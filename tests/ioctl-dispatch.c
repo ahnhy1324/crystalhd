@@ -39,10 +39,12 @@ typedef struct poll_table_struct { int unused; } poll_table;
 struct device { int unused; };
 struct pci_dev { struct device dev; unsigned int device; };
 struct test_lock { unsigned readers, writers; };
+struct crystalhd_hw;
 struct crystalhd_cmd {
     uint32_t state;
     struct crystalhd_user user[BC_LINK_MAX_OPENS];
     const void *session_owner;
+    struct crystalhd_hw *hw_ctx;
 };
 struct crystalhd_adp {
     struct pci_dev *pdev;
@@ -52,6 +54,14 @@ struct crystalhd_adp {
     struct crystalhd_cmd cmds;
     struct test_lock user_lock, tx_lock;
     atomic_t rx_poll_ready;
+};
+struct crystalhd_hw {
+    struct crystalhd_adp *adp;
+    unsigned lock;
+    bool dma_fault, dev_started, FleaEnablePWM, FleaPowerTransition;
+    bool hw_pause_issued;
+    enum FLEA_POWER_STATES FleaPowerState;
+    uint32_t FleaRawActive;
 };
 struct crystalhd_file { struct crystalhd_user *user; uint64_t generation; };
 struct file { void *private_data; };
@@ -64,6 +74,7 @@ struct crystalhd_cmd_tbl {
 
 static struct pci_dev pci;
 static struct crystalhd_adp adapter, *current_adapter;
+static struct crystalhd_hw hardware;
 static struct crystalhd_file binding;
 static struct file file;
 static struct test_lock chd_device_lock;
@@ -82,11 +93,34 @@ static bool fail_user_admission, fail_tx_admission, interrupt_tx;
 static bool release_user, attach_extra;
 static int copy_in_error, copy_out_error;
 static BC_STATUS handler_status;
+static bool expect_raw_lease, pause_during_raw, fault_during_raw;
+static unsigned raw_rechecks, raw_initial_owners;
+
+BC_STATUS crystalhd_flea_raw_enter(struct crystalhd_hw *, bool, bool *);
+void crystalhd_flea_raw_leave(struct crystalhd_hw *, bool);
+static bool crystalhd_rawio_command(unsigned int);
 
 static void Check(bool okay, const char *message)
 {
     checks++;
     if (!okay) { fprintf(stderr, "FAIL: %s\n", message); exit(1); }
+}
+#define spin_lock_irqsave(spin, flags) do { \
+    Check((spin) == &hardware.lock && !*(spin), "raw lease lock is nonrecursive"); \
+    *(spin) = 1; (flags) = 0; \
+} while (0)
+#define spin_unlock_irqrestore(spin, flags) do { \
+    Check((spin) == &hardware.lock && *(spin) == 1 && !(flags), "raw lease lock balances"); \
+    *(spin) = 0; \
+} while (0)
+static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
+                                                     enum FLEA_STATE_CH_EVENT event)
+{
+    Check(hw == &hardware && !hw->lock && event == FLEA_EVT_CMD_COMP &&
+          hw->FleaRawActive == raw_initial_owners,
+          "raw completion reevaluates power only after releasing its own lease");
+    raw_rechecks++;
+    return BC_STS_SUCCESS;
 }
 static struct device *chddev(void) { return &pci.dev; }
 static void crystalhd_rx_poll_wake(struct crystalhd_adp *adp, unsigned events)
@@ -209,6 +243,14 @@ static BC_STATUS Handle(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *io, uns
         Check(adapter.user_lock.readers == 1, "ordinary ioctl has shared admission");
     Check(adapter.tx_lock.writers == (command == BCM_IOC_PROC_INPUT),
           "only input holds TX serialization; receive remains independent");
+    if (expect_raw_lease)
+        Check(!hardware.lock && hardware.FleaRawActive == raw_initial_owners + 1,
+              "raw handler holds its exact active-device lease through the last access");
+    if (pause_during_raw) {
+        hardware.FleaPowerState = FLEA_PS_LP_PENDING;
+        hardware.hw_pause_issued = true;
+    }
+    if (fault_during_raw) hardware.dma_fault = true;
     handler_calls++;
     if (command == BCM_IOC_RELEASE && release_user) ctx->user[io->u_id].in_use = 0;
     return handler_status;
@@ -260,6 +302,9 @@ static void Reset(void)
     };
     adapter.cmds.user[1] = (struct crystalhd_user){ .uid = 1, .in_use = 1, .mode = DTS_PLAYBACK_MODE };
     adapter.cmds.session_owner = &adapter.cmds.user[1];
+    hardware = (struct crystalhd_hw){ .adp = &adapter, .dev_started = true,
+        .FleaPowerState = FLEA_PS_ACTIVE };
+    adapter.cmds.hw_ctx = &hardware;
     current_adapter = &adapter;
     chd_device_generation = 3;
     binding = (struct crystalhd_file){ .user = &adapter.cmds.user[1], .generation = 3 };
@@ -274,6 +319,8 @@ static void Reset(void)
     release_user = attach_extra = false;
     copy_in_error = copy_out_error = 0;
     handler_status = BC_STS_SUCCESS;
+    expect_raw_lease = pause_during_raw = fault_during_raw = false;
+    raw_rechecks = raw_initial_owners = 0;
 }
 static long Call(unsigned command, bool compat)
 {
@@ -500,6 +547,94 @@ static void Permissions(void)
               "neighboring registers are never exposed by the color exception");
     }
 }
+static void RawPowerAdmission(void)
+{
+    const unsigned commands[] = { BCM_IOC_REG_RD, BCM_IOC_FPGA_RD,
+        BCM_IOC_MEM_RD, BCM_IOC_REG_WR, BCM_IOC_FPGA_WR,
+        BCM_IOC_MEM_WR, BCM_IOC_WR_PCI_CFG };
+    const BC_STATUS results[] = { BC_STS_SUCCESS, BC_STS_IO_ERROR, BC_STS_TIMEOUT };
+
+    for (unsigned compat = 0; compat < 2; compat++) {
+        for (unsigned op = 0; op < sizeof(commands) / sizeof(commands[0]); op++) {
+            for (unsigned result = 0; result < sizeof(results) / sizeof(results[0]); result++) {
+                Reset();
+                hardware.FleaEnablePWM = true;
+                hardware.FleaRawActive = raw_initial_owners = 2;
+                expect_raw_lease = op < 3;
+                handler_status = results[result];
+                Check(Call(commands[op], compat) == 0 &&
+                      caller_data.RetSts == (op < 3 ? results[result] : BC_STS_BUSY),
+                      "enabled raw reads retain callback status while arbitrary writes are refused");
+                Check(handler_calls == (op < 3) && hardware.FleaRawActive == 2 &&
+                      !hardware.lock && !raw_rechecks && frees == 1,
+                      "success and callback failure release only this call's raw lease");
+            }
+            for (unsigned state = FLEA_PS_NONE; state <= FLEA_PS_FAULT; state++) {
+                Reset();
+                hardware.FleaEnablePWM = true;
+                hardware.FleaPowerState = state;
+                expect_raw_lease = op < 3 && state == FLEA_PS_ACTIVE;
+                BC_STATUS expected = state == FLEA_PS_FAULT ? BC_STS_IO_ERROR :
+                    expect_raw_lease ? BC_STS_SUCCESS : BC_STS_BUSY;
+                Check(Call(commands[op], compat) == 0 && caller_data.RetSts == expected &&
+                      handler_calls == expect_raw_lease && !hardware.FleaRawActive,
+                      "raw entry cannot access stopped, pending, asleep or faulted hardware");
+            }
+            for (unsigned fault = 0; fault < 4; fault++) {
+                Reset();
+                hardware.FleaEnablePWM = true;
+                if (fault == 0) hardware.dma_fault = true;
+                if (fault == 1) hardware.dev_started = false;
+                if (fault == 2) hardware.FleaPowerTransition = true;
+                if (fault == 3) hardware.FleaRawActive = UINT32_MAX;
+                Check(Call(commands[op], compat) == 0 &&
+                      caller_data.RetSts == (fault < 2 ? BC_STS_IO_ERROR : BC_STS_BUSY) &&
+                      !handler_calls && hardware.FleaRawActive == (fault == 3 ? UINT32_MAX : 0),
+                      "raw health, transition and overflow refusals never call a handler or leak a lease");
+            }
+        }
+        for (unsigned write = 0; write < 2; write++) {
+            Reset();
+            privileged = false;
+            hardware.FleaEnablePWM = true;
+            expect_raw_lease = !write;
+            caller_data.u.regAcc.Offset = CRYSTALHD_FLEA_COLOR_REGISTER;
+            Check(Call(write ? BCM_IOC_REG_WR : BCM_IOC_REG_RD, compat) == 0 &&
+                  caller_data.RetSts == (write ? BC_STS_BUSY : BC_STS_SUCCESS) &&
+                  color_calls == !write && !hardware.FleaRawActive,
+                  "legacy color handler replacement obeys the same raw power admission");
+        }
+        for (unsigned fault = 0; fault < 2; fault++) {
+            Reset();
+            hardware.FleaEnablePWM = expect_raw_lease = pause_during_raw = true;
+            fault_during_raw = fault;
+            Check(Call(BCM_IOC_REG_RD, compat) == 0 && handler_calls == 1 &&
+                  !hardware.FleaRawActive && raw_rechecks == !fault,
+                  "late pause is reevaluated after raw release but a fault is not resumed");
+        }
+        for (unsigned copy = 0; copy < 2; copy++) {
+            Reset();
+            hardware.FleaEnablePWM = true;
+            expect_raw_lease = copy;
+            if (copy) copy_out_error = -EFAULT; else copy_in_error = -EFAULT;
+            Check(Call(BCM_IOC_MEM_RD, compat) == -EFAULT && handler_calls == copy &&
+                  !hardware.FleaRawActive && frees == 1,
+                  "user copy failures do not leak an active-device raw lease");
+        }
+        Reset();
+        hardware.FleaEnablePWM = true;
+        Check(Call(BCM_IOC_FW_DOWNLOAD, compat) == 0 && handler_calls == 1 &&
+              !hardware.FleaRawActive && caller_data.RetSts == BC_STS_SUCCESS,
+              "kernel-owned firmware download is not misclassified as external raw writes");
+        Reset();
+        pci.device = BC_PCI_DEVID_LINK;
+        hardware.FleaEnablePWM = true;
+        Check(Call(BCM_IOC_REG_WR, compat) == 0 && handler_calls == 1 &&
+              !hardware.FleaRawActive && caller_data.RetSts == BC_STS_SUCCESS,
+              "LINK legacy raw behavior is not gated by Flea runtime-power policy");
+    }
+}
+
 int main(void)
 {
     PollReadiness();
@@ -508,6 +643,7 @@ int main(void)
     Admission();
     ResultsAndCleanup();
     Permissions();
+    RawPowerAdmission();
     Reset();
     printf("Legacy ioctl dispatch passed (%u checks)\n", checks);
     return 0;

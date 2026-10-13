@@ -79,6 +79,7 @@ awk '
 /^void crystalhd_flea_stop_rx_dma_engine\(/ { copy = 1 }
 /^BC_STATUS crystalhd_flea_stop_tx_dma_engine\(/ { copy = 1 }
 /^void crystalhd_hw_dma_fatal_stop\(/ { copy = 1; fatal_found++ }
+/^void crystalhd_hw_publish_fault\(/ { copy = 1; publish_found++ }
 /^bool crystalhd_hw_ack_fault_interrupt\(/ { copy = 1; ack_found++ }
 /^static bool crystalhd_hw_dma_inventory_empty\(/ { copy = 1; inventory_found++ }
 /^BC_STATUS crystalhd_hw_free_dma_rings\(/ { copy = 1; free_found++ }
@@ -89,7 +90,7 @@ awk '
 /^static BC_STATUS bc_cproc_flush_cap_buffs\(/ { copy = 1; command_found++ }
 copy { print }
 copy && /^}/ { copy = 0 }
-END { if (command_found != 2 || helper_found != 1 || fatal_found != 1 || ack_found != 1 || inventory_found != 1 || free_found != 1 || copy) exit 1 }
+END { if (command_found != 2 || helper_found != 1 || fatal_found != 1 || publish_found != 1 || ack_found != 1 || inventory_found != 1 || free_found != 1 || copy) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" \
   "$repo_dir/driver/linux/crystalhd_hw.c" \
   "$repo_dir/driver/linux/crystalhd_cmds.c" > "$dma_test_dir/dma-stop-functions.h"
@@ -129,10 +130,10 @@ awk '
 awk '
     BEGIN { print "BC_STATUS crystalhd_hw_suspend(struct crystalhd_hw *hw);" }
     /^BC_STATUS crystalhd_hw_(close|suspend)\(/ { copy = 1; found++ }
-    /^void crystalhd_hw_dma_fatal_stop\(/ { copy = 1; found++ }
+    /^void crystalhd_hw_(dma_fatal_stop|publish_fault)\(/ { copy = 1; found++ }
     copy { print }
     copy && /^}/ { copy = 0 }
-    END { if (found != 3 || copy) exit 1 }
+    END { if (found != 4 || copy) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$dma_test_dir/flea-stop-callers.h"
 for reset_sanitize in no yes; do
     reset_extra=

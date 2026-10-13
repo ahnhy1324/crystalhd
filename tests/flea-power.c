@@ -19,8 +19,15 @@
 #include "bchp_decode_cpuregs2_0.h"
 
 #define READ_ONCE(value) (value)
+#define WRITE_ONCE(value, next) ((value) = (next))
+#define ARRAY_SIZE(value) (sizeof(value) / sizeof((value)[0]))
 #define printk(...) ((void)0)
-#define dev_err(...) ((void)0)
+#define dev_err(...) mock_dev_err(__VA_ARGS__)
+#define chddev() NULL
+#define EPOLLERR 8U
+#define EPOLLHUP 16U
+#define TEST_BRIDGE_CLOCKS (BCHP_CLK_PM_CTRL_DIS_BLINK_108_CLK_MASK | \
+                           BCHP_CLK_PM_CTRL_DIS_BLINK_216_CLK_MASK)
 
 struct mock_device;
 struct crystalhd_rx_dma_pkt { unsigned unused; };
@@ -29,7 +36,8 @@ struct crystalhd_hw {
     uint32_t FleaEnablePWM;
     enum FLEA_POWER_STATES FleaPowerState;
     bool FleaPowerTransition, FleaPowerRecheck, hw_pause_issued;
-    unsigned FleaIrqActive, FleaTxActive;
+    unsigned FleaIrqActive, FleaTxActive, FleaRawActive;
+    struct crystalhd_flea_power_snapshot FleaPowerSaved;
     enum LIST_STATUS TxList0Sts, TxList1Sts;
     uint32_t EmptyCnt, SingleThreadAppFIFOEmpty, FwCmdCnt;
     enum list_sts rx_list_sts[2];
@@ -51,7 +59,7 @@ struct crystalhd_hw {
 enum { RX_CASES = 16 + 32 };
 static unsigned transitions, cases, transition_cases, sequence_cases;
 static unsigned register_cycles;
-static unsigned memc_cases;
+static unsigned memc_cases, fault_cases;
 static enum FLEA_POWER_STATES requested;
 static void check(bool condition, const char *what);
 
@@ -72,21 +80,31 @@ static BC_STATUS record_power_request(struct crystalhd_hw *hw,
 enum nested_point { NEST_NONE, NEST_UNLOCK, NEST_PICTURE, NEST_FETCH,
                     NEST_REPOST, NEST_TX };
 
-struct mock_pci_device { unsigned device; };
+struct mock_pci_device { unsigned device; int dev; };
+static struct mock_pci_device flea_pci = {.device = BC_PCI_DEVID_FLEA};
 
 struct mock_device {
     struct mock_pci_device *pdev;
+    struct { unsigned cin_wait_exit; } cmds;
     bool present;
     bool idle, fail_self_refresh, fail_fll_write;
     bool require_lock, lock_held;
     unsigned reads, writes, dram_writes, delays, power_ups, fetches;
     unsigned status_reads, poll_delays, power_writes;
-    uint32_t memc_samples[4];
+    uint32_t memc_samples[256];
     unsigned memc_sample_count;
+    uint32_t pll_samples[128];
+    unsigned pll_sample_count, pll_reads;
+    uint32_t invalid_read_addr, invalid_read_value;
+    uint32_t invalid_read_xor;
+    unsigned invalid_read_at, invalid_read_seen;
+    bool invalid_read_pending;
+    bool actual_power_up;
     bool record_writes;
-    struct { uint32_t addr, value; } write_log[8];
+    struct { uint32_t addr, value; } write_log[128];
     unsigned logged_writes;
     unsigned picture_irqs, tx_irqs;
+    unsigned fault_wakes, interrupt_masks;
     struct crystalhd_hw *command_on_lock;
     unsigned command_lock_countdown;
     struct crystalhd_hw *health_on_lock;
@@ -108,8 +126,10 @@ struct mock_device {
     bool firmware_alive, cleanup_completion, resume_cleanup_on_unlock;
     unsigned cleanup_probes, cleanup_resumes;
     uint32_t last_fll;
-    struct { uint32_t addr, value; } registers[32];
+    struct mock_register { uint32_t addr, value; } registers[32], awake_registers[32];
     unsigned register_count;
+    unsigned awake_register_count;
+    bool awake_image_saved;
 };
 
 static struct mock_device device;
@@ -119,6 +139,7 @@ static bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
                                            enum FLEA_POWER_STATES state);
 static BC_STATUS real_set_next_power_state(struct crystalhd_hw *hw,
                                           enum FLEA_STATE_CH_EVENT event);
+static BC_STATUS real_runtime_power_up(struct crystalhd_hw *hw);
 static void nested_transition(enum nested_point point);
 
 static void check(bool condition, const char *what)
@@ -127,6 +148,32 @@ static void check(bool condition, const char *what)
     fprintf(stderr, "Flea transition: %s\n", what);
     exit(EXIT_FAILURE);
 }
+
+static void mock_dev_err(void *dev, const char *format, ...)
+{
+    (void)dev;
+    (void)format;
+}
+
+static void crystalhd_rx_poll_wake(struct mock_device *dev, unsigned events)
+{
+    check(events == (EPOLLERR | EPOLLHUP), "power fault omitted terminal poll status");
+    dev->fault_wakes++;
+}
+
+static void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw)
+{
+    check(hw->dma_fault && !hw->adp->present, "IRQ mask preceded fault publication");
+    hw->adp->interrupt_masks++;
+}
+
+static void crystalhd_link_disable_interrupts(struct crystalhd_hw *hw)
+{
+    (void)hw;
+    check(false, "Flea power fault selected Link IRQ masking");
+}
+
+#include "flea-power-fault.h"
 
 static void mark_unhealthy(struct crystalhd_hw *hw, unsigned failure)
 {
@@ -204,7 +251,30 @@ static uint32_t register_value(struct mock_device *dev, uint32_t addr)
 static uint32_t read_register(struct mock_device *dev, uint32_t addr)
 {
     check(!dev->require_lock || dev->lock_held, "power-down MMIO read outside lock");
+    check(addr == BCHP_CLK_PM_CTRL ||
+          !(register_value(dev, BCHP_CLK_PM_CTRL) & TEST_BRIDGE_CLOCKS),
+          "dependent register read while BLINK register-access clocks are gated");
+    if (addr == BCHP_CLK_PM_CTRL && !dev->actual_power_up && !dev->awake_image_saved) {
+        memcpy(dev->awake_registers, dev->registers, sizeof(dev->registers));
+        dev->awake_register_count = dev->register_count;
+        dev->awake_image_saved = true;
+    }
     dev->reads++;
+    if (addr == dev->invalid_read_addr && dev->invalid_read_at) {
+        dev->invalid_read_pending = ++dev->invalid_read_seen == dev->invalid_read_at;
+        if (dev->invalid_read_pending)
+            return dev->invalid_read_xor ? register_value(dev, addr) ^ dev->invalid_read_xor :
+                                          dev->invalid_read_value;
+    }
+    if (addr == BCHP_DDR23_PHY_CONTROL_REGS_PLL_STATUS) {
+        unsigned sample = dev->pll_reads++;
+        if (!dev->pll_sample_count)
+            return BCHP_DDR23_PHY_CONTROL_REGS_PLL_STATUS_LOCK_MASK;
+        check(dev->pll_sample_count <= ARRAY_SIZE(dev->pll_samples),
+              "invalid scripted PLL sample count");
+        if (sample >= dev->pll_sample_count) sample = dev->pll_sample_count - 1;
+        return dev->pll_samples[sample];
+    }
     if (addr == BCHP_DDR23_CTL_REGS_0_CTL_STATUS) {
         unsigned sample = dev->status_reads++;
         if (dev->memc_sample_count) {
@@ -217,7 +287,10 @@ static uint32_t read_register(struct mock_device *dev, uint32_t addr)
                BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo1_empty_MASK |
                BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo2_empty_MASK |
                BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo3_empty_MASK |
-               (dev->fail_self_refresh ? BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK : 0);
+               ((dev->fail_self_refresh ||
+                 !(register_value(dev, BCHP_DDR23_CTL_REGS_0_PARAMS2) &
+                   BCHP_DDR23_CTL_REGS_0_PARAMS2_clke_MASK)) ?
+                BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK : 0);
     }
     return register_value(dev, addr);
 }
@@ -226,10 +299,12 @@ static void write_register(struct mock_device *dev, uint32_t addr, uint32_t valu
 {
     unsigned i;
     check(!dev->require_lock || dev->lock_held, "power-down MMIO write outside lock");
+    check(addr != dev->invalid_read_addr || !dev->invalid_read_pending,
+          "a bad RMW read was used for a write before another validated read");
     dev->writes++;
     if (dev->record_writes) {
         check(dev->logged_writes < sizeof(dev->write_log) / sizeof(dev->write_log[0]),
-              "unexpected extra write during MEMC refusal");
+              "MMIO trace storage exhausted");
         dev->write_log[dev->logged_writes].addr = addr;
         dev->write_log[dev->logged_writes++].value = value;
     }
@@ -293,11 +368,23 @@ static BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *hw,
     return hw->adp->repost_status;
 }
 
-static void crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
+static BC_STATUS crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
 {
     check(hw->lock && hw->FleaPowerTransition,
           "physical wake outside locked transition reservation");
     hw->adp->power_ups++;
+    if (hw->adp->actual_power_up) return real_runtime_power_up(hw);
+    /* The legacy state-machine stub models a completed wake, including an
+     * awake register image for its next down attempt. New fault cases call
+     * the actual helper above; no register restoration algorithm is mocked.
+     */
+    if (hw->adp->awake_image_saved) {
+        memcpy(hw->adp->registers, hw->adp->awake_registers, sizeof(hw->adp->registers));
+        hw->adp->register_count = hw->adp->awake_register_count;
+        hw->adp->awake_image_saved = false;
+    }
+    hw->FleaPowerSaved.valid = false;
+    return BC_STS_SUCCESS;
 }
 
 static void crystalhd_flea_handle_PicQSts_intr(struct crystalhd_hw *hw)
@@ -345,13 +432,15 @@ static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
 #include "flea-power-functions.h"
 #undef crystalhd_flea_set_power_state
 
+#include "flea-power-registers.h"
+
 #define crystalhd_flea_set_power_state private_set_power_state
 #include "flea-power-transitions.h"
 #undef crystalhd_flea_set_power_state
 #include "flea-power-done.h"
 
-/* The state-machine cases retain their wake stub. These additional tests
- * execute the actual wake helper, separately from those reservation cases.
+/* Legacy interleavings keep their wake stub; the integrated fault cases
+ * select actual down/up/setter/selector with the same environment callbacks.
  */
 #define crystalhd_flea_runtime_power_up real_runtime_power_up
 #include "flea-power-up.h"
@@ -431,6 +520,7 @@ static struct crystalhd_hw transition_setup(enum FLEA_POWER_STATES state)
     memset(&device, 0, sizeof(device));
     device.idle = true;
     device.present = true;
+    device.pdev = &flea_pci;
     device.firmware_alive = true;
     write_register(&device, BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR, 7);
     write_register(&device, BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR, 11);
@@ -480,7 +570,7 @@ static void transition_failures(void)
                   "idle/self-refresh timeout lost accepted zero-FLL pause");
             check(hw.FleaPowerState == FLEA_PS_LP_PENDING,
                   "timeout lost successful zero-FLL pending state");
-            check(device.status_reads == (refresh ? 101U : 401U) &&
+            check(device.status_reads == (refresh ? 102U : 401U) &&
                   device.poll_delays == (refresh ? 0U : 401U),
                   "idle/self-refresh polls did not remain bounded");
             check(register_value(&device, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL) ==
@@ -531,7 +621,7 @@ static void transition_failures(void)
     }
 
     for (unsigned pending = 0; pending < 2; pending++)
-        for (unsigned owner = 0; owner < 12; owner++) {
+        for (unsigned owner = 0; owner < 13; owner++) {
             enum FLEA_POWER_STATES state = pending ? FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE;
             struct crystalhd_hw hw = transition_setup(state);
             hw.fwcmd_active = owner == 0;
@@ -546,6 +636,7 @@ static void transition_failures(void)
             hw.fwcmd_trans_active = owner == 9;
             hw.FleaIrqActive = owner == 10;
             hw.FleaTxActive = owner == 11;
+            hw.FleaRawActive = owner == 12;
             check(crystalhd_flea_set_power_state(&hw, FLEA_PS_LP_COMPLETE),
                   "busy owner lost accepted zero-FLL pause");
             check(hw.FleaPowerState == FLEA_PS_LP_PENDING && device.dram_writes == 1 &&
@@ -674,18 +765,14 @@ static void transition_success(void)
     }
 }
 
-static void register_round_trips(void)
-{
-    static const struct {
-        uint32_t addr, mask;
-        bool set_on_down;
-    } regs[] = {
+static const struct power_register {
+    uint32_t addr, mask;
+    bool set_on_down;
+} power_registers[] = {
         {BCHP_CLK_PM_CTRL,
          BCHP_CLK_PM_CTRL_DIS_ARM_CLK_MASK |
          BCHP_CLK_PM_CTRL_DIS_AVD_CLK_MASK |
-         BCHP_CLK_PM_CTRL_DIS_BLINK_108_CLK_MASK |
          BCHP_CLK_PM_CTRL_DIS_AVD_108_CLK_MASK |
-         BCHP_CLK_PM_CTRL_DIS_BLINK_216_CLK_MASK |
          BCHP_CLK_PM_CTRL_DIS_AVD_216_CLK_MASK |
          BCHP_CLK_PM_CTRL_DIS_DDR_108_CLK_MASK |
          BCHP_CLK_PM_CTRL_DIS_DDR_216_CLK_MASK, true},
@@ -699,43 +786,120 @@ static void register_round_trips(void)
          BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL_pwrdn_MASK, true},
         {BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL,
          BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL_pwrdn_MASK, true},
+        {BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL,
+         BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_idle_MASK |
+         BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_ctl_iddq_MASK |
+         BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_rxenb_MASK |
+         BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_cke_reb_MASK, true},
+        {BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL,
+         BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_idle_MASK |
+         BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_dm_iddq_MASK |
+         BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_dq_iddq_MASK |
+         BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_read_enb_iddq_MASK |
+         BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_dqs_iddq_MASK |
+         BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_clk_iddq_MASK, true},
+        {BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL,
+         BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_idle_MASK |
+         BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_dm_iddq_MASK |
+         BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_dq_iddq_MASK |
+         BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_read_enb_iddq_MASK |
+         BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_dqs_iddq_MASK |
+         BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_clk_iddq_MASK, true},
         {BCHP_DDR23_CTL_REGS_0_PARAMS2,
          BCHP_DDR23_CTL_REGS_0_PARAMS2_clke_MASK, true},
         {BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0,
-         BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0_enable_MASK, false}
-    };
+         BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0_enable_MASK, false},
+        {BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL,
+         BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL_arb_disable_MASK, true}
+};
 
-    /* Zero, all-one and walking-one backgrounds exercise every unrelated
-     * readback bit, including SUN/MISC and PHY reserved bits. This is a
-     * targeted register-image test, not full pad/IDDQ restoration or proof
-     * of PLL/DRAM readiness: wake currently uses delays, not readiness polls.
+static uint32_t valid_power_bits(uint32_t addr)
+{
+    switch (addr) {
+    case BCHP_CLK_PM_CTRL:
+        return ~(BCHP_CLK_PM_CTRL_reserved_for_eco0_MASK | BCHP_CLK_PM_CTRL_reserved1_MASK |
+                 BCHP_CLK_PM_CTRL_reserved2_MASK | BCHP_CLK_PM_CTRL_reserved3_MASK);
+    case BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL:
+        return ~BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL_reserved0_MASK;
+    case BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL:
+        return ~BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL_reserved0_MASK;
+    case BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG:
+        return ~(BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG_reserved0_MASK |
+                 BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG_reserved1_MASK |
+                 BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG_reserved2_MASK);
+    case BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL:
+        return ~BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL_reserved0_MASK;
+    case BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL:
+        return ~BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL_reserved0_MASK;
+    case BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL:
+        return ~(BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_reserved0_MASK |
+                 BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_reserved1_MASK |
+                 BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_reserved2_MASK);
+    case BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL:
+        return ~BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_reserved0_MASK;
+    case BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL:
+        return ~BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_reserved0_MASK;
+    case BCHP_DDR23_CTL_REGS_0_PARAMS2:
+        return ~BCHP_DDR23_CTL_REGS_0_PARAMS2_reserved0_MASK;
+    case BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0:
+        return ~BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0_reserved0_MASK;
+    case BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL:
+        return ~BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL_reserved0_MASK;
+    }
+    check(false, "unknown register in independent RDB validity expectations");
+    return 0;
+}
+
+static void register_round_trips(void)
+{
+
+    /* Dense and walking-one backgrounds exercise named unrelated bits and
+     * saved non-idle pad fields, not reserved bus data. Readiness is scripted MMIO,
+     * not electrical proof; real down/up both execute below.
      */
     for (unsigned image = 0; image < 34; image++) {
-        uint32_t seed = image == 0 ? 0 : image == 1 ? UINT32_MAX :
+        uint32_t seed = image == 0 ? 0 : image == 1 ? UINT32_C(0x7fffffff) :
                         UINT32_C(1) << (image - 2);
-        uint32_t initial[sizeof(regs) / sizeof(regs[0])];
+        uint32_t initial[ARRAY_SIZE(power_registers)];
         struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
         hw.FleaPowerTransition = true;
         lock_hw(&hw.lock);
-        for (unsigned i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
-            initial[i] = seed & ~regs[i].mask;
-            if (!regs[i].set_on_down) initial[i] |= regs[i].mask;
-            write_register(&device, regs[i].addr, initial[i]);
+        for (unsigned i = 0; i < ARRAY_SIZE(power_registers); i++) {
+            initial[i] = seed & valid_power_bits(power_registers[i].addr) & ~power_registers[i].mask;
+            if (power_registers[i].addr == BCHP_CLK_PM_CTRL)
+                initial[i] &= ~TEST_BRIDGE_CLOCKS;
+            if (power_registers[i].addr == BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL ||
+                power_registers[i].addr == BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL ||
+                power_registers[i].addr == BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL)
+                initial[i] |= seed & power_registers[i].mask & ~UINT32_C(0x80000000);
+            if (!power_registers[i].set_on_down) initial[i] |= power_registers[i].mask;
+            write_register(&device, power_registers[i].addr, initial[i]);
         }
         for (unsigned repeat = 0; repeat < 2; repeat++) {
-            check(crystalhd_flea_runtime_power_dn(&hw),
+            check(crystalhd_flea_runtime_power_dn(&hw) == FLEA_PD_ENTERED,
                   "paired register test failed to enter mocked power-down");
-            for (unsigned i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
-                uint32_t expected = regs[i].set_on_down ?
-                                    initial[i] | regs[i].mask :
-                                    initial[i] & ~regs[i].mask;
-                check(register_value(&device, regs[i].addr) == expected,
+            for (unsigned i = 0; i < ARRAY_SIZE(power_registers); i++) {
+                uint32_t expected = power_registers[i].set_on_down ?
+                                    initial[i] | power_registers[i].mask :
+                                    initial[i] & ~power_registers[i].mask;
+                check(register_value(&device, power_registers[i].addr) == expected,
                       "power-down changed unrelated register bits or missed its mask");
+                if (repeat) {
+                    // Change only non-owned readback after the snapshot.
+                    uint32_t changed = ~initial[i] & ~power_registers[i].mask &
+                                       valid_power_bits(power_registers[i].addr);
+                    if (power_registers[i].addr == BCHP_CLK_PM_CTRL)
+                        changed &= ~TEST_BRIDGE_CLOCKS;
+                    initial[i] = changed | (initial[i] & power_registers[i].mask);
+                    write_register(&device, power_registers[i].addr,
+                                   changed | (expected & power_registers[i].mask));
+                }
             }
-            real_runtime_power_up(&hw);
-            for (unsigned i = 0; i < sizeof(regs) / sizeof(regs[0]); i++)
-                check(register_value(&device, regs[i].addr) == initial[i],
-                      "power-up did not restore targeted clock/refresh register image");
+            check(real_runtime_power_up(&hw) == BC_STS_SUCCESS,
+                  "paired register test rejected scripted valid readiness");
+            for (unsigned i = 0; i < ARRAY_SIZE(power_registers); i++)
+                check(register_value(&device, power_registers[i].addr) == initial[i],
+                      "power-up did not restore owned bits or clobbered changed unrelated bits");
             check(register_value(&device, BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR) == 7 &&
                   register_value(&device, BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR) == 11,
                   "paired power cycle changed watchdog timer values");
@@ -796,7 +960,7 @@ static void memc_refusal_matrix(void)
           "MEMC test literals no longer match the named RDB fields");
     for (unsigned bits = 0; bits < 32; bits++) {
         const uint32_t raw = (bits & 3U) | ((bits & 28U) << 2);
-        const bool admitted = (raw & 0x71U) == 0x71U;
+        const bool admitted = raw == 0x73U;
         struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
         device.memc_samples[0] = raw;
         device.memc_samples[1] = 0x71; /* Later self-refresh poll has CKE low. */
@@ -810,7 +974,7 @@ static void memc_refusal_matrix(void)
                   device.dram_writes == 1 && !device.last_fll,
                   "all named MEMC idle bits did not reach the existing later transition");
         } else {
-            memc_refusal_check(&hw, 401, 401);
+            memc_refusal_check(&hw, raw == 0x71U ? 1 : 401, raw == 0x71U ? 0 : 401);
         }
         memc_cases++;
     }
@@ -940,6 +1104,7 @@ static void step(struct crystalhd_hw *hw, enum FLEA_STATE_CH_EVENT event,
             hw->fwcmd_trans_active == before.fwcmd_trans_active &&
             hw->FleaIrqActive == before.FleaIrqActive &&
             hw->FleaTxActive == before.FleaTxActive &&
+            hw->FleaRawActive == before.FleaRawActive &&
             hw->FleaPowerTransition == before.FleaPowerTransition &&
             hw->rx_list_sts[0] == before.rx_list_sts[0] &&
             hw->rx_list_sts[1] == before.rx_list_sts[1],
@@ -985,6 +1150,7 @@ static void disabled_pwm(void)
     struct crystalhd_hw hw = setup(FLEA_PS_LP_COMPLETE, 15, 16, 31);
     hw.FleaPowerTransition = true;
     hw.FleaIrqActive = 17;
+    hw.FleaRawActive = 19;
     hw.FleaTxActive = 23;
     hw.FleaPowerRecheck = true;
     const struct crystalhd_hw before = hw;
@@ -994,6 +1160,7 @@ static void disabled_pwm(void)
             "PWM unexpectedly enabled at init", &before, FLEA_EVT_NONE);
     require(!hw.FleaIrqActive, "initializer retained IRQ owner", &before, FLEA_EVT_NONE);
     require(!hw.FleaTxActive, "initializer retained TX owner", &before, FLEA_EVT_NONE);
+    require(!hw.FleaRawActive, "initializer retained raw-read owner", &before, FLEA_EVT_NONE);
     require(!hw.FleaPowerRecheck, "initializer retained deferred power check", &before, FLEA_EVT_NONE);
     require(hw.TxList0Sts == before.TxList0Sts &&
             hw.TxList1Sts == before.TxList1Sts &&
@@ -1038,7 +1205,7 @@ static void events(void)
 static void command_owners(void)
 {
     for (unsigned pending = 0; pending < 2; pending++)
-        for (unsigned owners = 0; owners < 32; owners++) {
+        for (unsigned owners = 0; owners < 64; owners++) {
             struct crystalhd_hw hw = setup(pending ? FLEA_PS_LP_PENDING :
                                                     FLEA_PS_ACTIVE, 0, 0, 0);
             hw.fwcmd_active = !!(owners & 1);
@@ -1046,6 +1213,7 @@ static void command_owners(void)
             hw.fwcmd_trans_active = !!(owners & 4);
             hw.FleaIrqActive = !!(owners & 8);
             hw.FleaTxActive = !!(owners & 16);
+            hw.FleaRawActive = !!(owners & 32);
             enum FLEA_POWER_STATES to = owners ? FLEA_PS_LP_PENDING : FLEA_PS_LP_COMPLETE;
             step(&hw, pending ? FLEA_EVT_CMD_COMP : FLEA_EVT_PAUSE,
                  to, to != hw.FleaPowerState);
@@ -1593,6 +1761,349 @@ static void failed_intent_transition_sequences(void)
     }
 }
 
+static void retained_power_fault(struct crystalhd_hw *hw)
+{
+    check(hw->FleaPowerState == FLEA_PS_FAULT && hw->dma_fault && !device.present &&
+          device.cmds.cin_wait_exit && device.fault_wakes == 1 && device.interrupt_masks == 1 &&
+          !hw->FleaPowerTransition && !hw->lock && !device.lock_held,
+          "uncertain physical transition did not retain an unlocked terminal fault");
+    const struct crystalhd_flea_power_snapshot saved = hw->FleaPowerSaved;
+    const unsigned reads = device.reads, writes = device.writes;
+    const unsigned fll = device.dram_writes, wakes = device.power_ups;
+    const unsigned picture = device.picture_irqs, tx = device.tx_irqs;
+    const unsigned fetches = device.fetches, reposts = device.reposts;
+    const bool intent = hw->hw_pause_issued;
+    const bool picture_pending = hw->PwrDwnPiQIntr, tx_pending = hw->PwrDwnTxIntr;
+    for (unsigned enabled = 0; enabled < 2; enabled++) {
+        hw->FleaEnablePWM = enabled;
+        for (unsigned event = FLEA_EVT_NONE; event <= FLEA_EVT_RX_RESUME; event++) {
+            check(real_set_next_power_state(hw, event) == BC_STS_IO_ERROR &&
+                  hw->FleaPowerState == FLEA_PS_FAULT && hw->dma_fault && !device.present,
+                  "lifecycle event or disabled PWM bypassed retained power fault");
+        }
+        check(crystalhd_flea_publish_fll(hw, false) == BC_STS_IO_ERROR &&
+              crystalhd_flea_publish_fll(hw, true) == BC_STS_IO_ERROR,
+              "ordinary/cleanup FLL publication bypassed retained fault");
+    }
+    check(!memcmp(&saved, &hw->FleaPowerSaved, sizeof(saved)) &&
+          hw->hw_pause_issued == intent && hw->PwrDwnPiQIntr == picture_pending &&
+          hw->PwrDwnTxIntr == tx_pending && !hw->FleaPowerTransition &&
+          device.reads == reads && device.writes == writes && device.dram_writes == fll &&
+          device.power_ups == wakes && device.picture_irqs == picture && device.tx_irqs == tx &&
+          device.fetches == fetches && device.reposts == reposts,
+          "faulted request touched MMIO, lost retained state or replayed work");
+}
+
+static void later_refresh_failures(void)
+{
+    for (unsigned cause = 0; cause < 34; cause++) {
+        if (cause < 32 && ((UINT32_C(1) << cause) & UINT32_C(0x73))) continue;
+        const bool timeout = cause == 33;
+        const uint32_t invalid = cause == 32 ? UINT32_MAX :
+                                 cause < 32 ? UINT32_C(0x71) | (UINT32_C(1) << cause) : 0;
+        for (unsigned recovery = 0; recovery < 4; recovery++) {
+            struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
+            unsigned index = 0;
+            device.memc_samples[index++] = 0x73;
+            if (timeout)
+                for (unsigned poll = 0; poll < 100; poll++)
+                    device.memc_samples[index++] = 0x73;
+            else
+                device.memc_samples[index++] = invalid;
+            if (recovery == 1) {
+                device.memc_samples[index++] = 0x71;
+                device.memc_samples[index++] = 0x71;
+            }
+            device.memc_samples[index++] = recovery < 2 ? 0x73 :
+                                           recovery == 2 ? 0x71 : UINT32_MAX;
+            device.memc_sample_count = index;
+            device.record_writes = true;
+            const BC_STATUS result = real_set_next_power_state(&hw, FLEA_EVT_PAUSE);
+            check(result == (recovery < 2 ? BC_STS_SUCCESS : BC_STS_IO_ERROR),
+                  "later self-refresh refusal and uncertain restoration were conflated");
+            check(!device.power_writes && !hw.DrvPauseCnt &&
+                  hw.TickStartInPD == UINT64_C(99) && device.dram_writes == 1 &&
+                  !device.last_fll && device.status_reads <= 201,
+                  "failed self-refresh gated clocks, retried FLL or exceeded bounded reads");
+            check(register_value(&device, BCHP_DDR23_CTL_REGS_0_PARAMS2) == UINT32_C(0x02400000) &&
+                  register_value(&device, BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0) == UINT32_C(0x1080),
+                  "later failure did not restore the actual saved refresh requests");
+            const unsigned expected_reads = 1 + (timeout ? 100 : 1) +
+                                            (recovery == 0 || recovery == 3 ? 1 :
+                                             recovery == 1 ? 3 : 100);
+            check(device.status_reads == expected_reads,
+                  "self-refresh/rollback poll count changed or invalid status was retried");
+            if (recovery < 2) {
+                check(hw.FleaPowerState == FLEA_PS_LP_PENDING && !hw.dma_fault &&
+                      device.present && !hw.FleaPowerTransition && !hw.lock &&
+                      register_value(&device, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL) == 0 &&
+                      register_value(&device, BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR) == 7 &&
+                      register_value(&device, BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR) == 11,
+                      "confirmed rollback did not return to accepted physically-awake pause");
+            } else {
+                check(register_value(&device, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL) == 1 &&
+                      hw.FleaPowerSaved.valid,
+                      "uncertain rollback reopened arbiter or discarded its snapshot");
+#ifdef _POWER_HANDLE_AVD_WATCHDOG_
+                check(register_value(&device, BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR) == UINT32_MAX &&
+                      register_value(&device, BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR) == UINT32_MAX,
+                      "uncertain rollback resumed watchdogs before confirming memory readiness");
+#endif
+                retained_power_fault(&hw);
+            }
+            fault_cases++;
+        }
+    }
+}
+
+static struct crystalhd_hw real_wake_setup(void)
+{
+    struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
+    device.actual_power_up = true;
+    check(real_set_next_power_state(&hw, FLEA_EVT_PAUSE) == BC_STS_SUCCESS &&
+          hw.FleaPowerState == FLEA_PS_LP_COMPLETE && hw.FleaPowerSaved.valid,
+          "integrated wake fixture did not execute actual down and capture a snapshot");
+    hw.PwrDwnPiQIntr = hw.PwrDwnTxIntr = true;
+    hw.hw_pause_issued = true;
+    hw.PicQSts = 1;
+    device.return_packet = true;
+    device.reads = device.writes = device.power_writes = device.status_reads = 0;
+    device.logged_writes = 0;
+    device.record_writes = true;
+    return hw;
+}
+
+static void wake_failed_before_admission(struct crystalhd_hw *hw, bool readiness)
+{
+    const uint32_t core = BCHP_CLK_PM_CTRL_DIS_ARM_CLK_MASK |
+                          BCHP_CLK_PM_CTRL_DIS_AVD_CLK_MASK |
+                          BCHP_CLK_PM_CTRL_DIS_AVD_108_CLK_MASK |
+                          BCHP_CLK_PM_CTRL_DIS_AVD_216_CLK_MASK;
+    check(hw->FleaPowerSaved.valid && device.power_ups == 1 &&
+          device.dram_writes == 1 && !device.last_fll &&
+          hw->PwrDwnPiQIntr && hw->PwrDwnTxIntr && hw->hw_pause_issued &&
+          !device.picture_irqs && !device.tx_irqs && !device.fetches && !device.reposts,
+          "failed actual wake published FLL, replayed work or discarded retained notifications");
+    if (readiness) {
+        for (unsigned i = 0; i < device.logged_writes; i++) {
+            check(device.write_log[i].addr != BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL ||
+                  (device.write_log[i].value & BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL_arb_disable_MASK),
+                  "failed readiness check reopened memory arbiter");
+            check(device.write_log[i].addr != BCHP_CLK_PM_CTRL ||
+                  (device.write_log[i].value & core) == core,
+                  "failed readiness check enabled decoder core clocks");
+        }
+    }
+    retained_power_fault(hw);
+}
+
+static void actual_wake_failures(void)
+{
+    for (unsigned stage = 0; stage < 2; stage++)
+        for (unsigned failure = 0; failure < 3; failure++) {
+            struct crystalhd_hw hw = real_wake_setup();
+            if (!stage) {
+                device.pll_samples[0] = failure == 0 ? 0 : failure == 1 ? 3 : UINT32_MAX;
+                device.pll_sample_count = 1;
+            } else {
+                device.memc_samples[0] = failure == 0 ? 0x71 : failure == 1 ? 0x77 : UINT32_MAX;
+                device.memc_sample_count = 1;
+            }
+            check(real_set_next_power_state(&hw, FLEA_EVT_RX_RESUME) == BC_STS_IO_ERROR,
+                  "actual wake accepted PLL/CKE timeout or invalid readiness word");
+            check((stage ? device.status_reads : device.pll_reads) == (failure ? 1U : 100U),
+                  "actual wake readiness did not stop at invalid word or bounded timeout");
+            wake_failed_before_admission(&hw, true);
+            fault_cases++;
+        }
+    for (unsigned reg = 0; reg < ARRAY_SIZE(power_registers); reg++)
+        for (unsigned failure = 0; failure < 3; failure++) {
+            struct crystalhd_hw hw = real_wake_setup();
+            device.invalid_read_addr = power_registers[reg].addr;
+            device.invalid_read_at = failure ? 2 : 1;
+            device.invalid_read_value = UINT32_MAX;
+            if (failure == 2)
+                device.invalid_read_xor = reg == 0 ? BCHP_CLK_PM_CTRL_DIS_DDR_108_CLK_MASK :
+                                          power_registers[reg].mask & (0U - power_registers[reg].mask);
+            check(real_set_next_power_state(&hw, FLEA_EVT_RESUME) == BC_STS_IO_ERROR &&
+                  device.invalid_read_seen == device.invalid_read_at,
+                  "actual wake ignored invalid/mismatched register read or retried it");
+            unsigned affected_writes = 0;
+            for (unsigned i = 0; i < device.logged_writes; i++)
+                affected_writes += device.write_log[i].addr == power_registers[reg].addr;
+            check(affected_writes == (failure != 0),
+                  "bad RMW read performed a write or failed readback caused another write");
+            wake_failed_before_admission(&hw, false);
+            fault_cases++;
+        }
+    struct crystalhd_hw hw = real_wake_setup();
+    device.pll_samples[0] = 0;
+    device.pll_samples[1] = 1;
+    device.pll_sample_count = 2;
+    device.memc_samples[0] = 0x71;
+    device.memc_samples[1] = 0x73;
+    device.memc_sample_count = 2;
+    check(real_set_next_power_state(&hw, FLEA_EVT_RX_RESUME) == BC_STS_SUCCESS &&
+          hw.FleaPowerState == FLEA_PS_ACTIVE && !hw.dma_fault && device.present &&
+          !hw.FleaPowerTransition && !hw.hw_pause_issued && device.power_ups == 1 &&
+          device.pll_reads == 2 && device.status_reads == 2 && device.dram_writes == 2 &&
+          device.last_fll == 4 && device.picture_irqs == 1 && device.tx_irqs == 1 &&
+          device.fetches == 1 && device.reposts == 1,
+          "delayed valid PLL/CKE readiness did not restore normal actual wake admission");
+    fault_cases++;
+
+    hw = real_wake_setup();
+    device.fail_fll_write = true;
+    check(real_set_next_power_state(&hw, FLEA_EVT_RESUME) == BC_STS_IO_ERROR &&
+          hw.FleaPowerState == FLEA_PS_LP_PENDING && !hw.dma_fault && device.present &&
+          !hw.FleaPowerSaved.valid && !hw.FleaPowerTransition && device.power_ups == 1 &&
+          !device.picture_irqs && !device.tx_irqs && !device.fetches && !device.reposts,
+          "actual successful wake plus FLL failure was confused with uncertain hardware restoration");
+    unsigned writes = device.writes, reads = device.reads;
+    device.fail_fll_write = false;
+    check(real_set_next_power_state(&hw, FLEA_EVT_RX_RESUME) == BC_STS_SUCCESS &&
+          hw.FleaPowerState == FLEA_PS_ACTIVE && device.power_ups == 1 &&
+          device.reads == reads && device.writes == writes && device.dram_writes == 3 &&
+          device.picture_irqs == 1 && device.tx_irqs == 1 && device.reposts == 1,
+          "retry after actual successful wake repeated power transition or lost deferred work");
+    fault_cases++;
+}
+
+static void snapshot_failure_cases(void)
+{
+    for (unsigned reg = 0; reg < ARRAY_SIZE(power_registers); reg++)
+        for (unsigned failure = 0; failure < 3; failure++) {
+            struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
+            const struct power_register *spec = &power_registers[reg];
+            if (failure < 2) {
+                device.invalid_read_addr = spec->addr;
+                device.invalid_read_at = 1;
+                const uint32_t reserved = ~valid_power_bits(spec->addr);
+                device.invalid_read_value = failure ? reserved & (0U - reserved) : UINT32_MAX;
+            } else {
+                uint32_t value = spec->mask & (0U - spec->mask);
+                if (spec->addr == BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0) value = 0;
+                if (spec->addr == BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL ||
+                    spec->addr == BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL ||
+                    spec->addr == BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL)
+                    value = UINT32_C(0x80000000);
+                device.require_lock = false;
+                write_register(&device, spec->addr, value);
+                device.require_lock = true;
+                device.writes = device.power_writes = 0;
+            }
+            check(real_set_next_power_state(&hw, FLEA_EVT_PAUSE) == BC_STS_SUCCESS &&
+                  hw.FleaPowerState == FLEA_PS_LP_PENDING && !hw.FleaPowerSaved.valid &&
+                  !hw.dma_fault && device.present && !hw.FleaPowerTransition &&
+                  device.dram_writes == 1 && !device.last_fll && !device.writes &&
+                  !device.status_reads && !hw.DrvPauseCnt,
+                  "invalid or already-gated snapshot did not cleanly refuse before mutations");
+            if (reg == 0)
+                check(device.reads == 1,
+                      "invalid or gated initial CLOCK read was followed by dependent register reads");
+            fault_cases++;
+        }
+    struct crystalhd_hw hw = transition_setup(FLEA_PS_LP_COMPLETE);
+    device.actual_power_up = true;
+    check(real_set_next_power_state(&hw, FLEA_EVT_RESUME) == BC_STS_IO_ERROR &&
+          !device.reads && !device.writes && !device.dram_writes && !hw.FleaPowerSaved.valid,
+          "wake without a retained snapshot touched hardware or reported success");
+    retained_power_fault(&hw);
+    fault_cases++;
+}
+
+static void observed_register_baseline(void)
+{
+    static const struct {
+        enum FLEA_POWER_REG index;
+        uint32_t addr, value;
+    } observed[] = {
+        {FLEA_PR_CLOCK, BCHP_CLK_PM_CTRL, UINT32_C(0x03000000)},
+        {FLEA_PR_PHY_CLOCK, BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL, 0},
+        {FLEA_PR_PLL, BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG, 0},
+        {FLEA_PR_PHY_REGULATOR, BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL, 0},
+        {FLEA_PR_LANE0_REGULATOR, BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL, 0},
+        {FLEA_PR_LANE1_REGULATOR, BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL, 0},
+        {FLEA_PR_PHY_PAD, BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL, UINT32_C(0x00000122)},
+        {FLEA_PR_LANE0_PAD, BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL, UINT32_C(0x000a626a)},
+        {FLEA_PR_LANE1_PAD, BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL, UINT32_C(0x000a626a)},
+        {FLEA_PR_PARAMS, BCHP_DDR23_CTL_REGS_0_PARAMS2, UINT32_C(0x25534512)},
+        {FLEA_PR_REFRESH, BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0, UINT32_C(0x00001068)},
+        {FLEA_PR_ARBITER, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL, 0}
+    };
+    /* Control words observed by the read-only inventory at 01a9ea3. The
+     * native status 0x32 is busy, never permission to gate. Only the second
+     * branch scripts an idle/self-refresh/wake response for a device-free
+     * register-image check; it is not a native power-cycle result.
+     */
+    for (unsigned busy = 0; busy < 2; busy++) {
+        struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
+        device.require_lock = false;
+        for (unsigned i = 0; i < ARRAY_SIZE(observed); i++)
+            write_register(&device, observed[i].addr, observed[i].value);
+        device.require_lock = true;
+        device.writes = device.power_writes = 0;
+        device.record_writes = true;
+        device.actual_power_up = true;
+        if (busy) {
+            device.memc_samples[0] = 0x32;
+            device.memc_sample_count = 1;
+        } else {
+            device.memc_samples[0] = 0x73;
+            device.memc_samples[1] = 0x71;
+            device.memc_samples[2] = 0x73;
+            device.memc_sample_count = 3;
+        }
+        check(real_set_next_power_state(&hw, FLEA_EVT_PAUSE) == BC_STS_SUCCESS &&
+              hw.FleaPowerState == (busy ? FLEA_PS_LP_PENDING : FLEA_PS_LP_COMPLETE),
+              "observed valid controls rejected or busy native status treated as safe gating");
+        if (busy) {
+            check(device.status_reads == 401 && !device.power_writes && !hw.FleaPowerSaved.valid,
+                  "observed busy status did not preserve bounded refusal");
+        } else {
+            check(hw.FleaPowerSaved.valid && hw.FleaPowerSaved.cke == 2,
+                  "actual down did not retain a checked baseline CKE");
+            for (unsigned i = 0; i < ARRAY_SIZE(observed); i++) {
+                unsigned reg;
+                for (reg = 0; reg < ARRAY_SIZE(power_registers); reg++)
+                    if (power_registers[reg].addr == observed[i].addr) break;
+                check(reg < ARRAY_SIZE(power_registers) &&
+                      hw.FleaPowerSaved.value[observed[i].index] ==
+                      (observed[i].value & power_registers[reg].mask),
+                      "retained snapshot contains unowned bits or lost owned pad state");
+            }
+            check(real_set_next_power_state(&hw, FLEA_EVT_RESUME) == BC_STS_SUCCESS &&
+                  hw.FleaPowerState == FLEA_PS_ACTIVE && device.pll_reads == 1 &&
+                  device.status_reads == 3 && !hw.FleaPowerSaved.valid,
+                  "observed legal control baseline failed scripted down/up roundtrip");
+        }
+        for (unsigned i = 0; i < ARRAY_SIZE(observed); i++)
+            check(register_value(&device, observed[i].addr) == observed[i].value,
+                  "refusal/roundtrip changed an observed legal control word");
+        for (unsigned i = 0; i < device.logged_writes; i++)
+            check(device.write_log[i].addr != BCHP_CLK_PM_CTRL ||
+                  !(device.write_log[i].value & TEST_BRIDGE_CLOCKS),
+                  "runtime power transition gated BLINK register-access clocks");
+        fault_cases++;
+    }
+    const uint32_t bridges[] = {
+        BCHP_CLK_PM_CTRL_DIS_BLINK_108_CLK_MASK,
+        BCHP_CLK_PM_CTRL_DIS_BLINK_216_CLK_MASK, TEST_BRIDGE_CLOCKS
+    };
+    for (unsigned i = 0; i < ARRAY_SIZE(bridges); i++) {
+        struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
+        device.require_lock = false;
+        write_register(&device, BCHP_CLK_PM_CTRL, UINT32_C(0x03000000) | bridges[i]);
+        device.require_lock = true;
+        device.writes = device.power_writes = 0;
+        check(real_set_next_power_state(&hw, FLEA_EVT_PAUSE) == BC_STS_SUCCESS &&
+              hw.FleaPowerState == FLEA_PS_LP_PENDING && device.reads == 1 &&
+              !device.writes && !device.status_reads && !hw.FleaPowerSaved.valid,
+              "gated BLINK baseline allowed dependent register reads or power writes");
+        fault_cases++;
+    }
+}
+
 int main(void)
 {
     idle_matrix();
@@ -1614,9 +2125,13 @@ int main(void)
     firmware_wake_intent_sequences();
     cleanup_completion_sequences();
     failed_intent_transition_sequences();
+    later_refresh_failures();
+    actual_wake_failures();
+    snapshot_failure_cases();
+    observed_register_baseline();
     printf("PASS: %u Flea power selector cases; %u mocked-MMIO transition cases; "
            "%u integrated event sequences; %u targeted register cycles; "
-           "%u MEMC refusal cases; no device access\n",
-           cases, transition_cases, sequence_cases, register_cycles, memc_cases);
+           "%u MEMC refusal cases; %u integrated power fault cases; no device access\n",
+           cases, transition_cases, sequence_cases, register_cycles, memc_cases, fault_cases);
     return 0;
 }

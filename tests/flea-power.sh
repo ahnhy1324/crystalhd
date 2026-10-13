@@ -9,11 +9,25 @@ cleanup()
     rm -f "$test_dir/check" "$test_dir/flea-power-functions.h" \
         "$test_dir/flea-power-types.h" "$test_dir/flea-power-transitions.h" \
         "$test_dir/flea-power-pause.h" "$test_dir/flea-power-done.h" \
-        "$test_dir/flea-power-fll.h" "$test_dir/flea-power-up.h"
+        "$test_dir/flea-power-fll.h" "$test_dir/flea-power-up.h" \
+        "$test_dir/flea-power-registers.h" "$test_dir/flea-power-fault.h"
     rmdir "$test_dir"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+
+awk '
+    /^\/\* Runtime power register helpers\./ { copying = 1; found++ }
+    /^\/\* Runtime power transitions\. \*\// { copying = 0; ended++ }
+    copying { print }
+    END { if (found != 1 || ended != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-registers.h"
+awk '
+    /^void crystalhd_hw_publish_fault\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_hw.c" > "$test_dir/flea-power-fault.h"
 
 # Compile the actual initializer and selector, not a second predicate model.
 # Split static signatures and column-zero closing braces are extraction fuses.
@@ -29,7 +43,7 @@ awk '
     END { if (found != 2 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-functions.h"
 awk '
-    /^(bool|BC_STATUS) crystalhd_flea_(runtime_power_dn|set_power_state)\(/ {
+    /^(enum FLEA_POWER_DOWN_RESULT|BC_STATUS) crystalhd_flea_(runtime_power_dn|set_power_state)\(/ {
         if (previous != "static") exit 1
         print previous
         copying = 1; found++
@@ -40,7 +54,7 @@ awk '
     END { if (found != 2 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-transitions.h"
 awk '
-    /^void crystalhd_flea_runtime_power_up\(/ {
+    /^BC_STATUS crystalhd_flea_runtime_power_up\(/ {
         if (previous != "static") exit 1
         print previous
         copying = 1; found++
@@ -69,13 +83,14 @@ awk '
     END { if (found != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-fll.h"
 awk '
-    /^enum (FLEA_POWER_STATES|FLEA_STATE_CH_EVENT|LIST_STATUS|list_sts|_BC_PCI_DEV_IDS)[[:space:]]*\{/ {
+    /^enum (FLEA_POWER_STATES|FLEA_POWER_REG|FLEA_POWER_DOWN_RESULT|FLEA_STATE_CH_EVENT|LIST_STATUS|list_sts|_BC_PCI_DEV_IDS)[[:space:]]*\{/ {
         copying = 1; found++
     }
+    /^struct crystalhd_flea_power_snapshot[[:space:]]*\{/ { copying = 1; found++ }
     /^typedef enum _BC_STATUS[[:space:]]*\{/ { copying = 1; found++ }
     copying { print }
     copying && /^}(;| BC_STATUS;)/ { copying = 0 }
-    END { if (found != 6 || copying) exit 1 }
+    END { if (found != 9 || copying) exit 1 }
 ' "$repo_dir/driver/linux/FleaDefs.h" "$repo_dir/driver/linux/crystalhd_hw.h" \
     "$repo_dir/include/bc_dts_defs.h" "$repo_dir/include/bc_dts_glob_lnx.h" \
     > "$test_dir/flea-power-types.h"

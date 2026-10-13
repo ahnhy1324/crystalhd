@@ -12,10 +12,7 @@ index a62e8a4..441ea9e 100644
  void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw);
  void crystalhd_flea_enable_interrupts(struct crystalhd_hw *hw);
  void crystalhd_flea_clear_interrupts(struct crystalhd_hw *hw);
-@@ -69,6 +72,11 @@ bool crystalhd_flea_core_reset(struct crystalhd_hw *hw)
- {
- 	unsigned int pollCnt=0,regVal=0;
- 
+@@ -72,3 +75,8 @@ bool crystalhd_flea_core_reset(struct crystalhd_hw *hw)
 +#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 +	if (hw->research_scl_config_dirty && !crystalhd_flea_scl_size_current(hw))
 +		return false;

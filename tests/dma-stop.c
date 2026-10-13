@@ -535,6 +535,33 @@ static void test_flush_frontend(bool direct)
 		hw.rx_cancel_epoch == 1);
 }
 
+static void test_fault_publication_retains_ownership(void)
+{
+	const uint32_t devices[] = { BC_PCI_DEVID_FLEA, BC_PCI_DEVID_LINK, 0xffff };
+
+	for (unsigned int chip = 0; chip < ARRAY_SIZE(devices); chip++) {
+		struct pci_dev pci = { .irq = 1, .device = devices[chip] };
+		struct crystalhd_adp adp = { .pdev = &pci };
+		struct crystalhd_hw hw;
+		struct crystalhd_cmd ctx;
+		struct crystalhd_dioq active, ready, freeq;
+
+		reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
+			1, 1, 1, BC_LINK_CAP_EN);
+		irq_depth = 1;
+		/* IRQ-side publication is not PCI drainage or ownership retirement. */
+		crystalhd_hw_publish_fault(&hw);
+		assert(hw.dma_fault && !adp.present && adp.cmds.cin_wait_exit);
+		assert(flea_masks == (unsigned int)(chip == 0));
+		assert(link_masks == (unsigned int)(chip == 1));
+		assert(master_enabled && !master_clears && !pending_waits);
+		assert(active.count == 1 && ready.count == 1 && freeq.count == 1);
+		assert(attached_owners == 3 && !releases && !detaches && !stops);
+		assert(irq_depth == 1);
+		irq_depth = 0;
+	}
+}
+
 static void test_fatal_pending_is_not_proof(void)
 {
 	for (unsigned int pending = 0; pending < 2; pending++) {
@@ -832,6 +859,7 @@ int main(void)
 		!hw.rx_cancel_epoch);
 	test_flush_frontend(false);
 	test_flush_frontend(true);
+	test_fault_publication_retains_ownership();
 	test_fatal_pending_is_not_proof();
 	test_fault_interrupt_acknowledgement();
 	test_empty_faulted_ring_inventory();

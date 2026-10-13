@@ -1668,7 +1668,10 @@ bool crystalhd_hw_ack_fault_interrupt(struct crystalhd_hw *hw)
 	return true;
 }
 
-void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw)
+/* Publication and interrupt masking are safe from a locked IRQ/PM path.
+ * PCI draining and ownership release belong to the terminal sleepable path.
+ */
+void crystalhd_hw_publish_fault(struct crystalhd_hw *hw)
 {
 	/* Other admitted readers may still touch device state. Even a local
 	 * successful drain is not a lifetime fence: only terminal cleanup under
@@ -1682,6 +1685,11 @@ void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw)
 		crystalhd_flea_disable_interrupts(hw);
 	else if (hw->adp->pdev->device == BC_PCI_DEVID_LINK)
 		crystalhd_link_disable_interrupts(hw);
+}
+
+void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw)
+{
+	crystalhd_hw_publish_fault(hw);
 	pci_clear_master(hw->adp->pdev);
 	if (!pci_wait_for_pending_transaction(hw->adp->pdev))
 		dev_err(&hw->adp->pdev->dev, "PCI transactions did not drain after DMA stop\n");
@@ -2074,6 +2082,10 @@ BC_STATUS crystalhd_hw_resume(struct crystalhd_hw *hw)
 		return BC_STS_IO_ERROR;
 
 	mutex_lock(&hw->fwcmd_trans_mutex);
+	if (READ_ONCE(hw->dma_fault)) {
+		mutex_unlock(&hw->fwcmd_trans_mutex);
+		return BC_STS_IO_ERROR;
+	}
 	// Reset list state
 	hw->rx_list_sts[0] = sts_free;
 	hw->rx_list_sts[1] = sts_free;

@@ -16,6 +16,7 @@ struct _BC_DTS_PROC_OUT;
 
 #define KERN_ERR ""
 #define printk(...) ((void)0)
+#define READ_ONCE(value) (value)
 #define WINDOW_MASK BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK
 #define WINDOW_ENABLE BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_ENABLE_MASK
 #define WINDOW_BYTES (~(uint32_t)WINDOW_MASK + 1U)
@@ -30,6 +31,7 @@ struct crystalhd_adp {
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
     enum FLEA_POWER_STATES FleaPowerState;
+    bool dma_fault;
     void (*pfnWriteDevRegister)(struct crystalhd_adp *, uint32_t, uint32_t);
     void (*pfnWriteFPGARegister)(struct crystalhd_adp *, uint32_t, uint32_t);
 };
@@ -64,6 +66,7 @@ static _Thread_local struct operation *current;
 static uint32_t selected;
 static unsigned violations, mmio_count, cases, raw_calls;
 static bool race, first_selected, contender_attempted, contender_selected, first_pio;
+static unsigned fault_at_lock;
 
 static unsigned slot(uint32_t address)
 {
@@ -111,6 +114,8 @@ static unsigned long lock_dram(pthread_mutex_t *lock)
     current->irq_state = 1;
     current->locked = true;
     current->locks++;
+    if (fault_at_lock && current->locks == fault_at_lock)
+        hardware.dma_fault = true;
     current->burst_reads = current->burst_writes = current->burst_selects = 0;
     current->burst_flushes = 0;
     current->burst_start = current->start + current->done * 4U;
@@ -124,7 +129,9 @@ static void unlock_dram(pthread_mutex_t *lock, unsigned long flags)
     assert(current && current->locked && current->irq_state == 1 &&
            lock == &adapter.dram_lock && flags == current->initial_irq_state);
     assert(!pthread_mutex_lock(&control));
-    if (current->kind == DRAM_READ) {
+    if (hardware.dma_fault && !current->burst_selects) {
+        require(!current->burst_reads && !current->burst_writes && !current->burst_flushes);
+    } else if (current->kind == DRAM_READ) {
         require(current->burst_selects == 1 &&
                 current->burst_reads == current->burst_count &&
                 !current->burst_writes && !current->burst_flushes);
@@ -231,6 +238,7 @@ static void reset(void)
 {
     assert(!current);
     violations = mmio_count = raw_calls = 0;
+    fault_at_lock = 0;
     race = first_selected = contender_attempted = contender_selected = first_pio = false;
     selected = UINT32_MAX & WINDOW_MASK;
     endpoint.device = BC_PCI_DEVID_FLEA;
@@ -374,6 +382,12 @@ static void rejected(void)
         hardware.FleaPowerState = FLEA_PS_LP_COMPLETE;
         assert(CALL(&hardware, 0, 1, op.words) == BC_STS_BUSY);
         hardware.FleaPowerState = FLEA_PS_ACTIVE;
+        hardware.dma_fault = true;
+        assert(CALL(&hardware, 0, 1, op.words) == BC_STS_IO_ERROR);
+        hardware.dma_fault = false;
+        hardware.FleaPowerState = FLEA_PS_FAULT;
+        assert(CALL(&hardware, 0, 1, op.words) == BC_STS_IO_ERROR);
+        hardware.FleaPowerState = FLEA_PS_ACTIVE;
         for (unsigned n = 0; n < sizeof(invalid) / sizeof(invalid[0]); n++)
             assert(CALL(&hardware, invalid[n].start, invalid[n].count,
                         op.words) == BC_STS_ERROR);
@@ -381,6 +395,27 @@ static void rejected(void)
         assert(!mmio_count && !op.locks && !op.unlocks && !op.done && !violations);
         current = NULL;
         cases++;
+    }
+}
+
+static void fault_between_bursts(void)
+{
+    for (unsigned kind = DRAM_READ; kind <= DRAM_WRITE; kind++) {
+        for (unsigned burst = 1; burst <= 3; burst++) {
+            struct operation op;
+            reset();
+            prepare(&op, kind, 4, 129, 0);
+            fault_at_lock = burst;
+            run(&op);
+            assert(op.status == BC_STS_IO_ERROR && hardware.dma_fault &&
+                   op.done == 64U * (burst - 1) && op.selects == burst - 1 &&
+                   op.locks == burst && op.unlocks == burst && !op.locked &&
+                   op.irq_state == op.initial_irq_state && !violations);
+            for (unsigned i = op.done; i < op.count; i++)
+                assert(kind == DRAM_READ ? op.words[i] == 0 :
+                       *cell(op.start + 4U * i) == pattern(op.start + 4U * i));
+            cases++;
+        }
     }
 }
 
@@ -435,6 +470,7 @@ int main(void)
     rejected();
     disabled_irq();
     concurrent();
+    fault_between_bursts();
     raw_commands();
     printf("Flea DRAM: %u cases; deterministic four-way contention PASS\n", cases);
     return 0;

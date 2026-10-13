@@ -30,7 +30,12 @@
 #include <linux/sched/signal.h>
 #include <asm/tsc.h>
 #include <asm/msr.h>
+#include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_clk.h"
 #include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_ddr23_ctl_regs_0.h"
+#include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_ddr23_phy_control_regs.h"
+#include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_ddr23_phy_byte_lane_0.h"
+#include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_ddr23_phy_byte_lane_1.h"
+#include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_pri_arb_control_regs.h"
 #include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_misc3.h"
 #include "crystalhd_hw.h"
 #include "crystalhd_fleafuncs.h"
@@ -65,6 +70,9 @@ bool crystalhd_flea_core_reset(struct crystalhd_hw *hw)
 {
 	unsigned int pollCnt=0,regVal=0;
 
+	if (READ_ONCE(hw->dma_fault) ||
+	    READ_ONCE(hw->FleaPowerState) == FLEA_PS_FAULT)
+		return false;
 	dev_dbg(&hw->adp->pdev->dev,"[crystalhd_flea_core_reset]: Starting core reset\n");
 
 	hw->pfnWriteDevRegister(hw->adp, BCHP_MISC3_RESET_CTRL,
@@ -378,6 +386,9 @@ BC_STATUS crystalhd_flea_mem_rd(struct crystalhd_hw *hw, uint32_t start_off,
 		return BC_STS_INV_ARG;
 	}
 
+	if (READ_ONCE(hw->dma_fault) ||
+	    READ_ONCE(hw->FleaPowerState) == FLEA_PS_FAULT)
+		return BC_STS_IO_ERROR;
 	if( hw->FleaPowerState == FLEA_PS_LP_COMPLETE ) {
 		/*printk(KERN_ERR "%s: Flea power down, cann't read memory.\n", __func__); */
 		return BC_STS_BUSY;
@@ -396,6 +407,10 @@ BC_STATUS crystalhd_flea_mem_rd(struct crystalhd_hw *hw, uint32_t start_off,
 		 * against interrupt-side DRAM transfers after selecting it.
 		 */
 		spin_lock_irqsave(&hw->adp->dram_lock, flags);
+		if (READ_ONCE(hw->dma_fault)) {
+			spin_unlock_irqrestore(&hw->adp->dram_lock, flags);
+			return BC_STS_IO_ERROR;
+		}
 		hw->pfnWriteDevRegister(hw->adp, BCHP_MISC2_DIRECT_WINDOW_CONTROL,
 			(addr & mask) |
 			BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_ENABLE_MASK);
@@ -431,6 +446,9 @@ BC_STATUS crystalhd_flea_mem_wr(struct crystalhd_hw *hw, uint32_t start_off,
 		return BC_STS_INV_ARG;
 	}
 
+	if (READ_ONCE(hw->dma_fault) ||
+	    READ_ONCE(hw->FleaPowerState) == FLEA_PS_FAULT)
+		return BC_STS_IO_ERROR;
 	if( hw->FleaPowerState == FLEA_PS_LP_COMPLETE ) {
 		/*printk(KERN_ERR "%s: Flea power down, cann't write memory.\n", __func__); */
 		return BC_STS_BUSY;
@@ -446,6 +464,10 @@ BC_STATUS crystalhd_flea_mem_wr(struct crystalhd_hw *hw, uint32_t start_off,
 		uint32_t offset = addr & ~mask, n;
 
 		spin_lock_irqsave(&hw->adp->dram_lock, flags);
+		if (READ_ONCE(hw->dma_fault)) {
+			spin_unlock_irqrestore(&hw->adp->dram_lock, flags);
+			return BC_STS_IO_ERROR;
+		}
 		hw->pfnWriteDevRegister(hw->adp, BCHP_MISC2_DIRECT_WINDOW_CONTROL,
 			(addr & mask) |
 			BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_ENABLE_MASK);
@@ -461,106 +483,243 @@ BC_STATUS crystalhd_flea_mem_wr(struct crystalhd_hw *hw, uint32_t start_off,
 }
 
 
-static
-void crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
+/* Runtime power register helpers. The caller owns hw->lock and the
+ * transition reservation. These bounded checks do not prove physical leases.
+ */
+#define FLEA_PM_CORE_CLOCKS (BCHP_CLK_PM_CTRL_DIS_ARM_CLK_MASK | \
+	BCHP_CLK_PM_CTRL_DIS_AVD_CLK_MASK | \
+	BCHP_CLK_PM_CTRL_DIS_AVD_108_CLK_MASK | \
+	BCHP_CLK_PM_CTRL_DIS_AVD_216_CLK_MASK)
+#define FLEA_PM_BRIDGE_CLOCKS (BCHP_CLK_PM_CTRL_DIS_BLINK_108_CLK_MASK | \
+	BCHP_CLK_PM_CTRL_DIS_BLINK_216_CLK_MASK)
+#define FLEA_PM_DDR_CLOCKS (BCHP_CLK_PM_CTRL_DIS_DDR_108_CLK_MASK | \
+	BCHP_CLK_PM_CTRL_DIS_DDR_216_CLK_MASK)
+#define FLEA_PM_MEMC_IDLE (BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK | \
+	BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo1_empty_MASK | \
+	BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo2_empty_MASK | \
+	BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo3_empty_MASK)
+#define FLEA_PM_MEMC_KNOWN (FLEA_PM_MEMC_IDLE | \
+	BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK)
+
+struct flea_power_register {
+	uint32_t address;
+	uint32_t owned;
+	uint32_t reserved;
+};
+
+static const struct flea_power_register flea_power_registers[FLEA_PR_COUNT] = {
+	[FLEA_PR_CLOCK] = { BCHP_CLK_PM_CTRL,
+		FLEA_PM_CORE_CLOCKS | FLEA_PM_DDR_CLOCKS,
+		BCHP_CLK_PM_CTRL_reserved_for_eco0_MASK |
+		BCHP_CLK_PM_CTRL_reserved1_MASK |
+		BCHP_CLK_PM_CTRL_reserved2_MASK |
+		BCHP_CLK_PM_CTRL_reserved3_MASK },
+	[FLEA_PR_PHY_CLOCK] = { BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL,
+		BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL_DIS_DDR_CLK_MASK,
+		BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL_reserved0_MASK },
+	[FLEA_PR_PLL] = { BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG,
+		BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG_PWRDN_MASK,
+		BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG_reserved0_MASK |
+		BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG_reserved1_MASK |
+		BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG_reserved2_MASK },
+	[FLEA_PR_PHY_REGULATOR] = { BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL,
+		BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL_pwrdn_MASK,
+		BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL_reserved0_MASK },
+	[FLEA_PR_LANE0_REGULATOR] = { BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL,
+		BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL_pwrdn_MASK,
+		BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL_reserved0_MASK },
+	[FLEA_PR_LANE1_REGULATOR] = { BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL,
+		BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL_pwrdn_MASK,
+		BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL_reserved0_MASK },
+	[FLEA_PR_PHY_PAD] = { BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL,
+		BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_idle_MASK |
+		BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_ctl_iddq_MASK |
+		BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_rxenb_MASK |
+		BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_cke_reb_MASK,
+		BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_reserved0_MASK |
+		BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_reserved1_MASK |
+		BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_reserved2_MASK },
+	[FLEA_PR_LANE0_PAD] = { BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL,
+		BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_idle_MASK |
+		BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_dm_iddq_MASK |
+		BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_dq_iddq_MASK |
+		BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_read_enb_iddq_MASK |
+		BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_dqs_iddq_MASK |
+		BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_clk_iddq_MASK,
+		BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_reserved0_MASK },
+	[FLEA_PR_LANE1_PAD] = { BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL,
+		BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_idle_MASK |
+		BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_dm_iddq_MASK |
+		BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_dq_iddq_MASK |
+		BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_read_enb_iddq_MASK |
+		BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_dqs_iddq_MASK |
+		BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_clk_iddq_MASK,
+		BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_reserved0_MASK },
+	[FLEA_PR_PARAMS] = { BCHP_DDR23_CTL_REGS_0_PARAMS2,
+		BCHP_DDR23_CTL_REGS_0_PARAMS2_clke_MASK,
+		BCHP_DDR23_CTL_REGS_0_PARAMS2_reserved0_MASK },
+	[FLEA_PR_REFRESH] = { BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0,
+		BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0_enable_MASK,
+		BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0_reserved0_MASK },
+	[FLEA_PR_ARBITER] = { BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL,
+		BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL_arb_disable_MASK,
+		BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL_reserved0_MASK },
+};
+
+static bool flea_pm_read(struct crystalhd_hw *hw, enum FLEA_POWER_REG index,
+			 uint32_t *value)
 {
-	uint32_t regVal;
-	uint64_t currTick;
-	uint32_t totalTick_Hi;
-	uint32_t TickSpentInPD_Hi;
-	uint64_t temp_64;
-	long totalTick_Hi_f;
-	long TickSpentInPD_Hi_f;
+	const struct flea_power_register *reg = &flea_power_registers[index];
 
-	/*printk("RT PU \n"); */
+	*value = hw->pfnReadDevRegister(hw->adp, reg->address);
+	return *value != ~0U && !(*value & reg->reserved);
+}
 
-	/* NAREN This function restores clocks and power to the DRAM and to the core to bring the decoder back up to full operation */
-	/* Start the DRAM controller clocks first */
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_CLK_PM_CTRL);
-	regVal &= ~(BCHP_CLK_PM_CTRL_DIS_DDR_108_CLK_MASK |	BCHP_CLK_PM_CTRL_DIS_DDR_216_CLK_MASK);
-	hw->pfnWriteDevRegister(hw->adp, BCHP_CLK_PM_CTRL, regVal);
+/* Verify only bits owned by this transition; preserve other live fields. */
+static bool flea_pm_update(struct crystalhd_hw *hw, enum FLEA_POWER_REG index,
+			   uint32_t mask, uint32_t value)
+{
+	const struct flea_power_register *reg = &flea_power_registers[index];
+	uint32_t live;
 
-	/* Delay to allow the DRAM clock to stabilize */
-	udelay(25);
+	if (!flea_pm_read(hw, index, &live))
+		return false;
+	mask &= reg->owned;
+	hw->pfnWriteDevRegister(hw->adp, reg->address,
+			       (live & ~mask) | (value & mask));
+	return flea_pm_read(hw, index, &live) &&
+	       (live & mask) == (value & mask);
+}
 
-	/* Power Up PHY and start clocks on DRAM device */
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL);
-	regVal &= ~(BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL_pwrdn_MASK);
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL, regVal);
+static bool flea_pm_restore(struct crystalhd_hw *hw, enum FLEA_POWER_REG index,
+			    uint32_t mask)
+{
+	return flea_pm_update(hw, index, mask, hw->FleaPowerSaved.value[index]);
+}
 
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG);
-	regVal &= ~(BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG_PWRDN_MASK);
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG, regVal);
+static bool flea_pm_capture(struct crystalhd_hw *hw)
+{
+	unsigned int i;
+	uint32_t value, owned;
 
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL);
-	regVal &= ~BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL_DIS_DDR_CLK_MASK;
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL, regVal);
+	hw->FleaPowerSaved.valid = false;
+	/* BLINK must remain available for register access and fault masking.
+	 * Reject an inaccessible clock baseline before touching DDR/PHY words.
+	 */
+	for (i = 0; i < FLEA_PR_COUNT; i++) {
+		if (!flea_pm_read(hw, i, &value))
+			return false;
+		owned = value & flea_power_registers[i].owned;
+		/* Do not retain a baseline that itself requests clock/power gating. */
+		if ((i == FLEA_PR_CLOCK && (value & FLEA_PM_BRIDGE_CLOCKS)) ||
+		    (i <= FLEA_PR_LANE1_REGULATOR && owned) ||
+		    ((i == FLEA_PR_PARAMS || i == FLEA_PR_ARBITER) && owned) ||
+		    (i == FLEA_PR_REFRESH && !owned) ||
+		    (i == FLEA_PR_PHY_PAD &&
+		     (owned & BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_idle_MASK)) ||
+		    (i == FLEA_PR_LANE0_PAD &&
+		     (owned & BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_idle_MASK)) ||
+		    (i == FLEA_PR_LANE1_PAD &&
+		     (owned & BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_idle_MASK)))
+			return false;
+		hw->FleaPowerSaved.value[i] = owned;
+	}
+	hw->FleaPowerSaved.valid = true;
+	return true;
+}
 
-	/* Delay to allow the PLL to lock */
-	udelay(25);
+/* Software polling budgets only, not a new hardware settling guarantee. */
+static bool flea_pm_wait_cke(struct crystalhd_hw *hw, uint32_t expected)
+{
+	unsigned int i;
+	uint32_t value;
 
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL);
-	regVal &= ~(BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_idle_MASK );
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL, regVal);
+	for (i = 0; i < 100; i++) {
+		value = hw->pfnReadDevRegister(hw->adp,
+					     BCHP_DDR23_CTL_REGS_0_CTL_STATUS);
+		if (value & ~FLEA_PM_MEMC_KNOWN)
+			return false;
+		if ((value & BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK) == expected)
+			return true;
+	}
+	return false;
+}
 
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL);
-	regVal &= ~(BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL_pwrdn_MASK);
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL, regVal);
+static bool flea_pm_wait_pll(struct crystalhd_hw *hw)
+{
+	unsigned int i;
+	uint32_t value;
 
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL);
-	regVal &= ~(BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL_pwrdn_MASK);
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL, regVal);
+	for (i = 0; i < 100; i++) {
+		value = hw->pfnReadDevRegister(hw->adp,
+					BCHP_DDR23_PHY_CONTROL_REGS_PLL_STATUS);
+		if (value & BCHP_DDR23_PHY_CONTROL_REGS_PLL_STATUS_reserved0_MASK)
+			return false;
+		if (value & BCHP_DDR23_PHY_CONTROL_REGS_PLL_STATUS_LOCK_MASK)
+			return true;
+	}
+	return false;
+}
 
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL);
-	regVal &= ~(BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_idle_MASK );
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL, regVal);
+static BC_STATUS flea_pm_fault(struct crystalhd_hw *hw, const char *stage)
+{
+	if (hw->FleaPowerState != FLEA_PS_FAULT)
+		dev_err(&hw->adp->pdev->dev, "runtime power fault: %s\n", stage);
+	hw->FleaPowerState = FLEA_PS_FAULT;
+	crystalhd_hw_publish_fault(hw);
+	return BC_STS_IO_ERROR;
+}
 
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL);
-	regVal &= ~(BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_idle_MASK );
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL, regVal);
-
-	/* Start Refresh Cycles from controller */
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0);
-	regVal |= BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0_enable_MASK;
-	hw->pfnWriteDevRegister(hw->adp, BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0, regVal);
-
-	/* turn off self-refresh */
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_CTL_REGS_0_PARAMS2);
-	regVal &= ~(BCHP_DDR23_CTL_REGS_0_PARAMS2_clke_MASK);
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_CTL_REGS_0_PARAMS2, regVal);
-
-	udelay(5);
-
-	/* Issue refresh cycle */
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_CTL_REGS_0_REFRESH_CMD, 0x60);
-
-	/* Enable the ARM AVD and BLINK clocks */
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_CLK_PM_CTRL);
-
-	regVal &= ~(BCHP_CLK_PM_CTRL_DIS_ARM_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_AVD_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_BLINK_108_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_AVD_108_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_BLINK_216_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_AVD_216_CLK_MASK);
-
-	hw->pfnWriteDevRegister(hw->adp, BCHP_CLK_PM_CTRL, regVal);
-
-	/* Start arbiter */
-	hw->pfnWriteDevRegister(hw->adp, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL_arb_disable_Enable);
-
+static void flea_pm_restore_watchdogs(struct crystalhd_hw *hw)
+{
 #ifdef _POWER_HANDLE_AVD_WATCHDOG_
-	/* Restore Watchdog timers */
-	/* Make sure the timeouts do not happen */
-	/*Outer Loop Watchdog timer */
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR, hw->OLWatchDogTimer);
-
-	/*//Inner Loop Watchdog timer */
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR, hw->ILWatchDogTimer);
-
+	hw->pfnWriteDevRegister(hw->adp, BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR,
+			       hw->OLWatchDogTimer);
+	hw->pfnWriteDevRegister(hw->adp, BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR,
+			       hw->ILWatchDogTimer);
+#else
+	(void)hw;
 #endif
+}
 
-	/*printk("RT Power Up Flea Complete\n"); */
+/* Runtime power transitions. */
+static
+BC_STATUS crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
+{
+	uint64_t currTick, temp_64;
+	uint32_t totalTick_Hi, TickSpentInPD_Hi;
+	long totalTick_Hi_f, TickSpentInPD_Hi_f;
+
+	if (!hw->FleaPowerSaved.valid)
+		return flea_pm_fault(hw, "snapshot read");
+	if (!flea_pm_restore(hw, FLEA_PR_CLOCK, FLEA_PM_DDR_CLOCKS))
+		return flea_pm_fault(hw, "restore read");
+	udelay(25);
+	if (!flea_pm_restore(hw, FLEA_PR_PHY_REGULATOR, ~0U) ||
+	    !flea_pm_restore(hw, FLEA_PR_PLL, ~0U) ||
+	    !flea_pm_restore(hw, FLEA_PR_PHY_CLOCK, ~0U))
+		return flea_pm_fault(hw, "restore read");
+	udelay(25);
+	if (!flea_pm_wait_pll(hw))
+		return flea_pm_fault(hw, "PLL lock");
+	if (!flea_pm_restore(hw, FLEA_PR_PHY_PAD, ~0U) ||
+	    !flea_pm_restore(hw, FLEA_PR_LANE0_REGULATOR, ~0U) ||
+	    !flea_pm_restore(hw, FLEA_PR_LANE1_REGULATOR, ~0U) ||
+	    !flea_pm_restore(hw, FLEA_PR_LANE0_PAD, ~0U) ||
+	    !flea_pm_restore(hw, FLEA_PR_LANE1_PAD, ~0U) ||
+	    !flea_pm_restore(hw, FLEA_PR_REFRESH, ~0U) ||
+	    !flea_pm_restore(hw, FLEA_PR_PARAMS, ~0U))
+		return flea_pm_fault(hw, "restore read");
+	udelay(5);
+	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_CTL_REGS_0_REFRESH_CMD, 0x60);
+	if (!flea_pm_wait_cke(hw, hw->FleaPowerSaved.cke))
+		return flea_pm_fault(hw, "CKE wake");
+	if (!flea_pm_restore(hw, FLEA_PR_CLOCK, FLEA_PM_CORE_CLOCKS) ||
+	    !flea_pm_restore(hw, FLEA_PR_ARBITER, ~0U))
+		return flea_pm_fault(hw, "restore read");
+	flea_pm_restore_watchdogs(hw);
+	hw->FleaPowerSaved.valid = false;
+
 	currTick = rdtsc_ordered();
 	hw->TickSpentInPD += (currTick - hw->TickStartInPD);
 
@@ -608,216 +767,88 @@ void crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
 		/*		hw->PDRatio, hw->PauseThreshold, hw->DefaultPauseThreshold); */
 	}
 
-	return;
+	return BC_STS_SUCCESS;
 }
 
 static
-bool crystalhd_flea_runtime_power_dn(struct crystalhd_hw *hw)
+enum FLEA_POWER_DOWN_RESULT crystalhd_flea_runtime_power_dn(struct crystalhd_hw *hw)
 {
-	uint32_t regVal;
-	uint32_t pollCnt;
-	uint32_t saved_params, saved_refresh;
-	const uint32_t memc_idle_mask =
-		BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK |
-		BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo1_empty_MASK |
-		BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo2_empty_MASK |
-		BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo3_empty_MASK;
-	const uint32_t memc_known_mask = memc_idle_mask |
-		BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK;
+	uint32_t value = 0;
+	unsigned int i;
 
-	/*printk("RT PD \n"); */
-
-	/* NAREN This function stops the decoder clocks including the AVD, ARM and DRAM */
-	/* It powers down the DRAM device and places the DRAM into self-refresh */
-
+	if (!flea_pm_capture(hw))
+		return FLEA_PD_REFUSED;
 #ifdef _POWER_HANDLE_AVD_WATCHDOG_
-	/* Make sure the timeouts do not happen */
-	/* Because the AVD drops to a debug prompt and stops decoding if it hits any watchdogs */
-	/*Outer Loop Watchdog timer */
-	regVal = hw->pfnReadDevRegister(hw->adp,
-		BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR);
-
-	hw->OLWatchDogTimer = regVal;
-	hw->pfnWriteDevRegister(hw->adp,
-		BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR,
-		0xffffffff);
-
-	/*Inner Loop Watchdog timer */
-	regVal = hw->pfnReadDevRegister(hw->adp,
-		BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR);
-
-	hw->ILWatchDogTimer = regVal;
-	hw->pfnWriteDevRegister(hw->adp,
-		BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR,
-		0xffffffff);
-#else
-	regVal = 0;
+	hw->OLWatchDogTimer = hw->pfnReadDevRegister(hw->adp,
+					BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR);
+	hw->ILWatchDogTimer = hw->pfnReadDevRegister(hw->adp,
+					BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR);
+	hw->pfnWriteDevRegister(hw->adp, BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR,
+			       ~0U);
+	hw->pfnWriteDevRegister(hw->adp, BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR,
+			       ~0U);
 #endif
-
-	/* Stop memory arbiter first to freese memory access */
-	hw->pfnWriteDevRegister(hw->adp, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL_arb_disable_Disable);
-
-	/* delay at least 15us for memory transactions to complete */
-	/* udelay(15); */
-
-	/* Refuse power-down unless the controller is idle and all named read
-	 * FIFOs are empty. This does not establish firmware/source quiescence.
-	 */
-	pollCnt=0;
-	while (pollCnt++ <= 400) /*200 */
-	{
-		regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_CTL_REGS_0_CTL_STATUS);
-
-		if (regVal & ~memc_known_mask) {
-			printk("RT PD: invalid memory controller status %#x\n", regVal);
-			goto abort;
-		}
-		if ((regVal & memc_idle_mask) == memc_idle_mask)
-		{
-			/* udelay(10); */
+	if (!flea_pm_update(hw, FLEA_PR_ARBITER, ~0U, ~0U))
+		goto restore_fault;
+	/* Idle and read FIFO bits remain refusal guards, not physical leases. */
+	for (i = 0; i <= 400; i++) {
+		value = hw->pfnReadDevRegister(hw->adp,
+					     BCHP_DDR23_CTL_REGS_0_CTL_STATUS);
+		if (value & ~FLEA_PM_MEMC_KNOWN)
+			goto refuse;
+		if ((value & FLEA_PM_MEMC_IDLE) == FLEA_PM_MEMC_IDLE)
 			break;
-		}
 		udelay(10);
 	}
+	if ((value & FLEA_PM_MEMC_IDLE) != FLEA_PM_MEMC_IDLE ||
+	    !(value & BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK))
+		goto refuse;
+	hw->FleaPowerSaved.cke = value & BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK;
 
-	/*If we failed Start the arbiter and return*/
-	if ((regVal & memc_idle_mask) != memc_idle_mask)
-	{
-		printk("RT PD: memory controller or read FIFOs did not become idle\n");
-		goto abort;
-	}
+	if (!flea_pm_update(hw, FLEA_PR_PARAMS, ~0U, ~0U))
+		goto recover;
+	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_CTL_REGS_0_REFRESH_CMD, 0x60);
+	if (!flea_pm_update(hw, FLEA_PR_REFRESH, ~0U, 0) ||
+	    !flea_pm_wait_cke(hw, 0))
+		goto recover;
 
-	/* Disable the AVD, ARM and BLINK clocks*/
-	/*regVal = hw->pfnReadDevRegister(hw->adp, BCHP_CLK_PM_CTRL);
-
-	regVal |=	BCHP_CLK_PM_CTRL_DIS_ARM_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_AVD_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_BLINK_108_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_AVD_108_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_BLINK_216_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_AVD_216_CLK_MASK;
-
-	hw->pfnWriteDevRegister(hw->adp, BCHP_CLK_PM_CTRL, regValE);*/
-
-	/* turn on self-refresh */
-	saved_params = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_CTL_REGS_0_PARAMS2);
-	saved_refresh = hw->pfnReadDevRegister(hw->adp, BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0);
-	regVal = saved_params | BCHP_DDR23_CTL_REGS_0_PARAMS2_clke_MASK;
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_CTL_REGS_0_PARAMS2, regVal);
-
-	/* Issue refresh cycle */
-	hw->pfnWriteDevRegister(hw->adp,	BCHP_DDR23_CTL_REGS_0_REFRESH_CMD, 0x60);
-
-	/* Stop Refresh Cycles from controller */
-	regVal = saved_refresh & ~BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0_enable_MASK;
-	hw->pfnWriteDevRegister(hw->adp, BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0, regVal);
-
-	/* A failed self-refresh request must not be followed by clock gating. */
-	pollCnt=0;
-	while(pollCnt++ < 100)
-	{
-		regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_CTL_REGS_0_CTL_STATUS);
-
-		if(!(regVal & BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK))
-			break;
-	}
-	if (regVal & BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK) {
-		printk("RT PD: self-refresh timed out\n");
-		/* Undo only the requests already made; the PHY/clocks are still on. */
-		hw->pfnWriteDevRegister(hw->adp, BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0,
-					 saved_refresh);
-		hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_CTL_REGS_0_PARAMS2,
-					 saved_params);
-		udelay(5);
-		hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_CTL_REGS_0_REFRESH_CMD, 0x60);
-		goto abort;
-	}
-
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_CLK_PM_CTRL);
-
-	regVal |=	BCHP_CLK_PM_CTRL_DIS_ARM_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_AVD_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_BLINK_108_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_AVD_108_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_BLINK_216_CLK_MASK |
-				BCHP_CLK_PM_CTRL_DIS_AVD_216_CLK_MASK;
-
-	hw->pfnWriteDevRegister(hw->adp, BCHP_CLK_PM_CTRL, regVal);
-
-	/* Power down PHY and stop clocks on DRAM */
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL);
-
-	regVal |=	BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_idle_MASK |
-				BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_dm_iddq_MASK |
-				BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_dq_iddq_MASK |
-				BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_read_enb_iddq_MASK |
-				BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_dqs_iddq_MASK |
-				BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_clk_iddq_MASK;
-
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL, regVal);
-
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL);
-
-	regVal |=	BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_idle_MASK |
-				BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_dm_iddq_MASK |
-				BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_dq_iddq_MASK |
-				BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_read_enb_iddq_MASK |
-				BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_dqs_iddq_MASK |
-				BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL_clk_iddq_MASK;
-
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL, regVal);
-
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL);
-	regVal |= BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL_pwrdn_MASK;
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL, regVal);
-
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL);
-	regVal |= BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL_pwrdn_MASK;
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL, regVal);
-
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL);
-	regVal |=	BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_idle_MASK |
-				BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_ctl_iddq_MASK |
-				BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_rxenb_MASK |
-				BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_cke_reb_MASK;
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL, regVal);
-
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL);
-	regVal |= BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL_DIS_DDR_CLK_MASK;
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL, regVal);
-
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG);
-	regVal |= BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG_PWRDN_MASK;
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG, regVal);
-
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL);
-	regVal |= BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL_pwrdn_MASK;
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL, regVal);
-
-	/* Finally clock off the DRAM controller */
-	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_CLK_PM_CTRL);
-	regVal |=	BCHP_CLK_PM_CTRL_DIS_DDR_108_CLK_MASK |	BCHP_CLK_PM_CTRL_DIS_DDR_216_CLK_MASK;
-	hw->pfnWriteDevRegister(hw->adp, BCHP_CLK_PM_CTRL, regVal);
-
-	/* udelay(20); */
-
-	/*printk("RT Power Down Flea Complete\n"); */
-
-	/* Measure how much time we spend in idle */
+	if (!flea_pm_update(hw, FLEA_PR_CLOCK, FLEA_PM_CORE_CLOCKS, ~0U) ||
+	    !flea_pm_update(hw, FLEA_PR_LANE0_PAD, ~0U, ~0U) ||
+	    !flea_pm_update(hw, FLEA_PR_LANE1_PAD, ~0U, ~0U) ||
+	    !flea_pm_update(hw, FLEA_PR_LANE0_REGULATOR, ~0U, ~0U) ||
+	    !flea_pm_update(hw, FLEA_PR_LANE1_REGULATOR, ~0U, ~0U) ||
+	    !flea_pm_update(hw, FLEA_PR_PHY_PAD, ~0U, ~0U) ||
+	    !flea_pm_update(hw, FLEA_PR_PHY_CLOCK, ~0U, ~0U) ||
+	    !flea_pm_update(hw, FLEA_PR_PLL, ~0U, ~0U) ||
+	    !flea_pm_update(hw, FLEA_PR_PHY_REGULATOR, ~0U, ~0U) ||
+	    !flea_pm_update(hw, FLEA_PR_CLOCK, FLEA_PM_DDR_CLOCKS, ~0U))
+		goto restore_fault;
 	hw->TickStartInPD = rdtsc_ordered();
 	hw->DrvPauseCnt++;
-	return true;
+	return FLEA_PD_ENTERED;
 
-abort:
-	hw->pfnWriteDevRegister(hw->adp, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL,
-			 BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL_arb_disable_Enable);
-#ifdef _POWER_HANDLE_AVD_WATCHDOG_
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR,
-			 hw->OLWatchDogTimer);
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR,
-			 hw->ILWatchDogTimer);
-#endif
-	return false;
+recover:
+	/* Only a checked recovery may release the arbiter after a request. */
+	if (!flea_pm_restore(hw, FLEA_PR_REFRESH, ~0U) ||
+	    !flea_pm_restore(hw, FLEA_PR_PARAMS, ~0U))
+		goto recovery_fault;
+	udelay(5);
+	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_CTL_REGS_0_REFRESH_CMD, 0x60);
+	if (!flea_pm_wait_cke(hw, hw->FleaPowerSaved.cke))
+		goto recovery_fault;
+refuse:
+	if (!flea_pm_restore(hw, FLEA_PR_ARBITER, ~0U))
+		goto restore_fault;
+	flea_pm_restore_watchdogs(hw);
+	hw->FleaPowerSaved.valid = false;
+	return FLEA_PD_REFUSED;
+
+recovery_fault:
+	flea_pm_fault(hw, "self-refresh recovery");
+	return FLEA_PD_FAULT;
+restore_fault:
+	flea_pm_fault(hw, "restore read");
+	return FLEA_PD_FAULT;
 }
 
 bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
@@ -915,6 +946,9 @@ static BC_STATUS crystalhd_flea_publish_fll(struct crystalhd_hw *hw,
 	BC_STATUS sts = BC_STS_SUCCESS;
 	bool reserved = false, recheck = false;
 
+	if (READ_ONCE(hw->dma_fault) ||
+	    READ_ONCE(hw->FleaPowerState) == FLEA_PS_FAULT)
+		return BC_STS_IO_ERROR;
 	/* The cleanup heartbeat can sleep. Reserve an active device before
 	 * probing it, without holding the spinlock across that wait.
 	 */
@@ -949,6 +983,10 @@ static BC_STATUS crystalhd_flea_publish_fll(struct crystalhd_hw *hw,
 
 	freeListLen = crystalhd_hw_count_free_rx_pkts(hw);
 	spin_lock_irqsave(&hw->lock, flags);
+	if (READ_ONCE(hw->dma_fault) || hw->FleaPowerState == FLEA_PS_FAULT) {
+		sts = BC_STS_IO_ERROR;
+		goto unlock;
+	}
 	if (READ_ONCE(hw->FleaEnablePWM)) {
 		if (!READ_ONCE(hw->adp->present) || READ_ONCE(hw->dma_fault) ||
 		    !READ_ONCE(hw->dev_started)) {
@@ -996,6 +1034,8 @@ void crystalhd_flea_init_power_state(struct crystalhd_hw *hw)
 	hw->FleaPowerRecheck = false;
 	hw->FleaTxActive = 0;
 	hw->FleaIrqActive = 0;
+	hw->FleaRawActive = 0;
+	hw->FleaPowerSaved.valid = false;
 }
 
 /* Only the selector's transition reservation owner may call this helper. */
@@ -1008,6 +1048,7 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 	uint32_t freeListLen;
 	unsigned long flags;
 	bool replay_pic = false, replay_tx = false;
+	enum FLEA_POWER_DOWN_RESULT down;
 
 	/* This helper takes hw->lock itself; keep it outside the locked MMIO. */
 	freeListLen = crystalhd_hw_count_free_rx_pkts(hw);
@@ -1028,7 +1069,9 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 			break;
 		}
 		if (hw->FleaPowerState == FLEA_PS_LP_COMPLETE) {
-			crystalhd_flea_runtime_power_up(hw);
+			sts = crystalhd_flea_runtime_power_up(hw);
+			if (sts != BC_STS_SUCCESS)
+				break;
 			/* Clocks are on; admission still needs FLL publication. */
 			hw->FleaPowerState = FLEA_PS_LP_PENDING;
 		}
@@ -1074,16 +1117,19 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 		 * defers optional power-down, but the pause request was accepted.
 		 * These host checks do not prove physical source quiescence.
 		 */
-		if (hw->FleaTxActive || hw->FleaIrqActive ||
+		if (hw->FleaTxActive || hw->FleaIrqActive || hw->FleaRawActive ||
 		    hw->fwcmd_trans_active || hw->fwcmd_active || hw->FwCmdCnt ||
 		    hw->fwcmd_poisoned ||
 		    hw->TxList0Sts != ListStsFree || hw->TxList1Sts != ListStsFree ||
 		    hw->rx_list_sts[0] != sts_free || hw->rx_list_sts[1] != sts_free ||
 		    hw->EmptyCnt || hw->SingleThreadAppFIFOEmpty)
 			break;
-		/* Failed optional power-down leaves the accepted zero-FLL pause. */
-		if (crystalhd_flea_runtime_power_dn(hw))
+		/* A refusal preserves zero-FLL; an unconfirmed recovery is terminal. */
+		down = crystalhd_flea_runtime_power_dn(hw);
+		if (down == FLEA_PD_ENTERED)
 			hw->FleaPowerState = FLEA_PS_LP_COMPLETE;
+		else if (down == FLEA_PD_FAULT)
+			sts = BC_STS_IO_ERROR;
 		break;
 	default:
 		sts = BC_STS_ERR_USAGE;
@@ -1106,6 +1152,9 @@ BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 	unsigned long flags;
 	bool repost, recheck, followup = false;
 
+	if (READ_ONCE(hw->FleaPowerState) == FLEA_PS_FAULT ||
+	    READ_ONCE(hw->dma_fault))
+		return BC_STS_IO_ERROR;
 	if (!READ_ONCE(hw->FleaEnablePWM)) {
 		/* Preserve the supported, runtime-PWM-disabled path. */
 		hw->FleaPowerState = FLEA_PS_ACTIVE;
@@ -1117,6 +1166,10 @@ retry:
 	recheck = false;
 	sts = BC_STS_SUCCESS;
 	spin_lock_irqsave(&hw->lock, flags);
+	if (hw->FleaPowerState == FLEA_PS_FAULT || READ_ONCE(hw->dma_fault)) {
+		sts = BC_STS_IO_ERROR;
+		goto unlock;
+	}
 	if (hw->FleaPowerTransition) {
 		/* The last completion may retire between the setter's final
 		 * owner check and this selector's reservation release.
@@ -1178,7 +1231,7 @@ retry:
 		if (hw->TxList0Sts == ListStsFree && hw->TxList1Sts == ListStsFree &&
 		    !hw->EmptyCnt && !hw->SingleThreadAppFIFOEmpty &&
 		    hw->rx_list_sts[0] == sts_free && hw->rx_list_sts[1] == sts_free &&
-		    !hw->FleaTxActive && !hw->FleaIrqActive &&
+		    !hw->FleaTxActive && !hw->FleaIrqActive && !hw->FleaRawActive &&
 		    !hw->FwCmdCnt && !hw->fwcmd_active && !hw->fwcmd_trans_active &&
 		    !hw->fwcmd_poisoned)
 			next = FLEA_PS_LP_COMPLETE;
@@ -1238,6 +1291,47 @@ unlock:
 		goto retry;
 	}
 	return request_sts;
+}
+
+/* External raw access is serialized with optional runtime power-down. */
+BC_STATUS crystalhd_flea_raw_enter(struct crystalhd_hw *hw, bool write, bool *owned)
+{
+	unsigned long flags;
+	BC_STATUS sts = BC_STS_SUCCESS;
+
+	*owned = false;
+	spin_lock_irqsave(&hw->lock, flags);
+	if (READ_ONCE(hw->dma_fault) || hw->FleaPowerState == FLEA_PS_FAULT)
+		sts = BC_STS_IO_ERROR;
+	else if (hw->FleaEnablePWM) {
+		if (!READ_ONCE(hw->adp->present) || !READ_ONCE(hw->dev_started))
+			sts = BC_STS_IO_ERROR;
+		else if (write || hw->FleaPowerTransition ||
+			 hw->FleaPowerState != FLEA_PS_ACTIVE || hw->FleaRawActive == ~0U)
+			sts = BC_STS_BUSY;
+		else {
+			hw->FleaRawActive++;
+			*owned = true;
+		}
+	}
+	spin_unlock_irqrestore(&hw->lock, flags);
+	return sts;
+}
+
+void crystalhd_flea_raw_leave(struct crystalhd_hw *hw, bool owned)
+{
+	unsigned long flags;
+	bool recheck;
+
+	if (!owned)
+		return;
+	spin_lock_irqsave(&hw->lock, flags);
+	hw->FleaRawActive--;
+	recheck = !READ_ONCE(hw->dma_fault) &&
+		  (hw->FleaPowerState == FLEA_PS_LP_PENDING || hw->hw_pause_issued);
+	spin_unlock_irqrestore(&hw->lock, flags);
+	if (recheck)
+		crystalhd_flea_set_next_power_state(hw, FLEA_EVT_CMD_COMP);
 }
 
 /* Called with the outer transaction mutex held, after its last state update. */
@@ -3000,6 +3094,8 @@ bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crysta
 
 	if (!adp || !hw->dev_started)
 		return rc;
+	if (READ_ONCE(hw->dma_fault))
+		return crystalhd_hw_ack_fault_interrupt(hw);
 
 	IntrStsValue.WholeReg=0;
 
@@ -3024,6 +3120,10 @@ bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crysta
 	if (READ_ONCE(hw->FleaEnablePWM))
 	{
 		spin_lock_irqsave(&hw->lock, power_flags);
+		if (READ_ONCE(hw->dma_fault) || hw->FleaPowerState == FLEA_PS_FAULT) {
+			spin_unlock_irqrestore(&hw->lock, power_flags);
+			return crystalhd_hw_ack_fault_interrupt(hw);
+		}
 		if (hw->FleaPowerState != FLEA_PS_LP_COMPLETE) {
 			/* List retirement precedes later firmware notifications. */
 			hw->FleaIrqActive++;

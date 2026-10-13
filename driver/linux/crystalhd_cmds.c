@@ -1177,6 +1177,10 @@ int crystalhd_decoder_channel_start_locked(struct crystalhd_cmd *ctx,
 	 * the live driver-owned controls while clearing reserved and 4:2:0 bits.
 	 */
 	spin_lock_irqsave(&ctx->hw_ctx->lock, flags);
+	if (READ_ONCE(ctx->hw_ctx->dma_fault) || !READ_ONCE(ctx->adp->present)) {
+		spin_unlock_irqrestore(&ctx->hw_ctx->lock, flags);
+		return -ENODEV;
+	}
 	color_control = ctx->hw_ctx->pfnReadDevRegister(
 		ctx->adp, CRYSTALHD_FLEA_COLOR_REGISTER);
 	color_control &= CRYSTALHD_FLEA_COLOR_DRIVER_MASK;
