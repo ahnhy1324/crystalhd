@@ -106,17 +106,58 @@ Use [tests/phase1-release-gate.sh](tests/phase1-release-gate.sh) with the tracke
 Its 11 fixtures retain exact matching; only the WMV3 HD missing-duration metadata
 reflects the intentional [#341 correction](https://github.com/ahnhy1324/crystalhd/pull/341).
 The [Phase 1 oracle](tests/phase1-oracle.tsv) stays frozen as historical evidence.
-Keep the full `--rc` thresholds and fixtures unchanged. Aggregate evidence
-validation must explicitly select and exactly verify the maintenance manifest;
-individual runs do not establish an aggregate pass. Preserve historical
-Phase 1 evidence validation as a separate path.
+For the qualified **GStreamer 1.28.2** environment, explicitly select
+[its maintenance variant](tests/maintenance-oracle-gst-1.28.2.tsv) instead.
+Its version condition is exactly `1.28.2`, not `1.28.2` or later. It records
+the documented H.264 duration-metadata difference, without relaxing frame
+counts, PTS, pixels, test duration or resource limits. Other environments follow
+their validated manifest rules; do not automatically switch to this variant
+to avoid a failure or bypass the version check.
+Keep the full `--rc` thresholds and fixtures unchanged. Pass the same manifest
+explicitly to oracle, round-robin and aggregate evidence validation.
+`evidence-check` without `--manifest` defaults to historical
+`tests/phase1-oracle.tsv`, not the maintenance oracle. Individual runs do not
+establish an aggregate pass; preserve historical Phase 1 validation separately.
 Run hardware tests from a clean Git checkout of the candidate, serially on the
 qualified BCM70015 host. The existing hardware gate records Git identity and
 requires its tracked oracle even with `--runtime installed`; the archive
-build/install check above is separate. Before starting,
+build/staging/install check above is separate. Path construction with `pwd -P`
+and ordinary build/install instructions do not require `.git`; the hardware
+release gates do. Before starting,
 record candidate commit/tag, loaded/selected module and userspace identities,
 host versions, options, fixture IDs, commands and result location once per
 run set. Keep logs and private media out of the source tree.
+
+Manifest-related examples for that exact environment, from the source root:
+replace the fixture and evidence placeholders with your absolute paths.
+Each hardware result directory must be new and outside the source tree.
+Create only the campaign parent below; leave its per-gate directories absent.
+Run commands separately and stop on failure. `manifest-check` checks structure;
+the hardware oracle and evidence validation enforce the exact version match.
+
+```sh
+repo_root=$(pwd -P)
+gate="$repo_root/tests/phase1-release-gate.sh"
+manifest="$repo_root/tests/maintenance-oracle-gst-1.28.2.tsv"
+fixture_root="/absolute/path/to/fixtures"
+evidence_root="/absolute/path/to/new-campaign"
+
+mkdir -m 0750 -- "$evidence_root"
+sh "$gate" manifest-check "$manifest"
+sh "$gate" oracle --runtime source --results "$evidence_root/oracle" \
+  --manifest "$manifest" --fixture-root "$fixture_root"
+sh "$gate" round-robin --rc --runtime source \
+  --results "$evidence_root/round-robin" \
+  --manifest "$manifest" --fixture-root "$fixture_root"
+```
+
+These are excerpts, not the full campaign. Only after all required stages
+(including soak-720p, soak-1080p, churn, controls and reload-sanity) are complete
+with the same candidate/runtime identity, validate the aggregate:
+
+```sh
+sh "$gate" evidence-check "$evidence_root" --manifest "$manifest"
+```
 
 G0–G6 must all PASS for the final qualifying candidate, with an explicit
 experimental disposition and maintainer approval. Missing, stale, failed or
