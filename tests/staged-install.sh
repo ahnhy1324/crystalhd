@@ -23,8 +23,62 @@ cleanup()
 }
 trap cleanup EXIT HUP INT TERM
 
-make -C "$repo_dir" KVER="$KVER" KDIR="$KDIR" \
-    DESTDIR="$stage_dir" install
+# A restrictive caller umask must not hide installed components from ordinary
+# users. Owner-only checks would miss inaccessible directories in a root install.
+(
+    umask 077
+    make -C "$repo_dir" KVER="$KVER" KDIR="$KDIR" \
+        DESTDIR="$stage_dir" install
+)
+# The private staging root remains private; all newly installed public parents,
+# including intermediate directories, must permit unprivileged traversal.
+find "$stage_dir" -mindepth 1 -type d -print | while IFS= read -r public_directory; do
+    if [ "$(stat -c '%a' "$public_directory")" != 755 ]; then
+        echo "Installation directory is not public/traversable: $public_directory" >&2
+        exit 1
+    fi
+done
+test "$(stat -c '%a' "$stage_dir")" = 700
+test "$(stat -c '%a' "$stage_dir/lib/modules/$KVER/updates/crystalhd.ko")" = 644
+
+# Recursive make recipes execute even with -n; grouping them must not make
+# their non-recursive install commands write files during a dry run.
+make -n -C "$repo_dir" DESTDIR="$stage_dir/dry-run" install-runtime >/dev/null
+test ! -e "$stage_dir/dry-run"
+
+# Exercise the real non-DESTDIR depmod branches without changing host modules.
+# Only this isolated check skips ownership preflight, uses a private MODULEDIR,
+# and substitutes depmod; normal installation above retains the real guard.
+permission_test="$stage_dir/permission-test"
+mkdir "$permission_test"
+cat >"$permission_test/depmod" <<'EOF'
+#!/bin/sh
+set -eu
+test "$*" = '-a crystalhd-permission-test'
+case $(umask) in 0022|022) ;; *) echo 'depmod inherited a restrictive umask' >&2; exit 1 ;; esac
+printf '%s\n' "$*" >>"${TEST_DEPMOD_OUTPUT:?}"
+: >"${TEST_DEPMOD_INDEX:?}"
+EOF
+chmod 0755 "$permission_test/depmod"
+(
+    umask 077
+    PATH="$permission_test:$PATH"
+    TEST_DEPMOD_OUTPUT="$permission_test/calls"
+    TEST_DEPMOD_INDEX="$permission_test/modules.dep"
+    export PATH TEST_DEPMOD_OUTPUT TEST_DEPMOD_INDEX
+    test "$(command -v depmod)" = "$permission_test/depmod"
+    make -C "$repo_dir/driver/linux" -f Makefile.in -o install-preflight \
+        KVER=crystalhd-permission-test DESTDIR= \
+        MODULEDIR="$permission_test/modules" install-module
+    test "$(stat -c '%a' "$TEST_DEPMOD_INDEX")" = 644
+    make -C "$repo_dir/driver/linux" -f Makefile.in \
+        KVER=crystalhd-permission-test DESTDIR= \
+        MODULEDIR="$permission_test/modules" uninstall-module
+    test "$(stat -c '%a' "$TEST_DEPMOD_INDEX")" = 644
+    test "$(wc -l <"$TEST_DEPMOD_OUTPUT")" -eq 2
+)
+rm -f -- "$permission_test/depmod" "$permission_test/calls" "$permission_test/modules.dep"
+echo "restrictive-umask module paths and install/uninstall depmod passed"
 
 test -f "$stage_dir/lib/modules/$KVER/updates/crystalhd.ko"
 package_version=$(sed -n 's/^PACKAGE_VERSION="\([^"]*\)"$/\1/p' "$repo_dir/dkms.conf")
