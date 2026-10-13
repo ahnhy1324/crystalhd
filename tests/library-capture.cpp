@@ -1385,7 +1385,12 @@ static void TestReleaseOrdering(bool device_close, BC_STATUS decoder_status)
 		      "release starts with the complete ioctl envelope pool");
 		const BC_STATUS status = device_close ? DtsDeviceClose(context) :
 		                                      DtsReleaseInterface(context);
-		Check(status == (decoder_failed ? decoder_status : scenario.expected),
+		BC_STATUS expected = decoder_failed ? decoder_status : scenario.expected;
+		if (device_close && expected == BC_STS_BUSY)
+			expected = BC_STS_ERROR;
+		Check(status == expected,
+		      device_close && scenario.expected == BC_STS_BUSY ?
+		      "consuming DeviceClose never returns retry-only BUSY" :
 		      "terminal cleanup preserves the first failure status");
 		const size_t unmaps = decoder_failed &&
 		                      scenario.cleanup_failure != FAIL_NONE ? 2U : 1U;

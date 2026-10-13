@@ -18,6 +18,9 @@ extern bc_dil_glob_s *bc_dil_glob_ptr;
 static unsigned failures, checks, calls, rx_peeks;
 static BC_DTS_STATS request, response;
 static BC_STATUS ioctl_status;
+static DTS_LIB_CONTEXT *status_context;
+static bool advance_epoch_during_ioctl;
+static unsigned pause_calls;
 
 static void Check(bool condition, const char *message)
 {
@@ -46,11 +49,25 @@ extern "C" int __wrap_ioctl(int fd, unsigned long code, ...)
     if (!(request.DrvcpbEmptySize & (1U << 30))) ++rx_peeks;
     data->u.drvStat = response;
     data->RetSts = ioctl_status;
+    if (advance_epoch_during_ioctl) {
+        /* Model an old status ioctl completing after another thread has
+         * already reset and recovered the decoder into the next epoch. */
+        DtsLock(status_context);
+        status_context->recoveryGeneration++;
+        status_context->recoveryPending = false;
+        status_context->recoveryStatus = BC_STS_SUCCESS;
+        DtsUnLock(status_context);
+    }
     return 0;
 }
 
-/* Only the unexecuted BCM70012 flow-control branch references firmware. */
-BC_STATUS DtsFWPauseVideo(HANDLE, uint32_t) { std::abort(); }
+BC_STATUS DtsFWPauseVideo(HANDLE device, uint32_t)
+{
+    if (device != status_context)
+        std::abort();
+    ++pause_calls;
+    return BC_STS_SUCCESS;
+}
 
 struct Fixture {
     bc_dil_glob_s globals = {};
@@ -66,6 +83,7 @@ struct Fixture {
         context.VidParams.VideoAlgo = BC_VID_ALGO_H264;
         context.circBuf.freeSize = 123456;
         context.pIoDataFreeHd = &pooled;
+        status_context = &context;
         pthread_mutexattr_t attr;
         pthread_mutexattr_init(&attr);
         pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
@@ -83,11 +101,14 @@ struct Fixture {
         response.picNumFlags = 19;
         calls = rx_peeks = 0;
         ioctl_status = BC_STS_SUCCESS;
+        advance_epoch_during_ioctl = false;
+        pause_calls = 0;
     }
     ~Fixture() {
         Check(context.pIoDataFreeHd == &pooled && pooled.next == nullptr,
               "status call returns the single owned ioctl object to its pool");
         pthread_mutex_destroy(&context.thLock);
+        status_context = nullptr;
         bc_dil_glob_ptr = nullptr;
     }
 };
@@ -186,11 +207,85 @@ static void FailuresAndReuse()
           "invalid status pointers never issue an ioctl");
 }
 
+static void RecoveryEpochValidation()
+{
+    {
+        Fixture fixture;
+        fixture.context.SingleThreadedAppMode = true;
+        response.drvRLL = 12;
+        response.DrvNextMDataPLD = 27;
+        response.picNumFlags = 0x55;
+        response.eosDetected = 1;
+        response.pwr_state_change = BC_HW_SUSPEND;
+        advance_epoch_during_ioctl = true;
+        BC_DTS_STATUS status = {};
+        Check(DtsGetDriverStatus(&fixture.context, &status) == BC_STS_SUCCESS,
+              "a delayed pre-epoch status ioctl still returns its base counters");
+        Check(fixture.context.recoveryGeneration == 1 &&
+                  !fixture.context.recoveryPending,
+              "an old SUSPEND sample cannot create a second epoch after recovery");
+        Check(!fixture.context.bEOS && fixture.context.DrvStatusEOSCnt == 0,
+              "a delayed pre-epoch status suffix cannot republish stale EOS");
+        Check(status.ReadyListCount == 0 && status.NextTimeStamp == 0 &&
+                  status.picNumFlags == 0,
+              "a delayed pre-epoch sample suppresses its stale ready/timestamp tuple");
+        uint8_t eos = 1;
+        Check(DtsIsEndOfStream(&fixture.context, &eos) == BC_STS_SUCCESS && !eos,
+              "stale status EOS does not survive into the recovered epoch");
+    }
+    {
+        Fixture fixture;
+        fixture.context.DevId = BC_PCI_DEVID_LINK;
+        fixture.context.SingleThreadedAppMode = true;
+        response.drvRLL = 12;
+        response.pwr_state_change = BC_HW_SUSPEND;
+        advance_epoch_during_ioctl = true;
+        BC_DTS_STATUS status = {};
+        Check(DtsGetDriverStatus(&fixture.context, &status) == BC_STS_SUCCESS &&
+                  pause_calls == 0 && !fixture.context.hw_paused,
+              "stale LINK ready depth cannot auto-pause the recovered channel");
+        Check(status.ReadyListCount == 0 && status.NextTimeStamp == 0 &&
+                  status.picNumFlags == 0,
+              "LINK flow-control revalidation clears the complete stale tuple");
+    }
+    {
+        Fixture fixture;
+        fixture.context.SingleThreadedAppMode = true;
+        response.drvRLL = 12;
+        response.eosDetected = 1;
+        response.pwr_state_change = BC_HW_SUSPEND;
+        BC_DTS_STATUS status = {};
+        Check(DtsGetDriverStatus(&fixture.context, &status) == BC_STS_SUCCESS &&
+                  fixture.context.recoveryGeneration == 1 &&
+                  fixture.context.recoveryPending,
+              "a current SUSPEND status atomically latches the first recovery epoch");
+        Check(status.ReadyListCount == 0 && status.NextTimeStamp == 0 &&
+                  status.picNumFlags == 0 && !fixture.context.bEOS,
+              "the PM-latching status call cannot publish its pre-reset output suffix");
+    }
+    {
+        Fixture fixture;
+        fixture.context.recoveryGeneration = 4;
+        fixture.context.recoveryPending = true;
+        response.drvRLL = 12;
+        response.pwr_state_change = BC_HW_SUSPEND;
+        BC_DTS_STATUS status = {};
+        Check(DtsGetDriverStatus(&fixture.context, &status) == BC_STS_SUCCESS &&
+                  fixture.context.recoveryGeneration == 4 &&
+                  fixture.context.recoveryPending,
+              "a query begun during recovery cannot enqueue a nested PM epoch");
+        Check(status.ReadyListCount == 0 && status.NextTimeStamp == 0 &&
+                  status.picNumFlags == 0,
+              "a query begun during recovery exposes no stale ready-facing state");
+    }
+}
+
 int main()
 {
     InternalRequests();
     PublicRequests();
     FailuresAndReuse();
+    RecoveryEpochValidation();
     std::printf("Library status: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

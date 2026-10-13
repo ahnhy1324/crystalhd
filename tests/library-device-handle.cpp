@@ -31,6 +31,8 @@ static unsigned shared_attach_calls;
 static unsigned shared_detach_calls;
 static unsigned shared_nattch;
 static bool raw_close_expected;
+static bool expect_recovery_owner_during_close;
+static bool recovery_owner_seen_during_close;
 
 struct IoctlRecord {
 	int fd;
@@ -137,6 +139,11 @@ extern "C" int __wrap_close(int fd)
 {
 	++close_calls;
 	closed_fd = fd;
+	if (expect_recovery_owner_during_close) {
+		recovery_owner_seen_during_close = shared_state.g_bDecOpened;
+		Check(shared_state.g_bDecOpened,
+		      "recovery-owned decoder remains reserved through driver close");
+	}
 	if (raw_close_expected)
 		Check(ioctl_count == 0,
 		      "context-allocation failure closes without driver commands");
@@ -463,8 +470,8 @@ static void CheckTerminalDecoderOwnership()
 		DtsSetDecStat(true, owner);
 		failed_command = BCM_IOC_FW_CMD;
 		fail_with_status = true;
-		Check(DtsDeviceClose(context) == BC_STS_BUSY,
-		      "terminal close preserves the firmware failure status");
+		Check(DtsDeviceClose(context) == BC_STS_ERROR,
+		      "consuming close does not return the retry-only BUSY status");
 		Check(!shared_state.g_bDecOpened && shared_state.g_nProcID == 0,
 		      "terminal release retires its unreachable decoder ownership");
 		Check(!DtsIsDecOpened(owner + 1),
@@ -508,6 +515,29 @@ static void CheckTerminalDecoderOwnership()
 	Check(close_calls == 0 && ioctl_count == 0 && shared_detach_calls == 1,
 	      "foreign-owner control performs only local terminal cleanup");
 	EndCase("foreign decoder-context release frees every allocation");
+
+	BeginCase(0);
+	shared_nattch = 1;
+	std::memset(&shared_state, 0, sizeof(shared_state));
+	bc_dil_glob_ptr = &shared_state;
+	DtsSetDecStat(true, owner);
+	context = AllocateTerminalContext(DTS_PLAYBACK_MODE, owner);
+	if (context) {
+		context->State = BC_DEC_STATE_CLOSE;
+		context->recoveryRetireDecoderOwner = true;
+		expect_recovery_owner_during_close = true;
+		Check(DtsReleaseInterface(context) == BC_STS_SUCCESS,
+		      "failed-recovery logical CLOSE consumes its interface");
+		expect_recovery_owner_during_close = false;
+	}
+	Check(recovery_owner_seen_during_close &&
+	      !shared_state.g_bDecOpened && shared_state.g_nProcID == 0,
+	      "failed-recovery ownership retires only after driver close");
+	Check(close_calls == 1 && shared_detach_calls == 1,
+	      "failed-recovery release closes and detaches exactly once");
+	CheckIoctls(0, {BCM_IOC_RELEASE},
+	      "failed-recovery release preserves terminal driver ordering");
+	EndCase("failed-recovery decoder owner releases every allocation");
 }
 
 static void CheckNullOpenOutput()

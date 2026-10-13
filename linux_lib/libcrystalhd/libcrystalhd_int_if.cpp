@@ -45,6 +45,21 @@
 #define BCHP_CLK_TEMP_MON_CTRL 0x00070040 /* Temperature monitor control. */
 #define BCHP_CLK_TEMP_MON_STATUS 0x00070044 /* Temperature monitor status. */
 
+class DtsColorControlCall {
+	DTS_LIB_CONTEXT *context;
+	BC_STATUS status;
+	bool active;
+public:
+	explicit DtsColorControlCall(DTS_LIB_CONTEXT *ctx) : context(ctx),
+		status(DtsAcquireControl(ctx, DTS_CONTROL_LIFECYCLE)),
+		active(status == BC_STS_SUCCESS) {}
+	~DtsColorControlCall() {
+		if (active)
+			DtsReleaseControl(context);
+	}
+	BC_STATUS Status() const { return status; }
+};
+
 static bool DtsIoctlTransferAllocationSize(uint32_t payload_size,
 					   uint32_t *allocation_size)
 {
@@ -219,6 +234,9 @@ DtsSetOutputColorSpace(HANDLE hDevice, BC_OUTPUT_FORMAT mode)
 	BC_STATUS sts;
 
 	DTS_GET_CTX(hDevice, Ctx);
+	DtsColorControlCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 	/* Keep the previous capture layout visible until programming succeeds.
 	 * thLock is recursive: register helpers also use it for the ioctl pool.
 	 * Callers must still select the format before registering capture buffers.
@@ -262,9 +280,9 @@ DtsSetLinkIn422Mode(HANDLE hDevice)
 	DTS_LIB_CONTEXT *Ctx;
 	DTS_GET_CTX(hDevice, Ctx);
 	DtsLock(Ctx);
-	BC_STATUS sts = DtsProgramLinkColorSpace(hDevice, Ctx->b422Mode);
+	const BC_OUTPUT_FORMAT mode = Ctx->b422Mode;
 	DtsUnLock(Ctx);
-	return sts;
+	return DtsProgramLinkColorSpace(hDevice, mode);
 }
 
 DRVIFLIB_INT_API BC_STATUS
@@ -273,9 +291,9 @@ DtsSetFleaIn422Mode(HANDLE hDevice)
 	DTS_LIB_CONTEXT *Ctx;
 	DTS_GET_CTX(hDevice, Ctx);
 	DtsLock(Ctx);
-	BC_STATUS sts = DtsProgramFleaColorSpace(hDevice, Ctx->b422Mode);
+	const BC_OUTPUT_FORMAT mode = Ctx->b422Mode;
 	DtsUnLock(Ctx);
-	return sts;
+	return DtsProgramFleaColorSpace(hDevice, mode);
 }
 
 DRVIFLIB_INT_API BC_STATUS

@@ -70,6 +70,11 @@ typedef struct _GstCrystalHdDec {
   guint scale_width;
   guint active_scale_width;
   guint64 next_hardware_timestamp;
+  guint64 recovery_generation_seen;
+  gboolean recovery_needs_sync;
+  gboolean recovery_request_headers;
+  guint32 recovery_h264_config_size;
+  gint64 recovery_abort_started_us;
   guint32 simple_picture_number;
   gboolean have_simple_picture_number;
   gboolean wmv3_reordered_output;
@@ -425,38 +430,241 @@ gst_crystalhd_clear_timestamps(GstCrystalHdDec *self)
   self->wmv3_last_duration = GST_CLOCK_TIME_NONE;
 }
 
+/* Called with the decoder stream lock. Recovery discards every pre-epoch
+ * hardware queue, so retire the matching base-class frames and timestamp
+ * mirror together. @current remains owned by handle_frame when present. */
+static GstFlowReturn
+gst_crystalhd_reconcile_recovery(GstCrystalHdDec *self,
+                                 GstVideoCodecFrame *current,
+                                 gboolean *in_progress,
+                                 gboolean *changed)
+{
+  GstVideoDecoder *decoder = GST_VIDEO_DECODER(self);
+  guint64 generation = 0;
+  BC_STATUS recovery_status = BC_STS_SUCCESS;
+  guint8 active = FALSE;
+  guint32 replay_bytes = 0;
+  BC_STATUS status;
+
+  *in_progress = FALSE;
+  *changed = FALSE;
+  if (self->device == NULL)
+    return GST_FLOW_OK;
+  status = DtsGetRecoveryStatus(self->device, &generation,
+                                &recovery_status, &active, &replay_bytes);
+  if (status != BC_STS_SUCCESS) {
+    GST_ELEMENT_ERROR(self, LIBRARY, FAILED,
+                      ("Could not query CrystalHD recovery state"),
+                      ("DtsGetRecoveryStatus returned %d", status));
+    return GST_FLOW_ERROR;
+  }
+  if (recovery_status != BC_STS_SUCCESS) {
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("CrystalHD recovery failed: %s",
+                       gst_crystalhd_status_hint(recovery_status)),
+                      ("Recovery epoch %" G_GUINT64_FORMAT " returned %d",
+                       generation, recovery_status));
+    return GST_FLOW_ERROR;
+  }
+
+  *in_progress = active != FALSE;
+  /* Do not consume the epoch until recovery has a final outcome. This keeps
+   * completion observable so drain gets a fresh progress window and no old
+   * frame is purged while firmware is still mutating its queues. */
+  if (active)
+    return GST_FLOW_OK;
+  if (generation == self->recovery_generation_seen)
+    return GST_FLOW_OK;
+
+  self->recovery_h264_config_size = replay_bytes;
+
+  self->recovery_generation_seen = generation;
+  self->recovery_needs_sync = TRUE;
+  self->recovery_request_headers = self->codec.subtype == BC_MSUBTYPE_H264;
+  self->recovery_abort_started_us = 0;
+  *changed = TRUE;
+  while (!g_queue_is_empty(&self->timestamps)) {
+    CrystalHdTimestamp *entry = g_queue_pop_head(&self->timestamps);
+    GstVideoCodecFrame *pending = gst_video_decoder_get_frame(
+        decoder, entry->frame_number);
+    if (pending != NULL) {
+      if (pending == current)
+        gst_video_codec_frame_unref(pending);
+      else
+        gst_video_decoder_drop_frame(decoder, pending);
+    }
+    g_free(entry);
+  }
+  gst_crystalhd_clear_timestamps(self);
+  self->need_second_field = FALSE;
+  self->progressive_field_sequence = FALSE;
+  self->output_eos = FALSE;
+  self->drain_idle = FALSE;
+  self->last_delivery_us = g_get_monotonic_time();
+  GST_INFO_OBJECT(self, "reconciled CrystalHD recovery epoch %"
+                  G_GUINT64_FORMAT, generation);
+  return GST_FLOW_OK;
+}
+
+static gboolean
+gst_crystalhd_recovery_abort_is_transient(GstCrystalHdDec *self,
+                                          BC_STATUS status,
+                                          GstFlowReturn *flow)
+{
+  gboolean active, changed;
+  gint64 now;
+
+  /* DtsDrvCmd can latch a PM epoch and still surface a generic I/O error
+   * when ioctl(2) itself failed. Always inspect the epoch first. */
+  *flow = gst_crystalhd_reconcile_recovery(self, NULL, &active, &changed);
+  if (*flow != GST_FLOW_OK)
+    return FALSE;
+  if (active || changed) {
+    self->recovery_abort_started_us = 0;
+    return TRUE;
+  }
+  if (status != BC_STS_IO_USER_ABORT && status != BC_STS_PWR_MGMT)
+    return FALSE;
+  now = g_get_monotonic_time();
+  if (self->recovery_abort_started_us == 0)
+    self->recovery_abort_started_us = now;
+  return now - self->recovery_abort_started_us <
+      GST_CRYSTALHD_DRAIN_TIMEOUT_US;
+}
+
 static BC_STATUS
 gst_crystalhd_close_device(GstCrystalHdDec *self)
 {
   BC_STATUS result = BC_STS_SUCCESS;
   BC_STATUS status;
+  BC_STATUS recovery_status = BC_STS_SUCCESS;
+  guint64 recovery_generation = 0;
+  guint8 recovery_active = FALSE;
+  guint32 replay_bytes = 0;
+  gint64 deadline;
+  gboolean skip_firmware_cleanup = FALSE;
 
-  if (self->decoder_started) {
+  if (self->device == NULL)
+    goto cleared;
+
+  deadline = g_get_monotonic_time() + GST_CRYSTALHD_DRAIN_TIMEOUT_US;
+  for (;;) {
+    status = DtsGetRecoveryStatus(self->device, &recovery_generation,
+                                  &recovery_status, &recovery_active,
+                                  &replay_bytes);
+    if (status != BC_STS_SUCCESS)
+      return status; /* Ownership is unknown; retain the live handle. */
+    if (!recovery_active)
+      break;
+    if (g_get_monotonic_time() >= deadline)
+      return BC_STS_BUSY; /* DeviceClose would itself be non-consuming BUSY. */
+    g_usleep(1000);
+  }
+  skip_firmware_cleanup |= recovery_status != BC_STS_SUCCESS;
+
+  while (!skip_firmware_cleanup && self->decoder_started) {
     status = DtsStopDecoder(self->device);
-    if (result == BC_STS_SUCCESS)
-      result = status;
-    self->decoder_started = FALSE;
+    if (status == BC_STS_SUCCESS) {
+      self->decoder_started = FALSE;
+      break;
+    }
+    {
+      BC_STATUS query = DtsGetRecoveryStatus(self->device,
+          &recovery_generation, &recovery_status, &recovery_active,
+          &replay_bytes);
+      if (query != BC_STS_SUCCESS)
+        return status;
+      if (query == BC_STS_SUCCESS && recovery_status != BC_STS_SUCCESS) {
+        skip_firmware_cleanup = TRUE;
+        if (result == BC_STS_SUCCESS)
+          result = status;
+        break;
+      }
+      if (query == BC_STS_SUCCESS && recovery_active) {
+        if (g_get_monotonic_time() < deadline) {
+          g_usleep(1000);
+          continue;
+        }
+        return status;
+      } else if (status == BC_STS_BUSY || status == BC_STS_PWR_MGMT ||
+                 status == BC_STS_IO_USER_ABORT) {
+        if (g_get_monotonic_time() < deadline) {
+          g_usleep(1000);
+          continue;
+        }
+      }
+      if (result == BC_STS_SUCCESS)
+        result = status;
+      break;
+    }
   }
 
-  if (self->decoder_open) {
+  while (!skip_firmware_cleanup && self->decoder_open) {
     status = DtsCloseDecoder(self->device);
-    if (result == BC_STS_SUCCESS)
-      result = status;
-    self->decoder_open = FALSE;
+    if (status == BC_STS_SUCCESS) {
+      self->decoder_open = FALSE;
+      self->decoder_started = FALSE; /* Close subsumes a failed prior Stop. */
+      break;
+    }
+    {
+      BC_STATUS query = DtsGetRecoveryStatus(self->device,
+          &recovery_generation, &recovery_status, &recovery_active,
+          &replay_bytes);
+      if (query != BC_STS_SUCCESS)
+        return status;
+      if (query == BC_STS_SUCCESS && recovery_status != BC_STS_SUCCESS) {
+        skip_firmware_cleanup = TRUE;
+        if (result == BC_STS_SUCCESS)
+          result = status;
+        break;
+      }
+      if (query == BC_STS_SUCCESS && recovery_active) {
+        if (g_get_monotonic_time() < deadline) {
+          g_usleep(1000);
+          continue;
+        }
+        return status;
+      } else if (status == BC_STS_BUSY || status == BC_STS_PWR_MGMT ||
+                 status == BC_STS_IO_USER_ABORT) {
+        if (g_get_monotonic_time() < deadline) {
+          g_usleep(1000);
+          continue;
+        }
+      }
+      if (result == BC_STS_SUCCESS)
+        result = status;
+      break;
+    }
   }
 
-  if (self->device != NULL) {
+  /* DeviceClose is a consuming API even when final driver cleanup reports an
+   * error. Call it exactly once after normal Stop/Close, or directly for a
+   * quarantined failed-recovery channel that must receive no firmware command. */
+  do {
     status = DtsDeviceClose(self->device);
-    if (result == BC_STS_SUCCESS)
-      result = status;
-    self->device = NULL;
-  }
+    if (status != BC_STS_BUSY)
+      break;
+    if (g_get_monotonic_time() >= deadline)
+      return status; /* Sole documented non-consuming close result. */
+    g_usleep(1000);
+  } while (TRUE);
+  if (result == BC_STS_SUCCESS)
+    result = status;
+  self->device = NULL;
+  self->decoder_started = FALSE;
+  self->decoder_open = FALSE;
 
+cleared:
   self->output_configured = FALSE;
   self->progressive_field_sequence = FALSE;
   self->input_flushed = FALSE;
   self->input_metadata_size = 0;
   self->need_second_field = FALSE;
+  self->recovery_generation_seen = 0;
+  self->recovery_needs_sync = FALSE;
+  self->recovery_request_headers = FALSE;
+  self->recovery_h264_config_size = 0;
+  self->recovery_abort_started_us = 0;
   gst_crystalhd_clear_timestamps(self);
   return result;
 }
@@ -970,6 +1178,10 @@ gst_crystalhd_receive_one(GstCrystalHdDec *self, guint timeout_ms,
   *completed = NULL;
 
   status = DtsProcOutputNoCopy(self->device, timeout_ms, &output);
+  if (status == BC_STS_FMT_CHANGE || status == BC_STS_NO_DATA ||
+      status == BC_STS_BUSY ||
+      status == BC_STS_TIMEOUT)
+    self->recovery_abort_started_us = 0;
   if (status == BC_STS_SUCCESS || status == BC_STS_FMT_CHANGE)
     GST_LOG_OBJECT(self, "received PIB: status=%d flags=0x%08x output-flags=0x%08x "
         "token=%" G_GUINT64_FORMAT " picture=%u %ux%u Y-dwords=%u",
@@ -994,9 +1206,23 @@ gst_crystalhd_receive_one(GstCrystalHdDec *self, guint timeout_ms,
 
     status = DtsReleaseOutputBuffs(self->device, NULL, FALSE);
     if (status != BC_STS_SUCCESS && flow == GST_FLOW_OK) {
-      GST_ERROR_OBJECT(self, "failed to release output buffers: %d", status);
-      flow = GST_FLOW_ERROR;
+      if (gst_crystalhd_recovery_abort_is_transient(self, status, &flow)) {
+        *activity = FALSE;
+        if (*completed != NULL) {
+          /* copy_output has already consumed the timestamp. Retire both the
+           * returned reference and the base pending frame before retrying. */
+          gst_video_decoder_drop_frame(GST_VIDEO_DECODER(self), *completed);
+          *completed = NULL;
+        }
+        return GST_FLOW_OK;
+      }
+      if (flow == GST_FLOW_OK) {
+        GST_ERROR_OBJECT(self, "failed to release output buffers: %d", status);
+        flow = GST_FLOW_ERROR;
+      }
     }
+    if (status == BC_STS_SUCCESS)
+      self->recovery_abort_started_us = 0;
     /* No hardware pointer or lease survives negotiation/downstream calls. */
     if (flow == GST_FLOW_OK && *completed != NULL &&
         !gst_crystalhd_configure_output(
@@ -1004,7 +1230,10 @@ gst_crystalhd_receive_one(GstCrystalHdDec *self, guint timeout_ms,
             (output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0))
       flow = GST_FLOW_NOT_NEGOTIATED;
     if (flow != GST_FLOW_OK && *completed != NULL) {
-      gst_video_codec_frame_unref(*completed);
+      /* copy_output already removed the timestamp and returned a get_frame
+       * reference. Retire the base pending frame as well; an unacknowledged
+       * hardware buffer must never be delivered or left orphaned. */
+      gst_video_decoder_drop_frame(GST_VIDEO_DECODER(self), *completed);
       *completed = NULL;
     }
     return flow;
@@ -1013,6 +1242,11 @@ gst_crystalhd_receive_one(GstCrystalHdDec *self, guint timeout_ms,
   if (status == BC_STS_NO_DATA || status == BC_STS_BUSY ||
       status == BC_STS_TIMEOUT)
     return GST_FLOW_OK;
+
+  if (gst_crystalhd_recovery_abort_is_transient(self, status, &flow))
+    return GST_FLOW_OK;
+  if (flow != GST_FLOW_OK)
+    return flow;
 
   GST_ERROR_OBJECT(self, "DtsProcOutputNoCopy failed: %d", status);
   return GST_FLOW_ERROR;
@@ -1047,8 +1281,21 @@ gst_crystalhd_output_iteration(GstCrystalHdDec *self)
   BC_STATUS status;
   GstFlowReturn flow = GST_FLOW_OK;
   gboolean activity = FALSE;
+  gboolean recovery_active = FALSE;
+  gboolean recovery_changed = FALSE;
 
   GST_VIDEO_DECODER_STREAM_LOCK(decoder);
+  flow = gst_crystalhd_reconcile_recovery(self, NULL, &recovery_active,
+                                          &recovery_changed);
+  if (flow != GST_FLOW_OK) {
+    self->output_flow = flow;
+    GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+    return FALSE;
+  }
+  if (recovery_active) {
+    GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+    return FALSE;
+  }
   g_mutex_lock(&self->output_lock);
   if (self->output_stop || self->output_paused || self->output_active ||
       !self->decoder_started || self->output_flow != GST_FLOW_OK ||
@@ -1069,8 +1316,11 @@ gst_crystalhd_output_iteration(GstCrystalHdDec *self)
     decoder_status.cpbEmptySize = CRYSTALHD_STATUS_SKIP_READY_HEAD_PEEK;
   status = DtsGetDriverStatus(self->device, &decoder_status);
   if (status != BC_STS_SUCCESS) {
-    GST_ERROR_OBJECT(self, "DtsGetDriverStatus failed: %d", status);
-    flow = GST_FLOW_ERROR;
+    if (!gst_crystalhd_recovery_abort_is_transient(self, status, &flow) &&
+        flow == GST_FLOW_OK) {
+      GST_ERROR_OBJECT(self, "DtsGetDriverStatus failed: %d", status);
+      flow = GST_FLOW_ERROR;
+    }
   } else if (decoder_status.ReadyListCount != 0) {
     self->drain_idle = FALSE;
     flow = gst_crystalhd_receive_one(self, 0, &activity, &completed);
@@ -1078,10 +1328,17 @@ gst_crystalhd_output_iteration(GstCrystalHdDec *self)
     guint8 eos = FALSE;
     self->drain_idle = TRUE;
     status = DtsIsEndOfStream(self->device, &eos);
-    if (status != BC_STS_SUCCESS)
-      flow = GST_FLOW_ERROR;
-    else
+    if (status != BC_STS_SUCCESS) {
+      if (!gst_crystalhd_recovery_abort_is_transient(self, status, &flow) &&
+          flow == GST_FLOW_OK)
+        flow = GST_FLOW_ERROR;
+    }
+    else {
+      self->recovery_abort_started_us = 0;
       self->output_eos = eos != 0;
+    }
+  } else {
+    self->recovery_abort_started_us = 0;
   }
   GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
 
@@ -1094,6 +1351,12 @@ gst_crystalhd_output_iteration(GstCrystalHdDec *self)
   GST_VIDEO_DECODER_STREAM_LOCK(decoder);
   if (completed != NULL && flow == GST_FLOW_OK)
     self->last_delivery_us = g_get_monotonic_time();
+  if (flow == GST_FLOW_OK) {
+    GstFlowReturn recovery_flow = gst_crystalhd_reconcile_recovery(
+        self, NULL, &recovery_active, &recovery_changed);
+    if (recovery_flow != GST_FLOW_OK)
+      flow = recovery_flow;
+  }
   if (flow != GST_FLOW_OK) {
     self->output_flow = flow;
     if (flow != GST_FLOW_FLUSHING && flow != GST_FLOW_EOS)
@@ -1196,6 +1459,23 @@ gst_crystalhd_wait_output(GstCrystalHdDec *self, guint64 generation,
   return self->output_flow;
 }
 
+static GstFlowReturn
+gst_crystalhd_wait_input_progress(GstCrystalHdDec *self, guint64 generation,
+                                  gint64 deadline, guint lock_levels)
+{
+  gint64 remaining = gst_crystalhd_drain_remaining_us(
+      deadline, g_get_monotonic_time());
+
+  if (remaining == 0) {
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("Timed out waiting for CrystalHD input recovery"),
+                      ("No stable input admission before the 10 second deadline"));
+    return GST_FLOW_ERROR;
+  }
+  return gst_crystalhd_wait_output(self, generation,
+                                   MIN(remaining, (gint64)1000), lock_levels);
+}
+
 /* A human pause is not stalled decoding. Inspect the top-level state so a
  * child already PAUSED while its pipeline still awaits PLAYING/preroll is
  * not mistaken for a deliberate pause. No state change is performed here. */
@@ -1269,7 +1549,8 @@ gst_crystalhd_start(GstVideoDecoder *decoder)
   GST_OBJECT_LOCK(self);
   self->active_scale_width = self->scale_width;
   GST_OBJECT_UNLOCK(self);
-  gst_crystalhd_close_device(self);
+  if (gst_crystalhd_close_device(self) != BC_STS_SUCCESS)
+    return FALSE;
   self->next_hardware_timestamp = CRYSTALHD_TIMESTAMP_STEP;
   self->output_flow = GST_FLOW_OK;
   self->output_stop = FALSE;
@@ -1444,6 +1725,27 @@ gst_crystalhd_reopen_format(GstVideoDecoder *decoder, GstVideoCodecState *state,
                        gst_crystalhd_status_hint(status)),
                       ("DtsDeviceOpen returned %d", status));
     goto fail;
+  }
+
+  {
+    BC_STATUS recovery_status;
+    guint8 recovery_active;
+    guint32 recovery_replay_bytes;
+    operation = "DtsGetRecoveryStatus";
+    status = DtsGetRecoveryStatus(self->device,
+                                  &self->recovery_generation_seen,
+                                  &recovery_status, &recovery_active,
+                                  &recovery_replay_bytes);
+    if (status != BC_STS_SUCCESS || recovery_status != BC_STS_SUCCESS ||
+        recovery_active) {
+      if (status == BC_STS_SUCCESS)
+        status = recovery_active ? BC_STS_BUSY : recovery_status;
+      goto fail_status;
+    }
+    self->recovery_needs_sync = FALSE;
+    self->recovery_request_headers = FALSE;
+    self->recovery_h264_config_size = 0;
+    self->recovery_abort_started_us = 0;
   }
 
   memset(&version, 0, sizeof(version));
@@ -1633,14 +1935,40 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
   guint64 hardware_timestamp;
   const guint8 *data;
   gsize size;
+  gsize base_reservation;
   gsize reservation;
   guint8 *padded = NULL;
   guint64 generation = self->generation;
   guint lock_levels = self->parsing_frame ? 2 : 1;
   CrystalHdPayloadStatus payload;
+  gboolean recovery_active = FALSE;
+  gboolean recovery_changed = FALSE;
+  gboolean h264_has_parameter_sets = FALSE;
+  gboolean submitted_recovery_sync = FALSE;
 
   if (!self->decoder_started || frame->input_buffer == NULL)
     return gst_video_decoder_drop_frame(decoder, frame);
+
+  flow = gst_crystalhd_reconcile_recovery(self, frame, &recovery_active,
+                                          &recovery_changed);
+  if (flow != GST_FLOW_OK) {
+    gst_video_decoder_drop_frame(decoder, frame);
+    return flow;
+  }
+  if (self->recovery_request_headers) {
+    /* handle_frame runs on the upstream streaming thread.  Emit here rather
+     * than from output-side reconciliation to avoid reversing pad locks. */
+    gst_pad_push_event(GST_VIDEO_DECODER_SINK_PAD(decoder),
+        gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE,
+                                                     TRUE, 0));
+    self->recovery_request_headers = FALSE;
+  }
+  if (self->recovery_needs_sync &&
+      !GST_VIDEO_CODEC_FRAME_IS_SYNC_POINT(frame)) {
+    gst_video_decoder_request_sync_point(
+        decoder, frame, GST_VIDEO_DECODER_REQUEST_SYNC_POINT_DISCARD_INPUT);
+    return gst_video_decoder_drop_frame(decoder, frame);
+  }
 
   if (!gst_buffer_map(frame->input_buffer, &map, GST_MAP_READ))
     return gst_video_decoder_drop_frame(decoder, frame);
@@ -1655,8 +1983,16 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
     gst_video_decoder_drop_frame(decoder, frame);
     return GST_FLOW_ERROR;
   }
+  if (self->codec.subtype == BC_MSUBTYPE_H264)
+    h264_has_parameter_sets =
+        gst_crystalhd_h264_has_parameter_sets(data, size);
+  if (self->recovery_needs_sync && self->codec.subtype == BC_MSUBTYPE_H264 &&
+      self->recovery_h264_config_size == 0 &&
+      !h264_has_parameter_sets)
+    goto recovery_drop;
   if (!gst_crystalhd_input_reservation(self->codec.subtype, size,
-                                      self->input_metadata_size, &reservation)) {
+                                      self->input_metadata_size,
+                                      &base_reservation)) {
     gst_buffer_unmap(frame->input_buffer, &map);
     GST_ELEMENT_ERROR(self, STREAM, DECODE,
                       ("Compressed picture exceeds CrystalHD input ring capacity"),
@@ -1681,21 +2017,116 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
   deadline = g_get_monotonic_time() + GST_CRYSTALHD_INPUT_TIMEOUT_US;
 
   for (;;) {
+    flow = gst_crystalhd_reconcile_recovery(self, frame, &recovery_active,
+                                            &recovery_changed);
+    if (flow != GST_FLOW_OK)
+      goto input_flow_error;
+    if (self->recovery_request_headers) {
+      gst_pad_push_event(GST_VIDEO_DECODER_SINK_PAD(decoder),
+          gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE,
+                                                       TRUE, 0));
+      self->recovery_request_headers = FALSE;
+    }
+    if (self->recovery_needs_sync &&
+        !GST_VIDEO_CODEC_FRAME_IS_SYNC_POINT(frame))
+      goto recovery_drop;
+    if (self->recovery_needs_sync && self->codec.subtype == BC_MSUBTYPE_H264 &&
+        self->recovery_h264_config_size == 0 && !h264_has_parameter_sets)
+      goto recovery_drop;
+    reservation = base_reservation;
+    if (self->recovery_needs_sync && self->recovery_h264_config_size != 0 &&
+        !gst_crystalhd_add_recovery_config_reservation(
+            self->recovery_h264_config_size, &reservation)) {
+      flow = GST_FLOW_ERROR;
+      goto input_flow_error;
+    }
+    if (recovery_active) {
+      flow = gst_crystalhd_wait_input_progress(self, generation, deadline,
+                                               lock_levels);
+      if (flow != GST_FLOW_OK)
+        goto input_flow_error;
+      continue;
+    }
     flow = gst_crystalhd_wait_input_space(self, reservation, deadline,
                                          lock_levels);
     if (flow != GST_FLOW_OK)
       goto input_flow_error;
+    flow = gst_crystalhd_reconcile_recovery(self, frame, &recovery_active,
+                                            &recovery_changed);
+    if (flow != GST_FLOW_OK)
+      goto input_flow_error;
+    if (self->recovery_request_headers) {
+      gst_pad_push_event(GST_VIDEO_DECODER_SINK_PAD(decoder),
+          gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE,
+                                                       TRUE, 0));
+      self->recovery_request_headers = FALSE;
+    }
+    if (self->recovery_needs_sync &&
+        !GST_VIDEO_CODEC_FRAME_IS_SYNC_POINT(frame))
+      goto recovery_drop;
+    if (self->recovery_needs_sync && self->codec.subtype == BC_MSUBTYPE_H264 &&
+        self->recovery_h264_config_size == 0 && !h264_has_parameter_sets)
+      goto recovery_drop;
+    {
+      gsize current_reservation = base_reservation;
+      if (self->recovery_needs_sync && self->recovery_h264_config_size != 0 &&
+          !gst_crystalhd_add_recovery_config_reservation(
+              self->recovery_h264_config_size, &current_reservation)) {
+        flow = GST_FLOW_ERROR;
+        goto input_flow_error;
+      }
+      if (current_reservation > reservation)
+        continue;
+    }
+    if (recovery_active)
+      continue;
+    submitted_recovery_sync = self->recovery_needs_sync;
     /* Once submission starts, this session is no longer an empty flush. */
     self->input_flushed = FALSE;
     status = DtsProcInput(self->device, (guint8 *)data, size,
                           hardware_timestamp, 0);
-    if (status != BC_STS_BUSY)
+    flow = gst_crystalhd_reconcile_recovery(self, frame, &recovery_active,
+                                            &recovery_changed);
+    if (flow != GST_FLOW_OK)
+      goto input_flow_error;
+    /* A successful call can straddle the PM epoch: its AU may have reached
+     * either the queue that recovery flushed or the reconstructed decoder.
+     * It cannot safely own a timestamp in either case, and resubmitting it
+     * could duplicate an AU that the new decoder already accepted. Retire it
+     * before applying the new epoch's H.264 gate; the persistent cache
+     * capability reported by the library governs the next sync AU. */
+    if (recovery_active || recovery_changed)
+      goto recovery_drop;
+    if (self->recovery_request_headers) {
+      gst_pad_push_event(GST_VIDEO_DECODER_SINK_PAD(decoder),
+          gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE,
+                                                       TRUE, 0));
+      self->recovery_request_headers = FALSE;
+    }
+    if (self->recovery_needs_sync &&
+        !GST_VIDEO_CODEC_FRAME_IS_SYNC_POINT(frame))
+      goto recovery_drop;
+    if (self->recovery_needs_sync && self->codec.subtype == BC_MSUBTYPE_H264 &&
+        self->recovery_h264_config_size == 0 && !h264_has_parameter_sets)
+      goto recovery_drop;
+    if (status == BC_STS_IO_USER_ABORT || status == BC_STS_PWR_MGMT) {
+      /* The call may have queued only part of this AU before PM became
+       * visible. Recovery flushes it; never resubmit that same AU. */
+      self->recovery_needs_sync = TRUE;
+      goto recovery_drop;
+    }
+    if (status == BC_STS_SUCCESS && !recovery_active && !recovery_changed) {
+      if (submitted_recovery_sync) {
+        self->recovery_needs_sync = FALSE;
+        self->recovery_h264_config_size = 0;
+      }
+      break;
+    }
+    if (status != BC_STS_BUSY && status != BC_STS_SUCCESS)
       break;
 
-    flow = gst_crystalhd_wait_output(self, generation,
-        MIN((gint64)1000,
-            gst_crystalhd_drain_remaining_us(deadline, g_get_monotonic_time())),
-        lock_levels);
+    flow = gst_crystalhd_wait_input_progress(self, generation, deadline,
+                                             lock_levels);
     if (flow != GST_FLOW_OK)
       goto input_flow_error;
   }
@@ -1739,6 +2170,14 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
   gst_video_codec_frame_unref(frame);
   gst_crystalhd_wake_output(self);
   return self->output_flow;
+
+recovery_drop:
+  self->recovery_needs_sync = TRUE;
+  gst_video_decoder_request_sync_point(
+      decoder, frame, GST_VIDEO_DECODER_REQUEST_SYNC_POINT_DISCARD_INPUT);
+  g_free(padded);
+  gst_buffer_unmap(frame->input_buffer, &map);
+  return gst_video_decoder_drop_frame(decoder, frame);
 
 input_flow_error:
   g_free(padded);
@@ -1802,23 +2241,46 @@ gst_crystalhd_drain(GstVideoDecoder *decoder)
   BC_STATUS status;
   GstFlowReturn flow = GST_FLOW_OK;
   gboolean active = FALSE;
+  gboolean recovery_active = FALSE;
+  gboolean recovery_changed = FALSE;
 
   if (!self->decoder_started || self->input_flushed)
     return GST_FLOW_OK;
 
   started = g_get_monotonic_time();
   deadline = started + GST_CRYSTALHD_DRAIN_TIMEOUT_US;
-  flow = gst_crystalhd_wait_input_space(self, GST_CRYSTALHD_EOS_RESERVATION,
-                                       deadline, 1);
-  if (flow != GST_FLOW_OK)
-    return flow;
-  status = DtsFlushInput(self->device, 0);
-  if (status != BC_STS_SUCCESS) {
-    GST_ELEMENT_ERROR(self, STREAM, DECODE,
-                      ("Could not drain CrystalHD decoder: %s",
-                       gst_crystalhd_status_hint(status)),
-                      ("DtsFlushInput returned %d", status));
-    return GST_FLOW_ERROR;
+  for (;;) {
+    flow = gst_crystalhd_reconcile_recovery(self, NULL, &recovery_active,
+                                            &recovery_changed);
+    if (flow != GST_FLOW_OK)
+      return flow;
+    if (!recovery_active) {
+      flow = gst_crystalhd_wait_input_space(
+          self, GST_CRYSTALHD_EOS_RESERVATION, deadline, 1);
+      if (flow != GST_FLOW_OK)
+        return flow;
+      status = DtsFlushInput(self->device, 0);
+      flow = gst_crystalhd_reconcile_recovery(
+          self, NULL, &recovery_active, &recovery_changed);
+      if (flow != GST_FLOW_OK)
+        return flow;
+      if (status == BC_STS_SUCCESS && !recovery_active && !recovery_changed)
+        break;
+      if (!recovery_active && !recovery_changed &&
+          status != BC_STS_BUSY && status != BC_STS_PWR_MGMT &&
+          status != BC_STS_IO_USER_ABORT && status != BC_STS_SUCCESS) {
+        GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                          ("Could not drain CrystalHD decoder: %s",
+                           gst_crystalhd_status_hint(status)),
+                          ("DtsFlushInput returned %d", status));
+        return GST_FLOW_ERROR;
+      }
+    }
+    if (g_get_monotonic_time() >= deadline)
+      return GST_FLOW_ERROR;
+    flow = gst_crystalhd_wait_output(self, generation, 1000, 1);
+    if (flow != GST_FLOW_OK)
+      return flow;
   }
 
   self->draining = TRUE;
@@ -1827,6 +2289,12 @@ gst_crystalhd_drain(GstVideoDecoder *decoder)
   gst_crystalhd_wake_output(self);
   for (;;) {
     gint64 remaining;
+    flow = gst_crystalhd_reconcile_recovery(self, NULL, &recovery_active,
+                                            &recovery_changed);
+    if (flow != GST_FLOW_OK)
+      goto done;
+    if (recovery_changed)
+      deadline = g_get_monotonic_time() + GST_CRYSTALHD_DRAIN_TIMEOUT_US;
     if (generation != self->generation || gst_crystalhd_is_flushing(self)) {
       flow = GST_FLOW_FLUSHING;
       goto done;
@@ -1920,6 +2388,25 @@ gst_crystalhd_finalize(GObject *object)
 {
   GstCrystalHdDec *self = GST_CRYSTALHD_DEC(object);
   g_assert(self->output_thread == NULL);
+  /* stop() may retain a valid handle when recovery is still active or a
+   * lock-only recovery query transiently fails. Once the plugin worker is
+   * joined, bypass normal firmware Stop/Close and request terminal library
+   * retirement directly. DeviceClose atomically quarantines an unclaimed PM
+   * epoch, joins its TX worker, and reserves BUSY for a still-live handle. */
+  while (self->device != NULL) {
+    BC_STATUS status = DtsDeviceClose(self->device);
+    if (status == BC_STS_BUSY) {
+      GST_WARNING_OBJECT(self,
+          "waiting for retained CrystalHD handle during finalization: %d",
+          status);
+      g_usleep(1000);
+    } else {
+      self->device = NULL;
+      self->decoder_started = FALSE;
+      self->decoder_open = FALSE;
+    }
+  }
+  gst_crystalhd_clear_timestamps(self);
   g_cond_clear(&self->output_cond);
   g_mutex_clear(&self->output_lock);
   G_OBJECT_CLASS(gst_crystalhd_dec_parent_class)->finalize(object);

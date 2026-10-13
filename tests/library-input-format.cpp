@@ -30,6 +30,12 @@ static size_t allocation_count;
 static bool record_allocations;
 static int fail_malloc, fail_aligned;
 static unsigned failed_allocations;
+static DTS_LIB_CONTEXT *snapshot_context;
+static bool snapshot_on_free;
+static BC_STATUS snapshot_call_status, snapshot_recovery_status;
+static uint64_t snapshot_generation;
+static uint8_t snapshot_active;
+static uint32_t snapshot_replay_bytes;
 static void Record(void *p) {
     if (!record_allocations || !p) return;
     if (allocation_count == sizeof allocations / sizeof allocations[0]) std::abort();
@@ -58,6 +64,12 @@ extern "C" int __wrap_posix_memalign(void **p, size_t align, size_t size) {
     return result;
 }
 extern "C" void __wrap_free(void *p) {
+    if (p && snapshot_on_free) {
+        snapshot_on_free = false;
+        snapshot_call_status = DtsGetRecoveryStatus(snapshot_context,
+            &snapshot_generation, &snapshot_recovery_status,
+            &snapshot_active, &snapshot_replay_bytes);
+    }
     for (size_t n = allocation_count; n; --n) {
         if (allocations[n-1].pointer == p && allocations[n-1].live) {
             allocations[n-1].live = false; break;
@@ -257,6 +269,31 @@ static void RepeatedConfiguration() {
               !std::memcmp(f.context.VidParams.pMetaData,bytes.data(),bytes.size()),"metadata is an exact owned copy");
         Check(Live()==2,"reconfiguration retires previous metadata and PES header buffers");
     }
+}
+static void AtomicRecoverySnapshotDuringReplacement() {
+    Fixture f;
+    auto initial = Format(BC_MSUBTYPE_H264, avc);
+    Check(f.Set(&initial) == BC_STS_SUCCESS,
+          "atomic snapshot fixture caches complete H.264 headers");
+    f.context.recoveryInjectSpsPps = true;
+    snapshot_context = &f.context;
+    snapshot_on_free = true;
+    snapshot_call_status = BC_STS_ERROR;
+    snapshot_recovery_status = BC_STS_ERROR;
+    snapshot_generation = UINT64_MAX;
+    snapshot_active = 1;
+    snapshot_replay_bytes = UINT32_MAX;
+    auto replacement = Format(BC_MSUBTYPE_H264, {});
+    Check(f.Set(&replacement) == BC_STS_SUCCESS,
+          "format replacement succeeds at the recovery-snapshot seam");
+    Check(!snapshot_on_free && snapshot_call_status == BC_STS_SUCCESS &&
+              snapshot_recovery_status == BC_STS_SUCCESS &&
+              !snapshot_active && snapshot_replay_bytes == 0,
+          "old storage is freed only after the getter sees the complete new tuple");
+    Check(!f.context.recoveryInjectSpsPps &&
+              f.context.PESConvParams.m_iSpsPpsLen == 0,
+          "replacement atomically clears stale replay state and cache length");
+    snapshot_context = nullptr;
 }
 static void AliasedMetadata() {
     Fixture f; f.Valid();
@@ -540,6 +577,7 @@ int main() {
         {"WMV3 short metadata",ShortWmv},
         {"malloc failure atomicity",MallocFailure},{"converter allocation failure atomicity",AlignedFailure},
         {"zero metadata replaces stale state",ZeroMetadata},{"repeated configuration ownership",RepeatedConfiguration},
+        {"atomic recovery snapshot during replacement",AtomicRecoverySnapshotDuringReplacement},
         {"aliased metadata replacement",AliasedMetadata},{"pending converter buffer ownership",PendingBufferOwnership},
         {"direct converter failure and retry",DirectConverterRetry},
         {"valid codec preservation",ValidCodecs},{"malformed AVC framing",MalformedAvc},

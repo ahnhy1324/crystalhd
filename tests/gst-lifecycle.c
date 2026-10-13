@@ -95,6 +95,40 @@ static struct {
   guint8 last_metadata[64];
   gboolean release_makes_room;
   gboolean publish_on_wait;
+  guint32 free_bytes_on_sleep;
+  guint64 recovery_generation;
+  BC_STATUS recovery_status;
+  gboolean recovery_active;
+  guint32 recovery_replay_bytes;
+  gboolean recovery_after_input;
+  gboolean recovery_after_input_complete;
+  BC_STATUS recovery_after_input_status;
+  gboolean recovery_replay_armed;
+  guint recovery_replay_consumptions;
+  BC_STATUS input_once;
+  BC_STATUS input_persistent;
+  guint32 free_bytes_after_input_once;
+  gboolean complete_recovery_on_sleep;
+  gboolean recovery_query_advance_timeout;
+  guint recovery_query_calls;
+  BC_STATUS recovery_query_once;
+  BC_STATUS driver_status_once;
+  BC_STATUS output_once;
+  BC_STATUS release_once;
+  BC_STATUS eos_once;
+  gboolean driver_status_latches_recovery;
+  gboolean output_latches_recovery;
+  gboolean release_latches_recovery;
+  gboolean eos_latches_recovery;
+  BC_STATUS stop_transient_status;
+  guint stop_transient_count;
+  BC_STATUS close_transient_status;
+  guint close_transient_count;
+  BC_STATUS device_close_transient_status;
+  guint device_close_transient_count;
+  gboolean device_close_advance_timeout;
+  guint sleep_calls;
+  guint sleep_limit;
   guint64 accepted[64];
   guint accepted_count;
   guint8 pixels[16 * 16 * 2];
@@ -105,6 +139,13 @@ static BC_STATUS
 operation_status(MockOperation operation)
 {
   return (mock.fail_operations & (1U << operation)) ? BC_STS_ERROR : BC_STS_SUCCESS;
+}
+
+static void
+mock_latch_recovery(void)
+{
+  mock.recovery_generation++;
+  mock.recovery_active = TRUE;
 }
 
 static void
@@ -136,7 +177,18 @@ lifecycle_sleep(gulong usecs)
     g_usleep(usecs);
     return;
   }
+  mock.sleep_calls++;
+  if (mock.sleep_limit != 0)
+    g_assert_cmpuint(mock.sleep_calls, <=, mock.sleep_limit);
   lifecycle_now += usecs;
+  if (mock.free_bytes_on_sleep != 0) {
+    mock.free_bytes = mock.free_bytes_on_sleep;
+    mock.free_bytes_on_sleep = 0;
+  }
+  if (mock.complete_recovery_on_sleep && mock.recovery_active) {
+    mock.complete_recovery_on_sleep = FALSE;
+    mock.recovery_active = FALSE;
+  }
   if (flush_during_wait != NULL) {
     GstHarness *harness = flush_during_wait;
     flush_during_wait = NULL;
@@ -222,14 +274,26 @@ BC_STATUS DtsDeviceOpen(HANDLE *device, uint32_t mode)
 
 BC_STATUS DtsDeviceClose(HANDLE device)
 {
+  BC_STATUS status;
   g_assert_true(device == &mock);
   g_assert_true(mock.device_active);
   mock.close_calls++;
+  if (mock.device_close_transient_count != 0) {
+    mock.device_close_transient_count--;
+    status = mock.device_close_transient_status;
+    if (status == BC_STS_BUSY) {
+      if (mock.device_close_advance_timeout)
+        lifecycle_now += GST_CRYSTALHD_DRAIN_TIMEOUT_US;
+      return status;
+    }
+  } else {
+    status = operation_status(MOCK_DEVICE_CLOSE);
+  }
   mock.device_active = FALSE;
   G_LOCK(mock_queue);
   g_queue_clear_full(&mock.pictures, g_free);
   G_UNLOCK(mock_queue);
-  return operation_status(MOCK_DEVICE_CLOSE);
+  return status;
 }
 
 BC_STATUS DtsCrystalHDVersion(HANDLE device, PBC_INFO_CRYSTAL version)
@@ -275,10 +339,17 @@ BC_STATUS DtsOpenDecoder(HANDLE device, uint32_t stream_type)
 
 BC_STATUS DtsCloseDecoder(HANDLE device)
 {
+  BC_STATUS status;
   (void)device;
   mock.decoder_close_calls++;
-  mock.opened = FALSE;
-  return operation_status(MOCK_DECODER_CLOSE);
+  if (mock.close_transient_count != 0) {
+    mock.close_transient_count--;
+    return mock.close_transient_status;
+  }
+  status = operation_status(MOCK_DECODER_CLOSE);
+  if (status == BC_STS_SUCCESS)
+    mock.opened = FALSE;
+  return status;
 }
 
 BC_STATUS DtsStartDecoder(HANDLE device)
@@ -293,10 +364,17 @@ BC_STATUS DtsStartDecoder(HANDLE device)
 
 BC_STATUS DtsStopDecoder(HANDLE device)
 {
+  BC_STATUS status;
   (void)device;
   mock.stop_calls++;
-  mock.started = FALSE;
-  return operation_status(MOCK_STOP);
+  if (mock.stop_transient_count != 0) {
+    mock.stop_transient_count--;
+    return mock.stop_transient_status;
+  }
+  status = operation_status(MOCK_STOP);
+  if (status == BC_STS_SUCCESS)
+    mock.started = FALSE;
+  return status;
 }
 
 BC_STATUS DtsStartCapture(HANDLE device)
@@ -332,10 +410,37 @@ BC_STATUS DtsProcInput(HANDLE device, uint8_t *data, uint32_t size,
   g_assert_true(mock.started);
   if (mock.fail_input)
     return BC_STS_ERROR;
+  if (mock.input_once != BC_STS_SUCCESS) {
+    BC_STATUS result = mock.input_once;
+    mock.input_once = BC_STS_SUCCESS;
+    if (mock.free_bytes_after_input_once != 0) {
+      mock.free_bytes = mock.free_bytes_after_input_once;
+      mock.free_bytes_after_input_once = 0;
+    }
+    return result;
+  }
+  if (mock.input_persistent != BC_STS_SUCCESS)
+    return mock.input_persistent;
   if (mock.busy_stale) {
     mock.busy_stale = FALSE;
     queue_picture(timestamp + 123, 0xee);
     return BC_STS_BUSY;
+  }
+  if (mock.recovery_after_input) {
+    BC_STATUS result = mock.recovery_after_input_status;
+    mock.recovery_after_input = FALSE;
+    if (result == BC_STS_SUCCESS) {
+      g_assert_cmpuint(mock.accepted_count, <, G_N_ELEMENTS(mock.accepted));
+      mock.accepted[mock.accepted_count++] = timestamp;
+      if (mock.recovery_replay_armed) {
+        mock.recovery_replay_armed = FALSE;
+        mock.recovery_replay_consumptions++;
+      }
+    }
+    mock.recovery_generation++;
+    mock.recovery_active = !mock.recovery_after_input_complete;
+    mock.recovery_after_input_complete = FALSE;
+    return result;
   }
   g_assert_cmpuint(mock.accepted_count, <, G_N_ELEMENTS(mock.accepted));
   mock.accepted[mock.accepted_count++] = timestamp;
@@ -356,12 +461,43 @@ BC_STATUS DtsGetDriverStatus(HANDLE device, BC_DTS_STATUS *status)
     mock.status_unflagged_calls++;
   else
     mock.status_invalid_requests++;
+  if (mock.driver_status_once != BC_STS_SUCCESS) {
+    BC_STATUS result = mock.driver_status_once;
+    mock.driver_status_once = BC_STS_SUCCESS;
+    if (mock.driver_status_latches_recovery) {
+      mock.driver_status_latches_recovery = FALSE;
+      mock_latch_recovery();
+    }
+    return result;
+  }
   if (mock.fail_status)
     return BC_STS_ERROR;
   memset(status, 0, sizeof(*status));
   G_LOCK(mock_queue);
   status->ReadyListCount = mock.pictures.length;
   G_UNLOCK(mock_queue);
+  return BC_STS_SUCCESS;
+}
+
+BC_STATUS DtsGetRecoveryStatus(HANDLE device, uint64_t *generation,
+                               BC_STATUS *status, uint8_t *in_progress,
+                               uint32_t *replay_bytes)
+{
+  g_assert_true(device == &mock);
+  mock.recovery_query_calls++;
+  if (mock.recovery_query_once != BC_STS_SUCCESS) {
+    BC_STATUS result = mock.recovery_query_once;
+    mock.recovery_query_once = BC_STS_SUCCESS;
+    return result;
+  }
+  *generation = mock.recovery_generation;
+  *status = mock.recovery_status;
+  *in_progress = mock.recovery_active;
+  *replay_bytes = mock.recovery_replay_bytes;
+  if (mock.recovery_active && mock.recovery_query_advance_timeout) {
+    mock.recovery_query_advance_timeout = FALSE;
+    lifecycle_now += GST_CRYSTALHD_DRAIN_TIMEOUT_US;
+  }
   return BC_STS_SUCCESS;
 }
 
@@ -381,11 +517,20 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
   MockPicture *picture;
   guint8 *pixels;
   gsize pixel_size;
+  (void)device;
+  (void)timeout;
+  if (mock.output_once != BC_STS_SUCCESS) {
+    BC_STATUS result = mock.output_once;
+    mock.output_once = BC_STS_SUCCESS;
+    if (mock.output_latches_recovery) {
+      mock.output_latches_recovery = FALSE;
+      mock_latch_recovery();
+    }
+    return result;
+  }
   G_LOCK(mock_queue);
   picture = g_queue_pop_head(&mock.pictures);
   G_UNLOCK(mock_queue);
-  (void)device;
-  (void)timeout;
   if (picture == NULL)
     return BC_STS_NO_DATA;
   pixel_size = (gsize)picture->width * picture->height * 2;
@@ -413,6 +558,7 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
 
 BC_STATUS DtsReleaseOutputBuffs(HANDLE device, void *reserved, BOOL change)
 {
+  BC_STATUS result = mock.release_once;
   (void)device;
   (void)reserved;
   (void)change;
@@ -421,7 +567,12 @@ BC_STATUS DtsReleaseOutputBuffs(HANDLE device, void *reserved, BOOL change)
     mock.free_bytes = 1024 * 1024;
   memset(mock.pixels, 0xcc, sizeof(mock.pixels));
   memset(mock.scaled_pixels, 0xcc, sizeof(mock.scaled_pixels));
-  return BC_STS_SUCCESS;
+  mock.release_once = BC_STS_SUCCESS;
+  if (result != BC_STS_SUCCESS && mock.release_latches_recovery) {
+    mock.release_latches_recovery = FALSE;
+    mock_latch_recovery();
+  }
+  return result;
 }
 
 BC_STATUS DtsFlushInput(HANDLE device, uint32_t operation)
@@ -451,6 +602,15 @@ BC_STATUS DtsIsEndOfStream(HANDLE device, uint8_t *eos)
 {
   gboolean publish;
   (void)device;
+  if (mock.eos_once != BC_STS_SUCCESS) {
+    BC_STATUS result = mock.eos_once;
+    mock.eos_once = BC_STS_SUCCESS;
+    if (mock.eos_latches_recovery) {
+      mock.eos_latches_recovery = FALSE;
+      mock_latch_recovery();
+    }
+    return result;
+  }
   G_LOCK(mock_queue);
   *eos = mock.early_eos || g_queue_is_empty(&mock.pictures);
   publish = mock.publish_after_eos;
@@ -1022,6 +1182,16 @@ new_input(GstClockTime pts)
   bytes[4] = 0x65;
   buffer = gst_buffer_new_wrapped_full(0, bytes, 8, 0, 8,
                                         bytes, input_destroyed);
+  GST_BUFFER_PTS(buffer) = pts;
+  GST_BUFFER_DURATION(buffer) = 40 * GST_MSECOND;
+  return buffer;
+}
+
+static GstBuffer *
+new_h264_input(GstClockTime pts, const guint8 *bytes, gsize size)
+{
+  GstBuffer *buffer = gst_buffer_new_allocate(NULL, size, NULL);
+  gst_buffer_fill(buffer, 0, bytes, size);
   GST_BUFFER_PTS(buffer) = pts;
   GST_BUFFER_DURATION(buffer) = 40 * GST_MSECOND;
   return buffer;
@@ -3319,6 +3489,685 @@ test_natural_caps_raw_tail(void)
   gst_harness_teardown(harness);
 }
 
+static void
+test_recovery_epoch_reconcile(void)
+{
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstVideoDecoder *decoder = GST_VIDEO_DECODER(self);
+  GstVideoCodecFrame *current, *retained;
+  GstFlowReturn flow;
+  gboolean active, changed;
+
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(self->timestamps.length, ==, 1);
+
+  GST_VIDEO_DECODER_STREAM_LOCK(decoder);
+  current = gst_video_decoder_get_oldest_frame(decoder);
+  GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+  g_assert_nonnull(current);
+
+  mock.recovery_generation = 1;
+  mock.recovery_active = TRUE;
+  GST_VIDEO_DECODER_STREAM_LOCK(decoder);
+  flow = gst_crystalhd_reconcile_recovery(self, current, &active, &changed);
+  GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+  g_assert_cmpint(flow, ==, GST_FLOW_OK);
+  g_assert_true(active);
+  g_assert_false(changed);
+  g_assert_cmpuint(self->timestamps.length, ==, 1);
+  g_assert_cmpuint(self->recovery_generation_seen, ==, 0);
+
+  mock.recovery_active = FALSE;
+  GST_VIDEO_DECODER_STREAM_LOCK(decoder);
+  flow = gst_crystalhd_reconcile_recovery(self, current, &active, &changed);
+  retained = gst_video_decoder_get_oldest_frame(decoder);
+  GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+  g_assert_cmpint(flow, ==, GST_FLOW_OK);
+  g_assert_false(active);
+  g_assert_true(changed);
+  g_assert_cmpuint(self->timestamps.length, ==, 0);
+  g_assert_cmpuint(self->recovery_generation_seen, ==, 1);
+  g_assert_true(self->recovery_needs_sync);
+  g_assert_true(retained == current);
+  gst_video_codec_frame_unref(retained);
+
+  GST_VIDEO_DECODER_STREAM_LOCK(decoder);
+  g_assert_cmpint(gst_video_decoder_drop_frame(decoder, current), ==,
+                  GST_FLOW_OK);
+  GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+
+  mock.recovery_generation = 2;
+  mock.recovery_status = BC_STS_ERROR;
+  GST_VIDEO_DECODER_STREAM_LOCK(decoder);
+  flow = gst_crystalhd_reconcile_recovery(self, NULL, &active, &changed);
+  GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+  g_assert_cmpint(flow, ==, GST_FLOW_ERROR);
+  g_assert_cmpuint(self->recovery_generation_seen, ==, 1);
+  mock.recovery_status = BC_STS_SUCCESS;
+  gst_harness_teardown(harness);
+}
+
+static void
+test_recovery_config_reservation_boundaries(void)
+{
+  const gsize exact_config = GST_CRYSTALHD_INPUT_CAPACITY - 768;
+  static const gsize rejected[] = {
+    GST_CRYSTALHD_INPUT_CAPACITY - 1,
+    GST_CRYSTALHD_INPUT_CAPACITY,
+    GST_CRYSTALHD_INPUT_CAPACITY + 1,
+    G_MAXSIZE
+  };
+  gsize reservation;
+  guint i;
+
+  /* At this size the 17 full packet groups plus fixed framing are 768
+   * bytes, so the combined replay call is exactly the 1 MiB ring. */
+  g_assert_cmpuint(exact_config / 60000, ==, 17);
+  reservation = 0;
+  g_assert_true(gst_crystalhd_add_recovery_config_reservation(
+      exact_config, &reservation));
+  g_assert_cmpuint(reservation, ==, GST_CRYSTALHD_INPUT_CAPACITY);
+
+  reservation = 1;
+  g_assert_false(gst_crystalhd_add_recovery_config_reservation(
+      exact_config, &reservation));
+  g_assert_cmpuint(reservation, ==, 1);
+  reservation = 23;
+  g_assert_false(gst_crystalhd_add_recovery_config_reservation(
+      exact_config + 1, &reservation));
+  g_assert_cmpuint(reservation, ==, 23);
+
+  for (i = 0; i < G_N_ELEMENTS(rejected); ++i) {
+    reservation = 37;
+    g_assert_false(gst_crystalhd_add_recovery_config_reservation(
+        rejected[i], &reservation));
+    g_assert_cmpuint(reservation, ==, 37);
+  }
+}
+
+static void
+test_recovery_input_deadline(void)
+{
+  guint mode;
+
+  for (mode = 0; mode < 2; ++mode) {
+    GstHarness *harness = new_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+
+    mock.auto_output = FALSE;
+    mock.sleep_limit = 10001;
+    if (mode == 0) {
+      mock.recovery_generation = 1;
+      mock.recovery_active = TRUE;
+    } else {
+      mock.input_persistent = BC_STS_BUSY;
+    }
+    g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==,
+                    GST_FLOW_ERROR);
+    g_assert_cmpint(lifecycle_now, ==,
+                    1 + GST_CRYSTALHD_INPUT_TIMEOUT_US);
+    g_assert_cmpuint(mock.sleep_calls, ==, 10000);
+    g_assert_cmpuint(mock.input_calls, ==, mode == 0 ? 0 : 10000);
+    g_assert_cmpuint(mock.accepted_count, ==, 0);
+    g_assert_cmpuint(mock.unsafe_submissions, ==, 0);
+    g_assert_cmpuint(self->timestamps.length, ==, 0);
+    g_assert_cmpuint(mock.destroyed_inputs, ==, 1);
+    mock.recovery_active = FALSE;
+    mock.input_persistent = BC_STS_SUCCESS;
+    gst_harness_teardown(harness);
+  }
+}
+
+static void
+test_recovery_blocked_delivery_reconcile(void)
+{
+  DeliveryGate gate = { 0 };
+  GstCrystalHdDec *self;
+  GThread *operation;
+  GstBuffer *output;
+  gboolean completed_while_blocked;
+  gboolean output_active;
+  gint64 deadline;
+  gulong probe;
+
+  real_workers = TRUE;
+  g_mutex_init(&gate.lock);
+  g_cond_init(&gate.changed);
+  gate.harness = new_decoder();
+  self = GST_CRYSTALHD_DEC(gate.harness->element);
+  mock.auto_output = FALSE;
+  probe = gst_pad_add_probe(gate.harness->sinkpad,
+                            GST_PAD_PROBE_TYPE_BUFFER,
+                            hold_delivery, &gate, NULL);
+  g_assert_cmpint(gst_harness_push(gate.harness, new_input(0)), ==,
+                  GST_FLOW_OK);
+  queue_picture(mock.accepted[0], 0x71);
+
+  g_mutex_lock(&gate.lock);
+  deadline = g_get_monotonic_time() + 2 * G_USEC_PER_SEC;
+  while (!gate.entered &&
+         g_cond_wait_until(&gate.changed, &gate.lock, deadline))
+    ;
+  g_assert_true(gate.entered);
+  g_assert_true(gate.lease_released);
+  g_mutex_unlock(&gate.lock);
+
+  /* copy_output already removed the delivered frame's timestamp before the
+   * downstream push blocked. A completed epoch may therefore reconcile the
+   * remaining timestamp set while output_active still owns that frame. */
+  mock.recovery_generation = 1;
+  mock.recovery_replay_bytes = 31;
+  mock.recovery_active = FALSE;
+  operation = g_thread_new("recovery-next-input", delivery_operation, &gate);
+  g_mutex_lock(&gate.lock);
+  deadline = g_get_monotonic_time() + 2 * G_USEC_PER_SEC;
+  while (!gate.operation_done &&
+         g_cond_wait_until(&gate.changed, &gate.lock, deadline))
+    ;
+  completed_while_blocked = gate.operation_done;
+  g_mutex_lock(&self->output_lock);
+  output_active = self->output_active;
+  g_mutex_unlock(&self->output_lock);
+  gate.release = TRUE;
+  g_cond_broadcast(&gate.changed);
+  g_mutex_unlock(&gate.lock);
+  g_thread_join(operation);
+  gst_pad_remove_probe(gate.harness->sinkpad, probe);
+
+  g_assert_true(completed_while_blocked);
+  g_assert_cmpint(gate.operation_flow, ==, GST_FLOW_OK);
+  g_assert_true(output_active);
+  g_assert_cmpuint(self->recovery_generation_seen, ==, 1);
+  g_assert_false(self->recovery_needs_sync);
+  g_assert_cmpuint(mock.accepted_count, ==, 2);
+  g_assert_cmpuint(self->timestamps.length, ==, 1);
+  output = wait_for_output(gate.harness);
+  check_output(output, 0, 0x71);
+  gst_buffer_unref(output);
+  g_assert_null(gst_harness_try_pull(gate.harness));
+  g_assert_false(gate.timed_out);
+  gst_harness_teardown(gate.harness);
+  g_assert_cmpuint(mock.release_calls, ==, 1);
+  g_assert_cmpuint(mock.destroyed_inputs, ==, 2);
+  g_cond_clear(&gate.changed);
+  g_mutex_clear(&gate.lock);
+  real_workers = FALSE;
+}
+
+static void
+test_recovery_h264_gate_and_reservation(void)
+{
+  static const guint8 valid_headers[] = {
+    /* One leading_zero_8bits byte before the first four-byte prefix is
+     * valid Annex B and must not make the recovery gate miss the headers. */
+    0, 0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f,
+    0, 0, 0, 1, 0x68, 0xee, 0x3c,
+    0, 0, 0, 1, 0x65, 0x88, 0x84
+  };
+  static const guint8 garbage_prefixed_headers[] = {
+    0x12, 0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f,
+    0, 0, 0, 1, 0x68, 0xee, 0x3c,
+    0, 0, 0, 1, 0x65, 0x88, 0x84
+  };
+  static const guint8 empty_nal_headers[] = {
+    0, 0, 0, 1,
+    0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f,
+    0, 0, 0, 1, 0x68, 0xee, 0x3c,
+    0, 0, 0, 1, 0x65, 0x88
+  };
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  gsize reservation;
+
+  mock.auto_output = FALSE;
+  mock.recovery_generation = 1;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.input_calls, ==, 0);
+  g_assert_cmpuint(mock.accepted_count, ==, 0);
+  g_assert_true(self->recovery_needs_sync);
+
+  g_assert_false(gst_crystalhd_h264_has_parameter_sets(
+      empty_nal_headers, sizeof(empty_nal_headers)));
+  g_assert_false(gst_crystalhd_h264_has_parameter_sets(
+      garbage_prefixed_headers, sizeof(garbage_prefixed_headers)));
+  g_assert_cmpint(gst_harness_push(harness,
+      new_h264_input(40 * GST_MSECOND, empty_nal_headers,
+                     sizeof(empty_nal_headers))), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.input_calls, ==, 0);
+  g_assert_cmpuint(mock.accepted_count, ==, 0);
+
+  g_assert_true(gst_crystalhd_h264_has_parameter_sets(
+      valid_headers, sizeof(valid_headers)));
+  g_assert_cmpint(gst_harness_push(harness,
+      new_h264_input(80 * GST_MSECOND, valid_headers,
+                     sizeof(valid_headers))), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.input_calls, ==, 1);
+  g_assert_cmpuint(mock.accepted_count, ==, 1);
+  g_assert_false(self->recovery_needs_sync);
+  g_assert_cmpuint(self->timestamps.length, ==, 1);
+
+  g_assert_true(gst_crystalhd_input_reservation(
+      BC_MSUBTYPE_H264, 8, self->input_metadata_size, &reservation));
+  g_assert_true(gst_crystalhd_add_recovery_config_reservation(
+      37, &reservation));
+  mock.recovery_generation = 2;
+  mock.recovery_replay_bytes = 37;
+  mock.required_bytes = reservation;
+  mock.free_bytes = reservation;
+  mock.input_once = BC_STS_BUSY;
+  mock.free_bytes_after_input_once = reservation - 1;
+  mock.free_bytes_on_sleep = reservation;
+  g_assert_cmpint(gst_harness_push(harness,
+      new_input(120 * GST_MSECOND)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.input_calls, ==, 3);
+  g_assert_cmpuint(mock.accepted_count, ==, 2);
+  g_assert_cmpuint(mock.unsafe_submissions, ==, 0);
+  g_assert_cmpuint(self->timestamps.length, ==, 1);
+  g_assert_false(self->recovery_needs_sync);
+
+  mock.recovery_generation = 3;
+  mock.free_bytes = reservation;
+  g_assert_cmpint(gst_harness_push(harness,
+      new_input(160 * GST_MSECOND)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.input_calls, ==, 4);
+  g_assert_cmpuint(mock.accepted_count, ==, 3);
+  g_assert_cmpuint(mock.unsafe_submissions, ==, 0);
+  g_assert_cmpuint(self->recovery_generation_seen, ==, 3);
+  g_assert_false(self->recovery_needs_sync);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_recovery_post_input_generation(void)
+{
+  static const guint8 valid_headers[] = {
+    0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f,
+    0, 0, 0, 1, 0x68, 0xee, 0x3c,
+    0, 0, 0, 1, 0x65, 0x88, 0x84
+  };
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+
+  /* Recovery can complete immediately before/in input admission. Model its
+   * one-shot config replay as consumed by the successful call while the new
+   * getter contract continues to expose the persistent cache capability.
+   * The ambiguous AU is retired exactly once and must never be resubmitted. */
+  mock.auto_output = FALSE;
+  mock.recovery_replay_bytes = 31;
+  mock.recovery_replay_armed = TRUE;
+  mock.recovery_after_input = TRUE;
+  mock.recovery_after_input_complete = TRUE;
+  mock.recovery_after_input_status = BC_STS_SUCCESS;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.input_calls, ==, 1);
+  g_assert_cmpuint(mock.accepted_count, ==, 1);
+  g_assert_cmpuint(mock.recovery_replay_consumptions, ==, 1);
+  g_assert_false(mock.recovery_replay_armed);
+  g_assert_cmpuint(self->timestamps.length, ==, 0);
+  g_assert_cmpuint(self->recovery_generation_seen, ==, 1);
+  g_assert_true(self->recovery_needs_sync);
+  g_assert_cmpuint(self->recovery_h264_config_size, ==, 31);
+  g_assert_cmpuint(mock.destroyed_inputs, ==, 1);
+
+  g_assert_cmpint(gst_harness_push(harness, new_input(40 * GST_MSECOND)), ==,
+                  GST_FLOW_OK);
+  g_assert_cmpuint(mock.input_calls, ==, 2);
+  g_assert_cmpuint(mock.accepted_count, ==, 2);
+  g_assert_cmpuint(mock.accepted[0], !=, mock.accepted[1]);
+  g_assert_cmpuint(self->timestamps.length, ==, 1);
+  g_assert_cmpuint(self->recovery_generation_seen, ==, 1);
+  g_assert_false(self->recovery_needs_sync);
+  gst_harness_teardown(harness);
+
+  /* Without a complete cache, the same ambiguity still drops the accepted
+   * AU, but a following headerless IDR must not enter the reconstructed
+   * decoder. A proven SPS/PPS AU is required to resume. */
+  harness = new_decoder();
+  self = GST_CRYSTALHD_DEC(harness->element);
+  mock.auto_output = FALSE;
+  mock.recovery_after_input = TRUE;
+  mock.recovery_after_input_complete = TRUE;
+  mock.recovery_after_input_status = BC_STS_SUCCESS;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.input_calls, ==, 1);
+  g_assert_cmpuint(mock.accepted_count, ==, 1);
+  g_assert_cmpuint(self->timestamps.length, ==, 0);
+  g_assert_true(self->recovery_needs_sync);
+  g_assert_cmpint(gst_harness_push(harness, new_input(40 * GST_MSECOND)), ==,
+                  GST_FLOW_OK);
+  g_assert_cmpuint(mock.input_calls, ==, 1);
+  g_assert_cmpuint(mock.accepted_count, ==, 1);
+  g_assert_cmpuint(self->timestamps.length, ==, 0);
+  g_assert_true(self->recovery_needs_sync);
+  g_assert_cmpint(gst_harness_push(harness,
+      new_h264_input(80 * GST_MSECOND, valid_headers,
+                     sizeof(valid_headers))), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.input_calls, ==, 2);
+  g_assert_cmpuint(mock.accepted_count, ==, 2);
+  g_assert_cmpuint(self->timestamps.length, ==, 1);
+  g_assert_false(self->recovery_needs_sync);
+  gst_harness_teardown(harness);
+
+  /* An in-progress epoch after the call is equally ambiguous, including
+   * when the library reports the PM status instead of SUCCESS. */
+  harness = new_decoder();
+  self = GST_CRYSTALHD_DEC(harness->element);
+  mock.auto_output = FALSE;
+  mock.recovery_replay_bytes = 31;
+  mock.recovery_after_input = TRUE;
+  mock.recovery_after_input_status = BC_STS_PWR_MGMT;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.input_calls, ==, 1);
+  g_assert_cmpuint(mock.accepted_count, ==, 0);
+  g_assert_cmpuint(self->timestamps.length, ==, 0);
+  g_assert_true(self->recovery_needs_sync);
+  g_assert_true(mock.recovery_active);
+  mock.recovery_active = FALSE;
+  gst_harness_teardown(harness);
+}
+
+static void
+test_recovery_release_failure(void)
+{
+  static const guint8 valid_headers[] = {
+    0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f,
+    0, 0, 0, 1, 0x68, 0xee, 0x3c,
+    0, 0, 0, 1, 0x65, 0x88, 0x84
+  };
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstVideoCodecFrame *pending;
+  GstBuffer *output;
+
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  queue_picture(mock.accepted[0], 0x51);
+  mock.release_once = BC_STS_ERROR;
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_ERROR);
+  g_assert_null(gst_harness_try_pull(harness));
+  g_assert_cmpuint(mock.release_calls, ==, 1);
+  g_assert_cmpuint(self->timestamps.length, ==, 0);
+  GST_VIDEO_DECODER_STREAM_LOCK(self);
+  pending = gst_video_decoder_get_oldest_frame(GST_VIDEO_DECODER(self));
+  GST_VIDEO_DECODER_STREAM_UNLOCK(self);
+  g_assert_null(pending);
+  gst_harness_teardown(harness);
+
+  harness = new_decoder();
+  self = GST_CRYSTALHD_DEC(harness->element);
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  queue_picture(mock.accepted[0], 0x52);
+  mock.release_once = BC_STS_PWR_MGMT;
+  mock.release_latches_recovery = TRUE;
+  g_assert_false(gst_crystalhd_output_iteration(self));
+  g_assert_cmpint(self->output_flow, ==, GST_FLOW_OK);
+  g_assert_null(gst_harness_try_pull(harness));
+  g_assert_cmpuint(mock.release_calls, ==, 1);
+  g_assert_cmpuint(self->timestamps.length, ==, 0);
+  g_assert_true(mock.recovery_active);
+  mock.recovery_active = FALSE;
+  g_assert_false(gst_crystalhd_output_iteration(self));
+  g_assert_cmpuint(self->recovery_generation_seen, ==, 1);
+  g_assert_true(self->recovery_needs_sync);
+  gst_harness_teardown(harness);
+
+  harness = new_decoder();
+  self = GST_CRYSTALHD_DEC(harness->element);
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  queue_picture(mock.accepted[0], 0x53);
+  mock.output_once = BC_STS_IO_USER_ABORT;
+  mock.output_latches_recovery = TRUE;
+  g_assert_false(gst_crystalhd_output_iteration(self));
+  g_assert_cmpint(self->output_flow, ==, GST_FLOW_OK);
+  g_assert_true(mock.recovery_active);
+  g_assert_cmpuint(self->timestamps.length, ==, 1);
+  mock.complete_recovery_on_sleep = TRUE;
+  lifecycle_sleep(1);
+  g_assert_false(mock.recovery_active);
+  g_assert_cmpuint(self->recovery_generation_seen, ==, 1);
+  g_assert_cmpuint(self->timestamps.length, ==, 0);
+  g_assert_true(self->recovery_needs_sync);
+  g_assert_null(gst_harness_try_pull(harness));
+  g_assert_cmpuint(mock.release_calls, ==, 0);
+  mock.auto_output = TRUE;
+  g_assert_cmpint(gst_harness_push(harness,
+      new_h264_input(40 * GST_MSECOND, valid_headers,
+                     sizeof(valid_headers))), ==, GST_FLOW_OK);
+  output = gst_harness_try_pull(harness);
+  check_output(output, 40 * GST_MSECOND, 2);
+  gst_buffer_unref(output);
+  g_assert_null(gst_harness_try_pull(harness));
+  g_assert_cmpuint(mock.release_calls, ==, 2);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_recovery_abort_bounded(void)
+{
+  static const BC_STATUS statuses[] = {
+    BC_STS_IO_USER_ABORT, BC_STS_PWR_MGMT
+  };
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS(statuses); ++i) {
+    GstHarness *harness = new_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+
+    mock.auto_output = FALSE;
+    g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+    queue_picture(mock.accepted[0], 0x61 + i);
+    mock.output_once = statuses[i];
+    g_assert_false(gst_crystalhd_output_iteration(self));
+    g_assert_cmpint(self->output_flow, ==, GST_FLOW_OK);
+    g_assert_cmpint(self->recovery_abort_started_us, >, 0);
+    lifecycle_now += GST_CRYSTALHD_DRAIN_TIMEOUT_US;
+    mock.output_once = statuses[i];
+    g_assert_false(gst_crystalhd_output_iteration(self));
+    g_assert_cmpint(self->output_flow, ==, GST_FLOW_ERROR);
+    g_assert_cmpuint(self->timestamps.length, ==, 1);
+    g_assert_null(gst_harness_try_pull(harness));
+    gst_harness_teardown(harness);
+
+    harness = new_decoder();
+    self = GST_CRYSTALHD_DEC(harness->element);
+    self->draining = TRUE;
+    mock.eos_once = statuses[i];
+    g_assert_false(gst_crystalhd_output_iteration(self));
+    g_assert_cmpint(self->output_flow, ==, GST_FLOW_OK);
+    g_assert_cmpint(self->recovery_abort_started_us, >, 0);
+    lifecycle_now += GST_CRYSTALHD_DRAIN_TIMEOUT_US;
+    mock.eos_once = statuses[i];
+    g_assert_false(gst_crystalhd_output_iteration(self));
+    g_assert_cmpint(self->output_flow, ==, GST_FLOW_ERROR);
+    self->draining = FALSE;
+    gst_harness_teardown(harness);
+  }
+}
+
+static void
+test_recovery_drain_eos(void)
+{
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *output;
+
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  queue_picture(mock.accepted[0], 0x62);
+  mock.eos_once = BC_STS_IO_USER_ABORT;
+  mock.eos_latches_recovery = TRUE;
+  mock.complete_recovery_on_sleep = TRUE;
+  g_assert_cmpint(gst_crystalhd_drain(GST_VIDEO_DECODER(self)), ==,
+                  GST_FLOW_OK);
+  output = gst_harness_try_pull(harness);
+  check_output(output, 0, 0x62);
+  gst_buffer_unref(output);
+  g_assert_null(gst_harness_try_pull(harness));
+  g_assert_cmpuint(mock.recovery_generation, ==, 1);
+  g_assert_cmpuint(self->recovery_generation_seen, ==, 1);
+  g_assert_false(mock.recovery_active);
+  g_assert_true(self->output_eos);
+  g_assert_true(self->drain_idle);
+  g_assert_cmpuint(self->timestamps.length, ==, 0);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_recovery_close_semantics(void)
+{
+  GstHarness *harness;
+  GstCrystalHdDec *self;
+  BC_STATUS status;
+
+  harness = new_decoder();
+  self = GST_CRYSTALHD_DEC(harness->element);
+  mock.recovery_query_once = BC_STS_ERROR;
+  status = gst_crystalhd_close_device(self);
+  g_assert_cmpint(status, ==, BC_STS_ERROR);
+  g_assert_nonnull(self->device);
+  g_assert_true(mock.device_active);
+  g_assert_cmpuint(mock.close_calls, ==, 0);
+  status = gst_crystalhd_close_device(self);
+  g_assert_cmpint(status, ==, BC_STS_SUCCESS);
+  g_assert_null(self->device);
+  g_assert_cmpuint(mock.close_calls, ==, 1);
+  gst_harness_teardown(harness);
+
+  harness = new_decoder();
+  self = GST_CRYSTALHD_DEC(harness->element);
+  mock.recovery_generation = 1;
+  mock.recovery_active = TRUE;
+  mock.recovery_query_advance_timeout = TRUE;
+  status = gst_crystalhd_close_device(self);
+  g_assert_cmpint(status, ==, BC_STS_BUSY);
+  g_assert_nonnull(self->device);
+  g_assert_true(mock.device_active);
+  g_assert_cmpuint(mock.stop_calls, ==, 0);
+  g_assert_cmpuint(mock.close_calls, ==, 0);
+  mock.recovery_active = FALSE;
+  status = gst_crystalhd_close_device(self);
+  g_assert_cmpint(status, ==, BC_STS_SUCCESS);
+  g_assert_null(self->device);
+  g_assert_cmpuint(mock.stop_calls, ==, 1);
+  g_assert_cmpuint(mock.close_calls, ==, 1);
+  gst_harness_teardown(harness);
+
+  harness = new_decoder();
+  self = GST_CRYSTALHD_DEC(harness->element);
+  mock.recovery_generation = 1;
+  mock.recovery_active = TRUE;
+  mock.complete_recovery_on_sleep = TRUE;
+  status = gst_crystalhd_close_device(self);
+  g_assert_cmpint(status, ==, BC_STS_SUCCESS);
+  g_assert_null(self->device);
+  g_assert_cmpuint(mock.close_calls, ==, 1);
+  g_assert_false(mock.recovery_active);
+  g_assert_cmpuint(mock.start_calls, ==, 1);
+  gst_harness_teardown(harness);
+
+  harness = new_decoder();
+  self = GST_CRYSTALHD_DEC(harness->element);
+  mock.device_close_transient_status = BC_STS_BUSY;
+  mock.device_close_transient_count = 1;
+  status = gst_crystalhd_close_device(self);
+  g_assert_cmpint(status, ==, BC_STS_SUCCESS);
+  g_assert_null(self->device);
+  g_assert_cmpuint(mock.close_calls, ==, 2);
+  gst_harness_teardown(harness);
+
+  harness = new_decoder();
+  self = GST_CRYSTALHD_DEC(harness->element);
+  mock.device_close_transient_status = BC_STS_BUSY;
+  mock.device_close_transient_count = 1;
+  mock.device_close_advance_timeout = TRUE;
+  status = gst_crystalhd_close_device(self);
+  g_assert_cmpint(status, ==, BC_STS_BUSY);
+  g_assert_nonnull(self->device);
+  g_assert_true(mock.device_active);
+  g_assert_cmpuint(mock.close_calls, ==, 1);
+  mock.device_close_advance_timeout = FALSE;
+  status = gst_crystalhd_close_device(self);
+  g_assert_cmpint(status, ==, BC_STS_SUCCESS);
+  g_assert_null(self->device);
+  g_assert_cmpuint(mock.close_calls, ==, 2);
+  gst_harness_teardown(harness);
+
+  harness = new_decoder();
+  self = GST_CRYSTALHD_DEC(harness->element);
+  mock.fail_operations = 1U << MOCK_STOP;
+  status = gst_crystalhd_close_device(self);
+  g_assert_cmpint(status, ==, BC_STS_ERROR);
+  g_assert_null(self->device);
+  g_assert_false(mock.device_active);
+  g_assert_cmpuint(mock.stop_calls, ==, 1);
+  g_assert_cmpuint(mock.decoder_close_calls, ==, 1);
+  g_assert_cmpuint(mock.close_calls, ==, 1);
+  mock.fail_operations = 0;
+  gst_harness_teardown(harness);
+
+  harness = new_decoder();
+  self = GST_CRYSTALHD_DEC(harness->element);
+  mock.recovery_generation = 1;
+  mock.recovery_status = BC_STS_PWR_MGMT;
+  status = gst_crystalhd_close_device(self);
+  g_assert_cmpint(status, ==, BC_STS_SUCCESS);
+  g_assert_null(self->device);
+  g_assert_cmpuint(mock.stop_calls, ==, 0);
+  g_assert_cmpuint(mock.decoder_close_calls, ==, 0);
+  g_assert_cmpuint(mock.close_calls, ==, 1);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_recovery_finalizer_retained_handle(void)
+{
+  guint mode;
+
+  for (mode = 0; mode < 3; ++mode) {
+    GstCrystalHdDec *self;
+
+    memset(&mock, 0, sizeof(mock));
+    g_queue_init(&mock.pictures);
+    lifecycle_now = 1;
+    iteration_decoder = NULL;
+    flush_during_wait = NULL;
+    seek_during_wait = NULL;
+    flush_during_quiesce = NULL;
+    mock.device_active = TRUE;
+    mock.opened = TRUE;
+    mock.started = TRUE;
+    if (mode == 0) {
+      /* No RESUME ever arrives. Terminal DeviceClose owns cancellation;
+       * BUSY is the only non-consuming result and must be retried. */
+      mock.recovery_generation = 1;
+      mock.recovery_active = TRUE;
+      mock.device_close_transient_status = BC_STS_BUSY;
+      mock.device_close_transient_count = 2;
+    } else if (mode == 1) {
+      /* A failed status query retained this handle in stop(). Finalization
+       * must not query again: the raw close is now the authoritative owner. */
+      mock.recovery_query_once = BC_STS_ERROR;
+    } else
+      mock.fail_operations = 1U << MOCK_DEVICE_CLOSE;
+    self = g_object_new(GST_TYPE_CRYSTALHD_DEC, NULL);
+    gst_object_ref_sink(self);
+    self->device = &mock;
+    self->decoder_open = TRUE;
+    self->decoder_started = TRUE;
+    g_assert_null(self->output_thread);
+    gst_object_unref(self);
+    g_assert_false(mock.device_active);
+    g_assert_cmpuint(mock.recovery_query_calls, ==, 0);
+    g_assert_cmpuint(mock.stop_calls, ==, 0);
+    g_assert_cmpuint(mock.decoder_close_calls, ==, 0);
+    g_assert_cmpuint(mock.close_calls, ==, mode == 0 ? 3 : 1);
+  }
+}
+
 int
 main(int argc, char **argv)
 {
@@ -3344,6 +4193,28 @@ main(int argc, char **argv)
   g_test_add_func("/crystalhd/lifecycle/natural-caps-errors", test_natural_caps_errors);
   g_test_add_func("/crystalhd/lifecycle/natural-caps-raw-tail", test_natural_caps_raw_tail);
   g_test_add_func("/crystalhd/lifecycle/natural-caps-raw-boundaries", test_natural_caps_raw_boundaries);
+  g_test_add_func("/crystalhd/recovery/epoch-reconcile",
+                  test_recovery_epoch_reconcile);
+  g_test_add_func("/crystalhd/recovery/config-reservation-boundaries",
+                  test_recovery_config_reservation_boundaries);
+  g_test_add_func("/crystalhd/recovery/input-deadline",
+                  test_recovery_input_deadline);
+  g_test_add_func("/crystalhd/recovery/blocked-delivery-reconcile",
+                  test_recovery_blocked_delivery_reconcile);
+  g_test_add_func("/crystalhd/recovery/h264-gate-reservation",
+                  test_recovery_h264_gate_and_reservation);
+  g_test_add_func("/crystalhd/recovery/post-input-generation",
+                  test_recovery_post_input_generation);
+  g_test_add_func("/crystalhd/recovery/release-failure",
+                  test_recovery_release_failure);
+  g_test_add_func("/crystalhd/recovery/abort-bounded",
+                  test_recovery_abort_bounded);
+  g_test_add_func("/crystalhd/recovery/drain-eos",
+                  test_recovery_drain_eos);
+  g_test_add_func("/crystalhd/recovery/close-semantics",
+                  test_recovery_close_semantics);
+  g_test_add_func("/crystalhd/recovery/finalizer-retained-handle",
+                  test_recovery_finalizer_retained_handle);
   g_test_add_func("/crystalhd/lifecycle/busy-stale-output", test_busy_stale_output);
   g_test_add_func("/crystalhd/lifecycle/flush-stale-output", test_flush_stale_output);
   g_test_add_func("/crystalhd/lifecycle/flush-reopen-errors", test_flush_reopen_errors);

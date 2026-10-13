@@ -103,15 +103,21 @@ extern "C" int __wrap_ioctl(int fd, unsigned long code, ...)
 
 extern "C" int __wrap_usleep(useconds_t)
 {
-    if (!detection.run_tx || ++detection.sleeps > 1000)
+    if (!detection.run_tx || ++detection.sleeps > 1000) {
+        std::fprintf(stderr, "unexpected usleep run=%d sleeps=%u\n",
+                     detection.run_tx, detection.sleeps);
         std::abort();
+    }
     return 0;
 }
 
 extern "C" int __wrap_clock_gettime(clockid_t clock_id, struct timespec *value)
 {
-    if (!detection.run_tx || clock_id != CLOCK_MONOTONIC || !value)
+    if (!detection.run_tx || clock_id != CLOCK_MONOTONIC || !value) {
+        std::fprintf(stderr, "unexpected clock run=%d id=%d value=%p\n",
+                     detection.run_tx, static_cast<int>(clock_id), (void *)value);
         std::abort();
+    }
     value->tv_sec = detection.clock_ms / 1000;
     value->tv_nsec = (detection.clock_ms % 1000) * 1000000;
     return 0;
@@ -120,8 +126,10 @@ extern "C" int __wrap_clock_gettime(clockid_t clock_id, struct timespec *value)
 extern "C" int __wrap_pthread_cond_timedwait(pthread_cond_t *, pthread_mutex_t *,
                                                const struct timespec *)
 {
-    if (!detection.run_tx)
+    if (!detection.run_tx) {
+        std::fputs("unexpected cond wait outside TX\n", stderr);
         std::abort();
+    }
     /* Model the idle wait as elapsed time. Merely constructing its monotonic
      * deadline must not make the synthetic hardware clock advance. */
     detection.clock_ms += detection.clock_step_ms;
@@ -131,8 +139,12 @@ extern "C" int __wrap_pthread_cond_timedwait(pthread_cond_t *, pthread_mutex_t *
 BC_STATUS DtsGetDrvStat(HANDLE device, BC_DTS_STATS *status)
 {
     if (!detection.allow_status || device != observed_context ||
-        ++detection.status_calls > detection.status_limit)
+        ++detection.status_calls > detection.status_limit) {
+        std::fprintf(stderr, "unexpected status allow=%d calls=%u limit=%u\n",
+                     detection.allow_status, detection.status_calls,
+                     detection.status_limit);
         std::abort();
+    }
     *status = detection.status;
     if (detection.progress_each_status) {
         DtsLock(observed_context);
@@ -154,8 +166,10 @@ BC_STATUS DtsGetDrvStat(HANDLE device, BC_DTS_STATS *status)
 
 BC_STATUS DtsTxDmaText(HANDLE device, uint8_t *, uint32_t size, uint32_t *, uint8_t)
 {
-    if (!detection.run_tx || device != observed_context)
+    if (!detection.run_tx || device != observed_context) {
+        std::fputs("unexpected DMA outside TX\n", stderr);
         std::abort();
+    }
     ++detection.dma_calls;
     detection.dma_bytes += size;
     detection.dma_in_progress = true;
@@ -181,22 +195,35 @@ BC_STATUS DtsTxDmaText(HANDLE device, uint8_t *, uint32_t size, uint32_t *, uint
 /* The TX loop's suspend-recovery branch must never run in these tests. Wrap
  * only those cross-TU recovery entry points, not the loop or EOS decisions.
  */
-extern "C" BC_STATUS __wrap_DtsSetupHardware(HANDLE, BOOL) { std::abort(); }
-extern "C" BC_STATUS __wrap_DtsOpenDecoder(HANDLE, uint32_t) { std::abort(); }
-extern "C" BC_STATUS __wrap_DtsStartDecoder(HANDLE) { std::abort(); }
-extern "C" BC_STATUS __wrap_DtsStartCapture(HANDLE) { std::abort(); }
-BC_STATUS DtsSetCoreClock(HANDLE, uint32_t) { std::abort(); }
-BC_STATUS DtsPushFwToFlea(HANDLE, char *) { std::abort(); }
-BC_STATUS DtsPushAuthFwToLink(HANDLE, char *) { std::abort(); }
-BC_STATUS DtsFWInitialize(HANDLE, uint32_t) { std::abort(); }
-BC_STATUS DtsFWActivateDecoder(HANDLE) { std::abort(); }
+extern "C" BC_STATUS __wrap_DtsSetupHardware(HANDLE, BOOL)
+{
+    /* A SUSPEND sample now deliberately enters one-shot recovery.  This EOS
+     * fixture injects a first-stage failure so it can continue proving that
+     * the interrupted drain never publishes EOS. */
+    return BC_STS_IO_ERROR;
+}
+static BC_STATUS unexpected_status(const char *name)
+{
+    std::fprintf(stderr, "unexpected %s\n", name);
+    std::abort();
+}
+extern "C" BC_STATUS __wrap_DtsOpenDecoder(HANDLE, uint32_t) { return unexpected_status("Open"); }
+extern "C" BC_STATUS __wrap_DtsStartDecoder(HANDLE) { return unexpected_status("Start"); }
+extern "C" BC_STATUS __wrap_DtsStartCapture(HANDLE) { return unexpected_status("Capture"); }
+BC_STATUS DtsSetCoreClock(HANDLE, uint32_t) { return BC_STS_SUCCESS; }
+BC_STATUS DtsSetFleaIn422Mode(HANDLE) { return unexpected_status("FleaColor"); }
+BC_STATUS DtsSetLinkIn422Mode(HANDLE) { return unexpected_status("LinkColor"); }
+BC_STATUS DtsPushFwToFlea(HANDLE, char *) { return unexpected_status("PushFlea"); }
+BC_STATUS DtsPushAuthFwToLink(HANDLE, char *) { return unexpected_status("PushLink"); }
+BC_STATUS DtsFWInitialize(HANDLE, uint32_t) { return unexpected_status("Initialize"); }
+BC_STATUS DtsFWActivateDecoder(HANDLE) { return unexpected_status("Activate"); }
 BC_STATUS DtsFWStartVideo(HANDLE, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t)
-{ std::abort(); }
-BC_STATUS DtsFWOpenChannel(HANDLE, uint32_t, uint32_t) { std::abort(); }
-BC_STATUS DtsFWSetVideoInput(HANDLE) { std::abort(); }
-BC_STATUS DtsSetProgressive(HANDLE, uint32_t) { std::abort(); }
-BC_STATUS DtsSetVideoClock(HANDLE, uint32_t) { std::abort(); }
-BC_STATUS DtsSetTSMode(HANDLE, uint32_t) { std::abort(); }
+{ return unexpected_status("FWStart"); }
+BC_STATUS DtsFWOpenChannel(HANDLE, uint32_t, uint32_t) { return unexpected_status("FWOpen"); }
+BC_STATUS DtsFWSetVideoInput(HANDLE) { return unexpected_status("VideoInput"); }
+BC_STATUS DtsSetProgressive(HANDLE, uint32_t) { return unexpected_status("Progressive"); }
+BC_STATUS DtsSetVideoClock(HANDLE, uint32_t) { return unexpected_status("VideoClock"); }
+BC_STATUS DtsSetTSMode(HANDLE, uint32_t) { return unexpected_status("TSMode"); }
 BC_STATUS DtsCopyRawDataToOutBuff(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *)
 { std::abort(); }
 BC_STATUS DtsCopyNV12ToYV12(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *)
@@ -205,10 +232,10 @@ BC_STATUS DtsCopyNV12(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *)
 { std::abort(); }
 BC_STATUS DtsCopyFormat(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *)
 { std::abort(); }
-BC_STATUS DtsFWDecFlushChannel(HANDLE, uint32_t) { std::abort(); }
-BC_STATUS DtsFWPauseVideo(HANDLE, uint32_t) { std::abort(); }
-BC_STATUS DtsFWCloseChannel(HANDLE, uint32_t) { std::abort(); }
-BC_STATUS DtsFWStopVideo(HANDLE, uint32_t, bool) { std::abort(); }
+BC_STATUS DtsFWDecFlushChannel(HANDLE, uint32_t) { return unexpected_status("FWFlush"); }
+BC_STATUS DtsFWPauseVideo(HANDLE, uint32_t) { return unexpected_status("FWPause"); }
+BC_STATUS DtsFWCloseChannel(HANDLE, uint32_t) { return unexpected_status("FWClose"); }
+BC_STATUS DtsFWStopVideo(HANDLE, uint32_t, bool) { return unexpected_status("FWStop"); }
 void DumpInputSampleToFile(uint8_t *, uint32_t) { std::abort(); }
 
 struct Fixture {
@@ -888,7 +915,16 @@ static void test_flea_mpeg4_idle_fallback(unsigned scenario)
     }
     txThreadProc(&fixture.context);
     detection.run_tx = false;
-    const bool eos = query_eos(fixture) != 0;
+    uint8_t eos_value = 0xff;
+    const BC_STATUS eos_status = DtsIsEndOfStream(&fixture.context,
+                                                   &eos_value);
+    if (scenario == 8)
+        check(eos_status == BC_STS_BUSY && eos_value == FALSE,
+              "suspend epoch blocks EOS and clears the caller-visible result");
+    else
+        check(eos_status == BC_STS_SUCCESS,
+              "non-suspend MPEG-4 EOS query succeeds");
+    const bool eos = eos_value != 0;
     const bool expected = scenario == 0 || scenario == 9;
     std::printf("FLEA-MPEG4 scenario=%u polls=%u DMA=%u/%u retired=%llu fence=%llu EOS=%d\n",
                 scenario, detection.status_calls, detection.dma_calls, detection.dma_bytes,

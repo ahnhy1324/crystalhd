@@ -238,6 +238,24 @@ static unsigned DtsSequenceStartCode(const uint8_t *data, uint32_t size)
 	return 0;
 }
 
+/* Annex B permits leading_zero_8bits before the first start-code prefix.
+ * Accept only zero padding there; later NAL boundaries still have to be
+ * exact three- or four-byte prefixes and empty NALs remain invalid. */
+static bool DtsInitialSequenceStartCode(const uint8_t *data, uint32_t size,
+	uint32_t *start)
+{
+	if (!data || !start)
+		return false;
+	uint32_t one = 0;
+	while (one < size && data[one] == 0)
+		++one;
+	if (one >= size || data[one] != 1 || one < 2)
+		return false;
+	const uint32_t prefix = one >= 3 ? 4 : 3;
+	*start = one - (prefix - 1);
+	return true;
+}
+
 // Validate framing and count output before allocation; the second pass copies
 // the same bounded spans. AVC supports mixed Annex-B prefixes; startcoded
 // MPEG-4 is byte-preserved. Both retain legacy two-byte length framing.
@@ -272,8 +290,8 @@ static BC_STATUS DtsConvertSequenceHeaders(const uint8_t *data, uint32_t size,
 			return BC_STS_SUCCESS;
 		}
 	}
-	const bool annex_b = DtsSequenceStartCode(data, size) != 0;
 	uint32_t position = 0, written = 0;
+	const bool annex_b = DtsInitialSequenceStartCode(data, size, &position);
 	while (position < size) {
 		uint32_t begin, length;
 		if (annex_b) {
@@ -316,12 +334,74 @@ static BC_STATUS DtsConvertSequenceHeaders(const uint8_t *data, uint32_t size,
 	return BC_STS_SUCCESS;
 }
 
+static bool DtsHasCompleteAnnexBAvcConfig(const uint8_t *headers, uint32_t size)
+{
+	bool haveSps = false, havePps = false;
+	for (uint32_t position = 0; position < size;) {
+		if (size - position < 5)
+			return false;
+		if (headers[position] || headers[position + 1] ||
+		    headers[position + 2] || headers[position + 3] != 1)
+			return false;
+		const uint8_t type = headers[position + 4] & 0x1f;
+		haveSps |= type == NALU_TYPE_SPS;
+		havePps |= type == NALU_TYPE_PPS;
+		position += 5;
+		while (position < size) {
+			if (size - position >= 4 && headers[position] == 0 &&
+			    headers[position + 1] == 0 && headers[position + 2] == 0 &&
+			    headers[position + 3] == 1)
+				break;
+			position++;
+		}
+	}
+	return haveSps && havePps;
+}
+
+BC_STATUS DtsCacheSpsPps(HANDLE hDevice, const uint8_t *pBuffer, uint32_t ulSize)
+{
+	DTS_LIB_CONTEXT *Ctx = NULL;
+	DTS_GET_CTX(hDevice,Ctx);
+	if (Ctx->VidParams.MediaSubType != BC_MSUBTYPE_H264 || !pBuffer || !ulSize)
+		return BC_STS_SUCCESS;
+
+	uint32_t size = 0;
+	BC_STATUS status = DtsConvertSequenceHeaders(pBuffer, ulSize, false,
+		NULL, 0, &size);
+	if (status != BC_STS_SUCCESS || !size)
+		return BC_STS_SUCCESS; /* Opportunistic cache; never reject an AU. */
+	uint8_t *headers = NULL;
+	if (posix_memalign((void **)&headers, 8, size))
+		return BC_STS_INSUFF_RES;
+	uint32_t copied = 0;
+	status = DtsConvertSequenceHeaders(pBuffer, ulSize, false,
+		headers, size, &copied);
+	if (status != BC_STS_SUCCESS || copied != size) {
+		free(headers);
+		return status != BC_STS_SUCCESS ? status : BC_STS_INV_ARG;
+	}
+	if (!DtsHasCompleteAnnexBAvcConfig(headers, size)) {
+		free(headers);
+		return BC_STS_SUCCESS;
+	}
+
+	DtsLock(Ctx);
+	uint8_t *oldHeaders = Ctx->PESConvParams.m_pSpsPpsBuf;
+	Ctx->PESConvParams.m_pSpsPpsBuf = headers;
+	Ctx->PESConvParams.m_iSpsPpsLen = size;
+	DtsUnLock(Ctx);
+	free(oldHeaders);
+	return BC_STS_SUCCESS;
+}
+
 BC_STATUS DtsSetSpsPps(HANDLE hDevice)
 {
 	DTS_LIB_CONTEXT *Ctx = NULL;
 	DTS_GET_CTX(hDevice,Ctx);
 	const bool divx = Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX;
-	if (Ctx->VidParams.MediaSubType != BC_MSUBTYPE_AVC1 && !divx)
+	const bool h264 = Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264;
+	if (Ctx->VidParams.MediaSubType != BC_MSUBTYPE_AVC1 &&
+	    !h264 && !divx)
 		return BC_STS_SUCCESS;
 	if (Ctx->VidParams.MetaDataSz && !Ctx->VidParams.pMetaData)
 		return BC_STS_INV_ARG;
@@ -330,17 +410,24 @@ BC_STATUS DtsSetSpsPps(HANDLE hDevice)
 	BC_STATUS status = DtsConvertSequenceHeaders(Ctx->VidParams.pMetaData,
 		Ctx->VidParams.MetaDataSz, divx, NULL, 0, &size);
 	if (status != BC_STS_SUCCESS)
-		return status;
+		return h264 ? BC_STS_SUCCESS : status;
 	uint8_t *headers = NULL;
 	if (size) {
 		if (posix_memalign((void **)&headers, 8, size))
-			return BC_STS_INSUFF_RES;
+			return h264 ? BC_STS_SUCCESS : BC_STS_INSUFF_RES;
 		uint32_t copied = 0;
 		status = DtsConvertSequenceHeaders(Ctx->VidParams.pMetaData,
 			Ctx->VidParams.MetaDataSz, divx, headers, size, &copied);
 		if (status != BC_STS_SUCCESS || copied != size) {
 			free(headers);
+			if (h264)
+				return BC_STS_SUCCESS;
 			return status != BC_STS_SUCCESS ? status : BC_STS_INV_ARG;
+		}
+		if (h264 && !DtsHasCompleteAnnexBAvcConfig(headers, size)) {
+			free(headers);
+			headers = NULL;
+			size = 0;
 		}
 	}
 	free(Ctx->PESConvParams.m_pSpsPpsBuf);
@@ -498,8 +585,9 @@ BOOL DtsChkAVCSps(HANDLE /*hDevice*/, uint8_t *pBuffer, uint32_t ulSize)
  * an in-band SPS and sends a second, untimestamped copy of the parameter
  * sets. Detect only; do not consume the converter's pending NAL state.
  */
-static BOOL DtsAVC1HasSps(const DTS_LIB_CONTEXT *Ctx,
-						const uint8_t *pBuffer, uint32_t ulSize)
+static BOOL DtsAVC1HasNal(const DTS_LIB_CONTEXT *Ctx,
+						const uint8_t *pBuffer, uint32_t ulSize,
+						uint8_t wantedType)
 {
 	const uint32_t lengthSize = Ctx->VidParams.StartCodeSz;
 	if (!pBuffer || !ulSize || lengthSize == 0 || lengthSize > 4 ||
@@ -516,7 +604,7 @@ static BOOL DtsAVC1HasSps(const DTS_LIB_CONTEXT *Ctx,
 			initialSize = (initialSize << 8) | pBuffer[i];
 	const bool annexB = !Ctx->PESConvParams.m_bIsAdd_SCode_CodeIn || initialSize == 1;
 	if (annexB)
-		return DtsHasStartCodeHeader(pBuffer, ulSize, 0x1f, NALU_TYPE_SPS);
+		return DtsHasStartCodeHeader(pBuffer, ulSize, 0x1f, wantedType);
 	uint32_t pos = 0;
 	while (pos < ulSize)
 	{
@@ -528,7 +616,7 @@ static BOOL DtsAVC1HasSps(const DTS_LIB_CONTEXT *Ctx,
 		pos += lengthSize;
 		if (!nalSize || nalSize > ulSize - pos)
 			return FALSE;
-		if ((pBuffer[pos] & 0x1f) == NALU_TYPE_SPS)
+		if ((pBuffer[pos] & 0x1f) == wantedType)
 			return TRUE;
 		pos += nalSize;
 	}
@@ -540,7 +628,7 @@ BOOL DtsCheckSpsPps(HANDLE hDevice, uint8_t *pBuffer, uint32_t ulSize)
 	DTS_LIB_CONTEXT *Ctx = NULL;
 	DTS_GET_CTX(hDevice,Ctx);
 	if (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_AVC1)
-		return DtsAVC1HasSps(Ctx, pBuffer, ulSize);
+		return DtsAVC1HasNal(Ctx, pBuffer, ulSize, NALU_TYPE_SPS);
 	if (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX)
 		// MPEG-4 VOL codes are 0x20..0x2f, not AVC NAL unit types.
 		return DtsHasStartCodeHeader(pBuffer, ulSize, 0xf0, 0x20);
@@ -551,6 +639,19 @@ BOOL DtsCheckSpsPps(HANDLE hDevice, uint8_t *pBuffer, uint32_t ulSize)
 	else
 		return FALSE;
 
+}
+
+BOOL DtsCheckRecoverySpsPps(HANDLE hDevice, uint8_t *pBuffer, uint32_t ulSize)
+{
+	DTS_LIB_CONTEXT *Ctx = NULL;
+	DTS_GET_CTX(hDevice,Ctx);
+	if (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_AVC1)
+		return DtsAVC1HasNal(Ctx, pBuffer, ulSize, NALU_TYPE_SPS) &&
+			DtsAVC1HasNal(Ctx, pBuffer, ulSize, NALU_TYPE_PPS);
+	if (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264)
+		return DtsHasStartCodeHeader(pBuffer, ulSize, 0x1f, NALU_TYPE_SPS) &&
+			DtsHasStartCodeHeader(pBuffer, ulSize, 0x1f, NALU_TYPE_PPS);
+	return DtsCheckSpsPps(hDevice, pBuffer, ulSize);
 }
 
 BC_STATUS DtsAddH264SCode(HANDLE hDevice, uint8_t **ppBuffer, uint32_t *pUlDataSize, uint64_t *pTimeStamp)

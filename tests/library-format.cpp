@@ -685,7 +685,8 @@ static void FetchPackingOwnership()
         fetched_output.PibInfo.ppb.width = 5;
         repost_status = static_cast<BC_STATUS>(raw_status);
         const bool retired = raw_status == BC_STS_SUCCESS;
-        const BC_STATUS expected = retired ? BC_STS_IO_XFR_ERROR : repost_status;
+        const BC_STATUS expected = retired ? BC_STS_IO_XFR_ERROR :
+            (raw_status == BC_STS_PWR_MGMT ? BC_STS_BUSY : repost_status);
         Check(rejected.Run() == expected && fetch_calls == 1 && repost_calls == 1 &&
                   rejected.lease.context.ProcOutPending == (retired ? 0 : 1),
               "packing failure reposts once and clears pending only on acknowledged retirement");
@@ -724,7 +725,9 @@ static void FetchPackingOwnership()
         if (raw_status == BC_STS_SUCCESS) continue;
         FetchFixture failed;
         fetch_status = static_cast<BC_STATUS>(raw_status);
-        Check(failed.Run() == fetch_status && fetch_calls == 1 && repost_calls == 0 &&
+        const BC_STATUS expected = raw_status == BC_STS_PWR_MGMT ?
+            BC_STS_BUSY : fetch_status;
+        Check(failed.Run() == expected && fetch_calls == 1 && repost_calls == 0 &&
                   failed.lease.context.ProcOutPending == 0 &&
                   failed.lease.storage == failed.lease.original,
               "failed driver fetch admits no caller-owned picture and does not attempt conversion/repost");

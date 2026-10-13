@@ -140,7 +140,9 @@ BC_STATUS DtsCheckProfile(HANDLE hDevice);
 
 BC_STATUS DtsCheckKeyFrame(HANDLE hDevice, uint8_t *pBuffer);
 BC_STATUS DtsSetSpsPps(HANDLE hDevice);
+BC_STATUS DtsCacheSpsPps(HANDLE hDevice, const uint8_t *pBuffer, uint32_t ulSize);
 BOOL DtsCheckSpsPps(HANDLE hDevice, uint8_t *pBuffer, uint32_t ulSize);
+BOOL DtsCheckRecoverySpsPps(HANDLE hDevice, uint8_t *pBuffer, uint32_t ulSize);
 
 BC_STATUS DtsSetVC1SH(HANDLE hDevice);
 

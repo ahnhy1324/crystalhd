@@ -325,6 +325,114 @@ void DtsUnLock(DTS_LIB_CONTEXT	*Ctx)
 	pthread_mutex_unlock(&Ctx->thLock);
 }
 
+/* Caller holds thLock. */
+static BC_STATUS DtsAcquireControlLocked(DTS_LIB_CONTEXT *Ctx,
+	DTS_CONTROL_OWNER owner)
+{
+	const bool lifecycle = owner == DTS_CONTROL_LIFECYCLE;
+	if (owner == DTS_CONTROL_TEARDOWN && Ctx->recoveryPending &&
+	    Ctx->controlOwner == DTS_CONTROL_NONE) {
+		/* DeviceClose is the terminal escape from a PM epoch that may never
+		 * reach RESUME. Claiming teardown closes all new admission; its later
+		 * TX join retires the sole recovery worker without replaying firmware.
+		 * An already-owned recovery transaction is left alone and returns BUSY
+		 * through the ordinary foreign-owner check below. */
+		Ctx->recoveryPending = false;
+		if (Ctx->recoveryStatus == BC_STS_SUCCESS)
+			Ctx->recoveryStatus = BC_STS_PWR_MGMT;
+	}
+	if (Ctx->controlOwner != DTS_CONTROL_NONE) {
+		if (!Ctx->controlDepth ||
+		    !pthread_equal(Ctx->controlThread, pthread_self()))
+			return BC_STS_BUSY;
+		if (owner == DTS_CONTROL_RECOVERY &&
+		    Ctx->controlOwner != DTS_CONTROL_RECOVERY)
+			return BC_STS_BUSY;
+		if (Ctx->recoveryStatus != BC_STS_SUCCESS &&
+		    Ctx->controlOwner != DTS_CONTROL_RECOVERY &&
+		    !(Ctx->controlOwner == DTS_CONTROL_TEARDOWN &&
+		      owner == DTS_CONTROL_TEARDOWN))
+			return Ctx->recoveryStatus;
+		Ctx->controlDepth++;
+		return BC_STS_SUCCESS;
+	}
+
+	if (owner == DTS_CONTROL_RECOVERY && DtsStopIsUnresolved(Ctx))
+		return BC_STS_BUSY;
+	if (lifecycle &&
+	    Ctx->recoveryStatus != BC_STS_SUCCESS)
+		return Ctx->recoveryStatus;
+	if (owner == DTS_CONTROL_TEARDOWN &&
+	    Ctx->recoveryStatus == BC_STS_SUCCESS && Ctx->recoveryPending)
+		return BC_STS_BUSY;
+	if (lifecycle && Ctx->recoveryPending)
+		return BC_STS_BUSY;
+	if (lifecycle && Ctx->stopInProgress)
+		return BC_STS_BUSY;
+
+	Ctx->controlOwner = owner;
+	Ctx->controlThread = pthread_self();
+	Ctx->controlDepth = 1;
+	return BC_STS_SUCCESS;
+}
+
+BC_STATUS DtsAcquireControl(DTS_LIB_CONTEXT *Ctx, DTS_CONTROL_OWNER owner)
+{
+	DtsLock(Ctx);
+	const BC_STATUS sts = DtsAcquireControlLocked(Ctx, owner);
+	DtsUnLock(Ctx);
+	return sts;
+}
+
+void DtsReleaseControl(DTS_LIB_CONTEXT *Ctx)
+{
+	DtsLock(Ctx);
+	if (Ctx->controlOwner != DTS_CONTROL_NONE && Ctx->controlDepth &&
+	    pthread_equal(Ctx->controlThread, pthread_self())) {
+		if (!--Ctx->controlDepth) {
+			Ctx->controlOwner = DTS_CONTROL_NONE;
+			memset(&Ctx->controlThread, 0, sizeof(Ctx->controlThread));
+		}
+	}
+	DtsUnLock(Ctx);
+}
+
+BC_STATUS DtsBeginInputCall(DTS_LIB_CONTEXT *Ctx)
+{
+	DtsLock(Ctx);
+	BC_STATUS sts = DtsRecoveryAdmissionStatus(Ctx);
+	const bool nestedInput = Ctx->inputCalls &&
+		pthread_equal(Ctx->inputThread, pthread_self());
+	const bool foreignControl = Ctx->controlOwner != DTS_CONTROL_NONE &&
+		(!Ctx->controlDepth ||
+		 !pthread_equal(Ctx->controlThread, pthread_self()));
+	/* An outer admitted input can cross a concurrent ordinary lifecycle
+	 * lease before its internal Align/SPES call.  Do not turn that nested
+	 * suffix into a partial BUSY after earlier bytes were queued.  Recovery
+	 * and terminal teardown remain absolute barriers, as do the downstream
+	 * txQuiescing/state/stop checks. */
+	if (sts == BC_STS_SUCCESS && foreignControl &&
+	    (!nestedInput || Ctx->controlOwner != DTS_CONTROL_LIFECYCLE))
+		sts = BC_STS_BUSY;
+	if (sts == BC_STS_SUCCESS && Ctx->inputCalls && !nestedInput)
+		sts = BC_STS_BUSY;
+	if (sts == BC_STS_SUCCESS) {
+		if (!Ctx->inputCalls)
+			Ctx->inputThread = pthread_self();
+		Ctx->inputCalls++;
+	}
+	DtsUnLock(Ctx);
+	return sts;
+}
+
+void DtsFinishInputCall(DTS_LIB_CONTEXT *Ctx)
+{
+	DtsLock(Ctx);
+	if (Ctx->inputCalls && !--Ctx->inputCalls)
+		memset(&Ctx->inputThread, 0, sizeof(Ctx->inputThread));
+	DtsUnLock(Ctx);
+}
+
 static BC_STATUS DtsAcquireOutput(DTS_LIB_CONTEXT *Ctx)
 {
 	BC_STATUS sts = BC_STS_SUCCESS;
@@ -333,7 +441,13 @@ static BC_STATUS DtsAcquireOutput(DTS_LIB_CONTEXT *Ctx)
 	 * observed an empty pending count. There is one shared pOutData buffer.
 	 */
 	DtsLock(Ctx);
-	if (Ctx->State == BC_DEC_STATE_CLOSE)
+	if (DtsRecoveryAdmissionStatus(Ctx) != BC_STS_SUCCESS)
+		sts = DtsRecoveryAdmissionStatus(Ctx);
+	else if (Ctx->controlOwner != DTS_CONTROL_NONE &&
+		 (!Ctx->controlDepth ||
+		  !pthread_equal(Ctx->controlThread, pthread_self())))
+		sts = BC_STS_BUSY;
+	else if (Ctx->State == BC_DEC_STATE_CLOSE)
 		sts = BC_STS_DEC_NOT_OPEN;
 	else if (Ctx->State != BC_DEC_STATE_START && Ctx->State != BC_DEC_STATE_PAUSE)
 		sts = BC_STS_DEC_NOT_STARTED;
@@ -368,7 +482,13 @@ BC_STATUS DtsBeginOutputCall(DTS_LIB_CONTEXT *Ctx)
 		return BC_STS_INV_ARG;
 	DtsLock(Ctx);
 	BC_STATUS status = BC_STS_SUCCESS;
-	if (Ctx->State == BC_DEC_STATE_CLOSE)
+	if (DtsRecoveryAdmissionStatus(Ctx) != BC_STS_SUCCESS)
+		status = DtsRecoveryAdmissionStatus(Ctx);
+	else if (Ctx->controlOwner != DTS_CONTROL_NONE &&
+		 (!Ctx->controlDepth ||
+		  !pthread_equal(Ctx->controlThread, pthread_self())))
+		status = BC_STS_BUSY;
+	else if (Ctx->State == BC_DEC_STATE_CLOSE)
 		status = BC_STS_DEC_NOT_OPEN;
 	else if (Ctx->State != BC_DEC_STATE_START && Ctx->State != BC_DEC_STATE_PAUSE)
 		status = BC_STS_DEC_NOT_STARTED;
@@ -378,8 +498,10 @@ BC_STATUS DtsBeginOutputCall(DTS_LIB_CONTEXT *Ctx)
 		status = BC_STS_BUSY;
 	else if (Ctx->outputPhase != DTS_OUTPUT_IDLE || Ctx->ProcOutPending)
 		status = BC_STS_BUSY;
-	else
+	else {
 		Ctx->outputPhase = DTS_OUTPUT_ACTIVE;
+		Ctx->outputRecoveryGeneration = Ctx->recoveryGeneration;
+	}
 	DtsUnLock(Ctx);
 	return status;
 }
@@ -401,38 +523,211 @@ BC_STATUS DtsBeginOutputRelease(DTS_LIB_CONTEXT *Ctx)
 void DtsFinishOutputCall(DTS_LIB_CONTEXT *Ctx)
 {
 	DtsLock(Ctx);
-	if (Ctx->outputPhase == DTS_OUTPUT_ACTIVE)
+	if (Ctx->outputPhase == DTS_OUTPUT_ACTIVE ||
+	    Ctx->outputPhase == DTS_OUTPUT_DELIVERING)
 		Ctx->outputPhase = Ctx->ProcOutPending ? DTS_OUTPUT_RETIRE_ONLY : DTS_OUTPUT_IDLE;
 	DtsUnLock(Ctx);
+}
+
+/* Caller holds thLock. A generation increase alone is insufficient: only the
+ * cancellation stamp from that exact PM epoch can invalidate this old call. */
+static bool DtsRecoveryCanceledGenerationLocked(const DTS_LIB_CONTEXT *Ctx)
+{
+	return Ctx->outputRecoveryGeneration < Ctx->recoveryGeneration &&
+		Ctx->recoveryCancelGeneration == Ctx->recoveryGeneration;
+}
+
+static bool DtsRecoveryCanceledOutputLocked(const DTS_LIB_CONTEXT *Ctx)
+{
+	return Ctx->outputPhase == DTS_OUTPUT_ACTIVE &&
+		DtsRecoveryCanceledGenerationLocked(Ctx);
+}
+
+/* Caller holds thLock. */
+static BC_STATUS DtsNormalizeRecoveryOutputAbortLocked(DTS_LIB_CONTEXT *Ctx,
+	BC_DTS_PROC_OUT *output, BC_STATUS status)
+{
+	if ((status != BC_STS_IO_USER_ABORT && status != BC_STS_PWR_MGMT) ||
+	    !output || output->Ybuff || output->UVbuff)
+		return status;
+
+	return DtsRecoveryCanceledGenerationLocked(Ctx) ? BC_STS_BUSY : status;
+}
+
+static BC_STATUS DtsNormalizeRecoveryOutputAbort(DTS_LIB_CONTEXT *Ctx,
+	BC_DTS_PROC_OUT *output, BC_STATUS status)
+{
+	DtsLock(Ctx);
+	status = DtsNormalizeRecoveryOutputAbortLocked(Ctx, output, status);
+	DtsUnLock(Ctx);
+	return status;
+}
+
+BC_STATUS DtsPrepareFetchedOutput(DTS_LIB_CONTEXT *Ctx,
+	BC_DTS_PROC_OUT *output)
+{
+	const BC_DEC_YUV_BUFFS &buffer = Ctx->pOutData->u.DecOutData.OutPutBuffs;
+	if (Ctx->softwareUyvy && !(output->PoutFlags & BC_POUT_FLAGS_FMT_CHANGE) &&
+	    !(output->PicInfo.flags & VDEC_FLAG_EOS) &&
+	    (!(Ctx->pOutData->u.DecOutData.Flags & COMP_FLAG_DATA_VALID) ||
+	     buffer.YuvBuff != output->Ybuff || buffer.UVbuffOffset ||
+	     buffer.UVBuffDoneSz))
+		return BC_STS_IO_XFR_ERROR;
+	return DtsPrepareOutputPacking(Ctx, output, buffer.YuvBuffSz);
+}
+
+/* Linearize copy/callback delivery before any caller-visible work.  Recovery
+ * may cancel an old ACTIVE fetch, but once DELIVERING is published it waits
+ * for the bounded userspace copy/repost suffix instead of retroactively
+ * invalidating pixels or a callback that cannot be retracted. */
+BC_STATUS DtsCommitFetchedOutput(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output)
+{
+	if (!Ctx || !output)
+		return BC_STS_INV_ARG;
+
+	DtsLock(Ctx);
+	if (Ctx->outputPhase != DTS_OUTPUT_ACTIVE || !Ctx->ProcOutPending) {
+		DtsUnLock(Ctx);
+		output->Ybuff = output->UVbuff = NULL;
+		return BC_STS_ERROR;
+	}
+	const bool recoveryCanceled = DtsRecoveryCanceledOutputLocked(Ctx);
+	const bool canceled = Ctx->CancelWaiting;
+	if (!recoveryCanceled && !canceled)
+		Ctx->outputPhase = DTS_OUTPUT_DELIVERING;
+	DtsUnLock(Ctx);
+
+	if (!recoveryCanceled && !canceled)
+		return BC_STS_SUCCESS;
+
+	/* Keep ACTIVE until the one retirement attempt completes.  A failed ACK
+	 * leaves ProcOutPending set and the outer finalizer changes it to
+	 * RETIRE_ONLY; it must never cause a second ADD_RXBUFFS command. */
+	(void)DtsRelRxBuff(Ctx, &Ctx->pOutData->u.RxBuffs, FALSE);
+	output->Ybuff = output->UVbuff = NULL;
+	return recoveryCanceled ? BC_STS_BUSY : BC_STS_IO_USER_ABORT;
+}
+
+/* A dropped frame can continue the same public call only after its driver
+ * lease was returned and no recovery/stop barrier arrived during that
+ * repost. */
+BC_STATUS DtsContinueOutputCall(DTS_LIB_CONTEXT *Ctx)
+{
+	if (!Ctx)
+		return BC_STS_INV_ARG;
+	DtsLock(Ctx);
+	if (Ctx->outputPhase != DTS_OUTPUT_DELIVERING || Ctx->ProcOutPending) {
+		DtsUnLock(Ctx);
+		return BC_STS_ERROR;
+	}
+	BC_STATUS status = DtsRecoveryAdmissionStatus(Ctx);
+	if (status == BC_STS_SUCCESS && Ctx->CancelWaiting)
+		status = BC_STS_IO_USER_ABORT;
+	if (status == BC_STS_SUCCESS && DtsStopIsUnresolved(Ctx))
+		status = BC_STS_BUSY;
+	if (status == BC_STS_SUCCESS) {
+		Ctx->outputPhase = DTS_OUTPUT_ACTIVE;
+		Ctx->outputRecoveryGeneration = Ctx->recoveryGeneration;
+	}
+	DtsUnLock(Ctx);
+	return status;
 }
 
 BC_STATUS DtsPublishOutput(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output, BC_STATUS status)
 {
 	DtsLock(Ctx);
-	if (Ctx->outputPhase != DTS_OUTPUT_ACTIVE) {
+	if (Ctx->outputPhase != DTS_OUTPUT_ACTIVE &&
+	    Ctx->outputPhase != DTS_OUTPUT_DELIVERING) {
 		output->Ybuff = output->UVbuff = NULL;
 		DtsUnLock(Ctx);
 		return BC_STS_ERROR;
 	}
-	if (status == BC_STS_SUCCESS && !Ctx->ProcOutPending)
-		status = BC_STS_IO_XFR_ERROR;
-	if (status == BC_STS_SUCCESS && Ctx->ProcOutPending && !Ctx->CancelWaiting) {
-		Ctx->outputPhase = DTS_OUTPUT_RETURNED;
+	const bool needsCommit = Ctx->outputPhase == DTS_OUTPUT_ACTIVE &&
+		Ctx->ProcOutPending &&
+		(status == BC_STS_SUCCESS || status == BC_STS_FMT_CHANGE);
+	const bool activeFailure = Ctx->outputPhase == DTS_OUTPUT_ACTIVE &&
+		!needsCommit;
+	DtsUnLock(Ctx);
+	if (activeFailure) {
+		output->Ybuff = output->UVbuff = NULL;
+		if (status == BC_STS_SUCCESS)
+			status = BC_STS_IO_XFR_ERROR;
+		DtsLock(Ctx);
+		status = DtsNormalizeRecoveryOutputAbortLocked(Ctx, output, status);
+		if (Ctx->outputPhase == DTS_OUTPUT_ACTIVE ||
+		    Ctx->outputPhase == DTS_OUTPUT_DELIVERING)
+			Ctx->outputPhase = Ctx->ProcOutPending ?
+				DTS_OUTPUT_RETIRE_ONLY : DTS_OUTPUT_IDLE;
 		DtsUnLock(Ctx);
 		return status;
 	}
-	const bool canceled_borrow = status == BC_STS_SUCCESS && Ctx->ProcOutPending;
-	DtsUnLock(Ctx);
-	if (canceled_borrow) {
-		/* Cancellation won the final publication race. Keep ACTIVE while
-		 * reposting; a failed ACK becomes retirement-only at the last access. */
-		DtsRelRxBuff(Ctx, &Ctx->pOutData->u.RxBuffs, FALSE);
-		output->Ybuff = output->UVbuff = NULL;
-		status = BC_STS_IO_USER_ABORT;
+	if (needsCommit) {
+		const BC_STATUS commitStatus = DtsCommitFetchedOutput(Ctx, output);
+		if (commitStatus != BC_STS_SUCCESS) {
+			DtsFinishOutputCall(Ctx);
+			return commitStatus;
+		}
 	}
+	if (status == BC_STS_SUCCESS || status == BC_STS_FMT_CHANGE) {
+		const BC_STATUS packing = DtsPrepareFetchedOutput(Ctx, output);
+		if (packing != BC_STS_SUCCESS) {
+			const BC_STATUS released = DtsRelRxBuff(Ctx,
+				&Ctx->pOutData->u.RxBuffs, FALSE);
+			status = released == BC_STS_SUCCESS ? packing : released;
+		} else {
+			DtsUpdateOutStats(Ctx, output);
+			if (status == BC_STS_FMT_CHANGE) {
+				const BC_STATUS released = DtsRelRxBuff(Ctx,
+					&Ctx->pOutData->u.RxBuffs, TRUE);
+				if (released != BC_STS_SUCCESS)
+					status = released;
+				output->Ybuff = output->UVbuff = NULL;
+			}
+		}
+	}
+
 	if (status != BC_STS_SUCCESS)
 		output->Ybuff = output->UVbuff = NULL;
-	DtsFinishOutputCall(Ctx);
+
+	DtsLock(Ctx);
+	if (Ctx->outputPhase != DTS_OUTPUT_DELIVERING) {
+		DtsUnLock(Ctx);
+		output->Ybuff = output->UVbuff = NULL;
+		return BC_STS_ERROR;
+	}
+	if (status == BC_STS_SUCCESS && Ctx->ProcOutPending) {
+		Ctx->outputPhase = DTS_OUTPUT_RETURNED;
+		DtsUnLock(Ctx);
+		return BC_STS_SUCCESS;
+	}
+	if (status == BC_STS_SUCCESS) {
+		status = BC_STS_IO_XFR_ERROR;
+		output->Ybuff = output->UVbuff = NULL;
+	}
+	/* Normalize the exact recovery generation before publishing a terminal
+	 * phase, under the same lock.  The unlock below is this call's final Ctx
+	 * access, so teardown can safely consume it once the phase is visible. */
+	status = DtsNormalizeRecoveryOutputAbortLocked(Ctx, output, status);
+	Ctx->outputPhase = Ctx->ProcOutPending ?
+		DTS_OUTPUT_RETIRE_ONLY : DTS_OUTPUT_IDLE;
+	DtsUnLock(Ctx);
+	return status;
+}
+
+/* Copy-mode has already returned/reposted the driver buffer. Validate and
+ * retire the userspace call phase in one lock operation so a PM epoch cannot
+ * land between the final generation check and the RAII finalizer. Caller
+ * destination pointers are never library-owned and must remain unchanged. */
+BC_STATUS DtsPublishCopiedOutput(DTS_LIB_CONTEXT *Ctx, BC_STATUS status)
+{
+	DtsLock(Ctx);
+	if (Ctx->outputPhase != DTS_OUTPUT_DELIVERING) {
+		DtsUnLock(Ctx);
+		return BC_STS_ERROR;
+	}
+	Ctx->outputPhase = Ctx->ProcOutPending ?
+		DTS_OUTPUT_RETIRE_ONLY : DTS_OUTPUT_IDLE;
+	DtsUnLock(Ctx);
 	return status;
 }
 
@@ -1211,6 +1506,8 @@ BC_STATUS DtsDrvCmd(DTS_LIB_CONTEXT	*Ctx,
 	BC_IOCTL_DATA *pIo = NULL;
 	BC_STATUS	Sts = BC_STS_SUCCESS ;
 	int i = 30;
+	uint64_t statusGeneration = 0;
+	bool statusObserveAllowed = false;
 
 	if(!Ctx || Ctx->DevHandle < 0){
 		DebugLog_Trace(LDIL_DBG,"Invalid arg..%p \n",Ctx);
@@ -1227,6 +1524,13 @@ BC_STATUS DtsDrvCmd(DTS_LIB_CONTEXT	*Ctx,
 	}
 
 	pIo->RetSts = BC_STS_SUCCESS;
+	if (Code == BCM_IOC_GET_DRV_STAT) {
+		DtsLock(Ctx);
+		statusGeneration = Ctx->recoveryGeneration;
+		statusObserveAllowed = !Ctx->recoveryPending &&
+			Ctx->controlOwner != DTS_CONTROL_RECOVERY;
+		DtsUnLock(Ctx);
+	}
 
 	//  We need to take care of async completion.
 	// == FIX ME ==
@@ -1246,6 +1550,21 @@ BC_STATUS DtsDrvCmd(DTS_LIB_CONTEXT	*Ctx,
 	}
 	rc = ioctl(Ctx->DevHandle, Code, pIo);
 	Sts = pIo->RetSts;
+	if (Sts == BC_STS_PWR_MGMT) {
+		bool observe = Code != BCM_IOC_GET_DRV_STAT;
+		if (Code == BCM_IOC_GET_DRV_STAT) {
+			DtsLock(Ctx);
+			observe = statusObserveAllowed &&
+				statusGeneration == Ctx->recoveryGeneration &&
+				!Ctx->recoveryPending &&
+				Ctx->controlOwner != DTS_CONTROL_RECOVERY;
+			if (observe)
+				DtsObservePowerState(Ctx, BC_HW_SUSPEND);
+			DtsUnLock(Ctx);
+		}
+		else if (observe)
+			DtsObservePowerState(Ctx, BC_HW_SUSPEND);
+	}
 
 	if(Ctx->DevId == BC_PCI_DEVID_LINK && Code == BCM_IOC_FW_CMD) {
 		Ctx->fw_cmd_issued = false; // FW commands complete synchronously
@@ -1649,11 +1968,31 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 
 	if(sts == BC_STS_SUCCESS)
 	{
-		DtsSetupProcOutInfo(Ctx,pOut,Ctx->pOutData);
 		sts = Ctx->pOutData->RetSts;
 		if(sts != BC_STS_SUCCESS)
 		{
 			DtsDecPend(Ctx);
+		} else {
+			/* FETCH may be the first successful suffix after S3.  Bind
+			 * interpretation of its old buffer and all context-format updates
+			 * to the same generation check used by recovery cancellation. */
+			DtsLock(Ctx);
+			const bool cancel = Ctx->CancelWaiting;
+			const bool recoveryCancel = DtsRecoveryCanceledOutputLocked(Ctx);
+			if (!cancel && !recoveryCancel) {
+				DtsSetupProcOutInfo(Ctx,pOut,Ctx->pOutData);
+				/* Embedded PIB parsing can turn an ioctl SUCCESS into
+				 * NO_DATA/IO_XFR_ERROR (notably the Flea EOS sentinel). */
+				sts = Ctx->pOutData->RetSts;
+			}
+			DtsUnLock(Ctx);
+			if (cancel || recoveryCancel) {
+				(void)DtsRelRxBuff(Ctx,&Ctx->pOutData->u.RxBuffs,FALSE);
+				pOut->Ybuff = pOut->UVbuff = NULL;
+				return recoveryCancel ? BC_STS_BUSY : BC_STS_IO_USER_ABORT;
+			}
+			if (sts != BC_STS_SUCCESS)
+				DtsDecPend(Ctx);
 		}
 
 	}else{
@@ -1661,38 +2000,9 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 		DtsDecPend(Ctx);
 	}
 
-	DtsLock(Ctx);
-	const bool cancel = Ctx->CancelWaiting;
-	DtsUnLock(Ctx);
-	if (!cancel) {
-		if (sts == BC_STS_SUCCESS) {
-			const BC_DEC_YUV_BUFFS &buffer = Ctx->pOutData->u.DecOutData.OutPutBuffs;
-			BC_STATUS packing = BC_STS_SUCCESS;
-			if (Ctx->softwareUyvy && !(pOut->PoutFlags & BC_POUT_FLAGS_FMT_CHANGE) &&
-				!(pOut->PicInfo.flags & VDEC_FLAG_EOS) &&
-				(!(Ctx->pOutData->u.DecOutData.Flags & COMP_FLAG_DATA_VALID) ||
-				 buffer.YuvBuff != pOut->Ybuff || buffer.UVbuffOffset || buffer.UVBuffDoneSz))
-				packing = BC_STS_IO_XFR_ERROR;
-			else
-				packing = DtsPrepareOutputPacking(Ctx, pOut, buffer.YuvBuffSz);
-			if (packing != BC_STS_SUCCESS) {
-				const BC_STATUS released = DtsRelRxBuff(Ctx, &Ctx->pOutData->u.RxBuffs, FALSE);
-				pOut->Ybuff = pOut->UVbuff = NULL;
-				return released == BC_STS_SUCCESS ? packing : released;
-			}
-		}
-		return sts;
-	}
-
-	/* Cancel request waiting.. Release Buffer back
-	 * to driver and trigger Cancel wait.
-	 */
-	if(sts == BC_STS_SUCCESS){
-		sts = BC_STS_IO_USER_ABORT;
-		DtsRelRxBuff(Ctx,&Ctx->pOutData->u.RxBuffs,FALSE);
-	}
-
-	return sts;
+	if (sts != BC_STS_SUCCESS)
+		pOut->Ybuff = pOut->UVbuff = NULL;
+	return DtsNormalizeRecoveryOutputAbort(Ctx, pOut, sts);
 }
 //------------------------------------------------------------------------
 // The old private entry point also owns a complete call phase. Public output
@@ -1741,6 +2051,7 @@ BC_STATUS DtsCancelFetchOutInt(DTS_LIB_CONTEXT *Ctx)
 		usleep(100 * 1000);
 		DtsLock(Ctx);
 		pend = Ctx->outputPhase == DTS_OUTPUT_ACTIVE ||
+			Ctx->outputPhase == DTS_OUTPUT_DELIVERING ||
 			Ctx->outputPhase == DTS_OUTPUT_RETURNED ||
 			(Ctx->ProcOutPending && Ctx->outputPhase != DTS_OUTPUT_RETIRE_ONLY);
 		DtsUnLock(Ctx);
@@ -1775,6 +2086,7 @@ BC_STATUS DtsUnmapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
 
 	DtsLock(Ctx);
 	if (Ctx->outputPhase == DTS_OUTPUT_ACTIVE ||
+	    Ctx->outputPhase == DTS_OUTPUT_DELIVERING ||
 	    Ctx->outputPhase == DTS_OUTPUT_RETURNED || Ctx->CancelWaiting ||
 	    (Ctx->ProcOutPending && Ctx->outputPhase != DTS_OUTPUT_RETIRE_ONLY)) {
 		DtsUnLock(Ctx);
@@ -1949,13 +2261,18 @@ BC_STATUS DtsInitInterface(int hDevice, HANDLE *RetCtx, uint32_t mode)
 //------------------------------------------------------------------------
 void DtsJoinTxThread(DTS_LIB_CONTEXT *Ctx)
 {
+	pthread_t tx_thread;
+
 	DtsLock(Ctx);
 	Ctx->txThreadExit = true;
+	tx_thread = Ctx->htxThread;
 	DtsUnLock(Ctx);
 	txBufShutdown(&Ctx->circBuf);
-	if (Ctx->htxThread)
-		pthread_join(Ctx->htxThread, NULL);
+	if (tx_thread)
+		pthread_join(tx_thread, NULL);
+	DtsLock(Ctx);
 	Ctx->htxThread = 0;
+	DtsUnLock(Ctx);
 }
 
 BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
@@ -1967,7 +2284,8 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 		return BC_STS_INV_ARG;
 
 	terminal_decoder_owner = Ctx->OpMode == DTS_PLAYBACK_MODE &&
-		Ctx->State != BC_DEC_STATE_CLOSE && Ctx->ProcessID != 0 &&
+		(Ctx->State != BC_DEC_STATE_CLOSE ||
+		 Ctx->recoveryRetireDecoderOwner) && Ctx->ProcessID != 0 &&
 		bc_dil_glob_ptr && bc_dil_glob_ptr->g_bDecOpened &&
 		bc_dil_glob_ptr->g_nProcID == Ctx->ProcessID;
 
@@ -1975,7 +2293,6 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 	DtsReleasePESConverter((HANDLE)Ctx);
 	// de-Allocate circular buffer
 	txBufFree(&Ctx->circBuf);
-	Ctx->htxThread = 0;
 	if(Ctx->alignBuf)
 		free(Ctx->alignBuf);
 
@@ -2007,6 +2324,7 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 	 * retire only the decoder ownership represented by this context. */
 	if (terminal_decoder_owner) {
 		DtsSetDecStat(false, Ctx->ProcessID);
+		Ctx->recoveryRetireDecoderOwner = false;
 	}
 
 	/* Normal ownership is retired before userspace backing is freed. If an
@@ -3011,6 +3329,235 @@ static bool DtsCompleteFleaMpeg4Eos(DTS_LIB_CONTEXT *Ctx,
 	return ready;
 }
 
+void DtsObservePowerState(DTS_LIB_CONTEXT *Ctx, uint8_t powerState)
+{
+	if (!Ctx)
+		return;
+
+	DtsLock(Ctx);
+	/* SUSPEND is the earliest reliable userspace discontinuity signal. RESUME
+	 * is also accepted as the first sample because processes may be frozen for
+	 * the whole suspended interval. The TX worker alone executes recovery. */
+	if (powerState == BC_HW_SUSPEND && !Ctx->recoverySuspendSeen) {
+		Ctx->recoverySuspendSeen = true;
+		Ctx->recoveryResumeSeen = false;
+		if (Ctx->recoveryStatus == BC_STS_SUCCESS &&
+		    Ctx->controlOwner != DTS_CONTROL_RECOVERY) {
+			Ctx->recoveryPending = true;
+			Ctx->recoveryGeneration++;
+			Ctx->recoveryCancelGeneration = Ctx->recoveryGeneration;
+		}
+	} else if (powerState == BC_HW_RESUME && !Ctx->recoveryResumeSeen) {
+		Ctx->recoveryResumeSeen = true;
+		Ctx->recoverySuspendSeen = false;
+		if (Ctx->recoveryStatus == BC_STS_SUCCESS &&
+		    !Ctx->recoveryPending && Ctx->controlOwner != DTS_CONTROL_RECOVERY) {
+			Ctx->recoveryPending = true;
+			Ctx->recoveryGeneration++;
+			Ctx->recoveryCancelGeneration = Ctx->recoveryGeneration;
+		}
+	} else if (powerState == BC_HW_RUNNING &&
+		   Ctx->recoveryStatus == BC_STS_SUCCESS &&
+		   !Ctx->recoveryPending && Ctx->controlOwner != DTS_CONTROL_RECOVERY) {
+		/* A confirmed running interval separates two RESUME-only epochs. */
+		Ctx->recoveryResumeSeen = false;
+		Ctx->recoverySuspendSeen = false;
+	}
+	DtsUnLock(Ctx);
+}
+
+class DtsRecoveryCall {
+	DTS_LIB_CONTEXT *context;
+	BC_STATUS status;
+	bool active;
+	bool pending;
+public:
+	DtsRecoveryCall(DTS_LIB_CONTEXT *ctx, bool resumeObserved) : context(ctx),
+		status(BC_STS_SUCCESS), active(false), pending(false) {
+		/* Latch and own the very first RESUME observation in one thLock
+		 * critical section. This leaves no window for a public lifecycle
+		 * call to enter between detection and recovery ownership.
+		 */
+		DtsLock(context);
+		if (context->recoveryStatus != BC_STS_SUCCESS) {
+			/* A completed failed epoch is terminal quarantine.  A PM status
+			 * observed by its own failing stage may have re-latched pending;
+			 * consume it without ever replaying Setup/Open/START. */
+			context->recoveryPending = false;
+			status = context->recoveryStatus;
+			DtsUnLock(context);
+			return;
+		}
+		if (resumeObserved && !context->recoveryResumeSeen) {
+			context->recoveryResumeSeen = true;
+			context->recoverySuspendSeen = false;
+			/* Some drivers can expose RESUME before userspace samples SUSPEND. */
+			if (context->recoveryStatus == BC_STS_SUCCESS &&
+			    !context->recoveryPending) {
+				context->recoveryPending = true;
+				context->recoveryGeneration++;
+				context->recoveryCancelGeneration =
+					context->recoveryGeneration;
+			}
+		} else if (!resumeObserved && context->recoveryStatus == BC_STS_SUCCESS &&
+			   !context->recoveryPending &&
+			   context->controlOwner != DTS_CONTROL_RECOVERY) {
+			context->recoveryResumeSeen = false;
+			context->recoverySuspendSeen = false;
+		}
+		/* SUSPEND closes admission immediately, but reconstruction must wait
+		 * for a confirmed RESUME sample. A transient RUNNING sample while the
+		 * machine is going down is not permission to touch firmware. */
+		pending = context->recoveryPending &&
+			(resumeObserved || context->recoveryResumeSeen);
+		if (pending) {
+			if (context->controlOwner == DTS_CONTROL_NONE &&
+			    DtsStopIsUnresolved(context)) {
+				/* A suspend-aborted STOP cannot safely be replayed and cannot
+				 * coexist with channel reconstruction. Consume this epoch into
+				 * fail-closed quarantine once its old owner has retired. */
+				status = context->stopStatus != BC_STS_SUCCESS ?
+					context->stopStatus : BC_STS_IO_ERROR;
+				context->recoveryPending = false;
+				context->recoveryStatus = status;
+			} else {
+				status = DtsAcquireControlLocked(context, DTS_CONTROL_RECOVERY);
+				active = status == BC_STS_SUCCESS;
+			}
+			/* Owner contention is retryable. Once an attempt owns control,
+			 * consume this RESUME observation before issuing any command so
+			 * a stage failure cannot blindly replay START on the next poll.
+			 */
+			if (active)
+				context->recoveryPending = false;
+		}
+		DtsUnLock(context);
+	}
+	~DtsRecoveryCall() {
+		if (active)
+			DtsReleaseControl(context);
+	}
+	BC_STATUS Status() const { return status; }
+	bool Pending() const { return pending; }
+};
+
+BC_STATUS DtsWaitForInputCalls(DTS_LIB_CONTEXT *Ctx)
+{
+	for (unsigned int polls = 0; ; ++polls) {
+		DtsLock(Ctx);
+		const bool active = Ctx->inputCalls != 0;
+		DtsUnLock(Ctx);
+		if (!active)
+			return BC_STS_SUCCESS;
+		if (polls == 500)
+			return BC_STS_TIMEOUT;
+		bc_sleep_ms(10);
+	}
+}
+
+static BC_STATUS DtsRestoreAfterResume(DTS_LIB_CONTEXT *Ctx)
+{
+	HANDLE hDevice = (HANDLE)Ctx;
+	BC_STATUS sts;
+	DtsLock(Ctx);
+	const uint32_t priorState = Ctx->State;
+	const bool activeSession = priorState == BC_DEC_STATE_START ||
+		priorState == BC_DEC_STATE_PAUSE;
+	if (activeSession)
+		Ctx->recoveryRetireDecoderOwner = true;
+	DtsUnLock(Ctx);
+	/* A lifecycle call admitted before the PM latch may have intentionally
+	 * stopped/closed the session while recovery waited for its control lease.
+	 * Setup was still lost across S3, so silently consuming the epoch would
+	 * allow a later Open/Start against uninitialized hardware. Require terminal
+	 * device retirement instead of resurrecting an intentionally stopped one. */
+	if (!activeSession)
+		return BC_STS_PWR_MGMT;
+
+	/* The outer recovery lease has already closed new input/output/control
+	 * admission. Let calls admitted before the RESUME observation retire
+	 * without retaining thLock across either wait.
+	 */
+	DtsLock(Ctx);
+	Ctx->recoveryCancelGeneration = Ctx->recoveryGeneration;
+	DtsUnLock(Ctx);
+	/* Stamp the transition before draining input. A FETCH already in the
+	 * kernel can be aborted by suspend while input retirement is still in
+	 * progress; its final no-buffer seam must already know this generation. */
+	sts = DtsWaitForInputCalls(Ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+	sts = DtsCancelFetchOutInt(Ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+
+	DtsLock(Ctx);
+	const bool resendEos = Ctx->bEOSCheck;
+	DtsUnLock(Ctx);
+
+	DtsSetCoreClock(hDevice, 180); /* Link's established recovery clock. */
+	sts = DtsSetupHardware(hDevice, true);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+
+	/* Suspend retains capture registrations, while a failed repost can leave
+	 * a retirement-only userspace lease. INIT is the first driver state where
+	 * destructive capture cleanup is admitted. Require that acknowledgement
+	 * before rebuilding the channel; StartCapture will register a fresh set. */
+	sts = DtsFlushRxCapture(hDevice, false);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+
+	/* Firmware reset invalidated the old channel. Publish the logical close
+	 * under the same lock used by lifecycle admission, then rebuild it while
+	 * retaining (but not mutex-holding) the recovery lease.
+	 */
+	DtsLock(Ctx);
+	Ctx->State = BC_DEC_STATE_CLOSE;
+	DtsUnLock(Ctx);
+	sts = DtsOpenDecoder(hDevice, 0);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+
+	sts = DtsRecoveryFlushInputRing(Ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+
+	sts = DtsRecoveryRestoreInputState(Ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+
+	if (Ctx->DevId == BC_PCI_DEVID_FLEA)
+		sts = DtsSetFleaIn422Mode(hDevice);
+	else if (Ctx->DevId == BC_PCI_DEVID_LINK)
+		sts = DtsSetLinkIn422Mode(hDevice);
+	else
+		sts = BC_STS_NOT_IMPL;
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+
+	sts = DtsStartDecoder(hDevice);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+	sts = DtsStartCapture(hDevice);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+	if (resendEos) {
+		sts = DtsSendEOS(hDevice, 0);
+		if (sts != BC_STS_SUCCESS)
+			return sts;
+	}
+	if (priorState == BC_DEC_STATE_PAUSE) {
+		sts = DtsPauseDecoder(hDevice);
+		if (sts != BC_STS_SUCCESS)
+			return sts;
+	}
+	DtsLock(Ctx);
+	Ctx->recoveryRetireDecoderOwner = false;
+	DtsUnLock(Ctx);
+	return BC_STS_SUCCESS;
+}
+
 // TX Thread
 // This thread has dual purpose. First is to send TX data. Second is to detect if we have restarted from any suspend/hibernate action
 // and to restore the HW state
@@ -3065,7 +3612,47 @@ void * txThreadProc(void *ctx)
 
 		if(pStat.PowerStateChange == BC_HW_SUSPEND)
 		{
+			DtsObservePowerState(Ctx, BC_HW_SUSPEND);
 			// HW is in suspend mode, sleep 30 ms and then try again
+			fleaIdleTiming = false;
+			usleep(30 * 1000);
+			continue;
+		}
+
+		{
+			DtsRecoveryCall recovery(Ctx,
+				pStat.PowerStateChange == BC_HW_RESUME);
+			if (recovery.Pending()) {
+				if (recovery.Status() != BC_STS_SUCCESS) {
+					usleep(2 * 1000);
+					continue;
+				}
+				DebugLog_Trace(LDIL_ERR,"Trying to resume from S3/S5\n");
+				sts = DtsRestoreAfterResume(Ctx);
+				DtsLock(Ctx);
+				Ctx->recoveryStatus = sts;
+				Ctx->recoveryPending = false;
+				DtsUnLock(Ctx);
+				if (sts != BC_STS_SUCCESS) {
+					DebugLog_Trace(LDIL_ERR,
+						"Cannot Recover from S3/S5 RESUME failed %d\n", sts);
+					usleep(1000 * 1000);
+					continue;
+				}
+				DebugLog_Trace(LDIL_ERR,"Resume from S3/S5 Done\n");
+				/* The status sample predates reset/reopen; reacquire it before
+				 * making any TX or EOS decision against the restored channel.
+				 */
+				continue;
+			}
+		}
+
+		DtsLock(Ctx);
+		const bool recoveryFailed = Ctx->recoveryStatus != BC_STS_SUCCESS;
+		DtsUnLock(Ctx);
+		if (recoveryFailed) {
+			/* A failed attempt is one-shot. Leave the ring and firmware
+			 * quarantined until terminal teardown consumes this handle. */
 			fleaIdleTiming = false;
 			usleep(30 * 1000);
 			continue;
@@ -3153,71 +3740,6 @@ void * txThreadProc(void *ctx)
 			numPicCaptured = pStat.FramesCaptured;
 		}
 
-		if(pStat.PowerStateChange == BC_HW_RESUME)
-		{
-			DebugLog_Trace(LDIL_ERR,"Trying to resume from S3/S5\n");
-			// HW is up, but needs to be initialized
-			DtsSetCoreClock(hDevice, 180); // For LINK
-			sts = DtsSetupHardware(hDevice, true);
-			if(sts != BC_STS_SUCCESS)
-			{
-				// At this point we are dead. Can't do much'
-				DebugLog_Trace(LDIL_ERR,"Cannot Recover from S3/S5 RESUME SetupHardware failed %d\n", sts);
-				usleep(1000 * 1000);
-				continue; // Try again and pray for the best
-			}
-			Ctx->State = BC_DEC_STATE_CLOSE; // Because the HW was reset below us
-			sts = DtsOpenDecoder(hDevice, 0);
-			if(sts != BC_STS_SUCCESS)
-			{
-				// At this point we are dead. Can't do much'
-				DebugLog_Trace(LDIL_ERR,"Cannot Recover from S3/S5 RESUME OpenDecoder failed %d\n", sts);
-				usleep(1000 * 1000);
-				continue; // Try again and pray for the best
-			}
-			/* Open leaves input admission closed in STOP. Discard pre-resume
-			 * bytes before Start so no input or multi-packet drain can straddle
-			 * the ring reset and the freshly rebased TX serials.
-			 */
-			DtsLock(Ctx);
-			txBufFlush(&Ctx->circBuf);
-			DtsUnLock(Ctx);
-			sts = DtsStartDecoder(hDevice);
-			if(sts != BC_STS_SUCCESS)
-			{
-				// At this point we are dead. Can't do much'
-				DebugLog_Trace(LDIL_ERR,"Cannot Recover from S3/S5 RESUME StartDecoder failed %d\n", sts);
-				usleep(1000 * 1000);
-				continue; // Try again and pray for the best
-			}
-			sts = DtsStartCapture(hDevice);
-			if(sts != BC_STS_SUCCESS)
-			{
-				// At this point we are dead. Can't do much'
-				DebugLog_Trace(LDIL_ERR,"Cannot Recover from S3/S5 RESUME StartCapture failed %d\n", sts);
-				usleep(1000 * 1000);
-				continue; // Try again and pray for the best
-			}
-			// Force sending SPS/PPS previously stored
-			DtsClrPendMdataList(Ctx);
-			Ctx->LastPicNum = -1;
-			Ctx->LastSessNum = -1;
-			Ctx->EOSCnt = 0;
-			Ctx->DrvStatusEOSCnt = 0;
-			DtsLock(Ctx);
-			Ctx->bEOS = FALSE;
-			const bool resendEos = Ctx->bEOSCheck;
-			DtsUnLock(Ctx);
-			Ctx->PESConvParams.m_lStartCodeDataSize = 0;
-
-			Ctx->PESConvParams.m_bAddSpsPps = true;
-			// But in case we were already in the mode to be hunting for EOS
-			// and did not send it to HW, resend it so the playback can end gracefully
-			if(resendEos)
-				DtsSendEOS(hDevice, 0);
-			DebugLog_Trace(LDIL_ERR,"Resume from S3/S5 Done\n");
-		}
-
 		// Check if we have data to send.
 		if(Ctx->circBuf.busySize != 0)
 		{
@@ -3232,7 +3754,9 @@ void * txThreadProc(void *ctx)
 			 * without it, so pooled ioctl/output completion remains live.
 			 */
 			DtsLock(Ctx);
-			const bool admitted = !Ctx->txQuiescing && !DtsStopIsUnresolved(Ctx) &&
+			const bool admitted =
+				DtsRecoveryAdmissionStatus(Ctx) == BC_STS_SUCCESS &&
+				!Ctx->txQuiescing && !DtsStopIsUnresolved(Ctx) &&
 				(Ctx->State == BC_DEC_STATE_START || Ctx->State == BC_DEC_STATE_PAUSE);
 			if (admitted)
 				Ctx->txPending = true;

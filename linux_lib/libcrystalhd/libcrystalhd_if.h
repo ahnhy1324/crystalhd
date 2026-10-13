@@ -167,10 +167,11 @@ Description:
     Finish output calls and surrender each successful NoCopy borrow once. After
     a failed output or admitted Release, retry Stop until cleanup succeeds;
     Stop never consumes the handle. Then call DeviceClose once. An ordinary
-    DeviceClose error can still report an already-consumed handle: never retry
-    it from status alone. Its defensive output-retention check is not a handle
-    ownership query. TX is joined before consumption; an unresponsive driver
-    can delay this call.
+    DeviceClose error can still report an already-consumed handle. For a
+    valid handle owned by the current process, BC_STS_BUSY is the sole
+    exception: it means the handle remains live and may be retried.
+    TX is joined before consumption; an unresponsive driver can delay this
+    call.
 
 Parameters:
 
@@ -1466,6 +1467,20 @@ DRVIFLIB_API BC_STATUS
 DtsGetDriverStatus(
     HANDLE          hDevice,
 	BC_DTS_STATUS   *pStatus
+    );
+
+/* Query the userspace recovery epoch without issuing a driver command.
+ * pReplayBytes reports the persistent size of a complete cached H.264
+ * SPS/PPS set available to recovery. It remains nonzero after the one-shot
+ * injection for an epoch has been consumed; zero means no complete H.264
+ * cache is available. */
+DRVIFLIB_API BC_STATUS
+DtsGetRecoveryStatus(
+    HANDLE          hDevice,
+    uint64_t       *pGeneration,
+    BC_STATUS      *pRecoveryStatus,
+    uint8_t        *pInProgress,
+    uint32_t       *pReplayBytes
     );
 
 /*****************************************************************************
