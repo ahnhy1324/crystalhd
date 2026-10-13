@@ -31,6 +31,7 @@ _Static_assert(offsetof(TX_INPUT_BUFFER_INFO, DramBuffAdd) == 0 &&
 
 typedef uint8_t u8;
 typedef uint32_t u32;
+typedef uint64_t u64;
 typedef struct { unsigned int refs; } refcount_t;
 static void refcount_set(refcount_t *ref, unsigned int count) { ref->refs = count; }
 static void refcount_inc(refcount_t *ref)
@@ -74,6 +75,7 @@ static bool refcount_dec_and_test(refcount_t *ref)
     Check((lock) == &adapter.user_lock && *(lock) == 1, \
           "firmware flush retains shared user admission")
 #define eCMD_C011_CMD_BASE 0x73763000U
+#define eCMD_C011_INIT (eCMD_C011_CMD_BASE + 0x01U)
 #define eCMD_C011_DEC_CHAN_FLUSH (eCMD_C011_CMD_BASE + 0x104U)
 #define eCMD_C011_DEC_CHAN_PAUSE (eCMD_C011_CMD_BASE + 0x11dU)
 typedef struct { unsigned wakeups; } wait_queue_head_t;
@@ -90,6 +92,7 @@ struct pci_dev { struct device dev; int irq; uint32_t device; };
 struct crystalhd_adp {
     struct pci_dev *pdev;
     bool present;
+    uint64_t generation;
     int user_lock;
     bool dma_terminal_quiesced;
     struct { uint32_t cin_wait_exit; } cmds;

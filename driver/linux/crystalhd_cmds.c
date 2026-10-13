@@ -837,7 +837,9 @@ BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx,
 {
 	struct device *dev;
 	BC_STATUS rollback_sts, sts;
+	u64 generation;
 	uint32_t *cmd;
+	bool init_recovery_locked = false;
 	bool resume_prepared = false, was_paused = false;
 
 	if (!ctx || !ctx->adp || !ctx->adp->pdev || !ctx->hw_ctx ||
@@ -847,6 +849,7 @@ BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx,
 	if (sts != BC_STS_SUCCESS)
 		return sts;
 	dev = &ctx->adp->pdev->dev;
+	generation = READ_ONCE(ctx->adp->generation);
 
 	sts = crystalhd_hw_fw_cmd_enter(ctx->hw_ctx);
 	if (sts != BC_STS_SUCCESS)
@@ -859,6 +862,17 @@ BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx,
 	}
 
 	cmd = fw_cmd->cmd;
+	if (cmd[0] == eCMD_C011_INIT) {
+		/* Keep capture from changing the exact resumed state between the
+		 * firmware transaction and its successful local commit.  This follows
+		 * the established fwcmd -> fetch lock order used below.
+		 */
+		down(&ctx->hw_ctx->fetch_sem);
+		if (ctx->state == (BC_LINK_RESUME | BC_LINK_INIT))
+			init_recovery_locked = true;
+		else
+			up(&ctx->hw_ctx->fetch_sem);
+	}
 
 	/* Pre-Process */
 	if (cmd[0] == eCMD_C011_DEC_CHAN_PAUSE) {
@@ -914,7 +928,20 @@ BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx,
 	}
 
 	/* Post-Process */
-	if (cmd[0] == eCMD_C011_DEC_CHAN_PAUSE) {
+	if (init_recovery_locked) {
+		/* Firmware download deliberately retains RESUME until INIT replies.
+		 * Publish only the exact recovery state and only while the same device
+		 * generation and session owner remain admitted across the transaction.
+		 */
+		if (ctx->state != (BC_LINK_RESUME | BC_LINK_INIT) ||
+		    !READ_ONCE(ctx->adp->present) ||
+		    READ_ONCE(ctx->adp->generation) != generation ||
+		    ctx->session_owner != owner) {
+			sts = BC_STS_IO_ERROR;
+		} else {
+			ctx->state = BC_LINK_INIT;
+		}
+	} else if (cmd[0] == eCMD_C011_DEC_CHAN_PAUSE) {
 		if (cmd[3]) {
 			/* Firmware has already accepted pause; finish the matching
 			 * capture transition even if the caller receives a signal.
@@ -927,6 +954,8 @@ BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx,
 	}
 
 done:
+	if (init_recovery_locked)
+		up(&ctx->hw_ctx->fetch_sem);
 	crystalhd_hw_fw_cmd_leave(ctx->hw_ctx);
 	return sts;
 }
