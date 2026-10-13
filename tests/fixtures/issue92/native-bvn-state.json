@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "result": "PASS",
+  "date": "2026-10-14",
+  "device": "BCM70015",
+  "kernel": "7.0.0-38-generic",
+  "module_version": "3.10.3",
+  "library_version": "3.22.0",
+  "source_commit": "6432a77aceffd4c7b9d8f077530fd89b2c208c62",
+  "profile": "--hardware <fixture> 180 --scaler-test 320 --observe-bvn-state",
+  "input": {
+    "codec": "MPEG-2",
+    "progressive": true,
+    "width": 640,
+    "height": 360,
+    "pictures": 180,
+    "bytes": 1777511,
+    "sha256": "32d8ca6ddf8ad529ae3875ee9b7e904630c633bfef6d74ba40d7b1040d20820b"
+  },
+  "output": {
+    "format": "YUY2",
+    "width": 320,
+    "height": 180,
+    "pictures": 180,
+    "bytes": 20736000,
+    "sha256": "7278bf6c89d602a34e4a8cf8261da45c0889bb0645fdb1fcb13810378f8fcb32",
+    "firmware_eos": true,
+    "pending": 0,
+    "ready": 0,
+    "clean_close": true
+  },
+  "stages": [
+    "after-OPEN/pre-START",
+    "first-released",
+    "last-released",
+    "after-EOS"
+  ],
+  "stable_registers_at_all_stages": {
+    "CLK_PM_CTRL": "0x03000000",
+    "SUN_TOP_CTRL_SW_RESET": "0x00200000",
+    "TMISC_SOFT_RESET": "0x00000000",
+    "MFD_REVISION_ID": "0x00000050",
+    "DNR_REVISION": "0x00000140",
+    "SCL_HD_REVISION_ID": "0x00000080"
+  },
+  "decoded_state": {
+    "aggregate_misc_108_clock_disabled": false,
+    "aggregate_misc_216_clock_disabled": false,
+    "bvn_reset": false,
+    "mfd_reset": false,
+    "dnr_reset": false,
+    "scl_reset": false,
+    "csc_reset": false,
+    "clock_bracket_consistent_at_all_stages": true
+  },
+  "access_containment": {
+    "target_reads": 28,
+    "gisb_guard_reads": 56,
+    "all_gisb_error_capture_status_values": "0x00000000",
+    "target_register_writes": 0,
+    "guard_clears": 0,
+    "retries": 0
+  },
+  "cleanup": {
+    "process_fds_before": 3,
+    "process_fds_after": 3,
+    "process_threads_before": 1,
+    "process_threads_after": 1,
+    "module_refcount_after": 0,
+    "device_owner_after": false,
+    "new_scoped_kernel_fault": false
+  },
+  "limits": [
+    "The four snapshots and their target reads are sequential, not atomic.",
+    "Reset booleans interpret a set SOFT_RESET bit as asserted; this register's RDB fields do not provide named polarity enums.",
+    "The public RDB exposes aggregate MISC 108/216 clock gates, not separate MFD, DNR, SCL or CSC clock gates.",
+    "Clean revision reads and native MFD/SCL output establish accessibility for this decoder-coupled path only.",
+    "This result does not establish a source lease, last-consumer completion or standalone BVN operation."
+  ]
+}

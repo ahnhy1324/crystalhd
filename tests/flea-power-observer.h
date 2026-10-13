@@ -10,6 +10,12 @@
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_pri_arb_control_regs.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_misc1.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_intr.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_sun_top_ctrl.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_tmisc.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_mfd.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_dnr.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_scl_hd.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_sun_gisb_arb.h"
 
 // Fixed target-register reads during ordinary decode. The legacy accessor may
 // write its indirect address portal; no target control register is changed.
@@ -261,6 +267,363 @@ struct FleaPowerObserver {
             reads == (configuration ? 15U : firmware_dma ? 27U : 24U)));
     }
 };
+
+// A fixed, read-only inventory of the public BVN reset/clock envelope during
+// one ordinary decode. The legacy accessor may write its indirect address
+// portal, but this observer never writes a target register. Revision IDs and
+// reset/clock state do not prove a source lease, downstream completion, or
+// standalone MFD/DNR/SCL/CSC operation.
+struct FleaBvnStateObserver {
+    using Reader = BC_STATUS (*)(HANDLE, uint32_t, uint32_t *);
+    HANDLE owner = nullptr;
+    bool enabled = false, failed = false;
+    unsigned next = 0, reads = 0, target_reads = 0, guard_reads = 0;
+    uint32_t rejected_guard = 0;
+    bool rejected_guard_valid = false;
+
+    static uint32_t Address(unsigned field) {
+        const uint32_t addresses[] = {BCHP_CLK_PM_CTRL,
+            BCHP_SUN_TOP_CTRL_SW_RESET, BCHP_TMISC_SOFT_RESET,
+            BCHP_MFD_REVISION_ID, BCHP_DNR_REVISION,
+            BCHP_SCL_HD_REVISION_ID, BCHP_CLK_PM_CTRL};
+        return addresses[field];
+    }
+    static uint32_t ClockReservedMask() {
+        return BCHP_CLK_PM_CTRL_reserved_for_eco0_MASK |
+            BCHP_CLK_PM_CTRL_reserved1_MASK |
+            BCHP_CLK_PM_CTRL_reserved2_MASK |
+            BCHP_CLK_PM_CTRL_reserved3_MASK;
+    }
+    static uint32_t AggregateClockDisableMask() {
+        // The public RDB exposes the BVN-facing aggregate clocks under the
+        // MISC 108/216 names; there is no per-MFD/DNR/SCL/CSC clock bit.
+        return BCHP_CLK_PM_CTRL_DIS_MISC_108_CLK_MASK |
+            BCHP_CLK_PM_CTRL_DIS_MISC_216_CLK_MASK;
+    }
+    static uint32_t SunResetReservedMask() {
+        return BCHP_SUN_TOP_CTRL_SW_RESET_reserved0_MASK |
+            BCHP_SUN_TOP_CTRL_SW_RESET_reserved1_MASK |
+            BCHP_SUN_TOP_CTRL_SW_RESET_reserved2_MASK;
+    }
+    static uint32_t TmiscResetMask() {
+        return BCHP_TMISC_SOFT_RESET_MFD_MASK |
+            BCHP_TMISC_SOFT_RESET_DNR_MASK |
+            BCHP_TMISC_SOFT_RESET_SCL_MASK |
+            BCHP_TMISC_SOFT_RESET_CSC_MASK;
+    }
+    static uint32_t RequiredOutputResetMask() {
+        // The pinned progressive fixture exercises the feeder and scaler.
+        // DNR/CSC are inventoried, but their state is not a decode-success
+        // prerequisite for this path.
+        return BCHP_TMISC_SOFT_RESET_MFD_MASK |
+            BCHP_TMISC_SOFT_RESET_SCL_MASK;
+    }
+    static uint32_t GisbReservedMask() {
+        return BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_reserved0_MASK |
+            BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_reserved1_MASK;
+    }
+    static uint32_t GisbErrorMask() {
+        return BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_timeout_MASK |
+            BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_tea_MASK |
+            BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_bs_b_MASK |
+            BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_write_MASK |
+            BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_valid_MASK;
+    }
+    static bool GisbClean(uint32_t raw) {
+        // Treat every nonzero capture-status bit as dirty. In particular, do
+        // not rely on VALID alone: timeout/TEA or malformed reserved state
+        // must stop the target sequence and must never be cleared here.
+        return raw != UINT32_MAX && !(raw & GisbReservedMask()) &&
+            !(raw & GisbErrorMask());
+    }
+    static bool Valid(unsigned field, uint32_t raw, bool output_stage) {
+        if (raw == UINT32_MAX) return false;
+        if (field == 0 || field == 6)
+            return !(raw & ClockReservedMask()) &&
+                (!output_stage || !(raw & AggregateClockDisableMask()));
+        if (field == 1)
+            return !(raw & SunResetReservedMask()) &&
+                (!output_stage || !(raw & BCHP_SUN_TOP_CTRL_SW_RESET_bvn_sw_reset_MASK));
+        if (field == 2)
+            return !(raw & BCHP_TMISC_SOFT_RESET_reserved0_MASK) &&
+                (!output_stage || !(raw & RequiredOutputResetMask()));
+        if (field == 3) return !(raw & BCHP_MFD_REVISION_ID_reserved0_MASK);
+        if (field == 4) return !(raw & BCHP_DNR_REVISION_reserved0_MASK);
+        return field == 5 && !(raw & BCHP_SCL_HD_REVISION_ID_reserved0_MASK);
+    }
+    bool Observe(HANDLE handle, unsigned stage, Reader reader = DtsDevRegisterRead,
+                 bool report = true) {
+        if (!enabled) return true;
+        if (failed || !owner || handle != owner || !reader || stage != next || stage >= 4) {
+            failed = true;
+            return false;
+        }
+        const char *const names[] = {"after-OPEN/pre-START", "first-released",
+            "last-released", "after-EOS"};
+        const bool output_stage = stage == 1 || stage == 2;
+        uint32_t raw[7] = {};
+        uint32_t guards[14] = {};
+        unsigned measured = 0;
+        unsigned measured_guards = 0;
+        BC_STATUS status = BC_STS_SUCCESS;
+        const gint64 before = g_get_monotonic_time();
+        for (unsigned i = 0; i < 7; ++i) {
+            ++reads; ++guard_reads;
+            status = reader(handle, BCHP_SUN_GISB_ARB_ERR_CAP_STATUS,
+                            &guards[measured_guards]);
+            if (status != BC_STS_SUCCESS) { failed = true; break; }
+            rejected_guard = guards[measured_guards];
+            rejected_guard_valid = true;
+            ++measured_guards;
+            if (!GisbClean(rejected_guard)) { failed = true; break; }
+
+            ++reads; ++target_reads;
+            const BC_STATUS target_status = reader(handle, Address(i), &raw[i]);
+            if (target_status == BC_STS_SUCCESS) ++measured;
+
+            ++reads; ++guard_reads;
+            status = reader(handle, BCHP_SUN_GISB_ARB_ERR_CAP_STATUS,
+                            &guards[measured_guards]);
+            if (status != BC_STS_SUCCESS) { failed = true; break; }
+            rejected_guard = guards[measured_guards];
+            rejected_guard_valid = true;
+            ++measured_guards;
+            if (!GisbClean(rejected_guard)) { failed = true; break; }
+            if (target_status != BC_STS_SUCCESS) {
+                status = target_status;
+                failed = true;
+                break;
+            }
+            if (!Valid(i, raw[i], output_stage)) { failed = true; break; }
+        }
+        if (measured == 7 && raw[0] != raw[6]) failed = true;
+        if (!failed) ++next;
+        if (report) {
+            std::printf("BVN state observation: stage=%s monotonic-us=%lld duration-us=%lld "
+                "reads=%u measured=%u api-status=%d result=%s", names[stage],
+                static_cast<long long>(before),
+                static_cast<long long>(g_get_monotonic_time() - before), reads,
+                measured, status, failed ? "FAIL" : "PASS");
+            for (unsigned i = 0; i < measured; ++i)
+                std::printf(" reg%u@%08x=%08x", i, Address(i), raw[i]);
+            if (measured > 2)
+                std::printf(" bvn-reset=%u mfd-reset=%u dnr-reset=%u scl-reset=%u csc-reset=%u",
+                    !!(raw[1] & BCHP_SUN_TOP_CTRL_SW_RESET_bvn_sw_reset_MASK),
+                    !!(raw[2] & BCHP_TMISC_SOFT_RESET_MFD_MASK),
+                    !!(raw[2] & BCHP_TMISC_SOFT_RESET_DNR_MASK),
+                    !!(raw[2] & BCHP_TMISC_SOFT_RESET_SCL_MASK),
+                    !!(raw[2] & BCHP_TMISC_SOFT_RESET_CSC_MASK));
+            std::printf(" target-reads=%u guard-reads=%u guards-measured=%u/14",
+                target_reads, guard_reads, measured_guards);
+            if (failed && rejected_guard_valid)
+                std::printf(" last-GISB@%08x=%08x",
+                    BCHP_SUN_GISB_ARB_ERR_CAP_STATUS, rejected_guard);
+            std::printf(" clock-bracket=%s atomic=no inventory-only=yes "
+                "source-lease/completion/standalone-certified=no\n",
+                measured < 7 ? "incomplete" : raw[0] == raw[6]
+                    ? "consistent" : "inconsistent");
+            std::fflush(stdout);
+        }
+        return !failed;
+    }
+    bool Finish(bool native_ok) const {
+        return native_ok && (!enabled || (!failed && owner && next == 4 &&
+            reads == 84 && target_reads == 28 && guard_reads == 56));
+    }
+};
+
+template<class Check> static void FleaBvnStateObserverSelfTest(const Check &check)
+{
+    struct Fixture {
+        unsigned calls = 0;
+        bool addresses_valid = true;
+        BC_STATUS status[84] = {};
+        uint32_t raw[84] = {};
+        static unsigned TargetCall(unsigned stage, unsigned field) {
+            return stage * 21U + field * 3U + 1U;
+        }
+        static unsigned GuardCall(unsigned stage, unsigned field, bool after) {
+            return stage * 21U + field * 3U + (after ? 2U : 0U);
+        }
+        static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *value) {
+            auto *f = static_cast<Fixture *>(handle);
+            const unsigned i = f->calls++;
+            if (i >= 84) { f->addresses_valid = false; return BC_STS_ERROR; }
+            const unsigned within = i % 21U;
+            const uint32_t expected = within % 3U == 1U
+                ? FleaBvnStateObserver::Address(within / 3U)
+                : BCHP_SUN_GISB_ARB_ERR_CAP_STATUS;
+            f->addresses_valid &= address == expected;
+            *value = f->raw[i];
+            return f->status[i];
+        }
+    };
+
+    check(FleaBvnStateObserver::Address(0) == 0x00070004U &&
+          FleaBvnStateObserver::Address(1) == 0x00404014U &&
+          FleaBvnStateObserver::Address(2) == 0x00541400U &&
+          FleaBvnStateObserver::Address(3) == 0x00540000U &&
+          FleaBvnStateObserver::Address(4) == 0x00540400U &&
+          FleaBvnStateObserver::Address(5) == 0x00540800U &&
+          FleaBvnStateObserver::Address(6) == 0x00070004U,
+          "BVN state observation pins the seven fixed public RDB addresses");
+    check(FleaBvnStateObserver::ClockReservedMask() == 0xfcf1e1e0U &&
+          FleaBvnStateObserver::AggregateClockDisableMask() == 0x00000202U &&
+          FleaBvnStateObserver::SunResetReservedMask() == 0x1fdff006U &&
+          FleaBvnStateObserver::TmiscResetMask() == 0x0000000fU &&
+          FleaBvnStateObserver::RequiredOutputResetMask() == 0x00000005U &&
+          BCHP_SUN_GISB_ARB_ERR_CAP_STATUS == 0x004000d4U &&
+          FleaBvnStateObserver::GisbReservedMask() == 0xffffe7c0U &&
+          FleaBvnStateObserver::GisbErrorMask() == 0x0000183fU,
+          "BVN state observation pins the documented reserved, clock and reset masks");
+    check(FleaBvnStateObserver::GisbClean(0) &&
+          !FleaBvnStateObserver::GisbClean(UINT32_MAX) &&
+          !FleaBvnStateObserver::GisbClean(BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_valid_MASK) &&
+          !FleaBvnStateObserver::GisbClean(BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_timeout_MASK) &&
+          !FleaBvnStateObserver::GisbClean(BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_tea_MASK) &&
+          !FleaBvnStateObserver::GisbClean(BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_reserved1_MASK),
+          "BVN state observation accepts only a zero GISB capture status");
+
+    Fixture disabled_fixture;
+    FleaBvnStateObserver disabled;
+    check(disabled.Observe(&disabled_fixture, 0, Fixture::Read, false) &&
+          disabled.Finish(true) && !disabled_fixture.calls,
+          "disabled BVN state observation adds no register access");
+
+    Fixture good;
+    FleaBvnStateObserver observer;
+    observer.enabled = true; observer.owner = &good;
+    for (unsigned stage = 0; stage < 4; ++stage)
+        check(observer.Observe(&good, stage, Fixture::Read, false),
+              "BVN state observation accepts four ordered fixed snapshots");
+    check(observer.Finish(true) && !observer.Finish(false) &&
+          observer.reads == 84 && observer.target_reads == 28 &&
+          observer.guard_reads == 56 && good.calls == 84 && good.addresses_valid,
+          "BVN state observation completes only after 28 targets and 56 clean GISB guards");
+
+    for (unsigned bad = 0; bad < 84; ++bad) {
+        for (unsigned api = 0; api < 2; ++api) {
+            Fixture f;
+            if (api) f.status[bad] = BC_STS_IO_ERROR;
+            else f.raw[bad] = UINT32_MAX;
+            FleaBvnStateObserver o; o.enabled = true; o.owner = &f;
+            for (unsigned stage = 0; stage <= bad / 21; ++stage)
+                check(o.Observe(&f, stage, Fixture::Read, false) == (stage < bad / 21),
+                      "BVN state observation stops at the first failed or all-ones read");
+            const unsigned attempted = bad + 1U + (bad % 3U == 1U ? 1U : 0U);
+            check(o.failed && o.next == bad / 21 && o.reads == attempted &&
+                  f.calls == attempted && f.addresses_valid && !o.Finish(true) &&
+                  !o.Observe(&f, o.next, Fixture::Read, false) && f.calls == attempted,
+                  "BVN state failure preserves the attempted prefix and never retries");
+        }
+    }
+
+    const uint32_t dirty_guards[] = {
+        BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_valid_MASK,
+        BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_timeout_MASK,
+        BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_tea_MASK,
+        BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_bs_b_MASK,
+        BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_write_MASK,
+        BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_reserved0_MASK,
+        BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_reserved1_MASK,
+    };
+    for (unsigned stage = 0; stage < 4; ++stage) {
+        for (unsigned field = 0; field < 7; ++field) {
+            for (bool after : {false, true}) {
+                for (uint32_t dirty : dirty_guards) {
+                    Fixture f;
+                    const unsigned bad = Fixture::GuardCall(stage, field, after);
+                    f.raw[bad] = dirty;
+                    FleaBvnStateObserver o; o.enabled = true; o.owner = &f;
+                    for (unsigned current = 0; current <= stage; ++current)
+                        check(o.Observe(&f, current, Fixture::Read, false) ==
+                              (current < stage),
+                              "dirty GISB guard stops the bounded BVN stage");
+                    const unsigned attempted = bad + 1U;
+                    check(o.failed && o.next == stage && o.reads == attempted &&
+                          f.calls == attempted && o.target_reads == stage * 7U + field +
+                              (after ? 1U : 0U) && f.addresses_valid && !o.Finish(true) &&
+                          !o.Observe(&f, stage, Fixture::Read, false) &&
+                          f.calls == attempted,
+                          "dirty pre/post GISB status permits no later target or retry");
+                }
+            }
+        }
+    }
+
+    const struct { unsigned field; uint32_t mask; } reserved[] = {
+        {0, FleaBvnStateObserver::ClockReservedMask()},
+        {1, FleaBvnStateObserver::SunResetReservedMask()},
+        {2, BCHP_TMISC_SOFT_RESET_reserved0_MASK},
+        {3, BCHP_MFD_REVISION_ID_reserved0_MASK},
+        {4, BCHP_DNR_REVISION_reserved0_MASK},
+        {5, BCHP_SCL_HD_REVISION_ID_reserved0_MASK},
+        {6, FleaBvnStateObserver::ClockReservedMask()},
+    };
+    for (const auto &fault : reserved) {
+        Fixture f;
+        const unsigned bad = Fixture::TargetCall(0, fault.field);
+        f.raw[bad] = fault.mask & (~fault.mask + 1U);
+        FleaBvnStateObserver o; o.enabled = true; o.owner = &f;
+        check(!o.Observe(&f, 0, Fixture::Read, false) && o.failed &&
+              o.reads == bad + 2 && f.calls == bad + 2,
+              "BVN state observation rejects each documented reserved field");
+    }
+
+    for (unsigned stage : {1U, 2U}) {
+        for (unsigned fault = 0; fault < 4; ++fault) {
+            Fixture f;
+            if (fault == 0) f.raw[Fixture::TargetCall(stage, 0)] =
+                BCHP_CLK_PM_CTRL_DIS_MISC_108_CLK_MASK;
+            if (fault == 1) f.raw[Fixture::TargetCall(stage, 0)] =
+                BCHP_CLK_PM_CTRL_DIS_MISC_216_CLK_MASK;
+            if (fault == 2) f.raw[Fixture::TargetCall(stage, 1)] =
+                BCHP_SUN_TOP_CTRL_SW_RESET_bvn_sw_reset_MASK;
+            if (fault == 3) f.raw[Fixture::TargetCall(stage, 2)] = stage == 1
+                ? BCHP_TMISC_SOFT_RESET_MFD_MASK : BCHP_TMISC_SOFT_RESET_SCL_MASK;
+            FleaBvnStateObserver o; o.enabled = true; o.owner = &f;
+            for (unsigned current = 0; current <= stage; ++current)
+                check(o.Observe(&f, current, Fixture::Read, false) == (current < stage),
+                      "active BVN output stages require aggregate clocks and reset release");
+            check(o.failed && o.next == stage && !o.Finish(true),
+                  "active BVN output gate failure cannot complete the observation");
+        }
+        for (uint32_t optional : {BCHP_TMISC_SOFT_RESET_DNR_MASK,
+                                  BCHP_TMISC_SOFT_RESET_CSC_MASK,
+                                  BCHP_TMISC_SOFT_RESET_DNR_MASK |
+                                      BCHP_TMISC_SOFT_RESET_CSC_MASK}) {
+            Fixture f; f.raw[Fixture::TargetCall(stage, 2)] = optional;
+            FleaBvnStateObserver o; o.enabled = true; o.owner = &f;
+            bool accepted = true;
+            for (unsigned current = 0; current <= stage; ++current)
+                accepted = accepted && o.Observe(&f, current, Fixture::Read, false);
+            check(accepted && !o.failed,
+                  "unused DNR/CSC reset state is inventoried without becoming a decode gate");
+        }
+    }
+
+    for (unsigned stage = 0; stage < 4; ++stage) {
+        Fixture f;
+        f.raw[Fixture::TargetCall(stage, 6)] =
+            BCHP_CLK_PM_CTRL_DIS_MISC_OTP_9_CLK_MASK;
+        FleaBvnStateObserver o; o.enabled = true; o.owner = &f;
+        for (unsigned current = 0; current <= stage; ++current)
+            check(o.Observe(&f, current, Fixture::Read, false) == (current < stage),
+                  "BVN state observation rejects unequal clock brackets");
+        check(o.failed && o.reads == (stage + 1) * 21 && !o.Finish(true),
+              "BVN clock bracket mismatch remains a non-atomic failed snapshot");
+    }
+
+    for (unsigned condition = 0; condition < 4; ++condition) {
+        Fixture owner, other;
+        FleaBvnStateObserver o; o.enabled = true; o.owner = condition == 0 ? nullptr : &owner;
+        const HANDLE handle = condition == 1 ? nullptr : condition == 2 ? &other : &owner;
+        const unsigned stage = condition == 3 ? 1 : 0;
+        check(!o.Observe(handle, stage, Fixture::Read, false) && o.failed &&
+              !owner.calls && !other.calls && !o.reads && !o.Finish(true),
+              "BVN state observation rejects missing, changed or out-of-order ownership before I/O");
+    }
+}
 
 template<class Check> static void FleaPowerObserverSelfTest(const Check &check)
 {

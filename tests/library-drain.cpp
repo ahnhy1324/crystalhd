@@ -3461,6 +3461,7 @@ struct Options {
     bool observe_power_fw_pause = false;
     bool observe_power_fw_dma = false;
     bool observe_power_config = false;
+    bool observe_bvn_state = false;
     bool observe_scl_config = false;
     bool observe_scl_filter_map = false;
     unsigned observe_scl_view = 0;
@@ -3558,6 +3559,17 @@ static bool ScalerBenchmarkConflicts(const Options &o)
 
 static bool ParseArguments(std::vector<const char *> arguments, Options *options)
 {
+    // A separate bounded, read-only mode: no other experiments or repetitions.
+    if (arguments.size() == 7 && !std::strcmp(arguments.back(), "--observe-bvn-state")) {
+        arguments.pop_back();
+        if (!ParseArguments(arguments, options) || options->mode != Mode::Hardware ||
+            options->expected != 180 || !options->scaler_test ||
+            options->scale_width != 320 || options->capture_path ||
+            options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2)
+            return false;
+        options->observe_bvn_state = true;
+        return true;
+    }
     // A separate bounded mode: no other experimental options or repetitions.
     if (arguments.size() == 5 && (!std::strcmp(arguments.back(), "--observe-power") ||
                                 !std::strcmp(arguments.back(), "--observe-power-fw-pause") ||
@@ -3819,7 +3831,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
 
 static bool SclInputAdmitted(const Options &options, const Input &input)
 {
-    return (!options.observe_power && !options.observe_runtime_inventory && !options.observe_scl_config && !options.observe_scl_filter_map && !options.observe_scl_view && !options.observe_mfd_config && !options.observe_mfd_address && !options.observe_mfd_framing && !options.inject_mfd_colour && !options.scl_status_test) ||
+    return (!options.observe_power && !options.observe_bvn_state && !options.observe_runtime_inventory && !options.observe_scl_config && !options.observe_scl_filter_map && !options.observe_scl_view && !options.observe_mfd_config && !options.observe_mfd_address && !options.observe_mfd_framing && !options.inject_mfd_colour && !options.scl_status_test) ||
         (options.expected == 180 && input.codec == AV_CODEC_ID_MPEG2VIDEO &&
          input.subtype == BC_MSUBTYPE_MPEG2VIDEO && input.progressive &&
          input.width == 640 && input.height == 360 && input.packets.size() == 180);
@@ -3827,7 +3839,7 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 
 static bool NeedsRawIo(const Options &options)
 {
-    if (options.observe_power) return true;
+    if (options.observe_power || options.observe_bvn_state) return true;
     return options.observe_avd_dmem_samples || options.observe_avd_cache_count || options.observe_avd_code_prefix || options.observe_avd_code_arena || options.observe_avd_cpu_map || options.observe_avd_memory || options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_ppb_context || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
         options.observe_scl_view || options.observe_mfd_config || options.observe_mfd_address || options.observe_mfd_framing || options.inject_mfd_colour || options.scl_status_test;
 }
@@ -8472,6 +8484,73 @@ static bool SelfTest()
     RuntimeInventorySelfTest(check);
     Mpeg4DirectSelfTest(check);
     FleaPowerObserverSelfTest(check);
+    FleaBvnStateObserverSelfTest(check);
+
+    const std::vector<const char *> bvn_arguments = {
+        "probe", "--hardware", "fixture", "180", "--scaler-test", "320",
+        "--observe-bvn-state"};
+    Options bvn_options;
+    check(ParseArguments(bvn_arguments, &bvn_options) && bvn_options.observe_bvn_state &&
+          !bvn_options.observe_power && NeedsRawIo(bvn_options) &&
+          bvn_options.scaler_test && bvn_options.scale_width == 320 &&
+          !bvn_options.capture_path && bvn_options.iterations == 1 &&
+          bvn_options.seconds == 30,
+          "BVN state observation admits only the bounded hardware profile with raw-I/O capability");
+    for (const auto &extras : std::vector<std::vector<const char *>>{
+            {"--observe-bvn-state"}, {"--observe-power"}, {"--observe-chroma"},
+            {"--observe-runtime-inventory"}, {"--scaler-test", "0"},
+            {"--capture-yuy2", "new"}, {"--mpeg1-via-mpeg2"},
+            {"--open-only"}, {"30"}, {"30", "1"}}) {
+        for (unsigned where : {4U, 7U}) {
+            auto mixed = bvn_arguments;
+            mixed.insert(mixed.begin() + where, extras.begin(), extras.end());
+            Options rejected;
+            check(!ParseArguments(mixed, &rejected),
+                  "BVN state observation rejects duplicate, expanded and mixed profiles before action");
+        }
+    }
+    for (unsigned field = 0; field < 3; ++field) {
+        auto invalid = bvn_arguments;
+        if (field == 0) invalid[1] = "--preflight";
+        if (field == 1) invalid[1] = "--self-test";
+        if (field == 2) invalid[3] = "179";
+        Options rejected;
+        check(!ParseArguments(invalid, &rejected),
+              "BVN state observation rejects alternate mode and frame count");
+    }
+    for (const char *width : {"0", "128", "318", "640"}) {
+        auto invalid = bvn_arguments; invalid[5] = width;
+        Options rejected;
+        check(!ParseArguments(invalid, &rejected),
+              "BVN state observation rejects every non-320 scaler width");
+    }
+    for (const auto &invalid : std::vector<std::vector<const char *>>{
+            {"probe", "--hardware", "fixture", "180", "--observe-bvn-state"},
+            {"probe", "--hardware", "fixture", "180", "--observe-bvn-state",
+                "--scaler-test", "320"},
+            {"probe", "--hardware", "fixture", "180", "--scaler-test", "320",
+                "--scaler-test", "320", "--observe-bvn-state"}}) {
+        Options rejected;
+        check(!ParseArguments(invalid, &rejected),
+              "BVN state observation requires one ordered scaler-test 320 option");
+    }
+    Input bvn_input; bvn_input.codec = AV_CODEC_ID_MPEG2VIDEO;
+    bvn_input.subtype = BC_MSUBTYPE_MPEG2VIDEO; bvn_input.progressive = true;
+    bvn_input.width = 640; bvn_input.height = 360; bvn_input.packets.resize(180);
+    check(SclInputAdmitted(bvn_options, bvn_input),
+          "BVN state observation accepts the existing MPEG2 fixture shape");
+    for (unsigned field = 0; field < 7; ++field) {
+        Input changed = bvn_input;
+        if (field == 0) changed.codec = AV_CODEC_ID_H264;
+        if (field == 1) changed.subtype = BC_MSUBTYPE_H264;
+        if (field == 2) changed.progressive = false;
+        if (field == 3) changed.width = 638;
+        if (field == 4) changed.height = 358;
+        if (field == 5) changed.packets.pop_back();
+        if (field == 6) changed.packets.emplace_back();
+        check(!SclInputAdmitted(bvn_options, changed) && SclInputAdmitted(Options{}, changed),
+              "BVN fixture restriction leaves ordinary decode admission unchanged");
+    }
 
     for (const char *power_mode : {"--observe-power", "--observe-power-fw-pause",
                                    "--observe-power-fw-dma", "--observe-power-config"}) {
@@ -10551,6 +10630,7 @@ struct Audit {
     unsigned expected = 0;
     ScalerBenchmark benchmark;
     FleaPowerObserver power;
+    FleaBvnStateObserver bvn_state;
     SclObserver scl;
     SclFilterMapObserver scl_filter_map;
     SclViewProbe scl_view;
@@ -10621,8 +10701,12 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             if (!marker && valid && released && audit->frames == 1)
                 valid = audit->power.Observe(device->handle, 1) &&
                     audit->power.PauseAndResume(device->handle);
+            if (!marker && valid && released && audit->frames == 1)
+                valid = audit->bvn_state.Observe(device->handle, 1);
             if (!marker && valid && released && audit->frames == audit->expected)
                 valid = audit->power.Observe(device->handle, 4);
+            if (!marker && valid && released && audit->frames == audit->expected)
+                valid = audit->bvn_state.Observe(device->handle, 2);
             bool owned_written = false;
             // File I/O uses only the owned copy, after the lease was released.
             if (!marker && valid && released && audit->capture) {
@@ -10708,10 +10792,12 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     std::fprintf(stderr, "SCL test-view experiment failed; guarded restoration if eligible and ordinary decoder cleanup follow\n");
                 else if (audit->scl.failed)
                     std::fprintf(stderr, "SCL raw configuration observation failed; ordinary decoder cleanup follows\n");
+                else if (audit->bvn_state.failed)
+                    std::fprintf(stderr, "BVN state observation failed; no further observer I/O, ordinary decoder cleanup follows\n");
                 else
                     std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
                                  static_cast<unsigned long long>(output.PicInfo.timeStamp));
-                if (audit->pixels && !audit->avd_dmem_samples.failed && !audit->avd_cache_count.failed && !audit->avd_cpu_map.failed && !audit->avd_memory.failed && !audit->scl.failed && !audit->scl_filter_map.fatal && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_address.failed && !audit->mfd_framing.failed && !audit->arm_metadata.failed && !audit->ppb_context.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
+                if (audit->pixels && !audit->avd_dmem_samples.failed && !audit->avd_cache_count.failed && !audit->avd_cpu_map.failed && !audit->avd_memory.failed && !audit->scl.failed && !audit->bvn_state.failed && !audit->scl_filter_map.fatal && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_address.failed && !audit->mfd_framing.failed && !audit->arm_metadata.failed && !audit->ppb_context.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
                     std::fprintf(stderr, "Scaler picture: got=%ux%u expected=%ux%u "
                                  "flags=%x words=%u packed422=%u\n",
                                  output.PicInfo.width, output.PicInfo.height,
@@ -10773,6 +10859,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.power.configuration = options.observe_power_config;
     audit.power.firmware_dma = options.observe_power_fw_dma;
     audit.power.firmware_command = options.observe_power_fw_pause ? DtsFWPauseVideo : nullptr;
+    audit.bvn_state.enabled = options.observe_bvn_state;
     audit.scl_filter_map.enabled = options.observe_scl_filter_map;
     audit.scl_view.selector = options.observe_scl_view;
     audit.mfd.enabled = options.observe_mfd_config || options.observe_runtime_inventory;
@@ -10825,6 +10912,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         std::fprintf(stderr, "This hardware probe is restricted to BCM70015\n");
         ok = false;
     }
+    if (ok && audit.bvn_state.enabled) audit.bvn_state.owner = device.handle;
     BC_INPUT_FORMAT format = {};
     // Match the production GStreamer input format; no AVC1/RCV conversion.
     format.Progressive = TRUE;
@@ -10858,6 +10946,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok && options.capture_path) ok = PackingState(device.handle, "selected-before-start", &audit.mfd_colour, &audit.scl_view);
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::PreStart);
     if (ok) ok = audit.power.Observe(device.handle, 0);
+    if (ok) ok = audit.bvn_state.Observe(device.handle, 0);
     if (ok) ok = audit.scl_view.Begin(device.handle);
     if (ok) ok = audit.runtime_inventory.Observe(&device.handle);
     if (ok) ok = audit.mfd.Observe(device.handle, 0);
@@ -10927,6 +11016,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = audit.avd_dmem_samples.Observe(&device.handle, 2, true);
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::EosBarrier);
     if (ok) ok = audit.power.Observe(device.handle, 5);
+    if (ok) ok = audit.bvn_state.Observe(device.handle, 3);
     // Only an actual native delivery barrier admits the last status sample.
     // Its diagnostic result cannot retroactively erase delivered native data.
     if (ok) (void)audit.scl_status.Eos(device.handle, true);
@@ -10949,6 +11039,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     const bool closed = device.Close();
     ok = ok && closed;
     ok = audit.power.Finish(ok);
+    ok = audit.bvn_state.Finish(ok);
     const bool captured = capture.Finish(ok);
     ok = ok && captured;
     ok = audit.scl_filter_map.Finish(ok);
@@ -10997,7 +11088,9 @@ int main(int argc, char **argv)
             "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --observe-avd-platform-code | --observe-avd-cache-count | --observe-avd-dmem-samples | --observe-avd-dmem-midpoints | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n"
             "Power observation: --hardware MPEG2_640x360_180_FRAMES 180 "
-            "[--observe-power | --observe-power-fw-pause | --observe-power-fw-dma | --observe-power-config]\n", argv[0]);
+            "[--observe-power | --observe-power-fw-pause | --observe-power-fw-dma | --observe-power-config]\n"
+            "BVN state observation: --hardware MPEG2_640x360_180_FRAMES 180 "
+            "--scaler-test 320 --observe-bvn-state\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
@@ -11006,7 +11099,9 @@ int main(int argc, char **argv)
         return 2;
     }
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_power)
+        if (options.observe_bvn_state)
+            std::fprintf(stderr, "--observe-bvn-state requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_power)
             std::fprintf(stderr, "Power observation requires CAP_SYS_RAWIO; no device was opened\n");
         else if (options.observe_avd_dmem_midpoints)
             std::fprintf(stderr, "--observe-avd-dmem-midpoints requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
