@@ -13,6 +13,8 @@
 struct FleaPowerObserver {
     using Reader = BC_STATUS (*)(HANDLE, uint32_t, uint32_t *);
     using Command = BC_STATUS (*)(HANDLE);
+    using FirmwareCommand = BC_STATUS (*)(HANDLE, uint32_t);
+    FirmwareCommand firmware_command = nullptr;
     bool enabled = false, failed = false;
     unsigned next = 0, reads = 0;
     static uint32_t Address(unsigned field) {
@@ -45,6 +47,8 @@ struct FleaPowerObserver {
         }
         const char *const names[] = {"pre-START", "first-released", "pause-API-return",
             "resume-API-return", "last-released", "EOS"};
+        const char *name = firmware_command && (stage == 2 || stage == 3)
+            ? (stage == 2 ? "firmware-pause-return" : "firmware-resume-return") : names[stage];
         uint32_t raw[4] = {};
         unsigned measured = 0;
         BC_STATUS status = BC_STS_SUCCESS;
@@ -60,7 +64,7 @@ struct FleaPowerObserver {
         if (!failed) ++next;
         if (report) {
             std::printf("Power observation: stage=%s monotonic-us=%lld duration-us=%lld "
-                "reads=%u measured=%u api-status=%d result=%s", names[stage],
+                "reads=%u measured=%u api-status=%d result=%s", name,
                 static_cast<long long>(before),
                 static_cast<long long>(g_get_monotonic_time() - before),
                 reads, measured, status, failed ? "FAIL" : "PASS");
@@ -75,6 +79,7 @@ struct FleaPowerObserver {
                         Command pause = DtsPauseDecoder, Command resume = DtsResumeDecoder,
                         bool report = true) {
         if (!enabled) return true;
+        if (firmware_command) return FirmwarePauseAndResume(handle, reader, report);
         if (failed || next != 2 || !handle || !reader || !pause || !resume) {
             failed = true;
             return false;
@@ -94,6 +99,30 @@ struct FleaPowerObserver {
         if (report)
             std::printf("Power observation commands: pause=%d resume=%d firmware-pause=no\n",
                         paused, resumed);
+        if (!observed || resumed != BC_STS_SUCCESS) { failed = true; return false; }
+        return Observe(handle, 3, reader, report);
+    }
+    bool FirmwarePauseAndResume(HANDLE handle, Reader reader, bool report) {
+        if (failed || next != 2 || !handle || !reader || !firmware_command) {
+            failed = true;
+            return false;
+        }
+        // Internal stock PAUSE ON/OFF, not the public Flea state-only API.
+        // An error may follow a committed command: attempt OFF once even then.
+        // Never bypass a poisoned mailbox or retry a refused cleanup command.
+        const gint64 before = g_get_monotonic_time();
+        const BC_STATUS paused = firmware_command(handle, 1);
+        const gint64 pause_us = g_get_monotonic_time() - before;
+        const bool observed = paused == BC_STS_SUCCESS && Observe(handle, 2, reader, report);
+        const gint64 resume_before = g_get_monotonic_time();
+        const BC_STATUS resumed = firmware_command(handle, 0);
+        if (report)
+            std::printf("Power observation firmware commands: pause=%d resume=%d "
+                "pause-host-us=%lld resume-host-us=%lld whole-device-idle=unproven\n",
+                paused, resumed, static_cast<long long>(pause_us),
+                static_cast<long long>(g_get_monotonic_time() - resume_before));
+        // Host timings include the driver's mailbox wait; they are not isolated
+        // firmware latency. Neither successful status nor MEMC idle is a lease.
         if (!observed || resumed != BC_STS_SUCCESS) { failed = true; return false; }
         return Observe(handle, 3, reader, report);
     }
@@ -127,6 +156,14 @@ template<class Check> static void FleaPowerObserverSelfTest(const Check &check)
         }
         static BC_STATUS Resume(HANDLE handle) {
             auto *f = static_cast<Fixture *>(handle); ++f->resumes; return f->resume_status;
+        }
+        static BC_STATUS Firmware(HANDLE handle, uint32_t operation) {
+            auto *f = static_cast<Fixture *>(handle);
+            if ((operation == 1 && !f->pauses && !f->resumes) ||
+                (operation == 0 && f->pauses == 1 && !f->resumes))
+                return operation ? Pause(handle) : Resume(handle);
+            f->addresses_valid = false;
+            return BC_STS_ERROR;
         }
     };
     for (unsigned bit = 0; bit < 32; ++bit) {
@@ -235,6 +272,58 @@ template<class Check> static void FleaPowerObserverSelfTest(const Check &check)
               f.calls == expected_reads && f.pauses == 1 && f.resumes == (fault != 0),
               "power command failures are sticky and never retry commands or reads");
     }
+    for (unsigned fault = 0; fault < 12; ++fault) {
+        Fixture f; FleaPowerObserver o; o.enabled = true; o.firmware_command = Fixture::Firmware;
+        check(o.Observe(&f, 0, Fixture::Read, false) && o.Observe(&f, 1, Fixture::Read, false),
+              "stock firmware pause starts after the first released output");
+        if (fault == 1 || fault == 3) f.pause_status = BC_STS_IO_ERROR;
+        if (fault == 2 || fault == 3) f.resume_status = BC_STS_IO_ERROR;
+        if (fault >= 4) f.status[8 + fault - 4] = BC_STS_IO_ERROR;
+        const unsigned expected_reads = fault == 1 || fault == 3 ? 8 : fault == 2 ? 12 :
+            fault >= 4 ? 5 + fault : 16;
+        check(o.PauseAndResume(&f, Fixture::Read, nullptr, nullptr, false) == (fault == 0) &&
+              f.calls == expected_reads && f.pauses == 1 && f.resumes == 1 && f.addresses_valid,
+              "stock firmware pause attempts OFF exactly once even after ambiguous ON or snapshot failure");
+        if (!fault) {
+            check(o.Observe(&f, 4, Fixture::Read, false) && o.Observe(&f, 5, Fixture::Read, false) &&
+                  o.Finish(true) && !o.Finish(false), "stock firmware pause preserves native completion requirements");
+        } else {
+            check(o.failed && !o.Finish(true) &&
+                  !o.PauseAndResume(&f, Fixture::Read, nullptr, nullptr, false) &&
+                  f.calls == expected_reads && f.pauses == 1 && f.resumes == 1,
+                  "stock firmware failure cannot be erased by successful OFF or repeat any command");
+        }
+    }
+    for (unsigned next : {0U, 1U, 3U, 4U, 5U, 6U}) {
+        Fixture f; FleaPowerObserver o; o.enabled = true; o.firmware_command = Fixture::Firmware; o.next = next;
+        check(!o.PauseAndResume(&f, Fixture::Read, nullptr, nullptr, false) &&
+              !f.calls && !f.pauses && !f.resumes && o.failed,
+              "stock firmware pause is not invoked outside the released-output barrier");
+    }
+    for (unsigned invalid = 0; invalid < 3; ++invalid) {
+        Fixture f; FleaPowerObserver o; o.enabled = true; o.firmware_command = Fixture::Firmware; o.next = 2;
+        if (invalid == 2) o.failed = true;
+        check(!o.PauseAndResume(invalid == 0 ? nullptr : &f,
+                  invalid == 1 ? nullptr : Fixture::Read, nullptr, nullptr, false) &&
+              !f.calls && !f.pauses && !f.resumes && o.failed,
+              "invalid stock firmware observation arguments cannot invoke a command");
+    }
+    for (unsigned bad = 0; bad < 5; ++bad) {
+        Fixture f; FleaPowerObserver o; o.enabled = true; o.firmware_command = Fixture::Firmware;
+        check(o.Observe(&f, 0, Fixture::Read, false) && o.Observe(&f, 1, Fixture::Read, false),
+              "stock firmware invalid-snapshot test starts at released output");
+        if (bad < 4) f.raw[8 + bad] = UINT32_MAX;
+        else f.raw[11] = BCHP_CLK_PM_CTRL_DIS_MISC_OTP_9_CLK_MASK;
+        const unsigned expected_reads = bad < 4 ? 9 + bad : 12;
+        check(!o.PauseAndResume(&f, Fixture::Read, nullptr, nullptr, false) &&
+              o.failed && !o.Finish(true) && f.calls == expected_reads &&
+              f.pauses == 1 && f.resumes == 1 && f.addresses_valid,
+              "invalid or inconsistent paused snapshot still attempts OFF once without resume reads");
+    }
+    Fixture disabled_fw; FleaPowerObserver off_fw; off_fw.firmware_command = Fixture::Firmware;
+    check(off_fw.PauseAndResume(&disabled_fw, Fixture::Read, nullptr, nullptr, false) &&
+          !disabled_fw.calls && !disabled_fw.pauses && !disabled_fw.resumes && !off_fw.failed,
+          "disabled observer cannot invoke an installed firmware callback");
     Fixture untouched; FleaPowerObserver off;
     check(off.Observe(nullptr, UINT32_MAX, nullptr, false) &&
           off.PauseAndResume(nullptr, nullptr, nullptr, nullptr, false) &&

@@ -4,6 +4,9 @@
 // kernel ioctl or device close. --preflight never opens the CrystalHD device.
 #include <bc_dts_types.h>
 #include <libcrystalhd_if.h>
+// Optional internal C++ entry point, never used by the ordinary probe path.
+// Keep older libraries loadable and reject the explicit probe if unavailable.
+extern BC_STATUS DtsFWPauseVideo(HANDLE, uint32_t) __attribute__((weak));
 #include "crystalhd_ioctl_limits.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_mfd.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_scl_hd.h"
@@ -3455,6 +3458,7 @@ struct Options {
     const char *capture_path = nullptr;
     bool observe_chroma = false;
     bool observe_power = false;
+    bool observe_power_fw_pause = false;
     bool observe_scl_config = false;
     bool observe_scl_filter_map = false;
     unsigned observe_scl_view = 0;
@@ -3553,11 +3557,14 @@ static bool ScalerBenchmarkConflicts(const Options &o)
 static bool ParseArguments(std::vector<const char *> arguments, Options *options)
 {
     // A separate bounded mode: no other experimental options or repetitions.
-    if (arguments.size() == 5 && !std::strcmp(arguments.back(), "--observe-power")) {
+    if (arguments.size() == 5 && (!std::strcmp(arguments.back(), "--observe-power") ||
+                                !std::strcmp(arguments.back(), "--observe-power-fw-pause"))) {
+        const bool firmware = !std::strcmp(arguments.back(), "--observe-power-fw-pause");
         arguments.pop_back();
         if (!ParseArguments(arguments, options) || options->mode != Mode::Hardware ||
             options->expected != 180) return false;
         options->observe_power = true;
+        options->observe_power_fw_pause = firmware;
         return true;
     }
     if (arguments.size() >= 3 &&
@@ -8458,14 +8465,16 @@ static bool SelfTest()
     Mpeg4DirectSelfTest(check);
     FleaPowerObserverSelfTest(check);
 
+    for (const char *power_mode : {"--observe-power", "--observe-power-fw-pause"}) {
     const std::vector<const char *> power_arguments = {
-        "probe", "--hardware", "fixture", "180", "--observe-power"};
+        "probe", "--hardware", "fixture", "180", power_mode};
     Options power_options;
     check(ParseArguments(power_arguments, &power_options) && power_options.observe_power &&
+          power_options.observe_power_fw_pause == !std::strcmp(power_mode, "--observe-power-fw-pause") &&
           NeedsRawIo(power_options) && power_options.iterations == 1 && power_options.seconds == 30,
           "power observation admits only the bounded hardware profile with raw-I/O capability");
     for (const auto &extras : std::vector<std::vector<const char *>>{
-            {"--observe-power"}, {"--observe-chroma"}, {"--observe-runtime-inventory"},
+            {"--observe-power"}, {"--observe-power-fw-pause"}, {"--observe-chroma"}, {"--observe-runtime-inventory"},
             {"--observe-scl-view", "2"}, {"--inject-mfd-colour", "a"},
             {"--scl-status-test", "clear"}, {"--scaler-test", "0"},
             {"--scaler-benchmark", "320"}, {"--capture-yuy2", "new"},
@@ -8501,6 +8510,7 @@ static bool SelfTest()
         if (field == 6) changed.packets.emplace_back();
         check(!SclInputAdmitted(power_options, changed) && SclInputAdmitted(Options{}, changed),
               "power observation fixture restriction does not alter ordinary decode admission");
+    }
     }
 
     unsigned number = 0;
@@ -10747,6 +10757,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.expected = expected;
     audit.scl.enabled = options.observe_scl_config;
     audit.power.enabled = options.observe_power;
+    audit.power.firmware_command = options.observe_power_fw_pause ? DtsFWPauseVideo : nullptr;
     audit.scl_filter_map.enabled = options.observe_scl_filter_map;
     audit.scl_view.selector = options.observe_scl_view;
     audit.mfd.enabled = options.observe_mfd_config || options.observe_runtime_inventory;
@@ -10970,13 +10981,18 @@ int main(int argc, char **argv)
             "[--mpeg1-via-mpeg2 | --h263-via-divx] "
             "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --observe-avd-platform-code | --observe-avd-cache-count | --observe-avd-dmem-samples | --observe-avd-dmem-midpoints | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n"
-            "Power observation: --hardware MPEG2_640x360_180_FRAMES 180 --observe-power\n", argv[0]);
+            "Power observation: --hardware MPEG2_640x360_180_FRAMES 180 "
+            "--observe-power_OR_--observe-power-fw-pause\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
+    if (options.observe_power_fw_pause && !DtsFWPauseVideo) {
+        std::fprintf(stderr, "Stock firmware pause entry point unavailable; no device was opened\n");
+        return 2;
+    }
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
         if (options.observe_power)
-            std::fprintf(stderr, "--observe-power requires CAP_SYS_RAWIO; no device was opened\n");
+            std::fprintf(stderr, "Power observation requires CAP_SYS_RAWIO; no device was opened\n");
         else if (options.observe_avd_dmem_midpoints)
             std::fprintf(stderr, "--observe-avd-dmem-midpoints requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_avd_dmem_samples)
