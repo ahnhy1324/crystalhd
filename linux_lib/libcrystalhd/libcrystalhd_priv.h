@@ -223,6 +223,15 @@ typedef enum _DTS_OUTPUT_PHASE {
     DTS_OUTPUT_RETIRE_ONLY
 } DTS_OUTPUT_PHASE;
 
+typedef enum _DTS_STOP_OUTCOME {
+	DTS_STOP_NONE = 0,
+	DTS_STOP_PENDING,
+	DTS_STOP_NOT_SUBMITTED,
+	DTS_STOP_REJECTED,
+	DTS_STOP_UNCERTAIN,
+	DTS_STOP_CONFIRMED
+} DTS_STOP_OUTCOME;
+
 typedef struct _DTS_LIB_CONTEXT{
 	uint32_t				Sig;			/* Mazic number */
 	uint32_t				State;			/* DIL's Run State */
@@ -323,6 +332,17 @@ typedef struct _DTS_LIB_CONTEXT{
 	 */
 	bool			txPending;
 	bool			txQuiescing;
+	/* Private lifecycle state, protected by thLock. Firmware STOP and host
+	 * cleanup are separate obligations; neither a local STOP enum nor a
+	 * successful RX unmap acknowledges a failed firmware command.
+	 */
+	DTS_STOP_OUTCOME stopOutcome;
+	BC_STATUS stopStatus;
+	bool stopHostCleanupDone;
+	/* Live control owner also covers START/CLOSE and LINK PAUSE/RESUME,
+	 * so their suffixes cannot overwrite a concurrent STOP outcome.
+	 */
+	bool stopInProgress;
 	/* TX byte serials make the FLEA EOS fallback wait for the DMA that
 	 * contains the complete drain sequence, not merely an empty SW ring.
 	 * All fields below are protected by thLock.
@@ -345,6 +365,16 @@ typedef struct _DTS_LIB_CONTEXT{
 	uint32_t		DrvMode;
 
 }DTS_LIB_CONTEXT;
+
+/* Caller holds thLock. A completed STOP can restart; an unresolved one
+ * survives ordinary ring resets and can only be recovered or retired.
+ */
+static inline bool DtsStopIsUnresolved(const DTS_LIB_CONTEXT *Ctx)
+{
+	return Ctx->stopInProgress ||
+		(Ctx->stopOutcome != DTS_STOP_NONE &&
+		 !(Ctx->stopOutcome == DTS_STOP_CONFIRMED && Ctx->stopHostCleanupDone));
+}
 
 /* Helper macro to get lib context from user handle */
 #define DTS_GET_CTX(_uh, _c)											\

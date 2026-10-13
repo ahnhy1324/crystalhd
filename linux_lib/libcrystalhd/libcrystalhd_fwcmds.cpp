@@ -746,6 +746,20 @@ DtsFWStartVideo(
 	return BC_STS_SUCCESS;
 }
 
+/* Ordinary StopDecoder owns this tracker. Forced orphan-channel cleanup
+ * keeps its historical behavior and must not overwrite that obligation.
+ */
+static void DtsRecordStopOutcome(DTS_LIB_CONTEXT *Ctx, bool force,
+	DTS_STOP_OUTCOME outcome, BC_STATUS status)
+{
+	DtsLock(Ctx);
+	if (!force && Ctx->stopInProgress) {
+		Ctx->stopOutcome = outcome;
+		Ctx->stopStatus = status;
+	}
+	DtsUnLock(Ctx);
+}
+
 DRVIFLIB_INT_API BC_STATUS
 DtsFWStopVideo(
     HANDLE  hDevice,
@@ -770,8 +784,10 @@ DtsFWStopVideo(
 		return BC_STS_DEC_NOT_STARTED;
 	}
 
-	if(!(pIocData = DtsAllocIoctlData(Ctx)))
+	if(!(pIocData = DtsAllocIoctlData(Ctx))) {
+		DtsRecordStopOutcome(Ctx, ForceStop, DTS_STOP_NOT_SUBMITTED, BC_STS_INSUFF_RES);
 		return BC_STS_INSUFF_RES;
+	}
 
 	sVid = (DecCmdChannelStopVideo *)&pIocData->u.fwCmd.cmd;
 
@@ -784,6 +800,10 @@ DtsFWStopVideo(
 
 	if( (sts=DtsDrvCmd(Ctx,BCM_IOC_FW_CMD,1,pIocData,FALSE)) != BC_STS_SUCCESS){
 		DebugLog_Trace(LDIL_DBG,"DtsStopVideo: Ioctl failed: %d\n",sts);
+		/* Driver errors do not prove whether firmware saw the request.
+		 * Preserve quarantine and never infer a replay-safe timeout.
+		 */
+		DtsRecordStopOutcome(Ctx, ForceStop, DTS_STOP_UNCERTAIN, sts);
 		DtsRelIoctlData(Ctx,pIocData);
 		return sts;
 	}
@@ -791,11 +811,13 @@ DtsFWStopVideo(
 	sVidRsp = (DecRspChannelStopVideo*)&pIocData->u.fwCmd.rsp;
 	if(sVidRsp->status){
 		DebugLog_Trace(LDIL_DBG,"DtsStopVideo: StopVideo Failed %d\n",sVidRsp->status);
+		DtsRecordStopOutcome(Ctx, ForceStop, DTS_STOP_REJECTED, BC_STS_FW_CMD_ERR);
 		DtsRelIoctlData(Ctx,pIocData);
 		return BC_STS_FW_CMD_ERR;
 	}
 
 	Ctx->State = BC_DEC_STATE_STOP;
+	DtsRecordStopOutcome(Ctx, ForceStop, DTS_STOP_CONFIRMED, BC_STS_SUCCESS);
 
 	DtsRelIoctlData(Ctx,pIocData);
 

@@ -27,8 +27,32 @@ static unsigned sleep_calls;
 static unsigned clear_on_sleep;
 static unsigned long last_ioctl_code;
 static bool flag_seen_in_ioctl;
+static bool stop_lifecycle_script, fail_allocation_once, mailbox_poisoned;
+static BC_STATUS stop_status, unmap_status;
+static uint32_t stop_response;
+static bool stop_syscall_failure;
+static unsigned stop_calls, activation_calls, close_calls, unmap_calls;
+static uint32_t state_at_unmap;
+static bool probe_control_owner;
+static BC_STATUS activation_status, start_status;
+static uint32_t activation_response, start_response;
+static unsigned start_calls;
+static bool fail_start_allocation, probe_lifecycle_owner;
 
 extern "C" void DumpInputSampleToFile(uint8_t *, uint32_t) {}
+extern "C" BC_STATUS DtsSetProgressive(HANDLE, uint32_t) { std::abort(); }
+/* Unexecuted EOS serialization dependencies of the real DtsFlushInput. */
+uint16_t WORD_SWAP(uint16_t) { std::abort(); }
+void PTS2MakerBit5Bytes(uint8_t *, int64_t) { std::abort(); }
+extern "C" BC_IOCTL_DATA *__real_DtsAllocIoctlData(DTS_LIB_CONTEXT *);
+extern "C" BC_IOCTL_DATA *__wrap_DtsAllocIoctlData(DTS_LIB_CONTEXT *context)
+{
+	if (fail_allocation_once) {
+		fail_allocation_once = false;
+		return nullptr;
+	}
+	return __real_DtsAllocIoctlData(context);
+}
 
 static void Check(bool condition, const char *message)
 {
@@ -42,7 +66,8 @@ static void Check(bool condition, const char *message)
 extern "C" int __wrap_ioctl(int fd, unsigned long code, ...)
 {
 	if (!active_context || fd != 99 ||
-	    (code != BCM_IOC_FW_CMD && code != BCM_IOC_GET_VERSION)) {
+	    (code != BCM_IOC_FW_CMD && code != BCM_IOC_GET_VERSION &&
+	     !(stop_lifecycle_script && code == BCM_IOC_FLUSH_RX_CAP))) {
 		std::fputs("unexpected ioctl in hardware-free firmware-command test\n",
 		           stderr);
 		std::abort();
@@ -56,6 +81,12 @@ extern "C" int __wrap_ioctl(int fd, unsigned long code, ...)
 	last_ioctl_code = code;
 	flag_seen_in_ioctl = active_context->fw_cmd_issued;
 	data->RetSts = ioctl_status;
+	if (code == BCM_IOC_FLUSH_RX_CAP) {
+		++unmap_calls;
+		state_at_unmap = active_context->State;
+		data->RetSts = unmap_status;
+		return 0;
+	}
 	if (code != BCM_IOC_FW_CMD) {
 		if (syscall_failure) {
 			errno = EIO;
@@ -69,7 +100,58 @@ extern "C" int __wrap_ioctl(int fd, unsigned long code, ...)
 	C011RspSelfTest *response =
 		reinterpret_cast<C011RspSelfTest *>(data->u.fwCmd.rsp);
 	response->status = response_status;
-	if (syscall_failure) {
+	bool fail_syscall = syscall_failure;
+	if (stop_lifecycle_script) {
+		const uint32_t opcode = data->u.fwCmd.cmd[0];
+		if (probe_lifecycle_owner) {
+			const unsigned entered_calls = calls;
+			Check(active_context->stopInProgress &&
+			          DtsStopDecoder(active_context) == BC_STS_BUSY &&
+			          DtsStartDecoder(active_context) == BC_STS_BUSY &&
+			          DtsCloseDecoder(active_context) == BC_STS_BUSY &&
+			          active_context->stopInProgress && calls == entered_calls,
+			      "public lifecycle owner admits its real helper but rejects competing controls");
+		}
+		if (opcode == eCMD_C011_DEC_CHAN_STOP_VIDEO) {
+			++stop_calls;
+			if (probe_control_owner) {
+				probe_control_owner = false;
+				const unsigned entered_calls = calls;
+				Check(active_context->stopInProgress &&
+				          DtsStopDecoder(active_context) == BC_STS_BUSY &&
+				          DtsStartDecoder(active_context) == BC_STS_BUSY &&
+				          DtsCloseDecoder(active_context) == BC_STS_BUSY &&
+				          active_context->stopInProgress && calls == entered_calls,
+				      "in-flight real STOP retains its lifecycle owner against nested controls");
+			}
+			data->RetSts = stop_status;
+			response->status = stop_response;
+			fail_syscall = stop_syscall_failure;
+		} else if (opcode == eCMD_C011_DEC_CHAN_ACTIVATE) {
+			++activation_calls;
+			data->RetSts = activation_status;
+			response->status = activation_response;
+			if (fail_start_allocation) {
+				fail_start_allocation = false;
+				fail_allocation_once = true;
+			}
+		} else if (opcode == eCMD_C011_DEC_CHAN_START_VIDEO) {
+			++start_calls;
+			data->RetSts = start_status;
+			response->status = start_response;
+		} else if (opcode == eCMD_C011_DEC_CHAN_CLOSE) {
+			++close_calls;
+		} else if (opcode == eCMD_C011_DEC_CHAN_PAUSE) {
+			data->RetSts = BC_STS_IO_ERROR;
+		} else {
+			std::fputs("unexpected firmware command in STOP lifecycle test\n", stderr);
+			std::abort();
+		}
+		if (mailbox_poisoned) data->RetSts = BC_STS_BUSY;
+		if (opcode == eCMD_C011_DEC_CHAN_STOP_VIDEO && stop_status == BC_STS_TIMEOUT)
+			mailbox_poisoned = true;
+	}
+	if (fail_syscall) {
 		errno = EIO;
 		return -1;
 	}
@@ -98,6 +180,18 @@ static void ResetObservations()
 	clear_on_sleep = 0;
 	last_ioctl_code = 0;
 	flag_seen_in_ioctl = false;
+	stop_lifecycle_script = fail_allocation_once = mailbox_poisoned = false;
+	stop_status = unmap_status = BC_STS_SUCCESS;
+	stop_response = 0;
+	stop_syscall_failure = false;
+	stop_calls = activation_calls = close_calls = unmap_calls = state_at_unmap = 0;
+	probe_control_owner = false;
+	// Failure witnesses cannot accidentally complete START; only the explicit
+	// positive lifecycle cases below enable its ACTIVATE/START acknowledgements.
+	activation_status = BC_STS_IO_ERROR;
+	start_status = BC_STS_SUCCESS;
+	activation_response = start_response = start_calls = 0;
+	fail_start_allocation = probe_lifecycle_owner = false;
 }
 
 struct Fixture {
@@ -407,6 +501,7 @@ static void DecoderCloseOwnership(uint32_t device, CloseFailure failure)
 	Check(calls == old_calls + (failure == CLOSE_POOL_EMPTY ? 0U : 1U),
 	      "failed decoder close issues at most one firmware command");
 	Check(fixture.context.State == BC_DEC_STATE_STOP &&
+	          !fixture.context.stopInProgress &&
 	          std::memcmp(&fixture.context.OpenRsp, &open_response,
 	                      sizeof(open_response)) == 0,
 	      "failed decoder close retains channel state and response identity");
@@ -438,6 +533,7 @@ static void DecoderCloseOwnership(uint32_t device, CloseFailure failure)
 	      "decoder close retry preserves the exact reviewed wire payload");
 	const decltype(fixture.context.OpenRsp) empty_response = {};
 	Check(fixture.context.State == BC_DEC_STATE_CLOSE &&
+	          !fixture.context.stopInProgress &&
 	          std::memcmp(&fixture.context.OpenRsp, &empty_response,
 	                      sizeof(empty_response)) == 0,
 	      "successful decoder close retires channel ownership");
@@ -449,6 +545,290 @@ static void DecoderCloseOwnership(uint32_t device, CloseFailure failure)
 	          fixture.context.DrvStatusEOSCnt == 0,
 	      "successful decoder close resets session metadata");
 	fixture.PoolReturned();
+}
+
+enum StopFailure {
+	STOP_HEALTHY, STOP_POOL_EMPTY, STOP_DRIVER_STATUS, STOP_FIRMWARE_RESPONSE,
+	STOP_TIMEOUT, STOP_SYSCALL, STOP_DRIVER_BUSY
+};
+
+struct StopFixture : Fixture {
+	explicit StopFixture(uint32_t device) : Fixture(device)
+	{
+		Check(txBufInit(&context.circBuf, CIRC_TX_BUF_SIZE) == BC_STS_SUCCESS,
+		      "STOP lifecycle fixture initializes the real TX ring");
+		context.State = BC_DEC_STATE_START;
+		context.OpenRsp.channelId = 7;
+		context.OpenRsp.channelStatus = 1;
+		context.bMapOutBufDirty = context.bMapOutBufDone = true;
+		DtsSetDecStat(true, context.ProcessID);
+		stop_lifecycle_script = true;
+	}
+	~StopFixture() { txBufFree(&context.circBuf); }
+};
+
+static BC_STATUS StopFault(StopFailure failure)
+{
+	switch (failure) {
+	case STOP_HEALTHY: return BC_STS_SUCCESS;
+	case STOP_POOL_EMPTY:
+		fail_allocation_once = true;
+		return BC_STS_INSUFF_RES;
+	case STOP_DRIVER_STATUS: return stop_status = BC_STS_IO_ERROR;
+	case STOP_DRIVER_BUSY: return stop_status = BC_STS_BUSY;
+	case STOP_FIRMWARE_RESPONSE:
+		stop_response = 1;
+		return BC_STS_FW_CMD_ERR;
+	case STOP_TIMEOUT: return stop_status = BC_STS_TIMEOUT;
+	case STOP_SYSCALL:
+		stop_syscall_failure = true;
+		return BC_STS_ERROR;
+	}
+	std::abort();
+}
+
+static void LowLevelStopOutcomeScope(uint32_t device, StopFailure failure, unsigned mode)
+{
+	Fixture fixture(device);
+	const bool force = mode == 1, coordinated = mode == 2;
+	fixture.context.State = force ? BC_DEC_STATE_CLOSE : BC_DEC_STATE_START;
+	const uint32_t old_state = fixture.context.State;
+	fixture.context.stopOutcome = DTS_STOP_PENDING;
+	fixture.context.stopStatus = BC_STS_BUSY;
+	fixture.context.stopInProgress = force || coordinated;
+	fixture.context.stopHostCleanupDone = true;
+	stop_lifecycle_script = true;
+	const BC_STATUS expected = StopFault(failure);
+	Check(DtsFWStopVideo(&fixture.context, 7, force) == expected &&
+	          stop_calls == (failure == STOP_POOL_EMPTY ? 0U : 1U) && !unmap_calls,
+	      "low-level STOP retains force entry, status and submission behavior");
+	DTS_STOP_OUTCOME outcome = DTS_STOP_PENDING;
+	if (coordinated) {
+		outcome = failure == STOP_HEALTHY ? DTS_STOP_CONFIRMED :
+		    failure == STOP_POOL_EMPTY ? DTS_STOP_NOT_SUBMITTED :
+		    failure == STOP_FIRMWARE_RESPONSE ? DTS_STOP_REJECTED : DTS_STOP_UNCERTAIN;
+	}
+	Check(fixture.context.stopOutcome == outcome &&
+	          fixture.context.stopStatus == (coordinated ? expected : BC_STS_BUSY) &&
+	          fixture.context.stopInProgress == (force || coordinated) &&
+	          fixture.context.stopHostCleanupDone,
+	      "only coordinator-owned non-forced STOP publishes outcome and never claims host cleanup");
+	Check(fixture.context.State == (failure == STOP_HEALTHY ? BC_DEC_STATE_STOP : old_state),
+	      "low-level STOP retains historical success-only state publication");
+}
+
+static void DecoderStopFailureOwnership(uint32_t device, StopFailure failure)
+{
+	StopFixture fixture(device);
+	const BC_STATUS expected = StopFault(failure);
+	const BC_STATUS first = DtsStopDecoder(&fixture.context);
+	Check(first == expected && stop_calls == (failure == STOP_POOL_EMPTY ? 0U : 1U),
+	      "public STOP retains real helper allocation/driver/response status");
+	Check(unmap_calls == 1 && !fixture.context.bMapOutBufDirty &&
+	          !fixture.context.bMapOutBufDone,
+	      "one-shot STOP failure does not prevent acknowledged host RX cleanup");
+	fixture.PoolReturned();
+	if (failure == STOP_HEALTHY) {
+		Check(fixture.context.State == BC_DEC_STATE_STOP && !fixture.context.txQuiescing &&
+		          state_at_unmap == BC_DEC_STATE_STOP,
+		      "real firmware helper commits STOP before successful outer RX cleanup");
+		Check(DtsStopDecoder(&fixture.context) == BC_STS_SUCCESS &&
+		          stop_calls == 1 && unmap_calls == 1,
+		      "fully successful repeated STOP remains an idempotent no-op");
+		return;
+	}
+	const unsigned activations = activation_calls;
+	Check(DtsStartDecoder(&fixture.context) != BC_STS_SUCCESS &&
+	          activation_calls == activations,
+	      "unresolved real firmware STOP blocks START before activation");
+	const unsigned before_retry = stop_calls;
+	const BC_STATUS repeated = DtsStopDecoder(&fixture.context);
+	if (failure == STOP_POOL_EMPTY)
+		Check(repeated == BC_STS_SUCCESS && stop_calls == before_retry + 1,
+		      "explicit repeated STOP retries a proven one-shot pre-submission allocation failure");
+	else
+		Check(repeated == expected && stop_calls == before_retry,
+		      "repeated STOP preserves rejection/transport failure without replay or false success");
+	if (failure == STOP_TIMEOUT) {
+		Check(repeated != BC_STS_SUCCESS,
+		      "repeated STOP cannot falsely resolve an uncertain timeout");
+		Check(stop_calls == before_retry,
+		      "uncertain STOP timeout is not automatically retransmitted");
+	}
+	Check(unmap_calls == 1, "already acknowledged RX cleanup is not repeated");
+	const BC_STATUS closed = DtsCloseDecoder(&fixture.context);
+	if (failure == STOP_TIMEOUT) {
+		Check(closed == expected && fixture.context.State != BC_DEC_STATE_CLOSE &&
+		          fixture.globals.g_bDecOpened && stop_calls == before_retry,
+		      "timeout quarantine is not bypassed by CLOSE or another STOP");
+	} else {
+		Check(closed == (failure == STOP_POOL_EMPTY ? BC_STS_SUCCESS : expected) &&
+		          close_calls == 1 && fixture.context.State == BC_DEC_STATE_CLOSE &&
+		          !fixture.globals.g_bDecOpened,
+		      "host-clean unresolved STOP retains a confirmed CLOSE route and original error");
+	}
+}
+
+static void StopLifecycleOwner(uint32_t device)
+{
+	StopFixture fixture(device);
+	probe_control_owner = true;
+	Check(DtsStopDecoder(&fixture.context) == BC_STS_SUCCESS && !probe_control_owner &&
+	          stop_calls == 1 && unmap_calls == 1 && !fixture.context.stopInProgress,
+	      "real STOP owns one complete command/host cleanup interval then releases admission");
+}
+
+static void PublicStartStopCycle(uint32_t device)
+{
+	StopFixture fixture(device);
+	fixture.context.State = BC_DEC_STATE_STOP;
+	activation_status = BC_STS_SUCCESS;
+	probe_lifecycle_owner = true;
+	// Progressive mode is off here, so both firmware helpers are real without
+	// entering the unrelated DtsSetProgressive stub. No capture/video is run.
+	Check(DtsStartDecoder(&fixture.context) == BC_STS_SUCCESS &&
+	          activation_calls == 1 && start_calls == 1 &&
+	          fixture.context.State == BC_DEC_STATE_START &&
+	          fixture.context.stopOutcome == DTS_STOP_NONE && !fixture.context.stopInProgress,
+	      "public START passes ACTIVATE and START acknowledgements without self-blocking");
+	Check(DtsStopDecoder(&fixture.context) == BC_STS_SUCCESS && stop_calls == 1 &&
+	          unmap_calls == 1 && fixture.context.State == BC_DEC_STATE_STOP &&
+	          fixture.context.stopOutcome == DTS_STOP_CONFIRMED &&
+	          fixture.context.stopHostCleanupDone && !fixture.context.stopInProgress,
+	      "public STOP fully retires the first acknowledged START and releases its owner");
+	Check(DtsStartDecoder(&fixture.context) == BC_STS_SUCCESS &&
+	          activation_calls == 2 && start_calls == 2 && stop_calls == 1 &&
+	          fixture.context.State == BC_DEC_STATE_START &&
+	          fixture.context.stopOutcome == DTS_STOP_NONE &&
+	          !fixture.context.stopHostCleanupDone && !fixture.context.stopInProgress,
+	      "public restart clears only a fully resolved STOP obligation after both helper acknowledgements");
+	Check(DtsStartDecoder(&fixture.context) == BC_STS_SUCCESS &&
+	          activation_calls == 3 && start_calls == 3 && stop_calls == 2 &&
+	          !fixture.context.stopInProgress,
+	      "START from an active session performs its ordinary STOP before claiming the next START owner");
+	Check(DtsCloseDecoder(&fixture.context) == BC_STS_SUCCESS && stop_calls == 3 &&
+	          close_calls == 1 && unmap_calls == 1 &&
+	          fixture.context.State == BC_DEC_STATE_CLOSE &&
+	          fixture.context.stopOutcome == DTS_STOP_NONE &&
+	          !fixture.context.txQuiescing && !fixture.context.stopInProgress &&
+	          !fixture.globals.g_bDecOpened,
+	      "public CLOSE acknowledges the final STOP/channel close and clears lifecycle ownership");
+	const uint32_t expected[] = {eCMD_C011_DEC_CHAN_ACTIVATE, eCMD_C011_DEC_CHAN_START_VIDEO,
+	    eCMD_C011_DEC_CHAN_STOP_VIDEO, eCMD_C011_DEC_CHAN_ACTIVATE, eCMD_C011_DEC_CHAN_START_VIDEO,
+	    eCMD_C011_DEC_CHAN_STOP_VIDEO, eCMD_C011_DEC_CHAN_ACTIVATE, eCMD_C011_DEC_CHAN_START_VIDEO,
+	    eCMD_C011_DEC_CHAN_STOP_VIDEO, eCMD_C011_DEC_CHAN_CLOSE};
+	bool exact = command_log.size() == sizeof(expected) / sizeof(expected[0]);
+	for (unsigned i = 0; i < command_log.size(); i++)
+		exact &= i < sizeof(expected) / sizeof(expected[0]) && command_log[i].cmd[0] == expected[i];
+	Check(exact, "public start/stop/restart/close emits only its ordered stock firmware commands");
+	const unsigned finished_calls = calls;
+	Check(DtsCloseDecoder(&fixture.context) == BC_STS_SUCCESS &&
+	          DtsStartDecoder(&fixture.context) == BC_STS_DEC_NOT_OPEN && calls == finished_calls,
+	      "completed CLOSE is idempotent and cannot reopen through START");
+}
+
+static void PublicStartFailureOwner(uint32_t device, bool video_start, unsigned fault)
+{
+	StopFixture fixture(device);
+	fixture.context.State = BC_DEC_STATE_STOP;
+	fixture.context.bMapOutBufDirty = fixture.context.bMapOutBufDone = false;
+	activation_status = BC_STS_SUCCESS;
+	probe_lifecycle_owner = true;
+	BC_STATUS expected = BC_STS_SUCCESS;
+	if (fault == 0) {
+		fail_allocation_once = !video_start;
+		fail_start_allocation = video_start;
+		expected = BC_STS_INSUFF_RES;
+	} else if (fault == 1) {
+		(video_start ? start_status : activation_status) = BC_STS_IO_ERROR;
+		expected = BC_STS_IO_ERROR;
+	} else {
+		(video_start ? start_response : activation_response) = 1;
+		expected = BC_STS_FW_CMD_ERR;
+	}
+	Check(DtsStartDecoder(&fixture.context) == expected &&
+	          activation_calls == (video_start || fault ? 1U : 0U) &&
+	          start_calls == (video_start && fault ? 1U : 0U) &&
+	          fixture.context.State == BC_DEC_STATE_STOP &&
+	          fixture.context.stopOutcome == DTS_STOP_NONE && !fixture.context.stopInProgress,
+	      "failed ACTIVATE/START preserves its error and releases the public START owner");
+	Check(DtsCloseDecoder(&fixture.context) == BC_STS_SUCCESS && close_calls == 1 &&
+	          !stop_calls && !fixture.context.stopInProgress &&
+	          fixture.context.State == BC_DEC_STATE_CLOSE,
+	      "a returned START failure does not leave the control owner blocking channel retirement");
+}
+
+static void DecoderCloseFirstStopFailure(uint32_t device, StopFailure failure)
+{
+	StopFixture fixture(device);
+	const BC_STATUS expected = StopFault(failure);
+	Check(DtsCloseDecoder(&fixture.context) == expected &&
+	          stop_calls == (failure == STOP_POOL_EMPTY ? 0U : 1U) &&
+	          unmap_calls == 1 && close_calls == 1,
+	      "same-operation CLOSE preserves first STOP failure without an implicit STOP replay");
+	const bool close_confirmed = failure != STOP_TIMEOUT;
+	Check((fixture.context.State == BC_DEC_STATE_CLOSE) == close_confirmed &&
+	          fixture.globals.g_bDecOpened == !close_confirmed &&
+	          !fixture.context.bMapOutBufDirty,
+	      "CLOSE confirmation and host RX cleanup remain distinct after real STOP failure");
+}
+
+static void DecoderStopCleanupRetry(uint32_t device, bool close_retry)
+{
+	StopFixture fixture(device);
+	unmap_status = BC_STS_IO_ERROR;
+	Check(DtsStopDecoder(&fixture.context) == BC_STS_IO_ERROR && stop_calls == 1 &&
+	          unmap_calls == 1 && state_at_unmap == BC_DEC_STATE_STOP &&
+	          fixture.context.bMapOutBufDirty && fixture.context.txQuiescing,
+	      "real helper STOP success followed by failed RX unmap retains cleanup ownership");
+	Check(DtsStartDecoder(&fixture.context) != BC_STS_SUCCESS && !activation_calls,
+	      "incomplete host cleanup blocks activation after confirmed firmware STOP");
+	const BC_STATUS repeated = close_retry ? DtsCloseDecoder(&fixture.context) :
+	                                       DtsStopDecoder(&fixture.context);
+	Check(repeated != BC_STS_SUCCESS && stop_calls == 1 && unmap_calls == 2 &&
+	          !close_calls && fixture.context.bMapOutBufDirty &&
+	          fixture.globals.g_bDecOpened,
+	      "STOP/CLOSE retry repeats only pending RX cleanup, not firmware STOP or premature CLOSE");
+	unmap_status = BC_STS_SUCCESS;
+	const BC_STATUS recovered = close_retry ? DtsCloseDecoder(&fixture.context) :
+	                                        DtsStopDecoder(&fixture.context);
+	Check(recovered == BC_STS_SUCCESS && stop_calls == 1 && unmap_calls == 3 &&
+	          !fixture.context.bMapOutBufDirty && !fixture.context.txQuiescing &&
+	          fixture.context.State == (close_retry ? BC_DEC_STATE_CLOSE : BC_DEC_STATE_STOP) &&
+	          close_calls == (close_retry ? 1U : 0U),
+	      "acknowledged RX cleanup resolves the pending STOP without a duplicate firmware command");
+}
+
+static void FlushDoesNotResolveStop(uint32_t device, unsigned operation)
+{
+	StopFixture fixture(device);
+	stop_response = 1;
+	Check(DtsStopDecoder(&fixture.context) == BC_STS_FW_CMD_ERR && unmap_calls == 1,
+	      "flush bypass test begins with unresolved STOP and acknowledged RX cleanup");
+	const unsigned before_flush = calls;
+	(void)DtsFlushInput(&fixture.context, 3);
+	Check(calls == before_flush, "flush-op3 cannot replay an unresolved firmware STOP");
+	const BC_STATUS status = operation == 0 ? DtsStartDecoder(&fixture.context) :
+	    operation == 1 ? DtsPauseDecoder(&fixture.context) : DtsResumeDecoder(&fixture.context);
+	Check(status != BC_STS_SUCCESS && calls == before_flush && !activation_calls,
+	      "flush-op3 cannot erase unresolved STOP admission for START/PAUSE/RESUME");
+}
+
+static void StopProcessOwnership(uint32_t device)
+{
+	StopFixture fixture(device);
+	fixture.globals.g_nProcID = fixture.context.ProcessID + 1;
+	const unsigned before = calls;
+	Check(DtsStopDecoder(&fixture.context) == BC_STS_ERROR &&
+	          DtsStartDecoder(&fixture.context) == BC_STS_ERROR &&
+	          DtsCloseDecoder(&fixture.context) == BC_STS_ERROR &&
+	          DtsPauseDecoder(&fixture.context) == BC_STS_ERROR &&
+	          DtsResumeDecoder(&fixture.context) == BC_STS_ERROR,
+	      "STOP lifecycle preserves process-ownership rejection across public controls");
+	Check(calls == before && !stop_calls && !unmap_calls && !close_calls &&
+	          fixture.context.State == BC_DEC_STATE_START &&
+	          !fixture.context.txQuiescing && fixture.context.bMapOutBufDirty,
+	      "process-ownership refusal cannot issue commands or retire capture ownership");
 }
 
 static void ZeroRateValidation()
@@ -806,6 +1186,26 @@ int main()
 	ValidTestIds(BC_PCI_DEVID_LINK);
 	FailurePropagation();
 	DecoderStartPayload();
+	for (uint32_t device : {BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA}) {
+		for (StopFailure failure : {STOP_HEALTHY, STOP_POOL_EMPTY, STOP_DRIVER_STATUS,
+		                           STOP_FIRMWARE_RESPONSE, STOP_TIMEOUT, STOP_SYSCALL,
+		                           STOP_DRIVER_BUSY}) {
+			for (unsigned mode = 0; mode < 3; mode++)
+				LowLevelStopOutcomeScope(device, failure, mode);
+			DecoderStopFailureOwnership(device, failure);
+			if (failure != STOP_HEALTHY) DecoderCloseFirstStopFailure(device, failure);
+		}
+		DecoderStopCleanupRetry(device, false);
+		DecoderStopCleanupRetry(device, true);
+		for (unsigned operation = 0; operation < 3; operation++)
+			FlushDoesNotResolveStop(device, operation);
+		StopProcessOwnership(device);
+		StopLifecycleOwner(device);
+		PublicStartStopCycle(device);
+		for (unsigned stage = 0; stage < 2; stage++)
+			for (unsigned fault = 0; fault < 3; fault++)
+				PublicStartFailureOwner(device, stage != 0, fault);
+	}
 	for (uint32_t device : {BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA})
 		for (CloseFailure failure : {CLOSE_POOL_EMPTY, CLOSE_DRIVER_STATUS,
 		                             CLOSE_FIRMWARE_RESPONSE, CLOSE_SYSCALL})

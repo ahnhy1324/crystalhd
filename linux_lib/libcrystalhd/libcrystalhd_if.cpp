@@ -44,13 +44,22 @@
 #include "libcrystalhd_fwcmds.h"
 #include "libcrystalhd_fwload_if.h"
 
-static bool DtsTxIsQuiescing(DTS_LIB_CONTEXT *Ctx)
-{
-	DtsLock(Ctx);
-	const bool blocked = Ctx->txQuiescing;
-	DtsUnLock(Ctx);
-	return blocked;
-}
+static BC_STATUS DtsStopDecoderInternal(HANDLE hDevice, bool retryUnsubmitted,
+	bool *controlBusy = NULL);
+
+/* Serialize the command/cleanup interval without holding thLock while
+ * allocating, waiting for firmware, or retiring TX/output owners.
+ */
+class DtsStopAttempt {
+	DTS_LIB_CONTEXT *context;
+public:
+	explicit DtsStopAttempt(DTS_LIB_CONTEXT *ctx) : context(ctx) {}
+	~DtsStopAttempt() {
+		DtsLock(context);
+		context->stopInProgress = false;
+		DtsUnLock(context);
+	}
+};
 
 static bool DtsBeginTxQuiesce(DTS_LIB_CONTEXT *Ctx)
 {
@@ -711,25 +720,60 @@ DtsDeviceClose(
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	DtsLock(Ctx);
+	const bool control_owned = Ctx->stopInProgress;
+	DtsUnLock(Ctx);
+	if (control_owned)
+		return BC_STS_BUSY;
 
 	if(Ctx->State != BC_DEC_STATE_CLOSE){
 		sts = DtsCloseDecoder(hDevice);
-		if (DtsTxIsQuiescing(Ctx)) {
+		DtsLock(Ctx);
+		if (Ctx->stopInProgress) {
+			DtsUnLock(Ctx);
+			return BC_STS_BUSY;
+		}
+		const bool join_needed = Ctx->txQuiescing || DtsStopIsUnresolved(Ctx);
+		if (join_needed)
+			Ctx->stopInProgress = true;
+		DtsUnLock(Ctx);
+		if (join_needed) {
 			/* DeviceClose has always joined TX before consuming the handle.
 			 * Do not return a live worker to existing callers that unload
 			 * the library on close. Join before retrying firmware teardown;
 			 * this can still wait on an unresponsive driver, as before.
+			 * Claim control before joining so a concurrent START cannot
+			 * acquire a worker which this close would then shut down.
 			 */
 			DtsJoinTxThread(Ctx);
+			DtsLock(Ctx);
+			Ctx->stopInProgress = false;
+			DtsUnLock(Ctx);
 			DtsCloseDecoder(hDevice);
 		}
 	}
 
+	/* A concurrent STOP/START/CLOSE is also a live library owner. Once
+	 * teardown claims this interval, no new lifecycle call may enter.
+	 */
+	DtsLock(Ctx);
+	if (Ctx->stopInProgress) {
+		DtsUnLock(Ctx);
+		return BC_STS_BUSY;
+	}
+	Ctx->stopInProgress = true;
+	DtsUnLock(Ctx);
 	const BC_STATUS output_sts = DtsCancelFetchOutInt(Ctx);
-	if (output_sts != BC_STS_SUCCESS)
+	if (output_sts != BC_STS_SUCCESS) {
+		DtsLock(Ctx);
+		Ctx->stopInProgress = false;
+		DtsUnLock(Ctx);
 		return output_sts;
+	}
 	DtsLock(Ctx);
 	const bool output_retained = Ctx->ProcOutPending || Ctx->outputPhase != DTS_OUTPUT_IDLE;
+	if (output_retained)
+		Ctx->stopInProgress = false;
 	DtsUnLock(Ctx);
 	if (output_retained)
 		return BC_STS_BUSY;
@@ -1072,7 +1116,7 @@ DtsStartDecoder(
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
 	DtsLock(Ctx);
-	const bool output_blocked = Ctx->txQuiescing ||
+	const bool output_blocked = Ctx->txThreadExit || Ctx->txQuiescing || DtsStopIsUnresolved(Ctx) ||
 		Ctx->ProcOutPending || Ctx->CancelWaiting || Ctx->outputPhase != DTS_OUTPUT_IDLE;
 	DtsUnLock(Ctx);
 	if (output_blocked)
@@ -1091,6 +1135,26 @@ DtsStartDecoder(
 			return sts;
 		}
 	}
+	DtsLock(Ctx);
+	/* A DeviceClose join is terminal even if a retained output lease lets
+	 * this handle survive temporarily; START does not recreate its worker.
+	 */
+	if (Ctx->txThreadExit || Ctx->txQuiescing || DtsStopIsUnresolved(Ctx) ||
+	    Ctx->ProcOutPending || Ctx->CancelWaiting || Ctx->outputPhase != DTS_OUTPUT_IDLE) {
+		DtsUnLock(Ctx);
+		return BC_STS_BUSY;
+	}
+	if (Ctx->State == BC_DEC_STATE_CLOSE) {
+		DtsUnLock(Ctx);
+		return BC_STS_DEC_NOT_OPEN;
+	}
+	if (Ctx->State == BC_DEC_STATE_START) {
+		DtsUnLock(Ctx);
+		return BC_STS_BUSY;
+	}
+	Ctx->stopInProgress = true;
+	DtsUnLock(Ctx);
+	DtsStopAttempt attempt(Ctx);
 
 	if(Ctx->VidParams.Progressive){
 		sts = DtsSetProgressive(hDevice,0);
@@ -1117,7 +1181,12 @@ DtsStartDecoder(
 		return sts;
 	}
 
+	DtsLock(Ctx);
 	Ctx->State = BC_DEC_STATE_START;
+	Ctx->stopOutcome = DTS_STOP_NONE;
+	Ctx->stopStatus = BC_STS_SUCCESS;
+	Ctx->stopHostCleanupDone = false;
+	DtsUnLock(Ctx);
 
 	return sts;
 }
@@ -1133,19 +1202,45 @@ DtsCloseDecoder(
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	DtsLock(Ctx);
+	const bool control_owned = Ctx->stopInProgress;
+	DtsUnLock(Ctx);
+	if (control_owned)
+		return BC_STS_BUSY;
 
 	if(Ctx->State == BC_DEC_STATE_CLOSE)
 	{
 		return BC_STS_SUCCESS;
 	}
 
-	if (Ctx->State != BC_DEC_STATE_STOP)
+	DtsLock(Ctx);
+	const bool stop_needed = Ctx->State != BC_DEC_STATE_STOP ||
+		Ctx->txQuiescing || DtsStopIsUnresolved(Ctx);
+	DtsUnLock(Ctx);
+	if (stop_needed)
 	{
-		sts = DtsStopDecoder(hDevice);
-		if (DtsTxIsQuiescing(Ctx))
+		/* Close is retirement, not an implicit retry of failed STOP. */
+		bool control_busy = false;
+		sts = DtsStopDecoderInternal(hDevice, false, &control_busy);
+		if (control_busy)
 			return sts;
 	}
-
+	DtsLock(Ctx);
+	if (Ctx->State == BC_DEC_STATE_CLOSE && !Ctx->stopInProgress) {
+		DtsUnLock(Ctx);
+		return sts;
+	}
+	const bool cleanup_pending = Ctx->stopInProgress || Ctx->txPending ||
+		Ctx->ProcOutPending || Ctx->CancelWaiting || Ctx->outputPhase != DTS_OUTPUT_IDLE ||
+		(Ctx->stopOutcome != DTS_STOP_NONE && !Ctx->stopHostCleanupDone) ||
+		(Ctx->State != BC_DEC_STATE_STOP &&
+		 !(Ctx->State == BC_DEC_STATE_FLUSH && Ctx->stopHostCleanupDone));
+	if (!cleanup_pending)
+		Ctx->stopInProgress = true;
+	DtsUnLock(Ctx);
+	if (cleanup_pending)
+		return sts == BC_STS_SUCCESS ? BC_STS_BUSY : sts;
+	DtsStopAttempt attempt(Ctx);
 
 	BC_STATUS close_sts = DtsFWCloseChannel(hDevice,Ctx->OpenRsp.channelId);
 	/* The firmware channel is still owned when close was not confirmed.
@@ -1157,6 +1252,12 @@ DtsCloseDecoder(
 	DtsSetDecStat(false, Ctx->ProcessID);
 
 	Ctx->State = BC_DEC_STATE_CLOSE;
+	DtsLock(Ctx);
+	Ctx->stopOutcome = DTS_STOP_NONE;
+	Ctx->stopStatus = BC_STS_SUCCESS;
+	Ctx->stopHostCleanupDone = false;
+	Ctx->txQuiescing = false;
+	DtsUnLock(Ctx);
 
 	Ctx->LastPicNum = -1;
 	Ctx->LastSessNum = -1;
@@ -1360,10 +1461,8 @@ DtsFormatChange(
 	return BC_STS_NOT_IMPL;
 }
 
-DRVIFLIB_API BC_STATUS
-DtsStopDecoder(
-    HANDLE  hDevice
-	)
+static BC_STATUS DtsStopDecoderInternal(HANDLE hDevice, bool retryUnsubmitted,
+	bool *controlBusy)
 {
 	BC_STATUS	sts = BC_STS_SUCCESS;
 
@@ -1374,21 +1473,48 @@ DtsStopDecoder(
 		return BC_STS_ERROR;
 
 	DtsLock(Ctx);
-	if (Ctx->State == BC_DEC_STATE_CLOSE || Ctx->State == BC_DEC_STATE_STOP)
+	if (Ctx->stopInProgress) {
+		if (controlBusy)
+			*controlBusy = true;
+		DtsUnLock(Ctx);
+		return BC_STS_BUSY;
+	}
+	if ((Ctx->State == BC_DEC_STATE_CLOSE || Ctx->State == BC_DEC_STATE_STOP) &&
+	    Ctx->stopOutcome == DTS_STOP_NONE && !Ctx->txQuiescing)
 	{
 		DtsUnLock(Ctx);
 		return BC_STS_SUCCESS;
 	}
+	if (Ctx->stopOutcome == DTS_STOP_CONFIRMED && Ctx->stopHostCleanupDone) {
+		DtsUnLock(Ctx);
+		return BC_STS_SUCCESS;
+	}
+	const bool retry = retryUnsubmitted && Ctx->stopOutcome == DTS_STOP_NOT_SUBMITTED;
+	if (Ctx->stopHostCleanupDone && !retry) {
+		sts = Ctx->stopStatus;
+		DtsUnLock(Ctx);
+		return sts;
+	}
+	if (Ctx->stopOutcome == DTS_STOP_NONE) {
+		Ctx->stopStatus = BC_STS_SUCCESS;
+	}
+	if (!retry)
+		sts = Ctx->stopStatus;
+	Ctx->stopInProgress = true;
+	Ctx->stopHostCleanupDone = false;
 	/* Close admission before checking for pending output. Keep the mutex
 	 * available while cancellation waits for the admitted owner to retire.
 	 * FLUSH is also accepted by the firmware stop command below.
 	 */
 	DtsUnLock(Ctx);
+	DtsStopAttempt attempt(Ctx);
 	const bool pending_tx = DtsBeginTxQuiesce(Ctx);
 
 	// On LINK if the decoder is paused due to the RLL being full, un pause it before flush
 	if(Ctx->DevId == BC_PCI_DEVID_LINK && Ctx->hw_paused) {
-		sts = DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_OFF);
+		const BC_STATUS resume_sts = DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_OFF);
+		if (sts == BC_STS_SUCCESS)
+			sts = resume_sts;
 		Ctx->hw_paused = false;
 	}
 	/* A nonzero firmware flush also cancels the driver's CPB-space wait.
@@ -1412,9 +1538,17 @@ DtsStopDecoder(
 	if (sts == BC_STS_SUCCESS)
 		sts = cleanup_sts;
 
-	cleanup_sts = DtsFWStopVideo(hDevice,Ctx->OpenRsp.channelId, FALSE);
-	if (sts == BC_STS_SUCCESS)
-		sts = cleanup_sts;
+	DtsLock(Ctx);
+	const bool submit_stop = Ctx->stopOutcome == DTS_STOP_NONE ||
+		Ctx->stopOutcome == DTS_STOP_PENDING || retry;
+	if (submit_stop)
+		Ctx->stopOutcome = DTS_STOP_PENDING;
+	DtsUnLock(Ctx);
+	if (submit_stop) {
+		cleanup_sts = DtsFWStopVideo(hDevice,Ctx->OpenRsp.channelId, FALSE);
+		if (sts == BC_STS_SUCCESS)
+			sts = cleanup_sts;
+	}
 
 	cleanup_sts = DtsFlushRxCapture(hDevice, false);
 	if (cleanup_sts != BC_STS_SUCCESS)
@@ -1424,11 +1558,18 @@ DtsStopDecoder(
 
 	DtsResetTxTracking(Ctx, sts == BC_STS_SUCCESS);
 	DtsLock(Ctx);
-	Ctx->State = BC_DEC_STATE_STOP;
-	Ctx->txQuiescing = false;
+	Ctx->stopHostCleanupDone = true;
+	const bool confirmed = Ctx->stopOutcome == DTS_STOP_CONFIRMED;
+	Ctx->State = confirmed ? BC_DEC_STATE_STOP : BC_DEC_STATE_FLUSH;
+	Ctx->txQuiescing = !confirmed;
 	DtsUnLock(Ctx);
 
 	return sts;
+}
+
+DRVIFLIB_API BC_STATUS DtsStopDecoder(HANDLE hDevice)
+{
+	return DtsStopDecoderInternal(hDevice, true);
 }
 
 DRVIFLIB_API BC_STATUS
@@ -1442,25 +1583,34 @@ DRVIFLIB_API BC_STATUS
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
-	if (DtsTxIsQuiescing(Ctx))
+	DtsLock(Ctx);
+	if (Ctx->txQuiescing || DtsStopIsUnresolved(Ctx)) {
+		DtsUnLock(Ctx);
 		return BC_STS_BUSY;
+	}
 
 	if (Ctx->State == BC_DEC_STATE_CLOSE)
 	{
 		DebugLog_Trace(LDIL_DBG, "DtsPauseDecoder: Decoder is not opened\n");
+		DtsUnLock(Ctx);
 		return BC_STS_DEC_NOT_OPEN;
 	}
 	if (Ctx->State == BC_DEC_STATE_STOP)
 	{
 		DebugLog_Trace(LDIL_DBG, "DtsPauseDecoder: Decoder is not started\n");
+		DtsUnLock(Ctx);
 		return BC_STS_DEC_NOT_STARTED;
 	}
 
 	if( Ctx->State == BC_DEC_STATE_PAUSE || Ctx->DevId == BC_PCI_DEVID_FLEA)
 	{
 		Ctx->State = BC_DEC_STATE_PAUSE;
+		DtsUnLock(Ctx);
 		return BC_STS_SUCCESS;
 	}
+	Ctx->stopInProgress = true;
+	DtsUnLock(Ctx);
+	DtsStopAttempt attempt(Ctx);
 
 	sts = DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_ON);
 	if(sts != BC_STS_SUCCESS )
@@ -1486,26 +1636,35 @@ DRVIFLIB_API BC_STATUS
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
-	if (DtsTxIsQuiescing(Ctx))
+	DtsLock(Ctx);
+	if (Ctx->txQuiescing || DtsStopIsUnresolved(Ctx)) {
+		DtsUnLock(Ctx);
 		return BC_STS_BUSY;
+	}
 
 	if (Ctx->State == BC_DEC_STATE_CLOSE)
 	{
 		DebugLog_Trace(LDIL_DBG, "DtsResumeDecoder: Decoder is not opened\n");
+		DtsUnLock(Ctx);
 		return BC_STS_DEC_NOT_OPEN;
 	}
 
 	if (Ctx->State == BC_DEC_STATE_STOP)
 	{
 		DebugLog_Trace(LDIL_DBG, "DtsResumeDecoder: Decoder is not started\n");
+		DtsUnLock(Ctx);
 		return BC_STS_DEC_NOT_STARTED;
 	}
 
 	if(Ctx->State == BC_DEC_STATE_START || Ctx->DevId == BC_PCI_DEVID_FLEA)
 	{
 		Ctx->State = BC_DEC_STATE_START;
+		DtsUnLock(Ctx);
 		return BC_STS_SUCCESS;
 	}
+	Ctx->stopInProgress = true;
+	DtsUnLock(Ctx);
+	DtsStopAttempt attempt(Ctx);
 
 	sts = DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_OFF);
 	if(sts != BC_STS_SUCCESS )
@@ -1571,6 +1730,10 @@ DtsStartCaptureImmidiate(HANDLE		hDevice,
 		sts = BC_STS_DEC_NOT_STARTED;
 		goto done;
 	}
+	if (DtsStopIsUnresolved(Ctx)) {
+		sts = BC_STS_BUSY;
+		goto done;
+	}
 
 	if(Ctx->CfgFlags & BC_ADDBUFF_MOVE){
 		sts = DtsMapYUVBuffs(Ctx);
@@ -1619,6 +1782,10 @@ DtsStartCapture(HANDLE  hDevice)
 	{
 		DebugLog_Trace(LDIL_DBG, "DtsStartCapture: Decoder is not started\n");
 		sts = BC_STS_DEC_NOT_STARTED;
+		goto done;
+	}
+	if (DtsStopIsUnresolved(Ctx)) {
+		sts = BC_STS_BUSY;
 		goto done;
 	}
 
@@ -2047,7 +2214,7 @@ DtsSendData( HANDLE  hDevice ,
 		 * no wait or DMA ioctl runs while thLock is held.
 		 */
 		DtsLock(Ctx);
-		if (Ctx->txQuiescing ||
+		if (Ctx->txQuiescing || DtsStopIsUnresolved(Ctx) ||
 		    (Ctx->State != BC_DEC_STATE_START && Ctx->State != BC_DEC_STATE_PAUSE)) {
 			DtsUnLock(Ctx);
 			return BC_STS_IO_USER_ABORT;
@@ -2392,7 +2559,7 @@ DtsProcInput( HANDLE  hDevice ,
 		return BC_STS_ERROR;
 
 	DtsLock(Ctx);
-	if (Ctx->txQuiescing) {
+	if (Ctx->txQuiescing || DtsStopIsUnresolved(Ctx)) {
 		DtsUnLock(Ctx);
 		return BC_STS_BUSY;
 	}
@@ -2705,6 +2872,11 @@ DtsFlushInput( HANDLE  hDevice ,
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	DtsLock(Ctx);
+	const bool stop_pending = DtsStopIsUnresolved(Ctx);
+	DtsUnLock(Ctx);
+	if (stop_pending)
+		return BC_STS_BUSY;
 
 	if(Op == 0 || Op == 5) // DRAIN
 	{

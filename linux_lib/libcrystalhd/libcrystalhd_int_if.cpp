@@ -233,7 +233,7 @@ DtsSetOutputColorSpace(HANDLE hDevice, BC_OUTPUT_FORMAT mode)
 		 * STOP alone is insufficient when a failed unmap left registrations.
 		 */
 		if (Ctx->ProcOutPending || Ctx->outputPhase != DTS_OUTPUT_IDLE ||
-			Ctx->CancelWaiting || Ctx->txQuiescing ||
+			Ctx->CancelWaiting || Ctx->txQuiescing || DtsStopIsUnresolved(Ctx) ||
 			Ctx->bMapOutBufDone || Ctx->bMapOutBufDirty ||
 			(Ctx->State != BC_DEC_STATE_CLOSE &&
 			 Ctx->State != BC_DEC_STATE_START && Ctx->State != BC_DEC_STATE_STOP)) {

@@ -34,6 +34,7 @@ static bool stop_at_packet_length;
 static unsigned packetizer_stops;
 static bool stop_at_ring_wait;
 static unsigned ring_wait_stops;
+static bool claim_control_after_close_check;
 enum class Point { Popped, Dma };
 static struct {
     Point point;
@@ -95,6 +96,13 @@ extern "C" int __real_pthread_mutex_unlock(pthread_mutex_t *mutex);
 extern "C" int __wrap_pthread_mutex_unlock(pthread_mutex_t *mutex)
 {
     const int result = __real_pthread_mutex_unlock(mutex);
+    if (claim_control_after_close_check && observed && mutex == &observed->thLock) {
+        claim_control_after_close_check = false;
+        // Model START acquiring control just after DeviceClose's first check.
+        DtsLock(observed);
+        observed->stopInProgress = true;
+        DtsUnLock(observed);
+    }
     if (worker_thread && observed && mutex == &observed->circBuf.flushLock &&
         run.point == Point::Popped && !run.blocked)
         pause_worker(); // The production pop really completed before this hook.
@@ -150,6 +158,12 @@ extern "C" int __wrap_pthread_join(pthread_t thread, void **result)
 {
     if (!cancelling_thread || !observed || thread != observed->htxThread)
         return __real_pthread_join(thread, result);
+    check(observed->stopInProgress,
+          "DeviceClose claims the control lifetime before joining its TX worker");
+    if (observed->stopInProgress)
+        check(DtsStartDecoder(observed) == BC_STS_BUSY &&
+              DtsDeviceClose(observed) == BC_STS_BUSY,
+              "no restart or competing close can enter the claimed join interval");
     std::unique_lock<std::mutex> lock(gate);
     ++run.join_calls;
     run.release = true;
@@ -219,8 +233,19 @@ BC_STATUS DtsFWDecFlushChannel(HANDLE device, uint32_t mode)
     firmware_boundary(0);
     return run.fail_first_flush && run.flush_calls == 1 ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
 }
-BC_STATUS DtsFWStopVideo(HANDLE, uint32_t, bool)
-{ firmware_boundary(1); return BC_STS_SUCCESS; }
+BC_STATUS DtsFWStopVideo(HANDLE device, uint32_t, bool force)
+{
+    firmware_boundary(1);
+    DTS_LIB_CONTEXT *context = static_cast<DTS_LIB_CONTEXT *>(device);
+    DtsLock(context);
+    if (!force && context->stopInProgress) {
+        context->stopOutcome = DTS_STOP_CONFIRMED;
+        context->stopStatus = BC_STS_SUCCESS;
+    }
+    context->State = BC_DEC_STATE_STOP;
+    DtsUnLock(context);
+    return BC_STS_SUCCESS;
+}
 BC_STATUS DtsFWCloseChannel(HANDLE, uint32_t)
 { firmware_boundary(2); return BC_STS_SUCCESS; }
 BC_STATUS DtsFWPauseVideo(HANDLE, uint32_t) { std::abort(); }
@@ -433,6 +458,9 @@ static void test_case(Point point, bool stop, bool timeout, bool queued_tail = f
     if (stop && queued_tail) {
         const unsigned dma_before_restart = run.dma_calls;
         run.allow_restart = true;
+        // The fixture worker sets this flag only to end its bounded loop.
+        // This is a fresh worker test, not a terminal DeviceClose join.
+        context.txThreadExit = false;
         check(DtsStartDecoder(&context) == BC_STS_SUCCESS,
               "actual StartDecoder permits a restart after successful stop");
         run.status_calls = 0;
@@ -575,7 +603,10 @@ static void test_send_admission()
           "a producer waiting for capacity aborts after StopDecoder clears the ring");
     check(ring_wait_stops == 1 && !stop_at_ring_wait && context.circBuf.busySize == 0,
           "full-ring cancellation leaves no late queued input");
-    context.State = BC_DEC_STATE_START;
+    run.allow_restart = true;
+    check(DtsStartDecoder(&context) == BC_STS_SUCCESS,
+          "next packetizer case restarts through the real lifecycle API");
+    run.allow_restart = false;
     packetizer_stops = 0;
     stop_at_packet_length = true;
     const BC_STATUS result = DtsAlignSendData(&context, bytes, sizeof(packet), 100000, false);
@@ -592,8 +623,48 @@ static void test_send_admission()
     bc_dil_glob_ptr = nullptr;
 }
 
+static void test_device_close_control_race()
+{
+    run = {};
+    run.done = true;
+    bc_dil_glob_s globals = {};
+    bc_dil_glob_ptr = &globals;
+    DTS_LIB_CONTEXT context = {};
+    observed = &context;
+    context.Sig = LIB_CTX_SIG;
+    context.ProcessID = getpid();
+    context.State = BC_DEC_STATE_START;
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&context.thLock, &attr);
+    pthread_mutexattr_destroy(&attr);
+    if (txBufInit(&context.circBuf, CIRC_TX_BUF_SIZE) != BC_STS_SUCCESS)
+        std::abort();
+    claim_control_after_close_check = true;
+    check(DtsDeviceClose(&context) == BC_STS_BUSY &&
+          !claim_control_after_close_check && context.stopInProgress,
+          "DeviceClose recognizes control acquired after its initial check");
+    check(!context.txThreadExit && !run.join_calls && !run.release_calls &&
+          !run.stop_calls && !run.close_calls,
+          "control-only BUSY leaves the other caller's worker and handle untouched");
+    context.stopInProgress = false;
+    context.txThreadExit = true;
+    context.State = BC_DEC_STATE_STOP;
+    context.stopOutcome = DTS_STOP_CONFIRMED;
+    context.stopStatus = BC_STS_SUCCESS;
+    context.stopHostCleanupDone = true;
+    check(DtsStartDecoder(&context) == BC_STS_BUSY && !run.control_calls,
+          "a terminally joined worker cannot be restarted through a retained handle");
+    txBufFree(&context.circBuf);
+    pthread_mutex_destroy(&context.thLock);
+    observed = nullptr;
+    bc_dil_glob_ptr = nullptr;
+}
+
 int main()
 {
+    test_device_close_control_race();
     test_send_admission();
     for (const Point point : {Point::Popped, Point::Dma})
         for (const bool stop : {false, true})
