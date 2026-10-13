@@ -1111,6 +1111,22 @@ static void FirmwarePauseRollback(void)
           "failed firmware pause leaves capture running");
     Check(!(context.state & BC_LINK_PAUSED) && !pause_calls && firmware_calls == 1,
           "failed firmware pause publishes no local pause");
+
+    const BC_STATUS capture_pause_results[] = {
+        BC_STS_SUCCESS, BC_STS_BUSY, BC_STS_IO_ERROR
+    };
+    for (unsigned i = 0; i < sizeof(capture_pause_results) /
+                                  sizeof(capture_pause_results[0]); i++) {
+        ResetOwned(BC_LINK_INIT, true);
+        data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
+        data.udata.u.fwCmd.cmd[3] = 1;
+        pause_status = capture_pause_results[i];
+        Check(bc_cproc_do_fw_cmd(&context, &data) == capture_pause_results[i],
+              "accepted firmware pause returns the local capture result");
+        Check((context.state & BC_LINK_PAUSED) && pause_calls == 1 &&
+              pause_states[0] && firmware_calls == 1 && hardware.fetch_sem == 1,
+              "local pause failure preserves firmware state and releases capture lock");
+    }
 }
 
 static void FirmwareSharedEntry(void)

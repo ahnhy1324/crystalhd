@@ -169,7 +169,7 @@ static int TestWait(wait_queue_head_t *event)
 
 static int TestSleep(unsigned milliseconds);
 static bool crystalhd_link_load_firmware_config(struct crystalhd_hw *hw);
-static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
+static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
                                                enum FLEA_STATE_CH_EVENT event);
 static void crystalhd_flea_fw_transaction_done(struct crystalhd_hw *hw);
 
@@ -708,7 +708,7 @@ static bool crystalhd_link_load_firmware_config(struct crystalhd_hw *hw)
     return true;
 }
 
-static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
+static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
                                                enum FLEA_STATE_CH_EVENT event)
 {
     Check(hw == &hardware, "Flea power event uses the active hardware");
@@ -718,6 +718,8 @@ static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
         power_wakes++;
         if (!power_wake_fails)
             hw->FleaPowerState = FLEA_PS_ACTIVE;
+        else
+            return BC_STS_IO_ERROR;
     } else {
         Check(event == FLEA_EVT_CMD_COMP && !hw->fwcmd_active,
               "pending power recheck follows host end and uses completion, not FLL wake");
@@ -726,6 +728,7 @@ static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
                       "power recheck follows mailbox serialization release");
         power_reevaluations++;
     }
+    return BC_STS_SUCCESS;
 }
 
 static BC_STATUS WriteCommand(struct crystalhd_hw *hw, uint32_t address,

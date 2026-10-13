@@ -921,7 +921,7 @@ BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx,
 			 */
 			down(&ctx->hw_ctx->fetch_sem);
 			ctx->state |= BC_LINK_PAUSED;
-			ctx->hw_ctx->pfnIssuePause(ctx->hw_ctx, true);
+			sts = ctx->hw_ctx->pfnIssuePause(ctx->hw_ctx, true);
 			up(&ctx->hw_ctx->fetch_sem);
 		}
 	}
