@@ -14236,9 +14236,11 @@ class FirmwarePpbReturnHeaderTests(unittest.TestCase):
         self.assertIn("crystalhd_valid_dram_range(start_off, dw_cnt)", driver)
         self.assertIn("for (n = 0; n < count; n++, addr += 4)", driver)
         read = "rd_buff[ix + n] = readl(hw->adp->mem_addr + (addr & ~mask));"
-        self.assertLess(driver.index("spin_lock_irqsave"), driver.index("pfnWriteDevRegister"))
-        self.assertLess(driver.index("pfnWriteDevRegister"), driver.index(read))
-        self.assertLess(driver.index(read), driver.index("spin_unlock_irqrestore"))
+        window = driver.index("pfnWriteDevRegister")
+        self.assertLess(driver.index("spin_lock_irqsave"), window)
+        self.assertLess(window, driver.index(read))
+        # The fault branch unlocks and returns before selecting the window.
+        self.assertLess(driver.index(read), driver.index("spin_unlock_irqrestore", window))
         self.assertEqual(self.report["transport"], {"api_length_unit": "bytes", "driver_length_unit": "DWORDs",
             "pair_api_bytes": 8, "pair_driver_dwords": 2, "pair_sequential_readl_calls": 2, "readl_address_step_bytes": 4,
             "host_window_locked_per_burst": True, "firmware_words_locked": False, "atomic_64bit_read": False,
