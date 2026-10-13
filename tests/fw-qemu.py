@@ -2228,6 +2228,62 @@ class FirmwarePictureQemuTests(unittest.TestCase):
         actual = self.check(execute_picture(active=2))
         self.assertEqual(self.state(actual), (1, 0, 0, 0))
 
+    def test_empty_producer_after_slot4_delivery_retains_cached_return(self):
+        """Selected synthetic CPU joins, not native duplicate IRQ/recycle proof."""
+        produced = self.check(execute_picture(configured=True, route=1, refresh=True))
+        returned = self.check(execute_picture("irq", previous=produced["snapshot"]))
+        delivered = execute_slot4_delivery(returned["snapshot"])
+        empty = self.check(execute_picture(previous=delivered["snapshot"]))
+        repeated = self.check(execute_picture("irq", previous=empty["snapshot"]))
+
+        def root_bytes(actual, offset, size):
+            return actual["pages"][0xd3000][0xa00 + offset:0xa00 + offset + size]
+
+        # Keep the real format helper: unchanged geometry takes its actual
+        # tail at 7970, rather than inventing a configured-state contract.
+        self.assertIn((0x8650, 0x78dc),
+                      [(site, target) for site, target, _ in produced["calls"]])
+        self.assertIn((0x7970, 0x203c4),
+                      [(site, target) for site, target, _ in produced["calls"]])
+        self.assertEqual([event[0] for event in produced["events"]],
+                         ["enter", "build", "kick", "rx-publish", "leave"])
+        self.assertEqual(produced["events"][2][1], 0)
+        self.assertEqual(delivered["pages"], delivered["expected"])
+        self.assertEqual(delivered["stores"], [
+            (0x6f30, 0xd2038, 0x200),
+            (0x7784, PICTURE_ROOT + 0x1a8, 1),
+            (0x7024, 0x100f2008, 0x200)])
+
+        cache = struct.pack("<3I", META_RECORD, PICTURE_TOKEN, 0)
+        for actual in (produced, returned, delivered, empty, repeated):
+            self.assertEqual(self.state(actual), (1, 1, 1, 0))
+            self.assertEqual(root_bytes(actual, 0xe0, 12), cache)
+            self.assertEqual(struct.unpack_from("<2I", actual["pages"][0x400000], 0x100),
+                             (3, 3))
+        self.assertEqual([root_bytes(actual, 0x1a8, 1)
+                          for actual in (produced, returned, delivered, empty, repeated)],
+                         [b"\0", b"\0", b"\x01", b"\x01", b"\x01"])
+
+        # d624's empty-ring return leaves the zeroed local tuple untouched.
+        # 83f4 then reaches 8828/8830 without cache/gate/pending publication.
+        self.assertEqual([(site, target) for site, target, _ in empty["calls"]], [
+            (0x8368, 0x70f0), (0x836c, 0x898), (0x8440, 0x203c4),
+            (0x8450, 0x206e4), (0x845c, 0xd624),
+            (0x882c, 0xaf18), (0x8830, 0x710c)])
+        self.assertEqual([event[0] for event in empty["events"]], ["enter", "leave"])
+        self.assertEqual(empty["rx_writes"], [])
+        self.assertEqual(empty["rx_order"], [])
+        self.assertEqual(empty["pages"][0xd3000], delivered["pages"][0xd3000])
+        self.assertEqual(empty["pages"][0x401000], delivered["pages"][0x401000])
+
+        self.assertEqual(struct.unpack_from("<3I", returned["pages"][0x401000], 0x100),
+                         (2, 3, PICTURE_TOKEN))
+        self.assertEqual(struct.unpack_from("<4I", repeated["pages"][0x401000], 0x100),
+                         (2, 4, PICTURE_TOKEN, PICTURE_TOKEN))
+        for actual in (returned, repeated):
+            self.assertEqual(actual["real_status"], [(0xd5a4, 0)])
+            self.assertEqual([event[0] for event in actual["events"]], [])
+
     def test_tagged_empty_picture_branch_is_not_a_lease(self):
         for configured in (False, True):
             with self.subTest(configured=configured):
