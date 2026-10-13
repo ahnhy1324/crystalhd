@@ -485,7 +485,6 @@ BC_STATUS crystalhd_flea_mem_wr(struct crystalhd_hw *hw, uint32_t start_off,
 }
 
 
-#if 0 /* Permanently excluded in this isolated host-PM shadow artifact. */
 /* Runtime power register helpers. The caller owns hw->lock and the
  * transition reservation. These bounded checks do not prove physical leases.
  */
@@ -687,7 +686,7 @@ static void flea_pm_restore_watchdogs(struct crystalhd_hw *hw)
 
 /* Runtime power transitions. */
 static
-BC_STATUS crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
+BC_STATUS crystalhd_flea_physical_power_up(struct crystalhd_hw *hw)
 {
 	uint64_t currTick, temp_64;
 	uint32_t totalTick_Hi, TickSpentInPD_Hi;
@@ -774,7 +773,7 @@ BC_STATUS crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
 }
 
 static
-enum FLEA_POWER_DOWN_RESULT crystalhd_flea_runtime_power_dn(struct crystalhd_hw *hw)
+enum FLEA_POWER_DOWN_RESULT crystalhd_flea_physical_power_dn(struct crystalhd_hw *hw)
 {
 	uint32_t value = 0;
 	unsigned int i;
@@ -853,20 +852,32 @@ restore_fault:
 	flea_pm_fault(hw, "restore read");
 	return FLEA_PD_FAULT;
 }
-#endif
-
-/* This artifact exercises host ownership/FLL paths, never runtime gating.
- * No switch can select the excluded physical register helpers above.
- * Normal stop_device's existing terminal shutdown is a separate path.
- */
+/* Immutable experimental one-cycle wrapper; original physical bodies above. */
 static BC_STATUS crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
 {
+	BC_STATUS status;
+
+	if (!crystalhd_pm_cycle_up_claim(hw)) {
+		hw->FleaPowerState = FLEA_PS_FAULT;
+		crystalhd_hw_publish_fault(hw);
+		return BC_STS_IO_ERROR;
+	}
 	crystalhd_pm_shadow_trace(hw, CHD_PM_UP_ENTRY, FLEA_EVT_NONE,
 				 hw->FleaPowerState, FLEA_PS_ACTIVE,
-				 BC_STS_IO_ERROR, CHD_PM_SHADOW_UNKNOWN);
-	hw->FleaPowerState = FLEA_PS_FAULT;
-	crystalhd_hw_publish_fault(hw);
-	return BC_STS_IO_ERROR;
+				 BC_STS_SUCCESS, CHD_PM_SHADOW_UNKNOWN);
+	status = crystalhd_flea_physical_power_up(hw);
+	crystalhd_pm_cycle_up_record(hw, status);
+	if (status != BC_STS_SUCCESS || hw->FleaPowerSaved.valid) {
+		if (hw->FleaPowerState != FLEA_PS_FAULT) {
+			hw->FleaPowerState = FLEA_PS_FAULT;
+			crystalhd_hw_publish_fault(hw);
+		}
+		status = BC_STS_IO_ERROR;
+	}
+	crystalhd_pm_shadow_trace(hw, CHD_PM_UP_RESULT, FLEA_EVT_NONE,
+				 hw->FleaPowerState, FLEA_PS_ACTIVE, status,
+				 CHD_PM_SHADOW_UNKNOWN);
+	return status;
 }
 
 #if 0 /* Previous immutable arbiter-only helper retained as research evidence. */
@@ -951,30 +962,47 @@ done:
 	return report->down_result;
 }
 #endif
+#if 0 /* Previous immutable retention-only protocol is not part of this cycle. */
 #include "crystalhd_pm_retention_ops.h"
+#endif
 
 static enum FLEA_POWER_DOWN_RESULT
 crystalhd_flea_runtime_power_dn(struct crystalhd_hw *hw)
 {
-	struct chd_pm_retention_report report;
 	enum FLEA_POWER_DOWN_RESULT result = FLEA_PD_REFUSED;
 
-	/* Recheck the caller's host admission before even the one-shot claim. */
-	if (!hw->FleaPowerTransition || hw->FleaPowerState != FLEA_PS_LP_PENDING ||
+	/* Consume the sole token before baseline capture or any physical write. */
+	if (!crystalhd_pm_cycle_down_claim(hw))
+		goto refuse;
+	/* The consumed token also covers refusals; no subsequent capture is allowed. */
+	if (!hw->FleaPowerTransition || !hw->FleaCyclePauseFll ||
+	    hw->FleaPowerSaved.valid ||
+	    hw->FleaPowerState != FLEA_PS_LP_PENDING ||
 	    READ_ONCE(hw->dma_fault) || !READ_ONCE(hw->adp->present) || !hw->dev_started ||
 	    hw->FleaTxActive || hw->FleaIrqActive || hw->FleaRawActive ||
 	    hw->fwcmd_trans_active || hw->fwcmd_active || hw->FwCmdCnt || hw->fwcmd_poisoned ||
 	    hw->TxList0Sts != ListStsFree || hw->TxList1Sts != ListStsFree ||
 	    hw->rx_list_sts[0] != sts_free || hw->rx_list_sts[1] != sts_free ||
 	    hw->EmptyCnt || hw->SingleThreadAppFIFOEmpty)
-		goto refuse;
-	if (!crystalhd_pm_arbiter_claim())
-		goto refuse;
-	result = crystalhd_flea_retention_cycle(hw, &report);
-	crystalhd_pm_retention_record(hw, &report);
+		goto record;
+	crystalhd_pm_shadow_trace(hw, CHD_PM_DOWN_ENTRY, FLEA_EVT_NONE,
+				 hw->FleaPowerState, FLEA_PS_LP_COMPLETE,
+				 BC_STS_SUCCESS, CHD_PM_SHADOW_UNKNOWN);
+	result = crystalhd_flea_physical_power_dn(hw);
+record:
+	if (!crystalhd_pm_cycle_down_record(hw, result))
+		result = FLEA_PD_FAULT;
 	if (result == FLEA_PD_FAULT) {
-		hw->FleaPowerState = FLEA_PS_FAULT;
-		crystalhd_hw_publish_fault(hw);
+		if (hw->FleaPowerState != FLEA_PS_FAULT) {
+			hw->FleaPowerState = FLEA_PS_FAULT;
+			crystalhd_hw_publish_fault(hw);
+		}
+		return result;
+	}
+	if (result == FLEA_PD_ENTERED) {
+		crystalhd_pm_shadow_trace(hw, CHD_PM_DOWN_ENTERED, FLEA_EVT_NONE,
+					 hw->FleaPowerState, FLEA_PS_LP_COMPLETE,
+					 result, CHD_PM_SHADOW_UNKNOWN);
 		return result;
 	}
 refuse:
@@ -1173,6 +1201,7 @@ void crystalhd_flea_init_power_state(struct crystalhd_hw *hw)
 	hw->FleaIrqActive = 0;
 	hw->FleaRawActive = 0;
 	hw->FleaPowerSaved.valid = false;
+	hw->FleaCyclePauseFll = false;
 	crystalhd_pm_shadow_session(hw);
 	crystalhd_pm_shadow_trace(hw, CHD_PM_INIT, FLEA_EVT_NONE,
 				 FLEA_PS_NONE, FLEA_PS_NONE, BC_STS_SUCCESS,
@@ -1223,10 +1252,13 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 		if (hw->pfnDevDRAMWrite(hw, hw->FleaFLLUpdateAddr, 1,
 				      &freeListLen) != BC_STS_SUCCESS) {
 			sts = BC_STS_IO_ERROR;
+			crystalhd_pm_cycle_fll_record(hw, sts);
 			crystalhd_pm_shadow_trace(hw, CHD_PM_FLL_RESTORE, FLEA_EVT_NONE,
 						 trace_old, NewState, sts, freeListLen);
 			break;
 		}
+		crystalhd_pm_cycle_fll_record(hw, BC_STS_SUCCESS);
+		hw->FleaCyclePauseFll = false;
 		hw->FleaPowerState = FLEA_PS_ACTIVE;
 		crystalhd_pm_shadow_trace(hw, CHD_PM_FLL_RESTORE, FLEA_EVT_NONE,
 					 trace_old, NewState, BC_STS_SUCCESS, freeListLen);
@@ -1260,6 +1292,7 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 			break;
 		}
 		hw->FleaPowerState = FLEA_PS_LP_PENDING;
+		hw->FleaCyclePauseFll = true;
 		crystalhd_pm_shadow_trace(hw, CHD_PM_FLL, FLEA_EVT_NONE,
 					 trace_old, NewState, BC_STS_SUCCESS, 0);
 		if (NewState == FLEA_PS_LP_PENDING)
@@ -1895,6 +1928,9 @@ bool crystalhd_flea_start_device(struct crystalhd_hw *hw)
 bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
 {
 	uint32_t regVal=0, pollCnt=0;
+
+	if (crystalhd_pm_cycle_reject_asleep(hw))
+		return false;
 
 	/*
 	-- Issue the core reset so that we

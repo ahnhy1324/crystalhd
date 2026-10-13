@@ -35,6 +35,10 @@ enum chd_pm_shadow_stage {
 	CHD_PM_FAULT,
 	CHD_PM_ARBITER,
 	CHD_PM_RETENTION,
+	CHD_PM_DOWN_ENTRY,
+	CHD_PM_DOWN_ENTERED,
+	CHD_PM_UP_RESULT,
+	CHD_PM_ASLEEP_CLOSE,
 	CHD_PM_STAGE_COUNT,
 };
 
@@ -53,6 +57,7 @@ struct chd_pm_shadow_record {
 	u32 fw_transaction, fw_active, fw_count, fw_poisoned;
 	u32 tx_list0, tx_list1, rx_list0, rx_list1;
 	u32 empty_count, single_fifo_empty, rx_pause;
+	u32 snapshot_valid, cycle_phase;
 };
 
 struct chd_pm_shadow_ring {
@@ -68,6 +73,7 @@ struct chd_pm_shadow_ring {
 	struct chd_pm_arbiter_report arbiter;
 	u32 retention_valid;
 	struct chd_pm_retention_report retention;
+	struct chd_pm_cycle_report cycle;
 };
 
 static inline void chd_pm_shadow_increment(u64 *value)
@@ -89,7 +95,8 @@ static inline void chd_pm_shadow_store(struct chd_pm_shadow_ring *ring,
 		chd_pm_shadow_increment(&ring->down_refused);
 	if (record->stage == CHD_PM_UP_ENTRY)
 		chd_pm_shadow_increment(&ring->up_entry);
-	if (record->violations & CHD_PM_LP_COMPLETE)
+	if (record->stage == CHD_PM_SET && record->new_state == FLEA_PS_LP_COMPLETE &&
+	    record->old_state != record->new_state)
 		chd_pm_shadow_increment(&ring->lp_complete);
 	if (record->violations)
 		chd_pm_shadow_increment(&ring->violations);
@@ -106,7 +113,7 @@ static inline void chd_pm_shadow_store(struct chd_pm_shadow_ring *ring,
 	}
 	if (!ring->first_fault_valid &&
 	    (record->dma_fault || record->new_state == FLEA_PS_FAULT || record->fw_poisoned ||
-	     record->violations || record->stage == CHD_PM_UP_ENTRY)) {
+	     record->violations)) {
 		ring->first_fault = *record;
 		ring->first_fault_valid = 1;
 	}

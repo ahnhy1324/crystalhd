@@ -487,6 +487,7 @@ struct crystalhd_hw {
 
 	uint32_t			FleaEnablePWM;
 	u64			FleaShadowSession;
+	bool			FleaCyclePauseFll;
 	uint32_t			FleaWaitFirstPlaybackNotify;
 	enum FLEA_POWER_STATES	FleaPowerState;
 	/* Serializes runtime transitions and cleanup heartbeat access. */

@@ -148,6 +148,8 @@ static bool crystalhd_retire_hw_context(struct crystalhd_cmd *ctx,
 {
 	if (!ctx->hw_ctx)
 		goto retired;
+	if (crystalhd_pm_cycle_reject_asleep(ctx->hw_ctx))
+		return false;
 	if (READ_ONCE(ctx->hw_ctx->dma_fault))
 		return false;
 

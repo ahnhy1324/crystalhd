@@ -1584,6 +1584,8 @@ BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw)
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	if (crystalhd_pm_cycle_reject_asleep(hw))
+		return BC_STS_IO_ERROR;
 
 	/* Backend stop callbacks sleep. The caller excludes process submissions;
 	 * drain the ISR before detaching either fixed-list owner.
@@ -2020,6 +2022,8 @@ BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap)
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	if (crystalhd_pm_cycle_reject_asleep(hw))
+		return BC_STS_IO_ERROR;
 	if (READ_ONCE(hw->dma_fault))
 		return BC_STS_IO_ERROR;
 	/* A monitor handle never creates capture queues or posts DMA. */
