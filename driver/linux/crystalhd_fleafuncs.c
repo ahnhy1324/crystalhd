@@ -2284,7 +2284,22 @@ BC_STATUS crystalhd_flea_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd)
 		goto done;
 
 	if (res_buff[2] != 0) {
-		dev_err(dev, "res_buff[2] != C011_RET_SUCCESS\n");
+		if (cmd_buff[0] == eCMD_C011_DEC_CHAN_START_VIDEO)
+			dev_err(dev,
+				"firmware reply rejected: stage=reply-validation "
+				"request=0x%08x sequence=0x%08x channel=%u "
+				"response=0x%08x response-sequence=0x%08x "
+				"status=0x%08x\n",
+				cmd_buff[0], cmd_buff[1], cmd_buff[2],
+				res_buff[0], res_buff[1], res_buff[2]);
+		else
+			dev_err(dev,
+				"firmware reply rejected: stage=reply-validation "
+				"request=0x%08x sequence=0x%08x "
+				"request-word2=0x%08x response=0x%08x "
+				"response-sequence=0x%08x status=0x%08x\n",
+				cmd_buff[0], cmd_buff[1], cmd_buff[2],
+				res_buff[0], res_buff[1], res_buff[2]);
 		sts = BC_STS_FW_CMD_ERR;
 		goto done;
 	}

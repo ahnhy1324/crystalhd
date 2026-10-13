@@ -2,6 +2,7 @@
 /* Exact firmware-command state helpers; no device is opened. */
 #include <errno.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -89,6 +90,7 @@ static void TestSpinLock(spinlock_t *lock);
 static void AssertSpinHeld(spinlock_t *lock);
 static void AssertMutexHeld(struct mutex *mutex);
 static void TestDebug(struct device *dev, const char *function);
+static void TestError(struct device *dev, const char *format, ...);
 
 static int TestMutexLock(struct mutex *mutex)
 {
@@ -161,7 +163,7 @@ static int TestWait(wait_queue_head_t *event)
 #define KERN_ERR ""
 #define printk(...) ((void)0)
 #define dev_dbg(dev, ...) TestDebug(dev, __func__)
-#define dev_err(dev, ...) ((void)(dev))
+#define dev_err(dev, ...) TestError(dev, __VA_ARGS__)
 #define dev_info(dev, ...) ((void)(dev))
 #define msleep_interruptible(milliseconds) TestSleep(milliseconds)
 #define lockdep_assert_held(lock) _Generic((lock), \
@@ -648,6 +650,8 @@ static unsigned transfer_reads, transfer_writes, mailbox_reads, mailbox_posts;
 static unsigned sleeps, firmware_config_calls, power_wakes;
 static unsigned power_reevaluations, reply_owner_checks, postprocess_owner_checks;
 static bool power_wake_fails, pending_during_reply;
+static char last_error[512];
+static unsigned error_logs;
 
 static void TestDebug(struct device *dev, const char *function)
 {
@@ -658,6 +662,18 @@ static void TestDebug(struct device *dev, const char *function)
               "postprocessing retains host ownership after response IRQ retirement");
         postprocess_owner_checks++;
     }
+}
+
+static void TestError(struct device *dev, const char *format, ...)
+{
+    va_list arguments;
+
+    (void)dev;
+    va_start(arguments, format);
+    if (vsnprintf(last_error, sizeof(last_error), format, arguments) < 0)
+        abort();
+    va_end(arguments);
+    error_logs++;
 }
 
 static bool WordsZero(const uint32_t *words, unsigned count)
@@ -825,6 +841,8 @@ static void InitTransfer(BC_FW_CMD *command, uint32_t id, bool stale)
     sleeps = firmware_config_calls = power_wakes = 0;
     power_reevaluations = reply_owner_checks = postprocess_owner_checks = 0;
     power_wake_fails = pending_during_reply = false;
+    last_error[0] = '\0';
+    error_logs = 0;
     hardware.pfnDevDRAMWrite = WriteCommand;
     hardware.pfnDevDRAMRead = ReadTransfer;
     hardware.pfnReadDevRegister = ReadMailbox;
@@ -950,10 +968,17 @@ static void ReplyRangeAndFirmwareStatus(void)
             BC_FW_CMD command;
             const uint32_t firmware_status[] = { 0U, 1U, UINT32_MAX };
             BC_STATUS expected = status ? BC_STS_FW_CMD_ERR : BC_STS_SUCCESS;
+            char expected_log[sizeof(last_error)];
 
             InitTransfer(&command, eCMD_C011_DEC_CHAN_START_VIDEO, true);
             response_address = CRYSTALHD_DEVICE_DRAM_SIZE - sizeof(command.rsp);
             response_words[2] = firmware_status[status];
+            if (status) {
+                command.cmd[1] = 0x10203040U;
+                command.cmd[2] = 9U;
+                response_words[0] = 0xaabbccddU;
+                response_words[1] = 0x55667788U;
+            }
             Check(execute[generation](&hardware, &command) == expected,
                   "last valid DRAM reply and firmware status retain existing semantics");
             Check(!memcmp(command.rsp, response_words, sizeof(command.rsp)) &&
@@ -963,8 +988,48 @@ static void ReplyRangeAndFirmwareStatus(void)
             Check(hardware.pib_del_Q_addr == (status ? 0xccddU : response_words[5]) &&
                   hardware.pib_rel_Q_addr == (status ? 0xddeeU : response_words[6]),
                   "only a successfully read firmware success reply publishes PIB queues");
+            if (!generation) {
+                if (!status) {
+                    Check(!error_logs,
+                          "a successful Flea reply does not emit a rejection diagnostic");
+                } else {
+                    snprintf(expected_log, sizeof(expected_log),
+                             "firmware reply rejected: stage=reply-validation "
+                             "request=0x%08x sequence=0x%08x channel=%u "
+                             "response=0x%08x response-sequence=0x%08x "
+                             "status=0x%08x\n",
+                             command.cmd[0], command.cmd[1], command.cmd[2],
+                             response_words[0], response_words[1], response_words[2]);
+                    Check(error_logs == 1 && !strcmp(last_error, expected_log),
+                          "a rejected Flea START logs one bounded raw reply identity");
+                }
+            }
             DestroyHardware();
         }
+    }
+
+    {
+        BC_FW_CMD command;
+        char expected_log[sizeof(last_error)];
+
+        InitTransfer(&command, eCMD_C011_DEC_CHAN_OPEN, true);
+        command.cmd[1] = 0x11223344U;
+        command.cmd[2] = 0x01020304U;
+        response_words[0] = 0x99aabbccU;
+        response_words[1] = 0x55667788U;
+        response_words[2] = UINT32_MAX;
+        Check(crystalhd_flea_do_fw_cmd(&hardware, &command) == BC_STS_FW_CMD_ERR,
+              "a rejected non-START Flea reply retains firmware-error semantics");
+        snprintf(expected_log, sizeof(expected_log),
+                 "firmware reply rejected: stage=reply-validation "
+                 "request=0x%08x sequence=0x%08x "
+                 "request-word2=0x%08x response=0x%08x "
+                 "response-sequence=0x%08x status=0x%08x\n",
+                 command.cmd[0], command.cmd[1], command.cmd[2],
+                 response_words[0], response_words[1], response_words[2]);
+        Check(error_logs == 1 && !strcmp(last_error, expected_log),
+              "a non-START rejection labels word two without claiming a channel");
+        DestroyHardware();
     }
 }
 
