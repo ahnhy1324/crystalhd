@@ -51,6 +51,7 @@ struct crystalhd_hw {
 enum { RX_CASES = 16 + 32 };
 static unsigned transitions, cases, transition_cases, sequence_cases;
 static unsigned register_cycles;
+static unsigned memc_cases;
 static enum FLEA_POWER_STATES requested;
 static void check(bool condition, const char *what);
 
@@ -80,6 +81,11 @@ struct mock_device {
     bool require_lock, lock_held;
     unsigned reads, writes, dram_writes, delays, power_ups, fetches;
     unsigned status_reads, poll_delays, power_writes;
+    uint32_t memc_samples[4];
+    unsigned memc_sample_count;
+    bool record_writes;
+    struct { uint32_t addr, value; } write_log[8];
+    unsigned logged_writes;
     unsigned picture_irqs, tx_irqs;
     struct crystalhd_hw *command_on_lock;
     unsigned command_lock_countdown;
@@ -200,8 +206,17 @@ static uint32_t read_register(struct mock_device *dev, uint32_t addr)
     check(!dev->require_lock || dev->lock_held, "power-down MMIO read outside lock");
     dev->reads++;
     if (addr == BCHP_DDR23_CTL_REGS_0_CTL_STATUS) {
-        dev->status_reads++;
+        unsigned sample = dev->status_reads++;
+        if (dev->memc_sample_count) {
+            check(dev->memc_sample_count <= sizeof(dev->memc_samples) / sizeof(dev->memc_samples[0]),
+                  "invalid scripted MEMC sample count");
+            if (sample >= dev->memc_sample_count) sample = dev->memc_sample_count - 1;
+            return dev->memc_samples[sample];
+        }
         return (dev->idle ? BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK : 0) |
+               BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo1_empty_MASK |
+               BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo2_empty_MASK |
+               BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo3_empty_MASK |
                (dev->fail_self_refresh ? BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK : 0);
     }
     return register_value(dev, addr);
@@ -212,6 +227,12 @@ static void write_register(struct mock_device *dev, uint32_t addr, uint32_t valu
     unsigned i;
     check(!dev->require_lock || dev->lock_held, "power-down MMIO write outside lock");
     dev->writes++;
+    if (dev->record_writes) {
+        check(dev->logged_writes < sizeof(dev->write_log) / sizeof(dev->write_log[0]),
+              "unexpected extra write during MEMC refusal");
+        dev->write_log[dev->logged_writes].addr = addr;
+        dev->write_log[dev->logged_writes++].value = value;
+    }
     switch (addr) {
     case BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL:
     case BCHP_DDR23_CTL_REGS_0_PARAMS2:
@@ -723,6 +744,134 @@ static void register_round_trips(void)
         hw.FleaPowerTransition = false;
         unlock_hw(&hw.lock);
     }
+}
+
+static void memc_refusal_check(const struct crystalhd_hw *hw,
+                               unsigned status_reads, unsigned delays)
+{
+    static const struct { uint32_t addr, value; } expected[] = {
+#ifdef _POWER_HANDLE_AVD_WATCHDOG_
+        {BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR, UINT32_MAX},
+        {BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR, UINT32_MAX},
+#endif
+        {BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL, 1},
+        {BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL, 0},
+#ifdef _POWER_HANDLE_AVD_WATCHDOG_
+        {BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR, 7},
+        {BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR, 11},
+#endif
+    };
+    check(hw->FleaPowerState == FLEA_PS_LP_PENDING &&
+          !hw->FleaPowerTransition && !hw->lock && !device.lock_held,
+          "MEMC refusal did not retain an unlocked accepted pending pause");
+    check(device.dram_writes == 1 && !device.last_fll &&
+          device.status_reads == status_reads && device.poll_delays == delays &&
+          device.delays == delays && !device.power_writes && !hw->DrvPauseCnt &&
+          hw->TickStartInPD == UINT64_C(99),
+          "MEMC refusal exceeded its poll budget, retried or recorded physical power-down");
+    check(device.logged_writes == sizeof(expected) / sizeof(expected[0]) &&
+          device.writes == device.logged_writes,
+          "MEMC refusal wrote beyond arbiter/watchdog restoration");
+    for (unsigned i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
+        check(device.write_log[i].addr == expected[i].addr &&
+              device.write_log[i].value == expected[i].value,
+              "MEMC refusal changed exact abort write order or values");
+    check(register_value(&device, BCHP_DDR23_CTL_REGS_0_PARAMS2) == UINT32_C(0x02400000) &&
+          register_value(&device, BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0) ==
+              (UINT32_C(0x80) | BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0_enable_MASK) &&
+          register_value(&device, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL) == 0 &&
+          register_value(&device, BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR) == 7 &&
+          register_value(&device, BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR) == 11,
+          "MEMC refusal changed refresh controls or failed to restore arbiter/watchdogs");
+}
+
+static void memc_refusal_matrix(void)
+{
+    check((BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK |
+           BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo1_empty_MASK |
+           BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo2_empty_MASK |
+           BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo3_empty_MASK) == UINT32_C(0x71) &&
+          (BCHP_DDR23_CTL_REGS_0_CTL_STATUS_reserved0_MASK |
+           BCHP_DDR23_CTL_REGS_0_CTL_STATUS_reserved1_MASK) == UINT32_C(0xffffff8c),
+          "MEMC test literals no longer match the named RDB fields");
+    for (unsigned bits = 0; bits < 32; bits++) {
+        const uint32_t raw = (bits & 3U) | ((bits & 28U) << 2);
+        const bool admitted = (raw & 0x71U) == 0x71U;
+        struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
+        device.memc_samples[0] = raw;
+        device.memc_samples[1] = 0x71; /* Later self-refresh poll has CKE low. */
+        device.memc_sample_count = admitted ? 2 : 1;
+        device.record_writes = !admitted;
+        check(real_set_next_power_state(&hw, FLEA_EVT_PAUSE) == BC_STS_SUCCESS,
+              "optional MEMC refusal rejected the accepted zero-FLL pause");
+        if (admitted) {
+            check(hw.FleaPowerState == FLEA_PS_LP_COMPLETE && hw.DrvPauseCnt == 1 &&
+                  device.status_reads == 2 && !device.poll_delays &&
+                  device.dram_writes == 1 && !device.last_fll,
+                  "all named MEMC idle bits did not reach the existing later transition");
+        } else {
+            memc_refusal_check(&hw, 401, 401);
+        }
+        memc_cases++;
+    }
+    /* A valid-looking idle prefix must not mask any reserved bit. Test both
+     * an immediate invalid sample and an invalid sample after one busy read.
+     */
+    for (unsigned bit = 0; bit < 32; bit++) {
+        if ((UINT32_C(1) << bit) & 0x73U) continue;
+        for (unsigned delayed = 0; delayed < 2; delayed++) {
+            struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
+            device.memc_samples[0] = 0x33;
+            device.memc_samples[delayed] = 0x71U | (UINT32_C(1) << bit);
+            device.memc_sample_count = delayed + 1;
+            device.record_writes = true;
+            check(real_set_next_power_state(&hw, FLEA_EVT_PAUSE) == BC_STS_SUCCESS,
+                  "invalid MEMC status rejected accepted pending pause");
+            memc_refusal_check(&hw, delayed + 1, delayed);
+            memc_cases++;
+        }
+    }
+    for (uint32_t raw = 0; raw < 2; raw++) {
+        struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
+        device.memc_samples[0] = raw ? UINT32_MAX : UINT32_C(0x33);
+        device.memc_sample_count = 1;
+        device.record_writes = true;
+        check(real_set_next_power_state(&hw, FLEA_EVT_RX_PAUSE) == BC_STS_SUCCESS &&
+              hw.hw_pause_issued,
+              "native-shaped MEMC refusal lost accepted RX pause intent");
+        memc_refusal_check(&hw, raw ? 1 : 401, raw ? 0 : 401);
+        memc_cases++;
+    }
+    struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
+    device.memc_samples[0] = device.memc_samples[1] = 0x33;
+    device.memc_samples[2] = 0x73;
+    device.memc_samples[3] = 0x71;
+    device.memc_sample_count = 4;
+    check(real_set_next_power_state(&hw, FLEA_EVT_PAUSE) == BC_STS_SUCCESS &&
+          hw.FleaPowerState == FLEA_PS_LP_COMPLETE && hw.DrvPauseCnt == 1 &&
+          device.status_reads == 4 && device.poll_delays == 2 &&
+          device.dram_writes == 1 && !hw.FleaPowerTransition,
+          "MEMC 0x33-to-0x73 sequence failed to wait for the third FIFO to drain");
+    memc_cases++;
+
+    const enum FLEA_STATE_CH_EVENT events[] = {
+        FLEA_EVT_PAUSE, FLEA_EVT_RX_PAUSE, FLEA_EVT_CMD_COMP, FLEA_EVT_FW_CMD_POST};
+    const enum FLEA_POWER_STATES states[] = {
+        FLEA_PS_ACTIVE, FLEA_PS_LP_PENDING, FLEA_PS_LP_COMPLETE};
+    for (unsigned state = 0; state < sizeof(states) / sizeof(states[0]); state++)
+        for (unsigned event = 0; event < sizeof(events) / sizeof(events[0]); event++) {
+            hw = transition_setup(states[state]);
+            hw.FleaEnablePWM = false;
+            hw.hw_pause_issued = true;
+            device.memc_samples[0] = UINT32_MAX;
+            device.memc_sample_count = 1;
+            check(real_set_next_power_state(&hw, events[event]) == BC_STS_SUCCESS &&
+                  hw.FleaPowerState == FLEA_PS_ACTIVE && hw.hw_pause_issued &&
+                  !device.reads && !device.writes && !device.dram_writes &&
+                  !device.delays && !hw.FleaPowerTransition,
+                  "disabled PWM path touched MEMC or changed historical pause intent");
+            memc_cases++;
+        }
 }
 
 static void require(bool condition, const char *what,
@@ -1457,6 +1606,7 @@ int main(void)
     transition_failures();
     transition_success();
     register_round_trips();
+    memc_refusal_matrix();
     wake_interleavings();
     direction_sequences();
     deferred_completion_sequences();
@@ -1465,7 +1615,8 @@ int main(void)
     cleanup_completion_sequences();
     failed_intent_transition_sequences();
     printf("PASS: %u Flea power selector cases; %u mocked-MMIO transition cases; "
-           "%u integrated event sequences; %u targeted register cycles; no device access\n",
-           cases, transition_cases, sequence_cases, register_cycles);
+           "%u integrated event sequences; %u targeted register cycles; "
+           "%u MEMC refusal cases; no device access\n",
+           cases, transition_cases, sequence_cases, register_cycles, memc_cases);
     return 0;
 }
