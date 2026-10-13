@@ -19,11 +19,14 @@ struct _BC_DTS_PROC_OUT;
 #include "command-pm-types.h"
 #include "crystalhd_ioctl_limits.h"
 
+typedef uint64_t u64;
+
 #ifndef ERESTARTSYS
 #define ERESTARTSYS 512
 #endif
 
 #define KERN_ERR ""
+#define KERN_DEBUG ""
 #define GFP_KERNEL 0
 #define READ_ONCE(value) (value)
 #define WRITE_ONCE(value, update) ((value) = (update))
@@ -77,6 +80,7 @@ struct crystalhd_hw {
     BC_STATUS (*pfnFWDwnld)(struct crystalhd_hw *, const uint8_t *, uint32_t);
     BC_STATUS (*pfnIssuePause)(struct crystalhd_hw *, bool);
     BC_STATUS (*pfnDoFirmwareCmd)(struct crystalhd_hw *, BC_FW_CMD *);
+    bool (*pfnNotifyHardware)(struct crystalhd_hw *, enum BRCM_EVENT);
     uint32_t (*pfnReadDevRegister)(struct crystalhd_adp *, uint32_t);
     void (*pfnWriteDevRegister)(struct crystalhd_adp *, uint32_t, uint32_t);
     uint32_t (*pfnReadFPGARegister)(struct crystalhd_adp *, uint32_t);
@@ -88,6 +92,9 @@ struct crystalhd_hw {
     bool fwcmd_pending, fwcmd_poisoned;
     int fetch_sem;
     uint32_t FwCmdCnt;
+    uint32_t PauseThreshold, ResumeThreshold, DefaultPauseThreshold;
+    uint32_t DrvTotalFrmCaptured;
+    struct { uint32_t rx_success, rx_errors; } stats;
 };
 struct crystalhd_user { uint32_t uid, in_use, mode; };
 struct crystalhd_cmd {
@@ -110,6 +117,7 @@ struct crystalhd_adp {
     struct pci_dev *pdev;
     unsigned cfg_users;
     bool present;
+    uint64_t generation;
     bool dma_terminal_quiesced;
     void *fill_byte_pool, *elem_pool_head;
     int user_lock, dram_lock;
@@ -140,6 +148,7 @@ typedef struct {
 static unsigned checks, failures, starts, stops, tx_stops, cancels, captures, pools, rings;
 static unsigned elem_deletes, dio_destroys, ring_frees, hardware_opens, hardware_closes;
 static unsigned irq_depth, irq_disables, irq_enables, capture_unmaps;
+static unsigned capture_locked_stops, capture_starts, capture_notifies;
 static unsigned hardware_allocations, hardware_frees, last_close_cfg_users;
 static unsigned hardware_alloc_attempts;
 static unsigned binding_count, binding_frees, device_reads, user_writes;
@@ -196,6 +205,7 @@ static int elem_error, dio_error;
 static BC_STATUS ring_status, hardware_open_status;
 static BC_STATUS capture_status, cancel_status, download_status;
 static BC_STATUS pause_status, firmware_status;
+static BC_STATUS capture_locked_status, capture_start_status;
 static unsigned pause_calls, firmware_calls;
 static BC_FW_CMD *last_firmware_command;
 static BC_FW_CMD firmware_command_snapshot;
@@ -204,15 +214,25 @@ static unsigned firmware_status_call, remove_during_firmware_call;
 static BC_STATUS firmware_call_status;
 static uint32_t firmware_open_channel;
 static bool remove_during_fw_command, poison_on_firmware_timeout;
+static bool advance_generation_during_fw_command, replace_owner_during_fw_command;
+static bool capture_notify_ok;
+static uint8_t replacement_owner;
 static bool pause_states[4];
 static pthread_mutex_t transaction_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t transaction_audit = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t transaction_changed = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t capture_overlap_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t capture_overlap_changed = PTHREAD_COND_INITIALIZER;
 static bool transaction_mode, block_first_firmware;
 static bool fault_on_transaction_lock;
 static bool first_firmware_waiting, release_first_firmware;
 static bool block_download_reset, download_reset_waiting, release_download_reset;
 static unsigned transaction_attempts;
+static bool capture_overlap_mode, capture_notify_waiting;
+static bool release_capture_notify, capture_fetch_waiting;
+static bool block_recovery_firmware, recovery_firmware_waiting;
+static bool release_recovery_firmware;
+static uint32_t capture_notify_state;
 static char events[32];
 static struct pci_dev endpoint = { .irq = 19, .device = BC_PCI_DEVID_FLEA };
 static struct crystalhd_adp adapter = { .pdev = &endpoint };
@@ -232,6 +252,10 @@ static int request_firmware(const struct firmware **firmware, const char *name,
 static void release_firmware(const struct firmware *firmware);
 static BC_STATUS IssuePause(struct crystalhd_hw *hw, bool state);
 static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command);
+static bool NotifyHardware(struct crystalhd_hw *hw, enum BRCM_EVENT event);
+static BC_STATUS crystalhd_hw_start_capture(struct crystalhd_hw *hw);
+static BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw,
+                                                   bool unmap);
 static uint32_t ReadDevice(struct crystalhd_adp *adp, uint32_t offset);
 static void WriteDevice(struct crystalhd_adp *adp, uint32_t offset, uint32_t value);
 static uint32_t ReadLink(struct crystalhd_adp *adp, uint32_t offset);
@@ -412,6 +436,7 @@ static void ConfigureHardware(struct crystalhd_hw *hw)
     *hw = (struct crystalhd_hw){ .adp = &adapter, .dev_started = true, .pfnStartDevice = Start,
         .pfnStopDevice = Stop, .pfnStopTxDMA = StopTx, .pfnFWDwnld = Download,
         .pfnIssuePause = IssuePause, .pfnDoFirmwareCmd = FirmwareCommand,
+        .pfnNotifyHardware = NotifyHardware,
         .pfnReadDevRegister = ReadDevice, .pfnWriteDevRegister = WriteDevice,
         .pfnReadFPGARegister = ReadLink, .pfnWriteFPGARegister = WriteLink,
         .pfnDevDRAMRead = ReadMemory, .pfnDevDRAMWrite = WriteMemory,
@@ -629,8 +654,24 @@ static void release_firmware(const struct firmware *firmware)
 }
 static int down_interruptible(int *sem)
 {
-    Check(sem == &hardware.fetch_sem && *sem == 1, "pause transition acquires fetch serialization");
-    *sem = 0;
+    if (capture_overlap_mode) {
+        if (sem != &hardware.fetch_sem) abort();
+        if (pthread_mutex_lock(&capture_overlap_mutex)) abort();
+        while (!*sem) {
+            capture_fetch_waiting = true;
+            pthread_cond_broadcast(&capture_overlap_changed);
+            if (pthread_cond_wait(&capture_overlap_changed,
+                                  &capture_overlap_mutex)) abort();
+        }
+        Check(*sem == 1,
+              "overlapping transition acquires fetch serialization");
+        *sem = 0;
+        if (pthread_mutex_unlock(&capture_overlap_mutex)) abort();
+    } else {
+        Check(sem == &hardware.fetch_sem && *sem == 1,
+              "pause transition acquires fetch serialization");
+        *sem = 0;
+    }
     return 0;
 }
 static void down(int *sem)
@@ -639,8 +680,19 @@ static void down(int *sem)
 }
 static void up(int *sem)
 {
-    Check(sem == &hardware.fetch_sem && *sem == 0, "pause transition releases fetch serialization");
-    *sem = 1;
+    if (capture_overlap_mode) {
+        if (sem != &hardware.fetch_sem) abort();
+        if (pthread_mutex_lock(&capture_overlap_mutex)) abort();
+        Check(*sem == 0,
+              "overlapping transition releases fetch serialization");
+        *sem = 1;
+        pthread_cond_broadcast(&capture_overlap_changed);
+        if (pthread_mutex_unlock(&capture_overlap_mutex)) abort();
+    } else {
+        Check(sem == &hardware.fetch_sem && *sem == 0,
+              "pause transition releases fetch serialization");
+        *sem = 1;
+    }
 }
 static BC_STATUS IssuePause(struct crystalhd_hw *hw, bool state)
 {
@@ -667,6 +719,19 @@ static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command)
     if (remove_during_fw_command ||
         remove_during_firmware_call == firmware_calls + 1)
         adapter.present = false;
+    if (advance_generation_during_fw_command)
+        adapter.generation++;
+    if (replace_owner_during_fw_command)
+        context.session_owner = &replacement_owner;
+    if (block_recovery_firmware) {
+        if (pthread_mutex_lock(&capture_overlap_mutex)) abort();
+        recovery_firmware_waiting = true;
+        pthread_cond_broadcast(&capture_overlap_changed);
+        while (!release_recovery_firmware)
+            if (pthread_cond_wait(&capture_overlap_changed,
+                                  &capture_overlap_mutex)) abort();
+        if (pthread_mutex_unlock(&capture_overlap_mutex)) abort();
+    }
     if (!transaction_mode)
         last_firmware_command = command;
     if (block_first_firmware) {
@@ -694,6 +759,40 @@ static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command)
         hardware.FwCmdCnt = 1;
     }
     return status;
+}
+static bool NotifyHardware(struct crystalhd_hw *hw, enum BRCM_EVENT event)
+{
+    Check(hw == &hardware && event == BC_EVENT_START_CAPTURE,
+          "capture notification reaches the active hardware context");
+    capture_notifies++;
+    if (capture_overlap_mode) {
+        if (pthread_mutex_lock(&capture_overlap_mutex)) abort();
+        capture_notify_state = context.state;
+        capture_notify_waiting = true;
+        pthread_cond_broadcast(&capture_overlap_changed);
+        while (!release_capture_notify)
+            if (pthread_cond_wait(&capture_overlap_changed,
+                                  &capture_overlap_mutex)) abort();
+        if (pthread_mutex_unlock(&capture_overlap_mutex)) abort();
+    }
+    return capture_notify_ok;
+}
+static BC_STATUS crystalhd_hw_start_capture(struct crystalhd_hw *hw)
+{
+    Check(hw == &hardware && hw->fetch_sem == 0,
+          "capture start runs under fetch serialization");
+    capture_starts++;
+    return capture_start_status;
+}
+static BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw,
+                                                   bool unmap)
+{
+    Check(hw == &hardware && hw->fetch_sem == 0,
+          "capture cleanup runs under fetch serialization");
+    capture_locked_stops++;
+    if (unmap)
+        capture_unmaps++;
+    return capture_locked_status;
 }
 static BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap)
 {
@@ -938,6 +1037,7 @@ static void Reset(uint32_t state, bool with_hardware)
     starts = stops = tx_stops = cancels = captures = pools = rings = 0;
     elem_deletes = dio_destroys = ring_frees = hardware_opens = hardware_closes = 0;
     irq_depth = irq_disables = irq_enables = capture_unmaps = 0;
+    capture_locked_stops = capture_starts = capture_notifies = 0;
     hardware_allocations = hardware_frees = last_close_cfg_users = 0;
     hardware_alloc_attempts = 0;
     hardware_alloc_fail = admission_pending = open_pending = false;
@@ -991,6 +1091,7 @@ static void Reset(uint32_t state, bool with_hardware)
     ring_status = hardware_open_status = BC_STS_SUCCESS;
     capture_status = cancel_status = download_status = BC_STS_SUCCESS;
     pause_status = firmware_status = BC_STS_SUCCESS;
+    capture_locked_status = capture_start_status = BC_STS_SUCCESS;
     pause_calls = firmware_calls = 0;
     last_firmware_command = NULL;
     memset(&firmware_command_snapshot, 0, sizeof(firmware_command_snapshot));
@@ -999,14 +1100,22 @@ static void Reset(uint32_t state, bool with_hardware)
     firmware_call_status = BC_STS_SUCCESS;
     firmware_open_channel = 0;
     remove_during_fw_command = poison_on_firmware_timeout = false;
+    advance_generation_during_fw_command = replace_owner_during_fw_command = false;
+    capture_notify_ok = true;
     memset(pause_states, 0, sizeof(pause_states));
     transaction_mode = block_first_firmware = false;
     fault_on_transaction_lock = false;
     first_firmware_waiting = release_first_firmware = false;
     block_download_reset = download_reset_waiting = release_download_reset = false;
     transaction_attempts = 0;
+    capture_overlap_mode = capture_notify_waiting = false;
+    release_capture_notify = capture_fetch_waiting = false;
+    block_recovery_firmware = recovery_firmware_waiting = false;
+    release_recovery_firmware = false;
+    capture_notify_state = BC_LINK_INVALID;
     endpoint.device = BC_PCI_DEVID_FLEA;
-    adapter = (struct crystalhd_adp){ .pdev = &endpoint, .present = true };
+    adapter = (struct crystalhd_adp){ .pdev = &endpoint, .present = true,
+        .generation = chd_device_generation };
     ConfigureHardware(&hardware);
     context = (struct crystalhd_cmd){ .state = state, .adp = &adapter,
         .hw_ctx = with_hardware ? &hardware : NULL, .cin_wait_exit = 1,
@@ -1215,6 +1324,103 @@ static void FirmwareSharedEntry(void)
     Check(bc_cproc_do_fw_cmd(&context, &data) == BC_STS_INV_ARG &&
           !firmware_calls,
           "the legacy adapter rejects an out-of-range owner index");
+}
+
+static void FirmwareResumeInitCommit(void)
+{
+    const uint32_t recovery = BC_LINK_RESUME | BC_LINK_INIT;
+    BC_FW_CMD command = {0};
+    int owner = 0, wrong_owner = 0;
+
+    command.cmd[0] = eCMD_C011_INIT;
+
+    ResetFrontendOwned(recovery, true, &owner);
+    context.retain_rx_on_suspend = true;
+    Check(crystalhd_fw_exec_locked(&context, &owner, &command) ==
+              BC_STS_SUCCESS && context.state == BC_LINK_INIT &&
+          context.retain_rx_on_suspend && firmware_calls == 1,
+          "successful legacy INIT commits exact recovery state without retiring retained RX");
+    Check(crystalhd_capture_flush(&context, false) == BC_STS_SUCCESS &&
+          context.state == BC_LINK_INIT && capture_locked_stops == 1 &&
+          capture_unmaps == 1 && !capture_starts && !capture_notifies,
+          "normalized recovery admits destructive cleanup of retained RX registrations");
+
+    ResetFrontendOwned(recovery, true, &owner);
+    context.retain_rx_on_suspend = true;
+    Check(crystalhd_fw_exec_locked(&context, &owner, &command) ==
+              BC_STS_SUCCESS && context.state == BC_LINK_INIT,
+          "prepare normalized recovery for capture admission");
+    context.state |= BC_LINK_FMT_CHG;
+    Check(crystalhd_capture_start(&context, 5, 3) == BC_STS_SUCCESS &&
+          context.state == BC_LINK_READY && capture_notifies == 1 &&
+          capture_starts == 1 && hardware.PauseThreshold == 5 &&
+          hardware.ResumeThreshold == 3 &&
+          hardware.DefaultPauseThreshold == 5,
+          "normalized recovery reaches exact READY and starts capture");
+
+    ResetFrontendOwned(recovery, true, &owner);
+    firmware_status = BC_STS_TIMEOUT;
+    Check(crystalhd_fw_exec_locked(&context, &owner, &command) ==
+              BC_STS_TIMEOUT && context.state == recovery &&
+          firmware_calls == 1,
+          "transport failure cannot commit resumed INIT");
+
+    ResetFrontendOwned(recovery, true, &owner);
+    firmware_status = BC_STS_FW_CMD_ERR;
+    Check(crystalhd_fw_exec_locked(&context, &owner, &command) ==
+              BC_STS_FW_CMD_ERR && context.state == recovery &&
+          firmware_calls == 1,
+          "firmware rejection cannot commit resumed INIT");
+
+    ResetFrontendOwned(recovery, true, &owner);
+    command.cmd[0] = eCMD_C011_DEC_CHAN_OPEN;
+    Check(crystalhd_fw_exec_locked(&context, &owner, &command) ==
+              BC_STS_SUCCESS && context.state == recovery &&
+          firmware_calls == 1,
+          "a successful non-INIT command cannot clear resumed recovery state");
+
+    ResetFrontendOwned(BC_LINK_INIT | BC_LINK_PAUSED, true, &owner);
+    command.cmd[0] = eCMD_C011_INIT;
+    Check(crystalhd_fw_exec_locked(&context, &owner, &command) ==
+              BC_STS_SUCCESS &&
+          context.state == (BC_LINK_INIT | BC_LINK_PAUSED) &&
+          firmware_calls == 1,
+          "INIT outside exact resumed recovery preserves ordinary driver state");
+
+    ResetFrontendOwned(recovery | BC_LINK_CAP_EN, true, &owner);
+    Check(crystalhd_fw_exec_locked(&context, &owner, &command) ==
+              BC_STS_SUCCESS &&
+          context.state == (recovery | BC_LINK_CAP_EN) &&
+          firmware_calls == 1,
+          "capture-first INIT preserves the published non-exact recovery state");
+
+    ResetFrontendOwned(recovery, true, &owner);
+    Check(crystalhd_fw_exec_locked(&context, &wrong_owner, &command) ==
+              BC_STS_ERR_USAGE && context.state == recovery &&
+          !firmware_calls,
+          "foreign owner is refused before resumed INIT can reach firmware");
+
+    ResetFrontendOwned(recovery, true, &owner);
+    replace_owner_during_fw_command = true;
+    Check(crystalhd_fw_exec_locked(&context, &owner, &command) ==
+              BC_STS_IO_ERROR && context.state == recovery &&
+          context.session_owner == &replacement_owner && firmware_calls == 1,
+          "lost session ownership after INIT reply cannot publish recovery");
+
+    ResetFrontendOwned(recovery, true, &owner);
+    advance_generation_during_fw_command = true;
+    Check(crystalhd_fw_exec_locked(&context, &owner, &command) ==
+              BC_STS_IO_ERROR && context.state == recovery &&
+          adapter.generation == chd_device_generation + 1 &&
+          firmware_calls == 1,
+          "changed device generation after INIT reply cannot publish recovery");
+
+    ResetFrontendOwned(recovery, true, &owner);
+    remove_during_fw_command = true;
+    Check(crystalhd_fw_exec_locked(&context, &owner, &command) ==
+              BC_STS_IO_ERROR && context.state == recovery &&
+          !adapter.present && firmware_calls == 1,
+          "removed device after INIT reply cannot publish recovery");
 }
 
 static void FirmwareDownloadSharedEntry(void)
@@ -2994,6 +3200,93 @@ static void *RunFirmwareTransaction(void *argument)
 
     thread->status = bc_cproc_do_fw_cmd(&context, &thread->data);
     return NULL;
+}
+
+struct recovery_init_thread {
+    BC_FW_CMD command;
+    const void *owner;
+    BC_STATUS status;
+};
+
+struct capture_start_thread {
+    BC_STATUS status;
+};
+
+static void *RunRecoveryInit(void *argument)
+{
+    struct recovery_init_thread *thread = argument;
+
+    thread->status = crystalhd_fw_exec_locked(&context, thread->owner,
+                                               &thread->command);
+    return NULL;
+}
+
+static void *RunCaptureStart(void *argument)
+{
+    struct capture_start_thread *thread = argument;
+
+    thread->status = crystalhd_capture_start(&context, 0, 0);
+    return NULL;
+}
+
+static void WaitForRecoveryFirmware(void)
+{
+    if (pthread_mutex_lock(&capture_overlap_mutex)) abort();
+    while (!recovery_firmware_waiting)
+        if (pthread_cond_wait(&capture_overlap_changed,
+                              &capture_overlap_mutex)) abort();
+    if (pthread_mutex_unlock(&capture_overlap_mutex)) abort();
+}
+
+static bool ReleaseRecoveryAfterCaptureAttemptsTransition(void)
+{
+    bool serialized;
+
+    if (pthread_mutex_lock(&capture_overlap_mutex)) abort();
+    while (!capture_fetch_waiting && !capture_notify_waiting)
+        if (pthread_cond_wait(&capture_overlap_changed,
+                              &capture_overlap_mutex)) abort();
+    serialized = capture_fetch_waiting && !capture_notify_waiting;
+    release_recovery_firmware = true;
+    release_capture_notify = true;
+    pthread_cond_broadcast(&capture_overlap_changed);
+    if (pthread_mutex_unlock(&capture_overlap_mutex)) abort();
+    return serialized;
+}
+
+static void FirmwareResumeCaptureOverlap(void)
+{
+    const uint32_t recovery = BC_LINK_RESUME | BC_LINK_INIT;
+    struct recovery_init_thread firmware = {0};
+    struct capture_start_thread capture = {0};
+    pthread_t firmware_tid, capture_tid;
+    int owner = 0;
+    bool serialized;
+
+    ResetFrontendOwned(recovery, true, &owner);
+    firmware.command.cmd[0] = eCMD_C011_INIT;
+    firmware.owner = &owner;
+    capture_overlap_mode = true;
+    block_recovery_firmware = true;
+
+    if (pthread_create(&firmware_tid, NULL, RunRecoveryInit, &firmware)) abort();
+    WaitForRecoveryFirmware();
+    if (pthread_create(&capture_tid, NULL, RunCaptureStart, &capture)) abort();
+    serialized = ReleaseRecoveryAfterCaptureAttemptsTransition();
+    if (pthread_join(firmware_tid, NULL) ||
+        pthread_join(capture_tid, NULL)) abort();
+
+    Check(serialized,
+          "overlapping capture waits behind the resumed INIT transaction");
+    Check(capture.status == BC_STS_SUCCESS &&
+          firmware.status == BC_STS_SUCCESS &&
+          capture_notify_state == BC_LINK_INIT &&
+          context.state == (BC_LINK_INIT | BC_LINK_CAP_EN),
+          "INIT commits exact recovery before capture performs its normal transition");
+    Check(hardware.fetch_sem == 1 && capture_notifies == 1 &&
+          !capture_starts && firmware_calls == 1,
+          "overlapping recovery releases serialization with exact side effects");
+    capture_overlap_mode = false;
 }
 
 static void WaitForFirstFirmware(void)
@@ -5662,6 +5955,8 @@ int main(void)
         {"legacy user slot exhaustion", OpenSlotExhaustion},
         {"invalid admission adapter arguments", InvalidAdmissionArguments},
         {"shared and legacy firmware command entry points", FirmwareSharedEntry},
+        {"legacy resumed INIT state commit and capture cleanup", FirmwareResumeInitCommit},
+        {"resumed INIT and capture transition serialization", FirmwareResumeCaptureOverlap},
         {"frontend-neutral firmware download entry point", FirmwareDownloadSharedEntry},
         {"legacy firmware download adapter", FirmwareDownloadLegacyAdapter},
         {"kernel firmware request preconditions", KernelFirmwarePreconditions},
