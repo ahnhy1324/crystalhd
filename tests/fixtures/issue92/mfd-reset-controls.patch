@@ -24,9 +24,7 @@ index 441ea9e..77913d0 100644
  #endif
  void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw);
  void crystalhd_flea_enable_interrupts(struct crystalhd_hw *hw);
-@@ -73,7 +74,7 @@ bool crystalhd_flea_core_reset(struct crystalhd_hw *hw)
- 	unsigned int pollCnt=0,regVal=0;
- 
+@@ -75,5 +76,5 @@ bool crystalhd_flea_core_reset(struct crystalhd_hw *hw)
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 -	if (hw->research_scl_config_dirty && !crystalhd_flea_scl_size_current(hw))
 +	if (!crystalhd_flea_research_stop_current(hw))
@@ -796,9 +794,7 @@ index 04d9ddd..652682d 100644
  	bool research_scl_config_dirty;
  	bool research_scl_reset_corroborated;
  	u64 research_scl_duty_generation;
-@@ -130,6 +136,8 @@ struct crystalhd_hw {
- 	bool dma_fault;
- 	bool dev_started, fwcmd_pending, fwcmd_poisoned;
+@@ -132,4 +138,6 @@ struct crystalhd_hw {
  	int fwcmd_trans_mutex;
 +	int fetch_sem;
 +	uint64_t rx_cancel_epoch;

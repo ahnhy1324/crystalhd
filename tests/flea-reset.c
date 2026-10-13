@@ -890,6 +890,29 @@ static void rejected_lifecycle_events(void)
         }
 }
 
+static void fault_cannot_reset(void)
+{
+    for (unsigned state = 0; state < 2; state++) {
+        for (unsigned operation = 0; operation < 3; operation++) {
+            setup();
+            struct crystalhd_hw hw = hardware();
+            hw.dma_fault = !state;
+            if (state) hw.FleaPowerState = FLEA_PS_FAULT;
+            hw.rx_freeq = &endpoint;
+            require_reset = true;
+            reset_complete = false;
+            assert(!(operation == 0 ? crystalhd_flea_core_reset(&hw) :
+                     operation == 1 ? crystalhd_flea_start_device(&hw) :
+                                      crystalhd_flea_stop_device(&hw)));
+            assert(!event_count && !reset_reads && !reset_writes && !callbacks &&
+                   hw.rx_freeq == &endpoint && hw.rx_list_post_index == 17 &&
+                   hw.RxCaptureState == 23 && hw.dma_fault == !state &&
+                   hw.FleaPowerState == (state ? FLEA_PS_FAULT : FLEA_PS_STOPPED));
+            cases++;
+        }
+    }
+}
+
 int main(void)
 {
     const unsigned releases[] = {0, 1, 2, MAX_VALID_POLL_CNT, MAX_VALID_POLL_CNT + 1U};
@@ -904,6 +927,7 @@ int main(void)
     ddr_cases();
     stop_cases();
     rejected_lifecycle_events();
+    fault_cannot_reset();
     printf("Flea reset/DDR: %u production reset/poll/init/start/stop scenarios passed\n", cases);
     return 0;
 }

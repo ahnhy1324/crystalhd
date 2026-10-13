@@ -633,6 +633,10 @@ static BC_STATUS crystalhd_legacy_color_access(struct crystalhd_cmd *ctx,
 	 * this compatibility path to the color bits, including stale writes.
 	 */
 	spin_lock_irqsave(&hw->lock, flags);
+	if (READ_ONCE(hw->dma_fault) || !READ_ONCE(ctx->adp->present)) {
+		spin_unlock_irqrestore(&hw->lock, flags);
+		return BC_STS_IO_ERROR;
+	}
 	control = hw->pfnReadDevRegister(ctx->adp,
 					CRYSTALHD_FLEA_COLOR_REGISTER);
 	if (io->cmd == BCM_IOC_REG_WR)
@@ -644,6 +648,8 @@ static BC_STATUS crystalhd_legacy_color_access(struct crystalhd_cmd *ctx,
 	return BC_STS_SUCCESS;
 }
 
+static bool crystalhd_rawio_command(unsigned int cmd);
+
 static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 			   uint32_t uid, uint32_t cmd, crystalhd_cmd_proc func,
 			   bool compat)
@@ -651,6 +657,8 @@ static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 	int rc;
 	crystalhd_ioctl_data *temp;
 	BC_STATUS sts = BC_STS_SUCCESS;
+	struct crystalhd_hw *raw_hw = NULL;
+	bool raw_owned = false;
 
 	temp = chd_dec_alloc_iodata(adp, 0);
 	if (!temp) {
@@ -677,8 +685,23 @@ static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 	if (!rc) {
 		if(func == NULL)
 			sts = BC_STS_PWR_MGMT; /* Can only happen when we are in suspend state */
-		else
-			sts = func(&adp->cmds, temp);
+		else {
+			/* Raw reads retain active-device admission across their last
+			 * access. Arbitrary writes cannot bypass enabled PM ordering.
+			 * Firmware download uses a separate kernel-internal path.
+			 */
+			if (adp->pdev->device == BC_PCI_DEVID_FLEA &&
+			    adp->cmds.hw_ctx && crystalhd_rawio_command(cmd)) {
+				raw_hw = adp->cmds.hw_ctx;
+				sts = crystalhd_flea_raw_enter(raw_hw,
+					cmd != BCM_IOC_REG_RD && cmd != BCM_IOC_FPGA_RD &&
+					cmd != BCM_IOC_MEM_RD, &raw_owned);
+			}
+			if (sts == BC_STS_SUCCESS)
+				sts = func(&adp->cmds, temp);
+			if (raw_hw)
+				crystalhd_flea_raw_leave(raw_hw, raw_owned);
+		}
 		if (sts == BC_STS_PENDING)
 			sts = BC_STS_NOT_IMPL;
 		temp->udata.RetSts = sts;

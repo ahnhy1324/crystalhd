@@ -495,6 +495,9 @@ struct crystalhd_hw {
 	uint32_t		FleaTxActive;
 	/* Awake IRQ work owns firmware notifications after list retirement. */
 	uint32_t		FleaIrqActive;
+	/* External raw reads retain admission until their last MMIO access. */
+	uint32_t		FleaRawActive;
+	struct crystalhd_flea_power_snapshot FleaPowerSaved;
 	uint32_t			EmptyCnt;
 	bool				SingleThreadAppFIFOEmpty;
 	bool				PwrDwnTxIntr; /* Got an TX FIFO status interrupt when in power down state */
@@ -690,6 +693,10 @@ BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap);
 void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw);
 bool crystalhd_hw_ack_fault_interrupt(struct crystalhd_hw *hw);
 void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw);
+void crystalhd_hw_publish_fault(struct crystalhd_hw *hw);
+BC_STATUS crystalhd_flea_raw_enter(struct crystalhd_hw *hw, bool write,
+				 bool *owned);
+void crystalhd_flea_raw_leave(struct crystalhd_hw *hw, bool owned);
 BC_STATUS crystalhd_hw_suspend(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_resume(struct crystalhd_hw *hw);
 void crystalhd_hw_stats(struct crystalhd_hw *hw, struct crystalhd_hw_stats *stats);

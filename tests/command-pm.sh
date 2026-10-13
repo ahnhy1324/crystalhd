@@ -111,10 +111,10 @@ awk '
     > "$pm_test_dir/command-pm-types.h"
 awk '
     /^BC_STATUS crystalhd_hw_(close|suspend|resume)\(/ { copying = 1; found++ }
-    /^void crystalhd_hw_dma_fatal_stop\(/ { copying = 1; found++ }
+    /^void crystalhd_hw_(dma_fatal_stop|publish_fault)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 4 || copying) exit 1 }
+    END { if (found != 5 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$pm_test_dir/command-pm-hardware.h"
 awk '
     /^static struct crystalhd_user \*bc_cproc_get_uid\(/ ||

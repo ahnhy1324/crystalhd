@@ -15,14 +15,14 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 awk '
-    /^enum _crystalhd_state/ || /^struct crystalhd_user \{/ {
+    /^enum (_crystalhd_state|FLEA_POWER_STATES|FLEA_STATE_CH_EVENT)[[:space:]{]/ || /^struct crystalhd_user \{/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^};/ { copying = 0 }
     /^#define[[:space:]]+DTS_MODE_INV[[:space:]]/ { print }
-    END { if (found != 2 || copying) exit 1 }
-' "$repo_dir/driver/linux/crystalhd_cmds.h" > "$ioctl_test_dir/ioctl-types.h"
+    END { if (found != 4 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_cmds.h" "$repo_dir/driver/linux/FleaDefs.h" > "$ioctl_test_dir/ioctl-types.h"
 awk '
     /^struct crystalhd_ppb_mpeg32 \{/ { copying = 1; found++ }
     /^#endif/ { copying = 0 }
@@ -41,7 +41,7 @@ awk '
 awk '
     /^static BC_STATUS bc_cproc_session_owner_required\(/ ||
     /^crystalhd_cmd_proc crystalhd_get_cmd_proc\(/ ||
-    /^static bool crystalhd_(legacy_color_command|rawio_command)\(/ ||
+    (/^static bool crystalhd_(legacy_color_command|rawio_command)\(/ && !/;[[:space:]]*$/) ||
     /^static int chd_dec_api_cmd\(/ ||
     /^static __poll_t chd_dec_poll\(/ ||
     /^static long chd_dec_(ioctl_common|ioctl|compat_ioctl)\(/ {
@@ -52,6 +52,12 @@ awk '
     END { if (found != 9 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" \
     "$repo_dir/driver/linux/crystalhd_lnx.c" > "$ioctl_test_dir/ioctl-functions.h"
+awk '
+    /^(BC_STATUS|void) crystalhd_flea_raw_(enter|leave)\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 2 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" >> "$ioctl_test_dir/ioctl-functions.h"
 
 for ioctl_bits in 32 64; do
     for ioctl_sanitize in no yes; do

@@ -128,10 +128,10 @@ awk '
     /^BC_STATUS crystalhd_hw_(post_tx|cancel_all_tx|tx_req_complete)\(/ ||
     /^bool crystalhd_hw_retain_tx_buffer\(/ ||
     /^void crystalhd_hw_retire_tx_quiesced\(/ ||
-    /^void crystalhd_hw_dma_fatal_stop\(/ { copying = 1; found++ }
+    /^void crystalhd_hw_(dma_fatal_stop|publish_fault)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 7 || copying) exit 1 }
+    END { if (found != 8 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$tx_test_dir/tx-admission-hardware.h"
 awk '
     /^struct crystalhd_tx_completion[[:space:]]*\{/ ||

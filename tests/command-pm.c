@@ -209,6 +209,7 @@ static pthread_mutex_t transaction_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t transaction_audit = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t transaction_changed = PTHREAD_COND_INITIALIZER;
 static bool transaction_mode, block_first_firmware;
+static bool fault_on_transaction_lock;
 static bool first_firmware_waiting, release_first_firmware;
 static bool block_download_reset, download_reset_waiting, release_download_reset;
 static unsigned transaction_attempts;
@@ -362,6 +363,10 @@ static void TransactionLock(int *lock)
         if (pthread_mutex_unlock(&transaction_audit)) abort();
     }
     if (pthread_mutex_lock(&transaction_mutex)) abort();
+    if (fault_on_transaction_lock) {
+        fault_on_transaction_lock = false;
+        hardware.dma_fault = true;
+    }
 }
 static void TransactionUnlock(int *lock)
 {
@@ -996,6 +1001,7 @@ static void Reset(uint32_t state, bool with_hardware)
     remove_during_fw_command = poison_on_firmware_timeout = false;
     memset(pause_states, 0, sizeof(pause_states));
     transaction_mode = block_first_firmware = false;
+    fault_on_transaction_lock = false;
     first_firmware_waiting = release_first_firmware = false;
     block_download_reset = download_reset_waiting = release_download_reset = false;
     transaction_attempts = 0;
@@ -5436,18 +5442,21 @@ static void Active(void)
 static void ResumeErrors(void)
 {
     unsigned idle, fault;
-    for (idle = 0; idle < 2; idle++) for (fault = 0; fault < 2; fault++) {
+    for (idle = 0; idle < 2; idle++) for (fault = 0; fault < 3; fault++) {
         struct crystalhd_cmd before;
         Reset(idle ? BC_LINK_INVALID : BC_LINK_SUSPEND, true);
         context.pwr_state_change = idle ? BC_HW_RUNNING : BC_HW_SUSPEND;
         context.user[0].in_use = 1;
         context.user[0].mode = idle ? DTS_MONITOR_MODE : DTS_PLAYBACK_MODE;
         before = context;
-        hardware.dma_fault = fault != 0; start_ok = false;
+        hardware.dma_fault = fault == 1; start_ok = false;
+        fault_on_transaction_lock = fault == 2;
         hardware.fwcmd_pending = hardware.fwcmd_poisoned = true;
         hardware.FwCmdCnt = 7;
         rings_live = true;
         hardware.rx_freeq = &rings_live;
+        hardware.rx_list_post_index = 1;
+        hardware.tx_list_post_index = 1;
         Check(crystalhd_resume(&context) == (fault ? BC_STS_IO_ERROR : BC_STS_ERROR),
               "DMA-fault/device-start failures propagate for active and monitor contexts");
         Check(!memcmp(&before, &context, sizeof(context)), "resume failure does not publish success state");
@@ -5458,6 +5467,9 @@ static void ResumeErrors(void)
         Check(rings_live && hardware.rx_freeq == &rings_live && !ring_frees &&
               !dio_destroys && !elem_deletes && !hardware_closes,
               "failed warm resume retains DMA owners and session storage");
+        if (fault)
+            Check(hardware.rx_list_post_index == 1 && hardware.tx_list_post_index == 1,
+                  "a fault arriving before or during resume admission preserves DMA bookkeeping");
     }
 }
 static void SuspendErrors(void)

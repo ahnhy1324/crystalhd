@@ -86,7 +86,7 @@ awk '
         awaiting_name = 0
     }
     /^struct crystalhd_rx_dma_pkt \*crystalhd_(hw_alloc_rx_pkt|rx_pkt_detach)\(/ ||
-    /^void crystalhd_(hw_free_rx_pkt|hw_retain_rx_pkt|hw_retire_rx_quiesced|hw_dma_fatal_stop|rx_pkt_rel_call_back)\(/ ||
+    /^void crystalhd_(hw_free_rx_pkt|hw_retain_rx_pkt|hw_retire_rx_quiesced|hw_dma_fatal_stop|hw_publish_fault|rx_pkt_rel_call_back)\(/ ||
     /^static unsigned int crystalhd_hw_detach_rx_owners\(/ ||
     /^uint32_t crystalhd_hw_count_free_rx_pkts\(/ ||
     /^void crystalhd_hw_stats\(/ ||
@@ -97,7 +97,7 @@ awk '
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 22 || copying || awaiting_name) exit 1 }
+    END { if (found != 23 || copying || awaiting_name) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$rx_test_dir/rx-hardware.h"
 awk '
 	/^BC_STATUS crystalhd_(rx_submit|rx_dequeue|rx_try_dequeue|rx_ack_format|capture_start|capture_flush)\(/ ||

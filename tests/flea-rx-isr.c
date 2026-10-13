@@ -31,7 +31,7 @@ struct crystalhd_hw_stats { uint32_t rx_success, rx_errors, num_interrupts; };
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
     int rx_lock, lock;
-    bool dev_started, FleaEnablePWM, FleaPowerTransition;
+    bool dev_started, dma_fault, FleaEnablePWM, FleaPowerTransition;
     bool PwrDwnPiQIntr, PwrDwnTxIntr, hw_pause_issued;
     uint32_t FleaIrqActive;
     enum FLEA_POWER_STATES FleaPowerState;
@@ -62,6 +62,9 @@ static bool full_handler;
 static union FLEA_INTR_BITS_COMMON full_status;
 static unsigned full_initial_owners, full_phases, full_ack_writes, full_rechecks;
 static unsigned full_pause_phase;
+static unsigned full_fault_acks, full_reads;
+static bool full_fault_at_lock, full_fault_ack_result;
+static bool crystalhd_hw_ack_fault_interrupt(struct crystalhd_hw *hw);
 
 static void check(bool condition, const char *message)
 {
@@ -82,6 +85,11 @@ static void test_spin_lock(int *lock, unsigned long *flags)
         return;
     }
     *lock = 1;
+    if (lock == &hardware.lock && full_fault_at_lock) {
+        full_fault_at_lock = false;
+        hardware.dma_fault = true;
+        hardware.FleaPowerState = FLEA_PS_FAULT;
+    }
 }
 
 static void test_spin_unlock(int *lock, unsigned long flags)
@@ -121,6 +129,7 @@ static uint32_t read_register(struct crystalhd_adp *adp, uint32_t reg)
     assert(adp == &adapter);
     if (reg == BCHP_INTR_INTR_STATUS) {
         assert(full_handler);
+        full_reads++;
         return full_status.WholeReg;
     }
     if (reg == BCHP_MISC1_Y_RX_ERROR_STATUS)
@@ -423,6 +432,17 @@ static void run_missing_owner_scenario(void)
           "a missing owner leaves queues untouched and the lock balanced");
 }
 
+/* The exact acknowledgement body is covered by dma-stop; this boundary
+ * ensures the complete Flea IRQ delegates instead of running live callbacks.
+ */
+static bool crystalhd_hw_ack_fault_interrupt(struct crystalhd_hw *hw)
+{
+    check(hw == &hardware && !hw->lock && !hw->rx_lock,
+          "fault-only interrupt delegation owns no normal IRQ locks");
+    full_fault_acks++;
+    return full_fault_ack_result;
+}
+
 static void full_reset(bool pwm, unsigned owners)
 {
     reset_scenario(true);
@@ -430,6 +450,9 @@ static void full_reset(bool pwm, unsigned owners)
     full_status.WholeReg = 0;
     full_initial_owners = hardware.FleaIrqActive = owners;
     full_phases = full_ack_writes = full_rechecks = full_pause_phase = 0;
+    full_fault_acks = full_reads = 0;
+    full_fault_at_lock = false;
+    full_fault_ack_result = true;
     hardware.dev_started = true;
     hardware.FleaEnablePWM = pwm;
     hardware.FleaPowerState = FLEA_PS_ACTIVE;
@@ -496,12 +519,34 @@ static void run_irq_lifetime_cases(void)
           "sleeping IRQ latches notifications without entering the awake lifetime");
 }
 
+static void run_fault_irq_cases(void)
+{
+    for (unsigned late = 0; late < 3; late++) {
+        for (unsigned handled = 0; handled < 2; handled++) {
+            full_reset(true, 2);
+            full_status.ArmMbox0Int = full_status.L0TxDMADone = 1;
+            full_fault_ack_result = handled;
+            if (late == 0) hardware.dma_fault = true;
+            if (late == 1) full_fault_at_lock = true;
+            if (late == 2) hardware.FleaPowerState = FLEA_PS_FAULT;
+            check(crystalhd_flea_hw_interrupt_handle(&adapter, &hardware) == !!handled &&
+                  full_fault_acks == 1 && full_reads == (late != 0),
+                  "initial and under-lock fault detection delegate exact IRQ acknowledgement status");
+            check(!full_phases && !full_ack_writes && !full_rechecks &&
+                  hardware.FleaIrqActive == 2 && !hardware.lock &&
+                  !list0_calls && !list1_calls && !start_calls,
+                  "faulted IRQ does not run firmware, TX, RX or resume callbacks or consume peer owners");
+        }
+    }
+}
+
 int main(void)
 {
     run_error_scenario();
     run_success_scenario();
     run_missing_owner_scenario();
     run_irq_lifetime_cases();
+    run_fault_irq_cases();
 
     printf("Flea RX ISR lock: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
