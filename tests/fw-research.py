@@ -16827,6 +16827,67 @@ class FirmwareArcReturnReleaseProjectionTests(unittest.TestCase):
                                             "physical_lease_certified", "engine_completion_certified"):
                                     self.assertFalse(result[key])
 
+    def test_synthetic_stale_token_after_metadata_index_reallocation(self):
+        # Synthetic ABA counterexample, not an observed allocation or IRQ:
+        # consume one token, explicitly install a newer allocation at the same
+        # metadata index/address, then consume a second identical old token.
+        # The fixture supplies scheduling and DMA completion; the projector
+        # executes the stock address scan/reference-drop/deallocation words.
+        for index in (0, 33):
+            for new_flag in (0xa9f8, 0xe9f8):
+                with self.subTest(index=index, new_flag=hex(new_flag)):
+                    token = 0x500100 + 228 * index
+                    flags, banks = bytearray(68), bytearray(144)
+                    struct.pack_into("<H", flags, 2 * index, 0xa800)
+                    struct.pack_into("<4I", banks, 0, 0x920000, 1, 0x1000, 0x11223344)
+                    first = project_arc_return_release(self.payload, 2, 4, token, flags, banks,
+                                                      metadata=(0, 0))
+                    first_local = first["pages"][0x3fffd000]
+                    self.assertEqual(struct.unpack_from("<H", first_local, 0x100 + 2 * index)[0], 0)
+                    self.assertEqual(struct.unpack_from("<4I", first_local, 0x1a8),
+                                     (0x920000, 0, 0, 0))
+                    self.assertEqual(struct.unpack_from("<I", first["pages"][0x600000], 0x100)[0], 3)
+
+                    # Explicit fixture mutation, NOT execution of AllocatePPB:
+                    # reuse only this descriptor with bank 8/subslot 31. The
+                    # opaque metadata pointer itself has no generation field.
+                    flags = bytearray(first_local[0x100:0x144])
+                    banks = bytearray(first_local[0x1a8:0x238])
+                    struct.pack_into("<H", flags, 2 * index, new_flag)
+                    new_bank = (0xa20000, 0x80000000, 0x2000, 0x33445566)
+                    struct.pack_into("<4I", banks, 8 * 16, *new_bank)
+                    second = project_arc_return_release(self.payload, 3, 4, token, flags, banks,
+                                                       metadata=(0, 0))
+                    final_local = second["pages"][0x3fffd000]
+                    expected_flags, expected_banks = bytearray(flags), bytearray(banks)
+                    if new_flag == 0xa9f8:
+                        struct.pack_into("<H", expected_flags, 2 * index, 0)
+                        struct.pack_into("<4I", expected_banks, 8 * 16, new_bank[0], 0, 0, 0)
+                        self.assertTrue({0x918c, 0x9190, 0x9194, 0x9198} <= set(second["visited"]))
+                    else:
+                        # Remaining 0x4000 blocks retirement; only 0x3000 drops.
+                        struct.pack_into("<H", expected_flags, 2 * index, 0xc9f8)
+                        self.assertFalse({0x918c, 0x9198} & set(second["visited"]))
+                    self.assertEqual(final_local[0x100:0x144], expected_flags)
+                    self.assertEqual(final_local[0x1a8:0x238], expected_banks)
+                    self.assertEqual(struct.unpack_from("<I", second["pages"][0x600000], 0x100)[0], 4)
+                    for result in (first, second):
+                        self.assertTrue(result["consumed"])
+                        self.assertEqual(result["matched_index"], index)
+                        self.assertEqual(result["calls"],
+                                         [(0x516c, 0x4d10), (0x517c, 0xba98), (0x51a4, 0x907c)])
+                        # Both ancillary fields remain zero: no stand-in for
+                        # Core_ReleaseUD or Core_ReleaseOffsetMeta completion.
+                        for offset in (0x44, 0xe0):
+                            address = token + offset
+                            page = result["pages"][address & ~4095]
+                            self.assertEqual(struct.unpack_from("<I", page, address & 4095)[0], 0)
+                        self.assertFalse({0x9108, 0x913c} & set(result["visited"]))
+                        for key in ("native_execution", "whole_core_run_executed", "metadata_helpers_executed",
+                                    "vendor_extensions_certified", "pipeline_timing_certified", "generation_certified",
+                                    "physical_lease_certified", "engine_completion_certified"):
+                            self.assertFalse(result[key])
+
     def test_empty_invalid_unknown_and_address_without_generation_token(self):
         flags, banks = bytes(68), bytes(144)
         for read, write in ((2, 2), (0xffffffff, 0xffffffff), (0, 3), (1, 3), (64, 3),
