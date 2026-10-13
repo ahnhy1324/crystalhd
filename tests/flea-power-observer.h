@@ -119,6 +119,7 @@ struct FleaPowerObserver {
                 ((i != 0 && i != 14) || Valid(0, raw[i])) &&
                 (!(i >= 1 && i <= 5) || !(raw[i] & 1U)) &&
                 (!(i >= 6 && i <= 8) || !(raw[i] & 0x80000000U)) &&
+                (i != 11 || Valid(1, raw[i])) &&
                 (i != 12 || !(raw[i] & BCHP_DDR23_PHY_CONTROL_REGS_PLL_STATUS_reserved0_MASK)) &&
                 (i != 13 || Valid(2, raw[i]));
             if (!valid) { failed = true; break; }
@@ -418,7 +419,7 @@ template<class Check> static void FleaPowerObserverSelfTest(const Check &check)
                   "configuration stops at first invalid/API read and never retries or reads later fields");
         }
     }
-    for (unsigned field : {0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 12U, 13U, 14U}) {
+    for (unsigned field : {0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 11U, 12U, 13U, 14U}) {
         ConfigurationFixture f;
         f.raw[field] |= field == 0 || field == 14 ? 4U : field >= 6 && field <= 8
             ? 0x80000000U : field >= 12 ? 4U : 1U;
