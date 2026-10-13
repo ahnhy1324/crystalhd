@@ -491,8 +491,9 @@ void crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
 	regVal &= ~(BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG_PWRDN_MASK);
 	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG, regVal);
 
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL,
-		~(BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL_DIS_DDR_CLK_MASK));
+	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL);
+	regVal &= ~BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL_DIS_DDR_CLK_MASK;
+	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL, regVal);
 
 	/* Delay to allow the PLL to lock */
 	udelay(25);
@@ -542,7 +543,7 @@ void crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
 				BCHP_CLK_PM_CTRL_DIS_BLINK_216_CLK_MASK |
 				BCHP_CLK_PM_CTRL_DIS_AVD_216_CLK_MASK);
 
-	hw->pfnWriteDevRegister(hw->adp, BCHP_CLK_PM_CTRL, 0x03000000);
+	hw->pfnWriteDevRegister(hw->adp, BCHP_CLK_PM_CTRL, regVal);
 
 	/* Start arbiter */
 	hw->pfnWriteDevRegister(hw->adp, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL_arb_disable_Enable);
@@ -767,7 +768,9 @@ bool crystalhd_flea_runtime_power_dn(struct crystalhd_hw *hw)
 				BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_cke_reb_MASK;
 	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL, regVal);
 
-	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL, BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL_DIS_DDR_CLK_MASK);
+	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL);
+	regVal |= BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL_DIS_DDR_CLK_MASK;
+	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL, regVal);
 
 	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG);
 	regVal |= BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG_PWRDN_MASK;

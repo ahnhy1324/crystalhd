@@ -40,7 +40,8 @@ struct crystalhd_hw {
                                uint32_t, uint32_t *);
     uint32_t DrvPauseCnt, FleaFLLUpdateAddr, PicQSts;
     uint32_t OLWatchDogTimer, ILWatchDogTimer;
-    uint64_t TickStartInPD;
+    uint64_t TickStartInPD, TickSpentInPD, TickCntDecodePU;
+    uint32_t PDRatio, PauseThreshold, DefaultPauseThreshold;
     bool PwrDwnPiQIntr, PwrDwnTxIntr;
     bool dma_fault, dev_started;
     unsigned lock;
@@ -49,6 +50,7 @@ struct crystalhd_hw {
 
 enum { RX_CASES = 16 + 32 };
 static unsigned transitions, cases, transition_cases, sequence_cases;
+static unsigned register_cycles;
 static enum FLEA_POWER_STATES requested;
 static void check(bool condition, const char *what);
 
@@ -295,7 +297,7 @@ static void crystalhd_flea_update_tx_buff_info(struct crystalhd_hw *hw)
 
 static void udelay(unsigned usec)
 {
-    check(usec == 10 || usec == 5, "unexpected transition delay");
+    check(usec == 10 || usec == 5 || usec == 25, "unexpected transition delay");
     if (usec == 10) device.poll_delays++;
     device.delays++;
 }
@@ -326,6 +328,13 @@ static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
 #include "flea-power-transitions.h"
 #undef crystalhd_flea_set_power_state
 #include "flea-power-done.h"
+
+/* The state-machine cases retain their wake stub. These additional tests
+ * execute the actual wake helper, separately from those reservation cases.
+ */
+#define crystalhd_flea_runtime_power_up real_runtime_power_up
+#include "flea-power-up.h"
+#undef crystalhd_flea_runtime_power_up
 
 /* Exercise the same selector with its real setter as well as the recording
  * matrix. This is not a separate state-machine implementation.
@@ -641,6 +650,78 @@ static void transition_success(void)
               "successful idle transition skipped final clock write");
         check(!hw.lock && !device.lock_held, "successful transition leaked hardware lock");
         transition_cases++;
+    }
+}
+
+static void register_round_trips(void)
+{
+    static const struct {
+        uint32_t addr, mask;
+        bool set_on_down;
+    } regs[] = {
+        {BCHP_CLK_PM_CTRL,
+         BCHP_CLK_PM_CTRL_DIS_ARM_CLK_MASK |
+         BCHP_CLK_PM_CTRL_DIS_AVD_CLK_MASK |
+         BCHP_CLK_PM_CTRL_DIS_BLINK_108_CLK_MASK |
+         BCHP_CLK_PM_CTRL_DIS_AVD_108_CLK_MASK |
+         BCHP_CLK_PM_CTRL_DIS_BLINK_216_CLK_MASK |
+         BCHP_CLK_PM_CTRL_DIS_AVD_216_CLK_MASK |
+         BCHP_CLK_PM_CTRL_DIS_DDR_108_CLK_MASK |
+         BCHP_CLK_PM_CTRL_DIS_DDR_216_CLK_MASK, true},
+        {BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL,
+         BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL_DIS_DDR_CLK_MASK, true},
+        {BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL,
+         BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL_pwrdn_MASK, true},
+        {BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG,
+         BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG_PWRDN_MASK, true},
+        {BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL,
+         BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL_pwrdn_MASK, true},
+        {BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL,
+         BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL_pwrdn_MASK, true},
+        {BCHP_DDR23_CTL_REGS_0_PARAMS2,
+         BCHP_DDR23_CTL_REGS_0_PARAMS2_clke_MASK, true},
+        {BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0,
+         BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0_enable_MASK, false}
+    };
+
+    /* Zero, all-one and walking-one backgrounds exercise every unrelated
+     * readback bit, including SUN/MISC and PHY reserved bits. This is a
+     * targeted register-image test, not full pad/IDDQ restoration or proof
+     * of PLL/DRAM readiness: wake currently uses delays, not readiness polls.
+     */
+    for (unsigned image = 0; image < 34; image++) {
+        uint32_t seed = image == 0 ? 0 : image == 1 ? UINT32_MAX :
+                        UINT32_C(1) << (image - 2);
+        uint32_t initial[sizeof(regs) / sizeof(regs[0])];
+        struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
+        hw.FleaPowerTransition = true;
+        lock_hw(&hw.lock);
+        for (unsigned i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
+            initial[i] = seed & ~regs[i].mask;
+            if (!regs[i].set_on_down) initial[i] |= regs[i].mask;
+            write_register(&device, regs[i].addr, initial[i]);
+        }
+        for (unsigned repeat = 0; repeat < 2; repeat++) {
+            check(crystalhd_flea_runtime_power_dn(&hw),
+                  "paired register test failed to enter mocked power-down");
+            for (unsigned i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
+                uint32_t expected = regs[i].set_on_down ?
+                                    initial[i] | regs[i].mask :
+                                    initial[i] & ~regs[i].mask;
+                check(register_value(&device, regs[i].addr) == expected,
+                      "power-down changed unrelated register bits or missed its mask");
+            }
+            real_runtime_power_up(&hw);
+            for (unsigned i = 0; i < sizeof(regs) / sizeof(regs[0]); i++)
+                check(register_value(&device, regs[i].addr) == initial[i],
+                      "power-up did not restore targeted clock/refresh register image");
+            check(register_value(&device, BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR) == 7 &&
+                  register_value(&device, BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR) == 11,
+                  "paired power cycle changed watchdog timer values");
+            register_cycles++;
+        }
+        hw.FleaPowerTransition = false;
+        unlock_hw(&hw.lock);
     }
 }
 
@@ -1375,6 +1456,7 @@ int main(void)
     unhealthy_down();
     transition_failures();
     transition_success();
+    register_round_trips();
     wake_interleavings();
     direction_sequences();
     deferred_completion_sequences();
@@ -1383,7 +1465,7 @@ int main(void)
     cleanup_completion_sequences();
     failed_intent_transition_sequences();
     printf("PASS: %u Flea power selector cases; %u mocked-MMIO transition cases; "
-           "%u integrated event sequences; no device access\n",
-           cases, transition_cases, sequence_cases);
+           "%u integrated event sequences; %u targeted register cycles; no device access\n",
+           cases, transition_cases, sequence_cases, register_cycles);
     return 0;
 }
