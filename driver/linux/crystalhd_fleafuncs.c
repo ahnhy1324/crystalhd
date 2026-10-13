@@ -1193,7 +1193,7 @@ void crystalhd_flea_notify_fll_change(struct crystalhd_hw *hw, bool bCleanupCont
 static
 void crystalhd_flea_init_power_state(struct crystalhd_hw *hw)
 {
-	hw->FleaEnablePWM = true;	/* Host-only shadow: physical down always refuses. */
+	hw->FleaEnablePWM = true;	/* Research only: one guarded physical down/up. */
 	hw->FleaPowerState = FLEA_PS_NONE;
 	hw->FleaPowerTransition = false;
 	hw->FleaPowerRecheck = false;
