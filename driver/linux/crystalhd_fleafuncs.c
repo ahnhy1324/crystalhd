@@ -920,6 +920,7 @@ void crystalhd_flea_init_power_state(struct crystalhd_hw *hw)
 {
 	hw->FleaEnablePWM = false;	/* Runtime power-down remains disabled. */
 	hw->FleaPowerState = FLEA_PS_NONE;
+	hw->FleaPowerTransition = false;
 }
 
 static
@@ -931,6 +932,7 @@ bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 	uint32_t freeListLen = 0;
 	struct crystalhd_rx_dma_pkt *rx_pkt = NULL;
 	unsigned long flags;
+	bool replay_pic = false, replay_tx = false;
 
 	freeListLen = crystalhd_hw_count_free_rx_pkts(hw);
 
@@ -938,41 +940,53 @@ bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 	{
 		case FLEA_PS_ACTIVE:
 		{
+			spin_lock_irqsave(&hw->lock, flags);
+			if (hw->FleaPowerTransition)
+				goto active_unlock;
 			if (hw->FleaPowerState != FLEA_PS_LP_PENDING &&
 			    hw->FleaPowerState != FLEA_PS_LP_COMPLETE)
-				break;
+				goto active_unlock;
+			/* Keep other transitions out until unlocked RX replay finishes. */
+			hw->FleaPowerTransition = true;
 			if (hw->FleaPowerState == FLEA_PS_LP_COMPLETE) {
 				crystalhd_flea_runtime_power_up(hw);
 				/* Clocks are on, but admission still needs FLL publication. */
 				hw->FleaPowerState = FLEA_PS_LP_PENDING;
 			}
 			if (hw->pfnDevDRAMWrite(hw, hw->FleaFLLUpdateAddr, 1,
-					      &freeListLen) != BC_STS_SUCCESS)
-				break;
+					      &freeListLen) != BC_STS_SUCCESS) {
+				hw->FleaPowerTransition = false;
+				goto active_unlock;
+			}
 			hw->FleaPowerState = FLEA_PS_ACTIVE;
 			StChangeSuccess = true;
+			replay_pic = hw->PwrDwnPiQIntr;
+			replay_tx = hw->PwrDwnTxIntr;
+			hw->PwrDwnPiQIntr = false;
+			hw->PwrDwnTxIntr = false;
+			spin_unlock_irqrestore(&hw->lock, flags);
 			/* Also replay saved notifications after a failed-FLL wake retry. */
-			if (hw->PwrDwnPiQIntr) {
+			if (replay_pic)
 				crystalhd_flea_handle_PicQSts_intr(hw);
-				hw->PwrDwnPiQIntr = false;
-			}
 			if (hw->PicQSts != 0) {
 				rx_pkt = crystalhd_hw_fetch_free_rx_pkt(hw);
 				if (rx_pkt && crystalhd_hw_repost_cap_buffer(hw, rx_pkt) !=
 					      BC_STS_SUCCESS)
 					dev_err(chddev(), "failed to repost RX buffer\n");
 			}
-			if (hw->PwrDwnTxIntr) {
+			if (replay_tx)
 				crystalhd_flea_update_tx_buff_info(hw);
-				hw->PwrDwnTxIntr = false;
-			}
+			spin_lock_irqsave(&hw->lock, flags);
+			hw->FleaPowerTransition = false;
+active_unlock:
+			spin_unlock_irqrestore(&hw->lock, flags);
 			break;
 		}
 
 		case FLEA_PS_LP_PENDING:
 		{
 			spin_lock_irqsave(&hw->lock, flags);
-			if(hw->FleaPowerState != FLEA_PS_ACTIVE)
+			if (hw->FleaPowerTransition || hw->FleaPowerState != FLEA_PS_ACTIVE)
 			{
 				spin_unlock_irqrestore(&hw->lock, flags);
 				break;
@@ -994,12 +1008,15 @@ bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 
 		case FLEA_PS_LP_COMPLETE:
 		{
-			/* Serialize final admission with firmware command begin/end.
-			 * The IRQ count alone does not cover reply copy/post-processing.
+			/* Serialize final admission with both mailbox and outer owners.
+			 * The IRQ count alone does not cover reply/capture post-processing.
 			 * This is not a complete RX/source-consumer quiescence contract.
 			 */
 			spin_lock_irqsave(&hw->lock, flags);
-			if (hw->fwcmd_active || hw->FwCmdCnt || hw->fwcmd_poisoned ||
+			if (!READ_ONCE(hw->adp->present) || READ_ONCE(hw->dma_fault) ||
+			    !READ_ONCE(hw->dev_started) ||
+			    hw->FleaPowerTransition || hw->fwcmd_trans_active ||
+			    hw->fwcmd_active || hw->FwCmdCnt || hw->fwcmd_poisoned ||
 			    hw->TxList0Sts != ListStsFree || hw->TxList1Sts != ListStsFree ||
 			    hw->rx_list_sts[0] != sts_free || hw->rx_list_sts[1] != sts_free ||
 			    hw->EmptyCnt || hw->SingleThreadAppFIFOEmpty)
@@ -1063,6 +1080,8 @@ void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 		hw->FleaPowerState = FLEA_PS_ACTIVE;
 		return;
 	}
+	if (READ_ONCE(hw->FleaPowerTransition))
+		return;
 
 	switch(hw->FleaPowerState)
 	{
@@ -1087,6 +1106,7 @@ void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 					(hw->rx_list_sts[1] == sts_free) &&
 					(!READ_ONCE(hw->FwCmdCnt)) &&
 					(!READ_ONCE(hw->fwcmd_active)) &&
+					(!READ_ONCE(hw->fwcmd_trans_active)) &&
 					(!READ_ONCE(hw->fwcmd_poisoned)))
 				{
 					NextPS = FLEA_PS_LP_COMPLETE;
@@ -1123,6 +1143,7 @@ void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 					(hw->rx_list_sts[1] == sts_free) &&
 					(!READ_ONCE(hw->FwCmdCnt)) &&
 					(!READ_ONCE(hw->fwcmd_active)) &&
+					(!READ_ONCE(hw->fwcmd_trans_active)) &&
 					(!READ_ONCE(hw->fwcmd_poisoned)))
 				{
 					NextPS = FLEA_PS_LP_COMPLETE;
@@ -1161,6 +1182,17 @@ void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 	}
 
 	return;
+}
+
+/* Called with the outer transaction mutex held, after its last state update. */
+void crystalhd_flea_fw_transaction_done(struct crystalhd_hw *hw)
+{
+	if (hw->adp->pdev->device != BC_PCI_DEVID_FLEA ||
+	    !READ_ONCE(hw->FleaEnablePWM) || !READ_ONCE(hw->adp->present) ||
+	    READ_ONCE(hw->dma_fault) || !READ_ONCE(hw->dev_started))
+		return;
+	if (READ_ONCE(hw->FleaPowerState) == FLEA_PS_LP_PENDING)
+		crystalhd_flea_set_next_power_state(hw, FLEA_EVT_CMD_COMP);
 }
 
 /* was FleaSetRxPicFireAddr */
@@ -2807,6 +2839,7 @@ bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crysta
 	bool				bPostRxBuff		= false;
 	bool				bSomeCmdDone	= false;
 	struct crystalhd_rx_dma_pkt *rx_pkt;
+	unsigned long power_flags;
 
 	bool	rc = false;
 
@@ -2833,8 +2866,13 @@ bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crysta
 
 	/* NAREN When In Power Down state, only interrupts possible are TXFIFO and PiQ       */
 	/* Save the state of these interrupts to process them when we resume from power down */
-	if(hw->FleaPowerState == FLEA_PS_LP_COMPLETE)
+	if (READ_ONCE(hw->FleaEnablePWM))
 	{
+		spin_lock_irqsave(&hw->lock, power_flags);
+		if (hw->FleaPowerState != FLEA_PS_LP_COMPLETE) {
+			spin_unlock_irqrestore(&hw->lock, power_flags);
+			goto awake;
+		}
 		if(IntrStsValue.ArmMbox1Int)
 		{
 			hw->PwrDwnPiQIntr = true;
@@ -2853,9 +2891,11 @@ bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crysta
 			hw->pfnWriteDevRegister(hw->adp, BCHP_INTR_INTR_CLR_REG, IntrStsValue.WholeReg);
 			hw->pfnWriteDevRegister(hw->adp, BCHP_INTR_EOI_CTRL, 1);
 		}
+		spin_unlock_irqrestore(&hw->lock, power_flags);
 		return (bIntFound);
 	}
 
+awake:
 	/*
 	-- Arm Mail box Zero interrupt is
 	-- BCHP_ARMCR4_BRIDGE_REG_MBOX_ARM1

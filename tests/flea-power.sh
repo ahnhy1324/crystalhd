@@ -32,21 +32,22 @@ awk '
         print previous
         copying = 1; found++
     }
+    /^void crystalhd_flea_fw_transaction_done\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
     { previous = $0 }
-    END { if (found != 2 || copying) exit 1 }
+    END { if (found != 3 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-transitions.h"
 awk '
-    /^enum (FLEA_POWER_STATES|FLEA_STATE_CH_EVENT|LIST_STATUS|list_sts)[[:space:]]*\{/ {
+    /^enum (FLEA_POWER_STATES|FLEA_STATE_CH_EVENT|LIST_STATUS|list_sts|_BC_PCI_DEV_IDS)[[:space:]]*\{/ {
         copying = 1; found++
     }
     /^typedef enum _BC_STATUS[[:space:]]*\{/ { copying = 1; found++ }
     copying { print }
     copying && /^}(;| BC_STATUS;)/ { copying = 0 }
-    END { if (found != 5 || copying) exit 1 }
+    END { if (found != 6 || copying) exit 1 }
 ' "$repo_dir/driver/linux/FleaDefs.h" "$repo_dir/driver/linux/crystalhd_hw.h" \
-    "$repo_dir/include/bc_dts_defs.h" \
+    "$repo_dir/include/bc_dts_defs.h" "$repo_dir/include/bc_dts_glob_lnx.h" \
     > "$test_dir/flea-power-types.h"
 
 for sanitize in no yes; do

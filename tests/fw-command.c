@@ -42,6 +42,7 @@ struct crystalhd_hw {
     struct mutex fwcmd_mutex;
     wait_queue_head_t fwcmd_event;
     bool fwcmd_pending;
+    bool fwcmd_trans_active;
     bool fwcmd_active;
     bool fwcmd_poisoned;
     int fwcmd_evt_sts;
@@ -79,6 +80,7 @@ static pthread_mutex_t audit_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t audit_changed = PTHREAD_COND_INITIALIZER;
 static unsigned mutex_attempts;
 static bool interrupt_mailbox_begin;
+static bool interrupt_transaction_enter;
 static bool complete_before_publication;
 static unsigned wait_calls;
 
@@ -95,6 +97,8 @@ static int TestMutexLock(struct mutex *mutex)
     pthread_cond_broadcast(&audit_changed);
     pthread_mutex_unlock(&audit_lock);
     if (interrupt_mailbox_begin && mutex == &hardware.fwcmd_mutex)
+        return -EINTR;
+    if (interrupt_transaction_enter && mutex == &hardware.fwcmd_trans_mutex)
         return -EINTR;
     return pthread_mutex_lock(&mutex->native);
 }
@@ -167,6 +171,7 @@ static int TestSleep(unsigned milliseconds);
 static bool crystalhd_link_load_firmware_config(struct crystalhd_hw *hw);
 static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
                                                enum FLEA_STATE_CH_EVENT event);
+static void crystalhd_flea_fw_transaction_done(struct crystalhd_hw *hw);
 
 #include "fw-command-functions.h"
 #include "fw-transport-functions.h"
@@ -207,6 +212,7 @@ static void InitHardware(void)
     last_woken = NULL;
     wait_mode = WAIT_BLOCK;
     interrupt_mailbox_begin = false;
+    interrupt_transaction_enter = false;
     complete_before_publication = false;
     wait_calls = 0;
     pthread_mutex_lock(&audit_lock);
@@ -232,6 +238,8 @@ static void AdmissionBeforePreprocess(void)
     hardware.fwcmd_poisoned = true;
     Check(crystalhd_hw_fw_cmd_enter(&hardware) == BC_STS_BUSY,
           "normal transaction admission rejects a poisoned mailbox");
+    Check(!hardware.fwcmd_trans_active,
+          "poisoned admission cannot acquire outer power ownership");
     rc = pthread_mutex_trylock(&hardware.fwcmd_trans_mutex.native);
     Check(!rc, "rejected poisoned admission releases transaction serialization");
     if (!rc) pthread_mutex_unlock(&hardware.fwcmd_trans_mutex.native);
@@ -245,16 +253,26 @@ static void AdmissionBeforePreprocess(void)
     if (!rc) pthread_mutex_unlock(&hardware.fwcmd_trans_mutex.native);
     Check(crystalhd_hw_fw_cmd_recovery_enter(&hardware) == BC_STS_BUSY,
           "reset recovery cannot overtake actively pending mailbox work");
+    Check(!hardware.fwcmd_trans_active,
+          "pending admission cannot acquire outer power ownership");
 
     hardware.fwcmd_pending = false;
     Check(crystalhd_hw_fw_cmd_enter(&hardware) == BC_STS_SUCCESS,
           "clean normal transaction admission retains serialization");
+    Check(hardware.fwcmd_trans_active && !hardware.fwcmd_active && !hardware.FwCmdCnt,
+          "normal admission protects preprocessing before any low-level command");
     crystalhd_hw_fw_cmd_leave(&hardware);
+    Check(!hardware.fwcmd_trans_active,
+          "early command exit releases the outer owner without a mailbox command");
 
     hardware.fwcmd_poisoned = true;
     Check(crystalhd_hw_fw_cmd_recovery_enter(&hardware) == BC_STS_SUCCESS,
           "verified-reset transaction may enter a poisoned mailbox");
+    Check(hardware.fwcmd_trans_active && hardware.fwcmd_poisoned,
+          "recovery ownership neither clears quarantine nor requires a posted command");
     crystalhd_hw_fw_cmd_leave(&hardware);
+    Check(!hardware.fwcmd_trans_active && hardware.fwcmd_poisoned,
+          "failed recovery exit releases ownership without clearing quarantine");
     DestroyHardware();
 }
 
@@ -264,6 +282,19 @@ static void CheckUnlocked(pthread_mutex_t *lock, const char *why)
 
     Check(!rc, why);
     if (!rc && pthread_mutex_unlock(lock)) abort();
+}
+
+static void crystalhd_flea_fw_transaction_done(struct crystalhd_hw *hw)
+{
+    int rc = pthread_mutex_trylock(&hardware.fwcmd_trans_mutex.native);
+
+    Check(hw == &hardware && !hw->fwcmd_trans_active,
+          "outer-release notification follows release of the transaction power guard");
+    Check(rc == EBUSY,
+          "outer-release notification retains transaction serialization through reevaluation");
+    if (!rc && pthread_mutex_unlock(&hardware.fwcmd_trans_mutex.native)) abort();
+    CheckUnlocked(&hardware.lock,
+                  "outer-release notification runs outside the hardware state lock");
 }
 
 static void UnavailableAdmission(void)
@@ -294,7 +325,8 @@ static void UnavailableAdmission(void)
                       "both entries reject DMA fault or absence before mailbox admission");
                 Check(hardware.fwcmd_pending == !!(mailbox & 1) &&
                       hardware.fwcmd_poisoned == !!(mailbox & 2) &&
-                      hardware.fwcmd_evt_sts == 7 && hardware.FwCmdCnt == 11,
+                      hardware.fwcmd_evt_sts == 7 && hardware.FwCmdCnt == 11 &&
+                      !hardware.fwcmd_trans_active,
                       "unavailable admission preserves all mailbox state, even pending/poisoned");
                 Check(hardware.fwcmd_event.wakeups == 13 &&
                       last_woken == &hardware.fwcmd_event,
@@ -315,6 +347,68 @@ static void UnavailableAdmission(void)
                               "denied admission leaves the firmware waitqueue unlocked");
                 DestroyHardware();
             }
+        }
+    }
+}
+
+static void OuterOwnerLifetime(void)
+{
+    BC_STATUS (*const enter[])(struct crystalhd_hw *) = {
+        crystalhd_hw_fw_cmd_enter,
+        crystalhd_hw_fw_cmd_recovery_enter,
+    };
+    unsigned entry, timeout;
+
+    for (entry = 0; entry < sizeof(enter) / sizeof(enter[0]); entry++) {
+        InitHardware();
+        interrupt_transaction_enter = true;
+        Check(enter[entry](&hardware) == BC_STS_IO_USER_ABORT,
+              "interrupted outer admission retains its established error");
+        Check(!hardware.fwcmd_trans_active && !hardware.fwcmd_active &&
+              !hardware.fwcmd_pending && !hardware.FwCmdCnt,
+              "interrupted admission publishes no owner or mailbox work");
+        CheckUnlocked(&hardware.fwcmd_trans_mutex.native,
+                      "interrupted outer admission leaves transaction mutex available");
+        DestroyHardware();
+
+        for (timeout = 0; timeout < 2; timeout++) {
+            InitHardware();
+            Check(enter[entry](&hardware) == BC_STS_SUCCESS &&
+                  hardware.fwcmd_trans_active,
+                  "successful outer admission covers command preprocessing");
+            Check(crystalhd_hw_fw_cmd_begin(&hardware) == BC_STS_SUCCESS &&
+                  hardware.fwcmd_trans_active && hardware.fwcmd_active &&
+                  hardware.FwCmdCnt == 1,
+                  "nested mailbox owner does not replace outer command ownership");
+            wait_mode = timeout ? WAIT_TIMEOUT : WAIT_COMPLETE_IMMEDIATELY;
+            Check(crystalhd_hw_fw_cmd_wait(&hardware) ==
+                  (timeout ? BC_STS_TIMEOUT : BC_STS_SUCCESS),
+                  "outer ownership preserves normal completion and timeout statuses");
+            crystalhd_hw_fw_cmd_end(&hardware);
+            Check(hardware.fwcmd_trans_active && !hardware.fwcmd_active &&
+                  hardware.FwCmdCnt == timeout,
+                  "low-level end retains the outer postprocessing or rollback inhibitor");
+            if (timeout) {
+                crystalhd_hw_fw_cmd_complete(&hardware);
+                Check(hardware.fwcmd_trans_active && !hardware.fwcmd_active &&
+                      !hardware.FwCmdCnt && hardware.fwcmd_poisoned,
+                      "late IRQ retires only firmware work, never the outer owner");
+            }
+            crystalhd_hw_fw_cmd_reset_locked(&hardware);
+            Check(hardware.fwcmd_trans_active && !hardware.fwcmd_active &&
+                  !hardware.fwcmd_pending && !hardware.fwcmd_poisoned &&
+                  !hardware.FwCmdCnt && !hardware.fwcmd_evt_sts,
+                  "verified reset clears low-level state without releasing its outer recovery owner");
+            crystalhd_hw_fw_cmd_leave(&hardware);
+            Check(!hardware.fwcmd_trans_active && !hardware.fwcmd_active &&
+                  !hardware.FwCmdCnt,
+                  "only outer leave releases command-layer ownership");
+            CheckUnlocked(&hardware.fwcmd_trans_mutex.native,
+                          "outer leave releases transaction serialization");
+            crystalhd_hw_fw_cmd_reset(&hardware);
+            Check(!hardware.fwcmd_trans_active && !hardware.fwcmd_active,
+                  "standalone reset cannot invent command ownership");
+            DestroyHardware();
         }
     }
 }
@@ -481,6 +575,65 @@ static void SerializedCommands(void)
     Check(!hardware.fwcmd_pending && !hardware.fwcmd_poisoned &&
           !hardware.FwCmdCnt,
           "serialized completion leaves no outstanding command count");
+    DestroyHardware();
+}
+
+struct transaction_thread {
+    BC_STATUS status;
+    bool acquired, owner_seen, may_leave;
+};
+
+static void *RunTransaction(void *argument)
+{
+    struct transaction_thread *thread = argument;
+
+    thread->status = crystalhd_hw_fw_cmd_enter(&hardware);
+    pthread_mutex_lock(&audit_lock);
+    thread->acquired = thread->status == BC_STS_SUCCESS;
+    thread->owner_seen = hardware.fwcmd_trans_active;
+    pthread_cond_broadcast(&audit_changed);
+    while (!thread->may_leave)
+        pthread_cond_wait(&audit_changed, &audit_lock);
+    pthread_mutex_unlock(&audit_lock);
+    if (thread->status == BC_STS_SUCCESS)
+        crystalhd_hw_fw_cmd_leave(&hardware);
+    return NULL;
+}
+
+static void SerializedOuterOwners(void)
+{
+    struct transaction_thread follower = {0};
+    pthread_t second;
+
+    InitHardware();
+    Check(crystalhd_hw_fw_cmd_enter(&hardware) == BC_STS_SUCCESS &&
+          crystalhd_hw_fw_cmd_begin(&hardware) == BC_STS_SUCCESS,
+          "first transaction owns both command and mailbox lifetimes");
+    crystalhd_hw_fw_cmd_complete(&hardware);
+    crystalhd_hw_fw_cmd_end(&hardware);
+    if (pthread_create(&second, NULL, RunTransaction, &follower)) abort();
+    pthread_mutex_lock(&audit_lock);
+    while (mutex_attempts < 3)
+        pthread_cond_wait(&audit_changed, &audit_lock);
+    Check(!follower.acquired && hardware.fwcmd_trans_active &&
+          !hardware.fwcmd_active && !hardware.FwCmdCnt,
+          "second transaction waits while the first performs outer postprocessing");
+    pthread_mutex_unlock(&audit_lock);
+
+    crystalhd_hw_fw_cmd_leave(&hardware);
+    pthread_mutex_lock(&audit_lock);
+    while (!follower.acquired)
+        pthread_cond_wait(&audit_changed, &audit_lock);
+    Check(follower.status == BC_STS_SUCCESS && follower.owner_seen &&
+          hardware.fwcmd_trans_active,
+          "next transaction takes its own outer guard after the prior leave completes");
+    follower.may_leave = true;
+    pthread_cond_broadcast(&audit_changed);
+    pthread_mutex_unlock(&audit_lock);
+    if (pthread_join(second, NULL)) abort();
+    Check(!hardware.fwcmd_trans_active && !hardware.fwcmd_active &&
+          !hardware.FwCmdCnt,
+          "serialized outer transactions release all owners without touching firmware counts");
     DestroyHardware();
 }
 
@@ -1170,10 +1323,12 @@ int main(void)
 {
     AdmissionBeforePreprocess();
     UnavailableAdmission();
+    OuterOwnerLifetime();
     NormalAndLateCompletion();
     TimeoutLateIrqAndRetry();
     TimeoutBoundaryAndReset();
     SerializedCommands();
+    SerializedOuterOwners();
     ReplyReadFailure();
     ReplyRangeAndFirmwareStatus();
     ReplyAdmissionAndWaitFailure();
