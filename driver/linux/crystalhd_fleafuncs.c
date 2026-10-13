@@ -28,6 +28,7 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/sched/signal.h>
+#include <linux/ktime.h>
 #include <asm/tsc.h>
 #include <asm/msr.h>
 #include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_clk.h"
@@ -868,10 +869,112 @@ static BC_STATUS crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
 	return BC_STS_IO_ERROR;
 }
 
+/* Arbiter-only readiness measurement: never request any low-power state. */
+static enum FLEA_POWER_DOWN_RESULT
+crystalhd_flea_arbiter_readiness(struct crystalhd_hw *hw,
+			       struct chd_pm_arbiter_report *report)
+{
+	const uint32_t owned = BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL_arb_disable_MASK;
+	const uint32_t reserved = BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL_reserved0_MASK;
+	const uint32_t ready = BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK |
+		BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo1_empty_MASK |
+		BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo2_empty_MASK |
+		BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo3_empty_MASK |
+		BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK;
+	uint32_t value;
+	unsigned int i;
+
+	lockdep_assert_held(&hw->lock);
+	*report = (struct chd_pm_arbiter_report) {
+		.session = hw->FleaShadowSession,
+		.begin_ns = ktime_get_mono_fast_ns(), .result = CHD_ARB_BASELINE_INVALID,
+		.down_result = FLEA_PD_REFUSED, .baseline = CHD_PM_SHADOW_UNKNOWN,
+		.disable_readback = CHD_PM_SHADOW_UNKNOWN,
+		.restore_live = CHD_PM_SHADOW_UNKNOWN,
+		.restore_readback = CHD_PM_SHADOW_UNKNOWN,
+		.memc_first = CHD_PM_SHADOW_UNKNOWN, .memc_last = CHD_PM_SHADOW_UNKNOWN,
+	};
+	report->baseline = hw->pfnReadDevRegister(hw->adp, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL);
+	if (report->baseline != 0)
+		goto done;
+	/* Change only the validated arb_disable bit, never any clock/DDR control. */
+	hw->pfnWriteDevRegister(hw->adp, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL,
+			       (report->baseline & ~owned) | owned);
+	report->touched = 1;
+	report->result = CHD_ARB_DISABLE_UNCONFIRMED;
+	report->disable_readback = hw->pfnReadDevRegister(hw->adp,
+					 BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL);
+	if (report->disable_readback == ~0U || (report->disable_readback & reserved) ||
+	    (report->disable_readback & owned) != owned)
+		goto restore;
+	report->result = CHD_ARB_TIMEOUT;
+	for (i = 0; i < 21; i++) {
+		value = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_CTL_REGS_0_CTL_STATUS);
+		if (!i)
+			report->memc_first = value;
+		report->memc_last = value;
+		report->polls++;
+		if (value & ~ready) {
+			report->result = CHD_ARB_MEMC_INVALID;
+			break;
+		}
+		if ((value & ready) == ready) {
+			report->result = CHD_ARB_GUARDS_REACHED;
+			break;
+		}
+		if (i < 20) {
+			udelay(10);
+			report->delay_us += 10;
+		}
+	}
+restore:
+	/* A failed read cannot authorize a blind whole-register restoration. */
+	report->restore = CHD_ARB_RESTORE_UNCONFIRMED;
+	report->restore_live = hw->pfnReadDevRegister(hw->adp,
+					BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL);
+	if (report->restore_live == ~0U || (report->restore_live & reserved))
+		goto restore_fault;
+	hw->pfnWriteDevRegister(hw->adp, BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL,
+			       (report->restore_live & ~owned) | (report->baseline & owned));
+	report->restore_readback = hw->pfnReadDevRegister(hw->adp,
+					    BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL);
+	if (report->restore_readback == ~0U || (report->restore_readback & reserved) ||
+	    (report->restore_readback & owned) != (report->baseline & owned))
+		goto restore_fault;
+	report->restore = CHD_ARB_RESTORE_CONFIRMED;
+	goto done;
+restore_fault:
+	report->down_result = FLEA_PD_FAULT;
+done:
+	report->end_ns = ktime_get_mono_fast_ns();
+	return report->down_result;
+}
+
 static enum FLEA_POWER_DOWN_RESULT
 crystalhd_flea_runtime_power_dn(struct crystalhd_hw *hw)
 {
-	/* Refuse before capture, watchdog access, or any target MMIO. */
+	struct chd_pm_arbiter_report report;
+	enum FLEA_POWER_DOWN_RESULT result = FLEA_PD_REFUSED;
+
+	/* Recheck the caller's host admission before even the one-shot claim. */
+	if (!hw->FleaPowerTransition || hw->FleaPowerState != FLEA_PS_LP_PENDING ||
+	    READ_ONCE(hw->dma_fault) || !READ_ONCE(hw->adp->present) || !hw->dev_started ||
+	    hw->FleaTxActive || hw->FleaIrqActive || hw->FleaRawActive ||
+	    hw->fwcmd_trans_active || hw->fwcmd_active || hw->FwCmdCnt || hw->fwcmd_poisoned ||
+	    hw->TxList0Sts != ListStsFree || hw->TxList1Sts != ListStsFree ||
+	    hw->rx_list_sts[0] != sts_free || hw->rx_list_sts[1] != sts_free ||
+	    hw->EmptyCnt || hw->SingleThreadAppFIFOEmpty)
+		goto refuse;
+	if (!crystalhd_pm_arbiter_claim())
+		goto refuse;
+	result = crystalhd_flea_arbiter_readiness(hw, &report);
+	crystalhd_pm_arbiter_record(hw, &report);
+	if (result == FLEA_PD_FAULT) {
+		hw->FleaPowerState = FLEA_PS_FAULT;
+		crystalhd_hw_publish_fault(hw);
+		return result;
+	}
+refuse:
 	crystalhd_pm_shadow_trace(hw, CHD_PM_DOWN_REFUSED, FLEA_EVT_NONE,
 				 hw->FleaPowerState, FLEA_PS_LP_COMPLETE,
 				 FLEA_PD_REFUSED, CHD_PM_SHADOW_UNKNOWN);

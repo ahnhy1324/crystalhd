@@ -27,10 +27,12 @@ awk '
     END { if (found != 7 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_pm_shadow.c" > "$test_dir/pwm-shadow-functions.h"
 awk '
-    /^\/\* This artifact exercises host ownership/ { shadow=1; found++ }
-    shadow && /^bool crystalhd_flea_detect_fw_alive/ { shadow=0; ended++ }
-    shadow { print }
-    END { if (found != 1 || ended != 1 || shadow) exit 1 }
+    /^static BC_STATUS crystalhd_flea_runtime_power_up\(/ { copying=1; found++ }
+    /^crystalhd_flea_runtime_power_dn\(/ { print previous; copying=1; found++ }
+    copying { print }
+    copying && /^}/ { copying=0 }
+    { previous=$0 }
+    END { if (found != 2 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/pwm-shadow-stubs.h"
 
 # Source fuses: no runtime control path, debugfs mutable operation or hw pointer.

@@ -21,8 +21,10 @@ typedef unsigned int BC_STATUS;
 #define __printf(a, b) __attribute__((format(printf, a, b)))
 
 #include "pwm-shadow-types.h"
+#include "crystalhd_pm_arbiter.h"
 #include "crystalhd_pm_shadow_ring.h"
 
+struct mock_adp { u32 present; };
 struct crystalhd_hw {
 	u64 FleaShadowSession;
 	u32 FleaPowerState, FleaPowerTransition, FleaTxActive, FleaIrqActive;
@@ -30,6 +32,8 @@ struct crystalhd_hw {
 	u32 fwcmd_poisoned, TxList0Sts, TxList1Sts, rx_list_sts[2];
 	u32 EmptyCnt, SingleThreadAppFIFOEmpty, hw_pause_issued, dma_fault;
 	u32 FleaEnablePWM;
+	u32 dev_started;
+	struct mock_adp *adp;
 	int lock;
 };
 struct inode { int unused; };
@@ -121,6 +125,24 @@ static void crystalhd_hw_publish_fault(struct crystalhd_hw *hw)
 }
 
 #include "pwm-shadow-functions.h"
+
+/* This suite exercises no-attempt/refusal and copied trace lifetime only.
+ * pwm-arbiter.c separately executes the actual MMIO protocol and one-shot.
+ */
+static bool crystalhd_pm_arbiter_claim(void) { return false; }
+static enum FLEA_POWER_DOWN_RESULT crystalhd_flea_arbiter_readiness(
+	struct crystalhd_hw *hw, struct chd_pm_arbiter_report *report)
+{
+	(void)hw; (void)report;
+	assert(false);
+	return FLEA_PD_FAULT;
+}
+static void crystalhd_pm_arbiter_record(struct crystalhd_hw *hw,
+	const struct chd_pm_arbiter_report *report)
+{
+	(void)hw; (void)report;
+	assert(false);
+}
 #include "pwm-shadow-stubs.h"
 
 static void trace(struct crystalhd_hw *hw, u32 stage)

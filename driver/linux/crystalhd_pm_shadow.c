@@ -13,6 +13,33 @@ static DEFINE_SPINLOCK(shadow_lock);
 static struct chd_pm_shadow_ring shadow_ring;
 static u64 shadow_session;
 static struct dentry *shadow_debugfs;
+static bool arbiter_attempted;
+
+bool crystalhd_pm_arbiter_claim(void)
+{
+	unsigned long flags;
+	bool claimed;
+
+	spin_lock_irqsave(&shadow_lock, flags);
+	claimed = !arbiter_attempted;
+	arbiter_attempted = true;
+	spin_unlock_irqrestore(&shadow_lock, flags);
+	return claimed;
+}
+
+void crystalhd_pm_arbiter_record(struct crystalhd_hw *hw,
+			       const struct chd_pm_arbiter_report *report)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&shadow_lock, flags);
+	shadow_ring.arbiter = *report;
+	shadow_ring.arbiter_valid = 1;
+	spin_unlock_irqrestore(&shadow_lock, flags);
+	crystalhd_pm_shadow_trace(hw, CHD_PM_ARBITER, FLEA_EVT_NONE,
+				 hw->FleaPowerState, hw->FleaPowerState,
+				 report->down_result, CHD_PM_SHADOW_UNKNOWN);
+}
 
 void crystalhd_pm_shadow_session(struct crystalhd_hw *hw)
 {
@@ -79,6 +106,7 @@ void crystalhd_pm_shadow_trace(struct crystalhd_hw *hw, u32 stage,
 	critical = record.violations || record.dma_fault || record.fw_poisoned ||
 		record.new_state == FLEA_PS_FAULT || stage == CHD_PM_INIT || stage == CHD_PM_RETIRE ||
 		stage == CHD_PM_DOWN_REFUSED || stage == CHD_PM_UP_ENTRY ||
+		stage == CHD_PM_ARBITER ||
 		stage == CHD_PM_FLL_RESTORE_BEGIN || stage == CHD_PM_FLL_RESTORE ||
 		record.old_state != record.new_state ||
 		(stage == CHD_PM_SELECT && record.old_state != record.selected_state) ||
@@ -124,7 +152,8 @@ static int shadow_show(struct seq_file *seq, void *unused)
 			snapshot->count) % CHD_PM_SHADOW_RECORDS;
 	(void)unused;
 
-	seq_printf(seq, "artifact=3.10.3-pm-shadow physical_runtime=compiled-out "
+	seq_printf(seq, "artifact=3.10.3-pm-arbiter physical_runtime=compiled-out "
+		   "arbiter_only=one-shot "
 		   "normal_stop_device_shutdown=unchanged "
 		   "capacity=%u total=%llu overwritten=%llu down_refused=%llu "
 		   "up_entry=%llu lp_complete=%llu violations=%llu "
@@ -135,6 +164,17 @@ static int shadow_show(struct seq_file *seq, void *unused)
 		   CHD_PM_SHADOW_RECEIPTS, snapshot->receipt_total, snapshot->receipt_dropped);
 	for (i = 0; i < CHD_PM_STAGE_COUNT; i++)
 		seq_printf(seq, "stage-count stage=%u count=%llu\n", i, snapshot->stage_count[i]);
+	if (snapshot->arbiter_valid) {
+		const struct chd_pm_arbiter_report *a = &snapshot->arbiter;
+
+		seq_printf(seq, "arbiter session=%llu begin_ns=%llu end_ns=%llu result=%u restore=%u "
+			   "down_result=%u touched=%u baseline=%u disable_readback=%u "
+			   "restore_live=%u restore_readback=%u memc_first=%u memc_last=%u "
+			   "polls=%u delay_us=%u\n", a->session, a->begin_ns, a->end_ns,
+			   a->result, a->restore, a->down_result, a->touched, a->baseline,
+			   a->disable_readback, a->restore_live, a->restore_readback,
+			   a->memc_first, a->memc_last, a->polls, a->delay_us);
+	}
 	seq_puts(seq, "kind sequence time_ns session stage request old selected new "
 		 "reserved status fll violations dma_fault tx irq raw fw_transaction "
 		 "fw_active fw_count fw_poisoned tx0 tx1 rx0 rx1 empty single rx_pause\n");

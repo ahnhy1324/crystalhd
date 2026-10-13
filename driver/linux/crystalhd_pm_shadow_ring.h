@@ -33,6 +33,7 @@ enum chd_pm_shadow_stage {
 	CHD_PM_FW_RESET,
 	CHD_PM_RETIRE,
 	CHD_PM_FAULT,
+	CHD_PM_ARBITER,
 	CHD_PM_STAGE_COUNT,
 };
 
@@ -62,6 +63,8 @@ struct chd_pm_shadow_ring {
 	/* First bounded transition receipts are never overwritten by IRQ traffic. */
 	struct chd_pm_shadow_record receipt[CHD_PM_SHADOW_RECEIPTS];
 	struct chd_pm_shadow_record retire, first_fault;
+	u32 arbiter_valid;
+	struct chd_pm_arbiter_report arbiter;
 };
 
 static inline void chd_pm_shadow_increment(u64 *value)
