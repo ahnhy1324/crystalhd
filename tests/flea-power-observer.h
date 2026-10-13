@@ -8,6 +8,8 @@
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_ddr23_phy_byte_lane_0.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_ddr23_phy_byte_lane_1.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_pri_arb_control_regs.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_misc1.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_intr.h"
 
 // Fixed target-register reads during ordinary decode. The legacy accessor may
 // write its indirect address portal; no target control register is changed.
@@ -19,6 +21,7 @@ struct FleaPowerObserver {
     using FirmwareCommand = BC_STATUS (*)(HANDLE, uint32_t);
     FirmwareCommand firmware_command = nullptr;
     bool configuration = false;
+    bool firmware_dma = false;
     bool enabled = false, failed = false;
     unsigned next = 0, reads = 0;
     static uint32_t Address(unsigned field) {
@@ -42,9 +45,44 @@ struct FleaPowerObserver {
             (BCHP_DDR23_CTL_REGS_0_CTL_STATUS_reserved0_MASK |
              BCHP_DDR23_CTL_REGS_0_CTL_STATUS_reserved1_MASK));
     }
+    static uint32_t DmaAddress(unsigned field) {
+        const uint32_t addresses[] = {BCHP_CLK_PM_CTRL,
+            BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL,
+            BCHP_MISC1_TX_FIRST_DESC_L_ADDR_LIST0,
+            BCHP_MISC1_TX_FIRST_DESC_L_ADDR_LIST1,
+            BCHP_INTR_INTR_STATUS, BCHP_DDR23_CTL_REGS_0_CTL_STATUS,
+            BCHP_CLK_PM_CTRL};
+        return addresses[field];
+    }
+    static bool DmaValid(unsigned field, uint32_t raw) {
+        if (field < 2) return Valid(field, raw);
+        if (field == 5) return Valid(2, raw);
+        if (field == 6) return Valid(0, raw);
+        if (field == 2)
+            return !(raw & BCHP_MISC1_TX_FIRST_DESC_L_ADDR_LIST0_reserved0_MASK);
+        if (field == 3)
+            return !(raw & BCHP_MISC1_TX_FIRST_DESC_L_ADDR_LIST1_reserved0_MASK);
+        const uint32_t reserved = BCHP_INTR_INTR_STATUS_reserved0_MASK |
+            BCHP_INTR_INTR_STATUS_reserved1_MASK | BCHP_INTR_INTR_STATUS_reserved2_MASK |
+            BCHP_INTR_INTR_STATUS_reserved3_MASK;
+        const uint32_t errors = BCHP_INTR_INTR_STATUS_HAT_INTR_MASK |
+            BCHP_INTR_INTR_STATUS_PCIE_TGT_CA_ATTN_MASK |
+            BCHP_INTR_INTR_STATUS_PCIE_TGT_UR_ATTN_MASK |
+            BCHP_INTR_INTR_STATUS_L1_HIF_RX_DMA_ERR_INTR_MASK |
+            BCHP_INTR_INTR_STATUS_L1_Y_RX_DMA_ERR_INTR_MASK |
+            BCHP_INTR_INTR_STATUS_L1_TX_DMA_ERR_INTR_MASK |
+            BCHP_INTR_INTR_STATUS_L0_HIF_RX_DMA_ERR_INTR_MASK |
+            BCHP_INTR_INTR_STATUS_L0_Y_RX_DMA_ERR_INTR_MASK |
+            BCHP_INTR_INTR_STATUS_L0_TX_DMA_ERR_INTR_MASK;
+        return field == 4 && !(raw & (reserved | errors));
+    }
     bool Observe(HANDLE handle, unsigned stage, Reader reader = DtsDevRegisterRead,
                  bool report = true) {
         if (!enabled) return true;
+        if (firmware_dma && (!firmware_command || configuration)) {
+            failed = true;
+            return false;
+        }
         if (configuration) {
             if (stage == 0) return ObserveConfiguration(handle, reader, report);
             if (!failed && next == 1 && stage < 6) return true;
@@ -59,18 +97,22 @@ struct FleaPowerObserver {
             "resume-API-return", "last-released", "EOS"};
         const char *name = firmware_command && (stage == 2 || stage == 3)
             ? (stage == 2 ? "firmware-pause-return" : "firmware-resume-return") : names[stage];
-        uint32_t raw[4] = {};
+        // Only the post-PAUSE bracket adds DMA status reads. No polling or
+        // descriptor/IRQ acknowledgement writes; these words are non-atomic.
+        const bool dma = firmware_dma && stage == 2;
+        const unsigned fields = dma ? 7U : 4U;
+        uint32_t raw[7] = {};
         unsigned measured = 0;
         BC_STATUS status = BC_STS_SUCCESS;
         const gint64 before = g_get_monotonic_time();
-        for (unsigned i = 0; i < 4; ++i) {
+        for (unsigned i = 0; i < fields; ++i) {
             ++reads;
-            status = reader(handle, Address(i), &raw[i]);
+            status = reader(handle, dma ? DmaAddress(i) : Address(i), &raw[i]);
             if (status != BC_STS_SUCCESS) { failed = true; break; }
             ++measured;
-            if (!Valid(i, raw[i])) { failed = true; break; }
+            if (!(dma ? DmaValid(i, raw[i]) : Valid(i, raw[i]))) { failed = true; break; }
         }
-        if (measured == 4 && raw[0] != raw[3]) failed = true;
+        if (measured == fields && raw[0] != raw[fields - 1]) failed = true;
         if (!failed) ++next;
         if (report) {
             std::printf("Power observation: stage=%s monotonic-us=%lld duration-us=%lld "
@@ -79,7 +121,20 @@ struct FleaPowerObserver {
                 static_cast<long long>(g_get_monotonic_time() - before),
                 reads, measured, status, failed ? "FAIL" : "PASS");
             for (unsigned i = 0; i < measured; ++i)
-                std::printf(" reg%u@%08x=%08x", i, Address(i), raw[i]);
+                std::printf(" reg%u@%08x=%08x", i, dma ? DmaAddress(i) : Address(i), raw[i]);
+            if (dma) {
+                // Raw descriptors may contain host DMA addresses: retain this
+                // diagnostic log locally; publish VALID bits, not the words.
+                if (measured > 2)
+                    std::printf(" tx0-valid=%u", !!(raw[2] &
+                        BCHP_MISC1_TX_FIRST_DESC_L_ADDR_LIST0_TX_DESC_LIST0_VALID_MASK));
+                if (measured > 3)
+                    std::printf(" tx1-valid=%u", !!(raw[3] &
+                        BCHP_MISC1_TX_FIRST_DESC_L_ADDR_LIST1_TX_DESC_LIST1_VALID_MASK));
+                std::printf(" clock-bracket=%s physical-quiescence=unproven",
+                    measured < fields ? "incomplete" : raw[0] == raw[fields - 1]
+                        ? "consistent" : "inconsistent");
+            }
             std::printf(" atomic=no power-gating-tested=no\n");
             std::fflush(stdout);
         }
@@ -143,6 +198,10 @@ struct FleaPowerObserver {
                         Command pause = DtsPauseDecoder, Command resume = DtsResumeDecoder,
                         bool report = true) {
         if (!enabled) return true;
+        if (firmware_dma && (!firmware_command || configuration)) {
+            failed = true;
+            return false;
+        }
         if (configuration) {
             if (!failed && next == 1) return true;
             failed = true;
@@ -197,7 +256,9 @@ struct FleaPowerObserver {
     }
     bool Finish(bool native_ok) const {
         return native_ok && (!enabled || (!failed &&
-            next == (configuration ? 1U : 6U) && reads == (configuration ? 15U : 24U)));
+            !(firmware_dma && (!firmware_command || configuration)) &&
+            next == (configuration ? 1U : 6U) &&
+            reads == (configuration ? 15U : firmware_dma ? 27U : 24U)));
     }
 };
 
@@ -378,6 +439,134 @@ template<class Check> static void FleaPowerObserverSelfTest(const Check &check)
               !f.calls && !f.pauses && !f.resumes && o.failed,
               "invalid stock firmware observation arguments cannot invoke a command");
     }
+    struct DmaFixture {
+        unsigned calls = 0, pauses = 0, resumes = 0;
+        bool valid = true;
+        uint32_t raw[27] = {};
+        BC_STATUS status[27] = {};
+        BC_STATUS pause_status = BC_STS_SUCCESS, resume_status = BC_STS_SUCCESS;
+        static uint32_t Address(unsigned i) {
+            const uint32_t ordinary[] = {0x00070004, 0x0040cb30, 0x01800004, 0x00070004};
+            const uint32_t paused[] = {0x00070004, 0x0040cb30, 0x00502000,
+                0x00502008, 0x00500700, 0x01800004, 0x00070004};
+            return i < 8 ? ordinary[i % 4] : i < 15 ? paused[i - 8] : ordinary[(i - 15) % 4];
+        }
+        DmaFixture() {
+            for (unsigned i = 0; i < 27; ++i)
+                raw[i] = Address(i) == 0x00070004 ? 0x03000000 :
+                    Address(i) == 0x01800004 ? 0x72 : 0;
+            // Synthetic host addresses, including a VALID descriptor, and all
+            // completion/mailbox bits. None is an error or an idle proof.
+            raw[10] = 0x12345661; raw[11] = 0x76543200; raw[12] = 0x000f1515;
+        }
+        static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *value) {
+            auto *f = static_cast<DmaFixture *>(handle);
+            const unsigned i = f->calls++;
+            if (i >= 27) { f->valid = false; return BC_STS_ERROR; }
+            f->valid &= address == Address(i);
+            // The three extra reads must be between PAUSE ON and OFF.
+            if (i >= 8 && i < 15) f->valid &= f->pauses == 1 && !f->resumes;
+            if (i >= 15) f->valid &= f->pauses == 1 && f->resumes == 1;
+            *value = f->raw[i];
+            return f->status[i];
+        }
+        static BC_STATUS Firmware(HANDLE handle, uint32_t operation) {
+            auto *f = static_cast<DmaFixture *>(handle);
+            if (operation == 1 && !f->pauses && !f->resumes && f->calls == 8) {
+                ++f->pauses; return f->pause_status;
+            }
+            if (operation == 0 && f->pauses == 1 && !f->resumes) {
+                ++f->resumes; return f->resume_status;
+            }
+            f->valid = false;
+            return BC_STS_ERROR;
+        }
+        bool Run(FleaPowerObserver &o) {
+            return o.Observe(this, 0, Read, false) && o.Observe(this, 1, Read, false) &&
+                o.PauseAndResume(this, Read, nullptr, nullptr, false) &&
+                o.Observe(this, 4, Read, false) && o.Observe(this, 5, Read, false);
+        }
+    };
+    for (unsigned bit = 0; bit < 32; ++bit) {
+        const uint32_t raw = UINT32_C(1) << bit;
+        check(FleaPowerObserver::DmaValid(2, raw) == !(raw & 0x1eU) &&
+              FleaPowerObserver::DmaValid(3, raw) == !(raw & 0x1eU),
+              "TX lower words preserve address and VALID fields but reject reserved bits 4:1");
+        check(FleaPowerObserver::DmaValid(4, raw) == !!(raw & 0x000f1515U),
+              "INTR accepts only completion/mailbox bits, rejecting every reserved, DMA, halt and PCIe error bit");
+        DmaFixture f; f.raw[12] = raw;
+        FleaPowerObserver o; o.enabled = o.firmware_dma = true;
+        o.firmware_command = DmaFixture::Firmware;
+        const bool allowed = !!(raw & 0x000f1515U);
+        check(f.Run(o) == allowed && o.Finish(true) == allowed && f.valid &&
+              f.calls == (allowed ? 27U : 13U) && f.pauses == 1 && f.resumes == 1,
+              "invalid or error IRQ stops before MEMC and the closing clock read but still attempts OFF once");
+    }
+    for (unsigned field = 0; field < 7; ++field)
+        check(!FleaPowerObserver::DmaValid(field, UINT32_MAX),
+              "DMA observation rejects all-ones values at all seven fields");
+    for (unsigned valid = 0; valid < 4; ++valid) {
+        DmaFixture f; f.raw[10] = valid & 1U; f.raw[11] = (valid >> 1) & 1U; f.raw[12] = 0;
+        FleaPowerObserver o; o.enabled = o.firmware_dma = true;
+        o.firmware_command = DmaFixture::Firmware;
+        check(f.Run(o) && o.Finish(true) && !o.Finish(false) && f.valid &&
+              f.calls == 27 && o.reads == 27 && o.next == 6 && f.pauses == 1 && f.resumes == 1,
+              "all VALID combinations and zero IRQ remain observations in the exact 27-read profile");
+        o.reads = 24;
+        check(!o.Finish(true), "DMA observation cannot use the historical 24-read completion count");
+    }
+    for (unsigned bad = 0; bad < 27; ++bad) {
+        for (unsigned api = 0; api < 2; ++api) {
+            DmaFixture f;
+            if (api) f.status[bad] = BC_STS_IO_ERROR;
+            else f.raw[bad] = UINT32_MAX;
+            FleaPowerObserver o; o.enabled = o.firmware_dma = true;
+            o.firmware_command = DmaFixture::Firmware;
+            check(!f.Run(o) && o.failed && !o.Finish(true) && f.valid &&
+                  f.calls == bad + 1 && o.reads == bad + 1 &&
+                  f.pauses == (bad >= 8) && f.resumes == (bad >= 8),
+                  "every DMA-profile API/raw fault preserves the exact prefix and once-only OFF cleanup");
+            check(!o.Observe(&f, o.next, DmaFixture::Read, false) &&
+                  !o.PauseAndResume(&f, DmaFixture::Read, nullptr, nullptr, false) &&
+                  f.calls == bad + 1 && f.pauses == (bad >= 8) && f.resumes == (bad >= 8),
+                  "a failed DMA profile never retries a read or command");
+        }
+    }
+    for (unsigned end : {3U, 7U, 14U, 18U, 22U, 26U}) {
+        DmaFixture f; f.raw[end] ^= BCHP_CLK_PM_CTRL_DIS_MISC_OTP_9_CLK_MASK;
+        FleaPowerObserver o; o.enabled = o.firmware_dma = true;
+        o.firmware_command = DmaFixture::Firmware;
+        check(!f.Run(o) && o.failed && f.valid && f.calls == end + 1 &&
+              f.pauses == (end >= 8) && f.resumes == (end >= 8) && !o.Finish(true),
+              "DMA mode retains clock brackets at every stage including the seven-read PAUSE stage");
+    }
+    for (unsigned fault = 1; fault < 4; ++fault) {
+        DmaFixture f;
+        if (fault & 1U) f.pause_status = BC_STS_IO_ERROR;
+        if (fault & 2U) f.resume_status = BC_STS_IO_ERROR;
+        FleaPowerObserver o; o.enabled = o.firmware_dma = true;
+        o.firmware_command = DmaFixture::Firmware;
+        const unsigned expected = fault & 1U ? 8 : 15;
+        check(!f.Run(o) && o.failed && f.valid && f.calls == expected &&
+              f.pauses == 1 && f.resumes == 1 && !o.Finish(true) &&
+              !o.PauseAndResume(&f, DmaFixture::Read, nullptr, nullptr, false) &&
+              f.calls == expected && f.pauses == 1 && f.resumes == 1,
+              "DMA profile attempts OFF once after failed ON and never reads after failed OFF");
+    }
+    for (unsigned mixed = 0; mixed < 2; ++mixed) {
+        DmaFixture f; FleaPowerObserver o; o.enabled = o.firmware_dma = true;
+        if (mixed) { o.configuration = true; o.firmware_command = DmaFixture::Firmware; }
+        check(!o.Observe(&f, 0, DmaFixture::Read, false) &&
+              !o.PauseAndResume(&f, DmaFixture::Read, nullptr, nullptr, false) &&
+              !o.Finish(true) && !f.calls && !f.pauses && !f.resumes,
+              "DMA mode rejects a missing firmware callback or configuration mix before any I/O");
+    }
+    DmaFixture disabled_dma; FleaPowerObserver dma_off;
+    dma_off.firmware_dma = true; dma_off.firmware_command = DmaFixture::Firmware;
+    check(dma_off.Observe(&disabled_dma, 0, DmaFixture::Read, false) &&
+          dma_off.PauseAndResume(&disabled_dma, DmaFixture::Read, nullptr, nullptr, false) &&
+          dma_off.Finish(true) && !disabled_dma.calls && !disabled_dma.pauses && !disabled_dma.resumes,
+          "an unenabled DMA observer performs no commands or reads");
     struct ConfigurationFixture {
         unsigned calls = 0;
         bool valid = true;
