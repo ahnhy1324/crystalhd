@@ -173,7 +173,7 @@ struct crystalhd_hw {
     TX_INPUT_BUFFER_INFO TxFwInputBuffInfo;
     uint32_t TxBuffInfoAddr, EmptyCnt;
     bool WakeUpDecodeDone, SingleThreadAppFIFOEmpty;
-    bool FleaEnablePWM, FleaPowerTransition;
+    bool FleaEnablePWM, FleaPowerTransition, hw_pause_issued;
     uint32_t FleaTxActive;
     enum FLEA_POWER_STATES FleaPowerState;
     uint32_t tx_list_post_index, tx_ioq_tag_seed;
@@ -916,8 +916,9 @@ static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
             hardware.FleaPowerState = FLEA_PS_ACTIVE;
         return run.power.resume_status;
     }
-    Check(event == FLEA_EVT_CMD_COMP && hardware.FleaPowerState == FLEA_PS_LP_PENDING,
-          "TX owner release retries only a pending idle request");
+    Check(event == FLEA_EVT_CMD_COMP &&
+          (hardware.FleaPowerState == FLEA_PS_LP_PENDING || hardware.hw_pause_issued),
+          "TX owner release retries pending idle or the latest pause intent");
     run.power.completions++;
     return BC_STS_SUCCESS;
 }
@@ -3247,6 +3248,17 @@ static void FleaPowerNestedAndBypass(void)
     crystalhd_flea_tx_end(&hardware);
     Check(!hardware.FleaTxActive && run.power.completions == 2 && !hardware.lock,
           "last owner release balances the counter and retries pending idle outside the lock");
+
+    for (unsigned pause = 0; pause < 2; pause++) {
+        FleaPowerReset(&tag);
+        Check(crystalhd_flea_tx_begin(&hardware) == BC_STS_SUCCESS &&
+              hardware.FleaTxActive == 1, "active TX acquires an owner before pause intent changes");
+        hardware.hw_pause_issued = pause;
+        crystalhd_flea_tx_end(&hardware);
+        Check(!hardware.FleaTxActive && run.power.completions == pause &&
+              hardware.FleaPowerState == FLEA_PS_ACTIVE && !hardware.lock,
+              "active completion reevaluates a pause intent without inventing one after resume");
+    }
 
     for (unsigned link = 0; link < 2; link++) {
         Reset();

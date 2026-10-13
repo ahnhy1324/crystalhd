@@ -32,7 +32,7 @@ struct crystalhd_hw {
     struct crystalhd_adp *adp;
     int rx_lock, lock;
     bool dev_started, FleaEnablePWM, FleaPowerTransition;
-    bool PwrDwnPiQIntr, PwrDwnTxIntr;
+    bool PwrDwnPiQIntr, PwrDwnTxIntr, hw_pause_issued;
     uint32_t FleaIrqActive;
     enum FLEA_POWER_STATES FleaPowerState;
     enum list_sts rx_list_sts[DMA_ENGINE_CNT];
@@ -460,6 +460,17 @@ static void run_irq_lifetime_cases(void)
                   full_rechecks == pwm && hardware.FleaIrqActive == 2 &&
                   hardware.FleaPowerTransition == !!busy && !hardware.lock,
                   "notification-only IRQ retires its owner and retries pending sleep without consuming peer owners");
+        }
+        for (unsigned intent = 0; intent < 2; intent++) {
+            full_reset(pwm, 2);
+            full_status.ArmMbox2Int = 1;
+            hardware.hw_pause_issued = intent;
+            check(crystalhd_flea_hw_interrupt_handle(&adapter, &hardware) &&
+                  full_phases == 4 && full_ack_writes == 2 &&
+                  full_rechecks == (pwm && intent) && hardware.FleaIrqActive == 2 &&
+                  hardware.FleaPowerState == FLEA_PS_ACTIVE &&
+                  hardware.hw_pause_issued == !!intent && !hardware.lock,
+                  "only enabled awake IRQ retirement asks the selector to restore current RX intent");
         }
         for (unsigned early = 0; early < 6; early++) {
             full_reset(pwm, 2);

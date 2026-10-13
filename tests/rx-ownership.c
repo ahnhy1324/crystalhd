@@ -64,7 +64,7 @@ struct crystalhd_hw {
     uint64_t rx_cancel_epoch;
     int lock, rx_lock, fetch_sem;
     bool hw_pause_issued, dma_fault, WakeUpDecodeDone;
-    bool FleaEnablePWM, FleaPowerTransition, dev_started;
+    bool FleaEnablePWM, FleaPowerTransition, FleaPowerRecheck, dev_started;
     uint32_t rx_pkt_tag_seed, rx_list_post_index, DrvTotalFrmCaptured;
     uint32_t FleaFLLUpdateAddr;
     uint32_t rx_list_sts[DMA_ENGINE_CNT];
@@ -2268,7 +2268,7 @@ static void fll_power_admission_cases(void)
             firmware_alive = alive;
             dram_write_status = error ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
             check(crystalhd_flea_publish_fll(&hardware, true) ==
-                  (alive ? dram_write_status : BC_STS_SUCCESS) &&
+                  (alive ? dram_write_status : BC_STS_IO_ERROR) &&
                   firmware_alive_checks == 1 && dram_write_calls == alive &&
                   !hardware.FleaPowerTransition && !hardware.lock,
                   "cleanup must release only its own reservation on every outcome");

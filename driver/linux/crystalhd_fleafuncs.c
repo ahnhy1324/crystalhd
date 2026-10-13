@@ -887,13 +887,16 @@ invalidate:
 	hw->TxFwInputBuffInfo.DramBuffSzInBytes = 0;
 }
 
+static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
+					      enum FLEA_STATE_CH_EVENT PowerEvt);
+
 static BC_STATUS crystalhd_flea_publish_fll(struct crystalhd_hw *hw,
 					  bool bCleanupContext)
 {
 	unsigned long flags = 0;
 	uint32_t freeListLen = 0;
 	BC_STATUS sts = BC_STS_SUCCESS;
-	bool reserved = false;
+	bool reserved = false, recheck = false;
 
 	/* The cleanup heartbeat can sleep. Reserve an active device before
 	 * probing it, without holding the spinlock across that wait.
@@ -919,12 +922,12 @@ static BC_STATUS crystalhd_flea_publish_fll(struct crystalhd_hw *hw,
 	* firmware is running. So Detect the heart beat.
 	*/
 	if (bCleanupContext && !crystalhd_flea_detect_fw_alive(hw)) {
-		if (reserved) {
-			spin_lock_irqsave(&hw->lock, flags);
-			hw->FleaPowerTransition = false;
-			spin_unlock_irqrestore(&hw->lock, flags);
-		}
-		return BC_STS_SUCCESS;
+		if (!reserved)
+			return BC_STS_SUCCESS;
+		/* Keep failed cleanup write-free, including deferred PM work. */
+		sts = BC_STS_IO_ERROR;
+		spin_lock_irqsave(&hw->lock, flags);
+		goto unlock;
 	}
 
 	freeListLen = crystalhd_hw_count_free_rx_pkts(hw);
@@ -946,9 +949,16 @@ static BC_STATUS crystalhd_flea_publish_fll(struct crystalhd_hw *hw,
 	}
 	sts = hw->pfnDevDRAMWrite(hw, hw->FleaFLLUpdateAddr, 1, &freeListLen);
 unlock:
-	if (reserved)
+	if (reserved) {
 		hw->FleaPowerTransition = false;
+		if (sts == BC_STS_SUCCESS) {
+			recheck = hw->FleaPowerRecheck;
+			hw->FleaPowerRecheck = false;
+		}
+	}
 	spin_unlock_irqrestore(&hw->lock, flags);
+	if (recheck)
+		crystalhd_flea_set_next_power_state(hw, FLEA_EVT_CMD_COMP);
 
 	return sts;
 }
@@ -1095,7 +1105,8 @@ retry:
 		 * owner check and this selector's reservation release.
 		 */
 		if (PowerEvt == FLEA_EVT_CMD_COMP &&
-		    hw->FleaPowerState == FLEA_PS_LP_PENDING)
+		    (hw->FleaPowerState == FLEA_PS_LP_PENDING ||
+		     hw->hw_pause_issued))
 			hw->FleaPowerRecheck = true;
 		sts = BC_STS_BUSY;
 		goto unlock;
@@ -1132,8 +1143,20 @@ retry:
 	case FLEA_EVT_CMD_COMP:
 		if (hw->FleaPowerState == FLEA_PS_LP_COMPLETE ||
 		    (PowerEvt == FLEA_EVT_CMD_COMP &&
-		     hw->FleaPowerState != FLEA_PS_LP_PENDING))
+		     hw->FleaPowerState != FLEA_PS_LP_PENDING &&
+		     !hw->hw_pause_issued))
 			break;
+		/* Do not revoke a temporary wake before its command or TX
+		 * producer reaches the doorbell. That owner retries on release.
+		 */
+		if (PowerEvt == FLEA_EVT_CMD_COMP &&
+		    hw->FleaPowerState == FLEA_PS_ACTIVE &&
+		    (hw->fwcmd_trans_active || hw->fwcmd_active || hw->FwCmdCnt ||
+		     hw->FleaTxActive))
+			break;
+		/* A firmware command may have woken an RX-paused device.
+		 * Recheck current intent here, not a caller's stale observation.
+		 */
 		next = FLEA_PS_LP_PENDING;
 		if (hw->TxList0Sts == ListStsFree && hw->TxList1Sts == ListStsFree &&
 		    !hw->EmptyCnt && !hw->SingleThreadAppFIFOEmpty &&
@@ -1165,10 +1188,12 @@ retry:
 	/* An owner may also have retired while the selected PENDING state
 	 * was not yet published, when its completion had nothing to retry.
 	 */
-	recheck = hw->FleaPowerState == FLEA_PS_LP_PENDING &&
-		(hw->FleaPowerRecheck ||
-		 (sts == BC_STS_SUCCESS && next == FLEA_PS_LP_PENDING));
-	hw->FleaPowerRecheck = false;
+	if (sts == BC_STS_SUCCESS) {
+		recheck = (hw->FleaPowerState == FLEA_PS_LP_PENDING ||
+			   (hw->FleaPowerState == FLEA_PS_ACTIVE && hw->hw_pause_issued)) &&
+			(hw->FleaPowerRecheck || next == FLEA_PS_LP_PENDING);
+		hw->FleaPowerRecheck = false;
+	}
 	repost = sts == BC_STS_SUCCESS && next == FLEA_PS_ACTIVE;
 unlock:
 	spin_unlock_irqrestore(&hw->lock, flags);
@@ -1205,7 +1230,8 @@ void crystalhd_flea_fw_transaction_done(struct crystalhd_hw *hw)
 	    !READ_ONCE(hw->FleaEnablePWM) || !READ_ONCE(hw->adp->present) ||
 	    READ_ONCE(hw->dma_fault) || !READ_ONCE(hw->dev_started))
 		return;
-	if (READ_ONCE(hw->FleaPowerState) == FLEA_PS_LP_PENDING)
+	if (READ_ONCE(hw->FleaPowerState) == FLEA_PS_LP_PENDING ||
+	    READ_ONCE(hw->hw_pause_issued))
 		crystalhd_flea_set_next_power_state(hw, FLEA_EVT_CMD_COMP);
 }
 
@@ -1852,13 +1878,14 @@ unlock:
 void crystalhd_flea_tx_end(struct crystalhd_hw *hw)
 {
 	unsigned long flags;
-	bool pending;
+	bool recheck;
 
 	spin_lock_irqsave(&hw->lock, flags);
 	hw->FleaTxActive--;
-	pending = hw->FleaPowerState == FLEA_PS_LP_PENDING;
+	recheck = hw->FleaPowerState == FLEA_PS_LP_PENDING ||
+		  hw->hw_pause_issued;
 	spin_unlock_irqrestore(&hw->lock, flags);
-	if (pending)
+	if (recheck)
 		crystalhd_flea_set_next_power_state(hw, FLEA_EVT_CMD_COMP);
 }
 
@@ -3087,7 +3114,8 @@ awake:
 		hw->FleaIrqActive--;
 		spin_unlock_irqrestore(&hw->lock, power_flags);
 	}
-	if( (hw->FleaPowerState == FLEA_PS_LP_PENDING) &&
+	if ((READ_ONCE(hw->FleaPowerState) == FLEA_PS_LP_PENDING ||
+	     (irq_power_owner && READ_ONCE(hw->hw_pause_issued))) &&
 	    (bSomeCmdDone || irq_power_owner))
 	{
 		/*printk("interrupt_handle: current PS:%d, bSomeCmdDone%d\n", hw->FleaPowerState,bSomeCmdDone); */
