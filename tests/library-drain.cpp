@@ -3459,6 +3459,7 @@ struct Options {
     bool observe_chroma = false;
     bool observe_power = false;
     bool observe_power_fw_pause = false;
+    bool observe_power_config = false;
     bool observe_scl_config = false;
     bool observe_scl_filter_map = false;
     unsigned observe_scl_view = 0;
@@ -3558,13 +3559,16 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
 {
     // A separate bounded mode: no other experimental options or repetitions.
     if (arguments.size() == 5 && (!std::strcmp(arguments.back(), "--observe-power") ||
-                                !std::strcmp(arguments.back(), "--observe-power-fw-pause"))) {
+                                !std::strcmp(arguments.back(), "--observe-power-fw-pause") ||
+                                !std::strcmp(arguments.back(), "--observe-power-config"))) {
         const bool firmware = !std::strcmp(arguments.back(), "--observe-power-fw-pause");
+        const bool configuration = !std::strcmp(arguments.back(), "--observe-power-config");
         arguments.pop_back();
         if (!ParseArguments(arguments, options) || options->mode != Mode::Hardware ||
             options->expected != 180) return false;
         options->observe_power = true;
         options->observe_power_fw_pause = firmware;
+        options->observe_power_config = configuration;
         return true;
     }
     if (arguments.size() >= 3 &&
@@ -8465,16 +8469,17 @@ static bool SelfTest()
     Mpeg4DirectSelfTest(check);
     FleaPowerObserverSelfTest(check);
 
-    for (const char *power_mode : {"--observe-power", "--observe-power-fw-pause"}) {
+    for (const char *power_mode : {"--observe-power", "--observe-power-fw-pause", "--observe-power-config"}) {
     const std::vector<const char *> power_arguments = {
         "probe", "--hardware", "fixture", "180", power_mode};
     Options power_options;
     check(ParseArguments(power_arguments, &power_options) && power_options.observe_power &&
           power_options.observe_power_fw_pause == !std::strcmp(power_mode, "--observe-power-fw-pause") &&
+          power_options.observe_power_config == !std::strcmp(power_mode, "--observe-power-config") &&
           NeedsRawIo(power_options) && power_options.iterations == 1 && power_options.seconds == 30,
           "power observation admits only the bounded hardware profile with raw-I/O capability");
     for (const auto &extras : std::vector<std::vector<const char *>>{
-            {"--observe-power"}, {"--observe-power-fw-pause"}, {"--observe-chroma"}, {"--observe-runtime-inventory"},
+            {"--observe-power"}, {"--observe-power-fw-pause"}, {"--observe-power-config"}, {"--observe-chroma"}, {"--observe-runtime-inventory"},
             {"--observe-scl-view", "2"}, {"--inject-mfd-colour", "a"},
             {"--scl-status-test", "clear"}, {"--scaler-test", "0"},
             {"--scaler-benchmark", "320"}, {"--capture-yuy2", "new"},
@@ -10757,6 +10762,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.expected = expected;
     audit.scl.enabled = options.observe_scl_config;
     audit.power.enabled = options.observe_power;
+    audit.power.configuration = options.observe_power_config;
     audit.power.firmware_command = options.observe_power_fw_pause ? DtsFWPauseVideo : nullptr;
     audit.scl_filter_map.enabled = options.observe_scl_filter_map;
     audit.scl_view.selector = options.observe_scl_view;
@@ -10982,7 +10988,7 @@ int main(int argc, char **argv)
             "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --observe-avd-platform-code | --observe-avd-cache-count | --observe-avd-dmem-samples | --observe-avd-dmem-midpoints | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n"
             "Power observation: --hardware MPEG2_640x360_180_FRAMES 180 "
-            "--observe-power_OR_--observe-power-fw-pause\n", argv[0]);
+            "[--observe-power | --observe-power-fw-pause | --observe-power-config]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
