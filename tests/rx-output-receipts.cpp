@@ -382,8 +382,8 @@ bool JoinReceipts(const HostReceipt *host, size_t host_count,
 }
 
 bool WriteTsv(const char *path, const JoinedReceipt *rows, size_t row_count,
-              uint64_t generation, uint64_t run_id, const OutputOps *in_ops,
-              Failure *failure)
+              uint64_t generation, uint64_t run_id, bool native_run_ok,
+              const OutputOps *in_ops, Failure *failure)
 {
     if (failure) *failure = Failure::None;
     if (!failure || !OutputPathAvailable(path) || (!rows && row_count)) {
@@ -421,8 +421,11 @@ bool WriteTsv(const char *path, const JoinedReceipt *rows, size_t row_count,
         "y_descriptor_count\tuv_descriptor_count\tdriver_picture_flags\t"
         "row_width\tpib_line\tpacket_flags\tstage_flags\tdisposition\t"
         "eos_trailer\tfire_to_irq_ns\tirq_to_completion_ns\t"
-        "disposition_to_host_ns\n";
-    if (ok && !WriteAll(fd, header, sizeof(header) - 1, ops)) {
+        "disposition_to_host_ns";
+    const char *header_suffix = native_run_ok
+        ? "\n" : "\tnative_run_result\n";
+    if (ok && (!WriteAll(fd, header, sizeof(header) - 1, ops) ||
+               !WriteAll(fd, header_suffix, std::strlen(header_suffix), ops))) {
         ok = false;
         *failure = Failure::OutputWrite;
     }
@@ -436,7 +439,7 @@ bool WriteTsv(const char *path, const JoinedReceipt *rows, size_t row_count,
             "%llu\t%llu\t%llu\t%llu\t%llu\t"
             "%llu\t%u\t%u\t%u\t%u\t%u\t%u\t"
             "%u\t%u\t%u\t%u\t%d\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t"
-            "%u\t%u\t%llu\t%llu\t%llu\n",
+            "%u\t%u\t%llu\t%llu\t%llu%s",
             static_cast<unsigned long long>(generation),
             static_cast<unsigned long long>(run_id),
             static_cast<unsigned long long>(host.ordinal),
@@ -470,7 +473,8 @@ bool WriteTsv(const char *path, const JoinedReceipt *rows, size_t row_count,
             static_cast<unsigned long long>(
                 driver.completion_ns - driver.irq_entry_ns),
             static_cast<unsigned long long>(
-                host.return_ns - driver.disposition_ns));
+                host.return_ns - driver.disposition_ns),
+            native_run_ok ? "\n" : "\tFAIL\n");
         if (length < 0 || static_cast<size_t>(length) >= sizeof(line) ||
             !WriteAll(fd, line, static_cast<size_t>(length), ops)) {
             ok = false;
@@ -688,8 +692,10 @@ bool Probe::SealAndRead()
     return true;
 }
 
-bool Probe::Finish(bool native_run_ok)
+bool Probe::Finish(bool native_run_ok,
+                   const DmaExpectation *preserve_failed_evidence)
 {
+    failed_evidence_published_ = false;
     if (!armed_ || fd_ < 0) {
         Fail(Failure::Argument);
         return false;
@@ -701,23 +707,51 @@ bool Probe::Finish(bool native_run_ok)
         ok = false;
     }
     armed_ = false;
-    if (!native_run_ok) {
-        Fail(Failure::NativeRun);
+    const bool preserve_failure = !native_run_ok && preserve_failed_evidence;
+    if (preserve_failed_evidence &&
+        (!preserve_failed_evidence->width ||
+         !preserve_failed_evidence->height ||
+         !preserve_failed_evidence->y_done_words)) {
+        Fail(Failure::Argument);
         ok = false;
     }
     Failure join_failure = Failure::None;
-    if (ok && !JoinReceipts(host_.data(), host_count_, driver_.data(),
+    if (ok && (native_run_ok || preserve_failure) &&
+        !JoinReceipts(host_.data(), host_count_, driver_.data(),
             driver_count_, joined_.data(), joined_.size(),
             driver_matched_.data(), driver_matched_.size(), &joined_count_,
             &join_failure)) {
         Fail(join_failure);
         ok = false;
     }
+    /* A failure artifact needs at least one exact host/driver join to carry
+     * its in-band FAIL marker.  Do not publish a header-only file for an empty
+     * seal or for a seal containing only unmatched EOS control receipts.
+     */
+    if (ok && preserve_failure && !joined_count_) ok = false;
+    DriverDmaAudit dma_audit;
+    Failure dma_failure = Failure::None;
+    if (ok && preserve_failed_evidence &&
+        !AuditDriverDma(driver_.data(), driver_count_,
+            preserve_failed_evidence->width,
+            preserve_failed_evidence->height,
+            preserve_failed_evidence->y_done_words,
+            preserve_failed_evidence->uv_done_words,
+            &dma_audit, &dma_failure)) {
+        Fail(dma_failure);
+        ok = false;
+    }
     Failure write_failure = Failure::None;
-    if (ok && !WriteTsv(output_path_, joined_.data(), joined_count_,
-                        arm_.generation, arm_.run_id, &output_ops_,
+    if (ok && (native_run_ok || preserve_failure) &&
+        !WriteTsv(output_path_, joined_.data(), joined_count_,
+                        arm_.generation, arm_.run_id, native_run_ok, &output_ops_,
                         &write_failure)) {
         Fail(write_failure);
+        ok = false;
+    }
+    failed_evidence_published_ = ok && preserve_failure;
+    if (!native_run_ok) {
+        Fail(Failure::NativeRun);
         ok = false;
     }
     return ok;
@@ -727,7 +761,8 @@ bool Probe::AuditDma(unsigned width, unsigned height, uint32_t y_done_words,
                      uint32_t uv_done_words, DriverDmaAudit *audit,
                      Failure *failure) const
 {
-    if (armed_ || fd_ >= 0 || failure_ != Failure::None) {
+    if (armed_ || fd_ >= 0 ||
+        (failure_ != Failure::None && !failed_evidence_published_)) {
         if (failure) *failure = Failure::Argument;
         if (audit) *audit = DriverDmaAudit{};
         return false;

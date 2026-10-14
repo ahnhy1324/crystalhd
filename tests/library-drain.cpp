@@ -3851,13 +3851,15 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
             !options->rx_output_receipts_path || arguments.size() != 7U ||
             std::strcmp(arguments[1], "--hardware") ||
             std::strcmp(arguments[3], "900") ||
-            std::strcmp(arguments[4], "60") ||
+            (std::strcmp(arguments[4], "60") &&
+             std::strcmp(arguments[4], "120")) ||
             std::strcmp(arguments[5], "1") ||
             std::strcmp(arguments[6], "--firmware-drop-nonref")) return false;
         arguments.pop_back();
         if (!ParseArguments(arguments, options) ||
             options->mode != Mode::Hardware || options->expected != 900U ||
-            options->seconds != 60U || options->iterations != 1U ||
+            (options->seconds != 60U && options->seconds != 120U) ||
+            options->iterations != 1U ||
             options->scaler_test || options->scaler_benchmark ||
             options->capture_path || options->output_format != OUTPUT_MODE422_YUY2)
             return false;
@@ -10172,6 +10174,20 @@ template<class Check> static void FirmwareDropSelfTest(const Check &check)
           admitted.rx_output_receipts_path && !admitted.scaler_test &&
           !admitted.scaler_benchmark && !admitted.capture_path && NeedsRawIo(admitted),
           "firmware-drop CLI admits only the exact one-run native profile with a new absolute receipt path");
+    auto extended = valid;
+    extended[4] = "120";
+    Options extended_admitted;
+    check(ParseArguments(extended, &extended_admitted) &&
+          extended_admitted.firmware_drop_nonref &&
+          extended_admitted.mode == Mode::Hardware &&
+          extended_admitted.expected == 900U &&
+          extended_admitted.seconds == 120U &&
+          extended_admitted.iterations == 1U &&
+          extended_admitted.rx_output_receipts_path &&
+          !extended_admitted.scaler_test &&
+          !extended_admitted.scaler_benchmark &&
+          !extended_admitted.capture_path && NeedsRawIo(extended_admitted),
+          "firmware-drop CLI admits a bounded 120-second discriminator without changing fixture or iteration scope");
     for (unsigned fault = 0; fault < 9; ++fault) {
         auto arguments = valid;
         if (fault == 0) arguments[1] = "--preflight";
@@ -10188,6 +10204,13 @@ template<class Check> static void FirmwareDropSelfTest(const Check &check)
         Options rejected;
         check(!ParseArguments(arguments, &rejected),
               "firmware-drop CLI fails closed on mode/count/time/repeat/path/duplicate/scaling/pacing changes");
+    }
+    for (const char *timeout : {"0", "59", "61", "119", "121", "300"}) {
+        auto arguments = valid;
+        arguments[4] = timeout;
+        Options rejected;
+        check(!ParseArguments(arguments, &rejected),
+              "firmware-drop CLI rejects every timeout except the frozen 60/120-second choices");
     }
 }
 
@@ -13490,19 +13513,36 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         rx_output_receipts::Failure::None;
     bool driver_dma_ok = false;
     if (audit.rx_output_receipts) {
-        receipts_ok = receipt_probe.Finish(native_run_ok);
+        rx_output_receipts::DmaExpectation firmware_drop_dma;
+        const rx_output_receipts::DmaExpectation *preserve_failed_evidence =
+            nullptr;
+        if (options.firmware_drop_nonref) {
+            firmware_drop_dma.width = issue399_firmware_drop::kWidth;
+            firmware_drop_dma.height = issue399_firmware_drop::kHeight;
+            firmware_drop_dma.y_done_words =
+                issue399_firmware_drop::kYDoneWords;
+            firmware_drop_dma.uv_done_words =
+                issue399_firmware_drop::kUVDoneWords;
+            preserve_failed_evidence = &firmware_drop_dma;
+        }
+        receipts_ok = receipt_probe.Finish(native_run_ok,
+                                           preserve_failed_evidence);
         std::printf("RX output receipts: host=%zu driver=%zu joined=%zu "
-            "generation=%llu run=%llu result=%s failure=%s\n",
+            "generation=%llu run=%llu result=%s failure=%s "
+            "failed-evidence-published=%s\n",
             receipt_probe.host_count(), receipt_probe.driver_count(),
             receipt_probe.joined_count(),
             static_cast<unsigned long long>(receipt_probe.generation()),
             static_cast<unsigned long long>(receipt_probe.run_id()),
             receipts_ok ? "PASS" : "FAIL",
-            rx_output_receipts::FailureName(receipt_probe.failure()));
+            rx_output_receipts::FailureName(receipt_probe.failure()),
+            receipt_probe.failed_evidence_published() ? "yes" : "no");
         std::fflush(stdout);
     }
     if (options.firmware_drop_nonref) {
-        driver_dma_ok = receipts_ok && receipt_probe.AuditDma(
+        driver_dma_ok =
+            (receipts_ok || receipt_probe.failed_evidence_published()) &&
+            receipt_probe.AuditDma(
             issue399_firmware_drop::kWidth,
             issue399_firmware_drop::kHeight,
             issue399_firmware_drop::kYDoneWords,
@@ -13631,7 +13671,7 @@ int main(int argc, char **argv)
             "Issue399 paced admission: --hardware PINNED_ISSUE399_H264_1920x1080_900_PACKETS 900 60 1 "
             "--scaler-benchmark 1280 --rx-output-receipts NEW_ABSOLUTE_TSV "
             "--pace-input 60\n"
-            "Issue399 firmware drop: --hardware PINNED_ISSUE399_H264_1920x1080_900_PACKETS 900 60 1 "
+            "Issue399 firmware drop: --hardware PINNED_ISSUE399_H264_1920x1080_900_PACKETS 900 60_OR_120 1 "
             "--firmware-drop-nonref --rx-output-receipts NEW_ABSOLUTE_TSV\n", argv[0]);
         return 2;
     }
