@@ -1039,6 +1039,9 @@ struct H264FieldFixture {
         (is_bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD) |
         (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0);
     output.PicInfo.timeStamp = 1;
+    output.PicInfo.picture_number = 71;
+    output.PicInfo.sess_num = 9;
+    output.PicInfo.picture_meta_payload = 0x1234;
     output.PicInfo.width = 16;
     output.PicInfo.height = 32;
     output.Ybuff = pixels->data();
@@ -1277,6 +1280,9 @@ static void H264Bcm70012SecondFieldTokenRecoveryIsNarrow() {
       case 2: ++fixture.decoder.generation; break;
       case 3: second.PicInfo.flags |= VDEC_FLAG_BOTTOM_FIRST; break;
       case 4: fixture.private_frame->decode_identity = 42; break;
+      case 5: ++second.PicInfo.picture_number; break;
+      case 6: ++second.PicInfo.sess_num; break;
+      case 7: ++second.PicInfo.picture_meta_payload; break;
     }
     Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, second) ==
                     VA_STATUS_ERROR_DECODING_ERROR &&
@@ -1285,7 +1291,7 @@ static void H264Bcm70012SecondFieldTokenRecoveryIsNarrow() {
                 !fixture.public_frame->ready,
             "BCM70012 zero token cannot bypass pair identity or geometry");
   };
-  for (unsigned int fault = 0; fault < 5; ++fault)
+  for (unsigned int fault = 0; fault < 8; ++fault)
     reject_zero_second(fault);
 
   {
@@ -1320,6 +1326,9 @@ static void H264FieldPairRejectsPartialOrMismatchedOutput() {
       case 4: second.PicInfo.width = 14; break;
       case 5: second.PicInfo.flags |= VDEC_FLAG_BOTTOM_FIRST; break;
       case 6: --second.YBuffDoneSz; break;
+      case 7: ++second.PicInfo.picture_number; break;
+      case 8: ++second.PicInfo.sess_num; break;
+      case 9: ++second.PicInfo.picture_meta_payload; break;
     }
     Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, second) ==
                     VA_STATUS_ERROR_DECODING_ERROR &&
@@ -1331,7 +1340,7 @@ static void H264FieldPairRejectsPartialOrMismatchedOutput() {
                 !fixture.public_frame->ready,
             "mismatched or short second field fails closed without poisoning a rebound public identity");
   };
-  for (unsigned int fault = 0; fault < 7; ++fault)
+  for (unsigned int fault = 0; fault < 10; ++fault)
     reject_second(fault);
 
   H264FieldFixture short_first;

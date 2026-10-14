@@ -1489,6 +1489,9 @@ struct H264FirstField {
   uint64_t timestamp = 0;
   uint64_t decode_identity = 0;
   uint64_t generation = 0;
+  uint32_t picture_number = 0;
+  uint32_t sess_num = 0;
+  uint32_t picture_meta_payload = 0;
   unsigned int width = 0;
   unsigned int height = 0;
   unsigned int source_pitch = 0;
@@ -3175,6 +3178,9 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
     if (first.timestamp != 0 && first.is_70012 &&
         first.generation == decode->generation && field_type_valid &&
         first.bottom != bottom && first.bottom_first == bottom_first &&
+        first.picture_number == output.PicInfo.picture_number &&
+        first.sess_num == output.PicInfo.sess_num &&
+        first.picture_meta_payload == output.PicInfo.picture_meta_payload &&
         first.width == output.PicInfo.width &&
         first.height == output.PicInfo.height &&
         first.source_pitch == padded_width * 2U) {
@@ -3263,6 +3269,9 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
       first.decode_identity =
           replay_duplicate ? 0 : decoded->second->decode_identity;
       first.generation = decode->generation;
+      first.picture_number = output.PicInfo.picture_number;
+      first.sess_num = output.PicInfo.sess_num;
+      first.picture_meta_payload = output.PicInfo.picture_meta_payload;
       first.width = width;
       first.height = height;
       first.source_pitch = padded_width * 2U;
@@ -3280,6 +3289,9 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
           first.decode_identity != decoded->second->decode_identity ||
           first.picture != decoded->second)) ||
         first.generation != decode->generation ||
+        first.picture_number != output.PicInfo.picture_number ||
+        first.sess_num != output.PicInfo.sess_num ||
+        first.picture_meta_payload != output.PicInfo.picture_meta_payload ||
         first.width != width || first.height != height ||
         first.source_pitch != padded_width * 2U ||
         first.is_70012 != decode->is_70012 || first.bottom == bottom ||
