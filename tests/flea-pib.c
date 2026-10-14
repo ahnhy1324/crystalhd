@@ -69,7 +69,7 @@ struct crystalhd_hw {
 };
 
 static unsigned checks, groups, failures;
-static unsigned reads, writes, syncs, fail_read, fail_write;
+static unsigned reads, writes, syncs, fail_read, fail_write, receipt_parse_calls;
 static bool partial_write;
 static BC_STATUS write_error;
 static void check(bool condition, const char *message)
@@ -149,6 +149,15 @@ static uint64_t rdtsc_ordered(void) { return 123; }
 static bool flea_get_picture_info(struct crystalhd_hw *, struct crystalhd_rx_dma_pkt *,
                                   uint32_t *, uint64_t *, bool);
 bool flea_GetPictureInfo(struct crystalhd_hw *, struct crystalhd_rx_dma_pkt *, uint32_t *, uint64_t *);
+static void crystalhd_rx_receipt_parse(struct crystalhd_hw *hw,
+                                       struct crystalhd_rx_dma_pkt *packet,
+                                       bool parsed)
+{
+    assert(hw && packet);
+    check(parsed == packet->metadata.valid,
+          "receipt parse hook observes the parser's final metadata state");
+    receipt_parse_calls++;
+}
 #include "flea-pib-functions.h"
 
 struct fixture {
@@ -253,6 +262,7 @@ static void fetch(struct fixture *f)
 {
     uint32_t expected[2048];
     unsigned syncs_before = syncs;
+    unsigned receipt_parse_before = receipt_parse_calls;
     memcpy(expected, f->original, sizeof(expected));
     expected[0] = f->line;
     BC_PIC_INFO_BLOCK pib = read_pib(f);
@@ -260,6 +270,8 @@ static void fetch(struct fixture *f)
     memcpy((uint8_t *)expected + f->pib_offset, &pib, sizeof(pib));
     check(flea_GetRptDropParam(&f->hw, &f->packet) == f->number,
           "actual dequeue wrapper reports the original picture number");
+    check(receipt_parse_calls == receipt_parse_before + 1,
+          "actual dequeue wrapper reports one receipt parse boundary");
     check(memcmp(f->words, expected, sizeof(expected)) == 0,
           "dequeue changes only the first-DWORD marker and saved original pixels");
     pib = read_pib(f);

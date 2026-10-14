@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "crystalhd_fw_research.h"
 
 #define KERN_ERR ""
 #define printk(...) ((void)0)
@@ -56,6 +57,8 @@ static unsigned long jiffies;
 static unsigned checks, failures, scenarios;
 static unsigned wait_calls, down_calls, fetch_calls, add_calls, retain_calls;
 static unsigned parser_calls;
+static unsigned receipt_parse_calls, receipt_disposition_calls;
+static uint32_t receipt_last_disposition;
 static int wait_result, add_result;
 static uint32_t reported_picture;
 static bool interrupt_lock, inject_packet_after_wait;
@@ -189,6 +192,10 @@ static void crystalhd_hw_retain_rx_pkt(struct crystalhd_hw *hw,
     hw->rx_fallback_head = retained;
 }
 
+static void crystalhd_rx_receipt_parse(struct crystalhd_hw *hw,
+                                       struct crystalhd_rx_dma_pkt *candidate,
+                                       bool parsed);
+
 static uint32_t link_GetRptDropParam(struct crystalhd_hw *hw,
                                      uint32_t height, uint32_t width,
                                      void *data)
@@ -210,7 +217,25 @@ static uint32_t flea_GetRptDropParam(struct crystalhd_hw *hw, void *data)
     assert(hw == &hardware && candidate && !hw->fetch_sem);
     parser_calls++;
     candidate->flags |= candidate->parsed_flags;
+    crystalhd_rx_receipt_parse(hw, candidate, true);
     return candidate->custom_picture ? candidate->picture : reported_picture;
+}
+
+static void crystalhd_rx_receipt_parse(struct crystalhd_hw *hw,
+                                       struct crystalhd_rx_dma_pkt *candidate,
+                                       bool parsed)
+{
+    assert(hw == &hardware && candidate && parsed);
+    receipt_parse_calls++;
+}
+
+static void crystalhd_rx_receipt_disposition(
+    struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt *candidate,
+    uint32_t disposition)
+{
+    assert(hw == &hardware && candidate);
+    receipt_disposition_calls++;
+    receipt_last_disposition = disposition;
 }
 
 #include "rx-fetch-wait-function.h"
@@ -235,6 +260,8 @@ static void reset(uint32_t device)
     jiffies = checks ? 17 : 0;
     wait_calls = down_calls = fetch_calls = add_calls = retain_calls = 0;
     parser_calls = 0;
+    receipt_parse_calls = receipt_disposition_calls = 0;
+    receipt_last_disposition = 0;
     wait_result = -EBUSY;
     add_result = BC_STS_SUCCESS;
     reported_picture = 1;
@@ -514,6 +541,43 @@ static void try_fetch_cases(uint32_t device)
           "single-candidate snapshot is not renewed by concurrent replenishment");
 }
 
+static void receipt_branch_cases(uint32_t device)
+{
+    static const struct {
+        uint32_t picture, last, last_two, expected;
+    } cases[] = {
+        { 0, 7, 6, CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_RECYCLE_ZERO },
+        { 7, 7, 6, CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_REPEAT_LAST },
+        { 6, 7, 6, CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_REPEAT_TWO_BACK },
+        { 8, 7, 6, CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_OUTPUT },
+    };
+
+    reset(device);
+    queue_candidate(0, 0, COMP_FLAG_FMT_CHANGE);
+    check(try_fetch() == &candidates[0] && receipt_parse_calls == 1 &&
+          receipt_disposition_calls == 1 &&
+          receipt_last_disposition ==
+            CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_FORMAT_CHANGE,
+          "format-change candidates record parse and format disposition once");
+
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct crystalhd_rx_dma_pkt *candidate;
+        bool output = cases[i].expected ==
+            CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_OUTPUT;
+
+        reset(device);
+        hardware.LastPicNo = cases[i].last;
+        hardware.LastTwoPicNo = cases[i].last_two;
+        candidate = queue_candidate(0, cases[i].picture, 0);
+        check((try_fetch() == candidate) == output &&
+              receipt_disposition_calls == 1 &&
+              receipt_last_disposition == cases[i].expected,
+              "ordinary candidates record the exact output/recycle/repeat disposition");
+        check(receipt_parse_calls == (device == BC_PCI_DEVID_FLEA),
+              "Flea records its parser boundary and Link does not invent one");
+    }
+}
+
 int main(void)
 {
     const uint32_t devices[] = { BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA };
@@ -526,6 +590,7 @@ int main(void)
         discard_owner_fallback_case(devices[i]);
         legacy_parser_history_cases(devices[i]);
         try_fetch_cases(devices[i]);
+        receipt_branch_cases(devices[i]);
     }
     printf("RX fetch wait: %u scenarios, %u checks, %u failures\n",
            scenarios, checks, failures);

@@ -257,6 +257,9 @@ struct crystalhd_rx_metadata {
 	uint32_t	picture_height;
 	uint32_t	row_width;
 	uint32_t	pib_line;
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+	uint32_t	session_number;
+#endif
 	uint32_t	first_pixel_word; /* Saved bytes, unavailable for trailer EOS. */
 	bool		valid;
 	bool		eos_trailer;
@@ -274,6 +277,12 @@ struct crystalhd_rx_dma_pkt {
 	BC_PIC_INFO_BLOCK		pib;
 	struct crystalhd_rx_metadata	metadata;
 	dma_addr_t			uv_phy_addr;
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+	uint64_t			receipt_run_id;
+	uint32_t			receipt_index_plus_one;
+	uint32_t			receipt_y_descriptor_count;
+	uint32_t			receipt_uv_descriptor_count;
+#endif
 	struct  crystalhd_rx_dma_pkt	*next;
 };
 

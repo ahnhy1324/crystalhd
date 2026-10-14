@@ -44,6 +44,9 @@
 #include <linux/pagemap.h>
 #include <linux/poll.h>
 #include <linux/vmalloc.h>
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+#include <linux/rcupdate.h>
+#endif
 
 #include <linux/io.h>
 #include <asm/irq.h>
@@ -57,6 +60,8 @@
 #include "crystalhd_v4l2.h"
 
 #define CRYSTAL_HD_NAME "Broadcom Crystal HD Decoder Driver"
+
+struct crystalhd_rx_receipt_store;
 
 /* OS specific PCI information structure and adapter information. */
 struct crystalhd_adp {
@@ -107,6 +112,11 @@ struct crystalhd_adp {
 
 	struct crystalhd_dio_req	*ua_map_free_head;
 	struct dma_pool		*fill_byte_pool;
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+	/* RCU-published only by the privileged, idle-device research observer. */
+	struct crystalhd_rx_receipt_store __rcu *rx_receipts;
+	u64 rx_receipt_last_run_id;
+#endif
 };
 
 struct crystalhd_device_access {

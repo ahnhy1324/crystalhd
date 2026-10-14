@@ -273,4 +273,120 @@ struct crystalhd_fw_research_crypto_result {
 #define CRYSTALHD_FW_RESEARCH_RUN_CRYPTO \
 	_IOWR('R', 0x9a, struct crystalhd_fw_research_crypto_result)
 
+/* Opt-in driver-observer records.  These are research measurements, not part
+ * of the legacy CrystalHD ioctl or libcrystalhd ABI.  Each stored record
+ * follows one admitted Flea RX DMA packet; admissions beyond capacity are
+ * counted in overflow_count.  Missing stages remain zero and are explicit in
+ * stage_flags.  Timestamps use the host monotonic clock in nanoseconds.
+ */
+#define CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION 1U
+#define CRYSTALHD_FW_RESEARCH_RX_RECEIPT_READ_RECORDS 32U
+#define CRYSTALHD_FW_RESEARCH_RX_RECEIPT_MAX_RECORDS 65536U
+#define CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL_CURRENT (1U << 0)
+
+#define CRYSTALHD_FW_RESEARCH_RX_STAGE_RESERVED       (1U << 0)
+#define CRYSTALHD_FW_RESEARCH_RX_STAGE_FIRE_RETURN    (1U << 1)
+#define CRYSTALHD_FW_RESEARCH_RX_STAGE_IRQ_ENTRY      (1U << 2)
+#define CRYSTALHD_FW_RESEARCH_RX_STAGE_COMPLETE       (1U << 3)
+#define CRYSTALHD_FW_RESEARCH_RX_STAGE_PARSED         (1U << 4)
+#define CRYSTALHD_FW_RESEARCH_RX_STAGE_PARSE_FAILED   (1U << 5)
+#define CRYSTALHD_FW_RESEARCH_RX_STAGE_DISPOSITION    (1U << 6)
+#define CRYSTALHD_FW_RESEARCH_RX_STAGE_CLOCK_INVERTED (1U << 7)
+#define CRYSTALHD_FW_RESEARCH_RX_STAGE_LIST_REPLACED  (1U << 8)
+
+#define CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_UNKNOWN          0U
+#define CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_OUTPUT           1U
+#define CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_FORMAT_CHANGE    2U
+#define CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_RECYCLE_ZERO     3U
+#define CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_REPEAT_LAST      4U
+#define CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_REPEAT_TWO_BACK  5U
+
+struct crystalhd_fw_research_rx_receipt {
+	__aligned_u64 ordinal;
+	__aligned_u64 capture_epoch;
+	/* Sampled by the outer post wrapper immediately after a successful
+	 * fire call returns. A fast IRQ may legitimately precede this sample;
+	 * CLOCK_INVERTED records that observed ordering instead of hiding it.
+	 */
+	__aligned_u64 fire_return_ns;
+	/* Entry of the Flea RX ISR invocation that finally completed this list;
+	 * two lists completed by one invocation may carry the same timestamp.
+	 * This is not a timestamp for the first PCIe payload beat.
+	 */
+	__aligned_u64 irq_entry_ns;
+	__aligned_u64 completion_ns;
+	__aligned_u64 parse_ns;
+	__aligned_u64 disposition_ns;
+	/* Raw firmware timestamp units; this is not a host clock sample/token. */
+	__aligned_u64 firmware_timestamp;
+	__u32 rx_sequence;
+	__u32 list_index;
+	__u32 packet_tag;
+	__u32 channel_id;
+	__s32 completion_status;
+	__u32 y_done_words;
+	__u32 uv_done_words;
+	__u32 y_descriptor_count;
+	__u32 uv_descriptor_count;
+	__u32 picture_number;
+	__u32 picture_flags;
+	__u32 picture_width;
+	__u32 picture_height;
+	__u32 row_width;
+	__u32 pib_line;
+	__u32 session_number;
+	__u32 packet_flags;
+	__u32 stage_flags;
+	/* OUTPUT means accepted as an output candidate by the driver.  It does
+	 * not prove a later userspace DtsProcOutput call returned the picture.
+	 */
+	__u32 disposition;
+	__u32 eos_trailer;
+};
+
+struct crystalhd_fw_research_rx_receipt_arm {
+	__u32 version;
+	__u32 size;
+	__u32 capacity;
+	__u32 flags;
+	__aligned_u64 generation;
+	__aligned_u64 run_id;
+	__u32 reserved[4];
+};
+
+struct crystalhd_fw_research_rx_receipt_seal {
+	__u32 version;
+	__u32 size;
+	__u32 flags;
+	__u32 sealed;
+	__aligned_u64 generation;
+	__aligned_u64 run_id;
+	__u32 record_count;
+	__u32 overflow_count;
+	__u32 reserved[4];
+};
+
+struct crystalhd_fw_research_rx_receipt_read {
+	__u32 version;
+	__u32 size;
+	__u32 flags;
+	__u32 start;
+	__aligned_u64 generation;
+	__aligned_u64 run_id;
+	__u32 returned;
+	__u32 record_count;
+	__u32 overflow_count;
+	__u32 sealed;
+	__u32 reserved[4];
+	struct crystalhd_fw_research_rx_receipt
+		records[CRYSTALHD_FW_RESEARCH_RX_RECEIPT_READ_RECORDS];
+};
+
+#define CRYSTALHD_FW_RESEARCH_RX_RECEIPT_ARM \
+	_IOWR('R', 0x9b, struct crystalhd_fw_research_rx_receipt_arm)
+#define CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL \
+	_IOWR('R', 0x9c, struct crystalhd_fw_research_rx_receipt_seal)
+#define CRYSTALHD_FW_RESEARCH_RX_RECEIPT_READ \
+	_IOWR('R', 0x9d, struct crystalhd_fw_research_rx_receipt_read)
+
 #endif

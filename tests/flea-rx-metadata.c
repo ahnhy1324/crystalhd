@@ -57,6 +57,10 @@ struct crystalhd_rx_dma_pkt {
     uint64_t uv_phy_addr;
     uint32_t pkt_tag;
 };
+struct crystalhd_rx_receipt_key {
+    uint64_t run_id;
+    uint32_t index_plus_one;
+};
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
     int rx_lock, lock;
@@ -84,6 +88,7 @@ static struct crystalhd_rx_dma_pkt packet, other_packet;
 static enum owner packet_owner;
 static unsigned checks, groups, failures, queue_calls, free_queue_calls;
 static unsigned lock_calls, write_calls, sync_calls, mailbox_calls, notify_calls;
+static unsigned receipt_reserve_calls, receipt_return_calls;
 static unsigned event_count;
 static enum event events[6];
 static BC_STATUS queue_status, free_queue_status, write_status;
@@ -268,8 +273,42 @@ static void write_register(struct crystalhd_adp *adp, uint32_t reg,
           "the sequence advances only after the owned packet's doorbell");
 }
 
+static void crystalhd_rx_receipt_reserve(struct crystalhd_hw *hw,
+                                         struct crystalhd_rx_dma_pkt *rx,
+                                         uint32_t list, uint32_t sequence,
+                                         uint32_t channel,
+                                         struct crystalhd_rx_receipt_key *key)
+{
+    receipt_reserve_calls++;
+    check(hw == &hardware && rx == &packet && list == initial_list &&
+          sequence == initial_sequence && channel == hardware.channelNum,
+          "receipt reservation uses the admitted packet identity");
+    check(hw->rx_lock == 1 && hw->lock == 1 && !irq_enabled &&
+          packet_owner == ACTIVE_QUEUE && packet.pkt_tag ==
+          hardware.rx_pkt_tag_seed + initial_list,
+          "receipt reservation follows ownership admission under both locks");
+    check(!sync_calls && !mailbox_calls,
+          "receipt identity is reserved before device sync and doorbell");
+    if (key) {
+        key->run_id = UINT64_C(0xabcdef);
+        key->index_plus_one = 7;
+    }
+}
+
+static void crystalhd_rx_receipt_fire_return(struct crystalhd_hw *hw,
+                                             const struct crystalhd_rx_receipt_key *key)
+{
+    receipt_return_calls++;
+    check(hw == &hardware && key && key->run_id == UINT64_C(0xabcdef) &&
+          key->index_plus_one == 7 && !hw->rx_lock && !hw->lock &&
+          !lock_depth && mailbox_calls == 1 && packet_owner == ACTIVE_QUEUE,
+          "fire-return receipt follows the successful unlocked doorbell path");
+}
+
+#define CRYSTALHD_ENABLE_FW_RESEARCH 1
 #include "fire-rxdma.h"
 #include "rx-post.h"
+#undef CRYSTALHD_ENABLE_FW_RESEARCH
 
 static void notify_fll(struct crystalhd_hw *hw, bool cleanup)
 {
@@ -285,6 +324,7 @@ static void prepare_attempt(void)
 {
     event_count = queue_calls = free_queue_calls = lock_calls = 0;
     write_calls = sync_calls = mailbox_calls = notify_calls = 0;
+    receipt_reserve_calls = receipt_return_calls = 0;
     memset(events, 0, sizeof(events));
     queue_status = free_queue_status = write_status = BC_STS_SUCCESS;
     partial_write_words = 0;
@@ -358,6 +398,8 @@ static void check_uncommitted_state(void)
           "rejection preserves the other active packet and its queue tag");
     check(!sync_calls && !mailbox_calls,
           "uncommitted metadata is neither synchronized nor posted to firmware");
+    check(!receipt_reserve_calls && !receipt_return_calls,
+          "rejected submission creates no receipt identity or return stamp");
 }
 
 static void check_no_metadata_write(void)
@@ -369,7 +411,7 @@ static void check_no_metadata_write(void)
 static void rejected(BC_STATUS expected_status, struct crystalhd_hw *hw,
                      struct crystalhd_rx_dma_pkt *rx, unsigned expected_locks)
 {
-    check(crystalhd_flea_hw_fire_rxdma(hw, rx) == expected_status,
+    check(crystalhd_flea_hw_fire_rxdma(hw, rx, NULL) == expected_status,
           "precondition rejects with the existing status");
     check(!event_count && !queue_calls,
           "precondition rejection does not queue, sync or publish");
@@ -433,7 +475,7 @@ static void test_queue_failure(void)
         reset(i % DMA_ENGINE_CNT, 3, UINT64_C(0xfedcba9876543210),
               UINT64_C(0x8765432112345678), 0xdead1234U);
         queue_status = errors[i];
-        check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet) == errors[i],
+        check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet, NULL) == errors[i],
               "queue rejection preserves the queue's status");
         check(event_count == 2 && events[0] == DRAM && events[1] == QUEUE &&
               queue_calls == 1 && write_calls == 1 && lock_calls == 2,
@@ -455,7 +497,8 @@ static void check_success(void)
           events[2] == SYNC && events[3] == MAILBOX,
           "successful submission orders DRAM/queue/sync/mailbox within the transaction");
     check(queue_calls == 1 && write_calls == 1 && sync_calls == 1 &&
-          mailbox_calls == 1 && lock_calls == 2 && !lock_depth &&
+          mailbox_calls == 1 && receipt_reserve_calls == 1 &&
+          lock_calls == 2 && !lock_depth &&
           !hardware.rx_lock && !hardware.lock && irq_enabled == initial_irq_enabled,
           "success restores both locks and the caller's original IRQ state");
     check(hardware.rx_list_sts[initial_list] ==
@@ -487,7 +530,7 @@ static void test_success(uint32_t list, uint32_t channel, uint64_t y,
     reset(list, channel, y, uv, sequence);
     hardware.rx_list_sts[1 - list] = initial_list_states[1 - list] = rx_uv_error;
     irq_enabled = initial_irq_enabled = enabled;
-    check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet) == BC_STS_SUCCESS,
+    check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet, NULL) == BC_STS_SUCCESS,
           "valid metadata submission succeeds");
     check_success();
     check(event_count == 4 && !notify_calls && !free_queue_calls,
@@ -506,7 +549,7 @@ static void test_write_failure(void)
             write_status = errors[i];
             partial_write_words = partial ? 3 : 0;
             irq_enabled = initial_irq_enabled = partial == 0;
-            check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet) == errors[i],
+            check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet, NULL) == errors[i],
                   "failed DRAM write returns its exact transport status");
             check(event_count == 1 && events[0] == DRAM && write_calls == 1 &&
                   !queue_calls && lock_calls == 2,
@@ -519,7 +562,7 @@ static void test_write_failure(void)
                       expected[word] : 0xcafef00dU),
                       "even a partially changed record is never posted after write failure");
             prepare_attempt();
-            check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet) == BC_STS_SUCCESS,
+            check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet, NULL) == BC_STS_SUCCESS,
                   "a failed write can retry with the same caller-owned packet");
             check_success();
         }
@@ -531,13 +574,13 @@ static void test_queue_retry(void)
     reset(1, 2, UINT64_C(0x123456789abcdef0),
           UINT64_C(0x87654321fedcba98), UINT32_MAX);
     queue_status = BC_STS_INSUFF_RES;
-    check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet) == BC_STS_INSUFF_RES,
+    check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet, NULL) == BC_STS_INSUFF_RES,
           "queue failure after metadata write is returned");
     check_uncommitted_state();
     check(packet_owner == CALLER && !free_queue.count,
           "a retry starts with exclusive caller ownership after queue failure");
     prepare_attempt();
-    check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet) == BC_STS_SUCCESS,
+    check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet, NULL) == BC_STS_SUCCESS,
           "queue admission can retry without a sequence gap or old tag mutation");
     check_success();
 }
@@ -611,7 +654,7 @@ static void test_wrapper(void)
           "the real wrapper preserves a successful transaction");
     check_success();
     check(event_count == 5 && events[4] == NOTIFY && notify_calls == 1 &&
-          !free_queue_calls,
+          receipt_return_calls == 1 && !free_queue_calls,
           "successful wrapper notification is outside the transaction with IRQs still disabled");
 }
 
@@ -627,7 +670,7 @@ static void test_power_admission(void)
                 if (pwm && (state != FLEA_PS_ACTIVE || reserved)) {
                     rejected(BC_STS_BUSY, &hardware, &packet, 2);
                 } else {
-                    check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet) == BC_STS_SUCCESS,
+                    check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet, NULL) == BC_STS_SUCCESS,
                           "PWM-off or active-unreserved post retains normal publication");
                     check_success();
                 }

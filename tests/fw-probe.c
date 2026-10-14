@@ -61,7 +61,7 @@ struct module { int state; };
 static struct module module;
 #define THIS_MODULE (&module)
 struct device { int unused; };
-struct pci_dev { struct device dev; unsigned device; };
+struct pci_dev { struct device dev; unsigned device, irq; };
 struct crystalhd_adp;
 struct mutex { unsigned held; };
 struct spinlock { unsigned held; };
@@ -88,6 +88,7 @@ struct crystalhd_cmd {
 };
 struct crystalhd_adp {
     bool present, hw_accessible;
+    bool irq_registered;
     u64 generation;
     unsigned cfg_users;
     struct pci_dev *pdev;
@@ -124,6 +125,7 @@ static struct firmware firmware;
 static struct crypto_shash hash_tfm;
 static const u8 firmware_bytes[] = { 1, 2, 3, 4 };
 static bool privileged, bad_digest, copy_in_error, copy_out_error;
+static bool receipt_copyout_starts_session;
 static bool acquire_retains, release_retains;
 static int request_error, crypto_error, digest_error, allocation_fail, nonseekable_error;
 static int allocations, live_allocations, request_count, firmware_release_count;
@@ -162,6 +164,12 @@ static BC_STATUS read_status;
 static int transaction_error;
 static unsigned transaction_mutation, transaction_count;
 static unsigned transaction_error_at, transaction_mutation_at;
+static unsigned receipt_arm_calls, receipt_cancel_calls;
+static unsigned receipt_seal_calls, receipt_read_calls;
+static unsigned receipt_sync_calls, receipt_event_count;
+static u64 receipt_run_id, receipt_active_run_id;
+static bool receipt_active_sealed;
+static char receipt_events[16];
 static BC_STATUS read_mock(struct crystalhd_hw *hw, u32 offset, u32 count, u32 *words);
 static unsigned clock_reads, clock_mutate_at, clock_mutation;
 static unsigned clock_guard_count, clock_guard_mutate_at, clock_guard_mutation;
@@ -365,7 +373,11 @@ static unsigned copy_to_user(void *to, const void *from, size_t size)
     unlocked(); copy_out_count++;
     if (uart_mode) CHECK(size == sizeof(struct crystalhd_fw_research_uart_result));
     if (crypto_mode) CHECK(size == sizeof(struct crystalhd_fw_research_crypto_result));
-    if (copy_out_error) return 1;
+    if (copy_out_error) {
+        if (receipt_copyout_starts_session)
+            adp.cfg_users = 1;
+        return 1;
+    }
     memcpy(to, from, size); return 0;
 }
 static void lifecycle_event(unsigned event)
@@ -389,6 +401,86 @@ static void crystalhd_flea_fw_transaction_done(struct crystalhd_hw *hw)
 {
     CHECK(hw == &hardware && hw->fwcmd_trans_mutex.held == 1);
     CHECK(!hw->lock.held && !hw->fwcmd_trans_active);
+}
+
+static void synchronize_irq(unsigned irq)
+{
+    barrier();
+    CHECK(adp.irq_registered && irq == adp.pdev->irq);
+    CHECK(receipt_event_count < ARRAY_SIZE(receipt_events));
+    receipt_events[receipt_event_count++] = 'S';
+    receipt_sync_calls++;
+}
+
+static int crystalhd_rx_receipt_arm(
+    struct crystalhd_adp *adapter,
+    struct crystalhd_fw_research_rx_receipt_arm *request)
+{
+    barrier();
+    CHECK(adapter == &adp && request->capacity);
+    CHECK(receipt_event_count && receipt_events[receipt_event_count - 1] == 'S');
+    CHECK(receipt_event_count < ARRAY_SIZE(receipt_events));
+    receipt_events[receipt_event_count++] = 'A';
+    receipt_arm_calls++;
+    if (receipt_active_run_id && !receipt_active_sealed)
+        return -EBUSY;
+    request->generation = adapter->generation;
+    request->run_id = ++receipt_run_id;
+    receipt_active_run_id = request->run_id;
+    receipt_active_sealed = false;
+    return 0;
+}
+
+static int crystalhd_rx_receipt_cancel_empty_arm(
+    struct crystalhd_adp *adapter, u64 generation, u64 run_id)
+{
+    barrier();
+    CHECK(adapter == &adp && generation == adapter->generation &&
+          run_id == receipt_active_run_id && !receipt_active_sealed);
+    CHECK(chd_device_lock.readers == 1 && adp.user_lock.writers == 1);
+    CHECK(receipt_event_count < ARRAY_SIZE(receipt_events));
+    receipt_events[receipt_event_count++] = 'C';
+    receipt_cancel_calls++;
+    receipt_active_run_id = 0;
+    return 0;
+}
+
+static int crystalhd_rx_receipt_seal(
+    struct crystalhd_adp *adapter,
+    struct crystalhd_fw_research_rx_receipt_seal *request)
+{
+    bool current = request->flags ==
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL_CURRENT;
+
+    barrier();
+    CHECK(adapter == &adp && receipt_active_run_id &&
+          ((current && !request->run_id) ||
+           (!current && request->run_id == receipt_active_run_id)));
+    CHECK(receipt_event_count && receipt_events[receipt_event_count - 1] == 'S');
+    CHECK(receipt_event_count < ARRAY_SIZE(receipt_events));
+    receipt_events[receipt_event_count++] = 'L';
+    receipt_seal_calls++;
+    receipt_active_sealed = true;
+    request->generation = adapter->generation;
+    request->run_id = receipt_active_run_id;
+    request->sealed = 1;
+    request->record_count = 7;
+    request->overflow_count = 2;
+    return 0;
+}
+
+static int crystalhd_rx_receipt_read(
+    struct crystalhd_adp *adapter,
+    struct crystalhd_fw_research_rx_receipt_read *request)
+{
+    CHECK(chd_device_lock.readers == 1 && adp.user_lock.readers == 1);
+    CHECK(adapter == &adp && request->run_id == receipt_active_run_id);
+    CHECK(receipt_event_count < ARRAY_SIZE(receipt_events));
+    receipt_events[receipt_event_count++] = 'R';
+    receipt_read_calls++;
+    request->generation = adapter->generation;
+    request->sealed = 1;
+    return 0;
 }
 
 #include "device-functions.h"
@@ -464,6 +556,7 @@ static void reset(void)
     pci.device = BC_PCI_DEVID_FLEA; module.state = MODULE_STATE_LIVE; privileged = true;
     firmware.data = firmware_bytes; firmware.size = sizeof(firmware_bytes);
     bad_digest = copy_in_error = copy_out_error = acquire_retains = release_retains = false;
+    receipt_copyout_starts_session = false;
     request_error = crypto_error = digest_error = allocation_fail = nonseekable_error = 0;
     allocations = request_count = firmware_release_count = hash_count = hash_free_count = 0;
     acquire_count = download_count = release_count = 0;
@@ -527,6 +620,12 @@ static void reset(void)
     }
     read_status = BC_STS_IO_ERROR; transaction_error = 0; transaction_mutation = 0;
     transaction_count = transaction_error_at = transaction_mutation_at = 0;
+    receipt_arm_calls = receipt_cancel_calls = 0;
+    receipt_seal_calls = receipt_read_calls = 0;
+    receipt_sync_calls = receipt_event_count = 0;
+    receipt_run_id = receipt_active_run_id = 0;
+    receipt_active_sealed = false;
+    memset(receipt_events, 0, sizeof(receipt_events));
 }
 static struct crystalhd_fw_research_result run(void)
 {
@@ -1021,6 +1120,187 @@ static void test_ioctl(void)
     CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN, argument) == -EFAULT);
     CHECK(release_count == 1 && !adp.cmds.session_owner);
     CHECK(crystalhd_fw_research_release(&inode, &file) == 0 && !live_allocations);
+}
+
+static void test_rx_receipt_ioctl(void)
+{
+    struct crystalhd_fw_research_rx_receipt_arm arm = {
+        .version = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION,
+        .size = sizeof(arm), .capacity = 64,
+    };
+    struct crystalhd_fw_research_rx_receipt_seal seal = {
+        .version = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION,
+        .size = sizeof(seal),
+    };
+    struct crystalhd_fw_research_rx_receipt_read read = {
+        .version = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION,
+        .size = sizeof(read),
+    };
+    struct inode inode = {0};
+    struct file file = {0};
+
+    reset();
+    adp.irq_registered = true;
+    pci.irq = 19;
+    CHECK(!crystalhd_fw_research_open(&inode, &file));
+    adp.generation++;
+    CHECK(crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_ARM, (unsigned long)&arm) == -ESTALE);
+    CHECK(!receipt_arm_calls && !receipt_sync_calls && !receipt_event_count);
+    adp.generation--;
+    CHECK(!crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_ARM, (unsigned long)&arm));
+    CHECK(arm.generation == 42 && arm.run_id == 1 &&
+          receipt_arm_calls == 1 && receipt_sync_calls == 1 &&
+          receipt_event_count == 2 && receipt_events[0] == 'S' &&
+          receipt_events[1] == 'A');
+
+    CHECK(crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL,
+        (unsigned long)&seal) == -EINVAL);
+    seal.flags = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL_CURRENT;
+    seal.run_id = arm.run_id;
+    CHECK(crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL,
+        (unsigned long)&seal) == -EINVAL);
+    seal.flags = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL_CURRENT << 1;
+    seal.run_id = 0;
+    CHECK(crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL,
+        (unsigned long)&seal) == -EINVAL);
+    CHECK(receipt_sync_calls == 1 && !receipt_seal_calls);
+
+    /* An owned/in-flight session is rejected before IRQ synchronization or
+     * store mutation; seal remains an idle-device operation.
+     */
+    seal.flags = 0;
+    seal.run_id = arm.run_id;
+    adp.cfg_users = 1;
+    CHECK(crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL,
+        (unsigned long)&seal) == -EBUSY);
+    CHECK(receipt_sync_calls == 1 && !receipt_seal_calls);
+    adp.cfg_users = 0;
+    CHECK(!crystalhd_fw_research_compat_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL, (unsigned long)&seal));
+    CHECK(seal.sealed && seal.generation == 42 &&
+          receipt_seal_calls == 1 && receipt_sync_calls == 2 &&
+          receipt_events[2] == 'S' && receipt_events[3] == 'L');
+
+    read.run_id = arm.run_id;
+    CHECK(!crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_READ, (unsigned long)&read));
+    CHECK(read.sealed && read.generation == 42 && receipt_read_calls == 1 &&
+          receipt_events[4] == 'R');
+
+    /* Replacing the sealed run also synchronizes first, then obtains a new
+     * monotonically distinct run identity.
+     */
+    arm = (struct crystalhd_fw_research_rx_receipt_arm){
+        .version = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION,
+        .size = sizeof(arm), .capacity = 1,
+    };
+    CHECK(!crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_ARM, (unsigned long)&arm));
+    CHECK(arm.run_id == 2 && receipt_arm_calls == 2 &&
+          receipt_sync_calls == 3 && receipt_events[5] == 'S' &&
+          receipt_events[6] == 'A');
+    CHECK(!crystalhd_fw_research_release(&inode, &file));
+    CHECK(!live_allocations);
+
+    /* A failed ARM copyout cannot strand an unreported, unsealed observer.
+     * The exact empty run is cancelled while writer exclusion is retained;
+     * a retry receives a fresh identity and can be sealed normally.
+     */
+    reset();
+    adp.irq_registered = true;
+    pci.irq = 19;
+    arm = (struct crystalhd_fw_research_rx_receipt_arm){
+        .version = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION,
+        .size = sizeof(arm), .capacity = 8,
+    };
+    CHECK(!crystalhd_fw_research_open(&inode, &file));
+    copy_out_error = true;
+    CHECK(crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_ARM,
+        (unsigned long)&arm) == -EFAULT);
+    CHECK(!arm.generation && !arm.run_id && receipt_arm_calls == 1 &&
+          receipt_cancel_calls == 1 && receipt_sync_calls == 2 &&
+          receipt_event_count == 4 && receipt_events[0] == 'S' &&
+          receipt_events[1] == 'A' && receipt_events[2] == 'S' &&
+          receipt_events[3] == 'C' &&
+          !receipt_active_run_id);
+    copy_out_error = false;
+    CHECK(!crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_ARM,
+        (unsigned long)&arm));
+    CHECK(arm.run_id == 2 && receipt_active_run_id == 2 &&
+          receipt_arm_calls == 2 && receipt_cancel_calls == 1 &&
+          receipt_sync_calls == 3);
+    seal = (struct crystalhd_fw_research_rx_receipt_seal){
+        .version = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION,
+        .size = sizeof(seal), .run_id = arm.run_id,
+    };
+    CHECK(!crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL,
+        (unsigned long)&seal));
+    CHECK(seal.sealed && receipt_active_sealed);
+    CHECK(!crystalhd_fw_research_release(&inode, &file));
+    CHECK(!live_allocations);
+
+    /* A session admitted in the unlocked ARM-copyout gap makes rollback
+     * unsafe.  After it exits, CURRENT discovers and seals the unreported
+     * identity.  Losing that SEAL reply is recoverable by the same idempotent
+     * request; subsequent reads return to exact run identity.
+     */
+    reset();
+    adp.irq_registered = true;
+    pci.irq = 19;
+    arm = (struct crystalhd_fw_research_rx_receipt_arm){
+        .version = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION,
+        .size = sizeof(arm), .capacity = 8,
+    };
+    CHECK(!crystalhd_fw_research_open(&inode, &file));
+    copy_out_error = true;
+    receipt_copyout_starts_session = true;
+    CHECK(crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_ARM,
+        (unsigned long)&arm) == -EFAULT);
+    CHECK(!arm.generation && !arm.run_id && adp.cfg_users == 1 &&
+          receipt_arm_calls == 1 && !receipt_cancel_calls &&
+          receipt_sync_calls == 1 && receipt_event_count == 2 &&
+          receipt_events[0] == 'S' && receipt_events[1] == 'A' &&
+          receipt_active_run_id == 1 && !receipt_active_sealed);
+    adp.cfg_users = 0;
+    receipt_copyout_starts_session = false;
+    seal = (struct crystalhd_fw_research_rx_receipt_seal){
+        .version = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION,
+        .size = sizeof(seal),
+        .flags = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL_CURRENT,
+    };
+    CHECK(crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL,
+        (unsigned long)&seal) == -EFAULT);
+    CHECK(!seal.run_id && !seal.sealed && receipt_active_sealed &&
+          receipt_seal_calls == 1);
+    copy_out_error = false;
+    CHECK(!crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL,
+        (unsigned long)&seal));
+    CHECK(seal.sealed && seal.run_id == receipt_active_run_id &&
+          seal.generation == 42 && seal.record_count == 7 &&
+          seal.overflow_count == 2 && receipt_active_sealed &&
+          receipt_seal_calls == 2);
+    read = (struct crystalhd_fw_research_rx_receipt_read){
+        .version = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION,
+        .size = sizeof(read), .run_id = seal.run_id,
+    };
+    CHECK(!crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RX_RECEIPT_READ, (unsigned long)&read));
+    CHECK(read.sealed && read.run_id == seal.run_id &&
+          receipt_read_calls == 1);
+    CHECK(!crystalhd_fw_research_release(&inode, &file));
+    CHECK(!live_allocations);
 }
 
 static void test_info(void)
@@ -3411,7 +3691,7 @@ int main(void)
                    CRYSTALHD_FW_RESEARCH_PIC_CAPTURE_COMMAND == 7 && CRYSTALHD_FW_RESEARCH_SET_CSC_COMMAND == 8 &&
                    CRYSTALHD_FW_RESEARCH_SET_FGT_COMMAND == 9 && CRYSTALHD_FW_RESEARCH_CUSTOM_VIDOUT_COMMAND == 10 &&
                    CRYSTALHD_FW_RESEARCH_FILL_PIC_BUF_COMMAND == 11, "fixed command selectors");
-    test_lifecycle(); test_admission(); test_idle(); test_hash(); test_commands(); test_named_controls(); test_raw_commands(); test_cleanup(); test_ioctl(); test_info();
+    test_lifecycle(); test_admission(); test_idle(); test_hash(); test_commands(); test_named_controls(); test_raw_commands(); test_cleanup(); test_ioctl(); test_rx_receipt_ioctl(); test_info();
     test_fixed_state(); test_fixed_state_guards(); test_fixed_state_ioctl();
     test_controller_observation_and_exact_whitelist(); test_controller_progression_and_cleanup();
     test_controller_guarded_publication(); test_controller_stage_fences(); test_controller_ioctl_and_compat();

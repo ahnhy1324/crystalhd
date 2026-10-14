@@ -29,6 +29,8 @@
 
 #include "crystalhd_lnx.h"
 #include "crystalhd_misc.h"
+#include "crystalhd_rx_receipt.h"
+#include "../../include/crystalhd_fw_research.h"
 
 /* Some HW specific code defines */
 extern uint32_t link_GetRptDropParam(struct crystalhd_hw *hw, uint32_t picHeight, uint32_t picWidth, void *);
@@ -604,19 +606,42 @@ static bool crystalhd_rx_accept_packet_locked(struct crystalhd_hw *hw,
 {
 	uint32_t picture;
 
-	if (pkt->flags & (COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE))
+	if (pkt->flags & (COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE)) {
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+		crystalhd_rx_receipt_parse(hw, pkt, true);
+		crystalhd_rx_receipt_disposition(hw, pkt,
+			CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_FORMAT_CHANGE);
+#endif
 		return true;
+	}
 	if (hw->adp->pdev->device == BC_PCI_DEVID_LINK) {
 		picture = link_GetRptDropParam(hw, hw->PICHeight, hw->PICWidth,
 					       pkt);
 	} else {
 		/* Flea discovers geometry and format changes in the picture PIB. */
 		picture = flea_GetRptDropParam(hw, pkt);
-		if (pkt->flags & (COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE))
+		if (pkt->flags & (COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE)) {
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+			crystalhd_rx_receipt_disposition(hw, pkt,
+				CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_FORMAT_CHANGE);
+#endif
 			return true;
+		}
 	}
 	if (!picture || picture == hw->LastPicNo ||
 	    picture == hw->LastTwoPicNo) {
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+		uint32_t disposition =
+			CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_RECYCLE_ZERO;
+
+		if (picture == hw->LastPicNo && picture)
+			disposition =
+				CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_REPEAT_LAST;
+		else if (picture == hw->LastTwoPicNo && picture)
+			disposition =
+				CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_REPEAT_TWO_BACK;
+		crystalhd_rx_receipt_disposition(hw, pkt, disposition);
+#endif
 		if (picture) {
 			hw->LastTwoPicNo = hw->LastPicNo;
 			hw->LastPicNo = picture;
@@ -632,6 +657,10 @@ static bool crystalhd_rx_accept_packet_locked(struct crystalhd_hw *hw,
 			 picture - hw->LastPicNo);
 	hw->LastTwoPicNo = hw->LastPicNo;
 	hw->LastPicNo = picture;
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+	crystalhd_rx_receipt_disposition(hw, pkt,
+		CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_OUTPUT);
+#endif
 	return true;
 }
 

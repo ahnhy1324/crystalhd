@@ -156,7 +156,9 @@ for rx_sanitize in no yes; do
         $rx_extra -I"$repo_dir/include" -I"$repo_dir/include/link" -I"$repo_dir/driver/linux" \
         -I"$rx_test_dir" "$repo_dir/tests/rx-ownership.c" -o "$rx_test_dir/check"
     "${CC:-cc}" ${CFLAGS:-} -std=c11 -O1 -g -Wall -Wextra -Werror \
-        $rx_extra -I"$rx_test_dir" "$repo_dir/tests/rx-fetch-wait.c" \
+		-DCRYSTALHD_ENABLE_FW_RESEARCH $rx_extra \
+		-I"$repo_dir/include" -I"$rx_test_dir" \
+		"$repo_dir/tests/rx-fetch-wait.c" \
         -o "$rx_test_dir/wait-check"
     "${CC:-cc}" ${CFLAGS:-} -std=c11 -O1 -g -Wall -Wextra -Werror \
         $rx_extra -I"$repo_dir/include" -I"$repo_dir/include/link" \

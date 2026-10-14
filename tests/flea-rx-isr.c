@@ -54,6 +54,9 @@ static struct crystalhd_rx_dma_pkt *free_packet;
 static struct crystalhd_rx_dma_pkt *ready_packet;
 static unsigned checks, failures, lock_recursions;
 static unsigned detach_calls, explicit_complete_calls, legacy_complete_calls;
+static unsigned receipt_irq_entry_calls, receipt_irq_calls;
+static uint32_t receipt_list;
+static BC_STATUS receipt_status;
 static unsigned fresh_posts, start_calls, list0_calls, list1_calls;
 static unsigned duplicate_active_tags;
 static bool inject_fresh_post;
@@ -269,6 +272,26 @@ static BC_STATUS crystalhd_hw_start_capture(struct crystalhd_hw *hw)
     return BC_STS_SUCCESS;
 }
 
+static uint64_t crystalhd_rx_receipt_irq_entry(struct crystalhd_hw *hw)
+{
+    assert(hw == &hardware);
+    receipt_irq_entry_calls++;
+    return UINT64_C(0x123456789);
+}
+
+static void crystalhd_rx_receipt_irq(struct crystalhd_hw *hw,
+                                     uint32_t list_index,
+                                     uint64_t irq_entry_ns,
+                                     BC_STATUS completion_status)
+{
+    check(hw == &hardware && hw->rx_lock == 1 &&
+          irq_entry_ns == UINT64_C(0x123456789),
+          "receipt binds the ISR-entry clock while the list is owned");
+    receipt_irq_calls++;
+    receipt_list = list_index;
+    receipt_status = completion_status;
+}
+
 #include "rx-flea-isr.h"
 
 /* The real full handler is extracted separately. These boundaries assert its
@@ -356,6 +379,9 @@ static void reset_scenario(bool success)
     detached_packet = free_packet = ready_packet = NULL;
     lock_recursions = detach_calls = explicit_complete_calls = 0;
     legacy_complete_calls = fresh_posts = start_calls = 0;
+    receipt_irq_entry_calls = receipt_irq_calls = 0;
+    receipt_list = UINT32_MAX;
+    receipt_status = BC_STS_NO_DATA;
     list0_calls = list1_calls = duplicate_active_tags = 0;
     inject_fresh_post = !success;
     success_scenario = success;
@@ -386,6 +412,9 @@ static void run_error_scenario(void)
           "error accounting and the freshly posted list state are preserved");
     check(list0_calls == 1 && list1_calls == 1 && !start_calls,
           "the error interrupt visits both lists without a success restart");
+    check(receipt_irq_entry_calls == 1 && receipt_irq_calls == 1 &&
+          receipt_list == 0 && receipt_status == BC_STS_ERROR,
+          "the error receipt retains its list and completion status");
 }
 
 static void run_success_scenario(void)
@@ -411,6 +440,9 @@ static void run_success_scenario(void)
           "success accounting and the completed list state are preserved");
     check(list0_calls == 1 && list1_calls == 1 && start_calls == 1,
           "successful completion restarts capture only after releasing rx_lock");
+    check(receipt_irq_entry_calls == 1 && receipt_irq_calls == 1 &&
+          receipt_list == 0 && receipt_status == BC_STS_SUCCESS,
+          "the success receipt retains its list and completion status");
 }
 
 static void run_missing_owner_scenario(void)
@@ -430,6 +462,9 @@ static void run_missing_owner_scenario(void)
     check(!active_packet && !detached_packet && !free_packet &&
           hardware.stats.rx_errors == 1 && !start_calls,
           "a missing owner leaves queues untouched and the lock balanced");
+    check(receipt_irq_entry_calls == 1 && receipt_irq_calls == 1 &&
+          receipt_list == 0 && receipt_status == BC_STS_ERROR,
+          "a missing owner still retires the exact active receipt list");
 }
 
 /* The exact acknowledgement body is covered by dma-stop; this boundary

@@ -109,6 +109,7 @@ struct crystalhd_adp {
 	int present, msi, chd_dec_major, lock;
 	bool irq_registered;
 	bool dma_terminal_quiesced;
+	bool receipts_cleaned;
 };
 #include "lifetime-binding.h"
 
@@ -142,6 +143,7 @@ static struct {
 } lifetime_owner;
 static unsigned int pci_gets, pci_puts;
 static unsigned int saved_invalidations, core_restores;
+static unsigned int receipt_cleanups;
 static bool dma_drained;
 static bool ignore_master_clear, express;
 static int command_error, status_error;
@@ -297,6 +299,8 @@ static void kfree(void *ptr)
 			if (kind == ADAPTER) {
 				struct crystalhd_adp *adp = ptr;
 				assert(chd_device_lock.writers == 1);
+				assert(adp->receipts_cleaned);
+				assert(receipt_cleanups == released[ADAPTER] + 1);
 				assert(!g_adp_info && !pci.data && !device_live);
 				assert(!regions_live && !bars_live[0] && !bars_live[1]);
 				assert(!chdev_live && !class_live);
@@ -588,6 +592,22 @@ static int crystalhd_session_l0s_end(struct crystalhd_adp *adp)
 	assert(adp == g_adp_info);
 	return 0;
 }
+static void crystalhd_rx_receipt_cleanup(struct crystalhd_adp *adp)
+{
+	unsigned int i;
+
+	assert(adp && chd_device_lock.writers == 1);
+	assert(!g_adp_info && !pci.data && !device_live && !regions_live);
+	assert(!adp->receipts_cleaned);
+	for (i = 0; i < ARRAY_SIZE(allocations); i++)
+		if (allocations[i].ptr == adp) {
+			assert(allocations[i].kind == ADAPTER);
+			adp->receipts_cleaned = true;
+			receipt_cleanups++;
+			return;
+		}
+	abort();
+}
 #include "lifetime-command.h"
 #include "lifetime-functions.h"
 
@@ -664,6 +684,7 @@ static void reset(void)
 	frontend_releases = 0;
 	pci_gets = pci_puts = 0;
 	saved_invalidations = core_restores = 0;
+	receipt_cleanups = 0;
 	dma_drained = false;
 	scenarios++;
 }

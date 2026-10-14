@@ -828,9 +828,7 @@ index 18ac047..6154369 100644
  #endif
  	void *rx_freeq, *rx_actq, *rx_rdyq, *tx_actq, *tx_freeq;
  	void *rx_pkt_pool_head, *rx_fallback_head;
-@@ -130,6 +137,9 @@ struct crystalhd_adp {
- 	bool hw_accessible;
- };
+@@ -133,4 +140,7 @@ struct crystalhd_adp {
  #include "lifetime-binding.h"
 +#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 +#include "lifetime-joint.h"

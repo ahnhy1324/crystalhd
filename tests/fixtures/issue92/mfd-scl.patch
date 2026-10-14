@@ -494,8 +494,9 @@
  						    scl_port_latch);
 --- a/driver/linux/crystalhd_fw_research.c
 +++ b/driver/linux/crystalhd_fw_research.c
-@@ -13,6 +13,13 @@
+@@ -13,7 +13,14 @@
  #include "crystalhd_fw_research.h"
+ #include "crystalhd_rx_receipt.h"
  #include "../../include/crystalhd_fw_research.h"
  
 +#if defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) && !defined(CRYSTALHD_MFD_FIXED_COLOUR_PROBE)

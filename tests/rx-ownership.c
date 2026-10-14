@@ -91,6 +91,10 @@ struct crystalhd_adp {
     unsigned present;
     struct crystalhd_cmd cmds;
 };
+struct crystalhd_rx_receipt_key {
+    uint64_t run_id;
+    uint32_t index_plus_one;
+};
 static void crystalhd_rx_poll_wake(struct crystalhd_adp *adp,
                                    unsigned int events)
 {
@@ -127,6 +131,7 @@ static void *registered_cookies[BC_RX_LIST_CNT];
 static bool mapped[BC_RX_LIST_CNT];
 static unsigned unmaps[BC_RX_LIST_CNT];
 static unsigned checks, failures, groups, maps, post_calls, stop_calls, irq_depth;
+static unsigned receipt_return_calls, receipt_complete_calls;
 static unsigned irq_disables, irq_enables, notify_calls, pause_calls;
 static unsigned rx_pause_calls;
 static BC_STATUS pause_status;
@@ -779,17 +784,49 @@ static BC_STATUS program_dma(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pk
     packet->pkt_tag = hw->rx_pkt_tag_seed + index;
     return crystalhd_dioq_add(hw->rx_actq, packet, false, packet->pkt_tag);
 }
-static BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt *packet)
+static BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
+                                               struct crystalhd_rx_dma_pkt *packet,
+                                               struct crystalhd_rx_receipt_key *key)
 {
-    return program_dma(hw, packet);
+    BC_STATUS status = program_dma(hw, packet);
+
+    if (status == BC_STS_SUCCESS && key) {
+        key->run_id = UINT64_C(0xabcdef);
+        key->index_plus_one = 7;
+    }
+    return status;
 }
 static BC_STATUS crystalhd_link_hw_prog_rxdma(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt *packet)
 {
     return program_dma(hw, packet);
 }
 BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *, struct crystalhd_rx_dma_pkt *);
+static void crystalhd_rx_receipt_fire_return(struct crystalhd_hw *hw,
+                                             const struct crystalhd_rx_receipt_key *key)
+{
+    assert(hw == &hardware && key && key->run_id == UINT64_C(0xabcdef) &&
+           key->index_plus_one == 7);
+    receipt_return_calls++;
+}
+static void crystalhd_rx_receipt_complete(struct crystalhd_hw *hw,
+                                          struct crystalhd_rx_dma_pkt *packet,
+                                          BC_STATUS status)
+{
+    assert(hw == &hardware && packet != NULL);
+    if (status == BC_STS_SUCCESS)
+        assert(packet->flags == COMP_FLAG_DATA_VALID);
+    receipt_complete_calls++;
+}
+static void crystalhd_rx_receipt_descriptors(struct crystalhd_rx_dma_pkt *packet,
+                                             uint32_t uv_descriptor_index)
+{
+    assert(packet != NULL);
+    (void)uv_descriptor_index;
+}
 #undef context
+#define CRYSTALHD_ENABLE_FW_RESEARCH 1
 #include "rx-post.h"
+#undef CRYSTALHD_ENABLE_FW_RESEARCH
 #include "rx-hardware.h"
 #include "rx-flea-fll.h"
 #include "rx-command.h"
@@ -3866,6 +3903,10 @@ int main(void)
     fll_capture_and_owner_cases();
     flea_pause_result_cases(false);
     flea_pause_result_cases(true);
+    check(receipt_return_calls > 0,
+          "the extracted Flea post wrapper exercised the receipt return hook");
+    check(receipt_complete_calls > 0,
+          "the extracted completion path exercised the receipt hook");
     printf("RX ownership: %u scenarios, %u checks, %u failures\n", groups, checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

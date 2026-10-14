@@ -42,6 +42,7 @@ $(error CRYSTALHD_FW_RESEARCH=1 requires CONFIG_CRYPTO_HASH=y or m)
 endif
 ccflags-y += -DCRYSTALHD_ENABLE_FW_RESEARCH
 crystalhd-objs += crystalhd_fw_research.o
+crystalhd-objs += crystalhd_rx_receipt.o
 endif
 
 # Opt-in parent lifetime support; it does not expose a decoding video node.
