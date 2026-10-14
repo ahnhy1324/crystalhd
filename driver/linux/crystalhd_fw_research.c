@@ -213,7 +213,9 @@ static bool crystalhd_fw_research_crypto_request_valid(
 {
 	return request->version == CRYSTALHD_FW_RESEARCH_VERSION &&
 		request->size == sizeof(struct crystalhd_fw_research_crypto_result) &&
-		!request->flags && !request->reserved;
+		!(request->flags &
+		  ~CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY) &&
+		!request->reserved;
 }
 
 static bool crystalhd_fw_research_heartbeat_request_valid(
@@ -1358,7 +1360,8 @@ done:
 }
 
 static int crystalhd_fw_research_crypto_sample(struct crystalhd_cmd *ctx,
-	u64 generation, struct crystalhd_fw_research_crypto_sample *sample)
+	u64 generation, struct crystalhd_fw_research_crypto_sample *sample,
+	bool sharf_aes_only)
 {
 	const u32 error_mask = BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_valid_MASK |
 		BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_tea_MASK |
@@ -1369,6 +1372,14 @@ static int crystalhd_fw_research_crypto_sample(struct crystalhd_cmd *ctx,
 		BCHP_BOP_GR_BRIDGE_REVISION,
 		BCHP_BOP_AES_STATUS,
 	};
+	static const u32 sharf_aes_registers[] = {
+		BCHP_SHARF_TOP_REVISION,
+		BCHP_SHARF_TOP_STATUS,
+		BCHP_BOP_AES_STATUS,
+	};
+	const u32 *targets = sharf_aes_only ? sharf_aes_registers : registers;
+	const unsigned int target_count = sharf_aes_only ?
+		ARRAY_SIZE(sharf_aes_registers) : ARRAY_SIZE(registers);
 	struct crystalhd_hw *hw = ctx->hw_ctx;
 	u32 values[ARRAY_SIZE(registers)];
 	u32 capture_address, capture_master;
@@ -1389,15 +1400,17 @@ static int crystalhd_fw_research_crypto_sample(struct crystalhd_cmd *ctx,
 			rc = -ENODEV;
 		goto done;
 	}
-	/* Interleave G0,T0,G1,T1,G2,T2,G3,T3,G4. Every Flea accessor
+	/* The original request interleaves G0,T0,G1,T1,G2,T2,G3,T3,G4.
+	 * SHARF_AES_ONLY interleaves G0,T0,G1,T1,G2,T2,G3 and deliberately
+	 * excludes BOP_GR_BRIDGE_REVISION. Every Flea accessor
 	 * programs its indirect GISB selector, so this is not a passive or
 	 * write-free device operation. Guard values are retained only after their
-	 * post-access readiness check; target values remain local until all nine
-	 * reads succeed. Never clear an error, retry, or read control, context,
-	 * key, IV, nonce, OTP or scrub state.
+	 * post-access readiness check; target values remain local until every
+	 * requested guard/target read succeeds. Never clear an error, retry, or
+	 * read control, context, key, IV, nonce, OTP or scrub state.
 	 */
 	spin_lock_irqsave(&hw->lock, flags);
-	for (i = 0; i <= ARRAY_SIZE(registers); i++) {
+	for (i = 0; i <= target_count; i++) {
 		rc = crystalhd_fw_research_register_ready(ctx, generation, hw);
 		if (rc)
 			goto unlock;
@@ -1435,14 +1448,18 @@ static int crystalhd_fw_research_crypto_sample(struct crystalhd_cmd *ctx,
 			sample->error_capture_complete = 1;
 			goto unlock;
 		}
-		if (i == ARRAY_SIZE(registers)) {
+		if (i == target_count) {
 			/* All target bit patterns are raw observations, including
 			 * zero/all ones. Guard values are diagnostics, not causality.
 			 */
 			sample->sharf_revision = values[0];
 			sample->sharf_status = values[1];
-			sample->bop_gr_bridge_revision = values[2];
-			sample->bop_aes_status = values[3];
+			if (sharf_aes_only)
+				sample->bop_aes_status = values[2];
+			else {
+				sample->bop_gr_bridge_revision = values[2];
+				sample->bop_aes_status = values[3];
+			}
 			sample->read_complete = 1;
 			break;
 		}
@@ -1451,7 +1468,7 @@ static int crystalhd_fw_research_crypto_sample(struct crystalhd_cmd *ctx,
 			goto unlock;
 		sample->attempted = 1;
 		sample->target_reads_attempted++;
-		values[i] = hw->pfnReadDevRegister(ctx->adp, registers[i]);
+		values[i] = hw->pfnReadDevRegister(ctx->adp, targets[i]);
 		rc = crystalhd_fw_research_register_ready(ctx, generation, hw);
 		if (rc)
 			goto unlock;
@@ -1769,7 +1786,9 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 		}
 		if (crypto) {
 			rc = crystalhd_fw_research_crypto_sample(ctx, generation,
-						       &crypto->after_init);
+						       &crypto->after_init,
+						       crypto->state.request.flags &
+						       CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY);
 			if (rc)
 				goto cleanup;
 		}
@@ -1825,7 +1844,9 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 		}
 		if (crypto) {
 			rc = crystalhd_fw_research_crypto_sample(ctx, generation,
-						       &crypto->after_open);
+						       &crypto->after_open,
+						       crypto->state.request.flags &
+						       CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY);
 			if (rc)
 				goto cleanup;
 		}

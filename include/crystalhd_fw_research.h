@@ -325,6 +325,13 @@ struct crystalhd_fw_research_crypto_result {
 	struct crystalhd_fw_research_crypto_sample after_open;
 };
 
+/* Preserve the original four-target request at flags == 0.  This opt-in mode
+ * omits the separately addressed BOP_GR_BRIDGE revision and samples only
+ * SHARF revision/status plus BOP_AES status.  The omitted result word is zero
+ * and must not be interpreted as a bridge observation.
+ */
+#define CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY (1U << 0)
+
 /* No crypto control, context, key, IV, nonce, OTP or scrub-register access. */
 #define CRYSTALHD_FW_RESEARCH_RUN_CRYPTO \
 	_IOWR('R', 0x9a, struct crystalhd_fw_research_crypto_result)

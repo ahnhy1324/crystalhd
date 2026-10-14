@@ -137,6 +137,11 @@ crypto_registers = re.search(r'registers\[\]\s*=\s*\{(.*?)\}', crypto_sampler, r
 assert re.findall(r'BCHP_\w+', crypto_registers) == [
     'BCHP_SHARF_TOP_REVISION', 'BCHP_SHARF_TOP_STATUS',
     'BCHP_BOP_GR_BRIDGE_REVISION', 'BCHP_BOP_AES_STATUS']
+crypto_inventory_registers = re.search(
+    r'sharf_aes_registers\[\]\s*=\s*\{(.*?)\}', crypto_sampler, re.S).group(1)
+assert re.findall(r'BCHP_\w+', crypto_inventory_registers) == [
+    'BCHP_SHARF_TOP_REVISION', 'BCHP_SHARF_TOP_STATUS',
+    'BCHP_BOP_AES_STATUS']
 for name, header, cli_name, value in (
         ('BCHP_SHARF_TOP_REVISION', 'bchp_sharf_top.h', 'CRYPTO_SHARF_REVISION_ADDRESS', 0xf4000),
         ('BCHP_SHARF_TOP_STATUS', 'bchp_sharf_top.h', 'CRYPTO_SHARF_STATUS_ADDRESS', 0xf4004),
@@ -161,9 +166,11 @@ assert crypto_sampler.count('BCHP_SUN_GISB_ARB_ERR_CAP_STATUS)') == 1
 assert crypto_sampler.count('BCHP_SUN_GISB_ARB_ERR_CAP_ADDR)') == 1
 assert crypto_sampler.count('BCHP_SUN_GISB_ARB_ERR_CAP_MASTER)') == 1
 assert 'BCHP_SUN_GISB_ARB_ERR_CAP_CLR' not in crypto_sampler
-assert re.search(r'for \(i = 0; i <= ARRAY_SIZE\(registers\); i\+\+\)', crypto_sampler)
+assert re.search(r'for \(i = 0; i <= target_count; i\+\+\)', crypto_sampler)
 assert crypto_sampler.index('BCHP_SUN_GISB_ARB_ERR_CAP_STATUS)') < \
-       crypto_sampler.index('pfnReadDevRegister(ctx->adp, registers[i])')
+       crypto_sampler.index('pfnReadDevRegister(ctx->adp, targets[i])')
+assert 'targets = sharf_aes_only ? sharf_aes_registers : registers' in crypto_sampler
+assert 'target_count = sharf_aes_only ?' in crypto_sampler
 assert 'sample->target_reads_attempted++' in crypto_sampler
 assert 'sample->guard_reads_complete++' in crypto_sampler
 assert not re.search(r'pfn(?:WriteDevRegister|DevDRAMRead|DevDRAMWrite)\s*\(', crypto_sampler)
@@ -347,6 +354,7 @@ _Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_init) 
 _Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_open) == 1656, "crypto open");
 _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO) == 1712, "crypto encoding");
 _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO == 0xc6b0529aU, "crypto ioctl");
+_Static_assert(CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY == 1U, "crypto inventory flag");
 _Static_assert(sizeof(struct crystalhd_fw_research_command_sample) == 24, "command sample");
 _Static_assert(offsetof(struct crystalhd_fw_research_command_sample, cpudma_ns) == 0, "CPUDMA clock");
 _Static_assert(offsetof(struct crystalhd_fw_research_command_sample, sdram_ns) == 8, "SDRAM clock");
