@@ -1704,7 +1704,8 @@ static bool ObserveActiveContextNative(HANDLE *current, const bool *opened,
     ActiveContextNativeIo::RegisterWriter register_writer = DtsDevRegisterWr,
     bool report = true,
     issue204_generation_observer::Result *generation = nullptr,
-    uint64_t receipt_generation = 0, uint64_t receipt_run_id = 0)
+    uint64_t receipt_generation = 0, uint64_t receipt_run_id = 0,
+    bool experimental_hst_route_pulse = false)
 {
     using namespace issue204_active_context;
     if (!result) return false;
@@ -1778,7 +1779,8 @@ static bool ObserveActiveContextNative(HANDLE *current, const bool *opened,
     adapter.register_writer = register_writer;
     adapter.memory_reader = memory_reader;
     ok = Run(plan, adapter.Interface(), source.data(), source.size(), result,
-             generation ? &generation_extension : nullptr);
+             generation ? &generation_extension : nullptr,
+             experimental_hst_route_pulse);
     if (report) {
         std::printf("Active context native: gate=exact61 graph-reads=%u "
             "graph-bytes=%u graph-result=PASS fresh-boundary=PASS failure=%u register-reads=%u "
@@ -1806,6 +1808,49 @@ static bool ObserveActiveContextNative(HANDLE *current, const bool *opened,
                     result->halt_elapsed_us[poll]));
         }
         std::printf("\n");
+        if (experimental_hst_route_pulse) {
+            const uint64_t pause_us = result->hst_pulse_pause_returned_us >=
+                    result->hst_pulse_started_us
+                ? result->hst_pulse_pause_returned_us -
+                    result->hst_pulse_started_us : 0U;
+            const uint64_t reselect_us = result->hst_pulse_reselected_us >=
+                    result->hst_pulse_started_us
+                ? result->hst_pulse_reselected_us -
+                    result->hst_pulse_started_us : 0U;
+            const uint64_t verified_us = result->hst_pulse_verified_us >=
+                    result->hst_pulse_started_us
+                ? result->hst_pulse_verified_us -
+                    result->hst_pulse_started_us : 0U;
+            std::printf("Hst route-release experimental recovery hypothesis: "
+                "eligible=%s attempted=%s pause-attempted=%s "
+                "reselect-attempted=%s pre-identity=0x%08x "
+                "pre-status=0x%08x pre-debug=0x%08x "
+                "post-identity=0x%08x post-status=0x%08x "
+                "post-debug=0x%08x pause-us=%llu reselect-us=%llu "
+                "verified-us=%llu clock-anomaly=%s "
+                "route-zero-register-reads=%u route-zero-memory-reads=%u "
+                "state=%s generation-proof=no lease-proof=no "
+                "completion-proof=no\n",
+                result->hst_pulse_eligible ? "yes" : "no",
+                result->hst_pulse_attempted ? "yes" : "no",
+                result->hst_pulse_pause_attempted ? "yes" : "no",
+                result->hst_pulse_reselect_attempted ? "yes" : "no",
+                result->hst_pulse_identity_before,
+                result->hst_pulse_status_before,
+                result->hst_pulse_debug_before,
+                result->hst_pulse_identity_after,
+                result->hst_pulse_status_after,
+                result->hst_pulse_debug_after,
+                static_cast<unsigned long long>(pause_us),
+                static_cast<unsigned long long>(reselect_us),
+                static_cast<unsigned long long>(verified_us),
+                result->hst_pulse_clock_anomaly ? "yes" : "no",
+                result->hst_pulse_route_zero_register_reads,
+                result->hst_pulse_route_zero_memory_reads,
+                result->hst_pulse_verified ? "precondition-restored" :
+                    result->halt_verified && !result->hst_pulse_attempted ?
+                        "not-needed" : "not-established");
+        }
         std::fflush(stdout);
     }
     if (report && generation) {
@@ -1859,8 +1904,18 @@ struct ActiveContextModelFixture {
     unsigned fail_register_read_at = 0, fail_register_write_at = 0;
     unsigned apply_then_error_write_at = 0;
     unsigned fail_memory_read_at = 0, lose_owner_memory_at = 0;
+    unsigned fail_pause_at = 0, lose_owner_pause_at = 0;
+    unsigned status_change_pause_at = 0;
+    uint64_t route_zero_pause_us = 1000U;
+    uint64_t pulse_reselect_delay_us = 0U, pulse_verify_delay_us = 0U;
+    bool pulse_route_zero = false, pulse_reselected = false;
+    bool pulse_load_persists = false, pulse_status_changes = false;
+    bool pulse_halt_clears = false, pulse_identity_changes = false;
+    bool fail_pulse_guard_read = false;
+    unsigned route_zero_register_reads = 0, route_zero_memory_reads = 0;
     uint32_t route = 0;
     uint32_t status = 0x440018c2U;
+    uint32_t identity = 0x7b010108U;
     uint32_t debug = 0;
     uint32_t halt_debug = 0;
     uint32_t bank0 = 0x00500000U;
@@ -1890,14 +1945,23 @@ struct ActiveContextModelFixture {
         if (!word || !issue204_active_context::ValidatePlan(fixture->plan,
                 &allocation, &delivery, &returned, &record)) return -1;
         ++fixture->register_reads;
+        if (fixture->pulse_route_zero) ++fixture->route_zero_register_reads;
         if (fixture->register_reads == fixture->fail_register_read_at) return -1;
+        if (fixture->pulse_reselected && fixture->fail_pulse_guard_read) {
+            fixture->fail_pulse_guard_read = false;
+            return -1;
+        }
+        if (fixture->pulse_reselected && fixture->pulse_verify_delay_us) {
+            fixture->now_us += fixture->pulse_verify_delay_us;
+            fixture->pulse_verify_delay_us = 0U;
+        }
         if (fixture->generation && fixture->fail_generation_register_address &&
             address == fixture->fail_generation_register_address) return -1;
         if (address == 0x00540000U) *word = 0x50U;
         else if (address == 0x004000d4U) *word = 0;
         else if (address == issue204_active_context::kRoute) *word = fixture->route;
         else if (address == issue204_active_context::kStatus) *word = fixture->status;
-        else if (address == issue204_active_context::kIdentity) *word = 0x7b010108U;
+        else if (address == issue204_active_context::kIdentity) *word = fixture->identity;
         else if (address == issue204_active_context::kDebug) {
             if ((fixture->status & issue204_active_context::kHalt) &&
                 fixture->held_debug_reads++ < fixture->pending_debug_reads)
@@ -1991,12 +2055,40 @@ struct ActiveContextModelFixture {
             }
             return fail ? -1 : 0;
         }
-        if (call == 2 && address == issue204_active_context::kStatus &&
+        if (call == 2 && address == issue204_active_context::kRoute &&
+            word == 0U && (fixture->status & issue204_active_context::kHalt)) {
+            if (apply) {
+                fixture->route = 0U;
+                fixture->pulse_route_zero = true;
+            }
+            return fail ? -1 : 0;
+        }
+        if (call == 3 && address == issue204_active_context::kRoute &&
+            word == 1U && fixture->pulse_route_zero) {
+            if (apply) {
+                fixture->route = 1U;
+                fixture->pulse_route_zero = false;
+                fixture->pulse_reselected = true;
+                fixture->now_us += fixture->pulse_reselect_delay_us;
+                fixture->debug = fixture->pulse_load_persists ?
+                    issue204_active_context::kLoadDebugBit : 0U;
+                if (fixture->pulse_status_changes) fixture->status ^= 1U;
+                if (fixture->pulse_halt_clears)
+                    fixture->status &= ~issue204_active_context::kHalt;
+                if (fixture->pulse_identity_changes) fixture->identity ^= 1U;
+            }
+            return fail ? -1 : 0;
+        }
+        const unsigned resume_call = fixture->pulse_reselected ? 4U : 2U;
+        const unsigned restore_call = fixture->pulse_reselected ? 5U : 3U;
+        if (call == resume_call &&
+            address == issue204_active_context::kStatus &&
             !(word & issue204_active_context::kHalt)) {
             if (apply) fixture->status = word;
             return fail ? -1 : 0;
         }
-        if (call == 3 && address == issue204_active_context::kRoute && word == 0U) {
+        if (call == restore_call &&
+            address == issue204_active_context::kRoute && word == 0U) {
             if (apply) fixture->route = 0U;
             return fail ? -1 : 0;
         }
@@ -2009,6 +2101,7 @@ struct ActiveContextModelFixture {
         if (!words || !issue204_active_context::ValidatePlan(fixture->plan,
                 &allocation, &delivery, &returned, &record)) return -1;
         ++fixture->memory_reads;
+        if (fixture->pulse_route_zero) ++fixture->route_zero_memory_reads;
         if (fixture->memory_reads == fixture->fail_memory_read_at) return -1;
         if (fixture->generation && fixture->fail_generation_memory_address &&
             address == fixture->fail_generation_memory_address) return -1;
@@ -2135,8 +2228,13 @@ struct ActiveContextModelFixture {
     static int Pause(void *opaque) {
         auto *fixture = static_cast<ActiveContextModelFixture *>(opaque);
         ++fixture->pauses;
-        fixture->now_us += 1000U;
-        return 0;
+        fixture->now_us += fixture->pulse_route_zero ?
+            fixture->route_zero_pause_us : 1000U;
+        if (fixture->status_change_pause_at == fixture->pauses)
+            fixture->status ^= 1U;
+        if (fixture->lose_owner_pause_at == fixture->pauses)
+            fixture->owner = false;
+        return fixture->fail_pause_at == fixture->pauses ? -1 : 0;
     }
     static uint64_t MonotonicUs(void *opaque) {
         auto *fixture = static_cast<ActiveContextModelFixture *>(opaque);
@@ -2276,6 +2374,225 @@ template<class Check> static void ActiveContextBindingSelfTest(const Check &chec
           !persistent_load_result.memory_reads &&
           persistent_load_result.module_recovery_required,
         "issue204 model refuses a load bit that does not clear within the fixed halt-poll budget");
+
+    ActiveContextModelFixture pulse_clear;
+    pulse_clear.plan = plan;
+    pulse_clear.pending_debug_reads = kHaltPollBudget;
+    Result pulse_clear_result;
+    check(Run(plan, pulse_clear.Interface(), source.data(), source.size(),
+              &pulse_clear_result, nullptr, true) &&
+          pulse_clear_result.failure == Failure::None &&
+          pulse_clear_result.hst_pulse_enabled &&
+          pulse_clear_result.hst_pulse_eligible &&
+          pulse_clear_result.hst_pulse_attempted &&
+          pulse_clear_result.hst_pulse_pause_attempted &&
+          pulse_clear_result.hst_pulse_reselect_attempted &&
+          pulse_clear_result.hst_pulse_verified &&
+          pulse_clear_result.hst_pulse_identity_before == 0x7b010108U &&
+          pulse_clear_result.hst_pulse_identity_after == 0x7b010108U &&
+          pulse_clear_result.hst_pulse_status_before ==
+              pulse_clear_result.hst_pulse_status_after &&
+          (pulse_clear_result.hst_pulse_status_after & kHalt) &&
+          pulse_clear_result.hst_pulse_debug_before == kLoadDebugBit &&
+          pulse_clear_result.hst_pulse_debug_after == 0U &&
+          pulse_clear_result.register_writes == 6U &&
+          pulse_clear.register_writes == 6U &&
+          pulse_clear.pauses == kHaltPollBudget &&
+          !pulse_clear.route_zero_register_reads &&
+          !pulse_clear.route_zero_memory_reads &&
+          !pulse_clear_result.hst_pulse_route_zero_register_reads &&
+          !pulse_clear_result.hst_pulse_route_zero_memory_reads &&
+          pulse_clear_result.resume_verified &&
+          pulse_clear_result.route_restored && pulse_clear.route == 0U,
+        "issue204 experimental Hst hypothesis permits exactly one read-free route pulse only after 32 stable H+LD samples");
+
+    ActiveContextModelFixture pulse_not_needed;
+    pulse_not_needed.plan = plan;
+    pulse_not_needed.pending_debug_reads = 8U;
+    Result pulse_not_needed_result;
+    check(Run(plan, pulse_not_needed.Interface(), source.data(), source.size(),
+              &pulse_not_needed_result, nullptr, true) &&
+          pulse_not_needed_result.hst_pulse_enabled &&
+          !pulse_not_needed_result.hst_pulse_eligible &&
+          !pulse_not_needed_result.hst_pulse_attempted &&
+          pulse_not_needed_result.register_writes == 4U &&
+          pulse_not_needed_result.resume_verified &&
+          pulse_not_needed_result.route_restored,
+        "issue204 Hst opt-in does not pulse when the established bounded wait clears LD normally");
+
+    ActiveContextModelFixture unstable_pulse;
+    unstable_pulse.plan = plan;
+    unstable_pulse.pending_debug_reads = kHaltPollBudget;
+    unstable_pulse.status_change_pause_at = 16U;
+    Result unstable_pulse_result;
+    check(!Run(plan, unstable_pulse.Interface(), source.data(), source.size(),
+               &unstable_pulse_result, nullptr, true) &&
+          unstable_pulse_result.failure == Failure::Halt &&
+          !unstable_pulse_result.hst_pulse_eligible &&
+          !unstable_pulse_result.hst_pulse_attempted &&
+          unstable_pulse_result.register_writes == 2U &&
+          unstable_pulse.register_writes == 2U &&
+          !unstable_pulse_result.memory_reads &&
+          unstable_pulse_result.module_recovery_required,
+        "issue204 Hst hypothesis refuses a non-identical 32-sample STATUS trace before pulsing");
+
+    ActiveContextModelFixture sampled_clock_anomaly;
+    sampled_clock_anomaly.plan = plan;
+    sampled_clock_anomaly.pending_debug_reads = kHaltPollBudget;
+    sampled_clock_anomaly.clock_override_at = 20U;
+    sampled_clock_anomaly.clock_override_us = 10000U;
+    Result sampled_clock_anomaly_result;
+    check(!Run(plan, sampled_clock_anomaly.Interface(), source.data(),
+               source.size(), &sampled_clock_anomaly_result, nullptr, true) &&
+          sampled_clock_anomaly_result.failure == Failure::Pulse &&
+          sampled_clock_anomaly_result.halt_clock_anomaly &&
+          !sampled_clock_anomaly_result.hst_pulse_eligible &&
+          !sampled_clock_anomaly_result.hst_pulse_attempted &&
+          sampled_clock_anomaly_result.register_writes == 2U &&
+          sampled_clock_anomaly_result.module_recovery_required,
+        "issue204 Hst hypothesis refuses any 32-sample clock anomaly before a route pulse");
+
+    ActiveContextModelFixture pulse_entry_clock_anomaly;
+    pulse_entry_clock_anomaly.plan = plan;
+    pulse_entry_clock_anomaly.pending_debug_reads = kHaltPollBudget;
+    pulse_entry_clock_anomaly.clock_override_at = kHaltPollBudget + 2U;
+    pulse_entry_clock_anomaly.clock_override_us = 10000U;
+    Result pulse_entry_clock_anomaly_result;
+    check(!Run(plan, pulse_entry_clock_anomaly.Interface(), source.data(),
+               source.size(), &pulse_entry_clock_anomaly_result, nullptr,
+               true) &&
+          pulse_entry_clock_anomaly_result.failure == Failure::Pulse &&
+          !pulse_entry_clock_anomaly_result.halt_clock_anomaly &&
+          pulse_entry_clock_anomaly_result.hst_pulse_clock_anomaly &&
+          !pulse_entry_clock_anomaly_result.hst_pulse_eligible &&
+          !pulse_entry_clock_anomaly_result.hst_pulse_attempted &&
+          pulse_entry_clock_anomaly_result.register_writes == 2U &&
+          pulse_entry_clock_anomaly_result.module_recovery_required,
+        "issue204 Hst hypothesis refuses a backward clock at pulse entry before its first route write");
+
+    for (unsigned mutation = 0; mutation < 4U; ++mutation) {
+        ActiveContextModelFixture rejected;
+        rejected.plan = plan;
+        rejected.pending_debug_reads = kHaltPollBudget;
+        rejected.pulse_load_persists = mutation == 0U;
+        rejected.pulse_status_changes = mutation == 1U;
+        rejected.pulse_halt_clears = mutation == 2U;
+        rejected.pulse_identity_changes = mutation == 3U;
+        Result failed;
+        check(!Run(plan, rejected.Interface(), source.data(), source.size(),
+                   &failed, nullptr, true) &&
+              failed.failure == Failure::Pulse &&
+              failed.hst_pulse_attempted && !failed.hst_pulse_verified &&
+              failed.register_writes == 4U && !failed.memory_reads &&
+              !rejected.route_zero_register_reads &&
+              !rejected.route_zero_memory_reads &&
+              failed.module_recovery_required,
+            "issue204 Hst hypothesis refuses persistent LD, any STATUS/PC change, cleared H, and identity change");
+    }
+
+    for (unsigned fault = 0; fault < 6U; ++fault) {
+        ActiveContextModelFixture rejected;
+        rejected.plan = plan;
+        rejected.pending_debug_reads = kHaltPollBudget;
+        if (fault == 0U) rejected.fail_register_write_at = 3U;
+        if (fault == 1U) rejected.apply_then_error_write_at = 3U;
+        if (fault == 2U) rejected.fail_register_write_at = 4U;
+        if (fault == 3U) rejected.apply_then_error_write_at = 4U;
+        if (fault == 4U) rejected.fail_pulse_guard_read = true;
+        if (fault == 5U) rejected.lose_owner_pause_at = kHaltPollBudget;
+        Result failed;
+        check(!Run(plan, rejected.Interface(), source.data(), source.size(),
+                   &failed, nullptr, true) &&
+              failed.failure != Failure::None &&
+              failed.hst_pulse_attempted && !failed.hst_pulse_verified &&
+              failed.register_writes >= 3U && failed.register_writes <= 4U &&
+              !failed.memory_reads && !rejected.route_zero_register_reads &&
+              !rejected.route_zero_memory_reads &&
+              failed.module_recovery_required,
+            "issue204 Hst hypothesis fails closed on route-write ambiguity, guarded access failure, and owner loss");
+    }
+
+    ActiveContextModelFixture pulse_pause_failure;
+    pulse_pause_failure.plan = plan;
+    pulse_pause_failure.pending_debug_reads = kHaltPollBudget;
+    pulse_pause_failure.fail_pause_at = kHaltPollBudget;
+    Result pulse_pause_failure_result;
+    check(!Run(plan, pulse_pause_failure.Interface(), source.data(),
+               source.size(), &pulse_pause_failure_result, nullptr, true) &&
+          pulse_pause_failure_result.failure == Failure::Pulse &&
+          pulse_pause_failure_result.register_writes == 3U &&
+          pulse_pause_failure_result.hst_pulse_route_zero &&
+          !pulse_pause_failure_result.hst_pulse_reselect_attempted &&
+          !pulse_pause_failure.route_zero_register_reads &&
+          !pulse_pause_failure.route_zero_memory_reads &&
+          pulse_pause_failure_result.module_recovery_required,
+        "issue204 Hst hypothesis stops without a read or repeated pulse when its sole route-zero pause fails");
+
+    ActiveContextModelFixture pulse_pause_overrun;
+    pulse_pause_overrun.plan = plan;
+    pulse_pause_overrun.pending_debug_reads = kHaltPollBudget;
+    pulse_pause_overrun.route_zero_pause_us = kHstPulsePauseBudgetUs + 1U;
+    Result pulse_pause_overrun_result;
+    check(!Run(plan, pulse_pause_overrun.Interface(), source.data(),
+               source.size(), &pulse_pause_overrun_result, nullptr, true) &&
+          pulse_pause_overrun_result.failure == Failure::Pulse &&
+          pulse_pause_overrun_result.register_writes == 4U &&
+          pulse_pause_overrun_result.hst_pulse_reselect_attempted &&
+          !pulse_pause_overrun_result.hst_pulse_verified &&
+          !pulse_pause_overrun.route_zero_register_reads &&
+          !pulse_pause_overrun.route_zero_memory_reads &&
+          pulse_pause_overrun_result.module_recovery_required,
+        "issue204 Hst hypothesis rejects an over-budget pause after restoring Hst without inspecting AUX state");
+
+    ActiveContextModelFixture pulse_reselect_overrun;
+    pulse_reselect_overrun.plan = plan;
+    pulse_reselect_overrun.pending_debug_reads = kHaltPollBudget;
+    pulse_reselect_overrun.pulse_reselect_delay_us =
+        kHstPulsePauseBudgetUs;
+    Result pulse_reselect_overrun_result;
+    check(!Run(plan, pulse_reselect_overrun.Interface(), source.data(),
+               source.size(), &pulse_reselect_overrun_result, nullptr, true) &&
+          pulse_reselect_overrun_result.failure == Failure::Pulse &&
+          pulse_reselect_overrun_result.register_writes == 4U &&
+          !pulse_reselect_overrun_result.hst_pulse_verified &&
+          pulse_reselect_overrun_result.module_recovery_required,
+        "issue204 Hst hypothesis detects an over-budget synchronous reselect after that write returns");
+
+    ActiveContextModelFixture pulse_verify_overrun;
+    pulse_verify_overrun.plan = plan;
+    pulse_verify_overrun.pending_debug_reads = kHaltPollBudget;
+    pulse_verify_overrun.pulse_verify_delay_us =
+        kHstPulseVerifyBudgetUs;
+    Result pulse_verify_overrun_result;
+    check(!Run(plan, pulse_verify_overrun.Interface(), source.data(),
+               source.size(), &pulse_verify_overrun_result, nullptr, true) &&
+          pulse_verify_overrun_result.failure == Failure::Pulse &&
+          pulse_verify_overrun_result.register_writes == 4U &&
+          !pulse_verify_overrun_result.hst_pulse_verified &&
+          pulse_verify_overrun_result.module_recovery_required,
+        "issue204 Hst hypothesis detects an over-budget post-reselect verification after the read returns");
+
+    ActiveContextModelFixture forbidden_read_fixture;
+    forbidden_read_fixture.plan = plan;
+    uint32_t forbidden_word = 0U;
+    Result forbidden_register_result;
+    forbidden_register_result.hst_pulse_enabled = true;
+    forbidden_register_result.hst_pulse_route_zero = true;
+    check(!RegisterRead(forbidden_read_fixture.Interface(),
+              &forbidden_register_result, kStatus, &forbidden_word) &&
+          forbidden_register_result.failure == Failure::Pulse &&
+          forbidden_register_result.hst_pulse_route_zero_register_reads == 1U &&
+          !forbidden_read_fixture.register_reads,
+        "issue204 route-zero guard rejects a register read before reaching the I/O callback");
+    Result forbidden_memory_result;
+    forbidden_memory_result.hst_pulse_enabled = true;
+    forbidden_memory_result.hst_pulse_route_zero = true;
+    check(!MemoryRead(forbidden_read_fixture.Interface(),
+              &forbidden_memory_result, plan.submitted, &forbidden_word, 4U) &&
+          forbidden_memory_result.failure == Failure::Pulse &&
+          forbidden_memory_result.hst_pulse_route_zero_memory_reads == 1U &&
+          !forbidden_read_fixture.memory_reads,
+        "issue204 route-zero guard rejects a memory read before reaching the I/O callback");
 
     ActiveContextModelFixture below_start_clock;
     below_start_clock.plan = plan;
@@ -4222,6 +4539,7 @@ struct Options {
     bool observe_video_staging = false;
     bool observe_active_context = false;
     bool observe_generation_bound = false;
+    bool experimental_hst_route_pulse = false;
     bool observe_avd_memory = false;
     bool observe_avd_cpu_map = false;
     bool observe_avd_code_arena = false;
@@ -4427,9 +4745,15 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
                 !std::strcmp(argument, "--observe-generation-bound");
         }));
     if (generation_options) {
+        const unsigned pulse_options = static_cast<unsigned>(std::count_if(
+            arguments.begin(), arguments.end(), [](const char *argument) {
+                return argument &&
+                    !std::strcmp(argument, "--experimental-hst-route-pulse");
+            }));
         if (options->pace_input_hz || !options->rx_output_receipts_path ||
             generation_options != 1U ||
-            arguments.size() != 11U ||
+            pulse_options > 1U ||
+            arguments.size() != 11U + pulse_options ||
             std::strcmp(arguments[1], "--hardware") ||
             std::strcmp(arguments[3], "180") ||
             std::strcmp(arguments[4], "30") ||
@@ -4437,8 +4761,14 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
             std::strcmp(arguments[6], "--scaler-test") ||
             std::strcmp(arguments[7], "0") ||
             std::strcmp(arguments[8], "--capture-yuy2") ||
-            std::strcmp(arguments[10], "--observe-generation-bound"))
+            std::strcmp(arguments[10], "--observe-generation-bound") ||
+            (pulse_options &&
+             std::strcmp(arguments[11], "--experimental-hst-route-pulse")))
             return false;
+        if (pulse_options) {
+            arguments.pop_back();
+            options->experimental_hst_route_pulse = true;
+        }
         arguments.pop_back();
         options->observe_generation_bound = true;
         if (!ParseArguments(arguments, options) ||
@@ -5062,6 +5392,31 @@ template<class Check> static void ActiveContextNativeSelfTest(const Check &check
           generation_admitted.output_format == OUTPUT_MODE422_YUY2 &&
           NeedsRawIo(generation_admitted),
         "generation-bound parser admits only the exact active-context profile with a distinct receipt artifact");
+    auto pulse_valid = generation_valid;
+    pulse_valid.insert(pulse_valid.begin() + 11,
+                       "--experimental-hst-route-pulse");
+    Options pulse_admitted;
+    check(ParseArguments(pulse_valid, &pulse_admitted) &&
+          pulse_admitted.observe_generation_bound &&
+          pulse_admitted.experimental_hst_route_pulse &&
+          pulse_admitted.rx_output_receipts_path &&
+          pulse_admitted.mode == Mode::Hardware &&
+          pulse_admitted.expected == 180U &&
+          pulse_admitted.seconds == 30U && pulse_admitted.iterations == 1U &&
+          pulse_admitted.scaler_test && !pulse_admitted.scale_width &&
+          pulse_admitted.capture_path && NeedsRawIo(pulse_admitted),
+        "experimental Hst pulse parser requires the exact generation-bound profile");
+    for (unsigned fault = 0; fault < 4U; ++fault) {
+        auto arguments = pulse_valid;
+        if (fault == 0U) arguments.erase(arguments.begin() + 10);
+        if (fault == 1U) arguments.push_back("--experimental-hst-route-pulse");
+        if (fault == 2U) arguments[11] = "--observe-active-context";
+        if (fault == 3U) arguments.insert(arguments.begin() + 10,
+                                           "--experimental-hst-route-pulse");
+        Options pulse_rejected;
+        check(!ParseArguments(arguments, &pulse_rejected),
+            "experimental Hst pulse parser rejects missing, repeated, replaced and reordered generation profiles");
+    }
     for (unsigned fault = 0; fault < 10U; ++fault) {
         auto arguments = generation_valid;
         if (fault == 0U) arguments[1] = "--preflight";
@@ -5479,6 +5834,42 @@ template<class Check> static void ActiveContextNativeSelfTest(const Check &check
               integrated_result.identity_word == 0x7b010108U &&
               !integrated_result.debug_word,
             "active-context native binding orders Graph x2, fresh boundary, and the four-write model");
+    }
+    {
+        IntegratedFixture pulse;
+        pulse.model.pending_debug_reads =
+            issue204_active_context::kHaltPollBudget;
+        pulse.model.generation = true;
+        HANDLE pulse_current = &pulse;
+        bool pulse_opened = true, pulse_started = true;
+        Deadline pulse_deadline(3600U);
+        uint32_t pulse_ready = 99U;
+        bool pulse_eos = true;
+        ActiveContextBoundaryGate pulse_boundary;
+        ConfigureIntegratedBoundary(&pulse, &pulse_current, &pulse_opened,
+            &pulse_started, &pulse_deadline, &pulse_ready, &pulse_eos,
+            &pulse_boundary);
+        issue204_active_context::Result pulse_result;
+        issue204_generation_observer::Result generation_result;
+        check(ObserveActiveContextNative(&pulse_current, &pulse_opened,
+                  &pulse_started, &pulse_result, &pulse_boundary,
+                  ActiveContextBoundaryGate::Check, IntegratedFixture::Memory,
+                  IntegratedFixture::RegisterRead,
+                  IntegratedFixture::RegisterWrite, false,
+                  &generation_result, 9U, 11U, true) &&
+              pulse.sequence_valid && pulse.gate_complete &&
+              pulse.model.register_writes == 6U &&
+              pulse_result.register_writes == 6U &&
+              pulse_result.hst_pulse_verified &&
+              !pulse.model.route_zero_register_reads &&
+              !pulse.model.route_zero_memory_reads &&
+              pulse_result.resume_verified && pulse_result.route_restored &&
+              generation_result.observed &&
+              generation_result.failure ==
+                  issue204_generation_observer::Failure::None &&
+              generation_result.receipt_generation == 9U &&
+              generation_result.receipt_run_id == 11U,
+            "generation-bound native binding passes the explicit experimental Hst hypothesis into one six-write read-free pulse model");
     }
     {
         IntegratedFixture rejected_graph;
@@ -14052,7 +14443,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
                     DtsDevRegisterRead, DtsDevRegisterWr, true,
                     options.observe_generation_bound
                         ? &generation_observation : nullptr,
-                    receipt_probe.generation(), receipt_probe.run_id());
+                    receipt_probe.generation(), receipt_probe.run_id(),
+                    options.experimental_hst_route_pulse);
                 if (!ok &&
                     active_context_observation.module_recovery_required)
                     std::fprintf(stderr,
@@ -14371,6 +14763,7 @@ int main(int argc, char **argv)
             "--scaler-test 0 --capture-yuy2 NEW_PATH --observe-active-context\n"
             "Generation-bound observation: --hardware H264_256x96_180_PACKETS 180 30 1 "
             "--scaler-test 0 --capture-yuy2 NEW_PATH --observe-generation-bound "
+            "[--experimental-hst-route-pulse] "
             "--rx-output-receipts NEW_ABSOLUTE_TSV\n"
             "Issue399 paced admission: --hardware PINNED_ISSUE399_H264_1920x1080_900_PACKETS 900 60 1 "
             "--scaler-benchmark 1280 --rx-output-receipts NEW_ABSOLUTE_TSV "
