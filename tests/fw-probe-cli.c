@@ -914,6 +914,10 @@ static void make_crypto_result(struct crystalhd_fw_research_crypto_result *resul
     struct crystalhd_fw_research_crypto_sample *changed;
     static const unsigned fault_targets[] = {1, 0, 0, 2, 2, 4};
     static const unsigned fault_guards[] = {1, 0, 1, 2, 3, 4};
+    bool sharf_aes_only = state_submitted.flags ==
+        CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY;
+    unsigned target_count = sharf_aes_only ? 3U : 4U;
+    unsigned guard_count = target_count + 1U;
     unsigned i, count;
     memset(result, 0, sizeof(*result)); make_state_result(&result->state);
     CHECK(crypto_stage < 2 && crypto_word < 4);
@@ -925,18 +929,20 @@ static void make_crypto_result(struct crystalhd_fw_research_crypto_result *resul
     for (i = 0; i < 2; i++) {
         if (!prerequisites[i]->attempted || !prerequisites[i]->read_complete || prerequisites[i]->status) break;
         samples[i]->attempted = samples[i]->read_complete = 1;
-        samples[i]->target_reads_attempted = 4;
-        samples[i]->guard_reads_complete = 5;
+        samples[i]->target_reads_attempted = target_count;
+        samples[i]->guard_reads_complete = guard_count;
         samples[i]->gisb_before = crypto_gisb_values[i][0];
-        samples[i]->gisb_last = crypto_gisb_values[i][4];
+        samples[i]->gisb_last = crypto_gisb_values[i][guard_count - 1U];
         samples[i]->sharf_revision = crypto_values[i][0];
         samples[i]->sharf_status = crypto_values[i][1];
-        samples[i]->bop_gr_bridge_revision = crypto_values[i][2];
+        if (!sharf_aes_only)
+            samples[i]->bop_gr_bridge_revision = crypto_values[i][2];
         samples[i]->bop_aes_status = crypto_values[i][3];
     }
     if (crypto_fault_at) {
         CHECK(crypto_fault_at <= 2 && crypto_fault_kind >= 1 && crypto_fault_kind <= 6 &&
-              (!crypto_guard_dirty || (crypto_guard_slot < 5 && crypto_guard_value)));
+              (!crypto_guard_dirty ||
+               (crypto_guard_slot < guard_count && crypto_guard_value)));
         changed = samples[crypto_fault_at - 1]; count = crypto_fault_at + 1;
         memset(changed, 0, sizeof(*changed));
         if (crypto_guard_dirty) {
@@ -1038,6 +1044,12 @@ static void make_crypto_result(struct crystalhd_fw_research_crypto_result *resul
     case 43:
         changed->error_capture_complete = 0;
         changed->error_capture_master = 1; break;
+    case 44: changed->target_reads_attempted = 4; break;
+    case 45: changed->guard_reads_complete = 5; break;
+    case 46:
+        changed->attempted = changed->read_complete = 1;
+        changed->target_reads_attempted = 3;
+        changed->guard_reads_complete = 3; break;
     default: CHECK(false);
     }
 }
@@ -1313,7 +1325,9 @@ int probe_ioctl(int fd, unsigned long command, ...)
               !image_runs && !packet_runs && !heap_runs && !clock_runs && !uart_runs);
         state_submitted = result->state.request;
         CHECK(state_submitted.version == 1 && state_submitted.size == sizeof(*result));
-        CHECK(!state_submitted.flags && !state_submitted.reserved);
+        CHECK((state_submitted.flags == 0 ||
+               state_submitted.flags == CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY) &&
+              !state_submitted.reserved);
         for (i = sizeof(result->state.request); i < sizeof(*result); i++) CHECK(!bytes[i]);
         memset(&submitted, 0, sizeof(submitted));
         submitted.version = 1; submitted.size = sizeof(result->state.control);
@@ -1445,6 +1459,7 @@ static char *command_observation_args[] = {"probe", "--command-observation", "--
 static char *clock_args[] = {"probe", "--clock-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *uart_args[] = {"probe", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *crypto_args[] = {"probe", "--crypto-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+static char *crypto_inventory_args[] = {"probe", "--crypto-inventory", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *heartbeat_args[] = {"probe", "--heartbeat-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h261_args[] = {"probe", "--h261-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h263_args[] = {"probe", "--h263-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
@@ -3014,9 +3029,104 @@ static void test_crypto_state(void)
         if (i == 11) metadata.reserved[0] = 1;
         CHECK(invoke(crypto_args) == 1);
         if (i < 6 || i == 11) CHECK(!runs && !output[0]);
-        if (i == 6 || i == 7) CHECK(crypto_runs == 1 && !output[0] && strstr(errors, "no retry"));
+        if (i == 6 || i == 7)
+            CHECK(crypto_runs == 1 && !output[0] &&
+                  strstr(errors, "run crypto-state readback: mock error\n") &&
+                  strstr(errors, "no retry"));
         if (i >= 8 && i <= 10) CHECK(crypto_runs == 1 && output[0]);
     }
+}
+
+static void test_crypto_inventory(void)
+{
+    char *invalid[][10] = {
+        {"probe", "--crypto-inventory", NULL},
+        {"probe", "--crypto-inventory", "--acknowledge-card-reset", NULL},
+        {"probe", "--crypto-inventory", "--expected-generation", "42", NULL},
+        {"probe", "--crypto-inventory", "--crypto-inventory",
+         "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--crypto-inventory=1", "--acknowledge-card-reset",
+         "--expected-generation", "42", NULL},
+    };
+    static const uint32_t target_addresses[] = {0xf4000, 0xf4004, 0x51000c};
+    unsigned i, stage, guard;
+
+    for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        reset(); CHECK(invoke(invalid[i]) == 1 && !opens && !output[0]);
+    }
+    {
+        char *conflict[] = {"probe", "--crypto-inventory", "--crypto-state",
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+        reset(); CHECK(invoke(conflict) == 1 && !opens && !output[0]);
+    }
+
+    reset();
+    for (stage = 0; stage < 2; stage++) {
+        crypto_values[stage][0] = 0x12340000U + stage;
+        crypto_values[stage][1] = 0x56780000U + stage;
+        crypto_values[stage][2] = 0xdead0000U + stage;
+        crypto_values[stage][3] = 0x9abc0000U + stage;
+    }
+    CHECK(!invoke(crypto_inventory_args) && crypto_runs == 1 &&
+          state_submitted.flags == CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY);
+    CHECK(strstr(output, "\"crypto_inventory\":true") &&
+          !strstr(output, "\"crypto_state\":true") &&
+          strstr(output, "\"register_addresses\":[999424,999428,5308428]") &&
+          strstr(output, "\"bop_gr_bridge_included\":false"));
+    CHECK(strstr(output, "\"target_register_reads_per_sample\":3") &&
+          strstr(output, "\"guard_reads_per_sample\":4") &&
+          strstr(output, "\"successful_sample_register_reads\":7") &&
+          strstr(output, "\"maximum_register_reads_per_sample\":9") &&
+          strstr(output, "\"successful_run_register_reads\":14") &&
+          strstr(output, "\"maximum_register_reads\":16"));
+    CHECK(strstr(output, "\"target_reads_attempted\":3,\"guard_reads_complete\":4") &&
+          strstr(output, "\"sharf_revision\":305397760") &&
+          strstr(output, "\"sharf_status\":1450704896") &&
+          strstr(output, "\"bop_gr_bridge_revision\":null") &&
+          strstr(output, "\"bop_aes_status\":2596012032"));
+    CHECK(!strstr(output, "3735879680") &&
+          !strstr(output, "3735879681") &&
+          !strstr(output, "5312512"));
+
+    for (stage = 0; stage < 2; stage++) for (guard = 0; guard < 4; guard++) {
+        char needle[192];
+
+        reset();
+        crypto_fault_at = stage + 1;
+        crypto_fault_kind = 1;
+        crypto_guard_dirty = true;
+        crypto_guard_slot = guard;
+        crypto_guard_value = 1;
+        CHECK(invoke(crypto_inventory_args) == 1 && output[0] &&
+              !strstr(errors, "Invalid crypto-inventory result"));
+        if (!guard) {
+            CHECK(strstr(output,
+                "\"guard_failure_observed_after_target_index\":null"));
+            CHECK(strstr(output,
+                "\"guard_failure_observed_after_target_address\":null"));
+        } else {
+            snprintf(needle, sizeof(needle),
+                "\"guard_failure_observed_after_target_index\":%u,"
+                "\"guard_failure_observed_after_target_address\":%u",
+                guard - 1, target_addresses[guard - 1]);
+            CHECK(strstr(output, needle));
+        }
+    }
+
+    reset(); crypto_mutation = 11; crypto_word = 2;
+    CHECK(invoke(crypto_inventory_args) == 1 && !output[0] &&
+          strstr(errors, "Invalid crypto-inventory result"));
+    for (i = 44; i <= 46; i++) {
+        reset(); crypto_mutation = i;
+        CHECK(invoke(crypto_inventory_args) == 1 && !output[0] &&
+              strstr(errors, "Invalid crypto-inventory result"));
+    }
+
+    reset(); run_error = ENOTTY;
+    CHECK(invoke(crypto_inventory_args) == 1 && crypto_runs == 1 &&
+          !output[0] &&
+          strstr(errors, "run crypto-inventory readback: mock error\n") &&
+          strstr(errors, "no retry"));
 }
 
 static void crypto_json_examples(void)
@@ -3368,6 +3478,7 @@ int main(int argc, char **argv)
     test_fixed_state(); test_controller_root(); test_controller_image();
     test_controller_packet(); test_heap_packet(); test_command_observation();
     test_clock_state(); test_uart_state(); test_crypto_state();
+    test_crypto_inventory();
     test_heartbeat_state();
     printf("Firmware probe CLI: %u checks passed\n", checks);
     return 0;

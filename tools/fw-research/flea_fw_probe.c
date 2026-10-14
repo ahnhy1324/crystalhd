@@ -56,6 +56,12 @@ static const uint32_t crypto_target_addresses[] = {
 	CRYPTO_BOP_AES_STATUS_ADDRESS,
 };
 
+static const uint32_t crypto_inventory_target_addresses[] = {
+	CRYPTO_SHARF_REVISION_ADDRESS,
+	CRYPTO_SHARF_STATUS_ADDRESS,
+	CRYPTO_BOP_AES_STATUS_ADDRESS,
+};
+
 enum action {
 	ACTION_NONE, ACTION_INFO, ACTION_VERSION, ACTION_H264,
 	ACTION_H261, ACTION_H263, ACTION_MPEG1,
@@ -68,6 +74,7 @@ enum action {
 	ACTION_CLOCK_STATE,
 	ACTION_UART_STATE,
 	ACTION_CRYPTO_STATE,
+	ACTION_CRYPTO_INVENTORY,
 	ACTION_HEARTBEAT_STATE,
 };
 
@@ -115,6 +122,8 @@ static void usage(FILE *stream)
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --crypto-state\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
+	      "       flea-fw-probe --crypto-inventory\n"
+	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --heartbeat-state\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --help\n"
@@ -155,6 +164,10 @@ static void usage(FILE *stream)
 	      "first checked error it may also read raw capture address and master;\n"
 	      "it never clears the capture or reads keys, contexts, IVs or nonces.\n"
 	      "These observations do not establish cause or algorithm support.\n"
+	      "Crypto-inventory uses the same guarded contract but omits the\n"
+	      "separate BOP_GR_BRIDGE revision target. It reads only SHARF\n"
+	      "revision/status and BOP_AES status; the omitted bridge result is\n"
+	      "reported as unavailable, not as a zero-valued observation.\n"
 	      "Heartbeat-state performs one post-OPEN finite scratch #1 observation,\n"
 	      "bracketing each target read with GISB error-status guards. It keeps\n"
 	      "the initial and first five changed values, but does not establish the\n"
@@ -240,6 +253,8 @@ static bool parse_options(int argc, char **argv, struct options *options)
 			action = ACTION_UART_STATE;
 		else if (!strcmp(argv[i], "--crypto-state"))
 			action = ACTION_CRYPTO_STATE;
+		else if (!strcmp(argv[i], "--crypto-inventory"))
+			action = ACTION_CRYPTO_INVENTORY;
 		else if (!strcmp(argv[i], "--heartbeat-state"))
 			action = ACTION_HEARTBEAT_STATE;
 		else if (!strcmp(argv[i], "--acknowledge-card-reset")) {
@@ -661,9 +676,12 @@ static bool uart_result_valid(const struct crystalhd_fw_research_uart_result *re
 }
 
 static bool crypto_sample_succeeded(
-	const struct crystalhd_fw_research_crypto_sample *sample)
+	const struct crystalhd_fw_research_crypto_sample *sample,
+	uint32_t target_count)
 {
-	return sample->attempted && sample->read_complete && !sample->status;
+	return sample->attempted && sample->read_complete && !sample->status &&
+		sample->target_reads_attempted == target_count &&
+		sample->guard_reads_complete == target_count + 1;
 }
 
 static bool crypto_result_valid(
@@ -678,6 +696,10 @@ static bool crypto_result_valid(
 	const struct crystalhd_fw_research_state_sample *prerequisites[] = {
 		&state->after_init, &state->after_open,
 	};
+	bool sharf_aes_only = request->flags ==
+		CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY;
+	uint32_t target_count = sharf_aes_only ? 3U : 4U;
+	uint32_t guard_count = target_count + 1;
 	unsigned int i;
 
 	if (!state_result_valid(state, request, generation) ||
@@ -714,7 +736,8 @@ static bool crypto_result_valid(
 		if (sample->attempted > 1 || sample->read_complete > 1 ||
 		    sample->error_capture_complete > 1 ||
 		    sample->status > 0 || sample->status < -4095 ||
-		    sample->target_reads_attempted > 4 || sample->guard_reads_complete > 5 ||
+		    sample->target_reads_attempted > target_count ||
+		    sample->guard_reads_complete > guard_count ||
 		    !!sample->attempted != !!sample->target_reads_attempted ||
 		    sample->guard_reads_complete < sample->target_reads_attempted ||
 		    sample->guard_reads_complete > sample->target_reads_attempted + 1 ||
@@ -734,27 +757,31 @@ static bool crypto_result_valid(
 		if (sample->read_complete) {
 			/* Every raw state bit pattern is admissible. */
 			if (!sample->attempted || sample->status ||
-			    sample->target_reads_attempted != 4 ||
-			    sample->guard_reads_complete != 5 || guard_error)
+			    sample->target_reads_attempted != target_count ||
+			    sample->guard_reads_complete != guard_count || guard_error ||
+			    (sharf_aes_only && sample->bop_gr_bridge_revision))
 				return false;
 		} else if (sample->sharf_revision || sample->sharf_status ||
 			   sample->bop_gr_bridge_revision || sample->bop_aes_status ||
-			   (sample->target_reads_attempted == 4 &&
-			    sample->guard_reads_complete == 5 && !guard_error) ||
+			   (sample->target_reads_attempted == target_count &&
+			    sample->guard_reads_complete == guard_count && !guard_error) ||
 			   (active && !sample->status)) {
 			return false;
 		}
 		if (active && (!state_sample_succeeded(&state->calibration) ||
-			       (i && !crypto_sample_succeeded(samples[0]))))
+			       (i && !crypto_sample_succeeded(samples[0], target_count))))
 			return false;
 		if (sample->status &&
 		    (control->status != sample->status || control->command_count != (i ? 3U : 2U)))
 			return false;
 	}
-	if ((control->command_count > 2 && !crypto_sample_succeeded(samples[0])) ||
-	    (control->command_count > 3 && !crypto_sample_succeeded(samples[1])) ||
-	    (!control->status && (!crypto_sample_succeeded(samples[0]) ||
-				 !crypto_sample_succeeded(samples[1]))))
+	if ((control->command_count > 2 &&
+	     !crypto_sample_succeeded(samples[0], target_count)) ||
+	    (control->command_count > 3 &&
+	     !crypto_sample_succeeded(samples[1], target_count)) ||
+	    (!control->status &&
+	     (!crypto_sample_succeeded(samples[0], target_count) ||
+	      !crypto_sample_succeeded(samples[1], target_count))))
 		return false;
 	return true;
 }
@@ -1499,8 +1526,11 @@ static void print_uart_result(const struct crystalhd_fw_research_uart_result *re
 }
 
 static void print_crypto_sample(
-	const struct crystalhd_fw_research_crypto_sample *sample)
+	const struct crystalhd_fw_research_crypto_sample *sample,
+	bool sharf_aes_only)
 {
+	const uint32_t *target_addresses = sharf_aes_only ?
+		crypto_inventory_target_addresses : crypto_target_addresses;
 	bool after_target = sample->guard_reads_complete > 1 &&
 		(sample->gisb_last & CRYPTO_GISB_ERROR_MASK);
 	uint32_t target_index = after_target ? sample->guard_reads_complete - 2 : 0;
@@ -1528,28 +1558,42 @@ static void print_crypto_sample(
 	fputs(",\"guard_failure_observed_after_target_index\":", stdout);
 	if (after_target)
 		printf("%" PRIu32 ",\"guard_failure_observed_after_target_address\":%" PRIu32,
-		       target_index, crypto_target_addresses[target_index]);
+		       target_index, target_addresses[target_index]);
 	else
 		fputs("null,\"guard_failure_observed_after_target_address\":null", stdout);
 	fputs(",\"sharf_revision\":", stdout);
-	if (sample->read_complete)
-		printf("%" PRIu32 ",\"sharf_status\":%" PRIu32
-		       ",\"bop_gr_bridge_revision\":%" PRIu32
-		       ",\"bop_aes_status\":%" PRIu32,
-		       (uint32_t)sample->sharf_revision, (uint32_t)sample->sharf_status,
-		       (uint32_t)sample->bop_gr_bridge_revision,
-		       (uint32_t)sample->bop_aes_status);
-	else
+	if (!sample->read_complete) {
 		fputs("null,\"sharf_status\":null,\"bop_gr_bridge_revision\":null,"
 		      "\"bop_aes_status\":null", stdout);
+	} else {
+		printf("%" PRIu32 ",\"sharf_status\":%" PRIu32,
+		       (uint32_t)sample->sharf_revision,
+		       (uint32_t)sample->sharf_status);
+		if (sharf_aes_only)
+			fputs(",\"bop_gr_bridge_revision\":null", stdout);
+		else
+			printf(",\"bop_gr_bridge_revision\":%" PRIu32,
+			       (uint32_t)sample->bop_gr_bridge_revision);
+		printf(",\"bop_aes_status\":%" PRIu32,
+		       (uint32_t)sample->bop_aes_status);
+	}
 	putchar('}');
 }
 
 static void print_crypto_result(
 	const struct crystalhd_fw_research_crypto_result *result)
 {
-	printf("{\"version\":%" PRIu32 ",\"crypto_state\":true,\"control\":",
-	       (uint32_t)result->state.request.version);
+	bool sharf_aes_only = result->state.request.flags ==
+		CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY;
+
+	if (sharf_aes_only)
+		printf("{\"version\":%" PRIu32
+		       ",\"crypto_inventory\":true,\"control\":",
+		       (uint32_t)result->state.request.version);
+	else
+		printf("{\"version\":%" PRIu32
+		       ",\"crypto_state\":true,\"control\":",
+		       (uint32_t)result->state.request.version);
 	print_result_object(&result->state.control);
 	fputs(",\"fixed_state_samples\":{\"calibration\":", stdout);
 	print_state_sample(&result->state.calibration);
@@ -1558,26 +1602,38 @@ static void print_crypto_result(
 	fputs(",\"after_open\":", stdout);
 	print_state_sample(&result->state.after_open);
 	fputs("},\"crypto_samples\":{\"after_init\":", stdout);
-	print_crypto_sample(&result->after_init);
+	print_crypto_sample(&result->after_init, sharf_aes_only);
 	fputs(",\"after_open\":", stdout);
-	print_crypto_sample(&result->after_open);
-	printf("},\"scope\":{\"register_addresses\":[%" PRIu32 ",%" PRIu32
-	       ",%" PRIu32 ",%" PRIu32 "],\"gisb_error_guard_address\":%" PRIu32
-	       ",\"gisb_error_mask\":%" PRIu32
+	print_crypto_sample(&result->after_open, sharf_aes_only);
+	if (sharf_aes_only)
+		printf("},\"scope\":{\"register_addresses\":[%" PRIu32 ",%" PRIu32
+		       ",%" PRIu32 "],\"bop_gr_bridge_included\":false,"
+		       "\"gisb_error_guard_address\":%" PRIu32,
+		       CRYPTO_SHARF_REVISION_ADDRESS, CRYPTO_SHARF_STATUS_ADDRESS,
+		       CRYPTO_BOP_AES_STATUS_ADDRESS,
+		       CRYPTO_GISB_ERROR_STATUS_ADDRESS);
+	else
+		printf("},\"scope\":{\"register_addresses\":[%" PRIu32 ",%" PRIu32
+		       ",%" PRIu32 ",%" PRIu32 "],\"gisb_error_guard_address\":%" PRIu32,
+		       CRYPTO_SHARF_REVISION_ADDRESS, CRYPTO_SHARF_STATUS_ADDRESS,
+		       CRYPTO_BOP_GR_BRIDGE_REVISION_ADDRESS,
+		       CRYPTO_BOP_AES_STATUS_ADDRESS,
+		       CRYPTO_GISB_ERROR_STATUS_ADDRESS);
+	printf(",\"gisb_error_mask\":%" PRIu32
 	       ",\"gisb_error_capture_address_register\":%" PRIu32
 	       ",\"gisb_error_capture_master_register\":%" PRIu32
-	       ",\"target_register_reads_per_sample\":4,\"guard_reads_per_sample\":5,"
-	       "\"successful_sample_register_reads\":9,"
+	       ",\"target_register_reads_per_sample\":%u,\"guard_reads_per_sample\":%u,"
+	       "\"successful_sample_register_reads\":%u,"
 	       "\"conditional_error_capture_reads_maximum\":2,"
-	       "\"maximum_register_reads_per_sample\":11,"
-	       "\"successful_run_register_reads\":18,\"maximum_register_reads\":20,"
+	       "\"maximum_register_reads_per_sample\":%u,"
+	       "\"successful_run_register_reads\":%u,\"maximum_register_reads\":%u,"
 	       "\"raw_values_only\":true,\"target_register_writes\":false,"
 	       "\"error_capture_clear_writes\":false,\"retries\":false,"
 	       "\"indirect_gisb_selector_write\":true,"
-	       "\"successful_sample_indirect_gisb_selector_writes\":9,"
-	       "\"maximum_indirect_gisb_selector_writes_per_sample\":11,"
-	       "\"successful_run_indirect_gisb_selector_writes\":18,"
-	       "\"maximum_indirect_gisb_selector_writes\":20,\"passive\":false,"
+	       "\"successful_sample_indirect_gisb_selector_writes\":%u,"
+	       "\"maximum_indirect_gisb_selector_writes_per_sample\":%u,"
+	       "\"successful_run_indirect_gisb_selector_writes\":%u,"
+	       "\"maximum_indirect_gisb_selector_writes\":%u,\"passive\":false,"
 	       "\"bop_aes_revision_register_present\":false,"
 	       "\"bop_gr_bridge_revision_is_aes_core_revision\":false,"
 	       "\"sha_cmac_context_reads\":false,"
@@ -1587,11 +1643,14 @@ static void print_crypto_result(
 	       "\"guard_failure_attribution_causal\":false,"
 	       "\"independent_fetch_errors_certified\":false,"
 	       "\"atomic_coherence_established\":false}}\n",
-	       CRYPTO_SHARF_REVISION_ADDRESS, CRYPTO_SHARF_STATUS_ADDRESS,
-	       CRYPTO_BOP_GR_BRIDGE_REVISION_ADDRESS, CRYPTO_BOP_AES_STATUS_ADDRESS,
-	       CRYPTO_GISB_ERROR_STATUS_ADDRESS, CRYPTO_GISB_ERROR_MASK,
+	       CRYPTO_GISB_ERROR_MASK,
 	       CRYPTO_GISB_ERROR_CAPTURE_ADDRESS,
-	       CRYPTO_GISB_ERROR_CAPTURE_MASTER);
+	       CRYPTO_GISB_ERROR_CAPTURE_MASTER,
+	       sharf_aes_only ? 3U : 4U, sharf_aes_only ? 4U : 5U,
+	       sharf_aes_only ? 7U : 9U, sharf_aes_only ? 9U : 11U,
+	       sharf_aes_only ? 14U : 18U, sharf_aes_only ? 16U : 20U,
+	       sharf_aes_only ? 7U : 9U, sharf_aes_only ? 9U : 11U,
+	       sharf_aes_only ? 14U : 18U, sharf_aes_only ? 16U : 20U);
 }
 
 static void print_heartbeat_sample(
@@ -2032,6 +2091,7 @@ int main(int argc, char **argv)
 	case ACTION_CLOCK_STATE:
 	case ACTION_UART_STATE:
 	case ACTION_CRYPTO_STATE:
+	case ACTION_CRYPTO_INVENTORY:
 	case ACTION_HEARTBEAT_STATE:
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		break;
@@ -2128,21 +2188,30 @@ int main(int argc, char **argv)
 			 control->cleanup_status != BC_STS_SUCCESS) ? 1 : 0;
 		goto out;
 	}
-	if (options.action == ACTION_CRYPTO_STATE) {
+	if (options.action == ACTION_CRYPTO_STATE ||
+	    options.action == ACTION_CRYPTO_INVENTORY) {
 		const struct crystalhd_fw_research_result *control = &crypto_result.state.control;
+		const char *readback_name = options.action == ACTION_CRYPTO_INVENTORY ?
+			"run crypto-inventory readback" : "run crypto-state readback";
 
 		state_request.version = CRYSTALHD_FW_RESEARCH_VERSION;
 		state_request.size = sizeof(crypto_result);
+		if (options.action == ACTION_CRYPTO_INVENTORY)
+			state_request.flags =
+				CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY;
 		crypto_result.state.request = state_request;
 		if (ioctl(fd, CRYSTALHD_FW_RESEARCH_RUN_CRYPTO, &crypto_result) < 0) {
-			perror("run crypto-state readback");
+			perror(readback_name);
 			fputs("Device state may have changed; no retry was attempted.\n", stderr);
 			goto out;
 		}
 		if (control->retained)
 			fputs("Research resources remain retained. Do not force unload the driver.\n", stderr);
 		if (!crypto_result_valid(&crypto_result, &state_request, info.generation)) {
-			fputs("Invalid crypto-state result; no further command attempted.\n", stderr);
+			fputs(options.action == ACTION_CRYPTO_INVENTORY ?
+			      "Invalid crypto-inventory result; no further command attempted.\n" :
+			      "Invalid crypto-state result; no further command attempted.\n",
+			      stderr);
 			goto out;
 		}
 		have_crypto = true;

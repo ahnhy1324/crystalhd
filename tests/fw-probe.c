@@ -179,7 +179,8 @@ static char receipt_events[16];
 static BC_STATUS read_mock(struct crystalhd_hw *hw, u32 offset, u32 count, u32 *words);
 static unsigned clock_reads, clock_mutate_at, clock_mutation;
 static unsigned clock_guard_count, clock_guard_mutate_at, clock_guard_mutation;
-static bool clock_only, uart_mode, crypto_mode, heartbeat_mode;
+static bool clock_only, uart_mode, crypto_mode, crypto_inventory_mode,
+    heartbeat_mode;
 static u32 clock_values[2][3];
 static u32 crypto_values[2][4], crypto_gisb_values[2][5];
 static u32 crypto_capture_values[2][2];
@@ -604,7 +605,8 @@ static void reset(void)
     read_count = read_fail_at = read_mutate_at = read_mutation = 0;
     read_mismatch_stage = read_mismatch_word = 0; read_padding = false;
     clock_reads = clock_mutate_at = clock_mutation = 0;
-    clock_only = uart_mode = crypto_mode = heartbeat_mode = false;
+    clock_only = uart_mode = crypto_mode = crypto_inventory_mode =
+        heartbeat_mode = false;
     clock_guard_count = clock_guard_mutate_at = clock_guard_mutation = 0;
     memset(crypto_slots, 0, sizeof(crypto_slots));
     memset(crypto_capture_phase, 0, sizeof(crypto_capture_phase));
@@ -1534,19 +1536,25 @@ static u32 clock_read_mock(struct crystalhd_adp *adapter, u32 address)
     static const u32 addresses[] = {0x502200, 0x50229c, 0x70004};
     static const u32 uart_addresses[] = {0xf3004, 0x404100, 0x40421c};
     static const u32 crypto_addresses[] = {0xf4000, 0xf4004, 0x511000, 0x51000c};
+    static const u32 crypto_inventory_addresses[] = {0xf4000, 0xf4004, 0x51000c};
     unsigned index = clock_reads++;
-    unsigned width = crypto_mode ? 9U : 3U;
+    unsigned width = crypto_mode ? (crypto_inventory_mode ? 7U : 9U) : 3U;
     unsigned stage = clock_only ? 0 : command_count == 3U;
     unsigned slot = crypto_mode ? crypto_slots[stage] : index % width;
     u32 value;
     barrier(); CHECK(adapter == &adp && hardware.lock.held == 1 && hardware.fwcmd_trans_mutex.held == 1);
-    CHECK(index < (clock_only ? (crypto_mode ? 11U : width) : crypto_mode ? 20U : 2U * width));
+    CHECK(index < (clock_only ?
+        (crypto_mode ? (crypto_inventory_mode ? 9U : 11U) : width) :
+        crypto_mode ? (crypto_inventory_mode ? 16U : 20U) : 2U * width));
     if (crypto_mode) {
         if (!crypto_capture_phase[stage]) {
-            CHECK(slot < 9);
-            CHECK(address == (!(slot & 1) ? 0x4000d4 : crypto_addresses[slot / 2]));
+            unsigned target = slot / 2;
+            CHECK(slot < width);
+            CHECK(address == (!(slot & 1) ? 0x4000d4 :
+                (crypto_inventory_mode ? crypto_inventory_addresses :
+                 crypto_addresses)[target]));
             value = !(slot & 1) ? crypto_gisb_values[stage][slot / 2] :
-                crypto_values[stage][slot / 2];
+                crypto_values[stage][crypto_inventory_mode && target == 2 ? 3 : target];
             crypto_slots[stage]++;
             if (!(slot & 1) && (value & 0x1801U)) crypto_capture_phase[stage] = 1;
         } else {
@@ -3430,18 +3438,24 @@ static struct crystalhd_fw_research_state_request crypto_request(void)
     req.size = sizeof(struct crystalhd_fw_research_crypto_result); return req;
 }
 
-static struct crystalhd_fw_research_crypto_result crypto_run(void)
+static struct crystalhd_fw_research_crypto_result crypto_run_flags(u32 flags)
 {
     struct crystalhd_fw_research_crypto_result result;
     struct crystalhd_fw_research_request req = request();
     crypto_mode = true;
+    crypto_inventory_mode = flags ==
+        CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY;
     memset(&result, 0xa5, sizeof(result)); result.state.request = crypto_request();
+    result.state.request.flags = flags;
     crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state,
         NULL, NULL, NULL, NULL, NULL, NULL, &result, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.state.control.request.size == 1488 && result.state.request.size == 1712);
     return result;
 }
+
+static struct crystalhd_fw_research_crypto_result crypto_run(void)
+{ return crypto_run_flags(0); }
 
 static void crypto_partial(const struct crystalhd_fw_research_crypto_sample *sample,
                            unsigned stage, unsigned targets, unsigned guards, int status)
@@ -3488,6 +3502,21 @@ static void crypto_complete(const struct crystalhd_fw_research_crypto_sample *sa
     CHECK(sample->sharf_revision == crypto_values[stage][0]);
     CHECK(sample->sharf_status == crypto_values[stage][1]);
     CHECK(sample->bop_gr_bridge_revision == crypto_values[stage][2]);
+    CHECK(sample->bop_aes_status == crypto_values[stage][3]);
+}
+
+static void crypto_inventory_complete(
+    const struct crystalhd_fw_research_crypto_sample *sample, unsigned stage)
+{
+    CHECK(sample->attempted == 1 && sample->read_complete == 1 && !sample->status &&
+          !sample->error_capture_complete && !sample->error_capture_address &&
+          !sample->error_capture_master);
+    CHECK(sample->target_reads_attempted == 3 && sample->guard_reads_complete == 4);
+    CHECK(sample->gisb_before == crypto_gisb_values[stage][0]);
+    CHECK(sample->gisb_last == crypto_gisb_values[stage][3]);
+    CHECK(sample->sharf_revision == crypto_values[stage][0]);
+    CHECK(sample->sharf_status == crypto_values[stage][1]);
+    CHECK(!sample->bop_gr_bridge_revision);
     CHECK(sample->bop_aes_status == crypto_values[stage][3]);
 }
 
@@ -3552,7 +3581,8 @@ static void test_crypto_whitelist_and_guards(void)
     for (boundary = 1; boundary <= 18; boundary++)
         for (mutation = 1; mutation < ARRAY_SIZE(errors); mutation++) {
             crypto_guard_setup(); clock_guard_mutate_at = boundary; clock_guard_mutation = mutation;
-            CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == errors[mutation]);
+            CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample,
+                                                      false) == errors[mutation]);
             read = boundary / 2;
             if (boundary & 1) {
                 unsigned accessor = (boundary - 1) / 2;
@@ -3568,7 +3598,8 @@ static void test_crypto_whitelist_and_guards(void)
         }
     for (read = 1; read <= 9; read++) for (mutation = 1; mutation < ARRAY_SIZE(errors); mutation++) {
         crypto_guard_setup(); clock_mutate_at = read; clock_mutation = mutation;
-        CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == errors[mutation]);
+        CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample,
+                                                  false) == errors[mutation]);
         CHECK(clock_reads == read && !read_count);
         crypto_partial(&sample, 0, read / 2, read / 2, errors[mutation]);
         controller_guard_exit();
@@ -3579,7 +3610,8 @@ static void test_crypto_whitelist_and_guards(void)
     for (guard = 0; guard < 5; guard++) {
         crypto_guard_setup(); crypto_gisb_values[0][guard] = UINT32_MAX;
         clock_guard_mutate_at = guard * 4 + 2; clock_guard_mutation = 1;
-        CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == -ENODEV);
+        CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample,
+                                                  false) == -ENODEV);
         CHECK(clock_reads == guard * 2 + 1 && !read_count);
         crypto_partial(&sample, 0, guard, guard, -ENODEV); controller_guard_exit();
     }
@@ -3592,7 +3624,8 @@ static void test_crypto_whitelist_and_guards(void)
             crypto_guard_setup(); crypto_gisb_values[0][guard] = 1;
             clock_guard_mutate_at = guard * 4 + 3 + boundary;
             clock_guard_mutation = mutation;
-            CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == -EIO);
+            CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample,
+                                                      false) == -EIO);
             CHECK(clock_reads == guard * 2 + 1 + (boundary ? 1U : 0U) +
                   (boundary == 3 ? 1U : 0U));
             crypto_partial(&sample, 0, guard, guard + 1, -EIO);
@@ -3603,16 +3636,19 @@ static void test_crypto_whitelist_and_guards(void)
             crypto_guard_setup(); crypto_gisb_values[0][guard] = 1;
             clock_mutate_at = guard * 2 + 2 + read;
             clock_mutation = mutation;
-            CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == -EIO);
+            CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample,
+                                                      false) == -EIO);
             CHECK(clock_reads == guard * 2 + 2 + read);
             crypto_partial(&sample, 0, guard, guard + 1, -EIO);
             controller_guard_exit();
         }
     crypto_guard_setup(); transaction_error = -EINTR;
-    CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == -ERESTARTSYS);
+    CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample,
+                                              false) == -ERESTARTSYS);
     crypto_empty(&sample, -ERESTARTSYS); CHECK(!clock_reads); controller_guard_exit();
     crypto_guard_setup(); adp.cmds.hw_ctx = NULL;
-    CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == -ENODEV);
+    CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample,
+                                              false) == -ENODEV);
     crypto_empty(&sample, -ENODEV); CHECK(!clock_reads); controller_guard_exit();
 }
 
@@ -3691,6 +3727,56 @@ static void test_crypto_progression_and_cleanup(void)
     CHECK(result.state.control.cleanup_status == BC_STS_IO_ERROR && release_count == 1);
 }
 
+static void test_crypto_inventory_mode(void)
+{
+    struct crystalhd_fw_research_crypto_result result;
+    struct crystalhd_fw_research_crypto_sample sample;
+    struct crystalhd_fw_research_state_request req = crypto_request();
+    unsigned guard;
+
+    req.flags = CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY;
+    CHECK(crystalhd_fw_research_crypto_request_valid(&req));
+    req.flags = 2;
+    CHECK(!crystalhd_fw_research_crypto_request_valid(&req));
+    req.flags = 3;
+    CHECK(!crystalhd_fw_research_crypto_request_valid(&req));
+
+    state_reset();
+    result = crypto_run_flags(CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY);
+    CHECK(!result.state.control.status && command_count == 5 && read_count == 7 &&
+          clock_reads == 14 && release_count == 1 && !result.state.control.retained);
+    CHECK(result.state.request.flags ==
+          CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY);
+    crypto_inventory_complete(&result.after_init, 0);
+    crypto_inventory_complete(&result.after_open, 1);
+
+    state_reset();
+    crypto_gisb_values[0][3] = 1;
+    result = crypto_run_flags(CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY);
+    CHECK(result.state.control.status == -EIO && command_count == 2 &&
+          clock_reads == 9 && release_count == 1);
+    crypto_capture_complete(&result.after_init, 0, 3, 4, -EIO);
+    crypto_empty(&result.after_open, 0);
+
+    crypto_guard_setup();
+    crypto_inventory_mode = true;
+    CHECK(!crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample, true));
+    CHECK(clock_reads == 7 && !read_count);
+    crypto_inventory_complete(&sample, 0);
+    controller_guard_exit();
+
+    for (guard = 0; guard < 4; guard++) {
+        crypto_guard_setup();
+        crypto_inventory_mode = true;
+        crypto_gisb_values[0][guard] = 1;
+        CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample,
+                                                  true) == -EIO);
+        CHECK(clock_reads == guard * 2 + 3 && !read_count);
+        crypto_capture_complete(&sample, 0, guard, guard + 1, -EIO);
+        controller_guard_exit();
+    }
+}
+
 static void test_crypto_ioctl_and_compat(void)
 {
     struct inode inode = {0}; struct file file = {0};
@@ -3724,7 +3810,7 @@ static void test_crypto_ioctl_and_compat(void)
         result.state.request = crypto_request();
         if (field < ARRAY_SIZE(sizes)) result.state.request.size = sizes[field];
         else if (field == ARRAY_SIZE(sizes)) result.state.request.version++;
-        else if (field == ARRAY_SIZE(sizes) + 1) result.state.request.flags = 1;
+        else if (field == ARRAY_SIZE(sizes) + 1) result.state.request.flags = 2;
         else result.state.request.reserved = 1;
         CHECK(!crystalhd_fw_research_crypto_request_valid(&result.state.request));
         CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CRYPTO, arg) == -EINVAL);
@@ -3735,14 +3821,31 @@ static void test_crypto_ioctl_and_compat(void)
     CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CRYPTO, arg) == -ENOMEM);
     no_hardware(); CHECK(!clock_reads && !copy_out_count);
     CHECK(!crystalhd_fw_research_release(&inode, &file));
-    for (compat = 0; compat < 2; compat++) {
+    for (compat = 0; compat < 4; compat++) {
+        bool inventory = compat >= 2;
+
         state_reset(); crypto_mode = true;
-        CHECK(!crystalhd_fw_research_open(&inode, &file)); result.state.request = crypto_request();
-        CHECK(!(compat ? crystalhd_fw_research_compat_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CRYPTO, arg) :
-                         crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CRYPTO, arg)));
-        CHECK(!result.state.control.status && command_count == 5 && read_count == 7 && clock_reads == 18);
+        crypto_inventory_mode = inventory;
+        CHECK(!crystalhd_fw_research_open(&inode, &file));
+        result.state.request = crypto_request();
+        if (inventory)
+            result.state.request.flags =
+                CRYSTALHD_FW_RESEARCH_CRYPTO_SHARF_AES_ONLY;
+        CHECK(!((compat & 1) ?
+                crystalhd_fw_research_compat_ioctl(&file,
+                    CRYSTALHD_FW_RESEARCH_RUN_CRYPTO, arg) :
+                crystalhd_fw_research_ioctl(&file,
+                    CRYSTALHD_FW_RESEARCH_RUN_CRYPTO, arg)));
+        CHECK(!result.state.control.status && command_count == 5 &&
+              read_count == 7 && clock_reads == (inventory ? 14U : 18U));
         CHECK(copy_in_count == 1 && copy_out_count == 1 && release_count == 1 && !result.state.control.retained);
-        crypto_complete(&result.after_init, 0); crypto_complete(&result.after_open, 1);
+        if (inventory) {
+            crypto_inventory_complete(&result.after_init, 0);
+            crypto_inventory_complete(&result.after_open, 1);
+        } else {
+            crypto_complete(&result.after_init, 0);
+            crypto_complete(&result.after_open, 1);
+        }
         CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
     }
     state_reset(); crypto_mode = true;
@@ -4130,7 +4233,8 @@ int main(void)
     test_command_observation_early_refusal();
     test_clock_whitelist_and_guards(); test_clock_progression_and_cleanup(); test_clock_ioctl_and_compat();
     test_uart_whitelist_and_guards(); test_uart_progression_and_cleanup(); test_uart_ioctl_and_compat();
-    test_crypto_whitelist_and_guards(); test_crypto_progression_and_cleanup(); test_crypto_ioctl_and_compat();
+    test_crypto_whitelist_and_guards(); test_crypto_progression_and_cleanup();
+    test_crypto_inventory_mode(); test_crypto_ioctl_and_compat();
     test_heartbeat_bounded_observation(); test_heartbeat_ioctl_and_compat();
     CHECK(!live_allocations); unlocked();
     printf("Firmware probe: %u checks passed\n", checks);
