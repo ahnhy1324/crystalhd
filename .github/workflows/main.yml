@@ -114,6 +114,9 @@ jobs:
             --preflight "$RUNNER_TEMP/drain.h264" 179 || probe_status=$?
           test "$probe_status" -eq 2
 
+      - name: Verify true-1080p60 research baselines without hardware
+        run: make issue399-baseline-check
+
       - name: Verify native scaler stimuli without hardware
         run: |
           mkdir "$RUNNER_TEMP/scaler-samples"

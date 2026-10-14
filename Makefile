@@ -158,6 +158,11 @@ h264-stream-check:
 h264-reference-check:
 	$(PYTHON3) -B tests/h264-reference-lifecycle.py --self-test
 
+# Device-free, true-1080p60 source/encode/hash admission for issue #399.
+.PHONY: issue399-baseline-check
+issue399-baseline-check:
+	CRYSTALHD_ISSUE399_FFMPEG=1 $(PYTHON3) -B tests/issue399-baseline.test.py
+
 rx-ownership-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/rx-ownership.sh
 

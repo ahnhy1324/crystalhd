@@ -1,0 +1,201 @@
+{
+  "bundle_manifest_sha256": "38d4efa73573fb946f482b8dd33ec5c25fe5a1d02e47a5d230a8495ffcf589b0",
+  "bundle_schema": "crystalhd-issue399-baseline-v1",
+  "encodes": {
+    "b-reference": {
+      "file": "true1080p60-b-reference.mp4",
+      "file_sha256": "f8300d9bc139dfcca557acbe5dd24b14afd97395869a4ea64b7b9018a3636eb9",
+      "observed_frames": {
+        "key_frame_indices": [
+          0,
+          60,
+          120,
+          180,
+          240,
+          300,
+          360,
+          420,
+          480,
+          540,
+          600,
+          660,
+          720,
+          780,
+          840
+        ],
+        "nal_ref_idc_counts_by_type": {
+          "B": {
+            "0": 435,
+            "1": 225
+          },
+          "I": {
+            "3": 15
+          },
+          "P": {
+            "2": 225
+          }
+        },
+        "picture_type_counts": {
+          "B": 660,
+          "I": 15,
+          "P": 225
+        },
+        "pts_first": 0,
+        "pts_last": 899000,
+        "pts_step": 1000,
+        "reference_b_slice_count": 225,
+        "sps_max_num_ref_frames": 3,
+        "unique_full_frame_hashes": 900
+      },
+      "observed_stream": {
+        "avg_frame_rate": "60/1",
+        "bit_rate": 12579682,
+        "codec_name": "h264",
+        "color_primaries": "bt709",
+        "color_range": "tv",
+        "color_space": "bt709",
+        "color_transfer": "bt709",
+        "container_bit_rate": 12585999,
+        "container_size": 23598749,
+        "duration_ts": 900000,
+        "field_order": "progressive",
+        "has_b_frames": 2,
+        "height": 1080,
+        "level": 42,
+        "nb_frames": 900,
+        "pix_fmt": "yuv420p",
+        "profile": "High",
+        "r_frame_rate": "60/1",
+        "start_pts": 0,
+        "time_base": "1/60000",
+        "width": 1920
+      },
+      "requested": {
+        "b_adapt": 0,
+        "b_frames": 3,
+        "b_pyramid": "strict",
+        "buffer_size": 24000000,
+        "closed_gop": true,
+        "encoder_refs_option": 4,
+        "gop": 60,
+        "keyint_min": 60,
+        "level": "4.2",
+        "max_bit_rate": 12000000,
+        "min_bit_rate": 12000000,
+        "preset": "veryfast",
+        "profile": "high",
+        "scene_cut": 0,
+        "target_bit_rate": 12000000,
+        "threads": 1
+      },
+      "software_full_frame_hashes": "true1080p60-b-reference.framehash",
+      "software_full_frame_hashes_sha256": "99455925c877085ac07deb08745803984f2bd8ff3d7757a80d2e9e7bbe965a7e"
+    },
+    "no-b": {
+      "file": "true1080p60-no-b.mp4",
+      "file_sha256": "a51411993431ff4ed4964c449c595345948b7243e656bb570b8dfcc73e4d2557",
+      "observed_frames": {
+        "key_frame_indices": [
+          0,
+          60,
+          120,
+          180,
+          240,
+          300,
+          360,
+          420,
+          480,
+          540,
+          600,
+          660,
+          720,
+          780,
+          840
+        ],
+        "nal_ref_idc_counts_by_type": {
+          "I": {
+            "3": 15
+          },
+          "P": {
+            "2": 885
+          }
+        },
+        "picture_type_counts": {
+          "I": 15,
+          "P": 885
+        },
+        "pts_first": 0,
+        "pts_last": 899000,
+        "pts_step": 1000,
+        "reference_b_slice_count": 0,
+        "sps_max_num_ref_frames": 4,
+        "unique_full_frame_hashes": 900
+      },
+      "observed_stream": {
+        "avg_frame_rate": "60/1",
+        "bit_rate": 12121227,
+        "codec_name": "h264",
+        "color_primaries": "bt709",
+        "color_range": "tv",
+        "color_space": "bt709",
+        "color_transfer": "bt709",
+        "container_bit_rate": 12123777,
+        "container_size": 22732082,
+        "duration_ts": 900000,
+        "field_order": "progressive",
+        "has_b_frames": 0,
+        "height": 1080,
+        "level": 42,
+        "nb_frames": 900,
+        "pix_fmt": "yuv420p",
+        "profile": "High",
+        "r_frame_rate": "60/1",
+        "start_pts": 0,
+        "time_base": "1/60000",
+        "width": 1920
+      },
+      "requested": {
+        "b_adapt": 0,
+        "b_frames": 0,
+        "b_pyramid": "none",
+        "buffer_size": 24000000,
+        "closed_gop": true,
+        "encoder_refs_option": 4,
+        "gop": 60,
+        "keyint_min": 60,
+        "level": "4.2",
+        "max_bit_rate": 12000000,
+        "min_bit_rate": 12000000,
+        "preset": "veryfast",
+        "profile": "high",
+        "scene_cut": 0,
+        "target_bit_rate": 12000000,
+        "threads": 1
+      },
+      "software_full_frame_hashes": "true1080p60-no-b.framehash",
+      "software_full_frame_hashes_sha256": "6a45bdcdac100a989719ac7d88eaa8c1a0ec7ec9cc31e938585cfc3e162826d9"
+    }
+  },
+  "generator": "tests/issue399-baseline.py",
+  "schema": "crystalhd-issue399-frozen-v1",
+  "source": {
+    "frames": 900,
+    "height": 1080,
+    "identity": "12-bit frame number plus complement and white/black references",
+    "identity_range": [
+      0,
+      899
+    ],
+    "pixel_format": "yuv420p",
+    "progressive": true,
+    "rate": "60/1",
+    "software_full_frame_hashes_sha256": "6a9d96414b200d81874f697b0f194cb9cd9edf15d2b5e18c7852031a369a3b42",
+    "time_base": "1/60",
+    "unique_full_frame_hashes": 900,
+    "width": 1920
+  },
+  "tools": {
+    "ffmpeg": "ffmpeg version 8.0.1-3ubuntu2 Copyright (c) 2000-2025 the FFmpeg developers",
+    "ffprobe": "ffprobe version 8.0.1-3ubuntu2 Copyright (c) 2007-2025 the FFmpeg developers"
+  }
+}
