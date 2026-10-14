@@ -173,6 +173,24 @@ for forbidden in ('BCHP_SHARF_TOP_ERR_STATUS', 'BCHP_BOP_AES_CTRL',
                   'BCHP_BOP_AES_INITIAL_COUNTER'):
     assert forbidden not in crypto_sampler
 assert not re.search(r'BCHP_BOP_AES_\w*REVISION', source)
+heartbeat_sampler = re.search(r'static int crystalhd_fw_research_heartbeat_sample\(.*?\n}', source, re.S).group(0)
+scratch_declared = re.search(r'#define\s+BCHP_ARMCR4_BRIDGE_REG_SCRATCH_1\s+(0x[0-9a-fA-F]+)',
+                             (root / 'include/flea/bcm_70015_regs.h').read_text())
+scratch_printed = re.search(r'#define\s+HEARTBEAT_SCRATCH_ADDRESS\s+(0x[0-9a-fA-F]+)U', cli)
+assert scratch_declared and scratch_printed
+assert int(scratch_declared.group(1), 16) == int(scratch_printed.group(1), 16) == 0xe0048
+assert heartbeat_sampler.count('BCHP_ARMCR4_BRIDGE_REG_SCRATCH_1') == 1
+assert heartbeat_sampler.count('BCHP_SUN_GISB_ARB_ERR_CAP_STATUS);') == 2
+assert 'CRYSTALHD_FW_RESEARCH_HEARTBEAT_MAX_POLLS' in heartbeat_sampler
+assert 'CRYSTALHD_FW_RESEARCH_HEARTBEAT_REQUIRED_CHANGES' in heartbeat_sampler
+assert 'msleep(1)' in heartbeat_sampler
+assert 'crystalhd_hw_fw_cmd_enter(hw)' in heartbeat_sampler
+assert 'crystalhd_hw_fw_cmd_leave(hw)' in heartbeat_sampler
+assert not re.search(r'pfn(?:WriteDevRegister|DevDRAMRead|DevDRAMWrite)\s*\(', heartbeat_sampler)
+for forbidden in ('BCHP_ARM_UART', 'BCHP_SUN_TOP_CTRL_UART', 'BCHP_SUN_GISB_ARB_ERR_CAP_CLR',
+                  'BCHP_SUN_GISB_ARB_ERR_CAP_ADDR', 'BCHP_SUN_GISB_ARB_ERR_CAP_MASTER'):
+    assert forbidden not in heartbeat_sampler
+print('Firmware probe: bounded post-OPEN heartbeat whitelist and no-write surface verified')
 for name, value in (('H261', 2), ('H263', 3), ('MPEG1', 5)):
     wire = re.search(r'\bCRYSTALHD_FW_RESEARCH_ALGORITHM_' + name + r'\s+(\d+)U\b', source)
     declared = re.search(r'\beC011_VIDEO_ALG_' + name + r'\s*=\s*(0x[0-9a-fA-F]+)\b', legacy)
@@ -347,6 +365,16 @@ _Static_assert(offsetof(struct crystalhd_fw_research_command_observation_result,
 _Static_assert(offsetof(struct crystalhd_fw_research_command_observation_result, boundary_after_init) == 3128, "command boundary");
 _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_COMMAND_OBSERVATION) == 3248, "command encoding");
 _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_COMMAND_OBSERVATION == 0xccb0529eU, "command ioctl");
+_Static_assert(sizeof(struct crystalhd_fw_research_heartbeat_sample) == 72, "heartbeat sample");
+_Static_assert(offsetof(struct crystalhd_fw_research_heartbeat_sample, scratch_reads_complete) == 12, "heartbeat target count");
+_Static_assert(offsetof(struct crystalhd_fw_research_heartbeat_sample, guard_reads_complete) == 16, "heartbeat guard count");
+_Static_assert(offsetof(struct crystalhd_fw_research_heartbeat_sample, values) == 40, "heartbeat values");
+_Static_assert(offsetof(struct crystalhd_fw_research_heartbeat_sample, elapsed_ns) == 64, "heartbeat elapsed");
+_Static_assert(sizeof(struct crystalhd_fw_research_heartbeat_result) == 1672, "heartbeat result");
+_Static_assert(offsetof(struct crystalhd_fw_research_heartbeat_result, state) == 0, "heartbeat state");
+_Static_assert(offsetof(struct crystalhd_fw_research_heartbeat_result, after_open) == 1600, "heartbeat open");
+_Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_HEARTBEAT) == 1672, "heartbeat encoding");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RUN_HEARTBEAT == 0xc688529fU, "heartbeat ioctl");
 _Static_assert(sizeof(struct crystalhd_fw_research_rx_receipt) == 144, "RX receipt");
 _Static_assert(offsetof(struct crystalhd_fw_research_rx_receipt, fire_return_ns) == 16, "RX fire clock");
 _Static_assert(offsetof(struct crystalhd_fw_research_rx_receipt, irq_entry_ns) == 24, "RX IRQ clock");
@@ -447,6 +475,7 @@ for probe_sanitize in no yes; do
         "$probe_test_dir/cli-check" --uart-json-examples
         "$probe_test_dir/cli-check" --crypto-json-examples
         "$probe_test_dir/cli-check" --command-observation-json-example
+        "$probe_test_dir/cli-check" --heartbeat-json-examples
     } | "${PYTHON3:-python3}" -B -c '
 import hashlib, json, sys
 def unique_object(pairs):
@@ -459,13 +488,16 @@ def invalid_constant(value):
     raise AssertionError("non-JSON constant: " + value)
 lines = list(sys.stdin)
 examples = [json.loads(line, object_pairs_hook=unique_object, parse_constant=invalid_constant) for line in lines]
-commands, cryptos, uarts, clocks, heaps, examples = examples[747:], examples[664:747], examples[633:664], examples[602:633], examples[542:602], examples[:542]
+commands, heartbeats = examples[747:748], examples[748:]
+cryptos, uarts = examples[664:747], examples[633:664]
+clocks, heaps, examples = examples[602:633], examples[542:602], examples[:542]
 assert len(examples) == 542
 assert len(heaps) == 60
 assert len(clocks) == 31
 assert len(uarts) == 31
 assert len(cryptos) == 83
 assert len(commands) == 1
+assert len(heartbeats) == 4
 command = commands[0]
 assert set(command) == {"version", "command_observation", "control", "in_flight",
                        "boundary_after_init", "scope"}
@@ -1269,5 +1301,64 @@ for stage in range(2):
 assert all("bop_aes_revision" not in sample for result in cryptos for sample in result["crypto_samples"].values())
 print("Firmware probe CLI: 83 bounded crypto-state strict JSON examples verified")
 print("Firmware probe CLI: guarded command-observation strict JSON verified")
+heartbeat_scope = heartbeats[0]["scope"]
+assert heartbeat_scope == {
+    "scratch_address": 0xe0048,
+    "gisb_error_guard_address": 0x4000d4,
+    "gisb_error_mask": 0x1801,
+    "maximum_polls": 1000,
+    "required_changes": 5,
+    "retained_values_maximum": 6,
+    "poll_sleep_ms": 1,
+    "maximum_scratch_reads": 1001,
+    "maximum_guard_reads": 2002,
+    "maximum_register_reads": 3003,
+    "post_open_only": True,
+    "fixed_addresses_only": True,
+    "indirect_gisb_selector_write": True,
+    "passive": False,
+    "scratch_register_writes": False,
+    "error_capture_clear_writes": False,
+    "uart_status_or_fifo_reads": False,
+    "retries": False,
+    "specific_writer_established": False,
+    "timing_frequency_established": False,
+    "arc_decode_or_frame_progress_established": False,
+    "production_liveness_api": False,
+    "guard_failure_attribution_causal": False,
+    "independent_fetch_errors_certified": False,
+}
+for result in heartbeats:
+    assert set(result) == {"version", "heartbeat_state", "control",
+                           "fixed_state_samples", "heartbeat_sample", "scope"}
+    assert result["version"] == 1 and result["heartbeat_state"] is True
+    assert result["scope"] == heartbeat_scope
+    sample = result["heartbeat_sample"]
+    assert set(sample) == {"attempted", "status", "read_complete",
+                           "scratch_reads_complete", "guard_reads_complete",
+                           "polls_complete", "changes", "change_threshold_met",
+                           "values", "gisb_before", "gisb_last", "elapsed_ns"}
+    assert isinstance(sample["elapsed_ns"], str) and sample["elapsed_ns"].isdigit()
+success, unchanged, pre_guard, post_guard = heartbeats
+sample = success["heartbeat_sample"]
+assert success["control"]["status"] == 0 and sample["read_complete"]
+assert sample["scratch_reads_complete"] == 6 and sample["guard_reads_complete"] == 12
+assert sample["polls_complete"] == 5 and sample["changes"] == 5
+assert sample["change_threshold_met"] and sample["values"] == [100, 101, 102, 103, 104, 105]
+sample = unchanged["heartbeat_sample"]
+assert unchanged["control"]["status"] == 0 and sample["read_complete"]
+assert sample["scratch_reads_complete"] == 1001 and sample["guard_reads_complete"] == 2002
+assert sample["polls_complete"] == 1000 and sample["changes"] == 0
+assert not sample["change_threshold_met"] and sample["values"] == [100]
+for result, attempted, guards, before, last in ((pre_guard, False, 1, 1, 1),
+                                                 (post_guard, True, 2, 0, 0x800)):
+    sample = result["heartbeat_sample"]
+    assert result["control"]["status"] < 0 and sample["status"] < 0
+    assert sample["attempted"] is attempted and not sample["read_complete"]
+    assert sample["scratch_reads_complete"] == 0 and sample["guard_reads_complete"] == guards
+    assert sample["changes"] is None and sample["change_threshold_met"] is None
+    assert sample["values"] is None
+    assert sample["gisb_before"] == before and sample["gisb_last"] == last
+print("Firmware probe CLI: 4 bounded heartbeat strict JSON examples verified")
 '
 done
