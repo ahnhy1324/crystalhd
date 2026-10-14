@@ -36,6 +36,7 @@ extern "C" {
 #include <fcntl.h>
 #include <linux/capability.h>
 #include <limits>
+#include <memory>
 #include <set>
 #include <string>
 #include <time.h>
@@ -45,6 +46,7 @@ extern "C" {
 #include <utility>
 #include <vector>
 #include "issue204-active-context.h"
+#include "issue399-firmware-drop.h"
 #include "phase1-progress.h"
 #include "rx-output-receipts.h"
 
@@ -3715,6 +3717,7 @@ struct Options {
     unsigned scl_status_test = 0;
     const char *rx_output_receipts_path = nullptr;
     unsigned pace_input_hz = 0;
+    bool firmware_drop_nonref = false;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
 };
 
@@ -3835,6 +3838,31 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         options->rx_output_receipts_path = arguments[receipt_position + 1];
         arguments.erase(arguments.begin() + receipt_position,
                         arguments.begin() + receipt_position + 2);
+    }
+    const unsigned firmware_drop_options = static_cast<unsigned>(std::count_if(
+        arguments.begin(), arguments.end(), [](const char *argument) {
+            return argument && !std::strcmp(argument, "--firmware-drop-nonref");
+        }));
+    if (firmware_drop_options) {
+        // One exact issue #399 experiment.  Recurse only after removing its
+        // final literal so the ordinary parser continues to own base syntax.
+        if (firmware_drop_options != 1U || options->firmware_drop_nonref ||
+            options->pace_input_hz ||
+            !options->rx_output_receipts_path || arguments.size() != 7U ||
+            std::strcmp(arguments[1], "--hardware") ||
+            std::strcmp(arguments[3], "900") ||
+            std::strcmp(arguments[4], "60") ||
+            std::strcmp(arguments[5], "1") ||
+            std::strcmp(arguments[6], "--firmware-drop-nonref")) return false;
+        arguments.pop_back();
+        if (!ParseArguments(arguments, options) ||
+            options->mode != Mode::Hardware || options->expected != 900U ||
+            options->seconds != 60U || options->iterations != 1U ||
+            options->scaler_test || options->scaler_benchmark ||
+            options->capture_path || options->output_format != OUTPUT_MODE422_YUY2)
+            return false;
+        options->firmware_drop_nonref = true;
+        return true;
     }
     // A single exact native issue #204 profile.  Keep it separate from the
     // ordinary PPB observers: those have pre-start/first-output/EOS stages,
@@ -9740,6 +9768,429 @@ template<class Check> static void RuntimeInventorySelfTest(const Check &check)
 
 template<class Check> static void PpbStopLifecycleSelfTest(const Check &check);
 
+template<class Check> static void FirmwareDropSelfTest(const Check &check)
+{
+    using namespace issue399_firmware_drop;
+    const std::vector<uint8_t> p = {0, 0, 0, 1, 0x41, 0xc0};
+    const std::vector<uint8_t> b = {0, 0, 0, 1, 0x01, 0xa0};
+    const std::vector<uint8_t> rb = {0, 0, 0, 1, 0x21, 0xa0};
+    const std::vector<uint8_t> i = {0, 0, 0, 1, 0x65, 0xb0};
+    const std::vector<uint8_t> escaped_p = {
+        0, 0, 0, 1, 0x41, 0xc0, 0, 0, 3, 3, 4
+    };
+    for (const auto &sample : std::vector<std::pair<const std::vector<uint8_t> *, Picture>>{
+             {&p, {PictureKind::P, 2}}, {&b, {PictureKind::B, 0}},
+             {&rb, {PictureKind::B, 1}}, {&i, {PictureKind::I, 3}}}) {
+        Picture parsed;
+        check(ClassifyPacket(PacketView(sample.first->data(), sample.first->size()),
+                             &parsed) && parsed.kind == sample.second.kind &&
+              parsed.nal_ref_idc == sample.second.nal_ref_idc,
+              "firmware-drop parser classifies one exact Annex-B VCL access unit");
+    }
+    Picture escaped_picture;
+    check(ClassifyPacket(PacketView(escaped_p.data(), escaped_p.size()),
+                         &escaped_picture) &&
+          escaped_picture.kind == PictureKind::P &&
+          escaped_picture.nal_ref_idc == 2U,
+          "firmware-drop parser accepts an escaped literal 03 and resets the EBSP zero run");
+    for (const std::vector<uint8_t> &bad : std::vector<std::vector<uint8_t>>{
+             {}, {0, 0, 1}, {0, 0, 0, 1, 0x81, 0xa0},
+             {0, 0, 0, 1, 0x01, 0x00},
+             {0, 0, 0, 1, 0x01, 0xa0, 0, 0, 1, 0x01, 0xa0},
+             {0, 0, 0, 1, 0x01, 0, 0, 3, 4},
+             {0, 0, 0, 1, 0x41, 0xc0, 0, 0, 2, 4}}) {
+        Picture parsed;
+        check(!ClassifyPacket(PacketView(bad.data(), bad.size()), &parsed),
+              "firmware-drop parser rejects empty/truncated/forbidden/multi-VCL/invalid-RBSP packets");
+    }
+
+    Digest digest;
+    size_t digest_bytes = 0;
+    std::string digest_sha;
+    check(digest.Add(reinterpret_cast<const uint8_t *>("a"), 1) &&
+          digest.Add(reinterpret_cast<const uint8_t *>("bc"), 2) &&
+          digest.Finish(&digest_bytes, &digest_sha) && digest_bytes == 3U &&
+          digest_sha == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" &&
+          !digest.Add(reinterpret_cast<const uint8_t *>("d"), 1),
+          "firmware-drop digest streams exact bytes once and seals after SHA-256");
+    size_t sum = 0;
+    check(CheckedAdd(SIZE_MAX - 4U, 4U, &sum) && sum == SIZE_MAX &&
+          !CheckedAdd(SIZE_MAX, 1U, &sum) && !CheckedAdd(0, 0, nullptr),
+          "firmware-drop byte accounting accepts its exact limit and rejects overflow/null output");
+    Profile payload = Profile::None;
+    check(ExactPayload(22727167U,
+              "ed043bbb681fc9d0feb0412100fc732f867d912b348e7fd1056efeb02aac48b8",
+              22727167U,
+              "ed043bbb681fc9d0feb0412100fc732f867d912b348e7fd1056efeb02aac48b8",
+              &payload) && payload == Profile::NoB &&
+          !ExactPayload(22727167U,
+              "ed043bbb681fc9d0feb0412100fc732f867d912b348e7fd1056efeb02aac48b8",
+              22727166U,
+              "ed043bbb681fc9d0feb0412100fc732f867d912b348e7fd1056efeb02aac48b8",
+              &payload),
+          "firmware-drop payload gate requires identical pinned raw and concatenated identities");
+    check(ExactPayload(23586770U,
+              "69bf3f0ae2a9508076ad4fc89e5b2b06444ddfa2a1c29116a0b0766dee31a8ec",
+              23586770U,
+              "69bf3f0ae2a9508076ad4fc89e5b2b06444ddfa2a1c29116a0b0766dee31a8ec",
+              &payload) && payload == Profile::ReferenceB &&
+          !ExactPayload(23586770U,
+              "69bf3f0ae2a9508076ad4fc89e5b2b06444ddfa2a1c29116a0b0766dee31a8ed",
+              23586770U,
+              "69bf3f0ae2a9508076ad4fc89e5b2b06444ddfa2a1c29116a0b0766dee31a8ed",
+              &payload),
+          "firmware-drop payload gate admits only the pinned reference-B identity");
+
+    std::vector<std::vector<uint8_t>> b_storage, no_b_storage;
+    std::vector<PacketView> b_packets, no_b_packets;
+    b_storage.reserve(kPictures); no_b_storage.reserve(kPictures);
+    for (unsigned index = 0; index < kPictures; ++index) {
+        const unsigned position = index % 60U;
+        b_storage.push_back(position == 0U ? i : position % 4U == 1U ? p :
+                            position % 4U == 2U ? rb : b);
+        no_b_storage.push_back(position == 0U ? i : p);
+    }
+    for (unsigned index = 0; index < kPictures; ++index) {
+        b_packets.push_back(PacketView(b_storage[index].data(), b_storage[index].size()));
+        no_b_packets.push_back(PacketView(no_b_storage[index].data(), no_b_storage[index].size()));
+    }
+    Plan b_plan, no_b_plan;
+    check(::kTokenStep == issue399_firmware_drop::kTokenStep &&
+          Token(0U, 0U) == issue399_firmware_drop::kTokenStep &&
+          Token(0U, kPictures - 1U) ==
+              static_cast<uint64_t>(kPictures) *
+                  issue399_firmware_drop::kTokenStep,
+          "firmware-drop one-run coded-packet indices use the production token generator exactly");
+    check(BuildPlan(b_packets, Profile::ReferenceB, &b_plan) &&
+          b_plan.all_tokens.size() == 900U &&
+          b_plan.expected_drop_tokens.size() == 435U && b_plan.i == 15U &&
+          b_plan.p == 225U && b_plan.reference_b == 225U &&
+          b_plan.nonreference_b == 435U &&
+          b_plan.expected_drop_digest ==
+              "dcbd2e38e91f5bdcdda2d680474ef9bd0ed9cc1bcdfe206ea67e11ce5bb5a72b",
+          "firmware-drop B plan pins 435 non-reference tokens and their canonical digest");
+    check(BuildPlan(no_b_packets, Profile::NoB, &no_b_plan) &&
+          no_b_plan.expected_drop_tokens.empty() && no_b_plan.i == 15U &&
+          no_b_plan.p == 885U && !no_b_plan.reference_b &&
+          !no_b_plan.nonreference_b && no_b_plan.expected_drop_digest ==
+              "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "firmware-drop no-B control pins zero droppable tokens and empty-set digest");
+    unsigned b_delivered = 0, no_b_delivered = 0;
+    check(ExpectedDelivered(b_plan, kPictures, &b_delivered) &&
+          b_delivered == 465U &&
+          ExpectedDelivered(no_b_plan, kPictures, &no_b_delivered) &&
+          no_b_delivered == 900U &&
+          !ExpectedDelivered(b_plan, kPictures - 1U, &b_delivered) &&
+          !ExpectedDelivered(b_plan, kPictures, nullptr),
+          "firmware-drop derives profile-specific delivered counts without underflow or count drift");
+    check(rx_output_receipts::HostCapacity(465U) == 497U &&
+          rx_output_receipts::DriverCapacity(465U) == 1924U &&
+          rx_output_receipts::HostCapacity(465U) >= 466U &&
+          rx_output_receipts::DriverCapacity(465U) >= kPictures &&
+          rx_output_receipts::HostCapacity(900U) == 932U &&
+          rx_output_receipts::DriverCapacity(900U) == 3664U,
+          "firmware-drop receipt capacity uses 465/900 delivered profiles while retaining one EOS host marker and full input-side driver churn");
+    auto changed_packets = b_packets;
+    changed_packets[3] = PacketView(rb.data(), rb.size());
+    Plan rejected_plan;
+    check(!BuildPlan(changed_packets, Profile::ReferenceB, &rejected_plan) &&
+          !BuildPlan(std::vector<PacketView>(b_packets.begin(), b_packets.end() - 1),
+                     Profile::ReferenceB, &rejected_plan),
+          "firmware-drop plan rejects wrong picture class and non-900 packet count");
+
+    const HANDLE handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+    const auto finish_receipts = [](Oracle &oracle, size_t host,
+                                    size_t joined, size_t normal) {
+        return oracle.FinishReceipts(host, joined, true,
+            normal + kExpectedEosControls, kExpectedEosControls, normal,
+            static_cast<uint64_t>(normal) * kDmaDoneBytes, 0U, 0U);
+    };
+    Oracle complete(b_plan);
+    check(complete.Issue(handle, true, true,
+              [](HANDLE, uint32_t count) {
+                  return count == kRequestedDrops ? BC_STS_SUCCESS : BC_STS_ERROR;
+              }), "firmware-drop issues the exact documented request once after START/CAPTURE");
+    uint64_t last_delivered = 0;
+    for (uint64_t token : b_plan.all_tokens)
+        if (!b_plan.expected_drop_tokens.count(token)) last_delivered = token;
+    bool observed = true;
+    for (uint64_t token : b_plan.all_tokens)
+        if (!b_plan.expected_drop_tokens.count(token))
+            observed &= complete.Observe(token, token == last_delivered ? 1U : kRequestedDrops,
+                kWidth, kHeight, kYDoneWords, kUVDoneWords);
+    check(observed && complete.PendingSatisfied(b_plan.expected_drop_tokens) &&
+          complete.FinishNative(b_plan.expected_drop_tokens, 465U, true, 0U) &&
+          finish_receipts(complete, 465U, 465U, 465U) && complete.complete() &&
+          complete.first_drop() == kRequestedDrops &&
+          complete.last_picture_drop() == 1U && complete.min_drop() == 1U &&
+          complete.max_drop() == kRequestedDrops &&
+          complete.drop_increases() == 0U &&
+          complete.drop_decreases() == 1U &&
+          complete.drop_digest() ==
+              "35f804f9a406c55296f98afe970cba0f1172289d50b4b4d15324cae465023841" &&
+          !complete.marker_receipts() && !complete.marker_drop_observed(),
+          "firmware-drop exact B oracle separates expected drops, normal-picture n_drop sequence and joined receipts without inventing a terminal snapshot");
+
+    Oracle consumed_before_first_output(b_plan);
+    bool early_progress_ok = consumed_before_first_output.Issue(
+        handle, true, true,
+        [](HANDLE, uint32_t) { return BC_STS_SUCCESS; });
+    for (uint64_t token : b_plan.all_tokens)
+        if (!b_plan.expected_drop_tokens.count(token))
+            early_progress_ok &= consumed_before_first_output.Observe(
+                token, kRequestedDrops - 1U, kWidth, kHeight,
+                kYDoneWords, kUVDoneWords);
+    check(early_progress_ok && consumed_before_first_output.FinishNative(
+              b_plan.expected_drop_tokens, 465U, true, 0U) &&
+          finish_receipts(consumed_before_first_output, 465U, 465U, 465U) &&
+          consumed_before_first_output.complete() &&
+          consumed_before_first_output.first_drop() == kRequestedDrops - 1U &&
+          consumed_before_first_output.last_picture_drop() ==
+              kRequestedDrops - 1U &&
+          consumed_before_first_output.min_drop() == kRequestedDrops - 1U &&
+          consumed_before_first_output.max_drop() == kRequestedDrops - 1U &&
+          consumed_before_first_output.drop_increases() == 0U &&
+          consumed_before_first_output.drop_decreases() == 0U,
+          "firmware-drop records a first normal-picture value below the request without inventing an initial snapshot or requiring a direction");
+
+    Oracle marked(b_plan);
+    bool marked_ok = marked.Issue(handle, true, true,
+        [](HANDLE, uint32_t) { return BC_STS_SUCCESS; });
+    for (uint64_t token : b_plan.all_tokens)
+        if (!b_plan.expected_drop_tokens.count(token))
+            marked_ok &= marked.Observe(token,
+                token == last_delivered ? 1U : kRequestedDrops,
+                kWidth, kHeight, kYDoneWords, kUVDoneWords);
+    marked_ok = marked_ok && marked.ObserveMarker(0U, true);
+    check(marked_ok && marked.FinishNative(
+              b_plan.expected_drop_tokens, 465U, true, 0U) &&
+          finish_receipts(marked, 466U, 466U, 465U) && marked.complete() &&
+          marked.marker_receipts() == 1U && marked.marker_drop_observed() &&
+          marked.marker_drop() == 0U,
+          "firmware-drop records a valid zero EOS-marker PIB value and counts its receipt separately without assigning terminal semantics");
+
+    Oracle unproven_marker(b_plan);
+    check(unproven_marker.Issue(handle, true, true,
+              [](HANDLE, uint32_t) { return BC_STS_SUCCESS; }) &&
+          unproven_marker.ObserveMarker(UINT32_MAX, false) &&
+          unproven_marker.marker_receipts() == 1U &&
+          !unproven_marker.marker_drop_observed(),
+          "firmware-drop records an EOS receipt without treating an invalid PIB n_drop field as evidence");
+    Oracle nonzero_marker(b_plan);
+    check(nonzero_marker.Issue(handle, true, true,
+              [](HANDLE, uint32_t) { return BC_STS_SUCCESS; }) &&
+          nonzero_marker.ObserveMarker(1U, true) &&
+          nonzero_marker.marker_drop_observed() &&
+          nonzero_marker.marker_drop() == 1U,
+          "firmware-drop records a valid nonzero EOS-marker PIB without assigning terminal semantics");
+
+    Oracle control(no_b_plan);
+    bool control_ok = control.Issue(handle, true, true,
+        [](HANDLE, uint32_t) { return BC_STS_SUCCESS; });
+    for (uint64_t token : no_b_plan.all_tokens)
+        control_ok &= control.Observe(token, kRequestedDrops, kWidth, kHeight,
+                                      kYDoneWords, kUVDoneWords);
+    const std::set<uint64_t> empty;
+    check(control_ok && control.FinishNative(empty, 900U, true, 0U) &&
+          finish_receipts(control, 900U, 900U, 900U) && control.complete() &&
+          control.first_drop() == kRequestedDrops &&
+          control.last_picture_drop() == kRequestedDrops &&
+          control.min_drop() == kRequestedDrops &&
+          control.max_drop() == kRequestedDrops &&
+          !control.drop_increases() && !control.drop_decreases() &&
+          control.drop_digest() ==
+              "e35d34d857e3d4fb8ccbde7874da5a4030f6277daae8ee7bc7e0fc58bde541a5",
+          "firmware-drop no-B counterexample requires all 900 outputs while recording this flat synthetic n_drop sequence without assigning native semantics");
+
+    Oracle api_failure(b_plan);
+    unsigned api_calls = 0;
+    check(!api_failure.Issue(handle, true, true,
+              [&](HANDLE, uint32_t) { ++api_calls; return BC_STS_BUSY; }) &&
+          api_calls == 1U && api_failure.failure() == Failure::Api &&
+          !api_failure.Issue(handle, true, true,
+              [&](HANDLE, uint32_t) { ++api_calls; return BC_STS_SUCCESS; }) &&
+          api_calls == 1U,
+          "firmware-drop API failure is sticky and never retries the command");
+    Oracle lifecycle(b_plan);
+    unsigned lifecycle_calls = 0;
+    check(!lifecycle.Issue(handle, false, true,
+              [&](HANDLE, uint32_t) { ++lifecycle_calls; return BC_STS_SUCCESS; }) &&
+          !lifecycle_calls && lifecycle.failure() == Failure::Argument,
+          "firmware-drop refuses before START/CAPTURE without calling the API");
+    Oracle no_b_marker(no_b_plan);
+    check(no_b_marker.Issue(handle, true, true,
+              [](HANDLE, uint32_t) { return BC_STS_SUCCESS; }) &&
+          no_b_marker.ObserveMarker(0U, true) &&
+          no_b_marker.marker_drop_observed() && no_b_marker.marker_drop() == 0U,
+          "firmware-drop no-B control records an EOS-marker value without assigning consumed-drop semantics");
+
+    Oracle wrong_token(b_plan);
+    check(wrong_token.Issue(handle, true, true,
+              [](HANDLE, uint32_t) { return BC_STS_SUCCESS; }) &&
+          !wrong_token.Observe(*b_plan.expected_drop_tokens.begin(), kRequestedDrops,
+              kWidth, kHeight, kYDoneWords, kUVDoneWords) &&
+          wrong_token.failure() == Failure::Token,
+          "firmware-drop rejects a delivered token that the frozen parser classified as droppable");
+    Oracle direction_observation(b_plan);
+    auto delivered = b_plan.all_tokens.begin();
+    while (b_plan.expected_drop_tokens.count(*delivered)) ++delivered;
+    const uint64_t first = *delivered++;
+    while (b_plan.expected_drop_tokens.count(*delivered)) ++delivered;
+    const uint64_t second = *delivered;
+    check(direction_observation.Issue(handle, true, true,
+              [](HANDLE, uint32_t) { return BC_STS_SUCCESS; }) &&
+          direction_observation.Observe(first, 10U, kWidth, kHeight,
+                                        kYDoneWords, kUVDoneWords) &&
+          direction_observation.Observe(second, 11U, kWidth, kHeight,
+                                        kYDoneWords, kUVDoneWords) &&
+          direction_observation.drop_increases() == 1U &&
+          direction_observation.drop_decreases() == 0U,
+          "firmware-drop n_drop telemetry records increases without imposing an unproven remaining-count direction");
+    Oracle flat_sequence(b_plan);
+    bool flat_sequence_ok = flat_sequence.Issue(handle, true, true,
+        [](HANDLE, uint32_t) { return BC_STS_SUCCESS; });
+    for (uint64_t token : b_plan.all_tokens)
+        if (!b_plan.expected_drop_tokens.count(token))
+            flat_sequence_ok &= flat_sequence.Observe(token, kRequestedDrops,
+                kWidth, kHeight, kYDoneWords, kUVDoneWords);
+    check(flat_sequence_ok && flat_sequence.FinishNative(
+              b_plan.expected_drop_tokens, 465U, true, 0U) &&
+          finish_receipts(flat_sequence, 465U, 465U, 465U) &&
+          flat_sequence.complete() && !flat_sequence.drop_increases() &&
+          !flat_sequence.drop_decreases(),
+          "firmware-drop completion treats a flat n_drop sequence as telemetry while retaining exact output and receipt gates");
+    Oracle bad_dma(b_plan);
+    check(bad_dma.Issue(handle, true, true,
+              [](HANDLE, uint32_t) { return BC_STS_SUCCESS; }) &&
+          !bad_dma.Observe(first, kRequestedDrops, kWidth, kHeight,
+                           kYDoneWords - 1U, kUVDoneWords) &&
+          bad_dma.failure() == Failure::Dma,
+          "firmware-drop refuses partial native DMA payloads");
+    Oracle bad_packing(b_plan);
+    check(bad_packing.Issue(handle, true, true,
+              [](HANDLE, uint32_t) { return BC_STS_SUCCESS; }) &&
+          !bad_packing.Observe(first, kRequestedDrops, kWidth, kHeight,
+              kYDoneWords, kUVDoneWords, OUTPUT_MODE422_UYVY) &&
+          bad_packing.failure() == Failure::Geometry,
+          "firmware-drop refuses a returned packing mode other than native YUY2");
+
+    Oracle partial(b_plan);
+    bool partial_ok = partial.Issue(handle, true, true,
+        [](HANDLE, uint32_t) { return BC_STS_SUCCESS; });
+    std::set<uint64_t> partial_pending = b_plan.expected_drop_tokens;
+    bool skipped = false;
+    for (uint64_t token : b_plan.all_tokens) {
+        if (b_plan.expected_drop_tokens.count(token)) continue;
+        if (!skipped) { partial_pending.insert(token); skipped = true; continue; }
+        partial_ok &= partial.Observe(token, token == last_delivered ? 1U : kRequestedDrops,
+                                      kWidth, kHeight, kYDoneWords, kUVDoneWords);
+    }
+    check(partial_ok && !partial.FinishNative(partial_pending, 464U, true, 0U) &&
+          (partial.failure() == Failure::DeliveredSet ||
+           partial.failure() == Failure::PendingSet),
+          "firmware-drop partial/wrong missing set cannot masquerade as ordinary pending retirement");
+
+    Oracle pending_mismatch(b_plan);
+    bool pending_ok = pending_mismatch.Issue(handle, true, true,
+        [](HANDLE, uint32_t) { return BC_STS_SUCCESS; });
+    for (uint64_t token : b_plan.all_tokens)
+        if (!b_plan.expected_drop_tokens.count(token))
+            pending_ok &= pending_mismatch.Observe(token,
+                token == last_delivered ? 1U : kRequestedDrops,
+                kWidth, kHeight, kYDoneWords, kUVDoneWords);
+    std::set<uint64_t> wrong_pending = b_plan.expected_drop_tokens;
+    wrong_pending.insert(first);
+    check(pending_ok && !pending_mismatch.FinishNative(
+              wrong_pending, 465U, true, 0U) &&
+          pending_mismatch.failure() == Failure::PendingSet,
+          "firmware-drop separately rejects an ordinary pending token outside the exact expected-drop set");
+
+    Oracle receipt_mismatch(b_plan);
+    bool receipt_ok = receipt_mismatch.Issue(handle, true, true,
+        [](HANDLE, uint32_t) { return BC_STS_SUCCESS; });
+    for (uint64_t token : b_plan.all_tokens)
+        if (!b_plan.expected_drop_tokens.count(token))
+            receipt_ok &= receipt_mismatch.Observe(token,
+                token == last_delivered ? 1U : kRequestedDrops,
+                kWidth, kHeight, kYDoneWords, kUVDoneWords);
+    check(receipt_ok && receipt_mismatch.FinishNative(
+              b_plan.expected_drop_tokens, 465U, true, 0U) &&
+          !receipt_mismatch.FinishReceipts(464U, 465U, true, 467U, 2U, 465U,
+              465U * kDmaDoneBytes, 0U, 0U) &&
+          receipt_mismatch.failure() == Failure::ReceiptCount,
+          "firmware-drop joined receipt counts must equal the exact delivered set");
+
+    Oracle nonoutput_dma(b_plan);
+    bool nonoutput_dma_ok = nonoutput_dma.Issue(handle, true, true,
+        [](HANDLE, uint32_t) { return BC_STS_SUCCESS; });
+    for (uint64_t token : b_plan.all_tokens)
+        if (!b_plan.expected_drop_tokens.count(token))
+            nonoutput_dma_ok &= nonoutput_dma.Observe(
+                token, 7U, kWidth, kHeight, kYDoneWords, kUVDoneWords);
+    check(nonoutput_dma_ok && nonoutput_dma.FinishNative(
+              b_plan.expected_drop_tokens, 465U, true, 0U) &&
+          !nonoutput_dma.FinishReceipts(465U, 465U, true, 468U, 2U, 466U,
+              466U * kDmaDoneBytes, 1U, 0U) &&
+          nonoutput_dma.failure() == Failure::Dma,
+          "firmware-drop rejects a hidden full-size non-output DMA even when host and joined receipt counts match");
+
+    Oracle partial_dma(b_plan);
+    bool partial_dma_ok = partial_dma.Issue(handle, true, true,
+        [](HANDLE, uint32_t) { return BC_STS_SUCCESS; });
+    for (uint64_t token : b_plan.all_tokens)
+        if (!b_plan.expected_drop_tokens.count(token))
+            partial_dma_ok &= partial_dma.Observe(
+                token, 9U, kWidth, kHeight, kYDoneWords, kUVDoneWords);
+    check(partial_dma_ok && partial_dma.FinishNative(
+              b_plan.expected_drop_tokens, 465U, true, 0U) &&
+          !partial_dma.FinishReceipts(465U, 465U, true, 468U, 2U, 465U,
+              465U * kDmaDoneBytes, 0U, 1U) &&
+          partial_dma.failure() == Failure::Dma,
+          "firmware-drop rejects an extra partial DMA receipt instead of hiding it behind exact full-size counts");
+
+    Oracle eos_control_flood(b_plan);
+    bool eos_control_flood_ok = eos_control_flood.Issue(handle, true, true,
+        [](HANDLE, uint32_t) { return BC_STS_SUCCESS; });
+    for (uint64_t token : b_plan.all_tokens)
+        if (!b_plan.expected_drop_tokens.count(token))
+            eos_control_flood_ok &= eos_control_flood.Observe(
+                token, 12U, kWidth, kHeight, kYDoneWords, kUVDoneWords);
+    check(eos_control_flood_ok && eos_control_flood.FinishNative(
+              b_plan.expected_drop_tokens, 465U, true, 0U) &&
+          !eos_control_flood.FinishReceipts(465U, 465U, true, 468U, 3U,
+              465U, 465U * kDmaDoneBytes, 0U, 0U) &&
+          eos_control_flood.failure() == Failure::Dma,
+          "firmware-drop requires the exact two established EOS-control driver receipts and rejects an EOS-flagged flood");
+
+    const std::vector<const char *> valid = {
+        "probe", "--hardware", "fixture", "900", "60", "1",
+        "--firmware-drop-nonref", "--rx-output-receipts", "/tmp/new-drop.tsv"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.firmware_drop_nonref &&
+          admitted.mode == Mode::Hardware && admitted.expected == 900U &&
+          admitted.seconds == 60U && admitted.iterations == 1U &&
+          admitted.rx_output_receipts_path && !admitted.scaler_test &&
+          !admitted.scaler_benchmark && !admitted.capture_path && NeedsRawIo(admitted),
+          "firmware-drop CLI admits only the exact one-run native profile with a new absolute receipt path");
+    for (unsigned fault = 0; fault < 9; ++fault) {
+        auto arguments = valid;
+        if (fault == 0) arguments[1] = "--preflight";
+        if (fault == 1) arguments[3] = "899";
+        if (fault == 2) arguments[4] = "59";
+        if (fault == 3) arguments[5] = "2";
+        if (fault == 4) arguments.erase(arguments.end() - 2, arguments.end());
+        if (fault == 5) arguments[8] = "relative.tsv";
+        if (fault == 6) arguments.push_back("--firmware-drop-nonref");
+        if (fault == 7) arguments.insert(arguments.begin() + 6,
+                                         {"--scaler-benchmark", "1280"});
+        if (fault == 8) arguments.insert(arguments.begin() + 6,
+                                         {"--pace-input", "60"});
+        Options rejected;
+        check(!ParseArguments(arguments, &rejected),
+              "firmware-drop CLI fails closed on mode/count/time/repeat/path/duplicate/scaling/pacing changes");
+    }
+}
+
 static bool SelfTest()
 {
     bool ok = true;
@@ -9751,6 +10202,7 @@ static bool SelfTest()
             ok = false;
         }
     };
+    FirmwareDropSelfTest(check);
 
     SclFilterMapSelfTest(check);
     MfdAddressSelfTest(check);
@@ -12105,6 +12557,62 @@ static bool Load(const char *path, unsigned expected, Deadline *deadline, Input 
     return ok;
 }
 
+static bool DigestRegularFile(const char *path, size_t *bytes, std::string *sha)
+{
+    if (!path || !bytes || !sha) return false;
+    FILE *file = std::fopen(path, "rb");
+    if (!file) return false;
+    issue399_firmware_drop::Digest digest;
+    uint8_t buffer[65536];
+    bool ok = true;
+    while (ok) {
+        const size_t got = std::fread(buffer, 1, sizeof(buffer), file);
+        if (got && !digest.Add(buffer, got)) ok = false;
+        if (got != sizeof(buffer)) {
+            if (std::ferror(file)) ok = false;
+            break;
+        }
+    }
+    if (std::fclose(file)) ok = false;
+    return ok && digest.Finish(bytes, sha);
+}
+
+static bool PrepareFirmwareDrop(const Options &options, const Input &input,
+    issue399_firmware_drop::Plan *plan)
+{
+    using namespace issue399_firmware_drop;
+    if (!options.firmware_drop_nonref || !plan ||
+        input.codec != AV_CODEC_ID_H264 || input.subtype != BC_MSUBTYPE_H264 ||
+        input.profile != AV_PROFILE_H264_HIGH || input.level != 42 ||
+        !input.progressive || input.width != kWidth || input.height != kHeight ||
+        !input.metadata.empty() || input.packets.size() != kPictures)
+        return false;
+
+    size_t raw_bytes = 0, submitted_bytes = 0;
+    std::string raw_sha, submitted_sha;
+    if (!DigestRegularFile(options.path, &raw_bytes, &raw_sha)) return false;
+    Digest submitted;
+    std::vector<PacketView> packets;
+    try { packets.reserve(input.packets.size()); } catch (...) { return false; }
+    for (const Packet &packet : input.packets) {
+        if (!submitted.Add(packet.data.data(), packet.size)) return false;
+        try { packets.push_back(PacketView{packet.data.data(), packet.size}); }
+        catch (...) { return false; }
+    }
+    if (!submitted.Finish(&submitted_bytes, &submitted_sha)) return false;
+    Profile profile = Profile::None;
+    if (!ExactPayload(raw_bytes, raw_sha, submitted_bytes, submitted_sha,
+                      &profile) || !BuildPlan(packets, profile, plan)) return false;
+    std::printf("Firmware drop preflight: profile=%s packets=%zu bytes=%zu "
+        "sha256=%s request=%u nonreference-B=%u reference-B=%u "
+        "expected-nonref-B-token-sha256=%s native-output=%ux%u\n",
+        ProfileName(profile), packets.size(), raw_bytes, raw_sha.c_str(),
+        kRequestedDrops, plan->nonreference_b, plan->reference_b,
+        plan->expected_drop_digest.c_str(), kWidth, kHeight);
+    std::fflush(stdout);
+    return true;
+}
+
 struct Device {
     HANDLE handle = nullptr;
     bool opened = false, started = false;
@@ -12273,6 +12781,7 @@ struct Audit {
     PixelCapture *capture = nullptr;
     rx_output_receipts::Probe *rx_output_receipts = nullptr;
     InputPacing input_pacing;
+    issue399_firmware_drop::Oracle *firmware_drop = nullptr;
     ~Audit() { if (pixels) g_checksum_free(pixels); }
 };
 
@@ -12308,6 +12817,7 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 receipt.picture_number = output.PicInfo.picture_number;
                 receipt.session_number = output.PicInfo.sess_num;
                 receipt.picture_flags = output.PicInfo.flags;
+                receipt.n_drop = output.PicInfo.n_drop;
                 receipt.width = output.PicInfo.width;
                 receipt.height = output.PicInfo.height;
                 receipt.y_done_words = output.YBuffDoneSz;
@@ -12319,6 +12829,10 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     receipt_clock_ok;
             }
             bool valid = receipt_recorded;
+            if (valid && marker && audit->firmware_drop)
+                valid = audit->firmware_drop->ObserveMarker(
+                    output.PicInfo.n_drop,
+                    (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) != 0);
             if (!marker) {
                 const unsigned width = output.PicInfo.width, height = output.PicInfo.height;
                 const bool benchmark_coded_height = audit->benchmark.enabled &&
@@ -12334,6 +12848,11 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     (!audit->benchmark.enabled || output.b422Mode == OUTPUT_MODE422_YUY2) &&
                     static_cast<uint64_t>(output.YBuffDoneSz) * 4 >= static_cast<uint64_t>(width) * height * 2 &&
                     audit->pending.erase(output.PicInfo.timeStamp) == 1;
+                if (valid && audit->firmware_drop)
+                    valid = audit->firmware_drop->Observe(
+                        output.PicInfo.timeStamp, output.PicInfo.n_drop,
+                        width, height, output.YBuffDoneSz,
+                        output.UVBuffDoneSz, output.b422Mode);
                 if (valid && audit->pixels)
                     valid = HashActivePixels(audit->pixels, output, width, height, audit->output_format);
                 if (valid && audit->capture)
@@ -12566,8 +13085,11 @@ static bool SettleActiveContext(Device *device, const Input &input, Audit *audit
 static bool Run(Input &input, unsigned expected, unsigned seconds,
                 unsigned iteration, unsigned iterations,
                 Phase1Progress *progress, const Options &options,
-                PacedFixture paced_fixture)
+                PacedFixture paced_fixture,
+                const issue399_firmware_drop::Plan *firmware_drop_plan)
 {
+    if ((options.firmware_drop_nonref && options.pace_input_hz) ||
+        (!options.firmware_drop_nonref && firmware_drop_plan)) return false;
     if (options.observe_active_context && !PrepareActiveContextInput(&input)) {
         std::fprintf(stderr,
             "Active-context fixture preparation failed before device open\n");
@@ -12581,9 +13103,26 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         std::fprintf(stderr, "Input pacing preparation failed\n");
         return false;
     }
+    std::unique_ptr<issue399_firmware_drop::Oracle> firmware_drop;
+    if (options.firmware_drop_nonref) {
+        if (!firmware_drop_plan) return false;
+        try {
+            firmware_drop.reset(
+                new issue399_firmware_drop::Oracle(*firmware_drop_plan));
+        } catch (...) {
+            return false;
+        }
+        if (!firmware_drop->valid()) return false;
+    }
+    unsigned expected_delivered = expected;
+    if (options.firmware_drop_nonref &&
+        !issue399_firmware_drop::ExpectedDelivered(
+            *firmware_drop_plan, expected, &expected_delivered)) return false;
+    audit.firmware_drop = firmware_drop.get();
     rx_output_receipts::Probe receipt_probe;
     if (options.rx_output_receipts_path &&
-        !receipt_probe.Prepare(options.rx_output_receipts_path, expected)) {
+        !receipt_probe.Prepare(options.rx_output_receipts_path,
+                               expected_delivered)) {
         std::fprintf(stderr, "RX output receipt preparation failed: %s\n",
             rx_output_receipts::FailureName(receipt_probe.failure()));
         return false;
@@ -12601,7 +13140,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.output_format = options.output_format;
     audit.observe_chroma = options.observe_chroma;
     audit.benchmark_scaled = options.scaler_benchmark && options.scale_width != 0;
-    audit.expected = expected;
+    audit.expected = expected_delivered;
     audit.scl.enabled = options.observe_scl_config;
     audit.power.enabled = options.observe_power;
     audit.power.configuration = options.observe_power_config;
@@ -12716,9 +13255,11 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = audit.mfd_colour.PreStart(device.handle);
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
     if (ok && options.capture_path) ok = PackingState(device.handle, "started", &audit.mfd_colour, &audit.scl_view);
+    bool capture_started = false;
     if (ok) {
         ok = Status("DtsStartCapture", DtsStartCapture(device.handle));
         if (ok) {
+            capture_started = true;
             uint64_t pace_start_ns = 0;
             ok = !audit.input_pacing.enabled ||
                 (MonotonicNanoseconds(&pace_start_ns) &&
@@ -12727,6 +13268,21 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         }
     }
     if (ok && options.capture_path) ok = PackingState(device.handle, "capture-before-input", &audit.mfd_colour, &audit.scl_view);
+    if (ok && options.firmware_drop_nonref) {
+        // Public API only.  Static trace: ARM 0x4a60 -> 0x15d8 -> 0x108e8
+        // -> 0x27a14 -> outer CmdChannelDropField 0x257a4.  ARM 0x7bd4
+        // later copies acquired-picture +0x3c into host PIB n_drop; caller
+        // 0x834c obtains that PPB and publishes metadata before 0x77e0 RX.
+        // Neither trace alone proves which input tokens firmware discards.
+        ok = firmware_drop->Issue(device.handle, device.started,
+            capture_started,
+            [](HANDLE handle, uint32_t pictures) {
+                return DtsDropPictures(handle, pictures);
+            });
+        if (!ok)
+            std::fprintf(stderr, "DtsDropPictures failed: %d\n",
+                         firmware_drop->api_status());
+    }
     const HANDLE active_context_owner = options.observe_active_context
         ? device.handle : nullptr;
     unsigned active_context_submitted = 0;
@@ -12879,15 +13435,24 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         ok = Receive(&device, input, &audit);
         // EOS reaching the decoder is not itself a delivery barrier: a driver
         // status poll can observe it before every accepted picture is fetched.
-        if (!ok || (audit.eos && audit.ready == 0 && audit.pending.empty())) break;
+        const bool pending_complete = options.firmware_drop_nonref
+            ? firmware_drop->PendingSatisfied(audit.pending)
+            : audit.pending.empty();
+        if (!ok || (audit.eos && audit.ready == 0 && pending_complete)) break;
         g_usleep(1000);
     }
     // Native paths derive EOS from the firmware timing marker, which need not
     // appear as a successful NoCopy lease. DIVX also has a library idle-fence
     // fallback: its EOS state alone does not prove firmware-marker consumption.
     // In either case require complete frame delivery and token retirement.
-    ok = ok && !deadline.expired() && audit.eos && audit.ready == 0 &&
-         ExactPictureCount(audit.frames, expected) && audit.pending.empty();
+    if (options.firmware_drop_nonref) {
+        ok = ok && !deadline.expired() &&
+            firmware_drop->FinishNative(audit.pending, audit.frames,
+                                        audit.eos, audit.ready);
+    } else {
+        ok = ok && !deadline.expired() && audit.eos && audit.ready == 0 &&
+             ExactPictureCount(audit.frames, expected) && audit.pending.empty();
+    }
     // Delivery EOS barrier only, sampled before ordinary STOP/CLOSE.
     if (ok) ok = audit.arm_metadata.Observe(&device.handle, 2, true);
     if (ok) ok = audit.ppb_context.Observe(&device.handle, 2, true);
@@ -12920,6 +13485,10 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     const bool closed = device.Close();
     const bool native_run_ok = ok && closed;
     bool receipts_ok = true;
+    rx_output_receipts::DriverDmaAudit driver_dma;
+    rx_output_receipts::Failure driver_dma_failure =
+        rx_output_receipts::Failure::None;
+    bool driver_dma_ok = false;
     if (audit.rx_output_receipts) {
         receipts_ok = receipt_probe.Finish(native_run_ok);
         std::printf("RX output receipts: host=%zu driver=%zu joined=%zu "
@@ -12931,6 +13500,34 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
             receipts_ok ? "PASS" : "FAIL",
             rx_output_receipts::FailureName(receipt_probe.failure()));
         std::fflush(stdout);
+    }
+    if (options.firmware_drop_nonref) {
+        driver_dma_ok = receipts_ok && receipt_probe.AuditDma(
+            issue399_firmware_drop::kWidth,
+            issue399_firmware_drop::kHeight,
+            issue399_firmware_drop::kYDoneWords,
+            issue399_firmware_drop::kUVDoneWords,
+            &driver_dma, &driver_dma_failure);
+        std::printf("Firmware drop driver DMA: records=%zu completed=%zu "
+            "eos-controls=%zu eos-control-bytes=%llu zero=%zu partial=%zu "
+            "errors=%zu full-size=%zu "
+            "output-full-size=%zu non-output-full-size=%zu bytes=%llu "
+            "result=%s failure=%s\n",
+            driver_dma.records, driver_dma.completed, driver_dma.eos_control,
+            static_cast<unsigned long long>(driver_dma.eos_control_bytes),
+            driver_dma.zero_size, driver_dma.partial_size, driver_dma.error,
+            driver_dma.full_size,
+            driver_dma.output_full_size, driver_dma.non_output_full_size,
+            static_cast<unsigned long long>(driver_dma.full_size_bytes),
+            driver_dma_ok ? "PASS" : "FAIL",
+            rx_output_receipts::FailureName(driver_dma_failure));
+        const bool drop_receipts_ok = firmware_drop->FinishReceipts(
+            receipt_probe.host_count(), receipt_probe.joined_count(),
+            driver_dma_ok, driver_dma.records, driver_dma.eos_control,
+            driver_dma.full_size,
+            driver_dma.full_size_bytes, driver_dma.non_output_full_size,
+            driver_dma.partial_size);
+        receipts_ok = receipts_ok && drop_receipts_ok;
     }
     ok = native_run_ok && receipts_ok;
     ok = audit.input_pacing.Report(ok);
@@ -12955,11 +13552,50 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
                                 audit.output_width, audit.output_height, ok);
     std::printf("Library drain: iteration=%u/%u frames=%u/%u pending=%zu "
         "%s-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
-        iteration, iterations, audit.frames, expected, audit.pending.size(),
+        iteration, iterations, audit.frames, audit.expected, audit.pending.size(),
         input.subtype == BC_MSUBTYPE_DIVX ? "library" : "firmware",
         audit.eos ? "yes" : "no", audit.marker ? "yes" : "no", audit.ready,
         closed ? "PASS" : "FAIL", ok ? "PASS" : "FAIL");
     std::fflush(stdout);
+    if (options.firmware_drop_nonref) {
+        char marker_drop[32] = "NOT-OBSERVED";
+        if (firmware_drop->marker_drop_observed())
+            std::snprintf(marker_drop, sizeof(marker_drop), "%u",
+                          firmware_drop->marker_drop());
+        std::printf("Firmware drop result: profile=%s request=%u normal-pictures=%zu "
+            "expected-drop-count=%zu pending-token-count=%zu "
+            "picture-n-drop-first=%u last=%u min=%u max=%u "
+            "strict-increases=%u strict-decreases=%u picture-sequence-sha256=%s "
+            "eos-marker-receipts=%zu eos-marker-n-drop=%s "
+            "driver-eos-controls=%zu eos-control-bytes=%llu "
+            "full-size-dma-count=%zu non-output-full-size=%zu "
+            "partial-dma-count=%zu geometry=%ux%u words=%u+%u "
+            "full-size-dma-bytes=%llu receipts=%zu/%zu "
+            "cleanup=%s result=%s failure=%s\n",
+            issue399_firmware_drop::ProfileName(firmware_drop->profile()),
+            issue399_firmware_drop::kRequestedDrops,
+            firmware_drop->delivered(), firmware_drop->expected_drops(),
+            audit.pending.size(), firmware_drop->first_drop(),
+            firmware_drop->last_picture_drop(), firmware_drop->min_drop(),
+            firmware_drop->max_drop(), firmware_drop->drop_increases(),
+            firmware_drop->drop_decreases(),
+            firmware_drop->drop_digest().empty() ? "NOT-COMPLETE" :
+                firmware_drop->drop_digest().c_str(),
+            firmware_drop->marker_receipts(), marker_drop,
+            driver_dma.eos_control,
+            static_cast<unsigned long long>(driver_dma.eos_control_bytes),
+            driver_dma.full_size, driver_dma.non_output_full_size,
+            driver_dma.partial_size,
+            issue399_firmware_drop::kWidth, issue399_firmware_drop::kHeight,
+            issue399_firmware_drop::kYDoneWords,
+            issue399_firmware_drop::kUVDoneWords,
+            static_cast<unsigned long long>(
+                driver_dma.full_size_bytes),
+            receipt_probe.host_count(), receipt_probe.joined_count(),
+            closed ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+            issue399_firmware_drop::FailureName(firmware_drop->failure()));
+        std::fflush(stdout);
+    }
     if (audit.pixels) {
         std::printf("Scaler test: iteration=%u/%u requested-width=%u expected-output=%ux%u "
                     "%s-sha256=%s result=%s\n", iteration, iterations,
@@ -12983,6 +13619,7 @@ int main(int argc, char **argv)
             "[--mpeg1-via-mpeg2 | --h263-via-divx] "
             "[--rx-output-receipts NEW_ABSOLUTE_TSV] "
             "[--pace-input 60] "
+            "[--firmware-drop-nonref] "
             "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --observe-avd-platform-code | --observe-avd-cache-count | --observe-avd-dmem-samples | --observe-avd-dmem-midpoints | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n"
             "Power observation: --hardware MPEG2_640x360_180_FRAMES 180 "
@@ -12993,7 +13630,9 @@ int main(int argc, char **argv)
             "--scaler-test 0 --capture-yuy2 NEW_PATH --observe-active-context\n"
             "Issue399 paced admission: --hardware PINNED_ISSUE399_H264_1920x1080_900_PACKETS 900 60 1 "
             "--scaler-benchmark 1280 --rx-output-receipts NEW_ABSOLUTE_TSV "
-            "--pace-input 60\n", argv[0]);
+            "--pace-input 60\n"
+            "Issue399 firmware drop: --hardware PINNED_ISSUE399_H264_1920x1080_900_PACKETS 900 60 1 "
+            "--firmware-drop-nonref --rx-output-receipts NEW_ABSOLUTE_TSV\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
@@ -13152,6 +13791,16 @@ int main(int argc, char **argv)
         phase1_progress_close(&progress);
         return 2;
     }
+    issue399_firmware_drop::Plan firmware_drop_plan;
+    if (options.firmware_drop_nonref &&
+        !PrepareFirmwareDrop(options, input, &firmware_drop_plan)) {
+        std::fprintf(stderr, "Firmware drop mode requires one of the two pinned "
+            "900-picture progressive High@4.2 1920x1080 Annex-B payloads; "
+            "raw/submitted digest, picture classes and token set must all match; "
+            "no device was opened\n");
+        phase1_progress_close(&progress);
+        return 2;
+    }
     std::printf("Preflight: %ux%u subtype=%u packets=%zu metadata=%zu\n",
                 input.width, input.height, input.subtype, input.packets.size(), input.metadata.size());
     if (options.mpeg1_via_mpeg2)
@@ -13201,7 +13850,8 @@ int main(int argc, char **argv)
             "probe=library-drain iteration=%u/%u state=starting last-complete=%u\n",
             iteration, options.iterations, completed);
         ok = Run(input, options.expected, options.seconds, iteration,
-                 options.iterations, &progress, options, paced_fixture);
+                 options.iterations, &progress, options, paced_fixture,
+                 options.firmware_drop_nonref ? &firmware_drop_plan : nullptr);
         if (!SampleResources(&current)) {
             std::fprintf(stderr, "Unable to sample resources after iteration %u\n",
                          iteration);

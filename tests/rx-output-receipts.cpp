@@ -128,7 +128,7 @@ const char *FailureName(Failure failure)
         "none", "argument", "output-path", "allocation", "research-device-open",
         "receipt-arm", "host-receipt-overflow", "host-clock", "receipt-seal",
         "receipt-read", "research-device-close", "driver-receipt-overflow",
-        "invalid-driver-record", "clock-inversion", "eos-mismatch",
+        "invalid-driver-record", "dma-byte-overflow", "clock-inversion", "eos-mismatch",
         "firmware-timestamp", "ambiguous-join", "unmatched-receipt", "native-run",
         "output-open", "output-mode", "output-write", "output-close",
         "output-publish"
@@ -176,6 +176,109 @@ uint32_t DriverCapacity(unsigned expected_outputs)
 size_t HostCapacity(unsigned expected_outputs)
 {
     return static_cast<size_t>(expected_outputs) + 32U;
+}
+
+bool CheckedDmaByteAdd(uint64_t current, uint64_t bytes, uint64_t *result)
+{
+    if (!result || bytes > UINT64_MAX - current) return false;
+    *result = current + bytes;
+    return true;
+}
+
+bool AuditDriverDma(const crystalhd_fw_research_rx_receipt *driver,
+                    size_t driver_count, unsigned width, unsigned height,
+                    uint32_t y_done_words, uint32_t uv_done_words,
+                    DriverDmaAudit *audit, Failure *failure)
+{
+    if (failure) *failure = Failure::None;
+    if (audit) *audit = DriverDmaAudit{};
+    if ((!driver && driver_count) || !width || !height || !y_done_words ||
+        !audit || !failure) {
+        if (failure) *failure = Failure::Argument;
+        return false;
+    }
+    const uint64_t expected_words =
+        static_cast<uint64_t>(y_done_words) + uv_done_words;
+    if (expected_words > UINT64_MAX / 4U) {
+        *failure = Failure::DmaOverflow;
+        return false;
+    }
+    const uint64_t expected_bytes = expected_words * 4U;
+    const uint32_t known_stages = kRequiredStages |
+        CRYSTALHD_FW_RESEARCH_RX_STAGE_PARSE_FAILED |
+        CRYSTALHD_FW_RESEARCH_RX_STAGE_CLOCK_INVERTED |
+        CRYSTALHD_FW_RESEARCH_RX_STAGE_LIST_REPLACED;
+    for (size_t index = 0; index < driver_count; ++index) {
+        const crystalhd_fw_research_rx_receipt &record = driver[index];
+        ++audit->records;
+        if (record.ordinal != index || (record.stage_flags & ~known_stages) ||
+            (record.stage_flags & kRequiredStages) != kRequiredStages ||
+            (record.stage_flags & (CRYSTALHD_FW_RESEARCH_RX_STAGE_PARSE_FAILED |
+                                   CRYSTALHD_FW_RESEARCH_RX_STAGE_CLOCK_INVERTED |
+                                   CRYSTALHD_FW_RESEARCH_RX_STAGE_LIST_REPLACED)) ||
+            !record.fire_return_ns || !record.irq_entry_ns ||
+            !record.completion_ns || !record.parse_ns ||
+            !record.disposition_ns ||
+            record.fire_return_ns > record.irq_entry_ns ||
+            record.irq_entry_ns > record.completion_ns ||
+            record.completion_ns > record.parse_ns ||
+            record.parse_ns > record.disposition_ns ||
+            record.disposition < CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_OUTPUT ||
+            record.disposition >
+                CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_REPEAT_TWO_BACK ||
+            !record.y_descriptor_count ||
+            (uv_done_words ? !record.uv_descriptor_count :
+                             record.uv_descriptor_count != 0U)) {
+            *failure = Failure::DriverRecord;
+            return false;
+        }
+        ++audit->completed;
+        if (record.completion_status != BC_STS_SUCCESS) {
+            ++audit->error;
+            *failure = Failure::DriverRecord;
+            return false;
+        }
+        const bool eos_control = DriverEosControl(record);
+        const uint64_t actual_words =
+            static_cast<uint64_t>(record.y_done_words) + record.uv_done_words;
+        if (eos_control) {
+            if (actual_words > expected_words ||
+                !CheckedDmaByteAdd(audit->eos_control_bytes,
+                    actual_words * 4U, &audit->eos_control_bytes)) {
+                *failure = actual_words > expected_words
+                    ? Failure::DriverRecord : Failure::DmaOverflow;
+                return false;
+            }
+            ++audit->eos_control;
+        }
+        if (!record.y_done_words && !record.uv_done_words) {
+            if (!eos_control) {
+                *failure = Failure::DriverRecord;
+                return false;
+            }
+            ++audit->zero_size;
+            continue;
+        }
+        if (record.y_done_words != y_done_words ||
+            record.uv_done_words != uv_done_words) {
+            if (eos_control) continue;
+            ++audit->partial_size;
+            continue;
+        }
+        ++audit->full_size;
+        if (record.disposition == CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_OUTPUT)
+            ++audit->output_full_size;
+        else
+            ++audit->non_output_full_size;
+        if (record.picture_width != width || record.picture_height != height)
+            ++audit->partial_size;
+        if (!CheckedDmaByteAdd(audit->full_size_bytes, expected_bytes,
+                               &audit->full_size_bytes)) {
+            *failure = Failure::DmaOverflow;
+            return false;
+        }
+    }
+    return true;
 }
 
 bool JoinReceipts(const HostReceipt *host, size_t host_count,
@@ -308,7 +411,7 @@ bool WriteTsv(const char *path, const JoinedReceipt *rows, size_t row_count,
     static const char header[] =
         "receipt_generation\treceipt_run_id\thost_ordinal\thost_return_ns\t"
         "ready_before\ttoken\tpicture_number\t"
-        "session_number\thost_picture_flags\twidth\theight\ty_done_words\t"
+        "session_number\thost_picture_flags\thost_n_drop\twidth\theight\ty_done_words\t"
         "uv_done_words\tpout_flags\tb422_mode\teos\tdriver_ordinal\t"
         "capture_epoch\tfire_return_ns\tirq_entry_ns\tcompletion_ns\tparse_ns\t"
         "disposition_ns\traw_firmware_timestamp\tnormalized_firmware_timestamp\t"
@@ -328,7 +431,7 @@ bool WriteTsv(const char *path, const JoinedReceipt *rows, size_t row_count,
         const crystalhd_fw_research_rx_receipt &driver = rows[index].driver;
         char line[2048];
         const int length = std::snprintf(line, sizeof(line),
-            "%llu\t%llu\t%llu\t%llu\t%u\t%llu\t%u\t%u\t%u\t%u\t%u\t"
+            "%llu\t%llu\t%llu\t%llu\t%u\t%llu\t%u\t%u\t%u\t%u\t%u\t%u\t"
             "%u\t%u\t%u\t%u\t%u\t%llu\t%llu\t%llu\t"
             "%llu\t%llu\t%llu\t%llu\t%llu\t"
             "%llu\t%u\t%u\t%u\t%u\t%u\t%u\t"
@@ -341,7 +444,8 @@ bool WriteTsv(const char *path, const JoinedReceipt *rows, size_t row_count,
             host.ready_before,
             static_cast<unsigned long long>(host.token),
             host.picture_number, host.session_number, host.picture_flags,
-            host.width, host.height, host.y_done_words, host.uv_done_words,
+            host.n_drop, host.width, host.height, host.y_done_words,
+            host.uv_done_words,
             host.pout_flags, host.b422_mode, host.eos,
             static_cast<unsigned long long>(driver.ordinal),
             static_cast<unsigned long long>(driver.capture_epoch),
@@ -617,6 +721,19 @@ bool Probe::Finish(bool native_run_ok)
         ok = false;
     }
     return ok;
+}
+
+bool Probe::AuditDma(unsigned width, unsigned height, uint32_t y_done_words,
+                     uint32_t uv_done_words, DriverDmaAudit *audit,
+                     Failure *failure) const
+{
+    if (armed_ || fd_ >= 0 || failure_ != Failure::None) {
+        if (failure) *failure = Failure::Argument;
+        if (audit) *audit = DriverDmaAudit{};
+        return false;
+    }
+    return AuditDriverDma(driver_.data(), driver_count_, width, height,
+                          y_done_words, uv_done_words, audit, failure);
 }
 
 } // namespace rx_output_receipts

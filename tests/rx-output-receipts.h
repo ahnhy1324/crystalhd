@@ -29,6 +29,7 @@ enum class Failure {
     ResearchClose,
     DriverOverflow,
     DriverRecord,
+    DmaOverflow,
     ClockInversion,
     EosMismatch,
     Timestamp,
@@ -52,6 +53,7 @@ struct HostReceipt {
     uint32_t picture_number = 0;
     uint32_t session_number = 0;
     uint32_t picture_flags = 0;
+    uint32_t n_drop = 0;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t y_done_words = 0;
@@ -65,6 +67,20 @@ struct JoinedReceipt {
     HostReceipt host;
     crystalhd_fw_research_rx_receipt driver;
     uint64_t normalized_firmware_timestamp = 0;
+};
+
+struct DriverDmaAudit {
+    size_t records = 0;
+    size_t completed = 0;
+    size_t eos_control = 0;
+    size_t zero_size = 0;
+    size_t partial_size = 0;
+    size_t error = 0;
+    size_t full_size = 0;
+    size_t output_full_size = 0;
+    size_t non_output_full_size = 0;
+    uint64_t full_size_bytes = 0;
+    uint64_t eos_control_bytes = 0;
 };
 
 struct DeviceOps {
@@ -84,6 +100,11 @@ bool OutputPathAvailable(const char *path);
 bool NormalizeFirmwareTimestamp(uint64_t raw, uint64_t *normalized);
 uint32_t DriverCapacity(unsigned expected_outputs);
 size_t HostCapacity(unsigned expected_outputs);
+bool CheckedDmaByteAdd(uint64_t current, uint64_t bytes, uint64_t *result);
+bool AuditDriverDma(const crystalhd_fw_research_rx_receipt *driver,
+                    size_t driver_count, unsigned width, unsigned height,
+                    uint32_t y_done_words, uint32_t uv_done_words,
+                    DriverDmaAudit *audit, Failure *failure);
 
 bool JoinReceipts(const HostReceipt *host, size_t host_count,
                   const crystalhd_fw_research_rx_receipt *driver,
@@ -108,6 +129,9 @@ public:
     bool Arm();
     bool Record(const HostReceipt &receipt);
     bool Finish(bool native_run_ok);
+    bool AuditDma(unsigned width, unsigned height, uint32_t y_done_words,
+                  uint32_t uv_done_words, DriverDmaAudit *audit,
+                  Failure *failure) const;
 
     Failure failure() const { return failure_; }
     size_t host_count() const { return host_count_; }
