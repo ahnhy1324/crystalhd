@@ -347,7 +347,9 @@ global `pcie_aspm=force`, link-speed changes or payload-size tweaks.
 ## Advanced option index
 
 These are not required for ordinary local playback. Their owning component
-documents the exact behavior and limitations.
+documents the exact behavior and limitations. The
+[complete configuration inventory](CONFIGURATION.md) records every current
+setting's owner, default, dependencies, lifetime and safety level.
 
 | Need | Control | Where to read first |
 | --- | --- | --- |
