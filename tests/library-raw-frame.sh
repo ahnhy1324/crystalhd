@@ -19,7 +19,7 @@ cleanup()
         return
     fi
     if [ "$keep_outputs" -eq 0 ]; then
-        for name in checker mirror extreme translate mixed; do
+        for name in checker mirror extreme issue204-intra-lead translate mixed; do
             rm -f "$raw_test_dir/emitted/$name.h264" \
                 "$raw_test_dir/emitted/$name.yuv420" \
                 "$raw_test_dir/emitted/$name.output-chain.yuy2" \
@@ -114,9 +114,12 @@ planar_sha=$(sha256sum "$output_dir/checker.yuv420"); planar_sha=${planar_sha%% 
 mirror_sha=$(sha256sum "$output_dir/mirror.h264"); mirror_sha=${mirror_sha%% *}
 extreme_sha=$(sha256sum "$output_dir/extreme.h264"); extreme_sha=${extreme_sha%% *}
 translate_sha=$(sha256sum "$output_dir/translate.h264"); translate_sha=${translate_sha%% *}
+issue204_sha=$(sha256sum "$output_dir/issue204-intra-lead.h264"); issue204_sha=${issue204_sha%% *}
 [ "$mirror_sha" = e02b4497af9ba09237c94d1931ae173de8673ff24358926af6e0f50c7e1e3a3e ]
 [ "$extreme_sha" = 15b795ac26df55306e975e165a175885e549ec77837fbaf99e31fea25e61b932 ]
 [ "$translate_sha" = 79419ec0e595e71405895d83f5b0ab8b961bdbb9afa8c02c42a30ae2447b7403 ]
+[ "$(wc -c < "$output_dir/issue204-intra-lead.h264")" -eq 126823 ]
+[ "$issue204_sha" = 76680cf85767bbc78c89bf49a45aa5af7672dc956d7bcc4be3aa88abe17d1430 ]
 mixed_sha=$(sha256sum "$output_dir/mixed.h264"); mixed_sha=${mixed_sha%% *}
 mixed_planar_sha=$(sha256sum "$output_dir/mixed.yuv420"); mixed_planar_sha=${mixed_planar_sha%% *}
 mixed_packed_sha=$(sha256sum "$output_dir/mixed.output-chain.yuy2"); mixed_packed_sha=${mixed_packed_sha%% *}
@@ -124,7 +127,7 @@ mixed_packed_sha=$(sha256sum "$output_dir/mixed.output-chain.yuy2"); mixed_packe
 [ "$mixed_planar_sha" = 26b694283c0e1800a05ef6535d19202331d155c594bac057197c8e94b4d4c323 ]
 [ "$mixed_packed_sha" = 0bf4e31a8a63709f033946bb6bfcbdfcea565ceb5f8ffb962570b838db09666d ]
 
-for name in checker mirror extreme translate mixed; do
+for name in checker mirror extreme issue204-intra-lead translate mixed; do
     ffmpeg -nostdin -hide_banner -loglevel error -threads 1 -hwaccel none \
         -noautorotate -err_detect explode -xerror -i "$output_dir/$name.h264" \
         -map 0:v:0 -an -sn -dn -fps_mode passthrough -threads 1 \
@@ -138,7 +141,7 @@ for name in checker mirror extreme translate mixed; do
         2> "$output_dir/$name.ffprobe.log"
     [ ! -s "$output_dir/$name.ffprobe.log" ]
     awk -F, -v name="$name" '
-        { f=NR-1; isI=(f==0 || f==1 || (name=="extreme" ? f==4 : name=="mixed" ? f==32 : f==90));
+        { f=NR-1; isI=(f==0 || f==1 || (name=="extreme" ? f==4 : name=="mixed" ? f==32 : name=="issue204-intra-lead" ? f==60 : f==90));
           if (NF!=4 || $1!=(f==0) || $2!=256 || $3!=96 || $4!=(isI ? "I" : "P")) exit 1 }
         END { if (NR!=(name=="extreme" ? 6 : name=="mixed" ? 64 : 180)) exit 1 }
     ' "$output_dir/$name.ffprobe.csv"
@@ -152,6 +155,7 @@ printf 'Existing-output refusal: actual exit=%s (expected1)\n' "$refusal"
 sha256sum "$output_dir/checker.h264" "$output_dir/checker.yuv420" \
     "$output_dir/checker.output-chain.yuy2" "$output_dir/mirror.h264" \
     "$output_dir/extreme.h264" "$output_dir/translate.h264" \
+    "$output_dir/issue204-intra-lead.h264" \
     "$output_dir/translate.yuv420" "$output_dir/translate.output-chain.yuy2" \
     "$output_dir/mixed.h264" "$output_dir/mixed.yuv420" "$output_dir/mixed.output-chain.yuy2"
 printf 'PASS: native/Werror, ASan/UBSan, C header, Pentium2/no-SSE, full strict decode and output refusal\n'

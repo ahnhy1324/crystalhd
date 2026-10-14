@@ -1074,6 +1074,63 @@ static Stream Checker(bool mirror)
     return stream;
 }
 
+// Deterministic input for the issue #204 native active-context observer. LT0
+// remains resident; frame 60 renews LT1 with a non-IDR I_PCM picture so the
+// observer can stop at the historically measured one-pending-picture boundary.
+static Stream Issue204IntraLead()
+{
+    Builder b; Parser parser; Stream stream;
+    const Bytes a = Source(0), second = Source(1);
+    unsigned uploads = 0, compositions = 0;
+    for (unsigned f = 0; f < 180; ++f) {
+        const bool upload = f == 0 || f == 1 || f == 60;
+        const unsigned slot = f == 0 ? 0 : 1;
+        const Bytes &source = f == 0 ? a : second;
+        uint8_t mask[96];
+        for (unsigned mb = 0; mb < 96; ++mb)
+            mask[mb] = static_cast<uint8_t>((mb%16 + mb/16 + f%2)&1);
+        const uint8_t *au = nullptr; uint32_t count = 0;
+        if (upload) {
+            Planes planes(source, f == 60 ? 13 : 0);
+            Check(Upload(b, slot, planes, &au, &count) == BC_STS_SUCCESS,
+                  "issue204 source upload through public API");
+            ++uploads;
+        } else {
+            Check(Compose(b, mask, 96, &au, &count) == BC_STS_SUCCESS,
+                  "issue204 tile composition through public API");
+            ++compositions;
+        }
+        Require(au && count && count <= BC_RAW_FRAME_AU_CAPACITY,
+                "bounded complete issue204 AU");
+        const Bytes encoded(au, au+count);
+        const Bytes expected = upload ? source : Assemble(a, second, mask);
+        Check(parser.Read(encoded, upload, slot, mask) == expected,
+              "independent parser matches every issue204 source sample");
+        Check(Accept(b, au, count) == BC_STS_SUCCESS,
+              "issue204 actual-status Submit advances one frame");
+        Append(&stream.coded, encoded); Append(&stream.planar, expected);
+        stream.maximum_au = std::max(stream.maximum_au, count);
+    }
+    Check(uploads == 3 && compositions == 177 && parser.frame == 180 &&
+          stream.coded.size() == 126823 && stream.planar.size() == 6635520,
+          "exact issue204 180-frame coded and planar extents");
+    std::vector<Bytes> unique;
+    std::vector<unsigned> counts;
+    for (unsigned f = 0; f < 180; ++f) {
+        const Bytes view(stream.planar.begin()+f*frame_bytes,
+                         stream.planar.begin()+(f+1)*frame_bytes);
+        const auto found = std::find(unique.begin(), unique.end(), view);
+        if (found == unique.end()) { unique.push_back(view); counts.push_back(1); }
+        else ++counts[static_cast<size_t>(found-unique.begin())];
+    }
+    std::sort(counts.begin(), counts.end());
+    Check(unique.size() == 4 && counts == std::vector<unsigned>({1, 2, 88, 89}),
+          "exact issue204 source and checker-view counts");
+    std::printf("issue204-intra-lead: frames=180 I=0,1,60 key=0 P=177 bytes=%zu maxAU=%u planar=%zu\n",
+                stream.coded.size(), stream.maximum_au, stream.planar.size());
+    return stream;
+}
+
 static Stream Extreme()
 {
     Builder b; Parser parser; Stream stream;
@@ -1240,11 +1297,13 @@ int main(int argc, char **argv)
     try {
         if (argc == 3) Require(mkdir(argv[2], 0700) == 0, "refuse existing output directory");
         Validation(); SubmitFailures(); PredictorTests(); InterpolationTests(); TranslationValidation(); NonReferenceValidation();
-        const Stream checker = Checker(false), mirror = Checker(true), extreme = Extreme();
+        const Stream checker = Checker(false), mirror = Checker(true);
+        const Stream issue204_intra_lead = Issue204IntraLead(), extreme = Extreme();
         const Stream translate = Translations();
         const Stream mixed = MixedReferences();
         if (argc == 3) {
             Emit(argv[2], "checker", checker); Emit(argv[2], "mirror", mirror); Emit(argv[2], "extreme", extreme);
+            Emit(argv[2], "issue204-intra-lead", issue204_intra_lead);
             Emit(argv[2], "translate", translate);
             Emit(argv[2], "mixed", mixed);
         }

@@ -1,0 +1,212 @@
+{
+  "schema_version": 1,
+  "kind": "native-active-context-dynamic-observation",
+  "purpose": "Preserve the first successful clean-commit execution of the dynamic issue #204 observer, including the preceding fail-closed qualification counterexample.",
+  "probe": {
+    "validated_commit": "b868a2f466383ef1af6c1b442820a01a7067d3a4",
+    "base_commit": "2da885b4aa2092720056de91d2a0739d4adc4a05",
+    "binary_sha256": "664ed30b4acb60b6b92ed4cbbca48d1c5845419ff8a669ec3471133e39d0b33c",
+    "source_library_sha256": "e5455cb7cd653ba8d907246a81a1a56e9947ffe88b6ecf67c556a3d1082493d4",
+    "command": "LD_LIBRARY_PATH=$SOURCE_TREE/linux_lib/libcrystalhd $SOURCE_TREE/tests/library-drain-test --hardware $FIXTURE 180 30 1 --scaler-test 0 --capture-yuy2 $RESULTS/active-context.yuy2 --observe-active-context",
+    "source_tree_clean": true,
+    "results_outside_source_tree": true,
+    "production_code_changed": false
+  },
+  "environment": {
+    "os": "Ubuntu 26.04.1 LTS",
+    "kernel": "7.0.0-38-generic",
+    "device": "BCM70015 14e4:1615",
+    "module_version": "3.10.3",
+    "module_srcversion": "0121A57354B130DF8F3089C",
+    "module_file_sha256": "374ff6ca14ab5022ec72db9ab975b2485f9c96bea7132707bcf1e8c704f8bde7",
+    "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+    "library_reported_version": "3.22.0",
+    "force_l0s_off": true,
+    "session_l0s_off": false
+  },
+  "input": {
+    "generator": "tests/library-raw-frame.cpp:Issue204IntraLead",
+    "codec": "H264",
+    "progressive": true,
+    "width": 256,
+    "height": 96,
+    "packets": 180,
+    "bytes": 126823,
+    "sha256": "76680cf85767bbc78c89bf49a45aa5af7672dc956d7bcc4be3aa88abe17d1430",
+    "boundary_preparation": "split-existing-AUD-with-original-NAL-order-unchanged"
+  },
+  "failed_qualification": {
+    "probe_commit": "3e8cfb4ac79ce0b6c84b63dc6125975c40b81e2f",
+    "binary_sha256": "87a5a394b8496d9f1ae582c9e407bc86c742eb619c288a61e2f7332e15b5a21b",
+    "started_at": "2026-10-14T10:14:37+09:00",
+    "ended_at": "2026-10-14T10:15:02+09:00",
+    "exit_status": 1,
+    "external_timeout_seconds": 60,
+    "marker_gate": {
+      "submitted": 60,
+      "frames": 59,
+      "pending": 1,
+      "ready": 0,
+      "eos": false,
+      "marker": false,
+      "flush": false,
+      "result": "PASS"
+    },
+    "exact_gate": {
+      "submitted": 61,
+      "frames": 60,
+      "pending": 1,
+      "ready": 0,
+      "eos": false,
+      "marker": false,
+      "flush": false,
+      "result": "PASS"
+    },
+    "observer": {
+      "failure": "Halt",
+      "register_reads": 41,
+      "register_writes": 2,
+      "memory_reads": 0,
+      "pre_halt_status": "040018eb",
+      "identity": "7b010108",
+      "pre_halt_debug": "00000000",
+      "halt_poll_debug_recorded": false,
+      "route_restored": false,
+      "module_recovery_required": true
+    },
+    "partial_capture": {
+      "frames": 60,
+      "bytes": 2949120,
+      "sha256": "ef149993170f014bd4b2a9bf96d01eb5bfcdb4d5e36b8be4ea73b2e5b2604a1c",
+      "usable_as_success_evidence": false
+    },
+    "cleanup_pass": false,
+    "kernel_firmware_command_timeout": true,
+    "module_reload_completed": true,
+    "post_reload_h264_pass": true,
+    "post_reload_mpeg2_pass": true,
+    "stdout_sha256": "4063708978b5f6fb1bca48455e966e4098996a798e777566782d0a7a2a5285cb",
+    "stderr_sha256": "747e627d814fb0f22a89921b9067cb97a664aeb793a6e41f2ea243aa61423cb4",
+    "kernel_log_sha256": "af1d12e5523d81e57b82914a9bbffa02e412513149a074b9cb7c35132e55ab1d",
+    "disposition": "preserved-fail-closed-counterexample-not-success"
+  },
+  "validated_run": {
+    "started_at": "2026-10-14T10:21:36+09:00",
+    "ended_at": "2026-10-14T10:21:41+09:00",
+    "exit_status": 0,
+    "external_timeout_seconds": 60,
+    "marker_gate": {
+      "submitted": 60,
+      "frames": 59,
+      "pending": 1,
+      "ready": 0,
+      "eos": false,
+      "marker": false,
+      "flush": false,
+      "result": "PASS"
+    },
+    "exact_gate": {
+      "submitted": 61,
+      "frames": 60,
+      "pending": 1,
+      "ready": 0,
+      "eos": false,
+      "marker": false,
+      "flush": false,
+      "result": "PASS"
+    },
+    "observer": {
+      "failure": "None",
+      "graph_reads": 62,
+      "graph_bytes": 312,
+      "graph_result": "PASS",
+      "fresh_boundary": "PASS",
+      "register_reads": 1969,
+      "register_writes": 4,
+      "memory_reads": 19,
+      "pre_halt_status": "640015e2",
+      "identity": "7b010108",
+      "pre_halt_debug": "80000000",
+      "halt_polls": 1,
+      "halt_poll_status": "6600179d",
+      "halt_poll_debug": "00000000",
+      "route_restored": true,
+      "module_recovery_required": false,
+      "result": "PASS"
+    },
+    "completion": {
+      "frames": 180,
+      "expected_frames": 180,
+      "pending": 0,
+      "ready": 0,
+      "firmware_eos": true,
+      "output_marker": false,
+      "cleanup_pass": true,
+      "result": "PASS"
+    },
+    "capture": {
+      "format": "YUY2",
+      "width": 256,
+      "height": 96,
+      "frames": 180,
+      "bytes": 8847360,
+      "sha256": "ac667578c6c18a30922ffa11c405af79895e82e88ae4244defbb3962c64745a7",
+      "transport_result": "PASS"
+    },
+    "artifacts": {
+      "stdout_sha256": "6694840a63a736f3b3747da14a7f58f12e01e8eb2d10b59c0347d83c298a0e7a",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "kernel_log_sha256": "0585e742a967d6cb61877067aa0c15fd22ce65b7496f53befbe6598a697ed1d4"
+    }
+  },
+  "fresh_reopen_controls": {
+    "module_reload_between_observer_and_controls": false,
+    "h264": {
+      "input_bytes": 124832,
+      "input_sha256": "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e",
+      "frames": 180,
+      "firmware_eos": true,
+      "cleanup_pass": true,
+      "exit_status": 0,
+      "stdout_sha256": "3799fa2a83228dcc76d2fc368b0ac9aa3569c550bf82e3e7cd72b141e76eb151"
+    },
+    "mpeg2": {
+      "input_bytes": 50640,
+      "input_sha256": "aa4bf5cdc406edf6c334152e610f1d112ada505790c5472d0d884a7fc3612e7f",
+      "frames": 30,
+      "firmware_eos": true,
+      "cleanup_pass": true,
+      "exit_status": 0,
+      "stdout_sha256": "bfd25669a94820a4209d6fa39e2d4879a251cc535af665f4cdcdf7e196393748"
+    },
+    "device_idle_after_controls": true,
+    "module_parameters_unchanged": true,
+    "new_kernel_errors": 0
+  },
+  "verification": {
+    "library_drain_self_test_checks": 244461,
+    "raw_frame_api_checks_per_runtime": 5560,
+    "raw_frame_runtime_modes": ["native", "sanitize", "legacy-Pentium2"],
+    "raw_frame_compile_checks": ["C-header-Werror", "legacy-object-no-SIMD-or-cache-instructions"],
+    "strict_ffmpeg_planar_comparisons": 6,
+    "independent_review_blockers": 0
+  },
+  "scope": {
+    "dynamic_model_executed_on_native_hardware": true,
+    "same_owner_bracketed_graph": true,
+    "fresh_host_boundary": true,
+    "finite_held_outer_snapshot": true,
+    "root_holder_alias_ledger_record_source_join": true,
+    "normal_eos_cleanup_and_reopen": true,
+    "snapshot_atomic": false,
+    "repeated_same_commit_observer_sessions": false,
+    "source_generation": false,
+    "physical_source_lease": false,
+    "current_producer_identity": false,
+    "last_consumer_completion": false,
+    "release_cause": false,
+    "global_halt": false,
+    "standalone_mfd": false,
+    "production_support": false
+  }
+}

@@ -9,10 +9,9 @@
 /*
  * Device-independent preservation model for the native issue #204
  * observation.  A caller must obtain Plan from a separately bracketed,
- * same-owner PpbContextObserver::Graph() pair.  This helper is not connected
- * to a hardware CLI: the historical native trials used a private literal-
- * address probe, while this model records the invariants needed by a future
- * dynamic probe.
+ * same-owner PpbContextObserver::Graph() pair.  The historical native trials
+ * used a private literal-address probe; the sole hardware CLI connection now
+ * reproduces their exact input and host boundary before entering this model.
  *
  * A successful model run joins one sequential, non-atomic held outer-ARC
  * snapshot only; it is not a global halt.  It does not establish a source
@@ -32,9 +31,9 @@ static const uint32_t kOuterRecordAlias = 0x008590e8U;
 static const uint32_t kOuterDeliveryAlias = 0x008592d0U;
 static const uint32_t kOuterReturnAlias = 0x008592d4U;
 static const uint32_t kHalt = 0x02000000U;
-static const uint32_t kPendingLoad = 0x80000000U;
-static const uint32_t kOtherDebug =
-    0x40000000U | 0x20000000U | 0x00800000U | 0x00000800U;
+// Preserved native probes observed bit 31 before halt and waited for it to
+// clear after the halt request.  Its wider ARC meaning remains unproven.
+static const uint32_t kLoadDebugBit = 0x80000000U;
 static const uint32_t kDeliveryOffset = 0x00015678U;
 static const uint32_t kReturnOffset = 0x00015778U;
 static const uint32_t kRecordOffset = 0x00015878U;
@@ -103,6 +102,11 @@ struct Result {
     // future hardware caller must use ordinary module/device recovery.
     bool module_recovery_required = false;
     uint32_t halted_status = 0;
+    uint32_t pre_halt_status = 0;
+    uint32_t identity_word = 0;
+    uint32_t debug_word = 0;
+    uint32_t halt_poll_status = 0;
+    uint32_t halt_poll_debug = 0;
     uint32_t allocation = 0;
     uint32_t delivery_ring = 0;
     uint32_t return_ring = 0;
@@ -293,7 +297,7 @@ static inline bool Held(const Io &io, Result *result)
         Datum(io, result, kIdentity, &identity) && identity == 0x7b010108U &&
         Datum(io, result, kStatus, &status) && status == result->halted_status &&
         (status & kHalt) && Datum(io, result, kDebug, &debug) &&
-        !(debug & (kOtherDebug | kPendingLoad)) ? true :
+        debug == 0U ? true :
         Reject(result, Failure::Halt);
 }
 
@@ -481,10 +485,15 @@ static inline bool Run(const Plan &plan, const Io &io, uint32_t *source_words,
     if (!RegisterWrite(io, result, kRoute, 1U) || !Guard(io, result, 1U))
         return false;
     result->route_selected = true;
-    if (!Datum(io, result, kStatus, &status) || (status & kHalt) ||
-        !Datum(io, result, kIdentity, &identity) || identity != 0x7b010108U ||
-        !Datum(io, result, kDebug, &debug) ||
-        (debug & (kOtherDebug | kPendingLoad)))
+    if (!Datum(io, result, kStatus, &status)) return false;
+    result->pre_halt_status = status;
+    if (status & kHalt) return Reject(result, Failure::Identity);
+    if (!Datum(io, result, kIdentity, &identity)) return false;
+    result->identity_word = identity;
+    if (identity != 0x7b010108U) return Reject(result, Failure::Identity);
+    if (!Datum(io, result, kDebug, &debug)) return false;
+    result->debug_word = debug;
+    if (debug != 0U && debug != kLoadDebugBit)
         return Reject(result, Failure::Identity);
     result->halt_attempted = true;
     if (!RegisterWrite(io, result, kDebug, 2U)) return false;
@@ -492,9 +501,11 @@ static inline bool Run(const Plan &plan, const Io &io, uint32_t *source_words,
         if (!Datum(io, result, kStatus, &status) ||
             !Datum(io, result, kDebug, &debug)) return false;
         ++result->halt_polls;
-        if (debug & (kOtherDebug | kPendingLoad))
+        result->halt_poll_status = status;
+        result->halt_poll_debug = debug;
+        if (debug != 0U && debug != kLoadDebugBit)
             return Reject(result, Failure::Halt);
-        if (status & kHalt) {
+        if ((status & kHalt) && debug == 0U) {
             result->halted_status = status;
             result->halt_verified = true;
             break;
@@ -562,7 +573,7 @@ static inline bool Run(const Plan &plan, const Io &io, uint32_t *source_words,
 
     if (!Held(io, result) || !Datum(io, result, kIdentity, &identity) ||
         identity != 0x7b010108U || !Datum(io, result, kDebug, &debug) ||
-        (debug & (kOtherDebug | kPendingLoad)) ||
+        debug != 0U ||
         !Datum(io, result, kStatus, &status) || status != result->halted_status ||
         !(status & kHalt)) return Reject(result, Failure::Resume);
     result->resume_attempted = true;
