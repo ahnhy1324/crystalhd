@@ -84,11 +84,16 @@ are discarded without changing immutable client pixels. H.264 access-unit
 delimiters are placed first in their timestamped packet so they cannot shift
 firmware timestamp association.
 
-The replay cache permits at most 512 KiB per access unit, 32 MiB or 512 access
-units total, and 8192 replayed units before pruning an obsolete reference
-prefix. Missing IDR/I-root history or an exceeded limit is an error. Completed,
-non-outstanding ordinary B pictures may be omitted from MPEG-2 and VC-1 replay;
-stateful BI and reference history required by an open GOP remain. Synchronous
+The replay cache permits at most 8 MiB per H.264 access unit and 512 KiB per
+MPEG-2, MPEG-4 or VC-1 access unit, with 32 MiB or 512 access units total and
+8192 replayed units before pruning an obsolete reference prefix. Large H.264
+units are submitted automatically through bounded 512 KiB libcrystalhd
+fragments; applications must not split them. They require a matching
+libcrystalhd that exports `DtsProcInputFragment`; with an older library, the VA
+driver rejects the large unit before submitting a partial picture. Missing
+IDR/I-root history or an exceeded limit is an error. Completed, non-outstanding
+ordinary B pictures may be omitted from MPEG-2 and VC-1 replay; stateful BI and
+reference history required by an open GOP remain. Synchronous
 one-picture-at-a-time clients can be slow because they may trigger frequent
 reopen and replay. BCM70012 does not use this sealed-batch path.
 
