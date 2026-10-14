@@ -203,6 +203,54 @@ struct crystalhd_fw_research_heap_packet_result {
 #define CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET \
 	_IOWR('R', 0x97, struct crystalhd_fw_research_heap_packet_result)
 
+/* One exact, fresh-INIT command observation.  Register values are masked raw
+ * levels, not transfer ownership or visibility receipts.  Samples are taken
+ * only while the ordinary firmware-command transaction remains pending; the
+ * normal IRQ and reply copy retain completion authority.
+ */
+#define CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_MAX 64U
+
+struct crystalhd_fw_research_command_sample {
+	__aligned_u64 cpudma_ns;
+	__aligned_u64 sdram_ns;
+	__u32 cpudma_active;
+	__u32 sdram_busy;
+};
+
+struct crystalhd_fw_research_command_observation {
+	__u32 attempted;
+	__s32 status;
+	/* Set only after exact reply, boundary read and normal cleanup succeed. */
+	__u32 read_complete;
+	__u32 sample_count;
+	__aligned_u64 generation;
+	/* Frozen host words 0..2; no in-flight device packet is read. */
+	__u32 request_words[3];
+	__u32 response_words[3];
+	__u32 header_matches;
+	/* At most one non-clearing host aggregate-status observation. */
+	__u32 host_intr_attempted;
+	__u32 host_intr_valid;
+	__u32 host_intr_arm_mbox0;
+	__aligned_u64 host_intr_ns;
+	__u32 reserved[4];
+	struct crystalhd_fw_research_command_sample
+		samples[CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_MAX];
+};
+
+struct crystalhd_fw_research_command_observation_result {
+	struct crystalhd_fw_research_state_request request;
+	struct crystalhd_fw_research_result control;
+	struct crystalhd_fw_research_command_observation in_flight;
+	/* Existing bracketed five-word reader, used only after INIT completes and
+	 * before the following GET_VERSION command is posted.
+	 */
+	struct crystalhd_fw_research_heap_packet_sample boundary_after_init;
+};
+
+#define CRYSTALHD_FW_RESEARCH_RUN_COMMAND_OBSERVATION \
+	_IOWR('R', 0x9e, struct crystalhd_fw_research_command_observation_result)
+
 struct crystalhd_fw_research_clock_sample {
 	__u32 attempted;
 	__s32 status;

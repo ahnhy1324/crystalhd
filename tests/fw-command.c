@@ -174,6 +174,12 @@ static bool crystalhd_link_load_firmware_config(struct crystalhd_hw *hw);
 static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
                                                enum FLEA_STATE_CH_EVENT event);
 static void crystalhd_flea_fw_transaction_done(struct crystalhd_hw *hw);
+static void crystalhd_fw_research_command_posted(struct crystalhd_hw *hw,
+						 const BC_FW_CMD *fw_cmd)
+{
+	(void)hw;
+	(void)fw_cmd;
+}
 
 #include "fw-command-functions.h"
 #include "fw-transport-functions.h"

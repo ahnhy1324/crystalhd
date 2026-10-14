@@ -45,6 +45,8 @@ struct _BC_DTS_PROC_OUT;
 #define CRYPTO_GISB_ERROR_STATUS_ADDRESS 0x004000d4U
 #define CRYPTO_GISB_ERROR_CAPTURE_MASTER 0x004000d8U
 #define CRYPTO_GISB_ERROR_MASK 0x00001801U
+#define COMMAND_OBSERVATION_INIT 0x73763001U
+#define COMMAND_OBSERVATION_INIT_MEM_SIZE_MB 64U
 
 static const uint32_t crypto_target_addresses[] = {
 	CRYPTO_SHARF_REVISION_ADDRESS,
@@ -61,6 +63,7 @@ enum action {
 	ACTION_FIXED_STATE, ACTION_CONTROLLER_ROOT, ACTION_CONTROLLER_IMAGE,
 	ACTION_CONTROLLER_PACKET,
 	ACTION_HEAP_PACKET,
+	ACTION_COMMAND_OBSERVATION,
 	ACTION_CLOCK_STATE,
 	ACTION_UART_STATE,
 	ACTION_CRYPTO_STATE,
@@ -102,6 +105,8 @@ static void usage(FILE *stream)
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --heap-packet\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
+	      "       flea-fw-probe --command-observation\n"
+	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --clock-state\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --uart-state\n"
@@ -129,6 +134,11 @@ static void usage(FILE *stream)
 	      "image base. Header and stored reply words remain raw and are never\n"
 	      "followed. Equal brackets do not certify freshness, object lifetime,\n"
 	      "atomic coherence, queue validity or independent fetch-error detection.\n"
+	      "Command-observation samples only fixed CPUDMA/SDRAM status levels\n"
+	      "during one exact fresh INIT, optionally reads host interrupt status\n"
+	      "once, then uses the same five-word bracketed boundary reader. It does\n"
+	      "not read mailbox data/status or an in-flight command packet and does\n"
+	      "not establish visibility, ownership, a frame generation or a lease.\n"
 	      "Clock-state reads three fixed control registers after verified INIT\n"
 	      "and OPEN, with no clock/reset writes. All bit patterns remain raw;\n"
 	      "completed reads do not certify fetch errors or atomic coherence.\n"
@@ -212,6 +222,8 @@ static bool parse_options(int argc, char **argv, struct options *options)
 			action = ACTION_CONTROLLER_PACKET;
 		else if (!strcmp(argv[i], "--heap-packet"))
 			action = ACTION_HEAP_PACKET;
+		else if (!strcmp(argv[i], "--command-observation"))
+			action = ACTION_COMMAND_OBSERVATION;
 		else if (!strcmp(argv[i], "--clock-state"))
 			action = ACTION_CLOCK_STATE;
 		else if (!strcmp(argv[i], "--uart-state"))
@@ -1006,6 +1018,154 @@ static bool heap_packet_result_valid(const struct crystalhd_fw_research_heap_pac
 	return true;
 }
 
+static bool command_boundary_valid(
+	const struct crystalhd_fw_research_heap_packet_sample *sample, bool success)
+{
+	const struct crystalhd_fw_research_heap_packet_sample zero = { 0 };
+	struct crystalhd_fw_research_heap_packet_sample cleared;
+	uint64_t root, base, target;
+
+	if (sample->attempted > 1 || sample->read_complete > 1 || sample->reserved ||
+	    sample->status > 0 || sample->status < -4095)
+		return false;
+	if (!success) {
+		cleared = *sample;
+		cleared.attempted = 0;
+		cleared.status = 0;
+		return !sample->read_complete &&
+			(!sample->attempted || sample->status) &&
+			!memcmp(&cleared, &zero, sizeof(zero));
+	}
+	if (!heap_packet_sample_succeeded(sample))
+		return false;
+	root = sample->root_before;
+	base = sample->image_before[1];
+	target = base + HEAP_PACKET_OFFSET;
+	return sample->root_before == sample->root_after && !(root & 3U) &&
+		root >= IMAGE_CONTEXT_MIN &&
+		root + CONTROLLER_CANDIDATE_BYTES <= CONTROLLER_CANDIDATE_END &&
+		heap_span_valid(root + IMAGE_TUPLE_OFFSET,
+				sizeof(sample->image_before)) &&
+		heap_span_valid(root + PACKET_ALIASES_OFFSET,
+				2U * sizeof(uint32_t)) &&
+		heap_span_valid(root + PACKET_PHYSICAL_OFFSET, sizeof(uint32_t)) &&
+		heap_span_valid(root + HEAP_SLOTS_OFFSET,
+				 sizeof(sample->slots_before)) &&
+		sample->image_before[0] == base && !(base & 0xfffU) &&
+		base >= HEAP_IMAGE_MIN &&
+		base + HEAP_IMAGE_BYTES <= HEAP_IMAGE_LIMIT &&
+		sample->image_before[2] == HEAP_IMAGE_BYTES &&
+		(sample->image_before[3] & 0xffU) == 1U &&
+		heap_span_valid(target, HEAP_PACKET_SECTION_BYTES) &&
+		heap_span_valid(target, sizeof(sample->header_words)) &&
+		sample->packet_address == target &&
+		sample->packet_before[0] == target &&
+		sample->packet_before[1] == target &&
+		sample->packet_before[2] == target &&
+		!memcmp(sample->image_before, sample->image_after,
+			sizeof(sample->image_before)) &&
+		!memcmp(sample->packet_before, sample->packet_after,
+			sizeof(sample->packet_before)) &&
+		!memcmp(sample->slots_before, sample->slots_after,
+			sizeof(sample->slots_before));
+}
+
+static bool command_observation_result_valid(
+	const struct crystalhd_fw_research_command_observation_result *result,
+	const struct crystalhd_fw_research_state_request *request,
+	uint64_t generation)
+{
+	const struct crystalhd_fw_research_command_observation *observation =
+		&result->in_flight;
+	struct crystalhd_fw_research_request control_request = {
+		.version = CRYSTALHD_FW_RESEARCH_VERSION,
+		.size = sizeof(result->control),
+		.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL,
+	};
+	bool success;
+	uint64_t previous = 0;
+	unsigned int i;
+
+	if (memcmp(&result->request, request, sizeof(*request)) ||
+	    !result_valid(&result->control, &control_request, generation) ||
+	    observation->attempted > 1 || observation->read_complete > 1 ||
+	    observation->header_matches > 1 ||
+	    observation->host_intr_attempted > 1 ||
+	    observation->host_intr_valid > 1 ||
+	    observation->sample_count > CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_MAX ||
+	    observation->status > 0 || observation->status < -4095)
+		return false;
+	for (i = 0; i < sizeof(observation->reserved) /
+				 sizeof(observation->reserved[0]); i++)
+		if (observation->reserved[i])
+			return false;
+	success = !result->control.status;
+	if (observation->read_complete != success ||
+	    !command_boundary_valid(&result->boundary_after_init, success))
+		return false;
+	if (!success) {
+		const struct crystalhd_fw_research_command_sample zero = { 0 };
+
+		if (observation->sample_count || observation->header_matches ||
+		    observation->host_intr_attempted || observation->host_intr_valid ||
+		    observation->host_intr_arm_mbox0 || observation->host_intr_ns ||
+		    observation->response_words[0] || observation->response_words[1] ||
+		    observation->response_words[2])
+			return false;
+		for (i = 0; i < CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_MAX; i++)
+			if (memcmp(&observation->samples[i], &zero, sizeof(zero)))
+				return false;
+		if (!observation->generation)
+			return !observation->attempted && observation->status &&
+				!observation->request_words[0] &&
+				!observation->request_words[1] &&
+				!observation->request_words[2];
+		return observation->generation == generation &&
+			observation->status &&
+			observation->request_words[0] == COMMAND_OBSERVATION_INIT &&
+			observation->request_words[1] == 1U &&
+			observation->request_words[2] ==
+				COMMAND_OBSERVATION_INIT_MEM_SIZE_MB;
+	}
+	if (!observation->attempted || observation->status ||
+	    observation->generation != generation ||
+	    !observation->sample_count || !observation->header_matches ||
+	    observation->request_words[2] !=
+		COMMAND_OBSERVATION_INIT_MEM_SIZE_MB ||
+	    observation->request_words[0] != result->control.replies[0].command ||
+	    observation->request_words[1] != result->control.replies[0].sequence ||
+	    memcmp(observation->response_words,
+		   result->control.replies[0].response,
+		   sizeof(observation->response_words)) ||
+	    observation->host_intr_attempted != observation->host_intr_valid ||
+	    (observation->host_intr_valid &&
+	     (!observation->host_intr_ns ||
+	      (observation->host_intr_arm_mbox0 != 0 &&
+	       observation->host_intr_arm_mbox0 != 0x00010000U))))
+		return false;
+	for (i = 0; i < CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_MAX; i++) {
+		const struct crystalhd_fw_research_command_sample *sample =
+			&observation->samples[i];
+		const struct crystalhd_fw_research_command_sample zero = { 0 };
+
+		if (i >= observation->sample_count) {
+			if (memcmp(sample, &zero, sizeof(zero)))
+				return false;
+			continue;
+		}
+		if (!sample->cpudma_ns || !sample->sdram_ns ||
+		    sample->cpudma_ns < previous ||
+		    sample->sdram_ns < sample->cpudma_ns ||
+		    sample->cpudma_active > 0xfU || sample->sdram_busy > 1U)
+			return false;
+		previous = sample->sdram_ns;
+	}
+	if (observation->host_intr_valid &&
+	    observation->host_intr_ns < previous)
+		return false;
+	return true;
+}
+
 static void print_info(const struct crystalhd_fw_research_info *info)
 {
 	char hex[65];
@@ -1492,6 +1652,66 @@ static void print_heap_packet_result(const struct crystalhd_fw_research_heap_pac
 	       HEAP_PACKET_OFFSET, HEAP_PACKET_SECTION_BYTES);
 }
 
+static void print_command_observation_result(
+	const struct crystalhd_fw_research_command_observation_result *result)
+{
+	const struct crystalhd_fw_research_command_observation *observation =
+		&result->in_flight;
+	unsigned int i;
+
+	printf("{\"version\":%" PRIu32 ",\"command_observation\":true,\"control\":",
+	       (uint32_t)result->request.version);
+	print_result_object(&result->control);
+	printf(",\"in_flight\":{\"attempted\":%s,\"status\":%" PRId32
+	       ",\"read_complete\":%s,\"generation\":\"%" PRIu64
+	       "\",\"request_words\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32
+	       "],\"response_words\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32
+	       "],\"header_matches\":%s,\"host_interrupt\":",
+	       observation->attempted ? "true" : "false",
+	       (int32_t)observation->status,
+	       observation->read_complete ? "true" : "false",
+	       (uint64_t)observation->generation,
+	       (uint32_t)observation->request_words[0],
+	       (uint32_t)observation->request_words[1],
+	       (uint32_t)observation->request_words[2],
+	       (uint32_t)observation->response_words[0],
+	       (uint32_t)observation->response_words[1],
+	       (uint32_t)observation->response_words[2],
+	       observation->header_matches ? "true" : "false");
+	if (observation->host_intr_valid)
+		printf("{\"timestamp_ns\":\"%" PRIu64
+		       "\",\"arm_mbox0\":%" PRIu32 "}",
+		       (uint64_t)observation->host_intr_ns,
+		       (uint32_t)observation->host_intr_arm_mbox0);
+	else
+		fputs("null", stdout);
+	printf(",\"sample_count\":%" PRIu32 ",\"samples\":[",
+	       (uint32_t)observation->sample_count);
+	for (i = 0; i < observation->sample_count; i++) {
+		const struct crystalhd_fw_research_command_sample *sample =
+			&observation->samples[i];
+
+		printf("%s{\"cpudma_ns\":\"%" PRIu64
+		       "\",\"cpudma_active\":%" PRIu32
+		       ",\"sdram_ns\":\"%" PRIu64
+		       "\",\"sdram_busy\":%" PRIu32 "}",
+		       i ? "," : "", (uint64_t)sample->cpudma_ns,
+		       (uint32_t)sample->cpudma_active,
+		       (uint64_t)sample->sdram_ns,
+		       (uint32_t)sample->sdram_busy);
+	}
+	fputs("]},\"boundary_after_init\":", stdout);
+	print_heap_packet_sample(&result->boundary_after_init);
+	fputs(",\"scope\":{\"command\":\"fresh_init\",\"max_samples\":64,"
+	      "\"mailbox_data_or_status_read\":false,\"in_flight_packet_read\":false,"
+	      "\"avd_cpu_status_read\":false,\"action_register_access\":false,"
+	      "\"caller_selected_address\":false,\"queue_mutation\":false,"
+	      "\"ppb_retention\":false,\"ordinary_irq_authoritative\":true,"
+	      "\"runtime_transfer_established\":false,\"cross_cpu_visibility_established\":false,"
+	      "\"physical_generation_established\":false,\"source_lease_established\":false}}\n",
+	      stdout);
+}
+
 int main(int argc, char **argv)
 {
 	struct crystalhd_fw_research_info info = { 0 };
@@ -1503,6 +1723,8 @@ int main(int argc, char **argv)
 	struct crystalhd_fw_research_image_result image_result = { 0 };
 	struct crystalhd_fw_research_packet_result packet_result = { 0 };
 	struct crystalhd_fw_research_heap_packet_result heap_packet_result = { 0 };
+	struct crystalhd_fw_research_command_observation_result
+		command_observation_result = { 0 };
 	struct crystalhd_fw_research_clock_result clock_result = { 0 };
 	struct crystalhd_fw_research_uart_result uart_result = { 0 };
 	struct crystalhd_fw_research_crypto_result crypto_result = { 0 };
@@ -1511,6 +1733,7 @@ int main(int argc, char **argv)
 	bool have_info = false, have_result = false, have_state = false, have_controller = false;
 	bool have_image = false, have_packet = false;
 	bool have_heap_packet = false;
+	bool have_command_observation = false;
 	bool have_clock = false;
 	bool have_uart = false;
 	bool have_crypto = false;
@@ -1566,6 +1789,7 @@ int main(int argc, char **argv)
 	case ACTION_CONTROLLER_IMAGE:
 	case ACTION_CONTROLLER_PACKET:
 	case ACTION_HEAP_PACKET:
+	case ACTION_COMMAND_OBSERVATION:
 	case ACTION_CLOCK_STATE:
 	case ACTION_UART_STATE:
 	case ACTION_CRYPTO_STATE:
@@ -1604,6 +1828,35 @@ int main(int argc, char **argv)
 	}
 	if (!(info.selector_mask & (1U << (request.selector - 1)))) {
 		fputs("Research selector unavailable; no live command attempted.\n", stderr);
+		goto out;
+	}
+	if (options.action == ACTION_COMMAND_OBSERVATION) {
+		const struct crystalhd_fw_research_result *control =
+			&command_observation_result.control;
+
+		state_request.version = CRYSTALHD_FW_RESEARCH_VERSION;
+		state_request.size = sizeof(command_observation_result);
+		command_observation_result.request = state_request;
+		if (ioctl(fd, CRYSTALHD_FW_RESEARCH_RUN_COMMAND_OBSERVATION,
+			  &command_observation_result) < 0) {
+			perror("run command observation");
+			fputs("Device state may have changed; no retry was attempted.\n",
+			      stderr);
+			goto out;
+		}
+		if (control->retained)
+			fputs("Research resources remain retained. Do not force unload the driver.\n",
+			      stderr);
+		if (!command_observation_result_valid(&command_observation_result,
+				&state_request, info.generation)) {
+			fputs("Invalid command-observation result; no further command attempted.\n",
+			      stderr);
+			goto out;
+		}
+		have_command_observation = true;
+		rc = control->status || control->retained ||
+			(control->cleanup_attempted &&
+			 control->cleanup_status != BC_STS_SUCCESS) ? 1 : 0;
 		goto out;
 	}
 	if (options.action == ACTION_CRYPTO_STATE) {
@@ -1815,6 +2068,8 @@ out:
 		print_packet_result(&packet_result);
 	if (have_heap_packet)
 		print_heap_packet_result(&heap_packet_result);
+	if (have_command_observation)
+		print_command_observation_result(&command_observation_result);
 	if (have_clock)
 		print_clock_result(&clock_result);
 	if (have_uart)

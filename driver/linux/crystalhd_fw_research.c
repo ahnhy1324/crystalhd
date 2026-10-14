@@ -9,6 +9,9 @@
 #include "../../include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_arm_uart.h"
 #include "../../include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_bop_aes.h"
 #include "../../include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_bop_gr_bridge.h"
+#include "../../include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_decode_cpudma2_0.h"
+#include "../../include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_decode_cpuregs2_0.h"
+#include "../../include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_intr.h"
 #include "../../include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_sharf_top.h"
 #include "../../include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_sun_gisb_arb.h"
 /* The reduced combo header shares the full SUN_TOP RDB's include guard. */
@@ -48,6 +51,29 @@ static const u8 crystalhd_fw_research_owner;
 #define CRYSTALHD_FW_RESEARCH_HEAP_PACKET_OFFSET 0x00070000U
 #define CRYSTALHD_FW_RESEARCH_HEAP_PACKET_BYTES 0x100U
 #define CRYSTALHD_FW_RESEARCH_STATE_FIRMWARE_SIZE 0x000d3014U
+#define CRYSTALHD_FW_RESEARCH_CPUDMA_ACTIVE_MASK 0x0000000fU
+#define CRYSTALHD_FW_RESEARCH_SDRAM_BUSY_MASK 0x00000001U
+
+struct crystalhd_fw_command_observer {
+	u64 generation;
+	u32 request_words[3];
+	int hook_status;
+	bool posted;
+	struct crystalhd_fw_research_command_observation *result;
+};
+
+static int crystalhd_fw_research_observer_arm(
+	struct crystalhd_cmd *ctx, u64 generation, const u32 request_words[3],
+	struct crystalhd_fw_command_observer *observer,
+	struct crystalhd_fw_research_command_observation *result);
+static int crystalhd_fw_research_observer_finish(
+	struct crystalhd_cmd *ctx, struct crystalhd_fw_command_observer *observer,
+	const BC_FW_CMD *fw_cmd, BC_STATUS transport_status);
+static void crystalhd_fw_research_observer_invalidate(
+	struct crystalhd_fw_research_command_observation *result, int status);
+static void crystalhd_fw_research_command_observation_fail(
+	struct crystalhd_fw_research_command_observation_result *result,
+	int status);
 
 static const u8 crystalhd_fw_research_sha256[SHA256_DIGEST_SIZE] = {
 	0x8b, 0xf3, 0xa6, 0x8f, 0x5c, 0x64, 0x68, 0x63,
@@ -149,6 +175,15 @@ static bool crystalhd_fw_research_heap_packet_request_valid(
 {
 	return request->version == CRYSTALHD_FW_RESEARCH_VERSION &&
 		request->size == sizeof(struct crystalhd_fw_research_heap_packet_result) &&
+		!request->flags && !request->reserved;
+}
+
+static bool crystalhd_fw_research_command_observation_request_valid(
+	const struct crystalhd_fw_research_state_request *request)
+{
+	return request->version == CRYSTALHD_FW_RESEARCH_VERSION &&
+		request->size ==
+			sizeof(struct crystalhd_fw_research_command_observation_result) &&
 		!request->flags && !request->reserved;
 }
 
@@ -312,13 +347,15 @@ static int crystalhd_fw_research_payload(BC_FW_CMD *fw_cmd, u32 command,
 	return 0;
 }
 
-static int crystalhd_fw_research_command(struct crystalhd_cmd *ctx,
-	struct crystalhd_fw_research_result *result, u32 command)
+static int crystalhd_fw_research_command_internal(struct crystalhd_cmd *ctx,
+	struct crystalhd_fw_research_result *result, u32 command,
+	struct crystalhd_fw_research_command_observation *observation)
 {
+	struct crystalhd_fw_command_observer observer;
 	struct crystalhd_fw_research_reply *reply;
 	BC_FW_CMD fw_cmd;
 	BC_STATUS sts;
-	int rc;
+	int observer_rc = 0, rc;
 
 	if (!READ_ONCE(ctx->adp->present))
 		return -ENODEV;
@@ -329,10 +366,19 @@ static int crystalhd_fw_research_command(struct crystalhd_cmd *ctx,
 					  result->request.selector);
 	if (rc)
 		return rc;
+	if (observation) {
+		rc = crystalhd_fw_research_observer_arm(ctx, result->generation,
+			fw_cmd.cmd, &observer, observation);
+		if (rc)
+			return rc;
+	}
 	reply = &result->replies[result->command_count++];
 	reply->command = command;
 	reply->sequence = fw_cmd.cmd[1];
 	sts = crystalhd_fw_exec_locked(ctx, &crystalhd_fw_research_owner, &fw_cmd);
+	if (observation)
+		observer_rc = crystalhd_fw_research_observer_finish(ctx, &observer,
+			&fw_cmd, sts);
 	reply->transport_status = sts;
 	/* For these Flea commands only these two statuses establish a complete
 	 * DRAM reply read. Admission, timeout and read errors never do. In
@@ -351,7 +397,13 @@ static int crystalhd_fw_research_command(struct crystalhd_cmd *ctx,
 	rc = crystalhd_status_to_errno(sts);
 	if (!rc && command == eCMD_C011_DEC_CHAN_OPEN && fw_cmd.rsp[3] != 0)
 		return -EPROTO;
-	return rc;
+	return rc ? rc : observer_rc;
+}
+
+static int crystalhd_fw_research_command(struct crystalhd_cmd *ctx,
+	struct crystalhd_fw_research_result *result, u32 command)
+{
+	return crystalhd_fw_research_command_internal(ctx, result, command, NULL);
 }
 
 static int crystalhd_fw_research_state_apertures(struct crystalhd_adp *adp)
@@ -426,6 +478,262 @@ static int crystalhd_fw_research_state_ready(struct crystalhd_cmd *ctx,
 	if (hw->FleaPowerState != FLEA_PS_ACTIVE)
 		return -EAGAIN;
 	return 0;
+}
+
+static void crystalhd_fw_research_observer_invalidate(
+	struct crystalhd_fw_research_command_observation *result, int status)
+{
+	memset(result->response_words, 0, sizeof(result->response_words));
+	result->header_matches = 0;
+	result->host_intr_attempted = 0;
+	result->host_intr_valid = 0;
+	result->host_intr_arm_mbox0 = 0;
+	result->host_intr_ns = 0;
+	memset(result->samples, 0, sizeof(result->samples));
+	result->sample_count = 0;
+	result->read_complete = 0;
+	result->status = status ? status : -EIO;
+}
+
+static void crystalhd_fw_research_command_observation_fail(
+	struct crystalhd_fw_research_command_observation_result *result,
+	int status)
+{
+	struct crystalhd_fw_research_heap_packet_sample *boundary;
+	u32 attempted;
+
+	if (!result)
+		return;
+	boundary = &result->boundary_after_init;
+	attempted = boundary->attempted;
+	crystalhd_fw_research_observer_invalidate(&result->in_flight, status);
+	memset(boundary, 0, sizeof(*boundary));
+	boundary->attempted = attempted;
+	boundary->status = status ? status : -EIO;
+}
+
+static int crystalhd_fw_research_observer_arm(
+	struct crystalhd_cmd *ctx, u64 generation, const u32 request_words[3],
+	struct crystalhd_fw_command_observer *observer,
+	struct crystalhd_fw_research_command_observation *result)
+{
+	struct crystalhd_hw *hw = ctx->hw_ctx;
+	unsigned long flags;
+	int rc;
+
+	memset(observer, 0, sizeof(*observer));
+	memset(result, 0, sizeof(*result));
+	result->generation = generation;
+	memcpy(result->request_words, request_words,
+	       sizeof(result->request_words));
+	result->status = -EINPROGRESS;
+	if (request_words[0] != eCMD_C011_INIT || request_words[1] != 1U) {
+		rc = -EINVAL;
+		goto failed;
+	}
+	observer->generation = generation;
+	memcpy(observer->request_words, request_words,
+	       sizeof(observer->request_words));
+	observer->result = result;
+
+	spin_lock_irqsave(&hw->lock, flags);
+	rc = crystalhd_fw_research_state_ready(ctx, generation, hw);
+	if (!rc && hw->FleaPowerTransition)
+		rc = -EAGAIN;
+	if (!rc && (hw->fwcmd_observer || hw->fwcmd_active ||
+		    hw->fwcmd_trans_active))
+		rc = -EBUSY;
+	if (!rc)
+		hw->fwcmd_observer = observer;
+	spin_unlock_irqrestore(&hw->lock, flags);
+	if (!rc)
+		return 0;
+failed:
+	crystalhd_fw_research_observer_invalidate(result, rc);
+	return rc;
+}
+
+/* hw->lock is held.  A completed command is a normal sampling stop only when
+ * observed between constituent reads; every other changed guard is a refusal.
+ */
+static int crystalhd_fw_research_observer_inflight_ready(
+	struct crystalhd_hw *hw, struct crystalhd_fw_command_observer *observer)
+{
+	struct crystalhd_cmd *ctx = &hw->adp->cmds;
+	int rc;
+
+	lockdep_assert_held(&hw->lock);
+	if (hw->fwcmd_observer != observer)
+		return -ESTALE;
+	rc = crystalhd_fw_research_state_context(ctx, observer->generation, hw);
+	if (rc)
+		return rc;
+	if (!hw->pfnReadDevRegister || !READ_ONCE(hw->dev_started) ||
+	    READ_ONCE(hw->dma_fault) || hw->fwcmd_poisoned)
+		return -EIO;
+	if (hw->FleaPowerState != FLEA_PS_ACTIVE || hw->FleaPowerTransition)
+		return -EAGAIN;
+	if (!hw->fwcmd_pending || !hw->fwcmd_active)
+		return -EALREADY;
+	if (!hw->fwcmd_trans_active)
+		return -EPROTO;
+	return 0;
+}
+
+static int crystalhd_fw_research_observer_register(
+	struct crystalhd_hw *hw, struct crystalhd_fw_command_observer *observer,
+	u32 address, u32 mask, u32 *value, u64 *timestamp)
+{
+	unsigned long flags;
+	int rc;
+
+	spin_lock_irqsave(&hw->lock, flags);
+	rc = crystalhd_fw_research_observer_inflight_ready(hw, observer);
+	if (rc)
+		goto unlock;
+	*value = hw->pfnReadDevRegister(hw->adp, address) & mask;
+	rc = crystalhd_fw_research_observer_inflight_ready(hw, observer);
+	/* Completion before a read is a clean sampling boundary.  Completion
+	 * during the read invalidates the constituent and therefore the run.
+	 */
+	if (rc == -EALREADY)
+		rc = -ECANCELED;
+	if (!rc)
+		*timestamp = ktime_get_ns();
+unlock:
+	spin_unlock_irqrestore(&hw->lock, flags);
+	return rc;
+}
+
+void crystalhd_fw_research_command_posted(struct crystalhd_hw *hw,
+					  const BC_FW_CMD *fw_cmd)
+{
+	struct crystalhd_fw_command_observer *observer;
+	struct crystalhd_fw_research_command_observation *result;
+	u32 cpudma, sdram, host_intr;
+	u64 cpudma_ns, sdram_ns, host_intr_ns;
+	unsigned long flags;
+	unsigned int i;
+	int rc;
+
+	if (!hw || !fw_cmd)
+		return;
+	spin_lock_irqsave(&hw->lock, flags);
+	observer = hw->fwcmd_observer;
+	spin_unlock_irqrestore(&hw->lock, flags);
+	if (!observer)
+		return;
+	result = observer->result;
+	result->attempted = 1;
+	observer->posted = true;
+	if (memcmp(fw_cmd->cmd, observer->request_words,
+		   sizeof(observer->request_words))) {
+		observer->hook_status = -EPROTO;
+		return;
+	}
+
+	/* Fixed-count sampling only: no value controls another read or retry.
+	 * Each fixed register read has its own hw->lock -> gisb_lock interval,
+	 * so normal IRQ completion may run between constituent accesses.
+	 */
+	for (i = 0; i < CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_MAX; i++) {
+		cpudma = sdram = 0;
+		cpudma_ns = sdram_ns = 0;
+		rc = crystalhd_fw_research_observer_register(hw, observer,
+			BCHP_DECODE_CPUDMA2_0_REG_DMA_STATUS,
+			CRYSTALHD_FW_RESEARCH_CPUDMA_ACTIVE_MASK,
+			&cpudma, &cpudma_ns);
+		if (rc == -EALREADY) {
+			if (!i)
+				observer->hook_status = -ENODATA;
+			break;
+		}
+		if (rc) {
+			observer->hook_status = rc;
+			break;
+		}
+		rc = crystalhd_fw_research_observer_register(hw, observer,
+			BCHP_DECODE_CPUREGS2_0_REG_SDRAM_STATUS,
+			CRYSTALHD_FW_RESEARCH_SDRAM_BUSY_MASK,
+			&sdram, &sdram_ns);
+		if (rc == -EALREADY) {
+			if (!i)
+				observer->hook_status = -ENODATA;
+			break;
+		}
+		if (rc) {
+			observer->hook_status = rc;
+			break;
+		}
+		result->samples[i].cpudma_ns = cpudma_ns;
+		result->samples[i].sdram_ns = sdram_ns;
+		result->samples[i].cpudma_active = cpudma;
+		result->samples[i].sdram_busy = sdram;
+		result->sample_count = i + 1;
+	}
+	if (observer->hook_status || !result->sample_count)
+		return;
+
+	/* This aggregate status read is optional and never repeated.  A reply
+	 * that won the gap simply leaves it unattempted; the IRQ remains
+	 * authoritative and no alternate completion path is introduced.
+	 */
+	host_intr = 0;
+	host_intr_ns = 0;
+	rc = crystalhd_fw_research_observer_register(hw, observer,
+		BCHP_INTR_INTR_STATUS,
+		BCHP_INTR_INTR_STATUS_ARM_MBOX0_INTR_MASK,
+		&host_intr, &host_intr_ns);
+	if (!rc) {
+		result->host_intr_attempted = 1;
+		result->host_intr_valid = 1;
+		result->host_intr_arm_mbox0 = host_intr;
+		result->host_intr_ns = host_intr_ns;
+	} else if (rc != -EALREADY) {
+		observer->hook_status = rc;
+	}
+}
+
+static int crystalhd_fw_research_observer_finish(
+	struct crystalhd_cmd *ctx, struct crystalhd_fw_command_observer *observer,
+	const BC_FW_CMD *fw_cmd, BC_STATUS transport_status)
+{
+	struct crystalhd_fw_research_command_observation *result = observer->result;
+	struct crystalhd_hw *hw = ctx->hw_ctx;
+	unsigned long flags;
+	int rc = 0;
+
+	spin_lock_irqsave(&hw->lock, flags);
+	if (hw->fwcmd_observer != observer)
+		rc = -ESTALE;
+	else
+		hw->fwcmd_observer = NULL;
+	if (!rc && crystalhd_fw_research_state_ready(ctx, observer->generation, hw))
+		rc = -EIO;
+	spin_unlock_irqrestore(&hw->lock, flags);
+
+	if (!rc && (!observer->posted || !result->attempted ||
+		    !result->sample_count))
+		rc = -ENODATA;
+	if (!rc && observer->hook_status)
+		rc = observer->hook_status;
+	if (!rc && transport_status != BC_STS_SUCCESS &&
+	    transport_status != BC_STS_FW_CMD_ERR)
+		rc = crystalhd_status_to_errno(transport_status);
+	if (!rc) {
+		memcpy(result->response_words, fw_cmd->rsp,
+		       sizeof(result->response_words));
+		result->header_matches =
+			result->response_words[0] == result->request_words[0] &&
+			result->response_words[1] == result->request_words[1];
+		if (!result->header_matches)
+			rc = -EPROTO;
+	}
+	if (rc)
+		crystalhd_fw_research_observer_invalidate(result, rc);
+	else
+		result->status = 0;
+	return rc;
 }
 
 static int crystalhd_fw_research_state_sample(struct crystalhd_cmd *ctx,
@@ -1073,7 +1381,8 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 	struct crystalhd_fw_research_heap_packet_result *heap_packet,
 	struct crystalhd_fw_research_clock_result *clock,
 	struct crystalhd_fw_research_uart_result *uart,
-	struct crystalhd_fw_research_crypto_result *crypto)
+	struct crystalhd_fw_research_crypto_result *crypto,
+	struct crystalhd_fw_research_command_observation_result *command_observation)
 {
 	struct crystalhd_device_access access;
 	struct crystalhd_cmd *ctx;
@@ -1118,30 +1427,34 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 		memset(&crypto->after_init, 0, sizeof(crypto->after_init));
 		memset(&crypto->after_open, 0, sizeof(crypto->after_open));
 	}
+	if (command_observation) {
+		memset(&command_observation->in_flight, 0,
+		       sizeof(command_observation->in_flight));
+		memset(&command_observation->boundary_after_init, 0,
+		       sizeof(command_observation->boundary_after_init));
+	}
 	result->request = *request;
 	result->generation = generation;
 	if (!crystalhd_fw_research_live()) {
-		result->status = -EAGAIN;
-		return;
+		rc = -EAGAIN;
+		goto refuse;
 	}
 	if (!capable(CAP_SYS_RAWIO)) {
-		result->status = -EPERM;
-		return;
+		rc = -EPERM;
+		goto refuse;
 	}
 	if (!crystalhd_fw_research_request_valid(request)) {
-		result->status = -EINVAL;
-		return;
+		rc = -EINVAL;
+		goto refuse;
 	}
 	rc = crystalhd_device_enter(generation, true, &access);
-	if (rc) {
-		result->status = rc;
-		return;
-	}
+	if (rc)
+		goto refuse;
 	ctx = &access.adp->cmds;
 	rc = crystalhd_fw_research_idle(access.adp);
 	if (rc)
 		goto exit;
-	if (state) {
+	if (state || command_observation) {
 		if (access.adp->generation != generation) {
 			rc = -ESTALE;
 			goto exit;
@@ -1159,7 +1472,8 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 	result->firmware_hash_valid = hash_completed;
 	if (rc)
 		goto release;
-	if (state && firmware->size != CRYSTALHD_FW_RESEARCH_STATE_FIRMWARE_SIZE) {
+	if ((state || command_observation) &&
+	    firmware->size != CRYSTALHD_FW_RESEARCH_STATE_FIRMWARE_SIZE) {
 		rc = -EINVAL;
 		goto release;
 	}
@@ -1183,9 +1497,16 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 	rc = crystalhd_status_to_errno(sts);
 	if (rc)
 		goto cleanup;
-	rc = crystalhd_fw_research_command(ctx, result, eCMD_C011_INIT);
+	rc = crystalhd_fw_research_command_internal(ctx, result, eCMD_C011_INIT,
+		command_observation ? &command_observation->in_flight : NULL);
 	if (rc)
 		goto cleanup;
+	if (command_observation) {
+		rc = crystalhd_fw_research_heap_packet_sample(ctx, generation,
+			&command_observation->boundary_after_init);
+		if (rc)
+			goto cleanup;
+	}
 	rc = crystalhd_fw_research_command(ctx, result, eCMD_C011_GET_VERSION);
 	if (rc || request->selector == CRYSTALHD_FW_RESEARCH_VERSION_ONLY)
 		goto cleanup;
@@ -1325,14 +1646,39 @@ exit:
 	result->retained = session_attempted &&
 		crystalhd_fw_research_retained(access.adp);
 	result->status = rc;
+	if (command_observation) {
+		struct crystalhd_fw_research_command_observation *observation =
+			&command_observation->in_flight;
+		struct crystalhd_fw_research_heap_packet_sample *boundary =
+			&command_observation->boundary_after_init;
+
+		if (rc || result->retained || !result->cleanup_attempted ||
+		    result->cleanup_status != BC_STS_SUCCESS ||
+		    observation->status || !observation->header_matches ||
+		    !boundary->attempted || boundary->status ||
+		    !boundary->read_complete) {
+			int failure = rc ? rc : -EIO;
+
+			crystalhd_fw_research_command_observation_fail(
+				command_observation, failure);
+		} else {
+			observation->read_complete = 1;
+		}
+	}
 	crystalhd_device_exit(&access);
+	return;
+
+refuse:
+	result->status = rc;
+	crystalhd_fw_research_command_observation_fail(command_observation, rc);
 }
 
 static void crystalhd_fw_research_run(u64 generation,
 	const struct crystalhd_fw_research_request *request,
 	struct crystalhd_fw_research_result *result)
 {
-	crystalhd_fw_research_run_internal(generation, request, result, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+	crystalhd_fw_research_run_internal(generation, request, result, NULL, NULL,
+		NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 }
 
 struct crystalhd_fw_research_file {
@@ -1546,6 +1892,8 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 	struct crystalhd_fw_research_clock_result *clock_result;
 	struct crystalhd_fw_research_uart_result *uart_result;
 	struct crystalhd_fw_research_crypto_result *crypto_result;
+	struct crystalhd_fw_research_command_observation_result
+		*command_observation_result;
 	struct crystalhd_fw_research_request request;
 	struct crystalhd_fw_research_result *result;
 	void __user *user = (void __user *)argument;
@@ -1582,7 +1930,8 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.size = sizeof(struct crystalhd_fw_research_result);
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
-						 &state_result->control, state_result, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+			&state_result->control, state_result, NULL, NULL, NULL,
+			NULL, NULL, NULL, NULL, NULL);
 		if (copy_to_user(user, state_result, sizeof(*state_result)))
 			rc = -EFAULT;
 		kfree(state_result);
@@ -1603,7 +1952,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&controller_result->state.control, &controller_result->state,
-			controller_result, NULL, NULL, NULL, NULL, NULL, NULL);
+			controller_result, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 		if (copy_to_user(user, controller_result, sizeof(*controller_result)))
 			rc = -EFAULT;
 		kfree(controller_result);
@@ -1624,7 +1973,8 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&image_result->controller.state.control,
-			&image_result->controller.state, &image_result->controller, image_result, NULL, NULL, NULL, NULL, NULL);
+			&image_result->controller.state, &image_result->controller,
+			image_result, NULL, NULL, NULL, NULL, NULL, NULL);
 		if (copy_to_user(user, image_result, sizeof(*image_result)))
 			rc = -EFAULT;
 		kfree(image_result);
@@ -1646,7 +1996,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&packet_result->image.controller.state.control,
 			&packet_result->image.controller.state, &packet_result->image.controller,
-			&packet_result->image, packet_result, NULL, NULL, NULL, NULL);
+			&packet_result->image, packet_result, NULL, NULL, NULL, NULL, NULL);
 		if (copy_to_user(user, packet_result, sizeof(*packet_result)))
 			rc = -EFAULT;
 		kfree(packet_result);
@@ -1668,7 +2018,8 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&heap_packet_result->image.controller.state.control,
 			&heap_packet_result->image.controller.state, &heap_packet_result->image.controller,
-			&heap_packet_result->image, NULL, heap_packet_result, NULL, NULL, NULL);
+			&heap_packet_result->image, NULL, heap_packet_result, NULL, NULL,
+			NULL, NULL);
 		if (copy_to_user(user, heap_packet_result, sizeof(*heap_packet_result)))
 			rc = -EFAULT;
 		kfree(heap_packet_result);
@@ -1689,7 +2040,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&clock_result->state.control, &clock_result->state,
-			NULL, NULL, NULL, NULL, clock_result, NULL, NULL);
+			NULL, NULL, NULL, NULL, clock_result, NULL, NULL, NULL);
 		if (copy_to_user(user, clock_result, sizeof(*clock_result)))
 			rc = -EFAULT;
 		kfree(clock_result);
@@ -1710,7 +2061,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&uart_result->state.control, &uart_result->state,
-			NULL, NULL, NULL, NULL, NULL, uart_result, NULL);
+			NULL, NULL, NULL, NULL, NULL, uart_result, NULL, NULL);
 		if (copy_to_user(user, uart_result, sizeof(*uart_result)))
 			rc = -EFAULT;
 		kfree(uart_result);
@@ -1731,10 +2082,35 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&crypto_result->state.control, &crypto_result->state,
-			NULL, NULL, NULL, NULL, NULL, NULL, crypto_result);
+			NULL, NULL, NULL, NULL, NULL, NULL, crypto_result, NULL);
 		if (copy_to_user(user, crypto_result, sizeof(*crypto_result)))
 			rc = -EFAULT;
 		kfree(crypto_result);
+		return rc;
+	}
+	if (command == CRYSTALHD_FW_RESEARCH_RUN_COMMAND_OBSERVATION) {
+		if (copy_from_user(&state_request, user, sizeof(state_request)))
+			return -EFAULT;
+		if (!crystalhd_fw_research_command_observation_request_valid(
+			    &state_request))
+			return -EINVAL;
+		command_observation_result = kzalloc(
+			sizeof(*command_observation_result), GFP_KERNEL);
+		if (!command_observation_result)
+			return -ENOMEM;
+		command_observation_result->request = state_request;
+		memset(&request, 0, sizeof(request));
+		request.version = CRYSTALHD_FW_RESEARCH_VERSION;
+		request.size = sizeof(struct crystalhd_fw_research_result);
+		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+		crystalhd_fw_research_run_internal(binding->generation, &request,
+			&command_observation_result->control,
+			NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+			command_observation_result);
+		if (copy_to_user(user, command_observation_result,
+				 sizeof(*command_observation_result)))
+			rc = -EFAULT;
+		kfree(command_observation_result);
 		return rc;
 	}
 	if (command != CRYSTALHD_FW_RESEARCH_RUN)

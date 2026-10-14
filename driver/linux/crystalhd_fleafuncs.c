@@ -42,6 +42,7 @@
 #include "crystalhd_lnx.h"
 #include "FleaDefs.h"
 #include "crystalhd_flea_ddr.h"
+#include "crystalhd_fw_research.h"
 #include "crystalhd_rx_receipt.h"
 #include "../../include/crystalhd_fw_research.h"
 
@@ -2272,6 +2273,7 @@ BC_STATUS crystalhd_flea_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd)
 	hw->pfnWriteDevRegister(hw->adp, hw->fwcmdPostMbox, hw->fwcmdPostAddr);
 
 	spin_unlock_irqrestore(&hw->lock, flags);
+	crystalhd_fw_research_command_posted(hw, fw_cmd);
 
 	msleep_interruptible(50);
 

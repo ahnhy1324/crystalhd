@@ -361,6 +361,9 @@ enum BRCM_EVENT {
 };
 
 struct crystalhd_hw; /* forward declaration for the types */
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+struct crystalhd_fw_command_observer;
+#endif
 
 /*typedef void*		(*HW_VERIFY_DEVICE)(struct crystalhd_adp*); */
 /*typedef bool		(*HW_INIT_DEVICE_RESOURCES)(struct crystalhd_adp*); */
@@ -434,6 +437,13 @@ struct crystalhd_hw {
 	bool			fwcmd_active;
 	bool			fwcmd_poisoned;
 	int			fwcmd_evt_sts;
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+	/* Stack-owned only by the exclusive research ioctl and protected by
+	 * hw->lock.  The firmware-command mutexes keep the owner alive until the
+	 * synchronous low-level command returns.
+	 */
+	struct crystalhd_fw_command_observer *fwcmd_observer;
+#endif
 
 	uint32_t		pib_del_Q_addr;
 	uint32_t		pib_rel_Q_addr;
