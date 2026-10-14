@@ -83,6 +83,17 @@ struct DriverDmaAudit {
     uint64_t eos_control_bytes = 0;
 };
 
+struct DmaExpectation {
+    /* Opt-in failed-run preservation gate.  AuditDriverDma rejects malformed
+     * receipt structure; valid partial/non-output DMA remains diagnostic data
+     * for the experiment oracle rather than suppressing the only artifact.
+     */
+    unsigned width = 0;
+    unsigned height = 0;
+    uint32_t y_done_words = 0;
+    uint32_t uv_done_words = 0;
+};
+
 struct DeviceOps {
     void *opaque = nullptr;
     int (*open_device)(void *, const char *, int) = nullptr;
@@ -114,8 +125,8 @@ bool JoinReceipts(const HostReceipt *host, size_t host_count,
                   Failure *failure);
 
 bool WriteTsv(const char *path, const JoinedReceipt *rows, size_t row_count,
-              uint64_t generation, uint64_t run_id, const OutputOps *ops,
-              Failure *failure);
+              uint64_t generation, uint64_t run_id, bool native_run_ok,
+              const OutputOps *ops, Failure *failure);
 
 class Probe {
 public:
@@ -128,7 +139,8 @@ public:
     bool Prepare(const char *output_path, unsigned expected_outputs);
     bool Arm();
     bool Record(const HostReceipt &receipt);
-    bool Finish(bool native_run_ok);
+    bool Finish(bool native_run_ok,
+                const DmaExpectation *preserve_failed_evidence = nullptr);
     bool AuditDma(unsigned width, unsigned height, uint32_t y_done_words,
                   uint32_t uv_done_words, DriverDmaAudit *audit,
                   Failure *failure) const;
@@ -139,6 +151,9 @@ public:
     size_t joined_count() const { return joined_count_; }
     uint64_t generation() const { return arm_.generation; }
     uint64_t run_id() const { return arm_.run_id; }
+    bool failed_evidence_published() const {
+        return failed_evidence_published_;
+    }
 
 private:
     bool SealAndRead();
@@ -160,6 +175,7 @@ private:
     size_t host_count_ = 0;
     size_t driver_count_ = 0;
     size_t joined_count_ = 0;
+    bool failed_evidence_published_ = false;
 };
 
 } // namespace rx_output_receipts

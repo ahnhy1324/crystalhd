@@ -556,12 +556,24 @@ int main()
 
     char directory[] = "/tmp/crystalhd-rx-output-test.XXXXXX";
     Check(mkdtemp(directory) != nullptr, "temporary output directory created");
-    char output[512], native_failure[512], partial[512], raced[512];
+    char output[512], native_failure[512], preserved_failure[512];
+    char invalid_failure[512], semantic_failure[512], empty_failure[512];
+    char eos_only_failure[512], partial[512], raced[512];
     char publish_race[512], recovered[512], multi[512], overflow[512];
     char arm_reserved[512], arm_unknown[512];
     std::snprintf(output, sizeof(output), "%s/receipts.tsv", directory);
     std::snprintf(native_failure, sizeof(native_failure), "%s/native-fail.tsv",
                   directory);
+    std::snprintf(preserved_failure, sizeof(preserved_failure),
+                  "%s/preserved-native-fail.tsv", directory);
+    std::snprintf(invalid_failure, sizeof(invalid_failure),
+                  "%s/invalid-native-fail.tsv", directory);
+    std::snprintf(semantic_failure, sizeof(semantic_failure),
+                  "%s/semantic-native-fail.tsv", directory);
+    std::snprintf(empty_failure, sizeof(empty_failure),
+                  "%s/empty-native-fail.tsv", directory);
+    std::snprintf(eos_only_failure, sizeof(eos_only_failure),
+                  "%s/eos-only-native-fail.tsv", directory);
     std::snprintf(partial, sizeof(partial), "%s/partial.tsv", directory);
     std::snprintf(raced, sizeof(raced), "%s/raced.tsv", directory);
     std::snprintf(publish_race, sizeof(publish_race), "%s/publish-race.tsv",
@@ -623,7 +635,7 @@ int main()
             "640\t360\t6\t95\t1\t0\t10\t10\t20\n";
         Check(read == sizeof(expected) - 1 &&
               !std::memcmp(text, expected, sizeof(expected) - 1),
-              "TSV has the exact ordered 49-column schema including host n_drop and golden row");
+              "successful TSV preserves the exact ordered 49-column schema and golden row");
         Probe collision(&ops);
         Check(!collision.Prepare(output, 1) &&
               collision.failure() == Failure::Path,
@@ -689,6 +701,126 @@ int main()
               probe.failure() == Failure::NativeRun && !Exists(native_failure) &&
               fake.events == "OASRC",
               "failed native decode still seals evidence but never publishes a TSV");
+    }
+    {
+        FakeDevice fake;
+        fake.records.push_back(Driver(0, 6, 12));
+        DeviceOps ops = fake.Ops();
+        Probe probe(&ops);
+        DmaExpectation expected_dma;
+        expected_dma.width = 640;
+        expected_dma.height = 360;
+        expected_dma.y_done_words = 320 * 180;
+        Check(probe.Prepare(preserved_failure, 1) && probe.Arm() &&
+              probe.Record(Host(fake.records[0])) &&
+              !probe.Finish(false, &expected_dma) &&
+              probe.failure() == Failure::NativeRun &&
+              probe.failed_evidence_published() && fake.valid &&
+              fake.events == "OASRC" && probe.host_count() == 1 &&
+              probe.driver_count() == 1 && probe.joined_count() == 1 &&
+              Exists(preserved_failure),
+              "explicit failed-run policy validates, joins and atomically publishes evidence while returning native FAIL");
+        DriverDmaAudit audit;
+        Failure audit_failure = Failure::None;
+        Check(probe.AuditDma(640, 360, 320 * 180, 0,
+                             &audit, &audit_failure) &&
+              audit.records == 1 && audit.full_size == 1 &&
+              audit_failure == Failure::None,
+              "published failed-run evidence retains every sealed driver record for audit");
+        FILE *file = std::fopen(preserved_failure, "rb");
+        char text[4096] = {};
+        const size_t read = file ?
+            std::fread(text, 1, sizeof(text) - 1, file) : 0;
+        if (file) std::fclose(file);
+        Check(read && std::strstr(text,
+                  "disposition_to_host_ns\tnative_run_result\n") &&
+              std::strstr(text, "\tFAIL\n") &&
+              !std::strstr(text, "\tPASS\n"),
+              "failed evidence identifies native FAIL in-band and cannot masquerade as a passing run");
+        Check(!probe.Finish(false, &expected_dma) &&
+              !probe.failed_evidence_published(),
+              "a duplicate Finish call cannot expose stale failed-evidence publication state");
+    }
+    {
+        FakeDevice fake;
+        fake.records.push_back(Driver(0, 6, 12));
+        fake.records[0].y_done_words = 0;
+        DeviceOps ops = fake.Ops();
+        Probe probe(&ops);
+        DmaExpectation expected_dma;
+        expected_dma.width = 640;
+        expected_dma.height = 360;
+        expected_dma.y_done_words = 320 * 180;
+        Check(probe.Prepare(invalid_failure, 1) && probe.Arm() &&
+              probe.Record(Host(fake.records[0])) &&
+              !probe.Finish(false, &expected_dma) &&
+              probe.failure() == Failure::DriverRecord &&
+              !probe.failed_evidence_published() && fake.valid &&
+              fake.events == "OASRC" && !Exists(invalid_failure),
+              "failed-run preservation refuses malformed DMA receipts before atomic publication");
+    }
+    {
+        FakeDevice fake;
+        fake.records.push_back(Driver(0, 6, 12));
+        --fake.records[0].y_done_words;
+        DeviceOps ops = fake.Ops();
+        Probe probe(&ops);
+        DmaExpectation expected_dma;
+        expected_dma.width = 640;
+        expected_dma.height = 360;
+        expected_dma.y_done_words = 320 * 180;
+        Check(probe.Prepare(semantic_failure, 1) && probe.Arm() &&
+              probe.Record(Host(fake.records[0])) &&
+              !probe.Finish(false, &expected_dma) &&
+              probe.failure() == Failure::NativeRun &&
+              probe.failed_evidence_published() &&
+              Exists(semantic_failure),
+              "semantic short-picture evidence remains inspectable but cannot turn native failure into PASS");
+        DriverDmaAudit audit;
+        Failure audit_failure = Failure::None;
+        Check(probe.AuditDma(640, 360, 320 * 180, 0,
+                             &audit, &audit_failure) &&
+              audit.records == 1 && audit.partial_size == 1 &&
+              !audit.full_size && audit_failure == Failure::None,
+              "failed evidence distinguishes hypothesis anomalies from malformed receipt integrity");
+    }
+    {
+        FakeDevice fake;
+        DeviceOps ops = fake.Ops();
+        Probe probe(&ops);
+        DmaExpectation expected_dma;
+        expected_dma.width = 640;
+        expected_dma.height = 360;
+        expected_dma.y_done_words = 320 * 180;
+        Check(probe.Prepare(empty_failure, 1) && probe.Arm() &&
+              !probe.Finish(false, &expected_dma) &&
+              probe.failure() == Failure::NativeRun &&
+              !probe.failed_evidence_published() && fake.valid &&
+              fake.events == "OASRC" && !probe.host_count() &&
+              !probe.driver_count() && !probe.joined_count() &&
+              !Exists(empty_failure),
+              "zero-host zero-driver native failure cannot publish a header-only evidence TSV");
+    }
+    {
+        FakeDevice fake;
+        fake.records.push_back(Driver(0, 6, 12, true));
+        fake.records.back().y_done_words = 16;
+        fake.records.push_back(Driver(1, 7, 13, true));
+        fake.records.back().y_done_words = 0;
+        DeviceOps ops = fake.Ops();
+        Probe probe(&ops);
+        DmaExpectation expected_dma;
+        expected_dma.width = 640;
+        expected_dma.height = 360;
+        expected_dma.y_done_words = 320 * 180;
+        Check(probe.Prepare(eos_only_failure, 1) && probe.Arm() &&
+              !probe.Finish(false, &expected_dma) &&
+              probe.failure() == Failure::NativeRun &&
+              !probe.failed_evidence_published() && fake.valid &&
+              fake.events == "OASRC" && !probe.host_count() &&
+              probe.driver_count() == 2 && !probe.joined_count() &&
+              !Exists(eos_only_failure),
+              "EOS-control-only seal cannot publish failure evidence without one exact joined row");
     }
     {
         const FakeDevice::SealFault faults[] = {
@@ -854,6 +986,11 @@ int main()
     unlink(raced);
     unlink(recovered);
     unlink(partial);
+    unlink(eos_only_failure);
+    unlink(empty_failure);
+    unlink(semantic_failure);
+    unlink(invalid_failure);
+    unlink(preserved_failure);
     unlink(native_failure);
     unlink(overflow);
     unlink(multi);
