@@ -11,7 +11,7 @@ PYTHON3 ?= python3
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check raw-frame-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check h264-stream-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
+.PHONY: all driver library library-check raw-frame-check library-drain-test gstreamer vaapi vaapi-cpu-check examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check h264-stream-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
 
 all: driver library gstreamer vaapi examples
 
@@ -105,6 +105,9 @@ library-drain-test: library tests/phase1-progress.h tests/issue204-active-contex
 
 vaapi: library
 	$(MAKE) -C filters/vaapi
+
+vaapi-cpu-check:
+	CXX="$(CXX)" sh ./tests/vaapi-cpu-flags.sh
 
 examples: library
 	$(MAKE) -C examples
@@ -200,7 +203,7 @@ pib-check:
 	CC="$(CC)" sh ./tests/flea-pib.sh
 	CC="$(CC)" sh ./tests/link-pib.sh
 
-userspace32-check:
+userspace32-check: vaapi-cpu-check
 	CXX="$(CXX)" sh ./tests/userspace32.sh
 
 legacy-cpu-check:
