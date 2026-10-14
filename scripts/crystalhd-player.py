@@ -14,6 +14,21 @@ import tty
 
 MAX_SOFTWARE_OUTPUT_DIMENSION = 4096
 MAX_SOFTWARE_OUTPUT_PIXELS = 4096 * 2160
+HANDLED_BUS_MESSAGE_DETAILS = (
+    "application",
+    "error",
+    "eos",
+    "async-done",
+    "state-changed",
+    "clock-lost",
+    "latency",
+)
+
+
+def connect_bus_messages(bus, callback):
+    """Subscribe only to message types the controller consumes."""
+    for detail in HANDLED_BUS_MESSAGE_DETAILS:
+        bus.connect(f"message::{detail}", callback)
 
 
 def local_file(value):
@@ -257,7 +272,7 @@ class Player:
         self.pipeline.connect("deep-element-removed", self.element_removed)
         self.bus = self.pipeline.get_bus()
         self.bus.add_signal_watch()
-        self.bus.connect("message", self.message)
+        connect_bus_messages(self.bus, self.message)
 
     def fail(self, message):
         self.health.fail(message)

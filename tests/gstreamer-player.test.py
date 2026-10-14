@@ -151,6 +151,75 @@ class PolicyAndControlTests(unittest.TestCase):
         control.done = False
         return control
 
+    def test_bus_subscribes_only_to_messages_the_player_handles(self):
+        bus = mock.Mock()
+        callback = mock.Mock()
+        player.connect_bus_messages(bus, callback)
+        self.assertEqual(
+            bus.connect.call_args_list,
+            [mock.call(f"message::{detail}", callback)
+             for detail in player.HANDLED_BUS_MESSAGE_DETAILS])
+        self.assertNotIn(mock.call("message", callback), bus.connect.call_args_list)
+
+    def test_all_subscribed_bus_messages_keep_their_existing_actions(self):
+        def message(kind, src=None):
+            result = mock.Mock()
+            result.type = kind
+            result.src = src or mock.Mock()
+            return result
+
+        control = self.controller()
+        control.decoded_frame = mock.Mock()
+        control.decoder_removed = mock.Mock()
+        frame = mock.Mock()
+        frame.get_name.return_value = "crystalhd-player-frame"
+        frame.get_value.side_effect = {
+            "token": 1, "name": "theoradec", "klass": SOFTWARE,
+            "raw": True, "size": 512, "observed": 2.0,
+        }.get
+        application = message(control.Gst.MessageType.APPLICATION)
+        application.get_structure.return_value = frame
+        control.message(None, application)
+        control.decoded_frame.assert_called_once_with(
+            1, "theoradec", SOFTWARE, True, 512, 2.0)
+
+        removed = mock.Mock()
+        removed.get_name.return_value = "crystalhd-player-removed"
+        removed.get_value.return_value = 1
+        application.get_structure.return_value = removed
+        control.message(None, application)
+        control.decoder_removed.assert_called_once_with(1)
+
+        error = message(control.Gst.MessageType.ERROR)
+        error.src.get_name.return_value = "broken-source"
+        error.parse_error.return_value = (SimpleNamespace(message="decode failed"), None)
+        control.message(None, error)
+        self.assertEqual(control.health.error, "broken-source: decode failed")
+        control.stop.assert_called_with(1)
+
+        control = self.controller()
+        control.health.finish = mock.Mock(return_value=7)
+        control.message(None, message(control.Gst.MessageType.EOS))
+        control.stop.assert_called_once_with(7)
+
+        control = self.controller()
+        control.seek_completed = mock.Mock()
+        control.message(None, message(control.Gst.MessageType.ASYNC_DONE))
+        control.seek_completed.assert_called_once_with()
+        control.seek_completed.reset_mock()
+        control.message(None, message(control.Gst.MessageType.STATE_CHANGED, control.pipeline))
+        control.seek_completed.assert_called_once_with()
+
+        control = self.controller()
+        control.message(None, message(control.Gst.MessageType.CLOCK_LOST))
+        self.assertEqual(control.pipeline.set_state.call_args_list,
+                         [mock.call(control.Gst.State.PAUSED),
+                          mock.call(control.Gst.State.PLAYING)])
+
+        control = self.controller()
+        control.message(None, message(control.Gst.MessageType.LATENCY))
+        control.pipeline.recalculate_latency.assert_called_once_with()
+
     def test_seek_and_rate_use_explicit_flushing_time_seek(self):
         control = self.controller()
         with contextlib.redirect_stdout(io.StringIO()):
@@ -443,7 +512,7 @@ class GStreamerApiTests(unittest.TestCase):
         result.pipeline = self.Gst.parse_launch(description)
         result.bus = result.pipeline.get_bus()
         result.bus.add_signal_watch()
-        result.bus.connect("message", result.message)
+        player.connect_bus_messages(result.bus, result.message)
         decoder = result.pipeline.get_by_name("tested-decoder")
         if decoder is not None:
             result.element_setup(result.pipeline, decoder)
@@ -458,6 +527,30 @@ class GStreamerApiTests(unittest.TestCase):
         self.assertTrue(result.pipeline.get_property("suburi").endswith("sub%20titles.srt"))
         self.assertIsNotNone(result.pipeline.get_property("video-sink"))
         self.assertIsNone(result.pipeline.get_property("video-filter"))
+
+    def test_extended_bus_message_is_not_delivered_to_player_callback(self):
+        pipeline = self.Gst.Pipeline.new("extended-message-test")
+        bus = pipeline.get_bus()
+        bus.add_signal_watch()
+        self.addCleanup(bus.remove_signal_watch)
+        handled = []
+        player.connect_bus_messages(bus, lambda _bus, _message: handled.append(True))
+
+        # PROPERTY_NOTIFY is in the GST_MESSAGE_EXTENDED (bit 31) family that
+        # PyGObject cannot expose through message.type as a C long on i386.
+        self.assertTrue(bus.post(
+            self.Gst.Message.new_property_notify(pipeline, "name", None)))
+        context = self.GLib.MainContext.default()
+        while context.pending():
+            context.iteration(False)
+        self.assertEqual(handled, [])
+
+        # Prove that the signal watch was dispatched rather than merely idle.
+        structure = self.Gst.Structure.new_empty("test-application-message")
+        self.assertTrue(bus.post(self.Gst.Message.new_application(pipeline, structure)))
+        while context.pending():
+            context.iteration(False)
+        self.assertEqual(handled, [True])
 
     def test_explicit_upscale_filter_has_expected_caps_and_quality_settings(self):
         for name in ("videoscale", "capsfilter"):
