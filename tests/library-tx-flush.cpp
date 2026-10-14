@@ -838,6 +838,8 @@ static void test_device_close(Point point)
         std::unique_lock<std::mutex> lock(gate);
         await(lock, [] { return run.blocked; });
     }
+    context.inputFragmentActive = true;
+    context.inputFragmentEncrypted = false;
     cancelling_thread = true;
     const BC_STATUS result = DtsDeviceClose(&context);
     cancelling_thread = false;
@@ -853,7 +855,9 @@ static void test_device_close(Point point)
     check(run.release_calls == 1 && !run.release_while_owned,
           "consuming DeviceClose releases the interface only after TX retirement");
     check(!run.stop_while_owned && !run.close_while_owned &&
-          run.last_stop > run.dma_retired && context.State == BC_DEC_STATE_CLOSE,
+          run.last_stop > run.dma_retired && context.State == BC_DEC_STATE_CLOSE &&
+          !context.inputFragmentActive && !context.inputFragmentRawPermit &&
+          !context.inputFragmentMdata,
           "DeviceClose stops and closes only after its joined worker can no longer submit");
     std::printf("device-close %s status=%d joins=%u release_owned=%d\n",
                 point == Point::Popped ? "popped" : "dma", result,
@@ -998,6 +1002,25 @@ static void test_send_admission()
         txBufFlush(&context.circBuf);
     }
     context.State = BC_DEC_STATE_START;
+    context.inputFragmentActive = true;
+    context.inputFragmentEncrypted = false;
+    check(DtsStopDecoder(&context) == BC_STS_SUCCESS &&
+          !context.inputFragmentActive && !context.inputFragmentRawPermit,
+          "real StopDecoder aborts an unfinished fragmented input transaction");
+    run.allow_restart = true;
+    check(DtsStartDecoder(&context) == BC_STS_SUCCESS,
+          "fragment teardown fixture restarts through the real lifecycle API");
+    run.allow_restart = false;
+    context.inputFragmentActive = true;
+    context.inputFragmentEncrypted = false;
+    check(DtsFlushInput(&context, 3) == BC_STS_SUCCESS &&
+          !context.inputFragmentActive && !context.inputFragmentRawPermit &&
+          !context.inputFragmentMdata,
+          "real destructive FlushInput aborts an unfinished fragmented input transaction");
+    run.allow_restart = true;
+    check(DtsStartDecoder(&context) == BC_STS_SUCCESS,
+          "fragment flush fixture restarts through the real lifecycle API");
+    run.allow_restart = false;
     uint8_t *filler = static_cast<uint8_t *>(std::calloc(1, CIRC_TX_BUF_SIZE));
     if (!filler || txBufPush(&context.circBuf, filler, CIRC_TX_BUF_SIZE) != BC_STS_SUCCESS)
         std::abort();
@@ -1111,9 +1134,13 @@ struct RecoveryFixture {
         context.DevId = device;
         context.ProcessID = getpid();
         context.VidParams.StreamType = BC_STREAM_TYPE_PES;
+        context.VidParams.MediaSubType = BC_MSUBTYPE_H264;
+        context.VidParams.VideoAlgo = BC_VID_ALGO_H264;
         context.b422Mode = device == BC_PCI_DEVID_FLEA ?
             OUTPUT_MODE422_YUY2 : OUTPUT_MODE422_UYVY;
         context.MdataPoolPtr = &metadata;
+        context.MDFreeHead = &metadata;
+        context.MDPendHead = context.MDPendTail = DTS_MDATA_PEND_LINK((&context));
         context.LastPicNum = 91;
         context.LastSessNum = 73;
         context.EOSCnt = 5;
@@ -1275,6 +1302,69 @@ static void run_successful_recovery(uint32_t device)
     check(DtsAcquireControl(&fixture.context, DTS_CONTROL_LIFECYCLE) == BC_STS_SUCCESS,
           "normal lifecycle admission resumes after successful recovery");
     DtsReleaseControl(&fixture.context);
+}
+
+static void test_recovery_aborts_partial_fragment()
+{
+    RecoveryFixture fixture(BC_PCI_DEVID_FLEA);
+    fixture.context.SingleThreadedAppMode = 1;
+    fixture.context.PESConvParams.m_bAddSpsPps = false;
+    const uint8_t first[] = {
+        0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x21, 0xa0,
+        0x19, 0x7f, 0x5e, 0x33,
+    };
+    const uint8_t tail[] = {0x42, 0x17, 0x8c, 0xe1};
+    const uint32_t stale_before = fixture.context.circBuf.busySize;
+    check(DtsProcInputFragment(&fixture.context,
+                               const_cast<uint8_t *>(first), sizeof(first),
+                               660000, false, DTS_INPUT_FRAGMENT_FIRST) ==
+              BC_STS_SUCCESS &&
+          fixture.context.inputFragmentActive &&
+          fixture.context.circBuf.busySize > stale_before &&
+          fixture.context.inputFragmentMdata == nullptr,
+          "Flea suspend fixture stops between a real PES FIRST and LAST");
+    const uint32_t partial_bytes = fixture.context.circBuf.busySize;
+    const unsigned controls = run.control_calls;
+    check(DtsSetupHardware(&fixture.context, true) == BC_STS_BUSY &&
+          run.control_calls == controls &&
+          fixture.context.inputFragmentActive &&
+          fixture.context.circBuf.busySize == partial_bytes,
+          "ordinary setup cannot use the recovery-only partial-fragment bypass");
+
+    DtsObservePowerState(&fixture.context, BC_HW_SUSPEND);
+    recovery.power_states = {BC_HW_RESUME};
+    std::thread worker([&] {
+        worker_thread = true;
+        txThreadProc(&fixture.context);
+        worker_thread = false;
+    });
+    worker.join();
+
+    check(recovery.order == expected_recovery_stages(BC_PCI_DEVID_FLEA) &&
+          fixture.context.recoveryStatus == BC_STS_SUCCESS &&
+          fixture.context.State == BC_DEC_STATE_START,
+          "same-thread recovery setup crosses the partial-fragment latch once");
+    check(!fixture.context.inputFragmentActive &&
+          fixture.context.inputFragmentMdata == nullptr &&
+          fixture.context.circBuf.busySize == 0 &&
+          fixture.context.MDPendHead == DTS_MDATA_PEND_LINK((&fixture.context)) &&
+          fixture.context.MDPendTail == DTS_MDATA_PEND_LINK((&fixture.context)),
+          "recovery discards every partial PES byte, latch and metadata owner");
+    check(DtsProcInputFragment(&fixture.context,
+                               const_cast<uint8_t *>(tail), sizeof(tail), 0,
+                               false, DTS_INPUT_FRAGMENT_LAST) ==
+              BC_STS_INV_ARG &&
+          fixture.context.circBuf.busySize == 0,
+          "post-resume stale LAST is rejected without restoring partial bytes");
+    check(DtsProcInputFragment(&fixture.context,
+                               const_cast<uint8_t *>(first), sizeof(first),
+                               670000, false,
+                               DTS_INPUT_FRAGMENT_FIRST |
+                                   DTS_INPUT_FRAGMENT_LAST) ==
+              BC_STS_SUCCESS &&
+          !fixture.context.inputFragmentActive &&
+          fixture.context.circBuf.busySize != 0,
+          "a fresh complete AU is admitted after partial-fragment recovery");
 }
 
 static void test_recovery_failures()
@@ -1749,6 +1839,7 @@ static void test_recovery_transaction()
     test_pm_latch_blocks_link_auto_pause();
     test_link_recovery_resets_eos_idle_count();
     test_recovery_retires_failed_output_release();
+    test_recovery_aborts_partial_fragment();
     run_successful_recovery(BC_PCI_DEVID_FLEA);
     run_successful_recovery(BC_PCI_DEVID_LINK);
     test_recovery_failures();

@@ -45,7 +45,8 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs libva libva-drm libdrm gbm \
 
 all: $(DRIVER)
 
-BACKEND_HEADERS := crystalhd-decode-replay.h crystalhd-mpeg2.h crystalhd-mpeg2-replay.h \
+BACKEND_HEADERS := crystalhd-access-unit-limits.h crystalhd-decode-replay.h \
+	crystalhd-mpeg2.h crystalhd-mpeg2-replay.h \
 	crystalhd-mpeg4.h \
 	crystalhd-trace.h crystalhd-vc1.h crystalhd-wmv3.h crystalhd-vc1-replay.h
 

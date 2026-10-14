@@ -2780,6 +2780,30 @@ BC_STATUS DtsFetchTimeStampMdata(DTS_LIB_CONTEXT *Ctx, uint16_t snum, uint64_t *
 // Name: DtsPrepareMdata
 // Description: Insert Meta Data..
 //------------------------------------------------------------------------
+BC_STATUS DtsFillMdata(DTS_LIB_CONTEXT *Ctx, DTS_INPUT_MDATA *temp,
+	uint64_t timeStamp, uint8_t **ppData, uint32_t *pSize)
+{
+	if (!Ctx || !temp || !ppData || !pSize)
+		return BC_STS_INV_ARG;
+
+	/* Store all app data.  DtsAllocMdata already cleared this owner. */
+	DtsMdataSetIntTag(Ctx,temp);
+	temp->appTimeStamp = timeStamp;
+
+	/* Fill SPES data. */
+	temp->Spes.StartCode[0] = 0;
+	temp->Spes.StartCode[1] = 0;
+	temp->Spes.StartCode[2] = 01;
+	temp->Spes.StartCode[3] = 0xBD;
+	temp->Spes.PacketLen = 0x07;
+	temp->Spes.StartCodeEnd = 0x40;
+	temp->Spes.Command = 0x0A;
+
+	*ppData = (uint8_t*)(&temp->Spes);
+	*pSize = sizeof(temp->Spes);
+	return BC_STS_SUCCESS;
+}
+
 BC_STATUS DtsPrepareMdata(DTS_LIB_CONTEXT *Ctx, uint64_t timeStamp, DTS_INPUT_MDATA **mData, uint8_t** ppData, uint32_t *pSize)
 {
 	DTS_INPUT_MDATA		*temp = NULL;
@@ -2801,23 +2825,8 @@ BC_STATUS DtsPrepareMdata(DTS_LIB_CONTEXT *Ctx, uint64_t timeStamp, DTS_INPUT_MD
 			return BC_STS_BUSY;
 		}
 	}
-	/* Store all app data */
-	DtsMdataSetIntTag(Ctx,temp);
-	temp->appTimeStamp = timeStamp;
-
-	/* Fill spes data.. */
-	temp->Spes.StartCode[0] = 0;
-	temp->Spes.StartCode[1] = 0;
-	temp->Spes.StartCode[2] = 01;
-	temp->Spes.StartCode[3] = 0xBD;
-	temp->Spes.PacketLen = 0x07;
-	temp->Spes.StartCodeEnd = 0x40;
-	temp->Spes.Command = 0x0A;
-
 	*mData = temp;
-	*ppData = (uint8_t*)(&temp->Spes);
-	*pSize = sizeof(temp->Spes);
-	return BC_STS_SUCCESS;
+	return DtsFillMdata(Ctx, temp, timeStamp, ppData, pSize);
 }
 
 

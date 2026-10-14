@@ -95,6 +95,29 @@ public:
 	BC_STATUS Status() const { return status; }
 };
 
+/* Caller holds thLock. Only DtsProcInputFragment opens this narrow permit;
+ * internal Align/Send calls on that same thread may then carry the current
+ * fragment while every legacy/raw producer remains excluded. */
+static bool DtsFragmentRawPermittedLocked(const DTS_LIB_CONTEXT *Ctx)
+{
+	return Ctx->inputFragmentActive && Ctx->inputFragmentRawPermit &&
+		pthread_equal(Ctx->inputFragmentThread, pthread_self());
+}
+
+/* Caller holds thLock. */
+static void DtsClearInputFragmentLocked(DTS_LIB_CONTEXT *Ctx)
+{
+	if (Ctx->inputFragmentMdata) {
+		DtsFreeMdata(Ctx, Ctx->inputFragmentMdata, FALSE);
+		Ctx->inputFragmentMdata = NULL;
+	}
+	Ctx->inputFragmentActive = false;
+	Ctx->inputFragmentEncrypted = false;
+	Ctx->inputFragmentLast = false;
+	Ctx->inputFragmentRawPermit = false;
+	memset(&Ctx->inputFragmentThread, 0, sizeof(Ctx->inputFragmentThread));
+}
+
 /* Consume a channel that is already in recovery quarantine.  No legacy
  * firmware STOP/CLOSE command is safe after a partial reset; only retire
  * host waiters and the driver/interface allocation. */
@@ -145,6 +168,9 @@ static BC_STATUS DtsRetireFailedRecoveryDevice(DTS_LIB_CONTEXT *Ctx,
 
 BC_STATUS DtsRecoveryFlushInputRing(DTS_LIB_CONTEXT *Ctx)
 {
+	DtsLock(Ctx);
+	DtsClearInputFragmentLocked(Ctx);
+	DtsUnLock(Ctx);
 	return txBufFlush(&Ctx->circBuf);
 }
 
@@ -175,6 +201,7 @@ static bool DtsBeginTxQuiesce(DTS_LIB_CONTEXT *Ctx)
 	DtsLock(Ctx);
 	Ctx->State = BC_DEC_STATE_FLUSH;
 	Ctx->txQuiescing = true;
+	DtsClearInputFragmentLocked(Ctx);
 	Ctx->bEOSCheck = false;
 	Ctx->eosTxStart = Ctx->txBytesEnqueued;
 	Ctx->eosTxFence = Ctx->txBytesEnqueued;
@@ -499,8 +526,19 @@ BC_STATUS DtsSetupHardware(HANDLE hDevice, BOOL IgnClkChk)
 	if (control.Status() != BC_STS_SUCCESS)
 		return control.Status();
 	DtsLock(Ctx);
-	const bool input_busy = Ctx->inputCalls &&
-		!pthread_equal(Ctx->inputThread, pthread_self());
+	/* Recovery owns the whole reset/reopen transaction and has already waited
+	 * for every active input call to retire.  A fragment latch can legitimately
+	 * remain between FIRST and LAST; the established post-Open recovery flush
+	 * destroys its partial ring bytes.  Admit only that nested, same-thread
+	 * recovery setup.  Ordinary callers must still leave the logical AU intact
+	 * and receive BUSY rather than resetting hardware underneath it. */
+	const bool recovery_setup =
+		Ctx->controlOwner == DTS_CONTROL_RECOVERY && Ctx->controlDepth &&
+		pthread_equal(Ctx->controlThread, pthread_self());
+	const bool input_busy =
+		(Ctx->inputFragmentActive && !recovery_setup) ||
+		(Ctx->inputCalls &&
+		 !pthread_equal(Ctx->inputThread, pthread_self()));
 	DtsUnLock(Ctx);
 	if (input_busy)
 		return BC_STS_BUSY;
@@ -1569,8 +1607,9 @@ DtsSetVideoParams(
 	if (control.Status() != BC_STS_SUCCESS)
 		return control.Status();
 	DtsLock(Ctx);
-	const bool input_busy = Ctx->inputCalls &&
-		!pthread_equal(Ctx->inputThread, pthread_self());
+	const bool input_busy = Ctx->inputFragmentActive ||
+		(Ctx->inputCalls &&
+		 !pthread_equal(Ctx->inputThread, pthread_self()));
 	DtsUnLock(Ctx);
 	if (input_busy)
 		return BC_STS_BUSY;
@@ -1596,8 +1635,9 @@ DtsSetInputFormat(
 	if (control.Status() != BC_STS_SUCCESS)
 		return control.Status();
 	DtsLock(Ctx);
-	const bool input_busy = Ctx->inputCalls &&
-		!pthread_equal(Ctx->inputThread, pthread_self());
+	const bool input_busy = Ctx->inputFragmentActive ||
+		(Ctx->inputCalls &&
+		 !pthread_equal(Ctx->inputThread, pthread_self()));
 	DtsUnLock(Ctx);
 	if (input_busy)
 		return BC_STS_BUSY;
@@ -1876,7 +1916,8 @@ DRVIFLIB_API BC_STATUS
 	if (control.Status() != BC_STS_SUCCESS)
 		return control.Status();
 	DtsLock(Ctx);
-	if (Ctx->txQuiescing || DtsStopIsUnresolved(Ctx)) {
+	if (Ctx->txQuiescing || DtsStopIsUnresolved(Ctx) ||
+	    Ctx->inputFragmentActive) {
 		DtsUnLock(Ctx);
 		return BC_STS_BUSY;
 	}
@@ -2568,8 +2609,14 @@ DtsSendData( HANDLE  hDevice ,
 			DtsUnLock(Ctx);
 			return recoverySts;
 		}
+		const bool fragmentPermitted = DtsFragmentRawPermittedLocked(Ctx);
+		if (Ctx->inputFragmentActive && !fragmentPermitted) {
+			DtsUnLock(Ctx);
+			return BC_STS_BUSY;
+		}
 		if (Ctx->txQuiescing || DtsStopIsUnresolved(Ctx) ||
-		    (Ctx->State != BC_DEC_STATE_START && Ctx->State != BC_DEC_STATE_PAUSE)) {
+		    (Ctx->State != BC_DEC_STATE_START && Ctx->State != BC_DEC_STATE_PAUSE) ||
+		    (fragmentPermitted && Ctx->State != BC_DEC_STATE_START)) {
 			DtsUnLock(Ctx);
 			return BC_STS_IO_USER_ABORT;
 		}
@@ -2626,24 +2673,49 @@ DtsSendSPESPkt(HANDLE  hDevice ,
 	DtsInputCall input_call(Ctx);
 	if (input_call.Status() != BC_STS_SUCCESS)
 		return input_call.Status();
+	DtsLock(Ctx);
+	const bool fragmentPermitted = DtsFragmentRawPermittedLocked(Ctx);
+	const bool fragmentBlocked = Ctx->inputFragmentActive && !fragmentPermitted;
+	const uint32_t inputState = Ctx->State;
+	DTS_INPUT_MDATA *reserved = NULL;
+	if (fragmentPermitted && inputState == BC_DEC_STATE_START) {
+		/* FIRST acquired this owner before any recovery prefix was queued.
+		 * Consume it exactly once instead of entering the legacy retry loop. */
+		reserved = Ctx->inputFragmentMdata;
+		Ctx->inputFragmentMdata = NULL;
+	}
+	DtsUnLock(Ctx);
+	if (fragmentBlocked)
+		return BC_STS_BUSY;
 
-	if (Ctx->State == BC_DEC_STATE_CLOSE)
+	if (inputState == BC_DEC_STATE_CLOSE)
 	{
 		return BC_STS_DEC_NOT_OPEN;
 	}
 
-	if (Ctx->State == BC_DEC_STATE_STOP || Ctx->State == BC_DEC_STATE_FLUSH)
+	if (inputState == BC_DEC_STATE_STOP || inputState == BC_DEC_STATE_FLUSH)
 	{
 		return BC_STS_DEC_NOT_STARTED;
 	}
 
-	while (i <20)
-	{
-		sts = DtsPrepareMdata(Ctx, timeStamp, &im, &pSPESPkt, &ulSize);
-		if (sts == BC_STS_SUCCESS)
-			break;
-		i++;
-		bc_sleep_ms(2);
+	if (fragmentPermitted) {
+		if (!reserved)
+			return BC_STS_BUSY;
+		im = reserved;
+		sts = DtsFillMdata(Ctx, im, timeStamp, &pSPESPkt, &ulSize);
+		if (sts != BC_STS_SUCCESS) {
+			DtsFreeMdata(Ctx, im, TRUE);
+			return sts;
+		}
+	} else {
+		while (i <20)
+		{
+			sts = DtsPrepareMdata(Ctx, timeStamp, &im, &pSPESPkt, &ulSize);
+			if (sts == BC_STS_SUCCESS)
+				break;
+			i++;
+			bc_sleep_ms(2);
+		}
 	}
 	if (sts == BC_STS_SUCCESS)
 	{
@@ -2700,6 +2772,12 @@ DtsAlignSendData( HANDLE  hDevice ,
 	DtsInputCall input_call(Ctx);
 	if (input_call.Status() != BC_STS_SUCCESS)
 		return input_call.Status();
+	DtsLock(Ctx);
+	const bool fragmentPermitted = DtsFragmentRawPermittedLocked(Ctx);
+	const bool fragmentBlocked = Ctx->inputFragmentActive && !fragmentPermitted;
+	DtsUnLock(Ctx);
+	if (fragmentBlocked)
+		return BC_STS_BUSY;
 
 	alignBuf = Ctx->alignBuf;
 
@@ -2754,6 +2832,8 @@ DtsAlignSendData( HANDLE  hDevice ,
 
 		if (paused)
 		{
+			if (fragmentPermitted)
+				return BC_STS_IO_USER_ABORT;
 			/* A five-second uninterruptible pause held an admitted input call
 			 * until the recovery drain timeout boundary. Poll admission so a PM
 			 * epoch retires the call promptly without holding thLock. */
@@ -2936,6 +3016,7 @@ DtsProcInput( HANDLE  hDevice ,
 
 	uint32_t Offset = 0;
 	bool clearRecoveryConfigAfterInput = false;
+	bool fragmentMayContinue = false;
 	const uint8_t *const cacheInput = pUserData;
 	const uint32_t cacheInputSize = ulSizeInBytes;
 
@@ -2949,12 +3030,16 @@ DtsProcInput( HANDLE  hDevice ,
 
 	DtsLock(Ctx);
 	const BC_STATUS recoverySts = DtsRecoveryAdmissionStatus(Ctx);
-	if (recoverySts != BC_STS_SUCCESS || Ctx->txQuiescing || DtsStopIsUnresolved(Ctx)) {
+	if (recoverySts != BC_STS_SUCCESS || Ctx->txQuiescing ||
+	    DtsStopIsUnresolved(Ctx) ||
+	    (Ctx->inputFragmentActive && !DtsFragmentRawPermittedLocked(Ctx))) {
 		DtsUnLock(Ctx);
 		return recoverySts != BC_STS_SUCCESS ? recoverySts : BC_STS_BUSY;
 	}
 	if (Ctx->State == BC_DEC_STATE_FLUSH)
 		Ctx->State = BC_DEC_STATE_START;
+	fragmentMayContinue = DtsFragmentRawPermittedLocked(Ctx) &&
+		!Ctx->inputFragmentLast;
 	DtsUnLock(Ctx);
 
 	if (Ctx->State != BC_DEC_STATE_START)
@@ -3092,14 +3177,224 @@ DtsProcInput( HANDLE  hDevice ,
 	/* Commit H.264 recovery state only after this AU was accepted.  Until then
 	 * the previous complete cache must survive a transport failure or a late
 	 * suspend that flushes bytes queued earlier in this call. */
-	if (sts == BC_STS_SUCCESS && Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264)
-		(void)DtsCacheSpsPps(hDevice, cacheInput, cacheInputSize);
+	if (sts == BC_STS_SUCCESS && Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264) {
+		if (fragmentMayContinue)
+			(void)DtsCacheSpsPpsFragmentFirst(hDevice, cacheInput,
+				cacheInputSize);
+		else
+			(void)DtsCacheSpsPps(hDevice, cacheInput, cacheInputSize);
+	}
 	if (sts == BC_STS_SUCCESS && clearRecoveryConfigAfterInput) {
 		DtsLock(Ctx);
 		Ctx->recoveryInjectSpsPps = false;
 		Ctx->PESConvParams.m_bAddSpsPps = false;
 		DtsUnLock(Ctx);
 	}
+	return sts;
+}
+
+/* Return the complete TX-ring footprint of one PES packetizer call.  The
+ * payload itself is split at MAX_RE_PES_BOUND; every split gains the fixed
+ * nine-byte PES prefix, while only the first packet carries PTS/private/
+ * extension/stuffing fields.  DtsProcInputFragment uses this before exposing
+ * its producer permit, so a retryable BUSY cannot follow a partial PES push. */
+static bool DtsFragmentPESFootprint(const DTS_LIB_CONTEXT *Ctx,
+	uint32_t payloadBytes, bool addPts, uint64_t *ringBytes)
+{
+	if (!Ctx || !ringBytes)
+		return false;
+	if (!payloadBytes) {
+		*ringBytes = 0;
+		return true;
+	}
+
+	const PES_CONVERT_PARAMS &pes = Ctx->PESConvParams;
+	if ((pes.m_bPESPrivData && !pes.m_pPESPrivData) ||
+	    (pes.m_bPESExtField && !pes.m_pPESExtField) ||
+	    pes.m_nPESExtLen > 0x7fU)
+		return false;
+
+	uint64_t optionalBytes = addPts ? 5U : 0U;
+	if (pes.m_bPESPrivData || pes.m_bPESExtField)
+		optionalBytes += 1U;
+	if (pes.m_bPESPrivData)
+		optionalBytes += 16U;
+	if (pes.m_bPESExtField)
+		optionalBytes += static_cast<uint64_t>(pes.m_nPESExtLen) + 1U;
+	if (pes.m_bStuffing)
+		optionalBytes += pes.m_nStuffingBytes;
+	/* optPesHdrLen and the packetizer's header cursor are one byte; the cursor
+	 * starts after the fixed nine-byte prefix. The payload must stay positive. */
+	const uint64_t packetBound = static_cast<uint32_t>(MAX_RE_PES_BOUND);
+	if (optionalBytes > 0xffU - sizeof(b_pes_header) ||
+	    optionalBytes + 3U >= packetBound)
+		return false;
+
+	const uint64_t firstPayload = packetBound - optionalBytes - 3U;
+	const uint64_t laterPayload = packetBound - 3U;
+	uint64_t packets = 1;
+	if (payloadBytes > firstPayload) {
+		const uint64_t remaining = payloadBytes - firstPayload;
+		packets += (remaining + laterPayload - 1U) / laterPayload;
+	}
+	*ringBytes = static_cast<uint64_t>(payloadBytes) + optionalBytes +
+		packets * sizeof(b_pes_header);
+	return true;
+}
+
+DRVIFLIB_API BC_STATUS
+DtsProcInputFragment(HANDLE hDevice, uint8_t *pUserData,
+			 uint32_t ulSizeInBytes, uint64_t timeStamp,
+			 BOOL encrypted, uint32_t flags)
+{
+	DTS_LIB_CONTEXT *Ctx = NULL;
+	DTS_GET_CTX(hDevice, Ctx);
+	if (!DtsChkPID(Ctx->ProcessID))
+		return BC_STS_ERROR;
+	if (!pUserData || !ulSizeInBytes ||
+	    ulSizeInBytes > DTS_INPUT_FRAGMENT_MAX_SIZE ||
+	    (flags & ~(DTS_INPUT_FRAGMENT_FIRST | DTS_INPUT_FRAGMENT_LAST)))
+		return BC_STS_INV_ARG;
+
+	const bool first = (flags & DTS_INPUT_FRAGMENT_FIRST) != 0;
+	const bool last = (flags & DTS_INPUT_FRAGMENT_LAST) != 0;
+	if (!first && timeStamp != 0)
+		return BC_STS_INV_ARG;
+	uint64_t markerTimestamp = timeStamp;
+	if (Ctx->DevId == BC_PCI_DEVID_FLEA &&
+	    markerTimestamp != 0xFFFFFFFFFFFFFFFFULL)
+		markerTimestamp /= 10000;
+
+	/* Keep the capacity observation and the following enqueue in one input
+	 * ownership interval.  An active fragment blocks every other producer, and
+	 * the TX worker can only increase free space, so a successful reservation
+	 * makes the existing synchronous packetizer bounded for this call. */
+	DtsInputCall input_call(Ctx);
+	if (input_call.Status() != BC_STS_SUCCESS)
+		return input_call.Status();
+
+	DtsLock(Ctx);
+	const BC_STATUS recoverySts = DtsRecoveryAdmissionStatus(Ctx);
+	const bool esTransport =
+		Ctx->VidParams.StreamType == BC_STREAM_TYPE_ES;
+	const bool pesTransport =
+		Ctx->VidParams.StreamType == BC_STREAM_TYPE_PES;
+	const bool format_ok =
+		Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264 &&
+		(esTransport ||
+		 (Ctx->DevId == BC_PCI_DEVID_FLEA && pesTransport)) &&
+		!Ctx->PESConvParams.m_bIsAdd_SCode_CodeIn;
+	const bool sequence_ok = first ? !Ctx->inputFragmentActive :
+		Ctx->inputFragmentActive &&
+		Ctx->inputFragmentEncrypted == encrypted;
+	/* ES carries raw bytes plus a SPES timestamp owner. Flea's actual H.264
+	 * path is PES: reserve every packet header and its first-packet optional
+	 * fields, including separately packetized recovery configuration. */
+	uint64_t required = 0;
+	unsigned int timestampOwners = 0;
+	bool footprint_ok = true;
+	auto addFootprint = [&](uint32_t bytes, bool timestamp) {
+		if (!bytes || !footprint_ok)
+			return;
+		const bool marker = timestamp && esTransport;
+		if (marker) {
+			required += sizeof(BC_SEQ_HDR_FORMAT);
+			++timestampOwners;
+		}
+		if (esTransport) {
+			required += bytes;
+			return;
+		}
+		uint64_t packetized = 0;
+		const bool addPts =
+			timestamp || Ctx->PESConvParams.m_bSoftRave;
+		footprint_ok = DtsFragmentPESFootprint(Ctx, bytes, addPts,
+			&packetized);
+		if (footprint_ok)
+			required += packetized;
+	};
+	if (first && Ctx->PESConvParams.m_bAddSpsPps &&
+	    Ctx->PESConvParams.m_pSpsPpsBuf != NULL &&
+	    Ctx->PESConvParams.m_iSpsPpsLen != 0)
+		addFootprint(Ctx->PESConvParams.m_iSpsPpsLen,
+			Ctx->PESConvParams.m_bSoftRave);
+	addFootprint(ulSizeInBytes, first && markerTimestamp != 0);
+	const bool needsTimestampOwner = timestampOwners != 0;
+	BC_STATUS sts = BC_STS_SUCCESS;
+	if (recoverySts != BC_STS_SUCCESS)
+		sts = recoverySts;
+	else if (!format_ok || !sequence_ok || !footprint_ok ||
+		 timestampOwners > 1)
+		sts = BC_STS_INV_ARG;
+	else if (Ctx->txQuiescing || DtsStopIsUnresolved(Ctx) ||
+		 Ctx->State != BC_DEC_STATE_START)
+		sts = BC_STS_BUSY;
+	else if (required > Ctx->circBuf.totalSize)
+		sts = BC_STS_INSUFF_RES;
+	else if (required > DtsTxFreeSize(hDevice))
+		sts = BC_STS_BUSY;
+	DTS_INPUT_MDATA *reserved = NULL;
+	if (sts == BC_STS_SUCCESS && needsTimestampOwner) {
+		/* Use the ordinary metadata ownership primitive, but do not enter its
+		 * legacy sleep/retry loop.  This owner is removed atomically while
+		 * thLock is held, before any recovery prefix can be enqueued. */
+		reserved = DtsAllocMdata(Ctx);
+		if (!reserved)
+			sts = BC_STS_BUSY;
+	}
+	if (sts == BC_STS_SUCCESS) {
+		/* Publish the exclusion before releasing thLock: even direct callers
+		 * of the internal raw APIs cannot consume this reservation. */
+		Ctx->inputFragmentActive = true;
+		Ctx->inputFragmentEncrypted = encrypted;
+		Ctx->inputFragmentLast = last;
+		Ctx->inputFragmentRawPermit = true;
+		Ctx->inputFragmentThread = pthread_self();
+		Ctx->inputFragmentMdata = reserved;
+	}
+	DtsUnLock(Ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+
+	if (first)
+		sts = DtsProcInput(hDevice, pUserData, ulSizeInBytes,
+				   timeStamp, encrypted);
+	else
+		sts = DtsAlignSendData(hDevice, pUserData, ulSizeInBytes, 0,
+				       encrypted);
+	DtsLock(Ctx);
+	/* DtsAddStartCode may suppress the timestamp. Return an unused reservation
+	 * through the same metadata ownership path before exposing the latch. */
+	if (Ctx->inputFragmentMdata) {
+		DtsFreeMdata(Ctx, Ctx->inputFragmentMdata, FALSE);
+		Ctx->inputFragmentMdata = NULL;
+	}
+	Ctx->inputFragmentRawPermit = false;
+	memset(&Ctx->inputFragmentThread, 0, sizeof(Ctx->inputFragmentThread));
+	if (sts != BC_STS_SUCCESS) {
+		/* No-capacity BUSY was excluded before packetization. A later BUSY can
+		 * only be a lifecycle/recovery race after packetization began, so it is
+		 * not the documented zero-byte/retryable result. Report cancellation
+		 * and retain the active latch until teardown discards a possible prefix. */
+		if (sts == BC_STS_BUSY)
+			sts = BC_STS_IO_USER_ABORT;
+		DtsUnLock(Ctx);
+		return sts;
+	}
+	/* A lifecycle/recovery barrier may have started after the final byte was
+	 * queued. It will discard those bytes; never resurrect its canceled
+	 * fragment latch after that point. */
+	const BC_STATUS finalRecoverySts = DtsRecoveryAdmissionStatus(Ctx);
+	if (finalRecoverySts != BC_STS_SUCCESS || Ctx->txQuiescing ||
+	    DtsStopIsUnresolved(Ctx) || Ctx->State != BC_DEC_STATE_START) {
+		DtsClearInputFragmentLocked(Ctx);
+		sts = finalRecoverySts != BC_STS_SUCCESS ?
+			(finalRecoverySts == BC_STS_BUSY ? BC_STS_IO_USER_ABORT :
+			 finalRecoverySts) : BC_STS_IO_USER_ABORT;
+	} else if (last) {
+		DtsClearInputFragmentLocked(Ctx);
+	}
+	DtsUnLock(Ctx);
 	return sts;
 }
 
@@ -3122,6 +3417,11 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 	DtsInputCall input_call(Ctx);
 	if (input_call.Status() != BC_STS_SUCCESS)
 		return input_call.Status();
+	DtsLock(Ctx);
+	const bool fragmented_input = Ctx->inputFragmentActive;
+	DtsUnLock(Ctx);
+	if (fragmented_input)
+		return BC_STS_BUSY;
 
 	uint8_t	*pEOS;
 	uint32_t nEOSLen;
