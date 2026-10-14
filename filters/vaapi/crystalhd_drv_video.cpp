@@ -265,6 +265,7 @@ static bool BuildSps(const VAPictureParameterBufferH264 &picture,
                      VAProfile profile, std::vector<uint8_t> *output) {
   BitWriter bits;
   uint8_t profile_idc;
+  unsigned int height_in_map_units;
 
   switch (profile) {
     case VAProfileH264ConstrainedBaseline:
@@ -278,6 +279,18 @@ static bool BuildSps(const VAPictureParameterBufferH264 &picture,
       break;
     default:
       return false;
+  }
+
+  // VA reports the decoded frame height in macroblocks.  H.264 SPS syntax
+  // instead counts map units, where an interlaced sequence has two
+  // macroblock rows per map unit (7.4.2.1.1).  Passing the VA value through
+  // unchanged advertises twice the coded height for MBAFF/field sequences and
+  // leaves the firmware waiting for a picture that can never complete.
+  height_in_map_units = picture.picture_height_in_mbs_minus1 + 1U;
+  if (!picture.seq_fields.bits.frame_mbs_only_flag) {
+    if ((height_in_map_units & 1U) != 0)
+      return false;
+    height_in_map_units /= 2U;
   }
 
   bits.PutBits(8, profile_idc);
@@ -309,7 +322,7 @@ static bool BuildSps(const VAPictureParameterBufferH264 &picture,
   bits.PutUE(picture.num_ref_frames);
   bits.PutBit(picture.seq_fields.bits.gaps_in_frame_num_value_allowed_flag);
   bits.PutUE(picture.picture_width_in_mbs_minus1);
-  bits.PutUE(picture.picture_height_in_mbs_minus1);
+  bits.PutUE(height_in_map_units - 1U);
   bits.PutBit(picture.seq_fields.bits.frame_mbs_only_flag);
   if (!picture.seq_fields.bits.frame_mbs_only_flag)
     bits.PutBit(picture.seq_fields.bits.mb_adaptive_frame_field_flag);

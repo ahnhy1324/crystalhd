@@ -274,6 +274,89 @@ static void CheckAnnexBNal(const std::vector<uint8_t> &nal, uint8_t type)
 	}
 }
 
+class SpsReader {
+public:
+	explicit SpsReader(const std::vector<uint8_t> &nal)
+	{
+		if (nal.size() < 6 || nal[0] || nal[1] || nal[2] ||
+		    nal[3] != 1 || (nal[4] & 31) != 7)
+			throw std::runtime_error("invalid Annex-B SPS");
+		unsigned int zeros = 0;
+		for (size_t i = 5; i < nal.size(); ++i) {
+			if (zeros == 2 && nal[i] == 3) {
+				if (i + 1 == nal.size() || nal[i + 1] > 3)
+					throw std::runtime_error("invalid emulation prevention");
+				zeros = 0;
+				continue;
+			}
+			bytes.push_back(nal[i]);
+			zeros = nal[i] == 0 ? zeros + 1 : 0;
+		}
+	}
+
+	unsigned int Bits(unsigned int count)
+	{
+		unsigned int value = 0;
+		while (count--)
+			value = value * 2 + Bit();
+		return value;
+	}
+
+	unsigned int Bit()
+	{
+		if (offset / 8 >= bytes.size())
+			throw std::runtime_error("truncated SPS");
+		const unsigned int value = (bytes[offset / 8] >> (7 - offset % 8)) & 1;
+		++offset;
+		return value;
+	}
+
+	unsigned int UE()
+	{
+		unsigned int zeros = 0;
+		while (!Bit()) {
+			if (++zeros > 30)
+				throw std::runtime_error("oversized Golomb code");
+		}
+		unsigned int value = 1;
+		while (zeros--)
+			value = value * 2 + Bit();
+		return value - 1;
+	}
+
+private:
+	std::vector<uint8_t> bytes;
+	size_t offset = 0;
+};
+
+static void CheckSpsGeometry(const std::vector<uint8_t> &sps,
+			     unsigned int expected_height_in_map_units_minus1,
+			     bool frame_mbs_only, bool mbaff)
+{
+	SpsReader reader(sps);
+	const unsigned int profile = reader.Bits(8);
+	reader.Bits(8); // constraint flags
+	reader.Bits(8); // level_idc
+	assert(reader.UE() == 0); // seq_parameter_set_id
+	if (profile == 100) {
+		assert(reader.UE() == 1); // chroma_format_idc
+		assert(reader.UE() == 0); // bit_depth_luma_minus8
+		assert(reader.UE() == 0); // bit_depth_chroma_minus8
+		assert(reader.Bit() == 0); // qpprime_y_zero_transform_bypass_flag
+		assert(reader.Bit() == 0); // seq_scaling_matrix_present_flag
+	}
+	reader.UE(); // log2_max_frame_num_minus4
+	assert(reader.UE() == 0); // pic_order_cnt_type
+	reader.UE(); // log2_max_pic_order_cnt_lsb_minus4
+	reader.UE(); // max_num_ref_frames
+	reader.Bit(); // gaps_in_frame_num_value_allowed_flag
+	reader.UE(); // pic_width_in_mbs_minus1
+	assert(reader.UE() == expected_height_in_map_units_minus1);
+	assert(reader.Bit() == frame_mbs_only);
+	if (!frame_mbs_only)
+		assert(reader.Bit() == mbaff);
+}
+
 int main()
 {
 	VAPictureParameterBufferH264 picture = {};
@@ -309,10 +392,26 @@ int main()
 		assert(BuildSps(picture, expected.profile, &sps));
 		CheckAnnexBNal(sps, 7);
 		assert(sps[5] == expected.profile_idc);
+		CheckSpsGeometry(sps, 67, true, false);
 
 		assert(BuildPps(picture, slice, expected.profile, FlatMatrix(), &pps));
 		CheckAnnexBNal(pps, 8);
 	}
+
+	// VA's height is the full decoded frame in macroblocks.  The SPS uses
+	// half as many map units when frame_mbs_only_flag is clear.
+	picture.seq_fields.bits.frame_mbs_only_flag = 0;
+	picture.seq_fields.bits.mb_adaptive_frame_field_flag = 1;
+	std::vector<uint8_t> interlaced_sps;
+	assert(BuildSps(picture, VAProfileH264High, &interlaced_sps));
+	CheckSpsGeometry(interlaced_sps, 33, false, true);
+	picture.picture_height_in_mbs_minus1 = 66;
+	std::vector<uint8_t> invalid_interlaced_sps = {0xaa, 0x55};
+	assert(!BuildSps(picture, VAProfileH264High, &invalid_interlaced_sps));
+	assert(invalid_interlaced_sps == std::vector<uint8_t>({0xaa, 0x55}));
+	picture.picture_height_in_mbs_minus1 = 67;
+	picture.seq_fields.bits.frame_mbs_only_flag = 1;
+	picture.seq_fields.bits.mb_adaptive_frame_field_flag = 0;
 
 	std::vector<uint8_t> rejected;
 	assert(!BuildSps(picture, VAProfileNone, &rejected));
