@@ -265,6 +265,7 @@ static bool BuildSps(const VAPictureParameterBufferH264 &picture,
                      VAProfile profile, std::vector<uint8_t> *output) {
   BitWriter bits;
   uint8_t profile_idc;
+  unsigned int height_in_map_units;
 
   switch (profile) {
     case VAProfileH264ConstrainedBaseline:
@@ -278,6 +279,18 @@ static bool BuildSps(const VAPictureParameterBufferH264 &picture,
       break;
     default:
       return false;
+  }
+
+  // VA reports the decoded frame height in macroblocks.  H.264 SPS syntax
+  // instead counts map units, where an interlaced sequence has two
+  // macroblock rows per map unit (7.4.2.1.1).  Passing the VA value through
+  // unchanged advertises twice the coded height for MBAFF/field sequences and
+  // leaves the firmware waiting for a picture that can never complete.
+  height_in_map_units = picture.picture_height_in_mbs_minus1 + 1U;
+  if (!picture.seq_fields.bits.frame_mbs_only_flag) {
+    if ((height_in_map_units & 1U) != 0)
+      return false;
+    height_in_map_units /= 2U;
   }
 
   bits.PutBits(8, profile_idc);
@@ -309,7 +322,7 @@ static bool BuildSps(const VAPictureParameterBufferH264 &picture,
   bits.PutUE(picture.num_ref_frames);
   bits.PutBit(picture.seq_fields.bits.gaps_in_frame_num_value_allowed_flag);
   bits.PutUE(picture.picture_width_in_mbs_minus1);
-  bits.PutUE(picture.picture_height_in_mbs_minus1);
+  bits.PutUE(height_in_map_units - 1U);
   bits.PutBit(picture.seq_fields.bits.frame_mbs_only_flag);
   if (!picture.seq_fields.bits.frame_mbs_only_flag)
     bits.PutBit(picture.seq_fields.bits.mb_adaptive_frame_field_flag);
@@ -1467,6 +1480,25 @@ struct OutputPollLease {
   int fd = -1;
 };
 
+struct H264FirstField {
+  bool valid = false;
+  bool replay_duplicate = false;
+  bool bottom = false;
+  bool bottom_first = false;
+  bool is_70012 = false;
+  uint64_t timestamp = 0;
+  uint64_t decode_identity = 0;
+  uint64_t generation = 0;
+  uint32_t picture_number = 0;
+  uint32_t sess_num = 0;
+  uint32_t picture_meta_payload = 0;
+  unsigned int width = 0;
+  unsigned int height = 0;
+  unsigned int source_pitch = 0;
+  std::shared_ptr<Surface> picture;
+  std::vector<uint8_t> pixels;
+};
+
 struct DecodeContext {
   VAContextID id = VA_INVALID_ID;
   VAConfigID config = VA_INVALID_ID;
@@ -1566,6 +1598,7 @@ struct DecodeContext {
   uint64_t next_timestamp = kTimestampStep;
   std::unordered_map<uint64_t, VASurfaceID> pending;
   std::unordered_map<uint64_t, std::shared_ptr<Surface>> decoded_frames;
+  H264FirstField h264_first_field;
   std::deque<std::shared_ptr<Surface>> experimental_ready;
   std::unordered_map<Surface *, uint64_t> surface_timestamps;
   CrystalHDDecodeReplay replay;
@@ -1667,6 +1700,7 @@ struct DecodeContext {
     input_backpressured = false;
     input_budget_exhausted = false;
     sync_inactivity_ns = 0;
+    h264_first_field = H264FirstField();
     return result;
   }
 
@@ -2593,6 +2627,168 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
   return true;
 }
 
+static bool CopyH264FieldPairToSurface(
+    Surface *surface, const H264FirstField &first,
+    const BC_DTS_PROC_OUT &second) {
+  if (surface == nullptr || !first.valid || second.Ybuff == nullptr ||
+      first.width != second.PicInfo.width ||
+      first.height != second.PicInfo.height || first.height % 4U != 0 ||
+      first.source_pitch < first.width * 2U ||
+      first.pixels.size() != static_cast<size_t>(first.source_pitch) *
+                                 (first.height / 2U))
+    return false;
+
+  const unsigned int width =
+      std::min<unsigned int>(first.width, surface->width);
+  const unsigned int height =
+      std::min<unsigned int>(first.height, surface->height);
+  const unsigned int field_rows = first.height / 2U;
+  const uint8_t *fields[2] = {};
+  fields[first.bottom ? 1 : 0] = first.pixels.data();
+  fields[first.bottom ? 0 : 1] = second.Ybuff;
+
+  bool used_i915_wc = false;
+  if (!surface->BeginDecodedCpuWrite(&used_i915_wc))
+    return false;
+  if (surface->fourcc == VA_FOURCC_ARGB) {
+    for (unsigned int row = 0; row < surface->height; ++row) {
+      uint8_t *line = surface->planes[0] +
+                      static_cast<size_t>(row) * surface->pitch[0];
+      for (unsigned int column = 0; column < surface->width; ++column)
+        StoreArgb(line + static_cast<size_t>(column) * 4, 16, 128, 128);
+    }
+    for (unsigned int parity = 0; parity < 2; ++parity) {
+      for (unsigned int source_row = 0; source_row < field_rows; ++source_row) {
+        const unsigned int destination_row = source_row * 2U + parity;
+        if (destination_row >= height)
+          break;
+        const uint8_t *source = fields[parity] +
+            static_cast<size_t>(source_row) * first.source_pitch;
+        uint8_t *destination = surface->planes[0] +
+            static_cast<size_t>(destination_row) * surface->pitch[0];
+        for (unsigned int column = 0; column + 1 < width; column += 2) {
+          StoreArgb(destination + static_cast<size_t>(column) * 4,
+                    source[column * 2], source[column * 2 + 1],
+                    source[column * 2 + 3]);
+          StoreArgb(destination + static_cast<size_t>(column + 1) * 4,
+                    source[column * 2 + 2], source[column * 2 + 1],
+                    source[column * 2 + 3]);
+        }
+      }
+    }
+    if (!surface->EndDecodedCpuWrite(used_i915_wc))
+      return false;
+    surface->ready = true;
+    surface->frame_timestamp = first.timestamp;
+    return true;
+  }
+
+  if (surface->fourcc != VA_FOURCC_NV12 || (width & 1U) != 0) {
+    surface->EndDecodedCpuWrite(used_i915_wc);
+    return false;
+  }
+  for (unsigned int row = 0; row < height; ++row) {
+    if (width < surface->width)
+      memset(surface->planes[0] + static_cast<size_t>(row) * surface->pitch[0] +
+                 width,
+             16, surface->width - width);
+  }
+  for (unsigned int row = height; row < surface->height; ++row)
+    memset(surface->planes[0] + static_cast<size_t>(row) * surface->pitch[0],
+           16, surface->width);
+  const unsigned int chroma_rows = (height + 1U) / 2U;
+  const unsigned int chroma_width = Align(surface->width, 2);
+  for (unsigned int row = 0; row < chroma_rows; ++row) {
+    if (width < chroma_width)
+      memset(surface->planes[1] + static_cast<size_t>(row) * surface->pitch[1] +
+                 width,
+             128, chroma_width - width);
+  }
+  for (unsigned int row = chroma_rows;
+       row < (surface->height + 1U) / 2U; ++row)
+    memset(surface->planes[1] + static_cast<size_t>(row) * surface->pitch[1],
+           128, chroma_width);
+
+#if defined(__SSE2__)
+  const __m128i luma_mask = _mm_set1_epi16(0x00ff);
+#endif
+  // Each hardware buffer contains one field in display-line order. Weave
+  // luma into alternating rows, but downsample chroma between adjacent rows
+  // of the same field. Averaging top and bottom fields together produces
+  // temporal comb colors rather than interlaced 4:2:0.
+  for (unsigned int parity = 0; parity < 2; ++parity) {
+    for (unsigned int source_row = 0; source_row < field_rows; ++source_row) {
+      const unsigned int destination_row = source_row * 2U + parity;
+      if (destination_row >= height)
+        break;
+      const uint8_t *source = fields[parity] +
+          static_cast<size_t>(source_row) * first.source_pitch;
+      uint8_t *destination = surface->planes[0] +
+          static_cast<size_t>(destination_row) * surface->pitch[0];
+      unsigned int column = 0;
+#if defined(__SSE2__)
+      for (; width - column >= 16; column += 16) {
+        const __m128i packed0 = _mm_loadu_si128(
+            reinterpret_cast<const __m128i *>(source + column * 2));
+        const __m128i packed1 = _mm_loadu_si128(
+            reinterpret_cast<const __m128i *>(source + column * 2 + 16));
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(destination + column),
+            _mm_packus_epi16(_mm_and_si128(packed0, luma_mask),
+                             _mm_and_si128(packed1, luma_mask)));
+      }
+#endif
+      for (; column + 1 < width; column += 2) {
+        destination[column] = source[column * 2];
+        destination[column + 1] = source[column * 2 + 2];
+      }
+    }
+
+    for (unsigned int source_row = 0; source_row + 1 < field_rows;
+         source_row += 2) {
+      const unsigned int destination_row = source_row + parity;
+      if (destination_row >= chroma_rows)
+        break;
+      const uint8_t *first_row = fields[parity] +
+          static_cast<size_t>(source_row) * first.source_pitch;
+      const uint8_t *second_row = first_row + first.source_pitch;
+      uint8_t *destination = surface->planes[1] +
+          static_cast<size_t>(destination_row) * surface->pitch[1];
+      unsigned int column = 0;
+#if defined(__SSE2__)
+      for (; width - column >= 16; column += 16) {
+        const __m128i first0 = _mm_loadu_si128(
+            reinterpret_cast<const __m128i *>(first_row + column * 2));
+        const __m128i first1 = _mm_loadu_si128(
+            reinterpret_cast<const __m128i *>(first_row + column * 2 + 16));
+        const __m128i second0 = _mm_loadu_si128(
+            reinterpret_cast<const __m128i *>(second_row + column * 2));
+        const __m128i second1 = _mm_loadu_si128(
+            reinterpret_cast<const __m128i *>(second_row + column * 2 + 16));
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(destination + column),
+            _mm_packus_epi16(
+                _mm_srli_epi16(_mm_avg_epu8(first0, second0), 8),
+                _mm_srli_epi16(_mm_avg_epu8(first1, second1), 8)));
+      }
+#endif
+      for (; column + 1 < width; column += 2) {
+        destination[column] = static_cast<uint8_t>(
+            (static_cast<unsigned int>(first_row[column * 2 + 1]) +
+             second_row[column * 2 + 1] + 1U) /
+            2U);
+        destination[column + 1] = static_cast<uint8_t>(
+            (static_cast<unsigned int>(first_row[column * 2 + 3]) +
+             second_row[column * 2 + 3] + 1U) /
+            2U);
+      }
+    }
+  }
+  if (!surface->EndDecodedCpuWrite(used_i915_wc))
+    return false;
+  surface->ready = true;
+  surface->frame_timestamp = first.timestamp;
+  return true;
+}
+
 static bool CopyNv12Pixels(const Surface &source, Surface *destination) {
   if (destination == nullptr || source.fourcc != VA_FOURCC_NV12 ||
       destination->fourcc != VA_FOURCC_NV12)
@@ -2939,6 +3135,7 @@ static void MarkPendingPicturesFailed(Driver *driver, DecodeContext *decode) {
 
 static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
                             const char *reason) {
+  decode->h264_first_field = H264FirstField();
   if (decode->IsMpeg4()) {
     decode->mpeg4_replay.Fail(reason);
     for (auto &epoch : decode->mpeg4_draining_epochs)
@@ -2957,6 +3154,41 @@ static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
 static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
                                       const BC_DTS_PROC_OUT &reported) {
   BC_DTS_PROC_OUT output = reported;
+  H264FirstField paired_first_field;
+  bool h264_field_pair = false;
+  const bool h264_interlaced = IsH264Profile(decode->profile) &&
+      (output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0;
+  // BCM70012 resolves the application's token through DtsFetchMdata. That
+  // lookup removes the entry while returning the first field, so a second
+  // field carrying zero can only inherit the already-held first field's
+  // token. Keep the exception narrow: every field property available before
+  // the ownership lookup must still identify the complementary half.
+  if (decode->is_70012 && h264_interlaced &&
+      output.PicInfo.timeStamp == 0 && decode->h264_first_field.valid) {
+    const H264FirstField &first = decode->h264_first_field;
+    const uint32_t field_type =
+        output.PicInfo.flags & VDEC_FLAG_BOTTOMFIELD;
+    const bool field_type_valid = field_type == VDEC_FLAG_TOPFIELD ||
+                                  field_type == VDEC_FLAG_BOTTOMFIELD;
+    const bool bottom = field_type == VDEC_FLAG_BOTTOMFIELD;
+    const bool bottom_first =
+        (output.PicInfo.flags & VDEC_FLAG_BOTTOM_FIRST) != 0;
+    const unsigned int padded_width = output.PicInfo.width <= 720
+        ? 720 : (output.PicInfo.width <= 1280 ? 1280 : 1920);
+    if (first.timestamp != 0 && first.is_70012 &&
+        first.generation == decode->generation && field_type_valid &&
+        first.bottom != bottom && first.bottom_first == bottom_first &&
+        first.picture_number == output.PicInfo.picture_number &&
+        first.sess_num == output.PicInfo.sess_num &&
+        first.picture_meta_payload == output.PicInfo.picture_meta_payload &&
+        first.width == output.PicInfo.width &&
+        first.height == output.PicInfo.height &&
+        first.source_pitch == padded_width * 2U) {
+      output.PicInfo.timeStamp = first.timestamp;
+      Debug("recover BCM70012 second H.264 field as token %llu",
+            static_cast<unsigned long long>(first.timestamp));
+    }
+  }
   if (driver->trace.enabled()) {
     driver->trace.Emit(crystalhd_vaapi_trace::Event::OutputDequeued,
                        TraceDecodeTokenFields(driver, decode,
@@ -2966,6 +3198,115 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
       output.PicInfo.timeStamp == decode->prefed_timestamp)
     return FailDecode(driver, decode,
                       "speculative H.264 prefix produced a picture");
+  if (decode->h264_first_field.valid && !h264_interlaced)
+    return FailDecode(driver, decode,
+                      "progressive output interrupted an H.264 field pair");
+  if (h264_interlaced) {
+    const uint32_t field_type =
+        output.PicInfo.flags & VDEC_FLAG_BOTTOMFIELD;
+    const bool field_type_valid = field_type == VDEC_FLAG_TOPFIELD ||
+                                  field_type == VDEC_FLAG_BOTTOMFIELD;
+    const bool bottom = field_type == VDEC_FLAG_BOTTOMFIELD;
+    const bool bottom_first =
+        (output.PicInfo.flags & VDEC_FLAG_BOTTOM_FIRST) != 0;
+    const unsigned int width = output.PicInfo.width;
+    const unsigned int height = output.PicInfo.height;
+    const unsigned int padded_width = decode->is_70012
+        ? (width <= 720 ? 720 : (width <= 1280 ? 1280 : 1920))
+        : width;
+    const uint64_t field_bytes = static_cast<uint64_t>(padded_width) *
+                                 2U * (height / 2U);
+    const auto inspection = decode->replay.Inspect(output.PicInfo.timeStamp);
+    const bool replay_duplicate =
+        inspection == CrystalHDDecodeReplay::Output::Duplicate &&
+        decode->replay.IsOutstanding(output.PicInfo.timeStamp);
+    const bool new_picture =
+        inspection == CrystalHDDecodeReplay::Output::New;
+    if (decode->is_70012 && output.PicInfo.timeStamp == 0 &&
+        !decode->h264_first_field.valid)
+      return FailDecode(driver, decode,
+                        "unbound BCM70012 H.264 field has no timestamp");
+    if (!decode->h264_first_field.valid &&
+        !new_picture && !replay_duplicate) {
+      if (inspection == CrystalHDDecodeReplay::Output::Invalid)
+        return FailDecode(driver, decode, decode->ReplayFailure());
+      return VA_STATUS_SUCCESS;
+    }
+
+    const auto decoded =
+        decode->decoded_frames.find(output.PicInfo.timeStamp);
+    const auto pending = decode->pending.find(output.PicInfo.timeStamp);
+    const unsigned int crop_unit_y =
+        decode->picture.seq_fields.bits.frame_mbs_only_flag ? 2U : 4U;
+    const bool valid_field =
+        (new_picture || replay_duplicate) &&
+        (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) != 0 &&
+        output.Ybuff != nullptr && field_type_valid && width != 0 &&
+        height != 0 && width == decode->StreamWidth() &&
+        height == decode->StreamHeight() && ((width | height) & 1U) == 0 &&
+        (height & 3U) == 0 &&
+        (replay_duplicate ||
+         (decoded != decode->decoded_frames.end() &&
+          pending != decode->pending.end() &&
+          decoded->second->expected_timestamp == output.PicInfo.timeStamp &&
+          decoded->second->decode_identity != 0 &&
+          decoded->second->trace_generation == decode->generation &&
+          FitsH264CodedGeometry(*decoded->second, width, height, crop_unit_y))) &&
+        field_bytes <= std::numeric_limits<size_t>::max() &&
+        static_cast<uint64_t>(output.YBuffDoneSz) * 4U >= field_bytes;
+    if (!valid_field)
+      return FailDecode(driver, decode,
+                        "invalid H.264 field geometry/data or ownership");
+
+    if (!decode->h264_first_field.valid) {
+      H264FirstField &first = decode->h264_first_field;
+      first.valid = true;
+      first.replay_duplicate = replay_duplicate;
+      first.bottom = bottom;
+      first.bottom_first = bottom_first;
+      first.is_70012 = decode->is_70012;
+      first.timestamp = output.PicInfo.timeStamp;
+      first.decode_identity =
+          replay_duplicate ? 0 : decoded->second->decode_identity;
+      first.generation = decode->generation;
+      first.picture_number = output.PicInfo.picture_number;
+      first.sess_num = output.PicInfo.sess_num;
+      first.picture_meta_payload = output.PicInfo.picture_meta_payload;
+      first.width = width;
+      first.height = height;
+      first.source_pitch = padded_width * 2U;
+      first.picture = replay_duplicate ? nullptr : decoded->second;
+      first.pixels.assign(output.Ybuff,
+                          output.Ybuff + static_cast<size_t>(field_bytes));
+      return VA_STATUS_SUCCESS;
+    }
+
+    const H264FirstField &first = decode->h264_first_field;
+    if (first.timestamp != output.PicInfo.timeStamp ||
+        first.replay_duplicate != replay_duplicate ||
+        (!replay_duplicate &&
+         (decoded == decode->decoded_frames.end() ||
+          first.decode_identity != decoded->second->decode_identity ||
+          first.picture != decoded->second)) ||
+        first.generation != decode->generation ||
+        first.picture_number != output.PicInfo.picture_number ||
+        first.sess_num != output.PicInfo.sess_num ||
+        first.picture_meta_payload != output.PicInfo.picture_meta_payload ||
+        first.width != width || first.height != height ||
+        first.source_pitch != padded_width * 2U ||
+        first.is_70012 != decode->is_70012 || first.bottom == bottom ||
+        first.bottom_first != bottom_first)
+      return FailDecode(driver, decode,
+                        "H.264 fields have mismatched identity, parity, order or geometry");
+    paired_first_field = std::move(decode->h264_first_field);
+    decode->h264_first_field = H264FirstField();
+    // Identity has already been checked against decoded_frames. Do not let
+    // this temporary pair object turn the map into an apparent second owner:
+    // a rebound/dropped public surface must still take the stale-pixel discard
+    // path, while real capture/VPP owners remain visible in use_count/readers.
+    paired_first_field.picture.reset();
+    h264_field_pair = true;
+  }
   const bool ordered_mpeg4_simple =
       decode->profile == VAProfileMPEG4Simple &&
       (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) != 0 &&
@@ -3030,7 +3371,8 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
                  : (output_width <= 1280 ? 1280 : 1920))
           : output_width;
   const uint64_t required_bytes =
-      static_cast<uint64_t>(padded_width) * 2 * output_height;
+      static_cast<uint64_t>(padded_width) * 2 *
+      (h264_field_pair ? output_height / 2U : output_height);
   auto decoded = decode->decoded_frames.find(output.PicInfo.timeStamp);
   // The map can be the last owner after a frontend reuses/drops its public
   // surface. Check before locking the public weak link below; captured and
@@ -3072,7 +3414,8 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
       (decoded == decode->decoded_frames.end() || fits(*decoded->second)) &&
       (!current_picture || fits(*surface->second)) &&
       static_cast<uint64_t>(output.YBuffDoneSz) * 4 >= required_bytes &&
-      (output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) == 0;
+      ((output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) == 0 ||
+       h264_field_pair);
   bool complete = valid_frame;
   bool wrote_pixels = false;
   bool public_materialized = false;
@@ -3087,14 +3430,21 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
   if (decoded != decode->decoded_frames.end()) {
     if (complete && !discard_pixels) {
       if (direct) {
-        complete = CopyYuy2ToSurface(surface->second.get(), output,
-                                     decode->is_70012);
+        complete = h264_field_pair
+            ? CopyH264FieldPairToSurface(surface->second.get(),
+                                         paired_first_field, output)
+            : CopyYuy2ToSurface(surface->second.get(), output,
+                                decode->is_70012);
         wrote_pixels = complete;
         decoded->second->ready = complete;
         decoded->second->frame_timestamp = complete ? output.PicInfo.timeStamp : 0;
       } else {
         complete = PromoteDecodedPicture(decoded->second) &&
-            CopyYuy2ToSurface(decoded->second.get(), output, decode->is_70012);
+            (h264_field_pair
+                 ? CopyH264FieldPairToSurface(decoded->second.get(),
+                                              paired_first_field, output)
+                 : CopyYuy2ToSurface(decoded->second.get(), output,
+                                     decode->is_70012));
         wrote_pixels = complete;
       }
     }
@@ -3118,8 +3468,11 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
         } else {
           complete = decoded != decode->decoded_frames.end()
               ? CopyNv12Surface(*decoded->second, surface->second.get())
-              : CopyYuy2ToSurface(surface->second.get(), output,
-                                  decode->is_70012);
+              : (h264_field_pair
+                     ? CopyH264FieldPairToSurface(surface->second.get(),
+                                                  paired_first_field, output)
+                     : CopyYuy2ToSurface(surface->second.get(), output,
+                                         decode->is_70012));
           wrote_pixels = complete;
           public_materialized = complete;
           if (decode->experimental_ready_remap && complete) {
@@ -3184,6 +3537,9 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
     if (status == BC_STS_SUCCESS &&
         DtsReleaseOutputBuffs(decode->device, nullptr, FALSE) != BC_STS_SUCCESS)
       return FailDecode(driver, decode, "EOS output release failed");
+    if (decode->h264_first_field.valid)
+      return FailDecode(driver, decode,
+                        "EOS arrived with an incomplete H.264 field pair");
     // DIVX firmware can expose its EOS marker before the final reordered
     // picture becomes ready. Keep the batch sealed and continue polling; once
     // every accepted timestamp arrives, DtsIsEndOfStream (or a later marker)
@@ -3268,7 +3624,10 @@ static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode,
       Debug("DtsGetDriverStatus: status=%d ready=%u", status,
             decoder_status.ReadyListCount);
     if (status != BC_STS_SUCCESS)
-      return VA_STATUS_ERROR_DECODING_ERROR;
+      return decode->h264_first_field.valid
+          ? FailDecode(driver, decode,
+                       "hardware status failed during an H.264 field pair")
+          : VA_STATUS_ERROR_DECODING_ERROR;
     if (decoder_status.ReadyListCount == 0)
       return CompleteMpeg4EndOfStream(driver, decode);
     bool activity = false;

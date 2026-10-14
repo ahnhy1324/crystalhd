@@ -142,6 +142,23 @@ class CrystalHDDecodeReplay {
     return Output::Unknown;  // Firmware can report an untimestamped repeat.
   }
 
+  // Inspect an output identity without retiring it. Separate-field hardware
+  // output must keep the access unit outstanding until both fields have been
+  // validated and assembled into one client-visible picture.
+  Output Inspect(uint64_t timestamp) const {
+    if (failed())
+      return Output::Invalid;
+    for (const AccessUnit &unit : units_) {
+      if (unit.timestamp != timestamp)
+        continue;
+      if (unit.completed)
+        return Output::Duplicate;
+      return outstanding_.count(timestamp) != 0 ? Output::New
+                                                : Output::Invalid;
+    }
+    return Output::Unknown;
+  }
+
   bool Fail(const char *reason) {
     phase_ = Phase::Failed;
     failure_ = reason;
@@ -152,6 +169,9 @@ class CrystalHDDecodeReplay {
   const char *failure() const { return failure_; }
   size_t cached_pictures() const { return units_.size(); }
   size_t outstanding() const { return outstanding_.size(); }
+  bool IsOutstanding(uint64_t timestamp) const {
+    return outstanding_.count(timestamp) != 0;
+  }
   bool replayable() const { return replayable_; }
   bool live_stream_started() const { return live_ && multiple_inputs_; }
 

@@ -22,12 +22,15 @@ For the separately characterized live-stream integration, see the top-level
 
 ## Supported decode subset
 
-The backend supports these progressive BCM70015 inputs:
+The backend supports these progressive BCM70015 inputs, plus the selected
+H.264 MBAFF case described below:
 
 - H.264 Constrained Baseline, Main and High. Reconstruction preserves each
   picture's effective 4x4 and active 8x8 scaling lists, including JVT and
   custom matrices. Omitted IQ buffers use flat-16 defaults for that picture;
-  malformed buffers and zero active coefficients are rejected.
+  malformed buffers and zero active coefficients are rejected. Selected MBAFF
+  field pairs emitted from one submitted VA frame/access unit are supported;
+  separately submitted PAFF fields, deinterlacing and pulldown are not.
 - MPEG-2 Simple I/P pictures through 720x576, and Main I/P/B pictures through
   1920x1088 coded size. Input must be 4:2:0 frame pictures with frame-predicted
   DCT, whole slices and no repeat-first-field or top-field-first flags. Picture
@@ -104,6 +107,11 @@ For experimental long-running H.264 input,
 after a second original picture is accepted, does not infer EOS from an
 input-delivery gap. Final pictures then require subsequent input or explicit
 context drain; the absolute ten-second synchronization deadline still applies.
+For finite files with stock FFmpeg, leave this variable unset:
+`vaSyncSurface()` waits for one surface and is not an EOF or drain signal. In
+explicit live mode the last reordered pictures can therefore remain held until
+subsequent input, or until a client retains the output surfaces and calls
+`vaDestroyContext()` to perform the explicit drain before downloading them.
 Setting the variable to `0`, or to any value other than exactly `1`, selects
 strict replay.
 An initial one-picture decoder probe remains eligible for inactivity-based
