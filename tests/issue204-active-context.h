@@ -30,10 +30,17 @@ static const uint32_t kOuterTableAlias = 0x00859378U;
 static const uint32_t kOuterRecordAlias = 0x008590e8U;
 static const uint32_t kOuterDeliveryAlias = 0x008592d0U;
 static const uint32_t kOuterReturnAlias = 0x008592d4U;
+// ARCtangent-A4 architectural control bits: STATUS.H means halted and
+// DEBUG.LD means a delayed load is pending.  The remaining sampled STATUS
+// fields, including any PC-related value, are deliberately not interpreted.
 static const uint32_t kHalt = 0x02000000U;
-// Preserved native probes observed bit 31 before halt and waited for it to
-// clear after the halt request.  Its wider ARC meaning remains unproven.
 static const uint32_t kLoadDebugBit = 0x80000000U;
+// This is a sample-count limit, not a hardware timeout.  The native adapter
+// pauses for 1 ms between samples, but guarded I/O and scheduling add variable
+// time.  Thirty-two samples keep the complete generation observer below its
+// independent 4096-register-read ceiling while covering the observed case in
+// which eight samples were insufficient.
+static const unsigned kHaltPollBudget = 32U;
 static const uint32_t kDeliveryOffset = 0x00015678U;
 static const uint32_t kReturnOffset = 0x00015778U;
 static const uint32_t kRecordOffset = 0x00015878U;
@@ -59,6 +66,7 @@ enum class Failure {
     Ledger,
     Record,
     Source,
+    Extension,
     Resume
 };
 
@@ -79,6 +87,7 @@ struct Io {
     int (*write_register)(void *, uint32_t, uint32_t) = nullptr;
     int (*read_memory)(void *, uint32_t, uint32_t *, uint32_t) = nullptr;
     int (*pause)(void *) = nullptr;
+    uint64_t (*monotonic_us)(void *) = nullptr;
 };
 
 struct Result {
@@ -97,6 +106,8 @@ struct Result {
     bool halt_verified = false;
     bool resume_verified = false;
     bool route_restored = false;
+    // Diagnostic only: held-state acceptance never depends on this clock.
+    bool halt_clock_anomaly = false;
     // Any failure after a route-select attempt deliberately performs no more
     // custom I/O: an API error does not prove the write was unapplied.  A
     // future hardware caller must use ordinary module/device recovery.
@@ -107,6 +118,9 @@ struct Result {
     uint32_t debug_word = 0;
     uint32_t halt_poll_status = 0;
     uint32_t halt_poll_debug = 0;
+    uint32_t halt_status_trace[kHaltPollBudget] = {};
+    uint32_t halt_debug_trace[kHaltPollBudget] = {};
+    uint64_t halt_elapsed_us[kHaltPollBudget] = {};
     uint32_t allocation = 0;
     uint32_t delivery_ring = 0;
     uint32_t return_ring = 0;
@@ -117,9 +131,19 @@ struct Result {
     uint32_t return_read = 0;
     uint32_t return_write = 0;
     uint32_t bank0 = 0;
+    uint32_t bank_bitmap = 0;
+    uint32_t bank_stride = 0;
+    uint32_t bank_count = 0;
     uint32_t chroma = 0;
     uint32_t raw_pts = 0;
     uint32_t source_valid_bytes = 0;
+};
+
+struct HeldExtension {
+    // Extensions are observation-only.  Run verifies that a callback did not
+    // consume any of the four route/halt/resume/restore write slots.
+    void *opaque = nullptr;
+    bool (*observe)(const Plan &, const Io &, Result *, void *) = nullptr;
 };
 
 static inline bool CheckedAdd(uint32_t base, uint32_t amount, uint32_t *sum)
@@ -431,6 +455,9 @@ static inline bool RecordMatches(const uint32_t *record, const Ledger &ledger,
         record[13] != 5U)
         return Reject(result, Failure::Record);
     result->bank0 = ledger.bank0;
+    result->bank_bitmap = ledger.bitmap;
+    result->bank_stride = ledger.stride;
+    result->bank_count = ledger.bank_count & 255U;
     result->chroma = chroma;
     result->raw_pts = record[13];
     return true;
@@ -463,14 +490,16 @@ static inline bool SourceMatches(const uint32_t *words, Result *result)
 }
 
 static inline bool Run(const Plan &plan, const Io &io, uint32_t *source_words,
-                       size_t source_word_count, Result *result)
+                       size_t source_word_count, Result *result,
+                       const HeldExtension *extension = nullptr)
 {
     uint32_t allocation = 0, delivery = 0, returned = 0, slot0_record = 0;
     if (!result) return false;
     *result = Result{};
     if (!source_words || source_word_count != kSourceWords ||
+        (extension && (!extension->opaque || !extension->observe)) ||
         !io.opaque || !io.valid || !io.read_register || !io.write_register ||
-        !io.read_memory || !io.pause ||
+        !io.read_memory || !io.pause || !io.monotonic_us ||
         !ValidatePlan(plan, &allocation, &delivery, &returned, &slot0_record) ||
         !Alive(io, result)) return Reject(result, Failure::Argument);
     result->allocation = allocation;
@@ -497,12 +526,22 @@ static inline bool Run(const Plan &plan, const Io &io, uint32_t *source_words,
         return Reject(result, Failure::Identity);
     result->halt_attempted = true;
     if (!RegisterWrite(io, result, kDebug, 2U)) return false;
-    for (unsigned poll = 0; poll < 8U; ++poll) {
+    const uint64_t halt_started_us = io.monotonic_us(io.opaque);
+    uint64_t prior_sample_us = halt_started_us;
+    for (unsigned poll = 0; poll < kHaltPollBudget; ++poll) {
         if (!Datum(io, result, kStatus, &status) ||
             !Datum(io, result, kDebug, &debug)) return false;
+        const uint64_t sampled_us = io.monotonic_us(io.opaque);
         ++result->halt_polls;
         result->halt_poll_status = status;
         result->halt_poll_debug = debug;
+        result->halt_status_trace[poll] = status;
+        result->halt_debug_trace[poll] = debug;
+        if (sampled_us < halt_started_us || sampled_us < prior_sample_us)
+            result->halt_clock_anomaly = true;
+        result->halt_elapsed_us[poll] = sampled_us >= halt_started_us ?
+            sampled_us - halt_started_us : 0U;
+        prior_sample_us = sampled_us;
         if (debug != 0U && debug != kLoadDebugBit)
             return Reject(result, Failure::Halt);
         if ((status & kHalt) && debug == 0U) {
@@ -510,7 +549,8 @@ static inline bool Run(const Plan &plan, const Io &io, uint32_t *source_words,
             result->halt_verified = true;
             break;
         }
-        if (io.pause(io.opaque) || !Alive(io, result))
+        if (poll + 1U < kHaltPollBudget &&
+            (io.pause(io.opaque) || !Alive(io, result)))
             return Reject(result, Failure::Access);
     }
     if (!result->halt_verified) return Reject(result, Failure::Halt);
@@ -552,8 +592,19 @@ static inline bool Run(const Plan &plan, const Io &io, uint32_t *source_words,
         !RecordMatches(record_before, ledger_before, plan, result) ||
         !HeldMemory(io, result, ledger_before.bank0, source_words,
                     kSourceReadBytes) ||
-        !SourceMatches(source_words, result) ||
-        !ReadEdges(io, result, plan, &after) ||
+        !SourceMatches(source_words, result))
+        return false;
+    if (extension) {
+        const unsigned writes_before_extension = result->register_writes;
+        Io read_only = io;
+        read_only.write_register = nullptr;
+        if (!extension->observe(plan, read_only, result,
+                                extension->opaque) ||
+            result->register_writes != writes_before_extension)
+            return result->failure == Failure::None
+                ? Reject(result, Failure::Extension) : false;
+    }
+    if (!ReadEdges(io, result, plan, &after) ||
         !EdgesMatch(after, plan, delivery, returned) ||
         !EdgesEqual(before, after) ||
         !ReadAliases(io, result, aliases_after) ||

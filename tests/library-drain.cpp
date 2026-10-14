@@ -46,6 +46,7 @@ extern "C" {
 #include <utility>
 #include <vector>
 #include "issue204-active-context.h"
+#include "issue204-generation-observer.h"
 #include "issue399-firmware-drop.h"
 #include "phase1-progress.h"
 #include "rx-output-receipts.h"
@@ -1670,6 +1671,9 @@ struct ActiveContextNativeIo {
         g_usleep(1000);
         return Valid(opaque) ? 0 : -1;
     }
+    static uint64_t MonotonicUs(void *) {
+        return static_cast<uint64_t>(g_get_monotonic_time());
+    }
     issue204_active_context::Io Interface() {
         issue204_active_context::Io io;
         io.opaque = this;
@@ -1678,9 +1682,19 @@ struct ActiveContextNativeIo {
         io.write_register = RegisterWrite;
         io.read_memory = MemoryRead;
         io.pause = Pause;
+        io.monotonic_us = MonotonicUs;
         return io;
     }
 };
+
+static bool GenerationObservationPassed(
+    bool active_ok, const issue204_active_context::Result &active,
+    const issue204_generation_observer::Result &generation)
+{
+    return issue204_generation_observer::ClassifyReport(
+        active_ok, active, generation).outcome ==
+        issue204_generation_observer::ReportOutcome::Pass;
+}
 
 static bool ObserveActiveContextNative(HANDLE *current, const bool *opened,
     const bool *started, issue204_active_context::Result *result,
@@ -1688,7 +1702,9 @@ static bool ObserveActiveContextNative(HANDLE *current, const bool *opened,
     PpbContextObserver::Reader memory_reader = DtsDevMemRd,
     ActiveContextNativeIo::RegisterReader register_reader = DtsDevRegisterRead,
     ActiveContextNativeIo::RegisterWriter register_writer = DtsDevRegisterWr,
-    bool report = true)
+    bool report = true,
+    issue204_generation_observer::Result *generation = nullptr,
+    uint64_t receipt_generation = 0, uint64_t receipt_run_id = 0)
 {
     using namespace issue204_active_context;
     if (!result) return false;
@@ -1704,6 +1720,26 @@ static bool ObserveActiveContextNative(HANDLE *current, const bool *opened,
     // more importantly, before the first route-select write.  DtsDevMemRd may
     // still allocate its own per-call transport buffer internally.
     std::vector<uint32_t> source(kSourceWords);
+    std::vector<uint32_t> generation_source;
+    issue204_generation_observer::Capture generation_capture;
+    HeldExtension generation_extension;
+    if (generation) {
+        *generation = issue204_generation_observer::Result{};
+        if (!receipt_generation || !receipt_run_id) {
+            result->failure = Failure::Argument;
+            generation->failure =
+                issue204_generation_observer::Failure::Argument;
+            return false;
+        }
+        generation_source.resize(kSourceWords);
+        generation_capture.result = generation;
+        generation_capture.source_words = generation_source.data();
+        generation_capture.source_word_count = generation_source.size();
+        generation_capture.receipt_generation = receipt_generation;
+        generation_capture.receipt_run_id = receipt_run_id;
+        generation_extension =
+            issue204_generation_observer::Extension(&generation_capture);
+    }
     PpbContextObserver graph_reader;
     graph_reader.enabled = graph_reader.video_graph =
         graph_reader.owner_video_graph = true;
@@ -1741,7 +1777,8 @@ static bool ObserveActiveContextNative(HANDLE *current, const bool *opened,
     adapter.register_reader = register_reader;
     adapter.register_writer = register_writer;
     adapter.memory_reader = memory_reader;
-    ok = Run(plan, adapter.Interface(), source.data(), source.size(), result);
+    ok = Run(plan, adapter.Interface(), source.data(), source.size(), result,
+             generation ? &generation_extension : nullptr);
     if (report) {
         std::printf("Active context native: gate=exact61 graph-reads=%u "
             "graph-bytes=%u graph-result=PASS fresh-boundary=PASS failure=%u register-reads=%u "
@@ -1758,6 +1795,50 @@ static bool ObserveActiveContextNative(HANDLE *current, const bool *opened,
             result->route_restored ? "yes" : "no",
             result->module_recovery_required ? "yes" : "no",
             ok ? "PASS" : "FAIL");
+        std::printf("Active context halt trace: samples=%u clock-anomaly=%s pairs=",
+            result->halt_polls,
+            result->halt_clock_anomaly ? "yes" : "no");
+        for (unsigned poll = 0; poll < result->halt_polls; ++poll) {
+            std::printf("%s%08x/%08x@%lluus", poll ? "," : "",
+                result->halt_status_trace[poll],
+                result->halt_debug_trace[poll],
+                static_cast<unsigned long long>(
+                    result->halt_elapsed_us[poll]));
+        }
+        std::printf("\n");
+        std::fflush(stdout);
+    }
+    if (report && generation) {
+        const issue204_generation_observer::ReportDecision decision =
+            issue204_generation_observer::ClassifyReport(
+                ok, *result, *generation);
+        if (decision.outcome ==
+            issue204_generation_observer::ReportOutcome::NotRun) {
+            std::printf("Generation-bound outer/ARM: result=%s reason=%s\n",
+                issue204_generation_observer::ReportOutcomeName(
+                    decision.outcome),
+                issue204_generation_observer::ReportReasonName(
+                    decision.reason));
+        } else {
+            std::printf("Generation-bound outer/ARM: latest-i=%u delivered-i=%u "
+                "delivered-j=%u display=%u/%u frame-metadata=0x%08x "
+                "delivered-record=0x%08x arm-raw=0x%08x raw-timestamp=%u "
+                "source-bank=%u "
+                "receipt-generation=%llu receipt-run=%llu result=%s failure=%u "
+                "atomic-cross-core=no physical-lease=no\n",
+                generation->latest_producer_i, generation->delivered_i,
+                generation->delivered_j, generation->display_producer,
+                generation->display_consumer,
+                generation->frame_metadata, generation->delivered_record,
+                generation->arm_raw_record,
+                generation->raw_firmware_timestamp, generation->source_bank,
+                static_cast<unsigned long long>(
+                    generation->receipt_generation),
+                static_cast<unsigned long long>(generation->receipt_run_id),
+                issue204_generation_observer::ReportOutcomeName(
+                    decision.outcome),
+                static_cast<unsigned>(generation->failure));
+        }
         std::fflush(stdout);
     }
     return ok;
@@ -1783,6 +1864,21 @@ struct ActiveContextModelFixture {
     uint32_t debug = 0;
     uint32_t halt_debug = 0;
     uint32_t bank0 = 0x00500000U;
+    bool generation = false;
+    unsigned generation_mutation = 0;
+    unsigned generation_arm_reads = 0;
+    unsigned generation_delivered_reads = 0;
+    uint32_t generation_frame_pool = 0x00600000U;
+    uint32_t generation_latest_i = 6U;
+    uint32_t generation_i = 5U;
+    uint32_t generation_j = 3U;
+    uint32_t generation_cursor = 10U;
+    uint32_t generation_timestamp = 300U;
+    uint32_t fail_generation_register_address = 0;
+    uint32_t fail_generation_memory_address = 0;
+    uint64_t now_us = 10000U;
+    uint64_t clock_override_us = 0;
+    unsigned clock_reads = 0, clock_override_at = 0;
 
     static int Valid(void *opaque) {
         const auto *fixture = static_cast<const ActiveContextModelFixture *>(opaque);
@@ -1795,6 +1891,8 @@ struct ActiveContextModelFixture {
                 &allocation, &delivery, &returned, &record)) return -1;
         ++fixture->register_reads;
         if (fixture->register_reads == fixture->fail_register_read_at) return -1;
+        if (fixture->generation && fixture->fail_generation_register_address &&
+            address == fixture->fail_generation_register_address) return -1;
         if (address == 0x00540000U) *word = 0x50U;
         else if (address == 0x004000d4U) *word = 0;
         else if (address == issue204_active_context::kRoute) *word = fixture->route;
@@ -1831,12 +1929,48 @@ struct ActiveContextModelFixture {
             *word = fixture->mutation == 13 ? fixture->bank0 + 4U :
                 fixture->mutation == 16 ? fixture->plan.video_base + fixture->plan.video_bytes :
                 fixture->bank0;
-        else if (address == issue204_active_context::LedgerAddress(50U)) *word = 7U;
+        else if (address == issue204_active_context::LedgerAddress(50U))
+            *word = fixture->generation_mutation == 8U ? 1U : 7U;
         else if (address == issue204_active_context::LedgerAddress(51U)) *word = 0xc000U;
         else if (address == issue204_active_context::LedgerAddress(52U)) *word = 0x08030100U;
         else if (address == issue204_active_context::LedgerAddress(85U))
             *word = fixture->mutation == 14 ? 0x00618004U : 0x00618000U;
         else if (address == issue204_active_context::LedgerAddress(86U)) *word = 6U;
+        else if (fixture->generation &&
+                 address == issue204_generation_observer::kOuterProducerWord)
+            *word = fixture->generation_latest_i | (63U << 8U);
+        else if (fixture->generation &&
+                 address == issue204_generation_observer::kOuterDisplayCursors)
+            *word = fixture->generation_cursor |
+                ((fixture->generation_mutation == 1U
+                    ? fixture->generation_cursor + 1U
+                    : fixture->generation_cursor) << 8U);
+        else if (fixture->generation &&
+                 address == ((issue204_generation_observer::kOuterDisplayTable +
+                    ((fixture->generation_cursor - 1U) & 63U)) & ~3U))
+            *word = fixture->generation_i <<
+                (((issue204_generation_observer::kOuterDisplayTable +
+                   ((fixture->generation_cursor - 1U) & 63U)) & 3U) * 8U);
+        else if (fixture->generation &&
+                 address == ((issue204_generation_observer::kOuterIToJ +
+                    fixture->generation_i) & ~3U))
+            *word = fixture->generation_j <<
+                (((issue204_generation_observer::kOuterIToJ +
+                   fixture->generation_i) & 3U) * 8U);
+        else if (fixture->generation &&
+                 address == ((issue204_generation_observer::kOuterJToI +
+                    fixture->generation_j) & ~3U))
+            *word = (fixture->generation_mutation == 2U
+                    ? fixture->generation_i + 1U : fixture->generation_i) <<
+                (((issue204_generation_observer::kOuterJToI +
+                   fixture->generation_j) & 3U) * 8U);
+        else if (fixture->generation &&
+                 (address == issue204_generation_observer::kOuterAssignmentFramePool ||
+                  address == issue204_generation_observer::kOuterDisplayFramePool))
+            *word = fixture->generation_frame_pool +
+                (fixture->generation_mutation == 3U &&
+                 address == issue204_generation_observer::kOuterDisplayFramePool
+                    ? 4U : 0U);
         else return -1;
         return 0;
     }
@@ -1876,6 +2010,8 @@ struct ActiveContextModelFixture {
                 &allocation, &delivery, &returned, &record)) return -1;
         ++fixture->memory_reads;
         if (fixture->memory_reads == fixture->fail_memory_read_at) return -1;
+        if (fixture->generation && fixture->fail_generation_memory_address &&
+            address == fixture->fail_generation_memory_address) return -1;
         if (address == fixture->plan.active_context + 8U && bytes == 4U) {
             ++fixture->root_reads;
             words[0] = fixture->after_mutation == 1 && fixture->root_reads > 1U ?
@@ -1931,14 +2067,82 @@ struct ActiveContextModelFixture {
                 words[index] = known > 0 ? expected : 0xa5a5a5a5U;
             }
             if (fixture->mutation == 10) words[0] ^= 0x01000000U;
+        } else if (fixture->generation &&
+                   address == fixture->plan.holder +
+                       issue204_generation_observer::kArmCacheOffset &&
+                   bytes == issue204_generation_observer::kArmCacheBytes) {
+            ++fixture->generation_arm_reads;
+            std::memset(words, 0, bytes);
+            const uint32_t delivered_pool = record;
+            const uint32_t delivered_record = delivered_pool +
+                fixture->generation_j * issue204_active_context::kRecordStride;
+            const uint32_t luma = fixture->bank0 + 0xc000U;
+            words[0] = 0x02000000U;
+            words[1] = delivered_record +
+                (fixture->generation_mutation == 4U ? 4U : 0U);
+            uint32_t *prepared = words +
+                issue204_generation_observer::kArmElementBytes / 4U;
+            prepared[5] = 256U;
+            prepared[6] = 96U;
+            prepared[13] = luma;
+            prepared[14] = luma + 24576U;
+            if (fixture->generation_mutation == 5U &&
+                fixture->generation_arm_reads > 1U) prepared[20] = 1U;
+        } else if (fixture->generation &&
+                   address == fixture->generation_frame_pool +
+                       fixture->generation_i *
+                           issue204_generation_observer::kFrameStride +
+                       issue204_generation_observer::kFrameMetadataOffset &&
+                   bytes == issue204_active_context::kRecordBytes) {
+            std::memset(words, 0, bytes);
+            const uint32_t luma = fixture->bank0 + 0xc000U;
+            words[1] = luma;
+            words[2] = luma + 24576U;
+            words[3] = 256U;
+            words[4] = 96U;
+            words[13] = fixture->generation_timestamp;
+        } else if (fixture->generation &&
+                   address == record + fixture->generation_j *
+                           issue204_active_context::kRecordStride &&
+                   bytes == issue204_active_context::kRecordBytes) {
+            ++fixture->generation_delivered_reads;
+            std::memset(words, 0, bytes);
+            const uint32_t luma = fixture->bank0 + 0xc000U;
+            words[1] = luma;
+            words[2] = luma + 24576U;
+            words[3] = 256U;
+            words[4] = 96U;
+            words[13] = fixture->generation_timestamp;
+            if (fixture->generation_mutation == 6U &&
+                fixture->generation_delivered_reads > 1U) words[22] = 1U;
+        } else if (fixture->generation &&
+                   address == fixture->bank0 + 0xc000U &&
+                   bytes == issue204_active_context::kSourceReadBytes) {
+            for (unsigned index = 0;
+                 index < issue204_active_context::kSourceWords; ++index) {
+                uint32_t expected = 0;
+                const int known = issue204_active_context::KnownSourceWord(
+                    index, &expected);
+                words[index] = known > 0 ? expected : 0xa5a5a5a5U;
+            }
+            if (fixture->generation_mutation == 7U)
+                words[0] ^= 0x01000000U;
         } else return -1;
         if (fixture->memory_reads == fixture->lose_owner_memory_at)
             fixture->owner = false;
         return 0;
     }
     static int Pause(void *opaque) {
-        ++static_cast<ActiveContextModelFixture *>(opaque)->pauses;
+        auto *fixture = static_cast<ActiveContextModelFixture *>(opaque);
+        ++fixture->pauses;
+        fixture->now_us += 1000U;
         return 0;
+    }
+    static uint64_t MonotonicUs(void *opaque) {
+        auto *fixture = static_cast<ActiveContextModelFixture *>(opaque);
+        ++fixture->clock_reads;
+        return fixture->clock_reads == fixture->clock_override_at ?
+            fixture->clock_override_us : fixture->now_us;
     }
     issue204_active_context::Io Interface() {
         issue204_active_context::Io io;
@@ -1948,6 +2152,7 @@ struct ActiveContextModelFixture {
         io.write_register = RegisterWrite;
         io.read_memory = MemoryRead;
         io.pause = Pause;
+        io.monotonic_us = MonotonicUs;
         return io;
     }
 };
@@ -2002,6 +2207,25 @@ template<class Check> static void ActiveContextBindingSelfTest(const Check &chec
           result.record == result.allocation + kRecordOffset,
         "issue204 model derives all observed addresses instead of embedding native session values");
 
+    bool read_only_extension_called = false;
+    HeldExtension read_only_extension;
+    read_only_extension.opaque = &read_only_extension_called;
+    read_only_extension.observe = [](
+        const Plan &, const Io &read_only, Result *, void *opaque) {
+        *static_cast<bool *>(opaque) = true;
+        return read_only.read_register && read_only.read_memory &&
+            !read_only.write_register;
+    };
+    ActiveContextModelFixture read_only_fixture;
+    read_only_fixture.plan = plan;
+    Result read_only_result;
+    check(Run(plan, read_only_fixture.Interface(), source.data(), source.size(),
+              &read_only_result, &read_only_extension) &&
+          read_only_extension_called &&
+          read_only_result.register_writes == 4U &&
+          read_only_fixture.register_writes == 4U,
+        "issue204 extension receives no raw register-write callback and cannot bypass the four-write bracket");
+
     ActiveContextModelFixture pre_halt_bit;
     pre_halt_bit.plan = plan;
     pre_halt_bit.debug = kLoadDebugBit;
@@ -2016,12 +2240,18 @@ template<class Check> static void ActiveContextBindingSelfTest(const Check &chec
 
     ActiveContextModelFixture delayed_load_clear;
     delayed_load_clear.plan = plan;
-    delayed_load_clear.pending_debug_reads = 3U;
+    delayed_load_clear.pending_debug_reads = 8U;
     Result delayed_load_result;
     check(Run(plan, delayed_load_clear.Interface(), source.data(), source.size(),
               &delayed_load_result) &&
-          delayed_load_result.halt_polls == 4U &&
+          delayed_load_result.halt_polls == 9U &&
           delayed_load_result.halt_poll_debug == 0U &&
+          delayed_load_result.halt_status_trace[0] ==
+              (delayed_load_clear.status | kHalt) &&
+          delayed_load_result.halt_debug_trace[7] == kLoadDebugBit &&
+          delayed_load_result.halt_debug_trace[8] == 0U &&
+          delayed_load_result.halt_elapsed_us[0] == 0U &&
+          delayed_load_result.halt_elapsed_us[8] == 8000U &&
           delayed_load_result.halt_verified &&
           delayed_load_result.resume_verified &&
           delayed_load_result.route_restored,
@@ -2029,17 +2259,50 @@ template<class Check> static void ActiveContextBindingSelfTest(const Check &chec
 
     ActiveContextModelFixture persistent_load;
     persistent_load.plan = plan;
-    persistent_load.pending_debug_reads = 8U;
+    persistent_load.pending_debug_reads = kHaltPollBudget;
     Result persistent_load_result;
     check(!Run(plan, persistent_load.Interface(), source.data(), source.size(),
                &persistent_load_result) &&
           persistent_load_result.failure == Failure::Halt &&
-          persistent_load_result.halt_polls == 8U &&
+          persistent_load_result.halt_polls == kHaltPollBudget &&
           persistent_load_result.halt_poll_debug == kLoadDebugBit &&
+          persistent_load_result.halt_status_trace[0] ==
+              (persistent_load.status | kHalt) &&
+          persistent_load_result.halt_debug_trace[kHaltPollBudget - 1U] ==
+              kLoadDebugBit &&
+          persistent_load_result.halt_elapsed_us[kHaltPollBudget - 1U] ==
+              (kHaltPollBudget - 1U) * 1000U &&
           persistent_load_result.register_writes == 2U &&
           !persistent_load_result.memory_reads &&
           persistent_load_result.module_recovery_required,
         "issue204 model refuses a load bit that does not clear within the fixed halt-poll budget");
+
+    ActiveContextModelFixture below_start_clock;
+    below_start_clock.plan = plan;
+    below_start_clock.pending_debug_reads = 1U;
+    below_start_clock.clock_override_at = 3U;
+    below_start_clock.clock_override_us = 9000U;
+    Result below_start_result;
+    check(Run(plan, below_start_clock.Interface(), source.data(), source.size(),
+              &below_start_result) && below_start_result.halt_clock_anomaly &&
+          below_start_result.halt_polls == 2U &&
+          below_start_result.halt_elapsed_us[1] == 0U &&
+          below_start_result.halt_verified && below_start_result.route_restored,
+        "issue204 halt trace flags a sample below its monotonic start without weakening held-state proof");
+
+    ActiveContextModelFixture nonmonotonic_clock;
+    nonmonotonic_clock.plan = plan;
+    nonmonotonic_clock.pending_debug_reads = 2U;
+    nonmonotonic_clock.clock_override_at = 4U;
+    nonmonotonic_clock.clock_override_us = 10500U;
+    Result nonmonotonic_result;
+    check(Run(plan, nonmonotonic_clock.Interface(), source.data(), source.size(),
+              &nonmonotonic_result) && nonmonotonic_result.halt_clock_anomaly &&
+          nonmonotonic_result.halt_polls == 3U &&
+          nonmonotonic_result.halt_elapsed_us[1] == 1000U &&
+          nonmonotonic_result.halt_elapsed_us[2] == 500U &&
+          nonmonotonic_result.halt_verified && nonmonotonic_result.route_restored,
+        "issue204 halt trace flags an above-start backward sample without weakening held-state proof");
 
     ActiveContextModelFixture unknown_pre_halt_bit;
     unknown_pre_halt_bit.plan = plan;
@@ -2160,6 +2423,259 @@ template<class Check> static void ActiveContextBindingSelfTest(const Check &chec
     check(!Run(plan, malformed.Interface(), source.data(), source.size() - 1U, &failed) &&
           failed.failure == Failure::Argument && !malformed.register_reads,
         "issue204 model requires the exact finite source-read scratch extent before any I/O");
+    ActiveContextModelFixture no_clock;
+    no_clock.plan = plan;
+    Io no_clock_io = no_clock.Interface();
+    no_clock_io.monotonic_us = nullptr;
+    check(!Run(plan, no_clock_io, source.data(), source.size(), &failed) &&
+          failed.failure == Failure::Argument && !no_clock.register_reads &&
+          !no_clock.register_writes && !no_clock.memory_reads,
+        "issue204 model requires a monotonic trace clock before any I/O");
+
+    ActiveContextModelFixture generation_fixture;
+    generation_fixture.plan = plan;
+    generation_fixture.generation = true;
+    std::vector<uint32_t> generation_source(kSourceWords);
+    issue204_generation_observer::Result generation_result;
+    issue204_generation_observer::Capture generation_capture;
+    generation_capture.result = &generation_result;
+    generation_capture.source_words = generation_source.data();
+    generation_capture.source_word_count = generation_source.size();
+    generation_capture.receipt_generation = 9U;
+    generation_capture.receipt_run_id = 11U;
+    HeldExtension generation_extension =
+        issue204_generation_observer::Extension(&generation_capture);
+    Result generation_active;
+    check(Run(plan, generation_fixture.Interface(), source.data(), source.size(),
+              &generation_active, &generation_extension) &&
+          generation_active.failure == Failure::None &&
+          generation_active.resume_verified && generation_active.route_restored &&
+          generation_result.failure ==
+              issue204_generation_observer::Failure::None &&
+          generation_result.observed && !generation_result.receipt_verified &&
+          generation_result.receipt_generation == 9U &&
+          generation_result.receipt_run_id == 11U &&
+          generation_result.latest_producer_i == 6U &&
+          generation_result.delivered_i == 5U &&
+          generation_result.delivered_j == 3U &&
+          generation_result.raw_firmware_timestamp == 300U &&
+          generation_result.source_bank == 1U &&
+          generation_result.source_valid_bytes == kSourceValidBytes &&
+          generation_result.arm_raw_record ==
+              generation_result.delivered_record &&
+          generation_fixture.register_writes == 4U &&
+          generation_fixture.route == 0U &&
+          !(generation_fixture.status & kHalt) &&
+          GenerationObservationPassed(true, generation_active,
+                                      generation_result),
+        "issue204 generation model joins stable outer i/j, ARM P/F and selected source before clean resume");
+    const issue204_generation_observer::ReportDecision success_report =
+        issue204_generation_observer::ClassifyReport(
+            true, generation_active, generation_result);
+    issue204_generation_observer::Result never_executed_generation;
+    const issue204_generation_observer::ReportDecision halt_report =
+        issue204_generation_observer::ClassifyReport(
+            false, persistent_load_result, never_executed_generation);
+    issue204_active_context::Result graph_failed_active;
+    graph_failed_active.failure = Failure::Graph;
+    const issue204_generation_observer::ReportDecision precondition_report =
+        issue204_generation_observer::ClassifyReport(
+            false, graph_failed_active, never_executed_generation);
+    issue204_active_context::Result extension_failed_active;
+    extension_failed_active.failure = Failure::Extension;
+    issue204_generation_observer::Result extension_failed_generation;
+    extension_failed_generation.failure =
+        issue204_generation_observer::Failure::Source;
+    extension_failed_generation.receipt_generation = 9U;
+    extension_failed_generation.receipt_run_id = 11U;
+    const issue204_generation_observer::ReportDecision failure_report =
+        issue204_generation_observer::ClassifyReport(
+            false, extension_failed_active, extension_failed_generation);
+    check(success_report.outcome ==
+              issue204_generation_observer::ReportOutcome::Pass &&
+          success_report.reason ==
+              issue204_generation_observer::ReportReason::None &&
+          std::strcmp(issue204_generation_observer::ReportOutcomeName(
+                          success_report.outcome), "PASS") == 0 &&
+          halt_report.outcome ==
+              issue204_generation_observer::ReportOutcome::NotRun &&
+          halt_report.reason ==
+              issue204_generation_observer::ReportReason::ActiveContextHaltPrecondition &&
+          std::strcmp(issue204_generation_observer::ReportOutcomeName(
+                          halt_report.outcome), "NOT-RUN") == 0 &&
+          std::strcmp(issue204_generation_observer::ReportReasonName(
+                          halt_report.reason),
+                      "active-context-halt-precondition") == 0 &&
+          precondition_report.outcome ==
+              issue204_generation_observer::ReportOutcome::NotRun &&
+          precondition_report.reason ==
+              issue204_generation_observer::ReportReason::ActiveContextPrecondition &&
+          std::strcmp(issue204_generation_observer::ReportReasonName(
+                          precondition_report.reason),
+                      "active-context-precondition") == 0 &&
+          failure_report.outcome ==
+              issue204_generation_observer::ReportOutcome::Fail &&
+          failure_report.reason ==
+              issue204_generation_observer::ReportReason::None,
+        "issue204 generation reporting distinguishes success, genuine extension failure and an unexecuted halt-precondition refusal");
+    ActiveContextModelFixture generation_after_failure;
+    generation_after_failure.plan = plan;
+    generation_after_failure.generation = true;
+    generation_after_failure.after_mutation = 1U;
+    issue204_generation_observer::Result after_failure_generation;
+    issue204_generation_observer::Capture after_failure_capture;
+    after_failure_capture.result = &after_failure_generation;
+    after_failure_capture.source_words = generation_source.data();
+    after_failure_capture.source_word_count = generation_source.size();
+    after_failure_capture.receipt_generation = 9U;
+    after_failure_capture.receipt_run_id = 11U;
+    HeldExtension after_failure_extension =
+        issue204_generation_observer::Extension(&after_failure_capture);
+    Result after_failure_active;
+    const bool after_failure_ok = Run(
+        plan, generation_after_failure.Interface(), source.data(),
+        source.size(), &after_failure_active, &after_failure_extension);
+    check(!after_failure_ok && after_failure_generation.observed &&
+          after_failure_generation.failure ==
+              issue204_generation_observer::Failure::None &&
+          after_failure_active.failure == Failure::Graph &&
+          after_failure_active.module_recovery_required &&
+          generation_after_failure.register_writes == 2U &&
+          !GenerationObservationPassed(after_failure_ok,
+                                       after_failure_active,
+                                       after_failure_generation),
+        "issue204 generation result cannot report PASS after a closing active-context bracket failure");
+    ActiveContextModelFixture generation_nonzero_alias;
+    generation_nonzero_alias.plan = plan;
+    generation_nonzero_alias.generation = true;
+    generation_nonzero_alias.record_slot = 2U;
+    issue204_generation_observer::Result nonzero_alias_result;
+    issue204_generation_observer::Capture nonzero_alias_capture;
+    nonzero_alias_capture.result = &nonzero_alias_result;
+    nonzero_alias_capture.source_words = generation_source.data();
+    nonzero_alias_capture.source_word_count = generation_source.size();
+    nonzero_alias_capture.receipt_generation = 9U;
+    nonzero_alias_capture.receipt_run_id = 11U;
+    HeldExtension nonzero_alias_extension =
+        issue204_generation_observer::Extension(&nonzero_alias_capture);
+    Result nonzero_alias_active;
+    check(Run(plan, generation_nonzero_alias.Interface(), source.data(),
+              source.size(), &nonzero_alias_active,
+              &nonzero_alias_extension) &&
+          nonzero_alias_active.record_slot == 2U &&
+          nonzero_alias_result.delivered_pool ==
+              nonzero_alias_active.allocation + kRecordOffset &&
+          nonzero_alias_result.delivered_record ==
+              nonzero_alias_result.delivered_pool +
+                  3U * kRecordStride &&
+          nonzero_alias_result.arm_raw_record ==
+              nonzero_alias_result.delivered_record,
+        "issue204 generation model derives j from the delivered-pool base independently of the active alias slot");
+    issue204_generation_observer::Receipt generation_receipt;
+    generation_receipt.generation = 9U;
+    generation_receipt.run_id = 11U;
+    generation_receipt.host_token = 6000000U;
+    generation_receipt.raw_firmware_timestamp = 300U;
+    generation_receipt.normalized_firmware_timestamp = 6000000U;
+    generation_receipt.host_width = generation_receipt.driver_width = 256U;
+    generation_receipt.host_height = generation_receipt.driver_height = 96U;
+    check(issue204_generation_observer::VerifyReceipt(
+              &generation_result, generation_receipt) &&
+          generation_result.receipt_verified,
+        "issue204 generation witness binds the observed raw timestamp to one joined capture generation/run receipt");
+    for (unsigned mutation = 1U; mutation <= 8U; ++mutation) {
+        ActiveContextModelFixture rejected;
+        rejected.plan = plan;
+        rejected.generation = true;
+        rejected.generation_mutation = mutation;
+        issue204_generation_observer::Result rejected_generation;
+        issue204_generation_observer::Capture rejected_capture;
+        rejected_capture.result = &rejected_generation;
+        rejected_capture.source_words = generation_source.data();
+        rejected_capture.source_word_count = generation_source.size();
+        rejected_capture.receipt_generation = 9U;
+        rejected_capture.receipt_run_id = 11U;
+        HeldExtension rejected_extension =
+            issue204_generation_observer::Extension(&rejected_capture);
+        Result rejected_active;
+        check(!Run(plan, rejected.Interface(), source.data(), source.size(),
+                   &rejected_active, &rejected_extension) &&
+              rejected_active.failure == Failure::Extension &&
+              rejected_generation.failure !=
+                  issue204_generation_observer::Failure::None &&
+              !rejected_generation.observed &&
+              rejected_active.module_recovery_required &&
+              rejected.register_writes == 2U,
+            "issue204 generation model fails closed on cursor/map/pool/ARM/record/source/allocation mismatches");
+    }
+    struct GenerationIoFault {
+        bool register_read;
+        uint32_t address;
+        issue204_generation_observer::Failure failure;
+    };
+    const GenerationIoFault generation_io_faults[] = {
+        {true, issue204_generation_observer::kOuterProducerWord,
+            issue204_generation_observer::Failure::OuterState},
+        {false, plan.holder + issue204_generation_observer::kArmCacheOffset,
+            issue204_generation_observer::Failure::ArmCache},
+        {false, generation_fixture.generation_frame_pool +
+                generation_fixture.generation_i *
+                    issue204_generation_observer::kFrameStride +
+                issue204_generation_observer::kFrameMetadataOffset,
+            issue204_generation_observer::Failure::Record},
+        {false, generation_active.allocation + kRecordOffset +
+                generation_fixture.generation_j * kRecordStride,
+            issue204_generation_observer::Failure::Record},
+        {false, generation_fixture.bank0 + 0xc000U,
+            issue204_generation_observer::Failure::Source},
+    };
+    for (const GenerationIoFault &fault : generation_io_faults) {
+        ActiveContextModelFixture generation_io_failure;
+        generation_io_failure.plan = plan;
+        generation_io_failure.generation = true;
+        if (fault.register_read)
+            generation_io_failure.fail_generation_register_address =
+                fault.address;
+        else
+            generation_io_failure.fail_generation_memory_address =
+                fault.address;
+        issue204_generation_observer::Result generation_io_result;
+        issue204_generation_observer::Capture generation_io_capture;
+        generation_io_capture.result = &generation_io_result;
+        generation_io_capture.source_words = generation_source.data();
+        generation_io_capture.source_word_count = generation_source.size();
+        generation_io_capture.receipt_generation = 9U;
+        generation_io_capture.receipt_run_id = 11U;
+        HeldExtension generation_io_extension =
+            issue204_generation_observer::Extension(&generation_io_capture);
+        Result generation_io_active;
+        check(!Run(plan, generation_io_failure.Interface(), source.data(),
+                   source.size(), &generation_io_active,
+                   &generation_io_extension) &&
+              generation_io_active.failure == Failure::Access &&
+              generation_io_result.failure == fault.failure &&
+              generation_io_active.module_recovery_required &&
+              generation_io_failure.register_writes == 2U,
+            "issue204 generation extension preserves stage-specific I/O failure without unsafe resume");
+    }
+    issue204_generation_observer::Result wrong_receipt_result = generation_result;
+    wrong_receipt_result.receipt_verified = false;
+    generation_receipt.raw_firmware_timestamp = 301U;
+    check(!issue204_generation_observer::VerifyReceipt(
+              &wrong_receipt_result, generation_receipt) &&
+          wrong_receipt_result.failure ==
+              issue204_generation_observer::Failure::Receipt,
+        "issue204 generation witness rejects a receipt outside the observed raw timestamp");
+    issue204_generation_observer::Result wrong_generation_result =
+        generation_result;
+    wrong_generation_result.receipt_verified = false;
+    generation_receipt.raw_firmware_timestamp = 300U;
+    generation_receipt.generation = 10U;
+    check(!issue204_generation_observer::VerifyReceipt(
+              &wrong_generation_result, generation_receipt) &&
+          wrong_generation_result.failure ==
+              issue204_generation_observer::Failure::Receipt,
+        "issue204 generation witness rejects a receipt from another armed generation");
 }
 
 // Native framing observations only: the revision pin is an observed board
@@ -3705,6 +4221,7 @@ struct Options {
     bool observe_video_graph = false;
     bool observe_video_staging = false;
     bool observe_active_context = false;
+    bool observe_generation_bound = false;
     bool observe_avd_memory = false;
     bool observe_avd_cpu_map = false;
     bool observe_avd_code_arena = false;
@@ -3720,6 +4237,11 @@ struct Options {
     bool firmware_drop_nonref = false;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
 };
+
+static bool ActiveContextMode(const Options &options)
+{
+    return options.observe_active_context || options.observe_generation_bound;
+}
 
 static bool AvdMemoryConflicts(const Options &o)
 {
@@ -3789,6 +4311,13 @@ static bool ScalerBenchmarkConflicts(const Options &o)
 
 static bool RxOutputReceiptsConflicts(const Options &o)
 {
+    if (o.observe_generation_bound) {
+        Options other = o;
+        other.observe_generation_bound = false;
+        other.capture_path = nullptr;
+        other.scaler_test = false;
+        return RxOutputReceiptsConflicts(other);
+    }
     return o.capture_path || o.scaler_test || o.mpeg1_via_mpeg2 ||
         o.h263_via_divx || o.open_only || o.observe_chroma ||
         o.observe_power || o.observe_bvn_state || o.observe_scl_config ||
@@ -3890,6 +4419,37 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
             options->scale_width || !options->capture_path ||
             options->output_format != OUTPUT_MODE422_YUY2) return false;
         options->observe_active_context = true;
+        return true;
+    }
+    const unsigned generation_options = static_cast<unsigned>(std::count_if(
+        arguments.begin(), arguments.end(), [](const char *argument) {
+            return argument &&
+                !std::strcmp(argument, "--observe-generation-bound");
+        }));
+    if (generation_options) {
+        if (options->pace_input_hz || !options->rx_output_receipts_path ||
+            generation_options != 1U ||
+            arguments.size() != 11U ||
+            std::strcmp(arguments[1], "--hardware") ||
+            std::strcmp(arguments[3], "180") ||
+            std::strcmp(arguments[4], "30") ||
+            std::strcmp(arguments[5], "1") ||
+            std::strcmp(arguments[6], "--scaler-test") ||
+            std::strcmp(arguments[7], "0") ||
+            std::strcmp(arguments[8], "--capture-yuy2") ||
+            std::strcmp(arguments[10], "--observe-generation-bound"))
+            return false;
+        arguments.pop_back();
+        options->observe_generation_bound = true;
+        if (!ParseArguments(arguments, options) ||
+            options->mode != Mode::Hardware || options->expected != 180U ||
+            options->seconds != 30U || options->iterations != 1U ||
+            !options->scaler_test || options->scale_width ||
+            !options->capture_path ||
+            !std::strcmp(options->capture_path,
+                         options->rx_output_receipts_path) ||
+            options->output_format != OUTPUT_MODE422_YUY2)
+            return false;
         return true;
     }
     // A separate bounded, read-only mode: no other experiments or repetitions.
@@ -4269,7 +4829,7 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 static bool NeedsRawIo(const Options &options)
 {
     if (options.observe_power || options.observe_bvn_state ||
-        options.observe_active_context || options.rx_output_receipts_path)
+        ActiveContextMode(options) || options.rx_output_receipts_path)
         return true;
     return options.observe_avd_dmem_samples || options.observe_avd_cache_count || options.observe_avd_code_prefix || options.observe_avd_code_arena || options.observe_avd_cpu_map || options.observe_avd_memory || options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_ppb_context || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
         options.observe_scl_view || options.observe_mfd_config || options.observe_mfd_address || options.observe_mfd_framing || options.inject_mfd_colour || options.scl_status_test;
@@ -4353,7 +4913,7 @@ static bool ActiveContextInputShape(const Options &options, const Input &input)
 
 static bool ActiveContextInputAdmitted(const Options &options, const Input &input)
 {
-    return !options.observe_active_context ||
+    return !ActiveContextMode(options) ||
         (ActiveContextInputShape(options, input) &&
          ActiveContextSubmittedDigestMatches(input));
 }
@@ -4481,6 +5041,51 @@ template<class Check> static void ActiveContextNativeSelfTest(const Check &check
     check(!ParseArguments({"probe", "--self-test", "--observe-active-context"},
                           &rejected),
         "active-context mode cannot be attached to self-test");
+
+    const std::vector<const char *> generation_valid = {
+        "probe", "--hardware", "fixture", "180", "30", "1",
+        "--scaler-test", "0", "--capture-yuy2", "new",
+        "--observe-generation-bound", "--rx-output-receipts",
+        "/tmp/new-generation-receipts.tsv"};
+    Options generation_admitted;
+    check(ParseArguments(generation_valid, &generation_admitted) &&
+          generation_admitted.observe_generation_bound &&
+          !generation_admitted.observe_active_context &&
+          generation_admitted.rx_output_receipts_path &&
+          generation_admitted.mode == Mode::Hardware &&
+          generation_admitted.expected == 180U &&
+          generation_admitted.seconds == 30U &&
+          generation_admitted.iterations == 1U &&
+          generation_admitted.scaler_test &&
+          !generation_admitted.scale_width &&
+          generation_admitted.capture_path &&
+          generation_admitted.output_format == OUTPUT_MODE422_YUY2 &&
+          NeedsRawIo(generation_admitted),
+        "generation-bound parser admits only the exact active-context profile with a distinct receipt artifact");
+    for (unsigned fault = 0; fault < 10U; ++fault) {
+        auto arguments = generation_valid;
+        if (fault == 0U) arguments[1] = "--preflight";
+        if (fault == 1U) arguments[3] = "179";
+        if (fault == 2U) arguments[4] = "31";
+        if (fault == 3U) arguments[5] = "2";
+        if (fault == 4U) arguments[6] = "--scaler-benchmark";
+        if (fault == 5U) arguments[7] = "320";
+        if (fault == 6U) arguments[8] = "--capture-uyvy";
+        if (fault == 7U) arguments[12] = "relative.tsv";
+        if (fault == 8U) arguments.push_back("--observe-generation-bound");
+        if (fault == 9U) {
+            arguments.push_back("--pace-input");
+            arguments.push_back("60");
+        }
+        Options generation_rejected;
+        check(!ParseArguments(arguments, &generation_rejected),
+            "generation-bound parser rejects altered, mixed and repeated profiles");
+    }
+    auto same_output = generation_valid;
+    same_output[9] = "/tmp/new-generation-receipts.tsv";
+    Options same_output_rejected;
+    check(!ParseArguments(same_output, &same_output_rejected),
+        "generation-bound parser refuses one path for both pixels and receipts before device I/O");
 
     Input input;
     input.codec = AV_CODEC_ID_H264;
@@ -5797,6 +6402,13 @@ struct PixelCapture {
         return ok;
     }
 };
+
+static bool ReceiptNativeRunReady(bool generation_mode, bool native_ok,
+                                  bool capture_finalized, bool capture_ok)
+{
+    return native_ok && (!generation_mode ||
+        (capture_finalized && capture_ok));
+}
 
 struct Resources {
     unsigned long rss_kib = 0;
@@ -11511,6 +12123,14 @@ static bool SelfTest()
         check(rmdir(created_directory) == 0, "owned capture filesystem test directory removed");
     }
 
+    check(ReceiptNativeRunReady(false, true, false, false) &&
+          !ReceiptNativeRunReady(false, false, false, false) &&
+          ReceiptNativeRunReady(true, true, true, true) &&
+          !ReceiptNativeRunReady(true, true, false, true) &&
+          !ReceiptNativeRunReady(true, true, true, false) &&
+          !ReceiptNativeRunReady(true, false, true, true),
+          "generation receipt publication requires native success and a finalized successful capture");
+
     check(Token(0, 0) == 100000 && Token(0, 9999) < Token(1, 0) &&
           Token(998, 9999) < Token(999, 0), "generation token ranges");
     unsigned long value = 0;
@@ -13111,9 +13731,10 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
                 PacedFixture paced_fixture,
                 const issue399_firmware_drop::Plan *firmware_drop_plan)
 {
+    const bool active_context_mode = ActiveContextMode(options);
     if ((options.firmware_drop_nonref && options.pace_input_hz) ||
         (!options.firmware_drop_nonref && firmware_drop_plan)) return false;
-    if (options.observe_active_context && !PrepareActiveContextInput(&input)) {
+    if (active_context_mode && !PrepareActiveContextInput(&input)) {
         std::fprintf(stderr,
             "Active-context fixture preparation failed before device open\n");
         return false;
@@ -13306,17 +13927,19 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
             std::fprintf(stderr, "DtsDropPictures failed: %d\n",
                          firmware_drop->api_status());
     }
-    const HANDLE active_context_owner = options.observe_active_context
+    const HANDLE active_context_owner = active_context_mode
         ? device.handle : nullptr;
     unsigned active_context_submitted = 0;
     bool active_context_marker_submitted = false;
     bool active_context_observation_attempted = false;
     bool active_context_flush_attempted = false;
+    issue204_active_context::Result active_context_observation;
+    issue204_generation_observer::Result generation_observation;
     size_t packet_index = 0;
     for (Packet &packet : input.packets) {
         if (!ok) break;
         const uint64_t token = Token(iteration - 1, packet_index);
-        const bool resume_fragment = options.observe_active_context &&
+        const bool resume_fragment = active_context_mode &&
             packet_index == kActiveContextBoundaryPacket;
         uint64_t pace_target_ns = 0;
         if (audit.input_pacing.enabled)
@@ -13350,10 +13973,10 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         if (ok) {
             audit.pending.insert(token);
             audit.input_pacing.ObserveQueues(audit.pending.size(), audit.ready);
-            if (options.observe_active_context) ++active_context_submitted;
+            if (active_context_mode) ++active_context_submitted;
         }
         ++packet_index;
-        if (ok && options.observe_active_context &&
+        if (ok && active_context_mode &&
             packet_index == kActiveContextBoundaryPacket) {
             static const size_t marker_bytes = 15U;
             uint8_t marker[marker_bytes + AV_INPUT_BUFFER_PADDING_SIZE] = {
@@ -13391,7 +14014,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
                 std::fprintf(stderr,
                     "Active-context marker gate failed; no continuation or custom I/O follows\n");
         }
-        if (ok && options.observe_active_context &&
+        if (ok && active_context_mode &&
             packet_index == kActiveContextBoundaryPacket + 1U) {
             ok = SettleActiveContext(&device, input, &audit, deadline);
             if (ok) {
@@ -13423,11 +14046,15 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
                 boundary.flush_attempted = active_context_flush_attempted;
                 boundary.ready = &audit.ready;
                 boundary.eos = &audit.eos;
-                issue204_active_context::Result observation;
                 ok = ObserveActiveContextNative(&device.handle, &device.opened,
-                    &device.started, &observation, &boundary,
-                    ActiveContextBoundaryGate::Check);
-                if (!ok && observation.module_recovery_required)
+                    &device.started, &active_context_observation, &boundary,
+                    ActiveContextBoundaryGate::Check, DtsDevMemRd,
+                    DtsDevRegisterRead, DtsDevRegisterWr, true,
+                    options.observe_generation_bound
+                        ? &generation_observation : nullptr,
+                    receipt_probe.generation(), receipt_probe.run_id());
+                if (!ok &&
+                    active_context_observation.module_recovery_required)
                     std::fprintf(stderr,
                         "Active-context observation requires module recovery; no further custom I/O or input follows\n");
             } else {
@@ -13448,7 +14075,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
             ok = false;
         }
         if (ok)
-            active_context_flush_attempted = options.observe_active_context;
+            active_context_flush_attempted = active_context_mode;
         if (ok)
             ok = Status("DtsFlushInput(0)", DtsFlushInput(device.handle, 0));
         if (ok && options.capture_path) ok = PackingState(device.handle, "flush-input-returned", &audit.mfd_colour, &audit.scl_view);
@@ -13507,11 +14134,22 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     }
     const bool closed = device.Close();
     const bool native_run_ok = ok && closed;
+    bool capture_finalized = false;
+    bool capture_ok = true;
+    if (options.observe_generation_bound) {
+        capture_ok = capture.Finish(native_run_ok);
+        capture_finalized = true;
+    }
+    const bool receipt_native_run_ok = ReceiptNativeRunReady(
+        options.observe_generation_bound, native_run_ok,
+        capture_finalized, capture_ok);
     bool receipts_ok = true;
     rx_output_receipts::DriverDmaAudit driver_dma;
     rx_output_receipts::Failure driver_dma_failure =
         rx_output_receipts::Failure::None;
     bool driver_dma_ok = false;
+    rx_output_receipts::JoinedReceipt generation_joined;
+    bool generation_joined_ok = false;
     if (audit.rx_output_receipts) {
         rx_output_receipts::DmaExpectation firmware_drop_dma;
         const rx_output_receipts::DmaExpectation *preserve_failed_evidence =
@@ -13525,8 +14163,23 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
                 issue399_firmware_drop::kUVDoneWords;
             preserve_failed_evidence = &firmware_drop_dma;
         }
-        receipts_ok = receipt_probe.Finish(native_run_ok,
-                                           preserve_failed_evidence);
+        rx_output_receipts::JoinedExpectation generation_expectation;
+        const rx_output_receipts::JoinedExpectation *joined_expectation =
+            nullptr;
+        if (options.observe_generation_bound && receipt_native_run_ok &&
+            generation_observation.observed &&
+            generation_observation.failure ==
+                issue204_generation_observer::Failure::None) {
+            generation_expectation.raw_firmware_timestamp =
+                generation_observation.raw_firmware_timestamp;
+            generation_expectation.width = generation_observation.width;
+            generation_expectation.height = generation_observation.height;
+            generation_expectation.receipt = &generation_joined;
+            joined_expectation = &generation_expectation;
+        }
+        receipts_ok = receipt_probe.Finish(receipt_native_run_ok,
+            preserve_failed_evidence, joined_expectation);
+        generation_joined_ok = receipts_ok && joined_expectation != nullptr;
         std::printf("RX output receipts: host=%zu driver=%zu joined=%zu "
             "generation=%llu run=%llu result=%s failure=%s "
             "failed-evidence-published=%s\n",
@@ -13538,6 +14191,54 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
             rx_output_receipts::FailureName(receipt_probe.failure()),
             receipt_probe.failed_evidence_published() ? "yes" : "no");
         std::fflush(stdout);
+    }
+    if (options.observe_generation_bound) {
+        const issue204_generation_observer::ReportDecision decision =
+            issue204_generation_observer::ClassifyReport(
+                native_run_ok, active_context_observation,
+                generation_observation);
+        if (decision.outcome ==
+            issue204_generation_observer::ReportOutcome::NotRun) {
+            std::printf("Generation-bound host receipt: result=%s reason=%s\n",
+                issue204_generation_observer::ReportOutcomeName(
+                    decision.outcome),
+                issue204_generation_observer::ReportReasonName(
+                    decision.reason));
+            std::fflush(stdout);
+        } else {
+            issue204_generation_observer::Receipt receipt;
+            if (generation_joined_ok) {
+                receipt.generation = receipt_probe.generation();
+                receipt.run_id = receipt_probe.run_id();
+                receipt.host_token = generation_joined.host.token;
+                receipt.raw_firmware_timestamp =
+                    generation_joined.driver.firmware_timestamp;
+                receipt.normalized_firmware_timestamp =
+                    generation_joined.normalized_firmware_timestamp;
+                receipt.host_width = generation_joined.host.width;
+                receipt.host_height = generation_joined.host.height;
+                receipt.driver_width = generation_joined.driver.picture_width;
+                receipt.driver_height = generation_joined.driver.picture_height;
+            }
+            const bool generation_receipt_ok = generation_joined_ok &&
+                issue204_generation_observer::VerifyReceipt(
+                    &generation_observation, receipt);
+            receipts_ok = receipts_ok && generation_receipt_ok;
+            std::printf("Generation-bound host receipt: raw-timestamp=%u "
+                "token=%llu geometry=%ux%u generation=%llu run=%llu "
+                "unique-match=%s result=%s failure=%u\n",
+                generation_observation.raw_firmware_timestamp,
+                static_cast<unsigned long long>(receipt.host_token),
+                generation_observation.width, generation_observation.height,
+                static_cast<unsigned long long>(
+                    generation_observation.receipt_generation),
+                static_cast<unsigned long long>(
+                    generation_observation.receipt_run_id),
+                generation_joined_ok ? "yes" : "no",
+                generation_receipt_ok ? "PASS" : "FAIL",
+                static_cast<unsigned>(generation_observation.failure));
+            std::fflush(stdout);
+        }
     }
     if (options.firmware_drop_nonref) {
         driver_dma_ok =
@@ -13569,11 +14270,11 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
             driver_dma.partial_size);
         receipts_ok = receipts_ok && drop_receipts_ok;
     }
-    ok = native_run_ok && receipts_ok;
+    ok = receipt_native_run_ok && receipts_ok;
     ok = audit.input_pacing.Report(ok);
     ok = audit.power.Finish(ok);
     ok = audit.bvn_state.Finish(ok);
-    const bool captured = capture.Finish(ok);
+    const bool captured = capture_finalized ? capture_ok : capture.Finish(ok);
     ok = ok && captured;
     ok = audit.scl_filter_map.Finish(ok);
     ok = audit.scl_status.Finish(ok);
@@ -13668,6 +14369,9 @@ int main(int argc, char **argv)
             "--scaler-test 320 --observe-bvn-state\n"
             "Active context observation: --hardware H264_256x96_180_PACKETS 180 30 1 "
             "--scaler-test 0 --capture-yuy2 NEW_PATH --observe-active-context\n"
+            "Generation-bound observation: --hardware H264_256x96_180_PACKETS 180 30 1 "
+            "--scaler-test 0 --capture-yuy2 NEW_PATH --observe-generation-bound "
+            "--rx-output-receipts NEW_ABSOLUTE_TSV\n"
             "Issue399 paced admission: --hardware PINNED_ISSUE399_H264_1920x1080_900_PACKETS 900 60 1 "
             "--scaler-benchmark 1280 --rx-output-receipts NEW_ABSOLUTE_TSV "
             "--pace-input 60\n"
@@ -13681,7 +14385,9 @@ int main(int argc, char **argv)
         return 2;
     }
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.rx_output_receipts_path)
+        if (options.observe_generation_bound)
+            std::fprintf(stderr, "--observe-generation-bound requires CAP_SYS_RAWIO; no fixture/progress/capture/device/output was opened\n");
+        else if (options.rx_output_receipts_path)
             std::fprintf(stderr, "--rx-output-receipts requires CAP_SYS_RAWIO; no fixture/progress/device/output was opened\n");
         else if (options.observe_active_context)
             std::fprintf(stderr, "--observe-active-context requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");

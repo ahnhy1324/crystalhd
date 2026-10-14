@@ -693,7 +693,8 @@ bool Probe::SealAndRead()
 }
 
 bool Probe::Finish(bool native_run_ok,
-                   const DmaExpectation *preserve_failed_evidence)
+                   const DmaExpectation *preserve_failed_evidence,
+                   const JoinedExpectation *joined_expectation)
 {
     failed_evidence_published_ = false;
     if (!armed_ || fd_ < 0) {
@@ -723,6 +724,36 @@ bool Probe::Finish(bool native_run_ok,
             &join_failure)) {
         Fail(join_failure);
         ok = false;
+    }
+    if (ok && joined_expectation) {
+        if (!joined_expectation->width || !joined_expectation->height ||
+            !joined_expectation->receipt) {
+            Fail(Failure::Argument);
+            ok = false;
+        } else {
+            *joined_expectation->receipt = JoinedReceipt{};
+            size_t match = joined_count_;
+            unsigned matches = 0;
+            for (size_t index = 0; index < joined_count_; ++index) {
+                const JoinedReceipt &candidate = joined_[index];
+                if (candidate.driver.firmware_timestamp !=
+                        joined_expectation->raw_firmware_timestamp ||
+                    candidate.host.width != joined_expectation->width ||
+                    candidate.host.height != joined_expectation->height ||
+                    candidate.driver.picture_width !=
+                        joined_expectation->width ||
+                    candidate.driver.picture_height !=
+                        joined_expectation->height) continue;
+                ++matches;
+                match = index;
+            }
+            if (matches != 1U) {
+                Fail(matches ? Failure::Ambiguous : Failure::Unmatched);
+                ok = false;
+            } else {
+                *joined_expectation->receipt = joined_[match];
+            }
+        }
     }
     /* A failure artifact needs at least one exact host/driver join to carry
      * its in-band FAIL marker.  Do not publish a header-only file for an empty

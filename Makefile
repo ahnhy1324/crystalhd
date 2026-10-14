@@ -96,7 +96,7 @@ raw-frame-check:
 
 # Optional direct-library hardware probe. Building never opens the device;
 # running requires explicit --hardware (or device-free --preflight).
-library-drain-test: library tests/phase1-progress.h tests/issue204-active-context.h tests/issue399-firmware-drop.h tests/flea-power-observer.h tests/rx-output-receipts.h tests/rx-output-receipts.cpp
+library-drain-test: library tests/phase1-progress.h tests/issue204-active-context.h tests/issue204-generation-observer.h tests/issue399-firmware-drop.h tests/flea-power-observer.h tests/rx-output-receipts.h tests/rx-output-receipts.cpp
 	$(CXX) -std=c++11 -O2 -g -Wall -Wextra -Werror -D__LINUX_USER__ \
 		-Iinclude -Ilinux_lib/libcrystalhd tests/library-drain.cpp \
 		tests/rx-output-receipts.cpp \
