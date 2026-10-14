@@ -1,10 +1,10 @@
 # CrystalHD configuration schema v1
 
-This document specifies the configuration contract proposed for a future
-headless `crystalhd-config` tool.  It is a design and conformance reference,
-not an announcement that the driver, libraries, plugins or launchers already
-read these files.  The current production controls and their exact behavior
-remain documented in [CONFIGURATION.md](CONFIGURATION.md).
+This document specifies the configuration contract implemented by the
+read-only `crystalhd-config` parser and inspector.  The driver, libraries,
+plugins and launchers do not read these files; using the tool does not apply
+settings or change their behavior.  The current production controls and their
+exact behavior remain documented in [CONFIGURATION.md](CONFIGURATION.md).
 
 The v1 goals are deliberately narrow:
 
@@ -17,13 +17,46 @@ The v1 goals are deliberately narrow:
 - keep privileged module configuration outside an ordinary userspace
   playback profile.
 
-The executable check in `tests/configuration-schema.test.py` is a
-**test-only reference oracle** for this specification.  It is not installed,
-imported or used as a production parser.
+The installed implementation is `scripts/crystalhd-config.py`.  The schema
+and CLI tests import or execute that production implementation; test code is
+never installed as the parser.
+
+## Read-only CLI
+
+The three commands are:
+
+```sh
+crystalhd-config validate
+crystalhd-config show-effective --format text
+crystalhd-config explain vaapi.h264.mode --format json
+```
+
+Options follow the command. `--system-config FILE` and `--user-config FILE`
+select explicit absolute paths; `--no-system-config` and `--no-user-config`
+suppress the corresponding layer. `--preset NAME`, `--profile NAME`, and
+`--ignore-environment` control selection and setting-specific process
+environment inspection. The path-locating `XDG_CONFIG_HOME` or `HOME` must
+still be absolute unless the user layer is explicitly suppressed. Text and
+JSON formats are available for `show-effective` and `explain`.
+
+Exit status `0` means success, `2` is command-line syntax or an unknown
+canonical key, and `3` is an unsafe, unreadable or invalid configuration,
+selector or cross-setting transaction.
+
+The only supplied preset is the empty `default` compatibility preset. The
+tool is diagnostic only: it cannot write or apply settings, launch another
+program, reload a module, source `chromium.conf`, or access hardware. Its last
+observable layer is the current process environment. A future application's
+CLI options and GObject properties can be higher-priority inputs, but this
+read-only process cannot observe them and reports that limit explicitly.
+Reported states describe only configuration and established native-adapter
+semantics; they do not mean an application applied a value. Hardware-dependent
+requests such as BCM70015 scaling, i915 WC, a DRM node, decoder availability
+or link topology are reported as conditional/not inspected where applicable.
 
 ## Files and strict INI subset
 
-The proposed default files are:
+The default files are:
 
 1. `/etc/crystalhd/config.ini` for system defaults;
 2. `$XDG_CONFIG_HOME/crystalhd/config.ini` for user defaults, falling back to
@@ -75,10 +108,10 @@ therefore different from omission, `false`, integer `0` and the empty string
 an existing public interface.
 
 Unknown sections, metadata keys, setting keys, value types and schema versions
-are errors.  An error identifies the file and line and rejects the complete
-managed configuration; no profile, preset or partial file is applied.  A
-future managed launcher must fail before opening a decoder.  Existing programs
-which do not use the future manager retain their current behavior.
+are errors.  An error identifies the file role and line and rejects the
+complete managed configuration; no profile, preset or partial file is
+accepted.  Any future managed launcher must fail before opening a decoder.
+Existing programs which do not use the manager retain their current behavior.
 
 ## Canonical keys and existing targets
 
@@ -126,7 +159,7 @@ runtimes and are not schema keys.
 ## Selection and merge order
 
 Preset and profile selection is a separate pass from value merging.  For each
-selector, a future explicit manager command wins over the user file, which
+selector, an explicit manager command wins over the user file, which
 wins over the system file.  With no preset selection, `default` means an empty
 compatibility preset.  With no profile selection, no named profile is active.
 An unknown selected preset or profile is an error.
@@ -218,8 +251,9 @@ managed file, preset, profile or canonical application setting.
 
 ## File integrity and privileges
 
-A future manager must open a config file without following its final symlink,
-then validate the already-open file with `fstat` before parsing it.
+The manager opens a config file through its validated containing-directory
+descriptor without following the final symlink, then validates the already-open
+file with `fstat` before parsing it.
 
 - A system file and its containing CrystalHD directory are root-owned regular
   objects with no group/other write bits.
@@ -232,8 +266,8 @@ then validate the already-open file with `fstat` before parsing it.
 
 Readability alone is not sufficient.  An unsafe owner, type, symlink or mode
 is a hard configuration error, not a reason to consume the file partially.
-Configuration contains no password-storage secret, and future diagnostics
-must redact environment values and user paths which are not required to
+Configuration contains no password-storage secret. Diagnostics redact raw
+environment values and non-compiled user paths which are not required to
 explain a result.
 
 Kernel module parameters retain their current module-load lifetime.  A future

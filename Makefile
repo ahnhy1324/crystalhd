@@ -11,7 +11,7 @@ PYTHON3 ?= python3
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check raw-frame-check library-drain-test gstreamer vaapi vaapi-cpu-check examples browser configuration-check uapi-check dma-check l0s-check command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check h264-stream-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
+.PHONY: all driver library library-check raw-frame-check library-drain-test gstreamer vaapi vaapi-cpu-check examples browser configuration-check uapi-check dma-check l0s-check command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check h264-stream-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check install-config uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check uninstall-config clean
 
 all: driver library gstreamer vaapi examples
 
@@ -118,6 +118,7 @@ browser:
 configuration-check:
 	$(PYTHON3) -B tests/configuration-inventory.test.py
 	$(PYTHON3) -B tests/configuration-schema.test.py
+	$(PYTHON3) -B tests/crystalhd-config.test.py
 
 uapi-check:
 	sh ./tests/uapi-abi.sh
@@ -252,7 +253,8 @@ install-runtime: library gstreamer vaapi
 		$(MAKE) -C linux_lib/libcrystalhd $(USER_ARGS) install; \
 		$(MAKE) -C filters/gst/gst-plugin-1.0 $(USER_ARGS) install; \
 		$(MAKE) -C filters/vaapi $(USER_ARGS) install; \
-		$(MAKE) install-check
+		$(MAKE) install-check; \
+		$(MAKE) install-config
 	@umask 022; install -D -m 0644 VERSION "$(DESTDIR)$(DATADIR)/crystalhd/VERSION"
 
 install-browser: browser
@@ -260,6 +262,10 @@ install-browser: browser
 
 install-check:
 	install -D -m 0755 scripts/crystalhd-check "$(DESTDIR)$(BINDIR)/crystalhd-check"
+
+install-config:
+	@umask 022; install -D -m 0755 scripts/crystalhd-config.py \
+		"$(DESTDIR)$(BINDIR)/crystalhd-config"
 
 uninstall:
 	$(MAKE) uninstall-runtime
@@ -276,12 +282,16 @@ uninstall-runtime:
 	$(MAKE) -C linux_lib/libcrystalhd $(USER_ARGS) uninstall
 	$(MAKE) -C firmware DESTDIR=$(DESTDIR) uninstall
 	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) uninstall-udev
+	$(MAKE) uninstall-config
 
 uninstall-browser:
 	$(MAKE) -C browser $(USER_ARGS) uninstall
 
 uninstall-check:
 	rm -f -- "$(DESTDIR)$(BINDIR)/crystalhd-check"
+
+uninstall-config:
+	rm -f -- "$(DESTDIR)$(BINDIR)/crystalhd-config"
 
 clean:
 	rm -f tests/library-drain-test
