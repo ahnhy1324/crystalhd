@@ -30,16 +30,35 @@ void *operator new(size_t bytes, const std::nothrow_t &) noexcept {
 void *operator new[](size_t bytes, const std::nothrow_t &) noexcept {
   try { return allocation_fault::Allocate(bytes); } catch (...) { return nullptr; }
 }
-void operator delete(void *pointer) noexcept { std::free(pointer); }
-void operator delete[](void *pointer) noexcept { std::free(pointer); }
-void operator delete(void *pointer, size_t) noexcept { std::free(pointer); }
-void operator delete[](void *pointer, size_t) noexcept { std::free(pointer); }
-void operator delete(void *pointer, const std::nothrow_t &) noexcept {
+#if defined(__GNUC__) || defined(__clang__)
+#define CRYSTALHD_TEST_NOINLINE __attribute__((noinline))
+#else
+#define CRYSTALHD_TEST_NOINLINE
+#endif
+// Keep the malloc-backed fault injector opaque to GCC's
+// -Wmismatched-new-delete inliner. These are the matching deallocators for the
+// replacement operators above, not production allocation code.
+CRYSTALHD_TEST_NOINLINE void operator delete(void *pointer) noexcept {
   std::free(pointer);
 }
-void operator delete[](void *pointer, const std::nothrow_t &) noexcept {
+CRYSTALHD_TEST_NOINLINE void operator delete[](void *pointer) noexcept {
   std::free(pointer);
 }
+CRYSTALHD_TEST_NOINLINE void operator delete(void *pointer, size_t) noexcept {
+  std::free(pointer);
+}
+CRYSTALHD_TEST_NOINLINE void operator delete[](void *pointer, size_t) noexcept {
+  std::free(pointer);
+}
+CRYSTALHD_TEST_NOINLINE void operator delete(
+    void *pointer, const std::nothrow_t &) noexcept {
+  std::free(pointer);
+}
+CRYSTALHD_TEST_NOINLINE void operator delete[](
+    void *pointer, const std::nothrow_t &) noexcept {
+  std::free(pointer);
+}
+#undef CRYSTALHD_TEST_NOINLINE
 
 namespace {
 unsigned checks = 0;
