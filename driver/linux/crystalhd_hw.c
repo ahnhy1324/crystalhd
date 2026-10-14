@@ -719,14 +719,26 @@ BC_STATUS crystalhd_hw_setup_dma_rings(struct crystalhd_hw *hw)
 		}
 
 		mem = bc_kern_dma_alloc(hw->adp, mem_len, &phy_addr);
-		if (mem) {
-			memset(mem, 0, mem_len);
-		} else {
+		if (!mem) {
 			dev_err(dev, "Insufficient Memory For RX\n");
 			kfree(rpkt);
 			crystalhd_hw_free_dma_rings(hw);
 			return BC_STS_INSUFF_RES;
 		}
+		/* Stock Flea firmware treats a zero low descriptor-address word as
+		 * "do not start" even when the high word is nonzero, then clears its
+		 * pending state without reporting that rejection. Keep the descriptor
+		 * and packet unpublished and unwind the complete ring inventory.
+		 */
+		if (hw->adp->pdev->device == BC_PCI_DEVID_FLEA &&
+		    !lower_32_bits(phy_addr)) {
+			dev_err(dev, "RX descriptor DMA address has a zero low word\n");
+			bc_kern_dma_free(hw->adp, mem_len, mem, phy_addr);
+			kfree(rpkt);
+			crystalhd_hw_free_dma_rings(hw);
+			return BC_STS_IO_ERROR;
+		}
+		memset(mem, 0, mem_len);
 		rpkt->desc_mem.pdma_desc_start = mem;
 		rpkt->desc_mem.phy_addr = phy_addr;
 		rpkt->desc_mem.sz  = BC_LINK_MAX_SGLS * sizeof(struct dma_descriptor);

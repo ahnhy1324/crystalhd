@@ -2078,7 +2078,8 @@ class FirmwarePictureOutputTests(unittest.TestCase):
         native = (ROOT / "driver/linux/crystalhd_fleafuncs.c").read_text()
         self.assertIn("sizeof (PicDeliInfo) - sizeof(PicDeliInfo.Reserved)", native)
         self.assertRegex(native, r"FleaRxPicDelAddr\s*=\s*borchStachAddr\s*\+\s*1\s*\+\s*HOST_TO_FW_PIC_DEL_INFO_ADDR")
-        self.assertRegex(native, r"pfnWriteDevRegister\(hw->adp, RX_POST_MAILBOX, hw->channelNum\)")
+        self.assertRegex(native, r"channel\s*=\s*READ_ONCE\(hw->channelNum\)")
+        self.assertRegex(native, r"pfnWriteDevRegister\(hw->adp, RX_POST_MAILBOX, channel\)")
         for key, text in (("host_record_source", "_PIC_DELIVERY_HOST_INFO_"),
                           ("host_submit_source", "pfnDevDRAMWrite")):
             path, _ = delivery[key].rsplit(":", 1)

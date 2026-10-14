@@ -6,11 +6,44 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 dma_test_dir=$(mktemp -d)
 trap 'rm -rf "$dma_test_dir"' EXIT HUP INT TERM
 
+# The probe must make one checked combined streaming/coherent-mask attempt per
+# width. A separate dma_set_mask() call can conceal coherent-mask failure.
+awk '
+/^static int chd_dec_pci_probe\(/ { probe = 1; probes++ }
+probe {
+	if (/dma_set_mask\(/) separate++
+	if (/rc[[:space:]]*=[[:space:]]*dma_set_mask_and_coherent\(&pdev->dev, DMA_BIT_MASK\(64\)\)/) {
+		mask64++; line64 = NR; check64line = NR + 1
+	}
+	if (/rc[[:space:]]*=[[:space:]]*dma_set_mask_and_coherent\(&pdev->dev, DMA_BIT_MASK\(32\)\)/) {
+		mask32++; line32 = NR; check32line = NR + 1
+	}
+	if (NR == check64line && /if \(!rc\)/) checked64++
+	if (NR == check32line && /if \(!rc\)/) checked32++
+	if (/pinfo->dmabits = 64;/) { bits64++; bits64line = NR }
+	if (/pinfo->dmabits = 32;/) { bits32++; bits32line = NR }
+	if (line32 && !failure && /rc = -ENODEV;/) failure = NR
+	if (failure && !unwind && /goto cleanup_int;/) unwind = NR
+}
+/^int chd_dec_pci_suspend\(/ { probe = 0 }
+END {
+	if (probes != 1 || separate || mask64 != 1 || mask32 != 1 ||
+	    checked64 != 1 || checked32 != 1 ||
+	    bits64 != 1 || bits32 != 1 || !failure || !unwind ||
+	    !(line64 < bits64line && bits64line < line32 && line32 < bits32line &&
+	      bits32line < failure && failure < unwind)) {
+		print "DMA mask negotiation contract changed" > "/dev/stderr"
+		exit 1
+	}
+}
+' "$repo_dir/driver/linux/crystalhd_lnx.c"
+
 # Compile the actual descriptor builders and their production data structures
 # against a small DMA-address shim. No device or kernel module is required.
 awk '
 /^#define CRYSTALHD_DMA_DESC_MAX_XFER_BYTES[[:space:]]/ { print }
 /^enum _BC_DTS_GLOBALS \{/ { copy = 1 }
+/^enum _BC_PCI_DEV_IDS\{/ { copy = 1 }
 /^struct (dma_descriptor|dma_desc_mem|crystalhd_dma_desc_source|crystalhd_tx_buffer|crystalhd_rx_buffer|crystalhd_dio_user_info|crystalhd_dio_req) \{/ { copy = 1 }
 copy { print }
 copy && /^};/ { copy = 0 }
@@ -35,6 +68,13 @@ copy { print }
 copy && /^}/ { copy = 0 }
 END { if (found != 1 || copy) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$dma_test_dir/dma-setup.h"
+
+awk '
+/^void bc_kern_dma_free\(/ { copy = 1; found++ }
+copy { print }
+copy && /^}/ { copy = 0 }
+END { if (found != 1 || copy) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_misc.c" > "$dma_test_dir/dma-free.h"
 
 "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
   -fsanitize=address,undefined -fno-omit-frame-pointer \

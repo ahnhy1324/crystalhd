@@ -827,7 +827,7 @@ static void InitTransfer(BC_FW_CMD *command, uint32_t id, bool stale)
     memset(response_words, 0, sizeof(response_words));
     response_words[0] = id;
     response_words[1] = 17;
-    response_words[3] = 7;
+    response_words[3] = FLEA_DECODER_CHANNEL_COUNT - 1;
     response_words[5] = 0x12300;
     response_words[6] = 0x12400;
     response_words[11] = 0x12500;
@@ -1141,6 +1141,107 @@ static void PreservedReplyTransport(void)
     DestroyHardware();
 }
 
+static void FleaChannelAdmission(void)
+{
+    const uint32_t commands[] = {
+        eCMD_C011_DEC_CHAN_STREAM_OPEN,
+        eCMD_C011_DEC_CHAN_OPEN,
+    };
+    const uint32_t invalid[] = { FLEA_DECODER_CHANNEL_COUNT, UINT32_MAX };
+    unsigned command_index, channel, invalid_index;
+
+    for (command_index = 0;
+         command_index < sizeof(commands) / sizeof(commands[0]);
+         command_index++) {
+        for (channel = 0; channel < FLEA_DECODER_CHANNEL_COUNT; channel++) {
+            BC_FW_CMD command;
+            TX_INPUT_BUFFER_INFO input;
+
+            InitTransfer(&command, commands[command_index], true);
+            response_words[3] = channel;
+            input = hardware.TxFwInputBuffInfo;
+            Check(crystalhd_flea_do_fw_cmd(&hardware, &command) == BC_STS_SUCCESS &&
+                  !memcmp(command.rsp, response_words, sizeof(command.rsp)) &&
+                  hardware.channelNum == channel && !hardware.fwcmd_poisoned,
+                  "Flea OPEN accepts exactly each channel in the four-record range");
+            if (commands[command_index] == eCMD_C011_DEC_CHAN_STREAM_OPEN) {
+                Check(hardware.TxBuffInfoAddr == 0xbbcc &&
+                      !memcmp(&hardware.TxFwInputBuffInfo, &input, sizeof(input)) &&
+                      hardware.PwrDwnTxIntr && hardware.PwrDwnPiQIntr &&
+                      hardware.SingleThreadAppFIFOEmpty && hardware.EmptyCnt == 123,
+                      "valid STREAM_OPEN publishes only its existing channel state");
+            } else {
+                Check(hardware.TxBuffInfoAddr == response_words[11] &&
+                      !hardware.TxFwInputBuffInfo.DramBuffAdd &&
+                      !hardware.TxFwInputBuffInfo.DramBuffSzInBytes &&
+                      !hardware.TxFwInputBuffInfo.Flags &&
+                      !hardware.TxFwInputBuffInfo.HostXferSzInBytes &&
+                      !hardware.TxFwInputBuffInfo.SeqNum &&
+                      !hardware.PwrDwnTxIntr && !hardware.PwrDwnPiQIntr &&
+                      !hardware.SingleThreadAppFIFOEmpty && !hardware.EmptyCnt,
+                      "valid CHAN_OPEN publishes and resets its existing channel state");
+            }
+            DestroyHardware();
+        }
+
+        for (invalid_index = 0;
+             invalid_index < sizeof(invalid) / sizeof(invalid[0]);
+             invalid_index++) {
+            BC_FW_CMD command;
+            TX_INPUT_BUFFER_INFO input;
+            uint32_t reply[FW_CMD_BUFF_SZ];
+            unsigned callbacks;
+
+            InitTransfer(&command, commands[command_index], true);
+            response_words[3] = invalid[invalid_index];
+            memcpy(reply, response_words, sizeof(reply));
+            input = hardware.TxFwInputBuffInfo;
+            Check(crystalhd_flea_do_fw_cmd(&hardware, &command) == BC_STS_IO_ERROR,
+                  "out-of-range Flea OPEN fails closed after a complete reply");
+            Check(!memcmp(command.rsp, reply, sizeof(reply)),
+                  "invalid Flea OPEN preserves the complete diagnostic reply");
+            Check(hardware.fwcmd_poisoned && !hardware.fwcmd_pending &&
+                  !hardware.fwcmd_active && !hardware.FwCmdCnt,
+                  "invalid Flea OPEN quarantines the reconciled mailbox lifetime");
+            Check(hardware.channelNum == 0xaabb && hardware.TxBuffInfoAddr == 0xbbcc &&
+                  hardware.pib_del_Q_addr == 0xccdd && hardware.pib_rel_Q_addr == 0xddee &&
+                  !memcmp(&hardware.TxFwInputBuffInfo, &input, sizeof(input)) &&
+                  hardware.PwrDwnTxIntr && hardware.PwrDwnPiQIntr &&
+                  hardware.SingleThreadAppFIFOEmpty && hardware.EmptyCnt == 123,
+                  "invalid Flea OPEN publishes no response-derived channel state");
+            CheckUnlocked(&hardware.lock,
+                          "invalid Flea OPEN releases its quarantine lock");
+            CheckUnlocked(&hardware.fwcmd_mutex.native,
+                          "invalid Flea OPEN releases mailbox serialization");
+
+            callbacks = transfer_reads + transfer_writes + mailbox_reads +
+                        mailbox_posts + sleeps + wait_calls;
+            Check(crystalhd_flea_do_fw_cmd(&hardware, &command) == BC_STS_BUSY &&
+                  callbacks == transfer_reads + transfer_writes + mailbox_reads +
+                               mailbox_posts + sleeps + wait_calls,
+                  "quarantine blocks a later Flea command before hardware access");
+            Check(hardware.channelNum == 0xaabb && hardware.TxBuffInfoAddr == 0xbbcc &&
+                  !memcmp(&hardware.TxFwInputBuffInfo, &input, sizeof(input)),
+                  "blocked retry cannot mutate channel state");
+            DestroyHardware();
+        }
+    }
+
+    for (command_index = 0;
+         command_index < sizeof(commands) / sizeof(commands[0]);
+         command_index++) {
+        BC_FW_CMD command;
+
+        InitTransfer(&command, commands[command_index], true);
+        response_words[3] = UINT32_MAX;
+        Check(crystalhd_link_do_fw_cmd(&hardware, &command) == BC_STS_SUCCESS &&
+              !memcmp(command.rsp, response_words, sizeof(command.rsp)) &&
+              !hardware.fwcmd_poisoned && hardware.channelNum == 0xaabb,
+              "the Flea-only channel bound does not alter BCM70012 replies");
+        DestroyHardware();
+    }
+}
+
 static void SingletonChannelRouting(void)
 {
     BC_FW_CMD command;
@@ -1401,6 +1502,7 @@ int main(void)
     ReplyRangeAndFirmwareStatus();
     ReplyAdmissionAndWaitFailure();
     PreservedReplyTransport();
+    FleaChannelAdmission();
     SingletonChannelRouting();
     CommandPublicationFailure();
     UnpostedCountState();

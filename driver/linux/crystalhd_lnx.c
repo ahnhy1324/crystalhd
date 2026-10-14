@@ -1549,17 +1549,20 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 		goto cleanup_chdev;
 	}
 
-	/* Set dma mask... */
-	if (!dma_set_mask(&pdev->dev, DMA_BIT_MASK(64))) {
-		dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
+	/* Set the streaming and coherent masks as one checked contract. */
+	rc = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
+	if (!rc) {
 		pinfo->dmabits = 64;
-	} else if (!dma_set_mask(&pdev->dev, DMA_BIT_MASK(32))) {
-		dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
-		pinfo->dmabits = 32;
 	} else {
-		dev_err(dev, "%s: Unabled to setup DMA %d\n", __func__, rc);
-		rc = -ENODEV;
-		goto cleanup_int;
+		rc = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+		if (!rc) {
+			pinfo->dmabits = 32;
+		} else {
+			dev_err(dev, "%s: Unable to set up DMA: %d\n",
+				__func__, rc);
+			rc = -ENODEV;
+			goto cleanup_int;
+		}
 	}
 
 	sts = crystalhd_setup_cmd_context(&pinfo->cmds, pinfo);

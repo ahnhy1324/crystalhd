@@ -10,7 +10,7 @@ typedef unsigned int refcount_t;
 typedef unsigned int BC_OUTPUT_FORMAT;
 typedef enum {
 	BC_STS_SUCCESS, BC_STS_INV_ARG, BC_STS_NOT_IMPL,
-	BC_STS_ERROR, BC_STS_INSUFF_RES
+	BC_STS_ERROR, BC_STS_INSUFF_RES, BC_STS_IO_ERROR
 } BC_STATUS;
 typedef union {
 	uint64_t full_addr;
@@ -38,8 +38,9 @@ struct scatterlist {
 #define GFP_KERNEL 0
 #define KERN_ERR ""
 #define printk(...) ((void)0)
+#define lower_32_bits(value) ((uint32_t)(value))
 
-struct pci_dev { struct device dev; };
+struct pci_dev { struct device dev; uint16_t device; };
 struct crystalhd_adp { struct pci_dev *pdev; };
 struct crystalhd_dioq { int unused; };
 struct tx_dma_pkt {
@@ -59,10 +60,37 @@ struct crystalhd_hw {
 	struct crystalhd_dioq *tx_freeq;
 };
 
-static struct crystalhd_rx_dma_pkt rx_packet;
+static struct crystalhd_rx_dma_pkt rx_packets[BC_RX_LIST_CNT];
 static struct dma_descriptor tx_dma[BC_TX_LIST_CNT][BC_LINK_MAX_SGLS];
+static struct dma_descriptor rx_dma[2][BC_LINK_MAX_SGLS];
 static unsigned int dma_allocs, packet_allocs, packet_frees, ring_teardowns;
-static bool packet_live;
+static unsigned int coherent_frees;
+static struct device *free_devices[BC_TX_LIST_CNT + 2];
+static uint32_t free_sizes[BC_TX_LIST_CNT + 2];
+static void *free_cpus[BC_TX_LIST_CNT + 2];
+static dma_addr_t free_dmas[BC_TX_LIST_CNT + 2];
+static bool packet_live[BC_RX_LIST_CNT];
+static bool tx_zero_address;
+static unsigned int accepted_rx_packets;
+enum rx_alloc_plan {
+	RX_ALLOC_NULL,
+	RX_ALLOC_VALID_THEN_LOW_ZERO,
+	RX_ALLOC_LOW_ZERO_THEN_NULL,
+};
+static enum rx_alloc_plan rx_alloc_plan;
+
+static void dma_free_coherent(struct device *device, uint32_t size, void *cpu,
+			      dma_addr_t dma)
+{
+	assert(coherent_frees < BC_TX_LIST_CNT + 2);
+	free_devices[coherent_frees] = device;
+	free_sizes[coherent_frees] = size;
+	free_cpus[coherent_frees] = cpu;
+	free_dmas[coherent_frees] = dma;
+	coherent_frees++;
+}
+
+#include "dma-free.h"
 
 static BC_STATUS crystalhd_hw_create_ioqs(struct crystalhd_hw *hw)
 {
@@ -76,12 +104,26 @@ static BC_STATUS crystalhd_hw_create_ioqs(struct crystalhd_hw *hw)
 static void *bc_kern_dma_alloc(struct crystalhd_adp *adp, uint32_t size,
 			       dma_addr_t *physical)
 {
+	unsigned int allocation;
+
 	assert(adp && size == sizeof(tx_dma[0]) && physical);
-	*physical = 0x100000 + dma_allocs * sizeof(tx_dma[0]);
-	if (dma_allocs < BC_TX_LIST_CNT)
-		return tx_dma[dma_allocs++];
-	dma_allocs++;
-	assert(packet_live);
+	allocation = dma_allocs++;
+	if (allocation < BC_TX_LIST_CNT) {
+		*physical = tx_zero_address && allocation == 0 ? 0 :
+			0x100000 + allocation * sizeof(tx_dma[0]);
+		return tx_dma[allocation];
+	}
+	assert(packet_live[allocation - BC_TX_LIST_CNT]);
+	if (rx_alloc_plan == RX_ALLOC_VALID_THEN_LOW_ZERO) {
+		*physical = allocation == BC_TX_LIST_CNT ? UINT64_C(0x00200000) :
+			UINT64_C(0x0000000100000000);
+		return rx_dma[allocation - BC_TX_LIST_CNT];
+	}
+	if (rx_alloc_plan == RX_ALLOC_LOW_ZERO_THEN_NULL &&
+	    allocation == BC_TX_LIST_CNT) {
+		*physical = UINT64_C(0x0000000100000000);
+		return rx_dma[0];
+	}
 	return NULL;
 }
 
@@ -95,29 +137,51 @@ static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue, void *data,
 
 static void *kzalloc(size_t size, int flags)
 {
-	assert(size == sizeof(rx_packet) && flags == GFP_KERNEL && !packet_live);
-	memset(&rx_packet, 0, sizeof(rx_packet));
-	packet_allocs++;
-	packet_live = true;
-	return &rx_packet;
+	unsigned int index = packet_allocs++;
+
+	assert(size == sizeof(rx_packets[0]) && flags == GFP_KERNEL &&
+	       index < BC_RX_LIST_CNT && !packet_live[index]);
+	memset(&rx_packets[index], 0, sizeof(rx_packets[index]));
+	packet_live[index] = true;
+	return &rx_packets[index];
 }
 
 void kfree(void *memory)
 {
-	assert(memory == &rx_packet && packet_live);
-	packet_live = false;
+	struct crystalhd_rx_dma_pkt *packet = memory;
+	unsigned int index;
+
+	assert(packet >= rx_packets && packet < rx_packets + BC_RX_LIST_CNT);
+	index = packet - rx_packets;
+	assert(packet_live[index]);
+	packet_live[index] = false;
 	packet_frees++;
 }
 
 static BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 {
+	struct crystalhd_rx_dma_pkt *packet;
 	unsigned int i;
 
-	assert(hw && !packet_live);
+	assert(hw);
 	for (i = 0; i < BC_TX_LIST_CNT; i++) {
 		assert(hw->tx_pkt_pool[i].desc_mem.pdma_desc_start == tx_dma[i]);
+		assert(hw->tx_pkt_pool[i].desc_mem.phy_addr ==
+		       (tx_zero_address && i == 0 ? 0 :
+		        0x100000 + i * sizeof(tx_dma[0])));
+		bc_kern_dma_free(hw->adp, hw->tx_pkt_pool[i].desc_mem.sz,
+				 hw->tx_pkt_pool[i].desc_mem.pdma_desc_start,
+				 hw->tx_pkt_pool[i].desc_mem.phy_addr);
 		hw->tx_pkt_pool[i].desc_mem.pdma_desc_start = NULL;
 	}
+	while ((packet = hw->rx_pkt_pool_head) != NULL) {
+		hw->rx_pkt_pool_head = packet->next;
+		bc_kern_dma_free(hw->adp, packet->desc_mem.sz,
+				 packet->desc_mem.pdma_desc_start,
+				 packet->desc_mem.phy_addr);
+		kfree(packet);
+	}
+	hw->tx_freeq = NULL;
 	ring_teardowns++;
 	return BC_STS_SUCCESS;
 }
@@ -125,12 +189,36 @@ static BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 static void crystalhd_hw_free_rx_pkt(struct crystalhd_hw *hw,
 				     struct crystalhd_rx_dma_pkt *packet)
 {
-	(void)hw;
-	(void)packet;
-	assert(!"failed RX descriptor allocation must not queue its packet");
+	assert(hw && packet && packet >= rx_packets &&
+	       packet < rx_packets + BC_RX_LIST_CNT &&
+	       packet_live[packet - rx_packets]);
+	packet->next = hw->rx_pkt_pool_head;
+	hw->rx_pkt_pool_head = packet;
+	accepted_rx_packets++;
 }
 
 #include "dma-setup.h"
+
+static void reset_dma_fixture(void)
+{
+	dma_allocs = packet_allocs = packet_frees = ring_teardowns = 0;
+	coherent_frees = accepted_rx_packets = 0;
+	tx_zero_address = false;
+	rx_alloc_plan = RX_ALLOC_NULL;
+	memset(packet_live, 0, sizeof(packet_live));
+	memset(free_devices, 0, sizeof(free_devices));
+	memset(free_sizes, 0, sizeof(free_sizes));
+	memset(free_cpus, 0, sizeof(free_cpus));
+	memset(free_dmas, 0, sizeof(free_dmas));
+}
+
+static bool no_live_packets(void)
+{
+	for (unsigned int i = 0; i < BC_RX_LIST_CNT; i++)
+		if (packet_live[i])
+			return false;
+	return true;
+}
 
 enum {
 	RX_SEGMENT_SIZE = 4096,
@@ -603,16 +691,80 @@ static void invalid_tx_bounds(void)
 
 static void rx_descriptor_allocation_failure(void)
 {
-	struct pci_dev pci = {0};
+	struct pci_dev pci = { .device = BC_PCI_DEVID_FLEA };
 	struct crystalhd_adp adp = { .pdev = &pci };
 	struct crystalhd_hw hw = { .adp = &adp, .rx_pkt_tag_seed = 0x70029070 };
 
-	dma_allocs = packet_allocs = packet_frees = ring_teardowns = 0;
-	packet_live = false;
+	reset_dma_fixture();
 	assert(crystalhd_hw_setup_dma_rings(&hw) == BC_STS_INSUFF_RES);
 	assert(dma_allocs == BC_TX_LIST_CNT + 1);
-	assert(packet_allocs == 1 && packet_frees == 1 && !packet_live);
-	assert(ring_teardowns == 1);
+	assert(packet_allocs == 1 && packet_frees == 1 && no_live_packets());
+	assert(ring_teardowns == 1 && coherent_frees == BC_TX_LIST_CNT &&
+	       !accepted_rx_packets && !hw.tx_freeq);
+}
+
+static void dma_zero_free(void)
+{
+	struct pci_dev pci = {0};
+	struct crystalhd_adp adp = { .pdev = &pci };
+	uint32_t storage = 0;
+
+	reset_dma_fixture();
+	bc_kern_dma_free(&adp, sizeof(storage), &storage, 0);
+	assert(coherent_frees == 1 && free_devices[0] == &pci.dev &&
+	       free_sizes[0] == sizeof(storage) && free_cpus[0] == &storage &&
+	       free_dmas[0] == 0);
+
+	bc_kern_dma_free(NULL, sizeof(storage), &storage, 0);
+	bc_kern_dma_free(&adp, 0, &storage, 0);
+	bc_kern_dma_free(&adp, sizeof(storage), NULL, 0);
+	assert(coherent_frees == 1);
+}
+
+static void rx_low_word_zero_unwind(void)
+{
+	struct pci_dev pci = { .device = BC_PCI_DEVID_FLEA };
+	struct crystalhd_adp adp = { .pdev = &pci };
+	struct crystalhd_hw hw = { .adp = &adp, .rx_pkt_tag_seed = 0x70029070 };
+
+	reset_dma_fixture();
+	tx_zero_address = true;
+	rx_alloc_plan = RX_ALLOC_VALID_THEN_LOW_ZERO;
+	memset(rx_dma, 0xa5, sizeof(rx_dma));
+	assert(crystalhd_hw_setup_dma_rings(&hw) == BC_STS_IO_ERROR);
+	assert(dma_allocs == BC_TX_LIST_CNT + 2);
+	assert(packet_allocs == 2 && packet_frees == 2 && no_live_packets() &&
+	       accepted_rx_packets == 1);
+	assert(coherent_frees == BC_TX_LIST_CNT + 2 &&
+	       free_devices[0] == &pci.dev && free_sizes[0] == sizeof(rx_dma[1]) &&
+	       free_cpus[0] == rx_dma[1] &&
+	       free_dmas[0] == UINT64_C(0x0000000100000000));
+	assert(free_cpus[1] == tx_dma[0] && free_dmas[1] == 0 &&
+	       free_cpus[2] == tx_dma[1] &&
+	       free_cpus[3] == rx_dma[0] && free_dmas[3] == UINT64_C(0x00200000));
+	assert(((const unsigned char *)rx_dma[1])[0] == 0xa5);
+	assert(ring_teardowns == 1 && !hw.rx_pkt_pool_head && !hw.tx_freeq);
+	for (unsigned int i = 0; i < BC_TX_LIST_CNT; i++)
+		assert(!hw.tx_pkt_pool[i].desc_mem.pdma_desc_start);
+}
+
+static void link_low_word_zero_accepted(void)
+{
+	struct pci_dev pci = { .device = BC_PCI_DEVID_LINK };
+	struct crystalhd_adp adp = { .pdev = &pci };
+	struct crystalhd_hw hw = { .adp = &adp, .rx_pkt_tag_seed = 0x70029070 };
+
+	reset_dma_fixture();
+	rx_alloc_plan = RX_ALLOC_LOW_ZERO_THEN_NULL;
+	memset(rx_dma, 0xa5, sizeof(rx_dma));
+	assert(crystalhd_hw_setup_dma_rings(&hw) == BC_STS_INSUFF_RES);
+	assert(dma_allocs == BC_TX_LIST_CNT + 2 && packet_allocs == 2 &&
+	       packet_frees == 2 && no_live_packets() && accepted_rx_packets == 1);
+	assert(coherent_frees == BC_TX_LIST_CNT + 1 &&
+	       free_cpus[BC_TX_LIST_CNT] == rx_dma[0] &&
+	       free_dmas[BC_TX_LIST_CNT] == UINT64_C(0x0000000100000000));
+	assert(((const unsigned char *)rx_dma[0])[0] == 0 &&
+	       ring_teardowns == 1 && !hw.rx_pkt_pool_head && !hw.tx_freeq);
 }
 
 int main(void)
@@ -638,7 +790,10 @@ int main(void)
 	tx_short_mapped_backing();
 	tx_descriptor_width();
 	invalid_tx_bounds();
+	dma_zero_free();
 	rx_descriptor_allocation_failure();
+	rx_low_word_zero_unwind();
+	link_low_word_zero_accepted();
 	puts("DMA descriptor/setup tests passed (ASan/UBSan)");
 	return 0;
 }
