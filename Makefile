@@ -11,7 +11,7 @@ PYTHON3 ?= python3
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check raw-frame-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check h264-stream-check rx-ownership-check rx-receipt-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
+.PHONY: all driver library library-check raw-frame-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check h264-stream-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
 
 all: driver library gstreamer vaapi examples
 
@@ -96,9 +96,10 @@ raw-frame-check:
 
 # Optional direct-library hardware probe. Building never opens the device;
 # running requires explicit --hardware (or device-free --preflight).
-library-drain-test: library tests/phase1-progress.h tests/issue204-active-context.h tests/flea-power-observer.h
+library-drain-test: library tests/phase1-progress.h tests/issue204-active-context.h tests/flea-power-observer.h tests/rx-output-receipts.h tests/rx-output-receipts.cpp
 	$(CXX) -std=c++11 -O2 -g -Wall -Wextra -Werror -D__LINUX_USER__ \
 		-Iinclude -Ilinux_lib/libcrystalhd tests/library-drain.cpp \
+		tests/rx-output-receipts.cpp \
 		$$(pkg-config --cflags --libs libavformat libavcodec libavutil glib-2.0 gstreamer-1.0) \
 		-Llinux_lib/libcrystalhd -lcrystalhd $(CRYSTALHD_CPU_FLAGS) -o tests/library-drain-test
 
@@ -187,7 +188,10 @@ v4l2-parent-check:
 ioctl-dispatch-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/ioctl-dispatch.sh
 
-architecture-check: command-pm-check fw-command-check fw-download-check fw-staging-check fw-probe-check tx-admission-check h264-stream-check rx-ownership-check rx-receipt-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
+rx-output-receipts-check:
+	CXX="$(CXX)" sh ./tests/rx-output-receipts.sh
+
+architecture-check: command-pm-check fw-command-check fw-download-check fw-staging-check fw-probe-check tx-admission-check h264-stream-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
 
 pib-check:
 	CC="$(CC)" sh ./tests/flea-pib.sh

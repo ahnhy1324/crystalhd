@@ -37,6 +37,7 @@ extern "C" {
 #include <linux/capability.h>
 #include <set>
 #include <string>
+#include <time.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -44,6 +45,7 @@ extern "C" {
 #include <vector>
 #include "issue204-active-context.h"
 #include "phase1-progress.h"
+#include "rx-output-receipts.h"
 
 static volatile std::sig_atomic_t interrupted;
 
@@ -3710,6 +3712,7 @@ struct Options {
     bool observe_avd_dmem_midpoints = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
+    const char *rx_output_receipts_path = nullptr;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
 };
 
@@ -3779,8 +3782,42 @@ static bool ScalerBenchmarkConflicts(const Options &o)
         o.mpeg1_via_mpeg2 || o.h263_via_divx || o.open_only;
 }
 
+static bool RxOutputReceiptsConflicts(const Options &o)
+{
+    return o.capture_path || o.scaler_test || o.mpeg1_via_mpeg2 ||
+        o.h263_via_divx || o.open_only || o.observe_chroma ||
+        o.observe_power || o.observe_bvn_state || o.observe_scl_config ||
+        o.observe_scl_filter_map || o.observe_scl_view ||
+        o.observe_mfd_config || o.observe_mfd_address ||
+        o.observe_mfd_framing || o.observe_runtime_inventory ||
+        o.observe_arm_metadata || o.observe_arm_source_shape ||
+        o.observe_ppb_context || o.observe_active_context ||
+        o.observe_avd_memory || o.observe_avd_cpu_map ||
+        o.observe_avd_code_arena || o.observe_avd_code_prefix ||
+        o.observe_avd_cache_count || o.observe_avd_dmem_samples ||
+        o.inject_mfd_colour || o.scl_status_test;
+}
+
 static bool ParseArguments(std::vector<const char *> arguments, Options *options)
 {
+    size_t receipt_position = arguments.size();
+    unsigned receipt_options = 0;
+    for (size_t index = 1; index < arguments.size(); ++index) {
+        if (arguments[index] &&
+            !std::strcmp(arguments[index], "--rx-output-receipts")) {
+            ++receipt_options;
+            receipt_position = index;
+        }
+    }
+    if (receipt_options) {
+        if (receipt_options != 1 || options->rx_output_receipts_path ||
+            receipt_position + 1 >= arguments.size() ||
+            !rx_output_receipts::AbsoluteNewPathSyntax(
+                arguments[receipt_position + 1])) return false;
+        options->rx_output_receipts_path = arguments[receipt_position + 1];
+        arguments.erase(arguments.begin() + receipt_position,
+                        arguments.begin() + receipt_position + 2);
+    }
     // A single exact native issue #204 profile.  Keep it separate from the
     // ordinary PPB observers: those have pre-start/first-output/EOS stages,
     // while this experiment is admitted at one preserved mid-stream boundary.
@@ -3789,7 +3826,8 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
             return argument && !std::strcmp(argument, "--observe-active-context");
         }));
     if (active_context_options) {
-        if (active_context_options != 1U || arguments.size() != 11U ||
+        if (options->rx_output_receipts_path || active_context_options != 1U ||
+            arguments.size() != 11U ||
             std::strcmp(arguments[1], "--hardware") ||
             std::strcmp(arguments[3], "180") || std::strcmp(arguments[4], "30") ||
             std::strcmp(arguments[5], "1") ||
@@ -3808,6 +3846,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     }
     // A separate bounded, read-only mode: no other experiments or repetitions.
     if (arguments.size() == 7 && !std::strcmp(arguments.back(), "--observe-bvn-state")) {
+        if (options->rx_output_receipts_path) return false;
         arguments.pop_back();
         if (!ParseArguments(arguments, options) || options->mode != Mode::Hardware ||
             options->expected != 180 || !options->scaler_test ||
@@ -3822,6 +3861,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
                                 !std::strcmp(arguments.back(), "--observe-power-fw-pause") ||
                                 !std::strcmp(arguments.back(), "--observe-power-fw-dma") ||
                                 !std::strcmp(arguments.back(), "--observe-power-config"))) {
+        if (options->rx_output_receipts_path) return false;
         const bool dma = !std::strcmp(arguments.back(), "--observe-power-fw-dma");
         const bool firmware = dma || !std::strcmp(arguments.back(), "--observe-power-fw-pause");
         const bool configuration = !std::strcmp(arguments.back(), "--observe-power-config");
@@ -3967,7 +4007,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->observe_avd_dmem_samples || options->observe_avd_cache_count || options->observe_avd_code_prefix || options->observe_avd_code_arena || options->observe_avd_cpu_map || options->observe_avd_memory || options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->rx_output_receipts_path || options->observe_avd_dmem_samples || options->observe_avd_cache_count || options->observe_avd_code_prefix || options->observe_avd_code_arena || options->observe_avd_cpu_map || options->observe_avd_memory || options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->scaler_benchmark || options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -4072,6 +4112,9 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
          options->expected != 180 || options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2 ||
          options->observe_mfd_config || options->inject_mfd_colour || options->observe_scl_config || options->observe_scl_view ||
          options->observe_chroma || options->mpeg1_via_mpeg2 || options->h263_via_divx || options->open_only)) return false;
+    if (options->rx_output_receipts_path &&
+        (!hardware || options->iterations != 1 ||
+         RxOutputReceiptsConflicts(*options))) return false;
     return !options->capture_path ||
         (hardware && options->scaler_test && !options->open_only && options->iterations == 1);
 }
@@ -4087,7 +4130,8 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 static bool NeedsRawIo(const Options &options)
 {
     if (options.observe_power || options.observe_bvn_state ||
-        options.observe_active_context) return true;
+        options.observe_active_context || options.rx_output_receipts_path)
+        return true;
     return options.observe_avd_dmem_samples || options.observe_avd_cache_count || options.observe_avd_code_prefix || options.observe_avd_code_arena || options.observe_avd_cpu_map || options.observe_avd_memory || options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_ppb_context || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
         options.observe_scl_view || options.observe_mfd_config || options.observe_mfd_address || options.observe_mfd_framing || options.inject_mfd_colour || options.scl_status_test;
 }
@@ -9529,6 +9573,41 @@ static bool SelfTest()
                           &options),
           "iteration argument bounds");
 
+    Options receipt_options;
+    check(ParseArguments({"probe", "--hardware", "fixture", "900", "60", "1",
+                          "--scaler-benchmark", "0", "--rx-output-receipts",
+                          "/tmp/new-rx-output.tsv"}, &receipt_options) &&
+          receipt_options.mode == Mode::Hardware &&
+          receipt_options.iterations == 1 && receipt_options.scaler_benchmark &&
+          receipt_options.rx_output_receipts_path &&
+          !std::strcmp(receipt_options.rx_output_receipts_path,
+                       "/tmp/new-rx-output.tsv") &&
+          NeedsRawIo(receipt_options) && !NeedsRawIo(Options{}),
+          "RX output receipt probe is hardware-only, single-run, preallocated benchmark evidence");
+    for (const std::vector<const char *> &invalid :
+         std::vector<std::vector<const char *>>{
+            {"probe", "--preflight", "fixture", "900", "60",
+             "--rx-output-receipts", "/tmp/new-rx-output.tsv"},
+            {"probe", "--self-test", "--rx-output-receipts",
+             "/tmp/new-rx-output.tsv"},
+            {"probe", "--hardware", "fixture", "900", "60", "2",
+             "--rx-output-receipts", "/tmp/new-rx-output.tsv"},
+            {"probe", "--hardware", "fixture", "900", "60", "1",
+             "--rx-output-receipts", "relative.tsv"},
+            {"probe", "--hardware", "fixture", "900", "60", "1",
+             "--rx-output-receipts", "/tmp/a.tsv", "--rx-output-receipts",
+             "/tmp/b.tsv"},
+            {"probe", "--hardware", "fixture", "900", "60", "1",
+             "--scaler-test", "0", "--rx-output-receipts",
+             "/tmp/new-rx-output.tsv"},
+            {"probe", "--hardware", "fixture", "180", "30", "1",
+             "--capture-yuy2", "/tmp/capture.yuy2",
+             "--rx-output-receipts", "/tmp/new-rx-output.tsv"}}) {
+        Options rejected;
+        check(!ParseArguments(invalid, &rejected),
+              "RX output receipt scope rejects preflight, repetition, relative/duplicate paths and hot-path experiments");
+    }
+
     for (const char *width : {"0", "128", "320", "640", "1918"}) {
         options = Options{};
         check(ParseArguments({"probe", "--hardware", "fixture", "12", "9", "2",
@@ -11442,6 +11521,21 @@ static bool Status(const char *operation, BC_STATUS status)
     return false;
 }
 
+static bool MonotonicNanoseconds(uint64_t *value)
+{
+    struct timespec sample = {};
+    if (!value || clock_gettime(CLOCK_MONOTONIC, &sample) ||
+        sample.tv_sec < 0 || sample.tv_nsec < 0 ||
+        sample.tv_nsec >= 1000000000L ||
+        static_cast<uint64_t>(sample.tv_sec) >
+            (UINT64_MAX - static_cast<uint64_t>(sample.tv_nsec)) /
+                1000000000U)
+        return false;
+    *value = static_cast<uint64_t>(sample.tv_sec) * 1000000000U +
+        static_cast<uint64_t>(sample.tv_nsec);
+    return true;
+}
+
 // Named packing-control observation only; never follow device pointers.
 static bool PackingState(HANDLE handle, const char *stage, MfdColourProbe *colour,
                          SclViewProbe *view, SclViewProbe::Reader reader, bool report)
@@ -11532,6 +11626,7 @@ struct Audit {
     SclStatusTest scl_status;
     GChecksum *pixels = nullptr;
     PixelCapture *capture = nullptr;
+    rx_output_receipts::Probe *rx_output_receipts = nullptr;
     ~Audit() { if (pixels) g_checksum_free(pixels); }
 };
 
@@ -11542,8 +11637,13 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
         if (!Status("DtsGetDriverStatus", DtsGetDriverStatus(device->handle, &driver))) return false;
         audit->ready = driver.ReadyListCount;
         if (!audit->ready) break;
+        const uint32_t ready_before = audit->ready;
         BC_DTS_PROC_OUT output = {};
         const BC_STATUS result = DtsProcOutputNoCopy(device->handle, 0, &output);
+        uint64_t receipt_return_ns = 0;
+        const bool receipt_clock_ok = result != BC_STS_SUCCESS ||
+            !audit->rx_output_receipts ||
+            MonotonicNanoseconds(&receipt_return_ns);
         const gint64 fetched_us = result == BC_STS_SUCCESS && audit->benchmark.enabled
             ? g_get_monotonic_time() : 0;
         const bool marker = result == BC_STS_SUCCESS &&
@@ -11552,14 +11652,34 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             OutputLease lease(device->handle);
             CapturedFrame captured;
             audit->marker |= marker;
-            bool valid = true;
+            bool receipt_recorded = true;
+            if (audit->rx_output_receipts) {
+                rx_output_receipts::HostReceipt receipt;
+                receipt.return_ns = receipt_return_ns;
+                receipt.ready_before = ready_before;
+                receipt.token = output.PicInfo.timeStamp;
+                receipt.picture_number = output.PicInfo.picture_number;
+                receipt.session_number = output.PicInfo.sess_num;
+                receipt.picture_flags = output.PicInfo.flags;
+                receipt.width = output.PicInfo.width;
+                receipt.height = output.PicInfo.height;
+                receipt.y_done_words = output.YBuffDoneSz;
+                receipt.uv_done_words = output.UVBuffDoneSz;
+                receipt.pout_flags = output.PoutFlags;
+                receipt.b422_mode = output.b422Mode;
+                receipt.eos = marker;
+                receipt_recorded = audit->rx_output_receipts->Record(receipt) &&
+                    receipt_clock_ok;
+            }
+            bool valid = receipt_recorded;
             if (!marker) {
                 const unsigned width = output.PicInfo.width, height = output.PicInfo.height;
                 const bool benchmark_coded_height = audit->benchmark.enabled &&
                     !audit->benchmark_scaled && input.height == 1080 && height == 1088;
                 const bool ordinary_coded_height = !audit->benchmark.enabled &&
                     !audit->pixels && input.height == 1080 && height == 1088;
-                valid = (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) && output.Ybuff &&
+                valid = valid &&
+                    (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) && output.Ybuff &&
                     !(output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) &&
                     width == audit->output_width &&
                     (height == audit->output_height || benchmark_coded_height ||
@@ -11745,10 +11865,21 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     Deadline deadline(seconds);
     Device device;
     Audit audit(options.observe_avd_platform_code, options.observe_avd_dmem_midpoints);
+    rx_output_receipts::Probe receipt_probe;
+    if (options.rx_output_receipts_path &&
+        !receipt_probe.Prepare(options.rx_output_receipts_path, expected)) {
+        std::fprintf(stderr, "RX output receipt preparation failed: %s\n",
+            rx_output_receipts::FailureName(receipt_probe.failure()));
+        return false;
+    }
+    audit.rx_output_receipts = options.rx_output_receipts_path
+        ? &receipt_probe : nullptr;
     audit.iteration = iteration;
     // Per-picture progress records are deliberately excluded from timed
-    // benchmarks; an unbuffered file write would become part of each interval.
-    audit.progress = options.scaler_benchmark ? nullptr : progress;
+    // benchmarks and receipt capture; an unbuffered file write would become
+    // part of each measured output boundary.
+    audit.progress = options.scaler_benchmark ||
+        options.rx_output_receipts_path ? nullptr : progress;
     audit.output_width = input.width;
     audit.output_height = input.height;
     audit.output_format = options.output_format;
@@ -11803,6 +11934,11 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (!capture.Open(options.capture_path, audit.output_width, audit.output_height, expected,
                       options.output_format))
         return false;
+    if (audit.rx_output_receipts && !receipt_probe.Arm()) {
+        std::fprintf(stderr, "RX output receipt ARM failed: %s\n",
+            rx_output_receipts::FailureName(receipt_probe.failure()));
+        return false;
+    }
     audit.capture = options.capture_path ? &capture : nullptr;
     const uint32_t mode = ProbeDeviceMode(options);
     bool ok = Status("DtsDeviceOpen", DtsDeviceOpen(&device.handle, mode));
@@ -12046,7 +12182,21 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         }
     }
     const bool closed = device.Close();
-    ok = ok && closed;
+    const bool native_run_ok = ok && closed;
+    bool receipts_ok = true;
+    if (audit.rx_output_receipts) {
+        receipts_ok = receipt_probe.Finish(native_run_ok);
+        std::printf("RX output receipts: host=%zu driver=%zu joined=%zu "
+            "generation=%llu run=%llu result=%s failure=%s\n",
+            receipt_probe.host_count(), receipt_probe.driver_count(),
+            receipt_probe.joined_count(),
+            static_cast<unsigned long long>(receipt_probe.generation()),
+            static_cast<unsigned long long>(receipt_probe.run_id()),
+            receipts_ok ? "PASS" : "FAIL",
+            rx_output_receipts::FailureName(receipt_probe.failure()));
+        std::fflush(stdout);
+    }
+    ok = native_run_ok && receipts_ok;
     ok = audit.power.Finish(ok);
     ok = audit.bvn_state.Finish(ok);
     const bool captured = capture.Finish(ok);
@@ -12094,6 +12244,7 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0 | --scaler-benchmark WIDTH_OR_0] "
             "[--mpeg1-via-mpeg2 | --h263-via-divx] "
+            "[--rx-output-receipts NEW_ABSOLUTE_TSV] "
             "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --observe-avd-platform-code | --observe-avd-cache-count | --observe-avd-dmem-samples | --observe-avd-dmem-midpoints | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n"
             "Power observation: --hardware MPEG2_640x360_180_FRAMES 180 "
@@ -12110,7 +12261,9 @@ int main(int argc, char **argv)
         return 2;
     }
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_active_context)
+        if (options.rx_output_receipts_path)
+            std::fprintf(stderr, "--rx-output-receipts requires CAP_SYS_RAWIO; no fixture/progress/device/output was opened\n");
+        else if (options.observe_active_context)
             std::fprintf(stderr, "--observe-active-context requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_bvn_state)
             std::fprintf(stderr, "--observe-bvn-state requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
@@ -12170,6 +12323,12 @@ int main(int argc, char **argv)
             std::fprintf(stderr, "--observe-scl-config requires CAP_SYS_RAWIO; no fixture/capture/device was opened\n");
         else
             std::fprintf(stderr, "--observe-chroma requires CAP_SYS_RAWIO; no device was opened\n");
+        return 2;
+    }
+    if (options.rx_output_receipts_path &&
+        !rx_output_receipts::OutputPathAvailable(
+            options.rx_output_receipts_path)) {
+        std::fprintf(stderr, "--rx-output-receipts requires a new absolute output path; no fixture/progress/device was opened\n");
         return 2;
     }
     Phase1Progress progress{};
