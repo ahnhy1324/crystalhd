@@ -2,9 +2,12 @@
 #ifndef CRYSTALHD_DECODE_REPLAY_H
 #define CRYSTALHD_DECODE_REPLAY_H
 
+#include "crystalhd-access-unit-limits.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <new>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -17,8 +20,8 @@
 class CrystalHDDecodeReplay {
  public:
   struct Limits {
-    size_t picture_bytes = 512 * 1024;
-    size_t cache_bytes = 32 * 1024 * 1024;
+    size_t picture_bytes = crystalhd_access_unit_limits::kH264Bytes;
+    size_t cache_bytes = crystalhd_access_unit_limits::kReplayCacheBytes;
     size_t pictures = 512;
     size_t replay_pictures = 8192;
   };
@@ -47,8 +50,13 @@ class CrystalHDDecodeReplay {
       MakeRoom(bytes.size());
     if (!HasRoom(bytes.size()))
       return Fail("compressed IDR replay cache limit exceeded");
-    cache_bytes_ += bytes.size();
-    units_.push_back({timestamp, idr, std::move(bytes), false});
+    const size_t unit_bytes = bytes.size();
+    try {
+      units_.push_back({timestamp, idr, std::move(bytes), false});
+    } catch (const std::bad_alloc &) {
+      return Fail("compressed IDR replay cache allocation failed");
+    }
+    cache_bytes_ += unit_bytes;
     multiple_inputs_ = multiple_inputs_ || last_timestamp_ != 0;
     last_timestamp_ = timestamp;
     return true;
@@ -68,9 +76,13 @@ class CrystalHDDecodeReplay {
     const AccessUnit *unit = NextInput();
     if (unit == nullptr)
       return Fail("input submitted outside the running batch");
+    try {
+      outstanding_.insert(unit->timestamp);
+    } catch (const std::bad_alloc &) {
+      return Fail("compressed IDR replay tracking allocation failed");
+    }
     if (unit->completed)
       ++replay_work_;
-    outstanding_.insert(unit->timestamp);
     ++cursor_;
     return true;
   }
@@ -168,6 +180,7 @@ class CrystalHDDecodeReplay {
   bool sealed() const { return phase_ == Phase::Sealed; }
   const char *failure() const { return failure_; }
   size_t cached_pictures() const { return units_.size(); }
+  size_t cached_bytes() const { return cache_bytes_; }
   size_t outstanding() const { return outstanding_.size(); }
   bool IsOutstanding(uint64_t timestamp) const {
     return outstanding_.count(timestamp) != 0;
@@ -178,7 +191,8 @@ class CrystalHDDecodeReplay {
  private:
   enum class Phase { Running, Sealed, Ended, Failed };
   bool HasRoom(size_t bytes) const {
-    return bytes <= limits_.cache_bytes - cache_bytes_ &&
+    return cache_bytes_ <= limits_.cache_bytes &&
+           bytes <= limits_.cache_bytes - cache_bytes_ &&
            units_.size() < limits_.pictures;
   }
   void MakeRoom(size_t bytes) {

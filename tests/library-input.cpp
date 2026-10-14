@@ -26,6 +26,7 @@ static struct {
     bool consume_after_push = false;
     bool allow_metadata_retry = false;
     unsigned waits = 0, metadata_retries = 0, cancel_after_push = 0;
+    unsigned pause_after_push = 0, recovery_after_push = 0;
     unsigned failure_attempt = 0;
     BC_STATUS first_marker_status = BC_STS_SUCCESS;
     BC_STATUS failure_status = BC_STS_SUCCESS;
@@ -71,6 +72,10 @@ extern "C" BC_STATUS __wrap_txBufPush(pTXBUFFER ring, uint8_t *bytes, uint32_t s
             if (transport.consume_after_push) consume_ring(ring);
             if (transport.cancel_after_push == transport.accepted.size())
                 transport.context->State = BC_DEC_STATE_STOP;
+            if (transport.pause_after_push == transport.accepted.size())
+                transport.context->State = BC_DEC_STATE_PAUSE;
+            if (transport.recovery_after_push == transport.accepted.size())
+                transport.context->recoveryPending = true;
         }
         return status;
     }
@@ -144,6 +149,12 @@ struct Fixture {
         context.ProcessID = getpid();
         context.DevId = BC_PCI_DEVID_FLEA;
         context.State = BC_DEC_STATE_START;
+        pthread_mutexattr_t attr;
+        pthread_mutexattr_init(&attr);
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+        if (pthread_mutex_init(&context.thLock, &attr) != 0)
+            std::abort();
+        pthread_mutexattr_destroy(&attr);
         context.MdataPoolPtr = metadata_pool;
         context.MDPendHead = context.MDPendTail =
             DTS_MDATA_PEND_LINK((&context));
@@ -185,6 +196,7 @@ struct Fixture {
         std::free(context.VidParams.pMetaData);
         std::free(context.alignBuf);
         txBufFree(&context.circBuf);
+        pthread_mutex_destroy(&context.thLock);
         bc_dil_glob_ptr = nullptr;
     }
     BC_STATUS send(Bytes input)
@@ -923,12 +935,25 @@ static void WmvBFrameMetadata()
     }
 }
 
+enum class TransportKind { FleaEs, LinkPes, FleaPes };
+
 struct TransportFixture : Fixture {
     DTS_INPUT_MDATA metadata[8] = {};
-    explicit TransportFixture(bool link_pes = false) : Fixture(4) {
-        context.DevId = link_pes ? BC_PCI_DEVID_LINK : BC_PCI_DEVID_FLEA;
-        context.VidParams.MediaSubType = BC_MSUBTYPE_H264;
-        context.VidParams.StreamType = link_pes ? BC_STREAM_TYPE_PES : BC_STREAM_TYPE_ES;
+    explicit TransportFixture(TransportKind kind) :
+            Fixture(0, nullptr, BC_MSUBTYPE_H264) {
+        if (kind == TransportKind::FleaEs) {
+            // Deliberate synthetic ES path; real Flea configuration below is
+            // exercised separately and must remain PES.
+            context.DevId = BC_PCI_DEVID_FLEA;
+            context.VidParams.StreamType = BC_STREAM_TYPE_ES;
+        } else if (kind == TransportKind::LinkPes) {
+            context.DevId = BC_PCI_DEVID_LINK;
+            context.VidParams.StreamType = BC_STREAM_TYPE_PES;
+        } else {
+            check(context.DevId == BC_PCI_DEVID_FLEA &&
+                      context.VidParams.StreamType == BC_STREAM_TYPE_PES,
+                  "actual Flea H.264 configuration selects PES transport");
+        }
         context.PESConvParams.m_bAddSpsPps = false;
         context.PESConvParams.m_bIsAdd_SCode_CodeIn = false;
         context.MdataPoolPtr = metadata;
@@ -940,9 +965,15 @@ struct TransportFixture : Fixture {
         transport.context = &context;
         transport.consume_after_push = transport.allow_metadata_retry = false;
         transport.waits = transport.metadata_retries = transport.cancel_after_push = 0;
+        transport.pause_after_push = transport.recovery_after_push = 0;
         transport.first_marker_status = BC_STS_SUCCESS;
+        transport.failure_attempt = 0;
+        transport.failure_status = BC_STS_SUCCESS;
         transport.attempts.clear(); transport.accepted.clear(); transport.consumed.clear();
     }
+    explicit TransportFixture(bool link_pes = false) :
+            TransportFixture(link_pes ? TransportKind::LinkPes :
+                                        TransportKind::FleaEs) {}
     ~TransportFixture() {
         transport.context = nullptr;
         DtsClrPendMdataList(&context);
@@ -984,6 +1015,706 @@ static std::vector<uint32_t> expected_chunks(const uint8_t *data, uint32_t size)
     }
     return chunks;
 }
+
+static Bytes accepted_after(size_t first)
+{
+    Bytes all;
+    for (size_t i = first; i < transport.accepted.size(); ++i)
+        all.insert(all.end(), transport.accepted[i].begin(), transport.accepted[i].end());
+    return all;
+}
+
+struct PesCapture {
+    bool valid = true;
+    Bytes payload;
+    std::vector<uint64_t> timestamps;
+    uint64_t bytes = 0;
+};
+
+static PesCapture captured_pes(size_t first = 0)
+{
+    PesCapture capture;
+    for (size_t i = first; i < transport.accepted.size(); ++i) {
+        const Bytes &packet = transport.accepted[i];
+        capture.bytes += packet.size();
+        if (packet.size() < sizeof(b_pes_header) || packet[0] != 0 ||
+            packet[1] != 0 || packet[2] != 1 || packet[3] != 0xe0) {
+            capture.valid = false;
+            continue;
+        }
+        const uint32_t packet_length =
+            (static_cast<uint32_t>(packet[4]) << 8) | packet[5];
+        const size_t payload_offset = sizeof(b_pes_header) + packet[8];
+        if (packet.size() != packet_length + 6U ||
+            payload_offset > packet.size()) {
+            capture.valid = false;
+            continue;
+        }
+        if (packet[7] & 0x80)
+            capture.timestamps.push_back(pts(packet));
+        capture.payload.insert(capture.payload.end(),
+                               packet.begin() + payload_offset, packet.end());
+    }
+    return capture;
+}
+
+static uint64_t expected_pes_bytes(uint32_t payload_bytes,
+                                   uint32_t first_optional_bytes)
+{
+    if (!payload_bytes) return 0;
+    const uint64_t first_payload =
+        static_cast<uint32_t>(MAX_RE_PES_BOUND) - 3U - first_optional_bytes;
+    const uint64_t later_payload =
+        static_cast<uint32_t>(MAX_RE_PES_BOUND) - 3U;
+    uint64_t packets = 1;
+    if (payload_bytes > first_payload) {
+        const uint64_t rest = payload_bytes - first_payload;
+        packets += (rest + later_payload - 1U) / later_payload;
+    }
+    return payload_bytes + first_optional_bytes +
+           packets * sizeof(b_pes_header);
+}
+
+static void FragmentedH264Input()
+{
+    Bytes logical = parameter_sets();
+    append(logical, Bytes(DTS_INPUT_FRAGMENT_MAX_SIZE + 137U, 0x5a), 0);
+    // Turn the generated final NAL into an IDR while retaining a deterministic
+    // payload whose 512 KiB boundary lies strictly inside that NAL.
+    logical[parameter_sets().size() + 4] = 0x65;
+    const uint32_t first_size = DTS_INPUT_FRAGMENT_MAX_SIZE;
+    const uint32_t last_size = logical.size() - first_size;
+
+    {
+        TransportFixture f;
+        f.context.SingleThreadedAppMode = 1;
+        transport.consume_after_push = true;
+        check(DtsProcInputFragment(&f.context, logical.data(), first_size,
+                                   666671, false,
+                                   DTS_INPUT_FRAGMENT_FIRST) == BC_STS_SUCCESS,
+              "fragment FIRST accepts one bounded H.264 prefix");
+        check(f.context.inputFragmentActive &&
+              !f.context.inputFragmentRawPermit,
+              "FIRST retains only the logical-AU latch between calls");
+        const size_t accepted = transport.accepted.size();
+        check(DtsProcInput(&f.context, logical.data(), 8, 666672, false) ==
+                  BC_STS_BUSY &&
+              DtsAlignSendData(&f.context, logical.data(), 8, 0, false) ==
+                  BC_STS_BUSY &&
+              DtsSendData(&f.context, logical.data(), 8, 0, false) ==
+                  BC_STS_BUSY &&
+              DtsSendEOS(&f.context, 0) == BC_STS_BUSY &&
+              transport.accepted.size() == accepted,
+              "legacy, raw and EOS producers cannot interleave an open fragment");
+        BC_STATUS foreign_proc = BC_STS_SUCCESS;
+        BC_STATUS foreign_align = BC_STS_SUCCESS;
+        BC_STATUS foreign_send = BC_STS_SUCCESS;
+        std::thread foreign([&] {
+            foreign_proc = DtsProcInput(&f.context, logical.data(), 8,
+                                        666672, false);
+            foreign_align = DtsAlignSendData(&f.context, logical.data(), 8,
+                                             0, false);
+            foreign_send = DtsSendData(&f.context, logical.data(), 8, 0,
+                                       false);
+        });
+        foreign.join();
+        check(foreign_proc == BC_STS_BUSY && foreign_align == BC_STS_BUSY &&
+                  foreign_send == BC_STS_BUSY &&
+                  transport.accepted.size() == accepted,
+              "legacy and raw producers on another thread cannot interleave an open fragment");
+        check(DtsProcInputFragment(&f.context, logical.data() + first_size,
+                                   last_size, 0, false,
+                                   DTS_INPUT_FRAGMENT_LAST) == BC_STS_SUCCESS &&
+              !f.context.inputFragmentActive,
+              "LAST completes and releases the logical-AU latch");
+        check(!transport.accepted.empty() &&
+              transport.accepted.front().size() == sizeof(BC_SEQ_HDR_FORMAT) &&
+              accepted_after(1) == logical,
+              "mid-NAL split preserves every logical AU byte after one timestamp marker");
+        check(f.context.PESConvParams.m_iSpsPpsLen == parameter_sets().size() &&
+              !std::memcmp(f.context.PESConvParams.m_pSpsPpsBuf,
+                           parameter_sets().data(), parameter_sets().size()),
+              "FIRST performs H.264 recovery-cache bookkeeping exactly once");
+        check(f.free_metadata() == 7 && !f.no_pending_metadata(),
+              "fragmented AU owns exactly one timestamp metadata record");
+    }
+    {
+        TransportFixture f;
+        f.context.SingleThreadedAppMode = 1;
+        transport.consume_after_push = true;
+        check(DtsProcInputFragment(&f.context, logical.data(), first_size,
+                                   666671, false,
+                                   DTS_INPUT_FRAGMENT_FIRST) == BC_STS_SUCCESS,
+              "stall fixture accepts FIRST before capacity disappears");
+        transport.consume_after_push = false;
+        Bytes full(CIRC_TX_BUF_SIZE, 0xa5);
+        check(__real_txBufPush(&f.context.circBuf, full.data(), full.size()) ==
+                  BC_STS_SUCCESS,
+              "stall fixture fills the real ring after FIRST");
+        const size_t attempts = transport.attempts.size();
+        check(DtsProcInputFragment(&f.context, logical.data() + first_size,
+                                   last_size, 0, false,
+                                   DTS_INPUT_FRAGMENT_LAST) == BC_STS_BUSY &&
+              f.context.inputFragmentActive && transport.waits == 0 &&
+              transport.attempts.size() == attempts,
+              "continuation with no capacity returns BUSY without a byte or wait");
+        consume_ring(&f.context.circBuf);
+        transport.consume_after_push = true;
+        check(DtsProcInputFragment(&f.context, logical.data() + first_size,
+                                   last_size, 0, false,
+                                   DTS_INPUT_FRAGMENT_LAST) == BC_STS_SUCCESS &&
+              !f.context.inputFragmentActive,
+              "stalled LAST retries after output-side capacity returns");
+    }
+    {
+        TransportFixture f;
+        f.context.SingleThreadedAppMode = 1;
+        check(DtsProcInputFragment(&f.context, logical.data() + first_size,
+                                   last_size, 0, false,
+                                   DTS_INPUT_FRAGMENT_LAST) == BC_STS_INV_ARG,
+              "continuation without FIRST is rejected");
+        check(DtsProcInputFragment(&f.context, logical.data(), first_size,
+                                   666671, false,
+                                   DTS_INPUT_FRAGMENT_FIRST) == BC_STS_SUCCESS,
+              "reset fixture opens one fragmented AU");
+        f.context.inputFragmentMdata = DtsAllocMdata(&f.context);
+        f.context.inputFragmentRawPermit = true;
+        f.context.inputFragmentThread = pthread_self();
+        const unsigned free_with_reservation = f.free_metadata();
+        check(f.context.inputFragmentMdata != nullptr,
+              "reset fixture models a FIRST timestamp owner reserved in flight");
+        check(DtsRecoveryFlushInputRing(&f.context) == BC_STS_SUCCESS &&
+              !f.context.inputFragmentActive &&
+              !f.context.inputFragmentRawPermit &&
+              !f.context.inputFragmentMdata &&
+              f.free_metadata() == free_with_reservation + 1 &&
+              DtsProcInputFragment(&f.context,
+                                   logical.data() + first_size, last_size, 0,
+                                   false, DTS_INPUT_FRAGMENT_LAST) ==
+                  BC_STS_INV_ARG,
+              "recovery reset discards the fragment identity and rejects its tail");
+        uint8_t byte = 0;
+        check(DtsProcInputFragment(&f.context, &byte,
+                                   DTS_INPUT_FRAGMENT_MAX_SIZE + 1U, 1,
+                                   false, DTS_INPUT_FRAGMENT_FIRST |
+                                                  DTS_INPUT_FRAGMENT_LAST) ==
+                  BC_STS_INV_ARG,
+              "one byte above the public fragment bound is rejected before access");
+    }
+    for (const uint32_t shortage : {1U, 0U}) {
+        TransportFixture f;
+        f.context.SingleThreadedAppMode = 1;
+        check(DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS &&
+              f.context.recoveryInjectSpsPps,
+              "capacity fixture arms the cached H.264 recovery prefix");
+        Bytes idr_only;
+        append(idr_only, idr, 0);
+        const uint32_t required = idr_only.size() + sizeof(BC_SEQ_HDR_FORMAT) +
+                                  parameter_sets().size();
+        Bytes fill(CIRC_TX_BUF_SIZE - required + shortage, 0x39);
+        check(__real_txBufPush(&f.context.circBuf, fill.data(), fill.size()) ==
+                  BC_STS_SUCCESS,
+              "capacity fixture establishes an exact recovery-prefix boundary");
+        const BC_STATUS status = DtsProcInputFragment(
+            &f.context, idr_only.data(), idr_only.size(), 666671, false,
+            DTS_INPUT_FRAGMENT_FIRST | DTS_INPUT_FRAGMENT_LAST);
+        if (shortage) {
+            check(status == BC_STS_BUSY && transport.attempts.empty() &&
+                  !f.context.inputFragmentActive && transport.waits == 0,
+                  "one byte short reserves neither recovery prefix, marker nor input");
+        } else {
+            check(status == BC_STS_SUCCESS && transport.waits == 0 &&
+                  !f.context.inputFragmentActive &&
+                  transport.accepted.size() == 3 &&
+                  transport.accepted[0] == parameter_sets() &&
+                  transport.accepted[1].size() == sizeof(BC_SEQ_HDR_FORMAT) &&
+                  transport.accepted[2] == idr_only,
+                  "exact free-space boundary admits prefix, one marker and raw input");
+        }
+    }
+    {
+        TransportFixture f;
+        f.context.SingleThreadedAppMode = 1;
+        check(DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS &&
+                  f.context.recoveryInjectSpsPps,
+              "metadata fixture arms the cached H.264 recovery prefix");
+        f.context.MDFreeHead = nullptr;
+        const uint32_t ring_busy = f.context.circBuf.busySize;
+        const uint64_t enqueued = f.context.txBytesEnqueued;
+        const uint32_t metadata_tag = f.context.InMdataTag;
+        const bool add_config = f.context.PESConvParams.m_bAddSpsPps;
+        const bool inject_config = f.context.recoveryInjectSpsPps;
+        const uint8_t *const config = f.context.PESConvParams.m_pSpsPpsBuf;
+        const uint32_t config_size = f.context.PESConvParams.m_iSpsPpsLen;
+        Bytes config_copy(config, config + config_size);
+        Bytes idr_only;
+        append(idr_only, idr, 0);
+        check(DtsProcInputFragment(
+                  &f.context, idr_only.data(), idr_only.size(), 666671,
+                  false, DTS_INPUT_FRAGMENT_FIRST |
+                             DTS_INPUT_FRAGMENT_LAST) == BC_STS_BUSY &&
+                  transport.attempts.empty() && transport.waits == 0 &&
+                  f.context.circBuf.busySize == ring_busy &&
+                  f.context.txBytesEnqueued == enqueued &&
+                  f.context.InMdataTag == metadata_tag &&
+                  !f.context.inputFragmentActive &&
+                  !f.context.inputFragmentMdata &&
+                  f.context.PESConvParams.m_bAddSpsPps == add_config &&
+                  f.context.recoveryInjectSpsPps == inject_config &&
+                  f.context.PESConvParams.m_pSpsPpsBuf == config &&
+                  f.context.PESConvParams.m_iSpsPpsLen == config_size &&
+                  !std::memcmp(config, config_copy.data(), config_size) &&
+                  !f.context.MDFreeHead && f.no_pending_metadata(),
+              "metadata exhaustion returns zero-byte BUSY before recovery prefix and preserves all owners/latches");
+    }
+    {
+        TransportFixture f;
+        f.context.SingleThreadedAppMode = 1;
+        check(DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS,
+              "late-cancel fixture arms recovery prefix injection");
+        Bytes idr_only;
+        append(idr_only, idr, 0);
+        transport.failure_attempt = 2;
+        transport.failure_status = BC_STS_BUSY;
+        check(DtsProcInputFragment(
+                  &f.context, idr_only.data(), idr_only.size(), 666671,
+                  false, DTS_INPUT_FRAGMENT_FIRST |
+                             DTS_INPUT_FRAGMENT_LAST) ==
+                  BC_STS_IO_USER_ABORT &&
+                  transport.accepted.size() == 1 &&
+                  transport.accepted[0] == parameter_sets() &&
+                  f.context.inputFragmentActive &&
+                  !f.context.inputFragmentRawPermit &&
+                  !f.context.inputFragmentMdata,
+              "a late packetizer BUSY after a prefix is terminal cancellation, never zero-byte retryable BUSY");
+        check(DtsRecoveryFlushInputRing(&f.context) == BC_STS_SUCCESS &&
+                  !f.context.inputFragmentActive,
+              "recovery teardown retires the terminal partial fragment latch");
+    }
+    {
+        TransportFixture f;
+        f.context.SingleThreadedAppMode = 1;
+        Bytes idr_only;
+        append(idr_only, idr, 0);
+        transport.consume_after_push = true;
+        transport.recovery_after_push = 1;
+        check(DtsProcInputFragment(
+                  &f.context, idr_only.data(), idr_only.size(), 0, false,
+                  DTS_INPUT_FRAGMENT_FIRST | DTS_INPUT_FRAGMENT_LAST) ==
+                  BC_STS_IO_USER_ABORT &&
+                  transport.accepted.size() == 1 &&
+                  transport.accepted[0] == idr_only &&
+                  !f.context.inputFragmentActive && transport.waits == 0,
+              "recovery published after the final enqueue is terminal, never a retryable BUSY after accepted bytes");
+        f.context.recoveryPending = false;
+    }
+    {
+        TransportFixture f;
+        f.context.SingleThreadedAppMode = 1;
+        transport.consume_after_push = true;
+        check(DtsProcInputFragment(&f.context, logical.data(), first_size,
+                                   0, false,
+                                   DTS_INPUT_FRAGMENT_FIRST) == BC_STS_SUCCESS,
+              "pause fixture admits FIRST and publishes its fragment latch");
+        check(DtsPauseDecoder(&f.context) == BC_STS_BUSY &&
+                  f.context.State == BC_DEC_STATE_START &&
+                  f.context.inputFragmentActive,
+              "pause cannot change decoder state during an admitted fragmented AU");
+        check(DtsProcInputFragment(&f.context, logical.data() + first_size,
+                                   last_size, 0, false,
+                                   DTS_INPUT_FRAGMENT_LAST) == BC_STS_SUCCESS &&
+                  !f.context.inputFragmentActive,
+              "rejected pause leaves the bounded continuation usable");
+    }
+    {
+        TransportFixture f;
+        f.context.SingleThreadedAppMode = 1;
+        Bytes storage(DTS_INPUT_FRAGMENT_MAX_SIZE + 1U, 0x5a);
+        uint8_t *unaligned = storage.data() + 1;
+        unaligned[0] = unaligned[1] = unaligned[2] = 0;
+        unaligned[3] = 1;
+        unaligned[4] = 0x65;
+        transport.consume_after_push = true;
+        transport.pause_after_push = 1;
+        check(DtsProcInputFragment(
+                  &f.context, unaligned, DTS_INPUT_FRAGMENT_MAX_SIZE,
+                  666671, false,
+                  DTS_INPUT_FRAGMENT_FIRST | DTS_INPUT_FRAGMENT_LAST) ==
+                  BC_STS_IO_USER_ABORT &&
+                  transport.accepted.size() == 1 &&
+                  transport.accepted[0].size() == sizeof(BC_SEQ_HDR_FORMAT) &&
+                  transport.waits == 0 && f.context.inputFragmentActive,
+              "a PAUSE race after admission cancels promptly without entering the legacy pause wait loop");
+        f.context.State = BC_DEC_STATE_START;
+        check(DtsRecoveryFlushInputRing(&f.context) == BC_STS_SUCCESS &&
+                  !f.context.inputFragmentActive,
+              "flush retires the terminal latch after a raced pause");
+    }
+    {
+        TransportFixture f;
+        f.context.SingleThreadedAppMode = 1;
+        Bytes first;
+        append(first, sps, 0);
+        first.insert(first.end(), {0, 0, 0, 1, pps[0], pps[1]});
+        Bytes tail = {pps[2]};
+        append(tail, idr, 0);
+        transport.consume_after_push = true;
+        check(f.context.PESConvParams.m_iSpsPpsLen == parameter_sets().size(),
+              "truncated-PPS fixture begins with a complete older recovery cache");
+        check(DtsProcInputFragment(&f.context, first.data(), first.size(), 0,
+                                   false, DTS_INPUT_FRAGMENT_FIRST) ==
+                  BC_STS_SUCCESS &&
+                  !f.context.PESConvParams.m_pSpsPpsBuf &&
+                  f.context.PESConvParams.m_iSpsPpsLen == 0,
+              "complete SPS plus a PPS cut inside FIRST invalidates rather than publishing truncated recovery bytes");
+        check(DtsProcInputFragment(&f.context, tail.data(), tail.size(), 0,
+                                   false, DTS_INPUT_FRAGMENT_LAST) ==
+                  BC_STS_SUCCESS &&
+                  !f.context.PESConvParams.m_pSpsPpsBuf &&
+                  f.context.PESConvParams.m_iSpsPpsLen == 0,
+              "raw PPS continuation cannot retroactively establish recovery state");
+        first.insert(first.end(), tail.begin(), tail.end());
+        check(accepted_bytes() == first,
+              "truncated-PPS fail-closed handling preserves every transport byte");
+    }
+    {
+        TransportFixture f;
+        f.context.SingleThreadedAppMode = 1;
+        std::free(f.context.PESConvParams.m_pSpsPpsBuf);
+        f.context.PESConvParams.m_pSpsPpsBuf = nullptr;
+        f.context.PESConvParams.m_iSpsPpsLen = 0;
+        f.context.PESConvParams.m_bAddSpsPps = false;
+        f.context.recoveryInjectSpsPps = false;
+        Bytes first(DTS_INPUT_FRAGMENT_MAX_SIZE, 0x5a);
+        first[0] = first[1] = first[2] = 0;
+        first[3] = 1;
+        first[4] = 0x67;
+        Bytes tail(47, 0x33);
+        append(tail, pps, 0);
+        transport.consume_after_push = true;
+        check(DtsProcInputFragment(&f.context, first.data(), first.size(), 0,
+                                   false, DTS_INPUT_FRAGMENT_FIRST) ==
+                  BC_STS_SUCCESS &&
+                  !f.context.PESConvParams.m_pSpsPpsBuf &&
+                  f.context.PESConvParams.m_iSpsPpsLen == 0,
+              "SPS cut at FIRST boundary cannot establish a complete recovery cache");
+        check(DtsProcInputFragment(&f.context, tail.data(), tail.size(), 0,
+                                   false, DTS_INPUT_FRAGMENT_LAST) ==
+                  BC_STS_SUCCESS &&
+                  !f.context.PESConvParams.m_pSpsPpsBuf &&
+                  f.context.PESConvParams.m_iSpsPpsLen == 0,
+              "raw continuation PPS is not combined with an incomplete FIRST cache");
+        Bytes combined = first;
+        combined.insert(combined.end(), tail.begin(), tail.end());
+        check(accepted_bytes() == combined,
+              "cross-boundary configuration test still preserves transport bytes exactly");
+    }
+}
+
+static void FleaPesFragmentedH264Input()
+{
+    Bytes logical = parameter_sets();
+    append(logical, Bytes(DTS_INPUT_FRAGMENT_MAX_SIZE + 137U, 0x5a), 0);
+    logical[parameter_sets().size() + 4] = 0x65;
+    const uint32_t first_size = DTS_INPUT_FRAGMENT_MAX_SIZE;
+    const uint32_t last_size = logical.size() - first_size;
+    const uint64_t first_required = expected_pes_bytes(first_size, 5);
+    const uint64_t last_required = expected_pes_bytes(last_size, 0);
+    check(first_required == 524374U,
+          "512 KiB timestamped Flea fragment has nine exact PES packets");
+
+    {
+        TransportFixture f(TransportKind::FleaPes);
+        f.context.SingleThreadedAppMode = 1;
+        const unsigned metadata_before = f.free_metadata();
+        transport.consume_after_push = true;
+        check(DtsProcInputFragment(&f.context, logical.data(), first_size,
+                                   666671, false,
+                                   DTS_INPUT_FRAGMENT_FIRST) == BC_STS_SUCCESS,
+              "actual Flea PES accepts a timestamped 512 KiB FIRST");
+        const size_t first_packets = transport.accepted.size();
+        const PesCapture first = captured_pes();
+        check(first.valid && first_packets == 9 &&
+                  first.bytes == first_required &&
+                  first.payload == Bytes(logical.begin(),
+                                         logical.begin() + first_size) &&
+                  first.timestamps.size() == 1 &&
+                  first.timestamps[0] == 66,
+              "Flea FIRST PES reconstructs exact mid-NAL bytes and one scaled PTS");
+
+        const size_t accepted = transport.accepted.size();
+        BC_INPUT_FORMAT replacement = {};
+        replacement.mSubtype = BC_MSUBTYPE_H264;
+        replacement.width = 640;
+        replacement.height = 360;
+        replacement.Progressive = true;
+        replacement.startCodeSz = 4;
+        BC_STATUS foreign_align = BC_STS_SUCCESS;
+        std::thread foreign([&] {
+            foreign_align = DtsAlignSendData(&f.context, logical.data(), 8,
+                                             0, false);
+        });
+        foreign.join();
+        check(DtsProcInput(&f.context, logical.data(), 8, 666672, false) ==
+                  BC_STS_BUSY &&
+              DtsSendEOS(&f.context, 0) == BC_STS_BUSY &&
+              foreign_align == BC_STS_BUSY &&
+              DtsPauseDecoder(&f.context) == BC_STS_BUSY &&
+              DtsSetupHardware(&f.context, false) == BC_STS_BUSY &&
+              DtsSetVideoParams(&f.context, BC_VID_ALGO_H264, false, false,
+                                true, 0) == BC_STS_BUSY &&
+              DtsSetInputFormat(&f.context, &replacement) == BC_STS_BUSY &&
+              transport.accepted.size() == accepted &&
+              f.context.VidParams.StreamType == BC_STREAM_TYPE_PES &&
+              f.context.VidParams.MediaSubType == BC_MSUBTYPE_H264,
+              "Flea PES fragment excludes producers, pause and reconfiguration");
+
+        check(DtsProcInputFragment(&f.context, logical.data() + first_size,
+                                   last_size, 0, false,
+                                   DTS_INPUT_FRAGMENT_LAST) == BC_STS_SUCCESS,
+              "actual Flea PES accepts the raw mid-NAL continuation");
+        const PesCapture whole = captured_pes();
+        check(whole.valid && whole.payload == logical &&
+                  whole.timestamps.size() == 1 &&
+                  whole.timestamps[0] == 66 &&
+                  whole.bytes == first_required + last_required &&
+                  !f.context.inputFragmentActive,
+              "all Flea PES fragments reconstruct one byte-exact logical AU");
+        check(f.free_metadata() == metadata_before && f.no_pending_metadata(),
+              "Flea inline PTS consumes no SPES metadata owner");
+    }
+
+    {
+        static const uint32_t observed_size = 1450169U;
+        Bytes observed = parameter_sets();
+        append(observed,
+               Bytes(observed_size - observed.size() - 4U, 0x5a), 0);
+        observed[parameter_sets().size() + 4U] = 0x65;
+        check(observed.size() == observed_size,
+              "native-sized Flea fixture matches the observed 1,450,169-byte AU");
+        TransportFixture f(TransportKind::FleaPes);
+        f.context.SingleThreadedAppMode = 1;
+        transport.consume_after_push = true;
+        const uint32_t chunk = DTS_INPUT_FRAGMENT_MAX_SIZE;
+        check(DtsProcInputFragment(&f.context, observed.data(), chunk,
+                                   666671, false,
+                                   DTS_INPUT_FRAGMENT_FIRST) == BC_STS_SUCCESS,
+              "native-sized Flea AU accepts its bounded FIRST");
+        BC_STATUS middle_status = BC_STS_ERROR;
+        std::thread continuation([&] {
+            middle_status = DtsProcInputFragment(
+                &f.context, observed.data() + chunk, chunk, 0, false, 0);
+        });
+        continuation.join();
+        const uint32_t tail_size = observed.size() - 2U * chunk;
+        check(middle_status == BC_STS_SUCCESS &&
+                  DtsProcInputFragment(&f.context,
+                                       observed.data() + 2U * chunk,
+                                       tail_size, 0, false,
+                                       DTS_INPUT_FRAGMENT_LAST) ==
+                      BC_STS_SUCCESS,
+              "serialized continuation may change thread and completes the native-sized AU");
+        const PesCapture capture = captured_pes();
+        const uint64_t expected = expected_pes_bytes(chunk, 5) +
+                                  expected_pes_bytes(chunk, 0) +
+                                  expected_pes_bytes(tail_size, 0);
+        check(capture.valid && capture.payload == observed &&
+                  capture.timestamps.size() == 1 &&
+                  capture.timestamps[0] == 66 && capture.bytes == expected &&
+                  !f.context.inputFragmentActive,
+              "three Flea fragments reconstruct the observed large AU with one PTS");
+    }
+
+    for (unsigned alignment = 0; alignment < 4; ++alignment) {
+        TransportFixture f(TransportKind::FleaPes);
+        f.context.SingleThreadedAppMode = 1;
+        Bytes storage(132U + alignment, 0x3c);
+        uint8_t *input = storage.data() + alignment;
+        const uint32_t size = storage.size() - alignment;
+        input[0] = input[1] = input[2] = 0;
+        input[3] = 1;
+        input[4] = 0x65;
+        transport.consume_after_push = true;
+        check(DtsProcInputFragment(
+                  &f.context, input, size, 666671, false,
+                  DTS_INPUT_FRAGMENT_FIRST | DTS_INPUT_FRAGMENT_LAST) ==
+                  BC_STS_SUCCESS,
+              "Flea PES accepts every caller-buffer alignment");
+        const PesCapture capture = captured_pes();
+        check(capture.valid && capture.payload == Bytes(input, input + size) &&
+                  capture.timestamps.size() == 1,
+              "caller alignment does not change Flea PES payload or PTS");
+    }
+
+    {
+        TransportFixture f(TransportKind::FleaPes);
+        f.context.SingleThreadedAppMode = 1;
+        transport.consume_after_push = true;
+        check(DtsProcInputFragment(&f.context, logical.data(), first_size,
+                                   666671, false,
+                                   DTS_INPUT_FRAGMENT_FIRST) == BC_STS_SUCCESS,
+              "Flea capacity fixture admits FIRST before continuation stall");
+        transport.accepted.clear();
+        transport.attempts.clear();
+        transport.consume_after_push = false;
+        Bytes fill(CIRC_TX_BUF_SIZE - last_required + 1U, 0x39);
+        check(__real_txBufPush(&f.context.circBuf, fill.data(), fill.size()) ==
+                  BC_STS_SUCCESS,
+              "Flea continuation fixture leaves exactly one PES byte short");
+        const uint32_t ring_busy = f.context.circBuf.busySize;
+        check(DtsProcInputFragment(&f.context, logical.data() + first_size,
+                                   last_size, 0, false,
+                                   DTS_INPUT_FRAGMENT_LAST) == BC_STS_BUSY &&
+                  transport.attempts.empty() && transport.waits == 0 &&
+                  f.context.circBuf.busySize == ring_busy &&
+                  f.context.inputFragmentActive,
+              "one-byte-short Flea continuation returns zero-byte BUSY");
+        consume_ring(&f.context.circBuf);
+        transport.consume_after_push = true;
+        check(DtsProcInputFragment(&f.context, logical.data() + first_size,
+                                   last_size, 0, false,
+                                   DTS_INPUT_FRAGMENT_LAST) == BC_STS_SUCCESS,
+              "Flea continuation retries after exact PES capacity returns");
+        const PesCapture tail = captured_pes();
+        check(tail.valid && tail.payload ==
+                  Bytes(logical.begin() + first_size, logical.end()) &&
+                  tail.timestamps.empty() && tail.bytes == last_required,
+              "Flea continuation adds no timestamp and preserves its payload");
+    }
+
+    for (const uint32_t shortage : {1U, 0U}) {
+        TransportFixture f(TransportKind::FleaPes);
+        f.context.SingleThreadedAppMode = 1;
+        uint8_t private_data[16] = {};
+        uint8_t extension_data[2] = {0x31, 0x32};
+        f.context.PESConvParams.m_bPESPrivData = true;
+        f.context.PESConvParams.m_pPESPrivData = private_data;
+        f.context.PESConvParams.m_bPESExtField = true;
+        f.context.PESConvParams.m_nPESExtLen = sizeof(extension_data);
+        f.context.PESConvParams.m_pPESExtField = extension_data;
+        f.context.PESConvParams.m_bStuffing = true;
+        f.context.PESConvParams.m_nStuffingBytes = 3;
+        Bytes input(200000, 0x4b);
+        input[0] = input[1] = input[2] = 0;
+        input[3] = 1;
+        input[4] = 0x65;
+        const uint32_t optional = 5U + 1U + 16U + 3U + 3U;
+        const uint64_t required = expected_pes_bytes(input.size(), optional);
+        Bytes fill(CIRC_TX_BUF_SIZE - required + shortage, 0x72);
+        check(__real_txBufPush(&f.context.circBuf, fill.data(), fill.size()) ==
+                  BC_STS_SUCCESS,
+              "Flea optional-header fixture establishes exact ring boundary");
+        f.context.MDFreeHead = nullptr;
+        const uint32_t ring_busy = f.context.circBuf.busySize;
+        const BC_STATUS status = DtsProcInputFragment(
+            &f.context, input.data(), input.size(), 666671, false,
+            DTS_INPUT_FRAGMENT_FIRST | DTS_INPUT_FRAGMENT_LAST);
+        if (shortage) {
+            check(status == BC_STS_BUSY && transport.attempts.empty() &&
+                      transport.waits == 0 &&
+                      f.context.circBuf.busySize == ring_busy &&
+                      !f.context.inputFragmentActive,
+                  "all PES overhead is reserved before a one-byte-short FIRST");
+        } else {
+            const PesCapture capture = captured_pes();
+            check(status == BC_STS_SUCCESS && capture.valid &&
+                      capture.payload == input &&
+                      capture.timestamps.size() == 1 &&
+                      capture.timestamps[0] == 66 &&
+                      capture.bytes == required && transport.waits == 0 &&
+                      f.no_pending_metadata(),
+                  "exact capacity includes PTS/private/ext/stuffing without SPES metadata");
+        }
+    }
+
+    for (const uint32_t stuffing : {112U, 113U}) {
+        TransportFixture f(TransportKind::FleaPes);
+        f.context.SingleThreadedAppMode = 1;
+        uint8_t extension_data[127] = {};
+        f.context.PESConvParams.m_bPESExtField = true;
+        f.context.PESConvParams.m_nPESExtLen = sizeof(extension_data);
+        f.context.PESConvParams.m_pPESExtField = extension_data;
+        f.context.PESConvParams.m_bStuffing = true;
+        f.context.PESConvParams.m_nStuffingBytes = stuffing;
+        Bytes input = access_unit(0, false);
+        transport.consume_after_push = true;
+        const BC_STATUS status = DtsProcInputFragment(
+            &f.context, input.data(), input.size(), 666671, false,
+            DTS_INPUT_FRAGMENT_FIRST | DTS_INPUT_FRAGMENT_LAST);
+        if (stuffing == 112U) {
+            const PesCapture capture = captured_pes();
+            check(status == BC_STS_SUCCESS && capture.valid &&
+                      transport.accepted.size() == 1 &&
+                      transport.accepted[0][8] == 246U &&
+                      capture.payload == input &&
+                      capture.timestamps.size() == 1,
+                  "largest representable PES optional header is admitted exactly");
+        } else {
+            check(status == BC_STS_INV_ARG && transport.attempts.empty() &&
+                      transport.waits == 0 && !f.context.inputFragmentActive,
+                  "PES optional header that would wrap its byte cursor is rejected before input");
+        }
+    }
+
+    for (const uint32_t shortage : {1U, 0U}) {
+        TransportFixture f(TransportKind::FleaPes);
+        f.context.SingleThreadedAppMode = 1;
+        check(DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS &&
+                  f.context.recoveryInjectSpsPps,
+              "Flea recovery fixture arms cached Annex-B configuration");
+        Bytes idr_only;
+        append(idr_only, idr, 0);
+        const uint64_t required =
+            expected_pes_bytes(parameter_sets().size(), 0) +
+            expected_pes_bytes(idr_only.size(), 5);
+        Bytes fill(CIRC_TX_BUF_SIZE - required + shortage, 0x19);
+        check(__real_txBufPush(&f.context.circBuf, fill.data(), fill.size()) ==
+                  BC_STS_SUCCESS,
+              "Flea recovery fixture establishes exact prefix plus AU capacity");
+        f.context.MDFreeHead = nullptr;
+        const uint32_t ring_busy = f.context.circBuf.busySize;
+        const BC_STATUS status = DtsProcInputFragment(
+            &f.context, idr_only.data(), idr_only.size(), 666671, false,
+            DTS_INPUT_FRAGMENT_FIRST | DTS_INPUT_FRAGMENT_LAST);
+        if (shortage) {
+            check(status == BC_STS_BUSY && transport.attempts.empty() &&
+                      f.context.circBuf.busySize == ring_busy &&
+                      f.context.recoveryInjectSpsPps &&
+                      !f.context.inputFragmentActive,
+                  "Flea recovery prefix and timestamped AU are atomically preflighted");
+        } else {
+            Bytes expected = parameter_sets();
+            expected.insert(expected.end(), idr_only.begin(), idr_only.end());
+            const PesCapture capture = captured_pes();
+            check(status == BC_STS_SUCCESS && capture.valid &&
+                      capture.payload == expected &&
+                      capture.timestamps.size() == 1 &&
+                      capture.timestamps[0] == 66 &&
+                      capture.bytes == required && f.no_pending_metadata(),
+                  "Flea exact boundary carries recovery prefix and one AU PTS");
+        }
+    }
+
+    {
+        TransportFixture f(TransportKind::FleaPes);
+        f.context.SingleThreadedAppMode = 1;
+        transport.consume_after_push = true;
+        check(DtsProcInputFragment(&f.context, logical.data(), first_size,
+                                   0, false,
+                                   DTS_INPUT_FRAGMENT_FIRST) == BC_STS_SUCCESS &&
+                  f.context.inputFragmentActive,
+              "Flea lifecycle fixture opens a fragmented PES AU");
+        check(DtsRecoveryFlushInputRing(&f.context) == BC_STS_SUCCESS &&
+                  !f.context.inputFragmentActive &&
+                  DtsProcInputFragment(&f.context,
+                                       logical.data() + first_size,
+                                       last_size, 0, false,
+                                       DTS_INPUT_FRAGMENT_LAST) ==
+                      BC_STS_INV_ARG,
+              "recovery teardown aborts Flea PES and rejects its stale tail");
+    }
+}
+
 static void BoundedEsChunks()
 {
     for (uint32_t size : {ALIGN_BUF_SIZE-1U, uint32_t(ALIGN_BUF_SIZE), ALIGN_BUF_SIZE+1U,
@@ -1128,7 +1859,8 @@ static void SpesAdmissionFailures()
 
 static void TransportAdmission()
 {
-    BoundedEsChunks(); EsRingPressureAndCancellation(); SpesAdmissionFailures();
+    FragmentedH264Input(); FleaPesFragmentedH264Input(); BoundedEsChunks();
+    EsRingPressureAndCancellation(); SpesAdmissionFailures();
 }
 
 int main(int argc, char **argv)

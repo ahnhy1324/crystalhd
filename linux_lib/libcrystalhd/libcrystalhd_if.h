@@ -36,6 +36,16 @@
 
 #define FLEA_MAX_TRICK_MODE_SPEED	6
 
+/* DtsProcInputFragment() accepts at most one transport-sized fragment per
+ * call. FIRST runs the ordinary H.264 access-unit bookkeeping exactly once;
+ * subsequent fragments are byte-exact Annex-B continuations before ES or
+ * BCM70015 PES transport framing. Any SPS/PPS in a fragmented AU must be
+ * complete in FIRST; an incomplete pair is never promoted to the recovery
+ * cache. */
+#define DTS_INPUT_FRAGMENT_MAX_SIZE (512U * 1024U)
+#define DTS_INPUT_FRAGMENT_FIRST     0x00000001U
+#define DTS_INPUT_FRAGMENT_LAST      0x00000002U
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -1027,6 +1037,63 @@ DtsProcInput(
     uint32_t ulSizeInBytes,
     uint64_t timeStamp,
     BOOL     encrypted
+    );
+
+/*****************************************************************************
+
+Function name:
+
+    DtsProcInputFragment
+
+Description:
+
+    Sends one bounded fragment of a single Annex-B H.264 access unit through
+    the configured ES transport (including Link) or BCM70015 PES transport.
+    The first fragment must carry
+    DTS_INPUT_FRAGMENT_FIRST and the last must carry DTS_INPUT_FRAGMENT_LAST.
+    FIRST performs the same timestamp, EOS and recovery-header bookkeeping as
+    one DtsProcInput call; continuation bytes are sent without start-code
+    parsing or another timestamp.  PES packet boundaries may follow fragment
+    boundaries, but their reconstructed Annex-B payload is byte-exact.  A call
+    returning BC_STS_BUSY accepts no bytes and may be retried. Continuations
+    may be submitted by a different thread, but fragment calls and every other
+    input producer must remain serialized. Stop,
+    destructive flush, recovery or close aborts an unfinished fragmented
+    access unit.
+
+    If the access unit carries SPS/PPS, their complete Annex-B NAL units must
+    be contained in FIRST. A partial configuration at that boundary is not
+    combined with continuation bytes and cannot establish recovery state.
+
+    This additive interface is for callers that must release their own output
+    lock between transport-sized submissions.  Existing DtsProcInput behavior
+    is unchanged.  Other codecs and AVC1 length-prefixed input are not accepted
+    by this interface.
+
+Parameters:
+
+    hDevice       Handle obtained from DtsDeviceOpen.
+    pUserData     Pointer to this fragment's bytes.
+    sizeInBytes   1..DTS_INPUT_FRAGMENT_MAX_SIZE bytes.
+    Timestamp     Timestamp for FIRST; zero for every continuation.
+    Encrypted     Encryption state, identical for every fragment.
+    Flags         DTS_INPUT_FRAGMENT_FIRST and/or DTS_INPUT_FRAGMENT_LAST.
+
+Return:
+
+    BC_STS_SUCCESS when the complete fragment was accepted, BC_STS_BUSY when
+    no bytes were accepted because transport capacity is currently
+    insufficient, or another BC_STATUS error.
+
+*****************************************************************************/
+DRVIFLIB_API BC_STATUS
+DtsProcInputFragment(
+    HANDLE   hDevice,
+    uint8_t  *pUserData,
+    uint32_t ulSizeInBytes,
+    uint64_t timeStamp,
+    BOOL     encrypted,
+    uint32_t flags
     );
 
 /*****************************************************************************

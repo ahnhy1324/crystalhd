@@ -408,6 +408,41 @@ static void DtsReplaceSpsPpsCache(DTS_LIB_CONTEXT *Ctx, uint8_t *headers,
 	free(oldHeaders);
 }
 
+/* A non-final transport fragment is not an Annex-B NAL boundary. Recovery
+ * state may use parameter sets before the terminal NAL only when that NAL is
+ * known to be a different type. A terminal SPS/PPS, a headerless prefix, or a
+ * suffix that could become a cross-fragment start code is deliberately
+ * fail-closed: the old cache is invalidated instead of publishing bytes whose
+ * true NAL extent is not yet known. */
+static bool DtsFragmentConfigBoundarySafe(const uint8_t *data, uint32_t size)
+{
+	uint32_t position = 0;
+	if (!DtsInitialSequenceStartCode(data, size, &position))
+		return false;
+
+	for (;;) {
+		const unsigned prefix = DtsSequenceStartCode(data + position,
+			size - position);
+		if (!prefix || size - position <= prefix)
+			return false;
+		const uint32_t begin = position + prefix;
+		const unsigned type = data[begin] & 0x1f;
+		position = begin + 1;
+		while (position < size &&
+		       !DtsSequenceStartCode(data + position, size - position))
+			++position;
+		if (position != size)
+			continue;
+
+		if (type == NALU_TYPE_SPS || type == NALU_TYPE_PPS)
+			return false;
+		/* One trailing zero can join 00 01 in the continuation to form a
+		 * three-byte prefix. Do not retain older configuration across that
+		 * ambiguous boundary. */
+		return data[size - 1] != 0;
+	}
+}
+
 static bool DtsKeepOrInvalidatePartialSpsPps(DTS_LIB_CONTEXT *Ctx,
 	const uint8_t *headers, uint32_t size)
 {
@@ -462,6 +497,20 @@ BC_STATUS DtsCacheSpsPps(HANDLE hDevice, const uint8_t *pBuffer, uint32_t ulSize
 
 	DtsReplaceSpsPpsCache(Ctx, headers, size);
 	return BC_STS_SUCCESS;
+}
+
+BC_STATUS DtsCacheSpsPpsFragmentFirst(HANDLE hDevice,
+	const uint8_t *pBuffer, uint32_t ulSize)
+{
+	DTS_LIB_CONTEXT *Ctx = NULL;
+	DTS_GET_CTX(hDevice,Ctx);
+	if (Ctx->VidParams.MediaSubType != BC_MSUBTYPE_H264 || !pBuffer || !ulSize)
+		return BC_STS_SUCCESS;
+	if (!DtsFragmentConfigBoundarySafe(pBuffer, ulSize)) {
+		DtsReplaceSpsPpsCache(Ctx, NULL, 0);
+		return BC_STS_SUCCESS;
+	}
+	return DtsCacheSpsPps(hDevice, pBuffer, ulSize);
 }
 
 BC_STATUS DtsSetSpsPps(HANDLE hDevice)

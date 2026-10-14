@@ -362,6 +362,17 @@ typedef struct _DTS_LIB_CONTEXT{
 	uint32_t controlDepth;
 	uint32_t inputCalls;
 	pthread_t inputThread;
+	/* One logical Annex-B H.264 AU may span bounded public input calls.
+	 * Protected by thLock; lifecycle/recovery barriers abort the sequence. */
+	bool inputFragmentActive;
+	BOOL inputFragmentEncrypted;
+	bool inputFragmentLast;
+	bool inputFragmentRawPermit;
+	pthread_t inputFragmentThread;
+	/* FIRST reserves the timestamp owner before any recovery prefix or AU
+	 * byte can enter the ring.  This makes a retryable BUSY a zero-byte
+	 * result even when the metadata pool is exhausted. */
+	struct _DTS_INPUT_MDATA *inputFragmentMdata;
 	bool recoveryPending;
 	bool recoverySuspendSeen;
 	bool recoveryResumeSeen;
@@ -467,6 +478,8 @@ BC_STATUS DtsRemoveMdata(DTS_LIB_CONTEXT *Ctx, DTS_INPUT_MDATA	*Mdata, BOOL sync
 BC_STATUS DtsFetchMdata(DTS_LIB_CONTEXT *Ctx, uint16_t snum, BC_DTS_PROC_OUT *pout);
 BC_STATUS DtsFetchTimeStampMdata(DTS_LIB_CONTEXT *Ctx, uint16_t snum, uint64_t *TimeStamp);
 BC_STATUS DtsPrepareMdataASFHdr(DTS_LIB_CONTEXT *Ctx, DTS_INPUT_MDATA *mData, uint8_t* buf);
+BC_STATUS DtsFillMdata(DTS_LIB_CONTEXT *Ctx, DTS_INPUT_MDATA *mData,
+	uint64_t timeStamp, uint8_t **pDataBuf, uint32_t *pSize);
 BC_STATUS DtsPrepareMdata(DTS_LIB_CONTEXT *Ctx, uint64_t timeStamp, DTS_INPUT_MDATA **mData, uint8_t** pDataBuf, uint32_t *pSize);
 BC_STATUS DtsNotifyOperatingMode(HANDLE hDevice, uint32_t Mode);
 BC_STATUS DtsReleaseUserHandle(DTS_LIB_CONTEXT *Ctx);

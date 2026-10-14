@@ -1,9 +1,45 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Real VA submission and replay ownership, private CPU surfaces and deterministic
 // Dts calls only. Unexpected device/graphics/ioctl entry points abort.
+#define CRYSTALHD_VAAPI_TEST_FRAGMENT_INPUT 1
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
+#include <cstdlib>
+#include <new>
 #include <stdexcept>
 #include <string>
+
+namespace allocation_fault {
+thread_local bool fail_next = false;
+bool Consume() {
+  const bool fail = fail_next;
+  fail_next = false;
+  return fail;
+}
+void *Allocate(size_t bytes) {
+  if (Consume()) throw std::bad_alloc();
+  if (void *result = std::malloc(bytes == 0 ? 1 : bytes)) return result;
+  throw std::bad_alloc();
+}
+}
+
+void *operator new(size_t bytes) { return allocation_fault::Allocate(bytes); }
+void *operator new[](size_t bytes) { return allocation_fault::Allocate(bytes); }
+void *operator new(size_t bytes, const std::nothrow_t &) noexcept {
+  try { return allocation_fault::Allocate(bytes); } catch (...) { return nullptr; }
+}
+void *operator new[](size_t bytes, const std::nothrow_t &) noexcept {
+  try { return allocation_fault::Allocate(bytes); } catch (...) { return nullptr; }
+}
+void operator delete(void *pointer) noexcept { std::free(pointer); }
+void operator delete[](void *pointer) noexcept { std::free(pointer); }
+void operator delete(void *pointer, size_t) noexcept { std::free(pointer); }
+void operator delete[](void *pointer, size_t) noexcept { std::free(pointer); }
+void operator delete(void *pointer, const std::nothrow_t &) noexcept {
+  std::free(pointer);
+}
+void operator delete[](void *pointer, const std::nothrow_t &) noexcept {
+  std::free(pointer);
+}
 
 namespace {
 unsigned checks = 0;
@@ -11,9 +47,20 @@ void Require(bool value, const char *message) {
   ++checks;
   if (!value) throw std::runtime_error(message);
 }
-struct InputRecord { uint64_t timestamp; std::vector<uint8_t> bytes; };
+struct InputRecord {
+  uint64_t timestamp;
+  std::vector<uint8_t> bytes;
+  uint32_t fragment_flags;
+};
 struct DecoderMock {
   bool capacity = true;
+  bool allow_reopen = false;
+  size_t stall_after_inputs = std::numeric_limits<size_t>::max();
+  unsigned int reopen_count = 0;
+  unsigned int close_count = 0;
+  unsigned int legacy_input_calls = 0;
+  unsigned int fragment_input_calls = 0;
+  bool fragment_active = false;
   std::vector<InputRecord> inputs;
 };
 DecoderMock *active = nullptr;
@@ -21,38 +68,118 @@ void CheckDevice(HANDLE device) {
   Require(active != nullptr && device == active, "only the private decoder handle is used");
 }
 struct MockScope {
-  explicit MockScope(DecoderMock *mock) { Require(active == nullptr, "no nested decoder fixture"); active = mock; }
-  ~MockScope() { active = nullptr; }
+  explicit MockScope(DecoderMock *mock) {
+    Require(active == nullptr, "no nested decoder fixture");
+    active = mock;
+    crystalhd_test_fragment_input = DtsProcInputFragment;
+  }
+  ~MockScope() {
+    crystalhd_test_fragment_input = nullptr;
+    active = nullptr;
+  }
 };
 }
 
-extern "C" BC_STATUS DtsDeviceOpen(HANDLE *, uint32_t) { abort(); }
+extern "C" BC_STATUS DtsDeviceOpen(HANDLE *device, uint32_t) {
+  Require(active != nullptr && active->allow_reopen && device != nullptr,
+          "only an explicitly armed decoder can reopen");
+  *device = active;
+  ++active->reopen_count;
+  return BC_STS_SUCCESS;
+}
 extern "C" BC_STATUS DtsDupOutputPollFd(HANDLE, int *fd) {
   if (fd) *fd = -1;
   return BC_STS_NOT_IMPL;
 }
-extern "C" BC_STATUS DtsCrystalHDVersion(HANDLE, PBC_INFO_CRYSTAL) { abort(); }
-extern "C" BC_STATUS DtsSetInputFormat(HANDLE, BC_INPUT_FORMAT *) { abort(); }
-extern "C" BC_STATUS DtsOpenDecoder(HANDLE, uint32_t) { abort(); }
-extern "C" BC_STATUS DtsSetColorSpace(HANDLE, BC_OUTPUT_FORMAT) { abort(); }
-extern "C" BC_STATUS DtsStartDecoder(HANDLE) { abort(); }
-extern "C" BC_STATUS DtsStartCapture(HANDLE) { abort(); }
-extern "C" BC_STATUS DtsStopDecoder(HANDLE device) { CheckDevice(device); return BC_STS_SUCCESS; }
+extern "C" BC_STATUS DtsCrystalHDVersion(HANDLE device, PBC_INFO_CRYSTAL version) {
+  CheckDevice(device);
+  Require(active->allow_reopen && version != nullptr,
+          "version query belongs to an armed reopen");
+  *version = {};
+  version->device = 1;
+  return BC_STS_SUCCESS;
+}
+extern "C" BC_STATUS DtsSetInputFormat(HANDLE device, BC_INPUT_FORMAT *format) {
+  CheckDevice(device);
+  Require(active->allow_reopen && format != nullptr &&
+              format->mSubtype == BC_MSUBTYPE_H264,
+          "reopen restores the H.264 input format");
+  return BC_STS_SUCCESS;
+}
+extern "C" BC_STATUS DtsOpenDecoder(HANDLE device, uint32_t stream_type) {
+  CheckDevice(device);
+  Require(active->allow_reopen && stream_type == BC_STREAM_TYPE_ES,
+          "reopen restores the ES decoder");
+  return BC_STS_SUCCESS;
+}
+extern "C" BC_STATUS DtsSetColorSpace(HANDLE device, BC_OUTPUT_FORMAT format) {
+  CheckDevice(device);
+  Require(active->allow_reopen && format == OUTPUT_MODE422_YUY2,
+          "reopen restores packed output");
+  return BC_STS_SUCCESS;
+}
+extern "C" BC_STATUS DtsStartDecoder(HANDLE device) {
+  CheckDevice(device);
+  Require(active->allow_reopen, "only an armed decoder restarts");
+  return BC_STS_SUCCESS;
+}
+extern "C" BC_STATUS DtsStartCapture(HANDLE device) {
+  CheckDevice(device);
+  Require(active->allow_reopen, "only an armed decoder restarts capture");
+  return BC_STS_SUCCESS;
+}
+extern "C" BC_STATUS DtsStopDecoder(HANDLE device) {
+  CheckDevice(device);
+  active->fragment_active = false;
+  return BC_STS_SUCCESS;
+}
 extern "C" BC_STATUS DtsCloseDecoder(HANDLE device) { CheckDevice(device); return BC_STS_SUCCESS; }
-extern "C" BC_STATUS DtsDeviceClose(HANDLE device) { CheckDevice(device); return BC_STS_SUCCESS; }
+extern "C" BC_STATUS DtsDeviceClose(HANDLE device) {
+  CheckDevice(device);
+  ++active->close_count;
+  return BC_STS_SUCCESS;
+}
 extern "C" BC_STATUS DtsGetDriverStatus(HANDLE device, BC_DTS_STATUS *status) {
   CheckDevice(device); *status = {}; return BC_STS_SUCCESS;
 }
 extern "C" BC_STATUS DtsIsEndOfStream(HANDLE, uint8_t *) { abort(); }
 extern "C" uint32_t DtsTxFreeSize(HANDLE device) {
-  CheckDevice(device); return active->capacity ? 1024 * 1024 : 0;
+  CheckDevice(device);
+  return active->capacity && active->inputs.size() < active->stall_after_inputs
+             ? 1024 * 1024 : 0;
 }
 extern "C" BC_STATUS DtsProcInput(HANDLE device, uint8_t *bytes, uint32_t size,
                                     uint64_t timestamp, BOOL encrypted) {
   CheckDevice(device);
-  Require(bytes != nullptr && size != 0 && timestamp != 0 && !encrypted,
-          "original complete timestamped access unit reaches the library");
-  active->inputs.push_back({timestamp, std::vector<uint8_t>(bytes, bytes + size)});
+  Require(bytes != nullptr && size != 0 && !encrypted &&
+              !active->fragment_active,
+          "ordinary complete input cannot interleave a fragmented AU");
+  ++active->legacy_input_calls;
+  active->inputs.push_back({timestamp,
+                            std::vector<uint8_t>(bytes, bytes + size),
+                            DTS_INPUT_FRAGMENT_FIRST |
+                                DTS_INPUT_FRAGMENT_LAST});
+  return BC_STS_SUCCESS;
+}
+extern "C" BC_STATUS DtsProcInputFragment(
+    HANDLE device, uint8_t *bytes, uint32_t size, uint64_t timestamp,
+    BOOL encrypted, uint32_t flags) {
+  CheckDevice(device);
+  if (!active->capacity || active->inputs.size() >= active->stall_after_inputs)
+    return BC_STS_BUSY;
+  const bool first = (flags & DTS_INPUT_FRAGMENT_FIRST) != 0;
+  const bool last = (flags & DTS_INPUT_FRAGMENT_LAST) != 0;
+  Require(bytes != nullptr && size != 0 && !encrypted &&
+              size <= crystalhd_access_unit_limits::kDtsInputChunkBytes &&
+              !(flags & ~(DTS_INPUT_FRAGMENT_FIRST |
+                           DTS_INPUT_FRAGMENT_LAST)) &&
+              (first ? !active->fragment_active
+                     : active->fragment_active && timestamp == 0),
+          "bounded H.264 fragments preserve FIRST/continuation ordering");
+  ++active->fragment_input_calls;
+  active->fragment_active = !last;
+  active->inputs.push_back(
+      {timestamp, std::vector<uint8_t>(bytes, bytes + size), flags});
   return BC_STS_SUCCESS;
 }
 extern "C" BC_STATUS DtsProcOutputNoCopy(HANDLE, uint32_t, BC_DTS_PROC_OUT *) { abort(); }
@@ -212,6 +339,252 @@ struct Fixture {
   }
   void End() { Require(EndPicture(&context, 1) == VA_STATUS_SUCCESS, "real EndPicture/SubmitPicture"); }
 };
+
+VAStatus SubmitH264(Fixture *fixture, const std::vector<uint8_t> &bytes) {
+  fixture->Begin();
+  fixture->Render(fixture->Buffer(VAPictureParameterBufferType,
+                                  &fixture->picture,
+                                  sizeof(fixture->picture)));
+  fixture->Render(fixture->Buffer(VASliceParameterBufferType,
+                                  &fixture->slice,
+                                  sizeof(fixture->slice)));
+  fixture->Render(fixture->Buffer(VASliceDataBufferType, bytes.data(),
+                                  bytes.size()));
+  return EndPicture(&fixture->context, 1);
+}
+
+std::vector<InputRecord> LogicalInputs(
+    const std::vector<InputRecord> &fragments) {
+  std::vector<InputRecord> inputs;
+  for (const InputRecord &fragment : fragments) {
+    if ((fragment.fragment_flags & DTS_INPUT_FRAGMENT_FIRST) != 0) {
+      Require(!inputs.empty() ?
+                  (inputs.back().fragment_flags & DTS_INPUT_FRAGMENT_LAST) != 0
+                              : true,
+              "each logical input starts after the prior LAST");
+      inputs.push_back(fragment);
+    } else {
+      Require(!inputs.empty() &&
+                  (inputs.back().fragment_flags & DTS_INPUT_FRAGMENT_LAST) == 0,
+              "an ES continuation follows an open FIRST fragment");
+      inputs.back().bytes.insert(inputs.back().bytes.end(),
+                                 fragment.bytes.begin(),
+                                 fragment.bytes.end());
+      inputs.back().fragment_flags |= fragment.fragment_flags;
+    }
+  }
+  if (!inputs.empty())
+    Require((inputs.back().fragment_flags & DTS_INPUT_FRAGMENT_LAST) != 0,
+            "the final logical input ends with LAST");
+  return inputs;
+}
+
+void LargeH264AccessUnitBoundaryAndRecovery() {
+  constexpr size_t issue_bytes = 564322;
+  std::vector<uint8_t> issue_au(issue_bytes, 0x55);
+  issue_au[0] = 0x65;
+  size_t overhead = 0;
+  {
+    Fixture legacy_library;
+    CrystalHDFragmentInput saved = crystalhd_test_fragment_input;
+    crystalhd_test_fragment_input = nullptr;
+    const VAStatus status = SubmitH264(&legacy_library, issue_au);
+    crystalhd_test_fragment_input = saved;
+    Require(status == VA_STATUS_ERROR_DECODING_ERROR &&
+                legacy_library.mock.inputs.empty() &&
+                legacy_library.mock.legacy_input_calls == 0 &&
+                legacy_library.mock.fragment_input_calls == 0 &&
+                legacy_library.decode->partial_input_timestamp == 0 &&
+                legacy_library.decode->partial_input_offset == 0,
+            "an older library without the additive symbol rejects a large AU before consuming a byte");
+  }
+  {
+    Fixture normal;
+    Require(SubmitH264(&normal, std::vector<uint8_t>{0x65, 0x88, 0x84}) ==
+                    VA_STATUS_SUCCESS &&
+                normal.mock.legacy_input_calls == 1 &&
+                normal.mock.fragment_input_calls == 0 &&
+                normal.mock.inputs.size() == 1,
+            "ordinary sub-512KiB H.264 retains the legacy DtsProcInput path");
+  }
+  {
+    Fixture stalled;
+    stalled.mock.stall_after_inputs = 1;
+    Require(SubmitH264(&stalled, issue_au) == VA_STATUS_SUCCESS &&
+                stalled.mock.inputs.size() == 1 &&
+                stalled.mock.inputs[0].bytes.size() ==
+                    crystalhd_access_unit_limits::kDtsInputChunkBytes &&
+                stalled.decode->partial_input_timestamp == kTimestampStep &&
+                stalled.decode->partial_input_offset ==
+                    crystalhd_access_unit_limits::kDtsInputChunkBytes &&
+                stalled.decode->replay.outstanding() == 0 &&
+                stalled.decode->replay.NextInput() != nullptr,
+            "first fragment returns under TX stall without completing the AU");
+    stalled.mock.stall_after_inputs = std::numeric_limits<size_t>::max();
+    Require(PumpDecodeInput(&stalled.driver, stalled.decode.get()) ==
+                    VA_STATUS_SUCCESS &&
+                stalled.mock.inputs.size() == 2 &&
+                stalled.decode->partial_input_timestamp == 0 &&
+                stalled.decode->partial_input_offset == 0 &&
+                stalled.decode->replay.outstanding() == 1 &&
+                LogicalInputs(stalled.mock.inputs).size() == 1,
+            "bounded continuation resumes and commits the logical large AU");
+  }
+  {
+    Fixture measured;
+    Require(SubmitH264(&measured, issue_au) == VA_STATUS_SUCCESS,
+            "the reported 564322-byte H.264 IDR passes actual VA submission");
+    const auto original = LogicalInputs(measured.mock.inputs);
+    Require(measured.mock.inputs.size() == 2 && original.size() == 1 &&
+                original[0].bytes.size() > 512U * 1024U,
+            "the reported AU is carried by two bounded ES fragments");
+    overhead = original[0].bytes.size() - issue_au.size();
+    Require(overhead != 0 && overhead < 4096,
+            "bounded reconstructed parameter-set and start-code overhead");
+
+    // Exercise the real retained-input EOS/reopen path with the large original
+    // bytes; a following picture must not inherit the former 512 KiB failure.
+    Require(measured.decode->replay.Seal(), "seal the large-AU hardware batch");
+    std::vector<uint8_t> predicted = {0x41, 0x88, 0x84};
+    Require(SubmitH264(&measured, predicted) == VA_STATUS_SUCCESS &&
+                measured.mock.inputs.size() == 2,
+            "queue continuation while the large-AU batch is sealed");
+    measured.mock.allow_reopen = true;
+    Require(measured.decode->replay.Observe(kTimestampStep) ==
+                    CrystalHDDecodeReplay::Output::New &&
+                measured.decode->replay.EndOfSequence() &&
+                PumpDecodeInput(&measured.driver, measured.decode.get()) ==
+                    VA_STATUS_SUCCESS,
+            "EOS causes the production close/open/replay path to complete");
+    const auto replayed = LogicalInputs(measured.mock.inputs);
+    Require(measured.mock.close_count == 1 && measured.mock.reopen_count == 1 &&
+                measured.mock.inputs.size() == 5 && replayed.size() == 3 &&
+                replayed[1].bytes == replayed[0].bytes,
+            "reopen replays the exact oversized IDR then submits new input");
+  }
+
+  std::vector<uint8_t> exact(
+      crystalhd_access_unit_limits::kH264Bytes - overhead, 0x55);
+  exact[0] = 0x65;
+  {
+    Fixture boundary;
+    Require(SubmitH264(&boundary, exact) == VA_STATUS_SUCCESS &&
+                boundary.mock.inputs.size() == 16 &&
+                LogicalInputs(boundary.mock.inputs).size() == 1 &&
+                LogicalInputs(boundary.mock.inputs)[0].bytes.size() ==
+                    crystalhd_access_unit_limits::kH264Bytes &&
+                boundary.decode->replay.cached_bytes() ==
+                    crystalhd_access_unit_limits::kH264Bytes,
+            "exact assembled 8 MiB H.264 boundary is accepted and accounted");
+  }
+
+  exact.push_back(0x55);
+  {
+    Fixture overflow;
+    Require(SubmitH264(&overflow, exact) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                overflow.mock.inputs.empty() &&
+                !overflow.decode->replay.failed() &&
+                overflow.decode->next_timestamp == kTimestampStep,
+            "one byte beyond the assembled boundary is rejected before replay commit");
+    Require(SubmitH264(&overflow, issue_au) == VA_STATUS_SUCCESS &&
+                overflow.mock.inputs.size() == 2 &&
+                LogicalInputs(overflow.mock.inputs).size() == 1 &&
+                !overflow.decode->replay.failed(),
+            "a rejected oversized picture does not poison the next transaction");
+  }
+}
+
+void AllocationFailureIsTransactional() {
+  Fixture buffers;
+  const VABufferID expected = buffers.driver.next_buffer;
+  VABufferID returned = VA_INVALID_ID;
+  const uint8_t byte = 0x65;
+  Require(CreateBuffer(&buffers.context, 1, VASliceDataBufferType, UINT_MAX,
+                       UINT_MAX, nullptr, &returned) ==
+                  VA_STATUS_ERROR_ALLOCATION_FAILED &&
+              returned == VA_INVALID_ID &&
+              buffers.driver.next_buffer == expected &&
+              buffers.driver.buffers.count(expected) == 0,
+          "unrepresentable public buffer extent fails before allocation");
+  allocation_fault::fail_next = true;
+  Require(CreateBuffer(&buffers.context, 1, VASliceDataBufferType, 1, 1,
+                       const_cast<uint8_t *>(&byte), &returned) ==
+                  VA_STATUS_ERROR_ALLOCATION_FAILED &&
+              !allocation_fault::fail_next && returned == VA_INVALID_ID &&
+              buffers.driver.next_buffer == expected &&
+              buffers.driver.buffers.count(expected) == 0,
+          "public buffer allocation failure preserves ID and ownership state");
+
+  buffers.Begin();
+  VABufferID slice_data =
+      buffers.Buffer(VASliceDataBufferType, &byte, sizeof(byte));
+  allocation_fault::fail_next = true;
+  Require(RenderPicture(&buffers.context, 1, &slice_data, 1) ==
+                  VA_STATUS_ERROR_ALLOCATION_FAILED &&
+              !allocation_fault::fail_next &&
+              buffers.decode->h264_picture_invalid &&
+              EndPicture(&buffers.context, 1) ==
+                  VA_STATUS_ERROR_INVALID_PARAMETER,
+          "RenderPicture allocation failure poisons only its current picture");
+
+  buffers.Begin();
+  buffers.Parameters();
+  allocation_fault::fail_next = true;
+  Require(EndPicture(&buffers.context, 1) ==
+                  VA_STATUS_ERROR_ALLOCATION_FAILED &&
+              !allocation_fault::fail_next && buffers.mock.inputs.empty() &&
+              !buffers.decode->replay.failed() &&
+              buffers.decode->next_timestamp == kTimestampStep,
+          "access-unit assembly allocation failure commits no replay state");
+  Require(SubmitH264(&buffers, std::vector<uint8_t>{0x65, 0x88, 0x84}) ==
+                  VA_STATUS_SUCCESS &&
+              buffers.mock.inputs.size() == 1,
+          "next picture recovers after an assembly allocation failure");
+
+  // A deque node allocation is implementation-managed. Arm the allocator only
+  // around Append and repeat until one node boundary is reached.
+  CrystalHDDecodeReplay replay;
+  size_t accepted = 0;
+  for (uint64_t token = 1; token <= 4096 && !replay.failed(); ++token) {
+    std::vector<uint8_t> unit(1, 0x65);
+    allocation_fault::fail_next = true;
+    const bool appended = replay.Append(token, token == 1,
+                                        std::move(unit));
+    const bool consumed = !allocation_fault::fail_next;
+    allocation_fault::fail_next = false;
+    if (appended) {
+      ++accepted;
+      continue;
+    }
+    Require(consumed && replay.failed() &&
+                std::string(replay.failure()) ==
+                    "compressed IDR replay cache allocation failed" &&
+                replay.cached_pictures() == accepted &&
+                replay.cached_bytes() == accepted,
+            "replay allocation failure leaves byte and picture counters exact");
+  }
+  Require(replay.failed() && accepted != 0,
+          "fault injection reaches a bounded replay-container allocation");
+
+  CrystalHDDecodeReplay tracking;
+  Require(tracking.Append(1, true, {0x65}),
+          "prepare replay tracking allocation failure");
+  allocation_fault::fail_next = true;
+  const bool sent = tracking.InputSent();
+  const bool tracking_failure_consumed = !allocation_fault::fail_next;
+  allocation_fault::fail_next = false;
+  Require(!sent && tracking_failure_consumed && tracking.failed() &&
+              tracking.outstanding() == 0 &&
+              tracking.cached_pictures() == 1 &&
+              tracking.cached_bytes() == 1 &&
+              std::string(tracking.failure()) ==
+                  "compressed IDR replay tracking allocation failed",
+          "tracking allocation failure advances no cursor or outstanding state");
+
+  CrystalHDDecodeReplay reopened;
+  Require(reopened.Append(1, true, {0x65}) && !reopened.failed(),
+          "a fresh replay context opens normally after allocation failure");
+}
 
 void SetGeometry(Fixture *fixture, unsigned coded_width,
                  unsigned coded_height, unsigned surface_width,
@@ -674,6 +1047,8 @@ void DirectBackingReassignedBetweenVppBeginAndEnd() {
 int main() {
   unsigned failures = 0;
   const std::pair<const char *, void (*)()> groups[] = {
+    {"large H.264 AU boundary and recovery", LargeH264AccessUnitBoundaryAndRecovery},
+    {"allocation failure is transactional", AllocationFailureIsTransactional},
     {"visible crop surface geometry", VisibleCropSurfaceGeometry},
     {"buffer ordering and owned snapshot", BufferOrderAndSnapshot},
     {"missing matrix resets flat", MissingResetsFlat},

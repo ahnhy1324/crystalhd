@@ -61,6 +61,7 @@ extern "C" {
 #include <bc_dts_defs.h>
 #include <bc_dts_types.h>
 #include <libcrystalhd_if.h>
+#include "crystalhd-access-unit-limits.h"
 #include "crystalhd-decode-replay.h"
 #include "crystalhd-mpeg4.h"
 #include "crystalhd-mpeg2.h"
@@ -74,6 +75,17 @@ extern "C" {
 // Keep the plugin loadable with an older libcrystalhd.so.3. The optional
 // output-event API is negotiated only when the symbol is present.
 extern "C" BC_STATUS DtsDupOutputPollFd(HANDLE, int *) __attribute__((weak));
+// Large H.264 AUs use this additive libcrystalhd contract when available;
+// ordinary bounded AUs retain the legacy DtsProcInput path.
+extern "C" BC_STATUS DtsProcInputFragment(
+    HANDLE, uint8_t *, uint32_t, uint64_t, BOOL, uint32_t)
+    __attribute__((weak));
+#endif
+
+using CrystalHDFragmentInput = BC_STATUS (*)(
+    HANDLE, uint8_t *, uint32_t, uint64_t, BOOL, uint32_t);
+#if defined(CRYSTALHD_VAAPI_TEST_FRAGMENT_INPUT)
+static CrystalHDFragmentInput crystalhd_test_fragment_input = nullptr;
 #endif
 
 namespace {
@@ -1518,6 +1530,8 @@ struct DecodeContext {
   bool have_vpp_parameters = false;
   VAPictureParameterBufferH264 picture = {};
   bool have_picture = false;
+  bool h264_picture_invalid = false;
+  size_t h264_framed_slice_bytes = 0;
   VAIQMatrixBufferH264 iq_matrix = FlatH264IqMatrix();
   bool iq_matrix_valid = true;
   std::vector<VASliceParameterBufferH264> slices;
@@ -1579,6 +1593,8 @@ struct DecodeContext {
   bool low_latency_h264 = false;
   bool input_backpressured = false;
   bool input_budget_exhausted = false;
+  uint64_t partial_input_timestamp = 0;
+  size_t partial_input_offset = 0;
   bool experimental_ready_remap = false;
   bool experimental_ready_latest = false;
   uint64_t experimental_ready_delay_ns = 0;
@@ -1699,6 +1715,8 @@ struct DecodeContext {
     output_poll.reset();
     input_backpressured = false;
     input_budget_exhausted = false;
+    partial_input_timestamp = 0;
+    partial_input_offset = 0;
     sync_inactivity_ns = 0;
     h264_first_field = H264FirstField();
     return result;
@@ -3136,6 +3154,8 @@ static void MarkPendingPicturesFailed(Driver *driver, DecodeContext *decode) {
 static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
                             const char *reason) {
   decode->h264_first_field = H264FirstField();
+  decode->partial_input_timestamp = 0;
+  decode->partial_input_offset = 0;
   if (decode->IsMpeg4()) {
     decode->mpeg4_replay.Fail(reason);
     for (auto &epoch : decode->mpeg4_draining_epochs)
@@ -3678,9 +3698,11 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
         return FailDecode(driver, decode, "hardware reopen for replay failed");
     }
 
-    // Do not wait while holding the VA driver mutex. The library TX ring is
-    // 1 MiB; each accepted AU is limited to 512 KiB. Reserve conservative PES
-    // header/marker overhead before calling its otherwise-blocking input API.
+    // Large H.264 AUs use libcrystalhd's explicit logical-fragment contract.
+    // FIRST alone performs AU parsing/timestamp/recovery bookkeeping; raw
+    // continuations preserve a NAL split byte-for-byte. Each call is no larger
+    // than one transport transfer, so this mutex is released between calls and
+    // output can drain. Replay advances only after LAST was accepted.
     for (unsigned int attempt = 0; attempt < max_attempts; ++attempt) {
       const auto *unit = replay.NextInput();
       if (unit == nullptr)
@@ -3693,21 +3715,80 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
           !consume_prefeed)
         return FailDecode(driver, decode,
                           "speculative H.264 timestamp lost alignment");
-      const size_t reserve = unit->bytes.size() +
-                             (unit->bytes.size() / 60000 + 1) * 32 + 1024;
-      if (DtsTxFreeSize(decode->device) < reserve) {
+      const bool bounded_h264 = IsH264Profile(decode->profile);
+      size_t offset = 0;
+      if (bounded_h264 && decode->partial_input_timestamp != 0) {
+        if (decode->partial_input_timestamp != unit->timestamp ||
+            decode->partial_input_offset >= unit->bytes.size())
+          return FailDecode(driver, decode,
+                            "partial H.264 input lost replay alignment");
+        offset = decode->partial_input_offset;
+      } else if (decode->partial_input_timestamp != 0 ||
+                 decode->partial_input_offset != 0) {
+        return FailDecode(driver, decode,
+                          "partial input escaped its H.264 access unit");
+      }
+      const size_t remaining = unit->bytes.size() - offset;
+      const bool fragmented_h264 = bounded_h264 &&
+          (offset != 0 || unit->bytes.size() >
+                              crystalhd_access_unit_limits::kDtsInputChunkBytes);
+      CrystalHDFragmentInput fragment_input =
+#if defined(CRYSTALHD_VAAPI_TEST_FRAGMENT_INPUT)
+          crystalhd_test_fragment_input;
+#else
+          DtsProcInputFragment;
+#endif
+      if (fragmented_h264 && fragment_input == nullptr)
+        return FailDecode(driver, decode,
+                          "large H.264 input requires fragmented libcrystalhd input");
+      const size_t transfer = fragmented_h264
+          ? std::min(remaining,
+                     crystalhd_access_unit_limits::kDtsInputChunkBytes)
+          : remaining;
+      const size_t reserve =
+          transfer + (transfer / 60000 + 1) * 32 + 1024;
+      /* The additive fragment API performs its own exact, zero-byte
+       * reservation. Keep the historical conservative precheck only for the
+       * otherwise-blocking legacy one-shot path. */
+      if (!fragmented_h264 && DtsTxFreeSize(decode->device) < reserve) {
         decode->input_backpressured = true;
         break;
       }
-      const BC_STATUS status = DtsProcInput(
-          decode->device, const_cast<uint8_t *>(unit->bytes.data()),
-          static_cast<uint32_t>(unit->bytes.size()),
-          consume_prefeed ? 0 : unit->timestamp, FALSE);
+      BC_STATUS status;
+      if (fragmented_h264) {
+        uint32_t flags = offset == 0 ? DTS_INPUT_FRAGMENT_FIRST : 0;
+        if (offset + transfer == unit->bytes.size())
+          flags |= DTS_INPUT_FRAGMENT_LAST;
+        status = fragment_input(
+            decode->device,
+            const_cast<uint8_t *>(unit->bytes.data() + offset),
+            static_cast<uint32_t>(transfer),
+            (offset != 0 || consume_prefeed) ? 0 : unit->timestamp, FALSE,
+            flags);
+      } else {
+        status = DtsProcInput(
+            decode->device,
+            const_cast<uint8_t *>(unit->bytes.data() + offset),
+            static_cast<uint32_t>(transfer),
+            consume_prefeed ? 0 : unit->timestamp, FALSE);
+      }
       if (status == BC_STS_BUSY) {
         decode->input_backpressured = true;
         break;
       }
-      if (status != BC_STS_SUCCESS || !replay.InputSent())
+      if (status != BC_STS_SUCCESS)
+        return FailDecode(driver, decode, "compressed input submission failed");
+      decode->RecordTransportProgress();
+      if (offset + transfer != unit->bytes.size()) {
+        decode->partial_input_timestamp = unit->timestamp;
+        decode->partial_input_offset = offset + transfer;
+        if (attempt + 1 == max_attempts)
+          decode->input_budget_exhausted = true;
+        continue;
+      }
+      decode->partial_input_timestamp = 0;
+      decode->partial_input_offset = 0;
+      if (!replay.InputSent())
         return FailDecode(driver, decode, "compressed input submission failed");
       if (driver->trace.enabled())
         driver->trace.Emit(crystalhd_vaapi_trace::Event::InputSent,
@@ -3715,7 +3796,6 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                                                   input_timestamp));
       if (consume_prefeed)
         decode->prefed_timestamp = 0;
-      decode->RecordTransportProgress();
       if (attempt + 1 == max_attempts)
         decode->input_budget_exhausted = true;
 
@@ -3858,10 +3938,11 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                               VAProfile profile) {
   if (decode->IsMpeg4() && decode->mpeg4_replay.failed())
     return VA_STATUS_ERROR_DECODING_ERROR;
-  if (IsH264Profile(profile) && (!decode->have_picture || decode->slices.empty() ||
-      decode->slice_data.empty() || decode->target == VA_INVALID_SURFACE ||
-      !decode->iq_matrix_valid ||
-      !ValidateH264IqMatrix(decode->picture, profile, decode->iq_matrix)))
+  if (IsH264Profile(profile) &&
+      (decode->h264_picture_invalid || !decode->have_picture ||
+       decode->slices.empty() || decode->slice_data.empty() ||
+       decode->target == VA_INVALID_SURFACE || !decode->iq_matrix_valid ||
+       !ValidateH264IqMatrix(decode->picture, profile, decode->iq_matrix)))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   if (decode->experimental_ready_remap &&
       std::any_of(decode->slices.begin(), decode->slices.end(),
@@ -4086,28 +4167,47 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       return VA_STATUS_ERROR_INVALID_SURFACE;
     }
 
-    BeginAccessUnit(&bitstream);
-    idr = !decode->slice_data.front().empty() &&
-          (decode->slice_data.front().front() & 0x1f) == 5;
-    // An ordinary GOP can start with an IDR while earlier output is still
-    // pending. Let the bitstream's IDR semantics handle reference pictures;
-    // discarding pending output here loses real frames during normal playback.
-    if (!decode->sent_parameter_sets || idr) {
-      if (!BuildSps(decode->picture, profile, &bitstream))
-        return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
-    }
-    // VA-API exposes the active reference counts on each slice rather than the
-    // original PPS defaults. Redefine PPS id 0 before every access unit so a
-    // slice without num_ref_idx_active_override_flag is parsed consistently.
-    if (!BuildPps(decode->picture, decode->slices.front(), profile,
-                  decode->iq_matrix, &bitstream))
-      return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
+    const auto build_h264 = [&]() -> VAStatus {
+      try {
+        std::vector<uint8_t> assembled;
+        BeginAccessUnit(&assembled);
+        idr = !decode->slice_data.front().empty() &&
+              (decode->slice_data.front().front() & 0x1f) == 5;
+        // An ordinary GOP can start with an IDR while earlier output is still
+        // pending. Let the bitstream's IDR semantics handle reference pictures;
+        // discarding pending output here loses real frames during playback.
+        if (!decode->sent_parameter_sets || idr) {
+          if (!BuildSps(decode->picture, profile, &assembled))
+            return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
+        }
+        // VA exposes active reference counts on each slice instead of the
+        // original PPS defaults. Redefine PPS id 0 for every access unit.
+        if (!BuildPps(decode->picture, decode->slices.front(), profile,
+                      decode->iq_matrix, &assembled))
+          return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
 
-    static constexpr uint8_t start_code[] = {0, 0, 0, 1};
-    for (const std::vector<uint8_t> &slice : decode->slice_data) {
-      bitstream.insert(bitstream.end(), std::begin(start_code), std::end(start_code));
-      bitstream.insert(bitstream.end(), slice.begin(), slice.end());
-    }
+        static constexpr uint8_t start_code[] = {0, 0, 0, 1};
+        if (assembled.size() > crystalhd_access_unit_limits::kH264Bytes)
+          return VA_STATUS_ERROR_INVALID_PARAMETER;
+        for (const std::vector<uint8_t> &slice : decode->slice_data) {
+          const size_t remaining =
+              crystalhd_access_unit_limits::kH264Bytes - assembled.size();
+          if (remaining < sizeof(start_code) ||
+              slice.size() > remaining - sizeof(start_code))
+            return VA_STATUS_ERROR_INVALID_PARAMETER;
+          assembled.insert(assembled.end(), std::begin(start_code),
+                           std::end(start_code));
+          assembled.insert(assembled.end(), slice.begin(), slice.end());
+        }
+        bitstream.swap(assembled);
+        return VA_STATUS_SUCCESS;
+      } catch (const std::bad_alloc &) {
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
+      }
+    };
+    const VAStatus h264_status = build_h264();
+    if (h264_status != VA_STATUS_SUCCESS)
+      return h264_status;
     Debug("submit surface=%u bytes=%zu slices=%zu", decode->target,
           bitstream.size(), decode->slice_data.size());
     if (decode->next_timestamp == kTimestampStep) {
@@ -5455,17 +5555,30 @@ static VAStatus CreateBuffer(VADriverContextP context, VAContextID context_id,
   }
   if (buffer_id == nullptr || element_size == 0 || elements == 0)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
-  Buffer buffer;
-  buffer.context = context_id;
-  buffer.type = type;
-  buffer.element_size = element_size;
-  buffer.elements = elements;
-  buffer.data.resize(static_cast<size_t>(element_size) * elements);
-  if (data != nullptr)
-    memcpy(buffer.data.data(), data, buffer.data.size());
-  *buffer_id = driver->next_buffer++;
-  driver->buffers[*buffer_id] = std::move(buffer);
-  return VA_STATUS_SUCCESS;
+  if (elements > std::numeric_limits<size_t>::max() / element_size)
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  try {
+    Buffer buffer;
+    buffer.context = context_id;
+    buffer.type = type;
+    buffer.element_size = element_size;
+    buffer.elements = elements;
+    const size_t total_bytes = static_cast<size_t>(element_size) * elements;
+    if (total_bytes > buffer.data.max_size())
+      return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    buffer.data.resize(total_bytes);
+    if (data != nullptr)
+      memcpy(buffer.data.data(), data, buffer.data.size());
+    const VABufferID next = driver->next_buffer;
+    const auto inserted = driver->buffers.emplace(next, std::move(buffer));
+    if (!inserted.second)
+      return VA_STATUS_ERROR_MAX_NUM_EXCEEDED;
+    *buffer_id = next;
+    ++driver->next_buffer;
+    return VA_STATUS_SUCCESS;
+  } catch (const std::bad_alloc &) {
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
 }
 
 static VAStatus BufferSetNumElements(VADriverContextP context,
@@ -5480,8 +5593,18 @@ static VAStatus BufferSetNumElements(VADriverContextP context,
     return VA_STATUS_ERROR_SURFACE_BUSY;
   if (buffer->second.data_failed)
     return VA_STATUS_ERROR_INVALID_BUFFER;
-  buffer->second.data.resize(static_cast<size_t>(buffer->second.element_size) *
-                             elements);
+  if (elements > std::numeric_limits<size_t>::max() /
+                     buffer->second.element_size)
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  const size_t total_bytes =
+      static_cast<size_t>(buffer->second.element_size) * elements;
+  if (total_bytes > buffer->second.data.max_size())
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  try {
+    buffer->second.data.resize(total_bytes);
+  } catch (const std::bad_alloc &) {
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
   buffer->second.elements = elements;
   return VA_STATUS_SUCCESS;
 }
@@ -5630,6 +5753,8 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
   }
   decode->second->target = target;
   decode->second->have_picture = false;
+  decode->second->h264_picture_invalid = false;
+  decode->second->h264_framed_slice_bytes = 0;
   decode->second->mpeg2_picture = DecodeContext::Mpeg2Picture();
   decode->second->mpeg4_picture = DecodeContext::Mpeg4Picture();
   decode->second->vc1_picture = DecodeContext::Vc1Picture();
@@ -6014,6 +6139,10 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
                               buffer_ids, count);
   if (decode->second->IsVc1())
     return RenderVc1Picture(driver, decode->second.get(), context_id, buffer_ids, count);
+  if (count < 0 || (count != 0 && buffer_ids == nullptr)) {
+    decode->second->h264_picture_invalid = true;
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
+  }
   for (int i = 0; i < count; ++i) {
     auto buffer = driver->buffers.find(buffer_ids[i]);
     if (buffer == driver->buffers.end())
@@ -6044,13 +6173,33 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
                         sizeof(VASliceParameterBufferH264);
         const auto *parameters = reinterpret_cast<const VASliceParameterBufferH264 *>(
             buffer->second.data.data());
-        decode->second->slices.insert(decode->second->slices.end(), parameters,
-                                      parameters + slices);
+        try {
+          decode->second->slices.insert(decode->second->slices.end(), parameters,
+                                        parameters + slices);
+        } catch (const std::bad_alloc &) {
+          decode->second->h264_picture_invalid = true;
+          return VA_STATUS_ERROR_ALLOCATION_FAILED;
+        }
         break;
       }
-      case VASliceDataBufferType:
-        decode->second->slice_data.push_back(buffer->second.data);
+      case VASliceDataBufferType: {
+        const size_t framed = decode->second->h264_framed_slice_bytes;
+        const size_t limit = crystalhd_access_unit_limits::kH264Bytes;
+        if (framed > limit || limit - framed < 4 ||
+            buffer->second.data.size() > limit - framed - 4) {
+          decode->second->h264_picture_invalid = true;
+          return VA_STATUS_ERROR_INVALID_BUFFER;
+        }
+        try {
+          decode->second->slice_data.push_back(buffer->second.data);
+        } catch (const std::bad_alloc &) {
+          decode->second->h264_picture_invalid = true;
+          return VA_STATUS_ERROR_ALLOCATION_FAILED;
+        }
+        decode->second->h264_framed_slice_bytes +=
+            4 + buffer->second.data.size();
         break;
+      }
       default:
         break;
     }
@@ -6215,6 +6364,8 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
           profile, decode_context->target);
   decode_context->target = VA_INVALID_SURFACE;
   decode_context->have_picture = false;
+  decode_context->h264_picture_invalid = false;
+  decode_context->h264_framed_slice_bytes = 0;
   decode_context->slices.clear();
   decode_context->slice_data.clear();
   decode_context->mpeg2_picture = DecodeContext::Mpeg2Picture();
