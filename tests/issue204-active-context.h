@@ -31,10 +31,9 @@ static const uint32_t kOuterRecordAlias = 0x008590e8U;
 static const uint32_t kOuterDeliveryAlias = 0x008592d0U;
 static const uint32_t kOuterReturnAlias = 0x008592d4U;
 static const uint32_t kHalt = 0x02000000U;
-// Both 0 and bit 31 were observed before a successful, verified halt in the
-// preserved native trials.  Keep the bit name stage-specific: its wider ARC
-// meaning is not established by the available public register descriptions.
-static const uint32_t kPreHaltDebugBit = 0x80000000U;
+// Preserved native probes observed bit 31 before halt and waited for it to
+// clear after the halt request.  Its wider ARC meaning remains unproven.
+static const uint32_t kLoadDebugBit = 0x80000000U;
 static const uint32_t kDeliveryOffset = 0x00015678U;
 static const uint32_t kReturnOffset = 0x00015778U;
 static const uint32_t kRecordOffset = 0x00015878U;
@@ -106,6 +105,8 @@ struct Result {
     uint32_t pre_halt_status = 0;
     uint32_t identity_word = 0;
     uint32_t debug_word = 0;
+    uint32_t halt_poll_status = 0;
+    uint32_t halt_poll_debug = 0;
     uint32_t allocation = 0;
     uint32_t delivery_ring = 0;
     uint32_t return_ring = 0;
@@ -492,7 +493,7 @@ static inline bool Run(const Plan &plan, const Io &io, uint32_t *source_words,
     if (identity != 0x7b010108U) return Reject(result, Failure::Identity);
     if (!Datum(io, result, kDebug, &debug)) return false;
     result->debug_word = debug;
-    if (debug != 0U && debug != kPreHaltDebugBit)
+    if (debug != 0U && debug != kLoadDebugBit)
         return Reject(result, Failure::Identity);
     result->halt_attempted = true;
     if (!RegisterWrite(io, result, kDebug, 2U)) return false;
@@ -500,9 +501,11 @@ static inline bool Run(const Plan &plan, const Io &io, uint32_t *source_words,
         if (!Datum(io, result, kStatus, &status) ||
             !Datum(io, result, kDebug, &debug)) return false;
         ++result->halt_polls;
-        if (debug != 0U)
+        result->halt_poll_status = status;
+        result->halt_poll_debug = debug;
+        if (debug != 0U && debug != kLoadDebugBit)
             return Reject(result, Failure::Halt);
-        if (status & kHalt) {
+        if ((status & kHalt) && debug == 0U) {
             result->halted_status = status;
             result->halt_verified = true;
             break;

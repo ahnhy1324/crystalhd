@@ -1741,13 +1741,15 @@ static bool ObserveActiveContextNative(HANDLE *current, const bool *opened,
         std::printf("Active context native: gate=exact61 graph-reads=%u "
             "graph-bytes=%u graph-result=PASS fresh-boundary=PASS failure=%u register-reads=%u "
             "register-writes=%u memory-reads=%u pre-halt-status=0x%08x "
-            "identity=0x%08x debug=0x%08x route-restored=%s "
+            "identity=0x%08x debug=0x%08x halt-polls=%u "
+            "halt-poll-status=0x%08x halt-poll-debug=0x%08x route-restored=%s "
             "module-recovery-required=%s result=%s\n",
             graph_reader.reads, graph_reader.bytes,
             static_cast<unsigned>(result->failure), result->register_reads,
             result->register_writes, result->memory_reads,
             result->pre_halt_status, result->identity_word,
-            result->debug_word,
+            result->debug_word, result->halt_polls,
+            result->halt_poll_status, result->halt_poll_debug,
             result->route_restored ? "yes" : "no",
             result->module_recovery_required ? "yes" : "no",
             ok ? "PASS" : "FAIL");
@@ -1767,6 +1769,7 @@ struct ActiveContextModelFixture {
     unsigned context_reads = 0, terminal_reads = 0, ring_reads = 0;
     unsigned queue_reads = 0;
     unsigned table_alias_reads = 0, ledger_flags_reads = 0, record_reads = 0;
+    unsigned held_debug_reads = 0, pending_debug_reads = 0;
     unsigned fail_register_read_at = 0, fail_register_write_at = 0;
     unsigned apply_then_error_write_at = 0;
     unsigned fail_memory_read_at = 0, lose_owner_memory_at = 0;
@@ -1792,7 +1795,13 @@ struct ActiveContextModelFixture {
         else if (address == issue204_active_context::kRoute) *word = fixture->route;
         else if (address == issue204_active_context::kStatus) *word = fixture->status;
         else if (address == issue204_active_context::kIdentity) *word = 0x7b010108U;
-        else if (address == issue204_active_context::kDebug) *word = fixture->debug;
+        else if (address == issue204_active_context::kDebug) {
+            if ((fixture->status & issue204_active_context::kHalt) &&
+                fixture->held_debug_reads++ < fixture->pending_debug_reads)
+                *word = issue204_active_context::kLoadDebugBit;
+            else
+                *word = fixture->debug;
+        }
         else if (address == issue204_active_context::kOuterTableAlias) {
             ++fixture->table_alias_reads;
             *word = fixture->mutation == 5 ||
@@ -1990,15 +1999,42 @@ template<class Check> static void ActiveContextBindingSelfTest(const Check &chec
 
     ActiveContextModelFixture pre_halt_bit;
     pre_halt_bit.plan = plan;
-    pre_halt_bit.debug = kPreHaltDebugBit;
+    pre_halt_bit.debug = kLoadDebugBit;
     Result pre_halt_bit_result;
     check(Run(plan, pre_halt_bit.Interface(), source.data(), source.size(),
               &pre_halt_bit_result) &&
-          pre_halt_bit_result.debug_word == kPreHaltDebugBit &&
+          pre_halt_bit_result.debug_word == kLoadDebugBit &&
           pre_halt_bit_result.halt_verified &&
           pre_halt_bit_result.resume_verified &&
           pre_halt_bit_result.route_restored,
         "issue204 model accepts the two historically observed pre-halt debug values and still requires zero while held");
+
+    ActiveContextModelFixture delayed_load_clear;
+    delayed_load_clear.plan = plan;
+    delayed_load_clear.pending_debug_reads = 3U;
+    Result delayed_load_result;
+    check(Run(plan, delayed_load_clear.Interface(), source.data(), source.size(),
+              &delayed_load_result) &&
+          delayed_load_result.halt_polls == 4U &&
+          delayed_load_result.halt_poll_debug == 0U &&
+          delayed_load_result.halt_verified &&
+          delayed_load_result.resume_verified &&
+          delayed_load_result.route_restored,
+        "issue204 model bounds the historically established post-request load-bit wait and requires it clear before held memory access");
+
+    ActiveContextModelFixture persistent_load;
+    persistent_load.plan = plan;
+    persistent_load.pending_debug_reads = 8U;
+    Result persistent_load_result;
+    check(!Run(plan, persistent_load.Interface(), source.data(), source.size(),
+               &persistent_load_result) &&
+          persistent_load_result.failure == Failure::Halt &&
+          persistent_load_result.halt_polls == 8U &&
+          persistent_load_result.halt_poll_debug == kLoadDebugBit &&
+          persistent_load_result.register_writes == 2U &&
+          !persistent_load_result.memory_reads &&
+          persistent_load_result.module_recovery_required,
+        "issue204 model refuses a load bit that does not clear within the fixed halt-poll budget");
 
     ActiveContextModelFixture unknown_pre_halt_bit;
     unknown_pre_halt_bit.plan = plan;
