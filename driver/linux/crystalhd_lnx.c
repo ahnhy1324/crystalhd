@@ -18,6 +18,7 @@
 #include "crystalhd_lnx.h"
 #include "crystalhd_compat_ioctl.h"
 #include "crystalhd_fw_research.h"
+#include "crystalhd_rx_receipt.h"
 
 #include <linux/capability.h>
 #include <linux/overflow.h>
@@ -1466,6 +1467,7 @@ static void chd_dec_pci_remove(struct pci_dev *pdev)
 		chd_dma_quarantine = NULL;
 		put_quarantine = true;
 	}
+	crystalhd_rx_receipt_cleanup(pinfo);
 	kfree(pinfo);
 unlock:
 	up_write(&chd_device_lock);

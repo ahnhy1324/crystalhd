@@ -32,6 +32,7 @@
 #include "crystalhd_lnx.h"
 #include "crystalhd_linkfuncs.h"
 #include "crystalhd_fleafuncs.h"
+#include "crystalhd_rx_receipt.h"
 
 #define OFFSETOF(_s_, _m_) ((size_t)(unsigned long)&(((_s_ *)0)->_m_))
 
@@ -397,6 +398,12 @@ struct crystalhd_rx_dma_pkt *crystalhd_hw_alloc_rx_pkt(struct crystalhd_hw *hw)
 		temp->flags = 0;
 		temp->y_done_sz = 0;
 		temp->uv_done_sz = 0;
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+		temp->receipt_run_id = 0;
+		temp->receipt_index_plus_one = 0;
+		temp->receipt_y_descriptor_count = 0;
+		temp->receipt_uv_descriptor_count = 0;
+#endif
 		memset(&temp->pib, 0, sizeof(temp->pib));
 		memset(&temp->metadata, 0, sizeof(temp->metadata));
 		temp->uv_phy_addr = 0;
@@ -423,6 +430,12 @@ void crystalhd_hw_free_rx_pkt(struct crystalhd_hw *hw,
 	pkt->flags = 0;
 	pkt->y_done_sz = 0;
 	pkt->uv_done_sz = 0;
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+	pkt->receipt_run_id = 0;
+	pkt->receipt_index_plus_one = 0;
+	pkt->receipt_y_descriptor_count = 0;
+	pkt->receipt_uv_descriptor_count = 0;
+#endif
 	memset(&pkt->pib, 0, sizeof(pkt->pib));
 	memset(&pkt->metadata, 0, sizeof(pkt->metadata));
 	pkt->uv_phy_addr = 0;
@@ -1281,6 +1294,7 @@ BC_STATUS crystalhd_rx_pkt_complete(struct crystalhd_hw *hw,
 		rx_pkt->flags = COMP_FLAG_DATA_VALID;
 		if (rx_pkt->uv_phy_addr)
 			rx_pkt->uv_done_sz = uv_dw_dnsz;
+		crystalhd_rx_receipt_complete(hw, rx_pkt, comp_sts);
 		sts = crystalhd_dioq_add(hw->rx_rdyq, rx_pkt, true,
 					 hw->rx_pkt_tag_seed + list_index);
 		if (sts != BC_STS_SUCCESS) {
@@ -1365,6 +1379,7 @@ BC_STATUS crystalhd_rx_pkt_complete(struct crystalhd_hw *hw,
 		return sts;
 	}
 	/* Check if we can post this capture buffer again. */
+	crystalhd_rx_receipt_complete(hw, rx_pkt, comp_sts);
 	return crystalhd_hw_repost_cap_buffer(hw, rx_pkt);
 }
 
@@ -1736,6 +1751,7 @@ BC_STATUS crystalhd_hw_add_cap_buffer(struct crystalhd_hw *hw,
 						   &hw->adp->pdev->dev);
 	if (sts != BC_STS_SUCCESS)
 		goto release_packet;
+	crystalhd_rx_receipt_descriptors(rpkt, uv_desc_ix);
 
 	rpkt->uv_phy_addr = 0;
 

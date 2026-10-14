@@ -1642,11 +1642,11 @@ index e2393f9..91287bb 100644
  struct crystalhd_l0s_state { bool owned; };
  struct crystalhd_adp {
  	struct pci_dev *pdev;
-@@ -107,6 +119,7 @@ struct crystalhd_adp {
- 	int present, msi, chd_dec_major, lock;
- 	bool irq_registered;
+@@ -109,5 +121,6 @@ struct crystalhd_adp {
  	bool dma_terminal_quiesced;
+-	bool receipts_cleaned;
 +	bool hw_accessible;
++	bool receipts_cleaned;
  };
  #include "lifetime-binding.h"
  
@@ -1744,16 +1744,17 @@ index e2393f9..91287bb 100644
  	adp->irq_registered = true;
  	adp->msi = msi;
  	adp->chd_dec_major = 240;
-@@ -652,6 +710,9 @@ static void reset(void)
- 	pci_gets = pci_puts = 0;
- 	saved_invalidations = core_restores = 0;
- 	dma_drained = false;
+@@ -654,4 +712,7 @@ static void reset(void)
+-	receipt_cleanups = 0;
+-	dma_drained = false;
+-	scenarios++;
++	receipt_cleanups = 0;
++	dma_drained = false;
 +#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 +	pm_callback = false;
 +#endif
- 	scenarios++;
++	scenarios++;
  }
- 
 @@ -1150,8 +1211,189 @@ static void test_empty_preopened_context(void)
  	assert_released();
  }

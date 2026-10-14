@@ -203,6 +203,7 @@ for enabled in (None, '0', '1'):
         args.append('CRYSTALHD_FW_RESEARCH=' + enabled)
     output = subprocess.check_output(args, input=script, text=True, env=make_env)
     assert ('crystalhd_fw_research.o' in output) == (enabled == '1')
+    assert ('crystalhd_rx_receipt.o' in output) == (enabled == '1')
     assert ('-DCRYSTALHD_ENABLE_FW_RESEARCH' in output) == (enabled == '1')
 args = ['make', '--no-print-directory', '-f', '-', 'probe-check', 'CRYSTALHD_FW_RESEARCH=1']
 assert subprocess.run(args, input=script, text=True, stdout=subprocess.PIPE,
@@ -211,6 +212,7 @@ for value in ('y', 'm'):
     output = subprocess.check_output(args + ['CONFIG_CRYPTO_HASH=' + value],
                                      input=script, text=True, env=make_env)
     assert 'crystalhd_fw_research.o' in output
+    assert 'crystalhd_rx_receipt.o' in output
 args = ['make', '--no-print-directory', '-f', '-', 'probe-check', 'CRYSTALHD_FW_RESEARCH=2', 'CONFIG_CRYPTO_HASH=y']
 assert subprocess.run(args, input=script, text=True, stdout=subprocess.PIPE,
                       stderr=subprocess.PIPE, env=make_env).returncode != 0
@@ -327,6 +329,18 @@ _Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_init) 
 _Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_open) == 1656, "crypto open");
 _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO) == 1712, "crypto encoding");
 _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO == 0xc6b0529aU, "crypto ioctl");
+_Static_assert(sizeof(struct crystalhd_fw_research_rx_receipt) == 144, "RX receipt");
+_Static_assert(offsetof(struct crystalhd_fw_research_rx_receipt, fire_return_ns) == 16, "RX fire clock");
+_Static_assert(offsetof(struct crystalhd_fw_research_rx_receipt, irq_entry_ns) == 24, "RX IRQ clock");
+_Static_assert(offsetof(struct crystalhd_fw_research_rx_receipt, stage_flags) == 132, "RX stages");
+_Static_assert(offsetof(struct crystalhd_fw_research_rx_receipt, eos_trailer) == 140, "RX EOS");
+_Static_assert(sizeof(struct crystalhd_fw_research_rx_receipt_arm) == 48, "RX arm");
+_Static_assert(sizeof(struct crystalhd_fw_research_rx_receipt_seal) == 56, "RX seal");
+_Static_assert(sizeof(struct crystalhd_fw_research_rx_receipt_read) == 4672, "RX read");
+_Static_assert(offsetof(struct crystalhd_fw_research_rx_receipt_read, records) == 64, "RX records");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RX_RECEIPT_ARM == 0xc030529bU, "RX arm ioctl");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL == 0xc038529cU, "RX seal ioctl");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RX_RECEIPT_READ == 0xd240529dU, "RX read ioctl");
 _Static_assert(CRYSTALHD_FW_RESEARCH_VERSION_ONLY == 1U, "existing version selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H264_CONTROL == 2U, "existing H264 selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3U, "H261 selector");

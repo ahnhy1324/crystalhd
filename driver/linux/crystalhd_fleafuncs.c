@@ -42,6 +42,8 @@
 #include "crystalhd_lnx.h"
 #include "FleaDefs.h"
 #include "crystalhd_flea_ddr.h"
+#include "crystalhd_rx_receipt.h"
+#include "../../include/crystalhd_fw_research.h"
 
 #define OFFSETOF(_s_, _m_) ((size_t)(unsigned long)&(((_s_ *)0)->_m_))
 
@@ -64,7 +66,13 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 	struct crystalhd_rx_dma_pkt *rx_pkt, uint32_t *pic_number,
 	uint64_t *metadata, bool prepare_output);
 BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
-	struct crystalhd_rx_dma_pkt *rx_pkt);
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+	struct crystalhd_rx_dma_pkt *rx_pkt,
+	struct crystalhd_rx_receipt_key *receipt_key
+#else
+	struct crystalhd_rx_dma_pkt *rx_pkt
+#endif
+	);
 
 bool crystalhd_flea_core_reset(struct crystalhd_hw *hw)
 {
@@ -2498,7 +2506,13 @@ void crystalhd_flea_stop_rx_dma_engine(struct crystalhd_hw *hw)
 }
 
 BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
-									   struct crystalhd_rx_dma_pkt *rx_pkt)
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+					   struct crystalhd_rx_dma_pkt *rx_pkt,
+					   struct crystalhd_rx_receipt_key *receipt_key
+#else
+					   struct crystalhd_rx_dma_pkt *rx_pkt
+#endif
+					   )
 {
 	struct device *dev;
 	addr_64 desc_addr;
@@ -2590,6 +2604,10 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	if (sts != BC_STS_SUCCESS)
 		goto unlock;
 	rx_pkt->pkt_tag = pkt_tag;
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+	crystalhd_rx_receipt_reserve(hw, rx_pkt, hw->rx_list_post_index,
+				     hw->RxSeqNum, hw->channelNum, receipt_key);
+#endif
 	CLEAR_BIT(hw->PicQSts, hw->channelNum);
 	hw->rx_list_sts[hw->rx_list_post_index] |= rx_waiting_y_intr;
 	if (rx_pkt->uv_phy_addr)
@@ -2608,7 +2626,15 @@ unlock:
 
 BC_STATUS crystalhd_flea_hw_post_cap_buff(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt *rx_pkt)
 {
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+	struct crystalhd_rx_receipt_key receipt_key = { };
+	BC_STATUS sts = crystalhd_flea_hw_fire_rxdma(hw, rx_pkt, &receipt_key);
+
+	if (sts == BC_STS_SUCCESS)
+		crystalhd_rx_receipt_fire_return(hw, &receipt_key);
+#else
 	BC_STATUS sts = crystalhd_flea_hw_fire_rxdma(hw, rx_pkt);
+#endif
 
 	/* BUSY transfers ownership to the free queue; other errors leave the
 	 * packet with the caller, just as on BCM70012.
@@ -3020,11 +3046,13 @@ void crystalhd_flea_rx_isr(struct crystalhd_hw *hw, union FLEA_INTR_BITS_COMMON 
 	BC_STATUS comp_sts = BC_STS_NO_DATA;
 	uint32_t y_err_sts, uv_err_sts, y_dn_sz = 0, uv_dn_sz = 0;
 	bool ret = 0;
+	uint64_t receipt_irq_entry_ns;
 
 	if (!hw) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return;
 	}
+	receipt_irq_entry_ns = crystalhd_rx_receipt_irq_entry(hw);
 
 	if (!(intr_sts.L0YRxDMADone || intr_sts.L1YRxDMADone || intr_sts.L0UVRxDMADone || intr_sts.L1UVRxDMADone ||
 		intr_sts.L0YRxDMAErr || intr_sts.L1YRxDMAErr || intr_sts.L0UVRxDMAErr || intr_sts.L1UVRxDMAErr))
@@ -3071,6 +3099,8 @@ void crystalhd_flea_rx_isr(struct crystalhd_hw *hw, union FLEA_INTR_BITS_COMMON 
 		}
 		/* handle completion...*/
 		if (comp_sts != BC_STS_NO_DATA) {
+			crystalhd_rx_receipt_irq(hw, i, receipt_irq_entry_ns,
+						 comp_sts);
 			if (comp_sts == BC_STS_SUCCESS) {
 				/* Done sizes belong to this list until rx_lock drops. */
 				crystalhd_rx_pkt_done(hw, i, comp_sts);
@@ -3479,6 +3509,9 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 		rx_pkt->metadata.picture_height = pPicInfoLine->height;
 		rx_pkt->metadata.row_width = row_width;
 		rx_pkt->metadata.pib_line = PicInfoLineNum;
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+		rx_pkt->metadata.session_number = pPicInfoLine->sess_num;
+#endif
 		rx_pkt->metadata.eos_trailer = !!(widthField & PIB_EOS_DETECTED_BIT);
 		if (!rx_pkt->metadata.eos_trailer)
 			rx_pkt->metadata.first_pixel_word = pPicInfoLine->ycom;
@@ -3504,9 +3537,12 @@ uint32_t flea_GetRptDropParam(struct crystalhd_hw *hw, void* pRxDMAReq)
 {
 	uint32_t PicNumber = 0,result = 0;
 	uint64_t PicMetaData = 0;
+	struct crystalhd_rx_dma_pkt *rx_pkt = pRxDMAReq;
+	bool parsed;
 
-	if(flea_GetPictureInfo(hw, (struct crystalhd_rx_dma_pkt *)pRxDMAReq,
-		&PicNumber, &PicMetaData))
+	parsed = flea_GetPictureInfo(hw, rx_pkt, &PicNumber, &PicMetaData);
+	crystalhd_rx_receipt_parse(hw, rx_pkt, parsed);
+	if (parsed)
 		result = PicNumber;
 
 	return result;

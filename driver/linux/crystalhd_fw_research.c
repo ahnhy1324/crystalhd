@@ -15,6 +15,7 @@
 #include "../../include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_sun_top_ctrl.h"
 #include "crystalhd_lnx.h"
 #include "crystalhd_fw_research.h"
+#include "crystalhd_rx_receipt.h"
 #include "../../include/crystalhd_fw_research.h"
 
 static const u8 crystalhd_fw_research_owner;
@@ -1399,6 +1400,139 @@ static long crystalhd_fw_research_info(u64 generation, void __user *user)
 	return copy_to_user(user, &info, sizeof(info)) ? -EFAULT : 0;
 }
 
+static bool crystalhd_fw_research_words_zero(const u32 *words, size_t count)
+{
+	size_t i;
+
+	for (i = 0; i < count; i++)
+		if (words[i])
+			return false;
+	return true;
+}
+
+static long crystalhd_fw_research_rx_receipt_arm_ioctl(u64 generation,
+						       void __user *user)
+{
+	struct crystalhd_fw_research_rx_receipt_arm request;
+	struct crystalhd_device_access access;
+	int rc;
+
+	if (copy_from_user(&request, user, sizeof(request)))
+		return -EFAULT;
+	if (request.version != CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION ||
+	    request.size != sizeof(request) || !request.capacity ||
+	    request.capacity > CRYSTALHD_FW_RESEARCH_RX_RECEIPT_MAX_RECORDS ||
+	    request.flags || request.generation || request.run_id ||
+	    !crystalhd_fw_research_words_zero(request.reserved,
+		ARRAY_SIZE(request.reserved)))
+		return -EINVAL;
+	rc = crystalhd_device_enter(generation, true, &access);
+	if (rc)
+		return rc;
+	rc = access.adp->generation == generation ?
+		crystalhd_fw_research_idle(access.adp) : -ESTALE;
+	if (!rc && access.adp->irq_registered)
+		synchronize_irq(access.adp->pdev->irq);
+	if (!rc)
+		rc = crystalhd_rx_receipt_arm(access.adp, &request);
+	crystalhd_device_exit(&access);
+	if (rc)
+		return rc;
+	if (!copy_to_user(user, &request, sizeof(request)))
+		return 0;
+
+	/* A failed copyout did not report the new identity. Re-enter instead of
+	 * holding driver lifetime locks across a potentially faulting user copy.
+	 * Cancel only the exact empty arm while the adapter is still idle. If a
+	 * session won the gap, preserve its receipts rather than forcing deletion.
+	 */
+	rc = crystalhd_device_enter(generation, true, &access);
+	if (!rc) {
+		rc = access.adp->generation == generation ?
+			crystalhd_fw_research_idle(access.adp) : -ESTALE;
+		if (!rc && access.adp->irq_registered)
+			synchronize_irq(access.adp->pdev->irq);
+		if (!rc)
+			crystalhd_rx_receipt_cancel_empty_arm(access.adp,
+				request.generation, request.run_id);
+		crystalhd_device_exit(&access);
+	}
+	return -EFAULT;
+}
+
+static long crystalhd_fw_research_rx_receipt_seal_ioctl(u64 generation,
+							void __user *user)
+{
+	struct crystalhd_fw_research_rx_receipt_seal request;
+	struct crystalhd_device_access access;
+	int rc;
+
+	if (copy_from_user(&request, user, sizeof(request)))
+		return -EFAULT;
+	if (request.version != CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION ||
+	    request.size != sizeof(request) ||
+	    (request.flags != 0 &&
+	     request.flags != CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL_CURRENT) ||
+	    (request.flags == CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL_CURRENT ?
+	     request.run_id != 0 : request.run_id == 0) ||
+	    request.sealed || request.generation || request.record_count ||
+	    request.overflow_count ||
+	    !crystalhd_fw_research_words_zero(request.reserved,
+		ARRAY_SIZE(request.reserved)))
+		return -EINVAL;
+	rc = crystalhd_device_enter(generation, true, &access);
+	if (rc)
+		return rc;
+	rc = access.adp->generation == generation ?
+		crystalhd_fw_research_idle(access.adp) : -ESTALE;
+	if (!rc && access.adp->irq_registered)
+		synchronize_irq(access.adp->pdev->irq);
+	if (!rc)
+		rc = crystalhd_rx_receipt_seal(access.adp, &request);
+	crystalhd_device_exit(&access);
+	if (rc)
+		return rc;
+	return copy_to_user(user, &request, sizeof(request)) ? -EFAULT : 0;
+}
+
+static long crystalhd_fw_research_rx_receipt_read_ioctl(u64 generation,
+							void __user *user)
+{
+	struct crystalhd_fw_research_rx_receipt_read *request;
+	struct crystalhd_device_access access;
+	size_t input_size = offsetof(struct crystalhd_fw_research_rx_receipt_read,
+				     records);
+	long rc;
+
+	request = kzalloc(sizeof(*request), GFP_KERNEL);
+	if (!request)
+		return -ENOMEM;
+	if (copy_from_user(request, user, input_size)) {
+		rc = -EFAULT;
+		goto free_request;
+	}
+	if (request->version != CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION ||
+	    request->size != sizeof(*request) || request->flags ||
+	    !request->run_id || request->generation || request->returned ||
+	    request->record_count || request->overflow_count || request->sealed ||
+	    !crystalhd_fw_research_words_zero(request->reserved,
+		ARRAY_SIZE(request->reserved))) {
+		rc = -EINVAL;
+		goto free_request;
+	}
+	rc = crystalhd_device_enter(generation, false, &access);
+	if (rc)
+		goto free_request;
+	rc = access.adp->generation == generation ?
+		crystalhd_rx_receipt_read(access.adp, request) : -ESTALE;
+	crystalhd_device_exit(&access);
+	if (!rc && copy_to_user(user, request, sizeof(*request)))
+		rc = -EFAULT;
+free_request:
+	kfree(request);
+	return rc;
+}
+
 static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 					unsigned long argument)
 {
@@ -1425,6 +1559,15 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		return -ENODEV;
 	if (command == CRYSTALHD_FW_RESEARCH_GET_INFO)
 		return crystalhd_fw_research_info(binding->generation, user);
+	if (command == CRYSTALHD_FW_RESEARCH_RX_RECEIPT_ARM)
+		return crystalhd_fw_research_rx_receipt_arm_ioctl(
+			binding->generation, user);
+	if (command == CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL)
+		return crystalhd_fw_research_rx_receipt_seal_ioctl(
+			binding->generation, user);
+	if (command == CRYSTALHD_FW_RESEARCH_RX_RECEIPT_READ)
+		return crystalhd_fw_research_rx_receipt_read_ioctl(
+			binding->generation, user);
 	if (command == CRYSTALHD_FW_RESEARCH_RUN_STATE) {
 		if (copy_from_user(&state_request, user, sizeof(state_request)))
 			return -EFAULT;
