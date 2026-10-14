@@ -8,10 +8,12 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-function launch(overrides = {}, browserVersion = 'Chromium 999.0') {
+function launch(overrides = {}, browserVersion = 'Chromium 999.0',
+    configText = null) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'crystalhd-launcher-'));
   try {
     const browser = path.join(directory, 'mock-browser');
+    const config = path.join(directory, 'chromium.conf');
     fs.writeFileSync(browser, `#!/usr/bin/env node
 if (process.argv[2] === '--version') {
   console.log(${JSON.stringify(browserVersion)});
@@ -21,6 +23,8 @@ if (process.argv[2] === '--version') {
     driverPath: process.env.LIBVA_DRIVERS_PATH || null}));
 }
 `, {mode: 0o700});
+    if (configText !== null)
+      fs.writeFileSync(config, configText, {mode: 0o600});
     const env = {...process.env};
     for (const key of Object.keys(env)) {
       if (key.startsWith('CRYSTALHD_CHROMIUM_') || key.startsWith('LIBVA_'))
@@ -28,7 +32,8 @@ if (process.argv[2] === '--version') {
     }
     Object.assign(env, {
       CRYSTALHD_CHROMIUM: browser,
-      CRYSTALHD_CHROMIUM_CONFIG: path.join(directory, 'absent.conf'),
+      CRYSTALHD_CHROMIUM_CONFIG: configText === null ?
+        path.join(directory, 'absent.conf') : config,
       ...overrides,
     });
     return spawnSync('sh', [path.join(__dirname, '../scripts/crystalhd-chromium'),
@@ -37,6 +42,20 @@ if (process.argv[2] === '--version') {
     fs.rmSync(directory, {recursive: true, force: true});
   }
 }
+
+test('legacy readable shell config overrides an inherited launcher value', () => {
+  const result = launch({
+    CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE: '1',
+    CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX: '1',
+    CRYSTALHD_DRM_DEVICE: '/dev/dri/inherited',
+  }, 'Chromium 999.0', 'CRYSTALHD_DRM_DEVICE=/dev/dri/from-config\n');
+  assert.equal(result.status, 0, result.stderr);
+  const invocation = JSON.parse(result.stdout);
+  assert.ok(invocation.args.includes(
+    '--hardware-video-device-path=/dev/dri/from-config'));
+  assert.ok(!invocation.args.includes(
+    '--hardware-video-device-path=/dev/dri/inherited'));
+});
 
 for (const acknowledgement of ['', '1']) {
   test(`software default keeps GPU sandbox (legacy acknowledgement=${acknowledgement || 'unset'})`, () => {

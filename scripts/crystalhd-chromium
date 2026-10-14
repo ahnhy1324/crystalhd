@@ -8,8 +8,8 @@ repo_dir=$(CDPATH= cd -- "$script_dir/.." 2>/dev/null && pwd || true)
 config_file=${CRYSTALHD_CHROMIUM_CONFIG:-${XDG_CONFIG_HOME:-"$HOME/.config"}/crystalhd/chromium.conf}
 
 if [ -r "$config_file" ]; then
-    # This optional per-user shell configuration is never read with elevated
-    # privileges.
+    # This trusted shell configuration runs with the launcher's current
+    # privileges. Do not run the launcher elevated or select an untrusted file.
     # shellcheck disable=SC1090
     . "$config_file"
 fi

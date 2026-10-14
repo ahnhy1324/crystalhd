@@ -1,0 +1,271 @@
+# CrystalHD configuration schema v1
+
+This document specifies the configuration contract proposed for a future
+headless `crystalhd-config` tool.  It is a design and conformance reference,
+not an announcement that the driver, libraries, plugins or launchers already
+read these files.  The current production controls and their exact behavior
+remain documented in [CONFIGURATION.md](CONFIGURATION.md).
+
+The v1 goals are deliberately narrow:
+
+- preserve every existing environment variable, module parameter, command
+  line option, GStreamer property and public ABI;
+- make an effective value and its origin explainable without guessing an
+  application from its process name;
+- reject malformed or unsafe configuration as one transaction rather than
+  applying a convenient subset; and
+- keep privileged module configuration outside an ordinary userspace
+  playback profile.
+
+The executable check in `tests/configuration-schema.test.py` is a
+**test-only reference oracle** for this specification.  It is not installed,
+imported or used as a production parser.
+
+## Files and strict INI subset
+
+The proposed default files are:
+
+1. `/etc/crystalhd/config.ini` for system defaults;
+2. `$XDG_CONFIG_HOME/crystalhd/config.ini` for user defaults, falling back to
+   `$HOME/.config/crystalhd/config.ini` when `XDG_CONFIG_HOME` is unset.
+
+A missing file contributes no layer.  Merely installing CrystalHD must not
+create a file or change the current defaults.
+
+Each present file is UTF-8 without a byte-order mark and at most 64 KiB.
+LF and CRLF line endings are accepted.  Blank lines and whole-line comments
+whose first non-space character is `#` are accepted.  Inline comments,
+semicolon comments, interpolation, line continuation and key-name folding are
+not supported.
+
+The only section forms are:
+
+```ini
+[crystalhd]
+schema = 1
+preset = "default"
+profile = "moonlight"
+
+[settings]
+vaapi.h264.mode = "bounded"
+gstreamer.crystalhddec.scale_width = 0
+
+[profile.moonlight]
+vaapi.h264.mode = "live"
+vaapi.h264.low_latency = true
+```
+
+`[crystalhd]` and `schema = 1` are mandatory.  `preset` and `profile` are
+optional selectors.  `[settings]` is the file's base overlay.  A
+`[profile.NAME]` section is inert until that exact, case-sensitive `NAME` is
+selected.  Names match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`.  Duplicate sections
+or keys are errors.
+
+Whitespace surrounding `=` is ignored.  Values are one of:
+
+- the exact booleans `true` and `false`;
+- an unsigned decimal integer written as `0` or without a leading zero;
+- a double-quoted JSON string; or
+- the exact token `unset`.
+
+Omitting a key inherits the next lower layer.  `unset` instead blocks a lower
+configured value and restores that control's native/unset behavior.  It is
+therefore different from omission, `false`, integer `0` and the empty string
+`""`.  A schema adapter must preserve those distinctions when translating to
+an existing public interface.
+
+Unknown sections, metadata keys, setting keys, value types and schema versions
+are errors.  An error identifies the file and line and rejects the complete
+managed configuration; no profile, preset or partial file is applied.  A
+future managed launcher must fail before opening a decoder.  Existing programs
+which do not use the future manager retain their current behavior.
+
+## Canonical keys and existing targets
+
+The canonical type is stricter than the raw target where the current target
+accepts ambiguous strings.  Detailed owner, device, lifecycle and safety
+information remains in the production inventory.
+
+| Canonical key | Type and accepted values | Existing target and translation |
+| --- | --- | --- |
+| `libcrystalhd.rx_pool_count` <!-- schema-key:libcrystalhd.rx_pool_count --><!-- schema-map:environment:CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT=libcrystalhd.rx_pool_count --> | Integer enum: `8`, `16` | `CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT`; decimal string |
+| `vaapi.h264.mode` <!-- schema-key:vaapi.h264.mode --><!-- schema-map:environment:CRYSTALHD_VAAPI_LIVE_H264=vaapi.h264.mode --> | String enum: `"bounded"`, `"strict"`, `"live"` | `CRYSTALHD_VAAPI_LIVE_H264`; respectively absent, a non-`1` value, or `1` |
+| `vaapi.h264.low_latency` <!-- schema-key:vaapi.h264.low_latency --><!-- schema-map:environment:CRYSTALHD_VAAPI_LOW_LATENCY_H264=vaapi.h264.low_latency --> | Boolean | `CRYSTALHD_VAAPI_LOW_LATENCY_H264`; true is `1`, false is absent |
+| `vaapi.h264.ready_remap` <!-- schema-key:vaapi.h264.ready_remap --><!-- schema-map:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP=vaapi.h264.ready_remap --> | Boolean | `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP`; true is `1`, false is absent |
+| `vaapi.h264.ready_policy` <!-- schema-key:vaapi.h264.ready_policy --><!-- schema-map:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY=vaapi.h264.ready_policy --> | String enum: `"previous"`, `"latest"` | `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY` |
+| `vaapi.h264.ready_delay_us` <!-- schema-key:vaapi.h264.ready_delay_us --><!-- schema-map:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US=vaapi.h264.ready_delay_us --> | Integer enum: `0`, `16667`, `33333`, `50000` | `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US`; decimal string |
+| `vaapi.i915_wc` <!-- schema-key:vaapi.i915_wc --><!-- schema-map:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC=vaapi.i915_wc --> | Boolean | `CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC`; true is `1`, false is absent |
+| `vaapi.debug` <!-- schema-key:vaapi.debug --><!-- schema-map:environment:CRYSTALHD_VAAPI_DEBUG=vaapi.debug --> | Boolean | `CRYSTALHD_VAAPI_DEBUG`; true is present, false is absent. Never encode false as `0`, because any presence currently enables debug |
+| `vaapi.trace` <!-- schema-key:vaapi.trace --><!-- schema-map:environment:CRYSTALHD_VAAPI_TRACE=vaapi.trace --> | Boolean | `CRYSTALHD_VAAPI_TRACE`; true is `1`, false is absent |
+| `chromium.executable` <!-- schema-key:chromium.executable --><!-- schema-map:environment:CRYSTALHD_CHROMIUM=chromium.executable --> | Nonempty path string | `CRYSTALHD_CHROMIUM`; `unset` retains launcher autodetection |
+| `chromium.drm_device` <!-- schema-key:chromium.drm_device --><!-- schema-map:environment:CRYSTALHD_DRM_DEVICE=chromium.drm_device --> | Nonempty path string | `CRYSTALHD_DRM_DEVICE`; `unset` retains `/dev/dri/renderD128` |
+| `chromium.password_store` <!-- schema-key:chromium.password_store --><!-- schema-map:environment:CRYSTALHD_CHROMIUM_PASSWORD_STORE=chromium.password_store --> | String, including `""` | `CRYSTALHD_CHROMIUM_PASSWORD_STORE`; absent selects `basic`, while empty omits the browser flag |
+| `chromium.profile_dir` <!-- schema-key:chromium.profile_dir --><!-- schema-map:environment:CRYSTALHD_CHROMIUM_PROFILE_DIR=chromium.profile_dir --> | Nonempty path string | `CRYSTALHD_CHROMIUM_PROFILE_DIR`; `unset` uses the browser default |
+| `chromium.native_gl` <!-- schema-key:chromium.native_gl --><!-- schema-map:environment:CRYSTALHD_CHROMIUM_NATIVE_GL=chromium.native_gl --> | Boolean | `CRYSTALHD_CHROMIUM_NATIVE_GL`; true is `1`, false is absent |
+| `chromium.experimental_hw_decode` <!-- schema-key:chromium.experimental_hw_decode --><!-- schema-map:environment:CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE=chromium.experimental_hw_decode --> | Boolean | `CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE`; true is `1`, false is absent |
+| `chromium.disable_gpu_sandbox` <!-- schema-key:chromium.disable_gpu_sandbox --><!-- schema-map:environment:CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX=chromium.disable_gpu_sandbox --> | Boolean | `CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX`; explicit acknowledgement, true is `1` |
+| `chromium.h264_policy_ack` <!-- schema-key:chromium.h264_policy_ack --><!-- schema-map:environment:CRYSTALHD_CHROMIUM_H264_POLICY=chromium.h264_policy_ack --> | Boolean | `CRYSTALHD_CHROMIUM_H264_POLICY`; acknowledgement only, true is `1` |
+| `player.python` <!-- schema-key:player.python --><!-- schema-map:environment:CRYSTALHD_PLAYER_PYTHON=player.python --> | Nonempty path string | `CRYSTALHD_PLAYER_PYTHON`; `unset` retains `/usr/bin/python3` |
+| `gstreamer.crystalhddec.scale_width` <!-- schema-key:gstreamer.crystalhddec.scale_width --><!-- schema-map:gst-property:scale-width=gstreamer.crystalhddec.scale_width --><!-- schema-map:player-flag:--scale-width=gstreamer.crystalhddec.scale_width --> | `0`, or an even integer from `128` through `1918` | `crystalhddec scale-width`; `crystalhd-play --scale-width` is the explicit player override |
+| `player.decoder` <!-- schema-key:player.decoder --><!-- schema-map:player-flag:--hardware=player.decoder --><!-- schema-map:player-flag:--software=player.decoder --> | String enum: `"hardware"`, `"software"` | Mutually exclusive `crystalhd-play` flags; native value is hardware |
+| `player.software_output_size` <!-- schema-key:player.software_output_size --><!-- schema-map:player-flag:--software-output-size=player.software_output_size --> | String `"WIDTHxHEIGHT"`; positive even dimensions at most `4096`, total at most `4096x2160` | `crystalhd-play --software-output-size` |
+
+These current surfaces deliberately do not become ordinary merged keys:
+
+| Surface | Boundary |
+| --- | --- |
+| `force_l0s_off` <!-- schema-boundary:module:force_l0s_off=staged-module --> | Inspect or stage separately; never claim an immediate per-application change |
+| `session_l0s_off` <!-- schema-boundary:module:session_l0s_off=staged-module --> | Same separate module-load lifetime and topology checks |
+| `CRYSTALHD_CHROMIUM_CONFIG` <!-- schema-boundary:environment:CRYSTALHD_CHROMIUM_CONFIG=legacy-bootstrap --> | Selects the existing trusted shell file; it cannot recursively select the strict schema |
+| `crystalhd-play --subtitles` <!-- schema-boundary:player-flag:--subtitles=invocation-only --> | Per-media invocation input, never a saved preset/profile value |
+
+External loader selectors such as `LIBVA_DRIVER_NAME`, `VAAPI_FORCE_INDIRECT`,
+`GST_PLUGIN_PATH` and `LD_LIBRARY_PATH` remain owned by their respective
+runtimes and are not schema keys.
+
+## Selection and merge order
+
+Preset and profile selection is a separate pass from value merging.  For each
+selector, a future explicit manager command wins over the user file, which
+wins over the system file.  With no preset selection, `default` means an empty
+compatibility preset.  With no profile selection, no named profile is active.
+An unknown selected preset or profile is an error.
+
+Preset contents will be reviewed as separate data manifests.  This schema does
+not define Quality, Performance, Streaming or Experimental values and does not
+make any experimental setting implicit.
+
+The requested target state uses this exact low-to-high precedence:
+
+1. the component's compiled/native fallback;
+2. the selected preset manifest;
+3. system `[settings]`;
+4. user `[settings]`;
+5. the selected system `[profile.NAME]`;
+6. the selected user `[profile.NAME]`;
+7. an existing setting-specific process environment variable; and
+8. an explicit application command-line option or GObject property.
+
+The system file supplies defaults, not an enforcement policy.  More specific
+user, environment and application choices therefore win.
+
+There are two deliberately separate resolution steps.  First, the preset,
+system, user, selected profiles and explicit canonical application settings
+form one strict managed transaction.  It is type-checked and cross-checked
+without using raw process-environment strings to repair a contradiction.
+Second, existing setting-specific environment variables are adapted at their
+native public-interface boundary, before the higher-priority application
+override.  They are not strict-INI input and are never normalized, rewritten
+or imported into a managed file.
+
+A resolution report distinguishes:
+
+- the target request and origin after precedence;
+- the exact raw environment request and whether its native adapter accepted
+  it, subject to the diagnostic redaction rules below;
+- the effective value plus active, inactive or fallback reason; and
+- a native application rejection, when the existing program refuses the
+  combination rather than running with a fallback.
+
+For example, a valid managed `live` request with low latency enabled remains a
+valid transaction.  If raw `CRYSTALHD_VAAPI_LIVE_H264=0` then wins, the target
+request is `strict`, its raw environment origin remains visible, and the VA
+adapter reports low latency inactive because the live fast path is absent.  It
+does not turn that established raw behavior into a strict-schema error.
+
+Profile selection is always explicit.  The resolver must not inspect
+`argv[0]`, executable basenames, process names, desktop-file names, media paths
+or undocumented application internals.  A profile cannot select another
+profile or preset, which prevents recursive/cyclic selection.
+
+The resolved userspace settings are snapshotted before the relevant
+driver/library/plugin session is created.  They are not reread per frame.
+
+## Cross-setting validation
+
+Strict-schema validation rejects these incoherent combinations when produced
+by the canonical preset, system, user, selected-profile and application
+layers:
+
+- `vaapi.h264.low_latency = true` unless H.264 mode is `live`;
+- `vaapi.h264.ready_remap = true` unless mode is `live` and low latency is
+  true;
+- `chromium.experimental_hw_decode = true` unless
+  `chromium.disable_gpu_sandbox = true` explicitly acknowledges the current
+  launcher requirement; and
+- a nonzero `gstreamer.crystalhddec.scale_width` unless the player decoder is
+  hardware; and
+- a non-unset `player.software_output_size` unless the decoder is hardware and
+  `gstreamer.crystalhddec.scale_width` is nonzero.
+
+READY policy/delay values may be stored while remapping is false, but must be
+reported as inactive.  Device/backend conditions which cannot be known from a
+file—BCM70015 scaling, coded width, link topology and DRM/i915 availability—are
+reported as conditional or unsupported during effective-setting inspection;
+they are never treated as silently successful.
+
+Raw target adapters keep their established behavior after that strict
+transaction succeeds.  In particular, a non-`1` raw live-mode value selects
+strict replay and makes a requested low-latency/READY path inactive.  An
+unsupported raw READY policy or delay disables remapping while preserving the
+exact rejected value and environment origin in diagnostics.  An invalid raw
+RX-pool value falls back to 16 with a fallback receipt.  The Chromium launcher
+does not silently deactivate raw experimental hardware mode without the raw
+sandbox acknowledgement: it rejects that launch, so the report records a
+native application rejection and no successful launched state.  None of these
+raw outcomes weakens the transactional errors for the same contradiction in a
+managed file, preset, profile or canonical application setting.
+
+## File integrity and privileges
+
+A future manager must open a config file without following its final symlink,
+then validate the already-open file with `fstat` before parsing it.
+
+- A system file and its containing CrystalHD directory are root-owned regular
+  objects with no group/other write bits.
+- A user file is a regular file owned by the real/effective user, with no
+  group/other write bits.  Its containing CrystalHD directory has the same
+  ownership and write restriction.
+- A user file is not read when real and effective user or group IDs differ.
+- A writer creates user files as mode `0600` and uses a same-directory atomic
+  replacement only after the replacement validates.
+
+Readability alone is not sufficient.  An unsafe owner, type, symlink or mode
+is a hard configuration error, not a reason to consume the file partially.
+Configuration contains no password-storage secret, and future diagnostics
+must redact environment values and user paths which are not required to
+explain a result.
+
+Kernel module parameters retain their current module-load lifetime.  A future
+tool may display their effective sysfs state or prepare a separately confirmed
+`modprobe.d` change, but it must not auto-unload the module, modify global ASPM,
+or represent a saved value as already applied.
+
+## Legacy Chromium boundary
+
+`crystalhd-chromium` currently sources the readable file selected by
+`CRYSTALHD_CHROMIUM_CONFIG` as shell code, using the launcher's current
+privileges.  Assignments in that file override inherited launcher variables.
+Direct launcher use preserves that compatibility behavior.
+
+The strict v1 manager must never parse, source or automatically migrate this
+shell file.  A future **explicit managed invocation** requires an additive
+launcher mode which does not source the legacy file.  That mode is not
+implemented today; until it exists, the manager must not claim that it can
+launch Chromium with a fully determined effective configuration.  No process
+name matching or implicit bypass is permitted.
+
+## Versioning and migration
+
+Version 1 accepts only `schema = 1`.  Missing, older and newer versions are not
+guessed.  A future migration command must:
+
+1. parse and validate the source under its declared version;
+2. show dropped, renamed and changed values before writing;
+3. write a separate same-directory candidate and keep a recoverable backup;
+4. validate the candidate under the destination version; and
+5. replace the original atomically only after explicit confirmation.
+
+There is no automatic import from shell startup files, `chromium.conf`, the
+current process environment or `/etc/modprobe.d`.  Existing interfaces remain
+valid and continue to take precedence according to their documented lifetime.

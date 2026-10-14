@@ -5,6 +5,10 @@ production driver, library, VA-API backend, launchers, GStreamer element and
 `crystalhd-play`. It is not a new configuration-file format, preset system or
 settings manager. Unset controls retain the existing behavior.
 
+The strict schema proposed for a future, explicit headless manager is defined
+separately in [CONFIGURATION-SCHEMA.md](CONFIGURATION-SCHEMA.md). Production
+components do not read that schema today.
+
 Safety labels mean:
 
 - **Standard** — ordinary supported selection; normal input and device limits
@@ -147,3 +151,8 @@ It compares this document's hidden surface identifiers with module parameters,
 literal library/VA environment reads, CrystalHD-named variables in installed
 scripts, production GStreamer properties and explicit `crystalhd-play` options.
 Missing and stale rows both fail.
+
+The schema conformance check also classifies all 27 surfaces: 23 userspace
+surfaces map to 21 canonical keys, the two module parameters retain a separate
+module-load lifetime, `CRYSTALHD_CHROMIUM_CONFIG` remains a legacy bootstrap,
+and `--subtitles` remains invocation-only.
