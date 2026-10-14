@@ -39,6 +39,7 @@ enum class Failure {
     OutputMode,
     OutputWrite,
     OutputClose,
+    OutputPublish,
 };
 
 const char *FailureName(Failure failure);

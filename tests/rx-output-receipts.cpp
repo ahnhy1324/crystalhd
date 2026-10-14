@@ -5,14 +5,17 @@
 #include <cerrno>
 #include <climits>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits>
 #include <new>
+#include <string>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <vector>
 
 #include "bc_dts_types.h"
 #include "bc_dts_defs.h"
@@ -58,6 +61,14 @@ bool WriteAll(int fd, const char *data, size_t bytes, const OutputOps &ops)
         data += written;
         bytes -= static_cast<size_t>(written);
     }
+    return true;
+}
+
+template <size_t N>
+bool AllZero(const uint32_t (&values)[N])
+{
+    for (size_t index = 0; index < N; ++index)
+        if (values[index]) return false;
     return true;
 }
 
@@ -119,7 +130,8 @@ const char *FailureName(Failure failure)
         "receipt-read", "research-device-close", "driver-receipt-overflow",
         "invalid-driver-record", "clock-inversion", "eos-mismatch",
         "firmware-timestamp", "ambiguous-join", "unmatched-receipt", "native-run",
-        "output-open", "output-mode", "output-write", "output-close"
+        "output-open", "output-mode", "output-write", "output-close",
+        "output-publish"
     };
     const size_t index = static_cast<size_t>(failure);
     return index < sizeof(names) / sizeof(names[0]) ? names[index] : "unknown";
@@ -277,8 +289,16 @@ bool WriteTsv(const char *path, const JoinedReceipt *rows, size_t row_count,
     }
     OutputOps ops = in_ops ? *in_ops : OutputOps{};
     if (!ops.write_file) ops.write_file = WriteFile;
-    const int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC |
-                       O_NOFOLLOW, 0600);
+    std::vector<char> temporary;
+    try {
+        const std::string pattern = std::string(path) + ".partial.XXXXXX";
+        temporary.assign(pattern.begin(), pattern.end());
+        temporary.push_back('\0');
+    } catch (const std::bad_alloc &) {
+        *failure = Failure::Allocation;
+        return false;
+    }
+    const int fd = mkostemp(temporary.data(), O_CLOEXEC);
     if (fd < 0) {
         *failure = Failure::OutputOpen;
         return false;
@@ -357,6 +377,19 @@ bool WriteTsv(const char *path, const JoinedReceipt *rows, size_t row_count,
         ok = false;
         *failure = Failure::OutputClose;
     }
+    if (ok && link(temporary.data(), path)) {
+        ok = false;
+        *failure = Failure::OutputPublish;
+    }
+    int unlink_status;
+    do {
+        unlink_status = unlink(temporary.data());
+    } while (unlink_status && errno == EINTR);
+    /* Once link() succeeds the complete final path is authoritative.  A rare
+     * staging-unlink failure must not turn that safe publication into a false
+     * failure; normal and injected failure paths verify cleanup separately.
+     */
+    (void)unlink_status;
     return ok;
 }
 
@@ -430,16 +463,20 @@ bool Probe::Arm()
     armed_ = true;
     if (arm_.version != CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION ||
         arm_.size != sizeof(arm_) || !arm_.generation || !arm_.run_id ||
-        arm_.capacity != driver_.size() || arm_.flags) {
-        /* Successful ARM with corrupt copyout still created a store. Seal the
-         * current idle store so a subsequent exact ARM can replace it.
+        arm_.capacity != driver_.size() || arm_.flags ||
+        !AllZero(arm_.reserved)) {
+        /* Never use SEAL_CURRENT for malformed copyout: another privileged
+         * client may have replaced the store.  A nonzero returned run ID can
+         * only be retried as that exact identity; otherwise leave it alone.
          */
-        crystalhd_fw_research_rx_receipt_seal recovery = {};
-        recovery.version = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION;
-        recovery.size = sizeof(recovery);
-        recovery.flags = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL_CURRENT;
-        (void)device_ops_.ioctl_device(device_ops_.opaque, fd_,
-            CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL, &recovery);
+        if (arm_.run_id) {
+            crystalhd_fw_research_rx_receipt_seal recovery = {};
+            recovery.version = CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION;
+            recovery.size = sizeof(recovery);
+            recovery.run_id = arm_.run_id;
+            (void)device_ops_.ioctl_device(device_ops_.opaque, fd_,
+                CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL, &recovery);
+        }
         Fail(Failure::Arm);
         armed_ = false;
         (void)CloseDevice();
@@ -487,9 +524,9 @@ bool Probe::SealAndRead()
     const bool seal_failed = device_ops_.ioctl_device(device_ops_.opaque, fd_,
             CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL, &seal) < 0 ||
         seal.version != CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION ||
-        seal.size != sizeof(seal) || seal.flags || !seal.sealed ||
+        seal.size != sizeof(seal) || seal.flags || seal.sealed != 1 ||
         seal.generation != arm_.generation || seal.run_id != arm_.run_id ||
-        seal.record_count > driver_.size();
+        seal.record_count > driver_.size() || !AllZero(seal.reserved);
     if (seal_failed) {
         /* A failed ioctl can mean the exact SEAL never ran or that its reply
          * was lost after it ran.  Retry only our exact run ID: SEAL_CURRENT
@@ -522,15 +559,22 @@ bool Probe::SealAndRead()
         if (device_ops_.ioctl_device(device_ops_.opaque, fd_,
                 CRYSTALHD_FW_RESEARCH_RX_RECEIPT_READ, &read) < 0 ||
             read.version != CRYSTALHD_FW_RESEARCH_RX_RECEIPT_VERSION ||
-            read.size != sizeof(read) || read.flags ||
+            read.size != sizeof(read) || read.flags || read.start != start ||
             read.generation != arm_.generation || read.run_id != arm_.run_id ||
-            !read.sealed || read.record_count != seal.record_count ||
-            read.overflow_count ||
+            read.sealed != 1 || read.record_count != seal.record_count ||
+            read.overflow_count || !AllZero(read.reserved) ||
             read.returned > CRYSTALHD_FW_RESEARCH_RX_RECEIPT_READ_RECORDS ||
             read.returned > read.record_count - start ||
             (!read.returned && start < read.record_count)) {
             Fail(Failure::Read);
             return false;
+        }
+        for (uint32_t index = 0; index < read.returned; ++index) {
+            if (read.records[index].ordinal !=
+                    static_cast<uint64_t>(start) + index) {
+                Fail(Failure::Read);
+                return false;
+            }
         }
         std::copy(read.records, read.records + read.returned,
                   driver_.begin() + start);

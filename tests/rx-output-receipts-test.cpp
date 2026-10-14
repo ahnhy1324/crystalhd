@@ -3,9 +3,11 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <string>
 #include <sys/stat.h>
@@ -90,6 +92,10 @@ static HostReceipt Host(const crystalhd_fw_research_rx_receipt &driver)
 
 struct FakeDevice {
     enum class SealFault { None, RejectBeforeSeal, LoseReply };
+    enum class ArmReplyFault { None, Reserved, ZeroIdentity };
+    enum class SealReplyFault { None, Generation, Sealed, Reserved };
+    enum class ReadReplyFault { None, Generation, Start, Sealed, Reserved,
+                                Ordinal };
 
     std::vector<crystalhd_fw_research_rx_receipt> records;
     std::string events;
@@ -97,8 +103,9 @@ struct FakeDevice {
     bool close_ok = true;
     bool sealed = false;
     SealFault seal_fault = SealFault::None;
-    bool malformed_seal_reply = false;
-    bool malformed_read_reply = false;
+    ArmReplyFault arm_reply_fault = ArmReplyFault::None;
+    SealReplyFault seal_reply_fault = SealReplyFault::None;
+    ReadReplyFault read_reply_fault = ReadReplyFault::None;
     unsigned exact_seal_calls = 0;
     uint32_t overflow_count = 0;
     uint32_t capacity = 0;
@@ -127,6 +134,12 @@ struct FakeDevice {
             fake->capacity = arm->capacity;
             arm->generation = 7;
             arm->run_id = 9;
+            if (fake->arm_reply_fault == ArmReplyFault::Reserved)
+                arm->reserved[0] = 1;
+            if (fake->arm_reply_fault == ArmReplyFault::ZeroIdentity) {
+                arm->generation = 0;
+                arm->run_id = 0;
+            }
             return 0;
         }
         if (command == CRYSTALHD_FW_RESEARCH_RX_RECEIPT_SEAL) {
@@ -164,8 +177,14 @@ struct FakeDevice {
             seal->sealed = 1;
             seal->record_count = fake->records.size();
             seal->overflow_count = fake->overflow_count;
-            if (!recover && fake->malformed_seal_reply)
+            if (!recover &&
+                fake->seal_reply_fault == SealReplyFault::Generation)
                 seal->generation++;
+            if (!recover && fake->seal_reply_fault == SealReplyFault::Sealed)
+                seal->sealed = 2;
+            if (!recover &&
+                fake->seal_reply_fault == SealReplyFault::Reserved)
+                seal->reserved[0] = 1;
             return 0;
         }
         if (command == CRYSTALHD_FW_RESEARCH_RX_RECEIPT_READ) {
@@ -187,8 +206,17 @@ struct FakeDevice {
                 fake->records.size() - start);
             for (uint32_t index = 0; index < read->returned; ++index)
                 read->records[index] = fake->records[start + index];
-            if (fake->malformed_read_reply)
+            if (fake->read_reply_fault == ReadReplyFault::Generation)
                 read->generation++;
+            if (fake->read_reply_fault == ReadReplyFault::Start)
+                read->start++;
+            if (fake->read_reply_fault == ReadReplyFault::Sealed)
+                read->sealed = 2;
+            if (fake->read_reply_fault == ReadReplyFault::Reserved)
+                read->reserved[0] = 1;
+            if (fake->read_reply_fault == ReadReplyFault::Ordinal &&
+                read->returned)
+                read->records[0].ordinal++;
             return 0;
         }
         fake->valid = false;
@@ -235,6 +263,51 @@ struct FailingWriter {
     }
 };
 
+struct RecoveringWriter {
+    unsigned calls = 0;
+    static ssize_t Write(void *opaque, int fd, const void *data, size_t bytes)
+    {
+        RecoveringWriter *writer = static_cast<RecoveringWriter *>(opaque);
+        ++writer->calls;
+        if (writer->calls == 1) {
+            errno = EINTR;
+            return -1;
+        }
+        if (writer->calls == 2)
+            return write(fd, data, std::min<size_t>(bytes, 7));
+        return write(fd, data, bytes);
+    }
+    OutputOps Ops()
+    {
+        OutputOps ops;
+        ops.opaque = this;
+        ops.write_file = Write;
+        return ops;
+    }
+};
+
+struct PublishRacer {
+    const char *path = nullptr;
+    const char *target = nullptr;
+    bool raced = false;
+    static ssize_t Write(void *opaque, int fd, const void *data, size_t bytes)
+    {
+        PublishRacer *writer = static_cast<PublishRacer *>(opaque);
+        if (!writer->raced) {
+            writer->raced = true;
+            if (symlink(writer->target, writer->path)) return -1;
+        }
+        return write(fd, data, bytes);
+    }
+    OutputOps Ops()
+    {
+        OutputOps ops;
+        ops.opaque = this;
+        ops.write_file = Write;
+        return ops;
+    }
+};
+
 static bool Exists(const char *path, off_t *size = nullptr, mode_t *mode = nullptr)
 {
     struct stat status = {};
@@ -242,6 +315,18 @@ static bool Exists(const char *path, off_t *size = nullptr, mode_t *mode = nullp
     if (size) *size = status.st_size;
     if (mode) *mode = status.st_mode & 0777;
     return true;
+}
+
+static unsigned CountPrefix(const char *directory, const char *prefix)
+{
+    DIR *stream = opendir(directory);
+    if (!stream) return UINT_MAX;
+    unsigned count = 0;
+    const size_t length = std::strlen(prefix);
+    while (const dirent *entry = readdir(stream))
+        if (!std::strncmp(entry->d_name, prefix, length)) ++count;
+    closedir(stream);
+    return count;
 }
 
 int main()
@@ -381,14 +466,22 @@ int main()
     char directory[] = "/tmp/crystalhd-rx-output-test.XXXXXX";
     Check(mkdtemp(directory) != nullptr, "temporary output directory created");
     char output[512], native_failure[512], partial[512], raced[512];
-    char multi[512], overflow[512];
+    char publish_race[512], recovered[512], multi[512], overflow[512];
+    char arm_reserved[512], arm_unknown[512];
     std::snprintf(output, sizeof(output), "%s/receipts.tsv", directory);
     std::snprintf(native_failure, sizeof(native_failure), "%s/native-fail.tsv",
                   directory);
     std::snprintf(partial, sizeof(partial), "%s/partial.tsv", directory);
     std::snprintf(raced, sizeof(raced), "%s/raced.tsv", directory);
+    std::snprintf(publish_race, sizeof(publish_race), "%s/publish-race.tsv",
+                  directory);
+    std::snprintf(recovered, sizeof(recovered), "%s/recovered.tsv", directory);
     std::snprintf(multi, sizeof(multi), "%s/multi.tsv", directory);
     std::snprintf(overflow, sizeof(overflow), "%s/overflow.tsv", directory);
+    std::snprintf(arm_reserved, sizeof(arm_reserved), "%s/arm-reserved.tsv",
+                  directory);
+    std::snprintf(arm_unknown, sizeof(arm_unknown), "%s/arm-unknown.tsv",
+                  directory);
 
     {
         FakeDevice fake;
@@ -410,18 +503,54 @@ int main()
         char text[4096] = {};
         const size_t read = file ? std::fread(text, 1, sizeof(text) - 1, file) : 0;
         if (file) std::fclose(file);
-        Check(read && std::strstr(text, "receipt_generation\treceipt_run_id") &&
-              std::strstr(text, "normalized_firmware_timestamp") &&
-              std::strstr(text, "driver_picture_number\tdriver_session_number\t") &&
-              std::strstr(text, "driver_width\tdriver_height\t") &&
-              std::strstr(text, "driver_y_done_words\tdriver_uv_done_words\t") &&
-              std::strstr(text, "7\t9\t0\t") &&
-              std::strstr(text, "\t100000\t"),
-              "TSV preserves sealed-run provenance and normalized token without claiming a generic ABI");
+        static const char expected[] =
+            "receipt_generation\treceipt_run_id\thost_ordinal\thost_return_ns\t"
+            "ready_before\ttoken\tpicture_number\tsession_number\t"
+            "host_picture_flags\twidth\theight\ty_done_words\tuv_done_words\t"
+            "pout_flags\tb422_mode\teos\tdriver_ordinal\tcapture_epoch\t"
+            "fire_return_ns\tirq_entry_ns\tcompletion_ns\tparse_ns\t"
+            "disposition_ns\traw_firmware_timestamp\t"
+            "normalized_firmware_timestamp\tdriver_picture_number\t"
+            "driver_session_number\tdriver_width\tdriver_height\t"
+            "driver_y_done_words\tdriver_uv_done_words\trx_sequence\t"
+            "list_index\tpacket_tag\tchannel_id\tcompletion_status\t"
+            "y_descriptor_count\tuv_descriptor_count\tdriver_picture_flags\t"
+            "row_width\tpib_line\tpacket_flags\tstage_flags\tdisposition\t"
+            "eos_trailer\tfire_to_irq_ns\tirq_to_completion_ns\t"
+            "disposition_to_host_ns\n"
+            "7\t9\t0\t160\t2\t100000\t10\t4\t0\t640\t360\t57600\t0\t"
+            "131072\t2\t0\t0\t3\t100\t110\t120\t130\t140\t5\t100000\t"
+            "10\t4\t640\t360\t57600\t0\t10\t0\t20\t1\t0\t4\t0\t0\t"
+            "640\t360\t6\t95\t1\t0\t10\t10\t20\n";
+        Check(read == sizeof(expected) - 1 &&
+              !std::memcmp(text, expected, sizeof(expected) - 1),
+              "TSV has the exact ordered 48-column schema and golden row");
         Probe collision(&ops);
         Check(!collision.Prepare(output, 1) &&
               collision.failure() == Failure::Path,
               "an existing output is rejected before research-device open");
+    }
+    {
+        FakeDevice fake;
+        fake.arm_reply_fault = FakeDevice::ArmReplyFault::Reserved;
+        DeviceOps ops = fake.Ops();
+        Probe probe(&ops);
+        Check(probe.Prepare(arm_reserved, 1) && !probe.Arm() &&
+              probe.failure() == Failure::Arm && fake.valid && fake.sealed &&
+              fake.exact_seal_calls == 1 && fake.events == "OASC" &&
+              !Exists(arm_reserved),
+              "malformed ARM reply with an identity retries only that exact run");
+    }
+    {
+        FakeDevice fake;
+        fake.arm_reply_fault = FakeDevice::ArmReplyFault::ZeroIdentity;
+        DeviceOps ops = fake.Ops();
+        Probe probe(&ops);
+        Check(probe.Prepare(arm_unknown, 1) && !probe.Arm() &&
+              probe.failure() == Failure::Arm && fake.valid && !fake.sealed &&
+              fake.exact_seal_calls == 0 && fake.events == "OAC" &&
+              !Exists(arm_unknown),
+              "malformed ARM reply without an identity never seals a current run");
     }
     {
         FakeDevice fake;
@@ -485,20 +614,27 @@ int main()
         }
     }
     {
-        char malformed_seal[512];
-        std::snprintf(malformed_seal, sizeof(malformed_seal),
-                      "%s/malformed-seal.tsv", directory);
-        FakeDevice fake;
-        fake.records.push_back(Driver(0, 6, 12));
-        fake.malformed_seal_reply = true;
-        DeviceOps ops = fake.Ops();
-        Probe probe(&ops);
-        Check(probe.Prepare(malformed_seal, 1) && probe.Arm() &&
-              probe.Record(Host(fake.records[0])) && !probe.Finish(true) &&
-              probe.failure() == Failure::Seal && fake.valid && fake.sealed &&
-              fake.exact_seal_calls == 2 && fake.events == "OASSC" &&
-              !Exists(malformed_seal),
-              "malformed exact SEAL reply fails and retries only the owned run ID");
+        const FakeDevice::SealReplyFault faults[] = {
+            FakeDevice::SealReplyFault::Generation,
+            FakeDevice::SealReplyFault::Sealed,
+            FakeDevice::SealReplyFault::Reserved,
+        };
+        for (unsigned index = 0; index < 3; ++index) {
+            char malformed_seal[512];
+            std::snprintf(malformed_seal, sizeof(malformed_seal),
+                          "%s/malformed-seal-%u.tsv", directory, index);
+            FakeDevice fake;
+            fake.records.push_back(Driver(0, 6, 12));
+            fake.seal_reply_fault = faults[index];
+            DeviceOps ops = fake.Ops();
+            Probe probe(&ops);
+            Check(probe.Prepare(malformed_seal, 1) && probe.Arm() &&
+                  probe.Record(Host(fake.records[0])) && !probe.Finish(true) &&
+                  probe.failure() == Failure::Seal && fake.valid &&
+                  fake.sealed && fake.exact_seal_calls == 2 &&
+                  fake.events == "OASSC" && !Exists(malformed_seal),
+                  "malformed exact SEAL reply fails and retries only the owned run ID");
+        }
     }
     {
         char overflow_path[512];
@@ -516,19 +652,28 @@ int main()
               "driver receipt overflow fails before READ or export");
     }
     {
-        char malformed_read[512];
-        std::snprintf(malformed_read, sizeof(malformed_read),
-                      "%s/malformed-read.tsv", directory);
-        FakeDevice fake;
-        fake.records.push_back(Driver(0, 6, 12));
-        fake.malformed_read_reply = true;
-        DeviceOps ops = fake.Ops();
-        Probe probe(&ops);
-        Check(probe.Prepare(malformed_read, 1) && probe.Arm() &&
-              probe.Record(Host(fake.records[0])) && !probe.Finish(true) &&
-              probe.failure() == Failure::Read && fake.valid &&
-              fake.events == "OASRC" && !Exists(malformed_read),
-              "malformed READ reply fails without exporting evidence");
+        const FakeDevice::ReadReplyFault faults[] = {
+            FakeDevice::ReadReplyFault::Generation,
+            FakeDevice::ReadReplyFault::Start,
+            FakeDevice::ReadReplyFault::Sealed,
+            FakeDevice::ReadReplyFault::Reserved,
+            FakeDevice::ReadReplyFault::Ordinal,
+        };
+        for (unsigned index = 0; index < 5; ++index) {
+            char malformed_read[512];
+            std::snprintf(malformed_read, sizeof(malformed_read),
+                          "%s/malformed-read-%u.tsv", directory, index);
+            FakeDevice fake;
+            fake.records.push_back(Driver(0, 6, 12));
+            fake.read_reply_fault = faults[index];
+            DeviceOps ops = fake.Ops();
+            Probe probe(&ops);
+            Check(probe.Prepare(malformed_read, 1) && probe.Arm() &&
+                  probe.Record(Host(fake.records[0])) && !probe.Finish(true) &&
+                  probe.failure() == Failure::Read && fake.valid &&
+                  fake.events == "OASRC" && !Exists(malformed_read),
+                  "malformed READ reply fails without exporting evidence");
+        }
     }
     {
         char close_failure[512];
@@ -556,9 +701,22 @@ int main()
               probe.Record(Host(fake.records[0])) && !probe.Finish(true) &&
               probe.failure() == Failure::OutputWrite && writer.calls == 2,
               "short write followed by failure is reported");
-        off_t bytes = 0;
-        Check(Exists(partial, &bytes) && bytes == 8,
-              "a failed export preserves its partial file for diagnosis");
+        Check(!Exists(partial) &&
+              CountPrefix(directory, "partial.tsv.partial.") == 0,
+              "a failed export leaves neither a truncated final TSV nor staging file");
+    }
+    {
+        FakeDevice fake;
+        fake.records.push_back(Driver(0, 7, 13));
+        DeviceOps ops = fake.Ops();
+        RecoveringWriter writer;
+        OutputOps output_ops = writer.Ops();
+        Probe probe(&ops, &output_ops);
+        Check(probe.Prepare(recovered, 1) && probe.Arm() &&
+              probe.Record(Host(fake.records[0])) && probe.Finish(true) &&
+              writer.calls >= 4 && Exists(recovered) &&
+              CountPrefix(directory, "recovered.tsv.partial.") == 0,
+              "EINTR and short writes recover before atomic final publication");
     }
     {
         FakeDevice fake;
@@ -569,13 +727,33 @@ int main()
               probe.Record(Host(fake.records[0])) &&
               symlink(output, raced) == 0 && !probe.Finish(true) &&
               probe.failure() == Failure::Path,
-              "a final-component symlink race is not followed or overwritten");
+              "a pre-existing final-component symlink is not followed or overwritten");
         struct stat status = {};
         Check(lstat(raced, &status) == 0 && S_ISLNK(status.st_mode),
-              "failed symlink race leaves the link untouched");
+              "rejected final symlink remains untouched");
+    }
+    {
+        FakeDevice fake;
+        fake.records.push_back(Driver(0, 8, 14));
+        DeviceOps ops = fake.Ops();
+        PublishRacer writer;
+        writer.path = publish_race;
+        writer.target = output;
+        OutputOps output_ops = writer.Ops();
+        Probe probe(&ops, &output_ops);
+        Check(probe.Prepare(publish_race, 1) && probe.Arm() &&
+              probe.Record(Host(fake.records[0])) && !probe.Finish(true) &&
+              probe.failure() == Failure::OutputPublish && writer.raced &&
+              CountPrefix(directory, "publish-race.tsv.partial.") == 0,
+              "a final-path race fails atomic no-replace publication and cleans staging");
+        struct stat status = {};
+        Check(lstat(publish_race, &status) == 0 && S_ISLNK(status.st_mode),
+              "atomic publication never overwrites the racing final symlink");
     }
 
+    unlink(publish_race);
     unlink(raced);
+    unlink(recovered);
     unlink(partial);
     unlink(native_failure);
     unlink(overflow);
