@@ -3153,6 +3153,36 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
   BC_DTS_PROC_OUT output = reported;
   H264FirstField paired_first_field;
   bool h264_field_pair = false;
+  const bool h264_interlaced = IsH264Profile(decode->profile) &&
+      (output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0;
+  // BCM70012 resolves the application's token through DtsFetchMdata. That
+  // lookup removes the entry while returning the first field, so a second
+  // field carrying zero can only inherit the already-held first field's
+  // token. Keep the exception narrow: every field property available before
+  // the ownership lookup must still identify the complementary half.
+  if (decode->is_70012 && h264_interlaced &&
+      output.PicInfo.timeStamp == 0 && decode->h264_first_field.valid) {
+    const H264FirstField &first = decode->h264_first_field;
+    const uint32_t field_type =
+        output.PicInfo.flags & VDEC_FLAG_BOTTOMFIELD;
+    const bool field_type_valid = field_type == VDEC_FLAG_TOPFIELD ||
+                                  field_type == VDEC_FLAG_BOTTOMFIELD;
+    const bool bottom = field_type == VDEC_FLAG_BOTTOMFIELD;
+    const bool bottom_first =
+        (output.PicInfo.flags & VDEC_FLAG_BOTTOM_FIRST) != 0;
+    const unsigned int padded_width = output.PicInfo.width <= 720
+        ? 720 : (output.PicInfo.width <= 1280 ? 1280 : 1920);
+    if (first.timestamp != 0 && first.is_70012 &&
+        first.generation == decode->generation && field_type_valid &&
+        first.bottom != bottom && first.bottom_first == bottom_first &&
+        first.width == output.PicInfo.width &&
+        first.height == output.PicInfo.height &&
+        first.source_pitch == padded_width * 2U) {
+      output.PicInfo.timeStamp = first.timestamp;
+      Debug("recover BCM70012 second H.264 field as token %llu",
+            static_cast<unsigned long long>(first.timestamp));
+    }
+  }
   if (driver->trace.enabled()) {
     driver->trace.Emit(crystalhd_vaapi_trace::Event::OutputDequeued,
                        TraceDecodeTokenFields(driver, decode,
@@ -3162,8 +3192,6 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
       output.PicInfo.timeStamp == decode->prefed_timestamp)
     return FailDecode(driver, decode,
                       "speculative H.264 prefix produced a picture");
-  const bool h264_interlaced = IsH264Profile(decode->profile) &&
-      (output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0;
   if (decode->h264_first_field.valid && !h264_interlaced)
     return FailDecode(driver, decode,
                       "progressive output interrupted an H.264 field pair");
@@ -3188,6 +3216,10 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
         decode->replay.IsOutstanding(output.PicInfo.timeStamp);
     const bool new_picture =
         inspection == CrystalHDDecodeReplay::Output::New;
+    if (decode->is_70012 && output.PicInfo.timeStamp == 0 &&
+        !decode->h264_first_field.valid)
+      return FailDecode(driver, decode,
+                        "unbound BCM70012 H.264 field has no timestamp");
     if (!decode->h264_first_field.valid &&
         !new_picture && !replay_duplicate) {
       if (inspection == CrystalHDDecodeReplay::Output::Invalid)
@@ -3256,6 +3288,11 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
                         "H.264 fields have mismatched identity, parity, order or geometry");
     paired_first_field = std::move(decode->h264_first_field);
     decode->h264_first_field = H264FirstField();
+    // Identity has already been checked against decoded_frames. Do not let
+    // this temporary pair object turn the map into an apparent second owner:
+    // a rebound/dropped public surface must still take the stale-pixel discard
+    // path, while real capture/VPP owners remain visible in use_count/readers.
+    paired_first_field.picture.reset();
     h264_field_pair = true;
   }
   const bool ordered_mpeg4_simple =

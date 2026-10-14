@@ -966,13 +966,15 @@ struct H264FieldFixture {
   std::vector<uint8_t> top;
   std::vector<uint8_t> bottom;
 
-  explicit H264FieldFixture(bool direct = false)
-      : top(16 * 16 * 2), bottom(16 * 16 * 2) {
+  explicit H264FieldFixture(bool direct = false, bool is_70012 = false)
+      : top((is_70012 ? 720 : 16) * 16 * 2),
+        bottom((is_70012 ? 720 : 16) * 16 * 2) {
     decoder.id = 7;
     decoder.generation = 3;
     decoder.profile = VAProfileH264Main;
     decoder.width = 16;
     decoder.height = 32;
+    decoder.is_70012 = is_70012;
     decoder.picture.seq_fields.bits.frame_mbs_only_flag = 0;
     Require(public_frame->AllocateInternal(nullptr, -1, 16, 32,
                                            VA_FOURCC_NV12),
@@ -1010,15 +1012,18 @@ struct H264FieldFixture {
     Require(decoder.replay.Append(1, true, {1}),
             "append H.264 field fixture input");
     SendNext(&decoder.replay, 1);
-    Fill(top, 20, 40, 60);
-    Fill(bottom, 100, 140, 160);
+    const unsigned int source_width = is_70012 ? 720 : 16;
+    Fill(top, source_width, 20, 40, 60);
+    Fill(bottom, source_width, 100, 140, 160);
   }
 
-  static void Fill(std::vector<uint8_t> &pixels, uint8_t luma,
+  static void Fill(std::vector<uint8_t> &pixels, unsigned int source_width,
+                   uint8_t luma,
                    uint8_t u, uint8_t v) {
     for (unsigned int row = 0; row < 16; ++row) {
       for (unsigned int column = 0; column < 16; column += 2) {
-        const size_t at = (static_cast<size_t>(row) * 16 + column) * 2;
+        const size_t at =
+            (static_cast<size_t>(row) * source_width + column) * 2;
         pixels[at] = pixels[at + 2] = luma + row;
         pixels[at + 1] = u + row;
         pixels[at + 3] = v + row;
@@ -1136,6 +1141,165 @@ static void H264FieldPairsPreserveIdentityAndPixels() {
                   VA_STATUS_SUCCESS &&
               !replay.decoder.h264_first_field.valid,
           "unsolicited retired duplicate field cannot start a partial picture");
+}
+
+static std::shared_ptr<Surface> RebindH264PublicSurface(
+    H264FieldFixture *fixture) {
+  auto replacement = std::make_shared<Surface>();
+  fixture->public_frame->expected_timestamp = 2;
+  fixture->public_frame->decode_identity = 42;
+  fixture->public_frame->decode_picture = replacement;
+  return replacement;
+}
+
+static void H264FieldPairsRespectStaleAndRetainedOwnership() {
+  {
+    H264FieldFixture fixture;
+    mock_sync_fd = memfd_create("crystalhd-field-stale-test", MFD_CLOEXEC);
+    Require(mock_sync_fd >= 0, "allocate stale field-pair ownership fd");
+    fixture.private_frame->object_fds.push_back(mock_sync_fd);
+    std::weak_ptr<Surface> picture = fixture.private_frame;
+    const std::vector<uint8_t> public_pixels = fixture.public_frame->storage;
+    BC_DTS_PROC_OUT first = fixture.Output(false, false, &fixture.top);
+    BC_DTS_PROC_OUT second = fixture.Output(true, false, &fixture.bottom);
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, first) ==
+                    VA_STATUS_SUCCESS &&
+                fixture.decoder.h264_first_field.valid,
+            "retain first field before its public surface is rebound");
+    const auto replacement = RebindH264PublicSurface(&fixture);
+    fixture.private_frame.reset();
+    mock_failed_sync_flags = UINT64_MAX;
+    mock_sync_calls.clear();
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, second) ==
+                    VA_STATUS_SUCCESS &&
+                !fixture.decoder.h264_first_field.valid &&
+                fixture.decoder.pending.empty() &&
+                fixture.decoder.replay.outstanding() == 0 &&
+                fixture.decoder.decoded_frames.empty() && picture.expired() &&
+                mock_sync_calls.empty() &&
+                fixture.public_frame->storage == public_pixels &&
+                !fixture.public_frame->ready && !fixture.public_frame->failed &&
+                fixture.public_frame->decode_picture.lock() == replacement,
+            "a dropped field pair retires transport without CPU materialization");
+    mock_sync_fd = -1;
+  }
+
+  for (bool queued_vpp : {false, true}) {
+    H264FieldFixture fixture;
+    mock_sync_fd = memfd_create(queued_vpp ? "crystalhd-field-vpp-test"
+                                           : "crystalhd-field-capture-test",
+                                MFD_CLOEXEC);
+    Require(mock_sync_fd >= 0, "allocate retained field-pair ownership fd");
+    fixture.private_frame->object_fds.push_back(mock_sync_fd);
+    BC_DTS_PROC_OUT first = fixture.Output(false, false, &fixture.top);
+    BC_DTS_PROC_OUT second = fixture.Output(true, false, &fixture.bottom);
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, first) ==
+                    VA_STATUS_SUCCESS &&
+                fixture.decoder.h264_first_field.valid,
+            "retain first field before capture or VPP owns its picture");
+    auto retained = fixture.private_frame;
+    if (queued_vpp)
+      retained->vpp_readers = 1;
+    const auto replacement = RebindH264PublicSurface(&fixture);
+    fixture.private_frame.reset();
+    mock_failed_sync_flags = UINT64_MAX;
+    mock_sync_calls.clear();
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, second) ==
+                    VA_STATUS_SUCCESS &&
+                retained->ready && retained->frame_timestamp == 1 &&
+                mock_sync_calls ==
+                    std::vector<uint64_t>{DMA_BUF_SYNC_START |
+                                              DMA_BUF_SYNC_WRITE,
+                                          DMA_BUF_SYNC_END |
+                                              DMA_BUF_SYNC_WRITE} &&
+                fixture.decoder.pending.empty() &&
+                fixture.decoder.replay.outstanding() == 0 &&
+                fixture.decoder.decoded_frames.empty() &&
+                !fixture.public_frame->ready && !fixture.public_frame->failed &&
+                fixture.public_frame->decode_picture.lock() == replacement,
+            "capture and queued VPP ownership preserve stale field pixels");
+    fixture.CheckPixels(*retained);
+    mock_sync_fd = -1;
+  }
+}
+
+static void H264Bcm70012SecondFieldTokenRecoveryIsNarrow() {
+  for (bool direct : {false, true}) {
+    for (bool bottom_first : {false, true}) {
+      H264FieldFixture fixture(direct, true);
+      const bool first_bottom = bottom_first;
+      BC_DTS_PROC_OUT first = fixture.Output(
+          first_bottom, bottom_first,
+          first_bottom ? &fixture.bottom : &fixture.top);
+      BC_DTS_PROC_OUT second = fixture.Output(
+          !first_bottom, bottom_first,
+          first_bottom ? &fixture.top : &fixture.bottom);
+      second.PicInfo.timeStamp = 0;
+      Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, first) ==
+                      VA_STATUS_SUCCESS &&
+                  fixture.decoder.h264_first_field.valid &&
+                  ProcessDecodedOutput(&fixture.driver, &fixture.decoder,
+                                       second) == VA_STATUS_SUCCESS &&
+                  !fixture.decoder.h264_first_field.valid &&
+                  fixture.decoder.pending.empty() &&
+                  fixture.decoder.replay.outstanding() == 0 &&
+                  fixture.public_frame->ready &&
+                  fixture.public_frame->frame_timestamp == 1,
+              "BCM70012 recovers only its complementary second field token");
+      fixture.CheckPixels(*fixture.public_frame);
+    }
+  }
+
+  {
+    H264FieldFixture fixture(false, true);
+    BC_DTS_PROC_OUT unbound = fixture.Output(false, false, &fixture.top);
+    unbound.PicInfo.timeStamp = 0;
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, unbound) ==
+                    VA_STATUS_ERROR_DECODING_ERROR &&
+                fixture.decoder.replay.failed() &&
+                !fixture.decoder.h264_first_field.valid,
+            "a zero-token BCM70012 field cannot start an unbound pair");
+  }
+
+  const auto reject_zero_second = [](unsigned int fault) {
+    H264FieldFixture fixture(false, true);
+    BC_DTS_PROC_OUT first = fixture.Output(false, false, &fixture.top);
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, first) ==
+                    VA_STATUS_SUCCESS &&
+                fixture.decoder.h264_first_field.valid,
+            "retain BCM70012 first field before zero-token mismatch");
+    BC_DTS_PROC_OUT second = fixture.Output(true, false, &fixture.bottom);
+    second.PicInfo.timeStamp = 0;
+    switch (fault) {
+      case 0: second.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC |
+                                      VDEC_FLAG_TOPFIELD; break;
+      case 1: second.PicInfo.width = 14; break;
+      case 2: ++fixture.decoder.generation; break;
+      case 3: second.PicInfo.flags |= VDEC_FLAG_BOTTOM_FIRST; break;
+      case 4: fixture.private_frame->decode_identity = 42; break;
+    }
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, second) ==
+                    VA_STATUS_ERROR_DECODING_ERROR &&
+                fixture.decoder.replay.failed() &&
+                !fixture.decoder.h264_first_field.valid &&
+                !fixture.public_frame->ready,
+            "BCM70012 zero token cannot bypass pair identity or geometry");
+  };
+  for (unsigned int fault = 0; fault < 5; ++fault)
+    reject_zero_second(fault);
+
+  {
+    H264FieldFixture fixture;
+    BC_DTS_PROC_OUT first = fixture.Output(false, false, &fixture.top);
+    BC_DTS_PROC_OUT second = fixture.Output(true, false, &fixture.bottom);
+    second.PicInfo.timeStamp = 0;
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, first) ==
+                    VA_STATUS_SUCCESS &&
+                ProcessDecodedOutput(&fixture.driver, &fixture.decoder,
+                                     second) == VA_STATUS_ERROR_DECODING_ERROR &&
+                fixture.decoder.replay.failed(),
+            "BCM70015 never inherits the BCM70012 metadata workaround");
+  }
 }
 
 static void H264FieldPairRejectsPartialOrMismatchedOutput() {
@@ -6203,6 +6367,8 @@ int main() {
     UnknownOutputNeverGuessesAndInvalidOutputFails();
     DuplicateOutputCannotMutateOrRetirePixels();
     H264FieldPairsPreserveIdentityAndPixels();
+    H264FieldPairsRespectStaleAndRetainedOwnership();
+    H264Bcm70012SecondFieldTokenRecoveryIsNarrow();
     H264FieldPairRejectsPartialOrMismatchedOutput();
     H264FieldPartialStateClearsAtTeardownAndEos();
     RealH264SubmitCompletesFieldPairs();
