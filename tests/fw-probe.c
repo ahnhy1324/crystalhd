@@ -179,15 +179,36 @@ static char receipt_events[16];
 static BC_STATUS read_mock(struct crystalhd_hw *hw, u32 offset, u32 count, u32 *words);
 static unsigned clock_reads, clock_mutate_at, clock_mutation;
 static unsigned clock_guard_count, clock_guard_mutate_at, clock_guard_mutation;
-static bool clock_only, uart_mode, crypto_mode;
+static bool clock_only, uart_mode, crypto_mode, heartbeat_mode;
 static u32 clock_values[2][3];
 static u32 crypto_values[2][4], crypto_gisb_values[2][5];
 static u32 crypto_capture_values[2][2];
 static unsigned crypto_slots[2], crypto_capture_phase[2];
+static u64 mock_time_ns;
+static unsigned heartbeat_sleeps;
+static unsigned heartbeat_target_reads, heartbeat_guard_reads;
+static unsigned heartbeat_sleep_mutate_at, heartbeat_sleep_mutation;
+static u32 heartbeat_values[CRYSTALHD_FW_RESEARCH_HEARTBEAT_MAX_POLLS + 1];
+static u32 heartbeat_guards[2 * (CRYSTALHD_FW_RESEARCH_HEARTBEAT_MAX_POLLS + 1)];
 static u32 clock_read_mock(struct crystalhd_adp *adapter, u32 address);
-static u64 monotonic_ns;
+static u32 heartbeat_read_mock(struct crystalhd_adp *adapter, u32 address);
+static void state_mutate(unsigned mutation);
+
 static u64 ktime_get_ns(void)
-{ return ++monotonic_ns; }
+{
+    CHECK(!hardware.lock.held);
+    return ++mock_time_ns;
+}
+
+static void msleep(unsigned milliseconds)
+{
+    CHECK(milliseconds == 1 && !hardware.lock.held &&
+          hardware.fwcmd_trans_mutex.held == 1);
+    mock_time_ns += 1000000;
+    heartbeat_sleeps++;
+    if (heartbeat_sleep_mutate_at == heartbeat_sleeps)
+        state_mutate(heartbeat_sleep_mutation);
+}
 
 static void down_read(struct rwsem *lock)
 {
@@ -240,6 +261,7 @@ static void state_mutate(unsigned mutation)
     case 18: adp.mem_addr = NULL; break;
     case 19: hardware.pfnDevDRAMRead = NULL; break;
     case 20: hardware.pfnWriteDevRegister = NULL; break;
+    case 21: hardware.FleaPowerTransition = true; break;
     default: CHECK(false);
     }
 }
@@ -373,7 +395,8 @@ static int nonseekable_open(struct inode *inode, struct file *file)
 static unsigned copy_from_user(void *to, const void *from, size_t size)
 {
     unlocked(); copy_in_count++;
-    if (uart_mode || crypto_mode) CHECK(size == sizeof(struct crystalhd_fw_research_state_request));
+    if (uart_mode || crypto_mode || heartbeat_mode)
+        CHECK(size == sizeof(struct crystalhd_fw_research_state_request));
     if (copy_in_error) return 1;
     memcpy(to, from, size); return 0;
 }
@@ -382,6 +405,7 @@ static unsigned copy_to_user(void *to, const void *from, size_t size)
     unlocked(); copy_out_count++;
     if (uart_mode) CHECK(size == sizeof(struct crystalhd_fw_research_uart_result));
     if (crypto_mode) CHECK(size == sizeof(struct crystalhd_fw_research_crypto_result));
+    if (heartbeat_mode) CHECK(size == sizeof(struct crystalhd_fw_research_heartbeat_result));
     if (copy_out_error) {
         if (receipt_copyout_starts_session)
             adp.cfg_users = 1;
@@ -580,10 +604,15 @@ static void reset(void)
     read_count = read_fail_at = read_mutate_at = read_mutation = 0;
     read_mismatch_stage = read_mismatch_word = 0; read_padding = false;
     clock_reads = clock_mutate_at = clock_mutation = 0;
-    clock_only = uart_mode = crypto_mode = false;
+    clock_only = uart_mode = crypto_mode = heartbeat_mode = false;
     clock_guard_count = clock_guard_mutate_at = clock_guard_mutation = 0;
     memset(crypto_slots, 0, sizeof(crypto_slots));
     memset(crypto_capture_phase, 0, sizeof(crypto_capture_phase));
+    mock_time_ns = heartbeat_sleeps = 0;
+    heartbeat_target_reads = heartbeat_guard_reads = 0;
+    heartbeat_sleep_mutate_at = heartbeat_sleep_mutation = 0;
+    memset(heartbeat_values, 0, sizeof(heartbeat_values));
+    memset(heartbeat_guards, 0, sizeof(heartbeat_guards));
     for (i = 0; i < 2; i++) {
         clock_values[i][0] = 0x01234567U + i;
         clock_values[i][1] = 0x89abcdefU + i;
@@ -1536,6 +1565,31 @@ static u32 clock_read_mock(struct crystalhd_adp *adapter, u32 address)
     if (clock_reads == clock_mutate_at) state_mutate(clock_mutation);
     return value;
 }
+
+static u32 heartbeat_read_mock(struct crystalhd_adp *adapter, u32 address)
+{
+    unsigned slot = clock_reads++ % 3;
+    u32 value;
+
+    barrier();
+    CHECK(heartbeat_mode && adapter == &adp && hardware.lock.held == 1 &&
+          hardware.fwcmd_trans_mutex.held == 1);
+    CHECK(adp.cmds.session_owner == &crystalhd_fw_research_owner &&
+          adp.cmds.session_module_pinned && hardware.dev_started &&
+          !release_count && command_count == 3 && read_count == 7);
+    if (slot == 1) {
+        CHECK(address == BCHP_ARMCR4_BRIDGE_REG_SCRATCH_1);
+        CHECK(heartbeat_target_reads < ARRAY_SIZE(heartbeat_values));
+        value = heartbeat_values[heartbeat_target_reads++];
+    } else {
+        CHECK(address == BCHP_SUN_GISB_ARB_ERR_CAP_STATUS);
+        CHECK(heartbeat_guard_reads < ARRAY_SIZE(heartbeat_guards));
+        value = heartbeat_guards[heartbeat_guard_reads++];
+    }
+    if (clock_reads == clock_mutate_at)
+        state_mutate(clock_mutation);
+    return value;
+}
 static struct crystalhd_fw_research_state_request state_request(void)
 {
     struct crystalhd_fw_research_state_request req = {0};
@@ -1562,7 +1616,7 @@ command_observation_run(u64 generation,
     memset(&result, 0xa5, sizeof(result));
     result.request = command_observation_request();
     crystalhd_fw_research_run_internal(generation, request, &result.control,
-        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, &result);
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, &result, NULL);
     unlocked(); CHECK(!live_allocations);
     return result;
 }
@@ -1653,7 +1707,8 @@ static struct crystalhd_fw_research_state_result state_run(void)
     struct crystalhd_fw_research_state_result result;
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.request = state_request();
-    crystalhd_fw_research_run_internal(42, &req, &result.control, &result, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    crystalhd_fw_research_run_internal(42, &req, &result.control, &result,
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
     CHECK(result.control.generation == 42);
@@ -1867,7 +1922,9 @@ static struct crystalhd_fw_research_controller_result controller_run(void)
     struct crystalhd_fw_research_controller_result result;
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.state.request = controller_request();
-    crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state, &result, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    crystalhd_fw_research_run_internal(42, &req, &result.state.control,
+        &result.state, &result, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.state.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
     CHECK(result.state.control.request.size == sizeof(struct crystalhd_fw_research_result));
@@ -2168,7 +2225,8 @@ static struct crystalhd_fw_research_image_result image_run(void)
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.controller.state.request = image_request();
     crystalhd_fw_research_run_internal(42, &req, &result.controller.state.control,
-        &result.controller.state, &result.controller, &result, NULL, NULL, NULL, NULL, NULL, NULL);
+        &result.controller.state, &result.controller, &result, NULL, NULL,
+        NULL, NULL, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.controller.state.request.size == sizeof(result));
     CHECK(result.controller.state.control.request.size == 1488 &&
@@ -2365,7 +2423,8 @@ static struct crystalhd_fw_research_packet_result packet_run(void)
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.image.controller.state.request = packet_request();
     crystalhd_fw_research_run_internal(42, &req, &result.image.controller.state.control,
-        &result.image.controller.state, &result.image.controller, &result.image, &result, NULL, NULL, NULL, NULL, NULL);
+        &result.image.controller.state, &result.image.controller, &result.image,
+        &result, NULL, NULL, NULL, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.image.controller.state.request.size == sizeof(result));
     CHECK(result.image.controller.state.control.request.size == 1488 &&
@@ -2619,7 +2678,8 @@ static struct crystalhd_fw_research_heap_packet_result heap_packet_run(void)
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.image.controller.state.request = heap_packet_request();
     crystalhd_fw_research_run_internal(42, &req, &result.image.controller.state.control,
-        &result.image.controller.state, &result.image.controller, &result.image, NULL, &result, NULL, NULL, NULL, NULL);
+        &result.image.controller.state, &result.image.controller, &result.image,
+        NULL, &result, NULL, NULL, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.image.controller.state.request.size == sizeof(result));
     CHECK(result.image.controller.state.control.request.size == 1488 &&
@@ -2985,7 +3045,7 @@ static struct crystalhd_fw_research_clock_result clock_run(void)
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.state.request = clock_request();
     crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state,
-                                      NULL, NULL, NULL, NULL, &result, NULL, NULL, NULL);
+        NULL, NULL, NULL, NULL, &result, NULL, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.state.control.request.size == 1488 && result.state.request.size == 1656);
     return result;
@@ -3174,7 +3234,7 @@ static struct crystalhd_fw_research_uart_result uart_run(void)
     uart_mode = true;
     memset(&result, 0xa5, sizeof(result)); result.state.request = uart_request();
     crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state,
-                                      NULL, NULL, NULL, NULL, NULL, &result, NULL, NULL);
+        NULL, NULL, NULL, NULL, NULL, &result, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.state.control.request.size == 1488 && result.state.request.size == 1656);
     return result;
@@ -3377,7 +3437,7 @@ static struct crystalhd_fw_research_crypto_result crypto_run(void)
     crypto_mode = true;
     memset(&result, 0xa5, sizeof(result)); result.state.request = crypto_request();
     crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state,
-                                      NULL, NULL, NULL, NULL, NULL, NULL, &result, NULL);
+        NULL, NULL, NULL, NULL, NULL, NULL, &result, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.state.control.request.size == 1488 && result.state.request.size == 1712);
     return result;
@@ -3700,6 +3760,251 @@ static void test_crypto_ioctl_and_compat(void)
     CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
 }
 
+static struct crystalhd_fw_research_state_request heartbeat_request(void)
+{
+    struct crystalhd_fw_research_state_request req = state_request();
+    req.size = sizeof(struct crystalhd_fw_research_heartbeat_result);
+    return req;
+}
+
+static void heartbeat_change_pattern(void)
+{
+    unsigned i;
+
+    for (i = 0; i < CRYSTALHD_FW_RESEARCH_HEARTBEAT_RETAINED_VALUES; i++)
+        heartbeat_values[i] = 100U + i;
+}
+
+static struct crystalhd_fw_research_heartbeat_result heartbeat_run(void)
+{
+    struct crystalhd_fw_research_heartbeat_result result;
+    struct crystalhd_fw_research_request req = request();
+
+    heartbeat_mode = true;
+    hardware.pfnReadDevRegister = heartbeat_read_mock;
+    memset(&result, 0xa5, sizeof(result));
+    result.state.request = heartbeat_request();
+    crystalhd_fw_research_run_internal(42, &req, &result.state.control,
+        &result.state, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        &result);
+    unlocked();
+    CHECK(!live_allocations && result.state.control.request.size == 1488 &&
+          result.state.request.size == sizeof(result));
+    return result;
+}
+
+static void heartbeat_complete(
+    const struct crystalhd_fw_research_heartbeat_sample *sample,
+    unsigned polls, unsigned changes)
+{
+    unsigned i;
+
+    CHECK(sample->attempted == 1 && sample->read_complete == 1 &&
+          !sample->status && sample->polls_complete == polls &&
+          sample->scratch_reads_complete == polls + 1 &&
+          sample->guard_reads_complete == 2 * (polls + 1) &&
+          sample->changes == changes &&
+          sample->retained_values == changes + 1 &&
+          sample->elapsed_ns == (u64)heartbeat_sleeps * 1000000 + 1);
+    for (i = 0; i < sample->retained_values; i++)
+        CHECK(sample->values[i] == 100U + i);
+    for (; i < ARRAY_SIZE(sample->values); i++)
+        CHECK(!sample->values[i]);
+}
+
+static void heartbeat_guard_setup(void)
+{
+    state_reset();
+    heartbeat_mode = true;
+    hardware.pfnReadDevRegister = heartbeat_read_mock;
+    down_read(&chd_device_lock);
+    down_write(&adp.user_lock);
+    adp.cmds.hw_ctx = &hardware;
+    adp.cmds.session_owner = &crystalhd_fw_research_owner;
+    adp.cmds.session_module_pinned = true;
+    adp.cmds.state = BC_LINK_INIT;
+    command_count = 3;
+    read_count = 7;
+}
+
+static void test_heartbeat_bounded_observation(void)
+{
+    struct crystalhd_fw_research_heartbeat_result result;
+    struct crystalhd_fw_research_heartbeat_sample sample;
+    unsigned i;
+
+    state_reset();
+    heartbeat_change_pattern();
+    for (i = 0; i < 12; i++)
+        heartbeat_guards[i] = 0x7feU;
+    result = heartbeat_run();
+    CHECK(!result.state.control.status && result.state.control.command_count == 5 &&
+          read_count == 7 && clock_reads == 18 && heartbeat_target_reads == 6 &&
+          heartbeat_guard_reads == 12 && heartbeat_sleeps == 4 &&
+          release_count == 1 && !result.state.control.retained);
+    heartbeat_complete(&result.after_open, 5, 5);
+    CHECK(result.after_open.gisb_before == 0x7feU &&
+          result.after_open.gisb_last == 0x7feU);
+
+    /* A constant value is a successful finite observation, not liveness. */
+    heartbeat_guard_setup();
+    for (i = 0; i < ARRAY_SIZE(heartbeat_values); i++)
+        heartbeat_values[i] = 100U;
+    memset(&sample, 0xa5, sizeof(sample));
+    CHECK(!crystalhd_fw_research_heartbeat_sample(&adp.cmds, 42, &sample));
+    CHECK(sample.read_complete && !sample.status && sample.attempted &&
+          sample.scratch_reads_complete == 1001 &&
+          sample.guard_reads_complete == 2002 &&
+          sample.polls_complete == 1000 && !sample.changes &&
+          sample.retained_values == 1 && sample.values[0] == 100 &&
+          heartbeat_sleeps == 999 && clock_reads == 3003);
+    controller_guard_exit();
+
+    /* The fifth change at poll 1000 is admitted; poll 1001 is never read. */
+    heartbeat_guard_setup();
+    for (i = 0; i < ARRAY_SIZE(heartbeat_values); i++)
+        heartbeat_values[i] = i < 5 ? 100U + i : 104U;
+    heartbeat_values[CRYSTALHD_FW_RESEARCH_HEARTBEAT_MAX_POLLS] = 105U;
+    memset(&sample, 0xa5, sizeof(sample));
+    CHECK(!crystalhd_fw_research_heartbeat_sample(&adp.cmds, 42, &sample));
+    heartbeat_complete(&sample, 1000, 5);
+    CHECK(heartbeat_sleeps == 999 && clock_reads == 3003);
+    controller_guard_exit();
+
+    heartbeat_guard_setup();
+    for (i = 0; i < ARRAY_SIZE(heartbeat_values); i++)
+        heartbeat_values[i] = i < 5 ? 100U + i : 104U;
+    memset(&sample, 0xa5, sizeof(sample));
+    CHECK(!crystalhd_fw_research_heartbeat_sample(&adp.cmds, 42, &sample));
+    heartbeat_complete(&sample, 1000, 4);
+    CHECK(heartbeat_sleeps == 999 && clock_reads == 3003);
+    controller_guard_exit();
+
+    /* Pre- and post-target GISB faults stop without clearing capture state. */
+    heartbeat_guard_setup();
+    heartbeat_guards[0] = 1;
+    memset(&sample, 0xa5, sizeof(sample));
+    CHECK(crystalhd_fw_research_heartbeat_sample(&adp.cmds, 42, &sample) == -EIO);
+    CHECK(!sample.attempted && !sample.read_complete && sample.status == -EIO &&
+          !sample.scratch_reads_complete && sample.guard_reads_complete == 1 &&
+          sample.gisb_before == 1 && sample.gisb_last == 1 &&
+          !sample.retained_values && !sample.values[0] && clock_reads == 1);
+    controller_guard_exit();
+    heartbeat_guard_setup();
+    heartbeat_guards[1] = 0x800;
+    memset(&sample, 0xa5, sizeof(sample));
+    CHECK(crystalhd_fw_research_heartbeat_sample(&adp.cmds, 42, &sample) == -EIO);
+    CHECK(sample.attempted && !sample.read_complete && sample.status == -EIO &&
+          !sample.scratch_reads_complete && sample.guard_reads_complete == 2 &&
+          sample.gisb_last == 0x800 && !sample.retained_values &&
+          !sample.values[0] && clock_reads == 3);
+    controller_guard_exit();
+
+    /* Removal may publish absence after a clear guard but before scratch. */
+    heartbeat_guard_setup();
+    heartbeat_guards[0] = 0x20;
+    clock_guard_mutate_at = 3;
+    clock_guard_mutation = 1;
+    memset(&sample, 0xa5, sizeof(sample));
+    CHECK(crystalhd_fw_research_heartbeat_sample(&adp.cmds, 42, &sample) == -ENODEV);
+    CHECK(!sample.attempted && !sample.read_complete && sample.status == -ENODEV &&
+          !sample.scratch_reads_complete && sample.guard_reads_complete == 1 &&
+          sample.gisb_before == 0x20 && sample.gisb_last == 0x20 &&
+          !sample.retained_values && !sample.values[0] && clock_reads == 1);
+    controller_guard_exit();
+
+    /* The generation is rechecked after an unlocked sleep before another MMIO. */
+    heartbeat_guard_setup();
+    heartbeat_values[0] = heartbeat_values[1] = 100;
+    heartbeat_sleep_mutate_at = 1;
+    heartbeat_sleep_mutation = 2;
+    memset(&sample, 0xa5, sizeof(sample));
+    CHECK(crystalhd_fw_research_heartbeat_sample(&adp.cmds, 42, &sample) == -ESTALE);
+    CHECK(sample.attempted && !sample.read_complete && sample.status == -ESTALE &&
+          sample.scratch_reads_complete == 2 && sample.guard_reads_complete == 4 &&
+          sample.polls_complete == 1 && heartbeat_sleeps == 1 && clock_reads == 6 &&
+          !sample.retained_values && !sample.values[0]);
+    controller_guard_exit();
+
+    /* A pre-existing or newly selected power transition fails closed. */
+    heartbeat_guard_setup();
+    hardware.FleaPowerTransition = true;
+    memset(&sample, 0xa5, sizeof(sample));
+    CHECK(crystalhd_fw_research_heartbeat_sample(&adp.cmds, 42, &sample) == -EAGAIN);
+    CHECK(!sample.attempted && !sample.read_complete && sample.status == -EAGAIN &&
+          !sample.scratch_reads_complete && !sample.guard_reads_complete &&
+          !sample.retained_values && !sample.values[0] && !clock_reads);
+    controller_guard_exit();
+    heartbeat_guard_setup();
+    heartbeat_values[0] = heartbeat_values[1] = 100;
+    heartbeat_sleep_mutate_at = 1;
+    heartbeat_sleep_mutation = 21;
+    memset(&sample, 0xa5, sizeof(sample));
+    CHECK(crystalhd_fw_research_heartbeat_sample(&adp.cmds, 42, &sample) == -EAGAIN);
+    CHECK(sample.attempted && !sample.read_complete && sample.status == -EAGAIN &&
+          sample.scratch_reads_complete == 2 && sample.guard_reads_complete == 4 &&
+          sample.polls_complete == 1 && heartbeat_sleeps == 1 && clock_reads == 6 &&
+          !sample.retained_values && !sample.values[0]);
+    controller_guard_exit();
+
+    state_reset();
+    heartbeat_change_pattern();
+    command_status[2] = BC_STS_TIMEOUT;
+    result = heartbeat_run();
+    CHECK(result.state.control.status == -ETIMEDOUT && command_count == 3 &&
+          !clock_reads && !result.after_open.attempted &&
+          !result.after_open.read_complete && !result.after_open.status &&
+          release_count == 1 && !result.state.control.retained);
+}
+
+static void test_heartbeat_ioctl_and_compat(void)
+{
+    struct inode inode = {0};
+    struct file file = {0};
+    struct crystalhd_fw_research_heartbeat_result result;
+    unsigned long arg = (unsigned long)&result;
+    unsigned compat;
+
+    state_reset();
+    heartbeat_mode = true;
+    result.state.request = heartbeat_request();
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_HEARTBEAT,
+                                      arg) == -ENODEV);
+    CHECK(!crystalhd_fw_research_open(&inode, &file));
+    result.state.request.size--;
+    CHECK(!crystalhd_fw_research_heartbeat_request_valid(&result.state.request));
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_HEARTBEAT,
+                                      arg) == -EINVAL);
+    result.state.request = heartbeat_request();
+    copy_in_error = true;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_HEARTBEAT,
+                                      arg) == -EFAULT);
+    copy_in_error = false;
+    allocation_fail = allocations + 1;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_HEARTBEAT,
+                                      arg) == -ENOMEM);
+    no_hardware();
+    CHECK(!crystalhd_fw_research_release(&inode, &file));
+
+    for (compat = 0; compat < 2; compat++) {
+        state_reset();
+        heartbeat_mode = true;
+        hardware.pfnReadDevRegister = heartbeat_read_mock;
+        heartbeat_change_pattern();
+        CHECK(!crystalhd_fw_research_open(&inode, &file));
+        result.state.request = heartbeat_request();
+        CHECK(!(compat ? crystalhd_fw_research_compat_ioctl(
+                            &file, CRYSTALHD_FW_RESEARCH_RUN_HEARTBEAT, arg) :
+                        crystalhd_fw_research_ioctl(
+                            &file, CRYSTALHD_FW_RESEARCH_RUN_HEARTBEAT, arg)));
+        CHECK(!result.state.control.status && result.state.control.command_count == 5 &&
+              copy_in_count == 1 && copy_out_count == 1 && release_count == 1 &&
+              !result.state.control.retained);
+        heartbeat_complete(&result.after_open, 5, 5);
+        CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
+    }
+}
+
 int main(void)
 {
     _Static_assert(sizeof(struct crystalhd_fw_research_info) == 64, "info ABI");
@@ -3793,6 +4098,15 @@ int main(void)
     _Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_init) == 1600, "crypto init ABI");
     _Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_open) == 1656, "crypto open ABI");
     _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO == 0xc6b0529aU, "crypto ioctl ABI");
+    _Static_assert(sizeof(struct crystalhd_fw_research_heartbeat_sample) == 72, "heartbeat sample ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heartbeat_sample, scratch_reads_complete) == 12, "heartbeat target count ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heartbeat_sample, guard_reads_complete) == 16, "heartbeat guard count ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heartbeat_sample, values) == 40, "heartbeat values ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heartbeat_sample, elapsed_ns) == 64, "heartbeat clock ABI");
+    _Static_assert(sizeof(struct crystalhd_fw_research_heartbeat_result) == 1672, "heartbeat result ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heartbeat_result, state) == 0, "heartbeat state ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heartbeat_result, after_open) == 1600, "heartbeat sample offset ABI");
+    _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_HEARTBEAT == 0xc688529fU, "heartbeat ioctl ABI");
     _Static_assert(CRYSTALHD_FW_RESEARCH_HEAP_IMAGE_MIN == 0x117000U &&
                    CRYSTALHD_FW_RESEARCH_HEAP_IMAGE_BYTES == 0x100000U &&
                    CRYSTALHD_FW_RESEARCH_HEAP_END == 0x3ffc000U, "heap admission bounds");
@@ -3817,6 +4131,7 @@ int main(void)
     test_clock_whitelist_and_guards(); test_clock_progression_and_cleanup(); test_clock_ioctl_and_compat();
     test_uart_whitelist_and_guards(); test_uart_progression_and_cleanup(); test_uart_ioctl_and_compat();
     test_crypto_whitelist_and_guards(); test_crypto_progression_and_cleanup(); test_crypto_ioctl_and_compat();
+    test_heartbeat_bounded_observation(); test_heartbeat_ioctl_and_compat();
     CHECK(!live_allocations); unlocked();
     printf("Firmware probe: %u checks passed\n", checks);
     return 0;

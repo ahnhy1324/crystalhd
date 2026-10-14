@@ -329,6 +329,43 @@ struct crystalhd_fw_research_crypto_result {
 #define CRYSTALHD_FW_RESEARCH_RUN_CRYPTO \
 	_IOWR('R', 0x9a, struct crystalhd_fw_research_crypto_result)
 
+#define CRYSTALHD_FW_RESEARCH_HEARTBEAT_MAX_POLLS 1000U
+#define CRYSTALHD_FW_RESEARCH_HEARTBEAT_REQUIRED_CHANGES 5U
+#define CRYSTALHD_FW_RESEARCH_HEARTBEAT_RETAINED_VALUES 6U
+
+struct crystalhd_fw_research_heartbeat_sample {
+	__u32 attempted;
+	__s32 status;
+	/* The finite observation completed, not a decode/progress verdict. */
+	__u32 read_complete;
+	/* Scratch reads whose following GISB guard was also clear. */
+	__u32 scratch_reads_complete;
+	/* Two guards bracket every scratch read. */
+	__u32 guard_reads_complete;
+	/* Successful reads after the initial value, bounded by MAX_POLLS. */
+	__u32 polls_complete;
+	__u32 changes;
+	__u32 retained_values;
+	__u32 gisb_before;
+	__u32 gisb_last;
+	/* Initial value followed by at most the first five changed values. */
+	__u32 values[CRYSTALHD_FW_RESEARCH_HEARTBEAT_RETAINED_VALUES];
+	__aligned_u64 elapsed_ns;
+};
+
+struct crystalhd_fw_research_heartbeat_result {
+	struct crystalhd_fw_research_state_result state;
+	/* One post-OPEN observation; reset/startup-only writes precede it. */
+	struct crystalhd_fw_research_heartbeat_sample after_open;
+};
+
+/* Fixed scratch #1 and GISB error-status reads only. The indirect selector is
+ * necessarily programmed, but scratch, error-capture and UART registers are
+ * never written, cleared or drained. This is not a production watchdog.
+ */
+#define CRYSTALHD_FW_RESEARCH_RUN_HEARTBEAT \
+	_IOWR('R', 0x9f, struct crystalhd_fw_research_heartbeat_result)
+
 /* Opt-in driver-observer records.  These are research measurements, not part
  * of the legacy CrystalHD ioctl or libcrystalhd ABI.  Each stored record
  * follows one admitted Flea RX DMA packet; admissions beyond capacity are

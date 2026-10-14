@@ -19,7 +19,7 @@ struct _BC_DTS_PROC_OUT;
 int crystalhd_probe_main(int argc, char **argv);
 static unsigned checks, opens, stats, infos, runs, state_runs, controller_runs,
     image_runs, packet_runs, heap_runs, command_observation_runs, clock_runs,
-    uart_runs, crypto_runs, closes;
+    uart_runs, crypto_runs, heartbeat_runs, closes;
 static int open_error, stat_error, info_error, run_error, close_error;
 static bool character, output_error, flush_error;
 static struct crystalhd_fw_research_info metadata;
@@ -53,6 +53,7 @@ static uint32_t crypto_capture_values[2][2];
 static bool crypto_guard_dirty, crypto_capture_suppressed;
 static unsigned crypto_guard_slot;
 static uint32_t crypto_guard_value;
+static unsigned heartbeat_case, heartbeat_mutation;
 static const uint32_t commands[] = {eCMD_C011_INIT, eCMD_C011_GET_VERSION,
     eCMD_C011_DEC_CHAN_OPEN, eCMD_C011_DEC_CHAN_STATUS, eCMD_C011_DEC_CHAN_CLOSE};
 static const uint32_t raw_commands[] = {eCMD_C011_DEC_CHAN_SCALING_FILTERS,
@@ -1041,6 +1042,131 @@ static void make_crypto_result(struct crystalhd_fw_research_crypto_result *resul
     }
 }
 
+static void make_heartbeat_result(
+    struct crystalhd_fw_research_heartbeat_result *result)
+{
+    struct crystalhd_fw_research_heartbeat_sample *sample = &result->after_open;
+    struct crystalhd_fw_research_result *control = &result->state.control;
+    unsigned i;
+
+    memset(result, 0, sizeof(*result));
+    make_state_result(&result->state);
+    CHECK(heartbeat_case <= 4 && heartbeat_mutation <= 9);
+    if (control->command_count <= CRYSTALHD_FW_RESEARCH_MAX_COMMANDS)
+        memset(control->replies + control->command_count, 0,
+               (CRYSTALHD_FW_RESEARCH_MAX_COMMANDS - control->command_count) *
+               sizeof(control->replies[0]));
+    if (result->state.after_open.attempted &&
+        result->state.after_open.read_complete &&
+        !result->state.after_open.status) {
+        sample->gisb_before = 0x20;
+        sample->elapsed_ns = heartbeat_case == 1 ? 999000001 :
+            heartbeat_case >= 2 ? 1 : 4000001;
+        if (!heartbeat_case) {
+            sample->attempted = sample->read_complete = 1;
+            sample->scratch_reads_complete = 6;
+            sample->guard_reads_complete = 12;
+            sample->polls_complete = sample->changes = 5;
+            sample->retained_values = 6;
+            sample->gisb_last = 0x40;
+            for (i = 0; i < 6; i++) sample->values[i] = 100 + i;
+        } else if (heartbeat_case == 1) {
+            sample->attempted = sample->read_complete = 1;
+            sample->scratch_reads_complete = 1001;
+            sample->guard_reads_complete = 2002;
+            sample->polls_complete = 1000;
+            sample->retained_values = 1;
+            sample->gisb_last = 0x40;
+            sample->values[0] = 100;
+        } else if (heartbeat_case <= 3) {
+            sample->status = -EIO;
+            sample->gisb_before = heartbeat_case == 2 ? 1 : 0;
+            sample->gisb_last = heartbeat_case == 2 ? 1 : 0x800;
+            sample->guard_reads_complete = heartbeat_case == 2 ? 1 : 2;
+            sample->attempted = heartbeat_case == 3;
+            control->status = -EIO;
+            control->command_count = 3;
+            memset(control->replies + 3, 0,
+                   2 * sizeof(control->replies[0]));
+        } else {
+            sample->status = -ENODEV;
+            sample->guard_reads_complete = 1;
+            sample->gisb_before = sample->gisb_last = 0x20;
+            control->status = -ENODEV;
+            control->command_count = 3;
+            control->retained = 1;
+            control->cleanup_attempted = 0;
+            control->cleanup_status = BC_STS_CMD_CANCELLED;
+            memset(control->replies + 3, 0,
+                   2 * sizeof(control->replies[0]));
+        }
+    }
+    switch (heartbeat_mutation) {
+    case 0: break;
+    case 1: sample->read_complete = 2; break;
+    case 2: sample->retained_values = 7; break;
+    case 3: sample->values[1] = sample->values[0]; break;
+    case 4: sample->guard_reads_complete++; break;
+    case 5:
+        memset(sample, 0, sizeof(*sample));
+        sample->attempted = 1;
+        sample->status = -EIO;
+        sample->guard_reads_complete = 2;
+        sample->gisb_before = 1;
+        sample->gisb_last = 0x20;
+        sample->elapsed_ns = 1;
+        control->status = -EIO;
+        control->command_count = 3;
+        memset(control->replies + 3, 0, 2 * sizeof(control->replies[0]));
+        break;
+    case 6:
+        memset(sample, 0, sizeof(*sample));
+        sample->attempted = 1;
+        sample->status = -EIO;
+        sample->guard_reads_complete = 1;
+        sample->gisb_before = sample->gisb_last = 1;
+        sample->elapsed_ns = 1;
+        control->status = -EIO;
+        control->command_count = 3;
+        memset(control->replies + 3, 0, 2 * sizeof(control->replies[0]));
+        break;
+    case 7:
+        memset(sample, 0, sizeof(*sample));
+        sample->attempted = 1;
+        sample->status = -EIO;
+        sample->guard_reads_complete = 2;
+        sample->gisb_before = sample->gisb_last = 0x20;
+        sample->elapsed_ns = 1;
+        control->status = -EIO;
+        control->command_count = 3;
+        memset(control->replies + 3, 0, 2 * sizeof(control->replies[0]));
+        break;
+    case 8:
+        memset(sample, 0, sizeof(*sample));
+        sample->attempted = 1;
+        sample->status = -EIO;
+        sample->scratch_reads_complete = 1001;
+        sample->guard_reads_complete = 2002;
+        sample->polls_complete = 1000;
+        sample->gisb_before = sample->gisb_last = 0x20;
+        sample->elapsed_ns = 1;
+        control->status = -EIO;
+        control->command_count = 3;
+        memset(control->replies + 3, 0, 2 * sizeof(control->replies[0]));
+        break;
+    case 9:
+        memset(sample, 0, sizeof(*sample));
+        sample->attempted = 1;
+        sample->status = -EIO;
+        sample->elapsed_ns = 1;
+        control->status = -EIO;
+        control->command_count = 3;
+        memset(control->replies + 3, 0, 2 * sizeof(control->replies[0]));
+        break;
+    default: CHECK(false);
+    }
+}
+
 int probe_ioctl(int fd, unsigned long command, ...)
 {
     void *argument; va_list args;
@@ -1195,6 +1321,29 @@ int probe_ioctl(int fd, unsigned long command, ...)
         if (run_error) { errno = run_error; return -1; }
         make_crypto_result(result); return 0;
     }
+    if (command == CRYSTALHD_FW_RESEARCH_RUN_HEARTBEAT) {
+        struct crystalhd_fw_research_heartbeat_result *result = argument;
+        const unsigned char *bytes = argument;
+        unsigned i;
+
+        CHECK(command == 0xc688529fUL);
+        CHECK(infos == 1 && !runs++ && !heartbeat_runs++ && !state_runs &&
+              !controller_runs && !image_runs && !packet_runs && !heap_runs &&
+              !clock_runs && !uart_runs && !crypto_runs);
+        state_submitted = result->state.request;
+        CHECK(state_submitted.version == 1 &&
+              state_submitted.size == sizeof(*result));
+        CHECK(!state_submitted.flags && !state_submitted.reserved);
+        for (i = sizeof(result->state.request); i < sizeof(*result); i++)
+            CHECK(!bytes[i]);
+        memset(&submitted, 0, sizeof(submitted));
+        submitted.version = 1;
+        submitted.size = sizeof(result->state.control);
+        submitted.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+        if (run_error) { errno = run_error; return -1; }
+        make_heartbeat_result(result);
+        return 0;
+    }
     CHECK(command == CRYSTALHD_FW_RESEARCH_RUN && infos == 1 && !runs++);
     submitted = ((struct crystalhd_fw_research_result *)argument)->request;
     CHECK(submitted.version == 1 && submitted.size == sizeof(struct crystalhd_fw_research_result));
@@ -1234,7 +1383,7 @@ static void reset(void)
 {
     opens = stats = infos = runs = state_runs = controller_runs = image_runs =
         packet_runs = heap_runs = command_observation_runs = clock_runs =
-        uart_runs = crypto_runs = closes = 0;
+        uart_runs = crypto_runs = heartbeat_runs = closes = 0;
     open_error = stat_error = info_error = run_error = close_error = 0;
     character = true; output_error = flush_error = false;
     mutation = fault_at = fault_kind = response_pattern = 0;
@@ -1263,6 +1412,7 @@ static void reset(void)
     memset(crypto_values, 0, sizeof(crypto_values));
     crypto_guard_dirty = crypto_capture_suppressed = false;
     crypto_guard_slot = crypto_guard_value = 0;
+    heartbeat_case = heartbeat_mutation = 0;
     for (unsigned stage = 0; stage < 2; stage++)
         for (unsigned guard = 0; guard < 5; guard++)
             crypto_gisb_values[stage][guard] = 0x20U + stage * 0x200U + guard * 0x40U;
@@ -1295,6 +1445,7 @@ static char *command_observation_args[] = {"probe", "--command-observation", "--
 static char *clock_args[] = {"probe", "--clock-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *uart_args[] = {"probe", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *crypto_args[] = {"probe", "--crypto-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+static char *heartbeat_args[] = {"probe", "--heartbeat-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h261_args[] = {"probe", "--h261-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h263_args[] = {"probe", "--h263-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *mpeg1_args[] = {"probe", "--mpeg1-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
@@ -2913,6 +3064,108 @@ static void crypto_json_examples(void)
     }
 }
 
+static void test_heartbeat_state(void)
+{
+    char *invalid[][9] = {
+        {"probe", "--heartbeat-state", NULL},
+        {"probe", "--heartbeat-state", "--acknowledge-card-reset", NULL},
+        {"probe", "--heartbeat-state", "--expected-generation", "42", NULL},
+        {"probe", "--heartbeat-state", "--heartbeat-state",
+         "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--heartbeat-state=1", "--acknowledge-card-reset",
+         "--expected-generation", "42", NULL},
+    };
+    unsigned i, phase, kind;
+
+    for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        reset();
+        CHECK(invoke(invalid[i]) == 1 && !opens && !runs && !output[0]);
+    }
+    reset();
+    CHECK(!invoke(heartbeat_args) && heartbeat_runs == 1 && !crypto_runs &&
+          strstr(output, "\"heartbeat_state\":true") &&
+          strstr(output, "\"scratch_reads_complete\":6") &&
+          strstr(output, "\"guard_reads_complete\":12") &&
+          strstr(output, "\"change_threshold_met\":true") &&
+          strstr(output, "\"values\":[100,101,102,103,104,105]") &&
+          strstr(output, "\"uart_status_or_fifo_reads\":false") &&
+          strstr(output, "\"specific_writer_established\":false"));
+    reset(); heartbeat_case = 1;
+    CHECK(!invoke(heartbeat_args) && heartbeat_runs == 1 &&
+          strstr(output, "\"polls_complete\":1000,\"changes\":0") &&
+          strstr(output, "\"change_threshold_met\":false") &&
+          strstr(output, "\"values\":[100]"));
+    for (i = 2; i <= 3; i++) {
+        reset(); heartbeat_case = i;
+        CHECK(invoke(heartbeat_args) == 1 && heartbeat_runs == 1 && output[0] &&
+              !strstr(errors, "Invalid heartbeat-state result") &&
+              strstr(output, "\"read_complete\":false") &&
+              strstr(output, "\"changes\":null") &&
+              strstr(output, "\"values\":null"));
+    }
+    reset();
+    heartbeat_case = 4;
+    CHECK(invoke(heartbeat_args) == 1 && heartbeat_runs == 1 && output[0] &&
+          !strstr(errors, "Invalid heartbeat-state result") &&
+          strstr(errors, "remain retained") &&
+          strstr(output, "\"attempted\":false,\"status\":-19,"
+                         "\"read_complete\":false,\"scratch_reads_complete\":0,"
+                         "\"guard_reads_complete\":1"));
+    /* Preserve valid control/cleanup evidence when an earlier command or
+     * fixed-state prerequisite prevents the heartbeat sample from starting.
+     */
+    for (phase = 1; phase <= 3; phase++) {
+        for (kind = 1; kind <= 7; kind++) {
+            if (kind == 6 && phase != 3)
+                continue;
+            reset();
+            response_pattern = 2;
+            fault_at = phase;
+            fault_kind = kind;
+            CHECK(invoke(heartbeat_args) == 1 && heartbeat_runs == 1 &&
+                  output[0] && !strstr(errors, "Invalid heartbeat-state result") &&
+                  strstr(output, "\"attempted\":false,\"status\":0,"
+                                 "\"read_complete\":false"));
+        }
+    }
+    for (phase = 1; phase <= 3; phase++) {
+        reset();
+        response_pattern = 2;
+        sample_fault_at = phase;
+        sample_fault_kind = 1;
+        CHECK(invoke(heartbeat_args) == 1 && heartbeat_runs == 1 &&
+              output[0] && !strstr(errors, "Invalid heartbeat-state result") &&
+              strstr(output, "\"attempted\":false,\"status\":0,"
+                             "\"read_complete\":false"));
+    }
+    for (i = 1; i <= 9; i++) {
+        reset(); heartbeat_mutation = i;
+        CHECK(invoke(heartbeat_args) == 1 && heartbeat_runs == 1 &&
+              !output[0] && strstr(errors, "Invalid heartbeat-state result"));
+    }
+    reset();
+    {
+        char *conflict[] = {"probe", "--heartbeat-state", "--crypto-state",
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+        CHECK(invoke(conflict) == 1 && !opens && !runs);
+    }
+    reset(); run_error = EINTR;
+    CHECK(invoke(heartbeat_args) == 1 && heartbeat_runs == 1 && !output[0] &&
+          strstr(errors, "no retry"));
+}
+
+static void heartbeat_json_examples(void)
+{
+    unsigned value;
+
+    for (value = 0; value <= 3; value++) {
+        reset();
+        heartbeat_case = value;
+        CHECK(invoke(heartbeat_args) == (value >= 2) && output[0]);
+        fputs(output, stdout);
+    }
+}
+
 static void uart_json_examples(void)
 {
     unsigned value, stage, kind, phase, word;
@@ -3021,6 +3274,9 @@ int main(int argc, char **argv)
     if (argc == 2 && !strcmp(argv[1], "--command-observation-json-example")) {
         reset(); CHECK(!invoke(command_observation_args)); fputs(output, stdout); return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--heartbeat-json-examples")) {
+        heartbeat_json_examples(); return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--crypto-json-examples")) {
         crypto_json_examples(); return 0;
     }
@@ -3112,6 +3368,7 @@ int main(int argc, char **argv)
     test_fixed_state(); test_controller_root(); test_controller_image();
     test_controller_packet(); test_heap_packet(); test_command_observation();
     test_clock_state(); test_uart_state(); test_crypto_state();
+    test_heartbeat_state();
     printf("Firmware probe CLI: %u checks passed\n", checks);
     return 0;
 }

@@ -47,6 +47,7 @@ struct _BC_DTS_PROC_OUT;
 #define CRYPTO_GISB_ERROR_MASK 0x00001801U
 #define COMMAND_OBSERVATION_INIT 0x73763001U
 #define COMMAND_OBSERVATION_INIT_MEM_SIZE_MB 64U
+#define HEARTBEAT_SCRATCH_ADDRESS 0x000e0048U
 
 static const uint32_t crypto_target_addresses[] = {
 	CRYPTO_SHARF_REVISION_ADDRESS,
@@ -67,6 +68,7 @@ enum action {
 	ACTION_CLOCK_STATE,
 	ACTION_UART_STATE,
 	ACTION_CRYPTO_STATE,
+	ACTION_HEARTBEAT_STATE,
 };
 
 struct options {
@@ -113,6 +115,8 @@ static void usage(FILE *stream)
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --crypto-state\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
+	      "       flea-fw-probe --heartbeat-state\n"
+	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --help\n"
 	      "\n"
 	      "The live selectors reload firmware and reset an idle card. They do\n"
@@ -151,6 +155,11 @@ static void usage(FILE *stream)
 	      "first checked error it may also read raw capture address and master;\n"
 	      "it never clears the capture or reads keys, contexts, IVs or nonces.\n"
 	      "These observations do not establish cause or algorithm support.\n"
+	      "Heartbeat-state performs one post-OPEN finite scratch #1 observation,\n"
+	      "bracketing each target read with GISB error-status guards. It keeps\n"
+	      "the initial and first five changed values, but does not establish the\n"
+	      "specific writer, timing frequency, ARC/decode/frame progress or a\n"
+	      "production liveness API. No UART status/FIFO register is read.\n"
 	      "Use --info first;\n"
 	      "it reports metadata only, including the bound device generation.\n"
 	      "The separate research device requires CAP_SYS_RAWIO and an opt-in\n"
@@ -231,6 +240,8 @@ static bool parse_options(int argc, char **argv, struct options *options)
 			action = ACTION_UART_STATE;
 		else if (!strcmp(argv[i], "--crypto-state"))
 			action = ACTION_CRYPTO_STATE;
+		else if (!strcmp(argv[i], "--heartbeat-state"))
+			action = ACTION_HEARTBEAT_STATE;
 		else if (!strcmp(argv[i], "--acknowledge-card-reset")) {
 			if (options->acknowledge)
 				return false;
@@ -744,6 +755,135 @@ static bool crypto_result_valid(
 	    (control->command_count > 3 && !crypto_sample_succeeded(samples[1])) ||
 	    (!control->status && (!crypto_sample_succeeded(samples[0]) ||
 				 !crypto_sample_succeeded(samples[1]))))
+		return false;
+	return true;
+}
+
+static bool heartbeat_sample_succeeded(
+	const struct crystalhd_fw_research_heartbeat_sample *sample)
+{
+	return sample->attempted && sample->read_complete && !sample->status;
+}
+
+static bool heartbeat_result_valid(
+	const struct crystalhd_fw_research_heartbeat_result *result,
+	const struct crystalhd_fw_research_state_request *request,
+	uint64_t generation)
+{
+	const struct crystalhd_fw_research_state_result *state = &result->state;
+	const struct crystalhd_fw_research_result *control = &state->control;
+	const struct crystalhd_fw_research_heartbeat_sample *sample =
+		&result->after_open;
+	bool active = sample->attempted || sample->status || sample->read_complete ||
+		sample->scratch_reads_complete || sample->guard_reads_complete ||
+		sample->polls_complete || sample->changes || sample->retained_values ||
+		sample->gisb_before || sample->gisb_last || sample->elapsed_ns;
+	unsigned int i;
+
+	if (!state_result_valid(state, request, generation) ||
+	    (!control->download_attempted &&
+	     control->download_status != BC_STS_SUCCESS) ||
+	    (control->command_count &&
+	     control->download_status != BC_STS_SUCCESS) ||
+	    (control->cleanup_attempted &&
+	     (!control->download_attempted || !control->firmware_hash_valid ||
+	      !digest_matches(control->firmware_sha256))) ||
+	    (!control->cleanup_attempted &&
+	     control->cleanup_status != BC_STS_SUCCESS &&
+	     control->cleanup_status != BC_STS_CMD_CANCELLED) ||
+	    (!control->cleanup_attempted && control->download_attempted &&
+	     control->cleanup_status != BC_STS_CMD_CANCELLED))
+		return false;
+	for (i = control->command_count; i < CRYSTALHD_FW_RESEARCH_MAX_COMMANDS;
+	     i++) {
+		const struct crystalhd_fw_research_reply zero = { 0 };
+
+		if (memcmp(&control->replies[i], &zero, sizeof(zero)))
+			return false;
+	}
+	if (state_sample_succeeded(&state->calibration) &&
+	    !state->after_init.attempted && !state->after_init.status)
+		return false;
+	if (sample->attempted > 1 || sample->read_complete > 1 ||
+	    sample->status > 0 || sample->status < -4095 ||
+	    sample->scratch_reads_complete >
+		CRYSTALHD_FW_RESEARCH_HEARTBEAT_MAX_POLLS + 1 ||
+	    sample->guard_reads_complete >
+		2 * (CRYSTALHD_FW_RESEARCH_HEARTBEAT_MAX_POLLS + 1) ||
+	    sample->guard_reads_complete < 2 * sample->scratch_reads_complete ||
+	    sample->guard_reads_complete >
+		2 * sample->scratch_reads_complete + 2 ||
+	    ((!sample->attempted && sample->scratch_reads_complete) ||
+	     (!sample->attempted && sample->guard_reads_complete > 1) ||
+	     (sample->attempted && !sample->guard_reads_complete)) ||
+	    sample->polls_complete > CRYSTALHD_FW_RESEARCH_HEARTBEAT_MAX_POLLS ||
+	    (!sample->read_complete && sample->polls_complete ==
+		CRYSTALHD_FW_RESEARCH_HEARTBEAT_MAX_POLLS) ||
+	    sample->changes > CRYSTALHD_FW_RESEARCH_HEARTBEAT_REQUIRED_CHANGES ||
+	    sample->changes > sample->polls_complete ||
+	    sample->retained_values >
+		CRYSTALHD_FW_RESEARCH_HEARTBEAT_RETAINED_VALUES ||
+	    (!sample->guard_reads_complete &&
+	     (sample->gisb_before || sample->gisb_last)) ||
+	    (sample->guard_reads_complete == 1 &&
+	     sample->gisb_before != sample->gisb_last) ||
+	    ((sample->gisb_before & CRYPTO_GISB_ERROR_MASK) &&
+	     (sample->guard_reads_complete != 1 ||
+	      sample->gisb_before != sample->gisb_last || sample->attempted)) ||
+	    (sample->guard_reads_complete ==
+		2 * sample->scratch_reads_complete + 2 &&
+	     !(sample->gisb_last & CRYPTO_GISB_ERROR_MASK)) ||
+	    ((sample->gisb_last & CRYPTO_GISB_ERROR_MASK) &&
+	     sample->guard_reads_complete ==
+		2 * sample->scratch_reads_complete) ||
+	    (((sample->gisb_before | sample->gisb_last) &
+	      CRYPTO_GISB_ERROR_MASK) &&
+	     sample->status != -EIO) ||
+	    active != state_sample_succeeded(&state->after_open))
+		return false;
+	if (sample->read_complete) {
+		if (!sample->attempted || sample->status ||
+		    sample->scratch_reads_complete != sample->polls_complete + 1 ||
+		    sample->guard_reads_complete !=
+			2 * sample->scratch_reads_complete ||
+		    (sample->gisb_before & CRYPTO_GISB_ERROR_MASK) ||
+		    (sample->gisb_last & CRYPTO_GISB_ERROR_MASK) ||
+		    sample->retained_values != sample->changes + 1 ||
+		    (sample->changes <
+			CRYSTALHD_FW_RESEARCH_HEARTBEAT_REQUIRED_CHANGES &&
+		     sample->polls_complete !=
+			CRYSTALHD_FW_RESEARCH_HEARTBEAT_MAX_POLLS))
+			return false;
+		for (i = 1; i < sample->retained_values; i++)
+			if (sample->values[i] == sample->values[i - 1])
+				return false;
+		for (i = sample->retained_values;
+		     i < CRYSTALHD_FW_RESEARCH_HEARTBEAT_RETAINED_VALUES; i++)
+			if (sample->values[i])
+				return false;
+	} else if (active) {
+		if (!sample->status || sample->changes || sample->retained_values ||
+		    sample->polls_complete + (sample->scratch_reads_complete ? 1U : 0U) !=
+			sample->scratch_reads_complete)
+			return false;
+		for (i = 0; i < CRYSTALHD_FW_RESEARCH_HEARTBEAT_RETAINED_VALUES;
+		     i++)
+			if (sample->values[i])
+				return false;
+	} else {
+		/* Failures before the post-OPEN sampler legitimately leave its
+		 * entire result zero. Preserve the validated control/cleanup evidence.
+		 */
+		for (i = 0; i < CRYSTALHD_FW_RESEARCH_HEARTBEAT_RETAINED_VALUES;
+		     i++)
+			if (sample->values[i])
+				return false;
+	}
+	if (sample->status &&
+	    (control->status != sample->status || control->command_count != 3U))
+		return false;
+	if ((control->command_count > 3 && !heartbeat_sample_succeeded(sample)) ||
+	    (!control->status && !heartbeat_sample_succeeded(sample)))
 		return false;
 	return true;
 }
@@ -1454,6 +1594,91 @@ static void print_crypto_result(
 	       CRYPTO_GISB_ERROR_CAPTURE_MASTER);
 }
 
+static void print_heartbeat_sample(
+	const struct crystalhd_fw_research_heartbeat_sample *sample)
+{
+	unsigned int i;
+
+	printf("{\"attempted\":%s,\"status\":%" PRId32
+	       ",\"read_complete\":%s,\"scratch_reads_complete\":%" PRIu32
+	       ",\"guard_reads_complete\":%" PRIu32
+	       ",\"polls_complete\":%" PRIu32 ",\"changes\":",
+	       sample->attempted ? "true" : "false", (int32_t)sample->status,
+	       sample->read_complete ? "true" : "false",
+	       (uint32_t)sample->scratch_reads_complete,
+	       (uint32_t)sample->guard_reads_complete,
+	       (uint32_t)sample->polls_complete);
+	if (sample->read_complete)
+		printf("%" PRIu32 ",\"change_threshold_met\":%s,\"values\":[",
+		       (uint32_t)sample->changes,
+		       sample->changes >=
+			CRYSTALHD_FW_RESEARCH_HEARTBEAT_REQUIRED_CHANGES ?
+			"true" : "false");
+	else
+		fputs("null,\"change_threshold_met\":null,\"values\":null",
+		      stdout);
+	if (sample->read_complete) {
+		for (i = 0; i < sample->retained_values; i++) {
+			if (i)
+				putchar(',');
+			printf("%" PRIu32, (uint32_t)sample->values[i]);
+		}
+		putchar(']');
+	}
+	fputs(",\"gisb_before\":", stdout);
+	if (sample->guard_reads_complete)
+		printf("%" PRIu32 ",\"gisb_last\":%" PRIu32,
+		       (uint32_t)sample->gisb_before,
+		       (uint32_t)sample->gisb_last);
+	else
+		fputs("null,\"gisb_last\":null", stdout);
+	printf(",\"elapsed_ns\":\"%" PRIu64 "\"}",
+	       (uint64_t)sample->elapsed_ns);
+}
+
+static void print_heartbeat_result(
+	const struct crystalhd_fw_research_heartbeat_result *result)
+{
+	printf("{\"version\":%" PRIu32
+	       ",\"heartbeat_state\":true,\"control\":",
+	       (uint32_t)result->state.request.version);
+	print_result_object(&result->state.control);
+	fputs(",\"fixed_state_samples\":{\"calibration\":", stdout);
+	print_state_sample(&result->state.calibration);
+	fputs(",\"after_init\":", stdout);
+	print_state_sample(&result->state.after_init);
+	fputs(",\"after_open\":", stdout);
+	print_state_sample(&result->state.after_open);
+	fputs("},\"heartbeat_sample\":", stdout);
+	print_heartbeat_sample(&result->after_open);
+	printf(",\"scope\":{\"scratch_address\":%" PRIu32
+	       ",\"gisb_error_guard_address\":%" PRIu32
+	       ",\"gisb_error_mask\":%" PRIu32
+	       ",\"maximum_polls\":%u,\"required_changes\":%u,"
+	       "\"retained_values_maximum\":%u,\"poll_sleep_ms\":1,"
+	       "\"maximum_scratch_reads\":%u,\"maximum_guard_reads\":%u,"
+	       "\"maximum_register_reads\":%u,"
+	       "\"post_open_only\":true,\"fixed_addresses_only\":true,"
+	       "\"indirect_gisb_selector_write\":true,\"passive\":false,"
+	       "\"scratch_register_writes\":false,"
+	       "\"error_capture_clear_writes\":false,"
+	       "\"uart_status_or_fifo_reads\":false,\"retries\":false,"
+	       "\"specific_writer_established\":false,"
+	       "\"timing_frequency_established\":false,"
+	       "\"arc_decode_or_frame_progress_established\":false,"
+	       "\"production_liveness_api\":false,"
+	       "\"guard_failure_attribution_causal\":false,"
+	       "\"independent_fetch_errors_certified\":false}}\n",
+	       HEARTBEAT_SCRATCH_ADDRESS, CRYPTO_GISB_ERROR_STATUS_ADDRESS,
+	       CRYPTO_GISB_ERROR_MASK,
+	       CRYSTALHD_FW_RESEARCH_HEARTBEAT_MAX_POLLS,
+	       CRYSTALHD_FW_RESEARCH_HEARTBEAT_REQUIRED_CHANGES,
+	       CRYSTALHD_FW_RESEARCH_HEARTBEAT_RETAINED_VALUES,
+	       CRYSTALHD_FW_RESEARCH_HEARTBEAT_MAX_POLLS + 1,
+	       2 * (CRYSTALHD_FW_RESEARCH_HEARTBEAT_MAX_POLLS + 1),
+	       3 * (CRYSTALHD_FW_RESEARCH_HEARTBEAT_MAX_POLLS + 1));
+}
+
 static void print_controller_sample(
 	const struct crystalhd_fw_research_controller_sample *sample)
 {
@@ -1740,6 +1965,7 @@ int main(int argc, char **argv)
 	struct crystalhd_fw_research_clock_result clock_result = { 0 };
 	struct crystalhd_fw_research_uart_result uart_result = { 0 };
 	struct crystalhd_fw_research_crypto_result crypto_result = { 0 };
+	struct crystalhd_fw_research_heartbeat_result heartbeat_result = { 0 };
 	struct options options;
 	struct stat statbuf;
 	bool have_info = false, have_result = false, have_state = false, have_controller = false;
@@ -1749,6 +1975,7 @@ int main(int argc, char **argv)
 	bool have_clock = false;
 	bool have_uart = false;
 	bool have_crypto = false;
+	bool have_heartbeat = false;
 	int fd = -1, rc = 1;
 
 	if (argc == 2 && !strcmp(argv[1], "--help")) {
@@ -1805,6 +2032,7 @@ int main(int argc, char **argv)
 	case ACTION_CLOCK_STATE:
 	case ACTION_UART_STATE:
 	case ACTION_CRYPTO_STATE:
+	case ACTION_HEARTBEAT_STATE:
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		break;
 	case ACTION_H261:
@@ -1866,6 +2094,35 @@ int main(int argc, char **argv)
 			goto out;
 		}
 		have_command_observation = true;
+		rc = control->status || control->retained ||
+			(control->cleanup_attempted &&
+			 control->cleanup_status != BC_STS_SUCCESS) ? 1 : 0;
+		goto out;
+	}
+	if (options.action == ACTION_HEARTBEAT_STATE) {
+		const struct crystalhd_fw_research_result *control =
+			&heartbeat_result.state.control;
+
+		state_request.version = CRYSTALHD_FW_RESEARCH_VERSION;
+		state_request.size = sizeof(heartbeat_result);
+		heartbeat_result.state.request = state_request;
+		if (ioctl(fd, CRYSTALHD_FW_RESEARCH_RUN_HEARTBEAT,
+			  &heartbeat_result) < 0) {
+			perror("run heartbeat-state readback");
+			fputs("Device state may have changed; no retry was attempted.\n",
+			      stderr);
+			goto out;
+		}
+		if (control->retained)
+			fputs("Research resources remain retained. Do not force unload the driver.\n",
+			      stderr);
+		if (!heartbeat_result_valid(&heartbeat_result, &state_request,
+					    info.generation)) {
+			fputs("Invalid heartbeat-state result; no further command attempted.\n",
+			      stderr);
+			goto out;
+		}
+		have_heartbeat = true;
 		rc = control->status || control->retained ||
 			(control->cleanup_attempted &&
 			 control->cleanup_status != BC_STS_SUCCESS) ? 1 : 0;
@@ -2088,6 +2345,8 @@ out:
 		print_uart_result(&uart_result);
 	if (have_crypto)
 		print_crypto_result(&crypto_result);
+	if (have_heartbeat)
+		print_heartbeat_result(&heartbeat_result);
 	if (output_finish())
 		rc = 1;
 	return rc;
