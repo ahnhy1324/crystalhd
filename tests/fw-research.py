@@ -18374,5 +18374,104 @@ class NativeHstRoutePulseNonentryFixtureTests(unittest.TestCase):
             "checklist_or_capability_claim"})
 
 
+class NativeCommandStatusObserverFixtureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.path = ROOT / "tests/fixtures/issue204/native-command-status-observer.json"
+
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate JSON key: " + key)
+                result[key] = value
+            return result
+
+        cls.capture = json.loads(cls.path.read_text(),
+                                 object_pairs_hook=unique_object)
+
+    def test_provenance_and_sanitization(self):
+        capture = self.capture
+        self.assertEqual((capture["schema_version"], capture["kind"]),
+                         (1, "native-command-status-observer"))
+        commit = re.compile(r"[0-9a-f]{40}")
+        srcversion = re.compile(r"[0-9A-F]{23}")
+        for section in ("later_relocked_baseline", "same_lock_first_pair"):
+            self.assertIsNotNone(commit.fullmatch(
+                capture[section]["tested_commit"]))
+            self.assertIsNotNone(srcversion.fullmatch(
+                capture[section]["temporary_module_srcversion"]))
+        serialized = self.path.read_text()
+        for forbidden in ("/home/", "/tmp/", "/var/tmp/", "172.30.",
+                          "run-dir=", "username"):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_later_relocked_baseline_is_six_bounded_negative_runs(self):
+        baseline = self.capture["later_relocked_baseline"]
+        self.assertEqual((baseline["run_count"],
+                          baseline["sample_pairs_each_run"]), (6, 64))
+        self.assertEqual(len(baseline["sampling_window_ns"]), 6)
+        self.assertTrue(all(400000 < value < 600000
+                            for value in baseline["sampling_window_ns"]))
+        self.assertTrue(baseline["fresh_init_each_run"] and
+                        baseline["control_status_all_zero"] and
+                        baseline["cleanup_status_all_zero"])
+        self.assertFalse(baseline["first_pair_post_mailbox_same_lock"] or
+                         baseline["retained_after_run"])
+        self.assertEqual((baseline["cpudma_active_nonzero_samples"],
+                          baseline["sdram_busy_nonzero_samples"]), (0, 0))
+
+    def test_same_lock_run_and_boundary_are_exactly_scoped(self):
+        observed = self.capture["same_lock_first_pair"]
+        self.assertEqual((observed["ioctl_encoding"],
+                          observed["result_size"]), ("0xccb0529e", 3248))
+        self.assertEqual((observed["run_count"], observed["sample_flags"],
+                          observed["sample_pairs"]), (1, 1, 64))
+        self.assertTrue(observed["firmware_hash_valid"] and
+                        observed["attempted"] and observed["read_complete"] and
+                        observed["header_matches"] and
+                        observed["first_pair_post_mailbox_same_lock"] and
+                        observed["later_pairs_relocked"])
+        self.assertEqual((observed["control_status"],
+                          observed["cleanup_status"],
+                          observed["observer_status"]), (0, 0, 0))
+        self.assertFalse(observed["retained_after_run"])
+        self.assertEqual((observed["first_pair"]["cpudma_active"],
+                          observed["first_pair"]["sdram_busy"],
+                          observed["cpudma_active_nonzero_samples"],
+                          observed["sdram_busy_nonzero_samples"]),
+                         (0, 0, 0, 0))
+        boundary = observed["boundary_after_init"]
+        self.assertTrue(boundary["read_complete"] and
+                        boundary["root_stable"] and
+                        boundary["image_stable"] and
+                        boundary["packet_stable"])
+        self.assertEqual((boundary["status"], len(boundary["header_words"])),
+                         (0, 5))
+
+    def test_recovery_and_nonclaims(self):
+        recovery = self.capture["production_recovery"]
+        self.assertEqual((recovery["h264_controls"],
+                          recovery["mpeg2_controls"],
+                          recovery["frames_per_control"]), (4, 4, 180))
+        self.assertTrue(recovery["module_restored_after_each_tranche"] and
+                        recovery["firmware_eos_and_cleanup_pass"] and
+                        recovery["device_refcount_zero"])
+        self.assertFalse(recovery["new_aer_iommu_oops_timeout_or_lockup"])
+        scope = self.capture["scope"]
+        self.assertEqual({key for key, value in scope.items() if value}, {
+            "native_opt_in_executed",
+            "same_lock_first_pair_provenance_verified",
+            "ordinary_irq_and_reply_remained_authoritative"})
+        self.assertEqual({key for key, value in scope.items() if not value}, {
+            "mailbox_data_or_status_read", "in_flight_packet_read",
+            "action_register_access", "runtime_transfer_observed",
+            "cross_processor_visibility_proven",
+            "zero_level_samples_rule_out_short_activity",
+            "source_generation_proven", "physical_source_lease_proven",
+            "all_consumer_completion_proven",
+            "checklist_or_capability_claim"})
+
+
 if __name__ == "__main__":
     unittest.main()
