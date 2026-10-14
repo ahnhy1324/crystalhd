@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "kind": "native-command-status-observer",
+  "purpose": "Preserve bounded native fresh-INIT status observations before and after moving the first CPUDMA/SDRAM pair into the mailbox-post lock interval.",
+  "environment": {
+    "date": "2026-10-14",
+    "kernel": "7.0.0-38-generic",
+    "device": "BCM70015",
+    "production_module_srcversion": "0121A57354B130DF8F3089C",
+    "production_force_l0s_off": true,
+    "production_session_l0s_off": false
+  },
+  "later_relocked_baseline": {
+    "tested_commit": "5cd2c9034875a184cc1cb6f226e8a020f9205a59",
+    "temporary_module_srcversion": "5E1CED2C053B5FC0824A246",
+    "run_count": 6,
+    "fresh_init_each_run": true,
+    "sample_pairs_each_run": 64,
+    "first_pair_post_mailbox_same_lock": false,
+    "sampling_window_ns": [
+      512873,
+      465236,
+      513846,
+      427728,
+      510704,
+      512240
+    ],
+    "cpudma_active_nonzero_samples": 0,
+    "sdram_busy_nonzero_samples": 0,
+    "control_status_all_zero": true,
+    "cleanup_status_all_zero": true,
+    "retained_after_run": false
+  },
+  "same_lock_first_pair": {
+    "tested_commit": "4828e8a86afcc59943879872807381d3986a8b5b",
+    "temporary_module_srcversion": "89A7BAAD564D75A2EDDAB78",
+    "ioctl_encoding": "0xccb0529e",
+    "result_size": 3248,
+    "run_count": 1,
+    "command": "fresh INIT",
+    "firmware_hash_valid": true,
+    "control_status": 0,
+    "command_count": 5,
+    "cleanup_status": 0,
+    "retained_after_run": false,
+    "observer_status": 0,
+    "attempted": true,
+    "read_complete": true,
+    "header_matches": true,
+    "sample_flags": 1,
+    "sample_pairs": 64,
+    "first_pair_post_mailbox_same_lock": true,
+    "later_pairs_relocked": true,
+    "first_pair": {
+      "cpudma_active": 0,
+      "sdram_busy": 0,
+      "pair_span_ns": 3213
+    },
+    "sampling_window_ns": 410323,
+    "cpudma_active_nonzero_samples": 0,
+    "sdram_busy_nonzero_samples": 0,
+    "host_interrupt": {
+      "sampled_after_last_pair": true,
+      "delay_after_last_pair_ns": 2864,
+      "arm_mbox0": 0
+    },
+    "boundary_after_init": {
+      "status": 0,
+      "read_complete": true,
+      "root_stable": true,
+      "image_stable": true,
+      "packet_stable": true,
+      "header_words": [
+        1937113089,
+        0,
+        1377059,
+        1635848,
+        1635860
+      ]
+    }
+  },
+  "production_recovery": {
+    "module_restored_after_each_tranche": true,
+    "module_srcversion": "0121A57354B130DF8F3089C",
+    "h264_controls": 4,
+    "mpeg2_controls": 4,
+    "frames_per_control": 180,
+    "firmware_eos_and_cleanup_pass": true,
+    "device_refcount_zero": true,
+    "new_aer_iommu_oops_timeout_or_lockup": false
+  },
+  "scope": {
+    "native_opt_in_executed": true,
+    "same_lock_first_pair_provenance_verified": true,
+    "ordinary_irq_and_reply_remained_authoritative": true,
+    "mailbox_data_or_status_read": false,
+    "in_flight_packet_read": false,
+    "action_register_access": false,
+    "runtime_transfer_observed": false,
+    "cross_processor_visibility_proven": false,
+    "zero_level_samples_rule_out_short_activity": false,
+    "source_generation_proven": false,
+    "physical_source_lease_proven": false,
+    "all_consumer_completion_proven": false,
+    "checklist_or_capability_claim": false
+  }
+}

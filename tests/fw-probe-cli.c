@@ -17,7 +17,9 @@ struct _BC_DTS_PROC_OUT;
 #include "crystalhd_fw_research.h"
 
 int crystalhd_probe_main(int argc, char **argv);
-static unsigned checks, opens, stats, infos, runs, state_runs, controller_runs, image_runs, packet_runs, heap_runs, clock_runs, uart_runs, crypto_runs, closes;
+static unsigned checks, opens, stats, infos, runs, state_runs, controller_runs,
+    image_runs, packet_runs, heap_runs, command_observation_runs, clock_runs,
+    uart_runs, crypto_runs, closes;
 static int open_error, stat_error, info_error, run_error, close_error;
 static bool character, output_error, flush_error;
 static struct crystalhd_fw_research_info metadata;
@@ -38,6 +40,8 @@ static uint32_t packet_roots[2], packet_image_words[4], packet_words[3], packet_
 static unsigned heap_fault_at, heap_fault_kind, heap_mutation, heap_stage, heap_word;
 static uint32_t heap_roots[2], heap_bases[2], heap_extent, heap_owned, heap_header[5], heap_slots[2];
 static uint32_t heap_bad_root, heap_bad_value;
+static unsigned command_observation_mutation;
+static bool legacy_command_observation_reserved_zero;
 static unsigned clock_fault_at, clock_fault_kind, clock_mutation, clock_stage, clock_word;
 static uint32_t clock_values[2][3];
 static unsigned uart_fault_at, uart_fault_kind, uart_mutation, uart_stage, uart_word;
@@ -682,6 +686,82 @@ static void make_heap_result(struct crystalhd_fw_research_heap_packet_result *re
     }
 }
 
+static void make_command_observation_result(
+    struct crystalhd_fw_research_command_observation_result *result)
+{
+    struct crystalhd_fw_research_state_request request = result->request;
+    struct crystalhd_fw_research_command_observation *observation;
+
+    memset(result, 0, sizeof(*result));
+    result->request = request;
+    if (command_observation_mutation == 9 ||
+        command_observation_mutation == 10) {
+        result->control.request = submitted;
+        result->control.generation = metadata.generation;
+        result->control.status = -EAGAIN;
+        if (command_observation_mutation == 9) {
+            result->in_flight.status = -EAGAIN;
+            result->boundary_after_init.status = -EAGAIN;
+        }
+        return;
+    }
+    make_result(&result->control);
+    observation = &result->in_flight;
+    observation->attempted = observation->read_complete = 1;
+    observation->sample_flags =
+        CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_FLAG_FIRST_PAIR_POST_MAILBOX_SAME_LOCK;
+    observation->generation = metadata.generation;
+    observation->request_words[0] = result->control.replies[0].command;
+    observation->request_words[1] = result->control.replies[0].sequence;
+    observation->request_words[2] = 64;
+    memcpy(observation->response_words,
+           result->control.replies[0].response,
+           sizeof(observation->response_words));
+    observation->header_matches = 1;
+    observation->host_intr_attempted = observation->host_intr_valid = 1;
+    observation->host_intr_arm_mbox0 = 0x10000;
+    observation->host_intr_ns = 30;
+    observation->sample_count = 1;
+    observation->samples[0].cpudma_ns = 10;
+    observation->samples[0].sdram_ns = 20;
+    observation->samples[0].cpudma_active = 0xf;
+    observation->samples[0].sdram_busy = 1;
+    fill_heap_sample(&result->boundary_after_init, 0);
+
+    switch (command_observation_mutation) {
+    case 0: break;
+    case 1: observation->sample_count++; break;
+    case 2: observation->samples[0].cpudma_active = 0x10; break;
+    case 3: observation->samples[1].cpudma_ns = 1; break;
+    case 4: observation->host_intr_valid = 0; break;
+    case 5: observation->response_words[0]++; break;
+    case 6: observation->reserved[0] = 1; break;
+    case 7: result->boundary_after_init.root_after ^= 4; break;
+    case 8: observation->request_words[2]++; break;
+    case 11: observation->sample_flags = 0; break;
+    case 12: observation->sample_flags |= 2; break;
+    default: CHECK(false);
+    }
+}
+
+static bool legacy_command_observation_reserved_is_zero(
+    const struct crystalhd_fw_research_command_observation_result *result)
+{
+    /* The 5cd2 layout called these same four words reserved[].  Therefore a
+     * new record's provenance bit makes the old validator reject it, while a
+     * zero bit models an old record that the new validator must reject.
+     */
+    uint32_t legacy_reserved[4];
+    unsigned i;
+
+    memcpy(legacy_reserved, &result->in_flight.sample_flags,
+           sizeof(legacy_reserved));
+    for (i = 0; i < 4; i++)
+        if (legacy_reserved[i])
+            return false;
+    return true;
+}
+
 static void make_clock_result(struct crystalhd_fw_research_clock_result *result)
 {
     struct crystalhd_fw_research_clock_sample *samples[] = {&result->after_init, &result->after_open};
@@ -1046,6 +1126,27 @@ int probe_ioctl(int fd, unsigned long command, ...)
         if (run_error) { errno = run_error; return -1; }
         make_heap_result(result); return 0;
     }
+    if (command == CRYSTALHD_FW_RESEARCH_RUN_COMMAND_OBSERVATION) {
+        struct crystalhd_fw_research_command_observation_result *result = argument;
+        const unsigned char *bytes = argument;
+        unsigned i;
+        CHECK(command == 0xccb0529eUL);
+        CHECK(infos == 1 && !runs++ && !command_observation_runs++ &&
+              !state_runs && !controller_runs && !image_runs && !packet_runs &&
+              !heap_runs && !clock_runs && !uart_runs && !crypto_runs);
+        state_submitted = result->request;
+        CHECK(state_submitted.version == 1 && state_submitted.size == sizeof(*result));
+        CHECK(!state_submitted.flags && !state_submitted.reserved);
+        for (i = sizeof(result->request); i < sizeof(*result); i++) CHECK(!bytes[i]);
+        memset(&submitted, 0, sizeof(submitted));
+        submitted.version = 1; submitted.size = sizeof(result->control);
+        submitted.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+        if (run_error) { errno = run_error; return -1; }
+        make_command_observation_result(result);
+        legacy_command_observation_reserved_zero =
+            legacy_command_observation_reserved_is_zero(result);
+        return 0;
+    }
     if (command == CRYSTALHD_FW_RESEARCH_RUN_CLOCK) {
         struct crystalhd_fw_research_clock_result *result = argument;
         const unsigned char *bytes = argument;
@@ -1131,7 +1232,9 @@ int __wrap_ioctl(int fd, unsigned long command, ...)
 
 static void reset(void)
 {
-    opens = stats = infos = runs = state_runs = controller_runs = image_runs = packet_runs = heap_runs = clock_runs = uart_runs = crypto_runs = closes = 0;
+    opens = stats = infos = runs = state_runs = controller_runs = image_runs =
+        packet_runs = heap_runs = command_observation_runs = clock_runs =
+        uart_runs = crypto_runs = closes = 0;
     open_error = stat_error = info_error = run_error = close_error = 0;
     character = true; output_error = flush_error = false;
     mutation = fault_at = fault_kind = response_pattern = 0;
@@ -1150,6 +1253,8 @@ static void reset(void)
     heap_bases[0] = heap_bases[1] = 0x117000;
     heap_extent = 0x100000; heap_owned = 1; heap_bad_root = heap_bad_value = 0;
     memset(heap_header, 0, sizeof(heap_header)); memset(heap_slots, 0, sizeof(heap_slots));
+    command_observation_mutation = 0;
+    legacy_command_observation_reserved_zero = false;
     clock_fault_at = clock_fault_kind = clock_mutation = clock_stage = clock_word = 0;
     memset(clock_values, 0, sizeof(clock_values));
     uart_fault_at = uart_fault_kind = uart_mutation = uart_stage = uart_word = 0;
@@ -1186,6 +1291,7 @@ static char *controller_args[] = {"probe", "--controller-root", "--acknowledge-c
 static char *image_args[] = {"probe", "--controller-image", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *packet_args[] = {"probe", "--controller-packet", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *heap_args[] = {"probe", "--heap-packet", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+static char *command_observation_args[] = {"probe", "--command-observation", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *clock_args[] = {"probe", "--clock-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *uart_args[] = {"probe", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *crypto_args[] = {"probe", "--crypto-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
@@ -1258,6 +1364,57 @@ static void test_arguments(void)
     reset(); decimal[4] = "00042"; CHECK(!invoke(decimal) && runs == 1);
     reset(); decimal[4] = "18446744073709551615"; metadata.generation = UINT64_MAX;
     CHECK(!invoke(decimal) && runs == 1 && strstr(output, "\"18446744073709551615\""));
+}
+
+static void test_command_observation(void)
+{
+    unsigned i;
+
+    reset();
+    CHECK(!invoke(command_observation_args) && command_observation_runs == 1 &&
+          !state_runs && !controller_runs && !image_runs && !packet_runs &&
+          !heap_runs && !clock_runs && !uart_runs && !crypto_runs);
+    CHECK(strstr(output, "\"command_observation\":true") &&
+          strstr(output, "\"sample_flags\":1") &&
+          strstr(output, "\"sample_count\":1") &&
+          strstr(output, "\"cpudma_active\":15") &&
+          strstr(output, "\"sdram_busy\":1") &&
+          strstr(output, "\"arm_mbox0\":65536") &&
+          strstr(output, "\"mailbox_data_or_status_read\":false") &&
+          strstr(output, "\"ordinary_irq_authoritative\":true"));
+    /* New module -> old CLI: the same word was reserved and must be zero. */
+    CHECK(!legacy_command_observation_reserved_zero);
+    for (i = 1; i <= 8; i++) {
+        reset(); command_observation_mutation = i;
+        CHECK(invoke(command_observation_args) == 1 &&
+              command_observation_runs == 1 && !output[0] &&
+              strstr(errors, "Invalid command-observation result"));
+    }
+    reset(); command_observation_mutation = 9;
+    CHECK(invoke(command_observation_args) == 1 && output[0] &&
+          !strstr(errors, "Invalid command-observation result") &&
+          strstr(output, "\"status\":-11") &&
+          strstr(output, "\"attempted\":false") &&
+          strstr(output, "\"sample_flags\":0") &&
+          strstr(output, "\"first_pair_post_mailbox_same_lock\":false") &&
+          strstr(output, "\"remaining_pairs_relock\":false") &&
+          strstr(output, "\"sample_count\":0"));
+    reset(); command_observation_mutation = 10;
+    CHECK(invoke(command_observation_args) == 1 && !output[0] &&
+          strstr(errors, "Invalid command-observation result"));
+    reset(); command_observation_mutation = 11;
+    /* Old module -> new CLI: structurally valid old success lacks provenance. */
+    CHECK(invoke(command_observation_args) == 1 && !output[0] &&
+          legacy_command_observation_reserved_zero &&
+          strstr(errors, "Invalid command-observation result"));
+    reset(); command_observation_mutation = 12;
+    CHECK(invoke(command_observation_args) == 1 && !output[0] &&
+          !legacy_command_observation_reserved_zero &&
+          strstr(errors, "Invalid command-observation result"));
+    reset(); run_error = EINTR;
+    CHECK(invoke(command_observation_args) == 1 &&
+          command_observation_runs == 1 && !output[0] &&
+          strstr(errors, "no retry"));
 }
 static void test_metadata(void)
 {
@@ -2861,6 +3018,9 @@ static void heap_packet_json_examples(void)
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && !strcmp(argv[1], "--command-observation-json-example")) {
+        reset(); CHECK(!invoke(command_observation_args)); fputs(output, stdout); return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--crypto-json-examples")) {
         crypto_json_examples(); return 0;
     }
@@ -2947,7 +3107,11 @@ int main(int argc, char **argv)
         return 0;
     }
     CHECK(argc == 1);
-    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding(); test_raw_commands(); test_fixed_state(); test_controller_root(); test_controller_image(); test_controller_packet(); test_heap_packet(); test_clock_state(); test_uart_state(); test_crypto_state();
+    test_arguments(); test_metadata(); test_errors(); test_results();
+    test_named_controls(); test_decoding(); test_raw_commands();
+    test_fixed_state(); test_controller_root(); test_controller_image();
+    test_controller_packet(); test_heap_packet(); test_command_observation();
+    test_clock_state(); test_uart_state(); test_crypto_state();
     printf("Firmware probe CLI: %u checks passed\n", checks);
     return 0;
 }

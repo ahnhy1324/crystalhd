@@ -283,9 +283,7 @@ index 35ac5c2..e461b1e 100644
  static const u8 crystalhd_fw_research_owner;
  
  /* Research-only wire values: eC011_VIDEO_ALG_H261/H263/MPEG1 in 7411d.h. */
-@@ -1022,7 +1032,7 @@ static void crystalhd_fw_research_run_internal(u64 generation,
- 		result->status = -EINVAL;
- 		return;
+@@ -1024,5 +1034,5 @@ static void crystalhd_fw_research_run_internal(u64 generation,
  	}
 -#ifdef CRYSTALHD_MFD_SCL_STATUS_PROBE
 +#if defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) || defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE)

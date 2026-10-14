@@ -329,6 +329,24 @@ _Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_init) 
 _Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_open) == 1656, "crypto open");
 _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO) == 1712, "crypto encoding");
 _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO == 0xc6b0529aU, "crypto ioctl");
+_Static_assert(sizeof(struct crystalhd_fw_research_command_sample) == 24, "command sample");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_sample, cpudma_ns) == 0, "CPUDMA clock");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_sample, sdram_ns) == 8, "SDRAM clock");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_sample, cpudma_active) == 16, "CPUDMA status");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_sample, sdram_busy) == 20, "SDRAM status");
+_Static_assert(sizeof(struct crystalhd_fw_research_command_observation) == 1624, "command observation");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_observation, generation) == 16, "command generation");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_observation, request_words) == 24, "command request");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_observation, host_intr_ns) == 64, "host interrupt clock");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_observation, sample_flags) == 72, "command provenance flags");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_observation, reserved) == 76, "command reserved tail");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_observation, samples) == 88, "command samples");
+_Static_assert(sizeof(struct crystalhd_fw_research_command_observation_result) == 3248, "command result");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_observation_result, control) == 16, "command control");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_observation_result, in_flight) == 1504, "command in-flight");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_observation_result, boundary_after_init) == 3128, "command boundary");
+_Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_COMMAND_OBSERVATION) == 3248, "command encoding");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RUN_COMMAND_OBSERVATION == 0xccb0529eU, "command ioctl");
 _Static_assert(sizeof(struct crystalhd_fw_research_rx_receipt) == 144, "RX receipt");
 _Static_assert(offsetof(struct crystalhd_fw_research_rx_receipt, fire_return_ns) == 16, "RX fire clock");
 _Static_assert(offsetof(struct crystalhd_fw_research_rx_receipt, irq_entry_ns) == 24, "RX IRQ clock");
@@ -428,6 +446,7 @@ for probe_sanitize in no yes; do
         "$probe_test_dir/cli-check" --clock-json-examples
         "$probe_test_dir/cli-check" --uart-json-examples
         "$probe_test_dir/cli-check" --crypto-json-examples
+        "$probe_test_dir/cli-check" --command-observation-json-example
     } | "${PYTHON3:-python3}" -B -c '
 import hashlib, json, sys
 def unique_object(pairs):
@@ -440,12 +459,25 @@ def invalid_constant(value):
     raise AssertionError("non-JSON constant: " + value)
 lines = list(sys.stdin)
 examples = [json.loads(line, object_pairs_hook=unique_object, parse_constant=invalid_constant) for line in lines]
-cryptos, uarts, clocks, heaps, examples = examples[664:], examples[633:664], examples[602:633], examples[542:602], examples[:542]
+commands, cryptos, uarts, clocks, heaps, examples = examples[747:], examples[664:747], examples[633:664], examples[602:633], examples[542:602], examples[:542]
 assert len(examples) == 542
 assert len(heaps) == 60
 assert len(clocks) == 31
 assert len(uarts) == 31
 assert len(cryptos) == 83
+assert len(commands) == 1
+command = commands[0]
+assert set(command) == {"version", "command_observation", "control", "in_flight",
+                       "boundary_after_init", "scope"}
+assert command["version"] == 1 and command["command_observation"] is True
+assert command["in_flight"]["sample_flags"] == 1
+assert command["in_flight"]["sample_count"] == 1
+assert len(command["in_flight"]["samples"]) == 1
+assert command["scope"]["first_pair_post_mailbox_same_lock"] is True
+assert command["scope"]["remaining_pairs_relock"] is True
+assert command["scope"]["mailbox_data_or_status_read"] is False
+assert command["scope"]["in_flight_packet_read"] is False
+assert command["scope"]["ordinary_irq_authoritative"] is True
 legacy_bytes = "".join(lines[:542]).encode("utf-8")
 assert len(legacy_bytes) == 1020137
 assert hashlib.sha256(legacy_bytes).hexdigest() == "7bd6c6e9034849298fa08a6711e0f9faad5aba1b3ac22ad100b04efe30e834b7"
@@ -1236,5 +1268,6 @@ for stage in range(2):
     assert sample["error_capture_address"] is None and sample["error_capture_master"] is None
 assert all("bop_aes_revision" not in sample for result in cryptos for sample in result["crypto_samples"].values())
 print("Firmware probe CLI: 83 bounded crypto-state strict JSON examples verified")
+print("Firmware probe CLI: guarded command-observation strict JSON verified")
 '
 done

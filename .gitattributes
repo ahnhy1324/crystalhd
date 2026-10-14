@@ -5,3 +5,4 @@ Makefile text eol=lf
 **/Makefile text eol=lf
 scripts/* text eol=lf
 tests/fixtures/issue92/scl-input-enabled.patch -whitespace
+tests/fixtures/issue92/command-observer-compat.patch -whitespace

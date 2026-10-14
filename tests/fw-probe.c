@@ -16,6 +16,9 @@ struct _BC_DTS_PROC_OUT;
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_arm_uart.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_bop_aes.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_bop_gr_bridge.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_decode_cpudma2_0.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_decode_cpuregs2_0.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_intr.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_sharf_top.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_sun_gisb_arb.h"
 /* The reduced combo header shares the full SUN_TOP RDB's include guard. */
@@ -63,15 +66,18 @@ static struct module module;
 struct device { int unused; };
 struct pci_dev { struct device dev; unsigned device, irq; };
 struct crystalhd_adp;
+struct crystalhd_fw_command_observer;
 struct mutex { unsigned held; };
 struct spinlock { unsigned held; };
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
     struct mutex fwcmd_trans_mutex;
     struct spinlock lock;
-    bool dma_fault, fwcmd_pending, fwcmd_poisoned, dev_started;
+    bool dma_fault, fwcmd_pending, fwcmd_poisoned, fwcmd_active, dev_started;
     bool fwcmd_trans_active;
+    bool FleaPowerTransition;
     unsigned FleaPowerState;
+    struct crystalhd_fw_command_observer *fwcmd_observer;
     BC_STATUS (*pfnDevDRAMRead)(struct crystalhd_hw *, u32, u32, u32 *);
     u32 (*pfnReadDevRegister)(struct crystalhd_adp *, u32);
     void *pfnWriteDevRegister;
@@ -179,6 +185,9 @@ static u32 crypto_values[2][4], crypto_gisb_values[2][5];
 static u32 crypto_capture_values[2][2];
 static unsigned crypto_slots[2], crypto_capture_phase[2];
 static u32 clock_read_mock(struct crystalhd_adp *adapter, u32 address);
+static u64 monotonic_ns;
+static u64 ktime_get_ns(void)
+{ return ++monotonic_ns; }
 
 static void down_read(struct rwsem *lock)
 {
@@ -1534,12 +1543,117 @@ static struct crystalhd_fw_research_state_request state_request(void)
     req.size = sizeof(struct crystalhd_fw_research_state_result);
     return req;
 }
+
+static struct crystalhd_fw_research_state_request command_observation_request(void)
+{
+    struct crystalhd_fw_research_state_request req = {0};
+
+    req.version = CRYSTALHD_FW_RESEARCH_VERSION;
+    req.size = sizeof(struct crystalhd_fw_research_command_observation_result);
+    return req;
+}
+
+static struct crystalhd_fw_research_command_observation_result
+command_observation_run(u64 generation,
+                        const struct crystalhd_fw_research_request *request)
+{
+    struct crystalhd_fw_research_command_observation_result result;
+
+    memset(&result, 0xa5, sizeof(result));
+    result.request = command_observation_request();
+    crystalhd_fw_research_run_internal(generation, request, &result.control,
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, &result);
+    unlocked(); CHECK(!live_allocations);
+    return result;
+}
+
+static void command_observation_refused(
+    const struct crystalhd_fw_research_command_observation_result *result,
+    int status)
+{
+    const struct crystalhd_fw_research_command_observation observation = {
+        .status = status,
+    };
+    const struct crystalhd_fw_research_heap_packet_sample boundary = {
+        .status = status,
+    };
+
+    CHECK(result->control.status == status &&
+          result->control.generation == 42 &&
+          !result->control.download_attempted &&
+          !result->control.cleanup_attempted && !result->control.retained);
+    CHECK(!memcmp(&result->in_flight, &observation, sizeof(observation)));
+    CHECK(!memcmp(&result->boundary_after_init, &boundary, sizeof(boundary)));
+    no_hardware();
+}
+
+static void test_command_observation_early_refusal(void)
+{
+    struct crystalhd_fw_research_command_observation_result result;
+    struct crystalhd_fw_research_request control_request;
+    struct inode inode = {0};
+    struct file file = {0};
+    unsigned long argument = (unsigned long)&result;
+
+    reset(); control_request = request(); module.state = MODULE_STATE_COMING;
+    result = command_observation_run(42, &control_request);
+    command_observation_refused(&result, -EAGAIN);
+
+    reset(); control_request = request(); privileged = false;
+    result = command_observation_run(42, &control_request);
+    command_observation_refused(&result, -EPERM);
+
+    reset(); control_request = request(); control_request.version++;
+    result = command_observation_run(42, &control_request);
+    command_observation_refused(&result, -EINVAL);
+
+    reset(); control_request = request(); g_adp_info = NULL;
+    result = command_observation_run(42, &control_request);
+    command_observation_refused(&result, -ENODEV);
+
+    reset(); control_request = request(); adp.present = false;
+    result = command_observation_run(42, &control_request);
+    command_observation_refused(&result, -ENODEV);
+
+    reset(); control_request = request(); chd_device_generation++;
+    result = command_observation_run(42, &control_request);
+    command_observation_refused(&result, -ENODEV);
+
+    reset(); control_request = request(); adp.hw_accessible = false;
+    result = command_observation_run(42, &control_request);
+    command_observation_refused(&result, -EAGAIN);
+
+    /* Exercise the actual open -> ioctl -> copyout -> release lifecycle.  A
+     * refusal is a valid result, not an ioctl failure, and publishes no raw
+     * observation data.
+     */
+    reset(); CHECK(!crystalhd_fw_research_open(&inode, &file));
+    memset(&result, 0xa5, sizeof(result));
+    result.request = command_observation_request();
+    adp.hw_accessible = false;
+    CHECK(!crystalhd_fw_research_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RUN_COMMAND_OBSERVATION, argument));
+    CHECK(copy_in_count == 1 && copy_out_count == 1);
+    command_observation_refused(&result, -EAGAIN);
+    CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
+
+    reset(); CHECK(!crystalhd_fw_research_open(&inode, &file));
+    memset(&result, 0xa5, sizeof(result));
+    result.request = command_observation_request();
+    chd_device_generation++;
+    CHECK(!crystalhd_fw_research_compat_ioctl(&file,
+        CRYSTALHD_FW_RESEARCH_RUN_COMMAND_OBSERVATION, argument));
+    CHECK(copy_in_count == 1 && copy_out_count == 1);
+    command_observation_refused(&result, -ENODEV);
+    CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
+}
+
 static struct crystalhd_fw_research_state_result state_run(void)
 {
     struct crystalhd_fw_research_state_result result;
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.request = state_request();
-    crystalhd_fw_research_run_internal(42, &req, &result.control, &result, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    crystalhd_fw_research_run_internal(42, &req, &result.control, &result, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
     CHECK(result.control.generation == 42);
@@ -1753,7 +1867,7 @@ static struct crystalhd_fw_research_controller_result controller_run(void)
     struct crystalhd_fw_research_controller_result result;
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.state.request = controller_request();
-    crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state, &result, NULL, NULL, NULL, NULL, NULL, NULL);
+    crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state, &result, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.state.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
     CHECK(result.state.control.request.size == sizeof(struct crystalhd_fw_research_result));
@@ -2054,7 +2168,7 @@ static struct crystalhd_fw_research_image_result image_run(void)
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.controller.state.request = image_request();
     crystalhd_fw_research_run_internal(42, &req, &result.controller.state.control,
-        &result.controller.state, &result.controller, &result, NULL, NULL, NULL, NULL, NULL);
+        &result.controller.state, &result.controller, &result, NULL, NULL, NULL, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.controller.state.request.size == sizeof(result));
     CHECK(result.controller.state.control.request.size == 1488 &&
@@ -2251,7 +2365,7 @@ static struct crystalhd_fw_research_packet_result packet_run(void)
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.image.controller.state.request = packet_request();
     crystalhd_fw_research_run_internal(42, &req, &result.image.controller.state.control,
-        &result.image.controller.state, &result.image.controller, &result.image, &result, NULL, NULL, NULL, NULL);
+        &result.image.controller.state, &result.image.controller, &result.image, &result, NULL, NULL, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.image.controller.state.request.size == sizeof(result));
     CHECK(result.image.controller.state.control.request.size == 1488 &&
@@ -2505,7 +2619,7 @@ static struct crystalhd_fw_research_heap_packet_result heap_packet_run(void)
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.image.controller.state.request = heap_packet_request();
     crystalhd_fw_research_run_internal(42, &req, &result.image.controller.state.control,
-        &result.image.controller.state, &result.image.controller, &result.image, NULL, &result, NULL, NULL, NULL);
+        &result.image.controller.state, &result.image.controller, &result.image, NULL, &result, NULL, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.image.controller.state.request.size == sizeof(result));
     CHECK(result.image.controller.state.control.request.size == 1488 &&
@@ -2871,7 +2985,7 @@ static struct crystalhd_fw_research_clock_result clock_run(void)
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.state.request = clock_request();
     crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state,
-                                      NULL, NULL, NULL, NULL, &result, NULL, NULL);
+                                      NULL, NULL, NULL, NULL, &result, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.state.control.request.size == 1488 && result.state.request.size == 1656);
     return result;
@@ -3060,7 +3174,7 @@ static struct crystalhd_fw_research_uart_result uart_run(void)
     uart_mode = true;
     memset(&result, 0xa5, sizeof(result)); result.state.request = uart_request();
     crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state,
-                                      NULL, NULL, NULL, NULL, NULL, &result, NULL);
+                                      NULL, NULL, NULL, NULL, NULL, &result, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.state.control.request.size == 1488 && result.state.request.size == 1656);
     return result;
@@ -3263,7 +3377,7 @@ static struct crystalhd_fw_research_crypto_result crypto_run(void)
     crypto_mode = true;
     memset(&result, 0xa5, sizeof(result)); result.state.request = crypto_request();
     crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state,
-                                      NULL, NULL, NULL, NULL, NULL, NULL, &result);
+                                      NULL, NULL, NULL, NULL, NULL, NULL, &result, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.state.control.request.size == 1488 && result.state.request.size == 1712);
     return result;
@@ -3699,6 +3813,7 @@ int main(void)
     test_packet_admission_and_publication(); test_packet_progression_and_cleanup(); test_packet_ioctl_and_compat();
     test_heap_packet_admission_and_raw_payload(); test_heap_packet_brackets_and_guarded_publication();
     test_heap_packet_progression_and_cleanup(); test_heap_packet_ioctl_and_compat();
+    test_command_observation_early_refusal();
     test_clock_whitelist_and_guards(); test_clock_progression_and_cleanup(); test_clock_ioctl_and_compat();
     test_uart_whitelist_and_guards(); test_uart_progression_and_cleanup(); test_uart_ioctl_and_compat();
     test_crypto_whitelist_and_guards(); test_crypto_progression_and_cleanup(); test_crypto_ioctl_and_compat();

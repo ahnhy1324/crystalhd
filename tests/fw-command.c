@@ -84,6 +84,8 @@ static bool interrupt_mailbox_begin;
 static bool interrupt_transaction_enter;
 static bool complete_before_publication;
 static unsigned wait_calls;
+static bool transport_mailbox_posted;
+static unsigned research_locked_seen, research_unlocked_seen;
 
 static void crystalhd_hw_fw_cmd_complete(struct crystalhd_hw *hw);
 static void TestSpinLock(spinlock_t *lock);
@@ -174,6 +176,28 @@ static bool crystalhd_link_load_firmware_config(struct crystalhd_hw *hw);
 static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
                                                enum FLEA_STATE_CH_EVENT event);
 static void crystalhd_flea_fw_transaction_done(struct crystalhd_hw *hw);
+static void crystalhd_fw_research_command_posted_locked(
+	struct crystalhd_hw *hw, const BC_FW_CMD *fw_cmd)
+{
+	(void)fw_cmd;
+	if (hw != &hardware || !transport_mailbox_posted ||
+	    research_locked_seen != research_unlocked_seen ||
+	    pthread_mutex_trylock(&hw->lock) != EBUSY)
+		abort();
+	research_locked_seen++;
+}
+
+static void crystalhd_fw_research_command_posted(struct crystalhd_hw *hw,
+						 const BC_FW_CMD *fw_cmd)
+{
+	(void)fw_cmd;
+	if (hw != &hardware || research_locked_seen != research_unlocked_seen + 1 ||
+	    pthread_mutex_trylock(&hw->lock))
+		abort();
+	if (pthread_mutex_unlock(&hw->lock))
+		abort();
+	research_unlocked_seen++;
+}
 
 #include "fw-command-functions.h"
 #include "fw-transport-functions.h"
@@ -217,6 +241,8 @@ static void InitHardware(void)
     interrupt_transaction_enter = false;
     complete_before_publication = false;
     wait_calls = 0;
+    transport_mailbox_posted = false;
+    research_locked_seen = research_unlocked_seen = 0;
     pthread_mutex_lock(&audit_lock);
     mutex_attempts = 0;
     pthread_mutex_unlock(&audit_lock);
@@ -224,6 +250,8 @@ static void InitHardware(void)
 
 static void DestroyHardware(void)
 {
+	if (research_locked_seen != research_unlocked_seen)
+		abort();
     if (pthread_cond_destroy(&hardware.fwcmd_event.changed) ||
         pthread_mutex_destroy(&hardware.fwcmd_event.lock) ||
         pthread_mutex_destroy(&hardware.fwcmd_mutex.native) ||
@@ -808,6 +836,7 @@ static void PostMailbox(struct crystalhd_adp *adp, uint32_t address, uint32_t va
           value == hardware.fwcmdPostAddr,
           "command mailbox publishes the command address exactly once");
     mailbox_posts++;
+	transport_mailbox_posted = true;
 }
 
 static void InitTransfer(BC_FW_CMD *command, uint32_t id, bool stale)

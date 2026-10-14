@@ -509,23 +509,25 @@
  static const u8 crystalhd_fw_research_owner;
  
  /* Research-only wire values: eC011_VIDEO_ALG_H261/H263/MPEG1 in 7411d.h. */
-@@ -1007,6 +1014,16 @@
- 		result->status = -EINVAL;
- 		return;
+@@ -1513,7 +1520,18 @@
+ 	if (!crystalhd_fw_research_request_valid(request)) {
+ 		rc = -EINVAL;
+ 		goto refuse;
  	}
 +#ifdef CRYSTALHD_MFD_SCL_STATUS_PROBE
 +	/* This volatile pre-boot mode never reaches a decoder command or any
 +	 * of the firmware/state inspection routes in the ordinary harness.
 +	 */
 +	if (request->selector != CRYSTALHD_FW_RESEARCH_VERSION_ONLY ||
-+	    state || controller || image || packet || heap_packet || clock || uart) {
-+		result->status = -EINVAL;
-+		return;
++	    state || controller || image || packet || heap_packet || clock || uart ||
++	    crypto || command_observation) {
++		rc = -EINVAL;
++		goto refuse;
 +	}
 +#endif
  	rc = crystalhd_device_enter(generation, true, &access);
- 	if (rc) {
- 		result->status = rc;
+ 	if (rc)
+ 		goto refuse;
 @@ -1084,11 +1101,23 @@
  	ctx->hw_ctx->research_mfd_generation = generation;
  	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
