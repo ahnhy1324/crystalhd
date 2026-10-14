@@ -35,6 +35,7 @@ extern "C" {
 #include <dirent.h>
 #include <fcntl.h>
 #include <linux/capability.h>
+#include <limits>
 #include <set>
 #include <string>
 #include <time.h>
@@ -3713,6 +3714,7 @@ struct Options {
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     const char *rx_output_receipts_path = nullptr;
+    unsigned pace_input_hz = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
 };
 
@@ -3800,6 +3802,22 @@ static bool RxOutputReceiptsConflicts(const Options &o)
 
 static bool ParseArguments(std::vector<const char *> arguments, Options *options)
 {
+    size_t pace_position = arguments.size();
+    unsigned pace_options = 0;
+    for (size_t index = 1; index < arguments.size(); ++index) {
+        if (arguments[index] && !std::strcmp(arguments[index], "--pace-input")) {
+            ++pace_options;
+            pace_position = index;
+        }
+    }
+    if (pace_options) {
+        if (pace_options != 1 || options->pace_input_hz ||
+            pace_position + 1 >= arguments.size() ||
+            std::strcmp(arguments[pace_position + 1], "60")) return false;
+        options->pace_input_hz = 60;
+        arguments.erase(arguments.begin() + pace_position,
+                        arguments.begin() + pace_position + 2);
+    }
     size_t receipt_position = arguments.size();
     unsigned receipt_options = 0;
     for (size_t index = 1; index < arguments.size(); ++index) {
@@ -4007,7 +4025,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->rx_output_receipts_path || options->observe_avd_dmem_samples || options->observe_avd_cache_count || options->observe_avd_code_prefix || options->observe_avd_code_arena || options->observe_avd_cpu_map || options->observe_avd_memory || options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->pace_input_hz || options->rx_output_receipts_path || options->observe_avd_dmem_samples || options->observe_avd_cache_count || options->observe_avd_code_prefix || options->observe_avd_code_arena || options->observe_avd_cpu_map || options->observe_avd_memory || options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->scaler_benchmark || options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -4115,8 +4133,99 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     if (options->rx_output_receipts_path &&
         (!hardware || options->iterations != 1 ||
          RxOutputReceiptsConflicts(*options))) return false;
+    if (options->pace_input_hz &&
+        (!hardware || options->expected != 900 || options->seconds != 60 ||
+         options->iterations != 1 || !options->scaler_benchmark ||
+         options->scale_width != 1280 || !options->rx_output_receipts_path ||
+         RxOutputReceiptsConflicts(*options))) return false;
     return !options->capture_path ||
         (hardware && options->scaler_test && !options->open_only && options->iterations == 1);
+}
+
+enum class PacedFixture { None, NoB, ReferenceB };
+
+static const size_t kPacedNoBBytes = 22727167U;
+static const char kPacedNoBSha[] =
+    "ed043bbb681fc9d0feb0412100fc732f867d912b348e7fd1056efeb02aac48b8";
+static const size_t kPacedReferenceBBytes = 23586770U;
+static const char kPacedReferenceBSha[] =
+    "69bf3f0ae2a9508076ad4fc89e5b2b06444ddfa2a1c29116a0b0766dee31a8ec";
+static const size_t kPacedMaximumSubmittedBytes = kPacedReferenceBBytes;
+
+static PacedFixture PacedFixtureFromDigest(size_t bytes, const char *sha)
+{
+    if (!sha) return PacedFixture::None;
+    if (bytes == kPacedNoBBytes && !std::strcmp(sha, kPacedNoBSha))
+        return PacedFixture::NoB;
+    if (bytes == kPacedReferenceBBytes &&
+        !std::strcmp(sha, kPacedReferenceBSha))
+        return PacedFixture::ReferenceB;
+    return PacedFixture::None;
+}
+
+static const char *PacedFixtureName(PacedFixture fixture)
+{
+    if (fixture == PacedFixture::NoB) return "issue399-no-b";
+    if (fixture == PacedFixture::ReferenceB) return "issue399-reference-b";
+    return "none";
+}
+
+static bool BoundedSubmittedPacketDigest(const Input &input, size_t maximum,
+                                         size_t *bytes, std::string *sha)
+{
+    if (!bytes || !sha || !maximum ||
+        maximum > kPacedMaximumSubmittedBytes) return false;
+    GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
+    if (!checksum) return false;
+    size_t total = 0;
+    bool ok = true;
+    for (const Packet &packet : input.packets) {
+        if (!packet.size || packet.size > packet.data.size() ||
+            packet.size > maximum - total) {
+            ok = false;
+            break;
+        }
+        g_checksum_update(checksum, packet.data.data(),
+                          static_cast<gssize>(packet.size));
+        total += packet.size;
+    }
+    if (ok && total) {
+        try {
+            sha->assign(g_checksum_get_string(checksum));
+        } catch (...) {
+            ok = false;
+        }
+    } else {
+        ok = false;
+    }
+    g_checksum_free(checksum);
+    if (!ok) return false;
+    *bytes = total;
+    return true;
+}
+
+static bool PacedInputShapeAdmitted(const Options &options, const Input &input)
+{
+    return !options.pace_input_hz ||
+        (options.pace_input_hz == 60 && options.expected == 900 &&
+         input.codec == AV_CODEC_ID_H264 && input.subtype == BC_MSUBTYPE_H264 &&
+         input.progressive && input.width == 1920 && input.height == 1080 &&
+         input.packets.size() == 900);
+}
+
+static bool PacedInputAdmitted(const Options &options, const Input &input,
+                               PacedFixture *fixture = nullptr)
+{
+    if (fixture) *fixture = PacedFixture::None;
+    if (!options.pace_input_hz) return true;
+    if (!PacedInputShapeAdmitted(options, input)) return false;
+    size_t bytes = 0;
+    std::string sha;
+    if (!BoundedSubmittedPacketDigest(input, kPacedMaximumSubmittedBytes,
+                                      &bytes, &sha)) return false;
+    const PacedFixture matched = PacedFixtureFromDigest(bytes, sha.c_str());
+    if (fixture) *fixture = matched;
+    return matched != PacedFixture::None;
 }
 
 static bool SclInputAdmitted(const Options &options, const Input &input)
@@ -5277,6 +5386,265 @@ struct ScalerBenchmark {
         return passed;
     }
 };
+
+struct InputPacingSummary {
+    bool cadence_available = false;
+    bool sustained_admission = false;
+    size_t submit_deadline_misses = 0;
+    double submit_rate = 0.0;
+    uint64_t scheduled_span_ns = 0;
+    uint64_t actual_span_ns = 0;
+    uint64_t interval_p50_ns = 0;
+    uint64_t interval_p95_ns = 0;
+    uint64_t interval_max_ns = 0;
+    uint64_t lateness_p50_ns = 0;
+    uint64_t lateness_p95_ns = 0;
+    uint64_t lateness_max_ns = 0;
+};
+
+static uint64_t NearestRank(const std::vector<uint64_t> &sorted, unsigned percent)
+{
+    if (sorted.empty() || !percent || percent > 100) return 0;
+    const size_t index = (sorted.size() * percent + 99) / 100 - 1;
+    return sorted[index];
+}
+
+// Measurement for one exact issue #399 run. All vectors are reserved before
+// the device opens; the input/output hot path performs no evidence file I/O.
+struct InputPacing {
+    bool enabled = false;
+    bool started = false;
+    unsigned rate_hz = 0;
+    size_t limit = 0;
+    PacedFixture fixture = PacedFixture::None;
+    uint64_t start_ns = 0;
+    std::vector<uint64_t> submit_return_ns;
+    std::vector<uint64_t> submit_lateness_ns;
+    uint64_t pace_wait_events = 0;
+    uint64_t pace_wait_total_ns = 0;
+    uint64_t pace_wait_max_ns = 0;
+    uint64_t admission_wait_events = 0;
+    uint64_t admission_wait_polls = 0;
+    uint64_t admission_wait_total_ns = 0;
+    uint64_t admission_wait_max_ns = 0;
+    size_t pending_max = 0;
+    uint32_t ready_max = 0;
+
+    static bool ScheduledTarget(uint64_t start, size_t index, unsigned rate,
+                                uint64_t *target) {
+        if (!target || !rate) return false;
+        const uint64_t whole = static_cast<uint64_t>(index) / rate;
+        const uint64_t remainder = static_cast<uint64_t>(index) % rate;
+        if (whole > UINT64_MAX / 1000000000ULL) return false;
+        uint64_t delta = whole * 1000000000ULL;
+        const uint64_t fraction = remainder * 1000000000ULL / rate;
+        if (delta > UINT64_MAX - fraction) return false;
+        delta += fraction;
+        if (start > UINT64_MAX - delta) return false;
+        *target = start + delta;
+        return true;
+    }
+
+    bool Prepare(unsigned requested_rate, unsigned expected,
+                 PacedFixture requested_fixture = PacedFixture::None) {
+        enabled = requested_rate != 0;
+        rate_hz = requested_rate;
+        limit = expected;
+        if (!enabled) return true;
+        if (requested_rate != 60 || expected != 900 ||
+            requested_fixture == PacedFixture::None) return false;
+        fixture = requested_fixture;
+        try {
+            submit_return_ns.reserve(expected);
+            submit_lateness_ns.reserve(expected);
+        } catch (...) {
+            return false;
+        }
+        return true;
+    }
+
+    bool Start(uint64_t timestamp_ns) {
+        if (!enabled || started || !submit_return_ns.empty() ||
+            submit_return_ns.capacity() < limit ||
+            submit_lateness_ns.capacity() < limit) return false;
+        start_ns = timestamp_ns;
+        started = true;
+        return true;
+    }
+
+    bool Target(size_t index, uint64_t *target) const {
+        return enabled && started && index < limit &&
+            ScheduledTarget(start_ns, index, rate_hz, target);
+    }
+
+    bool RecordSubmit(size_t index, uint64_t target_ns, uint64_t return_ns) {
+        uint64_t expected_target = 0;
+        if (!Target(index, &expected_target) || index != submit_return_ns.size() ||
+            target_ns != expected_target || return_ns < target_ns ||
+            submit_return_ns.size() >= limit ||
+            submit_return_ns.size() >= submit_return_ns.capacity() ||
+            submit_lateness_ns.size() >= submit_lateness_ns.capacity()) return false;
+        try {
+            submit_return_ns.push_back(return_ns);
+            try {
+                submit_lateness_ns.push_back(return_ns - target_ns);
+            } catch (...) {
+                submit_return_ns.pop_back();
+                throw;
+            }
+        } catch (...) {
+            return false;
+        }
+        return true;
+    }
+
+    bool RecordPaceWait(uint64_t begin_ns, uint64_t end_ns) {
+        if (!enabled || end_ns <= begin_ns) return false;
+        const uint64_t duration = end_ns - begin_ns;
+        if (pace_wait_events == UINT64_MAX ||
+            pace_wait_total_ns > UINT64_MAX - duration) return false;
+        ++pace_wait_events;
+        pace_wait_total_ns += duration;
+        pace_wait_max_ns = std::max(pace_wait_max_ns, duration);
+        return true;
+    }
+
+    bool RecordAdmissionWait(uint64_t begin_ns, uint64_t end_ns,
+                             uint64_t polls) {
+        if (!enabled || !polls || end_ns <= begin_ns ||
+            admission_wait_events == UINT64_MAX ||
+            admission_wait_polls > UINT64_MAX - polls) return false;
+        const uint64_t duration = end_ns - begin_ns;
+        if (admission_wait_total_ns > UINT64_MAX - duration) return false;
+        ++admission_wait_events;
+        admission_wait_polls += polls;
+        admission_wait_total_ns += duration;
+        admission_wait_max_ns = std::max(admission_wait_max_ns, duration);
+        return true;
+    }
+
+    void ObserveQueues(size_t pending, uint32_t ready) {
+        if (!enabled) return;
+        pending_max = std::max(pending_max, pending);
+        ready_max = std::max(ready_max, ready);
+    }
+
+    bool Measure(InputPacingSummary *summary) const {
+        if (!enabled || !started || !summary || submit_return_ns.empty() ||
+            submit_return_ns.size() != submit_lateness_ns.size()) return false;
+        *summary = InputPacingSummary{};
+        uint64_t last_target = 0;
+        if (!Target(submit_return_ns.size() - 1, &last_target) ||
+            last_target < start_ns) return false;
+        summary->scheduled_span_ns = last_target - start_ns;
+        std::vector<uint64_t> lateness;
+        try {
+            lateness = submit_lateness_ns;
+        } catch (...) {
+            return false;
+        }
+        std::sort(lateness.begin(), lateness.end());
+        summary->lateness_p50_ns = NearestRank(lateness, 50);
+        summary->lateness_p95_ns = NearestRank(lateness, 95);
+        summary->lateness_max_ns = lateness.back();
+        const uint64_t submit_deadline_ns =
+            (1000000000ULL + rate_hz - 1) / rate_hz;
+        summary->submit_deadline_misses = static_cast<size_t>(std::count_if(
+            submit_lateness_ns.begin(), submit_lateness_ns.end(),
+            [submit_deadline_ns](uint64_t value) {
+                return value >= submit_deadline_ns;
+            }));
+        summary->sustained_admission = submit_return_ns.size() == limit &&
+            summary->submit_deadline_misses == 0;
+        if (submit_return_ns.size() < 2) return true;
+        if (submit_return_ns.back() <= submit_return_ns.front()) return false;
+        summary->actual_span_ns = submit_return_ns.back() - submit_return_ns.front();
+        summary->cadence_available = true;
+        summary->submit_rate = static_cast<double>(submit_return_ns.size() - 1) *
+            1000000000.0 / static_cast<double>(summary->actual_span_ns);
+        std::vector<uint64_t> intervals;
+        try {
+            intervals.reserve(submit_return_ns.size() - 1);
+            for (size_t index = 1; index < submit_return_ns.size(); ++index) {
+                if (submit_return_ns[index] < submit_return_ns[index - 1])
+                    return false;
+                intervals.push_back(submit_return_ns[index] -
+                                    submit_return_ns[index - 1]);
+            }
+        } catch (...) {
+            return false;
+        }
+        std::sort(intervals.begin(), intervals.end());
+        summary->interval_p50_ns = NearestRank(intervals, 50);
+        summary->interval_p95_ns = NearestRank(intervals, 95);
+        summary->interval_max_ns = intervals.back();
+        return true;
+    }
+
+    bool Report(bool complete) const {
+        if (!enabled) return complete;
+        InputPacingSummary summary;
+        const bool measured = Measure(&summary);
+        const bool passed = complete && measured &&
+            submit_return_ns.size() == limit && summary.cadence_available &&
+            summary.sustained_admission;
+        std::printf("Input pacing: fixture=%s rate-hz=%u submits=%zu/%zu "
+                    "scheduled-span-ms=%.3f actual-submit-span-ms=%.3f "
+                    "submit-rate-fps=%.3f interval-p50-us=%.3f "
+                    "interval-p95-us=%.3f interval-max-us=%.3f "
+                    "submit-return-lateness-p50-us=%.3f "
+                    "submit-return-lateness-p95-us=%.3f "
+                    "submit-return-lateness-max-us=%.3f "
+                    "submit-deadline-us=%.3f submit-deadline-misses=%zu "
+                    "sustained-admission=%s "
+                    "pace-wait-events=%llu pace-wait-total-ms=%.3f "
+                    "pace-wait-max-ms=%.3f admission-wait-events=%llu "
+                    "admission-wait-polls=%llu admission-wait-total-ms=%.3f "
+                    "admission-wait-max-ms=%.3f pending-max=%zu ready-max=%u "
+                    "media-pts-modified=no hot-path-evidence-io=no result=%s\n",
+                    PacedFixtureName(fixture), rate_hz,
+                    submit_return_ns.size(), limit,
+                    measured ? summary.scheduled_span_ns / 1000000.0 : 0.0,
+                    measured ? summary.actual_span_ns / 1000000.0 : 0.0,
+                    measured ? summary.submit_rate : 0.0,
+                    measured ? summary.interval_p50_ns / 1000.0 : 0.0,
+                    measured ? summary.interval_p95_ns / 1000.0 : 0.0,
+                    measured ? summary.interval_max_ns / 1000.0 : 0.0,
+                    measured ? summary.lateness_p50_ns / 1000.0 : 0.0,
+                    measured ? summary.lateness_p95_ns / 1000.0 : 0.0,
+                    measured ? summary.lateness_max_ns / 1000.0 : 0.0,
+                    (1000000000ULL + rate_hz - 1) / rate_hz / 1000.0,
+                    measured ? summary.submit_deadline_misses : 0,
+                    measured && summary.sustained_admission ? "PASS" : "FAIL",
+                    static_cast<unsigned long long>(pace_wait_events),
+                    pace_wait_total_ns / 1000000.0,
+                    pace_wait_max_ns / 1000000.0,
+                    static_cast<unsigned long long>(admission_wait_events),
+                    static_cast<unsigned long long>(admission_wait_polls),
+                    admission_wait_total_ns / 1000000.0,
+                    admission_wait_max_ns / 1000000.0,
+                    pending_max, ready_max, passed ? "PASS" : "FAIL");
+        std::fflush(stdout);
+        return passed;
+    }
+};
+
+// Choose bounded absolute CLOCK_MONOTONIC sleeps while Receive drains output.
+// The returned wake is never later than the frame target or 1 ms from now.
+static bool PaceWakeDeadline(uint64_t now_ns, uint64_t target_ns,
+                             uint64_t *wake_ns, bool *ready)
+{
+    if (!wake_ns || !ready) return false;
+    *ready = now_ns >= target_ns;
+    if (*ready) {
+        *wake_ns = target_ns;
+        return true;
+    }
+    const uint64_t slice = now_ns > UINT64_MAX - 1000000ULL
+        ? UINT64_MAX : now_ns + 1000000ULL;
+    *wake_ns = std::min(target_ns, slice);
+    return *wake_ns > now_ns;
+}
 
 static bool CaptureBudget(unsigned width, unsigned height, unsigned expected,
                           uint64_t *frame_bytes, uint64_t *total_bytes)
@@ -9608,6 +9976,283 @@ static bool SelfTest()
               "RX output receipt scope rejects preflight, repetition, relative/duplicate paths and hot-path experiments");
     }
 
+    const std::vector<const char *> paced_arguments = {
+        "probe", "--hardware", "fixture", "900", "60", "1",
+        "--scaler-benchmark", "1280", "--rx-output-receipts",
+        "/tmp/new-paced-rx-output.tsv", "--pace-input", "60"
+    };
+    Options paced_options;
+    check(ParseArguments(paced_arguments, &paced_options) &&
+          paced_options.mode == Mode::Hardware &&
+          paced_options.expected == 900 && paced_options.seconds == 60 &&
+          paced_options.iterations == 1 && paced_options.scaler_benchmark &&
+          !paced_options.scaler_test && paced_options.scale_width == 1280 &&
+          paced_options.pace_input_hz == 60 &&
+          paced_options.rx_output_receipts_path &&
+          !std::strcmp(paced_options.rx_output_receipts_path,
+                       "/tmp/new-paced-rx-output.tsv") &&
+          NeedsRawIo(paced_options),
+          "paced input accepts only the exact issue399 receipt/scaler hardware profile");
+    {
+        Options reordered;
+        check(ParseArguments({"probe", "--hardware", "fixture", "900", "60", "1",
+                              "--pace-input", "60", "--rx-output-receipts",
+                              "/tmp/new-paced-rx-output.tsv",
+                              "--scaler-benchmark", "1280"}, &reordered) &&
+              reordered.pace_input_hz == 60 && reordered.scale_width == 1280,
+              "paced input option order does not weaken the exact resulting profile");
+    }
+    for (const std::vector<const char *> &invalid :
+         std::vector<std::vector<const char *>>{
+            {"probe", "--hardware", "fixture", "900", "60", "1",
+             "--scaler-benchmark", "1280", "--rx-output-receipts",
+             "/tmp/new.tsv", "--pace-input"},
+            {"probe", "--hardware", "fixture", "900", "60", "1",
+             "--scaler-benchmark", "1280", "--rx-output-receipts",
+             "/tmp/new.tsv", "--pace-input", "0"},
+            {"probe", "--hardware", "fixture", "900", "60", "1",
+             "--scaler-benchmark", "1280", "--rx-output-receipts",
+             "/tmp/new.tsv", "--pace-input", "59"},
+            {"probe", "--hardware", "fixture", "900", "60", "1",
+             "--scaler-benchmark", "1280", "--rx-output-receipts",
+             "/tmp/new.tsv", "--pace-input", "61"},
+            {"probe", "--hardware", "fixture", "900", "60", "1",
+             "--scaler-benchmark", "1280", "--rx-output-receipts",
+             "/tmp/new.tsv", "--pace-input", "060"},
+            {"probe", "--hardware", "fixture", "900", "60", "1",
+             "--scaler-benchmark", "1280", "--rx-output-receipts",
+             "/tmp/new.tsv", "--pace-input", "60x"},
+            {"probe", "--hardware", "fixture", "900", "60", "1",
+             "--scaler-benchmark", "1280", "--rx-output-receipts",
+             "/tmp/new.tsv", "--pace-input", "60", "--pace-input", "60"},
+            {"probe", "--preflight", "fixture", "900", "60",
+             "--scaler-benchmark", "1280", "--rx-output-receipts",
+             "/tmp/new.tsv", "--pace-input", "60"},
+            {"probe", "--hardware", "fixture", "899", "60", "1",
+             "--scaler-benchmark", "1280", "--rx-output-receipts",
+             "/tmp/new.tsv", "--pace-input", "60"},
+            {"probe", "--hardware", "fixture", "900", "59", "1",
+             "--scaler-benchmark", "1280", "--rx-output-receipts",
+             "/tmp/new.tsv", "--pace-input", "60"},
+            {"probe", "--hardware", "fixture", "900", "60", "2",
+             "--scaler-benchmark", "1280", "--rx-output-receipts",
+             "/tmp/new.tsv", "--pace-input", "60"},
+            {"probe", "--hardware", "fixture", "900", "60", "1",
+             "--scaler-benchmark", "1278", "--rx-output-receipts",
+             "/tmp/new.tsv", "--pace-input", "60"},
+            {"probe", "--hardware", "fixture", "900", "60", "1",
+             "--scaler-test", "1280", "--rx-output-receipts",
+             "/tmp/new.tsv", "--pace-input", "60"},
+            {"probe", "--hardware", "fixture", "900", "60", "1",
+             "--scaler-benchmark", "1280", "--pace-input", "60"}}) {
+        Options rejected;
+        check(!ParseArguments(invalid, &rejected),
+              "paced input rejects every alternate value or incomplete profile before device access");
+    }
+    for (const std::vector<const char *> &extra :
+         std::vector<std::vector<const char *>>{
+            {"--capture-yuy2", "/tmp/capture.raw"}, {"--observe-chroma"},
+            {"--observe-power"}, {"--observe-bvn-state"},
+            {"--observe-scl-config"}, {"--observe-scl-filter-map"},
+            {"--observe-scl-view", "2"}, {"--observe-mfd-config"},
+            {"--observe-mfd-address"}, {"--observe-mfd-framing"},
+            {"--observe-runtime-inventory"}, {"--observe-arm-metadata"},
+            {"--observe-arm-source-shape"}, {"--observe-ppb-context"},
+            {"--observe-ppb-stop"}, {"--observe-ppb-metadata"},
+            {"--observe-ppb-return"}, {"--observe-video-prefix"},
+            {"--observe-video-graph"}, {"--observe-video-staging"},
+            {"--observe-active-context"}, {"--observe-avd-memory"},
+            {"--observe-avd-cpu-map"}, {"--observe-avd-code-arena"},
+            {"--observe-avd-code-prefix"}, {"--observe-avd-platform-code"},
+            {"--observe-avd-cache-count"}, {"--observe-avd-dmem-samples"},
+            {"--observe-avd-dmem-midpoints"}, {"--inject-mfd-colour", "a"},
+            {"--scl-status-test", "observe"}, {"--mpeg1-via-mpeg2"},
+            {"--h263-via-divx"}, {"--open-only"}}) {
+        auto mixed = paced_arguments;
+        mixed.insert(mixed.end() - 2, extra.begin(), extra.end());
+        Options rejected;
+        check(!ParseArguments(mixed, &rejected),
+              "paced input excludes all capture, observer, injection and codec research modes");
+    }
+    Input paced_input;
+    paced_input.codec = AV_CODEC_ID_H264;
+    paced_input.subtype = BC_MSUBTYPE_H264;
+    paced_input.progressive = true;
+    paced_input.width = 1920;
+    paced_input.height = 1080;
+    paced_input.packets.resize(900);
+    check(PacedInputShapeAdmitted(paced_options, paced_input) &&
+          !PacedInputAdmitted(paced_options, paced_input) &&
+          PacedInputAdmitted(Options{}, paced_input),
+          "same-shape 1080p H264 is refused without a pinned submitted-byte identity while default decode remains unchanged");
+    for (unsigned field = 0; field < 7; ++field) {
+        Input changed = paced_input;
+        Options changed_options = paced_options;
+        if (field == 0) changed.codec = AV_CODEC_ID_MPEG2VIDEO;
+        if (field == 1) changed.subtype = BC_MSUBTYPE_MPEG2VIDEO;
+        if (field == 2) changed.progressive = false;
+        if (field == 3) changed.width = 1918;
+        if (field == 4) changed.height = 1088;
+        if (field == 5) changed.packets.pop_back();
+        if (field == 6) changed_options.expected = 899;
+        check(!PacedInputShapeAdmitted(changed_options, changed) &&
+              PacedInputAdmitted(Options{}, changed),
+              "paced input shape mismatch is rejected without changing default decode admission");
+    }
+    check(PacedFixtureFromDigest(kPacedNoBBytes, kPacedNoBSha) ==
+              PacedFixture::NoB &&
+          PacedFixtureFromDigest(kPacedReferenceBBytes, kPacedReferenceBSha) ==
+              PacedFixture::ReferenceB &&
+          PacedFixtureFromDigest(kPacedNoBBytes - 1, kPacedNoBSha) ==
+              PacedFixture::None &&
+          PacedFixtureFromDigest(kPacedReferenceBBytes + 1,
+                                 kPacedReferenceBSha) == PacedFixture::None &&
+          PacedFixtureFromDigest(kPacedNoBBytes,
+              "fd043bbb681fc9d0feb0412100fc732f867d912b348e7fd1056efeb02aac48b8") ==
+              PacedFixture::None &&
+          PacedFixtureFromDigest(kPacedReferenceBBytes, nullptr) ==
+              PacedFixture::None,
+          "only the two frozen issue399 byte-count and SHA256 pairs map to paced fixture identities");
+    {
+        Input digest_input;
+        Packet first, second;
+        first.data = {'a', 0xff}; first.size = 1;
+        second.data = {'b', 'c', 0xee}; second.size = 2;
+        digest_input.packets.push_back(first);
+        digest_input.packets.push_back(second);
+        size_t bytes = 0;
+        std::string sha;
+        check(BoundedSubmittedPacketDigest(digest_input, 3, &bytes, &sha) &&
+              bytes == 3 &&
+              sha == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+              "bounded packet digest hashes concatenated packet.size bytes and excludes padding");
+        Input oversized = digest_input;
+        oversized.packets[1].size = 4;
+        Input zero = digest_input;
+        zero.packets[0].size = 0;
+        check(!BoundedSubmittedPacketDigest(digest_input, 2, &bytes, &sha) &&
+              !BoundedSubmittedPacketDigest(oversized, 3, &bytes, &sha) &&
+              !BoundedSubmittedPacketDigest(zero, 3, &bytes, &sha) &&
+              !BoundedSubmittedPacketDigest(digest_input, 0, &bytes, &sha) &&
+              !BoundedSubmittedPacketDigest(digest_input,
+                  kPacedMaximumSubmittedBytes + 1, &bytes, &sha) &&
+              !BoundedSubmittedPacketDigest(digest_input, 3, nullptr, &sha) &&
+              !BoundedSubmittedPacketDigest(digest_input, 3, &bytes, nullptr),
+              "bounded packet digest rejects budget overflow, size/data mismatch, empty packets and invalid outputs");
+    }
+    {
+        uint64_t target = 0;
+        check(InputPacing::ScheduledTarget(1000000000ULL, 0, 60, &target) &&
+              target == 1000000000ULL &&
+              InputPacing::ScheduledTarget(1000000000ULL, 1, 60, &target) &&
+              target == 1016666666ULL &&
+              InputPacing::ScheduledTarget(1000000000ULL, 59, 60, &target) &&
+              target == 1983333333ULL &&
+              InputPacing::ScheduledTarget(1000000000ULL, 60, 60, &target) &&
+              target == 2000000000ULL &&
+              InputPacing::ScheduledTarget(1000000000ULL, 899, 60, &target) &&
+              target == 15983333333ULL,
+              "60Hz schedule is absolute, drift-free and anchored at post-capture start");
+        check(!InputPacing::ScheduledTarget(0, 1, 0, &target) &&
+              !InputPacing::ScheduledTarget(0, 1, 60, nullptr) &&
+              !InputPacing::ScheduledTarget(UINT64_MAX, 1, 60, &target),
+              "pacing schedule rejects zero rate, null output and overflow");
+        uint64_t wake = 0;
+        bool ready = false;
+        check(PaceWakeDeadline(1000, 5001000, &wake, &ready) && !ready &&
+              wake == 1001000 &&
+              PaceWakeDeadline(5000000, 5001000, &wake, &ready) && !ready &&
+              wake == 5001000 &&
+              PaceWakeDeadline(5001000, 5001000, &wake, &ready) && ready &&
+              wake == 5001000 &&
+              !PaceWakeDeadline(0, 1, nullptr, &ready) &&
+              !PaceWakeDeadline(0, 1, &wake, nullptr),
+              "pacing wake decisions use bounded absolute deadlines and fail closed");
+    }
+    {
+        InputPacing disabled, invalid_rate, invalid_count, invalid_fixture;
+        check(disabled.Prepare(0, 12) && !disabled.enabled &&
+              !disabled.Start(1) && !disabled.RecordPaceWait(1, 2) &&
+              !invalid_rate.Prepare(59, 900, PacedFixture::NoB) &&
+              !invalid_count.Prepare(60, 899, PacedFixture::NoB) &&
+              !invalid_fixture.Prepare(60, 900, PacedFixture::None),
+              "pacing state is an exact opt-in and disabled state has no timing effects");
+        InputPacing pacing;
+        check(pacing.Prepare(60, 900, PacedFixture::NoB) &&
+              pacing.Start(1000000000ULL) &&
+              !pacing.Start(1000000001ULL),
+              "pacing reserves all samples before starting exactly once");
+        for (size_t index = 0; index < 900; ++index) {
+            uint64_t scheduled = 0;
+            const bool target_ok = pacing.Target(index, &scheduled);
+            check(target_ok && pacing.RecordSubmit(index, scheduled,
+                                                   scheduled + 1000),
+                  "pacing accepts only sequential submit-return samples for its own target");
+        }
+        pacing.ObserveQueues(3, 2);
+        pacing.ObserveQueues(7, 1);
+        check(pacing.RecordPaceWait(10, 30) &&
+              !pacing.RecordPaceWait(30, 29) &&
+              pacing.RecordAdmissionWait(100, 160, 3) &&
+              !pacing.RecordAdmissionWait(160, 170, 0),
+              "pacing records bounded waits and rejects reversed or zero-poll observations");
+        InputPacingSummary summary;
+        check(pacing.Measure(&summary) && summary.cadence_available &&
+              summary.sustained_admission && !summary.submit_deadline_misses &&
+              pacing.submit_return_ns.size() == 900 &&
+              summary.scheduled_span_ns == 14983333333ULL &&
+              summary.actual_span_ns == 14983333333ULL &&
+              summary.submit_rate > 59.999 && summary.submit_rate < 60.001 &&
+              summary.interval_p50_ns == 16666667ULL &&
+              summary.interval_p95_ns == 16666667ULL &&
+              summary.interval_max_ns == 16666667ULL &&
+              summary.lateness_p50_ns == 1000 &&
+              summary.lateness_p95_ns == 1000 &&
+              summary.lateness_max_ns == 1000 &&
+              pacing.pace_wait_events == 1 && pacing.pace_wait_total_ns == 20 &&
+              pacing.admission_wait_events == 1 &&
+              pacing.admission_wait_polls == 3 &&
+              pacing.admission_wait_total_ns == 60 &&
+              pacing.pending_max == 7 && pacing.ready_max == 2,
+              "pacing summary preserves cadence, lateness, admission and queue maxima");
+        uint64_t excess_target = 0;
+        check(!pacing.Target(900, &excess_target) &&
+              !pacing.RecordSubmit(900, 0, 0),
+              "pacing rejects samples beyond the preallocated 900-packet run");
+        InputPacing partial;
+        InputPacingSummary partial_summary;
+        uint64_t partial_target = 0;
+        check(partial.Prepare(60, 900, PacedFixture::NoB) &&
+              partial.Start(2000) && partial.Target(0, &partial_target) &&
+              partial.RecordSubmit(0, partial_target, partial_target + 1000) &&
+              partial.Measure(&partial_summary) &&
+              !partial_summary.sustained_admission &&
+              !partial_summary.submit_deadline_misses,
+              "a timely partial run cannot report sustained admission");
+        InputPacing faulty;
+        uint64_t first_target = 0;
+        check(faulty.Prepare(60, 900, PacedFixture::ReferenceB) &&
+              faulty.Start(500) &&
+              faulty.Target(0, &first_target) &&
+              !faulty.RecordSubmit(1, first_target, first_target) &&
+              !faulty.RecordSubmit(0, first_target + 1, first_target + 1) &&
+              !faulty.RecordSubmit(0, first_target, first_target - 1) &&
+              faulty.submit_return_ns.empty() &&
+              faulty.RecordSubmit(0, first_target, first_target) &&
+              !faulty.RecordSubmit(0, first_target, first_target),
+              "pacing rejects out-of-order, wrong-target, early and duplicate samples without partial state");
+        uint64_t second_target = 0;
+        InputPacingSummary faulty_summary;
+        check(faulty.Target(1, &second_target) &&
+              faulty.RecordSubmit(1, second_target,
+                  second_target + 16666667ULL) &&
+              faulty.Measure(&faulty_summary) &&
+              faulty_summary.cadence_available &&
+              !faulty_summary.sustained_admission &&
+              faulty_summary.submit_deadline_misses == 1,
+              "a submit returning at or after the next 60Hz tick rejects sustained admission");
+    }
+
     for (const char *width : {"0", "128", "320", "640", "1918"}) {
         options = Options{};
         check(ParseArguments({"probe", "--hardware", "fixture", "12", "9", "2",
@@ -11627,6 +12272,7 @@ struct Audit {
     GChecksum *pixels = nullptr;
     PixelCapture *capture = nullptr;
     rx_output_receipts::Probe *rx_output_receipts = nullptr;
+    InputPacing input_pacing;
     ~Audit() { if (pixels) g_checksum_free(pixels); }
 };
 
@@ -11636,6 +12282,7 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
         BC_DTS_STATUS driver = {};
         if (!Status("DtsGetDriverStatus", DtsGetDriverStatus(device->handle, &driver))) return false;
         audit->ready = driver.ReadyListCount;
+        audit->input_pacing.ObserveQueues(audit->pending.size(), audit->ready);
         if (!audit->ready) break;
         const uint32_t ready_before = audit->ready;
         BC_DTS_PROC_OUT output = {};
@@ -11830,12 +12477,75 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
 static bool WaitInput(Device *device, const Input &input, Audit *audit,
                       gsize reservation, const Deadline &deadline)
 {
+    uint64_t wait_begin_ns = 0;
+    uint64_t wait_polls = 0;
     while (!deadline.expired()) {
         if (!Receive(device, input, audit)) return false;
-        if (DtsTxFreeSize(device->handle) >= reservation) return true;
+        if (DtsTxFreeSize(device->handle) >= reservation) {
+            if (wait_polls) {
+                uint64_t wait_end_ns = 0;
+                if (!MonotonicNanoseconds(&wait_end_ns) ||
+                    !audit->input_pacing.RecordAdmissionWait(
+                        wait_begin_ns, wait_end_ns, wait_polls)) return false;
+            }
+            return true;
+        }
+        if (audit->input_pacing.enabled) {
+            if (!wait_polls && !MonotonicNanoseconds(&wait_begin_ns)) return false;
+            ++wait_polls;
+        }
         g_usleep(1000);
     }
+    if (wait_polls) {
+        uint64_t wait_end_ns = 0;
+        if (!MonotonicNanoseconds(&wait_end_ns) ||
+            !audit->input_pacing.RecordAdmissionWait(
+                wait_begin_ns, wait_end_ns, wait_polls))
+            std::fprintf(stderr, "Input admission timing failed\n");
+    }
     std::fprintf(stderr, "Input admission deadline expired\n");
+    return false;
+}
+
+static bool SleepMonotonicAbsolute(uint64_t wake_ns)
+{
+    const uint64_t seconds = wake_ns / 1000000000ULL;
+    if (seconds > static_cast<uint64_t>(std::numeric_limits<time_t>::max()))
+        return false;
+    struct timespec wake = {};
+    wake.tv_sec = static_cast<time_t>(seconds);
+    wake.tv_nsec = static_cast<long>(wake_ns % 1000000000ULL);
+    int result = 0;
+    do {
+        result = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake, nullptr);
+    } while (result == EINTR && !interrupted);
+    return result == 0;
+}
+
+static bool WaitInputPace(Device *device, const Input &input, Audit *audit,
+                          size_t packet_index, const Deadline &deadline,
+                          uint64_t *target_ns)
+{
+    if (!audit->input_pacing.Target(packet_index, target_ns)) return false;
+    uint64_t wait_begin_ns = 0;
+    bool waited = false;
+    while (!deadline.expired()) {
+        if (!Receive(device, input, audit)) return false;
+        uint64_t now_ns = 0, wake_ns = 0;
+        bool ready = false;
+        if (!MonotonicNanoseconds(&now_ns) ||
+            !PaceWakeDeadline(now_ns, *target_ns, &wake_ns, &ready)) return false;
+        if (ready) {
+            return !waited || audit->input_pacing.RecordPaceWait(
+                wait_begin_ns, now_ns);
+        }
+        if (!waited) {
+            wait_begin_ns = now_ns;
+            waited = true;
+        }
+        if (!SleepMonotonicAbsolute(wake_ns)) return false;
+    }
+    std::fprintf(stderr, "Input pacing deadline expired\n");
     return false;
 }
 
@@ -11855,7 +12565,8 @@ static bool SettleActiveContext(Device *device, const Input &input, Audit *audit
 
 static bool Run(Input &input, unsigned expected, unsigned seconds,
                 unsigned iteration, unsigned iterations,
-                Phase1Progress *progress, const Options &options)
+                Phase1Progress *progress, const Options &options,
+                PacedFixture paced_fixture)
 {
     if (options.observe_active_context && !PrepareActiveContextInput(&input)) {
         std::fprintf(stderr,
@@ -11865,6 +12576,11 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     Deadline deadline(seconds);
     Device device;
     Audit audit(options.observe_avd_platform_code, options.observe_avd_dmem_midpoints);
+    if (!audit.input_pacing.Prepare(options.pace_input_hz, expected,
+                                    paced_fixture)) {
+        std::fprintf(stderr, "Input pacing preparation failed\n");
+        return false;
+    }
     rx_output_receipts::Probe receipt_probe;
     if (options.rx_output_receipts_path &&
         !receipt_probe.Prepare(options.rx_output_receipts_path, expected)) {
@@ -12002,7 +12718,13 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok && options.capture_path) ok = PackingState(device.handle, "started", &audit.mfd_colour, &audit.scl_view);
     if (ok) {
         ok = Status("DtsStartCapture", DtsStartCapture(device.handle));
-        if (ok) audit.benchmark.CaptureStarted(g_get_monotonic_time());
+        if (ok) {
+            uint64_t pace_start_ns = 0;
+            ok = !audit.input_pacing.enabled ||
+                (MonotonicNanoseconds(&pace_start_ns) &&
+                 audit.input_pacing.Start(pace_start_ns));
+            if (ok) audit.benchmark.CaptureStarted(g_get_monotonic_time());
+        }
     }
     if (ok && options.capture_path) ok = PackingState(device.handle, "capture-before-input", &audit.mfd_colour, &audit.scl_view);
     const HANDLE active_context_owner = options.observe_active_context
@@ -12017,7 +12739,12 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         const uint64_t token = Token(iteration - 1, packet_index);
         const bool resume_fragment = options.observe_active_context &&
             packet_index == kActiveContextBoundaryPacket;
-        ok = WaitInput(&device, input, &audit, packet.reservation, deadline);
+        uint64_t pace_target_ns = 0;
+        if (audit.input_pacing.enabled)
+            ok = WaitInputPace(&device, input, &audit, packet_index,
+                               deadline, &pace_target_ns);
+        if (ok)
+            ok = WaitInput(&device, input, &audit, packet.reservation, deadline);
         if (ok && resume_fragment) {
             ok = active_context_marker_submitted &&
                 device.handle == active_context_owner && device.opened && device.started &&
@@ -12029,12 +12756,21 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
                     "Active-context continuation lost the exact pre-VCL gate; no VCL or custom I/O submitted\n");
         }
         if (ok) {
-            ok = Status("DtsProcInput", DtsProcInput(device.handle,
-                packet.data.data(), packet.size, resume_fragment ? 0U : token,
-                FALSE));
+            const BC_STATUS submit = DtsProcInput(device.handle,
+                packet.data.data(), packet.size, resume_fragment ? 0U : token, FALSE);
+            uint64_t submit_return_ns = 0;
+            const bool timing_clock_ok = !audit.input_pacing.enabled ||
+                MonotonicNanoseconds(&submit_return_ns);
+            const bool submit_ok = Status("DtsProcInput", submit);
+            const bool timing_ok = !audit.input_pacing.enabled ||
+                (timing_clock_ok && submit_ok &&
+                 audit.input_pacing.RecordSubmit(packet_index, pace_target_ns,
+                                                 submit_return_ns));
+            ok = timing_ok && submit_ok;
         }
         if (ok) {
             audit.pending.insert(token);
+            audit.input_pacing.ObserveQueues(audit.pending.size(), audit.ready);
             if (options.observe_active_context) ++active_context_submitted;
         }
         ++packet_index;
@@ -12197,6 +12933,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         std::fflush(stdout);
     }
     ok = native_run_ok && receipts_ok;
+    ok = audit.input_pacing.Report(ok);
     ok = audit.power.Finish(ok);
     ok = audit.bvn_state.Finish(ok);
     const bool captured = capture.Finish(ok);
@@ -12245,6 +12982,7 @@ int main(int argc, char **argv)
             "[--scaler-test WIDTH_OR_0 | --scaler-benchmark WIDTH_OR_0] "
             "[--mpeg1-via-mpeg2 | --h263-via-divx] "
             "[--rx-output-receipts NEW_ABSOLUTE_TSV] "
+            "[--pace-input 60] "
             "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --observe-avd-platform-code | --observe-avd-cache-count | --observe-avd-dmem-samples | --observe-avd-dmem-midpoints | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n"
             "Power observation: --hardware MPEG2_640x360_180_FRAMES 180 "
@@ -12252,7 +12990,10 @@ int main(int argc, char **argv)
             "BVN state observation: --hardware MPEG2_640x360_180_FRAMES 180 "
             "--scaler-test 320 --observe-bvn-state\n"
             "Active context observation: --hardware H264_256x96_180_PACKETS 180 30 1 "
-            "--scaler-test 0 --capture-yuy2 NEW_PATH --observe-active-context\n", argv[0]);
+            "--scaler-test 0 --capture-yuy2 NEW_PATH --observe-active-context\n"
+            "Issue399 paced admission: --hardware PINNED_ISSUE399_H264_1920x1080_900_PACKETS 900 60 1 "
+            "--scaler-benchmark 1280 --rx-output-receipts NEW_ABSOLUTE_TSV "
+            "--pace-input 60\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
@@ -12343,6 +13084,15 @@ int main(int argc, char **argv)
     Input input;
     if (!Load(options.path, options.expected, &deadline, &input,
               options.mpeg1_via_mpeg2, options.h263_via_divx)) {
+        phase1_progress_close(&progress);
+        return 2;
+    }
+    PacedFixture paced_fixture = PacedFixture::None;
+    if (!PacedInputAdmitted(options, input, &paced_fixture)) {
+        std::fprintf(stderr,
+            "--pace-input requires one pinned issue399 H264 progressive "
+            "1920x1080/900-packet Annex-B identity (no-B or reference-B); "
+            "no device was opened\n");
         phase1_progress_close(&progress);
         return 2;
     }
@@ -12451,7 +13201,7 @@ int main(int argc, char **argv)
             "probe=library-drain iteration=%u/%u state=starting last-complete=%u\n",
             iteration, options.iterations, completed);
         ok = Run(input, options.expected, options.seconds, iteration,
-                 options.iterations, &progress, options);
+                 options.iterations, &progress, options, paced_fixture);
         if (!SampleResources(&current)) {
             std::fprintf(stderr, "Unable to sample resources after iteration %u\n",
                          iteration);
