@@ -41,6 +41,12 @@ static const uint32_t kLoadDebugBit = 0x80000000U;
 // independent 4096-register-read ceiling while covering the observed case in
 // which eight samples were insufficient.
 static const unsigned kHaltPollBudget = 32U;
+// The native pause callback requests one millisecond.  This wider elapsed
+// ceiling detects a scheduler stall without pretending to be a bus timeout.
+// Synchronous register calls cannot be interrupted by this model; the elapsed
+// checks can only fail closed after such a call returns.
+static const uint64_t kHstPulsePauseBudgetUs = 100000U;
+static const uint64_t kHstPulseVerifyBudgetUs = 250000U;
 static const uint32_t kDeliveryOffset = 0x00015678U;
 static const uint32_t kReturnOffset = 0x00015778U;
 static const uint32_t kRecordOffset = 0x00015878U;
@@ -67,6 +73,7 @@ enum class Failure {
     Record,
     Source,
     Extension,
+    Pulse,
     Resume
 };
 
@@ -108,6 +115,29 @@ struct Result {
     bool route_restored = false;
     // Diagnostic only: held-state acceptance never depends on this clock.
     bool halt_clock_anomaly = false;
+    // Explicit opt-in diagnostics for one experimental Hst route-release
+    // hypothesis.  This is neither a generic recovery path nor evidence of a
+    // source generation, lease, or completion event.
+    bool hst_pulse_enabled = false;
+    bool hst_pulse_eligible = false;
+    bool hst_pulse_attempted = false;
+    bool hst_pulse_pause_attempted = false;
+    bool hst_pulse_reselect_attempted = false;
+    bool hst_pulse_verified = false;
+    bool hst_pulse_route_zero = false;
+    bool hst_pulse_clock_anomaly = false;
+    unsigned hst_pulse_route_zero_register_reads = 0;
+    unsigned hst_pulse_route_zero_memory_reads = 0;
+    uint32_t hst_pulse_identity_before = 0;
+    uint32_t hst_pulse_identity_after = 0;
+    uint32_t hst_pulse_status_before = 0;
+    uint32_t hst_pulse_status_after = 0;
+    uint32_t hst_pulse_debug_before = 0;
+    uint32_t hst_pulse_debug_after = 0;
+    uint64_t hst_pulse_started_us = 0;
+    uint64_t hst_pulse_pause_returned_us = 0;
+    uint64_t hst_pulse_reselected_us = 0;
+    uint64_t hst_pulse_verified_us = 0;
     // Any failure after a route-select attempt deliberately performs no more
     // custom I/O: an API error does not prove the write was unapplied.  A
     // future hardware caller must use ordinary module/device recovery.
@@ -141,7 +171,7 @@ struct Result {
 
 struct HeldExtension {
     // Extensions are observation-only.  Run verifies that a callback did not
-    // consume any of the four route/halt/resume/restore write slots.
+    // consume any route/halt/pulse/resume/restore write slot.
     void *opaque = nullptr;
     bool (*observe)(const Plan &, const Io &, Result *, void *) = nullptr;
 };
@@ -260,6 +290,10 @@ static inline bool RegisterRead(const Io &io, Result *result,
 {
     if (!result || result->failure != Failure::None || !word ||
         !io.read_register || !Alive(io, result)) return false;
+    if (result->hst_pulse_route_zero) {
+        ++result->hst_pulse_route_zero_register_reads;
+        return Reject(result, Failure::Pulse);
+    }
     if (result->register_reads >= 4096U) return Reject(result, Failure::Budget);
     ++result->register_reads;
     const int status = io.read_register(io.opaque, address, word);
@@ -275,7 +309,8 @@ static inline bool RegisterWrite(const Io &io, Result *result,
     const bool allowed = (address == kRoute && word <= 1U) ||
         (address == kDebug && word == 2U) ||
         (address == kStatus && !(word & kHalt));
-    if (!allowed || result->register_writes >= 4U)
+    const unsigned write_budget = result->hst_pulse_enabled ? 6U : 4U;
+    if (!allowed || result->register_writes >= write_budget)
         return Reject(result, Failure::Budget);
     ++result->register_writes;
     const int status = io.write_register(io.opaque, address, word);
@@ -289,6 +324,10 @@ static inline bool MemoryRead(const Io &io, Result *result, uint32_t address,
     if (!result || result->failure != Failure::None || !words || !bytes ||
         (address & 3U) || (bytes & 3U) || !io.read_memory ||
         !Alive(io, result)) return false;
+    if (result->hst_pulse_route_zero) {
+        ++result->hst_pulse_route_zero_memory_reads;
+        return Reject(result, Failure::Pulse);
+    }
     if (result->memory_reads >= 32U ||
         static_cast<uint64_t>(address) + bytes > 0x04000000ULL)
         return Reject(result, Failure::Budget);
@@ -491,11 +530,13 @@ static inline bool SourceMatches(const uint32_t *words, Result *result)
 
 static inline bool Run(const Plan &plan, const Io &io, uint32_t *source_words,
                        size_t source_word_count, Result *result,
-                       const HeldExtension *extension = nullptr)
+                       const HeldExtension *extension = nullptr,
+                       bool experimental_hst_route_pulse = false)
 {
     uint32_t allocation = 0, delivery = 0, returned = 0, slot0_record = 0;
     if (!result) return false;
     *result = Result{};
+    result->hst_pulse_enabled = experimental_hst_route_pulse;
     if (!source_words || source_word_count != kSourceWords ||
         (extension && (!extension->opaque || !extension->observe)) ||
         !io.opaque || !io.valid || !io.read_register || !io.write_register ||
@@ -553,7 +594,93 @@ static inline bool Run(const Plan &plan, const Io &io, uint32_t *source_words,
             (io.pause(io.opaque) || !Alive(io, result)))
             return Reject(result, Failure::Access);
     }
-    if (!result->halt_verified) return Reject(result, Failure::Halt);
+    if (!result->halt_verified) {
+        if (!experimental_hst_route_pulse)
+            return Reject(result, Failure::Halt);
+
+        // The hypothesis is admitted only for the exact native refusal that
+        // motivated it: all 32 samples are the same halted STATUS and every
+        // DEBUG sample is exactly LD.  Any other state remains an ordinary
+        // fail-closed halt refusal.
+        bool stable_pending_load = result->halt_polls == kHaltPollBudget;
+        const uint32_t stable_status = result->halt_status_trace[0];
+        for (unsigned poll = 0; poll < result->halt_polls; ++poll)
+            stable_pending_load = stable_pending_load &&
+                result->halt_status_trace[poll] == stable_status &&
+                (result->halt_status_trace[poll] & kHalt) &&
+                result->halt_debug_trace[poll] == kLoadDebugBit;
+        if (!stable_pending_load)
+            return Reject(result, Failure::Halt);
+        result->hst_pulse_identity_before = result->identity_word;
+        result->hst_pulse_status_before = stable_status;
+        result->hst_pulse_debug_before = kLoadDebugBit;
+        if (result->halt_clock_anomaly)
+            return Reject(result, Failure::Pulse);
+        result->hst_pulse_started_us = io.monotonic_us(io.opaque);
+        if (result->hst_pulse_started_us < prior_sample_us) {
+            result->hst_pulse_clock_anomaly = true;
+            return Reject(result, Failure::Pulse);
+        }
+        result->hst_pulse_eligible = true;
+        result->hst_pulse_attempted = true;
+
+        // Hst 1 -> 0, one pause, then 0 -> 1.  While Hst is zero no ARC AUX,
+        // register, or memory read is permitted; even a diagnostic read is a
+        // model failure.  A failed write can be ambiguously applied, so all
+        // such paths stop immediately and require ordinary module recovery.
+        result->hst_pulse_route_zero = true;
+        if (!RegisterWrite(io, result, kRoute, 0U)) return false;
+        result->hst_pulse_pause_attempted = true;
+        if (io.pause(io.opaque) || !Alive(io, result))
+            return Reject(result, Failure::Pulse);
+        result->hst_pulse_pause_returned_us = io.monotonic_us(io.opaque);
+        result->hst_pulse_reselect_attempted = true;
+        if (!RegisterWrite(io, result, kRoute, 1U)) return false;
+        result->hst_pulse_route_zero = false;
+        result->hst_pulse_reselected_us = io.monotonic_us(io.opaque);
+        if (result->hst_pulse_pause_returned_us <
+                result->hst_pulse_started_us ||
+            result->hst_pulse_reselected_us <
+                result->hst_pulse_pause_returned_us) {
+            result->hst_pulse_clock_anomaly = true;
+            return Reject(result, Failure::Pulse);
+        }
+        if (result->hst_pulse_pause_returned_us -
+                result->hst_pulse_started_us > kHstPulsePauseBudgetUs ||
+            result->hst_pulse_reselected_us -
+                result->hst_pulse_started_us > kHstPulsePauseBudgetUs)
+            return Reject(result, Failure::Pulse);
+
+        uint32_t pulse_identity = 0, pulse_status = 0, pulse_debug = 0;
+        if (!Guard(io, result, 1U) ||
+            !RegisterRead(io, result, kIdentity, &pulse_identity) ||
+            !RegisterRead(io, result, kStatus, &pulse_status) ||
+            !RegisterRead(io, result, kDebug, &pulse_debug) ||
+            !Guard(io, result, 1U))
+            return false;
+        result->hst_pulse_identity_after = pulse_identity;
+        result->hst_pulse_status_after = pulse_status;
+        result->hst_pulse_debug_after = pulse_debug;
+        result->hst_pulse_verified_us = io.monotonic_us(io.opaque);
+        if (result->hst_pulse_verified_us < result->hst_pulse_reselected_us) {
+            result->hst_pulse_clock_anomaly = true;
+            return Reject(result, Failure::Pulse);
+        }
+        if (result->hst_pulse_verified_us - result->hst_pulse_started_us >
+                kHstPulseVerifyBudgetUs)
+            return Reject(result, Failure::Pulse);
+        if (pulse_identity != result->hst_pulse_identity_before ||
+            pulse_status != result->hst_pulse_status_before ||
+            !(pulse_status & kHalt) ||
+            result->hst_pulse_debug_before != kLoadDebugBit ||
+            pulse_debug != 0U ||
+            result->hst_pulse_route_zero_register_reads ||
+            result->hst_pulse_route_zero_memory_reads)
+            return Reject(result, Failure::Pulse);
+        result->halted_status = pulse_status;
+        result->halt_verified = true;
+        result->hst_pulse_verified = true;
+    }
 
     Edges before, after;
     if (!ReadEdges(io, result, plan, &before) ||
@@ -641,7 +768,9 @@ static inline bool Run(const Plan &plan, const Io &io, uint32_t *source_words,
     if (!RegisterWrite(io, result, kRoute, 0U) || !Guard(io, result, 0U))
         return Reject(result, Failure::Resume);
     result->route_restored = true;
-    return result->failure == Failure::None && result->register_writes == 4U &&
+    const unsigned expected_writes = result->hst_pulse_attempted ? 6U : 4U;
+    return result->failure == Failure::None &&
+        result->register_writes == expected_writes &&
         result->source_valid_bytes == kSourceValidBytes;
 }
 

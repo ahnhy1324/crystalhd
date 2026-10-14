@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "kind": "native-hst-route-pulse-nonentry",
+  "purpose": "Preserve the single bounded native opt-in run in which ordinary halt verification cleared DEBUG.LD before the experimental Hst pulse precondition, so the pulse was not entered and the generation extension ran but found no admissible delivered record.",
+  "probe": {
+    "tested_commit": "d681a2ff1326485c9298eb68bf5a2d704066949b",
+    "temporary_module_srcversion": "664CAF5D5A36EA972A00DAF",
+    "temporary_module_sha256": "564bfe710f4ce47162bc31672ead36754cf8ba866ff086b8836c7e8916f019f7",
+    "source_library_sha256": "e5455cb7cd653ba8d907246a81a1a56e9947ffe88b6ecf67c556a3d1082493d4",
+    "probe_binary_sha256": "ece8d8581cdacc517c84e6e278471383290f2c412cf1387bbd46a83477db1e59",
+    "command": "LD_LIBRARY_PATH=$SOURCE_TREE/linux_lib/libcrystalhd $SOURCE_TREE/tests/library-drain-test --hardware $FIXTURE 180 30 1 --scaler-test 0 --capture-yuy2 $NEW_CAPTURE --observe-generation-bound --experimental-hst-route-pulse --rx-output-receipts $NEW_RECEIPTS",
+    "results_outside_source_tree": true,
+    "production_code_changed": false,
+    "exit_status": 1
+  },
+  "input": {
+    "generator": "tests/library-raw-frame.cpp:Issue204IntraLead",
+    "codec": "H264",
+    "progressive": true,
+    "width": 256,
+    "height": 96,
+    "packets": 180,
+    "bytes": 126823,
+    "sha256": "76680cf85767bbc78c89bf49a45aa5af7672dc956d7bcc4be3aa88abe17d1430"
+  },
+  "native_result": {
+    "marker_gate": "PASS",
+    "exact61_gate": "PASS",
+    "graph_result": "PASS",
+    "active_context": {
+      "failure": "Extension",
+      "register_reads": 1469,
+      "register_writes": 2,
+      "memory_reads": 13,
+      "pre_halt_status": "a4001779",
+      "identity": "7b010108",
+      "pre_halt_debug": "80000000",
+      "halt_polls": 1,
+      "halt_poll_status": "860015a0",
+      "halt_poll_debug": "00000000",
+      "halt_poll_elapsed_us": 111,
+      "ordinary_halt_verified": true,
+      "extension_executed": true,
+      "route_restored": false,
+      "module_recovery_required": true
+    },
+    "hst_route_pulse": {
+      "eligible": false,
+      "attempted": false,
+      "pause_attempted": false,
+      "reselect_attempted": false,
+      "route_zero_register_reads": 0,
+      "route_zero_memory_reads": 0,
+      "classified_result": "NOT-RUN",
+      "classified_reason": "ordinary-halt-cleared-delayed-load-before-pulse-precondition"
+    },
+    "generation_extension": {
+      "failure": "Record",
+      "latest_i": 63,
+      "delivered_i": 63,
+      "delivered_j": 34,
+      "display_producer": 64,
+      "display_consumer": 64,
+      "frame_metadata": "00000000",
+      "delivered_record": "00000000",
+      "source_bank": 63,
+      "receipt_generation": 1,
+      "receipt_run": 1,
+      "outer_arm_source_join": false,
+      "host_receipt_join": false
+    },
+    "partial_capture": {
+      "frames": 60,
+      "bytes": 2949120,
+      "sha256": "ef149993170f014bd4b2a9bf96d01eb5bfcdb4d5e36b8be4ea73b2e5b2604a1c",
+      "usable_as_success_evidence": false
+    },
+    "receipt_tsv_published": false,
+    "artifacts": {
+      "stdout_sha256": "39f91b550fb7230d3da9fec095862b4ea59fd72f1c64b4d400ef214216e489f2",
+      "stderr_sha256": "806800953a1a0a51a10fc28961910d4ca21c30544b3f398c4b553d0c3b0c3dd0",
+      "kernel_probe_sha256": "fbed54137d5da4b8990a75fde32c28cc1829d384a17b8d64c4d9381b37ca2e14",
+      "recovery_h264_stdout_sha256": "308ed8c19c318002a2426455631c44407553fa3b2b857dc1c3f5398fedc8a300",
+      "recovery_mpeg2_stdout_sha256": "2c51d71a9eb708b463ccb073ae0d5113d66ebf21ba10e57251243d11d8a614c0"
+    }
+  },
+  "production_recovery": {
+    "module_srcversion": "0121A57354B130DF8F3089C",
+    "module_restored": true,
+    "h264_frames": 180,
+    "mpeg2_frames": 30,
+    "both_firmware_eos": true,
+    "both_cleanup_pass": true,
+    "expected_firmware_command_timeout_during_failed_extension": true,
+    "aer_iommu_oops_or_lockup": false,
+    "device_idle_after_controls": true
+  },
+  "scope": {
+    "native_opt_in_executed": true,
+    "ordinary_halt_verified": true,
+    "generation_extension_executed": true,
+    "hst_route_pulse_executed": false,
+    "outer_arm_source_join_observed": false,
+    "host_driver_generation_receipt_observed": false,
+    "source_generation_proven": false,
+    "physical_source_lease_proven": false,
+    "all_consumer_completion_proven": false,
+    "checklist_or_capability_claim": false
+  }
+}

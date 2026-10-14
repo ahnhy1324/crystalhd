@@ -18272,5 +18272,107 @@ class NativeGenerationObserverHaltRefusalFixtureTests(unittest.TestCase):
             "checklist_or_capability_claim"})
 
 
+class NativeHstRoutePulseNonentryFixtureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.path = ROOT / "tests/fixtures/issue204/native-hst-route-pulse-nonentry.json"
+
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate JSON key: " + key)
+                result[key] = value
+            return result
+
+        cls.capture = json.loads(cls.path.read_text(),
+                                 object_pairs_hook=unique_object)
+
+    def test_provenance_and_sanitization(self):
+        capture = self.capture
+        self.assertEqual((capture["schema_version"], capture["kind"]),
+                         (1, "native-hst-route-pulse-nonentry"))
+        probe = capture["probe"]
+        digest = re.compile(r"[0-9a-f]{64}")
+        commit = re.compile(r"[0-9a-f]{40}")
+        self.assertIsNotNone(commit.fullmatch(probe["tested_commit"]))
+        for key in ("temporary_module_sha256", "source_library_sha256",
+                    "probe_binary_sha256"):
+            self.assertIsNotNone(digest.fullmatch(probe[key]))
+        for value in capture["native_result"]["artifacts"].values():
+            self.assertIsNotNone(digest.fullmatch(value))
+        self.assertTrue(probe["results_outside_source_tree"])
+        self.assertFalse(probe["production_code_changed"])
+        self.assertEqual(probe["exit_status"], 1)
+        command = probe["command"]
+        self.assertIn("--experimental-hst-route-pulse", command)
+        self.assertIn("--observe-generation-bound", command)
+        serialized = self.path.read_text()
+        for forbidden in ("/home/", "/tmp/", "/var/tmp/", "172.30.",
+                          "run-dir="):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_pulse_was_not_entered_after_ordinary_halt_verified(self):
+        native = self.capture["native_result"]
+        self.assertEqual((native["marker_gate"], native["exact61_gate"],
+                          native["graph_result"]), ("PASS", "PASS", "PASS"))
+        active = native["active_context"]
+        self.assertEqual((active["failure"], active["register_reads"],
+                          active["register_writes"], active["memory_reads"]),
+                         ("Extension", 1469, 2, 13))
+        self.assertEqual((active["pre_halt_debug"],
+                          active["halt_poll_debug"], active["halt_polls"]),
+                         ("80000000", "00000000", 1))
+        self.assertTrue(int(active["halt_poll_status"], 16) & 0x02000000)
+        self.assertTrue(active["ordinary_halt_verified"] and
+                        active["extension_executed"] and
+                        active["module_recovery_required"])
+        self.assertFalse(active["route_restored"])
+        pulse = native["hst_route_pulse"]
+        self.assertEqual((pulse["eligible"], pulse["attempted"],
+                          pulse["pause_attempted"], pulse["reselect_attempted"]),
+                         (False, False, False, False))
+        self.assertEqual((pulse["route_zero_register_reads"],
+                          pulse["route_zero_memory_reads"]), (0, 0))
+        self.assertEqual((pulse["classified_result"],
+                          pulse["classified_reason"]),
+                         ("NOT-RUN",
+                          "ordinary-halt-cleared-delayed-load-before-pulse-precondition"))
+
+    def test_extension_refusal_recovery_and_scope(self):
+        native = self.capture["native_result"]
+        generation = native["generation_extension"]
+        self.assertEqual((generation["failure"], generation["latest_i"],
+                          generation["delivered_i"], generation["delivered_j"],
+                          generation["display_producer"],
+                          generation["display_consumer"]),
+                         ("Record", 63, 63, 34, 64, 64))
+        self.assertFalse(generation["outer_arm_source_join"] or
+                         generation["host_receipt_join"])
+        partial = native["partial_capture"]
+        self.assertEqual((partial["frames"], partial["bytes"]),
+                         (60, 60 * 256 * 96 * 2))
+        self.assertFalse(partial["usable_as_success_evidence"])
+        self.assertFalse(native["receipt_tsv_published"])
+        recovery = self.capture["production_recovery"]
+        self.assertTrue(recovery["module_restored"] and
+                        recovery["both_firmware_eos"] and
+                        recovery["both_cleanup_pass"] and
+                        recovery["expected_firmware_command_timeout_during_failed_extension"] and
+                        recovery["device_idle_after_controls"])
+        self.assertEqual((recovery["h264_frames"], recovery["mpeg2_frames"]),
+                         (180, 30))
+        self.assertFalse(recovery["aer_iommu_oops_or_lockup"])
+        scope = self.capture["scope"]
+        self.assertEqual({key for key, value in scope.items() if value}, {
+            "native_opt_in_executed", "ordinary_halt_verified",
+            "generation_extension_executed"})
+        self.assertEqual({key for key, value in scope.items() if not value}, {
+            "hst_route_pulse_executed", "outer_arm_source_join_observed",
+            "host_driver_generation_receipt_observed", "source_generation_proven",
+            "physical_source_lease_proven", "all_consumer_completion_proven",
+            "checklist_or_capability_claim"})
+
+
 if __name__ == "__main__":
     unittest.main()
