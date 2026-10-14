@@ -117,6 +117,7 @@ browser:
 
 configuration-check:
 	$(PYTHON3) -B tests/configuration-inventory.test.py
+	$(PYTHON3) -B tests/configuration-schema.test.py
 
 uapi-check:
 	sh ./tests/uapi-abi.sh
