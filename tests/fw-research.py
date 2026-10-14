@@ -17912,5 +17912,188 @@ class NativeActiveContextBindingFixtureTests(unittest.TestCase):
                 self.assertFalse(value, key)
 
 
+class NativeActiveContextDynamicFixtureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.path = ROOT / "tests/fixtures/issue204/native-active-context-dynamic.json"
+
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate JSON key: " + key)
+                result[key] = value
+            return result
+
+        cls.capture = json.loads(cls.path.read_text(), object_pairs_hook=unique_object)
+
+    def exact_keys(self, value, keys):
+        self.assertIs(type(value), dict)
+        self.assertEqual(set(value), set(keys))
+
+    def test_schema_hashes_and_sanitization(self):
+        capture = self.capture
+        self.exact_keys(capture, {"schema_version", "kind", "purpose", "probe",
+                                  "environment", "input", "failed_qualification",
+                                  "validated_run", "fresh_reopen_controls", "verification",
+                                  "scope"})
+        self.assertEqual((capture["schema_version"], capture["kind"]),
+                         (1, "native-active-context-dynamic-observation"))
+        self.assertEqual(capture["purpose"],
+                         "Preserve the first successful clean-commit execution of the dynamic issue #204 observer, including the preceding fail-closed qualification counterexample.")
+        probe = capture["probe"]
+        self.exact_keys(probe, {"validated_commit", "base_commit", "binary_sha256",
+                                "source_library_sha256", "command", "source_tree_clean",
+                                "results_outside_source_tree", "production_code_changed"})
+        self.assertTrue(probe["source_tree_clean"] and
+                        probe["results_outside_source_tree"])
+        self.assertFalse(probe["production_code_changed"])
+        self.assertEqual(probe["command"],
+                         "LD_LIBRARY_PATH=$SOURCE_TREE/linux_lib/libcrystalhd $SOURCE_TREE/tests/library-drain-test --hardware $FIXTURE 180 30 1 --scaler-test 0 --capture-yuy2 $RESULTS/active-context.yuy2 --observe-active-context")
+        environment = capture["environment"]
+        self.exact_keys(environment, {"os", "kernel", "device", "module_version",
+                                      "module_srcversion", "module_file_sha256",
+                                      "firmware_sha256", "library_reported_version",
+                                      "force_l0s_off", "session_l0s_off"})
+        self.assertEqual(environment["firmware_sha256"], MAP.BUNDLED_SHA256)
+        self.assertEqual((environment["device"], environment["module_version"],
+                          environment["library_reported_version"]),
+                         ("BCM70015 14e4:1615", "3.10.3", "3.22.0"))
+        self.assertTrue(environment["force_l0s_off"])
+        self.assertFalse(environment["session_l0s_off"])
+        digest = re.compile(r"[0-9a-f]{64}")
+        commit = re.compile(r"[0-9a-f]{40}")
+        self.assertIsNotNone(commit.fullmatch(probe["validated_commit"]))
+        self.assertIsNotNone(commit.fullmatch(probe["base_commit"]))
+        self.assertIsNotNone(commit.fullmatch(
+            capture["failed_qualification"]["probe_commit"]))
+        hash_values = []
+        def collect(value, key=""):
+            if type(value) is dict:
+                for child_key, child in value.items():
+                    collect(child, child_key)
+            elif key.endswith("sha256"):
+                hash_values.append(value)
+        collect(capture)
+        self.assertGreaterEqual(len(hash_values), 17)
+        for value in hash_values:
+            self.assertIs(type(value), str)
+            self.assertIsNotNone(digest.fullmatch(value))
+        serialized = self.path.read_text()
+        for forbidden in ("/home/", "/tmp/", "/var/tmp/", "172.30.", "run-dir="):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_generated_input_and_exact_host_boundaries(self):
+        source = self.capture["input"]
+        self.assertEqual(source, {
+            "generator": "tests/library-raw-frame.cpp:Issue204IntraLead",
+            "codec": "H264", "progressive": True, "width": 256, "height": 96,
+            "packets": 180, "bytes": 126823,
+            "sha256": "76680cf85767bbc78c89bf49a45aa5af7672dc956d7bcc4be3aa88abe17d1430",
+            "boundary_preparation": "split-existing-AUD-with-original-NAL-order-unchanged"})
+        historical = json.loads((ROOT /
+            "tests/fixtures/issue204/native-active-context-binding.json").read_text())
+        self.assertEqual(source["sha256"], historical["input"]["submitted_sha256"])
+        self.assertEqual(source["bytes"], historical["input"]["submitted_bytes"])
+        expected_marker = {"submitted": 60, "frames": 59, "pending": 1,
+                           "ready": 0, "eos": False, "marker": False,
+                           "flush": False, "result": "PASS"}
+        expected_exact = {"submitted": 61, "frames": 60, "pending": 1,
+                          "ready": 0, "eos": False, "marker": False,
+                          "flush": False, "result": "PASS"}
+        for run in (self.capture["failed_qualification"],
+                    self.capture["validated_run"]):
+            self.assertEqual(run["marker_gate"], expected_marker)
+            self.assertEqual(run["exact_gate"], expected_exact)
+            self.assertEqual(run["external_timeout_seconds"], 60)
+
+    def test_failed_attempt_remains_a_counterexample(self):
+        failed = self.capture["failed_qualification"]
+        self.assertEqual((failed["exit_status"], failed["cleanup_pass"],
+                          failed["kernel_firmware_command_timeout"]), (1, False, True))
+        observer = failed["observer"]
+        self.assertEqual(observer, {
+            "failure": "Halt", "register_reads": 41, "register_writes": 2,
+            "memory_reads": 0, "pre_halt_status": "040018eb",
+            "identity": "7b010108", "pre_halt_debug": "00000000",
+            "halt_poll_debug_recorded": False, "route_restored": False,
+            "module_recovery_required": True})
+        partial = failed["partial_capture"]
+        self.assertEqual(partial["bytes"],
+                         partial["frames"] * self.capture["input"]["width"] *
+                         self.capture["input"]["height"] * 2)
+        self.assertFalse(partial["usable_as_success_evidence"])
+        self.assertEqual(partial["sha256"],
+                         "ef149993170f014bd4b2a9bf96d01eb5bfcdb4d5e36b8be4ea73b2e5b2604a1c")
+        self.assertTrue(failed["module_reload_completed"] and
+                        failed["post_reload_h264_pass"] and
+                        failed["post_reload_mpeg2_pass"])
+        self.assertEqual(failed["disposition"],
+                         "preserved-fail-closed-counterexample-not-success")
+
+    def test_validated_observer_completion_reopen_and_scope(self):
+        run = self.capture["validated_run"]
+        self.assertEqual(run["exit_status"], 0)
+        observer = run["observer"]
+        self.assertEqual((observer["failure"], observer["graph_reads"],
+                          observer["graph_bytes"], observer["register_reads"],
+                          observer["register_writes"], observer["memory_reads"]),
+                         ("None", 62, 312, 1969, 4, 19))
+        self.assertEqual((observer["pre_halt_status"], observer["identity"],
+                          observer["pre_halt_debug"], observer["halt_polls"],
+                          observer["halt_poll_status"], observer["halt_poll_debug"]),
+                         ("640015e2", "7b010108", "80000000", 1,
+                          "6600179d", "00000000"))
+        self.assertTrue(int(observer["halt_poll_status"], 16) & 0x02000000)
+        self.assertTrue(observer["route_restored"])
+        self.assertFalse(observer["module_recovery_required"])
+        self.assertEqual((observer["graph_result"], observer["fresh_boundary"],
+                          observer["result"]), ("PASS", "PASS", "PASS"))
+        completion, packed = run["completion"], run["capture"]
+        self.assertEqual((completion["frames"], completion["expected_frames"],
+                          completion["pending"], completion["ready"]), (180, 180, 0, 0))
+        self.assertTrue(completion["firmware_eos"] and completion["cleanup_pass"])
+        self.assertEqual(packed["bytes"],
+                         packed["width"] * packed["height"] * 2 * packed["frames"])
+        self.assertEqual((packed["format"], packed["sha256"], packed["transport_result"]),
+                         ("YUY2", "ac667578c6c18a30922ffa11c405af79895e82e88ae4244defbb3962c64745a7", "PASS"))
+
+        controls = self.capture["fresh_reopen_controls"]
+        self.assertFalse(controls["module_reload_between_observer_and_controls"])
+        for codec, expected in (("h264", (124832, 180,
+                "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e")),
+                                ("mpeg2", (50640, 30,
+                "aa4bf5cdc406edf6c334152e610f1d112ada505790c5472d0d884a7fc3612e7f"))):
+            result = controls[codec]
+            self.assertEqual((result["input_bytes"], result["frames"],
+                              result["input_sha256"]), expected)
+            self.assertTrue(result["firmware_eos"] and result["cleanup_pass"])
+            self.assertEqual(result["exit_status"], 0)
+        self.assertTrue(controls["device_idle_after_controls"] and
+                        controls["module_parameters_unchanged"])
+        self.assertEqual(controls["new_kernel_errors"], 0)
+
+        self.assertEqual(self.capture["verification"], {
+            "library_drain_self_test_checks": 244461,
+            "raw_frame_api_checks_per_runtime": 5560,
+            "raw_frame_runtime_modes": ["native", "sanitize", "legacy-Pentium2"],
+            "raw_frame_compile_checks": ["C-header-Werror",
+                                         "legacy-object-no-SIMD-or-cache-instructions"],
+            "strict_ffmpeg_planar_comparisons": 6,
+            "independent_review_blockers": 0})
+        scope = self.capture["scope"]
+        true_scope = {"dynamic_model_executed_on_native_hardware",
+                      "same_owner_bracketed_graph", "fresh_host_boundary",
+                      "finite_held_outer_snapshot",
+                      "root_holder_alias_ledger_record_source_join",
+                      "normal_eos_cleanup_and_reopen"}
+        self.assertEqual({key for key, value in scope.items() if value}, true_scope)
+        self.assertEqual({key for key, value in scope.items() if not value}, {
+            "snapshot_atomic", "repeated_same_commit_observer_sessions",
+            "source_generation", "physical_source_lease", "current_producer_identity",
+            "last_consumer_completion", "release_cause", "global_halt",
+            "standalone_mfd", "production_support"})
+
+
 if __name__ == "__main__":
     unittest.main()
