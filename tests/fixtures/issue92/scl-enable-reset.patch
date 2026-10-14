@@ -278,15 +278,15 @@ index 5d4b12e..291972e 100644
  #error "SCL size/reset contrast must be built without other peripheral experiments"
  #endif
 @@ -1073,6 +1077,14 @@ static void crystalhd_fw_research_run_internal(u64 generation,
- 		return;
+ 		goto refuse;
  	}
  #endif
 +#ifdef CRYSTALHD_SCL_ENABLE_RESET_PROBE
 +	/* Fixed pre-boot request only; no decoder or inspection command route. */
 +	if (request->selector != CRYSTALHD_FW_RESEARCH_VERSION_ONLY ||
-+	    state || controller || image || packet || heap_packet || clock || uart) {
-+		result->status = -EINVAL;
-+		return;
++	    state || controller || image || packet || heap_packet || clock || uart || crypto || command_observation) {
++		rc = -EINVAL;
++		goto refuse;
 +	}
 +#endif
  #ifdef CRYSTALHD_SCL_SIZE_RESET_PROBE

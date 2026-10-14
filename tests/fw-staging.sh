@@ -135,6 +135,10 @@ git -C "$test_dir" apply --check \
 	"$repo_dir/tests/fixtures/issue92/scl-input-enabled.patch"
 git -C "$test_dir" apply \
 	"$repo_dir/tests/fixtures/issue92/scl-input-enabled.patch"
+git -C "$test_dir" apply --check \
+	"$repo_dir/tests/fixtures/issue92/command-observer-compat.patch"
+git -C "$test_dir" apply \
+	"$repo_dir/tests/fixtures/issue92/command-observer-compat.patch"
 sh "$test_dir/tests/fw-download.sh"
 sh "$test_dir/tests/device-lifetime.sh"
 sh "$test_dir/tests/fw-probe.sh"

@@ -594,14 +594,14 @@ index 291972e..74a7f04 100644
  #define CRYSTALHD_FW_RESEARCH_ALGORITHM_H263 3U
  #define CRYSTALHD_FW_RESEARCH_ALGORITHM_MPEG1 5U
 @@ -1085,6 +1094,13 @@ static void crystalhd_fw_research_run_internal(u64 generation,
- 		return;
+ 		goto refuse;
  	}
  #endif
 +#if defined(CRYSTALHD_JOINT_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_FEED_PROBE)
 +	if (request->selector != CRYSTALHD_FW_RESEARCH_VERSION_ONLY ||
-+	    state || controller || image || packet || heap_packet || clock || uart) {
-+		result->status = -EINVAL;
-+		return;
++	    state || controller || image || packet || heap_packet || clock || uart || crypto || command_observation) {
++		rc = -EINVAL;
++		goto refuse;
 +	}
 +#endif
  #ifdef CRYSTALHD_SCL_SIZE_RESET_PROBE

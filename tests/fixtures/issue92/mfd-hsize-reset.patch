@@ -445,9 +445,7 @@ index 4ffb09c..5d4b12e 100644
  /* Research-only wire values: eC011_VIDEO_ALG_H261/H263/MPEG1 in 7411d.h. */
  #define CRYSTALHD_FW_RESEARCH_ALGORITHM_H261 2U
  #define CRYSTALHD_FW_RESEARCH_ALGORITHM_H263 3U
-@@ -1059,7 +1063,7 @@ static void crystalhd_fw_research_run_internal(u64 generation,
- 		result->status = -EINVAL;
- 		return;
+@@ -1061,5 +1065,5 @@ static void crystalhd_fw_research_run_internal(u64 generation,
  	}
 -#if defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) || defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE) || defined(CRYSTALHD_SCL_CONFIG_PROBE) || defined(CRYSTALHD_MFD_RESET_CONTROLS_PROBE)
 +#if defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) || defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE) || defined(CRYSTALHD_SCL_CONFIG_PROBE) || defined(CRYSTALHD_MFD_RESET_CONTROLS_PROBE) || defined(CRYSTALHD_MFD_HSIZE_RESET_PROBE)

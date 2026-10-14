@@ -588,21 +588,18 @@ index 47c5e59..1e9bdd8 100644
  /* Research-only wire values: eC011_VIDEO_ALG_H261/H263/MPEG1 in 7411d.h. */
  #define CRYSTALHD_FW_RESEARCH_ALGORITHM_H261 2U
  #define CRYSTALHD_FW_RESEARCH_ALGORITHM_H263 3U
-@@ -1060,6 +1064,14 @@ static void crystalhd_fw_research_run_internal(u64 generation,
- 		result->status = -EINVAL;
- 		return;
+@@ -1062,3 +1066,11 @@ static void crystalhd_fw_research_run_internal(u64 generation,
  	}
 +#endif
 +#ifdef CRYSTALHD_SCL_SIZE_RESET_PROBE
 +	/* A fixed pre-boot size-only experiment, never a codec or state request. */
 +	if (request->selector != CRYSTALHD_FW_RESEARCH_VERSION_ONLY ||
-+	    state || controller || image || packet || heap_packet || clock || uart) {
-+		result->status = -EINVAL;
-+		return;
++	    state || controller || image || packet || heap_packet || clock || uart || crypto || command_observation) {
++		rc = -EINVAL;
++		goto refuse;
 +	}
  #endif
  	rc = crystalhd_device_enter(generation, true, &access);
- 	if (rc) {
 @@ -1187,6 +1199,11 @@ static void crystalhd_fw_research_run_internal(u64 generation,
  	ctx->hw_ctx->research_scl_config_probe = true;
  	ctx->hw_ctx->research_mfd_generation = generation;

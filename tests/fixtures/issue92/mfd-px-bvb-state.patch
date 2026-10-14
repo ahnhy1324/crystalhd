@@ -170,14 +170,14 @@ index 909f971..7613b4c 100644
  #endif
  #if defined(CRYSTALHD_SCL_ENABLE_RESET_PROBE) || defined(CRYSTALHD_SCL_SIZE_RESET_PROBE) || defined(CRYSTALHD_SCL_CONFIG_PROBE) || defined(CRYSTALHD_MFD_RESET_CONTROLS_PROBE) || defined(CRYSTALHD_MFD_HSIZE_RESET_PROBE) || defined(CRYSTALHD_MFD_LATCH_PROBE) || defined(CRYSTALHD_MFD_FIXED_COLOUR_PROBE) || defined(CRYSTALHD_SCL_PORT_PROBE) || defined(CRYSTALHD_SCL_PORT_LATCH) || defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) || defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE) || defined(CRYSTALHD_MFD_PACKED_WINDOW_PROBE) || defined(CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE) || defined(CRYSTALHD_MFD_PACKED_HSIZE4_PROBE) || defined(CRYSTALHD_MFD_PACKED_NORMAL_PROBE) || defined(CRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE)
 @@ -1094,7 +1094,7 @@ static void crystalhd_fw_research_run_internal(u64 generation,
- 		return;
+ 		goto refuse;
  	}
  #endif
 -#if defined(CRYSTALHD_JOINT_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_FEED_PROBE) || defined(CRYSTALHD_JOINT_PX_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_PX_FEED_PROBE)
 +#if defined(CRYSTALHD_JOINT_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_FEED_PROBE) || defined(CRYSTALHD_JOINT_PX_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_PX_FEED_PROBE) || defined(CRYSTALHD_JOINT_BVB_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_BVB_FEED_PROBE)
  	if (request->selector != CRYSTALHD_FW_RESEARCH_VERSION_ONLY ||
- 	    state || controller || image || packet || heap_packet || clock || uart) {
- 		result->status = -EINVAL;
+ 	    state || controller || image || packet || heap_packet || clock || uart || crypto || command_observation) {
+ 		rc = -EINVAL;
 @@ -1273,6 +1273,18 @@ static void crystalhd_fw_research_run_internal(u64 generation,
  	ctx->hw_ctx->research_mfd_generation = generation;
  	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
