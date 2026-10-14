@@ -45,6 +45,8 @@ extern "C" {
 #include "issue204-active-context.h"
 #include "phase1-progress.h"
 
+static volatile std::sig_atomic_t interrupted;
+
 // Optional probe-only ABI from libcrystalhd_int_if.h. Avoid pulling its
 // unrelated register-map dependencies into this direct-library test.
 extern "C" BC_STATUS DtsDevRegisterRead(HANDLE handle, uint32_t offset, uint32_t *value);
@@ -1585,12 +1587,9 @@ struct PpbContextFixture {
     }
 };
 
-// Post-hoc preservation model for the successful native issue #204 snapshot.
-// The native trials did not execute this code.  It converts two already
-// bracketed Graph() results into a dynamic plan and exercises the extracted
-// halt/binding invariants with device-free I/O only.  No runtime selector is
-// exposed until the original exact61 admission boundary can be reproduced
-// without importing its private literal-address helpers.
+// Dynamic plan builder for the preserved native issue #204 snapshot.  The
+// historical trials did not execute this code; the exact opt-in native path
+// below now connects it only after reproducing their exact61 host boundary.
 static bool ActiveContextPlanFromGraphs(const HANDLE *current, HANDLE owner,
     const PpbContextGraph &before, const PpbContextGraph &after,
     issue204_active_context::Plan *plan)
@@ -1614,6 +1613,149 @@ static bool ActiveContextPlanFromGraphs(const HANDLE *current, HANDLE owner,
     return true;
 }
 
+struct ActiveContextNativeIo {
+    typedef BC_STATUS (*RegisterReader)(HANDLE, uint32_t, uint32_t *);
+    typedef BC_STATUS (*RegisterWriter)(HANDLE, uint32_t, uint32_t);
+    typedef BC_STATUS (*MemoryReader)(HANDLE, uint32_t *, uint32_t, uint32_t);
+    HANDLE *current = nullptr;
+    HANDLE owner = nullptr;
+    const bool *opened = nullptr;
+    const bool *started = nullptr;
+    RegisterReader register_reader = DtsDevRegisterRead;
+    RegisterWriter register_writer = DtsDevRegisterWr;
+    MemoryReader memory_reader = DtsDevMemRd;
+
+    static int Valid(void *opaque) {
+        const auto *adapter = static_cast<const ActiveContextNativeIo *>(opaque);
+        return adapter && adapter->current && adapter->owner &&
+            adapter->opened && *adapter->opened &&
+            adapter->started && *adapter->started &&
+            *adapter->current == adapter->owner && !interrupted ? 1 : 0;
+    }
+    static int RegisterRead(void *opaque, uint32_t address, uint32_t *word) {
+        auto *adapter = static_cast<ActiveContextNativeIo *>(opaque);
+        if (!Valid(adapter) || !word || !adapter->register_reader) return -1;
+        const BC_STATUS status = adapter->register_reader(
+            adapter->owner, address, word);
+        if (status != BC_STS_SUCCESS) return static_cast<int>(status);
+        return Valid(adapter) ? 0 : -1;
+    }
+    static int RegisterWrite(void *opaque, uint32_t address, uint32_t word) {
+        auto *adapter = static_cast<ActiveContextNativeIo *>(opaque);
+        if (!Valid(adapter) || !adapter->register_writer) return -1;
+        const BC_STATUS status = adapter->register_writer(
+            adapter->owner, address, word);
+        if (status != BC_STS_SUCCESS) return static_cast<int>(status);
+        return Valid(adapter) ? 0 : -1;
+    }
+    static int MemoryRead(void *opaque, uint32_t address, uint32_t *words,
+                          uint32_t bytes) {
+        auto *adapter = static_cast<ActiveContextNativeIo *>(opaque);
+        if (!Valid(adapter) || !words || !bytes || !adapter->memory_reader)
+            return -1;
+        // The model orders address before destination.  DtsDevMemRd orders
+        // destination/size before address; keep that conversion in one place.
+        const BC_STATUS status = adapter->memory_reader(
+            adapter->owner, words, bytes, address);
+        if (status != BC_STS_SUCCESS) return static_cast<int>(status);
+        return Valid(adapter) ? 0 : -1;
+    }
+    static int Pause(void *opaque) {
+        if (!Valid(opaque)) return -1;
+        g_usleep(1000);
+        return Valid(opaque) ? 0 : -1;
+    }
+    issue204_active_context::Io Interface() {
+        issue204_active_context::Io io;
+        io.opaque = this;
+        io.valid = Valid;
+        io.read_register = RegisterRead;
+        io.write_register = RegisterWrite;
+        io.read_memory = MemoryRead;
+        io.pause = Pause;
+        return io;
+    }
+};
+
+static bool ObserveActiveContextNative(HANDLE *current, const bool *opened,
+    const bool *started, issue204_active_context::Result *result,
+    void *boundary_opaque, int (*boundary_gate)(void *),
+    PpbContextObserver::Reader memory_reader = DtsDevMemRd,
+    ActiveContextNativeIo::RegisterReader register_reader = DtsDevRegisterRead,
+    ActiveContextNativeIo::RegisterWriter register_writer = DtsDevRegisterWr,
+    bool report = true)
+{
+    using namespace issue204_active_context;
+    if (!result) return false;
+    *result = Result{};
+    if (!current || !*current || !opened || !*opened || !started || !*started ||
+        !boundary_opaque || !boundary_gate || !memory_reader ||
+        !register_reader || !register_writer) {
+        result->failure = Failure::Owner;
+        return false;
+    }
+    const HANDLE owner = *current;
+    // Preallocate this observer's source scratch before graph acquisition and,
+    // more importantly, before the first route-select write.  DtsDevMemRd may
+    // still allocate its own per-call transport buffer internally.
+    std::vector<uint32_t> source(kSourceWords);
+    PpbContextObserver graph_reader;
+    graph_reader.enabled = graph_reader.video_graph =
+        graph_reader.owner_video_graph = true;
+    graph_reader.owner = owner;
+    PpbContextGraph before, after;
+    bool ok = graph_reader.Graph(current, 1U, memory_reader, &before, nullptr) &&
+        graph_reader.Graph(current, 1U, memory_reader, &after, &before);
+    Plan plan;
+    if (ok) ok = ActiveContextPlanFromGraphs(
+        current, owner, before, after, &plan);
+    const bool graph_ok = ok;
+    if (ok) ok = boundary_gate(boundary_opaque) != 0;
+    const bool owner_valid = *opened && *started && *current == owner &&
+        !interrupted;
+    if (!ok || !owner_valid) {
+        result->failure = !owner_valid ? Failure::Owner :
+            graph_ok ? Failure::Guard : Failure::Graph;
+        if (report) {
+            std::printf("Active context native: gate=exact61 graph-reads=%u "
+                "graph-bytes=%u graph-result=%s fresh-boundary=%s failure=%u "
+                "register-writes=0 module-recovery-required=no\n",
+                graph_reader.reads, graph_reader.bytes,
+                graph_ok ? "PASS" : "FAIL",
+                graph_ok && ok ? "PASS" : "FAIL",
+                static_cast<unsigned>(result->failure));
+            std::fflush(stdout);
+        }
+        return false;
+    }
+    ActiveContextNativeIo adapter;
+    adapter.current = current;
+    adapter.owner = owner;
+    adapter.opened = opened;
+    adapter.started = started;
+    adapter.register_reader = register_reader;
+    adapter.register_writer = register_writer;
+    adapter.memory_reader = memory_reader;
+    ok = Run(plan, adapter.Interface(), source.data(), source.size(), result);
+    if (report) {
+        std::printf("Active context native: gate=exact61 graph-reads=%u "
+            "graph-bytes=%u graph-result=PASS fresh-boundary=PASS failure=%u register-reads=%u "
+            "register-writes=%u memory-reads=%u pre-halt-status=0x%08x "
+            "identity=0x%08x debug=0x%08x route-restored=%s "
+            "module-recovery-required=%s result=%s\n",
+            graph_reader.reads, graph_reader.bytes,
+            static_cast<unsigned>(result->failure), result->register_reads,
+            result->register_writes, result->memory_reads,
+            result->pre_halt_status, result->identity_word,
+            result->debug_word,
+            result->route_restored ? "yes" : "no",
+            result->module_recovery_required ? "yes" : "no",
+            ok ? "PASS" : "FAIL");
+        std::fflush(stdout);
+    }
+    return ok;
+}
+
 struct ActiveContextModelFixture {
     issue204_active_context::Plan plan;
     bool owner = true, valid = true;
@@ -1631,6 +1773,7 @@ struct ActiveContextModelFixture {
     uint32_t route = 0;
     uint32_t status = 0x440018c2U;
     uint32_t debug = 0;
+    uint32_t halt_debug = 0;
     uint32_t bank0 = 0x00500000U;
 
     static int Valid(void *opaque) {
@@ -1694,7 +1837,10 @@ struct ActiveContextModelFixture {
             return fail ? -1 : 0;
         }
         if (call == 1 && address == issue204_active_context::kDebug && word == 2U) {
-            if (apply) fixture->status |= issue204_active_context::kHalt;
+            if (apply) {
+                fixture->status |= issue204_active_context::kHalt;
+                fixture->debug = fixture->halt_debug;
+            }
             return fail ? -1 : 0;
         }
         if (call == 2 && address == issue204_active_context::kStatus &&
@@ -1829,6 +1975,8 @@ template<class Check> static void ActiveContextBindingSelfTest(const Check &chec
           result.failure == Failure::None && result.halt_verified &&
           result.resume_verified && result.route_restored &&
           result.register_writes == 4U && fixture.register_writes == 4U &&
+          result.pre_halt_status == 0x440018c2U &&
+          result.identity_word == 0x7b010108U && !result.debug_word &&
           result.record_slot == 0U && result.source_valid_bytes == kSourceValidBytes &&
           result.raw_pts == 5U && fixture.route == 0U &&
           !(fixture.status & kHalt),
@@ -1839,6 +1987,44 @@ template<class Check> static void ActiveContextBindingSelfTest(const Check &chec
           result.return_ring == result.allocation + kReturnOffset &&
           result.record == result.allocation + kRecordOffset,
         "issue204 model derives all observed addresses instead of embedding native session values");
+
+    ActiveContextModelFixture pre_halt_bit;
+    pre_halt_bit.plan = plan;
+    pre_halt_bit.debug = kPreHaltDebugBit;
+    Result pre_halt_bit_result;
+    check(Run(plan, pre_halt_bit.Interface(), source.data(), source.size(),
+              &pre_halt_bit_result) &&
+          pre_halt_bit_result.debug_word == kPreHaltDebugBit &&
+          pre_halt_bit_result.halt_verified &&
+          pre_halt_bit_result.resume_verified &&
+          pre_halt_bit_result.route_restored,
+        "issue204 model accepts the two historically observed pre-halt debug values and still requires zero while held");
+
+    ActiveContextModelFixture unknown_pre_halt_bit;
+    unknown_pre_halt_bit.plan = plan;
+    unknown_pre_halt_bit.debug = 1U;
+    Result unknown_pre_halt_result;
+    check(!Run(plan, unknown_pre_halt_bit.Interface(), source.data(),
+               source.size(), &unknown_pre_halt_result) &&
+          unknown_pre_halt_result.failure == Failure::Identity &&
+          unknown_pre_halt_result.debug_word == 1U &&
+          unknown_pre_halt_result.register_writes == 1U &&
+          !unknown_pre_halt_result.memory_reads &&
+          unknown_pre_halt_result.module_recovery_required,
+        "issue204 model rejects unobserved pre-halt debug values before halt or memory access");
+
+    ActiveContextModelFixture nonzero_held_debug;
+    nonzero_held_debug.plan = plan;
+    nonzero_held_debug.halt_debug = 1U;
+    Result nonzero_held_result;
+    check(!Run(plan, nonzero_held_debug.Interface(), source.data(),
+               source.size(), &nonzero_held_result) &&
+          nonzero_held_result.failure == Failure::Halt &&
+          nonzero_held_result.register_writes == 2U &&
+          !nonzero_held_result.memory_reads &&
+          !nonzero_held_result.halt_verified &&
+          nonzero_held_result.module_recovery_required,
+        "issue204 model requires zero debug state after the halt request and before memory access");
 
     uint32_t known = 0;
     check(KnownSourceWord(0U, &known) == 1 && known == 0x10223446U &&
@@ -3390,7 +3576,6 @@ struct SclStatusFixture {
 static bool PackingState(HANDLE handle, const char *stage, MfdColourProbe *colour = nullptr,
     SclViewProbe *view = nullptr, SclViewProbe::Reader reader = DtsDevRegisterRead, bool report = true);
 
-static volatile std::sig_atomic_t interrupted;
 static void Interrupt(int) { interrupted = 1; }
 static const unsigned kMaximumPackets = 10000;
 static const unsigned kMaximumIterations = 1000;
@@ -3478,6 +3663,7 @@ struct Options {
     bool observe_video_prefix = false;
     bool observe_video_graph = false;
     bool observe_video_staging = false;
+    bool observe_active_context = false;
     bool observe_avd_memory = false;
     bool observe_avd_cpu_map = false;
     bool observe_avd_code_arena = false;
@@ -3559,6 +3745,31 @@ static bool ScalerBenchmarkConflicts(const Options &o)
 
 static bool ParseArguments(std::vector<const char *> arguments, Options *options)
 {
+    // A single exact native issue #204 profile.  Keep it separate from the
+    // ordinary PPB observers: those have pre-start/first-output/EOS stages,
+    // while this experiment is admitted at one preserved mid-stream boundary.
+    const unsigned active_context_options = static_cast<unsigned>(std::count_if(
+        arguments.begin(), arguments.end(), [](const char *argument) {
+            return argument && !std::strcmp(argument, "--observe-active-context");
+        }));
+    if (active_context_options) {
+        if (active_context_options != 1U || arguments.size() != 11U ||
+            std::strcmp(arguments[1], "--hardware") ||
+            std::strcmp(arguments[3], "180") || std::strcmp(arguments[4], "30") ||
+            std::strcmp(arguments[5], "1") ||
+            std::strcmp(arguments[6], "--scaler-test") ||
+            std::strcmp(arguments[7], "0") ||
+            std::strcmp(arguments[8], "--capture-yuy2") ||
+            std::strcmp(arguments[10], "--observe-active-context")) return false;
+        arguments.pop_back();
+        if (!ParseArguments(arguments, options) || options->mode != Mode::Hardware ||
+            options->expected != 180U || options->seconds != 30U ||
+            options->iterations != 1U || !options->scaler_test ||
+            options->scale_width || !options->capture_path ||
+            options->output_format != OUTPUT_MODE422_YUY2) return false;
+        options->observe_active_context = true;
+        return true;
+    }
     // A separate bounded, read-only mode: no other experiments or repetitions.
     if (arguments.size() == 7 && !std::strcmp(arguments.back(), "--observe-bvn-state")) {
         arguments.pop_back();
@@ -3839,7 +4050,8 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 
 static bool NeedsRawIo(const Options &options)
 {
-    if (options.observe_power || options.observe_bvn_state) return true;
+    if (options.observe_power || options.observe_bvn_state ||
+        options.observe_active_context) return true;
     return options.observe_avd_dmem_samples || options.observe_avd_cache_count || options.observe_avd_code_prefix || options.observe_avd_code_arena || options.observe_avd_cpu_map || options.observe_avd_memory || options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_ppb_context || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
         options.observe_scl_view || options.observe_mfd_config || options.observe_mfd_address || options.observe_mfd_framing || options.inject_mfd_colour || options.scl_status_test;
 }
@@ -3859,6 +4071,639 @@ static bool SubmittedPacketDigestMatches(const Input &input, size_t expected_byt
     ok = ok && total == expected_bytes && !std::strcmp(g_checksum_get_string(checksum), expected_sha);
     g_checksum_free(checksum);
     return ok;
+}
+
+static const size_t kActiveContextSubmittedBytes = 126823U;
+static const char kActiveContextSubmittedSha[] =
+    "76680cf85767bbc78c89bf49a45aa5af7672dc956d7bcc4be3aa88abe17d1430";
+static const unsigned kActiveContextPacketCount = 180U;
+static const unsigned kActiveContextBoundaryPacket = 60U;
+static const size_t kActiveContextAudBytes = 6U;
+static const size_t kActiveContextVclBytes = 37065U;
+
+static bool ActiveContextSubmittedIdentity(size_t bytes, const char *sha)
+{
+    return sha && bytes == kActiveContextSubmittedBytes &&
+        !std::strcmp(sha, kActiveContextSubmittedSha);
+}
+
+// Hash the original Annex-B byte order.  After packet 60 is split, logically
+// put its existing AUD back in front of the VCL; the synthetic filler SEI sent
+// as a separate timing marker is deliberately not part of the fixture digest.
+static bool ActiveContextSubmittedDigestMatches(const Input &input, bool split = false)
+{
+    static const uint8_t aud[kActiveContextAudBytes] = {0, 0, 0, 1, 9, 0x10};
+    if (input.packets.size() != kActiveContextPacketCount) return false;
+    GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
+    if (!checksum) return false;
+    size_t total = 0;
+    bool ok = true;
+    for (size_t index = 0; index < input.packets.size(); ++index) {
+        if (split && index == kActiveContextBoundaryPacket) {
+            if (total > kActiveContextSubmittedBytes - sizeof(aud)) {
+                ok = false;
+                break;
+            }
+            g_checksum_update(checksum, aud, sizeof(aud));
+            total += sizeof(aud);
+        }
+        const Packet &packet = input.packets[index];
+        if (!packet.size || packet.size > packet.data.size() ||
+            packet.size > kActiveContextSubmittedBytes - total) {
+            ok = false;
+            break;
+        }
+        g_checksum_update(checksum, packet.data.data(),
+                          static_cast<gssize>(packet.size));
+        total += packet.size;
+    }
+    ok = ok && ActiveContextSubmittedIdentity(
+        total, g_checksum_get_string(checksum));
+    g_checksum_free(checksum);
+    return ok;
+}
+
+static bool ActiveContextInputShape(const Options &options, const Input &input)
+{
+    return options.expected == kActiveContextPacketCount &&
+        input.codec == AV_CODEC_ID_H264 && input.subtype == BC_MSUBTYPE_H264 &&
+        input.progressive && input.width == 256U && input.height == 96U &&
+        input.metadata.empty() &&
+        input.packets.size() == kActiveContextPacketCount;
+}
+
+static bool ActiveContextInputAdmitted(const Options &options, const Input &input)
+{
+    return !options.observe_active_context ||
+        (ActiveContextInputShape(options, input) &&
+         ActiveContextSubmittedDigestMatches(input));
+}
+
+template<class Reserve>
+static bool SplitActiveContextAud(Packet *right, size_t padding, Reserve reserve)
+{
+    static const uint8_t aud[kActiveContextAudBytes] = {0, 0, 0, 1, 9, 0x10};
+    const size_t capacity = 1024U * 1024U;
+    if (!right || !padding || padding > 256U ||
+        right->size != kActiveContextVclBytes + sizeof(aud) ||
+        right->size > capacity || right->data.size() != right->size + padding ||
+        !std::equal(aud, aud + sizeof(aud), right->data.begin()) ||
+        !std::all_of(right->data.begin() + right->size, right->data.end(),
+                     [](uint8_t byte) { return byte == 0; })) return false;
+    gsize reservation = 0;
+    const size_t bytes = right->size - sizeof(aud);
+    if (!reserve(bytes, &reservation) || !reservation || reservation > capacity)
+        return false;
+    std::vector<uint8_t> vcl(right->data.begin() + sizeof(aud),
+                             right->data.begin() + right->size);
+    vcl.resize(bytes + padding, 0);
+    right->data.swap(vcl);
+    right->size = bytes;
+    right->reservation = reservation;
+    return true;
+}
+
+static bool PrepareActiveContextInput(Input *input)
+{
+    if (!input || !ActiveContextSubmittedDigestMatches(*input) ||
+        !SplitActiveContextAud(&input->packets[kActiveContextBoundaryPacket],
+            AV_INPUT_BUFFER_PADDING_SIZE,
+            [&](size_t bytes, gsize *reservation) {
+                return gst_crystalhd_input_reservation(
+                    input->subtype, bytes, input->metadata.size(), reservation) != FALSE;
+            })) return false;
+    return input->packets[kActiveContextBoundaryPacket].size ==
+            kActiveContextVclBytes &&
+        ActiveContextSubmittedDigestMatches(*input, true);
+}
+
+static bool ActiveContextBoundaryMatches(unsigned submitted, unsigned frames,
+    size_t pending, uint32_t ready, bool eos, bool marker, bool flush_attempted,
+    unsigned expected_submitted, unsigned expected_frames)
+{
+    return submitted == expected_submitted && frames == expected_frames &&
+        pending == 1U && ready == 0U && !eos && !marker && !flush_attempted;
+}
+
+struct ActiveContextBoundaryGate {
+    typedef BC_STATUS (*StatusReader)(HANDLE, BC_DTS_STATUS *);
+    typedef BC_STATUS (*EosReader)(HANDLE, uint8_t *);
+    HANDLE *current = nullptr;
+    HANDLE owner = nullptr;
+    const bool *opened = nullptr;
+    const bool *started = nullptr;
+    const Deadline *deadline = nullptr;
+    unsigned submitted = 0, frames = 0;
+    size_t pending = 0;
+    bool marker = false, flush_attempted = false;
+    uint32_t *ready = nullptr;
+    bool *eos = nullptr;
+    StatusReader status_reader = DtsGetDriverStatus;
+    EosReader eos_reader = DtsIsEndOfStream;
+
+    bool Owner() const {
+        return current && *current && owner && *current == owner && opened &&
+            *opened && started && *started && !interrupted && deadline &&
+            !deadline->expired();
+    }
+    static int Check(void *opaque) {
+        auto *gate = static_cast<ActiveContextBoundaryGate *>(opaque);
+        if (!gate || !gate->Owner() || !gate->ready || !gate->eos ||
+            !gate->status_reader || !gate->eos_reader) return 0;
+        if (!ActiveContextBoundaryMatches(gate->submitted, gate->frames,
+                gate->pending, 0U, false, gate->marker,
+                gate->flush_attempted, 61U, 60U)) return 0;
+        BC_DTS_STATUS driver = {};
+        if (gate->status_reader(gate->owner, &driver) != BC_STS_SUCCESS ||
+            !gate->Owner()) return 0;
+        *gate->ready = driver.ReadyListCount;
+        if (*gate->ready) return 0;
+        uint8_t eos = 0;
+        if (gate->eos_reader(gate->owner, &eos) != BC_STS_SUCCESS ||
+            !gate->Owner()) return 0;
+        *gate->eos = eos != 0;
+        return ActiveContextBoundaryMatches(gate->submitted, gate->frames,
+            gate->pending, *gate->ready, *gate->eos, gate->marker,
+            gate->flush_attempted, 61U, 60U) ? 1 : 0;
+    }
+};
+
+template<class Check> static void ActiveContextNativeSelfTest(const Check &check)
+{
+    const std::vector<const char *> valid = {
+        "probe", "--hardware", "fixture", "180", "30", "1",
+        "--scaler-test", "0", "--capture-yuy2", "new",
+        "--observe-active-context"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.observe_active_context &&
+          admitted.mode == Mode::Hardware && admitted.expected == 180U &&
+          admitted.seconds == 30U && admitted.iterations == 1U &&
+          admitted.scaler_test && !admitted.scale_width && admitted.capture_path &&
+          admitted.output_format == OUTPUT_MODE422_YUY2 && NeedsRawIo(admitted),
+        "active-context parser admits only the exact native capture profile");
+    for (unsigned fault = 0; fault < 10U; ++fault) {
+        auto arguments = valid;
+        if (fault == 0) arguments[1] = "--preflight";
+        if (fault == 1) arguments[3] = "179";
+        if (fault == 2) arguments[4] = "31";
+        if (fault == 3) arguments[5] = "2";
+        if (fault == 4) arguments[6] = "--scaler-benchmark";
+        if (fault == 5) arguments[7] = "320";
+        if (fault == 6) arguments[8] = "--capture-uyvy";
+        if (fault == 7) arguments[9] = "-";
+        if (fault == 8) arguments.insert(arguments.begin() + 10,
+                                          "--observe-ppb-context");
+        if (fault == 9) arguments.push_back("--observe-active-context");
+        Options rejected;
+        check(!ParseArguments(arguments, &rejected),
+            "active-context parser rejects altered, mixed and repeated profiles");
+    }
+    Options rejected;
+    check(!ParseArguments({"probe", "--self-test", "--observe-active-context"},
+                          &rejected),
+        "active-context mode cannot be attached to self-test");
+
+    Input input;
+    input.codec = AV_CODEC_ID_H264;
+    input.subtype = BC_MSUBTYPE_H264;
+    input.progressive = true;
+    input.width = 256U;
+    input.height = 96U;
+    input.packets.resize(kActiveContextPacketCount);
+    check(ActiveContextInputShape(admitted, input) &&
+          !ActiveContextInputAdmitted(admitted, input) &&
+          ActiveContextInputAdmitted(Options{}, input),
+        "active-context input shape cannot bypass the exact submitted-byte digest");
+    check(ActiveContextSubmittedIdentity(kActiveContextSubmittedBytes,
+              kActiveContextSubmittedSha) &&
+          !ActiveContextSubmittedIdentity(kActiveContextSubmittedBytes - 1U,
+              kActiveContextSubmittedSha) &&
+          !ActiveContextSubmittedIdentity(kActiveContextSubmittedBytes,
+              "76680cf85767bbc78c89bf49a45aa5af7672dc956d7bcc4be3aa88abe17d1431"),
+        "active-context identity requires the preserved byte count and digest exactly");
+    for (unsigned fault = 0; fault < 8U; ++fault) {
+        Input changed = input;
+        Options changed_options = admitted;
+        if (fault == 0) changed.codec = AV_CODEC_ID_MPEG2VIDEO;
+        if (fault == 1) changed.subtype = BC_MSUBTYPE_MPEG2VIDEO;
+        if (fault == 2) changed.progressive = false;
+        if (fault == 3) changed.width = 254U;
+        if (fault == 4) changed.height = 94U;
+        if (fault == 5) changed.metadata.push_back(0U);
+        if (fault == 6) changed.packets.pop_back();
+        if (fault == 7) changed_options.expected = 179U;
+        check(!ActiveContextInputShape(changed_options, changed) &&
+              !ActiveContextInputAdmitted(changed_options, changed),
+            "active-context admission rejects every shape/count/metadata deviation");
+    }
+
+    Packet packet;
+    packet.size = kActiveContextVclBytes + kActiveContextAudBytes;
+    packet.data.resize(packet.size + AV_INPUT_BUFFER_PADDING_SIZE, 0U);
+    const uint8_t aud[kActiveContextAudBytes] = {0, 0, 0, 1, 9, 0x10};
+    std::copy(aud, aud + sizeof(aud), packet.data.begin());
+    packet.data[kActiveContextAudBytes] = 0x65U;
+    const bool split = SplitActiveContextAud(&packet, AV_INPUT_BUFFER_PADDING_SIZE,
+        [](size_t bytes, gsize *reservation) {
+            *reservation = static_cast<gsize>(bytes + 64U);
+            return true;
+        });
+    check(split && packet.size == kActiveContextVclBytes &&
+          packet.data.size() == packet.size + AV_INPUT_BUFFER_PADDING_SIZE &&
+          packet.data[0] == 0x65U &&
+          packet.reservation == kActiveContextVclBytes + 64U,
+        "active-context preparation removes only the existing six-byte AUD and refreshes reservation/padding");
+    for (unsigned fault = 0; fault < 4U; ++fault) {
+        Packet bad;
+        bad.size = kActiveContextVclBytes + kActiveContextAudBytes;
+        bad.data.resize(bad.size + AV_INPUT_BUFFER_PADDING_SIZE, 0U);
+        std::copy(aud, aud + sizeof(aud), bad.data.begin());
+        if (fault == 0) bad.data[5] ^= 1U;
+        if (fault == 1) --bad.size;
+        if (fault == 2) bad.data.back() = 1U;
+        const bool reserve = fault != 3;
+        check(!SplitActiveContextAud(&bad, AV_INPUT_BUFFER_PADDING_SIZE,
+                [reserve](size_t bytes, gsize *reservation) {
+                    *reservation = static_cast<gsize>(bytes + 64U);
+                    return reserve;
+                }),
+            "active-context AUD split rejects prefix/size/padding/reservation faults without mutation");
+    }
+
+    check(ActiveContextBoundaryMatches(60U, 59U, 1U, 0U, false, false,
+              false, 60U, 59U) &&
+          ActiveContextBoundaryMatches(61U, 60U, 1U, 0U, false, false,
+              false, 61U, 60U),
+        "active-context staging admits the preserved pre-marker and exact61 boundaries");
+    for (unsigned fault = 0; fault < 7U; ++fault) {
+        unsigned submitted = 61U, frames = 60U, ready = 0U;
+        size_t pending = 1U;
+        bool eos = false, marker = false, flushed = false;
+        if (fault == 0) --submitted;
+        if (fault == 1) ++frames;
+        if (fault == 2) pending = 0U;
+        if (fault == 3) ready = 1U;
+        if (fault == 4) eos = true;
+        if (fault == 5) marker = true;
+        if (fault == 6) flushed = true;
+        check(!ActiveContextBoundaryMatches(submitted, frames, pending, ready,
+                  eos, marker, flushed, 61U, 60U),
+            "active-context exact61 gate refuses every host-state deviation");
+    }
+
+    struct BoundaryFixture {
+        unsigned status_calls = 0, eos_calls = 0;
+        uint32_t ready = 0;
+        uint8_t eos = 0;
+        BC_STATUS status = BC_STS_SUCCESS;
+        BC_STATUS eos_status = BC_STS_SUCCESS;
+        static BC_STATUS Status(HANDLE handle, BC_DTS_STATUS *driver) {
+            auto *fixture = static_cast<BoundaryFixture *>(handle);
+            ++fixture->status_calls;
+            driver->ReadyListCount = fixture->ready;
+            return fixture->status;
+        }
+        static BC_STATUS Eos(HANDLE handle, uint8_t *eos) {
+            auto *fixture = static_cast<BoundaryFixture *>(handle);
+            ++fixture->eos_calls;
+            *eos = fixture->eos;
+            return fixture->eos_status;
+        }
+    } boundary_fixture;
+    HANDLE boundary_owner = &boundary_fixture, boundary_current = boundary_owner;
+    bool boundary_opened = true, boundary_started = true;
+    Deadline boundary_deadline(3600U);
+    uint32_t refreshed_ready = 99U;
+    bool refreshed_eos = true;
+    ActiveContextBoundaryGate boundary;
+    boundary.current = &boundary_current; boundary.owner = boundary_owner;
+    boundary.opened = &boundary_opened; boundary.started = &boundary_started;
+    boundary.deadline = &boundary_deadline;
+    boundary.submitted = 61U; boundary.frames = 60U; boundary.pending = 1U;
+    boundary.ready = &refreshed_ready; boundary.eos = &refreshed_eos;
+    boundary.status_reader = BoundaryFixture::Status;
+    boundary.eos_reader = BoundaryFixture::Eos;
+    check(ActiveContextBoundaryGate::Check(&boundary) && !refreshed_ready &&
+          !refreshed_eos && boundary_fixture.status_calls == 1U &&
+          boundary_fixture.eos_calls == 1U,
+        "active-context pre-write gate refreshes driver ready depth and EOS after graph acquisition");
+    boundary_fixture.ready = 1U;
+    check(!ActiveContextBoundaryGate::Check(&boundary) && refreshed_ready == 1U,
+        "active-context pre-write gate refuses a picture becoming ready during graph acquisition");
+    boundary_fixture.ready = 0U; boundary_fixture.eos = 1U;
+    check(!ActiveContextBoundaryGate::Check(&boundary) && refreshed_eos,
+        "active-context pre-write gate refuses EOS becoming visible during graph acquisition");
+    boundary_fixture.eos = 0U; boundary_fixture.status = BC_STS_BUSY;
+    const unsigned eos_calls = boundary_fixture.eos_calls;
+    check(!ActiveContextBoundaryGate::Check(&boundary) &&
+          boundary_fixture.eos_calls == eos_calls,
+        "active-context pre-write gate stops after a driver-status API failure");
+    boundary_fixture.status = BC_STS_SUCCESS;
+    boundary_fixture.eos_status = BC_STS_BUSY;
+    check(!ActiveContextBoundaryGate::Check(&boundary),
+        "active-context pre-write gate refuses an EOS API failure");
+    boundary_fixture.eos_status = BC_STS_SUCCESS; boundary_current = nullptr;
+    const unsigned status_calls = boundary_fixture.status_calls;
+    check(!ActiveContextBoundaryGate::Check(&boundary) &&
+          boundary_fixture.status_calls == status_calls,
+        "active-context pre-write gate refuses owner loss before issuing status I/O");
+    boundary_current = boundary_owner;
+    boundary_deadline.end = g_get_monotonic_time() - 1;
+    const unsigned expired_status_calls = boundary_fixture.status_calls;
+    const unsigned expired_eos_calls = boundary_fixture.eos_calls;
+    check(!ActiveContextBoundaryGate::Check(&boundary) &&
+          boundary_fixture.status_calls == expired_status_calls &&
+          boundary_fixture.eos_calls == expired_eos_calls,
+        "active-context pre-write gate refuses an expired run before issuing status I/O");
+
+    struct NativeFixture {
+        HANDLE *current = nullptr;
+        HANDLE replacement = nullptr;
+        unsigned reads = 0, writes = 0, memories = 0;
+        uint32_t address = 0, word = 0, bytes = 0;
+        BC_STATUS status = BC_STS_SUCCESS;
+        bool lose_owner = false;
+        static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *word) {
+            auto *fixture = static_cast<NativeFixture *>(handle);
+            ++fixture->reads; fixture->address = address; *word = 0x12345678U;
+            if (fixture->lose_owner) *fixture->current = fixture->replacement;
+            return fixture->status;
+        }
+        static BC_STATUS Write(HANDLE handle, uint32_t address, uint32_t word) {
+            auto *fixture = static_cast<NativeFixture *>(handle);
+            ++fixture->writes; fixture->address = address; fixture->word = word;
+            if (fixture->lose_owner) *fixture->current = fixture->replacement;
+            return fixture->status;
+        }
+        static BC_STATUS Memory(HANDLE handle, uint32_t *words,
+                                uint32_t bytes, uint32_t address) {
+            auto *fixture = static_cast<NativeFixture *>(handle);
+            ++fixture->memories; fixture->address = address; fixture->bytes = bytes;
+            if (words && bytes >= 4U) words[0] = 0x89abcdefU;
+            if (fixture->lose_owner) *fixture->current = fixture->replacement;
+            return fixture->status;
+        }
+    } fixture;
+    HANDLE owner = &fixture, current = owner;
+    fixture.current = &current;
+    fixture.replacement = &fixture.replacement;
+    bool opened = true, started = true;
+    ActiveContextNativeIo adapter;
+    adapter.current = &current; adapter.owner = owner;
+    adapter.opened = &opened; adapter.started = &started;
+    adapter.register_reader = NativeFixture::Read;
+    adapter.register_writer = NativeFixture::Write;
+    adapter.memory_reader = NativeFixture::Memory;
+    auto io = adapter.Interface();
+    uint32_t word = 0, memory = 0;
+    check(io.valid(io.opaque) &&
+          !io.read_register(io.opaque, 0x11223344U, &word) &&
+          !io.write_register(io.opaque, 0x55667788U, 0xaabbccddU) &&
+          !io.read_memory(io.opaque, 0x01020304U, &memory, 4U) &&
+          word == 0x12345678U && memory == 0x89abcdefU &&
+          fixture.reads == 1U && fixture.writes == 1U && fixture.memories == 1U &&
+          fixture.address == 0x01020304U && fixture.bytes == 4U,
+        "active-context native callbacks preserve owner and adapt memory argument order");
+    fixture.status = BC_STS_BUSY;
+    check(io.read_register(io.opaque, 1U, &word) == BC_STS_BUSY &&
+          io.write_register(io.opaque, 2U, 3U) == BC_STS_BUSY &&
+          io.read_memory(io.opaque, 4U, &memory, 4U) == BC_STS_BUSY,
+        "active-context native callbacks propagate API failures to the fail-closed model");
+    fixture.status = BC_STS_SUCCESS;
+    fixture.lose_owner = true;
+    check(io.write_register(io.opaque, 2U, 3U) != 0 && current != owner &&
+          fixture.writes == 3U,
+        "active-context native callback reports owner loss after a possibly applied write");
+    fixture.lose_owner = false;
+    current = &fixture.replacement;
+    const unsigned calls = fixture.reads + fixture.writes + fixture.memories;
+    check(!io.valid(io.opaque) && io.read_register(io.opaque, 1U, &word) != 0 &&
+          io.write_register(io.opaque, 2U, 3U) != 0 &&
+          io.read_memory(io.opaque, 4U, &memory, 4U) != 0 &&
+          fixture.reads + fixture.writes + fixture.memories == calls,
+        "active-context native callbacks stop before I/O after owner replacement");
+    current = owner; started = false;
+    check(!io.valid(io.opaque) && io.pause(io.opaque) != 0,
+        "active-context native callbacks refuse closed or stopped sessions");
+
+    // Exercise the actual binding, not only its separately tested pieces: two
+    // graph brackets, the fresh host/API gate, and then the model callbacks.
+    struct IntegratedFixture {
+        PpbContextFixture graph;
+        ActiveContextModelFixture model;
+        unsigned graph_reads = 0, status_calls = 0, eos_calls = 0;
+        unsigned order = 0, graph_done_order = 0, status_order = 0;
+        unsigned eos_order = 0, first_read_order = 0, first_write_order = 0;
+        unsigned first_write_register_reads = 0;
+        uint32_t first_write_address = 0, first_write_word = 0;
+        bool gate_started = false, gate_complete = false;
+        bool reject_ready = false, sequence_valid = true;
+        bool first_write_after_gate = false;
+
+        IntegratedFixture() {
+            graph.video_graph = true;
+            graph.calls = 62U; // Enter the device-free stage-1 profile.
+            model.plan.active_context = issue204_active_context::kActiveContext;
+            model.plan.context = graph.Word(0x000d3a08U, 62U);
+            model.plan.holder = graph.Word(0x000d3a20U, 62U);
+            model.plan.submitted = graph.Word(model.plan.holder + 8U, 62U);
+            model.plan.submitted_bytes = graph.Word(model.plan.holder + 12U, 62U);
+            model.plan.video_base = graph.Word(model.plan.context + 0x1d8U, 62U);
+            model.plan.video_bytes = graph.Word(model.plan.context + 0x1dcU, 62U);
+        }
+        bool NoModelIo() const {
+            return !model.register_reads && !model.register_writes &&
+                !model.memory_reads;
+        }
+        static BC_STATUS Memory(HANDLE handle, uint32_t *words,
+                                uint32_t bytes, uint32_t address) {
+            auto *fixture = static_cast<IntegratedFixture *>(handle);
+            if (fixture->graph_reads < 62U) {
+                fixture->sequence_valid &= fixture->NoModelIo();
+                const BC_STATUS status = PpbContextFixture::Read(
+                    &fixture->graph, words, bytes, address);
+                if (++fixture->graph_reads == 62U)
+                    fixture->graph_done_order = ++fixture->order;
+                return status;
+            }
+            if (!fixture->gate_complete) {
+                fixture->sequence_valid = false;
+                return BC_STS_ERROR;
+            }
+            return ActiveContextModelFixture::MemoryRead(
+                &fixture->model, address, words, bytes) ?
+                BC_STS_ERROR : BC_STS_SUCCESS;
+        }
+        static BC_STATUS RegisterRead(HANDLE handle, uint32_t address,
+                                      uint32_t *word) {
+            auto *fixture = static_cast<IntegratedFixture *>(handle);
+            if (!fixture->gate_complete) {
+                fixture->sequence_valid = false;
+                return BC_STS_ERROR;
+            }
+            if (!fixture->model.register_reads)
+                fixture->first_read_order = ++fixture->order;
+            return ActiveContextModelFixture::RegisterRead(
+                &fixture->model, address, word) ?
+                BC_STS_ERROR : BC_STS_SUCCESS;
+        }
+        static BC_STATUS RegisterWrite(HANDLE handle, uint32_t address,
+                                       uint32_t word) {
+            auto *fixture = static_cast<IntegratedFixture *>(handle);
+            if (!fixture->gate_complete) {
+                fixture->sequence_valid = false;
+                return BC_STS_ERROR;
+            }
+            if (!fixture->model.register_writes) {
+                fixture->first_write_order = ++fixture->order;
+                fixture->first_write_register_reads = fixture->model.register_reads;
+                fixture->first_write_address = address;
+                fixture->first_write_word = word;
+                fixture->first_write_after_gate =
+                    fixture->graph_reads == 62U && fixture->graph.calls == 124U &&
+                    fixture->status_calls == 1U && fixture->eos_calls == 1U &&
+                    address == issue204_active_context::kRoute && word == 1U;
+                fixture->sequence_valid &= fixture->first_write_after_gate;
+            }
+            return ActiveContextModelFixture::RegisterWrite(
+                &fixture->model, address, word) ?
+                BC_STS_ERROR : BC_STS_SUCCESS;
+        }
+        static BC_STATUS Status(HANDLE handle, BC_DTS_STATUS *driver) {
+            auto *fixture = static_cast<IntegratedFixture *>(handle);
+            ++fixture->status_calls;
+            fixture->status_order = ++fixture->order;
+            const bool order = driver && !fixture->gate_started &&
+                fixture->graph_reads == 62U && fixture->graph.calls == 124U &&
+                fixture->graph.valid &&
+                fixture->NoModelIo();
+            fixture->sequence_valid &= order;
+            fixture->gate_started = true;
+            if (!order) return BC_STS_ERROR;
+            driver->ReadyListCount = fixture->reject_ready ? 1U : 0U;
+            return BC_STS_SUCCESS;
+        }
+        static BC_STATUS Eos(HANDLE handle, uint8_t *eos) {
+            auto *fixture = static_cast<IntegratedFixture *>(handle);
+            ++fixture->eos_calls;
+            fixture->eos_order = ++fixture->order;
+            const bool order = eos && fixture->gate_started &&
+                !fixture->gate_complete && fixture->status_calls == 1U &&
+                fixture->graph_reads == 62U && fixture->graph.calls == 124U &&
+                fixture->NoModelIo();
+            fixture->sequence_valid &= order;
+            if (!order) return BC_STS_ERROR;
+            *eos = 0;
+            fixture->gate_complete = true;
+            return BC_STS_SUCCESS;
+        }
+    };
+    auto ConfigureIntegratedBoundary = [](IntegratedFixture *fixture,
+                                           HANDLE *current,
+                                           const bool *opened,
+                                           const bool *started,
+                                           const Deadline *deadline,
+                                           uint32_t *ready, bool *eos,
+                                           ActiveContextBoundaryGate *gate) {
+        gate->current = current;
+        gate->owner = fixture;
+        gate->opened = opened;
+        gate->started = started;
+        gate->deadline = deadline;
+        gate->submitted = 61U;
+        gate->frames = 60U;
+        gate->pending = 1U;
+        gate->ready = ready;
+        gate->eos = eos;
+        gate->status_reader = IntegratedFixture::Status;
+        gate->eos_reader = IntegratedFixture::Eos;
+    };
+    {
+        IntegratedFixture integrated;
+        HANDLE integrated_current = &integrated;
+        bool integrated_opened = true, integrated_started = true;
+        Deadline integrated_deadline(3600U);
+        uint32_t integrated_ready = 99U;
+        bool integrated_eos = true;
+        ActiveContextBoundaryGate integrated_boundary;
+        ConfigureIntegratedBoundary(&integrated, &integrated_current,
+            &integrated_opened, &integrated_started, &integrated_deadline,
+            &integrated_ready, &integrated_eos, &integrated_boundary);
+        issue204_active_context::Result integrated_result;
+        check(issue204_active_context::ValidatePlan(integrated.model.plan) &&
+              ObserveActiveContextNative(&integrated_current,
+                  &integrated_opened, &integrated_started, &integrated_result,
+                  &integrated_boundary, ActiveContextBoundaryGate::Check,
+                  IntegratedFixture::Memory, IntegratedFixture::RegisterRead,
+                  IntegratedFixture::RegisterWrite, false) &&
+              integrated.sequence_valid && integrated.gate_complete &&
+              integrated.first_write_after_gate &&
+              integrated.graph_reads == 62U && integrated.graph.calls == 124U &&
+              integrated.status_calls == 1U &&
+              integrated.eos_calls == 1U && integrated.model.register_writes == 4U &&
+              integrated_result.register_writes == 4U &&
+              integrated.graph_done_order < integrated.status_order &&
+              integrated.status_order < integrated.eos_order &&
+              integrated.eos_order < integrated.first_read_order &&
+              integrated.first_read_order < integrated.first_write_order &&
+              integrated.first_write_register_reads == 3U &&
+              integrated.first_write_address == issue204_active_context::kRoute &&
+              integrated.first_write_word == 1U &&
+              integrated_result.halt_verified && integrated_result.resume_verified &&
+              integrated_result.route_restored &&
+              integrated_result.pre_halt_status == 0x440018c2U &&
+              integrated_result.identity_word == 0x7b010108U &&
+              !integrated_result.debug_word,
+            "active-context native binding orders Graph x2, fresh boundary, and the four-write model");
+    }
+    {
+        IntegratedFixture rejected_graph;
+        rejected_graph.graph.fail_at = 62U;
+        HANDLE rejected_current = &rejected_graph;
+        bool rejected_opened = true, rejected_started = true;
+        Deadline rejected_deadline(3600U);
+        uint32_t rejected_ready = 0;
+        bool rejected_eos = false;
+        ActiveContextBoundaryGate rejected_boundary;
+        ConfigureIntegratedBoundary(&rejected_graph, &rejected_current,
+            &rejected_opened, &rejected_started, &rejected_deadline,
+            &rejected_ready, &rejected_eos, &rejected_boundary);
+        issue204_active_context::Result rejected_result;
+        check(!ObserveActiveContextNative(&rejected_current,
+                  &rejected_opened, &rejected_started, &rejected_result,
+                  &rejected_boundary, ActiveContextBoundaryGate::Check,
+                  IntegratedFixture::Memory, IntegratedFixture::RegisterRead,
+                  IntegratedFixture::RegisterWrite, false) &&
+              rejected_result.failure == issue204_active_context::Failure::Graph &&
+              rejected_graph.graph_reads == 1U &&
+              !rejected_graph.status_calls && !rejected_graph.eos_calls &&
+              rejected_graph.NoModelIo() && !rejected_result.route_select_attempted,
+            "active-context native binding rejects a graph error before any register write");
+    }
+    {
+        IntegratedFixture rejected_gate;
+        rejected_gate.reject_ready = true;
+        HANDLE rejected_current = &rejected_gate;
+        bool rejected_opened = true, rejected_started = true;
+        Deadline rejected_deadline(3600U);
+        uint32_t rejected_ready = 0;
+        bool rejected_eos = false;
+        ActiveContextBoundaryGate rejected_boundary;
+        ConfigureIntegratedBoundary(&rejected_gate, &rejected_current,
+            &rejected_opened, &rejected_started, &rejected_deadline,
+            &rejected_ready, &rejected_eos, &rejected_boundary);
+        issue204_active_context::Result rejected_result;
+        check(!ObserveActiveContextNative(&rejected_current,
+                  &rejected_opened, &rejected_started, &rejected_result,
+                  &rejected_boundary, ActiveContextBoundaryGate::Check,
+                  IntegratedFixture::Memory, IntegratedFixture::RegisterRead,
+                  IntegratedFixture::RegisterWrite, false) &&
+              rejected_result.failure == issue204_active_context::Failure::Guard &&
+              rejected_gate.graph_reads == 62U && rejected_gate.graph.calls == 124U &&
+              rejected_gate.status_calls == 1U && !rejected_gate.eos_calls &&
+              rejected_gate.NoModelIo() && !rejected_result.route_select_attempted,
+            "active-context native binding rejects a fresh-gate change before any register write");
+    }
 }
 static bool ArmMetadataInputShape(const Options &options, const Input &input)
 {
@@ -8471,6 +9316,7 @@ static bool SelfTest()
     VideoGraphSelfTest(check);
     VideoStagingSelfTest(check);
     ActiveContextBindingSelfTest(check);
+    ActiveContextNativeSelfTest(check);
     AvdMemorySelfTest(check);
     AvdCpuMapSelfTest(check);
     AvdCacheCountSelfTest(check);
@@ -10837,10 +11683,29 @@ static bool WaitInput(Device *device, const Input &input, Audit *audit,
     return false;
 }
 
+static bool SettleActiveContext(Device *device, const Input &input, Audit *audit,
+                                const Deadline &deadline)
+{
+    const gint64 settle_end = g_get_monotonic_time() + 2 * G_USEC_PER_SEC;
+    bool ok = true;
+    while (ok && !deadline.expired() && g_get_monotonic_time() < settle_end) {
+        ok = Receive(device, input, audit);
+        if (ok) g_usleep(1000);
+    }
+    // Refresh both ReadyListCount and EOS after the final sleep.  The value
+    // left by DtsProcInput or a prior Receive call is not boundary evidence.
+    return ok && !deadline.expired() && Receive(device, input, audit);
+}
+
 static bool Run(Input &input, unsigned expected, unsigned seconds,
                 unsigned iteration, unsigned iterations,
                 Phase1Progress *progress, const Options &options)
 {
+    if (options.observe_active_context && !PrepareActiveContextInput(&input)) {
+        std::fprintf(stderr,
+            "Active-context fixture preparation failed before device open\n");
+        return false;
+    }
     Deadline deadline(seconds);
     Device device;
     Audit audit(options.observe_avd_platform_code, options.observe_avd_dmem_midpoints);
@@ -10968,15 +11833,121 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         if (ok) audit.benchmark.CaptureStarted(g_get_monotonic_time());
     }
     if (ok && options.capture_path) ok = PackingState(device.handle, "capture-before-input", &audit.mfd_colour, &audit.scl_view);
+    const HANDLE active_context_owner = options.observe_active_context
+        ? device.handle : nullptr;
+    unsigned active_context_submitted = 0;
+    bool active_context_marker_submitted = false;
+    bool active_context_observation_attempted = false;
+    bool active_context_flush_attempted = false;
     size_t packet_index = 0;
     for (Packet &packet : input.packets) {
         if (!ok) break;
         const uint64_t token = Token(iteration - 1, packet_index);
-        ok = WaitInput(&device, input, &audit, packet.reservation, deadline) &&
-             Status("DtsProcInput", DtsProcInput(device.handle, packet.data.data(),
-                    packet.size, token, FALSE));
-        if (ok) audit.pending.insert(token);
+        const bool resume_fragment = options.observe_active_context &&
+            packet_index == kActiveContextBoundaryPacket;
+        ok = WaitInput(&device, input, &audit, packet.reservation, deadline);
+        if (ok && resume_fragment) {
+            ok = active_context_marker_submitted &&
+                device.handle == active_context_owner && device.opened && device.started &&
+                ActiveContextBoundaryMatches(active_context_submitted,
+                    audit.frames, audit.pending.size(), audit.ready, audit.eos,
+                    audit.marker, active_context_flush_attempted, 60U, 59U);
+            if (!ok)
+                std::fprintf(stderr,
+                    "Active-context continuation lost the exact pre-VCL gate; no VCL or custom I/O submitted\n");
+        }
+        if (ok) {
+            ok = Status("DtsProcInput", DtsProcInput(device.handle,
+                packet.data.data(), packet.size, resume_fragment ? 0U : token,
+                FALSE));
+        }
+        if (ok) {
+            audit.pending.insert(token);
+            if (options.observe_active_context) ++active_context_submitted;
+        }
         ++packet_index;
+        if (ok && options.observe_active_context &&
+            packet_index == kActiveContextBoundaryPacket) {
+            static const size_t marker_bytes = 15U;
+            uint8_t marker[marker_bytes + AV_INPUT_BUFFER_PADDING_SIZE] = {
+                0, 0, 0, 1, 9, 0x10, 0, 0, 0, 1, 6, 3, 1, 0xff, 0x80
+            };
+            gsize reservation = 0;
+            ok = active_context_submitted == 60U &&
+                device.handle == active_context_owner && device.opened && device.started &&
+                !active_context_marker_submitted && !active_context_flush_attempted &&
+                gst_crystalhd_input_reservation(BC_MSUBTYPE_H264,
+                    marker_bytes, 0U, &reservation) && reservation &&
+                WaitInput(&device, input, &audit, reservation, deadline) &&
+                device.handle == active_context_owner && !audit.eos && !audit.marker &&
+                audit.frames <= 60U && audit.pending.size() + audit.frames == 60U;
+            if (ok) {
+                ok = Status("DtsProcInput(active-context AUD+filler)",
+                    DtsProcInput(device.handle, marker, marker_bytes,
+                        Token(iteration - 1, kActiveContextBoundaryPacket), FALSE));
+                active_context_marker_submitted = ok;
+            }
+            if (ok) ok = SettleActiveContext(&device, input, &audit, deadline);
+            if (ok) {
+                ok = ActiveContextBoundaryMatches(active_context_submitted,
+                    audit.frames, audit.pending.size(), audit.ready, audit.eos,
+                    audit.marker, active_context_flush_attempted, 60U, 59U);
+            }
+            std::printf("Active context marker gate: submitted=%u frames=%u "
+                "pending=%zu ready=%u EOS=%u marker=%u flush=%u result=%s\n",
+                active_context_submitted, audit.frames, audit.pending.size(),
+                audit.ready, audit.eos ? 1U : 0U, audit.marker ? 1U : 0U,
+                active_context_flush_attempted ? 1U : 0U,
+                ok ? "PASS" : "FAIL");
+            std::fflush(stdout);
+            if (!ok)
+                std::fprintf(stderr,
+                    "Active-context marker gate failed; no continuation or custom I/O follows\n");
+        }
+        if (ok && options.observe_active_context &&
+            packet_index == kActiveContextBoundaryPacket + 1U) {
+            ok = SettleActiveContext(&device, input, &audit, deadline);
+            if (ok) {
+                ok = device.handle == active_context_owner && device.opened &&
+                    device.started && !active_context_observation_attempted &&
+                    ActiveContextBoundaryMatches(active_context_submitted,
+                        audit.frames, audit.pending.size(), audit.ready, audit.eos,
+                        audit.marker, active_context_flush_attempted, 61U, 60U);
+            }
+            std::printf("Active context exact gate: submitted=%u frames=%u "
+                "pending=%zu ready=%u EOS=%u marker=%u flush=%u result=%s\n",
+                active_context_submitted, audit.frames, audit.pending.size(),
+                audit.ready, audit.eos ? 1U : 0U, audit.marker ? 1U : 0U,
+                active_context_flush_attempted ? 1U : 0U,
+                ok ? "PASS" : "FAIL");
+            std::fflush(stdout);
+            if (ok) {
+                active_context_observation_attempted = true;
+                ActiveContextBoundaryGate boundary;
+                boundary.current = &device.handle;
+                boundary.owner = active_context_owner;
+                boundary.opened = &device.opened;
+                boundary.started = &device.started;
+                boundary.deadline = &deadline;
+                boundary.submitted = active_context_submitted;
+                boundary.frames = audit.frames;
+                boundary.pending = audit.pending.size();
+                boundary.marker = audit.marker;
+                boundary.flush_attempted = active_context_flush_attempted;
+                boundary.ready = &audit.ready;
+                boundary.eos = &audit.eos;
+                issue204_active_context::Result observation;
+                ok = ObserveActiveContextNative(&device.handle, &device.opened,
+                    &device.started, &observation, &boundary,
+                    ActiveContextBoundaryGate::Check);
+                if (!ok && observation.module_recovery_required)
+                    std::fprintf(stderr,
+                        "Active-context observation requires module recovery; no further custom I/O or input follows\n");
+            } else {
+                std::fprintf(stderr,
+                    "Active-context exact61 gate failed; no custom I/O or further input follows\n");
+            }
+        }
         if (ok && options.capture_path && packet_index == 1)
             ok = PackingState(device.handle, "first-input-accepted", &audit.mfd_colour, &audit.scl_view);
     }
@@ -10989,6 +11960,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
                          "DtsIsEndOfStream was already set before this drain\n");
             ok = false;
         }
+        if (ok)
+            active_context_flush_attempted = options.observe_active_context;
         if (ok)
             ok = Status("DtsFlushInput(0)", DtsFlushInput(device.handle, 0));
         if (ok && options.capture_path) ok = PackingState(device.handle, "flush-input-returned", &audit.mfd_colour, &audit.scl_view);
@@ -11090,7 +12063,9 @@ int main(int argc, char **argv)
             "Power observation: --hardware MPEG2_640x360_180_FRAMES 180 "
             "[--observe-power | --observe-power-fw-pause | --observe-power-fw-dma | --observe-power-config]\n"
             "BVN state observation: --hardware MPEG2_640x360_180_FRAMES 180 "
-            "--scaler-test 320 --observe-bvn-state\n", argv[0]);
+            "--scaler-test 320 --observe-bvn-state\n"
+            "Active context observation: --hardware H264_256x96_180_PACKETS 180 30 1 "
+            "--scaler-test 0 --capture-yuy2 NEW_PATH --observe-active-context\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
@@ -11099,7 +12074,9 @@ int main(int argc, char **argv)
         return 2;
     }
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_bvn_state)
+        if (options.observe_active_context)
+            std::fprintf(stderr, "--observe-active-context requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_bvn_state)
             std::fprintf(stderr, "--observe-bvn-state requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_power)
             std::fprintf(stderr, "Power observation requires CAP_SYS_RAWIO; no device was opened\n");
@@ -11177,6 +12154,14 @@ int main(int argc, char **argv)
     if (!SclInputAdmitted(options, input)) {
         std::fprintf(stderr, "Raw observation requires native progressive MPEG2 "
                              "640x360 with 180 packets/expected frames; no device was opened\n");
+        phase1_progress_close(&progress);
+        return 2;
+    }
+    if (!ActiveContextInputAdmitted(options, input)) {
+        std::fprintf(stderr,
+            "Active-context observation requires the pinned progressive H264 "
+            "256x96/180-packet input: 126823 submitted bytes and fixed SHA256; "
+            "no capture or device was opened\n");
         phase1_progress_close(&progress);
         return 2;
     }
