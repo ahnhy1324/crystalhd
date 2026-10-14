@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "rx-output-receipts.h"
 
+#include <bc_dts_defs.h>
+
 #include <algorithm>
 #include <cerrno>
 #include <climits>
@@ -80,6 +82,7 @@ static HostReceipt Host(const crystalhd_fw_research_rx_receipt &driver)
     host.picture_number = driver.picture_number;
     host.session_number = driver.session_number;
     host.picture_flags = driver.picture_flags;
+    host.n_drop = 17;
     host.width = driver.picture_width;
     host.height = driver.picture_height;
     host.y_done_words = driver.y_done_words;
@@ -355,6 +358,94 @@ int main()
     Check(HostCapacity(1) == 33 && DriverCapacity(1) == 68 &&
           DriverCapacity(10000) == 40064,
           "bounded preallocation capacities cover successful outputs and RX churn");
+    uint64_t dma_sum = 0;
+    Check(CheckedDmaByteAdd(UINT64_MAX - 3U, 3U, &dma_sum) &&
+          dma_sum == UINT64_MAX &&
+          !CheckedDmaByteAdd(UINT64_MAX - 3U, 4U, &dma_sum) &&
+          !CheckedDmaByteAdd(0, 0, nullptr),
+          "driver DMA byte accumulation accepts its exact limit and rejects overflow/null output");
+
+    {
+        crystalhd_fw_research_rx_receipt full = Driver(0, 5, 10);
+        DriverDmaAudit audit;
+        Failure audit_failure = Failure::None;
+        Check(AuditDriverDma(&full, 1, 640, 360, 320 * 180, 0,
+                             &audit, &audit_failure) &&
+              audit.records == 1 && audit.completed == 1 &&
+              audit.full_size == 1 && audit.output_full_size == 1 &&
+              !audit.non_output_full_size && !audit.partial_size &&
+              audit.full_size_bytes == 320U * 180U * 4U &&
+              audit_failure == Failure::None,
+              "all-driver DMA audit counts exact completed native output bytes");
+        crystalhd_fw_research_rx_receipt zero = Driver(0, 5, 10, true);
+        zero.y_done_words = 0;
+        Check(AuditDriverDma(&zero, 1, 640, 360, 320 * 180, 0,
+                             &audit, &audit_failure) &&
+              audit.records == 1 && audit.completed == 1 &&
+              audit.eos_control == 1 && !audit.eos_control_bytes &&
+              audit.zero_size == 1 && !audit.full_size &&
+              !audit.partial_size && !audit.full_size_bytes,
+              "all-driver DMA audit keeps a fully staged zero-size EOS control separate from picture DMA bytes");
+        zero.eos_trailer = 0;
+        zero.picture_flags &= ~0x0004U;
+        Check(!AuditDriverDma(&zero, 1, 640, 360, 320 * 180, 0,
+                              &audit, &audit_failure) &&
+              audit_failure == Failure::DriverRecord,
+              "all-driver DMA audit rejects an unexplained zero-size non-EOS record");
+        crystalhd_fw_research_rx_receipt short_eos =
+            Driver(0, 5, 10, true);
+        short_eos.y_done_words = 16;
+        Check(AuditDriverDma(&short_eos, 1, 640, 360, 320 * 180, 0,
+                             &audit, &audit_failure) &&
+              audit.eos_control == 1 && audit.eos_control_bytes == 64U &&
+              !audit.zero_size && !audit.partial_size && !audit.full_size,
+              "all-driver DMA audit accounts a bounded short EOS control without calling it partial picture DMA");
+        short_eos.y_done_words = 320 * 180 + 1;
+        Check(!AuditDriverDma(&short_eos, 1, 640, 360, 320 * 180, 0,
+                              &audit, &audit_failure) &&
+              audit_failure == Failure::DriverRecord,
+              "all-driver DMA audit rejects an EOS control larger than one full native picture");
+        crystalhd_fw_research_rx_receipt exact_controls[3] = {
+            Driver(0, 5, 10), Driver(1, 6, 11, true),
+            Driver(2, 7, 12, true)
+        };
+        exact_controls[1].y_done_words = 16;
+        exact_controls[2].y_done_words = 0;
+        Check(AuditDriverDma(exact_controls, 3, 640, 360, 320 * 180, 0,
+                             &audit, &audit_failure) &&
+              audit.records == 3 && audit.completed == 3 &&
+              audit.eos_control == 2 && audit.zero_size == 1 &&
+              audit.full_size == 1 && audit.output_full_size == 1 &&
+              audit.eos_control_bytes == 64U &&
+              audit.full_size_bytes == 320U * 180U * 4U,
+              "all-driver DMA audit separates the exact two EOS controls and byte totals from one full picture");
+        full.disposition =
+            CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_RECYCLE_ZERO;
+        Check(AuditDriverDma(&full, 1, 640, 360, 320 * 180, 0,
+                             &audit, &audit_failure) &&
+              audit.full_size == 1 && !audit.output_full_size &&
+              audit.non_output_full_size == 1,
+              "all-driver DMA audit exposes a full-size non-output receipt");
+        full = Driver(0, 5, 10);
+        --full.y_done_words;
+        Check(AuditDriverDma(&full, 1, 640, 360, 320 * 180, 0,
+                             &audit, &audit_failure) &&
+              !audit.full_size && audit.partial_size == 1 &&
+              !audit.full_size_bytes,
+              "all-driver DMA audit never counts a partial transfer as full-size");
+        full = Driver(0, 5, 10);
+        full.completion_status = BC_STS_ERROR;
+        Check(!AuditDriverDma(&full, 1, 640, 360, 320 * 180, 0,
+                              &audit, &audit_failure) &&
+              audit.error == 1 && audit_failure == Failure::DriverRecord,
+              "all-driver DMA audit fails a completion error without using stale sizes");
+        full = Driver(0, 5, 10);
+        full.stage_flags &= ~CRYSTALHD_FW_RESEARCH_RX_STAGE_COMPLETE;
+        Check(!AuditDriverDma(&full, 1, 640, 360, 320 * 180, 0,
+                              &audit, &audit_failure) &&
+              audit_failure == Failure::DriverRecord,
+              "all-driver DMA audit fails an incomplete stage record");
+    }
 
     crystalhd_fw_research_rx_receipt drivers[3] = {
         Driver(0, 5, 10), Driver(1, UINT32_MAX, 11, true), Driver(2, 7, 12)
@@ -495,6 +586,14 @@ int main()
               fake.events == "OASRC" && probe.host_count() == 1 &&
               probe.driver_count() == 1 && probe.joined_count() == 1,
               "probe arms before the session boundary then seals, reads, closes and exports");
+        DriverDmaAudit dma_audit;
+        Failure dma_failure = Failure::None;
+        Check(probe.AuditDma(640, 360, 320 * 180, 0,
+                             &dma_audit, &dma_failure) &&
+              dma_audit.full_size == 1 &&
+              dma_audit.full_size_bytes == 320U * 180U * 4U &&
+              dma_failure == Failure::None,
+              "finished probe retains every sealed driver record for DMA audit");
         off_t bytes = 0;
         mode_t mode = 0;
         Check(Exists(output, &bytes, &mode) && bytes > 100 && mode == 0600,
@@ -506,7 +605,7 @@ int main()
         static const char expected[] =
             "receipt_generation\treceipt_run_id\thost_ordinal\thost_return_ns\t"
             "ready_before\ttoken\tpicture_number\tsession_number\t"
-            "host_picture_flags\twidth\theight\ty_done_words\tuv_done_words\t"
+            "host_picture_flags\thost_n_drop\twidth\theight\ty_done_words\tuv_done_words\t"
             "pout_flags\tb422_mode\teos\tdriver_ordinal\tcapture_epoch\t"
             "fire_return_ns\tirq_entry_ns\tcompletion_ns\tparse_ns\t"
             "disposition_ns\traw_firmware_timestamp\t"
@@ -518,13 +617,13 @@ int main()
             "row_width\tpib_line\tpacket_flags\tstage_flags\tdisposition\t"
             "eos_trailer\tfire_to_irq_ns\tirq_to_completion_ns\t"
             "disposition_to_host_ns\n"
-            "7\t9\t0\t160\t2\t100000\t10\t4\t0\t640\t360\t57600\t0\t"
+            "7\t9\t0\t160\t2\t100000\t10\t4\t0\t17\t640\t360\t57600\t0\t"
             "131072\t2\t0\t0\t3\t100\t110\t120\t130\t140\t5\t100000\t"
             "10\t4\t640\t360\t57600\t0\t10\t0\t20\t1\t0\t4\t0\t0\t"
             "640\t360\t6\t95\t1\t0\t10\t10\t20\n";
         Check(read == sizeof(expected) - 1 &&
               !std::memcmp(text, expected, sizeof(expected) - 1),
-              "TSV has the exact ordered 48-column schema and golden row");
+              "TSV has the exact ordered 49-column schema including host n_drop and golden row");
         Probe collision(&ops);
         Check(!collision.Prepare(output, 1) &&
               collision.failure() == Failure::Path,
