@@ -74,6 +74,9 @@ static void crystalhd_fw_research_observer_invalidate(
 static void crystalhd_fw_research_command_observation_fail(
 	struct crystalhd_fw_research_command_observation_result *result,
 	int status);
+static int crystalhd_fw_research_observer_register_locked(
+	struct crystalhd_hw *hw, struct crystalhd_fw_command_observer *observer,
+	u32 address, u32 mask, u32 *value, u64 *timestamp);
 
 static const u8 crystalhd_fw_research_sha256[SHA256_DIGEST_SIZE] = {
 	0x8b, 0xf3, 0xa6, 0x8f, 0x5c, 0x64, 0x68, 0x63,
@@ -489,6 +492,7 @@ static void crystalhd_fw_research_observer_invalidate(
 	result->host_intr_valid = 0;
 	result->host_intr_arm_mbox0 = 0;
 	result->host_intr_ns = 0;
+	result->sample_flags = 0;
 	memset(result->samples, 0, sizeof(result->samples));
 	result->sample_count = 0;
 	result->read_complete = 0;
@@ -588,9 +592,22 @@ static int crystalhd_fw_research_observer_register(
 	int rc;
 
 	spin_lock_irqsave(&hw->lock, flags);
+	rc = crystalhd_fw_research_observer_register_locked(hw, observer,
+		address, mask, value, timestamp);
+	spin_unlock_irqrestore(&hw->lock, flags);
+	return rc;
+}
+
+static int crystalhd_fw_research_observer_register_locked(
+	struct crystalhd_hw *hw, struct crystalhd_fw_command_observer *observer,
+	u32 address, u32 mask, u32 *value, u64 *timestamp)
+{
+	int rc;
+
+	lockdep_assert_held(&hw->lock);
 	rc = crystalhd_fw_research_observer_inflight_ready(hw, observer);
 	if (rc)
-		goto unlock;
+		return rc;
 	*value = hw->pfnReadDevRegister(hw->adp, address) & mask;
 	rc = crystalhd_fw_research_observer_inflight_ready(hw, observer);
 	/* Completion before a read is a clean sampling boundary.  Completion
@@ -600,9 +617,57 @@ static int crystalhd_fw_research_observer_register(
 		rc = -ECANCELED;
 	if (!rc)
 		*timestamp = ktime_get_ns();
-unlock:
-	spin_unlock_irqrestore(&hw->lock, flags);
 	return rc;
+}
+
+void crystalhd_fw_research_command_posted_locked(struct crystalhd_hw *hw,
+						 const BC_FW_CMD *fw_cmd)
+{
+	struct crystalhd_fw_command_observer *observer;
+	struct crystalhd_fw_research_command_observation *result;
+	u32 cpudma = 0, sdram = 0;
+	u64 cpudma_ns = 0, sdram_ns = 0;
+	int rc;
+
+	if (!hw || !fw_cmd)
+		return;
+	lockdep_assert_held(&hw->lock);
+	observer = hw->fwcmd_observer;
+	if (!observer)
+		return;
+	result = observer->result;
+	if (memcmp(fw_cmd->cmd, observer->request_words,
+		   sizeof(observer->request_words))) {
+		observer->hook_status = -EPROTO;
+		return;
+	}
+
+	result->attempted = 1;
+	observer->posted = true;
+	rc = crystalhd_fw_research_observer_register_locked(hw, observer,
+		BCHP_DECODE_CPUDMA2_0_REG_DMA_STATUS,
+		CRYSTALHD_FW_RESEARCH_CPUDMA_ACTIVE_MASK,
+		&cpudma, &cpudma_ns);
+	if (rc) {
+		observer->hook_status = rc == -EALREADY ? -ENODATA : rc;
+		return;
+	}
+	rc = crystalhd_fw_research_observer_register_locked(hw, observer,
+		BCHP_DECODE_CPUREGS2_0_REG_SDRAM_STATUS,
+		CRYSTALHD_FW_RESEARCH_SDRAM_BUSY_MASK,
+		&sdram, &sdram_ns);
+	if (rc) {
+		/* A first read without its paired second read is never published. */
+		observer->hook_status = rc == -EALREADY ? -ECANCELED : rc;
+		return;
+	}
+	result->samples[0].cpudma_ns = cpudma_ns;
+	result->samples[0].sdram_ns = sdram_ns;
+	result->samples[0].cpudma_active = cpudma;
+	result->samples[0].sdram_busy = sdram;
+	result->sample_count = 1;
+	result->sample_flags =
+		CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_FLAG_FIRST_PAIR_POST_MAILBOX_SAME_LOCK;
 }
 
 void crystalhd_fw_research_command_posted(struct crystalhd_hw *hw,
@@ -624,19 +689,21 @@ void crystalhd_fw_research_command_posted(struct crystalhd_hw *hw,
 	if (!observer)
 		return;
 	result = observer->result;
-	result->attempted = 1;
-	observer->posted = true;
-	if (memcmp(fw_cmd->cmd, observer->request_words,
+	if (!observer->posted || observer->hook_status ||
+	    memcmp(fw_cmd->cmd, observer->request_words,
 		   sizeof(observer->request_words))) {
-		observer->hook_status = -EPROTO;
+		if (!observer->hook_status)
+			observer->hook_status = -EPROTO;
 		return;
 	}
 
-	/* Fixed-count sampling only: no value controls another read or retry.
-	 * Each fixed register read has its own hw->lock -> gisb_lock interval,
-	 * so normal IRQ completion may run between constituent accesses.
+	/* The same-lock mailbox hook consumed pair zero.  Continue within the same
+	 * fixed total budget: no value controls another read or retry.  Each
+	 * remaining register read has its own hw->lock -> gisb_lock interval, so
+	 * normal IRQ completion may run between constituent accesses.
 	 */
-	for (i = 0; i < CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_MAX; i++) {
+	for (i = result->sample_count;
+	     i < CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_MAX; i++) {
 		cpudma = sdram = 0;
 		cpudma_ns = sdram_ns = 0;
 		rc = crystalhd_fw_research_observer_register(hw, observer,

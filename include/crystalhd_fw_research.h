@@ -204,11 +204,15 @@ struct crystalhd_fw_research_heap_packet_result {
 	_IOWR('R', 0x97, struct crystalhd_fw_research_heap_packet_result)
 
 /* One exact, fresh-INIT command observation.  Register values are masked raw
- * levels, not transfer ownership or visibility receipts.  Samples are taken
- * only while the ordinary firmware-command transaction remains pending; the
- * normal IRQ and reply copy retain completion authority.
+ * levels, not transfer ownership or visibility receipts.  The first pair is
+ * sampled after the mailbox write in that same hw->lock interval; later pairs
+ * use separate lock intervals.  All reads require the ordinary
+ * firmware-command transaction to remain pending, and normal IRQ/reply
+ * completion stays authoritative.
  */
 #define CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_MAX 64U
+#define CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_FLAG_FIRST_PAIR_POST_MAILBOX_SAME_LOCK \
+	0x00000001U
 
 struct crystalhd_fw_research_command_sample {
 	__aligned_u64 cpudma_ns;
@@ -233,7 +237,11 @@ struct crystalhd_fw_research_command_observation {
 	__u32 host_intr_valid;
 	__u32 host_intr_arm_mbox0;
 	__aligned_u64 host_intr_ns;
-	__u32 reserved[4];
+	/* Provenance: zero on every failure.  Success requires exactly the
+	 * FIRST_PAIR_POST_MAILBOX_SAME_LOCK bit above.
+	 */
+	__u32 sample_flags;
+	__u32 reserved[3];
 	struct crystalhd_fw_research_command_sample
 		samples[CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_MAX];
 };

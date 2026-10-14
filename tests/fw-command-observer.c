@@ -3,6 +3,8 @@
 #include <assert.h>
 #include <errno.h>
 #include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -32,13 +34,16 @@ typedef int BC_STATUS;
 
 typedef pthread_mutex_t spinlock_t;
 static _Thread_local unsigned lock_depth;
+static _Thread_local unsigned active_lock_epoch;
+static unsigned lock_entries;
 #define spin_lock_irqsave(target, saved_flags) do { \
 	(saved_flags) = 0x1234UL; assert((target) == &hardware.lock); \
 	assert(!pthread_mutex_lock(target)); lock_depth++; \
+	active_lock_epoch = ++lock_entries; \
 } while (0)
 #define spin_unlock_irqrestore(target, saved_flags) do { \
 	assert((target) == &hardware.lock && (saved_flags) == 0x1234UL && lock_depth == 1); \
-	lock_depth--; assert(!pthread_mutex_unlock(target)); \
+	lock_depth--; active_lock_epoch = 0; assert(!pthread_mutex_unlock(target)); \
 } while (0)
 
 typedef struct {
@@ -86,14 +91,14 @@ static struct crystalhd_adp adapter;
 static u64 now_ns;
 static unsigned reads, forbidden_reads, checks, failures;
 static bool complete_during_cpudma;
-static unsigned ready_calls, complete_at_ready_call;
+static bool mailbox_posted;
+static unsigned mailbox_lock_epoch;
+static unsigned read_lock_epochs[2 * CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_MAX + 1];
+static atomic_bool completion_thread_started, completion_thread_done;
 
 static int crystalhd_fw_research_state_context(struct crystalhd_cmd *ctx,
 	u64 generation, struct crystalhd_hw *hw)
 {
-	ready_calls++;
-	if (complete_at_ready_call == ready_calls)
-		hardware.fwcmd_pending = false;
 	return ctx == &command_context && ctx->adp == &adapter &&
 		hw == &hardware && ctx->hw_ctx == hw && adapter.present &&
 		adapter.hw_accessible && adapter.generation == generation &&
@@ -128,6 +133,9 @@ static u64 ktime_get_ns(void)
 static u32 read_register(struct crystalhd_adp *adp, u32 address)
 {
 	assert(adp == &adapter && lock_depth == 1);
+	assert(mailbox_posted && active_lock_epoch);
+	assert(reads < sizeof(read_lock_epochs) / sizeof(read_lock_epochs[0]));
+	read_lock_epochs[reads] = active_lock_epoch;
 	reads++;
 	switch (address) {
 	case BCHP_DECODE_CPUDMA2_0_REG_DMA_STATUS:
@@ -145,6 +153,10 @@ static u32 read_register(struct crystalhd_adp *adp, u32 address)
 		return 0;
 	}
 }
+
+static int crystalhd_fw_research_observer_register_locked(
+	struct crystalhd_hw *hw, struct crystalhd_fw_command_observer *observer,
+	u32 address, u32 mask, u32 *value, u64 *timestamp);
 
 #include "fw-command-observer-functions.h"
 
@@ -175,8 +187,12 @@ static void reset_fixture(void)
 	hardware.dev_started = true;
 	hardware.FleaPowerState = FLEA_PS_ACTIVE;
 	hardware.pfnReadDevRegister = read_register;
-	now_ns = reads = forbidden_reads = ready_calls = 0;
-	complete_at_ready_call = 0;
+	now_ns = reads = forbidden_reads = lock_entries = 0;
+	mailbox_posted = false;
+	mailbox_lock_epoch = 0;
+	memset(read_lock_epochs, 0, sizeof(read_lock_epochs));
+	atomic_store(&completion_thread_started, false);
+	atomic_store(&completion_thread_done, false);
 	complete_during_cpudma = false;
 }
 
@@ -200,6 +216,23 @@ static void end_pending(void)
 	hardware.fwcmd_trans_active = false;
 }
 
+static void post_mailbox_locked(const BC_FW_CMD *fw)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&hardware.lock, flags);
+	mailbox_posted = true;
+	mailbox_lock_epoch = active_lock_epoch;
+	crystalhd_fw_research_command_posted_locked(&hardware, fw);
+	spin_unlock_irqrestore(&hardware.lock, flags);
+}
+
+static void post_mailbox(const BC_FW_CMD *fw)
+{
+	post_mailbox_locked(fw);
+	crystalhd_fw_research_command_posted(&hardware, fw);
+}
+
 static void success_case(void)
 {
 	struct crystalhd_fw_research_command_observation result;
@@ -211,6 +244,14 @@ static void success_case(void)
 	check(!crystalhd_fw_research_observer_arm(&command_context, 37,
 		fw.cmd, &observer, &result), "exact fresh INIT arms");
 	begin_pending();
+	post_mailbox_locked(&fw);
+	check(result.attempted && result.sample_count == 1 && reads == 2 &&
+		result.sample_flags ==
+		CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_FLAG_FIRST_PAIR_POST_MAILBOX_SAME_LOCK,
+		"mailbox critical section captures exactly the earliest pair");
+	check(read_lock_epochs[0] == mailbox_lock_epoch &&
+		read_lock_epochs[1] == mailbox_lock_epoch,
+		"earliest pair shares the mailbox-post hardware-lock interval");
 	crystalhd_fw_research_command_posted(&hardware, &fw);
 	check(result.attempted && result.sample_count ==
 		CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_MAX,
@@ -220,6 +261,11 @@ static void success_case(void)
 	check(result.host_intr_valid &&
 		result.host_intr_arm_mbox0 == BCHP_INTR_INTR_STATUS_ARM_MBOX0_INTR_MASK,
 		"host aggregate sample is masked and taken once");
+	check(read_lock_epochs[2] != mailbox_lock_epoch,
+		"bounded continuation starts only after the mailbox lock is released");
+	for (i = 3; i < reads; i++)
+		check(read_lock_epochs[i] != read_lock_epochs[i - 1],
+		      "each continuation register uses its own lock interval");
 	for (i = 0; i < result.sample_count; i++)
 		check(result.samples[i].cpudma_active <= 0xfU &&
 		      result.samples[i].sdram_busy <= 1U &&
@@ -232,7 +278,8 @@ static void success_case(void)
 	check(!crystalhd_fw_research_observer_finish(&command_context,
 		&observer, &fw, BC_STS_SUCCESS), "matching ordinary reply finishes");
 	check(!result.status && result.header_matches && !result.read_complete &&
-		!hardware.fwcmd_observer,
+		!hardware.fwcmd_observer && result.sample_flags ==
+		CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_FLAG_FIRST_PAIR_POST_MAILBOX_SAME_LOCK,
 		"finish preserves samples but leaves whole-run completion unpublished");
 	destroy_fixture();
 }
@@ -247,6 +294,10 @@ static void guard_failure_case(void)
 	check(!crystalhd_fw_research_observer_arm(&command_context, 37,
 		fw.cmd, &observer, &result), "fault case arms");
 	begin_pending();
+	post_mailbox_locked(&fw);
+	check(result.sample_count == 1 && result.sample_flags ==
+		CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_FLAG_FIRST_PAIR_POST_MAILBOX_SAME_LOCK,
+		"later-fault case first publishes a complete provenance pair internally");
 	complete_during_cpudma = true;
 	crystalhd_fw_research_command_posted(&hardware, &fw);
 	fw.rsp[0] = fw.cmd[0];
@@ -256,10 +307,22 @@ static void guard_failure_case(void)
 		&observer, &fw, BC_STS_SUCCESS) < 0,
 		"constituent-read guard change rejects observation");
 	check(result.attempted && result.status && !result.sample_count &&
-		!result.read_complete && !result.host_intr_valid,
+		!result.read_complete && !result.host_intr_valid &&
+		!result.sample_flags,
 		"refusal publishes no partial raw sample");
 	check(!forbidden_reads, "guard failure never broadens register surface");
 	destroy_fixture();
+}
+
+static void *complete_after_mailbox_unlock(void *unused)
+{
+	(void)unused;
+	atomic_store(&completion_thread_started, true);
+	assert(!pthread_mutex_lock(&hardware.lock));
+	hardware.fwcmd_pending = false;
+	atomic_store(&completion_thread_done, true);
+	assert(!pthread_mutex_unlock(&hardware.lock));
+	return NULL;
 }
 
 static void completion_gap_case(void)
@@ -267,16 +330,34 @@ static void completion_gap_case(void)
 	struct crystalhd_fw_research_command_observation result;
 	struct crystalhd_fw_command_observer observer;
 	BC_FW_CMD fw = { .cmd = { eCMD_C011_INIT, 1, 64 } };
+	pthread_t completion;
+	unsigned long flags;
 
 	reset_fixture();
 	check(!crystalhd_fw_research_observer_arm(&command_context, 37,
 		fw.cmd, &observer, &result), "completion-gap case arms");
 	begin_pending();
-	/* Arm is readiness call 1; call 8 is before the second SDRAM read. */
-	complete_at_ready_call = 8;
+	spin_lock_irqsave(&hardware.lock, flags);
+	mailbox_posted = true;
+	mailbox_lock_epoch = active_lock_epoch;
+	assert(!pthread_create(&completion, NULL,
+		complete_after_mailbox_unlock, NULL));
+	while (!atomic_load(&completion_thread_started))
+		sched_yield();
+	crystalhd_fw_research_command_posted_locked(&hardware, &fw);
+	check(!atomic_load(&completion_thread_done) && result.sample_count == 1 &&
+		reads == 2,
+		"ordinary completion cannot overtake the mailbox-same-lock pair");
+	spin_unlock_irqrestore(&hardware.lock, flags);
+	assert(!pthread_join(completion, NULL));
+	check(atomic_load(&completion_thread_done),
+		"ordinary completion resumes after the mailbox lock is released");
 	crystalhd_fw_research_command_posted(&hardware, &fw);
 	check(result.sample_count == 1 && !observer.hook_status,
-		"completion between constituent reads retains only the complete pair");
+		"completion before continuation retains the mailbox-same-lock pair only");
+	check(result.sample_flags ==
+		CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_FLAG_FIRST_PAIR_POST_MAILBOX_SAME_LOCK,
+		"complete earliest pair carries explicit same-lock provenance");
 	fw.rsp[0] = fw.cmd[0];
 	fw.rsp[1] = fw.cmd[1];
 	end_pending();
@@ -296,7 +377,7 @@ static void identity_and_default_cases(void)
 	BC_FW_CMD fw = { .cmd = { eCMD_C011_INIT, 1, 64 } };
 
 	reset_fixture();
-	crystalhd_fw_research_command_posted(&hardware, &fw);
+	post_mailbox(&fw);
 	check(!reads, "default-unarmed hook performs no register access");
 	check(crystalhd_fw_research_observer_arm(&command_context, 37,
 		wrong.cmd, &observer, &result) == -EINVAL &&
@@ -313,12 +394,26 @@ static void identity_and_default_cases(void)
 	begin_pending();
 	wrong.cmd[1] = 1;
 	wrong.cmd[2] = 65;
-	crystalhd_fw_research_command_posted(&hardware, &wrong);
+	post_mailbox(&wrong);
 	end_pending();
 	check(crystalhd_fw_research_observer_finish(&command_context,
-		&observer, &wrong, BC_STS_SUCCESS) < 0 && !result.sample_count,
+		&observer, &wrong, BC_STS_SUCCESS) < 0 && !result.sample_count &&
+		!result.sample_flags,
 		"changed frozen request is rejected without a register read");
 	check(!reads && !forbidden_reads, "identity refusal is device-free");
+	destroy_fixture();
+
+	reset_fixture();
+	check(!crystalhd_fw_research_observer_arm(&command_context, 37,
+		fw.cmd, &observer, &result), "missing locked phase case arms");
+	begin_pending();
+	mailbox_posted = true;
+	crystalhd_fw_research_command_posted(&hardware, &fw);
+	end_pending();
+	check(crystalhd_fw_research_observer_finish(&command_context,
+		&observer, &fw, BC_STS_SUCCESS) < 0 && !reads &&
+		!result.sample_count && !result.sample_flags,
+		"unlocked phase cannot fabricate a missing mailbox-same-lock sample");
 	destroy_fixture();
 }
 

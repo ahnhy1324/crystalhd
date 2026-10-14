@@ -135,10 +135,11 @@ static void usage(FILE *stream)
 	      "followed. Equal brackets do not certify freshness, object lifetime,\n"
 	      "atomic coherence, queue validity or independent fetch-error detection.\n"
 	      "Command-observation samples only fixed CPUDMA/SDRAM status levels\n"
-	      "during one exact fresh INIT, optionally reads host interrupt status\n"
-	      "once, then uses the same five-word bracketed boundary reader. It does\n"
-	      "not read mailbox data/status or an in-flight command packet and does\n"
-	      "not establish visibility, ownership, a frame generation or a lease.\n"
+	      "during one exact fresh INIT. Its first pair is read in the mailbox-post\n"
+	      "lock interval; later pairs retain the same finite total budget. It may\n"
+	      "read host interrupt status once, then uses the same five-word boundary.\n"
+	      "It does not read mailbox data/status or an in-flight command packet and\n"
+	      "does not establish visibility, ownership, a frame generation or a lease.\n"
 	      "Clock-state reads three fixed control registers after verified INIT\n"
 	      "and OPEN, with no clock/reset writes. All bit patterns remain raw;\n"
 	      "completed reads do not certify fetch errors or atomic coherence.\n"
@@ -1106,7 +1107,8 @@ static bool command_observation_result_valid(
 	if (!success) {
 		const struct crystalhd_fw_research_command_sample zero = { 0 };
 
-		if (observation->sample_count || observation->header_matches ||
+		if (observation->sample_flags || observation->sample_count ||
+		    observation->header_matches ||
 		    observation->host_intr_attempted || observation->host_intr_valid ||
 		    observation->host_intr_arm_mbox0 || observation->host_intr_ns ||
 		    observation->response_words[0] || observation->response_words[1] ||
@@ -1129,6 +1131,8 @@ static bool command_observation_result_valid(
 	}
 	if (!observation->attempted || observation->status ||
 	    observation->generation != generation ||
+	    observation->sample_flags !=
+		CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_FLAG_FIRST_PAIR_POST_MAILBOX_SAME_LOCK ||
 	    !observation->sample_count || !observation->header_matches ||
 	    observation->request_words[2] !=
 		COMMAND_OBSERVATION_INIT_MEM_SIZE_MB ||
@@ -1685,7 +1689,9 @@ static void print_command_observation_result(
 		       (uint32_t)observation->host_intr_arm_mbox0);
 	else
 		fputs("null", stdout);
-	printf(",\"sample_count\":%" PRIu32 ",\"samples\":[",
+	printf(",\"sample_flags\":%" PRIu32
+	       ",\"sample_count\":%" PRIu32 ",\"samples\":[",
+	       (uint32_t)observation->sample_flags,
 	       (uint32_t)observation->sample_count);
 	for (i = 0; i < observation->sample_count; i++) {
 		const struct crystalhd_fw_research_command_sample *sample =
@@ -1702,14 +1708,20 @@ static void print_command_observation_result(
 	}
 	fputs("]},\"boundary_after_init\":", stdout);
 	print_heap_packet_sample(&result->boundary_after_init);
-	fputs(",\"scope\":{\"command\":\"fresh_init\",\"max_samples\":64,"
+	printf(",\"scope\":{\"command\":\"fresh_init\",\"max_samples\":64,"
+	      "\"first_pair_post_mailbox_same_lock\":%s,\"remaining_pairs_relock\":%s,"
 	      "\"mailbox_data_or_status_read\":false,\"in_flight_packet_read\":false,"
 	      "\"avd_cpu_status_read\":false,\"action_register_access\":false,"
 	      "\"caller_selected_address\":false,\"queue_mutation\":false,"
 	      "\"ppb_retention\":false,\"ordinary_irq_authoritative\":true,"
 	      "\"runtime_transfer_established\":false,\"cross_cpu_visibility_established\":false,"
 	      "\"physical_generation_established\":false,\"source_lease_established\":false}}\n",
-	      stdout);
+	      observation->sample_flags ==
+		CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_FLAG_FIRST_PAIR_POST_MAILBOX_SAME_LOCK ?
+	      "true" : "false",
+	      observation->sample_flags ==
+		CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_FLAG_FIRST_PAIR_POST_MAILBOX_SAME_LOCK ?
+	      "true" : "false");
 }
 
 int main(int argc, char **argv)

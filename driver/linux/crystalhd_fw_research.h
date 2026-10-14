@@ -7,13 +7,24 @@ int crystalhd_fw_research_init(void);
 void crystalhd_fw_research_cleanup(void);
 /* Metadata only; returns no adapter reference and performs no hardware I/O. */
 int crystalhd_fw_research_generation(u64 *generation);
-/* Called only after Flea has posted the exact command mailbox.  An unarmed
- * observer returns immediately; the ordinary IRQ/reply path remains the sole
- * command-completion authority.
+/* The locked hook is called immediately after Flea writes the mailbox in that
+ * same hw->lock interval.  It captures at most the first fixed status pair;
+ * the unlocked hook consumes the remainder of the same finite budget.  An
+ * unarmed observer returns immediately and the ordinary IRQ/reply path remains
+ * the sole command-completion authority.
  */
+void crystalhd_fw_research_command_posted_locked(struct crystalhd_hw *hw,
+						 const BC_FW_CMD *fw_cmd);
 void crystalhd_fw_research_command_posted(struct crystalhd_hw *hw,
 					  const BC_FW_CMD *fw_cmd);
 #else
+static inline void crystalhd_fw_research_command_posted_locked(
+	struct crystalhd_hw *hw, const BC_FW_CMD *fw_cmd)
+{
+	(void)hw;
+	(void)fw_cmd;
+}
+
 static inline void crystalhd_fw_research_command_posted(
 	struct crystalhd_hw *hw, const BC_FW_CMD *fw_cmd)
 {

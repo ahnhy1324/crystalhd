@@ -41,6 +41,7 @@ static unsigned heap_fault_at, heap_fault_kind, heap_mutation, heap_stage, heap_
 static uint32_t heap_roots[2], heap_bases[2], heap_extent, heap_owned, heap_header[5], heap_slots[2];
 static uint32_t heap_bad_root, heap_bad_value;
 static unsigned command_observation_mutation;
+static bool legacy_command_observation_reserved_zero;
 static unsigned clock_fault_at, clock_fault_kind, clock_mutation, clock_stage, clock_word;
 static uint32_t clock_values[2][3];
 static unsigned uart_fault_at, uart_fault_kind, uart_mutation, uart_stage, uart_word;
@@ -707,6 +708,8 @@ static void make_command_observation_result(
     make_result(&result->control);
     observation = &result->in_flight;
     observation->attempted = observation->read_complete = 1;
+    observation->sample_flags =
+        CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_FLAG_FIRST_PAIR_POST_MAILBOX_SAME_LOCK;
     observation->generation = metadata.generation;
     observation->request_words[0] = result->control.replies[0].command;
     observation->request_words[1] = result->control.replies[0].sequence;
@@ -735,8 +738,28 @@ static void make_command_observation_result(
     case 6: observation->reserved[0] = 1; break;
     case 7: result->boundary_after_init.root_after ^= 4; break;
     case 8: observation->request_words[2]++; break;
+    case 11: observation->sample_flags = 0; break;
+    case 12: observation->sample_flags |= 2; break;
     default: CHECK(false);
     }
+}
+
+static bool legacy_command_observation_reserved_is_zero(
+    const struct crystalhd_fw_research_command_observation_result *result)
+{
+    /* The 5cd2 layout called these same four words reserved[].  Therefore a
+     * new record's provenance bit makes the old validator reject it, while a
+     * zero bit models an old record that the new validator must reject.
+     */
+    uint32_t legacy_reserved[4];
+    unsigned i;
+
+    memcpy(legacy_reserved, &result->in_flight.sample_flags,
+           sizeof(legacy_reserved));
+    for (i = 0; i < 4; i++)
+        if (legacy_reserved[i])
+            return false;
+    return true;
 }
 
 static void make_clock_result(struct crystalhd_fw_research_clock_result *result)
@@ -1119,7 +1142,10 @@ int probe_ioctl(int fd, unsigned long command, ...)
         submitted.version = 1; submitted.size = sizeof(result->control);
         submitted.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
         if (run_error) { errno = run_error; return -1; }
-        make_command_observation_result(result); return 0;
+        make_command_observation_result(result);
+        legacy_command_observation_reserved_zero =
+            legacy_command_observation_reserved_is_zero(result);
+        return 0;
     }
     if (command == CRYSTALHD_FW_RESEARCH_RUN_CLOCK) {
         struct crystalhd_fw_research_clock_result *result = argument;
@@ -1228,6 +1254,7 @@ static void reset(void)
     heap_extent = 0x100000; heap_owned = 1; heap_bad_root = heap_bad_value = 0;
     memset(heap_header, 0, sizeof(heap_header)); memset(heap_slots, 0, sizeof(heap_slots));
     command_observation_mutation = 0;
+    legacy_command_observation_reserved_zero = false;
     clock_fault_at = clock_fault_kind = clock_mutation = clock_stage = clock_word = 0;
     memset(clock_values, 0, sizeof(clock_values));
     uart_fault_at = uart_fault_kind = uart_mutation = uart_stage = uart_word = 0;
@@ -1348,12 +1375,15 @@ static void test_command_observation(void)
           !state_runs && !controller_runs && !image_runs && !packet_runs &&
           !heap_runs && !clock_runs && !uart_runs && !crypto_runs);
     CHECK(strstr(output, "\"command_observation\":true") &&
+          strstr(output, "\"sample_flags\":1") &&
           strstr(output, "\"sample_count\":1") &&
           strstr(output, "\"cpudma_active\":15") &&
           strstr(output, "\"sdram_busy\":1") &&
           strstr(output, "\"arm_mbox0\":65536") &&
           strstr(output, "\"mailbox_data_or_status_read\":false") &&
           strstr(output, "\"ordinary_irq_authoritative\":true"));
+    /* New module -> old CLI: the same word was reserved and must be zero. */
+    CHECK(!legacy_command_observation_reserved_zero);
     for (i = 1; i <= 8; i++) {
         reset(); command_observation_mutation = i;
         CHECK(invoke(command_observation_args) == 1 &&
@@ -1365,9 +1395,21 @@ static void test_command_observation(void)
           !strstr(errors, "Invalid command-observation result") &&
           strstr(output, "\"status\":-11") &&
           strstr(output, "\"attempted\":false") &&
+          strstr(output, "\"sample_flags\":0") &&
+          strstr(output, "\"first_pair_post_mailbox_same_lock\":false") &&
+          strstr(output, "\"remaining_pairs_relock\":false") &&
           strstr(output, "\"sample_count\":0"));
     reset(); command_observation_mutation = 10;
     CHECK(invoke(command_observation_args) == 1 && !output[0] &&
+          strstr(errors, "Invalid command-observation result"));
+    reset(); command_observation_mutation = 11;
+    /* Old module -> new CLI: structurally valid old success lacks provenance. */
+    CHECK(invoke(command_observation_args) == 1 && !output[0] &&
+          legacy_command_observation_reserved_zero &&
+          strstr(errors, "Invalid command-observation result"));
+    reset(); command_observation_mutation = 12;
+    CHECK(invoke(command_observation_args) == 1 && !output[0] &&
+          !legacy_command_observation_reserved_zero &&
           strstr(errors, "Invalid command-observation result"));
     reset(); run_error = EINTR;
     CHECK(invoke(command_observation_args) == 1 &&

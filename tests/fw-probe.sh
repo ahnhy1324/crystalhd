@@ -338,6 +338,8 @@ _Static_assert(sizeof(struct crystalhd_fw_research_command_observation) == 1624,
 _Static_assert(offsetof(struct crystalhd_fw_research_command_observation, generation) == 16, "command generation");
 _Static_assert(offsetof(struct crystalhd_fw_research_command_observation, request_words) == 24, "command request");
 _Static_assert(offsetof(struct crystalhd_fw_research_command_observation, host_intr_ns) == 64, "host interrupt clock");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_observation, sample_flags) == 72, "command provenance flags");
+_Static_assert(offsetof(struct crystalhd_fw_research_command_observation, reserved) == 76, "command reserved tail");
 _Static_assert(offsetof(struct crystalhd_fw_research_command_observation, samples) == 88, "command samples");
 _Static_assert(sizeof(struct crystalhd_fw_research_command_observation_result) == 3248, "command result");
 _Static_assert(offsetof(struct crystalhd_fw_research_command_observation_result, control) == 16, "command control");
@@ -468,8 +470,11 @@ command = commands[0]
 assert set(command) == {"version", "command_observation", "control", "in_flight",
                        "boundary_after_init", "scope"}
 assert command["version"] == 1 and command["command_observation"] is True
+assert command["in_flight"]["sample_flags"] == 1
 assert command["in_flight"]["sample_count"] == 1
 assert len(command["in_flight"]["samples"]) == 1
+assert command["scope"]["first_pair_post_mailbox_same_lock"] is True
+assert command["scope"]["remaining_pairs_relock"] is True
 assert command["scope"]["mailbox_data_or_status_read"] is False
 assert command["scope"]["in_flight_packet_read"] is False
 assert command["scope"]["ordinary_irq_authoritative"] is True
