@@ -2,12 +2,22 @@
 
 This is the complete inventory of configuration surfaces read by the current
 production driver, library, VA-API backend, launchers, GStreamer element and
-`crystalhd-play`. It is not a new configuration-file format, preset system or
-settings manager. Unset controls retain the existing behavior.
+`crystalhd-play`. Unset controls retain the existing behavior.
 
-The strict schema proposed for a future, explicit headless manager is defined
-separately in [CONFIGURATION-SCHEMA.md](CONFIGURATION-SCHEMA.md). Production
-components do not read that schema today.
+The additive, read-only `crystalhd-config` utility validates and explains the
+strict schema defined in [CONFIGURATION-SCHEMA.md](CONFIGURATION-SCHEMA.md).
+Production components do not read those files, so installing or invoking the
+utility does not change their behavior. For example:
+
+```sh
+crystalhd-config validate
+crystalhd-config show-effective
+crystalhd-config explain vaapi.h264.mode --format json
+```
+
+Only the empty compatibility preset named `default` is currently provided.
+The utility does not write configuration, launch an application, reload a
+module, source the legacy `chromium.conf`, or access CrystalHD hardware.
 
 Safety labels mean:
 

@@ -23,6 +23,22 @@ cleanup()
 }
 trap cleanup EXIT HUP INT TERM
 
+# The independently exposed configuration-tool target must also create public
+# parent directories under a restrictive caller umask.
+config_stage="$stage_dir/config-only"
+(
+    umask 077
+    make -C "$repo_dir" DESTDIR="$config_stage" install-config
+)
+test "$(stat -c '%a' "$config_stage/usr")" = 755
+test "$(stat -c '%a' "$config_stage/usr/bin")" = 755
+test "$(stat -c '%a' "$config_stage/usr/bin/crystalhd-config")" = 755
+"$config_stage/usr/bin/crystalhd-config" validate \
+    --no-system-config --no-user-config --ignore-environment >/dev/null
+make -C "$repo_dir" DESTDIR="$config_stage" uninstall-config
+make -C "$repo_dir" DESTDIR="$config_stage" uninstall-config
+test ! -e "$config_stage/usr/bin/crystalhd-config"
+
 # A restrictive caller umask must not hide installed components from ordinary
 # users. Owner-only checks would miss inaccessible directories in a root install.
 (
@@ -129,10 +145,13 @@ test "$discovered_library" = "$stage_dir/usr/lib/libcrystalhd.so.3"
 echo "staged GStreamer plugin and libcrystalhd discovery passed"
 test -x "$stage_dir/usr/bin/crystalhd-play"
 test -x "$stage_dir/usr/bin/crystalhd-check"
+test -x "$stage_dir/usr/bin/crystalhd-config"
 test -f "$stage_dir/usr/share/crystalhd/player.py"
 env -u GST_PLUGIN_PATH -u GST_PLUGIN_PATH_1_0 -u LD_LIBRARY_PATH \
     "$stage_dir/usr/bin/crystalhd-play" --help >/dev/null
 "$stage_dir/usr/bin/crystalhd-check" --help >/dev/null
+"$stage_dir/usr/bin/crystalhd-config" show-effective \
+    --no-system-config --no-user-config --ignore-environment >/dev/null
 va_driver_dir=$(pkg-config --variable=libdir libva)/dri
 test -f "$stage_dir$va_driver_dir/crystalhd_drv_video.so"
 test ! -e "$stage_dir/usr/bin/crystalhd-chromium"
@@ -140,7 +159,8 @@ test ! -e "$stage_dir/usr/bin/setup-crystalhd-chrome-default"
 
 for installed_helper in \
     "$stage_dir/usr/bin/crystalhd-play" \
-    "$stage_dir/usr/bin/crystalhd-check"; do
+    "$stage_dir/usr/bin/crystalhd-check" \
+    "$stage_dir/usr/bin/crystalhd-config"; do
     if grep -F "$repo_dir" "$installed_helper" >/dev/null; then
         echo "Source-tree path leaked into $installed_helper" >&2
         exit 1
