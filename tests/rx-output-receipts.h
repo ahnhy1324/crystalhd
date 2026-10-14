@@ -94,6 +94,13 @@ struct DmaExpectation {
     uint32_t uv_done_words = 0;
 };
 
+struct JoinedExpectation {
+    uint64_t raw_firmware_timestamp = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    JoinedReceipt *receipt = nullptr;
+};
+
 struct DeviceOps {
     void *opaque = nullptr;
     int (*open_device)(void *, const char *, int) = nullptr;
@@ -140,7 +147,8 @@ public:
     bool Arm();
     bool Record(const HostReceipt &receipt);
     bool Finish(bool native_run_ok,
-                const DmaExpectation *preserve_failed_evidence = nullptr);
+                const DmaExpectation *preserve_failed_evidence = nullptr,
+                const JoinedExpectation *joined_expectation = nullptr);
     bool AuditDma(unsigned width, unsigned height, uint32_t y_done_words,
                   uint32_t uv_done_words, DriverDmaAudit *audit,
                   Failure *failure) const;

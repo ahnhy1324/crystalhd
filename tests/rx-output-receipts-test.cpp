@@ -560,7 +560,8 @@ int main()
     char invalid_failure[512], semantic_failure[512], empty_failure[512];
     char eos_only_failure[512], partial[512], raced[512];
     char publish_race[512], recovered[512], multi[512], overflow[512];
-    char arm_reserved[512], arm_unknown[512];
+    char arm_reserved[512], arm_unknown[512], expectation_failure[512];
+    char expectation_ambiguous[512];
     std::snprintf(output, sizeof(output), "%s/receipts.tsv", directory);
     std::snprintf(native_failure, sizeof(native_failure), "%s/native-fail.tsv",
                   directory);
@@ -585,6 +586,10 @@ int main()
                   directory);
     std::snprintf(arm_unknown, sizeof(arm_unknown), "%s/arm-unknown.tsv",
                   directory);
+    std::snprintf(expectation_failure, sizeof(expectation_failure),
+                  "%s/expectation-failure.tsv", directory);
+    std::snprintf(expectation_ambiguous, sizeof(expectation_ambiguous),
+                  "%s/expectation-ambiguous.tsv", directory);
 
     {
         FakeDevice fake;
@@ -592,9 +597,17 @@ int main()
         DeviceOps ops = fake.Ops();
         Probe probe(&ops);
         HostReceipt host = Host(fake.records[0]);
+        JoinedReceipt expected_joined;
+        JoinedExpectation joined_expected;
+        joined_expected.raw_firmware_timestamp = 5U;
+        joined_expected.width = 640U;
+        joined_expected.height = 360U;
+        joined_expected.receipt = &expected_joined;
         Check(probe.Prepare(output, 1) && !Exists(output) && probe.Arm() &&
               probe.generation() == 7 && probe.run_id() == 9 &&
-              probe.Record(host) && probe.Finish(true) && fake.valid &&
+              probe.Record(host) &&
+              probe.Finish(true, nullptr, &joined_expected) &&
+              expected_joined.driver.firmware_timestamp == 5U && fake.valid &&
               fake.events == "OASRC" && probe.host_count() == 1 &&
               probe.driver_count() == 1 && probe.joined_count() == 1,
               "probe arms before the session boundary then seals, reads, closes and exports");
@@ -640,6 +653,44 @@ int main()
         Check(!collision.Prepare(output, 1) &&
               collision.failure() == Failure::Path,
               "an existing output is rejected before research-device open");
+    }
+    {
+        FakeDevice fake;
+        fake.records.push_back(Driver(0, 5, 10));
+        fake.records.push_back(Driver(1, 5, 11));
+        DeviceOps ops = fake.Ops();
+        Probe probe(&ops);
+        JoinedReceipt selected;
+        JoinedExpectation expectation;
+        expectation.raw_firmware_timestamp = 5U;
+        expectation.width = 640U;
+        expectation.height = 360U;
+        expectation.receipt = &selected;
+        Check(probe.Prepare(expectation_ambiguous, 2) && probe.Arm() &&
+              probe.Record(Host(fake.records[0])) &&
+              probe.Record(Host(fake.records[1])) &&
+              !probe.Finish(true, nullptr, &expectation) &&
+              probe.failure() == Failure::Ambiguous &&
+              !Exists(expectation_ambiguous),
+              "multiple joined timestamp/geometry matches fail as ambiguous before publication");
+    }
+    {
+        FakeDevice fake;
+        fake.records.push_back(Driver(0, 5, 10));
+        DeviceOps ops = fake.Ops();
+        Probe probe(&ops);
+        JoinedReceipt selected;
+        JoinedExpectation expectation;
+        expectation.raw_firmware_timestamp = 6U;
+        expectation.width = 640U;
+        expectation.height = 360U;
+        expectation.receipt = &selected;
+        Check(probe.Prepare(expectation_failure, 1) && probe.Arm() &&
+              probe.Record(Host(fake.records[0])) &&
+              !probe.Finish(true, nullptr, &expectation) &&
+              probe.failure() == Failure::Unmatched &&
+              !Exists(expectation_failure),
+              "joined expectation failure prevents publication of a misleading passing artifact");
     }
     {
         FakeDevice fake;

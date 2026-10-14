@@ -18096,5 +18096,181 @@ class NativeActiveContextDynamicFixtureTests(unittest.TestCase):
             "standalone_mfd", "production_support"})
 
 
+class NativeGenerationObserverHaltRefusalFixtureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.path = ROOT / "tests/fixtures/issue204/native-generation-observer-halt-refusal.json"
+
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate JSON key: " + key)
+                result[key] = value
+            return result
+
+        cls.capture = json.loads(cls.path.read_text(),
+                                 object_pairs_hook=unique_object)
+
+    def exact_keys(self, value, keys):
+        self.assertIs(type(value), dict)
+        self.assertEqual(set(value), set(keys))
+
+    def test_schema_provenance_hashes_and_sanitization(self):
+        capture = self.capture
+        self.exact_keys(capture, {"schema_version", "kind", "purpose", "probe",
+                                  "input", "architecture", "attempts",
+                                  "production_recovery", "scope"})
+        self.assertEqual((capture["schema_version"], capture["kind"]),
+                         (1, "native-generation-observer-halt-refusal"))
+        probe = capture["probe"]
+        self.exact_keys(probe, {"temporary_module_srcversion",
+                                "temporary_module_sha256",
+                                "source_library_sha256",
+                                "second_attempt_binary_sha256", "command",
+                                "results_outside_source_tree",
+                                "production_code_changed"})
+        self.assertTrue(probe["results_outside_source_tree"])
+        self.assertFalse(probe["production_code_changed"])
+        self.assertEqual(probe["command"],
+                         "LD_LIBRARY_PATH=$SOURCE_TREE/linux_lib/libcrystalhd $SOURCE_TREE/tests/library-drain-test --hardware $FIXTURE 180 30 1 --scaler-test 0 --capture-yuy2 $NEW_CAPTURE --observe-generation-bound --rx-output-receipts $NEW_RECEIPTS")
+        self.assertEqual(self.capture["input"], {
+            "generator": "tests/library-raw-frame.cpp:Issue204IntraLead",
+            "codec": "H264", "progressive": True, "width": 256,
+            "height": 96, "packets": 180, "bytes": 126823,
+            "sha256": "76680cf85767bbc78c89bf49a45aa5af7672dc956d7bcc4be3aa88abe17d1430",
+            "boundary_preparation":
+                "split-existing-AUD-with-original-NAL-order-unchanged"})
+        digest = re.compile(r"[0-9a-f]{64}")
+        commit = re.compile(r"[0-9a-f]{40}")
+        hashes = []
+
+        def collect(value, key=""):
+            if type(value) is dict:
+                for child_key, child in value.items():
+                    collect(child, child_key)
+            elif key.endswith("sha256"):
+                hashes.append(value)
+
+        collect(capture)
+        self.assertEqual(len(hashes), 19)
+        for value in hashes:
+            self.assertIsNotNone(digest.fullmatch(value))
+        attempts = capture["attempts"]
+        self.assertIsNotNone(commit.fullmatch(attempts["eight_sample"]["probe_commit"]))
+        self.assertIsNotNone(commit.fullmatch(
+            attempts["thirty_two_sample"]["probe_commit"]))
+        self.assertNotIn("binary_sha256", attempts["eight_sample"])
+        self.assertEqual(attempts["thirty_two_sample"]["binary_sha256"],
+                         probe["second_attempt_binary_sha256"])
+        serialized = self.path.read_text()
+        for forbidden in ("/home/", "/tmp/", "/var/tmp/", "172.30.",
+                          "run-dir="):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_both_attempts_refuse_before_extension_and_publish_no_receipt(self):
+        source = self.capture["input"]
+        attempts = self.capture["attempts"]
+        expected = {
+            "eight_sample": (8, 139, "64001414", "00000000", "86001390"),
+            "thirty_two_sample": (32, 475, "a4001400", "80000000",
+                                  "8600132b")}
+        for name, attempt in attempts.items():
+            polls, reads, pre_status, pre_debug, final_status = expected[name]
+            self.assertEqual((attempt["halt_poll_budget"],
+                              attempt["marker_gate"], attempt["exact61_gate"],
+                              attempt["graph_result"]),
+                             (polls, "PASS", "PASS", "PASS"))
+            observer = attempt["observer"]
+            self.assertEqual((observer["failure"], observer["extension_executed"],
+                              observer["classified_result"],
+                              observer["classified_reason"]),
+                             ("Halt", False, "NOT-RUN",
+                              "active-context-halt-precondition"))
+            self.assertEqual((observer["register_reads"],
+                              observer["register_writes"],
+                              observer["memory_reads"], observer["halt_polls"]),
+                             (reads, 2, 0, polls))
+            self.assertEqual((observer["pre_halt_status"],
+                              observer["pre_halt_debug"],
+                              observer["trace"]["final_status"],
+                              observer["trace"]["final_debug"]),
+                             (pre_status, pre_debug, final_status, "80000000"))
+            self.assertEqual(observer["identity"], "7b010108")
+            self.assertTrue(int(observer["trace"]["final_status"], 16) &
+                            0x02000000)
+            self.assertTrue(int(observer["trace"]["final_debug"], 16) &
+                            0x80000000)
+            self.assertFalse(observer["route_restored"])
+            self.assertTrue(observer["module_recovery_required"])
+            partial = attempt["partial_capture"]
+            self.assertEqual((partial["frames"], partial["bytes"]),
+                             (60, 60 * source["width"] * source["height"] * 2))
+            self.assertEqual(partial["sha256"],
+                             "ef149993170f014bd4b2a9bf96d01eb5bfcdb4d5e36b8be4ea73b2e5b2604a1c")
+            self.assertFalse(partial["usable_as_success_evidence"])
+            self.assertFalse(attempt["receipt_tsv_published"])
+
+    def test_exact_trace_and_bounded_refusal_invariants(self):
+        architecture = self.capture["architecture"]
+        self.assertEqual(architecture, {
+            "reference": "ARCtangent-A4 Programmer's Reference",
+            "status_h_bit": "02000000", "status_h_meaning": "halted",
+            "debug_ld_bit": "80000000",
+            "debug_ld_meaning": "delayed-load-pending",
+            "program_counter_interpreted": False})
+        traces = {name: attempt["observer"]["trace"]
+                  for name, attempt in self.capture["attempts"].items()}
+        first = traces["eight_sample"]
+        self.assertEqual(first, {
+            "per_sample_values_available": False,
+            "all_status": None, "all_debug": None,
+            "final_status": "86001390", "final_debug": "80000000",
+            "elapsed_us": None})
+        second = traces["thirty_two_sample"]
+        elapsed = second["elapsed_us"]
+        self.assertEqual(elapsed, [
+            113, 1392, 2671, 3877, 5163, 6449, 7800, 9082,
+            10367, 11651, 12929, 14197, 15467, 16809, 18184, 19877,
+            21141, 22429, 23946, 25214, 26760, 28019, 29296, 30549,
+            31867, 33133, 34439, 35828, 37125, 38449, 39803, 41099])
+        self.assertTrue(second["per_sample_values_available"])
+        self.assertEqual((second["all_status"], second["final_status"],
+                          second["all_debug"], second["final_debug"]),
+                         ("8600132b", "8600132b", "80000000", "80000000"))
+        self.assertEqual(len(elapsed), 32)
+        self.assertTrue(all(earlier < later
+                            for earlier, later in zip(elapsed, elapsed[1:])))
+        self.assertTrue(int(second["all_status"], 16) & 0x02000000)
+        self.assertTrue(int(second["all_debug"], 16) & 0x80000000)
+
+    def test_recovery_and_scope_make_no_capability_or_checklist_claim(self):
+        recovery = self.capture["production_recovery"]
+        self.assertEqual(recovery["module_srcversion"],
+                         "0121A57354B130DF8F3089C")
+        self.assertTrue(recovery["performed_after_each_attempt"] and
+                        recovery["expected_firmware_command_timeout_during_failed_halt"] and
+                        recovery["device_idle_after_controls"])
+        self.assertFalse(recovery["aer_or_kernel_oops"])
+        for codec, expected in (("h264", (180,
+                "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e")),
+                                ("mpeg2", (30,
+                "aa4bf5cdc406edf6c334152e610f1d112ada505790c5472d0d884a7fc3612e7f"))):
+            control = recovery[codec]
+            self.assertEqual((control["frames"], control["input_sha256"]),
+                             expected)
+            self.assertTrue(control["firmware_eos"] and
+                            control["cleanup_pass"])
+        scope = self.capture["scope"]
+        self.assertEqual({key for key, value in scope.items() if value}, {
+            "halt_refusal_observed",
+            "halted_and_delayed_load_pending_observed"})
+        self.assertEqual({key for key, value in scope.items() if not value}, {
+            "generation_extension_executed", "outer_arm_source_join_observed",
+            "host_driver_generation_receipt_observed", "source_generation_proven",
+            "physical_source_lease_proven", "all_consumer_completion_proven",
+            "checklist_or_capability_claim"})
+
+
 if __name__ == "__main__":
     unittest.main()

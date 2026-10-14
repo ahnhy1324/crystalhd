@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "kind": "native-generation-observer-halt-refusal",
+  "purpose": "Preserve two bounded native refusals where ARC STATUS.H was set but DEBUG.LD (delayed-load pending) did not clear, so the generation extension did not execute.",
+  "probe": {
+    "temporary_module_srcversion": "664CAF5D5A36EA972A00DAF",
+    "temporary_module_sha256": "7a91919f2ba39bf155573ffd14962a2c768be5aab9630ff70f68a8c1571ef810",
+    "source_library_sha256": "e5455cb7cd653ba8d907246a81a1a56e9947ffe88b6ecf67c556a3d1082493d4",
+    "second_attempt_binary_sha256": "accda1fd4d123f70383ad06718f959ec997c073917c39908baa67e2064d33678",
+    "command": "LD_LIBRARY_PATH=$SOURCE_TREE/linux_lib/libcrystalhd $SOURCE_TREE/tests/library-drain-test --hardware $FIXTURE 180 30 1 --scaler-test 0 --capture-yuy2 $NEW_CAPTURE --observe-generation-bound --rx-output-receipts $NEW_RECEIPTS",
+    "results_outside_source_tree": true,
+    "production_code_changed": false
+  },
+  "input": {
+    "generator": "tests/library-raw-frame.cpp:Issue204IntraLead",
+    "codec": "H264",
+    "progressive": true,
+    "width": 256,
+    "height": 96,
+    "packets": 180,
+    "bytes": 126823,
+    "sha256": "76680cf85767bbc78c89bf49a45aa5af7672dc956d7bcc4be3aa88abe17d1430",
+    "boundary_preparation": "split-existing-AUD-with-original-NAL-order-unchanged"
+  },
+  "architecture": {
+    "reference": "ARCtangent-A4 Programmer's Reference",
+    "status_h_bit": "02000000",
+    "status_h_meaning": "halted",
+    "debug_ld_bit": "80000000",
+    "debug_ld_meaning": "delayed-load-pending",
+    "program_counter_interpreted": false
+  },
+  "attempts": {
+    "eight_sample": {
+      "probe_commit": "9dc38f4dab9df84c204125cfa0aa8476377a98d9",
+      "halt_poll_budget": 8,
+      "marker_gate": "PASS",
+      "exact61_gate": "PASS",
+      "graph_result": "PASS",
+      "observer": {
+        "failure": "Halt",
+        "extension_executed": false,
+        "classified_result": "NOT-RUN",
+        "classified_reason": "active-context-halt-precondition",
+        "register_reads": 139,
+        "register_writes": 2,
+        "memory_reads": 0,
+        "pre_halt_status": "64001414",
+        "identity": "7b010108",
+        "pre_halt_debug": "00000000",
+        "halt_polls": 8,
+        "trace": {
+          "per_sample_values_available": false,
+          "all_status": null,
+          "all_debug": null,
+          "final_status": "86001390",
+          "final_debug": "80000000",
+          "elapsed_us": null
+        },
+        "route_restored": false,
+        "module_recovery_required": true
+      },
+      "partial_capture": {
+        "frames": 60,
+        "bytes": 2949120,
+        "sha256": "ef149993170f014bd4b2a9bf96d01eb5bfcdb4d5e36b8be4ea73b2e5b2604a1c",
+        "usable_as_success_evidence": false
+      },
+      "receipt_tsv_published": false,
+      "artifacts": {
+        "stdout_sha256": "0affe610b45a09809ee3da39d9ca2eb80d5bf92cc9bd27268c8d55d91a2a94ea",
+        "stderr_sha256": "5d5c32ea60790cea201bfff17d687c24ef51ebf04379c062192e3cfa987b4311",
+        "kernel_log_sha256": "70469ecb960438651f9994e3175e1ee85dd49e16845b5536a7fbce73c5c4ecab",
+        "recovery_h264_stdout_sha256": "c5c6cc239e67021b94e6d762a386952d191b7b006ca61c9f013ef7b18aac3ba7",
+        "recovery_mpeg2_stdout_sha256": "92ff8f71f44019813291c4142a441e876ab8236c7bfe2c08a0b3929121ad399d"
+      }
+    },
+    "thirty_two_sample": {
+      "probe_commit": "7584cd5efa75c0f050a31465bb3802b2577b2568",
+      "binary_sha256": "accda1fd4d123f70383ad06718f959ec997c073917c39908baa67e2064d33678",
+      "halt_poll_budget": 32,
+      "marker_gate": "PASS",
+      "exact61_gate": "PASS",
+      "graph_result": "PASS",
+      "observer": {
+        "failure": "Halt",
+        "extension_executed": false,
+        "classified_result": "NOT-RUN",
+        "classified_reason": "active-context-halt-precondition",
+        "register_reads": 475,
+        "register_writes": 2,
+        "memory_reads": 0,
+        "pre_halt_status": "a4001400",
+        "identity": "7b010108",
+        "pre_halt_debug": "80000000",
+        "halt_polls": 32,
+        "trace": {
+          "per_sample_values_available": true,
+          "all_status": "8600132b",
+          "all_debug": "80000000",
+          "final_status": "8600132b",
+          "final_debug": "80000000",
+          "elapsed_us": [113, 1392, 2671, 3877, 5163, 6449, 7800, 9082, 10367, 11651, 12929, 14197, 15467, 16809, 18184, 19877, 21141, 22429, 23946, 25214, 26760, 28019, 29296, 30549, 31867, 33133, 34439, 35828, 37125, 38449, 39803, 41099]
+        },
+        "route_restored": false,
+        "module_recovery_required": true
+      },
+      "partial_capture": {
+        "frames": 60,
+        "bytes": 2949120,
+        "sha256": "ef149993170f014bd4b2a9bf96d01eb5bfcdb4d5e36b8be4ea73b2e5b2604a1c",
+        "usable_as_success_evidence": false
+      },
+      "receipt_tsv_published": false,
+      "artifacts": {
+        "stdout_sha256": "24a3dc781bf9581307c482c85d1e9f0c1f00eb07e672fb4e9cc81df97fe00fff",
+        "stderr_sha256": "0334cfe321b67234d05143d3c428e2b932bdf5d13a3212ca38079c769e7b6a99",
+        "kernel_log_sha256": "5ade13bda4021b42fb9566bee2ffc31782d02196636d30b835cf555ba8913537",
+        "recovery_h264_stdout_sha256": "0e1bd005bc2af9deab9553536d3a58d5e4e3edd885fe945b9ef674a65cd4e7a0",
+        "recovery_mpeg2_stdout_sha256": "bdf7ecc5d332c10ae4219ee6a4ff6693eb02fae5a53808e40586e380cdeb57aa"
+      }
+    }
+  },
+  "production_recovery": {
+    "module_srcversion": "0121A57354B130DF8F3089C",
+    "performed_after_each_attempt": true,
+    "h264": {
+      "input_sha256": "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e",
+      "frames": 180,
+      "firmware_eos": true,
+      "cleanup_pass": true
+    },
+    "mpeg2": {
+      "input_sha256": "aa4bf5cdc406edf6c334152e610f1d112ada505790c5472d0d884a7fc3612e7f",
+      "frames": 30,
+      "firmware_eos": true,
+      "cleanup_pass": true
+    },
+    "expected_firmware_command_timeout_during_failed_halt": true,
+    "aer_or_kernel_oops": false,
+    "device_idle_after_controls": true
+  },
+  "scope": {
+    "halt_refusal_observed": true,
+    "halted_and_delayed_load_pending_observed": true,
+    "generation_extension_executed": false,
+    "outer_arm_source_join_observed": false,
+    "host_driver_generation_receipt_observed": false,
+    "source_generation_proven": false,
+    "physical_source_lease_proven": false,
+    "all_consumer_completion_proven": false,
+    "checklist_or_capability_claim": false
+  }
+}
