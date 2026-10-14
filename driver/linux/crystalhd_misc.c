@@ -360,7 +360,7 @@ void *bc_kern_dma_alloc(struct crystalhd_adp *adp, uint32_t sz,
 void bc_kern_dma_free(struct crystalhd_adp *adp, uint32_t sz, void *ka,
 		      dma_addr_t phy_addr)
 {
-	if (!adp || !ka || !sz || !phy_addr) {
+	if (!adp || !ka || !sz) {
 		printk(KERN_ERR "%s: Invalid arg\n", __func__);
 		return;
 	}

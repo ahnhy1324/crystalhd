@@ -64,13 +64,15 @@
 
 /*
 -- RxDMA Picture QStatus Mailbox.
--- RxDMA Picture Post Mailbox. < Write DDR address to this mailbox >
+-- RxDMA Picture Post Mailbox. The channel index is written here; the
+-- descriptor payload is written separately to firmware DRAM.
  */
 #define RX_DMA_PIC_QSTS_MBOX		BCHP_ARMCR4_BRIDGE_REG_MBOX_PCI2
 #define RX_POST_MAILBOX				BCHP_ARMCR4_BRIDGE_REG_MBOX_ARM2
 #define RX_POST_CONFIRM_SCRATCH		BCHP_ARMCR4_BRIDGE_REG_SCRATCH_5
 #define RX_START_SEQ_NUMBER			1
 #define INDICATE_TX_DONE_REG		BCHP_ARMCR4_BRIDGE_REG_SCRATCH_9
+#define FLEA_DECODER_CHANNEL_COUNT	4U
 
 /*
 -- At the end of the picture frame there is the Link's Y0 data

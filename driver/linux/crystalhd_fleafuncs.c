@@ -2142,6 +2142,8 @@ bool crystalhd_flea_check_input_full(struct crystalhd_hw *hw, uint32_t needed_sz
 BC_STATUS crystalhd_flea_fw_cmd_post_proc(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd)
 {
 	BC_STATUS sts = BC_STS_SUCCESS;
+	unsigned long flags;
+	uint32_t channel;
 	struct DecRspChannelStartVideo *st_rsp = NULL;
 	struct C011_TS_CMD				*pGenRsp = NULL;
 	struct DecRspChannelChannelOpen *pRsp  = NULL;
@@ -2150,13 +2152,31 @@ BC_STATUS crystalhd_flea_fw_cmd_post_proc(struct crystalhd_hw *hw, BC_FW_CMD *fw
 
 	switch (fw_cmd->cmd[0]) {
 		case eCMD_C011_DEC_CHAN_STREAM_OPEN:
-			hw->channelNum = pGenRsp->ulParams[2];
+			channel = pGenRsp->ulParams[2];
+			if (channel >= FLEA_DECODER_CHANNEL_COUNT) {
+				spin_lock_irqsave(&hw->lock, flags);
+				hw->fwcmd_poisoned = true;
+				spin_unlock_irqrestore(&hw->lock, flags);
+				dev_err(&hw->adp->pdev->dev,
+					"invalid Flea stream-open channel: %u\n", channel);
+				return BC_STS_IO_ERROR;
+			}
+			hw->channelNum = channel;
 
 			dev_dbg(&hw->adp->pdev->dev, "Snooped Stream Open Cmd For ChNo:%x\n", hw->channelNum);
 			break;
 		case eCMD_C011_DEC_CHAN_OPEN:
 			pRsp = (struct DecRspChannelChannelOpen *)pGenRsp;
-			hw->channelNum = pRsp->ChannelID;
+			channel = pRsp->ChannelID;
+			if (channel >= FLEA_DECODER_CHANNEL_COUNT) {
+				spin_lock_irqsave(&hw->lock, flags);
+				hw->fwcmd_poisoned = true;
+				spin_unlock_irqrestore(&hw->lock, flags);
+				dev_err(&hw->adp->pdev->dev,
+					"invalid Flea channel-open channel: %u\n", channel);
+				return BC_STS_IO_ERROR;
+			}
+			hw->channelNum = channel;
 
 			/* used in Flea to update the Tx Buffer stats */
 			hw->TxBuffInfoAddr = pRsp->transportStreamCaptureAddr;
@@ -2518,7 +2538,7 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	addr_64 desc_addr;
 	unsigned long rx_flags, hw_flags;
 	PIC_DELIVERY_HOST_INFO	PicDeliInfo = {0};
-	uint32_t BuffSzInDwords, pkt_tag;
+	uint32_t BuffSzInDwords, pkt_tag, channel;
 	BC_STATUS sts;
 
 	if (!hw || !rx_pkt || !rx_pkt->buffer) {
@@ -2527,6 +2547,11 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	}
 
 	dev = &hw->adp->pdev->dev;
+	channel = READ_ONCE(hw->channelNum);
+	if (channel >= FLEA_DECODER_CHANNEL_COUNT) {
+		dev_err(dev, "Flea RX channel out of range: %u\n", channel);
+		return BC_STS_IO_ERROR;
+	}
 
 	if (hw->rx_list_post_index >= DMA_ENGINE_CNT) {
 		dev_err(dev, "List Out Of bounds %x\n", hw->rx_list_post_index);
@@ -2552,7 +2577,7 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 		return BC_STS_BUSY;
 	}
 
-	if (!TEST_BIT(hw->PicQSts, hw->channelNum)) {
+	if (!TEST_BIT(hw->PicQSts, channel)) {
 		/* NO pictures available for this channel */
 		dev_dbg(dev, "No Picture Available for DMA\n");
 		spin_unlock_irqrestore(&hw->rx_lock, rx_flags);
@@ -2565,7 +2590,7 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	PicDeliInfo.RxSeqNumber = hw->RxSeqNum;
 	PicDeliInfo.HostDescMemLowAddr_Y = desc_addr.low_part;
 	PicDeliInfo.HostDescMemHighAddr_Y = desc_addr.high_part;
-	PicDeliInfo.ChannelID = hw->channelNum;
+	PicDeliInfo.ChannelID = channel;
 	if (rx_pkt->uv_phy_addr) {
 		/* Program the UV descriptor */
 		desc_addr.full_addr = rx_pkt->uv_phy_addr;
@@ -2606,16 +2631,16 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	rx_pkt->pkt_tag = pkt_tag;
 #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 	crystalhd_rx_receipt_reserve(hw, rx_pkt, hw->rx_list_post_index,
-				     hw->RxSeqNum, hw->channelNum, receipt_key);
+				     hw->RxSeqNum, channel, receipt_key);
 #endif
-	CLEAR_BIT(hw->PicQSts, hw->channelNum);
+	CLEAR_BIT(hw->PicQSts, channel);
 	hw->rx_list_sts[hw->rx_list_post_index] |= rx_waiting_y_intr;
 	if (rx_pkt->uv_phy_addr)
 		hw->rx_list_sts[hw->rx_list_post_index] |= rx_waiting_uv_intr;
 	hw->rx_list_post_index = (hw->rx_list_post_index + 1) % DMA_ENGINE_CNT;
 
 	crystalhd_rx_buffer_sync_for_device(hw->adp, rx_pkt->buffer);
-	hw->pfnWriteDevRegister(hw->adp, RX_POST_MAILBOX, hw->channelNum);
+	hw->pfnWriteDevRegister(hw->adp, RX_POST_MAILBOX, channel);
 	hw->RxSeqNum++;
 
 unlock:

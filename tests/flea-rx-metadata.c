@@ -339,7 +339,8 @@ static void reset(uint32_t list, uint32_t channel, uint64_t y, uint64_t uv,
     adapter.present = true;
     hardware = (struct crystalhd_hw){
         .adp = &adapter, .rx_list_post_index = list, .RxSeqNum = sequence,
-        .channelNum = channel, .PicQSts = (UINT32_C(1) << channel) | 0x100U,
+        .channelNum = channel,
+        .PicQSts = (channel < 32 ? (UINT32_C(1) << channel) : 0) | 0x100U,
         .rx_pkt_tag_seed = 0x70029070U, .FleaRxPicDelAddr = 0x00d30400U,
         .RxCaptureState = 1, .rx_actq = &active, .rx_freeq = &free_queue,
         .dev_started = true, .FleaPowerState = FLEA_PS_ACTIVE,
@@ -465,6 +466,16 @@ static void test_preconditions(void)
     inject_dma_fault = true;
     irq_enabled = initial_irq_enabled = false;
     rejected(BC_STS_IO_ERROR, &hardware, &packet, 2);
+}
+
+static void test_invalid_channels(void)
+{
+    const uint32_t invalid[] = { FLEA_DECODER_CHANNEL_COUNT, UINT32_MAX };
+
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        reset(0, invalid[i], UINT64_C(0x1234567887654321), 0, 17);
+        rejected(BC_STS_IO_ERROR, &hardware, &packet, 0);
+    }
 }
 
 static void test_queue_failure(void)
@@ -710,13 +721,14 @@ static void test_power_admission(void)
 int main(void)
 {
     test_preconditions();
+    test_invalid_channels();
     test_write_failure();
     test_queue_failure();
     test_queue_retry();
     test_wrapper();
     test_power_admission();
     for (uint32_t list = 0; list < DMA_ENGINE_CNT; list++) {
-        for (uint32_t channel = 0; channel < 4; channel++) {
+        for (uint32_t channel = 0; channel < FLEA_DECODER_CHANNEL_COUNT; channel++) {
             test_success(list, channel, UINT64_C(0xfedcba9876543210), 0, 17, true);
             test_success(list, channel, UINT64_C(0x123456789abcdef0),
                          UINT64_C(0x87654321fedcba98), 0xdead1234U, false);
