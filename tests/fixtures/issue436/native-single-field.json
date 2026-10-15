@@ -1,7 +1,7 @@
 {
-  "schema": 1,
+  "schema": 2,
   "date": "2026-10-15",
-  "scope": "BCM70015 stock SET_SINGLE_FIELD, direct packed-field readback",
+  "scope": "BCM70015 stock SET_SINGLE_FIELD, direct field/scaled-field and full-height readback",
   "production_source": "1536ecf1ec2aab8c00345f8c2ff066b59a1b8fee",
   "probe_source": "2356cbc556df224b4473830216814b4f61750370",
   "environment": {
@@ -27,13 +27,15 @@
     "outputs": "new O_EXCL .yuy2 and .tsv files; copied active rows after extent validation, lease released before file I/O",
     "comparison": "match each single-field (opaque input token, field polarity) to its baseline; compare every active packed YUY2 byte",
     "tokens": "input packet identifiers in 100000-unit increments, not measured presentation timestamps",
-    "geometry": "native_api_geometry and the TSV coded_field_rows describe the API-reported dimensions; they do not independently measure SPS storage height",
+    "geometry": "native_api_geometry and TSV coded_field_rows (initial probe) / coded_output_rows (extended probe) describe the API-reported dimensions; they do not independently measure SPS storage height",
     "parity": "top/bottom counts use native PIB field flags; pixel equality is against the native paired-field baseline"
   },
   "cases": [
     {
-      "input": "existing H.264 High MBAFF TFF 1920x1080i25, 2 seconds",
+      "input": "existing H.264 High MBAFF 1920x1080i25, 2 seconds; stream-level tt but mixed per-picture SEI",
       "input_sha256": "30f14f2b75735e3bc3345b07503e055a6a1ea9241de27369c074d49649615c28",
+      "field_order_correction": "Initially labelled TFF from stream metadata; a complete SEI census found pic_struct=3 on 16 pictures and 4 on 34. This is not a uniform-TFF acceptance case.",
+      "sei_pic_struct_counts": {"3": 16, "4": 34},
       "inputs": 50,
       "native_api_geometry": [1920, 1080],
       "packed_field_geometry": [1920, 540],
@@ -67,9 +69,55 @@
       "baseline_recovery_pixels_and_metadata_identical": true,
       "baseline_payload_sha256": "8ba31fef27b8559c6db5c75adec7333acd7b1dab16a8d4662f7e3b72fcbbb9bc",
       "single_payload_sha256": "89d6712babf6d55e8dc4e6a7011d197378b433e2a4ca263a3ab111378e2b4fdc"
+    },
+    {
+      "input": "uniform TFF H.264 High MBAFF 1920x1080i25, 2 seconds",
+      "input_sha256": "af03b86f5c543f83ff33547ed653e79268ca0d466823a68ae5dd3b63042fb051",
+      "generate": "ffmpeg -nostdin -hide_banner -loglevel error -n -f lavfi -i testsrc2=size=1920x1080:rate=50 -t 2 -vf tinterlace=mode=interleave_top -c:v libx264 -preset fast -crf 18 -flags +ilme+ildct -x264-params tff=1:pic-struct=1:keyint=25:min-keyint=25:scenecut=0 -an -f mpegts OUTPUT.ts",
+      "probe_source": "84b96a41caf756fbfd14f89c8ec05dbf72fdaf2c",
+      "sei_pic_struct_counts": {"3": 50},
+      "software_top_field_first": 1,
+      "inputs": 50,
+      "native_api_geometry": [1920, 1080],
+      "packed_field_geometry": [1920, 540],
+      "runs": [
+        {"single_field": 0, "fields": 100, "bytes": 207360000, "result": "PASS"},
+        {"single_field": 1, "fields": 50, "bytes": 103680000, "result": "PASS"},
+        {"single_field": 0, "fields": 100, "bytes": 207360000, "result": "PASS"}
+      ],
+      "single_top_fields": 25,
+      "single_bottom_fields": 25,
+      "single_alternates_starting_top": true,
+      "single_fields_exactly_matching_baseline": 50,
+      "software_luma_exact_top_even_fields": 50,
+      "software_luma_exact_bottom_odd_fields": 50,
+      "baseline_recovery_pixels_and_metadata_identical": true,
+      "derived_content_sample_intervals_ms": {"60": 25, "20": 24},
+      "timing_limit": "Derived from 40 ms picture PTS and TFF parity, not measured output-arrival or display cadence"
+    },
+    {
+      "input": "same uniform TFF FHD fixture, decoder-mediated scale width 960",
+      "input_sha256": "af03b86f5c543f83ff33547ed653e79268ca0d466823a68ae5dd3b63042fb051",
+      "probe_source": "84b96a41caf756fbfd14f89c8ec05dbf72fdaf2c",
+      "option": "--scale-width 960",
+      "inputs": 50,
+      "native_api_geometry": [960, 540],
+      "packed_field_geometry": [960, 270],
+      "runs": [
+        {"single_field": 0, "fields": 100, "bytes": 51840000, "result": "PASS"},
+        {"single_field": 1, "fields": 50, "bytes": 25920000, "result": "PASS"},
+        {"single_field": 0, "fields": 100, "bytes": 51840000, "result": "PASS"}
+      ],
+      "single_top_fields": 25,
+      "single_bottom_fields": 25,
+      "single_fields_exactly_matching_baseline": 50,
+      "baseline_recovery_pixels_and_metadata_identical": true,
+      "baseline_payload_fraction_of_native_baseline": "1/4",
+      "single_payload_fraction_of_native_baseline": "1/8",
+      "limit": "Field scaling and omission, not full-height/full-field-rate Bob or a measured speedup"
     }
   ],
-  "all_direct_runs": {
+  "all_completed_direct_field_runs": {
     "exit": 0,
     "exact_per_input_token_multiplicity": true,
     "baseline_has_both_field_polarities": true,
@@ -80,7 +128,7 @@
     "scoped_kernel_check": "PASS"
   },
   "va_adapter_observation": {
-    "fixture": "same 50-picture TFF input",
+    "fixture": "same original 50-picture mixed-SEI FHD input, not the later uniform-TFF fixture",
     "probe": "tests/fw-single-field-probe.cpp",
     "pipeline": "strict FFmpeg VA decode -> hwdownload NV12 -> framehash",
     "single_zero_before": {"raw_fields": 100, "completed_frames": 50, "result": "PASS"},
@@ -99,7 +147,71 @@
     "module_refcount": 0,
     "scoped_kernel_check": "PASS"
   },
-  "conclusion": "The recognized firmware command advances to the next source after one unmodified packed field. Selected polarity alternates across sources. This halves the measured field payload; the unchanged VA Weave adapter correctly rejects cross-picture pairing.",
+  "full_height_observation": {
+    "input": "uniform TFF H.264 High MBAFF 1280x720i25, 2 seconds; synthetic geometry, not broadcast-format qualification",
+    "input_sha256": "fbfe72e9246453d3900887d4a1444fb801fb388d7fa4ee8f58990305271001a6",
+    "generate": "Use the uniform-TFF case generation command with testsrc2 size=1280x720, retaining rate=50 and all other options",
+    "sei_pic_struct_counts": {"3": 50},
+    "initial_strict_frame_attempt": {
+      "probe_source": "84b96a41caf756fbfd14f89c8ec05dbf72fdaf2c",
+      "option": "--frame-output",
+      "exit": 1,
+      "result": "FAIL: first full-height lease rejected because API flags=0x70 indicate TOPFIELD, not the assumed FRAME/FIELDPAIR metadata",
+      "captured_outputs": 0,
+      "first_completed_words": 460840,
+      "restore_and_close": "PASS",
+      "module_refcount": 0,
+      "scoped_kernel_check": "PASS"
+    },
+    "probe_source": "24c3026cf5a7c9c345948705e4d40a3e796b7354",
+    "option": "--full-payload",
+    "contract": "Observe exactly 1280x720 interlaced-flagged full-height payload, completed extent plus raw PIB scalar bounds, exact width/line trailers, one output per token; not a progressive-frame metadata assertion",
+    "runs": [
+      {"single_field": 0, "inputs": 50, "outputs": 50, "bytes": 92160000, "result": "PASS"},
+      {"single_field": 1, "inputs": 50, "outputs": 50, "bytes": 92160000, "result": "PASS"},
+      {"single_field": 0, "inputs": 50, "outputs": 50, "bytes": 92160000, "result": "PASS"}
+    ],
+    "all_three_pixels_and_metadata_identical": true,
+    "full_frame_luma_exact_software_matches": 150,
+    "raw_pib_flags_all_outputs": "0x48",
+    "api_flags_all_outputs": "0x70",
+    "raw_and_api_picture_numbers": "3..52 in each run, equal",
+    "trailer_width": 1280,
+    "trailer_line": 720,
+    "completed_words_per_output": 460840,
+    "active_bytes_per_output": 1843200,
+    "all_runs_eos_marker_and_empty_queue": true,
+    "all_runs_restore_and_close": "PASS",
+    "module_refcount_after_each": 0,
+    "scoped_kernel_check": "PASS",
+    "interpretation": "Both original fields remain in alternating rows: exact full-height luma Weave at 25 picture PTS/s, not Bob at 50 progressive outputs/s. Single-field mode changes neither pixels nor count on this source-width path. Library field-mask handling adds INTERLACED and rewrites FIELDPAIR to TOPFIELD (raw 0x48 -> API 0x70).",
+    "chroma_limit": "Full-height luma is exact; hardware YUY2 chroma is not bit-exact to software decode after common interlaced-bilinear YUV420p normalization. No physical picture-quality claim.",
+    "normalized_yuv420p_comparison": {
+      "frames": 50,
+      "each_input_filter": "settb=1/25,setpts=N,setfield=tff,scale=iw:ih:flags=bilinear:interl=1,format=yuv420p",
+      "psnr_db": {"y": "inf", "u": 32.930395, "v": 29.570724, "average": 35.704686}
+    },
+    "unchanged_va_adapter": {
+      "pipeline": "strict FFmpeg VA decode -> hwdownload NV12 -> framehash; no preload/single-field override",
+      "completed_frames": 0,
+      "exit": 251,
+      "result": "FAIL: decode/sync/download status 23; destroy context also reports 23",
+      "targeted_debug_repeat": {
+        "option": "CRYSTALHD_VAAPI_DEBUG=1",
+        "first_rejection": "H.264 fields have mismatched identity, parity, order or geometry",
+        "first_two_outputs": [{"token": 100000, "ordinal": 3}, {"token": 200000, "ordinal": 4}],
+        "api_and_context_geometry": [1280, 736],
+        "limit": "VA uses coded height 736, unlike the direct probe's exact 720-row setup; full-payload bounds and visible cropping at 736 need their own qualification before any adapter change",
+        "exit": 251,
+        "module_refcount": 0,
+        "scoped_kernel_check": "PASS"
+      },
+      "module_refcount": 0,
+      "scoped_kernel_check": "PASS",
+      "following_progressive_recovery": {"completed_frames": 180, "exit": 0, "module_refcount": 0, "result": "PASS"}
+    }
+  },
+  "conclusion": "On the tested field-output routes the recognized command selects one unchanged field per picture, with alternating polarity; it halves active field payload but does not provide Bob. Decoder-mediated scaling also works. The separately tested 1280x720 source-width path returns whole-picture Weave in both command modes despite TOPFIELD API metadata; the existing VA adapter does not accept this case.",
   "not_established": [
     "full-height or full-field-rate hardware Bob",
     "fixed-parity selection or motion-adaptive deinterlacing",
