@@ -208,6 +208,12 @@ struct Probe {
   std::map<int64_t, Picture> reference;
   std::map<int64_t, AVPictureType> reference_types;
   std::map<int64_t, bool> reference_keyframes;
+  std::map<int64_t, int64_t> reference_key_dts;
+
+  bool UsesH264TransportDts() const {
+    return codec->id == AV_CODEC_ID_H264 &&
+           std::strcmp(input->iformat->name, "mpegts") == 0;
+  }
 
   ~Probe() {
     av_frame_free(&download);
@@ -433,6 +439,13 @@ struct Probe {
         Check(avcodec_send_packet(decoder, nullptr), "start drain");
       } else {
         Check(result, "read packet");
+        if (record && UsesH264TransportDts() &&
+            (packet->flags & AV_PKT_FLAG_KEY) != 0) {
+          if (packet->pts == AV_NOPTS_VALUE || packet->dts == AV_NOPTS_VALUE)
+            throw std::runtime_error("H.264 TS key packet lacks PTS/DTS anchor");
+          if (!reference_key_dts.emplace(packet->pts, packet->dts).second)
+            throw std::runtime_error("duplicate H.264 TS key packet PTS");
+        }
         Check(avcodec_send_packet(decoder, packet), "send packet");
       }
     }
@@ -449,7 +462,23 @@ struct Probe {
   }
 
   void Seek(int64_t target) {
-    Check(av_seek_frame(input, stream, target, AVSEEK_FLAG_BACKWARD), "seek");
+    int64_t seek_timestamp = target;
+    if (UsesH264TransportDts()) {
+      // MPEG-TS binary seeking compares decoding timestamps. A display PTS
+      // can land after its IDR when B pictures reorder. Use the preceding
+      // reference key packet's DTS, while Decode still compares the original
+      // requested PTS and every pixel against the uninterrupted reference.
+      auto anchor = reference_key_dts.upper_bound(target);
+      if (anchor == reference_key_dts.begin())
+        throw std::runtime_error("no H.264 TS key packet anchor at/before target PTS");
+      --anchor;
+      seek_timestamp = anchor->second;
+      std::printf("TS seek target PTS %lld: key packet PTS %lld DTS %lld\n",
+                  static_cast<long long>(target),
+                  static_cast<long long>(anchor->first),
+                  static_cast<long long>(anchor->second));
+    }
+    Check(av_seek_frame(input, stream, seek_timestamp, AVSEEK_FLAG_BACKWARD), "seek");
     if (!decoder)
       OpenDecoder();
     avcodec_flush_buffers(decoder);
