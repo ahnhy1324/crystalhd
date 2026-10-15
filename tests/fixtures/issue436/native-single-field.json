@@ -211,7 +211,57 @@
       "following_progressive_recovery": {"completed_frames": 180, "exit": 0, "module_refcount": 0, "result": "PASS"}
     }
   },
-  "conclusion": "On the tested field-output routes the recognized command selects one unchanged field per picture, with alternating polarity; it halves active field payload but does not provide Bob. Decoder-mediated scaling also works. The separately tested 1280x720 source-width path returns whole-picture Weave in both command modes despite TOPFIELD API metadata; the existing VA adapter does not accept this case.",
+  "candidate_va_fix": {
+    "source": "17e93a0ef272df676d4abfdd3e57c3ff5d9b4e9f",
+    "scope": "Source-only VA adapter candidate; installed RC, libcrystalhd ABI, ioctl, firmware, module and PM settings unchanged",
+    "classification": "Completed full-height extent, ordinary width/line trailers and bounded common PIB identity distinguish whole Weave from compact half fields. Raw Flea timestamp is checked after safe multiplication by 20000. Normal replay, pending owner and generation checks remain mandatory; a whole picture cannot complete a pending half pair.",
+    "conversion": "One field-aware converter handles compact field buffers or alternating-row views of a whole picture; chroma averages rows within the same field, not across temporal fields",
+    "coded_height_controls": {
+      "probe_source": "fe5e7a9affcae39b0d7c3342c520a59fd5ffacfc",
+      "geometry_only_override": {"source": "39dce6e", "option": "--full-payload --coded-height 736", "expected_height": 736, "observed_height": 720, "outputs": 0, "exit": 1, "cleanup": "PASS", "result": "FAIL: original SPS still crops to 720; input-format override alone does not establish 736-row output"},
+      "uncropped_generation": "ffmpeg -nostdin -hide_banner -loglevel error -n -i INPUT.ts -map 0:v:0 -c:v copy -bsf:v h264_metadata=crop_bottom=0 -an -f mpegts NEW_OUTPUT.ts",
+      "tff": {"inputs": 50, "full_736_row_luma_exact_software": 50, "visible_720_row_luma_exact_original": 50, "vcl_nals_byte_identical": 50, "vcl_bytes": 1353949, "raw_flags": "0x48", "api_flags": "0x70", "bytes": 94208000, "result": "PASS"},
+      "bff": {"inputs": 50, "full_736_row_luma_exact_software": 50, "visible_720_row_luma_exact_original": 50, "vcl_nals_byte_identical": 50, "vcl_bytes": 1338288, "raw_flags": "0xc8", "api_flags": "0xf0", "bytes": 94208000, "result": "PASS"},
+      "bff_generate": "Use the uniform-TFF 1280x720 generation command with interleave_bottom and bff=1:pic-struct=1 instead of interleave_top and tff=1:pic-struct=1",
+      "all_native_runs": "50 outputs, full 1280x736 trailer/extent, EOS marker, ready=0, reset/close PASS, module refcount 0 and clean scoped kernel check",
+      "crop_counterexample": "Removing TFF SPS crop changes 1112 chroma bytes in row 719 across 41 pictures despite identical VCL and visible luma. Therefore compare VA output to the uncropped native reference, not the older cropped native color payload."
+    },
+    "native_va_readbacks": [
+      {"input": "uniform TFF 1280x720i25, 50 pictures", "outputs": 50, "nv12_bytes": 69120000, "every_byte_exact_uncropped_native_visible_reference": true, "result": "PASS"},
+      {"input": "uniform BFF 1280x720i25, 50 pictures", "outputs": 50, "nv12_bytes": 69120000, "every_byte_exact_uncropped_native_visible_reference": true, "result": "PASS"},
+      {"input": "uncropped TFF 1280x736i25, 50 pictures", "outputs": 50, "nv12_bytes": 70656000, "every_byte_exact_full_native_reference": true, "result": "PASS"},
+      {"input": "original mixed-SEI FHD 50-picture fixture", "outputs": 50, "complete_framehash_sequence_identical_to_pre_fix_va_baseline": true, "result": "PASS"},
+      {"input": "existing BFF 720x480i30, 60 pictures", "outputs": 60, "all_luma_frames_exact_software": true, "result": "PASS"},
+      {"input": "existing progressive high.mp4", "outputs": 180, "result": "PASS"}
+    ],
+    "all_listed_va_readbacks": "Exact frame counts and EOS, exit 0, module refcount 0, no scoped kernel errors; hardware output forced through VA hwdownload, no software fallback",
+    "seek_and_retained_picture_lifetime": {
+      "fixture": "100-picture uniform-TFF 1280x720i25, same generation command with -t 4; indexed MKV is a stream-copy remux of that TS",
+      "command": "timeout --signal=TERM --kill-after=5s 60s env LIBVA_DRIVER_NAME=crystalhd LIBVA_DRIVERS_PATH=/absolute/repo/filters/vaapi LD_LIBRARY_PATH=/absolute/repo/linux_lib/libcrystalhd /absolute/repo/filters/vaapi/vaapi-seek-test INPUT /dev/dri/renderD128 --lookahead 8 --expected-frames 100 --retain-old-frames",
+      "indexed_mkv": {"reference_frames": 100, "seek_targets": [2000, 1000, 3000, 0], "frames_exact_per_seek": 12, "held_frames_exact_after_each_operation": 8, "flush_and_new_timeline_checks": 2, "context_destruction_checks": 2, "result": "PASS"},
+      "mpegts_before_harness_fix": {
+        "reference_frames": 100,
+        "va": "FAIL: display-PTS seek skips its IDR, then unchanged admission rejects non-IDR input; exit 1, refcount 0, clean kernel",
+        "software": "FAIL: expected PTS 313200, got next-IDR PTS 403200, with co-located-POC warnings",
+        "offline_cause": "av_seek_frame(313200) returns non-key packet PTS 316800/DTS 313200; actual IDR is PTS 313200/DTS 306000. Seeking that recorded key DTS returns the IDR."
+      },
+      "harness_fix_source": "8cc1ae22d7eac56ceaaa9723f678a8ab19ae1075",
+      "harness_fix_scope": "H.264 MPEG-TS only: record key-packet PTS/DTS during the complete reference pass, seek from the preceding key DTS, but keep the exact requested PTS, pixel comparisons, counts and held-frame criteria. No runtime IDR-admission or MP4/MKV rule change.",
+      "mpegts_after_harness_fix": {"reference_frames": 100, "seek_targets": [313200, 223200, 403200, 133200], "frames_exact_per_seek": 12, "held_frames_exact_after_each_operation": 8, "flush_and_new_timeline_checks": 2, "context_destruction_checks": 2, "result": "PASS"},
+      "all_successful_hardware_lifetime_runs": "exit 0, module refcount 0, clean scoped kernel check; exact PTS and all output-pixel digests compared to each uninterrupted native reference",
+      "device_free_seek_self_check": "12/12 PASS, including unchanged MP4/MKV admission and lifetime criteria plus same-access-unit MP4-to-TS control",
+      "review": "Astra APPROVE for both the VA fix and the focused DTS-anchor harness correction"
+    },
+    "device_free": {
+      "plugin_o2_werror": "PASS",
+      "replay_o2_and_scalar_no_sse2": "PASS, including 1170 conversion boundary/alignment cases in each suite and new whole-Weave identity/bounds/ownership cases",
+      "i386_replay_syntax": "PASS; syntax only, not a linked 32-bit whole-Weave run",
+      "i386_cpu_policy": "PASS; normal SSE2 cache 1916 checks, Pentium2 QEMU scalar cache 1902 checks, legacy SIMD absence and i386 VPP syntax",
+      "astra_review": "APPROVE for bounded native qualification"
+    },
+    "not_claimed": ["hardware Bob or field-rate progressive output", "physical presentation or A/V", "stock Kodi BWDIF compatibility", "GStreamer whole-picture acceptance", "BCM70012 hardware qualification"]
+  },
+  "conclusion": "The tested field-output routes support exact field omission and decoder-mediated scaling, not Bob. The 1280-wide whole-picture Weave path is mislabelled TOPFIELD by the existing library. Unmodified VA rejects it; the separately pinned candidate VA fix accepts the measured full payload without weakening half-field pairing or picture ownership. Installed production behavior is unchanged.",
   "not_established": [
     "full-height or full-field-rate hardware Bob",
     "fixed-parity selection or motion-adaptive deinterlacing",
