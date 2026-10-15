@@ -32,7 +32,7 @@ VAAPI_DRM_DEVICE ?= /dev/dri/renderD128
 CPPFLAGS += -D__LINUX_USER__ -I$(ROOTDIR)/linux_lib/libcrystalhd \
 	-I$(ROOTDIR)/include
 CXXFLAGS ?= -O2
-CXXFLAGS += -std=c++17 -Wall -Wextra -Werror -fPIC \
+override CXXFLAGS += -std=c++17 -Wall -Wextra -Werror -fPIC \
 	$(shell $(PKG_CONFIG) --cflags libva libva-drm libdrm gbm \
 	libswscale)
 CRYSTALHD_NORMAL_CPU_FLAGS := -msse2
