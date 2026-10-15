@@ -5266,6 +5266,167 @@ static void LiveH264SpeculativePrefeedSequence() {
           "only actual access units complete and EOS retires the guard token");
 }
 
+static void LiveH264InterlacedPrefeedKeepsExactFieldOwnership() {
+  enum class Tail { Complete, Ghost, Flush };
+  for (bool bottom_first : {false, true}) {
+    for (Tail tail : {Tail::Complete, Tail::Ghost, Tail::Flush}) {
+      TeardownFixture fixture(5);
+      auto &decode = *fixture.decoder;
+      decode.id = 1;
+      decode.generation = 3;
+      decode.profile = VAProfileH264Main;
+      decode.height = fixture.io.output_height = 32;
+      decode.live_h264 = decode.live_h264_gap_tolerant = true;
+      decode.live_h264_fast_path = decode.low_latency_h264 = true;
+      decode.replay = CrystalHDDecodeReplay(true);
+      for (size_t index = 0; index < fixture.held.size(); ++index) {
+        const uint64_t token = (index + 1) * kTimestampStep;
+        const auto picture = decode.decoded_frames.at(token);
+        for (const auto &frame : {fixture.held[index], picture}) {
+          Require(frame->AllocateInternal(nullptr, -1, 16, 32,
+                                          VA_FOURCC_NV12),
+                  "allocate interlaced prefeed picture");
+          memset(frame->storage.data(), 99, frame->storage.size());
+          frame->expected_timestamp = token;
+          frame->decode_identity = frame->trace_decode_identity = index + 1;
+          frame->trace_context = decode.id;
+          frame->trace_generation = decode.generation;
+          frame->trace_submission_ordinal = index + 1;
+          frame->h264_crop_unit_y = 4;
+        }
+        fixture.held[index]->decode_picture = picture;
+      }
+      const uint64_t fourth = 4 * kTimestampStep;
+      const uint64_t fifth = 5 * kTimestampStep;
+      const auto fourth_owner = decode.decoded_frames.at(fourth);
+      const auto fifth_owner = decode.decoded_frames.at(fifth);
+      decode.decoded_frames.erase(fifth);
+      decode.pending.erase(fifth);
+      decode.surface_timestamps.erase(fixture.held[4].get());
+      fixture.held[4]->decode_picture.reset();
+      const uint32_t order = bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0;
+      const uint32_t first = bottom_first ? VDEC_FLAG_BOTTOMFIELD
+                                          : VDEC_FLAG_TOPFIELD;
+      const uint32_t second = bottom_first ? VDEC_FLAG_TOPFIELD
+                                           : VDEC_FLAG_BOTTOMFIELD;
+      const auto queue_field = [&](uint64_t token, uint32_t parity) {
+        fixture.io.outputs.push_back(token);
+        fixture.io.picture_flags.push_back(
+            VDEC_FLAG_INTERLACED_SRC | parity | order);
+      };
+      for (unsigned int picture = 1; picture <= 4; ++picture) {
+        const uint64_t token = picture * kTimestampStep;
+        Require(decode.replay.Append(token, picture == 1,
+                                      TestH264AccessUnit(picture == 1, picture)),
+                "accept an actual interlaced AU before its successor prefeed");
+        decode.next_timestamp = (picture + 1) * kTimestampStep;
+        Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS,
+                "submit interlaced AU and prefeed exactly its successor");
+        queue_field(token, first);
+        if (picture != 4)
+          queue_field(token, second);
+        Require(ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS,
+                "receive complete prefix and the final first field");
+        if (picture != 4)
+          fixture.CheckPicture(picture - 1);
+      }
+      const auto untouched = fixture.held[3]->storage;
+      Require(fixture.io.input_calls.size() == 8 &&
+                  fixture.io.input_calls.back().timestamp == fifth &&
+                  fixture.io.input_calls.back().bytes == H264LowLatencyPrefeed() &&
+                  decode.prefed_timestamp == fifth &&
+                  fixture.io.prefed_timestamp == fifth &&
+                  decode.h264_first_field.valid &&
+                  decode.h264_first_field.timestamp == fourth &&
+                  decode.h264_first_field.picture == fourth_owner &&
+                  decode.pending.count(fourth) == 1 &&
+                  decode.pending.count(fifth) == 0 &&
+                  decode.decoded_frames.count(fifth) == 0 &&
+                  decode.replay.outstanding() == 1 &&
+                  !fourth_owner->ready && !fixture.held[3]->ready &&
+                  !fixture.held[4]->ready,
+              "token-five prefeed cannot complete half of token four or own a picture");
+      Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                  ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                  fixture.io.input_calls.size() == 8 &&
+                  fixture.held[3]->storage == untouched &&
+                  !fixture.held[3]->ready && decode.h264_first_field.valid,
+              "empty transport polls cannot turn the held half into READY");
+
+      if (tail == Tail::Ghost) {
+        queue_field(fifth, first);
+        Require(ReceiveAvailable(&fixture.driver, &decode) ==
+                        VA_STATUS_ERROR_DECODING_ERROR &&
+                    decode.replay.failed() && !decode.h264_first_field.valid &&
+                    fixture.held[3]->failed && !fixture.held[3]->ready &&
+                    !fixture.held[4]->ready &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                               "release") == 8 && !fixture.io.invalid,
+                "ghost prefix output is released and cannot complete either owner");
+      } else if (tail == Tail::Flush) {
+        const uint64_t generation = decode.generation;
+        VASurfaceID surface = 4;
+        Require(DestroySurfacesWithTimeout(&fixture.context, &surface, 1, 0) ==
+                        VA_STATUS_SUCCESS &&
+                    decode.generation == generation + 1 &&
+                    !decode.h264_first_field.valid &&
+                    decode.h264_first_field.pixels.empty() &&
+                    decode.prefed_timestamp == 0 &&
+                    fixture.io.prefed_timestamp == 0 && decode.pending.empty() &&
+                    decode.replay.outstanding() == 0 &&
+                    !fixture.held[3]->ready && !fixture.held[4]->ready &&
+                    !fixture.io.invalid,
+                "surface-pool flush clears both held field and speculative successor");
+      } else {
+        queue_field(fourth, second);
+        Require(ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                    !decode.h264_first_field.valid && decode.pending.empty() &&
+                    decode.replay.outstanding() == 0 && fourth_owner->ready &&
+                    decode.decoded_frames.at(fourth) == fourth_owner,
+                "only the matching second field completes the exact fourth owner");
+        fixture.CheckPicture(3);
+        const auto completed = fixture.held[3]->storage;
+        queue_field(fourth, first);
+        queue_field(fourth, second);
+        Require(ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                    !decode.h264_first_field.valid && decode.pending.empty() &&
+                    decode.replay.outstanding() == 0 &&
+                    fixture.held[3]->storage == completed,
+                "duplicate paired output cannot complete or rewrite token four twice");
+        const auto fifth_unit = TestH264AccessUnit(false, 5);
+        decode.decoded_frames[fifth] = fifth_owner;
+        decode.pending[fifth] = 5;
+        decode.surface_timestamps[fixture.held[4].get()] = fifth;
+        fixture.held[4]->decode_picture = fifth_owner;
+        Require(decode.replay.Append(fifth, false, fifth_unit),
+                "accept the actual fifth AU with its own immutable owner");
+        decode.next_timestamp = 6 * kTimestampStep;
+        Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                    fixture.io.input_calls.size() == 10 &&
+                    fixture.io.input_calls[8].accepted &&
+                    fixture.io.input_calls[8].timestamp == 0 &&
+                    fixture.io.input_calls[8].bytes == fifth_unit &&
+                    fixture.io.inputs.back() == fifth &&
+                    decode.decoded_frames.at(fifth) == fifth_owner &&
+                    decode.prefed_timestamp == 6 * kTimestampStep &&
+                    fixture.held[3]->storage == completed,
+                "actual fifth AU consumes the existing prefix by zero-tag continuation");
+        queue_field(fifth, first);
+        queue_field(fifth, second);
+        Require(ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                    fifth_owner->ready && decode.pending.empty() &&
+                    decode.replay.outstanding() == 0 &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                               "release") == 12 && !fixture.io.invalid,
+                "the real fifth field pair completes once and releases every lease");
+        fixture.CheckPicture(4);
+      }
+      for (unsigned int picture = 0; picture < 3; ++picture)
+        fixture.CheckPicture(picture);
+    }
+  }
+}
+
 static void LiveH264PrefeedBusyFallback() {
   {
     TeardownFixture fixture(2);
@@ -7036,6 +7197,7 @@ int main() {
     CompletedLiveTailPrecedesUnreconstructibleContinuation();
     DecoderResetPreservesItsExplicitLivePolicy();
     LiveH264SpeculativePrefeedSequence();
+    LiveH264InterlacedPrefeedKeepsExactFieldOwnership();
     LiveH264PrefeedBusyFallback();
     LiveH264PrefeedEligibilityAndGhostGuard();
     TransportProgressRequiresActualHardwareIo();
