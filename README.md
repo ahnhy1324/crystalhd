@@ -25,7 +25,7 @@ remains available and unchanged.
 
 Fresh BCM70015 qualification uses Ubuntu 26.04.1 LTS / Linux 7.0.0-38.
 Earlier Ubuntu 25.10 / Linux 6.17 results, including VLC 3.0.21, remain
-historical; see the [dated hardware report](HARDWARE-2026-09-13.md#new-lts-qualification--2026-10-12).
+historical; see the [dated hardware report](HARDWARE-2026-09-13.md#new-lts-qualification--2026-10-13).
 The driver builds against Linux 5.15 and newer; other hosts still need testing.
 One hardware session can run at a time, with coded size up to 1920x1088.
 
