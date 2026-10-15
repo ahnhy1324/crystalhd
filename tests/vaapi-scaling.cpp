@@ -482,6 +482,32 @@ void LargeH264AccessUnitBoundaryAndRecovery() {
             "reopen replays the exact oversized IDR then submits new input");
   }
 
+  std::vector<uint8_t> transport_boundary(
+      crystalhd_access_unit_limits::kDtsInputChunkBytes - overhead, 0x55);
+  transport_boundary[0] = 0x65;
+  {
+    Fixture boundary;
+    Require(SubmitH264(&boundary, transport_boundary) == VA_STATUS_SUCCESS &&
+                boundary.mock.legacy_input_calls == 1 &&
+                boundary.mock.fragment_input_calls == 0 &&
+                boundary.mock.inputs.size() == 1 &&
+                boundary.mock.inputs[0].bytes.size() ==
+                    crystalhd_access_unit_limits::kDtsInputChunkBytes,
+            "exact assembled 512 KiB H.264 boundary retains one-shot input");
+  }
+
+  transport_boundary.push_back(0x55);
+  {
+    Fixture fragmented;
+    Require(SubmitH264(&fragmented, transport_boundary) == VA_STATUS_SUCCESS &&
+                fragmented.mock.legacy_input_calls == 0 &&
+                fragmented.mock.fragment_input_calls == 2 &&
+                LogicalInputs(fragmented.mock.inputs).size() == 1 &&
+                LogicalInputs(fragmented.mock.inputs)[0].bytes.size() ==
+                    crystalhd_access_unit_limits::kDtsInputChunkBytes + 1U,
+            "one byte above 512 KiB switches atomically to FIRST/LAST fragments");
+  }
+
   std::vector<uint8_t> exact(
       crystalhd_access_unit_limits::kH264Bytes - overhead, 0x55);
   exact[0] = 0x65;
