@@ -1,6 +1,6 @@
 # History
 
-## 1.1.0-rc.1 — candidate (unpublished)
+## 1.1.0-rc.2 — candidate (unpublished)
 
 This is the planned identity for the v1.1 release candidate tracked in
 [#430](https://github.com/ahnhy1324/crystalhd/issues/430). It is not a published
@@ -19,8 +19,11 @@ review and explicit maintainer RC approval.
 - Driver and library work hardens decoder stop, suspend/resume, Flea power and
   receive ownership. Default-off firmware investigations remain research, not
   new supported hardware functions.
+- VA teardown now retries busy hardware closure without losing ownership, and
+  allocation failures release hardware output while failing the affected
+  surface cleanly.
 - The candidate keeps the legacy ioctl version and the `libcrystalhd.so.3`
-  ABI. Its planned bundle/package mapping is `1.1.0-rc.1` / `3.10.4`; v1.0
+  ABI. Its planned bundle/package mapping is `1.1.0-rc.2` / `3.10.5`; v1.0
   tags and qualification evidence remain immutable historical baselines.
 
 ## 1.0.0 — October 13, 2026
