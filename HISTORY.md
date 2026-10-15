@@ -13,6 +13,14 @@ review and explicit maintainer RC approval.
   large H.264 access units with old-library fallback, selected H.264 MBAFF
   field pairs, and 32-bit player bus-message handling. These do not imply
   general interlaced VA, Kodi, Atom or browser support.
+- Selected H.264 MBAFF pairs materialize as complete interlaced NV12 Weave
+  frames. Runtime payload `f4d99d5` completed the 750-picture fixture with
+  identical luma to software decode, and standalone FFmpeg BWDIF produced
+  1,500 progressive outputs. Stock Kodi progressive hardware-video and
+  application-lifecycle checks passed, while physical A/V timing remains
+  unverified. Its interlaced integration remains a proposed v1.2.0 task in
+  [#436](https://github.com/ahnhy1324/crystalhd/issues/436); no VA hardware
+  deinterlacing capability is advertised.
 - The read-only configuration inspector, reviewed presets and redacted bug
   report are additive tooling; configuration files do not apply runtime
   settings.

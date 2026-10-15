@@ -14,6 +14,7 @@ before choosing the card for a workload; Sunshine/Moonlight has a separate
 | Use an application that requires libva | CrystalHD VA-API driver | Experimental subset |
 | Keep a Broadcom-API application working | `libcrystalhd.so.3` | Compatibility API |
 | Use VLC | VA-API, selected H.264/X11 setup only | Focused tested combination |
+| Use Kodi | VA-API, progressive H.264 on the reference X11 host | Interlaced post-processing is not yet support-grade |
 | Stream from Sunshine with Moonlight | [Moonlight guide](MOONLIGHT.md) | First-class experimental integration |
 | Accelerate Chromium or YouTube | VA-API browser experiment | Hardware path unverified; not daily use |
 
@@ -205,7 +206,7 @@ retest: its legacy H.264 path remains, its VA backend rejects the other codecs,
 and MPEG-4 is explicitly rejected by GStreamer. See the GStreamer and
 [VA-API](filters/vaapi/README.md) guides for the full contracts.
 
-## VA-API, FFmpeg and VLC
+## VA-API, FFmpeg, Kodi and VLC
 
 VA-API is an experimental client-integration subset, not the preferred local
 player. Choose the display GPU render node reported by `crystalhd-check`; do
@@ -225,6 +226,81 @@ ffmpeg -hide_banner -hwaccel vaapi -hwaccel_device "$drm_node" \
 The FFmpeg command submits and downloads decoded frames; it does not test
 speaker output or physical display cadence. For an installed driver, do not
 add checkout-specific `LIBVA_DRIVERS_PATH` or `LD_LIBRARY_PATH` values.
+
+### Interlaced H.264: Weave and FFmpeg BWDIF
+
+For the selected H.264 MBAFF field-pair subset, CrystalHD returns two hardware
+fields and the VA driver combines their alternating lines into one complete
+interlaced NV12 **Weave** frame. Weave preserves both fields; it is not
+deinterlacing, so motion can show normal combing.
+
+The v1.1 RC was checked with a 30-second, 1920x1080i25 TFF fixture. Direct VA
+readback completed all 750 input pictures twice. Every luma sample matched the
+software decoder; the deterministic same-field chroma conversion measured
+`U 40.96 dB` and `V 38.85 dB` PSNR. This is a selected-fixture result, not a
+claim for PAFF, arbitrary interlaced streams or physical picture quality.
+
+FFmpeg can deinterlace after downloading that Weave frame. This is the exact
+shape of the validated BWDIF path; replace the quoted input and render node:
+
+```sh
+drm_node=/dev/dri/renderDXXX
+LIBVA_DRIVER_NAME=crystalhd \
+ffmpeg -hide_banner -hwaccel vaapi -hwaccel_device "$drm_node" \
+  -hwaccel_output_format vaapi -i "/path/to/interlaced-video.ts" \
+  -map 0:v:0 \
+  -vf 'hwdownload,format=nv12,bwdif=mode=send_field:parity=auto:deint=all' \
+  -fps_mode passthrough -an -sn -f null -
+```
+
+This null-output command verifies decode, readback and filtering; it does not
+play audio or display the result. `send_field` ordinarily turns 25 complete
+interlaced pictures/s into 50 progressive frames/s. The qualification run
+wrote `framemd5` checksums and produced 1,500/1,500 frames plus clean EOS. On
+the reference Core 2 Duo T8100 that decode/readback/BWDIF/checksum run took
+33.95 seconds for 30 seconds of media, used 157% process CPU and 325,296 KiB
+maximum RSS. Null or displayed output was not timed separately, so this proves
+the filter path but neither certifies nor rules out real-time presentation.
+`deinterlace_vaapi=mode=bob` is not a substitute: this driver does not
+advertise a VA VPP deinterlacing filter. See the
+[VA component contract](filters/vaapi/README.md#interlaced-h264-weave-and-client-deinterlacing).
+
+### Kodi
+
+The v1.1 RC passed stock Kodi 21.3 progressive H.264 hardware-video and
+application-lifecycle checks on the reference X11 host. Kodi selected
+`ff-h264-vaapi` through the installed CrystalHD VA driver and played a
+120-second 1080p30 file to natural EOS; separate control runs passed seek,
+pause/resume, stop/reopen and quit. The qualified strict/default run had all
+live, low-latency, READY-remap and diagnostic experiments unset. Start an
+installed driver without checkout-specific library paths:
+
+```sh
+unset CRYSTALHD_VAAPI_LIVE_H264 CRYSTALHD_VAAPI_LOW_LATENCY_H264
+unset CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP
+unset CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY
+unset CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US
+unset CRYSTALHD_VAAPI_DEBUG CRYSTALHD_VAAPI_TRACE
+LIBVA_DRIVER_NAME=crystalhd kodi
+```
+
+Enable VA-API hardware acceleration in Kodi's video settings. During playback,
+verify both CrystalHD/`ff-h264-vaapi` in Kodi's debug log and an open hardware
+owner with `sudo fuser -v /dev/crystalhd`; the UI setting alone does not prove
+hardware decoding. No physical flash/click A/V PASS was recorded, and other
+Kodi releases and display backends remain unqualified.
+
+Interlaced Kodi playback is not yet a supported v1.1 path. Kodi 21.3 exposes
+`Deinterlace` (FFmpeg BWDIF) and `Render Bob`, but both explicit selections
+stalled and repeatedly restarted the CrystalHD VA decoder on the tested stack.
+The same input completed as a direct Weave readback and through standalone
+FFmpeg BWDIF, proving that missing paired-field Weave output is not the
+blocker. Kodi/CrystalHD VA decode, readback and post-processing scheduling
+remain incompatible in this case; the first failing internal cause and owning
+component are unresolved. Kodi `Auto` may also probe unsupported VAAPI Bob.
+The acceptance target and existing evidence are tracked in
+[#436](https://github.com/ahnhy1324/crystalhd/issues/436) as a proposed v1.2.0
+follow-up.
 
 One VLC 3.0.21 H.264 path was validated on the reference X11/i915 system:
 
