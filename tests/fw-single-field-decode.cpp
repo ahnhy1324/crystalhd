@@ -54,14 +54,17 @@ bool Status(const char *name, BC_STATUS status) {
     return false;
 }
 
-bool Number(const char *text, unsigned *value) {
+bool Number(const char *text, unsigned *value, unsigned limit = 1000) {
     if (!text || !*text) return false;
     unsigned parsed = 0;
     for (const char *p = text; *p; ++p) {
-        if (*p < '0' || *p > '9' || parsed > 1000U) return false;
-        parsed = parsed * 10U + static_cast<unsigned>(*p - '0');
+        if (*p < '0' || *p > '9') return false;
+        const unsigned digit = static_cast<unsigned>(*p - '0');
+        if (parsed > limit / 10U ||
+            (parsed == limit / 10U && digit > limit % 10U)) return false;
+        parsed = parsed * 10U + digit;
     }
-    if (parsed == 0 || parsed > 1000) return false;
+    if (parsed == 0) return false;
     *value = parsed;
     return true;
 }
@@ -85,6 +88,53 @@ struct Input {
     unsigned width = 0, height = 0;
     std::vector<Packet> packets;
 };
+
+struct Options {
+    unsigned scale_width = 0;
+    bool frame_output = false;
+};
+
+struct OutputGeometry {
+    unsigned width = 0, height = 0;
+    unsigned alternate_height = 0;
+    bool frame = false;
+    unsigned Rows() const { return frame ? height : (height + 1U) / 2U; }
+    const char *Kind() const { return frame ? "frame" : "field"; }
+};
+
+// Admit only the separately selected source-width observation and stock field
+// scaler contracts. Scaling changes output geometry, not the raw source-width
+// scan decision. The public scaler API ignores sHeight.
+bool SelectGeometry(const Input &input, const Options &options,
+                    OutputGeometry *output) {
+    if (!input.width || !input.height || input.width > 1920 ||
+        input.height > 1088 || (input.width & 1U) || (input.height & 3U))
+        return false;
+    output->width = input.width;
+    output->height = input.height;
+    output->frame = options.frame_output;
+    output->alternate_height = input.height == 1080 && !options.scale_width
+        ? 1088U : 0U;
+    if (options.frame_output) {
+        // 720 visible MBAFF rows can have a 736-row coded allocation. Copy
+        // only the admitted 720 visible rows, but guard the full reported span.
+        output->alternate_height = 736;
+        return input.width == 1280 && input.height == 720 &&
+            options.scale_width == 0;
+    }
+    if (options.scale_width) {
+        const unsigned width = options.scale_width;
+        if (width < 128 || width > 1918 || width > input.width ||
+            (width & 15U)) return false;
+        unsigned field_height = static_cast<unsigned>(
+            static_cast<uint64_t>(input.height / 2U) * width / input.width);
+        field_height += field_height & 1U;
+        if (!field_height) return false;
+        output->width = width;
+        output->height = field_height * 2U;
+    }
+    return true;
+}
 
 bool StartCode(const uint8_t *data, size_t size) {
     return data && size >= 4 && data[0] == 0 && data[1] == 0 &&
@@ -240,24 +290,28 @@ struct Lease {
 
 // Validate all source extents before pointer arithmetic; no borrowed pointer
 // survives Release(). The tested 1920-pixel fixture has no horizontal padding.
-bool FieldGeometry(const Input &input, const BC_DTS_PROC_OUT &out,
+bool PayloadGeometry(const OutputGeometry &expected, const BC_DTS_PROC_OUT &out,
                    size_t *pitch, size_t *rows, size_t *active_bytes) {
     const uint32_t field = out.PicInfo.flags & VDEC_FLAG_BOTTOMFIELD;
+    const bool kind = expected.frame
+        ? field == 0 || field == VDEC_FLAG_FIELDPAIR
+        : (out.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) &&
+            (field == VDEC_FLAG_TOPFIELD || field == VDEC_FLAG_BOTTOMFIELD);
     if (!(out.PoutFlags & BC_POUT_FLAGS_PIB_VALID) || !out.Ybuff ||
         out.b422Mode != OUTPUT_MODE422_YUY2 ||
         (out.PoutFlags & BC_POUT_FLAGS_ENCRYPTED) ||
-        !(out.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) ||
-        (field != VDEC_FLAG_TOPFIELD && field != VDEC_FLAG_BOTTOMFIELD) ||
-        out.PicInfo.width != input.width ||
-        (out.PicInfo.height != input.height &&
-         !(input.height == 1080 && out.PicInfo.height == 1088)))
+        !kind || out.PicInfo.width != expected.width ||
+        (out.PicInfo.height != expected.height &&
+         !(expected.alternate_height &&
+           out.PicInfo.height == expected.alternate_height)))
         return false;
-    const uint64_t row_pitch = ((static_cast<uint64_t>(input.width) + 15U) &
+    const uint64_t row_pitch = ((static_cast<uint64_t>(expected.width) + 15U) &
                                ~15ULL) * 2U;
-    const uint64_t field_rows = (static_cast<uint64_t>(out.PicInfo.height) + 1U) / 2U;
-    const uint64_t visible_rows = (static_cast<uint64_t>(input.height) + 1U) / 2U;
-    const uint64_t extent = row_pitch * field_rows;
-    const uint64_t bytes = static_cast<uint64_t>(input.width) * 2U * visible_rows;
+    const uint64_t coded_rows = expected.frame ? out.PicInfo.height :
+        (static_cast<uint64_t>(out.PicInfo.height) + 1U) / 2U;
+    const uint64_t visible_rows = expected.Rows();
+    const uint64_t extent = row_pitch * coded_rows;
+    const uint64_t bytes = static_cast<uint64_t>(expected.width) * 2U * visible_rows;
     if (!extent || extent > static_cast<uint64_t>(out.YBuffDoneSz) * 4U ||
         extent > std::numeric_limits<size_t>::max() ||
         bytes > std::numeric_limits<size_t>::max()) return false;
@@ -268,7 +322,7 @@ bool FieldGeometry(const Input &input, const BC_DTS_PROC_OUT &out,
 }
 
 struct Capture {
-    const Input &input;
+    const OutputGeometry &geometry;
     unsigned expected;
     unsigned multiplicity;
     File &pixels;
@@ -277,16 +331,15 @@ struct Capture {
     std::vector<unsigned> parities;
     std::vector<uint8_t> staging;
     uint64_t bytes = 0;
-    unsigned fields = 0, formats = 0;
+    unsigned outputs = 0, formats = 0;
     bool marker = false, eos = false;
     unsigned ready = 0;
 
-    Capture(const Input &source, unsigned count, unsigned per_input,
+    Capture(const OutputGeometry &output, unsigned count, unsigned per_input,
             File &raw, File &tsv)
-        : input(source), expected(count), multiplicity(per_input), pixels(raw),
+        : geometry(output), expected(count), multiplicity(per_input), pixels(raw),
           metadata(tsv), seen(count, 0), parities(count, 0),
-          staging(static_cast<size_t>(source.width) * 2U *
-                  ((source.height + 1U) / 2U)) {}
+          staging(static_cast<size_t>(output.width) * 2U * output.Rows()) {}
 
     bool Receive(HANDLE handle) {
         for (unsigned attempt = 0; attempt < 32; ++attempt) {
@@ -296,8 +349,8 @@ struct Capture {
             ready = driver.ReadyListCount;
             if (!ready) break;
             BC_DTS_PROC_OUT out = {};
-            out.PicInfo.width = input.width;
-            out.PicInfo.height = input.height;
+            out.PicInfo.width = geometry.width;
+            out.PicInfo.height = geometry.height;
             const BC_STATUS status = DtsProcOutputNoCopy(handle, 0, &out);
             const bool is_marker = (out.PicInfo.flags & VDEC_FLAG_EOS) != 0;
             marker |= is_marker;
@@ -316,12 +369,13 @@ struct Capture {
                 continue;
             }
             size_t pitch = 0, rows = 0, active_bytes = 0, index = 0;
-            const bool valid = FieldGeometry(input, out, &pitch, &rows,
+            const bool valid = PayloadGeometry(geometry, out, &pitch, &rows,
                 &active_bytes) && TokenIndex(out.PicInfo.timeStamp, expected,
-                &index) && fields < expected * 2U &&
+                &index) && outputs < expected * multiplicity &&
+                seen[index] < multiplicity &&
                 active_bytes <= kOutputLimit - bytes;
             if (valid) {
-                const size_t row_bytes = static_cast<size_t>(input.width) * 2U;
+                const size_t row_bytes = static_cast<size_t>(geometry.width) * 2U;
                 for (size_t row = 0; row < rows; ++row)
                     std::memcpy(staging.data() + row * row_bytes,
                         out.Ybuff + row * pitch, row_bytes);
@@ -332,7 +386,8 @@ struct Capture {
             const uint32_t pout = out.PoutFlags, words = out.YBuffDoneSz;
             if (!lease.Release()) return false;
             if (!valid) {
-                std::fprintf(stderr, "invalid-field token=%llu ordinal=%u geometry=%ux%u flags=%#x pout=%#x words=%u\n",
+                std::fprintf(stderr, "invalid-%s token=%llu ordinal=%u geometry=%ux%u flags=%#x pout=%#x words=%u\n",
+                    geometry.Kind(),
                     static_cast<unsigned long long>(info.timeStamp),
                     info.picture_number, info.width, info.height, info.flags,
                     pout, words);
@@ -340,19 +395,20 @@ struct Capture {
             }
             char line[512];
             const int length = std::snprintf(line, sizeof(line),
-                "%u\t%llu\t%u\t%u\t%u\t%u\t%#x\t%#x\t%u\t%u\t%zu\t%u\t%zu\t%llu\t%zu\n",
-                fields, static_cast<unsigned long long>(info.timeStamp),
+                "%u\t%llu\t%u\t%u\t%u\t%u\t%#x\t%#x\t%u\t%u\t%zu\t%u\t%zu\t%llu\t%zu\t%s\n",
+                outputs, static_cast<unsigned long long>(info.timeStamp),
                 info.picture_number, info.sess_num, info.width, info.height,
                 info.flags, pout, info.chroma_format, words, pitch,
-                (info.height + 1U) / 2U, rows,
-                static_cast<unsigned long long>(bytes), active_bytes);
+                geometry.frame ? info.height : (info.height + 1U) / 2U, rows,
+                static_cast<unsigned long long>(bytes), active_bytes,
+                geometry.Kind());
             if (length <= 0 || static_cast<size_t>(length) >= sizeof(line) ||
                 !pixels.Write(staging.data(), active_bytes) ||
                 !metadata.Write(line, static_cast<size_t>(length))) return false;
             ++seen[index];
             parities[index] |= (info.flags & VDEC_FLAG_BOTTOMFIELD) ==
                 VDEC_FLAG_BOTTOMFIELD ? 2U : 1U;
-            ++fields;
+            ++outputs;
             bytes += active_bytes;
         }
         uint8_t ended = 0;
@@ -363,7 +419,7 @@ struct Capture {
     }
 
     bool Exact() const {
-        return fields == expected * multiplicity &&
+        return outputs == expected * multiplicity &&
             std::all_of(seen.begin(), seen.end(), [this](unsigned count) {
                 return count == multiplicity;
             }) && (multiplicity == 1U ||
@@ -373,7 +429,8 @@ struct Capture {
     }
 };
 
-bool Run(const Input &input, unsigned expected, bool single,
+bool Run(const Input &input, const Options &options,
+         const OutputGeometry &geometry, unsigned expected, bool single,
          File &raw, File &tsv, Deadline *deadline) {
     Device device;
     const uint32_t mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW |
@@ -392,6 +449,11 @@ bool Run(const Input &input, unsigned expected, bool single,
     format.startCodeSz = 4;
     if (ok) ok = Status("DtsSetInputFormat", DtsSetInputFormat(device.handle,
         &format));
+    if (ok && options.scale_width) {
+        BC_SCALING_PARAMS scale = {};
+        scale.sWidth = options.scale_width;
+        ok = Status("DtsSetScaleParams", DtsSetScaleParams(device.handle, &scale));
+    }
     if (ok) device.opened = ok = Status("DtsOpenDecoder",
         DtsOpenDecoder(device.handle, BC_STREAM_TYPE_ES));
     if (ok) ok = Status("DtsSetColorSpace", DtsSetColorSpace(device.handle,
@@ -411,7 +473,8 @@ bool Run(const Input &input, unsigned expected, bool single,
         ok = Status("DtsFWSetSingleField", status);
     }
     if (ok) ok = Status("DtsStartCapture", DtsStartCapture(device.handle));
-    Capture capture(input, expected, single ? 1U : 2U, raw, tsv);
+    Capture capture(geometry, expected, geometry.frame || single ? 1U : 2U,
+        raw, tsv);
     size_t submitted = 0;
     bool flushed = false;
     while (ok && !deadline->Expired()) {
@@ -449,15 +512,16 @@ bool Run(const Input &input, unsigned expected, bool single,
         capture.eos && capture.ready == 0 && capture.Exact();
     const bool closed = device.Close();
     ok = closed && ok;
-    std::printf("single=%u inputs=%zu expected-inputs=%u fields=%u expected-fields=%u eos=%u marker=%u ready=%u formats=%u bytes=%llu cleanup=%s result=%s\n",
-        single, submitted, expected, capture.fields,
-        expected * (single ? 1U : 2U), capture.eos, capture.marker,
+    std::printf("single=%u inputs=%zu expected-inputs=%u payload-kind=%s scale-width=%u geometry=%ux%u outputs=%u expected-outputs=%u eos=%u marker=%u ready=%u formats=%u bytes=%llu cleanup=%s result=%s\n",
+        single, submitted, expected, geometry.Kind(), options.scale_width,
+        geometry.width, geometry.height, capture.outputs,
+        expected * capture.multiplicity, capture.eos, capture.marker,
         capture.ready, capture.formats,
         static_cast<unsigned long long>(capture.bytes),
         closed ? "PASS" : "FAIL", ok ? "PASS" : "FAIL");
     for (size_t i = 0; i < capture.seen.size(); ++i) {
         if (capture.seen[i] != capture.multiplicity)
-            std::printf("token=%llu fields=%u expected=%u\n",
+            std::printf("token=%llu outputs=%u expected=%u\n",
                 static_cast<unsigned long long>(Token(i)), capture.seen[i],
                 capture.multiplicity);
     }
@@ -470,6 +534,8 @@ bool SelfTest() {
     Input input;
     input.width = 1920;
     input.height = 1080;
+    Options options;
+    OutputGeometry geometry;
     BC_DTS_PROC_OUT out = {};
     uint8_t dummy = 0;
     out.Ybuff = &dummy;
@@ -480,29 +546,68 @@ bool SelfTest() {
     out.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD;
     out.YBuffDoneSz = 1920U * 2U * 540U / 4U;
     size_t pitch = 0, rows = 0, bytes = 0;
-    bool ok = Number("50", &value) && value == 50 &&
+    bool ok = SelectGeometry(input, options, &geometry) &&
+        Number("50", &value) && value == 50 &&
         !Number("0", &value) && !Number("1001", &value) &&
         !Number("-1", &value) && !Number("1x", &value) &&
         TokenIndex(Token(49), 50, &index) && index == 49 &&
         !TokenIndex(0, 50, &index) && !TokenIndex(100001, 50, &index) &&
         !TokenIndex(Token(50), 50, &index) &&
-        FieldGeometry(input, out, &pitch, &rows, &bytes) &&
+        PayloadGeometry(geometry, out, &pitch, &rows, &bytes) &&
         pitch == 3840 && rows == 540 && bytes == 2073600;
     --out.YBuffDoneSz;
-    ok = !FieldGeometry(input, out, &pitch, &rows, &bytes) && ok;
+    ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
     ++out.YBuffDoneSz;
     out.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC;
-    ok = !FieldGeometry(input, out, &pitch, &rows, &bytes) && ok;
+    ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
     out.PicInfo.flags |= VDEC_FLAG_BOTTOMFIELD;
     out.PoutFlags |= BC_POUT_FLAGS_ENCRYPTED;
-    ok = !FieldGeometry(input, out, &pitch, &rows, &bytes) && ok;
+    ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
     out.PoutFlags &= ~BC_POUT_FLAGS_ENCRYPTED;
     out.PicInfo.height = 1088;
     out.YBuffDoneSz = 1920U * 2U * 544U / 4U;
-    ok = FieldGeometry(input, out, &pitch, &rows, &bytes) &&
+    ok = PayloadGeometry(geometry, out, &pitch, &rows, &bytes) &&
         pitch == 3840 && rows == 540 && bytes == 2073600 && ok;
     --out.YBuffDoneSz;
-    ok = !FieldGeometry(input, out, &pitch, &rows, &bytes) && ok;
+    ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
+
+    options.scale_width = 960;
+    ok = SelectGeometry(input, options, &geometry) &&
+        geometry.width == 960 && geometry.height == 540 && ok;
+    out.PicInfo.width = 960;
+    out.PicInfo.height = 540;
+    out.YBuffDoneSz = 960U * 2U * 270U / 4U;
+    ok = PayloadGeometry(geometry, out, &pitch, &rows, &bytes) &&
+        pitch == 1920 && rows == 270 && bytes == 518400 && ok;
+    --out.YBuffDoneSz;
+    ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
+    input.height = 1076;
+    ok = SelectGeometry(input, options, &geometry) && geometry.height == 540 && ok;
+    options.scale_width = 962;
+    ok = !SelectGeometry(input, options, &geometry) && ok;
+    options.scale_width = 1920;
+    ok = !SelectGeometry(input, options, &geometry) && ok;
+    options.scale_width = 0;
+    options.frame_output = true;
+    ok = !SelectGeometry(input, options, &geometry) && ok;
+    input.width = 1280;
+    input.height = 720;
+    ok = SelectGeometry(input, options, &geometry) && geometry.frame && ok;
+    out.PicInfo.width = 1280;
+    out.PicInfo.height = 720;
+    out.PicInfo.flags = VDEC_FLAG_FIELDPAIR;
+    out.YBuffDoneSz = 1280U * 2U * 720U / 4U;
+    ok = PayloadGeometry(geometry, out, &pitch, &rows, &bytes) &&
+        pitch == 2560 && rows == 720 && bytes == 1843200 && ok;
+    out.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD;
+    ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
+    out.PicInfo.flags = 0;
+    out.PicInfo.height = 736;
+    ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
+    out.YBuffDoneSz = 1280U * 2U * 736U / 4U;
+    ok = PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && rows == 720 && ok;
+    options.scale_width = 640;
+    ok = !SelectGeometry(input, options, &geometry) && ok;
     std::printf("single-field device-free guards: %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -512,10 +617,21 @@ int main(int argc, char **argv) {
     if (argc == 2 && !std::strcmp(argv[1], "--self-test"))
         return SelfTest() ? 0 : 1;
     unsigned expected = 0;
-    if (argc != 5 || !Number(argv[2], &expected) ||
+    Options options;
+    bool arguments = true;
+    for (int i = 5; i < argc && arguments; ++i) {
+        if (!std::strcmp(argv[i], "--scale-width") && !options.scale_width &&
+            i + 1 < argc) {
+            arguments = Number(argv[++i], &options.scale_width, 1918);
+        } else if (!std::strcmp(argv[i], "--frame-output") &&
+                   !options.frame_output) {
+            options.frame_output = true;
+        } else arguments = false;
+    }
+    if (argc < 5 || !arguments || !Number(argv[2], &expected) ||
         (std::strcmp(argv[3], "0") && std::strcmp(argv[3], "1")) ||
         argv[4][0] != '/' || !argv[4][1]) {
-        std::fprintf(stderr, "usage: %s INPUT EXPECTED_INPUTS_1_TO_1000 0_OR_1 /absolute/NEW_OUTPUT_PREFIX | --self-test\n", argv[0]);
+        std::fprintf(stderr, "usage: %s INPUT EXPECTED_INPUTS_1_TO_1000 0_OR_1 /absolute/NEW_OUTPUT_PREFIX [--scale-width WIDTH_128_TO_1918_MULTIPLE_16 | --frame-output] | --self-test\n", argv[0]);
         return 2;
     }
     std::signal(SIGINT, Signal);
@@ -527,8 +643,13 @@ int main(int argc, char **argv) {
         return 2;
     }
     const bool single = !std::strcmp(argv[3], "1");
-    const uint64_t budget = static_cast<uint64_t>(input.width) * 2U *
-        ((input.height + 1U) / 2U) * expected * (single ? 1U : 2U);
+    OutputGeometry geometry;
+    if (!SelectGeometry(input, options, &geometry)) {
+        std::fprintf(stderr, "Require native field geometry, a multiple-of-16 scale width no greater than source width, or unscaled 1280x720 --frame-output; no device opened\n");
+        return 2;
+    }
+    const uint64_t budget = static_cast<uint64_t>(geometry.width) * 2U *
+        geometry.Rows() * expected * (geometry.frame || single ? 1U : 2U);
     if (budget > kOutputLimit) {
         std::fprintf(stderr, "Capture would exceed 256 MiB; no device opened\n");
         return 2;
@@ -539,10 +660,11 @@ int main(int argc, char **argv) {
         std::perror("new output file");
         return 2;
     }
-    const char header[] = "field_index\ttoken\tpicture_number\tsession\twidth\theight\tpicture_flags\tpout_flags\tchroma_format\ty_done_words\tsource_pitch\tcoded_field_rows\tvisible_field_rows\tbyte_offset\tbytes\n";
+    const char header[] = "output_index\ttoken\tpicture_number\tsession\twidth\theight\tpicture_flags\tpout_flags\tchroma_format\ty_done_words\tsource_pitch\tcoded_output_rows\toutput_rows\tbyte_offset\tbytes\tpayload_kind\n";
     if (!tsv.Write(header, sizeof(header) - 1U)) return 2;
     try {
-        const bool passed = Run(input, expected, single, raw, tsv, &deadline);
+        const bool passed = Run(input, options, geometry, expected, single,
+            raw, tsv, &deadline);
         const bool finished_raw = raw.Finish();
         const bool finished_tsv = tsv.Finish();
         return passed && finished_raw && finished_tsv ? 0 : 1;
