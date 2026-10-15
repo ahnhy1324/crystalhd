@@ -103,6 +103,8 @@ jobs:
           filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/h264-samples/high.mp4" --software
           filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/h264-samples/high.mp4" --software --lookahead 8
           filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/h264-samples/high.mp4" --software --retain-old-frames
+          python3 tests/vaapi-seek.test.py filters/vaapi/vaapi-seek-test \
+            "$RUNNER_TEMP/h264-samples/high.mp4" 180
           make library-drain-test
           ffmpeg -nostdin -hide_banner -loglevel error -n \
             -i "$RUNNER_TEMP/h264-samples/high.mp4" -map 0:v:0 -c:v copy \

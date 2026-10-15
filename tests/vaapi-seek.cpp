@@ -12,9 +12,11 @@ extern "C" {
 
 #include <array>
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <limits>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -34,6 +36,23 @@ static void Check(int result, const char *operation) {
   char error[AV_ERROR_MAX_STRING_SIZE];
   av_strerror(result, error, sizeof(error));
   throw std::runtime_error(std::string(operation) + ": " + error);
+}
+
+static size_t ParseExpectedFrames(const char *text) {
+  if (!text || !*text)
+    throw std::runtime_error("--expected-frames requires a positive integer");
+  size_t value = 0;
+  for (const unsigned char byte : std::string(text)) {
+    if (byte < '0' || byte > '9')
+      throw std::runtime_error("--expected-frames requires a positive integer");
+    const size_t digit = byte - '0';
+    if (value > (std::numeric_limits<size_t>::max() - digit) / 10)
+      throw std::runtime_error("--expected-frames is out of range");
+    value = value * 10 + digit;
+  }
+  if (value == 0)
+    throw std::runtime_error("--expected-frames requires a positive integer");
+  return value;
 }
 
 static AVPixelFormat ChooseHardware(AVCodecContext *, const AVPixelFormat *formats) {
@@ -184,6 +203,7 @@ struct Probe {
   bool export_prime = false;
   bool retain_old_frames = false;
   size_t lookahead = 0;
+  size_t expected_frames = 0;
   size_t deferred_at_limit = 0;
   std::map<int64_t, Picture> reference;
   std::map<int64_t, AVPictureType> reference_types;
@@ -237,8 +257,19 @@ struct Probe {
           parameters->field_order != AV_FIELD_UNKNOWN)
         throw std::runtime_error("VC-1 validation requires progressive pictures");
     }
-    if (input->streams[stream]->nb_frames <= 0)
-      throw std::runtime_error("container must declare a reliable frame count; use generated MP4/MOV samples");
+    const int64_t declared_frames = input->streams[stream]->nb_frames;
+    if (declared_frames > 0) {
+      if (static_cast<uint64_t>(declared_frames) >
+          std::numeric_limits<size_t>::max())
+        throw std::runtime_error("declared frame count is out of range");
+      const size_t declared = static_cast<size_t>(declared_frames);
+      if (expected_frames != 0 && expected_frames != declared)
+        throw std::runtime_error("--expected-frames conflicts with the container's declared frame count");
+      expected_frames = declared;
+    } else if (expected_frames == 0) {
+      throw std::runtime_error(
+          "container has no declared frame count; provide an independently verified --expected-frames boundary");
+    }
     device_path = device;
     OpenDecoder();
   }
@@ -469,9 +500,8 @@ struct Probe {
       throw std::runtime_error("use an input with at least 60 frames");
     if (retain_old_frames && count < 80)
       throw std::runtime_error("retained-frame regression requires at least 80 frames");
-    const int64_t declared = input->streams[stream]->nb_frames;
-    if (declared > 0 && count != static_cast<size_t>(declared))
-      throw std::runtime_error("reference did not drain the declared frame count");
+    if (count != expected_frames)
+      throw std::runtime_error("reference did not drain the expected frame count");
     std::printf("reference: %zu %s frames drained\n", count,
                 software ? "software" : "VA-API");
     if (export_prime) {
@@ -520,8 +550,8 @@ struct Probe {
 };
 
 int main(int argc, char **argv) {
-  if (argc < 2 || argc > 7) {
-    std::fprintf(stderr, "usage: %s VIDEO_CONTAINER [DRM_DEVICE|--software] [--lookahead 8] [--retain-old-frames] [--export-prime]\n", argv[0]);
+  if (argc < 2 || argc > 9) {
+    std::fprintf(stderr, "usage: %s VIDEO_CONTAINER [DRM_DEVICE|--software] [--lookahead 8] [--expected-frames COUNT] [--retain-old-frames] [--export-prime]\n", argv[0]);
     return 2;
   }
   try {
@@ -542,6 +572,11 @@ int main(int argc, char **argv) {
             std::strcmp(argv[++argument], "8") != 0)
           throw std::runtime_error("lookahead must be specified once as --lookahead 8");
         probe.lookahead = 8;
+      } else if (std::strcmp(argv[argument], "--expected-frames") == 0) {
+        if (probe.expected_frames != 0 || argument + 1 == argc)
+          throw std::runtime_error(
+              "--expected-frames must be specified once with a positive integer");
+        probe.expected_frames = ParseExpectedFrames(argv[++argument]);
       } else {
         if (mode_selected)
           throw std::runtime_error("choose only one DRM device or --software");

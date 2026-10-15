@@ -372,11 +372,11 @@ assuming an installed module is the one in use.
 ## Seek, flush and retained frames
 
 The probe also accepts progressive MPEG-2 Simple/Main, MPEG-4 Simple/Advanced
-Simple and VC-1/WMV3 in seekable containers with reliable declared frame counts
-and distinct picture timestamps. Open-GOP seeking requires the client to supply
-earlier reference pictures: a demuxer seek to a later I picture can skip leading
-B pictures even in software decoding. The probe does not certify arbitrary
-files' seek indices or preroll.
+Simple and VC-1/WMV3 in seekable containers with distinct picture timestamps.
+It normally requires a reliable declared frame count. Open-GOP seeking requires
+the client to supply earlier reference pictures: a demuxer seek to a later I
+picture can skip leading B pictures even in software decoding. The probe does
+not certify arbitrary files' seek indices or preroll.
 
 Install the `libavcodec`, `libavformat`, `libavutil` and `libva` development
 packages, then build the optional probe:
@@ -388,6 +388,12 @@ LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
 timeout --kill-after=10 120s filters/vaapi/vaapi-seek-test \
   /tmp/crystalhd-samples/high.mp4
 ```
+
+Some ASF/WMV containers omit `nb_frames`. Only when the fixture's exact decoded
+boundary was established independently, supply it explicitly, for example
+`--expected-frames 480`. The reference pass must still reach EOF with exactly
+that many pictures. A conflicting declared count is rejected; do not estimate
+this value from duration and frame rate or use it to excuse a short drain.
 
 The frozen 60-picture Full HD VC-1 Advanced elementary fixture needs a
 timestamped index before this probe can seek it. Build a new external MOV and
