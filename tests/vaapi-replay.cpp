@@ -2,8 +2,58 @@
 // Production replay state and output processing with private CPU memory only.
 // No device, decoder, capture, firmware, or DRM operation is started.
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
+#include <cstdlib>
+#include <new>
 #include <stdexcept>
 #include <string>
+
+namespace allocation_fault {
+thread_local bool fail_next = false;
+void *Allocate(size_t bytes) {
+  if (fail_next) {
+    fail_next = false;
+    throw std::bad_alloc();
+  }
+  if (void *result = std::malloc(bytes == 0 ? 1 : bytes))
+    return result;
+  throw std::bad_alloc();
+}
+}
+
+void *operator new(size_t bytes) { return allocation_fault::Allocate(bytes); }
+void *operator new[](size_t bytes) { return allocation_fault::Allocate(bytes); }
+void *operator new(size_t bytes, const std::nothrow_t &) noexcept {
+  try { return allocation_fault::Allocate(bytes); } catch (...) { return nullptr; }
+}
+void *operator new[](size_t bytes, const std::nothrow_t &) noexcept {
+  try { return allocation_fault::Allocate(bytes); } catch (...) { return nullptr; }
+}
+#if defined(__GNUC__) || defined(__clang__)
+#define CRYSTALHD_TEST_NOINLINE __attribute__((noinline))
+#else
+#define CRYSTALHD_TEST_NOINLINE
+#endif
+CRYSTALHD_TEST_NOINLINE void operator delete(void *pointer) noexcept {
+  std::free(pointer);
+}
+CRYSTALHD_TEST_NOINLINE void operator delete[](void *pointer) noexcept {
+  std::free(pointer);
+}
+CRYSTALHD_TEST_NOINLINE void operator delete(void *pointer, size_t) noexcept {
+  std::free(pointer);
+}
+CRYSTALHD_TEST_NOINLINE void operator delete[](void *pointer, size_t) noexcept {
+  std::free(pointer);
+}
+CRYSTALHD_TEST_NOINLINE void operator delete(
+    void *pointer, const std::nothrow_t &) noexcept {
+  std::free(pointer);
+}
+CRYSTALHD_TEST_NOINLINE void operator delete[](
+    void *pointer, const std::nothrow_t &) noexcept {
+  std::free(pointer);
+}
+#undef CRYSTALHD_TEST_NOINLINE
 
 static int mock_sync_fd = -1;
 static uint64_t mock_failed_sync_flags = 0;
@@ -227,6 +277,11 @@ struct DecodeIoMock {
   unsigned int output_polls = 0;
   unsigned int eos_queries = 0;
   unsigned int eos_after_queries = 0;
+  unsigned int device_close_busy = 0;
+  unsigned int device_close_calls = 0;
+  BC_STATUS stop_status = BC_STS_SUCCESS;
+  BC_STATUS decoder_close_status = BC_STS_SUCCESS;
+  BC_STATUS device_close_status = BC_STS_SUCCESS;
   std::vector<uint32_t> status_requests;
   std::thread::id output_thread;
   std::atomic<unsigned int> accepted_inputs{0};
@@ -251,6 +306,8 @@ extern "C" BC_STATUS __wrap_DtsDeviceOpen(HANDLE *device, uint32_t mode) {
   if (decode_io_mock == nullptr)
     return __real_DtsDeviceOpen(device, mode);
   ++decode_io_mock->open_attempts;
+  decode_io_mock->invalid |= device == nullptr ||
+                             (device != nullptr && *device != nullptr);
   if (decode_io_mock->allow_device_open) {
     *device = decode_io_mock->handle();
     return BC_STS_SUCCESS;
@@ -294,7 +351,23 @@ extern "C" BC_STATUS __wrap_DtsSetInputFormat(
                                                 : BC_STS_SUCCESS;
 }
 
-#define MOCK_CLOSE_OPERATION(name, event) \
+#define MOCK_OPEN_OPERATION(name, arguments, validation) \
+  extern "C" BC_STATUS __real_##name arguments; \
+  extern "C" BC_STATUS __wrap_##name arguments { \
+    if (decode_io_mock == nullptr) \
+      return __real_##name validation; \
+    decode_io_mock->invalid |= device != decode_io_mock->handle(); \
+    return BC_STS_SUCCESS; \
+  }
+MOCK_OPEN_OPERATION(DtsOpenDecoder, (HANDLE device, uint32_t stream_type),
+                    (device, stream_type))
+MOCK_OPEN_OPERATION(DtsSetColorSpace, (HANDLE device, BC_OUTPUT_FORMAT format),
+                    (device, format))
+MOCK_OPEN_OPERATION(DtsStartDecoder, (HANDLE device), (device))
+MOCK_OPEN_OPERATION(DtsStartCapture, (HANDLE device), (device))
+#undef MOCK_OPEN_OPERATION
+
+#define MOCK_CLOSE_OPERATION(name, event, result) \
   extern "C" BC_STATUS __real_##name(HANDLE); \
   extern "C" BC_STATUS __wrap_##name(HANDLE device) { \
     if (decode_io_mock == nullptr) \
@@ -302,12 +375,26 @@ extern "C" BC_STATUS __wrap_DtsSetInputFormat(
     decode_io_mock->invalid |= device != decode_io_mock->handle(); \
     decode_io_mock->prefed_timestamp = 0; \
     decode_io_mock->events.push_back(event); \
-    return BC_STS_SUCCESS; \
+    return decode_io_mock->result; \
   }
-MOCK_CLOSE_OPERATION(DtsStopDecoder, "stop")
-MOCK_CLOSE_OPERATION(DtsCloseDecoder, "close-decoder")
-MOCK_CLOSE_OPERATION(DtsDeviceClose, "close-device")
+MOCK_CLOSE_OPERATION(DtsStopDecoder, "stop", stop_status)
+MOCK_CLOSE_OPERATION(DtsCloseDecoder, "close-decoder", decoder_close_status)
 #undef MOCK_CLOSE_OPERATION
+
+extern "C" BC_STATUS __real_DtsDeviceClose(HANDLE);
+extern "C" BC_STATUS __wrap_DtsDeviceClose(HANDLE device) {
+  if (decode_io_mock == nullptr)
+    return __real_DtsDeviceClose(device);
+  decode_io_mock->invalid |= device != decode_io_mock->handle();
+  decode_io_mock->prefed_timestamp = 0;
+  decode_io_mock->events.push_back("close-device");
+  ++decode_io_mock->device_close_calls;
+  if (decode_io_mock->device_close_busy != 0) {
+    --decode_io_mock->device_close_busy;
+    return BC_STS_BUSY;
+  }
+  return decode_io_mock->device_close_status;
+}
 
 extern "C" BC_STATUS __real_DtsGetDriverStatus(HANDLE, BC_DTS_STATUS *);
 extern "C" BC_STATUS __wrap_DtsGetDriverStatus(HANDLE device, BC_DTS_STATUS *status) {
@@ -1416,6 +1503,234 @@ static void H264FieldPartialStateClearsAtTeardownAndEos() {
   }
 }
 
+static void H264FirstFieldAllocationFailureReleasesOutput() {
+  DecodeIoMock io;
+  H264FieldFixture fixture;
+  io.output_width = 16;
+  io.output_height = 32;
+  io.outputs.push_back(1);
+  io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC |
+                             VDEC_FLAG_TOPFIELD);
+  io.pixels.resize(16 * 16 * 2);
+  io.events.reserve(4);
+  MockDecodeScope scope(io);
+  fixture.decoder.device = io.handle();
+  bool activity = false;
+  allocation_fault::fail_next = true;
+  const VAStatus status =
+      ReceiveOne(&fixture.driver, &fixture.decoder, 0, &activity);
+  Require(status == VA_STATUS_ERROR_ALLOCATION_FAILED && activity &&
+              !allocation_fault::fail_next &&
+              !fixture.decoder.h264_first_field.valid &&
+              fixture.decoder.h264_first_field.pixels.empty() &&
+              fixture.decoder.replay.failed() &&
+              fixture.private_frame->failed && fixture.public_frame->failed &&
+              std::count(io.events.begin(), io.events.end(), "picture") == 1 &&
+              std::count(io.events.begin(), io.events.end(), "release") == 1 &&
+              !io.invalid,
+          "first-field allocation failure fails closed and releases its hardware output exactly once");
+}
+
+static void OutputAllocationFailuresReleaseHardwareExactlyOnce() {
+  {
+    DecodeIoMock io;
+    OutputFixture fixture;
+    fixture.Direct();
+    // Keep the public surface as the exact current target, but force the
+    // private picture to promote from a distinct direct backing.
+    fixture.private_frame->direct_backing = std::make_shared<Surface>();
+    io.outputs.push_back(1);
+    io.pixels.resize(16 * 16 * 2);
+    io.events.reserve(4);
+    MockDecodeScope scope(io);
+    fixture.decoder.device = io.handle();
+    bool activity = false;
+    allocation_fault::fail_next = true;
+    const VAStatus status =
+        ReceiveOne(&fixture.driver, &fixture.decoder, 0, &activity);
+    Require(status == VA_STATUS_ERROR_ALLOCATION_FAILED && activity &&
+                !allocation_fault::fail_next && fixture.decoder.replay.failed() &&
+                fixture.private_frame->failed && !fixture.private_frame->ready &&
+                fixture.public_frame->failed && !fixture.public_frame->ready &&
+                std::count(io.events.begin(), io.events.end(), "picture") == 1 &&
+                std::count(io.events.begin(), io.events.end(), "release") == 1 &&
+                !io.invalid,
+            "post-dequeue private promotion failure poisons both exact identities and releases once");
+  }
+
+  {
+    DecodeIoMock io;
+    OutputFixture fixture;
+    fixture.decoder.experimental_ready_remap = true;
+    fixture.private_frame->trace_submission_ordinal = 1;
+    fixture.private_frame->trace_context = 7;
+    fixture.private_frame->trace_generation = fixture.decoder.generation;
+    const auto dummy = std::make_shared<Surface>();
+    bool boundary = false;
+    for (size_t attempt = 0; attempt < 4096; ++attempt) {
+      allocation_fault::fail_next = true;
+      try {
+        fixture.decoder.experimental_ready.push_back(dummy);
+      } catch (const std::bad_alloc &) {
+        boundary = true;
+        break;
+      }
+    }
+    Require(boundary && !allocation_fault::fail_next,
+            "locate the next real deque allocation boundary");
+    const size_t queued_before = fixture.decoder.experimental_ready.size();
+    io.outputs.push_back(1);
+    io.pixels.resize(16 * 16 * 2);
+    io.events.reserve(4);
+    MockDecodeScope scope(io);
+    fixture.decoder.device = io.handle();
+    bool activity = false;
+    allocation_fault::fail_next = true;
+    const VAStatus status =
+        ReceiveOne(&fixture.driver, &fixture.decoder, 0, &activity);
+    Require(status == VA_STATUS_ERROR_ALLOCATION_FAILED && activity &&
+                !allocation_fault::fail_next && fixture.decoder.replay.failed() &&
+                fixture.decoder.experimental_ready.size() == queued_before &&
+                !fixture.private_frame->experimental_ready_queued &&
+                fixture.private_frame->experimental_ready_at_ns == 0 &&
+                fixture.private_frame->failed && !fixture.private_frame->ready &&
+                fixture.public_frame->failed && !fixture.public_frame->ready &&
+                std::count(io.events.begin(), io.events.end(), "picture") == 1 &&
+                std::count(io.events.begin(), io.events.end(), "release") == 1 &&
+                !io.invalid,
+            "READY queue allocation failure leaves no ghost entry and releases once");
+  }
+}
+
+static void DeviceCloseRetriesNonConsumingBusy() {
+  DecodeIoMock io;
+  MockDecodeScope scope(io);
+  DecodeContext decoder;
+  decoder.device = io.handle();
+  const auto poll = std::make_shared<OutputPollLease>(-1);
+  decoder.output_poll = poll;
+  decoder.armed_output_poll = poll;
+  io.events.reserve(8);
+  io.device_close_busy = 1;
+  Require(decoder.CloseHardware(0) == BC_STS_BUSY &&
+              decoder.device == io.handle() && decoder.output_poll == poll &&
+              !decoder.armed_output_poll.expired() &&
+              !decoder.decoder_open && !decoder.decoder_started &&
+              io.device_close_calls == 1 &&
+              std::count(io.events.begin(), io.events.end(), "stop") == 0 &&
+              std::count(io.events.begin(), io.events.end(),
+                         "close-decoder") == 0 &&
+              std::count(io.events.begin(), io.events.end(),
+                         "close-device") == 1 &&
+              !io.invalid,
+          "non-consuming device-close BUSY retains the exact handle and poll leases");
+  Require(decoder.CloseHardware(0) == BC_STS_SUCCESS &&
+              decoder.device == nullptr && !decoder.output_poll &&
+              decoder.armed_output_poll.expired() &&
+              io.device_close_calls == 2 &&
+              std::count(io.events.begin(), io.events.end(), "stop") == 0 &&
+              std::count(io.events.begin(), io.events.end(),
+                         "close-decoder") == 0 &&
+              std::count(io.events.begin(), io.events.end(),
+                         "close-device") == 2 &&
+              !io.invalid,
+          "retry consumes the retained handle without repeating decoder teardown");
+
+  DecodeContext lifecycle;
+  lifecycle.device = io.handle();
+  lifecycle.decoder_open = true;
+  lifecycle.decoder_started = true;
+  io.stop_status = BC_STS_BUSY;
+  const unsigned int calls = io.device_close_calls;
+  io.device_close_busy = 1;
+  Require(lifecycle.CloseHardware(0) == BC_STS_BUSY &&
+              lifecycle.device == io.handle() && lifecycle.decoder_started &&
+              lifecycle.decoder_open && lifecycle.hardware_close_pending &&
+              io.device_close_calls == calls + 1,
+          "Stop BUSY falls through to terminal DeviceClose and preserves state only when it too is BUSY");
+  io.stop_status = BC_STS_SUCCESS;
+  io.decoder_close_status = BC_STS_BUSY;
+  io.device_close_busy = 1;
+  Require(lifecycle.CloseHardware(0) == BC_STS_BUSY &&
+              lifecycle.device == io.handle() && !lifecycle.decoder_started &&
+              lifecycle.decoder_open && lifecycle.hardware_close_pending &&
+              io.device_close_calls == calls + 2,
+          "decoder-close BUSY still reaches terminal DeviceClose without losing retry state");
+  io.decoder_close_status = BC_STS_SUCCESS;
+  Require(lifecycle.CloseHardware(0) == BC_STS_SUCCESS &&
+              lifecycle.device == nullptr && !lifecycle.decoder_started &&
+              !lifecycle.decoder_open && !lifecycle.hardware_close_pending &&
+              io.device_close_calls == calls + 3,
+          "lifecycle retries finish before consuming the exact device handle");
+
+  DecodeContext terminal;
+  terminal.device = io.handle();
+  terminal.decoder_open = true;
+  terminal.decoder_started = true;
+  io.stop_status = BC_STS_BUSY;
+  Require(terminal.CloseHardware(0) == BC_STS_SUCCESS &&
+              terminal.device == nullptr && !terminal.decoder_open &&
+              !terminal.decoder_started,
+          "terminal DeviceClose can consume a recovery-blocked lifecycle without waiting for RESUME");
+
+  DecodeContext consumed;
+  consumed.device = io.handle();
+  consumed.decoder_open = true;
+  consumed.decoder_started = true;
+  io.stop_status = BC_STS_ERROR;
+  io.decoder_close_status = BC_STS_ERROR;
+  io.device_close_busy = 1;
+  Require(consumed.CloseHardware(0) == BC_STS_BUSY &&
+              consumed.device == io.handle() &&
+              consumed.retained_close_status == BC_STS_ERROR,
+          "a retained DeviceClose cannot erase an earlier terminal lifecycle error");
+  io.stop_status = BC_STS_SUCCESS;
+  io.decoder_close_status = BC_STS_SUCCESS;
+  Require(consumed.CloseHardware(0) == BC_STS_ERROR &&
+              consumed.device == nullptr && !consumed.decoder_open &&
+              !consumed.decoder_started &&
+              consumed.retained_close_status == BC_STS_SUCCESS,
+          "terminal lifecycle errors survive BUSY retries until DeviceClose consumes ownership");
+
+  DecodeContext terminal_error;
+  terminal_error.device = io.handle();
+  const auto terminal_poll = std::make_shared<OutputPollLease>(-1);
+  terminal_error.output_poll = terminal_poll;
+  terminal_error.armed_output_poll = terminal_poll;
+  io.device_close_status = BC_STS_IO_ERROR;
+  Require(terminal_error.CloseHardware(0) == BC_STS_IO_ERROR &&
+              terminal_error.device == nullptr &&
+              !terminal_error.hardware_close_pending &&
+              !terminal_error.output_poll &&
+              terminal_error.armed_output_poll.expired() && !io.invalid,
+          "same-process terminal DeviceClose error consumes the handle and poll ownership");
+  io.device_close_status = BC_STS_SUCCESS;
+}
+
+static void RetainedHandleClosesBeforeDecoderReopen() {
+  DecodeIoMock io;
+  io.events.reserve(8);
+  io.allow_device_open = true;
+  io.device_close_busy = 1;
+  MockDecodeScope scope(io);
+  DecodeContext decoder;
+  decoder.width = decoder.height = 16;
+  decoder.device = io.handle();
+  Require(OpenDecoder(&decoder, 16, 16, nullptr, 0) ==
+                  VA_STATUS_ERROR_HW_BUSY &&
+              decoder.device == io.handle() && io.open_attempts == 0 &&
+              io.device_close_calls == 1 && !io.invalid,
+          "a retained close blocks DtsDeviceOpen and cannot overwrite its live handle");
+  Require(OpenDecoder(&decoder, 16, 16, nullptr, 0) == VA_STATUS_SUCCESS &&
+              decoder.device == io.handle() && decoder.decoder_open &&
+              decoder.decoder_started && io.open_attempts == 1 &&
+              io.device_close_calls == 2 && !io.invalid,
+          "only a consumed retained handle permits one clean decoder reopen");
+  Require(decoder.CloseHardware(0) == BC_STS_SUCCESS &&
+              decoder.device == nullptr && !io.invalid,
+          "reopened decoder closes without leaving test ownership live");
+}
+
 static void RealH264SubmitCompletesFieldPairs() {
   for (bool direct : {false, true}) {
     for (bool bottom_first : {false, true}) {
@@ -1430,6 +1745,9 @@ static void RealH264SubmitCompletesFieldPairs() {
       decoder.height = 32;
       decoder.device = io.handle();
       decoder.decoder_open = decoder.decoder_started = true;
+      const bool retained_reset = direct && bottom_first;
+      decoder.hardware_close_pending = retained_reset;
+      io.allow_device_open = retained_reset;
       decoder.live_h264 = true;
       decoder.live_h264_gap_tolerant = direct;
       decoder.live_h264_fast_path = direct;
@@ -1459,8 +1777,10 @@ static void RealH264SubmitCompletesFieldPairs() {
                       VA_STATUS_SUCCESS &&
                   io.inputs == std::vector<uint64_t>{kTimestampStep} &&
                   decoder.pending.count(kTimestampStep) == 1 &&
-                  decoder.replay.outstanding() == 1,
-              "real H.264 submit accepts one interlaced access unit");
+                  decoder.replay.outstanding() == 1 &&
+                  io.open_attempts == (retained_reset ? 1U : 0U) &&
+                  !decoder.hardware_close_pending,
+              "real H.264 submit reopens a retained reset before accepting one interlaced access unit");
       const uint32_t order = bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0;
       const uint32_t first = bottom_first ? VDEC_FLAG_BOTTOMFIELD
                                           : VDEC_FLAG_TOPFIELD;
@@ -3919,6 +4239,117 @@ struct TeardownFixture {
             "held picture remains downloadable without its decoder context");
   }
 };
+
+static void RetryableBusySurvivesContextSurfaceAndDriverTeardown() {
+  {
+    TeardownFixture fixture(1);
+    fixture.io.events.reserve(32);
+    fixture.io.device_close_busy = 1;
+    Require(DestroyContextWithTimeout(&fixture.context, 1, 0) ==
+                    VA_STATUS_ERROR_HW_BUSY &&
+                fixture.driver.contexts.count(1) == 1 &&
+                fixture.decoder->destroy_prepared && fixture.decoder->retired &&
+                fixture.decoder->device == fixture.io.handle(),
+            "context destroy retains a non-consumed device for an explicit retry");
+    const auto seal_count =
+        std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal");
+    const auto eos_count =
+        std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos");
+    const auto release_count =
+        std::count(fixture.io.events.begin(), fixture.io.events.end(), "release");
+    Require(DestroyContextWithTimeout(&fixture.context, 1, 0) ==
+                    VA_STATUS_SUCCESS &&
+                fixture.driver.contexts.count(1) == 0 &&
+                fixture.decoder->device == nullptr &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                           "seal") == seal_count &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                           "eos") == eos_count &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                           "release") == release_count &&
+                !fixture.io.invalid,
+            "context retry closes once without repeating its completed drain");
+  }
+
+  {
+    TeardownFixture fixture(1);
+    fixture.io.events.reserve(32);
+    fixture.io.early_eos = true;
+    fixture.io.device_close_busy = 1;
+    Require(DestroyContextWithTimeout(&fixture.context, 1, 0) ==
+                    VA_STATUS_ERROR_HW_BUSY &&
+                fixture.driver.contexts.count(1) == 1 &&
+                fixture.decoder->device == fixture.io.handle(),
+            "live ownership takes priority while a failed drain still has a BUSY handle");
+    Require(DestroyContextWithTimeout(&fixture.context, 1, 0) ==
+                    VA_STATUS_ERROR_DECODING_ERROR &&
+                fixture.driver.contexts.count(1) == 0 &&
+                fixture.decoder->device == nullptr,
+            "terminal retry restores the original drain failure after consuming ownership");
+  }
+
+  {
+    TeardownFixture fixture(1);
+    fixture.io.events.reserve(16);
+    fixture.io.stop_status = BC_STS_BUSY;
+    fixture.io.device_close_busy = 1;
+    const uint64_t generation = fixture.decoder->generation;
+    VASurfaceID surface = 1;
+    Require(DestroySurfacesWithTimeout(&fixture.context, &surface, 1, 0) ==
+                    VA_STATUS_ERROR_HW_BUSY &&
+                fixture.driver.surfaces.count(1) == 0 &&
+                fixture.decoder->generation == generation + 1 &&
+                fixture.decoder->device == fixture.io.handle() &&
+                fixture.decoder->decoder_started &&
+                fixture.decoder->hardware_close_pending &&
+                fixture.io.open_attempts == 0,
+            "surface-pool reset reports its retained handle after one generation retirement");
+    fixture.io.stop_status = BC_STS_SUCCESS;
+    fixture.io.allow_device_open = true;
+    Require(OpenDecoder(&*fixture.decoder, 16, 16, nullptr, 0) ==
+                    VA_STATUS_SUCCESS &&
+                fixture.decoder->device == fixture.io.handle() &&
+                fixture.io.open_attempts == 1 && !fixture.io.invalid,
+            "the next open consumes a reset handle before acquiring a replacement");
+    Require(fixture.decoder->CloseHardware(0) == BC_STS_SUCCESS,
+            "surface-reset reopen leaves no live test device");
+  }
+
+  {
+    TeardownFixture fixture(1);
+    fixture.io.events.reserve(16);
+    fixture.io.device_close_busy = 1;
+    VASurfaceID surface = 1;
+    Require(DestroySurfacesWithTimeout(&fixture.context, &surface, 1, 0) ==
+                    VA_STATUS_ERROR_HW_BUSY &&
+                fixture.decoder->hardware_close_pending &&
+                fixture.decoder->pending.empty() &&
+                !fixture.decoder->ReplaySealed(),
+            "surface reset can retain only terminal hardware ownership");
+    Require(DestroyContextWithTimeout(&fixture.context, 1, 0) ==
+                    VA_STATUS_SUCCESS &&
+                fixture.driver.contexts.count(1) == 0 &&
+                fixture.decoder->device == nullptr && !fixture.io.invalid,
+            "context destroy consumes ownership without inventing a decode failure");
+  }
+
+  {
+    DecodeIoMock io;
+    io.events.reserve(8);
+    io.device_close_busy = 1;
+    MockDecodeScope scope(io);
+    auto *driver = new Driver(-1);
+    auto decoder = std::make_shared<DecodeContext>();
+    decoder->device = io.handle();
+    driver->contexts[1] = decoder;
+    VADriverContext context = {};
+    context.pDriverData = driver;
+    Require(Terminate(&context) == VA_STATUS_SUCCESS &&
+                context.pDriverData == nullptr && decoder->device == nullptr &&
+                io.device_close_calls == 2 && !io.invalid,
+            "one public termination callback joins workers and consumes BUSY ownership before unload");
+  }
+}
 
 static void ReadyStatusProbeSkipsReadyHeadPeek() {
   {
@@ -6380,6 +6811,10 @@ int main() {
     H264Bcm70012SecondFieldTokenRecoveryIsNarrow();
     H264FieldPairRejectsPartialOrMismatchedOutput();
     H264FieldPartialStateClearsAtTeardownAndEos();
+    H264FirstFieldAllocationFailureReleasesOutput();
+    OutputAllocationFailuresReleaseHardwareExactlyOnce();
+    DeviceCloseRetriesNonConsumingBusy();
+    RetainedHandleClosesBeforeDecoderReopen();
     RealH264SubmitCompletesFieldPairs();
     TraceIdentityUsesImmutableTokenAndLiveAliasOwner();
     TraceReadExportReuseBoundary();
@@ -6418,6 +6853,7 @@ int main() {
     InactiveSyncStillSealsItsExactFinalPicture();
     InactiveSyncStillSealsItsExactFinalPicture(true);
     ProgressDoesNotExtendFiniteSyncDeadline();
+    RetryableBusySurvivesContextSurfaceAndDriverTeardown();
     ContextTeardownDrainsAcceptedTailBeforeClose();
     ContextDrainRejectsMutationAndSurvivesSurfaceRelease();
     WaitingSyncKeepsCompletedRetiredPicture();

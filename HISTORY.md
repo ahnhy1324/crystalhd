@@ -1,5 +1,39 @@
 # History
 
+## 1.1.0-rc.2 — candidate (unpublished)
+
+This is the planned identity for the v1.1 release candidate tracked in
+[#430](https://github.com/ahnhy1324/crystalhd/issues/430). It is not a published
+tag or release, and the exact candidate remains subject to Gate A freeze,
+review and explicit maintainer RC approval.
+
+- Compatibility reports [#412](https://github.com/ahnhy1324/crystalhd/issues/412)–[#415](https://github.com/ahnhy1324/crystalhd/issues/415)
+  from [@sjq42](https://github.com/sjq42) led to normal i686 VA SSE2 selection,
+  preservation of required VA build flags with external `CXXFLAGS`, bounded
+  large H.264 access units with old-library fallback, selected H.264 MBAFF
+  field pairs, and 32-bit player bus-message handling. These do not imply
+  general interlaced VA, Kodi, Atom or browser support.
+- Selected H.264 MBAFF pairs materialize as complete interlaced NV12 Weave
+  frames. Runtime payload `f4d99d5` completed the 750-picture fixture with
+  identical luma to software decode, and standalone FFmpeg BWDIF produced
+  1,500 progressive outputs. Stock Kodi progressive hardware-video and
+  application-lifecycle checks passed, while physical A/V timing remains
+  unverified. Its interlaced integration remains a proposed v1.2.0 task in
+  [#436](https://github.com/ahnhy1324/crystalhd/issues/436); no VA hardware
+  deinterlacing capability is advertised.
+- The read-only configuration inspector, reviewed presets and redacted bug
+  report are additive tooling; configuration files do not apply runtime
+  settings.
+- Driver and library work hardens decoder stop, suspend/resume, Flea power and
+  receive ownership. Default-off firmware investigations remain research, not
+  new supported hardware functions.
+- VA teardown now retries busy hardware closure without losing ownership, and
+  allocation failures release hardware output while failing the affected
+  surface cleanly.
+- The candidate keeps the legacy ioctl version and the `libcrystalhd.so.3`
+  ABI. Its planned bundle/package mapping is `1.1.0-rc.2` / `3.10.5`; v1.0
+  tags and qualification evidence remain immutable historical baselines.
+
 ## 1.0.0 — October 13, 2026
 
 First numbered bundle release of this maintained fork, following the immutable

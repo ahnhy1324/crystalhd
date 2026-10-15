@@ -1583,6 +1583,8 @@ struct DecodeContext {
   std::weak_ptr<OutputPollLease> armed_output_poll;
   bool decoder_open = false;
   bool decoder_started = false;
+  bool hardware_close_pending = false;
+  BC_STATUS retained_close_status = BC_STS_SUCCESS;
   bool is_70012 = false;
   bool sent_parameter_sets = false;
   // Bounded history is safe for ordinary finite input. Gap tolerance and
@@ -1605,6 +1607,8 @@ struct DecodeContext {
   uint64_t prefed_timestamp = 0;
   bool closing = false;
   bool retired = false;
+  bool destroy_prepared = false;
+  VAStatus destroy_status = VA_STATUS_SUCCESS;
   uint64_t generation = 1;
   uint64_t next_submission_ordinal = 1;
   uint64_t transport_progress = 0;
@@ -1690,40 +1694,98 @@ struct DecodeContext {
 
   ~DecodeContext() { Close(); }
 
-  BC_STATUS CloseHardware() {
-    BC_STATUS result = BC_STS_SUCCESS;
+  BC_STATUS CloseHardware(uint64_t timeout_ns = kDecodeTimeoutNs) {
+    BC_STATUS result = retained_close_status;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::nanoseconds(timeout_ns);
+    const auto clear_abort_state = [&] {
+      prefed_timestamp = 0;
+      mpeg4_simple_picture_number = 0;
+      have_mpeg4_simple_picture_number = false;
+      input_backpressured = false;
+      input_budget_exhausted = false;
+      partial_input_timestamp = 0;
+      partial_input_offset = 0;
+      sync_inactivity_ns = 0;
+      h264_first_field = H264FirstField();
+    };
     prefed_timestamp = 0;
     mpeg4_simple_picture_number = 0;
     have_mpeg4_simple_picture_number = false;
+    bool lifecycle_busy = false;
     if (decoder_started) {
-      result = DtsStopDecoder(device);
-      decoder_started = false;
-    }
-    if (decoder_open) {
-      const BC_STATUS status = DtsCloseDecoder(device);
-      if (result == BC_STS_SUCCESS)
+      BC_STATUS status;
+      do {
+        status = DtsStopDecoder(device);
+        if (status != BC_STS_BUSY)
+          break;
+        if (std::chrono::steady_clock::now() >= deadline)
+          break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      } while (true);
+      if (status == BC_STS_SUCCESS)
+        decoder_started = false;
+      else if (status == BC_STS_BUSY)
+        lifecycle_busy = true;
+      else if (result == BC_STS_SUCCESS)
         result = status;
-      decoder_open = false;
+    }
+    if (decoder_open && !lifecycle_busy) {
+      BC_STATUS status;
+      do {
+        status = DtsCloseDecoder(device);
+        if (status != BC_STS_BUSY)
+          break;
+        if (std::chrono::steady_clock::now() >= deadline)
+          break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      } while (true);
+      if (status == BC_STS_SUCCESS) {
+        decoder_open = false;
+        decoder_started = false;
+      } else if (status == BC_STS_BUSY) {
+        lifecycle_busy = true;
+      } else if (result == BC_STS_SUCCESS) {
+        result = status;
+      }
     }
     if (device != nullptr) {
-      const BC_STATUS status = DtsDeviceClose(device);
+      BC_STATUS status = BC_STS_SUCCESS;
+      do {
+        status = DtsDeviceClose(device);
+        if (status != BC_STS_BUSY)
+          break;
+        if (std::chrono::steady_clock::now() >= deadline)
+          break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      } while (status == BC_STS_BUSY);
+      // For the valid same-process handles owned by this backend, BUSY is the
+      // sole non-consuming DeviceClose result. Preserve both the handle and
+      // its duplicated output-poll ownership so this exact close can be
+      // retried. The timeout bounds only our retry window; one library call
+      // can still block while it joins the TX worker.
+      if (status == BC_STS_BUSY) {
+        hardware_close_pending = true;
+        retained_close_status = result;
+        clear_abort_state();
+        return BC_STS_BUSY;
+      }
       if (result == BC_STS_SUCCESS)
         result = status;
       device = nullptr;
+      decoder_started = false;
+      decoder_open = false;
     }
+    hardware_close_pending = false;
+    retained_close_status = BC_STS_SUCCESS;
     armed_output_poll.reset();
     output_poll.reset();
-    input_backpressured = false;
-    input_budget_exhausted = false;
-    partial_input_timestamp = 0;
-    partial_input_offset = 0;
-    sync_inactivity_ns = 0;
-    h264_first_field = H264FirstField();
+    clear_abort_state();
     return result;
   }
 
-  BC_STATUS Close() {
-    const BC_STATUS status = CloseHardware();
+  BC_STATUS Close(uint64_t timeout_ns = kDecodeTimeoutNs) {
+    const BC_STATUS status = CloseHardware(timeout_ns);
     pending.clear();
     for (const auto &picture : experimental_ready)
       picture->experimental_ready_queued = false;
@@ -1750,9 +1812,9 @@ struct DecodeContext {
     return status;
   }
 
-  void Reset() {
+  BC_STATUS Reset(uint64_t timeout_ns = kDecodeTimeoutNs) {
     ++generation;
-    Close();
+    return Close(timeout_ns);
   }
 
 };
@@ -1816,7 +1878,7 @@ struct Driver {
     vpp_worker = std::thread(RunVppWorker, this);
   }
   void StartDecodeWorker();
-  ~Driver() {
+  void StopWorkers() {
     {
       std::lock_guard<std::mutex> lock(mutex);
       stopping = true;
@@ -1826,6 +1888,9 @@ struct Driver {
       decode_worker.join();
     if (vpp_worker.joinable())
       vpp_worker.join();
+  }
+  ~Driver() {
+    StopWorkers();
     if (decode_control_fd >= 0) {
       close(decode_control_fd);
       decode_control_fd = -1;
@@ -2405,7 +2470,8 @@ static bool IsValidConfig(VAProfile profile, VAEntrypoint entrypoint) {
 
 static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
                             unsigned int height = 0,
-                            const std::array<uint8_t, 4> *wmv3_metadata = nullptr) {
+                            const std::array<uint8_t, 4> *wmv3_metadata = nullptr,
+                            uint64_t close_timeout_ns = kDecodeTimeoutNs) {
   BC_INPUT_FORMAT input = {};
   BC_INFO_CRYSTAL version = {};
   uint32_t mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW |
@@ -2413,13 +2479,22 @@ static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
                   DTS_SINGLE_THREADED_MODE |
                   DTS_DFLT_RESOLUTION(vdecRESOLUTION_1080p23_976);
 
-  BC_STATUS status = DtsDeviceOpen(&decode->device, mode);
+  if (decode->device != nullptr) {
+    const BC_STATUS retained = decode->CloseHardware(close_timeout_ns);
+    if (decode->device != nullptr)
+      return VA_STATUS_ERROR_HW_BUSY;
+    if (retained != BC_STS_SUCCESS)
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+  }
+  HANDLE opened = nullptr;
+  BC_STATUS status = DtsDeviceOpen(&opened, mode);
   Debug("DtsDeviceOpen: %d", status);
   if (status != BC_STS_SUCCESS) {
     if (status == BC_STS_BUSY || status == BC_STS_DEC_EXIST_OPEN)
       return VA_STATUS_ERROR_HW_BUSY;
     return VA_STATUS_ERROR_OPERATION_FAILED;
   }
+  decode->device = opened;
 
   int output_poll_fd = -1;
   if (DtsDupOutputPollFd != nullptr &&
@@ -2970,9 +3045,9 @@ static void QueueExperimentalReady(
                        fields);
     return;
   }
+  decode->experimental_ready.push_back(picture);
   picture->experimental_ready_at_ns = MonotonicNowNs();
   picture->experimental_ready_queued = true;
-  decode->experimental_ready.push_back(picture);
   crystalhd_vaapi_trace::Fields fields = TraceFields(decode, picture.get());
   fields.payload_token = picture->frame_timestamp;
   fields.payload_decode_identity = picture->trace_decode_identity;
@@ -3169,10 +3244,16 @@ static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
   return VA_STATUS_ERROR_DECODING_ERROR;
 }
 
+struct OutputProcessingState {
+  std::shared_ptr<Surface> picture;
+  std::shared_ptr<Surface> surface;
+};
+
 // No hardware calls: tests exercise the same exact-once/immutable-picture
 // processing used for both normal decoding and IDR-prefix replay.
-static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
-                                      const BC_DTS_PROC_OUT &reported) {
+static VAStatus ProcessDecodedOutputImpl(
+    Driver *driver, DecodeContext *decode, const BC_DTS_PROC_OUT &reported,
+    OutputProcessingState *processing) {
   BC_DTS_PROC_OUT output = reported;
   H264FirstField paired_first_field;
   bool h264_field_pair = false;
@@ -3279,8 +3360,10 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
                         "invalid H.264 field geometry/data or ownership");
 
     if (!decode->h264_first_field.valid) {
+      std::vector<uint8_t> pixels;
+      pixels.assign(output.Ybuff,
+                    output.Ybuff + static_cast<size_t>(field_bytes));
       H264FirstField &first = decode->h264_first_field;
-      first.valid = true;
       first.replay_duplicate = replay_duplicate;
       first.bottom = bottom;
       first.bottom_first = bottom_first;
@@ -3296,8 +3379,8 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
       first.height = height;
       first.source_pitch = padded_width * 2U;
       first.picture = replay_duplicate ? nullptr : decoded->second;
-      first.pixels.assign(output.Ybuff,
-                          output.Ybuff + static_cast<size_t>(field_bytes));
+      first.pixels = std::move(pixels);
+      first.valid = true;
       return VA_STATUS_SUCCESS;
     }
 
@@ -3417,6 +3500,12 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
        (decoded->second->decode_target.lock() == surface->second &&
         surface->second->decode_picture.lock() == decoded->second &&
         surface->second->vpp_writers == 0));
+  if (processing != nullptr) {
+    if (decoded != decode->decoded_frames.end())
+      processing->picture = decoded->second;
+    if (current_picture)
+      processing->surface = surface->second;
+  }
   const auto fits = [&](const Surface &target) {
     if (!IsH264Profile(decode->profile))
       return target.width >= output_width && target.height >= output_height;
@@ -3532,6 +3621,24 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
   driver->condition.notify_all();
   return complete ? VA_STATUS_SUCCESS
                   : FailDecode(driver, decode, "invalid picture geometry/data or failed CPU write");
+}
+
+static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
+                                     const BC_DTS_PROC_OUT &reported) {
+  OutputProcessingState processing;
+  try {
+    return ProcessDecodedOutputImpl(driver, decode, reported, &processing);
+  } catch (const std::bad_alloc &) {
+    for (const auto &surface : {processing.picture, processing.surface}) {
+      if (!surface)
+        continue;
+      surface->ready = false;
+      surface->failed = true;
+      RetireFailedExperimentalState(surface.get());
+    }
+    FailDecode(driver, decode, "decoded output allocation failed");
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
 }
 
 static VAStatus CompleteMpeg4EndOfStream(Driver *driver,
@@ -3872,6 +3979,15 @@ static VAStatus DrainClosingContext(
     uint64_t timeout_ns = kDecodeTimeoutNs) {
   if (driver_lock == nullptr || !driver_lock->owns_lock() || !decode->closing)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
+  if (decode->hardware_close_pending) {
+    // Reset can retire every logical picture before a terminal DeviceClose
+    // reports BUSY.  A following context destroy then has ownership to close,
+    // but no decode work to fail.
+    if (!HasLivePendingPictures(driver, *decode) && !decode->ReplaySealed())
+      return VA_STATUS_SUCCESS;
+    return FailDecode(driver, decode.get(),
+                      "context has retained terminal hardware ownership");
+  }
   const uint64_t generation = decode->generation;
   const auto start = std::chrono::steady_clock::now();
   while (HasLivePendingPictures(driver, *decode) || decode->ReplaySealed()) {
@@ -4243,7 +4359,7 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
        bitstream.size() >
            kMpeg4ReplayCacheBytes - decode->Mpeg4CachedBytes()))
     return VA_STATUS_ERROR_HW_BUSY;
-  if (!decode->decoder_started) {
+  if (!decode->decoder_started || decode->hardware_close_pending) {
     VAStatus status = OpenDecoderForSubmit(
         decode, target_surface.get(), stream_width, stream_height,
         decode->IsVc1() ? &next_wmv3_metadata : nullptr);
@@ -4424,7 +4540,8 @@ static VAStatus SyncDecodeSurface(
     return initial_state;
   std::shared_ptr<DecodeContext> decode;
   for (auto &entry : driver->contexts) {
-    if (!entry.second->decoder_started)
+    if (!entry.second->decoder_started ||
+        entry.second->hardware_close_pending)
       continue;
     for (const auto &pending : entry.second->pending) {
       auto candidate = driver->surfaces.find(pending.second);
@@ -4699,7 +4816,8 @@ static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
 static bool HasAutonomousDecodeWork(
     const std::shared_ptr<DecodeContext> &decode) {
   return !decode->video_process && !decode->closing && !decode->retired &&
-         decode->decoder_started && !decode->ReplayFailed() &&
+         decode->decoder_started && !decode->hardware_close_pending &&
+         !decode->ReplayFailed() &&
          (!decode->pending.empty() || decode->ReplaySealed());
 }
 
@@ -4934,9 +5052,39 @@ static void RunVppWorker(Driver *driver) {
 }
 
 static VAStatus Terminate(VADriverContextP context) {
-  delete GetDriver(context);
+  Driver *driver = GetDriver(context);
+  if (driver == nullptr)
+    return VA_STATUS_SUCCESS;
+  driver->StopWorkers();
+
+  VAStatus status = VA_STATUS_SUCCESS;
+  {
+    std::lock_guard<std::mutex> lock(driver->mutex);
+    for (const auto &entry : driver->contexts) {
+      DecodeContext *decode = entry.second.get();
+      decode->closing = true;
+      decode->retired = true;
+      ClearTraceReadExportsForContext(
+          driver, TraceId(decode->id, VA_INVALID_ID), decode->generation);
+      BC_STATUS closed;
+      // libva unloads a backend after this callback regardless of its return
+      // value, so there is no public retry boundary. Once our workers are
+      // joined, retain and retry the sole non-consuming close result until the
+      // library consumes ownership, matching the GStreamer finalizer.
+      do {
+        closed = decode->CloseHardware(0);
+        if (decode->device != nullptr)
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      } while (decode->device != nullptr);
+      if (closed != BC_STS_SUCCESS && status == VA_STATUS_SUCCESS)
+        status = VA_STATUS_ERROR_OPERATION_FAILED;
+      decode->Close(0);
+    }
+  }
+
+  delete driver;
   context->pDriverData = nullptr;
-  return VA_STATUS_SUCCESS;
+  return status;
 }
 
 static VAStatus QueryConfigProfiles(VADriverContextP, VAProfile *profiles,
@@ -5239,8 +5387,9 @@ static VAStatus CreateSurfaces(VADriverContextP context, int width, int height,
                          surface_count, nullptr, 0);
 }
 
-static VAStatus DestroySurfaces(VADriverContextP context,
-                                VASurfaceID *surface_ids, int count) {
+static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
+                                           VASurfaceID *surface_ids, int count,
+                                           uint64_t close_timeout_ns) {
   if (count < 0 || (count != 0 && surface_ids == nullptr))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   Driver *driver = GetDriver(context);
@@ -5289,18 +5438,29 @@ static VAStatus DestroySurfaces(VADriverContextP context,
   // reordered pre-seek pictures in firmware, which makes those old pictures
   // appear on the new media timeline. Restart each affected hardware decoder
   // and advance its generation so queued VPP work from that epoch is canceled.
+  VAStatus reset_status = VA_STATUS_SUCCESS;
   for (DecodeContext *decode : reset_decoders) {
     Debug("reset decoder generation=%llu after decode-surface teardown",
           static_cast<unsigned long long>(decode->generation));
     MarkPendingPicturesFailed(driver, decode);
     ClearTraceReadExportsForContext(
         driver, TraceId(decode->id, VA_INVALID_ID), decode->generation);
-    decode->Reset();
+    const BC_STATUS closed = decode->Reset(close_timeout_ns);
+    if (decode->device != nullptr)
+      reset_status = VA_STATUS_ERROR_HW_BUSY;
+    else if (closed != BC_STS_SUCCESS && reset_status == VA_STATUS_SUCCESS)
+      reset_status = VA_STATUS_ERROR_OPERATION_FAILED;
     driver->trace.Emit(crystalhd_vaapi_trace::Event::ContextReset,
                        TraceFields(decode, nullptr));
   }
   driver->NotifyDecodeWorker();
-  return VA_STATUS_SUCCESS;
+  return reset_status;
+}
+
+static VAStatus DestroySurfaces(VADriverContextP context,
+                                VASurfaceID *surface_ids, int count) {
+  return DestroySurfacesWithTimeout(context, surface_ids, count,
+                                    kDecodeTimeoutNs);
 }
 
 static VAStatus QuerySurfaceAttributes(VADriverContextP context,
@@ -5514,24 +5674,39 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   return VA_STATUS_SUCCESS;
 }
 
-static VAStatus DestroyContext(VADriverContextP context,
-                               VAContextID context_id) {
+static VAStatus DestroyContextWithTimeout(VADriverContextP context,
+                                          VAContextID context_id,
+                                          uint64_t close_timeout_ns) {
   Driver *driver = GetDriver(context);
   std::unique_lock<std::mutex> lock(driver->mutex);
   auto found = driver->contexts.find(context_id);
-  if (found == driver->contexts.end() || found->second->closing)
+  if (found == driver->contexts.end())
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   const std::shared_ptr<DecodeContext> decode = found->second;
-  decode->closing = true;
-  VAStatus status = VA_STATUS_SUCCESS;
-  if (!decode->video_process)
-    status = DrainClosingContext(driver, decode, &lock);
-  decode->retired = true;
-  ClearTraceReadExportsForContext(
-      driver, TraceId(decode->id, VA_INVALID_ID), decode->generation);
-  const BC_STATUS closed = decode->Close();
-  if (status == VA_STATUS_SUCCESS && closed != BC_STS_SUCCESS)
-    status = VA_STATUS_ERROR_OPERATION_FAILED;
+  if (!decode->destroy_prepared) {
+    // A second call while the first call has temporarily released the driver
+    // lock for draining is not a close retry yet.
+    if (decode->closing)
+      return VA_STATUS_ERROR_INVALID_CONTEXT;
+    decode->closing = true;
+    decode->destroy_status = VA_STATUS_SUCCESS;
+    if (!decode->video_process)
+      decode->destroy_status = DrainClosingContext(driver, decode, &lock);
+    decode->retired = true;
+    ClearTraceReadExportsForContext(
+        driver, TraceId(decode->id, VA_INVALID_ID), decode->generation);
+    decode->destroy_prepared = true;
+  }
+  const BC_STATUS closed = decode->Close(close_timeout_ns);
+  // The sole non-consuming result keeps the context in the map. A later
+  // vaDestroyContext call resumes only this terminal close; it never drains or
+  // emits the destroy trace twice.
+  if (decode->device != nullptr)
+    return VA_STATUS_ERROR_HW_BUSY;
+  if (decode->destroy_status == VA_STATUS_SUCCESS &&
+      closed != BC_STS_SUCCESS)
+    decode->destroy_status = VA_STATUS_ERROR_OPERATION_FAILED;
+  const VAStatus status = decode->destroy_status;
   crystalhd_vaapi_trace::Fields fields = TraceFields(decode.get(), nullptr);
   fields.outcome = status;
   driver->trace.Emit(crystalhd_vaapi_trace::Event::ContextDestroy, fields);
@@ -5540,6 +5715,11 @@ static VAStatus DestroyContext(VADriverContextP context,
   driver->contexts.erase(context_id);
   driver->NotifyDecodeWorker();
   return status;
+}
+
+static VAStatus DestroyContext(VADriverContextP context,
+                               VAContextID context_id) {
+  return DestroyContextWithTimeout(context, context_id, kDecodeTimeoutNs);
 }
 
 static VAStatus CreateBuffer(VADriverContextP context, VAContextID context_id,

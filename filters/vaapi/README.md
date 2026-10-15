@@ -29,8 +29,9 @@ H.264 MBAFF case described below:
   picture's effective 4x4 and active 8x8 scaling lists, including JVT and
   custom matrices. Omitted IQ buffers use flat-16 defaults for that picture;
   malformed buffers and zero active coefficients are rejected. Selected MBAFF
-  field pairs emitted from one submitted VA frame/access unit are supported;
-  separately submitted PAFF fields, deinterlacing and pulldown are not.
+  field pairs emitted from one submitted VA frame/access unit are materialized
+  as a complete interlaced NV12 Weave frame; separately submitted PAFF fields,
+  VA VPP deinterlacing and pulldown are not supported.
 - MPEG-2 Simple I/P pictures through 720x576, and Main I/P/B pictures through
   1920x1088 coded size. Input must be 4:2:0 frame pictures with frame-predicted
   DCT, whole slices and no repeat-first-field or top-field-first flags. Picture
@@ -63,6 +64,34 @@ metadata: MPEG-2 reconstruction uses a 30-fps fallback and stable zero temporal
 references, and VC-1 reconstruction cannot establish presentation cadence or
 A/V synchronization. Client timestamps remain associated with their submitted
 pictures.
+
+## Interlaced H.264, Weave and client deinterlacing
+
+For a supported MBAFF pair, the hardware returns one packed 4:2:2 buffer per
+field. The VA driver writes field luma into alternating display rows and
+downsamples chroma between adjacent rows of the same field before interleaving
+the field chroma rows into NV12. Averaging chroma across temporally different
+top and bottom fields would instead create coloured comb artifacts. This
+operation is Weave output, not Bob or motion-adaptive deinterlacing.
+
+Runtime payload `f4d99d5` fully materialized the selected 750-picture
+1920x1080i25 fixture twice; every luma plane matched the software-decoded
+reference after common normalization, while deterministic chroma differences
+remained from this field-aware conversion. The exact fixture, pixel, timing,
+resource and teardown results are in the
+[hardware report](../../HARDWARE-2026-09-13.md#h264).
+
+Standalone FFmpeg CPU BWDIF after `hwdownload` completed the same fixture, but
+the driver still advertises no `VAProcFilterDeinterlacing` capability. See the
+[runnable command and performance boundary](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif).
+Stock Kodi 21.3 progressive hardware-video and lifecycle checks passed, but
+physical A/V timing was not accepted. Its explicit interlaced BWDIF and Render
+Bob selections stalled with repeated decode recovery. Direct Weave and
+standalone BWDIF show that paired-field output exists; Kodi/CrystalHD VA decode,
+readback and post-processing scheduling remain incompatible in this case, and
+the first failing internal cause is unresolved. Do not advertise Kodi
+interlaced support or fake a VA VPP capability. [#436](https://github.com/ahnhy1324/crystalhd/issues/436)
+tracks the proposed v1.2.0 follow-up.
 
 ## Replay and end of stream
 
@@ -240,7 +269,8 @@ timeline advances.
 - one CrystalHD playback session at a time; another client receives hardware
   busy until the active decoder closes
 - video processing is limited to unfiltered NV12 scaling and NV12-to-ARGB
-  conversion; there is no deinterlacing or rotation
+  conversion; there is no VA VPP deinterlacing or rotation. Selected H.264
+  field pairs use the decode-time Weave path described above
 - no VP8, VP9, AV1, or protected content
 - direct rendering requires writable NV12 DRM PRIME buffers
 - the VA-API backend is not a general display driver; it uses an existing DRM

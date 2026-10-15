@@ -1,11 +1,28 @@
 # Open work
 
-Release status **2026-10-13**: G0 is accepted by maintainer exception; G1–G6
-qualification and the release handoff are complete with recorded limitations.
-[Stable 1.0.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0)
-is approved and published; its public source archive passes build and staged
-install/discovery/uninstall checks.
-Historical RC results and the existing recovery copy remain unchanged.
+Release status **2026-10-15**: [stable 1.0.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0)
+is published and unchanged. The hardware-tested v1.1.0-rc.2 runtime payload is
+`f4d99d5` in [PR #435](https://github.com/ahnhy1324/crystalhd/pull/435); its code,
+CI, native hardware and Kodi video-lifecycle checks passed. The current
+approval head adds documentation only and leaves runtime files unchanged.
+Physical Kodi flash/click A/V observation and explicit maintainer RC GO remain;
+the documentation successor is not relabelled as a newly hardware-tested
+payload.
+
+- [ ] [#430: v1.1.0 RC qualification and GO/HOLD](https://github.com/ahnhy1324/crystalhd/issues/430)
+  — retain the exact tested runtime identity and recorded limitations while
+  awaiting physical Kodi A/V observation and the explicit RC decision.
+- [ ] [#429: External i386/BCM70015 acceptance](https://github.com/ahnhy1324/crystalhd/issues/429)
+  — primary-host results do not replace the reporter's Atom N280/i386/Kodi
+  combinations; keep unavailable external configurations marked NOT RUN.
+- [ ] [#436: proposed v1.2.0 Kodi interlace integration](https://github.com/ahnhy1324/crystalhd/issues/436)
+  — selected H.264 field pairs already produce a complete deterministic Weave
+  frame, and standalone FFmpeg BWDIF produces 50 progressive frames/s from 25
+  complete interlaced pictures/s. Resolve the Kodi/CrystalHD VA decode,
+  readback and post-processing scheduling integration without decode-error
+  recovery, preserve field order/cadence and EOS, and recheck progressive
+  playback and clean close/reopen. The exact owning component remains
+  unresolved; hardware deinterlacing is separate research, not a prerequisite.
 
 - [x] [#369: CrystalHD 1.0.0 final gates and release](https://github.com/ahnhy1324/crystalhd/issues/369)
   — G0–G6 and experimental dispositions are complete. The exact commit and
