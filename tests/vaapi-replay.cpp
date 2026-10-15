@@ -1053,39 +1053,49 @@ struct H264FieldFixture {
   std::vector<uint8_t> top;
   std::vector<uint8_t> bottom;
 
-  explicit H264FieldFixture(bool direct = false, bool is_70012 = false)
-      : top((is_70012 ? 720 : 16) * 16 * 2),
-        bottom((is_70012 ? 720 : 16) * 16 * 2) {
+  explicit H264FieldFixture(bool direct = false, bool is_70012 = false,
+                            uint32_t fourcc = VA_FOURCC_NV12,
+                            unsigned int width = 16, uint64_t token = 1)
+      : top((is_70012 ? 720 : width) * 16 * 2),
+        bottom((is_70012 ? 720 : width) * 16 * 2) {
     decoder.id = 7;
     decoder.generation = 3;
     decoder.profile = VAProfileH264Main;
-    decoder.width = 16;
+    decoder.width = width;
     decoder.height = 32;
     decoder.is_70012 = is_70012;
     decoder.picture.seq_fields.bits.frame_mbs_only_flag = 0;
-    Require(public_frame->AllocateInternal(nullptr, -1, 16, 32,
-                                           VA_FOURCC_NV12),
-            "allocate H.264 field public surface");
+    if (fourcc == VA_FOURCC_ARGB) {
+      // CPU-only stand-in for a mapped ARGB render target; no GBM device.
+      public_frame->width = width;
+      public_frame->height = 32;
+      public_frame->fourcc = fourcc;
+      public_frame->pitch[0] = width * 4U;
+      public_frame->storage.resize(static_cast<size_t>(width) * 32U * 4U);
+      public_frame->planes[0] = public_frame->storage.data();
+    } else {
+      Require(public_frame->AllocateInternal(nullptr, -1, width, 32, fourcc),
+              "allocate H.264 field public surface");
+    }
     if (direct) {
-      private_frame->width = 16;
+      private_frame->width = width;
       private_frame->height = 32;
       private_frame->direct_picture = true;
       private_frame->decode_target = public_frame;
       private_frame->direct_backing = public_frame;
       public_frame->direct_decode_eligible = true;
     } else {
-      Require(private_frame->AllocateInternal(nullptr, -1, 16, 32,
-                                              VA_FOURCC_NV12),
+      Require(private_frame->AllocateInternal(nullptr, -1, width, 32, fourcc),
               "allocate H.264 field private surface");
     }
-    private_frame->expected_timestamp = 1;
+    private_frame->expected_timestamp = token;
     private_frame->decode_identity = private_frame->trace_decode_identity = 41;
     private_frame->trace_context = 7;
     private_frame->trace_generation = 3;
     private_frame->trace_submission_ordinal = 1;
     private_frame->h264_crop_unit_y = 4;
     public_frame->id = 1;
-    public_frame->expected_timestamp = 1;
+    public_frame->expected_timestamp = token;
     public_frame->decode_identity = public_frame->trace_decode_identity = 41;
     public_frame->trace_context = 7;
     public_frame->trace_generation = 3;
@@ -1093,22 +1103,22 @@ struct H264FieldFixture {
     public_frame->h264_crop_unit_y = 4;
     public_frame->decode_picture = private_frame;
     driver.surfaces[1] = public_frame;
-    decoder.decoded_frames[1] = private_frame;
-    decoder.surface_timestamps[public_frame.get()] = 1;
-    decoder.pending[1] = 1;
-    Require(decoder.replay.Append(1, true, {1}),
+    decoder.decoded_frames[token] = private_frame;
+    decoder.surface_timestamps[public_frame.get()] = token;
+    decoder.pending[token] = 1;
+    Require(decoder.replay.Append(token, true, {1}),
             "append H.264 field fixture input");
-    SendNext(&decoder.replay, 1);
-    const unsigned int source_width = is_70012 ? 720 : 16;
-    Fill(top, source_width, 20, 40, 60);
-    Fill(bottom, source_width, 100, 140, 160);
+    SendNext(&decoder.replay, token);
+    const unsigned int source_width = is_70012 ? 720 : width;
+    Fill(top, source_width, 20, 40, 60, width);
+    Fill(bottom, source_width, 100, 140, 160, width);
   }
 
   static void Fill(std::vector<uint8_t> &pixels, unsigned int source_width,
                    uint8_t luma,
-                   uint8_t u, uint8_t v) {
+                   uint8_t u, uint8_t v, unsigned int width = 16) {
     for (unsigned int row = 0; row < 16; ++row) {
-      for (unsigned int column = 0; column < 16; column += 2) {
+      for (unsigned int column = 0; column < width; column += 2) {
         const size_t at =
             (static_cast<size_t>(row) * source_width + column) * 2;
         pixels[at] = pixels[at + 2] = luma + row;
@@ -1125,11 +1135,11 @@ struct H264FieldFixture {
     output.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC |
         (is_bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD) |
         (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0);
-    output.PicInfo.timeStamp = 1;
+    output.PicInfo.timeStamp = private_frame->expected_timestamp;
     output.PicInfo.picture_number = 71;
     output.PicInfo.sess_num = 9;
     output.PicInfo.picture_meta_payload = 0x1234;
-    output.PicInfo.width = 16;
+    output.PicInfo.width = decoder.width;
     output.PicInfo.height = 32;
     output.Ybuff = pixels->data();
     output.YBuffDoneSz = pixels->size() / 4;
@@ -1140,7 +1150,7 @@ struct H264FieldFixture {
     for (unsigned int row = 0; row < 32; ++row) {
       const unsigned int source_row = row / 2;
       const uint8_t expected = (row & 1U ? 100 : 20) + source_row;
-      for (unsigned int column = 0; column < 16; ++column)
+      for (unsigned int column = 0; column < decoder.width; ++column)
         Require(surface.planes[0][static_cast<size_t>(row) *
                                       surface.pitch[0] + column] == expected,
                 "field luma is woven into alternating display rows");
@@ -1152,7 +1162,7 @@ struct H264FieldFixture {
           (bottom_field ? 140 : 40) + source_row + 1;
       const uint8_t expected_v =
           (bottom_field ? 160 : 60) + source_row + 1;
-      for (unsigned int column = 0; column < 16; column += 2) {
+      for (unsigned int column = 0; column < decoder.width; column += 2) {
         const size_t at = static_cast<size_t>(row) * surface.pitch[1] + column;
         Require(surface.planes[1][at] == expected_u &&
                     surface.planes[1][at + 1] == expected_v,
@@ -1161,6 +1171,192 @@ struct H264FieldFixture {
     }
   }
 };
+
+struct H264WeaveFixture : H264FieldFixture {
+  std::vector<uint8_t> pixels;
+  BC_DTS_PROC_OUT output = {};
+  BC_PIC_INFO_BLOCK raw = {};
+
+  explicit H264WeaveFixture(bool direct = false,
+                            uint32_t fourcc = VA_FOURCC_NV12,
+                            unsigned int width = 16)
+      : H264FieldFixture(direct, false, fourcc, width, kTimestampStep),
+        pixels(static_cast<size_t>(width) * 32U * 2U + 160U, 0) {
+    const size_t pitch = static_cast<size_t>(width) * 2U;
+    for (unsigned int row = 0; row < 16; ++row) {
+      memcpy(pixels.data() + row * 2U * pitch, top.data() + row * pitch, pitch);
+      memcpy(pixels.data() + (row * 2U + 1U) * pitch,
+             bottom.data() + row * pitch, pitch);
+    }
+    output = Output(false, false, &pixels);
+    output.b422Mode = OUTPUT_MODE422_YUY2;
+    output.PicInfo.flags |= VDEC_FLAG_UNKNOWN_SRC;
+    raw = output.PicInfo;
+    raw.timeStamp = kTimestampStep / 20000U;
+    raw.flags = VDEC_FLAG_FIELDPAIR | VDEC_FLAG_UNKNOWN_SRC;
+    WritePib();
+    WriteWord(PayloadBytes(), output.PicInfo.picture_number);
+    WriteWord(pixels.size() - 8U, width);
+    WriteWord(pixels.size() - 4U, 32);
+  }
+
+  size_t PayloadBytes() const { return static_cast<size_t>(decoder.width) * 64U; }
+  void WriteWord(size_t offset, uint32_t value) {
+    memcpy(pixels.data() + offset, &value, sizeof(value));
+  }
+  void WritePib() {
+    memcpy(pixels.data() + PayloadBytes() + sizeof(uint32_t), &raw,
+           offsetof(BC_PIC_INFO_BLOCK, other));
+  }
+  VAStatus Process() { return ProcessDecodedOutput(&driver, &decoder, output); }
+
+  void CheckArgb(const Surface &surface) const {
+    for (unsigned int row = 0; row < 32; ++row) {
+      const unsigned int source_row = row / 2U;
+      const bool bottom_field = (row & 1U) != 0;
+      uint8_t expected[4];
+      StoreArgb(expected, (bottom_field ? 100 : 20) + source_row,
+                (bottom_field ? 140 : 40) + source_row,
+                (bottom_field ? 160 : 60) + source_row);
+      for (unsigned int column = 0; column < decoder.width; ++column)
+        Require(memcmp(surface.planes[0] + row * surface.pitch[0] + column * 4U,
+                       expected, sizeof(expected)) == 0,
+                "whole interlaced ARGB preserves both fields and row strides");
+    }
+  }
+};
+
+static void H264WholeWeavePreservesIdentityAndPixels() {
+  for (bool direct : {false, true}) {
+    for (uint32_t fourcc : {VA_FOURCC_NV12, VA_FOURCC_ARGB}) {
+      if (!direct && fourcc == VA_FOURCC_ARGB)
+        continue;  // Private decode storage is NV12; ARGB is a direct target.
+      for (unsigned int width : {16U, 18U}) {
+        H264WeaveFixture fixture(direct, fourcc, width);
+        Require(ClassifyH264InterlacedPayload(fixture.output) ==
+                    H264InterlacedPayload::Weave,
+                "completed PIB and converted timestamp identify whole Weave");
+        Require(fixture.Process() == VA_STATUS_SUCCESS &&
+                    !fixture.decoder.h264_first_field.valid &&
+                    fixture.decoder.pending.empty() &&
+                    fixture.decoder.replay.outstanding() == 0 &&
+                    fixture.private_frame->ready && fixture.public_frame->ready &&
+                    fixture.public_frame->frame_timestamp == kTimestampStep,
+                "one complete interlaced transfer retires exactly one identity");
+        if (fourcc == VA_FOURCC_NV12)
+          fixture.CheckPixels(*fixture.public_frame);
+        else
+          fixture.CheckArgb(*fixture.public_frame);
+        if (!direct)
+          Require(fixture.private_frame->storage == fixture.public_frame->storage,
+                  "private and public whole Weave pictures agree");
+        const auto original = fixture.public_frame->storage;
+        std::fill(fixture.pixels.begin(),
+                  fixture.pixels.begin() + fixture.PayloadBytes(), 0);
+        Require(fixture.Process() == VA_STATUS_SUCCESS &&
+                    fixture.public_frame->storage == original &&
+                    fixture.decoder.replay.outstanding() == 0,
+                "duplicate whole Weave cannot rewrite materialized pixels");
+      }
+    }
+  }
+
+  {
+    H264WeaveFixture fixture;
+    const uint64_t next = kTimestampStep * 2U;
+    auto replacement = std::make_shared<Surface>();
+    Require(replacement->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+            "allocate rebound whole-Weave target");
+    replacement->id = 1;
+    replacement->expected_timestamp = next;
+    replacement->decode_identity = 99;
+    fixture.driver.surfaces[1] = replacement;
+    const auto untouched = replacement->storage;
+    Require(fixture.Process() == VA_STATUS_SUCCESS &&
+                fixture.private_frame->ready &&
+                replacement->storage == untouched && !replacement->ready &&
+                fixture.decoder.replay.outstanding() == 0,
+            "whole Weave retains immutable picture without touching rebound owner");
+    fixture.CheckPixels(*fixture.private_frame);
+  }
+}
+
+static void H264WholeWeaveRejectsMalformedOrPartialOutput() {
+  for (unsigned int fault = 0; fault < 17; ++fault) {
+    H264WeaveFixture fixture;
+    switch (fault) {
+      case 0: --fixture.output.YBuffDoneSz; break;
+      case 1: fixture.WriteWord(fixture.pixels.size() - 8U, 18); break;
+      case 2: fixture.WriteWord(fixture.pixels.size() - 8U,
+                               16U | 0x80000000U); break;
+      case 3: fixture.WriteWord(fixture.pixels.size() - 4U, 16); break;
+      case 4: fixture.raw.timeStamp = 6; break;
+      case 5: fixture.raw.timeStamp = 0xffffffffULL; break;
+      case 6: fixture.raw.timeStamp =
+                  std::numeric_limits<uint64_t>::max() / 20000U + 1U; break;
+      case 7: ++fixture.raw.picture_number; break;
+      case 8: ++fixture.raw.sess_num; break;
+      case 9: ++fixture.raw.picture_meta_payload; break;
+      case 10: fixture.raw.flags = VDEC_FLAG_TOPFIELD; break;
+      case 11: fixture.raw.flags |= VDEC_FLAG_EOS; break;
+      case 12: fixture.raw.width = 18; break;
+      case 13: fixture.raw.height = 28; break;
+      case 14: fixture.WriteWord(fixture.PayloadBytes(), 72); break;
+      case 15: fixture.output.PoutFlags |= BC_POUT_FLAGS_ENCRYPTED; break;
+      case 16: fixture.raw.flags |= 0x800U; break;
+    }
+    fixture.WritePib();
+    Require(fixture.Process() == VA_STATUS_ERROR_DECODING_ERROR &&
+                fixture.decoder.replay.failed() &&
+                !fixture.decoder.h264_first_field.valid &&
+                !fixture.public_frame->ready && fixture.private_frame->failed,
+            "malformed whole payload never becomes a picture or a held field");
+  }
+  for (unsigned int fault = 0; fault < 4; ++fault) {
+    H264WeaveFixture fixture;
+    switch (fault) {
+      case 0: ++fixture.private_frame->trace_generation; break;
+      case 1: fixture.private_frame->decode_identity = 0; break;
+      case 2: fixture.decoder.pending.clear(); break;
+      case 3: ++fixture.private_frame->expected_timestamp; break;
+    }
+    Require(fixture.Process() == VA_STATUS_ERROR_DECODING_ERROR &&
+                !fixture.public_frame->ready && fixture.decoder.replay.failed(),
+            "whole Weave cannot bypass generation or pending decode ownership");
+  }
+  {
+    H264WeaveFixture fixture;
+    BC_DTS_PROC_OUT half = fixture.Output(false, false, &fixture.top);
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, half) ==
+                    VA_STATUS_SUCCESS && fixture.decoder.h264_first_field.valid &&
+                !fixture.public_frame->ready &&
+                fixture.decoder.replay.outstanding() == 1,
+            "a single half field remains pending and cannot become whole Weave");
+    Require(fixture.Process() == VA_STATUS_ERROR_DECODING_ERROR &&
+                !fixture.decoder.h264_first_field.valid &&
+                !fixture.public_frame->ready && fixture.decoder.replay.failed(),
+            "whole Weave cannot silently replace an already held half field");
+  }
+  {
+    // For tiny geometry the metadata tail can exceed the other half's pixel
+    // size. Its line trailer must still identify a field, not a whole frame.
+    H264WeaveFixture fixture;
+    fixture.output.PicInfo.width = fixture.raw.width = 2;
+    fixture.output.PicInfo.height = fixture.raw.height = 4;
+    const size_t field_bytes = 2U * 2U * 2U;
+    fixture.pixels.assign(field_bytes + 160U, 0);
+    fixture.output.Ybuff = fixture.pixels.data();
+    fixture.output.YBuffDoneSz = fixture.pixels.size() / 4U;
+    fixture.WriteWord(field_bytes, fixture.output.PicInfo.picture_number);
+    memcpy(fixture.pixels.data() + field_bytes + sizeof(uint32_t), &fixture.raw,
+           offsetof(BC_PIC_INFO_BLOCK, other));
+    fixture.WriteWord(fixture.pixels.size() - 8U, 2);
+    fixture.WriteWord(fixture.pixels.size() - 4U, 2);
+    Require(ClassifyH264InterlacedPayload(fixture.output) ==
+                H264InterlacedPayload::Field,
+            "large field metadata tail does not manufacture a whole picture");
+  }
+}
 
 static void H264FieldPairsPreserveIdentityAndPixels() {
   for (bool direct : {false, true}) {
@@ -1751,6 +1947,7 @@ static void RealH264SubmitCompletesFieldPairs() {
       decoder.live_h264 = true;
       decoder.live_h264_gap_tolerant = direct;
       decoder.live_h264_fast_path = direct;
+      decoder.auto_mbaff_prefeed = !direct;
       decoder.target = 1;
       decoder.have_picture = true;
       decoder.picture.picture_width_in_mbs_minus1 = 0;
@@ -1778,6 +1975,8 @@ static void RealH264SubmitCompletesFieldPairs() {
                   io.inputs == std::vector<uint64_t>{kTimestampStep} &&
                   decoder.pending.count(kTimestampStep) == 1 &&
                   decoder.replay.outstanding() == 1 &&
+                  decoder.prefed_timestamp == (direct ? 0 : 2 * kTimestampStep) &&
+                  io.input_calls.size() == (direct ? 1U : 2U) &&
                   io.open_attempts == (retained_reset ? 1U : 0U) &&
                   !decoder.hardware_close_pending,
               "real H.264 submit reopens a retained reset before accepting one interlaced access unit");
@@ -2692,6 +2891,7 @@ static void ExperimentalReadyRemapGate() {
     bool gap_tolerant;
     bool fast_path;
     bool low_latency;
+    bool auto_mbaff;
     bool enabled;
     bool latest;
     uint64_t delay_ns;
@@ -2724,6 +2924,7 @@ static void ExperimentalReadyRemapGate() {
                      decode->live_h264_gap_tolerant,
                      decode->live_h264_fast_path,
                      decode->low_latency_h264,
+                     decode->auto_mbaff_prefeed,
                      decode->experimental_ready_remap,
                      decode->experimental_ready_latest,
                      decode->experimental_ready_delay_ns};
@@ -2735,6 +2936,8 @@ static void ExperimentalReadyRemapGate() {
       create("1", nullptr, nullptr, nullptr, nullptr, VAProfileH264Main);
   const GateState low_h264 =
       create("1", "1", nullptr, nullptr, nullptr, VAProfileH264Main);
+  const GateState finite_low_h264 =
+      create(nullptr, "1", "1", nullptr, nullptr, VAProfileH264Main);
   const GateState strict_h264 =
       create("0", "1", "1", nullptr, nullptr, VAProfileH264Main);
   const GateState invalid_h264 =
@@ -2744,22 +2947,42 @@ static void ExperimentalReadyRemapGate() {
   Require(default_h264.transport && !default_h264.gap_tolerant &&
               !default_h264.fast_path &&
               !default_h264.low_latency && !default_h264.enabled &&
+              default_h264.auto_mbaff &&
               fast_h264.transport && fast_h264.gap_tolerant &&
               fast_h264.fast_path &&
               !fast_h264.low_latency && !fast_h264.enabled &&
+              !fast_h264.auto_mbaff &&
               low_h264.transport && low_h264.gap_tolerant &&
               low_h264.fast_path &&
               low_h264.low_latency && !low_h264.enabled &&
+              !low_h264.auto_mbaff &&
+              finite_low_h264.transport && !finite_low_h264.gap_tolerant &&
+              !finite_low_h264.fast_path && finite_low_h264.low_latency &&
+              !finite_low_h264.enabled && !finite_low_h264.auto_mbaff &&
               !strict_h264.transport && !strict_h264.gap_tolerant &&
               !strict_h264.fast_path &&
-              !strict_h264.low_latency && !strict_h264.enabled &&
+              strict_h264.low_latency && !strict_h264.enabled &&
               !invalid_h264.transport && !invalid_h264.gap_tolerant &&
               !invalid_h264.fast_path &&
-              !invalid_h264.low_latency && !invalid_h264.enabled &&
+              invalid_h264.low_latency && !invalid_h264.enabled &&
               !default_mpeg2.transport && !default_mpeg2.gap_tolerant &&
               !default_mpeg2.fast_path &&
-              !default_mpeg2.low_latency && !default_mpeg2.enabled,
+              !default_mpeg2.low_latency && !default_mpeg2.enabled &&
+              !default_mpeg2.auto_mbaff,
           "default H.264 transport is bounded while fast paths remain exact opt-ins");
+  Require(!create(nullptr, "0", nullptr, nullptr, nullptr,
+                   VAProfileH264Main).low_latency &&
+              !create(nullptr, "0", nullptr, nullptr, nullptr,
+                      VAProfileH264Main).auto_mbaff &&
+              !create(nullptr, "yes", nullptr, nullptr, nullptr,
+                      VAProfileH264Main).low_latency &&
+              !create(nullptr, "yes", nullptr, nullptr, nullptr,
+                      VAProfileH264Main).auto_mbaff &&
+              create("0", nullptr, nullptr, nullptr, nullptr,
+                     VAProfileH264Main).auto_mbaff &&
+              !create(nullptr, "1", nullptr, nullptr, nullptr,
+                      VAProfileMPEG2Main).low_latency,
+          "independent prefeed remains an exact H.264-only opt-in");
 
   Require(!create(nullptr, nullptr, "1", nullptr, nullptr,
                   VAProfileH264Main).enabled &&
@@ -5014,6 +5237,108 @@ static std::vector<uint8_t> ExpectedH264LowLatencyPrefeed() {
   return bytes;
 }
 
+static void AutomaticMbaffPrefeedSnapshotsAcceptedSequence() {
+  enum class Next { Continue, Ghost, Misaligned };
+  for (Next next : {Next::Continue, Next::Ghost, Next::Misaligned}) {
+    TeardownFixture fixture(2);
+    auto &decode = *fixture.decoder;
+    decode.profile = VAProfileH264Main;
+    decode.live_h264 = decode.auto_mbaff_prefeed = true;
+    decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag = 1;
+    decode.replay = CrystalHDDecodeReplay(true);
+    Require(ShouldAutoPrefeedH264(decode),
+            "finite frame-coded MBAFF on an opened BCM70015 is eligible");
+    decode.picture.seq_fields.bits.frame_mbs_only_flag = 1;
+    Require(!ShouldAutoPrefeedH264(decode), "progressive input is not automatic");
+    decode.picture.seq_fields.bits.frame_mbs_only_flag = 0;
+    decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag = 0;
+    Require(!ShouldAutoPrefeedH264(decode), "PAFF is not automatic MBAFF");
+    decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag = 1;
+    decode.picture.pic_fields.bits.field_pic_flag = 1;
+    Require(!ShouldAutoPrefeedH264(decode), "a coded field is not a frame AU");
+    decode.picture.pic_fields.bits.field_pic_flag = 0;
+    decode.live_h264_fast_path = true;
+    Require(!ShouldAutoPrefeedH264(decode), "explicit live prefeed remains opt-in");
+    decode.live_h264_fast_path = false;
+    decode.is_70012 = true;
+    Require(!ShouldAutoPrefeedH264(decode), "BCM70012 is not auto-prefed");
+    decode.is_70012 = false;
+    decode.decoder_started = false;
+    Require(!ShouldAutoPrefeedH264(decode), "unopened hardware is not known eligible");
+    decode.decoder_started = true;
+    decode.device = nullptr;
+    Require(!ShouldAutoPrefeedH264(decode), "a missing device cannot establish identity");
+    decode.device = fixture.io.handle();
+    decode.profile = VAProfileMPEG2Main;
+    Require(!ShouldAutoPrefeedH264(decode), "other codecs cannot auto-prefeed");
+    decode.profile = VAProfileH264Main;
+    decode.auto_mbaff_prefeed = false;
+    Require(!ShouldAutoPrefeedH264(decode), "explicit policy opt-out is honored");
+    decode.auto_mbaff_prefeed = true;
+
+    const auto first = TestH264AccessUnit(true, 1);
+    Require(decode.replay.Append(kTimestampStep, true, first,
+                                  ShouldAutoPrefeedH264(decode)),
+            "snapshot automatic eligibility with the accepted original AU");
+    decode.picture.seq_fields.bits.frame_mbs_only_flag = 1;
+    decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag = 0;
+    decode.next_timestamp = 2 * kTimestampStep;
+    Require(!ShouldAutoPrefeedH264(decode) && !decode.low_latency_h264 &&
+                decode.replay.NextInput()->prefeed &&
+                PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                fixture.io.input_calls.size() == 2 &&
+                fixture.io.input_calls[0].bytes == first &&
+                fixture.io.input_calls[1].bytes == H264LowLatencyPrefeed() &&
+                decode.prefed_timestamp == 2 * kTimestampStep,
+            "later progressive metadata cannot change an accepted MBAFF AU");
+    if (next == Next::Ghost) {
+      fixture.io.outputs.push_back(2 * kTimestampStep);
+      Require(ReceiveAvailable(&fixture.driver, &decode) ==
+                      VA_STATUS_ERROR_DECODING_ERROR && decode.replay.failed() &&
+                  !fixture.held[1]->ready && !fixture.io.invalid,
+              "ghost-prefix guard remains active after automatic eligibility ends");
+      continue;
+    }
+    const uint64_t token =
+        (next == Next::Misaligned ? 3 : 2) * kTimestampStep;
+    const auto second = TestH264AccessUnit(false, 2);
+    const auto owner = decode.decoded_frames.at(2 * kTimestampStep);
+    Require(decode.replay.Append(token, false, second,
+                                  ShouldAutoPrefeedH264(decode)),
+            "accept a successor under the progressive transport policy");
+    decode.next_timestamp = token + kTimestampStep;
+    const VAStatus status = PumpDecodeInput(&fixture.driver, &decode);
+    if (next == Next::Misaligned) {
+      Require(status == VA_STATUS_ERROR_DECODING_ERROR && decode.replay.failed() &&
+                  fixture.io.input_calls.size() == 2 && !fixture.io.invalid,
+              "automatic policy change cannot bypass the held-prefix alignment guard");
+      continue;
+    }
+    Require(status == VA_STATUS_SUCCESS && fixture.io.input_calls.size() == 3 &&
+                fixture.io.input_calls[2].accepted &&
+                fixture.io.input_calls[2].timestamp == 0 &&
+                fixture.io.input_calls[2].bytes == second &&
+                fixture.io.inputs == std::vector<uint64_t>(
+                    {kTimestampStep, 2 * kTimestampStep}) &&
+                decode.decoded_frames.at(2 * kTimestampStep) == owner &&
+                decode.prefed_timestamp == 0 && fixture.io.prefed_timestamp == 0 &&
+                !fixture.io.invalid,
+            "progressive successor consumes existing prefix byte-exactly without rearming");
+    Require(decode.replay.Seal() &&
+                decode.replay.Observe(kTimestampStep) ==
+                    CrystalHDDecodeReplay::Output::New &&
+                decode.replay.Observe(2 * kTimestampStep) ==
+                    CrystalHDDecodeReplay::Output::New &&
+                decode.replay.EndOfSequence() &&
+                decode.replay.Append(3 * kTimestampStep, false, {3}) &&
+                decode.replay.Restarted() && decode.replay.NextInput()->prefeed,
+            "replay retains the accepted MBAFF eligibility after sequence changes");
+    SendNext(&decode.replay, kTimestampStep);
+    Require(!decode.replay.NextInput()->prefeed,
+            "replay also retains the progressive successor's no-prefeed decision");
+  }
+}
+
 static void LiveH264SpeculativePrefeedSequence() {
   TeardownFixture fixture(3);
   fixture.decoder->live_h264 = true;
@@ -5068,6 +5393,257 @@ static void LiveH264SpeculativePrefeedSequence() {
               fixture.decoder->prefed_timestamp == 0 &&
               !fixture.decoder->replay.failed() && !fixture.io.invalid,
           "only actual access units complete and EOS retires the guard token");
+}
+
+static void LiveH264InterlacedPrefeedKeepsExactFieldOwnership() {
+  enum class Tail { Complete, Ghost, Flush, FiniteReplay, ContextDrain };
+  for (bool bottom_first : {false, true}) {
+    for (Tail tail : {Tail::Complete, Tail::Ghost, Tail::Flush,
+                      Tail::FiniteReplay, Tail::ContextDrain}) {
+      TeardownFixture fixture(5);
+      auto &decode = *fixture.decoder;
+      decode.id = 1;
+      decode.generation = 3;
+      decode.profile = VAProfileH264Main;
+      decode.height = fixture.io.output_height = 32;
+      decode.live_h264 = decode.live_h264_gap_tolerant = true;
+      decode.live_h264_fast_path = decode.low_latency_h264 = true;
+      if (tail == Tail::FiniteReplay)
+        decode.live_h264_gap_tolerant = decode.live_h264_fast_path = false;
+      decode.replay = CrystalHDDecodeReplay(true);
+      for (size_t index = 0; index < fixture.held.size(); ++index) {
+        const uint64_t token = (index + 1) * kTimestampStep;
+        const auto picture = decode.decoded_frames.at(token);
+        for (const auto &frame : {fixture.held[index], picture}) {
+          Require(frame->AllocateInternal(nullptr, -1, 16, 32,
+                                          VA_FOURCC_NV12),
+                  "allocate interlaced prefeed picture");
+          memset(frame->storage.data(), 99, frame->storage.size());
+          frame->expected_timestamp = token;
+          frame->decode_identity = frame->trace_decode_identity = index + 1;
+          frame->trace_context = decode.id;
+          frame->trace_generation = decode.generation;
+          frame->trace_submission_ordinal = index + 1;
+          frame->h264_crop_unit_y = 4;
+        }
+        fixture.held[index]->decode_picture = picture;
+      }
+      const uint64_t fourth = 4 * kTimestampStep;
+      const uint64_t fifth = 5 * kTimestampStep;
+      const auto fourth_owner = decode.decoded_frames.at(fourth);
+      const auto fifth_owner = decode.decoded_frames.at(fifth);
+      decode.decoded_frames.erase(fifth);
+      decode.pending.erase(fifth);
+      decode.surface_timestamps.erase(fixture.held[4].get());
+      fixture.held[4]->decode_picture.reset();
+      const uint32_t order = bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0;
+      const uint32_t first = bottom_first ? VDEC_FLAG_BOTTOMFIELD
+                                          : VDEC_FLAG_TOPFIELD;
+      const uint32_t second = bottom_first ? VDEC_FLAG_TOPFIELD
+                                           : VDEC_FLAG_BOTTOMFIELD;
+      const auto queue_field = [&](uint64_t token, uint32_t parity) {
+        fixture.io.outputs.push_back(token);
+        fixture.io.picture_flags.push_back(
+            VDEC_FLAG_INTERLACED_SRC | parity | order);
+      };
+      for (unsigned int picture = 1; picture <= 4; ++picture) {
+        const uint64_t token = picture * kTimestampStep;
+        Require(decode.replay.Append(token, picture == 1,
+                                      TestH264AccessUnit(picture == 1, picture)),
+                "accept an actual interlaced AU before its successor prefeed");
+        decode.next_timestamp = (picture + 1) * kTimestampStep;
+        Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS,
+                "submit interlaced AU and prefeed exactly its successor");
+        queue_field(token, first);
+        if (picture != 4)
+          queue_field(token, second);
+        Require(ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS,
+                "receive complete prefix and the final first field");
+        if (picture != 4)
+          fixture.CheckPicture(picture - 1);
+      }
+      const auto untouched = fixture.held[3]->storage;
+      Require(fixture.io.input_calls.size() == 8 &&
+                  fixture.io.input_calls.back().timestamp == fifth &&
+                  fixture.io.input_calls.back().bytes == H264LowLatencyPrefeed() &&
+                  decode.prefed_timestamp == fifth &&
+                  fixture.io.prefed_timestamp == fifth &&
+                  decode.h264_first_field.valid &&
+                  decode.h264_first_field.timestamp == fourth &&
+                  decode.h264_first_field.picture == fourth_owner &&
+                  decode.pending.count(fourth) == 1 &&
+                  decode.pending.count(fifth) == 0 &&
+                  decode.decoded_frames.count(fifth) == 0 &&
+                  decode.replay.outstanding() == 1 &&
+                  !fourth_owner->ready && !fixture.held[3]->ready &&
+                  !fixture.held[4]->ready,
+              "token-five prefeed cannot complete half of token four or own a picture");
+      Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                  ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                  fixture.io.input_calls.size() == 8 &&
+                  fixture.held[3]->storage == untouched &&
+                  !fixture.held[3]->ready && decode.h264_first_field.valid,
+              "empty transport polls cannot turn the held half into READY");
+
+      if (tail == Tail::FiniteReplay || tail == Tail::ContextDrain) {
+        if (tail == Tail::ContextDrain) {
+          fixture.io.on_sleep = [&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(140));
+            fixture.io.on_sleep = [&] {
+              Require(std::find(fixture.io.events.begin(), fixture.io.events.end(),
+                                "seal") == fixture.io.events.end(),
+                      "live prefeed gap does not infer EOF after finite grace");
+              std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            };
+          };
+          std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+          Require(SyncDecodeSurface(&fixture.driver, fixture.held[3], &lock,
+                                     155000000) == VA_STATUS_ERROR_TIMEDOUT &&
+                      !decode.replay.failed() && decode.h264_first_field.valid &&
+                      decode.prefed_timestamp == fifth &&
+                      !fixture.held[3]->ready,
+                  "finite live sync preserves incomplete pixels and references");
+        }
+        fixture.io.early_eos = true;  // Supply the complementary field ourselves.
+        std::function<void()> finish_after_seal;
+        finish_after_seal = [&] {
+          if (std::find(fixture.io.events.begin(), fixture.io.events.end(),
+                        "seal") == fixture.io.events.end()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            fixture.io.on_sleep = finish_after_seal;
+            return;
+          }
+          Require(fixture.io.outputs == std::deque<uint64_t>{0} &&
+                      decode.prefed_timestamp == fifth &&
+                      fixture.io.prefed_timestamp == 0 &&
+                      decode.h264_first_field.valid && !fixture.held[3]->ready,
+                  "seal drops raw prefix but keeps its guard and unfinished owner");
+          fixture.io.outputs.push_front(fourth);
+          fixture.io.picture_flags.push_back(
+              VDEC_FLAG_INTERLACED_SRC | second | order);
+        };
+        fixture.io.on_sleep = finish_after_seal;
+        const VAStatus status = tail == Tail::ContextDrain
+            ? DestroyContext(&fixture.context, 1)
+            : SyncSurface(&fixture.context, 4);
+        Require(status == VA_STATUS_SUCCESS && fourth_owner->ready &&
+                    !decode.h264_first_field.valid && decode.pending.empty() &&
+                    decode.replay.outstanding() == 0 &&
+                    decode.prefed_timestamp == 0 && fixture.io.prefed_timestamp == 0 &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                               "seal") == 1 &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                               "eos") == 1 &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                               "release") == 9 && !fixture.io.invalid,
+                "finite sync or explicit live destroy drains matching half and actual EOS");
+        fixture.CheckPicture(3);
+        const auto completed = fixture.held[3]->storage;
+        if (tail == Tail::ContextDrain) {
+          Require(fixture.driver.contexts.empty() && decode.device == nullptr &&
+                      fixture.held[3]->storage == completed,
+                  "destroyed live context leaves exact completed pixels downloadable");
+        } else {
+          const auto fifth_unit = TestH264AccessUnit(false, 5);
+          decode.decoded_frames[fifth] = fifth_owner;
+          decode.pending[fifth] = 5;
+          decode.surface_timestamps[fixture.held[4].get()] = fifth;
+          fixture.held[4]->decode_picture = fifth_owner;
+          Require(decode.replay.Append(fifth, false, fifth_unit),
+                  "accept a dependent continuation only with intact replay history");
+          decode.next_timestamp = 6 * kTimestampStep;
+          fixture.io.allow_device_open = true;
+          Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                      fixture.io.open_attempts == 1 &&
+                      fixture.io.input_calls.size() == 14,
+                  "finite continuation reopens and replays original reference input");
+          for (unsigned int picture = 1; picture <= 5; ++picture) {
+            const auto &call = fixture.io.input_calls[7 + picture];
+            Require(call.accepted && call.timestamp == picture * kTimestampStep &&
+                        call.bytes == TestH264AccessUnit(picture == 1, picture),
+                    "post-EOS replay restores each byte-exact original timestamp");
+            queue_field(picture * kTimestampStep, first);
+            queue_field(picture * kTimestampStep, second);
+          }
+          Require(ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                      fifth_owner->ready && decode.pending.empty() &&
+                      decode.replay.outstanding() == 0 &&
+                      fixture.held[3]->storage == completed && !fixture.io.invalid,
+                  "replayed pairs do not rewrite retained pixels and new pair completes");
+          fixture.CheckPicture(4);
+        }
+      } else if (tail == Tail::Ghost) {
+        queue_field(fifth, first);
+        Require(ReceiveAvailable(&fixture.driver, &decode) ==
+                        VA_STATUS_ERROR_DECODING_ERROR &&
+                    decode.replay.failed() && !decode.h264_first_field.valid &&
+                    fixture.held[3]->failed && !fixture.held[3]->ready &&
+                    !fixture.held[4]->ready &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                               "release") == 8 && !fixture.io.invalid,
+                "ghost prefix output is released and cannot complete either owner");
+      } else if (tail == Tail::Flush) {
+        const uint64_t generation = decode.generation;
+        VASurfaceID surface = 4;
+        Require(DestroySurfacesWithTimeout(&fixture.context, &surface, 1, 0) ==
+                        VA_STATUS_SUCCESS &&
+                    decode.generation == generation + 1 &&
+                    !decode.h264_first_field.valid &&
+                    decode.h264_first_field.pixels.empty() &&
+                    decode.prefed_timestamp == 0 &&
+                    fixture.io.prefed_timestamp == 0 && decode.pending.empty() &&
+                    decode.replay.outstanding() == 0 &&
+                    !fixture.held[3]->ready && !fixture.held[4]->ready &&
+                    !fixture.io.invalid,
+                "surface-pool flush clears both held field and speculative successor");
+      } else {
+        queue_field(fourth, second);
+        Require(ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                    !decode.h264_first_field.valid && decode.pending.empty() &&
+                    decode.replay.outstanding() == 0 && fourth_owner->ready &&
+                    decode.decoded_frames.at(fourth) == fourth_owner,
+                "only the matching second field completes the exact fourth owner");
+        fixture.CheckPicture(3);
+        const auto completed = fixture.held[3]->storage;
+        queue_field(fourth, first);
+        queue_field(fourth, second);
+        Require(ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                    !decode.h264_first_field.valid && decode.pending.empty() &&
+                    decode.replay.outstanding() == 0 &&
+                    fixture.held[3]->storage == completed,
+                "duplicate paired output cannot complete or rewrite token four twice");
+        const auto fifth_unit = TestH264AccessUnit(false, 5);
+        decode.decoded_frames[fifth] = fifth_owner;
+        decode.pending[fifth] = 5;
+        decode.surface_timestamps[fixture.held[4].get()] = fifth;
+        fixture.held[4]->decode_picture = fifth_owner;
+        Require(decode.replay.Append(fifth, false, fifth_unit),
+                "accept the actual fifth AU with its own immutable owner");
+        decode.next_timestamp = 6 * kTimestampStep;
+        Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                    fixture.io.input_calls.size() == 10 &&
+                    fixture.io.input_calls[8].accepted &&
+                    fixture.io.input_calls[8].timestamp == 0 &&
+                    fixture.io.input_calls[8].bytes == fifth_unit &&
+                    fixture.io.inputs.back() == fifth &&
+                    decode.decoded_frames.at(fifth) == fifth_owner &&
+                    decode.prefed_timestamp == 6 * kTimestampStep &&
+                    fixture.held[3]->storage == completed,
+                "actual fifth AU consumes the existing prefix by zero-tag continuation");
+        queue_field(fifth, first);
+        queue_field(fifth, second);
+        Require(ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                    fifth_owner->ready && decode.pending.empty() &&
+                    decode.replay.outstanding() == 0 &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                               "release") == 12 && !fixture.io.invalid,
+                "the real fifth field pair completes once and releases every lease");
+        fixture.CheckPicture(4);
+      }
+      for (unsigned int picture = 0; picture < 3; ++picture)
+        fixture.CheckPicture(picture);
+    }
+  }
 }
 
 static void LiveH264PrefeedBusyFallback() {
@@ -6806,6 +7382,8 @@ int main() {
     LiveStreamMarkerSurvivesReplayAndPruning();
     UnknownOutputNeverGuessesAndInvalidOutputFails();
     DuplicateOutputCannotMutateOrRetirePixels();
+    H264WholeWeavePreservesIdentityAndPixels();
+    H264WholeWeaveRejectsMalformedOrPartialOutput();
     H264FieldPairsPreserveIdentityAndPixels();
     H264FieldPairsRespectStaleAndRetainedOwnership();
     H264Bcm70012SecondFieldTokenRecoveryIsNarrow();
@@ -6837,7 +7415,9 @@ int main() {
     ExactBoundaryConversionByteEquivalence();
     CompletedLiveTailPrecedesUnreconstructibleContinuation();
     DecoderResetPreservesItsExplicitLivePolicy();
+    AutomaticMbaffPrefeedSnapshotsAcceptedSequence();
     LiveH264SpeculativePrefeedSequence();
+    LiveH264InterlacedPrefeedKeepsExactFieldOwnership();
     LiveH264PrefeedBusyFallback();
     LiveH264PrefeedEligibilityAndGhostGuard();
     TransportProgressRequiresActualHardwareIo();

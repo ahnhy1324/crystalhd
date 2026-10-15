@@ -30,6 +30,7 @@ class CrystalHDDecodeReplay {
     bool idr;
     std::vector<uint8_t> bytes;
     bool completed = false;
+    bool prefeed = false;
   };
   enum class Output { New, Duplicate, Unknown, Invalid };
 
@@ -38,7 +39,8 @@ class CrystalHDDecodeReplay {
   explicit CrystalHDDecodeReplay(Limits limits, bool live = false)
       : limits_(limits), live_(live) {}
 
-  bool Append(uint64_t timestamp, bool idr, std::vector<uint8_t> bytes) {
+  bool Append(uint64_t timestamp, bool idr, std::vector<uint8_t> bytes,
+              bool prefeed = false) {
     Prune();
     if (failed() || timestamp == 0 || bytes.empty() ||
         (last_timestamp_ == 0 && !idr) || timestamp <= last_timestamp_)
@@ -52,7 +54,7 @@ class CrystalHDDecodeReplay {
       return Fail("compressed IDR replay cache limit exceeded");
     const size_t unit_bytes = bytes.size();
     try {
-      units_.push_back({timestamp, idr, std::move(bytes), false});
+      units_.push_back({timestamp, idr, std::move(bytes), false, prefeed});
     } catch (const std::bad_alloc &) {
       return Fail("compressed IDR replay cache allocation failed");
     }

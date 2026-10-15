@@ -69,12 +69,12 @@ class SchemaOracleTest(unittest.TestCase):
         mapped = {(kind, name) for kind, name, _key in map_matches}
         bounded = {(kind, name) for kind, name, _reason in boundary_matches}
 
-        self.assertEqual(len(inventory_matches), 27)
-        self.assertEqual(len(surfaces), 27)
+        self.assertEqual(len(inventory_matches), 28)
+        self.assertEqual(len(surfaces), 28)
         self.assertEqual(len(map_matches), 23)
         self.assertEqual(len(mapped), 23)
-        self.assertEqual(len(boundary_matches), 4)
-        self.assertEqual(len(bounded), 4)
+        self.assertEqual(len(boundary_matches), 5)
+        self.assertEqual(len(bounded), 5)
         self.assertFalse(mapped & bounded)
         self.assertEqual(mapped | bounded, surfaces)
         self.assertEqual(
@@ -480,7 +480,7 @@ def main() -> int:
     if result.wasSuccessful():
         print(
             "configuration schema oracle: PASS "
-            "(21 canonical keys; 27 production surfaces classified; production core)"
+            "(21 canonical keys; 28 production surfaces classified; production core)"
         )
         return 0
     return 1

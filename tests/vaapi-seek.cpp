@@ -10,12 +10,17 @@ extern "C" {
 #include <libavutil/sha.h>
 }
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -202,12 +207,21 @@ struct Probe {
   bool software = false;
   bool export_prime = false;
   bool retain_old_frames = false;
+  bool close_before_tail = false;
+  bool live_gap = false;
+  bool live_gap_exercised = false;
   size_t lookahead = 0;
   size_t expected_frames = 0;
   size_t deferred_at_limit = 0;
   std::map<int64_t, Picture> reference;
   std::map<int64_t, AVPictureType> reference_types;
   std::map<int64_t, bool> reference_keyframes;
+  std::map<int64_t, int64_t> reference_key_dts;
+
+  bool UsesH264TransportDts() const {
+    return codec->id == AV_CODEC_ID_H264 &&
+           std::strcmp(input->iformat->name, "mpegts") == 0;
+  }
 
   ~Probe() {
     av_frame_free(&download);
@@ -224,6 +238,8 @@ struct Probe {
     Check(avformat_find_stream_info(input, nullptr), "read stream info");
     stream = av_find_best_stream(input, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
     Check(stream, "find video");
+    if (live_gap && codec->id != AV_CODEC_ID_H264)
+      throw std::runtime_error("--live-gap requires H.264 input");
     if (codec->id != AV_CODEC_ID_H264 && codec->id != AV_CODEC_ID_MPEG2VIDEO &&
         codec->id != AV_CODEC_ID_MPEG4 && codec->id != AV_CODEC_ID_VC1 &&
         codec->id != AV_CODEC_ID_WMV3)
@@ -297,6 +313,114 @@ struct Probe {
                                    device_path.c_str(), nullptr, 0), "create VA-API device");
     }
     Check(avcodec_open2(decoder, codec, nullptr), "open decoder");
+  }
+
+  bool NextPacketIsNonIdr() const {
+    if ((packet->flags & AV_PKT_FLAG_KEY) != 0 || !packet->data || packet->size <= 0)
+      return false;
+    const AVCodecParameters *parameters = input->streams[stream]->codecpar;
+    const bool avcc = parameters->extradata && parameters->extradata_size >= 5 &&
+                      parameters->extradata[0] == 1;
+    bool vcl = false;
+    const size_t size = static_cast<size_t>(packet->size);
+    if (avcc) {
+      const size_t length_size = (parameters->extradata[4] & 3U) + 1U;
+      for (size_t at = 0; at < size;) {
+        if (size - at < length_size)
+          return false;
+        size_t length = 0;
+        for (size_t byte = 0; byte < length_size; ++byte)
+          length = (length << 8U) | packet->data[at++];
+        if (length == 0 || length > size - at)
+          return false;
+        const unsigned int type = packet->data[at] & 31U;
+        if (type == 5)
+          return false;
+        vcl = vcl || type == 1;
+        at += length;
+      }
+    } else {
+      for (size_t at = 0; at + 3U < size; ++at) {
+        if (packet->data[at] != 0 || packet->data[at + 1] != 0 ||
+            packet->data[at + 2] != 1)
+          continue;
+        const unsigned int type = packet->data[at + 3] & 31U;
+        if (type == 5)
+          return false;
+        vcl = vcl || type == 1;
+      }
+    }
+    return vcl;
+  }
+
+  void TryLiveGap(const std::deque<OwnedFrame> &deferred) {
+#if VA_CHECK_VERSION(1, 9, 0)
+    const AVFrame *owner = deferred.back().get();
+    if (owner->format != AV_PIX_FMT_VAAPI || !owner->hw_frames_ctx)
+      throw std::runtime_error("live gap requires an owned VA frame pool");
+    auto *frames = reinterpret_cast<AVHWFramesContext *>(owner->hw_frames_ctx->data);
+    if (!frames->device_ctx || frames->device_ctx->type != AV_HWDEVICE_TYPE_VAAPI)
+      throw std::runtime_error("live gap frame pool has no VA device");
+    auto *device = static_cast<AVVAAPIDeviceContext *>(frames->device_ctx->hwctx);
+    if (!device || !device->display)
+      throw std::runtime_error("live gap frame pool has no VA display");
+    const auto try_surface = [&](VASurfaceID surface, const char *source,
+                                 int64_t pts) {
+      VASurfaceStatus state = VASurfaceReady;
+      if (vaQuerySurfaceStatus(device->display, surface, &state) != VA_STATUS_SUCCESS)
+        throw std::runtime_error("query live-gap surface failed");
+      if (state != VASurfaceRendering)
+        return false;
+      // Unused static-pool slots may also report Rendering. Zero-time sync
+      // validates an actual pending decode binding without pumping input.
+      const VAStatus bound = vaSyncSurface2(device->display, surface, 0);
+      if (bound == VA_STATUS_SUCCESS || bound == VA_STATUS_ERROR_INVALID_CONTEXT)
+        return false;
+      if (bound != VA_STATUS_ERROR_TIMEDOUT)
+        throw std::runtime_error("live-gap surface has no valid pending binding");
+      constexpr uint64_t gap_ns = 350ULL * 1000U * 1000U;
+      std::fprintf(stderr, "live-gap begin surface=%u owner=%s PTS=%lld next-packet-PTS=%lld next-packet-DTS=%lld wait-ns=%llu\n",
+                  surface, source, static_cast<long long>(pts),
+                  static_cast<long long>(packet->pts), static_cast<long long>(packet->dts),
+                  static_cast<unsigned long long>(gap_ns));
+      std::fflush(stderr);
+      const auto start = std::chrono::steady_clock::now();
+      const VAStatus waited = vaSyncSurface2(device->display, surface, gap_ns);
+      const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - start).count();
+      if (waited == VA_STATUS_SUCCESS) {
+        std::fprintf(stderr, "live-gap end surface=%u elapsed-ns=%lld status=SUCCESS; gap not established\n",
+                     surface, static_cast<long long>(elapsed));
+        std::fflush(stderr);
+        return false;
+      }
+      if (waited != VA_STATUS_ERROR_TIMEDOUT || elapsed < static_cast<int64_t>(gap_ns) ||
+          vaQuerySurfaceStatus(device->display, surface, &state) != VA_STATUS_SUCCESS ||
+          state != VASurfaceRendering)
+        throw std::runtime_error("live gap did not preserve a pending surface through its deadline");
+      std::fprintf(stderr, "live-gap end surface=%u elapsed-ns=%lld status=TIMEDOUT still=Rendering; resume original non-IDR packet\n",
+                  surface, static_cast<long long>(elapsed));
+      std::fflush(stderr);
+      live_gap_exercised = true;
+      return true;
+    };
+    for (auto picture = deferred.rbegin(); picture != deferred.rend(); ++picture) {
+      if (try_surface(static_cast<VASurfaceID>(reinterpret_cast<uintptr_t>((*picture)->data[3])),
+                      "retained-frame", (*picture)->best_effort_timestamp))
+        return;
+    }
+    // Reordered pending pictures need not have been returned as AVFrames.
+    // The documented static pool retains its own live surface owners.
+    auto *pool = static_cast<AVVAAPIFramesContext *>(frames->hwctx);
+    if (frames->initial_pool_size > 0 && pool && pool->surface_ids && pool->nb_surfaces > 0) {
+      for (int index = 0; index < pool->nb_surfaces; ++index)
+        if (try_surface(pool->surface_ids[index], "static-pool", AV_NOPTS_VALUE))
+          return;
+    }
+#else
+    (void)deferred;
+    throw std::runtime_error("--live-gap requires VA-API 1.9 headers or newer");
+#endif
   }
 
   Picture Fingerprint(const AVFrame *picture_frame, bool allow_export = true) {
@@ -429,12 +553,35 @@ struct Probe {
         result = av_read_frame(input, packet);
       } while (result >= 0 && packet->stream_index != stream);
       if (result == AVERROR_EOF) {
+        if (record && live_gap && !live_gap_exercised)
+          throw std::runtime_error("no bound pending surface sustained the live gap before input EOF");
         draining = true;
         Check(avcodec_send_packet(decoder, nullptr), "start drain");
       } else {
         Check(result, "read packet");
+        if (record && UsesH264TransportDts() &&
+            (packet->flags & AV_PKT_FLAG_KEY) != 0) {
+          if (packet->pts == AV_NOPTS_VALUE || packet->dts == AV_NOPTS_VALUE)
+            throw std::runtime_error("H.264 TS key packet lacks PTS/DTS anchor");
+          if (!reference_key_dts.emplace(packet->pts, packet->dts).second)
+            throw std::runtime_error("duplicate H.264 TS key packet PTS");
+        }
+        if (record && live_gap && !live_gap_exercised && count >= 12 &&
+            !deferred.empty() && NextPacketIsNonIdr())
+          TryLiveGap(deferred);
         Check(avcodec_send_packet(decoder, packet), "send packet");
       }
+    }
+    if (close_before_tail) {
+      if (!draining || !decoder || deferred.size() != lookahead)
+        throw std::runtime_error(
+            "explicit stream stop requires decoder EOF and the full retained tail");
+      // A live VA sync is not an EOF request. Retained AVFrames keep their
+      // surfaces/device alive while context teardown explicitly drains the
+      // accepted backend tail, before any of those pixels are downloaded.
+      avcodec_free_context(&decoder);
+      std::printf("explicit stream stop: decoder freed before %zu retained tail downloads\n",
+                  deferred.size());
     }
     // Input EOF is not validation EOF: download and count every retained tail
     // picture before checking the container's declared reference frame count.
@@ -449,9 +596,28 @@ struct Probe {
   }
 
   void Seek(int64_t target) {
-    Check(av_seek_frame(input, stream, target, AVSEEK_FLAG_BACKWARD), "seek");
-    if (!decoder)
+    int64_t seek_timestamp = target;
+    if (UsesH264TransportDts()) {
+      // MPEG-TS binary seeking compares decoding timestamps. A display PTS
+      // can land after its IDR when B pictures reorder. Use the preceding
+      // reference key packet's DTS, while Decode still compares the original
+      // requested PTS and every pixel against the uninterrupted reference.
+      auto anchor = reference_key_dts.upper_bound(target);
+      if (anchor == reference_key_dts.begin())
+        throw std::runtime_error("no H.264 TS key packet anchor at/before target PTS");
+      --anchor;
+      seek_timestamp = anchor->second;
+      std::printf("TS seek target PTS %lld: key packet PTS %lld DTS %lld\n",
+                  static_cast<long long>(target),
+                  static_cast<long long>(anchor->first),
+                  static_cast<long long>(anchor->second));
+    }
+    Check(av_seek_frame(input, stream, seek_timestamp, AVSEEK_FLAG_BACKWARD), "seek");
+    if (!decoder) {
       OpenDecoder();
+      if (close_before_tail)
+        std::printf("explicit stream reconnect: new decoder context opened\n");
+    }
     avcodec_flush_buffers(decoder);
     av_packet_unref(packet);
   }
@@ -504,14 +670,30 @@ struct Probe {
       throw std::runtime_error("reference did not drain the expected frame count");
     std::printf("reference: %zu %s frames drained\n", count,
                 software ? "software" : "VA-API");
-    if (export_prime) {
-      // Never let stale exported pixels become their own reference. The first
-      // pass above uses synchronized downloads; this pass exports fresh frames.
+    if (close_before_tail) {
+      auto tail = reference.end();
+      std::advance(tail, -static_cast<std::ptrdiff_t>(std::min<size_t>(8, reference.size())));
+      for (; tail != reference.end(); ++tail) {
+        std::printf("reference-tail PTS=%lld time_base=%d/%d width=%d height=%d SHA256=",
+                    static_cast<long long>(tail->first), input->streams[stream]->time_base.num,
+                    input->streams[stream]->time_base.den, tail->second.width, tail->second.height);
+        for (uint8_t byte : tail->second.digest)
+          std::printf("%02x", byte);
+        std::putchar('\n');
+      }
+    }
+    if (export_prime || live_gap) {
+      // Compare a complete fresh timeline with synchronized reference pixels;
+      // PRIME2 changes only how that fresh timeline is read.
       const int64_t first = reference.begin()->first;
       Seek(first);
       const size_t compared = Decode(false, first, count, nullptr, true);
-      std::printf("PRIME2 without prior vaSyncSurface: %zu complete-file PTS/SHA-256 digests match\n",
-                  compared);
+      if (export_prime)
+        std::printf("PRIME2 without prior vaSyncSurface: %zu complete-file PTS/SHA-256 digests match\n",
+                    compared);
+      else
+        std::printf("live-gap/no-gap replay: %zu complete-file PTS/SHA-256 digests match\n",
+                    compared);
     }
     const size_t indices[] = {count / 2, count / 4, count * 3 / 4, 0};
     size_t pass = 0;
@@ -550,8 +732,8 @@ struct Probe {
 };
 
 int main(int argc, char **argv) {
-  if (argc < 2 || argc > 9) {
-    std::fprintf(stderr, "usage: %s VIDEO_CONTAINER [DRM_DEVICE|--software] [--lookahead 8] [--expected-frames COUNT] [--retain-old-frames] [--export-prime]\n", argv[0]);
+  if (argc < 2 || argc > 11) {
+    std::fprintf(stderr, "usage: %s VIDEO_CONTAINER [DRM_DEVICE|--software] [--lookahead 8] [--expected-frames COUNT] [--retain-old-frames] [--export-prime] [--close-before-tail] [--live-gap]\n", argv[0]);
     return 2;
   }
   try {
@@ -567,6 +749,14 @@ int main(int argc, char **argv) {
         if (probe.retain_old_frames)
           throw std::runtime_error("--retain-old-frames must be specified once");
         probe.retain_old_frames = true;
+      } else if (std::strcmp(argv[argument], "--close-before-tail") == 0) {
+        if (probe.close_before_tail)
+          throw std::runtime_error("--close-before-tail must be specified once");
+        probe.close_before_tail = true;
+      } else if (std::strcmp(argv[argument], "--live-gap") == 0) {
+        if (probe.live_gap)
+          throw std::runtime_error("--live-gap must be specified once");
+        probe.live_gap = true;
       } else if (std::strcmp(argv[argument], "--lookahead") == 0) {
         if (probe.lookahead != 0 || argument + 1 == argc ||
             std::strcmp(argv[++argument], "8") != 0)
@@ -591,8 +781,24 @@ int main(int argc, char **argv) {
     }
     if (probe.export_prime && probe.software)
       throw std::runtime_error("--export-prime requires hardware mode");
+    if (probe.close_before_tail && probe.retain_old_frames)
+      throw std::runtime_error(
+          "--close-before-tail cannot be combined with --retain-old-frames");
+    if (probe.close_before_tail && (probe.software || probe.lookahead != 8))
+      throw std::runtime_error(
+          "--close-before-tail requires hardware mode and --lookahead 8");
     if (probe.retain_old_frames)
       probe.lookahead = 8;
+    if (probe.live_gap) {
+#if !VA_CHECK_VERSION(1, 9, 0)
+      throw std::runtime_error("--live-gap requires VA-API 1.9 headers or newer");
+#endif
+      if (probe.software || probe.lookahead != 8)
+        throw std::runtime_error("--live-gap requires hardware mode and --lookahead 8");
+      const char *live = std::getenv("CRYSTALHD_VAAPI_LIVE_H264");
+      if (!live || std::strcmp(live, "1") != 0)
+        throw std::runtime_error("--live-gap requires CRYSTALHD_VAAPI_LIVE_H264=1");
+    }
     probe.Open(argv[1], device);
     probe.Run();
     return 0;

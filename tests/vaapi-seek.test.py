@@ -128,6 +128,30 @@ def main():
                 )
         passed += 1
 
+        # Keep the same H.264 access units and expected presentation targets.
+        # TS binary seeking needs the reference key packet's DTS to include
+        # the IDR before reordered pictures; decoding/pixel criteria stay exact.
+        transport = temporary / "decode-timestamp-seek.ts"
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-xerror",
+             "-n", "-i", declared_fixture, "-map", "0:v:0", "-c:v", "copy",
+             "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", transport],
+            check=True,
+        )
+        output = require_success(
+            [seek_probe, transport, "--software", "--expected-frames", expected,
+             "--retain-old-frames"]
+        )
+        for line, occurrences in required.items():
+            if output.count(line) != occurrences:
+                raise TestFailure(
+                    f"TS retained-frame self-check expected {occurrences} "
+                    f"occurrences of {line!r}, got {output.count(line)}"
+                )
+        if output.count("TS seek target PTS ") != 6:
+            raise TestFailure("TS seeks did not retain all six reference key anchors")
+        passed += 1
+
     print(f"vaapi seek boundary/self-check: {passed}/{passed} passed")
 
 

@@ -84,14 +84,14 @@ resource and teardown results are in the
 Standalone FFmpeg CPU BWDIF after `hwdownload` completed the same fixture, but
 the driver still advertises no `VAProcFilterDeinterlacing` capability. See the
 [runnable command and performance boundary](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif).
-Stock Kodi 21.3 progressive hardware-video and lifecycle checks passed, but
-physical A/V timing was not accepted. Its explicit interlaced BWDIF and Render
-Bob selections stalled with repeated decode recovery. Direct Weave and
-standalone BWDIF show that paired-field output exists; Kodi/CrystalHD VA decode,
-readback and post-processing scheduling remain incompatible in this case, and
-the first failing internal cause is unresolved. Do not advertise Kodi
-interlaced support or fake a VA VPP capability. [#436](https://github.com/ahnhy1324/crystalhd/issues/436)
-tracks the proposed v1.2.0 follow-up.
+Stock Kodi 21.3 progressive hardware-video and lifecycle checks passed;
+quantified physical A/V remains unqualified. Installed RC `f4d99d5` failed
+interlaced BWDIF/Render Bob playback. Source candidate `ec77b71` addresses finite MBAFF
+input/tail scheduling, with complete decoder-oracle results, but Kodi source
+picture accounting and timing/output warnings still need qualification. See
+[Kodi qualification and remaining limits](../../USAGE.md#kodi). The driver
+does not advertise VA VPP deinterlacing; no general Kodi interlace or
+hardware-Bob support is claimed.
 
 ## Replay and end of stream
 
@@ -153,15 +153,25 @@ EOS. These policies do not affect other codecs, BCM70012's existing path or
 the library ABI, and the explicit live mode is not a general real-time
 streaming support claim.
 
-On BCM70015, additionally setting `CRYSTALHD_VAAPI_LOW_LATENCY_H264=1`
-enables experimental H.264 input prefeeding. It requires
-`CRYSTALHD_VAAPI_LIVE_H264=1` and reduced decode latency by one input cadence
-in a low-delay 720p30 hardware test. VA-API frame-rate signaling remains fixed
-at 30 fps; this option does not establish real-time playback or A/V
-synchronization support.
+Finite-policy BCM70015 MBAFF frame pictures automatically send the next
+timestamped AUD/filler prefix, avoiding a wait for the next complete input AU.
+This does not predict slice data or complete a missing field. The last picture
+still uses the ordinary real-EOS drain above. Progressive pictures, separately
+coded fields/PAFF, other codecs, BCM70012 and explicit live mode do not gain
+automatic prefeed. Set `CRYSTALHD_VAAPI_LOW_LATENCY_H264=0` to disable it.
+
+On BCM70015, `CRYSTALHD_VAAPI_LOW_LATENCY_H264=1` explicitly enables H.264
+input prefeeding independently of the LIVE policy. With LIVE unset, finite
+sealing/replay remains available; with `CRYSTALHD_VAAPI_LIVE_H264=1`, input gaps
+remain nonterminal and the client must explicitly close/drain at stream end.
+The explicit live+prefeed combination reduced decode latency by one input
+cadence in a low-delay 720p30 hardware test. VA-API frame-rate signaling remains
+fixed at 30 fps; prefeed alone does not establish real-time playback or physical
+A/V synchronization support.
 
 `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP=1` enables a further BCM70015-only
-presentation experiment when both options above are active. Selection is
+presentation experiment only with explicit `LIVE_H264=1` and
+`LOW_LATENCY_H264=1`. Selection is
 `previous` by default; `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY=latest`
 selects the newest eligible older picture. The optional
 `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US` accepts exactly `0`, `16667`,

@@ -43,6 +43,8 @@ typedef struct {
   guint32 picture_number;
   guint width;
   guint height;
+  gboolean whole_weave;
+  guint weave_fault;
 } MockPicture;
 
 typedef enum {
@@ -133,6 +135,8 @@ static struct {
   guint accepted_count;
   guint8 pixels[16 * 16 * 2];
   guint8 scaled_pixels[128 * 72 * 2];
+  guint8 whole_pixels[16 * 16 * 2 + 160];
+  guint8 legacy_pixels[720 * 16 * 2];
 } mock;
 
 static BC_STATUS
@@ -517,6 +521,8 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
   MockPicture *picture;
   guint8 *pixels;
   gsize pixel_size;
+  gsize completed_size;
+  guint field_type;
   (void)device;
   (void)timeout;
   if (mock.output_once != BC_STS_SUCCESS) {
@@ -533,10 +539,32 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
   G_UNLOCK(mock_queue);
   if (picture == NULL)
     return BC_STS_NO_DATA;
-  pixel_size = (gsize)picture->width * picture->height * 2;
-  if (pixel_size <= sizeof(mock.pixels)) {
+  field_type = picture->flags & VDEC_FLAG_BOTTOMFIELD;
+  completed_size = (gsize)picture->width * picture->height * 2;
+  if (!picture->whole_weave &&
+      (picture->flags & VDEC_FLAG_INTERLACED_SRC) != 0 &&
+      (field_type == VDEC_FLAG_TOPFIELD ||
+       field_type == VDEC_FLAG_BOTTOMFIELD)) {
+    guint source_width = picture->width;
+    if (mock.device_version == 0)
+      source_width = source_width <= 720 ? 720 :
+                     (source_width <= 1280 ? 1280 : 1920);
+    /* Completion counts pixels actually returned, not backing allocation:
+     * a real separate-field buffer contains only half the visible rows. */
+    completed_size = (gsize)source_width * (picture->height / 2) * 2;
+  }
+  pixel_size = completed_size;
+  if (picture->whole_weave) {
+    g_assert_cmpuint(picture->width, ==, 16);
+    g_assert_cmpuint(picture->height, ==, 16);
+    pixels = mock.whole_pixels;
+    pixel_size = completed_size = sizeof(mock.whole_pixels);
+  } else if (pixel_size <= sizeof(mock.pixels)) {
     pixels = mock.pixels;
     pixel_size = sizeof(mock.pixels);
+  } else if (pixel_size > sizeof(mock.scaled_pixels)) {
+    pixels = mock.legacy_pixels;
+    pixel_size = MIN(pixel_size, sizeof(mock.legacy_pixels));
   } else {
     pixels = mock.scaled_pixels;
     pixel_size = MIN(pixel_size, sizeof(mock.scaled_pixels));
@@ -551,7 +579,49 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
   output->PicInfo.flags = picture->flags;
   output->PicInfo.pulldown = picture->pulldown;
   output->Ybuff = pixels;
-  output->YBuffDoneSz = pixel_size / 4;
+  output->YBuffDoneSz = MIN(completed_size, pixel_size) / 4;
+  if (picture->whole_weave) {
+    const gsize payload = 16 * 16 * 2;
+    BC_PIC_INFO_BLOCK raw = output->PicInfo;
+    guint32 ordinal = raw.picture_number;
+    guint32 trailer_width = 16;
+    guint32 trailer_line = 16;
+    guint row;
+    output->b422Mode = OUTPUT_MODE422_YUY2;
+    for (row = 0; row < 16; ++row)
+      memset(pixels + row * 32, picture->pixel + row, 32);
+    raw.flags = VDEC_FLAG_FIELDPAIR | VDEC_FLAG_UNKNOWN_SRC |
+                (picture->flags & VDEC_FLAG_BOTTOM_FIRST);
+    raw.timeStamp = picture->timestamp / 20000U;
+    switch (picture->weave_fault) {
+      case 0: break;
+      case 1: --output->YBuffDoneSz; break;
+      case 2: ++trailer_width; break;
+      case 3: trailer_line = 8; break;
+      case 4: ++raw.timeStamp; break;
+      case 5: raw.timeStamp = 0xffffffffULL; break;
+      case 6: ++raw.picture_number; break;
+      case 7: ++raw.sess_num; break;
+      case 8: ++raw.picture_meta_payload; break;
+      case 9: raw.flags = VDEC_FLAG_TOPFIELD; break;
+      case 10: raw.flags |= VDEC_FLAG_EOS; break;
+      case 11: ++raw.width; break;
+      case 12: raw.height -= 4; break;
+      case 13: ++ordinal; break;
+      case 14: output->PoutFlags |= BC_POUT_FLAGS_ENCRYPTED; break;
+      case 15: raw.flags |= 0x800U; break;
+      case 16: output->Ybuff = NULL; break;
+      case 17: output->b422Mode = OUTPUT_MODE422_UYVY; break;
+      case 18: output->YBuffDoneSz = payload / 4; break;
+      case 19: output->YBuffDoneSz = G_MAXUINT32; break;
+      default: g_assert_not_reached();
+    }
+    memcpy(pixels + payload, &ordinal, sizeof(ordinal));
+    memcpy(pixels + payload + sizeof(ordinal), &raw,
+           offsetof(BC_PIC_INFO_BLOCK, other));
+    memcpy(pixels + pixel_size - 8, &trailer_width, sizeof(trailer_width));
+    memcpy(pixels + pixel_size - 4, &trailer_line, sizeof(trailer_line));
+  }
   g_free(picture);
   return BC_STS_SUCCESS;
 }
@@ -567,6 +637,8 @@ BC_STATUS DtsReleaseOutputBuffs(HANDLE device, void *reserved, BOOL change)
     mock.free_bytes = 1024 * 1024;
   memset(mock.pixels, 0xcc, sizeof(mock.pixels));
   memset(mock.scaled_pixels, 0xcc, sizeof(mock.scaled_pixels));
+  memset(mock.whole_pixels, 0xcc, sizeof(mock.whole_pixels));
+  memset(mock.legacy_pixels, 0xcc, sizeof(mock.legacy_pixels));
   mock.release_once = BC_STS_SUCCESS;
   if (result != BC_STS_SUCCESS && mock.release_latches_recovery) {
     mock.release_latches_recovery = FALSE;
@@ -2456,6 +2528,215 @@ queue_field(guint64 timestamp, guint8 pixel, gboolean bottom)
 }
 
 static void
+queue_whole_weave(guint64 timestamp, guint8 pixel, gboolean bottom_first,
+                   guint fault)
+{
+  MockPicture *picture;
+  queue_picture_geometry(timestamp, pixel, 71, 16, 16,
+      VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_UNKNOWN_SRC | VDEC_FLAG_TOPFIELD |
+      (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0));
+  picture = g_queue_peek_tail(&mock.pictures);
+  picture->whole_weave = TRUE;
+  picture->weave_fault = fault;
+}
+
+static void
+assert_whole_weave_buffer(GstBuffer *output, GstClockTime pts,
+                          guint8 pixel, gboolean bottom_first)
+{
+  guint8 bytes[16 * 16 * 2];
+  guint i;
+  g_assert_nonnull(output);
+  g_assert_cmpuint(gst_buffer_get_size(output), ==, sizeof(bytes));
+  g_assert_cmpuint(GST_BUFFER_PTS(output), ==, pts);
+  g_assert_cmpuint(GST_BUFFER_DURATION(output), ==, 40 * GST_MSECOND);
+  g_assert_true(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_INTERLACED));
+  g_assert_cmpint(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_TFF),
+                  ==, !bottom_first);
+  g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_ONEFIELD));
+  g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_RFF));
+  g_assert_cmpuint(gst_buffer_extract(output, 0, bytes, sizeof(bytes)),
+                   ==, sizeof(bytes));
+  for (i = 0; i < sizeof(bytes); ++i)
+    g_assert_cmpuint(bytes[i], ==, pixel + i / 32);
+}
+
+static void
+test_whole_weave_output(void)
+{
+  guint bottom_first;
+  for (bottom_first = 0; bottom_first < 2; ++bottom_first) {
+    GstHarness *harness = new_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    GstBuffer *output;
+    const GstClockTime pts = GST_SECOND + 7 * GST_MSECOND;
+    mock.auto_output = FALSE;
+    g_assert_cmpint(gst_harness_push(harness, new_input(pts)), ==, GST_FLOW_OK);
+    queue_whole_weave(mock.accepted[0], 0x30, bottom_first, 0);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    output = gst_harness_try_pull(harness);
+    assert_whole_weave_buffer(output, pts, 0x30, bottom_first);
+    g_assert_cmpuint(self->timestamps.length, ==, 0);
+    g_assert_false(self->need_second_field);
+    g_assert_cmpuint(mock.release_calls, ==, 1);
+    g_assert_cmpuint(mock.destroyed_inputs, ==, 1);
+    g_assert_true(gst_harness_push_event(harness, gst_event_new_eos()));
+    g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+    gst_harness_teardown(harness);
+    /* The completed lease was poisoned before delivery; close must not
+     * invalidate the application's independent full-height copy either. */
+    assert_whole_weave_buffer(output, pts, 0x30, bottom_first);
+    gst_buffer_unref(output);
+  }
+}
+
+static void
+test_whole_weave_rejects_malformed(void)
+{
+  guint fault;
+  for (fault = 1; fault <= 19; ++fault) {
+    GstHarness *harness = new_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    GstVideoCodecFrame *frame;
+    mock.auto_output = FALSE;
+    g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+    queue_whole_weave(mock.accepted[0], 0x30, FALSE, fault);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_ERROR);
+    g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+    g_assert_cmpuint(self->timestamps.length, ==, 1);
+    g_assert_false(self->need_second_field);
+    g_assert_cmpuint(mock.release_calls, ==, 1);
+    frame = gst_video_decoder_get_frame(GST_VIDEO_DECODER(self), 0);
+    g_assert_nonnull(frame);
+    g_assert_null(frame->output_buffer);
+    gst_video_codec_frame_unref(frame);
+    gst_harness_teardown(harness);
+    g_assert_cmpuint(mock.destroyed_inputs, ==, 1);
+  }
+}
+
+static void
+test_whole_weave_rejects_pending_half(void)
+{
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  queue_field(mock.accepted[0], 0x11, FALSE);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+  g_assert_true(self->need_second_field);
+  g_assert_cmpuint(self->timestamps.length, ==, 1);
+  g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+  g_assert_cmpuint(mock.release_calls, ==, 1);
+  queue_whole_weave(mock.accepted[0], 0x30, FALSE, 0);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_ERROR);
+  g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+  g_assert_cmpuint(self->timestamps.length, ==, 1);
+  g_assert_cmpuint(mock.release_calls, ==, 2);
+  gst_harness_teardown(harness);
+  g_assert_cmpuint(mock.destroyed_inputs, ==, 1);
+}
+
+static void
+test_whole_weave_token_lifetime(void)
+{
+  guint scenario;
+  for (scenario = 0; scenario < 3; ++scenario) {
+    GstHarness *harness = new_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    GstBuffer *held = NULL;
+    guint64 stale;
+    guint64 expected_token;
+    guint releases;
+    mock.auto_output = FALSE;
+    g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+    stale = mock.accepted[0];
+    if (scenario == 0) {
+      queue_whole_weave(stale, 0x30, FALSE, 0);
+      g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+      held = gst_harness_try_pull(harness);
+      assert_whole_weave_buffer(held, 0, 0x30, FALSE);
+      g_assert_cmpint(gst_harness_push(harness, new_input(40 * GST_MSECOND)),
+                      ==, GST_FLOW_OK);
+      expected_token = mock.accepted[1];
+    } else if (scenario == 1) {
+      /* Valid embedded metadata cannot bind an otherwise unsubmitted token. */
+      stale += CRYSTALHD_TIMESTAMP_STEP;
+      expected_token = mock.accepted[0];
+    } else {
+      GstSegment segment;
+      flush_decoder(harness);
+      gst_segment_init(&segment, GST_FORMAT_TIME);
+      g_assert_true(gst_harness_push_event(harness, gst_event_new_segment(&segment)));
+      g_assert_cmpint(gst_harness_push(harness, new_input(40 * GST_MSECOND)),
+                      ==, GST_FLOW_OK);
+      expected_token = mock.accepted[1];
+      g_assert_cmpuint(expected_token, >, stale);
+    }
+    releases = mock.release_calls;
+    queue_whole_weave(stale, 0x80, TRUE, 0);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_ERROR);
+    g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+    g_assert_false(self->need_second_field);
+    g_assert_cmpuint(self->timestamps.length, ==, 1);
+    g_assert_cmpuint(((CrystalHdTimestamp *)self->timestamps.head->data)->hardware_timestamp,
+                     ==, expected_token);
+    g_assert_cmpuint(mock.release_calls, ==, releases + 1);
+    if (held != NULL)
+      assert_whole_weave_buffer(held, 0, 0x30, FALSE);
+    gst_harness_teardown(harness);
+    if (held != NULL) {
+      assert_whole_weave_buffer(held, 0, 0x30, FALSE);
+      gst_buffer_unref(held);
+    }
+  }
+}
+
+static void
+test_whole_weave_70012_unchanged(void)
+{
+  GstHarness *harness = new_decoder_with_caps_and_device(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=16,height=16,framerate=25/1", 0);
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *output;
+  guint8 bytes[16 * 16 * 2];
+  guint i;
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  queue_field(mock.accepted[0], 0x11, FALSE);
+  queue_field(mock.accepted[0], 0x22, TRUE);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+  output = gst_harness_try_pull(harness);
+  g_assert_nonnull(output);
+  g_assert_true(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_INTERLACED));
+  g_assert_true(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_TFF));
+  g_assert_cmpuint(gst_buffer_extract(output, 0, bytes, sizeof(bytes)),
+                   ==, sizeof(bytes));
+  for (i = 0; i < sizeof(bytes); ++i)
+    g_assert_cmpuint(bytes[i], ==, (i / 32) % 2 ? 0x22 : 0x11);
+  g_assert_cmpuint(self->timestamps.length, ==, 0);
+  g_assert_false(self->need_second_field);
+  g_assert_cmpuint(mock.release_calls, ==, 2);
+  gst_buffer_unref(output);
+  gst_harness_teardown(harness);
+
+  harness = new_decoder_with_caps_and_device(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=16,height=16,framerate=25/1", 0);
+  self = GST_CRYSTALHD_DEC(harness->element);
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  queue_whole_weave(mock.accepted[0], 0x30, FALSE, 0);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_ERROR);
+  g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+  g_assert_false(self->need_second_field);
+  g_assert_cmpuint(self->timestamps.length, ==, 1);
+  g_assert_cmpuint(mock.release_calls, ==, 1);
+  gst_harness_teardown(harness);
+}
+
+static void
 test_field_identity(void)
 {
   GstHarness *harness = new_decoder();
@@ -4243,6 +4524,11 @@ main(int argc, char **argv)
   g_test_add_func("/crystalhd/lifecycle/drain-completion-requires-idle",
                   test_drain_completion_requires_idle);
   g_test_add_func("/crystalhd/lifecycle/field-identity", test_field_identity);
+  g_test_add_func("/crystalhd/lifecycle/whole-weave-output", test_whole_weave_output);
+  g_test_add_func("/crystalhd/lifecycle/whole-weave-malformed", test_whole_weave_rejects_malformed);
+  g_test_add_func("/crystalhd/lifecycle/whole-weave-pending-half", test_whole_weave_rejects_pending_half);
+  g_test_add_func("/crystalhd/lifecycle/whole-weave-token-lifetime", test_whole_weave_token_lifetime);
+  g_test_add_func("/crystalhd/lifecycle/whole-weave-70012", test_whole_weave_70012_unchanged);
   g_test_add_func("/crystalhd/lifecycle/field-pair-policy", test_field_pair_policy);
   g_test_add_func("/crystalhd/lifecycle/field-presentation-order", test_field_presentation_order);
   g_test_add_func("/crystalhd/lifecycle/output-interlace-mode-changes", test_output_interlace_mode_changes);

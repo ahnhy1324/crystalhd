@@ -410,8 +410,20 @@ class ArgumentTests(unittest.TestCase):
             self.assertEqual(args.file, args.subtitles)
             defaults = player.arguments([str(path)])
             self.assertEqual(defaults.mode, "hardware")
+            self.assertFalse(defaults.weave)
             self.assertEqual(defaults.scale_width, 0)
             self.assertIsNone(defaults.software_output_size)
+
+    def test_weave_is_explicit_and_works_with_either_decoder_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "interlaced video.ts"
+            path.touch()
+            for mode in ("hardware", "software"):
+                with self.subTest(mode=mode):
+                    args = player.arguments([f"--{mode}", "--weave", str(path)])
+                    self.assertEqual(args.mode, mode)
+                    self.assertTrue(args.weave)
+            self.assertEqual(player.arguments(["--weave", str(path)]).mode, "hardware")
 
     def test_explicit_hardware_scale_and_software_output_size(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -496,8 +508,9 @@ class GStreamerApiTests(unittest.TestCase):
         # Disable every hardware decoder before any test pipeline can start.
         player.configure_decoders(Gst, "software")
 
-    def make_player(self):
-        args = SimpleNamespace(mode="software", file=Path(self.temp.name) / "unused.ogg",
+    def make_player(self, mode="software", weave=False):
+        args = SimpleNamespace(mode=mode, weave=weave,
+                               file=Path(self.temp.name) / "unused.ogg",
                                subtitles=Path(self.temp.name) / "sub titles.srt",
                                scale_width=0, software_output_size=None)
         result = player.Player(args, self.Gst, self.GLib, {
@@ -527,6 +540,41 @@ class GStreamerApiTests(unittest.TestCase):
         self.assertTrue(result.pipeline.get_property("suburi").endswith("sub%20titles.srt"))
         self.assertIsNotNone(result.pipeline.get_property("video-sink"))
         self.assertIsNone(result.pipeline.get_property("video-filter"))
+
+    def test_weave_changes_only_deinterlacing_and_preserves_decoder_policy(self):
+        reference = self.Gst.ElementFactory.make("playbin")
+        original_flags = int(reference.get_property("flags"))
+        for mode in ("hardware", "software"):
+            for weave in (False, True):
+                with self.subTest(mode=mode, weave=weave):
+                    factories = [Factory("crystalhddec", HARDWARE),
+                                 Factory("avdec_h264", SOFTWARE),
+                                 Factory("vaapih264dec", HARDWARE),
+                                 Factory("faad", "Codec/Decoder/Audio")]
+                    registry = SimpleNamespace(get_feature_list=lambda _type: factories)
+                    output = io.StringIO()
+                    # Real playbin/property API, mock factories: never enable or open a card.
+                    with mock.patch.object(self.Gst.Registry, "get", return_value=registry), \
+                            contextlib.redirect_stdout(output):
+                        result = self.make_player(mode, weave)
+                    expected_flags = original_flags | ((1 << 12) if mode == "software" else 0)
+                    if weave:
+                        expected_flags &= ~(1 << 9)
+                    self.assertEqual(int(result.pipeline.get_property("flags")), expected_flags)
+                    self.assertEqual([factory.rank for factory in factories],
+                                     [356, 0, 0, 256] if mode == "hardware"
+                                     else [0, 256, 0, 256])
+                    self.assertTrue(result.pipeline.get_property("suburi").endswith("sub%20titles.srt"))
+                    self.assertIsNone(result.pipeline.get_property("video-filter"))
+                    if weave:
+                        decoder = "CrystalHD hardware" if mode == "hardware" else "software"
+                        self.assertIn(f"deinterlacing off; {decoder} decoding required", output.getvalue())
+                    else:
+                        self.assertEqual(output.getvalue(), "")
+                    wrong_name, wrong_klass = ("avdec_h264", SOFTWARE) if mode == "hardware" \
+                        else ("crystalhddec", HARDWARE)
+                    self.assertFalse(result.health.frame(1, wrong_name, wrong_klass, True, 512, 1))
+                    self.assertEqual(result.health.finish(), 1)
 
     def test_extended_bus_message_is_not_delivered_to_player_callback(self):
         pipeline = self.Gst.Pipeline.new("extended-message-test")

@@ -73,6 +73,25 @@ fallback:
 crystalhd-play --software "/path/to/video.mp4"
 ```
 
+### Explicit Weave playback
+
+In v1.1.0-rc.3, select the decoder and pass a complete interlaced frame through
+without GStreamer's automatic deinterlacing:
+
+```sh
+crystalhd-play --hardware --weave "/path/to/interlaced-video.mkv"
+crystalhd-play --software --weave "/path/to/interlaced-video.mkv"
+```
+
+Hardware means CrystalHD decoding; software means CPU decoding with hardware
+video decoders disabled. Both retain audio and the normal player controls.
+Hardware mode never silently falls back to software. Weave keeps the two
+fields in alternating rows; it is not hardware Bob or a deinterlacing filter,
+so motion can show combing/shaking. Without `--weave`, the player's existing
+deinterlacing policy is unchanged. Selected H.264 MBAFF playback is the bounded
+RC scope; deinterlacing quality and A/V synchronization tuning are deferred,
+not certified by successful playback. See [codec boundaries](#codec-boundaries).
+
 If hardware mode fails, start with the
 [symptom table](#troubleshooting-and-proof-of-hardware-use).
 
@@ -290,17 +309,27 @@ owner with `sudo fuser -v /dev/crystalhd`; the UI setting alone does not prove
 hardware decoding. No physical flash/click A/V PASS was recorded, and other
 Kodi releases and display backends remain unqualified.
 
-Interlaced Kodi playback is not yet a supported v1.1 path. Kodi 21.3 exposes
-`Deinterlace` (FFmpeg BWDIF) and `Render Bob`, but both explicit selections
-stalled and repeatedly restarted the CrystalHD VA decoder on the tested stack.
-The same input completed as a direct Weave readback and through standalone
-FFmpeg BWDIF, proving that missing paired-field Weave output is not the
-blocker. Kodi/CrystalHD VA decode, readback and post-processing scheduling
-remain incompatible in this case; the first failing internal cause and owning
-component are unresolved. Kodi `Auto` may also probe unsupported VAAPI Bob.
-The acceptance target and existing evidence are tracked in
-[#436](https://github.com/ahnhy1324/crystalhd/issues/436) as a proposed v1.2.0
-follow-up.
+The v1.1 RC includes selected interlaced Weave playback, not general
+deinterlacing or full-rate FHD support. The earlier `f4d99d5` Kodi stalls are
+preserved in the hardware report; the later finite MBAFF input/tail fix
+completes all 750 decoder-oracle pictures with verified pixels/PTS and EOS,
+and passes live input-gap/explicit-close/reopen checks. Kodi completes admitted
+field pairs and can traverse the selected full file, but may discard pictures
+or resync under load; some FHD runs retain timing/render warnings and a bounded
+post-EOS empty-output wait. No incomplete surface is returned to hide a wait.
+For an explicit HW/SW Weave selection use the
+[player commands above](#explicit-weave-playback). Kodi's VA-API acceleration
+setting selects hardware versus CPU decode; its deinterlacing method is a
+separate setting. `Auto` may probe unsupported VAAPI Bob. No driver
+deinterlacing capability is advertised; deinterlacing and sync tuning remain
+tracked in [#436](https://github.com/ahnhy1324/crystalhd/issues/436).
+
+On the source candidate, a selected 30-second 720i25 dialogue clip had
+subjectively aligned speech/lip motion in both no-deinterlace and explicit
+`Deinterlace` (BWDIF) comparisons; BWDIF reduced the visible shaking. Both
+ended normally. This is a useful playback check, not measured millisecond
+sync, a complete displayed-frame census or FHD support qualification.
+The CPU/no-deinterlace control showed similar shaking without using CrystalHD.
 
 One VLC 3.0.21 H.264 path was validated on the reference X11/i915 system:
 

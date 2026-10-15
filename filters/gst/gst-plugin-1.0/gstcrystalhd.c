@@ -15,6 +15,7 @@
 #include <bc_dts_defs.h>
 #include <bc_dts_types.h>
 #include <libcrystalhd_if.h>
+#include "../../crystalhd-h264-output.h"
 #include "gstcrystalhd-codecs.h"
 #include "gstcrystalhd-input.h"
 #include "gstcrystalhd-timing.h"
@@ -915,6 +916,8 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
   guint rows;
   guint destination_row = 0;
   gboolean interlaced;
+  gboolean whole_weave = FALSE;
+  gboolean field_payload;
   gboolean bottom_field;
   gboolean bottom_first;
   gboolean progressive_top_first = FALSE;
@@ -930,6 +933,25 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
   interlaced = (output->PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0;
   if (!gst_crystalhd_validate_scaled_output(self, width, interlaced))
     return GST_FLOW_ERROR;
+  if (interlaced && !self->is_70012 &&
+      self->codec.subtype == BC_MSUBTYPE_H264) {
+    CrystalHDH264Payload layout = crystalhd_h264_interlaced_payload(output);
+
+    if (layout == CRYSTALHD_H264_PAYLOAD_INVALID) {
+      GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                        ("Invalid CrystalHD H.264 interlaced payload or identity"),
+                        (NULL));
+      return GST_FLOW_ERROR;
+    }
+    whole_weave = layout == CRYSTALHD_H264_PAYLOAD_WEAVE;
+  }
+  if (whole_weave && self->need_second_field) {
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("Whole CrystalHD H.264 picture interrupted a field pair"),
+                      (NULL));
+    return GST_FLOW_ERROR;
+  }
+  field_payload = interlaced && !whole_weave;
   /* These are values in a two-bit picture-type field, not independent bits:
    * TOPFIELD=0x10 shares a bit with BOTTOMFIELD=0x18; FIELDPAIR is 0x08. */
   bottom_field = (output->PicInfo.flags & VDEC_FLAG_BOTTOMFIELD) ==
@@ -943,7 +965,7 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
       self->codec.subtype == BC_MSUBTYPE_DIVX &&
       self->codec.mpeg4_object_type == CRYSTALHD_MPEG4_OBJECT_TYPE_SIMPLE &&
       !interlaced && !self->need_second_field;
-  if (interlaced &&
+  if (field_payload &&
       (output->PicInfo.flags & VDEC_FLAG_BOTTOMFIELD) != VDEC_FLAG_TOPFIELD &&
       !bottom_field) {
     GST_ELEMENT_ERROR(self, STREAM, DECODE,
@@ -1079,8 +1101,8 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
     source_stride = padded_width * 2;
   }
   destination_stride = GST_VIDEO_FRAME_PLANE_STRIDE(&video_frame, 0);
-  rows = interlaced ? height / 2 : height;
-  destination_row = interlaced && bottom_field ? 1 : 0;
+  rows = field_payload ? height / 2 : height;
+  destination_row = field_payload && bottom_field ? 1 : 0;
 
   if (output->Ybuff == NULL ||
       (guint64)output->YBuffDoneSz * 4 < (guint64)source_stride * rows) {
@@ -1096,12 +1118,12 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
         GST_VIDEO_FRAME_PLANE_DATA(&video_frame, 0) +
         destination_row * destination_stride;
     memcpy(destination, output->Ybuff + row * source_stride, width * 2);
-    destination_row += interlaced ? 2 : 1;
+    destination_row += field_payload ? 2 : 1;
   }
 
   gst_video_frame_unmap(&video_frame);
 
-  if (interlaced && !self->need_second_field) {
+  if (field_payload && !self->need_second_field) {
     self->need_second_field = TRUE;
     self->field_frame_number = frame_number;
     self->field_bottom = bottom_field;
@@ -1122,7 +1144,7 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
   GST_BUFFER_FLAG_UNSET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_RFF);
   if (interlaced) {
     GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_INTERLACED);
-    if (!self->field_bottom_first)
+    if (!bottom_first)
       GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_TFF);
   } else if (progressive_field_sequence) {
     /* Progressive soft telecine remains a progressive buffer. MIXED caps

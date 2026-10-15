@@ -148,7 +148,7 @@ second session should be able to acquire the device again.
 | `VAAPI_FORCE_INDIRECT=1` | Moonlight option selecting the DRM PRIME/EGL route instead of unsupported direct `vaPutSurface` presentation |
 | `LIBVA_DRIVER_NAME=crystalhd` | Selects the installed CrystalHD VA driver for this process |
 | `CRYSTALHD_VAAPI_LIVE_H264=1` | BCM70015 live-stream mode: avoids treating ordinary input gaps as file EOS/replay boundaries; final frames still require later input or context drain |
-| `CRYSTALHD_VAAPI_LOW_LATENCY_H264=1` | Requires live mode; prefeeds the next timestamped H.264 prefix and reduced decode latency by about one frame interval in a tested 720p30 stream while preserving requested surface identity |
+| `CRYSTALHD_VAAPI_LOW_LATENCY_H264=1` | Prefeeds the next timestamped H.264 prefix; this streaming setup combines it with explicit live mode. Finite input can enable prefeed independently without adopting live-gap/EOS policy. The tested 720p30 stream reduced decode latency by about one frame interval while preserving requested surface identity. |
 | Event-driven RX | Negotiated automatically by a matching current driver/library; there is no user switch |
 
 The live and low-latency controls are process-local and experimental. They do

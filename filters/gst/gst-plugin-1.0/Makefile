@@ -47,7 +47,8 @@ check-codec-playback:
 	@echo "Skipping optional codec probe self-test (FFmpeg/GStreamer app development packages unavailable)"
 endif
 
-$(PLUGIN): gstcrystalhd.c gstcrystalhd-codecs.h gstcrystalhd-timing.h gstcrystalhd-input.h
+$(PLUGIN): gstcrystalhd.c gstcrystalhd-codecs.h gstcrystalhd-timing.h gstcrystalhd-input.h \
+		$(ROOTDIR)/filters/crystalhd-h264-output.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 
 $(PLAYBACK_TEST): $(ROOTDIR)/tests/gstreamer-playback.c \
@@ -64,7 +65,8 @@ $(CONTROLS_TEST): $(ROOTDIR)/tests/gstreamer-controls.c \
 # Includes production source but supplies its own Dts mocks. This target must
 # never link libcrystalhd or open the real decoder.
 $(LIFECYCLE_TEST): $(ROOTDIR)/tests/gst-lifecycle.c gstcrystalhd.c \
-		gstcrystalhd-codecs.h gstcrystalhd-timing.h gstcrystalhd-input.h
+		gstcrystalhd-codecs.h gstcrystalhd-timing.h gstcrystalhd-input.h \
+		$(ROOTDIR)/filters/crystalhd-h264-output.h
 	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror $(CPPFLAGS) $< -o $@ \
 		$(shell $(PKG_CONFIG) --cflags --libs gstreamer-check-1.0 gstreamer-video-1.0) $(CRYSTALHD_CPU_FLAGS)
 

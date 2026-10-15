@@ -14,6 +14,7 @@
 #include <cerrno>
 #include <climits>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -29,6 +30,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -61,6 +63,7 @@ extern "C" {
 #include <bc_dts_defs.h>
 #include <bc_dts_types.h>
 #include <libcrystalhd_if.h>
+#include "../crystalhd-h264-output.h"
 #include "crystalhd-access-unit-limits.h"
 #include "crystalhd-decode-replay.h"
 #include "crystalhd-mpeg4.h"
@@ -1588,11 +1591,13 @@ struct DecodeContext {
   bool is_70012 = false;
   bool sent_parameter_sets = false;
   // Bounded history is safe for ordinary finite input. Gap tolerance and
-  // direct/speculative paths remain explicit live-stream policy.
+  // direct targets remain explicit live-stream policy; prefeed is independent
+  // so a finite client can still drain its last picture through sealed EOS.
   bool live_h264 = false;
   bool live_h264_gap_tolerant = false;
   bool live_h264_fast_path = false;
   bool low_latency_h264 = false;
+  bool auto_mbaff_prefeed = false;
   bool input_backpressured = false;
   bool input_budget_exhausted = false;
   uint64_t partial_input_timestamp = 0;
@@ -2468,6 +2473,15 @@ static bool IsValidConfig(VAProfile profile, VAEntrypoint entrypoint) {
          (profile == VAProfileNone && entrypoint == VAEntrypointVideoProc);
 }
 
+static bool ShouldAutoPrefeedH264(const DecodeContext &decode) {
+  return decode.auto_mbaff_prefeed && IsH264Profile(decode.profile) &&
+         !decode.live_h264_fast_path && decode.device != nullptr &&
+         decode.decoder_started && !decode.is_70012 &&
+         !decode.picture.seq_fields.bits.frame_mbs_only_flag &&
+         decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag &&
+         !decode.picture.pic_fields.bits.field_pic_flag;
+}
+
 static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
                             unsigned int height = 0,
                             const std::array<uint8_t, 4> *wmv3_metadata = nullptr,
@@ -2720,25 +2734,19 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
   return true;
 }
 
-static bool CopyH264FieldPairToSurface(
-    Surface *surface, const H264FirstField &first,
-    const BC_DTS_PROC_OUT &second) {
-  if (surface == nullptr || !first.valid || second.Ybuff == nullptr ||
-      first.width != second.PicInfo.width ||
-      first.height != second.PicInfo.height || first.height % 4U != 0 ||
-      first.source_pitch < first.width * 2U ||
-      first.pixels.size() != static_cast<size_t>(first.source_pitch) *
-                                 (first.height / 2U))
+static bool CopyH264InterlacedToSurface(
+    Surface *surface, const uint8_t *const fields[2], unsigned int source_width,
+    unsigned int source_height, size_t field_pitch, uint64_t timestamp) {
+  if (surface == nullptr || fields[0] == nullptr || fields[1] == nullptr ||
+      source_width == 0 || (source_width & 1U) != 0 || source_height == 0 ||
+      source_height % 4U != 0 || field_pitch < source_width * 2U)
     return false;
 
   const unsigned int width =
-      std::min<unsigned int>(first.width, surface->width);
+      std::min<unsigned int>(source_width, surface->width);
   const unsigned int height =
-      std::min<unsigned int>(first.height, surface->height);
-  const unsigned int field_rows = first.height / 2U;
-  const uint8_t *fields[2] = {};
-  fields[first.bottom ? 1 : 0] = first.pixels.data();
-  fields[first.bottom ? 0 : 1] = second.Ybuff;
+      std::min<unsigned int>(source_height, surface->height);
+  const unsigned int field_rows = source_height / 2U;
 
   bool used_i915_wc = false;
   if (!surface->BeginDecodedCpuWrite(&used_i915_wc))
@@ -2756,7 +2764,7 @@ static bool CopyH264FieldPairToSurface(
         if (destination_row >= height)
           break;
         const uint8_t *source = fields[parity] +
-            static_cast<size_t>(source_row) * first.source_pitch;
+            static_cast<size_t>(source_row) * field_pitch;
         uint8_t *destination = surface->planes[0] +
             static_cast<size_t>(destination_row) * surface->pitch[0];
         for (unsigned int column = 0; column + 1 < width; column += 2) {
@@ -2772,7 +2780,7 @@ static bool CopyH264FieldPairToSurface(
     if (!surface->EndDecodedCpuWrite(used_i915_wc))
       return false;
     surface->ready = true;
-    surface->frame_timestamp = first.timestamp;
+    surface->frame_timestamp = timestamp;
     return true;
   }
 
@@ -2805,17 +2813,16 @@ static bool CopyH264FieldPairToSurface(
 #if defined(__SSE2__)
   const __m128i luma_mask = _mm_set1_epi16(0x00ff);
 #endif
-  // Each hardware buffer contains one field in display-line order. Weave
-  // luma into alternating rows, but downsample chroma between adjacent rows
-  // of the same field. Averaging top and bottom fields together produces
-  // temporal comb colors rather than interlaced 4:2:0.
+  // Field views can reference two compact buffers or alternating rows of a
+  // whole-picture transfer. Downsample chroma within each field in either
+  // case; averaging opposite fields produces temporal comb colors.
   for (unsigned int parity = 0; parity < 2; ++parity) {
     for (unsigned int source_row = 0; source_row < field_rows; ++source_row) {
       const unsigned int destination_row = source_row * 2U + parity;
       if (destination_row >= height)
         break;
       const uint8_t *source = fields[parity] +
-          static_cast<size_t>(source_row) * first.source_pitch;
+          static_cast<size_t>(source_row) * field_pitch;
       uint8_t *destination = surface->planes[0] +
           static_cast<size_t>(destination_row) * surface->pitch[0];
       unsigned int column = 0;
@@ -2842,8 +2849,8 @@ static bool CopyH264FieldPairToSurface(
       if (destination_row >= chroma_rows)
         break;
       const uint8_t *first_row = fields[parity] +
-          static_cast<size_t>(source_row) * first.source_pitch;
-      const uint8_t *second_row = first_row + first.source_pitch;
+          static_cast<size_t>(source_row) * field_pitch;
+      const uint8_t *second_row = first_row + field_pitch;
       uint8_t *destination = surface->planes[1] +
           static_cast<size_t>(destination_row) * surface->pitch[1];
       unsigned int column = 0;
@@ -2878,8 +2885,35 @@ static bool CopyH264FieldPairToSurface(
   if (!surface->EndDecodedCpuWrite(used_i915_wc))
     return false;
   surface->ready = true;
-  surface->frame_timestamp = first.timestamp;
+  surface->frame_timestamp = timestamp;
   return true;
+}
+
+static bool CopyH264FieldPairToSurface(
+    Surface *surface, const H264FirstField &first,
+    const BC_DTS_PROC_OUT &second) {
+  if (!first.valid || second.Ybuff == nullptr ||
+      first.width != second.PicInfo.width ||
+      first.height != second.PicInfo.height ||
+      first.pixels.size() != static_cast<size_t>(first.source_pitch) *
+                                 (first.height / 2U))
+    return false;
+  const uint8_t *fields[2] = {};
+  fields[first.bottom ? 1 : 0] = first.pixels.data();
+  fields[first.bottom ? 0 : 1] = second.Ybuff;
+  return CopyH264InterlacedToSurface(surface, fields, first.width, first.height,
+                                     first.source_pitch, first.timestamp);
+}
+
+static bool CopyH264WeaveToSurface(Surface *surface,
+                                  const BC_DTS_PROC_OUT &output) {
+  if (output.Ybuff == nullptr)
+    return false;
+  const size_t pitch = static_cast<size_t>(output.PicInfo.width) * 2U;
+  const uint8_t *fields[2] = {output.Ybuff, output.Ybuff + pitch};
+  return CopyH264InterlacedToSurface(surface, fields, output.PicInfo.width,
+                                     output.PicInfo.height, pitch * 2U,
+                                     output.PicInfo.timeStamp);
 }
 
 static bool CopyNv12Pixels(const Surface &source, Surface *destination) {
@@ -3249,6 +3283,20 @@ struct OutputProcessingState {
   std::shared_ptr<Surface> surface;
 };
 
+enum class H264InterlacedPayload { Field, Weave, Invalid };
+
+static H264InterlacedPayload ClassifyH264InterlacedPayload(
+    const BC_DTS_PROC_OUT &output) {
+  switch (crystalhd_h264_interlaced_payload(&output)) {
+    case CRYSTALHD_H264_PAYLOAD_FIELD:
+      return H264InterlacedPayload::Field;
+    case CRYSTALHD_H264_PAYLOAD_WEAVE:
+      return H264InterlacedPayload::Weave;
+    default:
+      return H264InterlacedPayload::Invalid;
+  }
+}
+
 // No hardware calls: tests exercise the same exact-once/immutable-picture
 // processing used for both normal decoding and IDR-prefix replay.
 static VAStatus ProcessDecodedOutputImpl(
@@ -3257,6 +3305,7 @@ static VAStatus ProcessDecodedOutputImpl(
   BC_DTS_PROC_OUT output = reported;
   H264FirstField paired_first_field;
   bool h264_field_pair = false;
+  bool h264_weave = false;
   const bool h264_interlaced = IsH264Profile(decode->profile) &&
       (output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0;
   // BCM70012 resolves the application's token through DtsFetchMdata. That
@@ -3295,14 +3344,36 @@ static VAStatus ProcessDecodedOutputImpl(
                        TraceDecodeTokenFields(driver, decode,
                                               output.PicInfo.timeStamp));
   }
-  if (decode->low_latency_h264 && decode->prefed_timestamp != 0 &&
+  if (decode->prefed_timestamp != 0 &&
       output.PicInfo.timeStamp == decode->prefed_timestamp)
     return FailDecode(driver, decode,
                       "speculative H.264 prefix produced a picture");
+  if (h264_interlaced && !decode->is_70012) {
+    const auto layout = ClassifyH264InterlacedPayload(output);
+    if (layout == H264InterlacedPayload::Invalid)
+      return FailDecode(driver, decode,
+                        "invalid H.264 interlaced payload or embedded identity");
+    h264_weave = layout == H264InterlacedPayload::Weave;
+  }
+  if (h264_weave && decode->replay.Inspect(output.PicInfo.timeStamp) ==
+                        CrystalHDDecodeReplay::Output::New) {
+    const auto picture = decode->decoded_frames.find(output.PicInfo.timeStamp);
+    const auto pending = decode->pending.find(output.PicInfo.timeStamp);
+    if (picture == decode->decoded_frames.end() ||
+        pending == decode->pending.end() ||
+        picture->second->expected_timestamp != output.PicInfo.timeStamp ||
+        picture->second->decode_identity == 0 ||
+        picture->second->trace_generation != decode->generation)
+      return FailDecode(driver, decode,
+                        "whole H.264 picture has no matching decode owner");
+  }
+  if (decode->h264_first_field.valid && h264_weave)
+    return FailDecode(driver, decode,
+                      "whole H.264 picture interrupted a field pair");
   if (decode->h264_first_field.valid && !h264_interlaced)
     return FailDecode(driver, decode,
                       "progressive output interrupted an H.264 field pair");
-  if (h264_interlaced) {
+  if (h264_interlaced && !h264_weave) {
     const uint32_t field_type =
         output.PicInfo.flags & VDEC_FLAG_BOTTOMFIELD;
     const bool field_type_valid = field_type == VDEC_FLAG_TOPFIELD ||
@@ -3524,7 +3595,7 @@ static VAStatus ProcessDecodedOutputImpl(
       (!current_picture || fits(*surface->second)) &&
       static_cast<uint64_t>(output.YBuffDoneSz) * 4 >= required_bytes &&
       ((output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) == 0 ||
-       h264_field_pair);
+       h264_field_pair || h264_weave);
   bool complete = valid_frame;
   bool wrote_pixels = false;
   bool public_materialized = false;
@@ -3536,24 +3607,23 @@ static VAStatus ProcessDecodedOutputImpl(
   const bool direct = current_picture &&
       decoded != decode->decoded_frames.end() &&
       decoded->second->direct_backing == surface->second;
+  const auto copy_output = [&](Surface *target) {
+    if (h264_field_pair)
+      return CopyH264FieldPairToSurface(target, paired_first_field, output);
+    if (h264_weave)
+      return CopyH264WeaveToSurface(target, output);
+    return CopyYuy2ToSurface(target, output, decode->is_70012);
+  };
   if (decoded != decode->decoded_frames.end()) {
     if (complete && !discard_pixels) {
       if (direct) {
-        complete = h264_field_pair
-            ? CopyH264FieldPairToSurface(surface->second.get(),
-                                         paired_first_field, output)
-            : CopyYuy2ToSurface(surface->second.get(), output,
-                                decode->is_70012);
+        complete = copy_output(surface->second.get());
         wrote_pixels = complete;
         decoded->second->ready = complete;
         decoded->second->frame_timestamp = complete ? output.PicInfo.timeStamp : 0;
       } else {
         complete = PromoteDecodedPicture(decoded->second) &&
-            (h264_field_pair
-                 ? CopyH264FieldPairToSurface(decoded->second.get(),
-                                              paired_first_field, output)
-                 : CopyYuy2ToSurface(decoded->second.get(), output,
-                                     decode->is_70012));
+            copy_output(decoded->second.get());
         wrote_pixels = complete;
       }
     }
@@ -3577,11 +3647,7 @@ static VAStatus ProcessDecodedOutputImpl(
         } else {
           complete = decoded != decode->decoded_frames.end()
               ? CopyNv12Surface(*decoded->second, surface->second.get())
-              : (h264_field_pair
-                     ? CopyH264FieldPairToSurface(surface->second.get(),
-                                                  paired_first_field, output)
-                     : CopyYuy2ToSurface(surface->second.get(), output,
-                                         decode->is_70012));
+              : copy_output(surface->second.get());
           wrote_pixels = complete;
           public_materialized = complete;
           if (decode->experimental_ready_remap && complete) {
@@ -3815,10 +3881,14 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
       if (unit == nullptr)
         break;
       const uint64_t input_timestamp = unit->timestamp;
+      bool prefeed_after_unit = false;
+      if constexpr (std::is_same<std::decay_t<decltype(replay)>,
+                                 CrystalHDDecodeReplay>::value)
+        prefeed_after_unit = decode->low_latency_h264 || unit->prefeed;
       const bool consume_prefeed =
-          decode->low_latency_h264 && decode->prefed_timestamp != 0 &&
+          decode->prefed_timestamp != 0 &&
           decode->prefed_timestamp == unit->timestamp;
-      if (decode->low_latency_h264 && decode->prefed_timestamp != 0 &&
+      if (decode->prefed_timestamp != 0 &&
           !consume_prefeed)
         return FailDecode(driver, decode,
                           "speculative H.264 timestamp lost alignment");
@@ -3906,7 +3976,7 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
       if (attempt + 1 == max_attempts)
         decode->input_budget_exhausted = true;
 
-      if (decode->low_latency_h264 && !decode->is_70012 &&
+      if (prefeed_after_unit && !decode->is_70012 &&
           decode->prefed_timestamp == 0 && replay.NextInput() == nullptr) {
         const uint64_t next_timestamp = decode->next_timestamp;
         const auto &prefeed = H264LowLatencyPrefeed();
@@ -4415,7 +4485,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     decode->wmv3_metadata = next_wmv3_metadata;
     decode->stream_width = stream_width;
     decode->stream_height = stream_height;
-  } else if (!decode->replay.Append(timestamp, idr, std::move(bitstream))) {
+  } else if (!decode->replay.Append(timestamp, idr, std::move(bitstream),
+                                     ShouldAutoPrefeedH264(*decode))) {
     return FailDecode(driver, decode, decode->replay.failure());
   }
   decode->next_timestamp += kTimestampStep;
@@ -5640,8 +5711,13 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   decode->live_h264_fast_path = h264 && live_h264_fast_path;
   const char *low_latency_h264 =
       getenv("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
-  decode->low_latency_h264 = decode->live_h264_fast_path &&
+  decode->low_latency_h264 = h264 &&
       low_latency_h264 != nullptr && strcmp(low_latency_h264, "1") == 0;
+  // Keep progressive and explicit-live defaults unchanged. An explicit value
+  // (including 0) disables automatic MBAFF prefeed; accepted AUs retain their
+  // own eligibility so later sequence metadata cannot change replay behavior.
+  decode->auto_mbaff_prefeed = h264 && !decode->live_h264_fast_path &&
+                               low_latency_h264 == nullptr;
   const char *experimental_ready_remap =
       getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP");
   const char *experimental_ready_delay =
@@ -5658,7 +5734,8 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
       experimental_ready_policy == nullptr ||
       strcmp(experimental_ready_policy, "previous") == 0 ||
       experimental_policy_latest;
-  decode->experimental_ready_remap = decode->low_latency_h264 &&
+  decode->experimental_ready_remap = decode->live_h264_fast_path &&
+      decode->low_latency_h264 &&
       experimental_ready_remap != nullptr &&
       strcmp(experimental_ready_remap, "1") == 0 &&
       experimental_delay_valid && experimental_policy_valid;

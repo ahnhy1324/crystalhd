@@ -1,0 +1,366 @@
+{
+  "schema": 2,
+  "date": "2026-10-15",
+  "scope": "BCM70015 stock SET_SINGLE_FIELD, direct field/scaled-field and full-height readback",
+  "production_source": "1536ecf1ec2aab8c00345f8c2ff066b59a1b8fee",
+  "probe_source": "2356cbc556df224b4473830216814b4f61750370",
+  "environment": {
+    "os": "Ubuntu 26.04.1 LTS x86-64",
+    "kernel": "7.0.0-38-generic",
+    "module_version": "3.10.5",
+    "module_srcversion": "FEA13A785A1CFC380529E04",
+    "firmware_stream": "0x13600",
+    "firmware_decoder": "0x150323",
+    "firmware_hardware": "0x70015",
+    "force_l0s_off": true,
+    "session_l0s_off": false,
+    "ffmpeg": "8.0.1-3ubuntu2"
+  },
+  "procedure": {
+    "probe": "tests/fw-single-field-decode.cpp",
+    "build": "c++ -std=c++11 -O2 -Wall -Wextra -Werror -D__LINUX_USER__ -Iinclude -Ilinux_lib/libcrystalhd tests/fw-single-field-decode.cpp $(pkg-config --cflags --libs libavformat libavcodec libavutil glib-2.0) -Llinux_lib/libcrystalhd -lcrystalhd -o /absolute/new/probe",
+    "run": "timeout --signal=TERM --kill-after=5s 45s env LD_LIBRARY_PATH=/absolute/repo/linux_lib/libcrystalhd /absolute/new/probe INPUT EXPECTED_INPUTS 0_OR_1 /absolute/new/output-prefix",
+    "sequence": [0, 1, 0],
+    "internal_deadline_seconds": 30,
+    "command_boundary": "successful START, before capture/input",
+    "restore_boundary": "successful STOP, reset SingleField=0, CLOSE, device close",
+    "outputs": "new O_EXCL .yuy2 and .tsv files; copied active rows after extent validation, lease released before file I/O",
+    "comparison": "match each single-field (opaque input token, field polarity) to its baseline; compare every active packed YUY2 byte",
+    "tokens": "input packet identifiers in 100000-unit increments, not measured presentation timestamps",
+    "geometry": "native_api_geometry and TSV coded_field_rows (initial probe) / coded_output_rows (extended probe) describe the API-reported dimensions; they do not independently measure SPS storage height",
+    "parity": "top/bottom counts use native PIB field flags; pixel equality is against the native paired-field baseline"
+  },
+  "cases": [
+    {
+      "input": "existing H.264 High MBAFF 1920x1080i25, 2 seconds; stream-level tt but mixed per-picture SEI",
+      "input_sha256": "30f14f2b75735e3bc3345b07503e055a6a1ea9241de27369c074d49649615c28",
+      "field_order_correction": "Initially labelled TFF from stream metadata; a complete SEI census found pic_struct=3 on 16 pictures and 4 on 34. This is not a uniform-TFF acceptance case.",
+      "sei_pic_struct_counts": {"3": 16, "4": 34},
+      "inputs": 50,
+      "native_api_geometry": [1920, 1080],
+      "packed_field_geometry": [1920, 540],
+      "runs": [
+        {"single_field": 0, "fields": 100, "bytes": 207360000, "result": "PASS"},
+        {"single_field": 1, "fields": 50, "bytes": 103680000, "result": "PASS"},
+        {"single_field": 0, "fields": 100, "bytes": 207360000, "result": "PASS"}
+      ],
+      "single_top_fields": 25,
+      "single_bottom_fields": 25,
+      "single_fields_exactly_matching_baseline": 50,
+      "baseline_recovery_pixels_and_metadata_identical": true,
+      "baseline_payload_sha256": "9b19d225bfb2eb60e3db4ff63f56f8c5a021ae679b7e01da2a77dd9b9ae2948b",
+      "single_payload_sha256": "1576a9c14b2cd0c6879dc49178be57cff16018cedd0a13f51c1384f2e6c2f86a"
+    },
+    {
+      "input": "H.264 High MBAFF BFF 720x480i30, 2 seconds",
+      "input_sha256": "cfe7d8efde6a49c45675861a4859737cb3a6b0c938cde326092ffb909e43cabd",
+      "generate": "ffmpeg -nostdin -hide_banner -loglevel error -n -f lavfi -i testsrc2=size=720x480:rate=60 -t 2 -vf tinterlace=mode=interleave_bottom -c:v libx264 -preset fast -crf 18 -flags +ilme+ildct -x264-params bff=1:keyint=30:min-keyint=30:scenecut=0 -an -f mpegts OUTPUT.ts",
+      "inputs": 60,
+      "native_api_geometry": [720, 480],
+      "packed_field_geometry": [720, 240],
+      "runs": [
+        {"single_field": 0, "fields": 120, "bytes": 41472000, "result": "PASS"},
+        {"single_field": 1, "fields": 60, "bytes": 20736000, "result": "PASS"},
+        {"single_field": 0, "fields": 120, "bytes": 41472000, "result": "PASS"}
+      ],
+      "single_top_fields": 30,
+      "single_bottom_fields": 30,
+      "single_fields_exactly_matching_baseline": 60,
+      "baseline_recovery_pixels_and_metadata_identical": true,
+      "baseline_payload_sha256": "8ba31fef27b8559c6db5c75adec7333acd7b1dab16a8d4662f7e3b72fcbbb9bc",
+      "single_payload_sha256": "89d6712babf6d55e8dc4e6a7011d197378b433e2a4ca263a3ab111378e2b4fdc"
+    },
+    {
+      "input": "uniform TFF H.264 High MBAFF 1920x1080i25, 2 seconds",
+      "input_sha256": "af03b86f5c543f83ff33547ed653e79268ca0d466823a68ae5dd3b63042fb051",
+      "generate": "ffmpeg -nostdin -hide_banner -loglevel error -n -f lavfi -i testsrc2=size=1920x1080:rate=50 -t 2 -vf tinterlace=mode=interleave_top -c:v libx264 -preset fast -crf 18 -flags +ilme+ildct -x264-params tff=1:pic-struct=1:keyint=25:min-keyint=25:scenecut=0 -an -f mpegts OUTPUT.ts",
+      "probe_source": "84b96a41caf756fbfd14f89c8ec05dbf72fdaf2c",
+      "sei_pic_struct_counts": {"3": 50},
+      "software_top_field_first": 1,
+      "inputs": 50,
+      "native_api_geometry": [1920, 1080],
+      "packed_field_geometry": [1920, 540],
+      "runs": [
+        {"single_field": 0, "fields": 100, "bytes": 207360000, "result": "PASS"},
+        {"single_field": 1, "fields": 50, "bytes": 103680000, "result": "PASS"},
+        {"single_field": 0, "fields": 100, "bytes": 207360000, "result": "PASS"}
+      ],
+      "single_top_fields": 25,
+      "single_bottom_fields": 25,
+      "single_alternates_starting_top": true,
+      "single_fields_exactly_matching_baseline": 50,
+      "software_luma_exact_top_even_fields": 50,
+      "software_luma_exact_bottom_odd_fields": 50,
+      "baseline_recovery_pixels_and_metadata_identical": true,
+      "derived_content_sample_intervals_ms": {"60": 25, "20": 24},
+      "timing_limit": "Derived from 40 ms picture PTS and TFF parity, not measured output-arrival or display cadence"
+    },
+    {
+      "input": "same uniform TFF FHD fixture, decoder-mediated scale width 960",
+      "input_sha256": "af03b86f5c543f83ff33547ed653e79268ca0d466823a68ae5dd3b63042fb051",
+      "probe_source": "84b96a41caf756fbfd14f89c8ec05dbf72fdaf2c",
+      "option": "--scale-width 960",
+      "inputs": 50,
+      "native_api_geometry": [960, 540],
+      "packed_field_geometry": [960, 270],
+      "runs": [
+        {"single_field": 0, "fields": 100, "bytes": 51840000, "result": "PASS"},
+        {"single_field": 1, "fields": 50, "bytes": 25920000, "result": "PASS"},
+        {"single_field": 0, "fields": 100, "bytes": 51840000, "result": "PASS"}
+      ],
+      "single_top_fields": 25,
+      "single_bottom_fields": 25,
+      "single_fields_exactly_matching_baseline": 50,
+      "baseline_recovery_pixels_and_metadata_identical": true,
+      "baseline_payload_fraction_of_native_baseline": "1/4",
+      "single_payload_fraction_of_native_baseline": "1/8",
+      "limit": "Field scaling and omission, not full-height/full-field-rate Bob or a measured speedup"
+    }
+  ],
+  "all_completed_direct_field_runs": {
+    "exit": 0,
+    "exact_per_input_token_multiplicity": true,
+    "baseline_has_both_field_polarities": true,
+    "firmware_eos_and_control_marker": true,
+    "final_ready_queue": 0,
+    "set_and_restore_status": 0,
+    "module_refcount_after_each": 0,
+    "scoped_kernel_check": "PASS"
+  },
+  "va_adapter_observation": {
+    "fixture": "same original 50-picture mixed-SEI FHD input, not the later uniform-TFF fixture",
+    "probe": "tests/fw-single-field-probe.cpp",
+    "pipeline": "strict FFmpeg VA decode -> hwdownload NV12 -> framehash",
+    "single_zero_before": {"raw_fields": 100, "completed_frames": 50, "result": "PASS"},
+    "single_one": {"raw_fields_before_abort": 2, "completed_frames": 0, "exit": 251, "status": 23, "result": "FAIL: different input identities cannot form a VA field pair"},
+    "single_zero_after": {"raw_fields": 100, "completed_frames": 50, "result": "PASS"},
+    "baseline_recovery_framehash_identical": true,
+    "restore_and_close": "PASS",
+    "module_refcount_after_each": 0,
+    "scoped_kernel_check": "PASS"
+  },
+  "following_progressive_control": {
+    "input_frames": 180,
+    "completed_nv12_readbacks": 180,
+    "exit": 0,
+    "result": "PASS",
+    "module_refcount": 0,
+    "scoped_kernel_check": "PASS"
+  },
+  "full_height_observation": {
+    "input": "uniform TFF H.264 High MBAFF 1280x720i25, 2 seconds; synthetic geometry, not broadcast-format qualification",
+    "input_sha256": "fbfe72e9246453d3900887d4a1444fb801fb388d7fa4ee8f58990305271001a6",
+    "generate": "Use the uniform-TFF case generation command with testsrc2 size=1280x720, retaining rate=50 and all other options",
+    "sei_pic_struct_counts": {"3": 50},
+    "initial_strict_frame_attempt": {
+      "probe_source": "84b96a41caf756fbfd14f89c8ec05dbf72fdaf2c",
+      "option": "--frame-output",
+      "exit": 1,
+      "result": "FAIL: first full-height lease rejected because API flags=0x70 indicate TOPFIELD, not the assumed FRAME/FIELDPAIR metadata",
+      "captured_outputs": 0,
+      "first_completed_words": 460840,
+      "restore_and_close": "PASS",
+      "module_refcount": 0,
+      "scoped_kernel_check": "PASS"
+    },
+    "probe_source": "24c3026cf5a7c9c345948705e4d40a3e796b7354",
+    "option": "--full-payload",
+    "contract": "Observe exactly 1280x720 interlaced-flagged full-height payload, completed extent plus raw PIB scalar bounds, exact width/line trailers, one output per token; not a progressive-frame metadata assertion",
+    "runs": [
+      {"single_field": 0, "inputs": 50, "outputs": 50, "bytes": 92160000, "result": "PASS"},
+      {"single_field": 1, "inputs": 50, "outputs": 50, "bytes": 92160000, "result": "PASS"},
+      {"single_field": 0, "inputs": 50, "outputs": 50, "bytes": 92160000, "result": "PASS"}
+    ],
+    "all_three_pixels_and_metadata_identical": true,
+    "full_frame_luma_exact_software_matches": 150,
+    "raw_pib_flags_all_outputs": "0x48",
+    "api_flags_all_outputs": "0x70",
+    "raw_and_api_picture_numbers": "3..52 in each run, equal",
+    "trailer_width": 1280,
+    "trailer_line": 720,
+    "completed_words_per_output": 460840,
+    "active_bytes_per_output": 1843200,
+    "all_runs_eos_marker_and_empty_queue": true,
+    "all_runs_restore_and_close": "PASS",
+    "module_refcount_after_each": 0,
+    "scoped_kernel_check": "PASS",
+    "interpretation": "Both original fields remain in alternating rows: exact full-height luma Weave at 25 picture PTS/s, not Bob at 50 progressive outputs/s. Single-field mode changes neither pixels nor count on this source-width path. Library field-mask handling adds INTERLACED and rewrites FIELDPAIR to TOPFIELD (raw 0x48 -> API 0x70).",
+    "chroma_limit": "Full-height luma is exact; hardware YUY2 chroma is not bit-exact to software decode after common interlaced-bilinear YUV420p normalization. No physical picture-quality claim.",
+    "normalized_yuv420p_comparison": {
+      "frames": 50,
+      "each_input_filter": "settb=1/25,setpts=N,setfield=tff,scale=iw:ih:flags=bilinear:interl=1,format=yuv420p",
+      "psnr_db": {"y": "inf", "u": 32.930395, "v": 29.570724, "average": 35.704686}
+    },
+    "unchanged_va_adapter": {
+      "pipeline": "strict FFmpeg VA decode -> hwdownload NV12 -> framehash; no preload/single-field override",
+      "completed_frames": 0,
+      "exit": 251,
+      "result": "FAIL: decode/sync/download status 23; destroy context also reports 23",
+      "targeted_debug_repeat": {
+        "option": "CRYSTALHD_VAAPI_DEBUG=1",
+        "first_rejection": "H.264 fields have mismatched identity, parity, order or geometry",
+        "first_two_outputs": [{"token": 100000, "ordinal": 3}, {"token": 200000, "ordinal": 4}],
+        "api_and_context_geometry": [1280, 736],
+        "limit": "VA uses coded height 736, unlike the direct probe's exact 720-row setup; full-payload bounds and visible cropping at 736 need their own qualification before any adapter change",
+        "exit": 251,
+        "module_refcount": 0,
+        "scoped_kernel_check": "PASS"
+      },
+      "module_refcount": 0,
+      "scoped_kernel_check": "PASS",
+      "following_progressive_recovery": {"completed_frames": 180, "exit": 0, "module_refcount": 0, "result": "PASS"}
+    }
+  },
+  "candidate_va_fix": {
+    "source": "17e93a0ef272df676d4abfdd3e57c3ff5d9b4e9f",
+    "scope": "Source-only VA adapter candidate; installed RC, libcrystalhd ABI, ioctl, firmware, module and PM settings unchanged",
+    "classification": "Completed full-height extent, ordinary width/line trailers and bounded common PIB identity distinguish whole Weave from compact half fields. Raw Flea timestamp is checked after safe multiplication by 20000. Normal replay, pending owner and generation checks remain mandatory; a whole picture cannot complete a pending half pair.",
+    "conversion": "One field-aware converter handles compact field buffers or alternating-row views of a whole picture; chroma averages rows within the same field, not across temporal fields",
+    "coded_height_controls": {
+      "probe_source": "fe5e7a9affcae39b0d7c3342c520a59fd5ffacfc",
+      "geometry_only_override": {"source": "39dce6e", "option": "--full-payload --coded-height 736", "expected_height": 736, "observed_height": 720, "outputs": 0, "exit": 1, "cleanup": "PASS", "result": "FAIL: original SPS still crops to 720; input-format override alone does not establish 736-row output"},
+      "uncropped_generation": "ffmpeg -nostdin -hide_banner -loglevel error -n -i INPUT.ts -map 0:v:0 -c:v copy -bsf:v h264_metadata=crop_bottom=0 -an -f mpegts NEW_OUTPUT.ts",
+      "tff": {"inputs": 50, "full_736_row_luma_exact_software": 50, "visible_720_row_luma_exact_original": 50, "vcl_nals_byte_identical": 50, "vcl_bytes": 1353949, "raw_flags": "0x48", "api_flags": "0x70", "bytes": 94208000, "result": "PASS"},
+      "bff": {"inputs": 50, "full_736_row_luma_exact_software": 50, "visible_720_row_luma_exact_original": 50, "vcl_nals_byte_identical": 50, "vcl_bytes": 1338288, "raw_flags": "0xc8", "api_flags": "0xf0", "bytes": 94208000, "result": "PASS"},
+      "bff_generate": "Use the uniform-TFF 1280x720 generation command with interleave_bottom and bff=1:pic-struct=1 instead of interleave_top and tff=1:pic-struct=1",
+      "all_native_runs": "50 outputs, full 1280x736 trailer/extent, EOS marker, ready=0, reset/close PASS, module refcount 0 and clean scoped kernel check",
+      "crop_counterexample": "Removing TFF SPS crop changes 1112 chroma bytes in row 719 across 41 pictures despite identical VCL and visible luma. Therefore compare VA output to the uncropped native reference, not the older cropped native color payload."
+    },
+    "native_va_readbacks": [
+      {"input": "uniform TFF 1280x720i25, 50 pictures", "outputs": 50, "nv12_bytes": 69120000, "every_byte_exact_uncropped_native_visible_reference": true, "result": "PASS"},
+      {"input": "uniform BFF 1280x720i25, 50 pictures", "outputs": 50, "nv12_bytes": 69120000, "every_byte_exact_uncropped_native_visible_reference": true, "result": "PASS"},
+      {"input": "uncropped TFF 1280x736i25, 50 pictures", "outputs": 50, "nv12_bytes": 70656000, "every_byte_exact_full_native_reference": true, "result": "PASS"},
+      {"input": "original mixed-SEI FHD 50-picture fixture", "outputs": 50, "complete_framehash_sequence_identical_to_pre_fix_va_baseline": true, "result": "PASS"},
+      {"input": "existing BFF 720x480i30, 60 pictures", "outputs": 60, "all_luma_frames_exact_software": true, "result": "PASS"},
+      {"input": "existing progressive high.mp4", "outputs": 180, "result": "PASS"}
+    ],
+    "all_listed_va_readbacks": "Exact frame counts and EOS, exit 0, module refcount 0, no scoped kernel errors; hardware output forced through VA hwdownload, no software fallback",
+    "seek_and_retained_picture_lifetime": {
+      "fixture": "100-picture uniform-TFF 1280x720i25, same generation command with -t 4; indexed MKV is a stream-copy remux of that TS",
+      "command": "timeout --signal=TERM --kill-after=5s 60s env LIBVA_DRIVER_NAME=crystalhd LIBVA_DRIVERS_PATH=/absolute/repo/filters/vaapi LD_LIBRARY_PATH=/absolute/repo/linux_lib/libcrystalhd /absolute/repo/filters/vaapi/vaapi-seek-test INPUT /dev/dri/renderD128 --lookahead 8 --expected-frames 100 --retain-old-frames",
+      "indexed_mkv": {"reference_frames": 100, "seek_targets": [2000, 1000, 3000, 0], "frames_exact_per_seek": 12, "held_frames_exact_after_each_operation": 8, "flush_and_new_timeline_checks": 2, "context_destruction_checks": 2, "result": "PASS"},
+      "mpegts_before_harness_fix": {
+        "reference_frames": 100,
+        "va": "FAIL: display-PTS seek skips its IDR, then unchanged admission rejects non-IDR input; exit 1, refcount 0, clean kernel",
+        "software": "FAIL: expected PTS 313200, got next-IDR PTS 403200, with co-located-POC warnings",
+        "offline_cause": "av_seek_frame(313200) returns non-key packet PTS 316800/DTS 313200; actual IDR is PTS 313200/DTS 306000. Seeking that recorded key DTS returns the IDR."
+      },
+      "harness_fix_source": "8cc1ae22d7eac56ceaaa9723f678a8ab19ae1075",
+      "harness_fix_scope": "H.264 MPEG-TS only: record key-packet PTS/DTS during the complete reference pass, seek from the preceding key DTS, but keep the exact requested PTS, pixel comparisons, counts and held-frame criteria. No runtime IDR-admission or MP4/MKV rule change.",
+      "mpegts_after_harness_fix": {"reference_frames": 100, "seek_targets": [313200, 223200, 403200, 133200], "frames_exact_per_seek": 12, "held_frames_exact_after_each_operation": 8, "flush_and_new_timeline_checks": 2, "context_destruction_checks": 2, "result": "PASS"},
+      "all_successful_hardware_lifetime_runs": "exit 0, module refcount 0, clean scoped kernel check; exact PTS and all output-pixel digests compared to each uninterrupted native reference",
+      "device_free_seek_self_check": "12/12 PASS, including unchanged MP4/MKV admission and lifetime criteria plus same-access-unit MP4-to-TS control",
+      "review": "Astra APPROVE for both the VA fix and the focused DTS-anchor harness correction"
+    },
+    "device_free": {
+      "plugin_o2_werror": "PASS",
+      "replay_o2_and_scalar_no_sse2": "PASS, including 1170 conversion boundary/alignment cases in each suite and new whole-Weave identity/bounds/ownership cases",
+      "i386_replay_syntax": "PASS; syntax only, not a linked 32-bit whole-Weave run",
+      "i386_cpu_policy": "PASS; normal SSE2 cache 1916 checks, Pentium2 QEMU scalar cache 1902 checks, legacy SIMD absence and i386 VPP syntax",
+      "astra_review": "APPROVE for bounded native qualification"
+    },
+    "not_claimed_at_this_va_only_revision": ["hardware Bob or field-rate progressive output", "physical presentation or A/V", "stock Kodi BWDIF compatibility", "GStreamer whole-picture acceptance", "BCM70012 hardware qualification"]
+  },
+  "candidate_gstreamer_fix": {
+    "source": "e3186fabf24cbb39b8ef6003879e0c331b1ebad2",
+    "environment": "Same native environment above; GStreamer exactly 1.28.2, source-built plugin/library; installed RC unchanged",
+    "scope": "Share the validated H.264 storage classifier with VA. BCM70015 whole-Weave copies every row into one owned output; compact fields keep existing pairing. Pending-half to whole, unmatched/stale tokens and malformed metadata fail closed. BCM70012 and interlaced-scaling restrictions are unchanged.",
+    "unmodified_baseline": {"input": "uniform TFF 1280x720i25, 50 pictures", "exit": 1, "result": "FAIL: CrystalHD fields belong to different input frames; cannot preroll"},
+    "native_yuy2_readbacks": [
+      {"input": "uniform TFF 1280x720i25", "outputs": 50, "bytes": 92160000, "every_byte_exact_native_reference": true, "result": "PASS"},
+      {"input": "uniform BFF 1280x720i25", "outputs": 50, "bytes": 92160000, "every_byte_exact_native_reference": true, "result": "PASS"},
+      {"input": "uncropped TFF 1280x736i25", "outputs": 50, "bytes": 94208000, "every_byte_exact_native_reference": true, "result": "PASS"},
+      {"input": "uniform TFF 1920x1080i25 compact-field regression", "outputs": 50, "bytes": 207360000, "every_byte_exact_native_reference": true, "result": "PASS"},
+      {"input": "existing BFF 720x480i30 compact-field regression", "outputs": 60, "bytes": 41472000, "every_byte_exact_native_reference": true, "result": "PASS"}
+    ],
+    "reference_method": "Whole-picture references use the same cropped/uncropped SPS as each source. Compact-field references validate adjacent token/ordinal/session/geometry and complementary polarity, then place top rows at even and bottom rows at odd positions without token sorting or color conversion.",
+    "mp4_seek_to_zero": {"inputs": "Stream-copy remuxes of the TFF/BFF 1280x720 fixtures", "each_order": "50/50 initial + 50/50 replay, natural EOS, exact repeated pixel/metadata digests, correct interlaced TFF/BFF flags and valid monotonic PTS", "result": "PASS", "limit": "Seek-to-zero replay, not the separate four-target VA seek test"},
+    "progressive_regression": {"input": "existing high.mp4", "outputs": "180/180 initial + 180/180 seek-to-zero replay", "oracle": "Exact existing h264-high-ipb row in tests/maintenance-oracle-gst-1.28.2.tsv, metadata and pixels unchanged", "result": "PASS"},
+    "va_shared_classifier_regression": {"input": "uniform TFF 1280x720i25", "outputs": 50, "nv12_bytes": 69120000, "every_byte_identical_to_17e93a0_readback": true, "result": "PASS"},
+    "all_native_runs": "Natural EOS for successful cases, expected failure for baseline, module refcount 0 after each, scoped kernel checks PASS; no software decoder fallback",
+    "device_free": {"gst_o2_werror": "PASS", "gst_lifecycle": "76/76 PASS, including full-Weave pixels/timing/lease lifetime, malformed metadata, stale tokens and unchanged BCM70012 behavior", "va_o2_werror_and_replay": "PASS, including 1170 conversion boundary/alignment cases", "shared_header_c11_cpp17_i386_no_sse_syntax": "PASS; not linked 32-bit frontend or hardware qualification", "astra_review": "APPROVE for bounded native qualification"},
+    "not_claimed": ["hardware Bob or field-rate progressive output", "stock Kodi BWDIF compatibility", "physical presentation or A/V", "new interlaced-scaling support", "BCM70012 hardware qualification"]
+  },
+  "kodi_bounded_diagnostics": {
+    "runtime_source": "e3186fabf24cbb39b8ef6003879e0c331b1ebad2",
+    "checkout": "c07e167aab0425f954bc55ab150779baaeb42a54",
+    "setup": "Unchanged stock Kodi 21.3, source plugin/library, copied windowed profiles, CRYSTALHD_VAAPI_DEBUG=1, both tracers unset; no normal-profile or installed-component changes",
+    "input": "Original #414 TFF 1920x1080i25 + AAC, 30 seconds / 750 pictures, SHA-256 0beeb66fe0bb81ad6d1b6787759ec2112add89aa5e0cebc7b0f3c71e0362d9d9; indexed MKV is video/audio stream-copy, still 750 H.264 packets",
+    "default_ts_bwdif": {"result": "FAIL", "before_first_seek": "Four successful inactivity seals/restarts after about 101-108 ms idle, replaying prefixes of 6/25/35/48 AUs; render-buffer waits and then audio starvation precede automatic seek", "first_internal_failure": "After automatic TS seek and discarded prefix, first non-IDR input is rejected: input must begin at an actual IDR with unique timestamps", "stop": "22-second SIGINT deadline plus 5-second kill grace expired; process killed, exit 137; not graceful close or file EOS"},
+    "default_mkv_bwdif": {"result": "FAIL for playback; useful restart control", "observation": "Same pre-seek seals/replay prefixes and stalls; indexed restart eliminates the observed status-23/IDR cascade, but repeated replay and two audio resyncs remain", "stop": "Application.Quit acknowledged, exit 0; deliberately bounded, not file-EOS acceptance"},
+    "live_mkv_bwdif": {"option": "CRYSTALHD_VAAPI_LIVE_H264=1; LOW_LATENCY and READY overrides unset", "result": "FAIL", "observation": "No inactivity seal/replay. Tokens 1-3 return both fields; token 4 returns only its first field. Kodi waits with decoded=2/proc=0/free surfaces, reports output-message timeout at 2 seconds; exact-surface VA sync subsequently times out at 10 seconds. Secondary IDR-admission errors follow decoder recovery.", "stop": "Application.Quit acknowledged, exit 0"},
+    "live_mkv_no_filter_control": {"profile": "method NONE=0, prefervaapirender=false; same CPU readback/copy route without BWDIF", "result": "FAIL", "observation": "Same token-4 exact-surface timeout and decoded=2/proc=0 output wait; disabling BWDIF does not remove the wait cycle", "selection_check": "Copied XML retains method 0 and prefer=false; no per-file video-settings override exists. Stock Kodi doubles configured interlaced display fps even with NONE; 50-fps renderer configuration and loading the shared SSE4 copy helper do not prove BWDIF.", "stop": "Application.Quit acknowledged, exit 0"},
+    "live_mkv_prefeed": {"options": "LIVE_H264=1 + LOW_LATENCY_H264=1; BWDIF profile, READY overrides unset", "prefeed": "Existing 170-byte AUD plus filler; no predicted VCL or source/metadata changes", "result": "PASS for unblocking the initial wait; FAIL for full-file/EOS qualification", "observation": "Submission advances beyond token 4 without inactivity seals/replay; 535 distinct tokens return both fields and token 536 only its first field. This is raw-output progress, not a 535-frame pixel/presentation oracle or all 750 input pictures.", "stop": "Demux EOF logged before the 35-second external TERM deadline; final output wait then reports 2-second Kodi and 10-second exact-surface VA timeouts. Application.Quit was acknowledged during close, but 10-second kill grace expired, exit 137; not graceful close.", "limit": "The deadline overlaps final queue drain. Exact skipped/unsubmitted input disposition, complete pixels/PTS, natural hardware EOS and uninterrupted shutdown are not established."},
+    "prefeed_quiet_eof_control": {"result": "FAIL for full-file/EOS; clean application teardown", "procedure": "Same source, copied BWDIF profile, indexed MKV and LIVE+LOW_LATENCY; 90-second cap, no TERM or Quit during playback/queue drain", "observation": "Again 536 submissions, 535 complete field pairs and half of token 536, no seal/replay or hardware EOS. Demux EOF at 19:22:48.343, Kodi output-message timeout at 19:22:50.389, followed by exact-surface token-536 sync timeout at 19:22:58.400. PlaybackEnded at 19:22:58.728 follows that error and is not hardware EOS proof.", "stop": "Only after PlaybackEnded: Application.Quit acknowledged, exit 0 before the cap; module refcount 0 and clean kernel check", "interpretation": "The final wait reproduces without shutdown interruption, so it is not solely an external-deadline artifact. Raw progress is still not a complete-input/pixel/presentation pass; exact skipped versus queued input accounting remains unresolved."},
+    "prefeed_cross_client_finite_control": {"test": "tests/vaapi-seek.cpp", "arguments": "Same indexed MKV and source VA/library; LIVE_H264=1, LOW_LATENCY_H264=1, --lookahead 8 --expected-frames 750; READY overrides unset", "result": "FAIL before seek: download VA-API frame: Input/output error", "observation": "All 750 actual AUs submitted; raw output has 749 complete field pairs and only the first field of token 750. Its exact-surface sync times out at 10 seconds; context drain also reports status 23. No inactivity seal/replay or hardware EOS occurs.", "stop": "Exit 1 before the 80-second cap, module refcount 0; not an external deadline interruption", "interpretation": "The finite-tail wait also occurs without Kodi/BWDIF. It does not establish a firmware defect: this explicit live policy suppresses idle EOS and no explicit backend EOF reaches the pending picture. Do not weaken 750-frame acceptance or promote a half picture to READY."},
+    "prefeed_device_free_guard": {"test": "tests/vaapi-replay.cpp: LiveH264InterlacedPrefeedKeepsExactFieldOwnership", "cases": "TFF/BFF times complete, ghost-output and flush outcomes; only a matching second field completes token 4, actual AU 5 retains exact bytes/owner through zero-timestamp continuation, duplicates cannot rewrite and ghost output fails closed", "werror_o0_complete_replay_suite": "PASS, including 1170 conversion boundary cases", "astra_review": "APPROVE", "limit": "Controlled outputs prove adapter contracts, not native pixels or hardware progress"},
+    "interpretation": "Separate secondary TS restart admission from the earlier input/output scheduling wait and replay cost. No field-identity, ownership or copy fault is established; render-buffer waits are not VA sync timeouts. Existing AUD/filler prefeed materially unblocks the initial interlaced wait, so additional real VCL is not shown indispensable at that boundary. Cross-client finite-tail drain and Kodi input accounting remain unresolved; changing IDR admission or returning a half-complete surface is not justified.",
+    "next_code_objective_at_that_revision": "Evaluate independent prefeed on a finite replay/sealing policy, without changing defaults or the existing explicit-live gap contract. Require all 750 complete pixels/PTS, EOS and clean close before any Kodi integration claim.",
+    "recovery": "Module refcount 0 and scoped kernel check PASS after every run. Progressive GStreamer controls after both ordinary and prefeed attempts each complete 180/180 + EOS with the unchanged exact-1.28.2 metadata/pixel oracle.",
+    "limits": "Bounded diagnostics only: no 750-picture Kodi pass, smooth presentation, physical A/V, Bob or firmware-failure claim. Raw debug logs remain private because they include local paths and media bytes."
+  },
+  "candidate_finite_prefeed_fix": {
+    "explicit_policy_source": "afdc020851f0151f94c0eca324d533df24b963cc",
+    "automatic_mbaff_source": "ec77b716280f248c95034a322cdb2a4e6bdd486c",
+    "live_gap_harness": "5cf0919a04905451940c38a4fcc1049f03d89de9",
+    "scope": "Source VA plugin/library only; installed RC f4d99d5, ABI/ioctl, module, firmware and PM unchanged",
+    "policy": "Separate AUD/filler prefeed from LIVE gap handling. Default finite BCM70015 MBAFF frame AUs preserve the decision per accepted/replayed AU; progressive, PAFF, other codecs, BCM70012 and explicit LIVE do not automatically opt in. Explicit LOW_LATENCY=0 opts out. A previously injected prefix still belongs to the actual next AU after a policy transition. READY remap still requires explicit LIVE=1 and LOW_LATENCY=1.",
+    "finite_750": {
+      "input": "Indexed stream-copy MKV of the original 750-picture FHD fixture",
+      "options": "LIVE/READY unset; explicit LOW_LATENCY=1 and default-auto runs both tested",
+      "result": "PASS: 750/750 complete NV12 pictures, real hardware EOS, exit 0",
+      "pixels": "Every picture hash matches the independently captured pre-fix strict native 750-picture oracle; the explicit/default candidate framemd5 files are identical",
+      "timestamps": "Source MKV PTS 21+40*n ms, n=0..749; output PTS 1..750 with duration 1 at timebase 1/25. The old TS reference has a different origin; only its pixel payloads are compared across containers.",
+      "artifacts": ["finite-prefeed-750.framemd5", "auto-mbaff-750.framemd5", "auto-mbaff-750.sha256"]
+    },
+    "default_regressions": {
+      "whole_weave": "PASS: BFF 1280x720 and TFF 1280x736, 50/50 each; every NV12 byte equals the earlier qualified native candidate",
+      "bwdif": "PASS: hwdownload NV12 -> bwdif send_field -> yuv420p, 1500/1500; all pixel hashes match the prior hardware-readback BWDIF oracle. MKV output PTS 1..1500, duration 1 at timebase 1/50, independently checked; not a performance measurement.",
+      "progressive": "PASS: default high.mp4, 180/180, PTS 0..179, duration 1 at 1/30, EOS and clean close",
+      "lifetime": "PASS: 750-picture reference, four 12-picture exact PTS/pixel seeks; eight retained old pictures stay exact after two flush/new-input operations and two context destructions"
+    },
+    "explicit_live_end_and_gap": {
+      "options": "LIVE=1, LOW_LATENCY=1, READY unset; --lookahead 8 --expected-frames 750 --close-before-tail --live-gap",
+      "gap": "Before a real non-IDR packet (PTS 901/DTS 861 ms), surface 4 holding PTS 821 ms is Rendering and sync2(timeout=0) reports TIMEDOUT. It remains pending/Rendering for 356975640 ns; no EOS, seal, reopen or replay occurs in that window. Resume the unchanged packet.",
+      "result": "PASS: all 750 gap-reference pictures match exact PTS/pixels of a fresh no-gap replay; four 12-picture seeks match. Two explicit codec-context closes drain the held tail before downloading eight retained surfaces, then fresh contexts reopen cleanly.",
+      "independent_tail": "All eight printed last-picture SHA-256 digests match rows 743..750 of the separately captured default finite 750-picture oracle after exact source-PTS rescaling",
+      "boundary": "Explicit context destruction is the EOF/drain signal. A vaSyncSurface wait on an established live stream is not EOF; live input gaps must not silently seal it. This is a native API contract test, not Sunshine/network or physical A/V acceptance.",
+      "artifacts": ["live-gap-close-reconnect.stdout", "live-gap-close-reconnect.log", "auto-mbaff-750.sha256"]
+    },
+    "stock_kodi_after_fix": {
+      "version": "Unmodified Kodi 21.3, copied windowed profiles; LIVE/LOW_LATENCY/READY unset",
+      "bwdif_ts_and_mkv": "Each admits 536 pictures, returns 536 exact-token complementary field pairs, completes real hardware EOS and natural PlaybackEnded, then Quit/exit 0. No orphan/duplicate half, replay, VA status 23, 10-second sync timeout or drain failure.",
+      "remaining_limits": "750 source pictures are not 536 admitted pictures: complete Kodi frame acceptance/presentation is not established by this count. Each run logs a bounded two-second post-EOS empty-output wait (decoded=0/proc=0), audio correction around -4.1 seconds and render-buffer warnings. These are not physical A/V measurements.",
+      "render_bob_control": "551 accepted pictures complete as 551 pairs and real EOS; natural PlaybackEnded then Quit/exit 0, no sync/drain failure. The post-EOS empty-output wait and about -1.1-second audio correction remain. No full-rate or hardware-Bob claim.",
+      "instrumented_admission_control": "A separate metadata-only avcodec_send_packet interposer records 558 unique source-picture calls (excluding stream-info probe), all accepted by libavcodec. Source-PTS mapping accounts for all 750: 192 not sent after audio-stall-triggered automatic seek, 120 non-reference inputs skipped with AVDISCARD_NONREF, 438 submitted to hardware and completed as exact complementary pairs across two epochs (236+202). Natural PlaybackEnded, real EOS, Quit/exit 0; no empty-output timeout in this run. Its roughly -6.3-second audio correction and diagnostic logging preclude a presentation/performance claim. This does not retroactively assign the identical split to earlier 536-picture runs.",
+      "quiet_buffered_control": "PARTIAL, not full-file acceptance: verbose VA/Kodi logging disabled; the metadata hook stores all 402 calls without overflow and prints only after exit. Excluding the stream-info probe, only the first 401 consecutive source pictures reach libavcodec (through PTS 16.021 seconds), all ret=0, with 108 non-reference inputs marked for skipping. Later 349 pictures and EOF never reach that decoder. Audio stalls, then frontend exits before any external Quit; automatic resync is possible but not proven by the quiet log. Hardware EOS and exit 0 establish teardown only, not consumption of the complete 30-second file. No VA sync/drain failure or post-EOS message timeout is logged.",
+      "weave_no_filter_control": "Copied profile NONE=0, preferVAAPIRender=false, default finite policy, buffered admission hook and Kodi DEBUG only (no VA debug). All 750 unique source-picture calls reach libavcodec exactly once, ret=0, followed by an accepted EOF and four AVERROR_EOF responses. Buffer stores 756 calls (one probe +750+five EOF), overflow 0. Dynamic NONREF skipping applies to 183 inputs; 500 reference +67 non-reference =567 predicted hardware submissions, not independently native-counted here. Full source traversal, real hardware EOS, PlaybackEnded and Quit/exit 0 pass; not 750 hardware/presented pictures or full-rate proof. No automatic seek or large audio-clock correction is logged; terminal audio stall and the bounded two-second post-EOS empty-output wait remain. No software-deinterlacing or hardware-Bob claim."
+    },
+    "physical_dialogue_observation": {
+      "input": "30-second 1280x720i25 TFF H.264 MBAFF +48 kHz stereo AAC dialogue clip; 750 source packets, generated from a 24p Tears of Steel excerpt with fps=50,tinterlace=interleave_top. Not native 50-distinct-field broadcast motion.",
+      "setup": "Same source candidate/stock Kodi 21.3, copied temporary profiles, preferVAAPIRender=false; no LIVE/LOW_LATENCY/READY/VA debug or admission hook. Normal user profile and installed components unchanged.",
+      "no_deinterlace": "NONE=0: maintainer reports speech/lip motion generally aligned but severe visible shaking. Initially paused, explicitly resumed, then frontend EOF and normal teardown, exit 0.",
+      "bwdif_comparison": "DEINTERLACE=7, no per-file override: maintainer reports reduced shaking and aligned speech/lip motion. Current log selects ff-h264-vaapi/source CrystalHD plugin, 1280x720/50 renderer and 20 ms output-PTS pattern; hardware-accel EOF then natural PlaybackEnded and Quit/exit 0.",
+      "software_weave_control": "Same clip/stock Kodi/display/audio, CPU ff-h264 only; VAAPI/VDPAU disabled, NONE=0, no per-file override. No CrystalHD device open; module refcount 0 while playing. Maintainer reports similar shaking to CrystalHD Weave. Two interactive backward seeks precede natural PlaybackEnded and Quit/exit 0; not an untouched cadence/frame-count benchmark. This shows the observed shaking is not exclusive to CrystalHD, not that every jitter cause is identified. Raw software-control logs remain in the local sw-weave cache.",
+      "logs": "kodi-av-temp/kodi.log and kodi-av-bwdif-temp/kodi.log, not stale logs copied inside profile/temp. BWDIF has no VA sync/drain failure, status 23, two-second empty-output timeout, automatic seek/resync or large audio-clock correction; an ordinary startup clock adjustment remains.",
+      "recovery": "Module refcount 0 after both; scoped kernel check PASS",
+      "acceptance_boundary": "QUALITATIVE A/V observation for this clip/host only. No millisecond offset, native/GUI frame census, 750 hardware-picture or 1500 presented-output claim; not full-rate FHD or general Kodi/interlace support. Less shaking with BWDIF supports a deinterlacing/display contribution, not proof of every jitter cause."
+    },
+    "device_free": {
+      "werror_replay": "PASS: finite sealing/EOS/replay and explicit-live close preserve exact TFF/BFF ownership/pixels, ghost/duplicate/flush guards; automatic-policy exclusions, opt-out, real submit and MBAFF-to-progressive continuation included",
+      "seek_harness": "Werror build, existing 12/12 self-check and six live-gap admission cases PASS; disabled-version guard has no sync2 symbol (simulation, not actual old-header qualification)",
+      "legacy": "i386 no-SSE backend/replay syntax PASS. CPU-policy test: 1916 native checks and 1902 Pentium-II/QEMU checks PASS, including SIMD policy and i386 VPP syntax. Not a linked 32-bit replay or physical legacy-host acceptance.",
+      "astra_review": "APPROVE for policy/ownership changes and live-gap/close harness"
+    },
+    "recovery": "All completed native trials exit 0, return module refcount 0 and pass scoped kernel checks; no install, firmware, PM or third-party app changes",
+    "evidence_location": "Named raw artifacts remain in the local finite-prefeed qualification cache; logs include private runtime paths and are not published"
+  },
+  "conclusion": "The tested field-output routes support exact field omission and decoder-mediated scaling, not Bob. The 1280-wide whole-picture Weave path is mislabelled TOPFIELD by the existing library. Separately pinned source candidates accept the measured full payload without weakening compact-field pairing or picture ownership. The later finite MBAFF prefeed fix completes all 750 decoder pictures and real EOS; explicit live gap/end/reconnect also passes. Kodi completes all admitted field pairs; a selected 720i25 dialogue has qualitatively aligned A/V and less shaking with BWDIF. Full-source FHD presentation, quantified/general physical A/V and hardware Bob remain unqualified. Installed production behavior is unchanged.",
+  "not_established": [
+    "full-height or full-field-rate hardware Bob",
+    "fixed-parity selection or motion-adaptive deinterlacing",
+    "general smooth presentation, quantified/general physical A/V or a throughput/latency speedup",
+    "other codecs, firmware revisions or BCM70012",
+    "standalone MFD/SCL operation or physical PPB leasing"
+  ]
+}
