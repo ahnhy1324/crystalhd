@@ -15,6 +15,28 @@ for command in "$qemu" "$pkg_config" objdump; do
     }
 done
 
+# A command-line CXXFLAGS assignment must add tuning flags without replacing
+# the VA driver's language, diagnostics, PIC, or dependency include contract.
+external_cxxflags='-O2 -march=bonnell -mtune=bonnell -mfpmath=sse'
+driver_command=$(make -nB --no-print-directory \
+    -C "$repo_dir/filters/vaapi" CXX="$cxx" PKG_CONFIG="$pkg_config" \
+    LEGACY_CPU=0 CXXFLAGS="$external_cxxflags" \
+    -o ../../linux_lib/libcrystalhd/libcrystalhd.so \
+    crystalhd_drv_video.so |
+    awk '/crystalhd_drv_video[.]cpp/ && /-o crystalhd_drv_video[.]so/ { print; exit }')
+test -n "$driver_command" || {
+    echo "VA-API CPU check could not inspect the production compile command" >&2
+    exit 1
+}
+required_cxxflags="$external_cxxflags -std=c++17 -Wall -Wextra -Werror -fPIC"
+dependency_cxxflags=$($pkg_config --cflags libva libva-drm libdrm gbm libswscale)
+for required_flag in $required_cxxflags $dependency_cxxflags; do
+    printf '%s\n' "$driver_command" | grep -F -q -- "$required_flag" || {
+        echo "VA-API production compile command lost $required_flag" >&2
+        exit 1
+    }
+done
+
 build_object() {
     mode=$1
     legacy=$2
