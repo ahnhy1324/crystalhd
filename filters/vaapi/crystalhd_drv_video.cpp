@@ -1590,7 +1590,8 @@ struct DecodeContext {
   bool is_70012 = false;
   bool sent_parameter_sets = false;
   // Bounded history is safe for ordinary finite input. Gap tolerance and
-  // direct/speculative paths remain explicit live-stream policy.
+  // direct targets remain explicit live-stream policy; prefeed is independent
+  // so a finite client can still drain its last picture through sealed EOS.
   bool live_h264 = false;
   bool live_h264_gap_tolerant = false;
   bool live_h264_fast_path = false;
@@ -5694,7 +5695,7 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   decode->live_h264_fast_path = h264 && live_h264_fast_path;
   const char *low_latency_h264 =
       getenv("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
-  decode->low_latency_h264 = decode->live_h264_fast_path &&
+  decode->low_latency_h264 = h264 &&
       low_latency_h264 != nullptr && strcmp(low_latency_h264, "1") == 0;
   const char *experimental_ready_remap =
       getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP");
@@ -5712,7 +5713,8 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
       experimental_ready_policy == nullptr ||
       strcmp(experimental_ready_policy, "previous") == 0 ||
       experimental_policy_latest;
-  decode->experimental_ready_remap = decode->low_latency_h264 &&
+  decode->experimental_ready_remap = decode->live_h264_fast_path &&
+      decode->low_latency_h264 &&
       experimental_ready_remap != nullptr &&
       strcmp(experimental_ready_remap, "1") == 0 &&
       experimental_delay_valid && experimental_policy_valid;

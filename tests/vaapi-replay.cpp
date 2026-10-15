@@ -2931,6 +2931,8 @@ static void ExperimentalReadyRemapGate() {
       create("1", nullptr, nullptr, nullptr, nullptr, VAProfileH264Main);
   const GateState low_h264 =
       create("1", "1", nullptr, nullptr, nullptr, VAProfileH264Main);
+  const GateState finite_low_h264 =
+      create(nullptr, "1", "1", nullptr, nullptr, VAProfileH264Main);
   const GateState strict_h264 =
       create("0", "1", "1", nullptr, nullptr, VAProfileH264Main);
   const GateState invalid_h264 =
@@ -2946,16 +2948,26 @@ static void ExperimentalReadyRemapGate() {
               low_h264.transport && low_h264.gap_tolerant &&
               low_h264.fast_path &&
               low_h264.low_latency && !low_h264.enabled &&
+              finite_low_h264.transport && !finite_low_h264.gap_tolerant &&
+              !finite_low_h264.fast_path && finite_low_h264.low_latency &&
+              !finite_low_h264.enabled &&
               !strict_h264.transport && !strict_h264.gap_tolerant &&
               !strict_h264.fast_path &&
-              !strict_h264.low_latency && !strict_h264.enabled &&
+              strict_h264.low_latency && !strict_h264.enabled &&
               !invalid_h264.transport && !invalid_h264.gap_tolerant &&
               !invalid_h264.fast_path &&
-              !invalid_h264.low_latency && !invalid_h264.enabled &&
+              invalid_h264.low_latency && !invalid_h264.enabled &&
               !default_mpeg2.transport && !default_mpeg2.gap_tolerant &&
               !default_mpeg2.fast_path &&
               !default_mpeg2.low_latency && !default_mpeg2.enabled,
           "default H.264 transport is bounded while fast paths remain exact opt-ins");
+  Require(!create(nullptr, "0", nullptr, nullptr, nullptr,
+                   VAProfileH264Main).low_latency &&
+              !create(nullptr, "yes", nullptr, nullptr, nullptr,
+                      VAProfileH264Main).low_latency &&
+              !create(nullptr, "1", nullptr, nullptr, nullptr,
+                      VAProfileMPEG2Main).low_latency,
+          "independent prefeed remains an exact H.264-only opt-in");
 
   Require(!create(nullptr, nullptr, "1", nullptr, nullptr,
                   VAProfileH264Main).enabled &&
@@ -5267,9 +5279,10 @@ static void LiveH264SpeculativePrefeedSequence() {
 }
 
 static void LiveH264InterlacedPrefeedKeepsExactFieldOwnership() {
-  enum class Tail { Complete, Ghost, Flush };
+  enum class Tail { Complete, Ghost, Flush, FiniteReplay, ContextDrain };
   for (bool bottom_first : {false, true}) {
-    for (Tail tail : {Tail::Complete, Tail::Ghost, Tail::Flush}) {
+    for (Tail tail : {Tail::Complete, Tail::Ghost, Tail::Flush,
+                      Tail::FiniteReplay, Tail::ContextDrain}) {
       TeardownFixture fixture(5);
       auto &decode = *fixture.decoder;
       decode.id = 1;
@@ -5278,6 +5291,8 @@ static void LiveH264InterlacedPrefeedKeepsExactFieldOwnership() {
       decode.height = fixture.io.output_height = 32;
       decode.live_h264 = decode.live_h264_gap_tolerant = true;
       decode.live_h264_fast_path = decode.low_latency_h264 = true;
+      if (tail == Tail::FiniteReplay)
+        decode.live_h264_gap_tolerant = decode.live_h264_fast_path = false;
       decode.replay = CrystalHDDecodeReplay(true);
       for (size_t index = 0; index < fixture.held.size(); ++index) {
         const uint64_t token = (index + 1) * kTimestampStep;
@@ -5353,7 +5368,94 @@ static void LiveH264InterlacedPrefeedKeepsExactFieldOwnership() {
                   !fixture.held[3]->ready && decode.h264_first_field.valid,
               "empty transport polls cannot turn the held half into READY");
 
-      if (tail == Tail::Ghost) {
+      if (tail == Tail::FiniteReplay || tail == Tail::ContextDrain) {
+        if (tail == Tail::ContextDrain) {
+          fixture.io.on_sleep = [&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(140));
+            fixture.io.on_sleep = [&] {
+              Require(std::find(fixture.io.events.begin(), fixture.io.events.end(),
+                                "seal") == fixture.io.events.end(),
+                      "live prefeed gap does not infer EOF after finite grace");
+              std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            };
+          };
+          std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+          Require(SyncDecodeSurface(&fixture.driver, fixture.held[3], &lock,
+                                     155000000) == VA_STATUS_ERROR_TIMEDOUT &&
+                      !decode.replay.failed() && decode.h264_first_field.valid &&
+                      decode.prefed_timestamp == fifth &&
+                      !fixture.held[3]->ready,
+                  "finite live sync preserves incomplete pixels and references");
+        }
+        fixture.io.early_eos = true;  // Supply the complementary field ourselves.
+        std::function<void()> finish_after_seal;
+        finish_after_seal = [&] {
+          if (std::find(fixture.io.events.begin(), fixture.io.events.end(),
+                        "seal") == fixture.io.events.end()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            fixture.io.on_sleep = finish_after_seal;
+            return;
+          }
+          Require(fixture.io.outputs == std::deque<uint64_t>{0} &&
+                      decode.prefed_timestamp == fifth &&
+                      fixture.io.prefed_timestamp == 0 &&
+                      decode.h264_first_field.valid && !fixture.held[3]->ready,
+                  "seal drops raw prefix but keeps its guard and unfinished owner");
+          fixture.io.outputs.push_front(fourth);
+          fixture.io.picture_flags.push_back(
+              VDEC_FLAG_INTERLACED_SRC | second | order);
+        };
+        fixture.io.on_sleep = finish_after_seal;
+        const VAStatus status = tail == Tail::ContextDrain
+            ? DestroyContext(&fixture.context, 1)
+            : SyncSurface(&fixture.context, 4);
+        Require(status == VA_STATUS_SUCCESS && fourth_owner->ready &&
+                    !decode.h264_first_field.valid && decode.pending.empty() &&
+                    decode.replay.outstanding() == 0 &&
+                    decode.prefed_timestamp == 0 && fixture.io.prefed_timestamp == 0 &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                               "seal") == 1 &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                               "eos") == 1 &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                               "release") == 9 && !fixture.io.invalid,
+                "finite sync or explicit live destroy drains matching half and actual EOS");
+        fixture.CheckPicture(3);
+        const auto completed = fixture.held[3]->storage;
+        if (tail == Tail::ContextDrain) {
+          Require(fixture.driver.contexts.empty() && decode.device == nullptr &&
+                      fixture.held[3]->storage == completed,
+                  "destroyed live context leaves exact completed pixels downloadable");
+        } else {
+          const auto fifth_unit = TestH264AccessUnit(false, 5);
+          decode.decoded_frames[fifth] = fifth_owner;
+          decode.pending[fifth] = 5;
+          decode.surface_timestamps[fixture.held[4].get()] = fifth;
+          fixture.held[4]->decode_picture = fifth_owner;
+          Require(decode.replay.Append(fifth, false, fifth_unit),
+                  "accept a dependent continuation only with intact replay history");
+          decode.next_timestamp = 6 * kTimestampStep;
+          fixture.io.allow_device_open = true;
+          Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                      fixture.io.open_attempts == 1 &&
+                      fixture.io.input_calls.size() == 14,
+                  "finite continuation reopens and replays original reference input");
+          for (unsigned int picture = 1; picture <= 5; ++picture) {
+            const auto &call = fixture.io.input_calls[7 + picture];
+            Require(call.accepted && call.timestamp == picture * kTimestampStep &&
+                        call.bytes == TestH264AccessUnit(picture == 1, picture),
+                    "post-EOS replay restores each byte-exact original timestamp");
+            queue_field(picture * kTimestampStep, first);
+            queue_field(picture * kTimestampStep, second);
+          }
+          Require(ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                      fifth_owner->ready && decode.pending.empty() &&
+                      decode.replay.outstanding() == 0 &&
+                      fixture.held[3]->storage == completed && !fixture.io.invalid,
+                  "replayed pairs do not rewrite retained pixels and new pair completes");
+          fixture.CheckPicture(4);
+        }
+      } else if (tail == Tail::Ghost) {
         queue_field(fifth, first);
         Require(ReceiveAvailable(&fixture.driver, &decode) ==
                         VA_STATUS_ERROR_DECODING_ERROR &&
