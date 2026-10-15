@@ -259,9 +259,29 @@
       "i386_cpu_policy": "PASS; normal SSE2 cache 1916 checks, Pentium2 QEMU scalar cache 1902 checks, legacy SIMD absence and i386 VPP syntax",
       "astra_review": "APPROVE for bounded native qualification"
     },
-    "not_claimed": ["hardware Bob or field-rate progressive output", "physical presentation or A/V", "stock Kodi BWDIF compatibility", "GStreamer whole-picture acceptance", "BCM70012 hardware qualification"]
+    "not_claimed_at_this_va_only_revision": ["hardware Bob or field-rate progressive output", "physical presentation or A/V", "stock Kodi BWDIF compatibility", "GStreamer whole-picture acceptance", "BCM70012 hardware qualification"]
   },
-  "conclusion": "The tested field-output routes support exact field omission and decoder-mediated scaling, not Bob. The 1280-wide whole-picture Weave path is mislabelled TOPFIELD by the existing library. Unmodified VA rejects it; the separately pinned candidate VA fix accepts the measured full payload without weakening half-field pairing or picture ownership. Installed production behavior is unchanged.",
+  "candidate_gstreamer_fix": {
+    "source": "e3186fabf24cbb39b8ef6003879e0c331b1ebad2",
+    "environment": "Same native environment above; GStreamer exactly 1.28.2, source-built plugin/library; installed RC unchanged",
+    "scope": "Share the validated H.264 storage classifier with VA. BCM70015 whole-Weave copies every row into one owned output; compact fields keep existing pairing. Pending-half to whole, unmatched/stale tokens and malformed metadata fail closed. BCM70012 and interlaced-scaling restrictions are unchanged.",
+    "unmodified_baseline": {"input": "uniform TFF 1280x720i25, 50 pictures", "exit": 1, "result": "FAIL: CrystalHD fields belong to different input frames; cannot preroll"},
+    "native_yuy2_readbacks": [
+      {"input": "uniform TFF 1280x720i25", "outputs": 50, "bytes": 92160000, "every_byte_exact_native_reference": true, "result": "PASS"},
+      {"input": "uniform BFF 1280x720i25", "outputs": 50, "bytes": 92160000, "every_byte_exact_native_reference": true, "result": "PASS"},
+      {"input": "uncropped TFF 1280x736i25", "outputs": 50, "bytes": 94208000, "every_byte_exact_native_reference": true, "result": "PASS"},
+      {"input": "uniform TFF 1920x1080i25 compact-field regression", "outputs": 50, "bytes": 207360000, "every_byte_exact_native_reference": true, "result": "PASS"},
+      {"input": "existing BFF 720x480i30 compact-field regression", "outputs": 60, "bytes": 41472000, "every_byte_exact_native_reference": true, "result": "PASS"}
+    ],
+    "reference_method": "Whole-picture references use the same cropped/uncropped SPS as each source. Compact-field references validate adjacent token/ordinal/session/geometry and complementary polarity, then place top rows at even and bottom rows at odd positions without token sorting or color conversion.",
+    "mp4_seek_to_zero": {"inputs": "Stream-copy remuxes of the TFF/BFF 1280x720 fixtures", "each_order": "50/50 initial + 50/50 replay, natural EOS, exact repeated pixel/metadata digests, correct interlaced TFF/BFF flags and valid monotonic PTS", "result": "PASS", "limit": "Seek-to-zero replay, not the separate four-target VA seek test"},
+    "progressive_regression": {"input": "existing high.mp4", "outputs": "180/180 initial + 180/180 seek-to-zero replay", "oracle": "Exact existing h264-high-ipb row in tests/maintenance-oracle-gst-1.28.2.tsv, metadata and pixels unchanged", "result": "PASS"},
+    "va_shared_classifier_regression": {"input": "uniform TFF 1280x720i25", "outputs": 50, "nv12_bytes": 69120000, "every_byte_identical_to_17e93a0_readback": true, "result": "PASS"},
+    "all_native_runs": "Natural EOS for successful cases, expected failure for baseline, module refcount 0 after each, scoped kernel checks PASS; no software decoder fallback",
+    "device_free": {"gst_o2_werror": "PASS", "gst_lifecycle": "76/76 PASS, including full-Weave pixels/timing/lease lifetime, malformed metadata, stale tokens and unchanged BCM70012 behavior", "va_o2_werror_and_replay": "PASS, including 1170 conversion boundary/alignment cases", "shared_header_c11_cpp17_i386_no_sse_syntax": "PASS; not linked 32-bit frontend or hardware qualification", "astra_review": "APPROVE for bounded native qualification"},
+    "not_claimed": ["hardware Bob or field-rate progressive output", "stock Kodi BWDIF compatibility", "physical presentation or A/V", "new interlaced-scaling support", "BCM70012 hardware qualification"]
+  },
+  "conclusion": "The tested field-output routes support exact field omission and decoder-mediated scaling, not Bob. The 1280-wide whole-picture Weave path is mislabelled TOPFIELD by the existing library. Unmodified VA and GStreamer reject it; separately pinned source candidates accept the measured full payload without weakening compact-field pairing or picture ownership. Installed production behavior is unchanged.",
   "not_established": [
     "full-height or full-field-rate hardware Bob",
     "fixed-parity selection or motion-adaptive deinterlacing",
