@@ -20,6 +20,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/crystalhd-config.py"
+MANIFEST = ROOT / "share/crystalhd/config-presets-v1.json"
 
 SPEC = importlib.util.spec_from_file_location("crystalhd_config_cli", SCRIPT)
 if SPEC is None or SPEC.loader is None:
@@ -75,6 +76,7 @@ class ConfigCliTest(unittest.TestCase):
         report = json.loads(first.stdout)
         self.assertEqual(report["schema"], 1)
         self.assertEqual(report["preset"], "default")
+        self.assertEqual(report["custom_overrides"], [])
         self.assertIsNone(report["profile"])
         self.assertEqual(report["environment"], "ignored")
         self.assertIn("application CLI and GObject overrides are not observed",
@@ -109,6 +111,9 @@ class ConfigCliTest(unittest.TestCase):
         self.assertEqual((result.returncode, result.stderr), (0, ""))
         report = json.loads(result.stdout)
         self.assertEqual(report["profile"], "stream")
+        self.assertEqual(report["custom_overrides"], [
+            "vaapi.h264.low_latency", "vaapi.h264.mode",
+        ])
         settings = {item["key"]: item for item in report["settings"]}
         self.assertEqual(settings["vaapi.h264.mode"]["origin"], "user")
         self.assertEqual(settings["vaapi.h264.low_latency"]["origin"],
@@ -121,12 +126,167 @@ class ConfigCliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 3)
         self.assertIn("unknown selected profile", result.stderr)
 
-    def test_only_empty_default_preset_exists(self):
-        accepted = self.run_cli("validate", *self.common(), "--preset", "default")
-        rejected = self.run_cli("validate", *self.common(), "--preset", "quality")
-        self.assertEqual(accepted.returncode, 0)
-        self.assertEqual(rejected.returncode, 3)
-        self.assertIn("unknown selected preset", rejected.stderr)
+    def test_reviewed_preset_inventory_and_nonselectable_entries(self):
+        result = self.run_cli("list-presets", "--format", "json")
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        records = json.loads(result.stdout)["presets"]
+        self.assertEqual(
+            [(item["name"], item["status"]) for item in records],
+            [
+                ("default", "SELECTABLE"),
+                ("quality", "SELECTABLE"),
+                ("performance", "UNAVAILABLE"),
+                ("low-memory", "SELECTABLE"),
+                ("streaming", "SELECTABLE"),
+                ("experimental", "UNAVAILABLE"),
+                ("custom", "VIRTUAL"),
+            ],
+        )
+        settings = dict((item["name"], item["settings"]) for item in records)
+        self.assertEqual(settings["default"], {})
+        self.assertEqual(settings["quality"], {
+            "gstreamer.crystalhddec.scale_width": 0,
+        })
+        self.assertIsNone(settings["performance"])
+        self.assertIsNone(settings["experimental"])
+        self.assertIsNone(settings["custom"])
+
+        quality = self.run_cli(
+            "show-effective", *self.common(), "--ignore-environment",
+            "--preset", "quality", "--format", "json",
+        )
+        self.assertEqual((quality.returncode, quality.stderr), (0, ""))
+        quality_report = json.loads(quality.stdout)
+        self.assertEqual(quality_report["preset"], "quality")
+        self.assertEqual(quality_report["custom_overrides"], [])
+        scale = next(item for item in quality_report["settings"]
+                     if item["key"] == "gstreamer.crystalhddec.scale_width")
+        self.assertEqual((scale["effective"], scale["origin"]),
+                         (0, "preset:quality"))
+
+        for name, reason in (
+                ("performance", "no-universal-media-safe-scaling-target"),
+                ("experimental", "no-coherent-mixed-risk-bundle"),
+                ("custom", "virtual custom preset cannot be selected")):
+            with self.subTest(name=name):
+                rejected = self.run_cli(
+                    "validate", *self.common(), "--ignore-environment",
+                    "--preset", name,
+                )
+                self.assertEqual(rejected.returncode, 3)
+                self.assertIn(reason, rejected.stderr)
+
+    def test_experimental_presets_require_exact_command_acknowledgement(self):
+        missing = self.run_cli(
+            "validate", *self.common(), "--ignore-environment",
+            "--preset", "low-memory",
+        )
+        self.assertEqual(missing.returncode, 3)
+        self.assertIn("low-memory-8-buffer", missing.stderr)
+        accepted = self.run_cli(
+            "show-effective", *self.common(), "--ignore-environment",
+            "--preset", "low-memory",
+            "--acknowledge-risk", "low-memory-8-buffer", "--format", "json",
+        )
+        self.assertEqual((accepted.returncode, accepted.stderr), (0, ""))
+        accepted_report = json.loads(accepted.stdout)
+        pool = next(item for item in accepted_report["settings"]
+                    if item["key"] == "libcrystalhd.rx_pool_count")
+        self.assertEqual((pool["effective"], pool["origin"]),
+                         (8, "preset:low-memory"))
+
+        streaming = self.run_cli(
+            "show-effective", *self.common(), "--ignore-environment",
+            "--preset", "streaming",
+            "--acknowledge-risk", "bcm70015-live-h264-drain",
+            "--format", "json",
+        )
+        self.assertEqual((streaming.returncode, streaming.stderr), (0, ""))
+        streaming_settings = {
+            item["key"]: item for item in json.loads(streaming.stdout)["settings"]
+        }
+        self.assertEqual(streaming_settings["vaapi.h264.mode"]["effective"],
+                         "live")
+        self.assertTrue(
+            streaming_settings["vaapi.h264.low_latency"]["effective"]
+        )
+        self.assertFalse(
+            streaming_settings["vaapi.h264.ready_remap"]["effective"]
+        )
+
+        for arguments, expected_status in (
+            (("--preset", "default", "--acknowledge-risk",
+              "low-memory-8-buffer"), 3),
+            (("--preset", "low-memory", "--acknowledge-risk", "unknown"), 2),
+            (("--preset", "low-memory", "--acknowledge-risk",
+              "low-memory-8-buffer", "--acknowledge-risk",
+              "low-memory-8-buffer"), 2),
+        ):
+            with self.subTest(arguments=arguments):
+                result = self.run_cli(
+                    "validate", *self.common(), "--ignore-environment", *arguments
+                )
+                self.assertEqual(result.returncode, expected_status)
+                self.assertNotIn("Traceback", result.stderr)
+
+        self.write_user(
+            "[crystalhd]\nschema = 1\n"
+            'preset = "low-memory"\n'
+        )
+        from_file = self.run_cli(
+            "validate", "--no-system-config", "--user-config",
+            str(self.user_file), "--ignore-environment",
+        )
+        self.assertEqual(from_file.returncode, 3)
+        self.assertIn("--acknowledge-risk", from_file.stderr)
+
+    def test_manifest_parser_is_strict_and_bounded(self):
+        raw = MANIFEST.read_bytes()
+        catalog = CONFIG.parse_preset_manifest(raw)
+        self.assertEqual(tuple(item.name for item in catalog.entries),
+                         CONFIG.PRESET_NAMES)
+        document = json.loads(raw.decode("utf-8"))
+        mutations = []
+        changed = dict(document)
+        changed["format_version"] = 2
+        mutations.append(changed)
+        changed = dict(document)
+        changed["extra"] = True
+        mutations.append(changed)
+        changed = json.loads(raw.decode("utf-8"))
+        changed["presets"][1]["settings"] = {
+            "gstreamer.crystalhddec.scale_width": 1281,
+        }
+        mutations.append(changed)
+        changed = json.loads(raw.decode("utf-8"))
+        changed["presets"][4]["required_acknowledgements"] = []
+        mutations.append(changed)
+        changed = json.loads(raw.decode("utf-8"))
+        changed["presets"][5]["status"] = "SELECTABLE"
+        changed["presets"][5]["settings"] = {
+            "vaapi.h264.ready_remap": True,
+        }
+        changed["presets"][5]["reason_code"] = None
+        mutations.append(changed)
+        changed = json.loads(raw.decode("utf-8"))
+        changed["presets"][0]["display_name"] = chr(0xd800)
+        mutations.append(changed)
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), self.assertRaises(CONFIG.SchemaError):
+                CONFIG.parse_preset_manifest(
+                    json.dumps(mutation).encode("utf-8")
+                )
+        duplicate = raw.replace(
+            b'"format": "crystalhd-presets",',
+            b'"format": "crystalhd-presets", "format": "duplicate",',
+            1,
+        )
+        with self.assertRaises(CONFIG.SchemaError):
+            CONFIG.parse_preset_manifest(duplicate)
+        with self.assertRaises(CONFIG.SchemaError):
+            CONFIG.parse_preset_manifest(b"[" * 2000 + b"0" + b"]" * 2000)
+        with self.assertRaises(CONFIG.SchemaError):
+            CONFIG.parse_preset_manifest(b"#" * (CONFIG.MAXIMUM_BYTES + 1))
 
     def test_environment_is_last_observable_layer_and_can_be_ignored(self):
         self.write_user(
@@ -491,9 +651,13 @@ class ConfigCliTest(unittest.TestCase):
         })
 
         archive_dir = self.root / "archive-without-git"
-        archive_dir.mkdir(mode=0o700)
-        copy = archive_dir / "crystalhd-config"
+        scripts_dir = archive_dir / "scripts"
+        manifest_dir = archive_dir / "share" / "crystalhd"
+        scripts_dir.mkdir(parents=True, mode=0o700)
+        manifest_dir.mkdir(parents=True, mode=0o700)
+        copy = scripts_dir / "crystalhd-config"
         shutil.copyfile(str(SCRIPT), str(copy))
+        shutil.copyfile(str(MANIFEST), str(manifest_dir / MANIFEST.name))
         os.chmod(str(copy), 0o755)
         result = self.run_cli(
             "show-effective", *self.common(), "--ignore-environment",

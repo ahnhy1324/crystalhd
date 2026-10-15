@@ -23,32 +23,37 @@ never installed as the parser.
 
 ## Read-only CLI
 
-The three commands are:
+The four commands are:
 
 ```sh
 crystalhd-config validate
 crystalhd-config show-effective --format text
 crystalhd-config explain vaapi.h264.mode --format json
+crystalhd-config list-presets --format text
 ```
 
 Options follow the command. `--system-config FILE` and `--user-config FILE`
 select explicit absolute paths; `--no-system-config` and `--no-user-config`
 suppress the corresponding layer. `--preset NAME`, `--profile NAME`, and
 `--ignore-environment` control selection and setting-specific process
-environment inspection. The path-locating `XDG_CONFIG_HOME` or `HOME` must
+environment inspection. Experimental presets additionally require their
+repeatable, command-line-only `--acknowledge-risk TOKEN`; neither a config
+file nor an environment variable can supply it. The path-locating
+`XDG_CONFIG_HOME` or `HOME` must
 still be absolute unless the user layer is explicitly suppressed. Text and
-JSON formats are available for `show-effective` and `explain`.
+JSON formats are available for `show-effective`, `explain` and `list-presets`.
 
-Exit status `0` means success, `2` is command-line syntax or an unknown
-canonical key, and `3` is an unsafe, unreadable or invalid configuration,
-selector or cross-setting transaction.
+Exit status `0` means success, `2` is command-line syntax, an unknown canonical
+key or an unknown/duplicated acknowledgement token, and `3` is an unsafe,
+unreadable or invalid configuration, selector, missing/inapplicable required
+acknowledgement, or cross-setting transaction.
 
-The only supplied preset is the empty `default` compatibility preset. The
-tool is diagnostic only: it cannot write or apply settings, launch another
-program, reload a module, source `chromium.conf`, or access hardware. Its last
-observable layer is the current process environment. A future application's
-CLI options and GObject properties can be higher-priority inputs, but this
-read-only process cannot observe them and reports that limit explicitly.
+The tool is diagnostic only: selecting a preset changes the reported target
+transaction, not a running application. It cannot write or apply settings,
+launch another program, reload a module, source `chromium.conf`, or access
+hardware. Its last observable layer is the current process environment. A
+future application's CLI options and GObject properties can be higher-priority
+inputs, but this read-only process cannot observe them and reports that limit.
 Reported states describe only configuration and established native-adapter
 semantics; they do not mean an application applied a value. Hardware-dependent
 requests such as BCM70015 scaling, i915 WC, a DRM node, decoder availability
@@ -156,6 +161,34 @@ External loader selectors such as `LIBVA_DRIVER_NAME`, `VAAPI_FORCE_INDIRECT`,
 `GST_PLUGIN_PATH` and `LD_LIBRARY_PATH` remain owned by their respective
 runtimes and are not schema keys.
 
+## Reviewed preset manifest
+
+The versioned catalog is installed as
+`$DATADIR/crystalhd/config-presets-v1.json`. Source checkouts and source
+archives use the same tracked sidecar without requiring `.git`. The tool reads
+one compiled relative location with the same bounded, non-following regular-file
+checks as configuration input; it never searches the current directory,
+`HOME`, an environment override or a host installation as a fallback.
+
+`crystalhd-config list-presets` reports the manifest without selecting or
+applying an entry. The v1 entries are deliberately narrow:
+
+| Name | Status / safety | Exact preset settings | Selection boundary |
+| --- | --- | --- | --- |
+| `default` | SELECTABLE / STANDARD | Empty compatibility layer | No acknowledgement |
+| `quality` | SELECTABLE / STANDARD | `gstreamer.crystalhddec.scale_width = 0` | Native-width output; no quality-improvement claim |
+| `performance` | UNAVAILABLE / EXPERIMENTAL | None | There is no universal media-safe scaling target; `1280` is not made global |
+| `low-memory` | SELECTABLE / EXPERIMENTAL | `libcrystalhd.rx_pool_count = 8` | Requires `--acknowledge-risk low-memory-8-buffer`; retained measurement is BCM70015-only |
+| `streaming` | SELECTABLE / EXPERIMENTAL | H.264 `live`, low latency on, READY remap off | Requires `--acknowledge-risk bcm70015-live-h264-drain`; BCM70015 H.264 VA, later input or explicit drain, and external loader/presentation setup remain requirements |
+| `experimental` | UNAVAILABLE / EXPERIMENTAL | None | Mixed READY-remap, i915, Chromium-sandbox, diagnostic and link-power risks are not bundled |
+| `custom` | VIRTUAL / DERIVED | None | Cannot be selected; reports are the selected real preset plus per-key override origins |
+
+The Streaming entry does not configure Moonlight, V-sync, pacing, loader
+paths, PCIe L0s, i915 WC, physical A/V synchronization or presentation. The
+Quality entry is an explicit native-output setting, not a benchmark result.
+Unavailable entries remain visible so a familiar marketing name cannot
+silently degrade into a different collection of options.
+
 ## Selection and merge order
 
 Preset and profile selection is a separate pass from value merging.  For each
@@ -164,9 +197,10 @@ wins over the system file.  With no preset selection, `default` means an empty
 compatibility preset.  With no profile selection, no named profile is active.
 An unknown selected preset or profile is an error.
 
-Preset contents will be reviewed as separate data manifests.  This schema does
-not define Quality, Performance, Streaming or Experimental values and does not
-make any experimental setting implicit.
+Only `SELECTABLE` manifest entries participate in merging. Experimental
+selection requires the entry's exact command-only acknowledgement on every
+invocation; it never becomes implicit through a file, environment variable or
+another preset.
 
 The requested target state uses this exact low-to-high precedence:
 

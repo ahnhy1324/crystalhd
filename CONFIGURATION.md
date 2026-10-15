@@ -13,9 +13,14 @@ utility does not change their behavior. For example:
 crystalhd-config validate
 crystalhd-config show-effective
 crystalhd-config explain vaapi.h264.mode --format json
+crystalhd-config list-presets
 ```
 
-Only the empty compatibility preset named `default` is currently provided.
+The reviewed preset catalog includes selectable Standard and explicitly
+acknowledged Experimental entries as well as unavailable/virtual names which
+cannot be selected. Use `list-presets` before selecting one; exact values,
+requirements and acknowledgement syntax are in
+[CONFIGURATION-SCHEMA.md](CONFIGURATION-SCHEMA.md#reviewed-preset-manifest).
 The utility does not write configuration, launch an application, reload a
 module, source the legacy `chromium.conf`, or access CrystalHD hardware.
 

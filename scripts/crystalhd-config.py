@@ -19,13 +19,29 @@ import sys
 MAXIMUM_BYTES = 64 * 1024
 MAXIMUM_INTEGER_DIGITS = 10
 SYSTEM_CONFIG = "/etc/crystalhd/config.ini"
+PRESET_MANIFEST_RELATIVE = "@PRESET_MANIFEST_RELATIVE@"
+SOURCE_PRESET_MANIFEST_RELATIVE = os.path.join(
+    "..", "share", "crystalhd", "config-presets-v1.json"
+)
+PRESET_NAMES = (
+    "default", "quality", "performance", "low-memory", "streaming",
+    "experimental", "custom",
+)
 PROFILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 INTEGER = re.compile(r"(?:0|[1-9][0-9]*)\Z")
 KEY_NAME = re.compile(r"[a-z][a-z0-9_.]*\Z")
+TOKEN_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
+EVIDENCE_REF = re.compile(
+    r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.md#[a-z0-9-]+\Z"
+)
 
 
 class SchemaError(ValueError):
     """The managed configuration cannot be accepted as one transaction."""
+
+
+class CommandLineSelectionError(ValueError):
+    """A dynamic manifest-backed command-line token is invalid."""
 
 
 class RedactedArgumentParser(argparse.ArgumentParser):
@@ -146,10 +162,6 @@ NATIVE = {
     "player.software_output_size": ABSENT,
 }
 
-# Presets are reviewed data, not magic behavior.  The first implementation
-# intentionally ships only the empty compatibility preset.
-PRESETS = {"default": {}}
-
 ENVIRONMENT_TARGETS = frozenset((
     "CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT",
     "CRYSTALHD_VAAPI_LIVE_H264",
@@ -250,6 +262,183 @@ class Resolution(object):
         self.rejections = rejections
         self.preset = preset
         self.profile = profile
+
+
+class PresetEntry(object):
+    def __init__(self, record):
+        self.record = record
+        self.name = record["name"]
+        self.status = record["status"]
+        self.settings = record["settings"]
+        self.required_acknowledgements = tuple(
+            record["required_acknowledgements"]
+        )
+
+
+class PresetCatalog(object):
+    def __init__(self, entries):
+        self.entries = tuple(entries)
+        self.by_name = dict((entry.name, entry) for entry in entries)
+        self.selectable = dict(
+            (entry.name, entry.settings)
+            for entry in entries if entry.status == "SELECTABLE"
+        )
+        self.acknowledgement_tokens = frozenset(
+            token
+            for entry in entries
+            for token in entry.required_acknowledgements
+        )
+
+
+def _unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise SchemaError("preset manifest contains a duplicate field")
+        value[key] = item
+    return value
+
+
+def _plain_text(value, maximum):
+    if type(value) is not str or not 0 < len(value) <= maximum:
+        return False
+    for character in value:
+        codepoint = ord(character)
+        if (codepoint < 0x20 or codepoint == 0x7f
+                or 0xd800 <= codepoint <= 0xdfff):
+            return False
+    return True
+
+
+def parse_preset_manifest(data):
+    """Parse the bounded, versioned preset sidecar without applying it."""
+    if len(data) > MAXIMUM_BYTES:
+        raise SchemaError("preset manifest exceeds 64 KiB")
+    if data.startswith(b"\xef\xbb\xbf"):
+        raise SchemaError("preset manifest UTF-8 byte-order mark is not permitted")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise SchemaError("preset manifest is not UTF-8")
+    try:
+        document = json.loads(text, object_pairs_hook=_unique_json_object)
+    except SchemaError:
+        raise
+    except (ValueError, RecursionError):
+        raise SchemaError("preset manifest is not valid JSON")
+
+    root_fields = {
+        "format", "format_version", "configuration_schema", "presets",
+    }
+    if type(document) is not dict or set(document) != root_fields:
+        raise SchemaError("preset manifest root fields are invalid")
+    if document["format"] != "crystalhd-presets":
+        raise SchemaError("preset manifest format is unsupported")
+    if type(document["format_version"]) is not int \
+            or document["format_version"] != 1:
+        raise SchemaError("preset manifest version is unsupported")
+    if type(document["configuration_schema"]) is not int \
+            or document["configuration_schema"] != 1:
+        raise SchemaError("preset manifest configuration schema is unsupported")
+    records = document["presets"]
+    if type(records) is not list or len(records) != len(PRESET_NAMES):
+        raise SchemaError("preset manifest has an invalid preset inventory")
+
+    entry_fields = {
+        "name", "display_name", "status", "safety",
+        "required_acknowledgements", "requirements", "evidence_refs",
+        "settings", "reason_code",
+    }
+    entries = []
+    all_tokens = set()
+    for expected_name, record in zip(PRESET_NAMES, records):
+        if type(record) is not dict or set(record) != entry_fields:
+            raise SchemaError("preset manifest entry fields are invalid")
+        name = record["name"]
+        if name != expected_name or TOKEN_NAME.fullmatch(name) is None:
+            raise SchemaError("preset manifest order or name is invalid")
+        if not _plain_text(record["display_name"], 64):
+            raise SchemaError("preset display name is invalid")
+        status = record["status"]
+        if status not in ("SELECTABLE", "UNAVAILABLE", "VIRTUAL"):
+            raise SchemaError("preset status is invalid")
+        safety = record["safety"]
+        if safety not in ("STANDARD", "EXPERIMENTAL", "DERIVED"):
+            raise SchemaError("preset safety class is invalid")
+
+        acknowledgements = record["required_acknowledgements"]
+        if type(acknowledgements) is not list:
+            raise SchemaError("preset acknowledgements are invalid")
+        if any(type(token) is not str or TOKEN_NAME.fullmatch(token) is None
+               for token in acknowledgements):
+            raise SchemaError("preset acknowledgement token is invalid")
+        if len(acknowledgements) != len(set(acknowledgements)):
+            raise SchemaError("preset acknowledgement token is duplicated")
+        if all_tokens & set(acknowledgements):
+            raise SchemaError("preset acknowledgement token is ambiguous")
+        all_tokens.update(acknowledgements)
+
+        requirements = record["requirements"]
+        if type(requirements) is not list:
+            raise SchemaError("preset requirements are invalid")
+        requirement_ids = set()
+        for requirement in requirements:
+            if type(requirement) is not dict \
+                    or set(requirement) != {"id", "description"}:
+                raise SchemaError("preset requirement fields are invalid")
+            requirement_id = requirement["id"]
+            if type(requirement_id) is not str \
+                    or TOKEN_NAME.fullmatch(requirement_id) is None:
+                raise SchemaError("preset requirement identifier is invalid")
+            if requirement_id in requirement_ids:
+                raise SchemaError("preset requirement is duplicated")
+            requirement_ids.add(requirement_id)
+            if not _plain_text(requirement["description"], 512):
+                raise SchemaError("preset requirement description is invalid")
+
+        evidence = record["evidence_refs"]
+        if type(evidence) is not list or not evidence:
+            raise SchemaError("preset evidence references are invalid")
+        if any(type(reference) is not str
+               or EVIDENCE_REF.fullmatch(reference) is None
+               for reference in evidence):
+            raise SchemaError("preset evidence reference is invalid")
+        if len(evidence) != len(set(evidence)):
+            raise SchemaError("preset evidence reference is duplicated")
+
+        settings = record["settings"]
+        reason = record["reason_code"]
+        if status == "SELECTABLE":
+            if type(settings) is not dict:
+                raise SchemaError("selectable preset settings are invalid")
+            for key, value in settings.items():
+                if key not in RULES or value is None or not RULES[key](value):
+                    raise SchemaError("preset setting is invalid")
+            candidate = dict(NATIVE)
+            candidate.update(settings)
+            validate_managed(candidate)
+            if reason is not None:
+                raise SchemaError("selectable preset has an unavailable reason")
+            if safety == "STANDARD" and acknowledgements:
+                raise SchemaError("standard preset requires a risk acknowledgement")
+            if safety == "EXPERIMENTAL" and not acknowledgements:
+                raise SchemaError("experimental preset lacks an acknowledgement")
+            if safety == "DERIVED":
+                raise SchemaError("selectable preset has derived safety")
+        else:
+            if settings is not None:
+                raise SchemaError("non-selectable preset contains settings")
+            if acknowledgements:
+                raise SchemaError("non-selectable preset has acknowledgements")
+            if type(reason) is not str or TOKEN_NAME.fullmatch(reason) is None:
+                raise SchemaError("non-selectable preset reason is invalid")
+            if status == "VIRTUAL" and (name != "custom" or safety != "DERIVED"):
+                raise SchemaError("virtual preset contract is invalid")
+        entries.append(PresetEntry(record))
+
+    if entries[0].name != "default" or entries[0].settings != {}:
+        raise SchemaError("default preset must remain empty")
+    return PresetCatalog(entries)
 
 
 def parse_value(text, line_number):
@@ -685,12 +874,8 @@ def _open_flags(directory=False):
     return flags
 
 
-def read_config(path, role, system=False):
+def _read_trusted_file(path, role, expected_uid):
     """Return bytes or None after a descriptor-relative, bounded safe read."""
-    if not system and (
-            os.getuid() != os.geteuid() or os.getgid() != os.getegid()):
-        raise SchemaError("user configuration is disabled when process IDs differ")
-
     if not os.path.isabs(path):
         raise SchemaError("{0} path must be absolute".format(role))
     parent, name = os.path.split(path)
@@ -710,7 +895,6 @@ def read_config(path, role, system=False):
             directory_stat = os.fstat(directory_fd)
         except OSError:
             raise SchemaError("{0} directory cannot be inspected safely".format(role))
-        expected_uid = 0 if system else os.getuid()
         if not stat.S_ISDIR(directory_stat.st_mode):
             raise SchemaError("{0} parent is not a directory".format(role))
         if directory_stat.st_uid != expected_uid:
@@ -775,6 +959,40 @@ def read_config(path, role, system=False):
             os.close(directory_fd)
 
 
+def read_config(path, role, system=False):
+    if not system and (
+            os.getuid() != os.geteuid() or os.getgid() != os.getegid()):
+        raise SchemaError("user configuration is disabled when process IDs differ")
+    expected_uid = 0 if system else os.getuid()
+    return _read_trusted_file(path, role, expected_uid)
+
+
+def preset_manifest_path():
+    relative = PRESET_MANIFEST_RELATIVE
+    if relative.startswith("@") and relative.endswith("@"):
+        relative = SOURCE_PRESET_MANIFEST_RELATIVE
+    if (type(relative) is not str or not relative or "\0" in relative
+            or os.path.isabs(relative)):
+        raise SchemaError("compiled preset manifest path is invalid")
+    script_path = os.path.abspath(__file__)
+    try:
+        script_stat = os.stat(script_path, follow_symlinks=False)
+    except OSError:
+        raise SchemaError("configuration inspector cannot be inspected safely")
+    if not stat.S_ISREG(script_stat.st_mode) or script_stat.st_mode & 0o022:
+        raise SchemaError("configuration inspector has unsafe permissions")
+    return os.path.abspath(os.path.join(os.path.dirname(script_path), relative)), \
+        script_stat.st_uid
+
+
+def load_preset_catalog():
+    path, expected_uid = preset_manifest_path()
+    data = _read_trusted_file(path, "preset manifest", expected_uid)
+    if data is None:
+        raise SchemaError("preset manifest is missing")
+    return parse_preset_manifest(data)
+
+
 def default_user_config(environment):
     xdg = environment.get("XDG_CONFIG_HOME")
     if xdg:
@@ -832,9 +1050,14 @@ def make_report(resolution, environment_observed):
             "state": resolution.activity[key],
             "environment_receipt": receipts.get(key),
         })
+    custom_override_keys = sorted(
+        key for key, origin in resolution.origins.items()
+        if origin not in ("compiled", "preset:" + resolution.preset)
+    )
     return {
         "schema": 1,
         "preset": resolution.preset,
+        "custom_overrides": custom_override_keys,
         "profile": resolution.profile,
         "environment": "observed" if environment_observed else "ignored",
         "observation_limit": (
@@ -865,6 +1088,9 @@ def _format_value(value):
 
 def print_text(report, key=None):
     print("preset: {0}".format(report["preset"]))
+    print("custom overrides: {0}".format(
+        ", ".join(report["custom_overrides"]) or "none"
+    ))
     print("profile: {0}".format(report["profile"] or "none"))
     print("environment: {0}".format(report["environment"]))
     print("observation: {0}".format(report["observation_limit"]))
@@ -899,6 +1125,36 @@ def print_json(report, key=None):
     print(json.dumps(output, sort_keys=True, indent=2, separators=(",", ": ")))
 
 
+def print_preset_catalog(catalog, output_format):
+    if output_format == "json":
+        print(json.dumps({
+            "configuration_schema": 1,
+            "format": "crystalhd-presets",
+            "format_version": 1,
+            "presets": [entry.record for entry in catalog.entries],
+        }, sort_keys=True, indent=2, separators=(",", ": ")))
+        return
+    for entry in catalog.entries:
+        record = entry.record
+        acknowledgements = ",".join(
+            record["required_acknowledgements"]
+        ) or "none"
+        reason = record["reason_code"] or "none"
+        print("{0}: status={1}; safety={2}; acknowledgements={3}; reason={4}".format(
+            entry.name, entry.status, record["safety"], acknowledgements, reason
+        ))
+        settings = record["settings"]
+        if settings is not None:
+            for key in sorted(settings):
+                print("  {0} = {1}".format(
+                    key, json.dumps(settings[key], ensure_ascii=True)
+                ))
+        for requirement in record["requirements"]:
+            print("  requires {0}: {1}".format(
+                requirement["id"], requirement["description"]
+            ))
+
+
 def add_common_options(parser):
     system = parser.add_mutually_exclusive_group()
     system.add_argument(
@@ -928,6 +1184,10 @@ def add_common_options(parser):
         "--ignore-environment", action="store_true",
         help="ignore setting-specific process environment variables",
     )
+    parser.add_argument(
+        "--acknowledge-risk", action="append", default=[], metavar="TOKEN",
+        help="acknowledge one selected experimental-preset risk",
+    )
 
 
 def make_argument_parser():
@@ -937,6 +1197,11 @@ def make_argument_parser():
     )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.required = True
+
+    listing = subparsers.add_parser(
+        "list-presets", help="list reviewed preset manifest entries"
+    )
+    listing.add_argument("--format", choices=("text", "json"), default="text")
 
     validate = subparsers.add_parser("validate", help="validate selected configuration")
     add_common_options(validate)
@@ -953,6 +1218,13 @@ def make_argument_parser():
 
 
 def resolve_arguments(arguments, environment):
+    catalog = load_preset_catalog()
+    acknowledgements = arguments.acknowledge_risk
+    if len(acknowledgements) != len(set(acknowledgements)):
+        raise CommandLineSelectionError("duplicate risk acknowledgement")
+    if set(acknowledgements) - catalog.acknowledgement_tokens:
+        raise CommandLineSelectionError("unknown risk acknowledgement")
+
     if arguments.no_system_config:
         system_path = None
     else:
@@ -968,6 +1240,28 @@ def resolve_arguments(arguments, environment):
 
     system = load_document(system_path, "system configuration", system=True)
     user = load_document(user_path, "user configuration", system=False)
+    selected_preset = arguments.preset
+    if selected_preset is None:
+        selected_preset = user.metadata.get(
+            "preset", system.metadata.get("preset", "default")
+        )
+    entry = catalog.by_name.get(selected_preset)
+    if entry is None:
+        raise SchemaError("unknown selected preset")
+    if entry.status == "UNAVAILABLE":
+        raise SchemaError("selected preset is unavailable: {0}".format(
+            entry.record["reason_code"]
+        ))
+    if entry.status == "VIRTUAL":
+        raise SchemaError("virtual custom preset cannot be selected")
+    required = set(entry.required_acknowledgements)
+    supplied = set(acknowledgements)
+    if required - supplied:
+        raise SchemaError("selected preset requires --acknowledge-risk {0}".format(
+            sorted(required - supplied)[0]
+        ))
+    if supplied - required:
+        raise SchemaError("risk acknowledgement does not apply to selected preset")
     raw_environment = {}
     if not arguments.ignore_environment:
         raw_environment = dict(
@@ -977,8 +1271,8 @@ def resolve_arguments(arguments, environment):
     return resolve(
         system,
         user,
-        PRESETS,
-        explicit_preset=arguments.preset,
+        catalog.selectable,
+        explicit_preset=selected_preset,
         explicit_profile=arguments.profile,
         raw_environment=raw_environment,
     )
@@ -991,8 +1285,18 @@ def main(argv=None, environment=None):
         parser.error("unknown canonical key")
 
     process_environment = os.environ if environment is None else environment
+    if arguments.command == "list-presets":
+        try:
+            catalog = load_preset_catalog()
+        except SchemaError as error:
+            print("crystalhd-config: {0}".format(error), file=sys.stderr)
+            return 3
+        print_preset_catalog(catalog, arguments.format)
+        return 0
     try:
         resolution = resolve_arguments(arguments, process_environment)
+    except CommandLineSelectionError:
+        parser.error("invalid manifest-backed command-line selection")
     except SchemaError as error:
         print("crystalhd-config: {0}".format(error), file=sys.stderr)
         return 3
