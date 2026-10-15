@@ -336,6 +336,15 @@
       "quiet_buffered_control": "PARTIAL, not full-file acceptance: verbose VA/Kodi logging disabled; the metadata hook stores all 402 calls without overflow and prints only after exit. Excluding the stream-info probe, only the first 401 consecutive source pictures reach libavcodec (through PTS 16.021 seconds), all ret=0, with 108 non-reference inputs marked for skipping. Later 349 pictures and EOF never reach that decoder. Audio stalls, then frontend exits before any external Quit; automatic resync is possible but not proven by the quiet log. Hardware EOS and exit 0 establish teardown only, not consumption of the complete 30-second file. No VA sync/drain failure or post-EOS message timeout is logged.",
       "weave_no_filter_control": "Copied profile NONE=0, preferVAAPIRender=false, default finite policy, buffered admission hook and Kodi DEBUG only (no VA debug). All 750 unique source-picture calls reach libavcodec exactly once, ret=0, followed by an accepted EOF and four AVERROR_EOF responses. Buffer stores 756 calls (one probe +750+five EOF), overflow 0. Dynamic NONREF skipping applies to 183 inputs; 500 reference +67 non-reference =567 predicted hardware submissions, not independently native-counted here. Full source traversal, real hardware EOS, PlaybackEnded and Quit/exit 0 pass; not 750 hardware/presented pictures or full-rate proof. No automatic seek or large audio-clock correction is logged; terminal audio stall and the bounded two-second post-EOS empty-output wait remain. No software-deinterlacing or hardware-Bob claim."
     },
+    "physical_dialogue_observation": {
+      "input": "30-second 1280x720i25 TFF H.264 MBAFF +48 kHz stereo AAC dialogue clip; 750 source packets, generated from a 24p Tears of Steel excerpt with fps=50,tinterlace=interleave_top. Not native 50-distinct-field broadcast motion.",
+      "setup": "Same source candidate/stock Kodi 21.3, copied temporary profiles, preferVAAPIRender=false; no LIVE/LOW_LATENCY/READY/VA debug or admission hook. Normal user profile and installed components unchanged.",
+      "no_deinterlace": "NONE=0: maintainer reports speech/lip motion generally aligned but severe visible shaking. Initially paused, explicitly resumed, then frontend EOF and normal teardown, exit 0.",
+      "bwdif_comparison": "DEINTERLACE=7, no per-file override: maintainer reports reduced shaking and aligned speech/lip motion. Current log selects ff-h264-vaapi/source CrystalHD plugin, 1280x720/50 renderer and 20 ms output-PTS pattern; hardware-accel EOF then natural PlaybackEnded and Quit/exit 0.",
+      "logs": "kodi-av-temp/kodi.log and kodi-av-bwdif-temp/kodi.log, not stale logs copied inside profile/temp. BWDIF has no VA sync/drain failure, status 23, two-second empty-output timeout, automatic seek/resync or large audio-clock correction; an ordinary startup clock adjustment remains.",
+      "recovery": "Module refcount 0 after both; scoped kernel check PASS",
+      "acceptance_boundary": "QUALITATIVE A/V observation for this clip/host only. No millisecond offset, native/GUI frame census, 750 hardware-picture or 1500 presented-output claim; not full-rate FHD or general Kodi/interlace support. Less shaking with BWDIF supports a deinterlacing/display contribution, not proof of every jitter cause."
+    },
     "device_free": {
       "werror_replay": "PASS: finite sealing/EOS/replay and explicit-live close preserve exact TFF/BFF ownership/pixels, ghost/duplicate/flush guards; automatic-policy exclusions, opt-out, real submit and MBAFF-to-progressive continuation included",
       "seek_harness": "Werror build, existing 12/12 self-check and six live-gap admission cases PASS; disabled-version guard has no sync2 symbol (simulation, not actual old-header qualification)",
@@ -345,11 +354,11 @@
     "recovery": "All completed native trials exit 0, return module refcount 0 and pass scoped kernel checks; no install, firmware, PM or third-party app changes",
     "evidence_location": "Named raw artifacts remain in the local finite-prefeed qualification cache; logs include private runtime paths and are not published"
   },
-  "conclusion": "The tested field-output routes support exact field omission and decoder-mediated scaling, not Bob. The 1280-wide whole-picture Weave path is mislabelled TOPFIELD by the existing library. Separately pinned source candidates accept the measured full payload without weakening compact-field pairing or picture ownership. The later finite MBAFF prefeed fix completes all 750 decoder pictures and real EOS; explicit live gap/end/reconnect also passes. Kodi completes all admitted field pairs, but its full-source presentation and physical A/V remain unqualified. Installed production behavior is unchanged.",
+  "conclusion": "The tested field-output routes support exact field omission and decoder-mediated scaling, not Bob. The 1280-wide whole-picture Weave path is mislabelled TOPFIELD by the existing library. Separately pinned source candidates accept the measured full payload without weakening compact-field pairing or picture ownership. The later finite MBAFF prefeed fix completes all 750 decoder pictures and real EOS; explicit live gap/end/reconnect also passes. Kodi completes all admitted field pairs; a selected 720i25 dialogue has qualitatively aligned A/V and less shaking with BWDIF. Full-source FHD presentation, quantified/general physical A/V and hardware Bob remain unqualified. Installed production behavior is unchanged.",
   "not_established": [
     "full-height or full-field-rate hardware Bob",
     "fixed-parity selection or motion-adaptive deinterlacing",
-    "smooth presentation, physical A/V or a throughput/latency speedup",
+    "general smooth presentation, quantified/general physical A/V or a throughput/latency speedup",
     "other codecs, firmware revisions or BCM70012",
     "standalone MFD/SCL operation or physical PPB leasing"
   ]

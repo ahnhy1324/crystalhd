@@ -85,8 +85,8 @@ Standalone FFmpeg CPU BWDIF after `hwdownload` completed the same fixture, but
 the driver still advertises no `VAProcFilterDeinterlacing` capability. See the
 [runnable command and performance boundary](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif).
 Stock Kodi 21.3 progressive hardware-video and lifecycle checks passed;
-physical A/V remains unqualified. Installed RC `f4d99d5` failed interlaced
-BWDIF/Render Bob playback. Source candidate `ec77b71` addresses finite MBAFF
+quantified physical A/V remains unqualified. Installed RC `f4d99d5` failed
+interlaced BWDIF/Render Bob playback. Source candidate `ec77b71` addresses finite MBAFF
 input/tail scheduling, with complete decoder-oracle results, but Kodi source
 picture accounting and timing/output warnings still need qualification. See
 [Kodi qualification and remaining limits](../../USAGE.md#kodi). The driver

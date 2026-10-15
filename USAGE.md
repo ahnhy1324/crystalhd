@@ -302,6 +302,12 @@ deinterlacing capability is advertised. See
 [#436](https://github.com/ahnhy1324/crystalhd/issues/436) for qualification and
 the remaining presentation work.
 
+On the source candidate, a selected 30-second 720i25 dialogue clip had
+subjectively aligned speech/lip motion in both no-deinterlace and explicit
+`Deinterlace` (BWDIF) comparisons; BWDIF reduced the visible shaking. Both
+ended normally. This is a useful playback check, not measured millisecond
+sync, a complete displayed-frame census or FHD support qualification.
+
 One VLC 3.0.21 H.264 path was validated on the reference X11/i915 system:
 
 ```sh
