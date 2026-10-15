@@ -14,6 +14,7 @@ crystalhd-config validate
 crystalhd-config show-effective
 crystalhd-config explain vaapi.h264.mode --format json
 crystalhd-config list-presets
+crystalhd-config bug-report > crystalhd-config-report.json
 ```
 
 The reviewed preset catalog includes selectable Standard and explicitly
@@ -23,6 +24,10 @@ requirements and acknowledgement syntax are in
 [CONFIGURATION-SCHEMA.md](CONFIGURATION-SCHEMA.md#reviewed-preset-manifest).
 The utility does not write configuration, launch an application, reload a
 module, source the legacy `chromium.conf`, or access CrystalHD hardware.
+The JSON-only `bug-report` form removes user-selected profile identifiers,
+non-compiled paths, raw environment values and arbitrary password-store
+values. It describes configuration only; use separately reviewed
+`crystalhd-check` output for installed component and backend identity.
 
 Safety labels mean:
 

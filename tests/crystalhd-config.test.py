@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import ast
+import errno
 import importlib.util
 import json
 import os
@@ -73,6 +74,13 @@ class ConfigCliTest(unittest.TestCase):
         second = self.run_cli(*arguments)
         self.assertEqual((first.returncode, first.stderr), (0, ""))
         self.assertEqual(first.stdout, second.stdout)
+        missing = self.run_cli(
+            "show-effective", "--no-system-config", "--user-config",
+            str(self.user_dir / "missing.ini"), "--ignore-environment",
+            "--format", "json",
+        )
+        self.assertEqual((missing.returncode, missing.stderr), (0, ""))
+        self.assertEqual(missing.stdout, first.stdout)
         report = json.loads(first.stdout)
         self.assertEqual(report["schema"], 1)
         self.assertEqual(report["preset"], "default")
@@ -390,6 +398,118 @@ class ConfigCliTest(unittest.TestCase):
         self.assertEqual(json.loads(store.stdout)["settings"][0]["effective"],
                          "<redacted-environment-value>")
 
+    def test_bug_report_redacts_private_values_and_profile_identifiers(self):
+        private_profile = "private-profile-name"
+        private_store = "private-config-string"
+        private_path = str(self.root / "private browser path")
+        private_environment = "private-environment-string"
+        self.write_user(
+            "[crystalhd]\n"
+            "schema = 1\n"
+            'profile = "{0}"\n'
+            "[settings]\n"
+            'chromium.password_store = "{1}"\n'
+            'chromium.executable = "{2}"\n'
+            "[profile.{0}]\n"
+            "vaapi.trace = true\n"
+            "chromium.profile_dir = unset\n".format(
+                private_profile, private_store, private_path
+            )
+        )
+        arguments = (
+            "--no-system-config", "--user-config", str(self.user_file),
+        )
+
+        normal = self.run_cli(
+            "show-effective", *arguments, "--ignore-environment",
+            "--format", "json",
+        )
+        self.assertEqual((normal.returncode, normal.stderr), (0, ""))
+        normal_report = json.loads(normal.stdout)
+        self.assertEqual(normal_report["profile"], private_profile)
+        normal_settings = {
+            item["key"]: item for item in normal_report["settings"]
+        }
+        self.assertEqual(
+            normal_settings["chromium.password_store"]["effective"],
+            private_store,
+        )
+        self.assertEqual(
+            normal_settings["vaapi.trace"]["origin"],
+            "user-profile:" + private_profile,
+        )
+
+        exported = self.run_cli(
+            "bug-report", *arguments,
+            environment={"CRYSTALHD_VAAPI_LIVE_H264": private_environment},
+        )
+        self.assertEqual((exported.returncode, exported.stderr), (0, ""))
+        for private_value in (
+                private_profile, private_store, private_path,
+                private_environment, str(self.root)):
+            self.assertNotIn(private_value, exported.stdout)
+        report = json.loads(exported.stdout)
+        self.assertEqual(
+            report["report_kind"],
+            "crystalhd-configuration-bug-report-v1",
+        )
+        self.assertEqual(report["profile"], "<redacted-selected-profile>")
+        self.assertIn("no application, device, backend, kernel module",
+                      report["state_scope"])
+        settings = {item["key"]: item for item in report["settings"]}
+        self.assertEqual(
+            settings["chromium.password_store"]["requested"],
+            "<redacted-setting-value>",
+        )
+        self.assertEqual(
+            settings["chromium.password_store"]["effective"],
+            "<redacted-setting-value>",
+        )
+        self.assertEqual(
+            settings["chromium.executable"]["effective"],
+            "<redacted-path>",
+        )
+        self.assertEqual(
+            settings["vaapi.trace"]["origin"],
+            "user-profile:<redacted>",
+        )
+        self.assertEqual(
+            settings["chromium.profile_dir"]["origin"],
+            "user-profile:<redacted>:unset",
+        )
+        live = settings["vaapi.h264.mode"]
+        self.assertEqual(
+            live["origin"], "environment:CRYSTALHD_VAAPI_LIVE_H264"
+        )
+        self.assertEqual(live["environment_receipt"]["raw"], "<redacted>")
+
+        rejected_format = self.run_cli("bug-report", *arguments, "--format", "json")
+        self.assertEqual(rejected_format.returncode, 2)
+        self.assertIn("invalid command line", rejected_format.stderr)
+
+    def test_black_box_explicit_false_and_unset_remain_distinct(self):
+        self.write_user(
+            "[crystalhd]\n"
+            "schema = 1\n"
+            "[settings]\n"
+            "vaapi.trace = false\n"
+            "chromium.profile_dir = unset\n"
+        )
+        result = self.run_cli(
+            "show-effective", "--no-system-config", "--user-config",
+            str(self.user_file), "--ignore-environment", "--format", "json",
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        settings = {
+            item["key"]: item for item in json.loads(result.stdout)["settings"]
+        }
+        self.assertFalse(settings["vaapi.trace"]["effective"])
+        self.assertEqual(settings["vaapi.trace"]["origin"], "user")
+        self.assertIsNone(settings["chromium.profile_dir"]["effective"])
+        self.assertEqual(
+            settings["chromium.profile_dir"]["origin"], "user:unset"
+        )
+
     def test_unknown_key_is_cli_error_and_invalid_config_is_data_error(self):
         missing_command = self.run_cli()
         self.assertEqual(missing_command.returncode, 2)
@@ -484,6 +604,20 @@ class ConfigCliTest(unittest.TestCase):
         with mock.patch.object(CONFIG.os, "read", side_effect=OSError(5, "I/O")):
             with self.assertRaisesRegex(CONFIG.SchemaError,
                                         "cannot be read safely"):
+                CONFIG.read_config(str(self.user_file), "user configuration")
+
+    def test_permission_denied_open_is_configuration_error(self):
+        self.write_user("[crystalhd]\nschema = 1\n")
+        real_open = os.open
+
+        def deny_file(path, *arguments, **keywords):
+            if path == self.user_file.name and "dir_fd" in keywords:
+                raise OSError(errno.EACCES, "permission denied")
+            return real_open(path, *arguments, **keywords)
+
+        with mock.patch.object(CONFIG.os, "open", side_effect=deny_file):
+            with self.assertRaisesRegex(CONFIG.SchemaError,
+                                        "cannot be opened safely"):
                 CONFIG.read_config(str(self.user_file), "user configuration")
 
     def test_bom_utf8_and_schema_errors_report_role_not_private_path(self):

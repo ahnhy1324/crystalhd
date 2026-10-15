@@ -1019,19 +1019,31 @@ def load_document(path, role, system=False):
         raise SchemaError("{0}: {1}".format(role, error))
 
 
-def _json_value(key, value, origin):
+def _json_value(key, value, origin, bug_report=False):
     if value is ABSENT:
         return None
     if isinstance(value, InvalidNativeValue):
         return "<invalid-environment-value>"
     if key in PATH_KEYS and origin != "compiled":
         return "<redacted-path>"
-    if key == "chromium.password_store" and origin.startswith("environment:"):
-        return "<redacted-environment-value>"
+    if key == "chromium.password_store" and origin != "compiled":
+        if bug_report:
+            return "<redacted-setting-value>"
+        if origin.startswith("environment:"):
+            return "<redacted-environment-value>"
     return value
 
 
-def make_report(resolution, environment_observed):
+def _report_origin(origin, bug_report):
+    if bug_report:
+        for prefix in ("system-profile:", "user-profile:"):
+            if origin.startswith(prefix):
+                suffix = ":unset" if origin.endswith(":unset") else ""
+                return prefix + "<redacted>" + suffix
+    return origin
+
+
+def make_report(resolution, environment_observed, bug_report=False):
     receipts = {}
     for receipt in resolution.raw_receipts:
         receipts[receipt.key] = {
@@ -1044,9 +1056,13 @@ def make_report(resolution, environment_observed):
         origin = resolution.origins[key]
         settings.append({
             "key": key,
-            "requested": _json_value(key, resolution.requested[key], origin),
-            "effective": _json_value(key, resolution.effective[key], origin),
-            "origin": origin,
+            "requested": _json_value(
+                key, resolution.requested[key], origin, bug_report=bug_report
+            ),
+            "effective": _json_value(
+                key, resolution.effective[key], origin, bug_report=bug_report
+            ),
+            "origin": _report_origin(origin, bug_report),
             "state": resolution.activity[key],
             "environment_receipt": receipts.get(key),
         })
@@ -1054,11 +1070,15 @@ def make_report(resolution, environment_observed):
         key for key, origin in resolution.origins.items()
         if origin not in ("compiled", "preset:" + resolution.preset)
     )
-    return {
+    report = {
         "schema": 1,
         "preset": resolution.preset,
         "custom_overrides": custom_override_keys,
-        "profile": resolution.profile,
+        "profile": (
+            "<redacted-selected-profile>"
+            if bug_report and resolution.profile is not None
+            else resolution.profile
+        ),
         "environment": "observed" if environment_observed else "ignored",
         "observation_limit": (
             "process environment is the last observable layer; future "
@@ -1074,6 +1094,13 @@ def make_report(resolution, environment_observed):
         ],
         "settings": settings,
     }
+    if bug_report:
+        report["report_kind"] = "crystalhd-configuration-bug-report-v1"
+        report["redaction"] = (
+            "raw environment values, non-compiled paths, selected profile "
+            "identifiers, and non-compiled password-store values"
+        )
+    return report
 
 
 def _format_value(value):
@@ -1210,6 +1237,11 @@ def make_argument_parser():
     add_common_options(show)
     show.add_argument("--format", choices=("text", "json"), default="text")
 
+    bug_report = subparsers.add_parser(
+        "bug-report", help="export a redacted configuration-only JSON report"
+    )
+    add_common_options(bug_report)
+
     explain = subparsers.add_parser("explain", help="explain one canonical setting")
     add_common_options(explain)
     explain.add_argument("key", metavar="KEY")
@@ -1310,7 +1342,12 @@ def main(argv=None, environment=None):
         ))
         return 0
 
-    report = make_report(resolution, observed)
+    report = make_report(
+        resolution, observed, bug_report=arguments.command == "bug-report"
+    )
+    if arguments.command == "bug-report":
+        print_json(report)
+        return 0
     key = arguments.key if arguments.command == "explain" else None
     if arguments.format == "json":
         print_json(report, key)

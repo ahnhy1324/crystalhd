@@ -43,6 +43,9 @@ fi
 "$config_stage/usr/bin/crystalhd-config" validate \
     --no-system-config --no-user-config --ignore-environment >/dev/null
 "$config_stage/usr/bin/crystalhd-config" list-presets --format json >/dev/null
+"$config_stage/usr/bin/crystalhd-config" bug-report \
+    --no-system-config --no-user-config --ignore-environment >/dev/null
+test ! -e "$config_stage/etc/crystalhd/config.ini"
 make -C "$repo_dir" DESTDIR="$config_stage" uninstall-config
 make -C "$repo_dir" DESTDIR="$config_stage" uninstall-config
 test ! -e "$config_stage/usr/bin/crystalhd-config"
@@ -60,6 +63,11 @@ test -f "$custom_stage$custom_datadir/crystalhd/config-presets-v1.json"
 (cd / && HOME="$stage_dir/unrelated-home" \
     "$custom_stage$custom_bindir/crystalhd-config" \
     list-presets --format json >/dev/null)
+(cd / && HOME="$stage_dir/unrelated-home" \
+    "$custom_stage$custom_bindir/crystalhd-config" \
+    bug-report --no-system-config --no-user-config \
+    --ignore-environment >/dev/null)
+test ! -e "$custom_stage/etc/crystalhd/config.ini"
 make -C "$repo_dir" DESTDIR="$custom_stage" \
     BINDIR="$custom_bindir" DATADIR="$custom_datadir" uninstall-config
 test ! -e "$custom_stage$custom_bindir/crystalhd-config"
@@ -194,6 +202,9 @@ env -u GST_PLUGIN_PATH -u GST_PLUGIN_PATH_1_0 -u LD_LIBRARY_PATH \
 "$stage_dir/usr/bin/crystalhd-config" show-effective \
     --no-system-config --no-user-config --ignore-environment >/dev/null
 "$stage_dir/usr/bin/crystalhd-config" list-presets --format text >/dev/null
+"$stage_dir/usr/bin/crystalhd-config" bug-report \
+    --no-system-config --no-user-config --ignore-environment >/dev/null
+test ! -e "$stage_dir/etc/crystalhd/config.ini"
 va_driver_dir=$(pkg-config --variable=libdir libva)/dri
 test -f "$stage_dir$va_driver_dir/crystalhd_drv_video.so"
 test ! -e "$stage_dir/usr/bin/crystalhd-chromium"
