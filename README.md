@@ -143,18 +143,37 @@ does not establish Moonlight support at that rate.
 
 ## Documentation
 
+Use the guides from your installed tag; `master` may describe unreleased changes.
+
+### Playback and setup
+
 | Need | Document |
 | --- | --- |
 | Local playback, controls, codecs, scaling, VA/VLC | [USAGE.md](USAGE.md) |
 | Sunshine/Moonlight hardware streaming | [MOONLIGHT.md](MOONLIGHT.md) |
 | Installation recovery, update and rollback | [BRINGUP.md](BRINGUP.md) |
 | DKMS ownership and updates | [README.dkms](README.dkms) |
-| Hardware fixtures, measurements and coverage | [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md) |
-| Current work | [TODO.md](TODO.md) |
+| Current options and read-only configuration diagnostics | [CONFIGURATION.md](CONFIGURATION.md) |
+
+### Development
+
+| Need | Document |
+| --- | --- |
+| Bug reports, patches and test results | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Configuration schema, precedence and preset contracts | [CONFIGURATION-SCHEMA.md](CONFIGURATION-SCHEMA.md) |
 | GStreamer options and framing | [GStreamer component guide](filters/gst/gst-plugin-1.0/README.md) |
 | VA-API subset and experimental controls | [VA-API component guide](filters/vaapi/README.md) |
 | Legacy API and library options | [libcrystalhd guide](linux_lib/libcrystalhd/README.md) |
+| Kernel DMA ownership and cleanup | [DMA.md](DMA.md) |
+
+### Project records and releases
+
+| Need | Document |
+| --- | --- |
+| Dated hardware fixtures, measurements and coverage | [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md) |
 | Maintainer release policy and qualification | [RELEASING.md](RELEASING.md) |
+| Release history and project lineage | [HISTORY.md](HISTORY.md) |
+| Current work | [TODO.md](TODO.md) |
 
 ## Developer checks
 
