@@ -1,0 +1,135 @@
+{
+  "format": "crystalhd-presets",
+  "format_version": 1,
+  "configuration_schema": 1,
+  "presets": [
+    {
+      "name": "default",
+      "display_name": "Default",
+      "status": "SELECTABLE",
+      "safety": "STANDARD",
+      "required_acknowledgements": [],
+      "requirements": [],
+      "evidence_refs": [
+        "CONFIGURATION-SCHEMA.md#selection-and-merge-order"
+      ],
+      "settings": {},
+      "reason_code": null
+    },
+    {
+      "name": "quality",
+      "display_name": "Quality",
+      "status": "SELECTABLE",
+      "safety": "STANDARD",
+      "required_acknowledgements": [],
+      "requirements": [
+        {
+          "id": "native-output",
+          "description": "Keeps CrystalHD decoder output at the coded width; it does not promise a quality improvement."
+        }
+      ],
+      "evidence_refs": [
+        "CONFIGURATION.md#gstreamer-property"
+      ],
+      "settings": {
+        "gstreamer.crystalhddec.scale_width": 0
+      },
+      "reason_code": null
+    },
+    {
+      "name": "performance",
+      "display_name": "Performance",
+      "status": "UNAVAILABLE",
+      "safety": "EXPERIMENTAL",
+      "required_acknowledgements": [],
+      "requirements": [],
+      "evidence_refs": [
+        "CONFIGURATION.md#gstreamer-property"
+      ],
+      "settings": null,
+      "reason_code": "no-universal-media-safe-scaling-target"
+    },
+    {
+      "name": "low-memory",
+      "display_name": "Low Memory",
+      "status": "SELECTABLE",
+      "safety": "EXPERIMENTAL",
+      "required_acknowledgements": [
+        "low-memory-8-buffer"
+      ],
+      "requirements": [
+        {
+          "id": "bcm70015-measurement",
+          "description": "The retained 8-buffer measurement is BCM70015-only; other devices remain unverified."
+        }
+      ],
+      "evidence_refs": [
+        "CONFIGURATION.md#libcrystalhd-environment"
+      ],
+      "settings": {
+        "libcrystalhd.rx_pool_count": 8
+      },
+      "reason_code": null
+    },
+    {
+      "name": "streaming",
+      "display_name": "Streaming",
+      "status": "SELECTABLE",
+      "safety": "EXPERIMENTAL",
+      "required_acknowledgements": [
+        "bcm70015-live-h264-drain"
+      ],
+      "requirements": [
+        {
+          "id": "bcm70015-h264-va",
+          "description": "Requires the experimental BCM70015 H.264 VA path."
+        },
+        {
+          "id": "later-input-or-explicit-drain",
+          "description": "The client must provide later access units or explicitly drain retained output."
+        },
+        {
+          "id": "external-loader-and-presentation",
+          "description": "Loader selection, presentation, pacing and application integration remain external."
+        }
+      ],
+      "evidence_refs": [
+        "filters/vaapi/README.md#replay-and-end-of-stream",
+        "MOONLIGHT.md#what-the-live-options-do"
+      ],
+      "settings": {
+        "vaapi.h264.mode": "live",
+        "vaapi.h264.low_latency": true,
+        "vaapi.h264.ready_remap": false
+      },
+      "reason_code": null
+    },
+    {
+      "name": "experimental",
+      "display_name": "Experimental",
+      "status": "UNAVAILABLE",
+      "safety": "EXPERIMENTAL",
+      "required_acknowledgements": [],
+      "requirements": [],
+      "evidence_refs": [
+        "CONFIGURATION.md#va-api-environment",
+        "CONFIGURATION.md#kernel-module-parameters"
+      ],
+      "settings": null,
+      "reason_code": "no-coherent-mixed-risk-bundle"
+    },
+    {
+      "name": "custom",
+      "display_name": "Custom",
+      "status": "VIRTUAL",
+      "safety": "DERIVED",
+      "required_acknowledgements": [],
+      "requirements": [],
+      "evidence_refs": [
+        "CONFIGURATION-SCHEMA.md#selection-and-merge-order"
+      ],
+      "settings": null,
+      "reason_code": "derived-from-explicit-key-overrides"
+    }
+  ]
+}

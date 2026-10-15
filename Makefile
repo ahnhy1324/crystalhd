@@ -7,6 +7,7 @@ DATADIR ?= $(PREFIX)/share
 KVER ?= $(shell uname -r)
 KDIR ?= /lib/modules/$(KVER)/build
 PYTHON3 ?= python3
+CONFIG_PRESET_MANIFEST := share/crystalhd/config-presets-v1.json
 
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
@@ -269,8 +270,17 @@ install-check:
 	install -D -m 0755 scripts/crystalhd-check "$(DESTDIR)$(BINDIR)/crystalhd-check"
 
 install-config:
-	@umask 022; install -D -m 0755 scripts/crystalhd-config.py \
-		"$(DESTDIR)$(BINDIR)/crystalhd-config"
+	@set -eu; umask 022; \
+		install -D -m 0644 "$(CONFIG_PRESET_MANIFEST)" \
+			"$(DESTDIR)$(DATADIR)/crystalhd/config-presets-v1.json"; \
+		install -D -m 0755 scripts/crystalhd-config.py \
+			"$(DESTDIR)$(BINDIR)/crystalhd-config"; \
+		preset_relative=$$($(PYTHON3) -c \
+			'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' \
+			"$(DATADIR)/crystalhd/config-presets-v1.json" "$(BINDIR)"); \
+		$(PYTHON3) -c \
+			'import json,sys; path=sys.argv[1]; data=open(path, encoding="utf-8").read(); needle="\"@PRESET_MANIFEST_RELATIVE@\""; data.count(needle) == 1 or sys.exit("unexpected preset manifest token count"); open(path, "w", encoding="utf-8", newline="\n").write(data.replace(needle, json.dumps(sys.argv[2], ensure_ascii=False)))' \
+			"$(DESTDIR)$(BINDIR)/crystalhd-config" "$$preset_relative"
 
 uninstall:
 	$(MAKE) uninstall-runtime
@@ -297,6 +307,7 @@ uninstall-check:
 
 uninstall-config:
 	rm -f -- "$(DESTDIR)$(BINDIR)/crystalhd-config"
+	rm -f -- "$(DESTDIR)$(DATADIR)/crystalhd/config-presets-v1.json"
 
 clean:
 	rm -f tests/library-drain-test

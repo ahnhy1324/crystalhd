@@ -33,11 +33,51 @@ config_stage="$stage_dir/config-only"
 test "$(stat -c '%a' "$config_stage/usr")" = 755
 test "$(stat -c '%a' "$config_stage/usr/bin")" = 755
 test "$(stat -c '%a' "$config_stage/usr/bin/crystalhd-config")" = 755
+test "$(stat -c '%a' \
+    "$config_stage/usr/share/crystalhd/config-presets-v1.json")" = 644
+if grep -F '@PRESET_MANIFEST_RELATIVE@' \
+    "$config_stage/usr/bin/crystalhd-config" >/dev/null; then
+    echo 'Installed configuration tool retained its source-tree manifest token' >&2
+    exit 1
+fi
 "$config_stage/usr/bin/crystalhd-config" validate \
     --no-system-config --no-user-config --ignore-environment >/dev/null
+"$config_stage/usr/bin/crystalhd-config" list-presets --format json >/dev/null
 make -C "$repo_dir" DESTDIR="$config_stage" uninstall-config
 make -C "$repo_dir" DESTDIR="$config_stage" uninstall-config
 test ! -e "$config_stage/usr/bin/crystalhd-config"
+test ! -e "$config_stage/usr/share/crystalhd/config-presets-v1.json"
+
+# Nondefault binary/data directories retain a relocation-safe relationship;
+# the generated tool does not search the host installation, cwd or HOME.
+custom_stage="$stage_dir/config-custom"
+custom_bindir=/opt/crystalhd-tools/bin
+custom_datadir=/srv/crystalhd-data/share
+make -C "$repo_dir" DESTDIR="$custom_stage" \
+    BINDIR="$custom_bindir" DATADIR="$custom_datadir" install-config
+test -x "$custom_stage$custom_bindir/crystalhd-config"
+test -f "$custom_stage$custom_datadir/crystalhd/config-presets-v1.json"
+(cd / && HOME="$stage_dir/unrelated-home" \
+    "$custom_stage$custom_bindir/crystalhd-config" \
+    list-presets --format json >/dev/null)
+make -C "$repo_dir" DESTDIR="$custom_stage" \
+    BINDIR="$custom_bindir" DATADIR="$custom_datadir" uninstall-config
+test ! -e "$custom_stage$custom_bindir/crystalhd-config"
+test ! -e "$custom_stage$custom_datadir/crystalhd/config-presets-v1.json"
+
+# The generated Python literal must preserve a supplementary Unicode code
+# point as UTF-8, rather than splitting it into two surrogate code units.
+unicode_stage="$stage_dir/config-unicode"
+unicode_datadir='/srv/crystalhd-🧪/share'
+make -C "$repo_dir" DESTDIR="$unicode_stage" \
+    BINDIR="$custom_bindir" DATADIR="$unicode_datadir" install-config
+(cd / && HOME="$stage_dir/unrelated-home" \
+    "$unicode_stage$custom_bindir/crystalhd-config" \
+    list-presets --format json >/dev/null)
+make -C "$repo_dir" DESTDIR="$unicode_stage" \
+    BINDIR="$custom_bindir" DATADIR="$unicode_datadir" uninstall-config
+test ! -e "$unicode_stage$custom_bindir/crystalhd-config"
+test ! -e "$unicode_stage$unicode_datadir/crystalhd/config-presets-v1.json"
 
 # A restrictive caller umask must not hide installed components from ordinary
 # users. Owner-only checks would miss inaccessible directories in a root install.
@@ -147,11 +187,13 @@ test -x "$stage_dir/usr/bin/crystalhd-play"
 test -x "$stage_dir/usr/bin/crystalhd-check"
 test -x "$stage_dir/usr/bin/crystalhd-config"
 test -f "$stage_dir/usr/share/crystalhd/player.py"
+test -f "$stage_dir/usr/share/crystalhd/config-presets-v1.json"
 env -u GST_PLUGIN_PATH -u GST_PLUGIN_PATH_1_0 -u LD_LIBRARY_PATH \
     "$stage_dir/usr/bin/crystalhd-play" --help >/dev/null
 "$stage_dir/usr/bin/crystalhd-check" --help >/dev/null
 "$stage_dir/usr/bin/crystalhd-config" show-effective \
     --no-system-config --no-user-config --ignore-environment >/dev/null
+"$stage_dir/usr/bin/crystalhd-config" list-presets --format text >/dev/null
 va_driver_dir=$(pkg-config --variable=libdir libva)/dri
 test -f "$stage_dir$va_driver_dir/crystalhd_drv_video.so"
 test ! -e "$stage_dir/usr/bin/crystalhd-chromium"
