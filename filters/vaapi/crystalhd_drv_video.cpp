@@ -1759,10 +1759,11 @@ struct DecodeContext {
           break;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       } while (status == BC_STS_BUSY);
-      // BUSY is the sole non-consuming DeviceClose result. Preserve both the
-      // handle and its duplicated output-poll ownership so this exact close
-      // can be retried. The timeout bounds only our retry window; one library
-      // call can still block while it joins the TX worker.
+      // For the valid same-process handles owned by this backend, BUSY is the
+      // sole non-consuming DeviceClose result. Preserve both the handle and
+      // its duplicated output-poll ownership so this exact close can be
+      // retried. The timeout bounds only our retry window; one library call
+      // can still block while it joins the TX worker.
       if (status == BC_STS_BUSY) {
         hardware_close_pending = true;
         retained_close_status = result;

@@ -281,6 +281,7 @@ struct DecodeIoMock {
   unsigned int device_close_calls = 0;
   BC_STATUS stop_status = BC_STS_SUCCESS;
   BC_STATUS decoder_close_status = BC_STS_SUCCESS;
+  BC_STATUS device_close_status = BC_STS_SUCCESS;
   std::vector<uint32_t> status_requests;
   std::thread::id output_thread;
   std::atomic<unsigned int> accepted_inputs{0};
@@ -392,7 +393,7 @@ extern "C" BC_STATUS __wrap_DtsDeviceClose(HANDLE device) {
     --decode_io_mock->device_close_busy;
     return BC_STS_BUSY;
   }
-  return BC_STS_SUCCESS;
+  return decode_io_mock->device_close_status;
 }
 
 extern "C" BC_STATUS __real_DtsGetDriverStatus(HANDLE, BC_DTS_STATUS *);
@@ -1591,6 +1592,7 @@ static void OutputAllocationFailuresReleaseHardwareExactlyOnce() {
                 !allocation_fault::fail_next && fixture.decoder.replay.failed() &&
                 fixture.decoder.experimental_ready.size() == queued_before &&
                 !fixture.private_frame->experimental_ready_queued &&
+                fixture.private_frame->experimental_ready_at_ns == 0 &&
                 fixture.private_frame->failed && !fixture.private_frame->ready &&
                 fixture.public_frame->failed && !fixture.public_frame->ready &&
                 std::count(io.events.begin(), io.events.end(), "picture") == 1 &&
@@ -1689,6 +1691,20 @@ static void DeviceCloseRetriesNonConsumingBusy() {
               !consumed.decoder_started &&
               consumed.retained_close_status == BC_STS_SUCCESS,
           "terminal lifecycle errors survive BUSY retries until DeviceClose consumes ownership");
+
+  DecodeContext terminal_error;
+  terminal_error.device = io.handle();
+  const auto terminal_poll = std::make_shared<OutputPollLease>(-1);
+  terminal_error.output_poll = terminal_poll;
+  terminal_error.armed_output_poll = terminal_poll;
+  io.device_close_status = BC_STS_IO_ERROR;
+  Require(terminal_error.CloseHardware(0) == BC_STS_IO_ERROR &&
+              terminal_error.device == nullptr &&
+              !terminal_error.hardware_close_pending &&
+              !terminal_error.output_poll &&
+              terminal_error.armed_output_poll.expired() && !io.invalid,
+          "same-process terminal DeviceClose error consumes the handle and poll ownership");
+  io.device_close_status = BC_STS_SUCCESS;
 }
 
 static void RetainedHandleClosesBeforeDecoderReopen() {
