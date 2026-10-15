@@ -295,11 +295,56 @@
     "prefeed_cross_client_finite_control": {"test": "tests/vaapi-seek.cpp", "arguments": "Same indexed MKV and source VA/library; LIVE_H264=1, LOW_LATENCY_H264=1, --lookahead 8 --expected-frames 750; READY overrides unset", "result": "FAIL before seek: download VA-API frame: Input/output error", "observation": "All 750 actual AUs submitted; raw output has 749 complete field pairs and only the first field of token 750. Its exact-surface sync times out at 10 seconds; context drain also reports status 23. No inactivity seal/replay or hardware EOS occurs.", "stop": "Exit 1 before the 80-second cap, module refcount 0; not an external deadline interruption", "interpretation": "The finite-tail wait also occurs without Kodi/BWDIF. It does not establish a firmware defect: this explicit live policy suppresses idle EOS and no explicit backend EOF reaches the pending picture. Do not weaken 750-frame acceptance or promote a half picture to READY."},
     "prefeed_device_free_guard": {"test": "tests/vaapi-replay.cpp: LiveH264InterlacedPrefeedKeepsExactFieldOwnership", "cases": "TFF/BFF times complete, ghost-output and flush outcomes; only a matching second field completes token 4, actual AU 5 retains exact bytes/owner through zero-timestamp continuation, duplicates cannot rewrite and ghost output fails closed", "werror_o0_complete_replay_suite": "PASS, including 1170 conversion boundary cases", "astra_review": "APPROVE", "limit": "Controlled outputs prove adapter contracts, not native pixels or hardware progress"},
     "interpretation": "Separate secondary TS restart admission from the earlier input/output scheduling wait and replay cost. No field-identity, ownership or copy fault is established; render-buffer waits are not VA sync timeouts. Existing AUD/filler prefeed materially unblocks the initial interlaced wait, so additional real VCL is not shown indispensable at that boundary. Cross-client finite-tail drain and Kodi input accounting remain unresolved; changing IDR admission or returning a half-complete surface is not justified.",
-    "next_code_objective": "Evaluate independent prefeed on a finite replay/sealing policy, without changing defaults or the existing explicit-live gap contract. Require all 750 complete pixels/PTS, EOS and clean close before any Kodi integration claim.",
+    "next_code_objective_at_that_revision": "Evaluate independent prefeed on a finite replay/sealing policy, without changing defaults or the existing explicit-live gap contract. Require all 750 complete pixels/PTS, EOS and clean close before any Kodi integration claim.",
     "recovery": "Module refcount 0 and scoped kernel check PASS after every run. Progressive GStreamer controls after both ordinary and prefeed attempts each complete 180/180 + EOS with the unchanged exact-1.28.2 metadata/pixel oracle.",
     "limits": "Bounded diagnostics only: no 750-picture Kodi pass, smooth presentation, physical A/V, Bob or firmware-failure claim. Raw debug logs remain private because they include local paths and media bytes."
   },
-  "conclusion": "The tested field-output routes support exact field omission and decoder-mediated scaling, not Bob. The 1280-wide whole-picture Weave path is mislabelled TOPFIELD by the existing library. Unmodified VA and GStreamer reject it; separately pinned source candidates accept the measured full payload without weakening compact-field pairing or picture ownership. Kodi's separate compact-field scheduling wait is reproduced even without BWDIF. Installed production behavior is unchanged.",
+  "candidate_finite_prefeed_fix": {
+    "explicit_policy_source": "afdc020851f0151f94c0eca324d533df24b963cc",
+    "automatic_mbaff_source": "ec77b716280f248c95034a322cdb2a4e6bdd486c",
+    "live_gap_harness": "5cf0919a04905451940c38a4fcc1049f03d89de9",
+    "scope": "Source VA plugin/library only; installed RC f4d99d5, ABI/ioctl, module, firmware and PM unchanged",
+    "policy": "Separate AUD/filler prefeed from LIVE gap handling. Default finite BCM70015 MBAFF frame AUs preserve the decision per accepted/replayed AU; progressive, PAFF, other codecs, BCM70012 and explicit LIVE do not automatically opt in. Explicit LOW_LATENCY=0 opts out. A previously injected prefix still belongs to the actual next AU after a policy transition. READY remap still requires explicit LIVE=1 and LOW_LATENCY=1.",
+    "finite_750": {
+      "input": "Indexed stream-copy MKV of the original 750-picture FHD fixture",
+      "options": "LIVE/READY unset; explicit LOW_LATENCY=1 and default-auto runs both tested",
+      "result": "PASS: 750/750 complete NV12 pictures, real hardware EOS, exit 0",
+      "pixels": "Every picture hash matches the independently captured pre-fix strict native 750-picture oracle; the explicit/default candidate framemd5 files are identical",
+      "timestamps": "Source MKV PTS 21+40*n ms, n=0..749; output PTS 1..750 with duration 1 at timebase 1/25. The old TS reference has a different origin; only its pixel payloads are compared across containers.",
+      "artifacts": ["finite-prefeed-750.framemd5", "auto-mbaff-750.framemd5", "auto-mbaff-750.sha256"]
+    },
+    "default_regressions": {
+      "whole_weave": "PASS: BFF 1280x720 and TFF 1280x736, 50/50 each; every NV12 byte equals the earlier qualified native candidate",
+      "bwdif": "PASS: hwdownload NV12 -> bwdif send_field -> yuv420p, 1500/1500; all pixel hashes match the prior hardware-readback BWDIF oracle. MKV output PTS 1..1500, duration 1 at timebase 1/50, independently checked; not a performance measurement.",
+      "progressive": "PASS: default high.mp4, 180/180, PTS 0..179, duration 1 at 1/30, EOS and clean close",
+      "lifetime": "PASS: 750-picture reference, four 12-picture exact PTS/pixel seeks; eight retained old pictures stay exact after two flush/new-input operations and two context destructions"
+    },
+    "explicit_live_end_and_gap": {
+      "options": "LIVE=1, LOW_LATENCY=1, READY unset; --lookahead 8 --expected-frames 750 --close-before-tail --live-gap",
+      "gap": "Before a real non-IDR packet (PTS 901/DTS 861 ms), surface 4 holding PTS 821 ms is Rendering and sync2(timeout=0) reports TIMEDOUT. It remains pending/Rendering for 356975640 ns; no EOS, seal, reopen or replay occurs in that window. Resume the unchanged packet.",
+      "result": "PASS: all 750 gap-reference pictures match exact PTS/pixels of a fresh no-gap replay; four 12-picture seeks match. Two explicit codec-context closes drain the held tail before downloading eight retained surfaces, then fresh contexts reopen cleanly.",
+      "independent_tail": "All eight printed last-picture SHA-256 digests match rows 743..750 of the separately captured default finite 750-picture oracle after exact source-PTS rescaling",
+      "boundary": "Explicit context destruction is the EOF/drain signal. A vaSyncSurface wait on an established live stream is not EOF; live input gaps must not silently seal it. This is a native API contract test, not Sunshine/network or physical A/V acceptance.",
+      "artifacts": ["live-gap-close-reconnect.stdout", "live-gap-close-reconnect.log", "auto-mbaff-750.sha256"]
+    },
+    "stock_kodi_after_fix": {
+      "version": "Unmodified Kodi 21.3, copied windowed profiles; LIVE/LOW_LATENCY/READY unset",
+      "bwdif_ts_and_mkv": "Each admits 536 pictures, returns 536 exact-token complementary field pairs, completes real hardware EOS and natural PlaybackEnded, then Quit/exit 0. No orphan/duplicate half, replay, VA status 23, 10-second sync timeout or drain failure.",
+      "remaining_limits": "750 source pictures are not 536 admitted pictures: complete Kodi frame acceptance/presentation is not established by this count. Each run logs a bounded two-second post-EOS empty-output wait (decoded=0/proc=0), audio correction around -4.1 seconds and render-buffer warnings. These are not physical A/V measurements.",
+      "render_bob_control": "551 accepted pictures complete as 551 pairs and real EOS; natural PlaybackEnded then Quit/exit 0, no sync/drain failure. The post-EOS empty-output wait and about -1.1-second audio correction remain. No full-rate or hardware-Bob claim.",
+      "instrumented_admission_control": "A separate metadata-only avcodec_send_packet interposer records 558 unique source-picture calls (excluding stream-info probe), all accepted by libavcodec. Source-PTS mapping accounts for all 750: 192 not sent after audio-stall-triggered automatic seek, 120 non-reference inputs skipped with AVDISCARD_NONREF, 438 submitted to hardware and completed as exact complementary pairs across two epochs (236+202). Natural PlaybackEnded, real EOS, Quit/exit 0; no empty-output timeout in this run. Its roughly -6.3-second audio correction and diagnostic logging preclude a presentation/performance claim. This does not retroactively assign the identical split to earlier 536-picture runs.",
+      "quiet_buffered_control": "PARTIAL, not full-file acceptance: verbose VA/Kodi logging disabled; the metadata hook stores all 402 calls without overflow and prints only after exit. Excluding the stream-info probe, only the first 401 consecutive source pictures reach libavcodec (through PTS 16.021 seconds), all ret=0, with 108 non-reference inputs marked for skipping. Later 349 pictures and EOF never reach that decoder. Audio stalls, then frontend exits before any external Quit; automatic resync is possible but not proven by the quiet log. Hardware EOS and exit 0 establish teardown only, not consumption of the complete 30-second file. No VA sync/drain failure or post-EOS message timeout is logged."
+    },
+    "device_free": {
+      "werror_replay": "PASS: finite sealing/EOS/replay and explicit-live close preserve exact TFF/BFF ownership/pixels, ghost/duplicate/flush guards; automatic-policy exclusions, opt-out, real submit and MBAFF-to-progressive continuation included",
+      "seek_harness": "Werror build, existing 12/12 self-check and six live-gap admission cases PASS; disabled-version guard has no sync2 symbol (simulation, not actual old-header qualification)",
+      "legacy": "i386 no-SSE backend/replay syntax PASS. CPU-policy test: 1916 native checks and 1902 Pentium-II/QEMU checks PASS, including SIMD policy and i386 VPP syntax. Not a linked 32-bit replay or physical legacy-host acceptance.",
+      "astra_review": "APPROVE for policy/ownership changes and live-gap/close harness"
+    },
+    "recovery": "All completed native trials exit 0, return module refcount 0 and pass scoped kernel checks; no install, firmware, PM or third-party app changes",
+    "evidence_location": "Named raw artifacts remain in the local finite-prefeed qualification cache; logs include private runtime paths and are not published"
+  },
+  "conclusion": "The tested field-output routes support exact field omission and decoder-mediated scaling, not Bob. The 1280-wide whole-picture Weave path is mislabelled TOPFIELD by the existing library. Separately pinned source candidates accept the measured full payload without weakening compact-field pairing or picture ownership. The later finite MBAFF prefeed fix completes all 750 decoder pictures and real EOS; explicit live gap/end/reconnect also passes. Kodi completes all admitted field pairs, but its full-source presentation and physical A/V remain unqualified. Installed production behavior is unchanged.",
   "not_established": [
     "full-height or full-field-rate hardware Bob",
     "fixed-parity selection or motion-adaptive deinterlacing",

@@ -290,17 +290,17 @@ owner with `sudo fuser -v /dev/crystalhd`; the UI setting alone does not prove
 hardware decoding. No physical flash/click A/V PASS was recorded, and other
 Kodi releases and display backends remain unqualified.
 
-Interlaced Kodi playback is not yet a supported v1.1 path. Kodi 21.3 exposes
-`Deinterlace` (FFmpeg BWDIF) and `Render Bob`, but both explicit selections
-stalled and repeatedly restarted the CrystalHD VA decoder on the tested stack.
-The same input completed as a direct Weave readback and through standalone
-FFmpeg BWDIF, proving that missing paired-field Weave output is not the
-blocker. Kodi/CrystalHD VA decode, readback and post-processing scheduling
-remain incompatible in this case; the first failing internal cause and owning
-component are unresolved. Kodi `Auto` may also probe unsupported VAAPI Bob.
-The acceptance target and existing evidence are tracked in
-[#436](https://github.com/ahnhy1324/crystalhd/issues/436) as a proposed v1.2.0
-follow-up.
+Interlaced Kodi playback remains experimental. Installed RC `f4d99d5`
+stalled with explicit `Deinterlace` (FFmpeg BWDIF) and `Render Bob`.
+Source candidate `ec77b71` fixes finite MBAFF input/tail scheduling: selected
+decoder checks pass all 750 pictures with exact pixels/PTS and real EOS;
+live input-gap, explicit close and reopen checks also pass. Stock Kodi now
+completes all admitted field pairs and hardware EOS, but frame drops/automatic
+resync and audio/render timing warnings prevent a full-rate or physical A/V
+support claim. Kodi `Auto` may still probe unsupported VAAPI Bob; no driver
+deinterlacing capability is advertised. See
+[#436](https://github.com/ahnhy1324/crystalhd/issues/436) for qualification and
+the remaining presentation work.
 
 One VLC 3.0.21 H.264 path was validated on the reference X11/i915 system:
 
