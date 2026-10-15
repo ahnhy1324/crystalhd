@@ -92,6 +92,7 @@ struct Input {
 
 struct Options {
     unsigned scale_width = 0;
+    unsigned coded_height = 0;
     bool full_payload = false;
 };
 
@@ -109,7 +110,8 @@ struct OutputGeometry {
 bool SelectGeometry(const Input &input, const Options &options,
                     OutputGeometry *output) {
     if (!input.width || !input.height || input.width > 1920 ||
-        input.height > 1088 || (input.width & 1U) || (input.height & 3U))
+        input.height > 1088 || (input.width & 1U) || (input.height & 3U) ||
+        (options.coded_height && !options.full_payload))
         return false;
     output->width = input.width;
     output->height = input.height;
@@ -117,11 +119,14 @@ bool SelectGeometry(const Input &input, const Options &options,
     output->alternate_height = input.height == 1080 && !options.scale_width
         ? 1088U : 0U;
     if (options.full_payload) {
-        // This observes the exact full-height transfer with interlaced source
-        // metadata. It makes no claim of progressive pixels or deinterlacing.
+        // Observe either the visible-height setup or VA's explicit MBAFF
+        // coded-height setup. Copy every returned row; compare visible crop
+        // separately. Neither setup asserts progressive pixels or Bob.
         output->alternate_height = 0;
+        if (options.coded_height) output->height = options.coded_height;
         return input.width == 1280 && input.height == 720 &&
-            options.scale_width == 0;
+            options.scale_width == 0 &&
+            (!options.coded_height || options.coded_height == 736);
     }
     if (options.scale_width) {
         const unsigned width = options.scale_width;
@@ -477,7 +482,7 @@ bool Run(const Input &input, const Options &options,
     format.OptFlags = 0x80000000U | vdecFrameRate30;
     format.mSubtype = BC_MSUBTYPE_H264;
     format.width = input.width;
-    format.height = input.height;
+    format.height = options.coded_height ? options.coded_height : input.height;
     format.startCodeSz = 4;
     if (ok) ok = Status("DtsSetInputFormat", DtsSetInputFormat(device.handle,
         &format));
@@ -673,6 +678,31 @@ bool SelfTest() {
     ok = PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
     out.PicInfo.height = 736;
     ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
+    options.coded_height = 735;
+    ok = !SelectGeometry(input, options, &geometry) && ok;
+    options.coded_height = 736;
+    ok = SelectGeometry(input, options, &geometry) &&
+        geometry.height == 736 && geometry.Rows() == 736 &&
+        !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
+    const size_t padded_bytes = 1280U * 2U * 736U;
+    full_output.assign(padded_bytes + 160U, 0);
+    out.Ybuff = full_output.data();
+    out.YBuffDoneSz = static_cast<uint32_t>(full_output.size() / 4U);
+    word = 1280;
+    std::memcpy(full_output.data() + full_output.size() - 8U, &word, sizeof(word));
+    word = 736;
+    std::memcpy(full_output.data() + full_output.size() - 4U, &word, sizeof(word));
+    word = 3;
+    std::memcpy(full_output.data() + padded_bytes, &word, sizeof(word));
+    word = 0x48;
+    std::memcpy(full_output.data() + padded_bytes + sizeof(uint32_t) +
+        offsetof(BC_PIC_INFO_BLOCK, flags), &word, sizeof(word));
+    ok = PayloadGeometry(geometry, out, &pitch, &rows, &bytes, &raw) &&
+        rows == 736 && bytes == padded_bytes && raw.line == 736 &&
+        raw.flags == 0x48 && ok;
+    options.full_payload = false;
+    ok = !SelectGeometry(input, options, &geometry) && ok;
+    options.full_payload = true;
     options.scale_width = 640;
     ok = !SelectGeometry(input, options, &geometry) && ok;
     std::printf("single-field device-free guards: %s\n", ok ? "PASS" : "FAIL");
@@ -693,12 +723,15 @@ int main(int argc, char **argv) {
         } else if (!std::strcmp(argv[i], "--full-payload") &&
                    !options.full_payload) {
             options.full_payload = true;
+        } else if (!std::strcmp(argv[i], "--coded-height") &&
+                   !options.coded_height && i + 1 < argc) {
+            arguments = Number(argv[++i], &options.coded_height, 736);
         } else arguments = false;
     }
     if (argc < 5 || !arguments || !Number(argv[2], &expected) ||
         (std::strcmp(argv[3], "0") && std::strcmp(argv[3], "1")) ||
         argv[4][0] != '/' || !argv[4][1]) {
-        std::fprintf(stderr, "usage: %s INPUT EXPECTED_INPUTS_1_TO_1000 0_OR_1 /absolute/NEW_OUTPUT_PREFIX [--scale-width WIDTH_128_TO_1918_MULTIPLE_16 | --full-payload] | --self-test\n", argv[0]);
+        std::fprintf(stderr, "usage: %s INPUT EXPECTED_INPUTS_1_TO_1000 0_OR_1 /absolute/NEW_OUTPUT_PREFIX [--scale-width WIDTH_128_TO_1918_MULTIPLE_16 | --full-payload [--coded-height 736]] | --self-test\n", argv[0]);
         return 2;
     }
     std::signal(SIGINT, Signal);
