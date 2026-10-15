@@ -30,6 +30,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -1596,6 +1597,7 @@ struct DecodeContext {
   bool live_h264_gap_tolerant = false;
   bool live_h264_fast_path = false;
   bool low_latency_h264 = false;
+  bool auto_mbaff_prefeed = false;
   bool input_backpressured = false;
   bool input_budget_exhausted = false;
   uint64_t partial_input_timestamp = 0;
@@ -2471,6 +2473,15 @@ static bool IsValidConfig(VAProfile profile, VAEntrypoint entrypoint) {
          (profile == VAProfileNone && entrypoint == VAEntrypointVideoProc);
 }
 
+static bool ShouldAutoPrefeedH264(const DecodeContext &decode) {
+  return decode.auto_mbaff_prefeed && IsH264Profile(decode.profile) &&
+         !decode.live_h264_fast_path && decode.device != nullptr &&
+         decode.decoder_started && !decode.is_70012 &&
+         !decode.picture.seq_fields.bits.frame_mbs_only_flag &&
+         decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag &&
+         !decode.picture.pic_fields.bits.field_pic_flag;
+}
+
 static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
                             unsigned int height = 0,
                             const std::array<uint8_t, 4> *wmv3_metadata = nullptr,
@@ -3333,7 +3344,7 @@ static VAStatus ProcessDecodedOutputImpl(
                        TraceDecodeTokenFields(driver, decode,
                                               output.PicInfo.timeStamp));
   }
-  if (decode->low_latency_h264 && decode->prefed_timestamp != 0 &&
+  if (decode->prefed_timestamp != 0 &&
       output.PicInfo.timeStamp == decode->prefed_timestamp)
     return FailDecode(driver, decode,
                       "speculative H.264 prefix produced a picture");
@@ -3870,10 +3881,14 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
       if (unit == nullptr)
         break;
       const uint64_t input_timestamp = unit->timestamp;
+      bool prefeed_after_unit = false;
+      if constexpr (std::is_same<std::decay_t<decltype(replay)>,
+                                 CrystalHDDecodeReplay>::value)
+        prefeed_after_unit = decode->low_latency_h264 || unit->prefeed;
       const bool consume_prefeed =
-          decode->low_latency_h264 && decode->prefed_timestamp != 0 &&
+          decode->prefed_timestamp != 0 &&
           decode->prefed_timestamp == unit->timestamp;
-      if (decode->low_latency_h264 && decode->prefed_timestamp != 0 &&
+      if (decode->prefed_timestamp != 0 &&
           !consume_prefeed)
         return FailDecode(driver, decode,
                           "speculative H.264 timestamp lost alignment");
@@ -3961,7 +3976,7 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
       if (attempt + 1 == max_attempts)
         decode->input_budget_exhausted = true;
 
-      if (decode->low_latency_h264 && !decode->is_70012 &&
+      if (prefeed_after_unit && !decode->is_70012 &&
           decode->prefed_timestamp == 0 && replay.NextInput() == nullptr) {
         const uint64_t next_timestamp = decode->next_timestamp;
         const auto &prefeed = H264LowLatencyPrefeed();
@@ -4470,7 +4485,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     decode->wmv3_metadata = next_wmv3_metadata;
     decode->stream_width = stream_width;
     decode->stream_height = stream_height;
-  } else if (!decode->replay.Append(timestamp, idr, std::move(bitstream))) {
+  } else if (!decode->replay.Append(timestamp, idr, std::move(bitstream),
+                                     ShouldAutoPrefeedH264(*decode))) {
     return FailDecode(driver, decode, decode->replay.failure());
   }
   decode->next_timestamp += kTimestampStep;
@@ -5697,6 +5713,11 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
       getenv("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
   decode->low_latency_h264 = h264 &&
       low_latency_h264 != nullptr && strcmp(low_latency_h264, "1") == 0;
+  // Keep progressive and explicit-live defaults unchanged. An explicit value
+  // (including 0) disables automatic MBAFF prefeed; accepted AUs retain their
+  // own eligibility so later sequence metadata cannot change replay behavior.
+  decode->auto_mbaff_prefeed = h264 && !decode->live_h264_fast_path &&
+                               low_latency_h264 == nullptr;
   const char *experimental_ready_remap =
       getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP");
   const char *experimental_ready_delay =

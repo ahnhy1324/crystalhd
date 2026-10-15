@@ -1947,6 +1947,7 @@ static void RealH264SubmitCompletesFieldPairs() {
       decoder.live_h264 = true;
       decoder.live_h264_gap_tolerant = direct;
       decoder.live_h264_fast_path = direct;
+      decoder.auto_mbaff_prefeed = !direct;
       decoder.target = 1;
       decoder.have_picture = true;
       decoder.picture.picture_width_in_mbs_minus1 = 0;
@@ -1974,6 +1975,8 @@ static void RealH264SubmitCompletesFieldPairs() {
                   io.inputs == std::vector<uint64_t>{kTimestampStep} &&
                   decoder.pending.count(kTimestampStep) == 1 &&
                   decoder.replay.outstanding() == 1 &&
+                  decoder.prefed_timestamp == (direct ? 0 : 2 * kTimestampStep) &&
+                  io.input_calls.size() == (direct ? 1U : 2U) &&
                   io.open_attempts == (retained_reset ? 1U : 0U) &&
                   !decoder.hardware_close_pending,
               "real H.264 submit reopens a retained reset before accepting one interlaced access unit");
@@ -2888,6 +2891,7 @@ static void ExperimentalReadyRemapGate() {
     bool gap_tolerant;
     bool fast_path;
     bool low_latency;
+    bool auto_mbaff;
     bool enabled;
     bool latest;
     uint64_t delay_ns;
@@ -2920,6 +2924,7 @@ static void ExperimentalReadyRemapGate() {
                      decode->live_h264_gap_tolerant,
                      decode->live_h264_fast_path,
                      decode->low_latency_h264,
+                     decode->auto_mbaff_prefeed,
                      decode->experimental_ready_remap,
                      decode->experimental_ready_latest,
                      decode->experimental_ready_delay_ns};
@@ -2942,15 +2947,18 @@ static void ExperimentalReadyRemapGate() {
   Require(default_h264.transport && !default_h264.gap_tolerant &&
               !default_h264.fast_path &&
               !default_h264.low_latency && !default_h264.enabled &&
+              default_h264.auto_mbaff &&
               fast_h264.transport && fast_h264.gap_tolerant &&
               fast_h264.fast_path &&
               !fast_h264.low_latency && !fast_h264.enabled &&
+              !fast_h264.auto_mbaff &&
               low_h264.transport && low_h264.gap_tolerant &&
               low_h264.fast_path &&
               low_h264.low_latency && !low_h264.enabled &&
+              !low_h264.auto_mbaff &&
               finite_low_h264.transport && !finite_low_h264.gap_tolerant &&
               !finite_low_h264.fast_path && finite_low_h264.low_latency &&
-              !finite_low_h264.enabled &&
+              !finite_low_h264.enabled && !finite_low_h264.auto_mbaff &&
               !strict_h264.transport && !strict_h264.gap_tolerant &&
               !strict_h264.fast_path &&
               strict_h264.low_latency && !strict_h264.enabled &&
@@ -2959,12 +2967,19 @@ static void ExperimentalReadyRemapGate() {
               invalid_h264.low_latency && !invalid_h264.enabled &&
               !default_mpeg2.transport && !default_mpeg2.gap_tolerant &&
               !default_mpeg2.fast_path &&
-              !default_mpeg2.low_latency && !default_mpeg2.enabled,
+              !default_mpeg2.low_latency && !default_mpeg2.enabled &&
+              !default_mpeg2.auto_mbaff,
           "default H.264 transport is bounded while fast paths remain exact opt-ins");
   Require(!create(nullptr, "0", nullptr, nullptr, nullptr,
                    VAProfileH264Main).low_latency &&
+              !create(nullptr, "0", nullptr, nullptr, nullptr,
+                      VAProfileH264Main).auto_mbaff &&
               !create(nullptr, "yes", nullptr, nullptr, nullptr,
                       VAProfileH264Main).low_latency &&
+              !create(nullptr, "yes", nullptr, nullptr, nullptr,
+                      VAProfileH264Main).auto_mbaff &&
+              create("0", nullptr, nullptr, nullptr, nullptr,
+                     VAProfileH264Main).auto_mbaff &&
               !create(nullptr, "1", nullptr, nullptr, nullptr,
                       VAProfileMPEG2Main).low_latency,
           "independent prefeed remains an exact H.264-only opt-in");
@@ -5222,6 +5237,108 @@ static std::vector<uint8_t> ExpectedH264LowLatencyPrefeed() {
   return bytes;
 }
 
+static void AutomaticMbaffPrefeedSnapshotsAcceptedSequence() {
+  enum class Next { Continue, Ghost, Misaligned };
+  for (Next next : {Next::Continue, Next::Ghost, Next::Misaligned}) {
+    TeardownFixture fixture(2);
+    auto &decode = *fixture.decoder;
+    decode.profile = VAProfileH264Main;
+    decode.live_h264 = decode.auto_mbaff_prefeed = true;
+    decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag = 1;
+    decode.replay = CrystalHDDecodeReplay(true);
+    Require(ShouldAutoPrefeedH264(decode),
+            "finite frame-coded MBAFF on an opened BCM70015 is eligible");
+    decode.picture.seq_fields.bits.frame_mbs_only_flag = 1;
+    Require(!ShouldAutoPrefeedH264(decode), "progressive input is not automatic");
+    decode.picture.seq_fields.bits.frame_mbs_only_flag = 0;
+    decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag = 0;
+    Require(!ShouldAutoPrefeedH264(decode), "PAFF is not automatic MBAFF");
+    decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag = 1;
+    decode.picture.pic_fields.bits.field_pic_flag = 1;
+    Require(!ShouldAutoPrefeedH264(decode), "a coded field is not a frame AU");
+    decode.picture.pic_fields.bits.field_pic_flag = 0;
+    decode.live_h264_fast_path = true;
+    Require(!ShouldAutoPrefeedH264(decode), "explicit live prefeed remains opt-in");
+    decode.live_h264_fast_path = false;
+    decode.is_70012 = true;
+    Require(!ShouldAutoPrefeedH264(decode), "BCM70012 is not auto-prefed");
+    decode.is_70012 = false;
+    decode.decoder_started = false;
+    Require(!ShouldAutoPrefeedH264(decode), "unopened hardware is not known eligible");
+    decode.decoder_started = true;
+    decode.device = nullptr;
+    Require(!ShouldAutoPrefeedH264(decode), "a missing device cannot establish identity");
+    decode.device = fixture.io.handle();
+    decode.profile = VAProfileMPEG2Main;
+    Require(!ShouldAutoPrefeedH264(decode), "other codecs cannot auto-prefeed");
+    decode.profile = VAProfileH264Main;
+    decode.auto_mbaff_prefeed = false;
+    Require(!ShouldAutoPrefeedH264(decode), "explicit policy opt-out is honored");
+    decode.auto_mbaff_prefeed = true;
+
+    const auto first = TestH264AccessUnit(true, 1);
+    Require(decode.replay.Append(kTimestampStep, true, first,
+                                  ShouldAutoPrefeedH264(decode)),
+            "snapshot automatic eligibility with the accepted original AU");
+    decode.picture.seq_fields.bits.frame_mbs_only_flag = 1;
+    decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag = 0;
+    decode.next_timestamp = 2 * kTimestampStep;
+    Require(!ShouldAutoPrefeedH264(decode) && !decode.low_latency_h264 &&
+                decode.replay.NextInput()->prefeed &&
+                PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                fixture.io.input_calls.size() == 2 &&
+                fixture.io.input_calls[0].bytes == first &&
+                fixture.io.input_calls[1].bytes == H264LowLatencyPrefeed() &&
+                decode.prefed_timestamp == 2 * kTimestampStep,
+            "later progressive metadata cannot change an accepted MBAFF AU");
+    if (next == Next::Ghost) {
+      fixture.io.outputs.push_back(2 * kTimestampStep);
+      Require(ReceiveAvailable(&fixture.driver, &decode) ==
+                      VA_STATUS_ERROR_DECODING_ERROR && decode.replay.failed() &&
+                  !fixture.held[1]->ready && !fixture.io.invalid,
+              "ghost-prefix guard remains active after automatic eligibility ends");
+      continue;
+    }
+    const uint64_t token =
+        (next == Next::Misaligned ? 3 : 2) * kTimestampStep;
+    const auto second = TestH264AccessUnit(false, 2);
+    const auto owner = decode.decoded_frames.at(2 * kTimestampStep);
+    Require(decode.replay.Append(token, false, second,
+                                  ShouldAutoPrefeedH264(decode)),
+            "accept a successor under the progressive transport policy");
+    decode.next_timestamp = token + kTimestampStep;
+    const VAStatus status = PumpDecodeInput(&fixture.driver, &decode);
+    if (next == Next::Misaligned) {
+      Require(status == VA_STATUS_ERROR_DECODING_ERROR && decode.replay.failed() &&
+                  fixture.io.input_calls.size() == 2 && !fixture.io.invalid,
+              "automatic policy change cannot bypass the held-prefix alignment guard");
+      continue;
+    }
+    Require(status == VA_STATUS_SUCCESS && fixture.io.input_calls.size() == 3 &&
+                fixture.io.input_calls[2].accepted &&
+                fixture.io.input_calls[2].timestamp == 0 &&
+                fixture.io.input_calls[2].bytes == second &&
+                fixture.io.inputs == std::vector<uint64_t>(
+                    {kTimestampStep, 2 * kTimestampStep}) &&
+                decode.decoded_frames.at(2 * kTimestampStep) == owner &&
+                decode.prefed_timestamp == 0 && fixture.io.prefed_timestamp == 0 &&
+                !fixture.io.invalid,
+            "progressive successor consumes existing prefix byte-exactly without rearming");
+    Require(decode.replay.Seal() &&
+                decode.replay.Observe(kTimestampStep) ==
+                    CrystalHDDecodeReplay::Output::New &&
+                decode.replay.Observe(2 * kTimestampStep) ==
+                    CrystalHDDecodeReplay::Output::New &&
+                decode.replay.EndOfSequence() &&
+                decode.replay.Append(3 * kTimestampStep, false, {3}) &&
+                decode.replay.Restarted() && decode.replay.NextInput()->prefeed,
+            "replay retains the accepted MBAFF eligibility after sequence changes");
+    SendNext(&decode.replay, kTimestampStep);
+    Require(!decode.replay.NextInput()->prefeed,
+            "replay also retains the progressive successor's no-prefeed decision");
+  }
+}
+
 static void LiveH264SpeculativePrefeedSequence() {
   TeardownFixture fixture(3);
   fixture.decoder->live_h264 = true;
@@ -7298,6 +7415,7 @@ int main() {
     ExactBoundaryConversionByteEquivalence();
     CompletedLiveTailPrecedesUnreconstructibleContinuation();
     DecoderResetPreservesItsExplicitLivePolicy();
+    AutomaticMbaffPrefeedSnapshotsAcceptedSequence();
     LiveH264SpeculativePrefeedSequence();
     LiveH264InterlacedPrefeedKeepsExactFieldOwnership();
     LiveH264PrefeedBusyFallback();
