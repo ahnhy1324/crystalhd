@@ -202,6 +202,7 @@ struct Probe {
   bool software = false;
   bool export_prime = false;
   bool retain_old_frames = false;
+  bool close_before_tail = false;
   size_t lookahead = 0;
   size_t expected_frames = 0;
   size_t deferred_at_limit = 0;
@@ -449,6 +450,17 @@ struct Probe {
         Check(avcodec_send_packet(decoder, packet), "send packet");
       }
     }
+    if (close_before_tail) {
+      if (!draining || !decoder || deferred.size() != lookahead)
+        throw std::runtime_error(
+            "explicit stream stop requires decoder EOF and the full retained tail");
+      // A live VA sync is not an EOF request. Retained AVFrames keep their
+      // surfaces/device alive while context teardown explicitly drains the
+      // accepted backend tail, before any of those pixels are downloaded.
+      avcodec_free_context(&decoder);
+      std::printf("explicit stream stop: decoder freed before %zu retained tail downloads\n",
+                  deferred.size());
+    }
     // Input EOF is not validation EOF: download and count every retained tail
     // picture before checking the container's declared reference frame count.
     while (!deferred.empty()) {
@@ -479,8 +491,11 @@ struct Probe {
                   static_cast<long long>(anchor->second));
     }
     Check(av_seek_frame(input, stream, seek_timestamp, AVSEEK_FLAG_BACKWARD), "seek");
-    if (!decoder)
+    if (!decoder) {
       OpenDecoder();
+      if (close_before_tail)
+        std::printf("explicit stream reconnect: new decoder context opened\n");
+    }
     avcodec_flush_buffers(decoder);
     av_packet_unref(packet);
   }
@@ -579,8 +594,8 @@ struct Probe {
 };
 
 int main(int argc, char **argv) {
-  if (argc < 2 || argc > 9) {
-    std::fprintf(stderr, "usage: %s VIDEO_CONTAINER [DRM_DEVICE|--software] [--lookahead 8] [--expected-frames COUNT] [--retain-old-frames] [--export-prime]\n", argv[0]);
+  if (argc < 2 || argc > 10) {
+    std::fprintf(stderr, "usage: %s VIDEO_CONTAINER [DRM_DEVICE|--software] [--lookahead 8] [--expected-frames COUNT] [--retain-old-frames] [--export-prime] [--close-before-tail]\n", argv[0]);
     return 2;
   }
   try {
@@ -596,6 +611,10 @@ int main(int argc, char **argv) {
         if (probe.retain_old_frames)
           throw std::runtime_error("--retain-old-frames must be specified once");
         probe.retain_old_frames = true;
+      } else if (std::strcmp(argv[argument], "--close-before-tail") == 0) {
+        if (probe.close_before_tail)
+          throw std::runtime_error("--close-before-tail must be specified once");
+        probe.close_before_tail = true;
       } else if (std::strcmp(argv[argument], "--lookahead") == 0) {
         if (probe.lookahead != 0 || argument + 1 == argc ||
             std::strcmp(argv[++argument], "8") != 0)
@@ -620,6 +639,12 @@ int main(int argc, char **argv) {
     }
     if (probe.export_prime && probe.software)
       throw std::runtime_error("--export-prime requires hardware mode");
+    if (probe.close_before_tail && probe.retain_old_frames)
+      throw std::runtime_error(
+          "--close-before-tail cannot be combined with --retain-old-frames");
+    if (probe.close_before_tail && (probe.software || probe.lookahead != 8))
+      throw std::runtime_error(
+          "--close-before-tail requires hardware mode and --lookahead 8");
     if (probe.retain_old_frames)
       probe.lookahead = 8;
     probe.Open(argv[1], device);
