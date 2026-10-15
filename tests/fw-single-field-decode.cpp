@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-// Optional BCM70015 research client: drain raw fields without VA's field pairing.
+// Optional BCM70015 research client: drain raw output without VA's field pairing.
 // Build only; no installed library, firmware, module or register changes:
 // c++ -std=c++11 -O2 -Wall -Wextra -Werror -D__LINUX_USER__
 //   -Iinclude -Ilinux_lib/libcrystalhd tests/fw-single-field-decode.cpp
@@ -16,6 +16,7 @@ extern "C" {
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -91,15 +92,15 @@ struct Input {
 
 struct Options {
     unsigned scale_width = 0;
-    bool frame_output = false;
+    bool full_payload = false;
 };
 
 struct OutputGeometry {
     unsigned width = 0, height = 0;
     unsigned alternate_height = 0;
-    bool frame = false;
-    unsigned Rows() const { return frame ? height : (height + 1U) / 2U; }
-    const char *Kind() const { return frame ? "frame" : "field"; }
+    bool full_payload = false;
+    unsigned Rows() const { return full_payload ? height : (height + 1U) / 2U; }
+    const char *Kind() const { return full_payload ? "full-height" : "field"; }
 };
 
 // Admit only the separately selected source-width observation and stock field
@@ -112,13 +113,13 @@ bool SelectGeometry(const Input &input, const Options &options,
         return false;
     output->width = input.width;
     output->height = input.height;
-    output->frame = options.frame_output;
+    output->full_payload = options.full_payload;
     output->alternate_height = input.height == 1080 && !options.scale_width
         ? 1088U : 0U;
-    if (options.frame_output) {
-        // 720 visible MBAFF rows can have a 736-row coded allocation. Copy
-        // only the admitted 720 visible rows, but guard the full reported span.
-        output->alternate_height = 736;
+    if (options.full_payload) {
+        // This observes the exact full-height transfer with interlaced source
+        // metadata. It makes no claim of progressive pixels or deinterlacing.
+        output->alternate_height = 0;
         return input.width == 1280 && input.height == 720 &&
             options.scale_width == 0;
     }
@@ -288,15 +289,20 @@ struct Lease {
     ~Lease() { if (owned) (void)Release(); }
 };
 
+struct RawMetadata {
+    bool valid = false;
+    uint32_t flags = 0, picture_number = 0, width = 0, line = 0;
+};
+
 // Validate all source extents before pointer arithmetic; no borrowed pointer
-// survives Release(). The tested 1920-pixel fixture has no horizontal padding.
+// survives Release(). Scaled widths have exact multiple-of-16 row pitches.
 bool PayloadGeometry(const OutputGeometry &expected, const BC_DTS_PROC_OUT &out,
-                   size_t *pitch, size_t *rows, size_t *active_bytes) {
+                     size_t *pitch, size_t *rows, size_t *active_bytes,
+                     RawMetadata *metadata = nullptr) {
     const uint32_t field = out.PicInfo.flags & VDEC_FLAG_BOTTOMFIELD;
-    const bool kind = expected.frame
-        ? field == 0 || field == VDEC_FLAG_FIELDPAIR
-        : (out.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) &&
-            (field == VDEC_FLAG_TOPFIELD || field == VDEC_FLAG_BOTTOMFIELD);
+    const bool kind = (out.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) &&
+        (field == VDEC_FLAG_TOPFIELD || field == VDEC_FLAG_BOTTOMFIELD ||
+         (expected.full_payload && field == VDEC_FLAG_FIELDPAIR));
     if (!(out.PoutFlags & BC_POUT_FLAGS_PIB_VALID) || !out.Ybuff ||
         out.b422Mode != OUTPUT_MODE422_YUY2 ||
         (out.PoutFlags & BC_POUT_FLAGS_ENCRYPTED) ||
@@ -307,7 +313,7 @@ bool PayloadGeometry(const OutputGeometry &expected, const BC_DTS_PROC_OUT &out,
         return false;
     const uint64_t row_pitch = ((static_cast<uint64_t>(expected.width) + 15U) &
                                ~15ULL) * 2U;
-    const uint64_t coded_rows = expected.frame ? out.PicInfo.height :
+    const uint64_t coded_rows = expected.full_payload ? out.PicInfo.height :
         (static_cast<uint64_t>(out.PicInfo.height) + 1U) / 2U;
     const uint64_t visible_rows = expected.Rows();
     const uint64_t extent = row_pitch * coded_rows;
@@ -315,6 +321,30 @@ bool PayloadGeometry(const OutputGeometry &expected, const BC_DTS_PROC_OUT &out,
     if (!extent || extent > static_cast<uint64_t>(out.YBuffDoneSz) * 4U ||
         extent > std::numeric_limits<size_t>::max() ||
         bytes > std::numeric_limits<size_t>::max()) return false;
+    RawMetadata raw;
+    if (expected.full_payload) {
+        const uint64_t done = static_cast<uint64_t>(out.YBuffDoneSz) * 4U;
+        const uint64_t flags_offset = extent + sizeof(uint32_t) +
+            offsetof(BC_PIC_INFO_BLOCK, flags);
+        // The driver reads width/line from the last two completed DWORDs.
+        // The embedded raw ordinal precedes BC_PIC_INFO_BLOCK by one DWORD.
+        // Require both raw scalars to finish before these trailers.
+        if (done > kOutputLimit || done > std::numeric_limits<size_t>::max() ||
+            done < 8U || flags_offset + sizeof(uint32_t) > done - 8U)
+            return false;
+        std::memcpy(&raw.width, out.Ybuff + static_cast<size_t>(done - 8U),
+            sizeof(raw.width));
+        std::memcpy(&raw.line, out.Ybuff + static_cast<size_t>(done - 4U),
+            sizeof(raw.line));
+        if (raw.width != expected.width || raw.line != expected.height)
+            return false;
+        std::memcpy(&raw.picture_number,
+            out.Ybuff + static_cast<size_t>(extent), sizeof(raw.picture_number));
+        std::memcpy(&raw.flags, out.Ybuff + static_cast<size_t>(flags_offset),
+            sizeof(raw.flags));
+        raw.valid = true;
+    }
+    if (metadata) *metadata = raw;
     *pitch = static_cast<size_t>(row_pitch);
     *rows = static_cast<size_t>(visible_rows);
     *active_bytes = static_cast<size_t>(bytes);
@@ -369,8 +399,9 @@ struct Capture {
                 continue;
             }
             size_t pitch = 0, rows = 0, active_bytes = 0, index = 0;
+            RawMetadata raw;
             const bool valid = PayloadGeometry(geometry, out, &pitch, &rows,
-                &active_bytes) && TokenIndex(out.PicInfo.timeStamp, expected,
+                &active_bytes, &raw) && TokenIndex(out.PicInfo.timeStamp, expected,
                 &index) && outputs < expected * multiplicity &&
                 seen[index] < multiplicity &&
                 active_bytes <= kOutputLimit - bytes;
@@ -395,13 +426,14 @@ struct Capture {
             }
             char line[512];
             const int length = std::snprintf(line, sizeof(line),
-                "%u\t%llu\t%u\t%u\t%u\t%u\t%#x\t%#x\t%u\t%u\t%zu\t%u\t%zu\t%llu\t%zu\t%s\n",
+                "%u\t%llu\t%u\t%u\t%u\t%u\t%#x\t%#x\t%u\t%u\t%zu\t%u\t%zu\t%llu\t%zu\t%s\t%u\t%#x\t%u\t%u\t%u\n",
                 outputs, static_cast<unsigned long long>(info.timeStamp),
                 info.picture_number, info.sess_num, info.width, info.height,
                 info.flags, pout, info.chroma_format, words, pitch,
-                geometry.frame ? info.height : (info.height + 1U) / 2U, rows,
+                geometry.full_payload ? info.height : (info.height + 1U) / 2U, rows,
                 static_cast<unsigned long long>(bytes), active_bytes,
-                geometry.Kind());
+                geometry.Kind(), raw.valid, raw.flags, raw.picture_number,
+                raw.width, raw.line);
             if (length <= 0 || static_cast<size_t>(length) >= sizeof(line) ||
                 !pixels.Write(staging.data(), active_bytes) ||
                 !metadata.Write(line, static_cast<size_t>(length))) return false;
@@ -473,7 +505,7 @@ bool Run(const Input &input, const Options &options,
         ok = Status("DtsFWSetSingleField", status);
     }
     if (ok) ok = Status("DtsStartCapture", DtsStartCapture(device.handle));
-    Capture capture(geometry, expected, geometry.frame || single ? 1U : 2U,
+    Capture capture(geometry, expected, geometry.full_payload || single ? 1U : 2U,
         raw, tsv);
     size_t submitted = 0;
     bool flushed = false;
@@ -588,24 +620,59 @@ bool SelfTest() {
     options.scale_width = 1920;
     ok = !SelectGeometry(input, options, &geometry) && ok;
     options.scale_width = 0;
-    options.frame_output = true;
+    options.full_payload = true;
     ok = !SelectGeometry(input, options, &geometry) && ok;
     input.width = 1280;
     input.height = 720;
-    ok = SelectGeometry(input, options, &geometry) && geometry.frame && ok;
+    ok = SelectGeometry(input, options, &geometry) && geometry.full_payload && ok;
     out.PicInfo.width = 1280;
     out.PicInfo.height = 720;
-    out.PicInfo.flags = VDEC_FLAG_FIELDPAIR;
-    out.YBuffDoneSz = 1280U * 2U * 720U / 4U;
-    ok = PayloadGeometry(geometry, out, &pitch, &rows, &bytes) &&
-        pitch == 2560 && rows == 720 && bytes == 1843200 && ok;
-    out.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD;
+    out.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_UNKNOWN_SRC |
+        VDEC_FLAG_TOPFIELD;
+    const size_t payload_bytes = 1280U * 2U * 720U;
+    std::vector<uint8_t> full_output(payload_bytes + 160U, 0);
+    out.Ybuff = full_output.data();
+    out.YBuffDoneSz = static_cast<uint32_t>(full_output.size() / 4U);
+    uint32_t word = 1280;
+    std::memcpy(full_output.data() + full_output.size() - 8U, &word, sizeof(word));
+    word = 720;
+    std::memcpy(full_output.data() + full_output.size() - 4U, &word, sizeof(word));
+    word = 3;
+    std::memcpy(full_output.data() + payload_bytes, &word, sizeof(word));
+    word = 0x68;
+    std::memcpy(full_output.data() + payload_bytes + sizeof(uint32_t) +
+        offsetof(BC_PIC_INFO_BLOCK, flags), &word, sizeof(word));
+    RawMetadata raw;
+    ok = PayloadGeometry(geometry, out, &pitch, &rows, &bytes, &raw) &&
+        pitch == 2560 && rows == 720 && bytes == 1843200 &&
+        raw.valid && raw.flags == 0x68 && raw.picture_number == 3 &&
+        raw.width == 1280 && raw.line == 720 && ok;
+    out.YBuffDoneSz = static_cast<uint32_t>(payload_bytes / 4U) - 1U;
     ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
+    out.YBuffDoneSz = static_cast<uint32_t>((payload_bytes + 32U) / 4U);
+    ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
+    out.YBuffDoneSz = static_cast<uint32_t>(full_output.size() / 4U);
+    word = 1281;
+    std::memcpy(full_output.data() + full_output.size() - 8U, &word, sizeof(word));
+    ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
+    word = 1280U | 0x80000000U;
+    std::memcpy(full_output.data() + full_output.size() - 8U, &word, sizeof(word));
+    ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
+    word = 1280;
+    std::memcpy(full_output.data() + full_output.size() - 8U, &word, sizeof(word));
+    word = 360;
+    std::memcpy(full_output.data() + full_output.size() - 4U, &word, sizeof(word));
+    ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
+    word = 720;
+    std::memcpy(full_output.data() + full_output.size() - 4U, &word, sizeof(word));
     out.PicInfo.flags = 0;
+    ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
+    out.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_FIELDPAIR;
+    ok = PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
+    out.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_BOTTOMFIELD;
+    ok = PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
     out.PicInfo.height = 736;
     ok = !PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
-    out.YBuffDoneSz = 1280U * 2U * 736U / 4U;
-    ok = PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && rows == 720 && ok;
     options.scale_width = 640;
     ok = !SelectGeometry(input, options, &geometry) && ok;
     std::printf("single-field device-free guards: %s\n", ok ? "PASS" : "FAIL");
@@ -623,15 +690,15 @@ int main(int argc, char **argv) {
         if (!std::strcmp(argv[i], "--scale-width") && !options.scale_width &&
             i + 1 < argc) {
             arguments = Number(argv[++i], &options.scale_width, 1918);
-        } else if (!std::strcmp(argv[i], "--frame-output") &&
-                   !options.frame_output) {
-            options.frame_output = true;
+        } else if (!std::strcmp(argv[i], "--full-payload") &&
+                   !options.full_payload) {
+            options.full_payload = true;
         } else arguments = false;
     }
     if (argc < 5 || !arguments || !Number(argv[2], &expected) ||
         (std::strcmp(argv[3], "0") && std::strcmp(argv[3], "1")) ||
         argv[4][0] != '/' || !argv[4][1]) {
-        std::fprintf(stderr, "usage: %s INPUT EXPECTED_INPUTS_1_TO_1000 0_OR_1 /absolute/NEW_OUTPUT_PREFIX [--scale-width WIDTH_128_TO_1918_MULTIPLE_16 | --frame-output] | --self-test\n", argv[0]);
+        std::fprintf(stderr, "usage: %s INPUT EXPECTED_INPUTS_1_TO_1000 0_OR_1 /absolute/NEW_OUTPUT_PREFIX [--scale-width WIDTH_128_TO_1918_MULTIPLE_16 | --full-payload] | --self-test\n", argv[0]);
         return 2;
     }
     std::signal(SIGINT, Signal);
@@ -645,11 +712,11 @@ int main(int argc, char **argv) {
     const bool single = !std::strcmp(argv[3], "1");
     OutputGeometry geometry;
     if (!SelectGeometry(input, options, &geometry)) {
-        std::fprintf(stderr, "Require native field geometry, a multiple-of-16 scale width no greater than source width, or unscaled 1280x720 --frame-output; no device opened\n");
+        std::fprintf(stderr, "Require native field geometry, a multiple-of-16 scale width no greater than source width, or unscaled 1280x720 --full-payload; no device opened\n");
         return 2;
     }
     const uint64_t budget = static_cast<uint64_t>(geometry.width) * 2U *
-        geometry.Rows() * expected * (geometry.frame || single ? 1U : 2U);
+        geometry.Rows() * expected * (geometry.full_payload || single ? 1U : 2U);
     if (budget > kOutputLimit) {
         std::fprintf(stderr, "Capture would exceed 256 MiB; no device opened\n");
         return 2;
@@ -660,7 +727,7 @@ int main(int argc, char **argv) {
         std::perror("new output file");
         return 2;
     }
-    const char header[] = "output_index\ttoken\tpicture_number\tsession\twidth\theight\tpicture_flags\tpout_flags\tchroma_format\ty_done_words\tsource_pitch\tcoded_output_rows\toutput_rows\tbyte_offset\tbytes\tpayload_kind\n";
+    const char header[] = "output_index\ttoken\tpicture_number\tsession\twidth\theight\tpicture_flags\tpout_flags\tchroma_format\ty_done_words\tsource_pitch\tcoded_output_rows\toutput_rows\tbyte_offset\tbytes\tpayload_kind\traw_metadata_valid\traw_pib_flags\traw_picture_number\ttrailer_width\ttrailer_line\n";
     if (!tsv.Write(header, sizeof(header) - 1U)) return 2;
     try {
         const bool passed = Run(input, options, geometry, expected, single,
