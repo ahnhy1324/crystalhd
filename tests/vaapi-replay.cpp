@@ -1053,39 +1053,49 @@ struct H264FieldFixture {
   std::vector<uint8_t> top;
   std::vector<uint8_t> bottom;
 
-  explicit H264FieldFixture(bool direct = false, bool is_70012 = false)
-      : top((is_70012 ? 720 : 16) * 16 * 2),
-        bottom((is_70012 ? 720 : 16) * 16 * 2) {
+  explicit H264FieldFixture(bool direct = false, bool is_70012 = false,
+                            uint32_t fourcc = VA_FOURCC_NV12,
+                            unsigned int width = 16, uint64_t token = 1)
+      : top((is_70012 ? 720 : width) * 16 * 2),
+        bottom((is_70012 ? 720 : width) * 16 * 2) {
     decoder.id = 7;
     decoder.generation = 3;
     decoder.profile = VAProfileH264Main;
-    decoder.width = 16;
+    decoder.width = width;
     decoder.height = 32;
     decoder.is_70012 = is_70012;
     decoder.picture.seq_fields.bits.frame_mbs_only_flag = 0;
-    Require(public_frame->AllocateInternal(nullptr, -1, 16, 32,
-                                           VA_FOURCC_NV12),
-            "allocate H.264 field public surface");
+    if (fourcc == VA_FOURCC_ARGB) {
+      // CPU-only stand-in for a mapped ARGB render target; no GBM device.
+      public_frame->width = width;
+      public_frame->height = 32;
+      public_frame->fourcc = fourcc;
+      public_frame->pitch[0] = width * 4U;
+      public_frame->storage.resize(static_cast<size_t>(width) * 32U * 4U);
+      public_frame->planes[0] = public_frame->storage.data();
+    } else {
+      Require(public_frame->AllocateInternal(nullptr, -1, width, 32, fourcc),
+              "allocate H.264 field public surface");
+    }
     if (direct) {
-      private_frame->width = 16;
+      private_frame->width = width;
       private_frame->height = 32;
       private_frame->direct_picture = true;
       private_frame->decode_target = public_frame;
       private_frame->direct_backing = public_frame;
       public_frame->direct_decode_eligible = true;
     } else {
-      Require(private_frame->AllocateInternal(nullptr, -1, 16, 32,
-                                              VA_FOURCC_NV12),
+      Require(private_frame->AllocateInternal(nullptr, -1, width, 32, fourcc),
               "allocate H.264 field private surface");
     }
-    private_frame->expected_timestamp = 1;
+    private_frame->expected_timestamp = token;
     private_frame->decode_identity = private_frame->trace_decode_identity = 41;
     private_frame->trace_context = 7;
     private_frame->trace_generation = 3;
     private_frame->trace_submission_ordinal = 1;
     private_frame->h264_crop_unit_y = 4;
     public_frame->id = 1;
-    public_frame->expected_timestamp = 1;
+    public_frame->expected_timestamp = token;
     public_frame->decode_identity = public_frame->trace_decode_identity = 41;
     public_frame->trace_context = 7;
     public_frame->trace_generation = 3;
@@ -1093,22 +1103,22 @@ struct H264FieldFixture {
     public_frame->h264_crop_unit_y = 4;
     public_frame->decode_picture = private_frame;
     driver.surfaces[1] = public_frame;
-    decoder.decoded_frames[1] = private_frame;
-    decoder.surface_timestamps[public_frame.get()] = 1;
-    decoder.pending[1] = 1;
-    Require(decoder.replay.Append(1, true, {1}),
+    decoder.decoded_frames[token] = private_frame;
+    decoder.surface_timestamps[public_frame.get()] = token;
+    decoder.pending[token] = 1;
+    Require(decoder.replay.Append(token, true, {1}),
             "append H.264 field fixture input");
-    SendNext(&decoder.replay, 1);
-    const unsigned int source_width = is_70012 ? 720 : 16;
-    Fill(top, source_width, 20, 40, 60);
-    Fill(bottom, source_width, 100, 140, 160);
+    SendNext(&decoder.replay, token);
+    const unsigned int source_width = is_70012 ? 720 : width;
+    Fill(top, source_width, 20, 40, 60, width);
+    Fill(bottom, source_width, 100, 140, 160, width);
   }
 
   static void Fill(std::vector<uint8_t> &pixels, unsigned int source_width,
                    uint8_t luma,
-                   uint8_t u, uint8_t v) {
+                   uint8_t u, uint8_t v, unsigned int width = 16) {
     for (unsigned int row = 0; row < 16; ++row) {
-      for (unsigned int column = 0; column < 16; column += 2) {
+      for (unsigned int column = 0; column < width; column += 2) {
         const size_t at =
             (static_cast<size_t>(row) * source_width + column) * 2;
         pixels[at] = pixels[at + 2] = luma + row;
@@ -1125,11 +1135,11 @@ struct H264FieldFixture {
     output.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC |
         (is_bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD) |
         (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0);
-    output.PicInfo.timeStamp = 1;
+    output.PicInfo.timeStamp = private_frame->expected_timestamp;
     output.PicInfo.picture_number = 71;
     output.PicInfo.sess_num = 9;
     output.PicInfo.picture_meta_payload = 0x1234;
-    output.PicInfo.width = 16;
+    output.PicInfo.width = decoder.width;
     output.PicInfo.height = 32;
     output.Ybuff = pixels->data();
     output.YBuffDoneSz = pixels->size() / 4;
@@ -1140,7 +1150,7 @@ struct H264FieldFixture {
     for (unsigned int row = 0; row < 32; ++row) {
       const unsigned int source_row = row / 2;
       const uint8_t expected = (row & 1U ? 100 : 20) + source_row;
-      for (unsigned int column = 0; column < 16; ++column)
+      for (unsigned int column = 0; column < decoder.width; ++column)
         Require(surface.planes[0][static_cast<size_t>(row) *
                                       surface.pitch[0] + column] == expected,
                 "field luma is woven into alternating display rows");
@@ -1152,7 +1162,7 @@ struct H264FieldFixture {
           (bottom_field ? 140 : 40) + source_row + 1;
       const uint8_t expected_v =
           (bottom_field ? 160 : 60) + source_row + 1;
-      for (unsigned int column = 0; column < 16; column += 2) {
+      for (unsigned int column = 0; column < decoder.width; column += 2) {
         const size_t at = static_cast<size_t>(row) * surface.pitch[1] + column;
         Require(surface.planes[1][at] == expected_u &&
                     surface.planes[1][at + 1] == expected_v,
@@ -1161,6 +1171,192 @@ struct H264FieldFixture {
     }
   }
 };
+
+struct H264WeaveFixture : H264FieldFixture {
+  std::vector<uint8_t> pixels;
+  BC_DTS_PROC_OUT output = {};
+  BC_PIC_INFO_BLOCK raw = {};
+
+  explicit H264WeaveFixture(bool direct = false,
+                            uint32_t fourcc = VA_FOURCC_NV12,
+                            unsigned int width = 16)
+      : H264FieldFixture(direct, false, fourcc, width, kTimestampStep),
+        pixels(static_cast<size_t>(width) * 32U * 2U + 160U, 0) {
+    const size_t pitch = static_cast<size_t>(width) * 2U;
+    for (unsigned int row = 0; row < 16; ++row) {
+      memcpy(pixels.data() + row * 2U * pitch, top.data() + row * pitch, pitch);
+      memcpy(pixels.data() + (row * 2U + 1U) * pitch,
+             bottom.data() + row * pitch, pitch);
+    }
+    output = Output(false, false, &pixels);
+    output.b422Mode = OUTPUT_MODE422_YUY2;
+    output.PicInfo.flags |= VDEC_FLAG_UNKNOWN_SRC;
+    raw = output.PicInfo;
+    raw.timeStamp = kTimestampStep / 20000U;
+    raw.flags = VDEC_FLAG_FIELDPAIR | VDEC_FLAG_UNKNOWN_SRC;
+    WritePib();
+    WriteWord(PayloadBytes(), output.PicInfo.picture_number);
+    WriteWord(pixels.size() - 8U, width);
+    WriteWord(pixels.size() - 4U, 32);
+  }
+
+  size_t PayloadBytes() const { return static_cast<size_t>(decoder.width) * 64U; }
+  void WriteWord(size_t offset, uint32_t value) {
+    memcpy(pixels.data() + offset, &value, sizeof(value));
+  }
+  void WritePib() {
+    memcpy(pixels.data() + PayloadBytes() + sizeof(uint32_t), &raw,
+           offsetof(BC_PIC_INFO_BLOCK, other));
+  }
+  VAStatus Process() { return ProcessDecodedOutput(&driver, &decoder, output); }
+
+  void CheckArgb(const Surface &surface) const {
+    for (unsigned int row = 0; row < 32; ++row) {
+      const unsigned int source_row = row / 2U;
+      const bool bottom_field = (row & 1U) != 0;
+      uint8_t expected[4];
+      StoreArgb(expected, (bottom_field ? 100 : 20) + source_row,
+                (bottom_field ? 140 : 40) + source_row,
+                (bottom_field ? 160 : 60) + source_row);
+      for (unsigned int column = 0; column < decoder.width; ++column)
+        Require(memcmp(surface.planes[0] + row * surface.pitch[0] + column * 4U,
+                       expected, sizeof(expected)) == 0,
+                "whole interlaced ARGB preserves both fields and row strides");
+    }
+  }
+};
+
+static void H264WholeWeavePreservesIdentityAndPixels() {
+  for (bool direct : {false, true}) {
+    for (uint32_t fourcc : {VA_FOURCC_NV12, VA_FOURCC_ARGB}) {
+      if (!direct && fourcc == VA_FOURCC_ARGB)
+        continue;  // Private decode storage is NV12; ARGB is a direct target.
+      for (unsigned int width : {16U, 18U}) {
+        H264WeaveFixture fixture(direct, fourcc, width);
+        Require(ClassifyH264InterlacedPayload(fixture.output) ==
+                    H264InterlacedPayload::Weave,
+                "completed PIB and converted timestamp identify whole Weave");
+        Require(fixture.Process() == VA_STATUS_SUCCESS &&
+                    !fixture.decoder.h264_first_field.valid &&
+                    fixture.decoder.pending.empty() &&
+                    fixture.decoder.replay.outstanding() == 0 &&
+                    fixture.private_frame->ready && fixture.public_frame->ready &&
+                    fixture.public_frame->frame_timestamp == kTimestampStep,
+                "one complete interlaced transfer retires exactly one identity");
+        if (fourcc == VA_FOURCC_NV12)
+          fixture.CheckPixels(*fixture.public_frame);
+        else
+          fixture.CheckArgb(*fixture.public_frame);
+        if (!direct)
+          Require(fixture.private_frame->storage == fixture.public_frame->storage,
+                  "private and public whole Weave pictures agree");
+        const auto original = fixture.public_frame->storage;
+        std::fill(fixture.pixels.begin(),
+                  fixture.pixels.begin() + fixture.PayloadBytes(), 0);
+        Require(fixture.Process() == VA_STATUS_SUCCESS &&
+                    fixture.public_frame->storage == original &&
+                    fixture.decoder.replay.outstanding() == 0,
+                "duplicate whole Weave cannot rewrite materialized pixels");
+      }
+    }
+  }
+
+  {
+    H264WeaveFixture fixture;
+    const uint64_t next = kTimestampStep * 2U;
+    auto replacement = std::make_shared<Surface>();
+    Require(replacement->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+            "allocate rebound whole-Weave target");
+    replacement->id = 1;
+    replacement->expected_timestamp = next;
+    replacement->decode_identity = 99;
+    fixture.driver.surfaces[1] = replacement;
+    const auto untouched = replacement->storage;
+    Require(fixture.Process() == VA_STATUS_SUCCESS &&
+                fixture.private_frame->ready &&
+                replacement->storage == untouched && !replacement->ready &&
+                fixture.decoder.replay.outstanding() == 0,
+            "whole Weave retains immutable picture without touching rebound owner");
+    fixture.CheckPixels(*fixture.private_frame);
+  }
+}
+
+static void H264WholeWeaveRejectsMalformedOrPartialOutput() {
+  for (unsigned int fault = 0; fault < 17; ++fault) {
+    H264WeaveFixture fixture;
+    switch (fault) {
+      case 0: --fixture.output.YBuffDoneSz; break;
+      case 1: fixture.WriteWord(fixture.pixels.size() - 8U, 18); break;
+      case 2: fixture.WriteWord(fixture.pixels.size() - 8U,
+                               16U | 0x80000000U); break;
+      case 3: fixture.WriteWord(fixture.pixels.size() - 4U, 16); break;
+      case 4: fixture.raw.timeStamp = 6; break;
+      case 5: fixture.raw.timeStamp = 0xffffffffULL; break;
+      case 6: fixture.raw.timeStamp =
+                  std::numeric_limits<uint64_t>::max() / 20000U + 1U; break;
+      case 7: ++fixture.raw.picture_number; break;
+      case 8: ++fixture.raw.sess_num; break;
+      case 9: ++fixture.raw.picture_meta_payload; break;
+      case 10: fixture.raw.flags = VDEC_FLAG_TOPFIELD; break;
+      case 11: fixture.raw.flags |= VDEC_FLAG_EOS; break;
+      case 12: fixture.raw.width = 18; break;
+      case 13: fixture.raw.height = 28; break;
+      case 14: fixture.WriteWord(fixture.PayloadBytes(), 72); break;
+      case 15: fixture.output.PoutFlags |= BC_POUT_FLAGS_ENCRYPTED; break;
+      case 16: fixture.raw.flags |= 0x800U; break;
+    }
+    fixture.WritePib();
+    Require(fixture.Process() == VA_STATUS_ERROR_DECODING_ERROR &&
+                fixture.decoder.replay.failed() &&
+                !fixture.decoder.h264_first_field.valid &&
+                !fixture.public_frame->ready && fixture.private_frame->failed,
+            "malformed whole payload never becomes a picture or a held field");
+  }
+  for (unsigned int fault = 0; fault < 4; ++fault) {
+    H264WeaveFixture fixture;
+    switch (fault) {
+      case 0: ++fixture.private_frame->trace_generation; break;
+      case 1: fixture.private_frame->decode_identity = 0; break;
+      case 2: fixture.decoder.pending.clear(); break;
+      case 3: ++fixture.private_frame->expected_timestamp; break;
+    }
+    Require(fixture.Process() == VA_STATUS_ERROR_DECODING_ERROR &&
+                !fixture.public_frame->ready && fixture.decoder.replay.failed(),
+            "whole Weave cannot bypass generation or pending decode ownership");
+  }
+  {
+    H264WeaveFixture fixture;
+    BC_DTS_PROC_OUT half = fixture.Output(false, false, &fixture.top);
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, half) ==
+                    VA_STATUS_SUCCESS && fixture.decoder.h264_first_field.valid &&
+                !fixture.public_frame->ready &&
+                fixture.decoder.replay.outstanding() == 1,
+            "a single half field remains pending and cannot become whole Weave");
+    Require(fixture.Process() == VA_STATUS_ERROR_DECODING_ERROR &&
+                !fixture.decoder.h264_first_field.valid &&
+                !fixture.public_frame->ready && fixture.decoder.replay.failed(),
+            "whole Weave cannot silently replace an already held half field");
+  }
+  {
+    // For tiny geometry the metadata tail can exceed the other half's pixel
+    // size. Its line trailer must still identify a field, not a whole frame.
+    H264WeaveFixture fixture;
+    fixture.output.PicInfo.width = fixture.raw.width = 2;
+    fixture.output.PicInfo.height = fixture.raw.height = 4;
+    const size_t field_bytes = 2U * 2U * 2U;
+    fixture.pixels.assign(field_bytes + 160U, 0);
+    fixture.output.Ybuff = fixture.pixels.data();
+    fixture.output.YBuffDoneSz = fixture.pixels.size() / 4U;
+    fixture.WriteWord(field_bytes, fixture.output.PicInfo.picture_number);
+    memcpy(fixture.pixels.data() + field_bytes + sizeof(uint32_t), &fixture.raw,
+           offsetof(BC_PIC_INFO_BLOCK, other));
+    fixture.WriteWord(fixture.pixels.size() - 8U, 2);
+    fixture.WriteWord(fixture.pixels.size() - 4U, 2);
+    Require(ClassifyH264InterlacedPayload(fixture.output) ==
+                H264InterlacedPayload::Field,
+            "large field metadata tail does not manufacture a whole picture");
+  }
+}
 
 static void H264FieldPairsPreserveIdentityAndPixels() {
   for (bool direct : {false, true}) {
@@ -6806,6 +7002,8 @@ int main() {
     LiveStreamMarkerSurvivesReplayAndPruning();
     UnknownOutputNeverGuessesAndInvalidOutputFails();
     DuplicateOutputCannotMutateOrRetirePixels();
+    H264WholeWeavePreservesIdentityAndPixels();
+    H264WholeWeaveRejectsMalformedOrPartialOutput();
     H264FieldPairsPreserveIdentityAndPixels();
     H264FieldPairsRespectStaleAndRetainedOwnership();
     H264Bcm70012SecondFieldTokenRecoveryIsNarrow();
