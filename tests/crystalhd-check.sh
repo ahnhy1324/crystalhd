@@ -263,6 +263,16 @@ run_check "$root"
 assert_status 1
 assert_contains 'FAIL: Module package identity: loaded 3.10.0 differs from selected 3.10.1'
 
+# An older/partial stack has no runtime receipt or newer session parameter.
+# The installation observer reports both limits without pretending that the
+# separate configuration model was applied by the loaded module.
+make_root
+rm -f -- "$root/sys/module/crystalhd/parameters/session_l0s_off"
+run_check "$root"
+assert_status 0
+assert_contains 'INFO: Runtime install record: unavailable (older or partial installation)'
+assert_contains 'INFO: BCM70015 session_l0s_off is unavailable in the loaded module'
+
 # Session policy is visible, including force-policy precedence.
 make_root
 printf '%s\n' Y >"$root/sys/module/crystalhd/parameters/session_l0s_off"

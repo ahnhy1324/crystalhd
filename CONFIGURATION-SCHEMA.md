@@ -23,13 +23,14 @@ never installed as the parser.
 
 ## Read-only CLI
 
-The four commands are:
+The five commands are:
 
 ```sh
 crystalhd-config validate
 crystalhd-config show-effective --format text
 crystalhd-config explain vaapi.h264.mode --format json
 crystalhd-config list-presets --format text
+crystalhd-config bug-report > crystalhd-config-report.json
 ```
 
 Options follow the command. `--system-config FILE` and `--user-config FILE`
@@ -42,6 +43,7 @@ file nor an environment variable can supply it. The path-locating
 `XDG_CONFIG_HOME` or `HOME` must
 still be absolute unless the user layer is explicitly suppressed. Text and
 JSON formats are available for `show-effective`, `explain` and `list-presets`.
+`bug-report` is JSON-only.
 
 Exit status `0` means success, `2` is command-line syntax, an unknown canonical
 key or an unknown/duplicated acknowledgement token, and `3` is an unsafe,
@@ -58,6 +60,15 @@ Reported states describe only configuration and established native-adapter
 semantics; they do not mean an application applied a value. Hardware-dependent
 requests such as BCM70015 scaling, i915 WC, a DRM node, decoder availability
 or link topology are reported as conditional/not inspected where applicable.
+
+`bug-report` exports the same configuration/native-adapter model and origin
+classes for support use. It additionally redacts a selected profile's name,
+the name suffix in profile origins, non-compiled paths, raw environment
+values, and non-compiled Chromium password-store values. Fixed canonical key,
+preset and environment-variable names remain visible. The report does not
+inspect or certify the installed library, module, plugin, device or hardware;
+pair it with separately reviewed `crystalhd-check` output when installation
+identity matters. Inspect any report before publishing it.
 
 ## Files and strict INI subset
 
