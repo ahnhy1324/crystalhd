@@ -124,7 +124,8 @@ bool SelectGeometry(const Input &input, const Options &options,
         // separately. Neither setup asserts progressive pixels or Bob.
         output->alternate_height = 0;
         if (options.coded_height) output->height = options.coded_height;
-        return input.width == 1280 && input.height == 720 &&
+        return input.width == 1280 &&
+            (input.height == 720 || input.height == 736) &&
             options.scale_width == 0 &&
             (!options.coded_height || options.coded_height == 736);
     }
@@ -700,6 +701,14 @@ bool SelfTest() {
     ok = PayloadGeometry(geometry, out, &pitch, &rows, &bytes, &raw) &&
         rows == 736 && bytes == padded_bytes && raw.line == 736 &&
         raw.flags == 0x48 && ok;
+    input.height = 736;
+    options.coded_height = 0;
+    ok = SelectGeometry(input, options, &geometry) &&
+        PayloadGeometry(geometry, out, &pitch, &rows, &bytes) && ok;
+    input.height = 732;
+    ok = !SelectGeometry(input, options, &geometry) && ok;
+    input.height = 720;
+    options.coded_height = 736;
     options.full_payload = false;
     ok = !SelectGeometry(input, options, &geometry) && ok;
     options.full_payload = true;
@@ -745,7 +754,7 @@ int main(int argc, char **argv) {
     const bool single = !std::strcmp(argv[3], "1");
     OutputGeometry geometry;
     if (!SelectGeometry(input, options, &geometry)) {
-        std::fprintf(stderr, "Require native field geometry, a multiple-of-16 scale width no greater than source width, or unscaled 1280x720 --full-payload; no device opened\n");
+        std::fprintf(stderr, "Require native field geometry, a multiple-of-16 scale width no greater than source width, or unscaled 1280x720/736 --full-payload; no device opened\n");
         return 2;
     }
     const uint64_t budget = static_cast<uint64_t>(geometry.width) * 2U *
