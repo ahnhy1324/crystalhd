@@ -72,6 +72,20 @@ for instruction in movdqu packuswb pavgb; do
 done
 "$tmp_dir/normal"
 
+# LP64 makes uintptr_t and unsigned long the same type, while the supported
+# i386 ABI defines uintptr_t as unsigned int. Parse the VPP regression TU with
+# the real 32-bit headers so its external-buffer handles cannot rely on LP64.
+normal_flags=$(make -s --no-print-directory -C "$repo_dir/filters/vaapi" \
+    LEGACY_CPU=0 CXX="$cxx -m32" print-cpu-flags)
+# Compiler, pkg-config and selected CPU flags intentionally expand into
+# arguments, as in build_object above.
+# shellcheck disable=SC2086
+$cxx -m32 -std=c++17 -O2 -Wall -Wextra -Werror -fsyntax-only \
+    -D__LINUX_USER__ -I"$repo_dir/include" \
+    -I"$repo_dir/linux_lib/libcrystalhd" \
+    $($pkg_config --cflags libva libva-drm libdrm gbm libswscale) \
+    $normal_flags "$repo_dir/tests/vaapi-vpp.cpp"
+
 build_object legacy 1
 if grep -Eq '%([xyz]mm[0-9]+|mm[0-7])|[[:space:]](emms|femms|clflush|[lms]fence|[ls]dmxcsr)([[:space:]]|$)' \
     "$tmp_dir/legacy.disassembly"; then

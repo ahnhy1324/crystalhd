@@ -946,7 +946,7 @@ void PendingBackingReimportIsRejectedBeforeMapping() {
     VASurfaceID owner = 2;
     Require(DestroySurfaces(&fixture.context, &owner, 1) == VA_STATUS_SUCCESS,
             "retire original owner with pending fence");
-    unsigned long handle = prime.objects[0].fd;
+    uintptr_t handle = prime.objects[0].fd;
     VASurfaceAttribExternalBuffers external = {};
     external.pixel_format = VA_FOURCC_NV12;
     external.width = 16;
@@ -1020,7 +1020,7 @@ void FirstExternalImportOwnsAliasesAndRollsBackAtomically() {
     Require(ftruncate(fd, 512) == 0, "size private 16x16 NV12 import");
     VADRMPRIMESurfaceDescriptor prime[2] = {};
     VASurfaceAttribExternalBuffers external[2] = {};
-    unsigned long handle = fd;
+    uintptr_t handle = fd;
     for (unsigned int i = 0; i < 2; ++i) {
       prime[i].fourcc = VA_FOURCC_NV12;
       prime[i].width = 16;
