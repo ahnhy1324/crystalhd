@@ -87,6 +87,8 @@ $(REPLAY_TEST): $(ROOTDIR)/tests/vaapi-replay.cpp crystalhd_drv_video.cpp $(BACK
 		-Wl,--wrap=poll,--wrap=__poll_chk,--wrap=read \
 		-Wl,--wrap=gbm_bo_get_plane_count,--wrap=gbm_bo_get_fd_for_plane \
 		-Wl,--wrap=DtsDeviceOpen,--wrap=DtsDupOutputPollFd \
+		-Wl,--wrap=DtsOpenDecoder,--wrap=DtsSetColorSpace \
+		-Wl,--wrap=DtsStartDecoder,--wrap=DtsStartCapture \
 		-Wl,--wrap=DtsDeviceClose,--wrap=DtsStopDecoder \
 		-Wl,--wrap=DtsCloseDecoder,--wrap=DtsCrystalHDVersion,--wrap=DtsSetInputFormat \
 		-Wl,--wrap=DtsGetDriverStatus,--wrap=DtsTxFreeSize \
