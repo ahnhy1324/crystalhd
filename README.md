@@ -12,6 +12,11 @@ event-driven receive and optional output scaling. The existing
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29)
 remains available and unchanged.
 
+The `1.1.0-rc.3` test candidate adds selected interlaced Weave playback and
+explicit hardware/software selection. It is a pre-release, not a replacement
+for stable 1.0.0; [RC usage and limitations](USAGE.md#explicit-weave-playback)
+include deferred deinterlacing and synchronization tuning.
+
 ## Compatibility
 
 | What you have or want | What to expect |
@@ -21,7 +26,7 @@ remains available and unchanged.
 | Full-HD input with reduced card output | Optional hardware scaling reduces transfer traffic. Selected H.264 input reached about 65 pictures/s with the qualified L0s workaround active; software enlargement costs CPU and cannot recover detail. This is not native 1080p60 or a displayed-rate guarantee. |
 | Sunshine / Moonlight | Default frame-matching mode works at 720p30; with V-sync/pacing off, an experimental previous-frame mode achieved about 59 renderer submissions/s at 720p60 and 29 at 1080p30. These are measured rates, not a matched speedup over default matching. Physical streaming A/V offset and forced-loss recovery remain unverified. |
 | BCM70012 / older CPUs | Legacy BCM70012 compatibility and x86-64/i686 builds are retained. Recent BCM70012 and physical no-SSE hardware tests remain outstanding. |
-| Kodi | Stock Kodi 21.3 selected CrystalHD for progressive H.264 and passed video/EOS/control lifecycle checks on the reference host; physical A/V timing remains unverified. Direct interlaced Weave readback passes and standalone FFmpeg BWDIF completed the selected fixture, but Kodi's interlaced methods are not yet support-grade; see [usage and limits](USAGE.md#kodi). |
+| Kodi | Stock Kodi 21.3 progressive hardware playback and lifecycle checks pass on the reference host. Selected interlaced Weave playback is included in the v1.1 RC with limited scope; deinterlacing and A/V synchronization tuning remain follow-up work. No general full-rate FHD or hardware-Bob claim; see [usage and limits](USAGE.md#kodi). |
 | VA-API, VLC, browsers | VA-API is experimental. VLC 3.0.23 selects CrystalHD VA/EGL and closes cleanly on the LTS reference host, but logs late pictures. Chromium/YouTube hardware support is unverified. |
 
 Fresh BCM70015 qualification uses Ubuntu 26.04.1 LTS / Linux 7.0.0-38.

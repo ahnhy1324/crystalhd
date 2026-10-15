@@ -77,6 +77,8 @@ def arguments(argv=None):
     modes.add_argument("--software", dest="mode", action="store_const", const="software",
                        help="disable hardware video decoders; no automatic fallback")
     parser.set_defaults(mode="hardware")
+    parser.add_argument("--weave", action="store_true",
+                        help="preserve interlaced frames without deinterlacing; works with either decoder mode")
     parser.add_argument("--scale-width", type=hardware_scale_width, default=0, metavar="PIXELS",
                         help="request an even BCM70015 output width from 128 to 1918 (0: native)")
     parser.add_argument("--software-output-size", type=output_size,
@@ -258,9 +260,20 @@ class Player:
         self.pipeline.set_property("uri", args.file.as_uri())
         if args.subtitles:
             self.pipeline.set_property("suburi", args.subtitles.as_uri())
-        if args.mode == "software":
+        if args.mode == "software" or args.weave:
+            flags = int(self.pipeline.get_property("flags"))
             # GstPlayFlags::FORCE_SW_DECODERS, present since GStreamer 1.18.
-            self.pipeline.set_property("flags", int(self.pipeline.get_property("flags")) | (1 << 12))
+            if args.mode == "software":
+                flags |= 1 << 12
+            if args.weave:
+                # GstPlayFlags::DEINTERLACE; leave audio, subtitles and other flags alone.
+                flags &= ~(1 << 9)
+            self.pipeline.set_property("flags", flags)
+        if args.weave:
+            if int(self.pipeline.get_property("flags")) & (1 << 9):
+                raise RuntimeError("GStreamer did not disable deinterlacing for --weave")
+            decoder = "CrystalHD hardware" if args.mode == "hardware" else "software"
+            print(f"Output: Weave (deinterlacing off; {decoder} decoding required)", flush=True)
         self.video_filter = None
         if args.software_output_size:
             self.video_filter = make_software_output_filter(

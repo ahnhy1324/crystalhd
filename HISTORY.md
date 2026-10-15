@@ -1,26 +1,33 @@
 # History
 
-## 1.1.0-rc.2 — candidate (unpublished)
+## 1.1.0-rc.3 — release candidate
 
-This is the planned identity for the v1.1 release candidate tracked in
-[#430](https://github.com/ahnhy1324/crystalhd/issues/430). It is not a published
-tag or release, and the exact candidate remains subject to Gate A freeze,
-review and explicit maintainer RC approval.
+Pre-release scope is tracked in
+[#430](https://github.com/ahnhy1324/crystalhd/issues/430). Long-duration and
+final stable-release qualification follow the immutable RC; this is not a
+stable v1.1.0 support declaration. Earlier rc.1/rc.2 identities were frozen
+development candidates, not published v1.1 releases.
 
 - Compatibility reports [#412](https://github.com/ahnhy1324/crystalhd/issues/412)–[#415](https://github.com/ahnhy1324/crystalhd/issues/415)
   from [@sjq42](https://github.com/sjq42) led to normal i686 VA SSE2 selection,
   preservation of required VA build flags with external `CXXFLAGS`, bounded
   large H.264 access units with old-library fallback, selected H.264 MBAFF
   field pairs, and 32-bit player bus-message handling. These do not imply
-  general interlaced VA, Kodi, Atom or browser support.
+  general interlaced VA, Atom or browser support.
 - Selected H.264 MBAFF pairs materialize as complete interlaced NV12 Weave
   frames. Runtime payload `f4d99d5` completed the 750-picture fixture with
   identical luma to software decode, and standalone FFmpeg BWDIF produced
-  1,500 progressive outputs. Stock Kodi progressive hardware-video and
-  application-lifecycle checks passed, while physical A/V timing remains
-  unverified. Its interlaced integration remains a proposed v1.2.0 task in
-  [#436](https://github.com/ahnhy1324/crystalhd/issues/436); no VA hardware
-  deinterlacing capability is advertised.
+  1,500 progressive outputs. Whole-picture storage is also accepted by VA and
+  GStreamer without weakening compact-field ownership checks. Finite MBAFF
+  prefeed fixes the last-field/EOS wait while explicit live gaps remain
+  nonterminal and explicit context close drains the tail.
+- `crystalhd-play --hardware --weave` and `--software --weave` select card or
+  CPU decoding without automatic deinterlacing; ordinary playback defaults
+  are unchanged. Stock Kodi progressive lifecycle and selected interlaced
+  playback are verified within the recorded scope. Deinterlacing quality,
+  A/V synchronization tuning and full-rate FHD presentation remain follow-up
+  work in [#436](https://github.com/ahnhy1324/crystalhd/issues/436); no VA
+  hardware-deinterlacing capability is advertised.
 - The read-only configuration inspector, reviewed presets and redacted bug
   report are additive tooling; configuration files do not apply runtime
   settings.
@@ -31,7 +38,7 @@ review and explicit maintainer RC approval.
   allocation failures release hardware output while failing the affected
   surface cleanly.
 - The candidate keeps the legacy ioctl version and the `libcrystalhd.so.3`
-  ABI. Its planned bundle/package mapping is `1.1.0-rc.2` / `3.10.5`; v1.0
+  ABI. Its bundle/package mapping is `1.1.0-rc.3` / `3.10.6`; v1.0
   tags and qualification evidence remain immutable historical baselines.
 
 ## 1.0.0 — October 13, 2026
