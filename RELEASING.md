@@ -48,9 +48,10 @@ checkout alone does not announce a published release.
 | GStreamer plugin / VA vendor string | `3.10.0` / `0.1` | Historical component labels; not the bundle identity |
 | Firmware | Existing BCM70012/BCM70015 images | Retain images, identities and license notices |
 
-The `v1.1.0-rc.3` mapping is bundle `1.1.0-rc.3` and package `3.10.6`.
-Publication requires #430 to record the frozen commit, required results
-and explicit maintainer RC GO. The earlier `1.1.0-rc.2` / `3.10.5` candidate
+Published [v1.1.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3)
+pins `51e5cdfe4c720da92dec54c72fc4f47c8382e43a`, bundle `1.1.0-rc.3` and
+package `3.10.6`. Its Gate A results and maintainer RC GO are recorded in
+#430; Gate B and stable GO remain separate. The earlier `1.1.0-rc.2` / `3.10.5` candidate
 was frozen but never published; retain its registered source/build unchanged
 for rollback rather than replacing it with RC.3 bytes.
 The published `v1.0.0-rc.1` retains bundle

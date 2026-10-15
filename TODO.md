@@ -1,15 +1,18 @@
 # Open work
 
-Release status **2026-10-15**: [stable 1.0.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0)
-is published and unchanged. The v1.1.0-rc.3 candidate adds selected interlaced
+Release status **2026-10-16**: [stable 1.0.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0)
+is unchanged. Published [v1.1.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3)
+adds selected interlaced
 Weave playback, finite MBAFF tail fixes and explicit HW/SW Weave selection.
 The maintainer approved RC publication with deinterlacing and sync tuning
 deferred; exact candidate checks and publication state are recorded in #430.
 This is not stable v1.1.0 GO or a full-rate FHD/deinterlacing support claim.
 
 - [ ] [#430: v1.1.0 RC qualification and GO/HOLD](https://github.com/ahnhy1324/crystalhd/issues/430)
-  — publish the qualified immutable RC, then run its declared Gate B campaign
-  before a separate stable-release GO. Preserve prior candidate results.
+  — qualify the published immutable RC before a separate stable-release GO.
+  The 11-codec oracle passes; the 8-hour run reaches 864,000 pictures/EOS but
+  fails its final audio-interval criterion. Later gates remain NOT RUN;
+  preserve the failure and investigate without weakening acceptance.
 - [ ] [#429: External i386/BCM70015 acceptance](https://github.com/ahnhy1324/crystalhd/issues/429)
   — primary-host results do not replace the reporter's Atom N280/i386/Kodi
   combinations; keep unavailable external configurations marked NOT RUN.

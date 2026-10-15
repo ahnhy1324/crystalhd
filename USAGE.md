@@ -75,8 +75,23 @@ crystalhd-play --software "/path/to/video.mp4"
 
 ### Explicit Weave playback
 
-In v1.1.0-rc.3, select the decoder and pass a complete interlaced frame through
-without GStreamer's automatic deinterlacing:
+`--weave` is available in [v1.1.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3),
+not the v1.0.0 installed by the stable quick start. To obtain the RC source:
+
+```sh
+git clone --branch v1.1.0-rc.3 --single-branch \
+  https://github.com/ahnhy1324/crystalhd.git crystalhd-rc3
+cd crystalhd-rc3
+```
+
+Install the [dependencies and build](README.md#quick-start) from this directory,
+then follow the [direct install/update](BRINGUP.md#direct-install-update-and-rollback)
+or [DKMS route](README.dkms), according to the existing module owner. Do not
+mix the two routes. Keep the published RC tag and previous rollback source
+unchanged.
+
+After installing the RC, select the decoder and pass a complete interlaced
+frame through without GStreamer's automatic deinterlacing:
 
 ```sh
 crystalhd-play --hardware --weave "/path/to/interlaced-video.mkv"
@@ -108,6 +123,26 @@ resolution can be decoded at every playback rate. Native Full-HD output at
 60 fps, including 1080p30 at 2x, is beyond the measured output limit.
 [Smaller card output](#optional-bcm70015-output-scaling) can improve throughput
 for Full-HD input at the cost of detail.
+
+### Application deinterlacing after Weave
+
+Weave is the complete interlaced frame supplied by the decoder. An application
+can then deinterlace that frame in software; this does not require a CrystalHD
+hardware deinterlacer. In `crystalhd-play`, **omit `--weave`** to allow
+GStreamer's existing automatic deinterlacing policy:
+
+```sh
+crystalhd-play --hardware "/path/to/interlaced-video.mkv"
+crystalhd-play --software "/path/to/interlaced-video.mkv"
+```
+
+Audio, subtitles and player controls stay available. The player has no CLI
+option selecting a particular filter such as BWDIF. For explicit selection,
+use [GStreamer's filter](#gstreamer-deinterlacing),
+[FFmpeg BWDIF](#interlaced-h264-weave-and-ffmpeg-bwdif), or
+[Kodi's Deinterlace method](#kodi). These filters use CPU time and may increase
+output cadence; successful decoding alone does not certify smooth display or
+A/V synchronization on every host.
 
 ## Optional BCM70015 output scaling
 
@@ -207,6 +242,28 @@ Replace the dimensions and frame rate with facts from the input. Raw WMV3 RCV
 is not accepted directly. The [GStreamer component guide](filters/gst/gst-plugin-1.0/README.md)
 defines exact framing rules and counted test procedures.
 
+### GStreamer deinterlacing
+
+For a known interlaced H.264 MP4, explicitly place GStreamer's built-in CPU
+`deinterlace` element after CrystalHD's complete Weave output:
+
+```sh
+gst-launch-1.0 -e \
+  filesrc location="/path/to/interlaced-video.mp4" ! qtdemux ! h264parse ! \
+  crystalhddec ! deinterlace mode=interlaced method=linear fields=all tff=auto ! \
+  videoconvert ! autovideosink
+```
+
+`method=linear` selects linear interpolation; `tff=auto` follows the decoder's
+field-order metadata. `fields=all` ordinarily produces 50 progressive outputs/s
+from 25 complete interlaced pictures/s. This is a video-only example, not a
+newly measured playback/performance result. Check locally available methods
+with `gst-inspect-1.0 deinterlace`; the
+[element reference](https://gstreamer.freedesktop.org/documentation/deinterlace/index.html)
+describes the choices. Remove the `deinterlace ... !` stage for plain Weave;
+do not select `method=weave` as an interpolation filter. For normal playback
+with audio, use the player above or Kodi instead.
+
 ## Codec boundaries
 
 This is the tested BCM70015 subset, not every bitstream allowed by each codec
@@ -253,8 +310,9 @@ fields and the VA driver combines their alternating lines into one complete
 interlaced NV12 **Weave** frame. Weave preserves both fields; it is not
 deinterlacing, so motion can show normal combing.
 
-The v1.1 RC was checked with a 30-second, 1920x1080i25 TFF fixture. Direct VA
-readback completed all 750 input pictures twice. Every luma sample matched the
+The earlier, unpublished RC.2 payload `f4d99d5` was checked with a 30-second,
+1920x1080i25 TFF fixture. Direct VA readback completed all 750 input pictures
+twice. Every luma sample matched the
 software decoder; the deterministic same-field chroma conversion measured
 `U 40.96 dB` and `V 38.85 dB` PSNR. This is a selected-fixture result, not a
 claim for PAFF, arbitrary interlaced streams or physical picture quality.
@@ -274,7 +332,7 @@ ffmpeg -hide_banner -hwaccel vaapi -hwaccel_device "$drm_node" \
 
 This null-output command verifies decode, readback and filtering; it does not
 play audio or display the result. `send_field` ordinarily turns 25 complete
-interlaced pictures/s into 50 progressive frames/s. The qualification run
+interlaced pictures/s into 50 progressive frames/s. That RC.2 qualification run
 wrote `framemd5` checksums and produced 1,500/1,500 frames plus clean EOS. On
 the reference Core 2 Duo T8100 that decode/readback/BWDIF/checksum run took
 33.95 seconds for 30 seconds of media, used 157% process CPU and 325,296 KiB
@@ -283,6 +341,11 @@ the filter path but neither certifies nor rules out real-time presentation.
 `deinterlace_vaapi=mode=bob` is not a substitute: this driver does not
 advertise a VA VPP deinterlacing filter. See the
 [VA component contract](filters/vaapi/README.md#interlaced-h264-weave-and-client-deinterlacing).
+For one progressive output per input picture instead, use `mode=send_frame`;
+this reduces output cadence, not the underlying decode work, and has different
+motion quality. The [BWDIF reference](https://ffmpeg.org/ffmpeg-filters.html#bwdif)
+defines its mode/parity options. These commands filter on the CPU after
+hardware readback, not inside the card.
 
 ### Kodi
 
@@ -309,6 +372,24 @@ owner with `sudo fuser -v /dev/crystalhd`; the UI setting alone does not prove
 hardware decoding. No physical flash/click A/V PASS was recorded, and other
 Kodi releases and display backends remain unqualified.
 
+For the selected interlaced subset in Kodi 21.3, keep **VAAPI hardware
+acceleration enabled** for CrystalHD decoding. While playing, open the cog
+icon → **Video settings → Deinterlace method**:
+
+- **Off** leaves the decoded Weave frame unfiltered.
+- **Deinterlace** explicitly selects Kodi's existing CPU BWDIF path after VA
+  readback; this is not driver-side Bob or VPP deinterlacing.
+- **Auto select** is not a way to force BWDIF and may probe unsupported VAAPI
+  Bob. Prefer the explicit method for this comparison.
+
+Method availability and labels depend on the Kodi version/backend; see the
+[playback settings](https://kodi.wiki/view/Video_playback#Video_Settings) and
+[Kodi 21.3 implementation](https://github.com/xbmc/xbmc/blob/21.3-Omega/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp).
+Decoder selection is separate from filter selection: for a CPU-only control,
+disable VAAPI (and VDPAU if offered), then close and reopen the file. Changing
+only the deinterlace method does not switch decoding to software. These are
+per-player choices, not settings applied by `crystalhd-config`.
+
 The v1.1 RC includes selected interlaced Weave playback, not general
 deinterlacing or full-rate FHD support. The earlier `f4d99d5` Kodi stalls are
 preserved in the hardware report; the later finite MBAFF input/tail fix
@@ -320,7 +401,7 @@ post-EOS empty-output wait. No incomplete surface is returned to hide a wait.
 For an explicit HW/SW Weave selection use the
 [player commands above](#explicit-weave-playback). Kodi's VA-API acceleration
 setting selects hardware versus CPU decode; its deinterlacing method is a
-separate setting. `Auto` may probe unsupported VAAPI Bob. No driver
+separate setting. No driver
 deinterlacing capability is advertised; deinterlacing and sync tuning remain
 tracked in [#436](https://github.com/ahnhy1324/crystalhd/issues/436).
 
@@ -331,7 +412,9 @@ ended normally. This is a useful playback check, not measured millisecond
 sync, a complete displayed-frame census or FHD support qualification.
 The CPU/no-deinterlace control showed similar shaking without using CrystalHD.
 
-One VLC 3.0.21 H.264 path was validated on the reference X11/i915 system:
+### VLC
+
+The historical Ubuntu 25.10 / VLC 3.0.21 H.264 check used this X11/i915 path:
 
 ```sh
 LIBVA_DRIVER_NAME=crystalhd \
@@ -342,7 +425,10 @@ vlc --avcodec-hw=vaapi --vout=gl --gl=egl_x11 \
 VLC can choose another decoder, so this command alone is not proof of
 CrystalHD use. While it plays, `sudo fuser -v /dev/crystalhd` should show the
 client. This result does not certify other VLC versions, codecs, Wayland paths
-or GPUs.
+or GPUs. On the newer LTS host, VLC 3.0.23 selected CrystalHD VA/EGL and closed
+cleanly but logged late pictures; see the
+[dated LTS result](HARDWARE-2026-09-13.md#new-lts-qualification--2026-10-13).
+Neither progressive result establishes VLC interlaced/deinterlacing support.
 
 ## Realistic expectations
 

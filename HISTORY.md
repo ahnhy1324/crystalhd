@@ -15,8 +15,8 @@ development candidates, not published v1.1 releases.
   field pairs, and 32-bit player bus-message handling. These do not imply
   general interlaced VA, Atom or browser support.
 - Selected H.264 MBAFF pairs materialize as complete interlaced NV12 Weave
-  frames. Runtime payload `f4d99d5` completed the 750-picture fixture with
-  identical luma to software decode, and standalone FFmpeg BWDIF produced
+  frames. Earlier unpublished RC.2 payload `f4d99d5` completed the 750-picture
+  fixture with identical luma to software decode, and standalone FFmpeg BWDIF produced
   1,500 progressive outputs. Whole-picture storage is also accepted by VA and
   GStreamer without weakening compact-field ownership checks. Finite MBAFF
   prefeed fixes the last-field/EOS wait while explicit live gaps remain

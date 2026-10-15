@@ -74,7 +74,7 @@ i915 and trace controls are read when the VA driver instance is initialized.
 | Control | Owner | Device/backend | Default and accepted values | Dependencies | Read/apply lifecycle | Safety | Public API |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `CRYSTALHD_VAAPI_LIVE_H264` <!-- config-surface:environment:CRYSTALHD_VAAPI_LIVE_H264 --> | CrystalHD VA driver | H.264 VA decode; explicit live behavior is BCM70015-only | Unset: bounded finite-input replay; exactly `1`: long-running live/direct path; every other value selects strict replay | Client must provide later input or explicitly drain retained surfaces at context destruction | Snapshot at `vaCreateContext()` | **Experimental** | Yes — documented process environment |
-| `CRYSTALHD_VAAPI_LOW_LATENCY_H264` <!-- config-surface:environment:CRYSTALHD_VAAPI_LOW_LATENCY_H264 --> | CrystalHD VA driver | BCM70015 H.264 VA decode | Off; exactly `1` enables prefeed | Requires `CRYSTALHD_VAAPI_LIVE_H264=1`; does not establish A/V-sync support | Snapshot at `vaCreateContext()` | **Experimental** | Yes — documented process environment |
+| `CRYSTALHD_VAAPI_LOW_LATENCY_H264` <!-- config-surface:environment:CRYSTALHD_VAAPI_LOW_LATENCY_H264 --> | CrystalHD VA driver | BCM70015 H.264 VA decode | Unset: automatic prefeed for eligible finite MBAFF frame AUs; exactly `1`: explicit H.264 prefeed; any other explicit value: off | Prefeed is independent of LIVE; explicit live streaming combines both controls; no A/V-sync guarantee | Snapshot at `vaCreateContext()` | **Experimental** for explicit selection; bounded automatic MBAFF behavior is part of ordinary finite decode | Yes — documented process environment |
 | `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP` <!-- config-surface:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP --> | CrystalHD VA driver | BCM70015 H.264 VA presentation experiment | Off; exactly `1` requests remapping | Requires live mode and low-latency mode, plus a valid policy and delay | Snapshot at `vaCreateContext()` | **Experimental** — deliberately does not preserve standard VA surface identity | Yes — documented process environment |
 | `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY` <!-- config-surface:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY --> | CrystalHD VA driver | READY-remap experiment | Unset or `previous`; optional `latest`; any other value disables remapping | READY remap and its prerequisites | Snapshot at `vaCreateContext()` | **Experimental** | Yes — documented process environment |
 | `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US` <!-- config-surface:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US --> | CrystalHD VA driver | READY-remap experiment | `0`; exactly `0`, `16667`, `33333` or `50000` microseconds; any other value disables remapping | READY remap and its prerequisites | Snapshot at `vaCreateContext()` | **Experimental** | Yes — documented process environment |
@@ -85,6 +85,14 @@ i915 and trace controls are read when the VA driver instance is initialized.
 The exact replay, drain and presentation limitations are in the
 [VA-API guide](filters/vaapi/README.md#replay-and-end-of-stream). Unset all
 experimental variables to return to the ordinary path.
+
+The current `crystalhd-config` inspector still models prefeed as live-only.
+It can report finite prefeed inactive or reject a managed finite+prefeed
+request even though the VA backend accepts that native environment selection.
+This is an [inspector limitation](CONFIGURATION-SCHEMA.md#cross-setting-validation),
+not proof that runtime prefeed is disabled. The tool does not apply settings;
+the backend's [prefeed rules](filters/vaapi/README.md#replay-and-end-of-stream)
+remain authoritative.
 
 ## Launcher and wrapper environment
 
@@ -173,7 +181,7 @@ literal library/VA environment reads, CrystalHD-named variables in installed
 scripts, production GStreamer properties and explicit `crystalhd-play` options.
 Missing and stale rows both fail.
 
-The schema conformance check also classifies all 27 surfaces: 23 userspace
+The schema conformance check also classifies all 28 surfaces: 23 userspace
 surfaces map to 21 canonical keys, the two module parameters retain a separate
 module-load lifetime, `CRYSTALHD_CHROMIUM_CONFIG` remains a legacy bootstrap,
-and `--subtitles` remains invocation-only.
+and `--subtitles` and `--weave` remain invocation-only.

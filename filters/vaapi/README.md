@@ -74,8 +74,8 @@ the field chroma rows into NV12. Averaging chroma across temporally different
 top and bottom fields would instead create coloured comb artifacts. This
 operation is Weave output, not Bob or motion-adaptive deinterlacing.
 
-Runtime payload `f4d99d5` fully materialized the selected 750-picture
-1920x1080i25 fixture twice; every luma plane matched the software-decoded
+Earlier unpublished RC.2 payload `f4d99d5` fully materialized the selected
+750-picture 1920x1080i25 fixture twice; every luma plane matched the software-decoded
 reference after common normalization, while deterministic chroma differences
 remained from this field-aware conversion. The exact fixture, pixel, timing,
 resource and teardown results are in the
@@ -85,10 +85,10 @@ Standalone FFmpeg CPU BWDIF after `hwdownload` completed the same fixture, but
 the driver still advertises no `VAProcFilterDeinterlacing` capability. See the
 [runnable command and performance boundary](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif).
 Stock Kodi 21.3 progressive hardware-video and lifecycle checks passed;
-quantified physical A/V remains unqualified. Installed RC `f4d99d5` failed
-interlaced BWDIF/Render Bob playback. Source candidate `ec77b71` addresses finite MBAFF
-input/tail scheduling, with complete decoder-oracle results, but Kodi source
-picture accounting and timing/output warnings still need qualification. See
+quantified physical A/V remains unqualified. Earlier RC.2 payload `f4d99d5` failed
+interlaced BWDIF/Render Bob playback. The `ec77b71` finite MBAFF input/tail fix
+is included in published RC.3, with complete decoder-oracle results, but Kodi
+source picture accounting and timing/output warnings still need qualification. See
 [Kodi qualification and remaining limits](../../USAGE.md#kodi). The driver
 does not advertise VA VPP deinterlacing; no general Kodi interlace or
 hardware-Bob support is claimed.

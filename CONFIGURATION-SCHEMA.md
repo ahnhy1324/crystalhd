@@ -248,9 +248,10 @@ A resolution report distinguishes:
 
 For example, a valid managed `live` request with low latency enabled remains a
 valid transaction.  If raw `CRYSTALHD_VAAPI_LIVE_H264=0` then wins, the target
-request is `strict`, its raw environment origin remains visible, and the VA
-adapter reports low latency inactive because the live fast path is absent.  It
-does not turn that established raw behavior into a strict-schema error.
+request is `strict` and its raw environment origin remains visible. The current
+inspector reports low latency inactive under its older live-only model; this
+does not describe the current backend's finite-prefeed behavior (see below).
+It does not turn the raw override into a strict-schema error.
 
 Profile selection is always explicit.  The resolver must not inspect
 `argv[0]`, executable basenames, process names, desktop-file names, media paths
@@ -262,9 +263,16 @@ driver/library/plugin session is created.  They are not reread per frame.
 
 ## Cross-setting validation
 
-Strict-schema validation rejects these incoherent combinations when produced
-by the canonical preset, system, user, selected-profile and application
-layers:
+**Current prefeed inspection limitation:** the inspector's live-only
+low-latency model predates the backend's independent explicit prefeed and
+automatic eligible finite-MBAFF prefeed. Its inactive/rejection result for
+finite prefeed is not a runtime verdict. This document describes the tool as
+implemented, not a correction to its code; native behavior is in the
+[VA environment inventory](CONFIGURATION.md#va-api-environment). READY remap
+still requires both explicit live and low-latency mode.
+
+The current inspector rejects the following combinations in canonical preset,
+system, user, selected-profile and application layers:
 
 - `vaapi.h264.low_latency = true` unless H.264 mode is `live`;
 - `vaapi.h264.ready_remap = true` unless mode is `live` and low latency is
@@ -283,9 +291,9 @@ file—BCM70015 scaling, coded width, link topology and DRM/i915 availability—
 reported as conditional or unsupported during effective-setting inspection;
 they are never treated as silently successful.
 
-Raw target adapters keep their established behavior after that strict
-transaction succeeds.  In particular, a non-`1` raw live-mode value selects
-strict replay and makes a requested low-latency/READY path inactive.  An
+Raw target inspection follows that strict transaction. In its current model,
+a non-`1` raw live-mode value selects strict replay and makes a requested
+low-latency/READY path inactive; for prefeed, observe the limitation above. An
 unsupported raw READY policy or delay disables remapping while preserving the
 exact rejected value and environment origin in diagnostics.  An invalid raw
 RX-pool value falls back to 16 with a fallback receipt.  The Chromium launcher
