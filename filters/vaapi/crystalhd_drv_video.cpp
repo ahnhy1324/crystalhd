@@ -62,6 +62,7 @@ extern "C" {
 #include <bc_dts_defs.h>
 #include <bc_dts_types.h>
 #include <libcrystalhd_if.h>
+#include "../crystalhd-h264-output.h"
 #include "crystalhd-access-unit-limits.h"
 #include "crystalhd-decode-replay.h"
 #include "crystalhd-mpeg4.h"
@@ -3272,74 +3273,16 @@ struct OutputProcessingState {
 
 enum class H264InterlacedPayload { Field, Weave, Invalid };
 
-// BCM70015 can deliver an entire woven picture while libcrystalhd reports a
-// TOPFIELD flag. Only completed data and its embedded PIB can establish that
-// layout. BCM70012 uses a different output format and keeps its field path.
 static H264InterlacedPayload ClassifyH264InterlacedPayload(
     const BC_DTS_PROC_OUT &output) {
-  const uint32_t width = output.PicInfo.width;
-  const uint32_t height = output.PicInfo.height;
-  const uint64_t done = static_cast<uint64_t>(output.YBuffDoneSz) * 4U;
-  const uint64_t pitch = static_cast<uint64_t>(width) * 2U;
-  const uint64_t full_bytes = pitch * height;
-  if (output.Ybuff == nullptr || width == 0 || width > kMaxWidth ||
-      height == 0 || height > kMaxHeight || (width & 1U) != 0 ||
-      (height & 3U) != 0 ||
-      (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) == 0 ||
-      (output.PoutFlags & BC_POUT_FLAGS_ENCRYPTED) != 0)
-    return H264InterlacedPayload::Invalid;
-  if (done < full_bytes)
-    return H264InterlacedPayload::Field;
-
-  // Bound every trailer read, including on i686. The kernel already bounds
-  // completion by the registered plane; this additionally rejects impossible
-  // dimensions/counts before constructing userspace pointers.
-  const uint64_t max_done = static_cast<uint64_t>(kMaxWidth) * 2U *
-                               (kMaxHeight + 2U) + 4096U;
-  if (done < 8U || done > max_done ||
-      done > std::numeric_limits<size_t>::max() ||
-      output.b422Mode != OUTPUT_MODE422_YUY2)
-    return H264InterlacedPayload::Invalid;
-  uint32_t trailer_width = 0, line = 0;
-  memcpy(&trailer_width, output.Ybuff + static_cast<size_t>(done - 8U), 4);
-  memcpy(&line, output.Ybuff + static_cast<size_t>(done - 4U), 4);
-  if (trailer_width != width)
-    return H264InterlacedPayload::Invalid;
-  const bool whole = line == height || line == height + 1U;
-  const bool half = line == height / 2U || line == height / 2U + 1U;
-  if (!whole && !half)
-    return H264InterlacedPayload::Invalid;
-  const uint64_t ordinal_offset = pitch * line;
-  const uint64_t pib_offset = ordinal_offset + sizeof(uint32_t);
-  const size_t common_bytes = offsetof(BC_PIC_INFO_BLOCK, other);
-  if (pib_offset > done - 8U || common_bytes > done - 8U - pib_offset)
-    return H264InterlacedPayload::Invalid;
-  uint32_t ordinal = 0;
-  BC_PIC_INFO_BLOCK raw = {};
-  memcpy(&ordinal, output.Ybuff + static_cast<size_t>(ordinal_offset), 4);
-  memcpy(&raw, output.Ybuff + static_cast<size_t>(pib_offset), common_bytes);
-  // Flea's embedded timestamp is in the firmware's shifted millisecond
-  // units. libcrystalhd converts ordinary values to 100 ns units by *20000.
-  const bool timestamp_matches = raw.timeStamp != 0xffffffffULL &&
-      raw.timeStamp <= std::numeric_limits<uint64_t>::max() / 20000U &&
-      raw.timeStamp * 20000U == output.PicInfo.timeStamp;
-  constexpr uint32_t flea_decode_error = 0x800U;  // FleaDefs.h firmware flag.
-  if ((ordinal & 0x80000000U) != 0 ||
-      (ordinal & 0x3fffffffU) != output.PicInfo.picture_number ||
-      !timestamp_matches ||
-      raw.picture_number != output.PicInfo.picture_number ||
-      raw.width != width || raw.height != height ||
-      raw.sess_num != output.PicInfo.sess_num ||
-      raw.picture_meta_payload != output.PicInfo.picture_meta_payload ||
-      (raw.flags & (VDEC_FLAG_EOS | flea_decode_error)) != 0)
-    return H264InterlacedPayload::Invalid;
-  if (half)
-    return H264InterlacedPayload::Field;
-  if (full_bytes > ordinal_offset ||
-      (ordinal & 0x40000000U) != 0 ||
-      (raw.flags & VDEC_FLAG_BOTTOMFIELD) != VDEC_FLAG_FIELDPAIR)
-    return H264InterlacedPayload::Invalid;
-  return H264InterlacedPayload::Weave;
+  switch (crystalhd_h264_interlaced_payload(&output)) {
+    case CRYSTALHD_H264_PAYLOAD_FIELD:
+      return H264InterlacedPayload::Field;
+    case CRYSTALHD_H264_PAYLOAD_WEAVE:
+      return H264InterlacedPayload::Weave;
+    default:
+      return H264InterlacedPayload::Invalid;
+  }
 }
 
 // No hardware calls: tests exercise the same exact-once/immutable-picture
