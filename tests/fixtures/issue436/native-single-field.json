@@ -1,0 +1,110 @@
+{
+  "schema": 1,
+  "date": "2026-10-15",
+  "scope": "BCM70015 stock SET_SINGLE_FIELD, direct packed-field readback",
+  "production_source": "1536ecf1ec2aab8c00345f8c2ff066b59a1b8fee",
+  "probe_source": "2356cbc556df224b4473830216814b4f61750370",
+  "environment": {
+    "os": "Ubuntu 26.04.1 LTS x86-64",
+    "kernel": "7.0.0-38-generic",
+    "module_version": "3.10.5",
+    "module_srcversion": "FEA13A785A1CFC380529E04",
+    "firmware_stream": "0x13600",
+    "firmware_decoder": "0x150323",
+    "firmware_hardware": "0x70015",
+    "force_l0s_off": true,
+    "session_l0s_off": false,
+    "ffmpeg": "8.0.1-3ubuntu2"
+  },
+  "procedure": {
+    "probe": "tests/fw-single-field-decode.cpp",
+    "build": "c++ -std=c++11 -O2 -Wall -Wextra -Werror -D__LINUX_USER__ -Iinclude -Ilinux_lib/libcrystalhd tests/fw-single-field-decode.cpp $(pkg-config --cflags --libs libavformat libavcodec libavutil glib-2.0) -Llinux_lib/libcrystalhd -lcrystalhd -o /absolute/new/probe",
+    "run": "timeout --signal=TERM --kill-after=5s 45s env LD_LIBRARY_PATH=/absolute/repo/linux_lib/libcrystalhd /absolute/new/probe INPUT EXPECTED_INPUTS 0_OR_1 /absolute/new/output-prefix",
+    "sequence": [0, 1, 0],
+    "internal_deadline_seconds": 30,
+    "command_boundary": "successful START, before capture/input",
+    "restore_boundary": "successful STOP, reset SingleField=0, CLOSE, device close",
+    "outputs": "new O_EXCL .yuy2 and .tsv files; copied active rows after extent validation, lease released before file I/O",
+    "comparison": "match each single-field (opaque input token, field polarity) to its baseline; compare every active packed YUY2 byte",
+    "tokens": "input packet identifiers in 100000-unit increments, not measured presentation timestamps",
+    "geometry": "native_api_geometry and the TSV coded_field_rows describe the API-reported dimensions; they do not independently measure SPS storage height",
+    "parity": "top/bottom counts use native PIB field flags; pixel equality is against the native paired-field baseline"
+  },
+  "cases": [
+    {
+      "input": "existing H.264 High MBAFF TFF 1920x1080i25, 2 seconds",
+      "input_sha256": "30f14f2b75735e3bc3345b07503e055a6a1ea9241de27369c074d49649615c28",
+      "inputs": 50,
+      "native_api_geometry": [1920, 1080],
+      "packed_field_geometry": [1920, 540],
+      "runs": [
+        {"single_field": 0, "fields": 100, "bytes": 207360000, "result": "PASS"},
+        {"single_field": 1, "fields": 50, "bytes": 103680000, "result": "PASS"},
+        {"single_field": 0, "fields": 100, "bytes": 207360000, "result": "PASS"}
+      ],
+      "single_top_fields": 25,
+      "single_bottom_fields": 25,
+      "single_fields_exactly_matching_baseline": 50,
+      "baseline_recovery_pixels_and_metadata_identical": true,
+      "baseline_payload_sha256": "9b19d225bfb2eb60e3db4ff63f56f8c5a021ae679b7e01da2a77dd9b9ae2948b",
+      "single_payload_sha256": "1576a9c14b2cd0c6879dc49178be57cff16018cedd0a13f51c1384f2e6c2f86a"
+    },
+    {
+      "input": "H.264 High MBAFF BFF 720x480i30, 2 seconds",
+      "input_sha256": "cfe7d8efde6a49c45675861a4859737cb3a6b0c938cde326092ffb909e43cabd",
+      "generate": "ffmpeg -nostdin -hide_banner -loglevel error -n -f lavfi -i testsrc2=size=720x480:rate=60 -t 2 -vf tinterlace=mode=interleave_bottom -c:v libx264 -preset fast -crf 18 -flags +ilme+ildct -x264-params bff=1:keyint=30:min-keyint=30:scenecut=0 -an -f mpegts OUTPUT.ts",
+      "inputs": 60,
+      "native_api_geometry": [720, 480],
+      "packed_field_geometry": [720, 240],
+      "runs": [
+        {"single_field": 0, "fields": 120, "bytes": 41472000, "result": "PASS"},
+        {"single_field": 1, "fields": 60, "bytes": 20736000, "result": "PASS"},
+        {"single_field": 0, "fields": 120, "bytes": 41472000, "result": "PASS"}
+      ],
+      "single_top_fields": 30,
+      "single_bottom_fields": 30,
+      "single_fields_exactly_matching_baseline": 60,
+      "baseline_recovery_pixels_and_metadata_identical": true,
+      "baseline_payload_sha256": "8ba31fef27b8559c6db5c75adec7333acd7b1dab16a8d4662f7e3b72fcbbb9bc",
+      "single_payload_sha256": "89d6712babf6d55e8dc4e6a7011d197378b433e2a4ca263a3ab111378e2b4fdc"
+    }
+  ],
+  "all_direct_runs": {
+    "exit": 0,
+    "exact_per_input_token_multiplicity": true,
+    "baseline_has_both_field_polarities": true,
+    "firmware_eos_and_control_marker": true,
+    "final_ready_queue": 0,
+    "set_and_restore_status": 0,
+    "module_refcount_after_each": 0,
+    "scoped_kernel_check": "PASS"
+  },
+  "va_adapter_observation": {
+    "fixture": "same 50-picture TFF input",
+    "probe": "tests/fw-single-field-probe.cpp",
+    "pipeline": "strict FFmpeg VA decode -> hwdownload NV12 -> framehash",
+    "single_zero_before": {"raw_fields": 100, "completed_frames": 50, "result": "PASS"},
+    "single_one": {"raw_fields_before_abort": 2, "completed_frames": 0, "exit": 251, "status": 23, "result": "FAIL: different input identities cannot form a VA field pair"},
+    "single_zero_after": {"raw_fields": 100, "completed_frames": 50, "result": "PASS"},
+    "baseline_recovery_framehash_identical": true,
+    "restore_and_close": "PASS",
+    "module_refcount_after_each": 0,
+    "scoped_kernel_check": "PASS"
+  },
+  "following_progressive_control": {
+    "input_frames": 180,
+    "completed_nv12_readbacks": 180,
+    "exit": 0,
+    "result": "PASS",
+    "module_refcount": 0,
+    "scoped_kernel_check": "PASS"
+  },
+  "conclusion": "The recognized firmware command advances to the next source after one unmodified packed field. Selected polarity alternates across sources. This halves the measured field payload; the unchanged VA Weave adapter correctly rejects cross-picture pairing.",
+  "not_established": [
+    "full-height or full-field-rate hardware Bob",
+    "fixed-parity selection or motion-adaptive deinterlacing",
+    "smooth presentation, physical A/V or a throughput/latency speedup",
+    "other codecs, firmware revisions or BCM70012",
+    "standalone MFD/SCL operation or physical PPB leasing"
+  ]
+}
