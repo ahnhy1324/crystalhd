@@ -389,6 +389,21 @@ timeout --kill-after=10 120s filters/vaapi/vaapi-seek-test \
   /tmp/crystalhd-samples/high.mp4
 ```
 
+The frozen 60-picture Full HD VC-1 Advanced elementary fixture needs a
+timestamped index before this probe can seek it. Build a new external MOV and
+verify its unchanged compressed bytes, packet boundaries, declared stream and
+frozen full-resolution PTS/software-pixel reference without opening CrystalHD:
+
+```sh
+python3 tests/vc1-seek-oracle.py build \
+  /absolute/path/vc1-fhd-scene60.vc1 /absolute/new/path/vc1-fhd60.mov \
+  --seek-probe "$PWD/filters/vaapi/vaapi-seek-test"
+```
+
+The operation is stream-copy only and refuses a different source hash or an
+existing output. `--seek-probe` runs only the software synchronous and
+eight-frame-lookahead checks; a later hardware invocation remains separate.
+
 The default synchronous test requires hardware frames, drains a complete
 reference decode, then compares NV12 pixel SHA-256 and PTS after forward and
 backward seeks and decoder flushes, including a flush with reordered pictures
