@@ -44,6 +44,8 @@ typedef struct {
   guint64 frames;
   GstClockTime last_pts;
   GstClockTime last_end_pts;
+  GstClockTime coverage_start_pts;
+  GstClockTime coverage_end_pts;
   GstClockTime last_raw_pts;
   GstClockTime running_start;
   GstClockTime running_end;
@@ -104,6 +106,7 @@ static void init_stream(Stream *stream) {
   gst_segment_init(&stream->segment, GST_FORMAT_TIME);
   stream->last_pts = GST_CLOCK_TIME_NONE;
   stream->last_end_pts = GST_CLOCK_TIME_NONE;
+  stream->coverage_start_pts = stream->coverage_end_pts = GST_CLOCK_TIME_NONE;
   stream->last_raw_pts = GST_CLOCK_TIME_NONE;
   stream->running_start = stream->running_end = GST_CLOCK_TIME_NONE;
   stream->observed_clock = GST_CLOCK_TIME_NONE;
@@ -137,6 +140,61 @@ static void begin_phase(Audit *audit, Phase phase) {
 static gboolean current_stream(const Audit *audit, const Stream *stream) {
   return stream->have_segment && !stream->flushing &&
       (audit->expected_seqnum == 0 || stream->seqnum == audit->expected_seqnum);
+}
+
+/* Keep the actual last buffer for tail/scheduling checks, and independently
+ * retain real pre-end audio coverage. A decoder may emit AAC padding whose
+ * start is exactly the video end; that must neither erase valid overlap nor
+ * count as overlap itself. The handoff and self-tests share all active-epoch,
+ * timestamp, segment and clock validation below. */
+static void observe_audio(Audit *audit, GstClockTime pts, GstClockTime duration,
+                          GstClockTime clock, gboolean nonzero) {
+  if (audit->failed) return;
+  if (!GST_CLOCK_TIME_IS_VALID(pts) || !GST_CLOCK_TIME_IS_VALID(duration) ||
+      duration == 0 || duration > 250 * GST_MSECOND ||
+      pts >= GST_CLOCK_TIME_NONE - duration) {
+    fail(audit, "Invalid decoded 48kHz audio buffer/timestamps");
+    return;
+  }
+  Stream *audio = &audit->audio;
+  if (!current_stream(audit, audio)) return;
+  GstClockTime start, end;
+  if (audit->phase == PAUSED) fail(audit, "Audio rendered after PAUSED state was confirmed");
+  else if (fabs(audio->segment.rate - phase_rate(audit->phase)) > 0.000001 ||
+           fabs(audio->segment.applied_rate - 1.0) > 0.000001)
+    fail(audit, "Audio segment did not apply the requested playback rate");
+  else if (!gst_segment_clip(&audio->segment, GST_FORMAT_TIME, pts, pts + duration, &start, &end))
+    fail(audit, "Audio rendered outside the active segment");
+  else {
+    const GstClockTime running = gst_segment_to_running_time(&audio->segment, GST_FORMAT_TIME, start);
+    const GstClockTime running_end = running + gst_util_uint64_scale(end - start, 1000,
+        (guint64)(1000 * fabs(audio->segment.rate)));
+    const GstClockTime media = gst_segment_to_stream_time(&audio->segment, GST_FORMAT_TIME, start);
+    const GstClockTime target = (GstClockTime)audit->sustain_seconds * GST_SECOND;
+    if ((GST_CLOCK_TIME_IS_VALID(audio->last_raw_pts) && pts <= audio->last_raw_pts) ||
+        !GST_CLOCK_TIME_IS_VALID(running) || !GST_CLOCK_TIME_IS_VALID(clock) ||
+        !GST_CLOCK_TIME_IS_VALID(media) || media >= GST_CLOCK_TIME_NONE - (end - start) ||
+        clock + 5 * GST_MSECOND < running || clock > running + MAX_CLOCK_LATE)
+      fail(audit, "Audio timestamps regressed or missed the scheduling bound");
+    else if (audit->sustain_seconds != 0 && media + end - start > target + MAX_AV_SKEW)
+      fail(audit, "Audio exceeded the sustained tail bound");
+    else {
+      audio->last_raw_pts = pts;
+      audio->last_pts = media;
+      audio->last_end_pts = media + end - start;
+      audio->running_start = running;
+      audio->running_end = running_end;
+      audio->observed_clock = clock;
+      if (audit->sustain_seconds != 0 && media < target &&
+          (!GST_CLOCK_TIME_IS_VALID(audio->coverage_end_pts) ||
+           audio->last_end_pts > audio->coverage_end_pts)) {
+        audio->coverage_start_pts = media;
+        audio->coverage_end_pts = audio->last_end_pts;
+      }
+      ++audit->total_audio;
+      if (nonzero) ++audit->audio_nonzero;
+    }
+  }
 }
 
 /* Pure production decisions, also called directly by --self-test. */
@@ -280,15 +338,23 @@ static gboolean sustain_complete(Audit *audit) {
   }
   const GstClockTime duration = (GstClockTime)audit->sustain_seconds * GST_SECOND;
   if (audit->audio_required &&
-      (!GST_CLOCK_TIME_IS_VALID(audit->audio.last_pts) ||
+      (!current_stream(audit, &audit->audio) ||
+       !GST_CLOCK_TIME_IS_VALID(audit->audio.last_pts) ||
        !GST_CLOCK_TIME_IS_VALID(audit->audio.last_end_pts) ||
        audit->audio.last_end_pts <= audit->audio.last_pts ||
-       audit->audio.last_pts >= duration ||
-       audit->audio.last_end_pts <= audit->last_pts ||
+       !GST_CLOCK_TIME_IS_VALID(audit->audio.coverage_start_pts) ||
+       !GST_CLOCK_TIME_IS_VALID(audit->audio.coverage_end_pts) ||
+       audit->audio.coverage_start_pts >= duration ||
+       audit->audio.coverage_end_pts <= audit->audio.coverage_start_pts ||
+       audit->audio.coverage_end_pts <= audit->last_pts ||
+       audit->audio.coverage_end_pts > duration + MAX_AV_SKEW ||
        audit->audio.last_end_pts > duration + MAX_AV_SKEW)) {
     gchar reason[256];
     g_snprintf(reason, sizeof(reason), "Audio did not cover the final sustained video interval: "
-        "last=[%.6f,%.6f]s target=%.6fs", (gdouble)audit->audio.last_pts / GST_SECOND,
+        "coverage=[%.6f,%.6f]s last=[%.6f,%.6f]s target=%.6fs",
+        (gdouble)audit->audio.coverage_start_pts / GST_SECOND,
+        (gdouble)audit->audio.coverage_end_pts / GST_SECOND,
+        (gdouble)audit->audio.last_pts / GST_SECOND,
         (gdouble)audit->audio.last_end_pts / GST_SECOND, (gdouble)duration / GST_SECOND);
     fail(audit, reason);
     return FALSE;
@@ -306,10 +372,12 @@ static GstPadProbeReturn stream_event(GstPad *pad, GstPadProbeInfo *info, gpoint
   if (GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_START) {
     stream->flushing = TRUE;
     stream->have_segment = FALSE;
+    stream->coverage_start_pts = stream->coverage_end_pts = GST_CLOCK_TIME_NONE;
   } else if (GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_STOP) {
     stream->flushing = FALSE;
     stream->last_pts = GST_CLOCK_TIME_NONE;
     stream->last_end_pts = GST_CLOCK_TIME_NONE;
+    stream->coverage_start_pts = stream->coverage_end_pts = GST_CLOCK_TIME_NONE;
     stream->last_raw_pts = GST_CLOCK_TIME_NONE;
     stream->running_start = stream->running_end = GST_CLOCK_TIME_NONE;
   } else if (GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
@@ -321,6 +389,7 @@ static GstPadProbeReturn stream_event(GstPad *pad, GstPadProbeInfo *info, gpoint
       stream->seqnum = gst_event_get_seqnum(event);
       stream->have_segment = TRUE;
       stream->flushing = FALSE;
+      stream->coverage_start_pts = stream->coverage_end_pts = GST_CLOCK_TIME_NONE;
     }
   }
   g_mutex_unlock(&audit->mutex);
@@ -490,10 +559,7 @@ static void audio_handoff(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpoi
   gboolean valid = caps != NULL && gst_audio_info_from_caps(&info, caps) &&
       GST_AUDIO_INFO_RATE(&info) == 48000 && GST_AUDIO_INFO_BPF(&info) > 0 &&
       gst_buffer_get_size(buffer) > 0 &&
-      gst_buffer_get_size(buffer) % GST_AUDIO_INFO_BPF(&info) == 0 &&
-      GST_CLOCK_TIME_IS_VALID(pts) && GST_CLOCK_TIME_IS_VALID(duration) &&
-      duration > 0 && duration <= 250 * GST_MSECOND &&
-      pts < GST_CLOCK_TIME_NONE - duration;
+      gst_buffer_get_size(buffer) % GST_AUDIO_INFO_BPF(&info) == 0;
   (void)sink;
   if (valid) {
     valid = gst_buffer_map(buffer, &map, GST_MAP_READ);
@@ -506,35 +572,7 @@ static void audio_handoff(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpoi
   if (caps != NULL) gst_caps_unref(caps);
   g_mutex_lock(&audit->mutex);
   if (!valid) fail(audit, "Invalid decoded 48kHz audio buffer/timestamps");
-  else if (current_stream(audit, &audit->audio)) {
-    Stream *audio = &audit->audio;
-    GstClockTime start, end;
-    if (audit->phase == PAUSED) fail(audit, "Audio rendered after PAUSED state was confirmed");
-    else if (fabs(audio->segment.rate - phase_rate(audit->phase)) > 0.000001 ||
-             fabs(audio->segment.applied_rate - 1.0) > 0.000001)
-      fail(audit, "Audio segment did not apply the requested playback rate");
-    else if (!gst_segment_clip(&audio->segment, GST_FORMAT_TIME, pts, pts + duration, &start, &end))
-      fail(audit, "Audio rendered outside the active segment");
-    else {
-      const GstClockTime running = gst_segment_to_running_time(&audio->segment, GST_FORMAT_TIME, start);
-      const GstClockTime running_end = running + gst_util_uint64_scale(end - start, 1000,
-          (guint64)(1000 * fabs(audio->segment.rate)));
-      if ((GST_CLOCK_TIME_IS_VALID(audio->last_raw_pts) && pts <= audio->last_raw_pts) ||
-          !GST_CLOCK_TIME_IS_VALID(running) || !GST_CLOCK_TIME_IS_VALID(clock) ||
-          clock + 5 * GST_MSECOND < running || clock > running + MAX_CLOCK_LATE)
-        fail(audit, "Audio timestamps regressed or missed the scheduling bound");
-      else {
-        audio->last_raw_pts = pts;
-        audio->last_pts = gst_segment_to_stream_time(&audio->segment, GST_FORMAT_TIME, start);
-        audio->last_end_pts = audio->last_pts + end - start;
-        audio->running_start = running;
-        audio->running_end = running_end;
-        audio->observed_clock = clock;
-        ++audit->total_audio;
-        if (nonzero) ++audit->audio_nonzero;
-      }
-    }
-  }
+  else observe_audio(audit, pts, duration, clock, nonzero);
   g_mutex_unlock(&audit->mutex);
 }
 
@@ -813,10 +851,13 @@ static int run(const gchar *filename, const gchar *decoder, const gchar *audio_d
         eos ? "yes" : "no", success ? "PASS" : "FAIL");
     if (audit.audio_required && GST_CLOCK_TIME_IS_VALID(audit.audio.last_pts) &&
         GST_CLOCK_TIME_IS_VALID(audit.audio.last_end_pts))
-      g_print("Sustain final audio interval=[%.6f,%.6f]s, final video interval=[%.6f,%u]s "
+      g_print("Sustain final audio interval=[%.6f,%.6f]s, retained pre-end audio=[%.6f,%.6f]s, "
+          "final video interval=[%.6f,%u]s "
           "(overlap evidence, not an exact audio sample-count claim)\n",
           (gdouble)audit.audio.last_pts / GST_SECOND,
           (gdouble)audit.audio.last_end_pts / GST_SECOND,
+          (gdouble)audit.audio.coverage_start_pts / GST_SECOND,
+          (gdouble)audit.audio.coverage_end_pts / GST_SECOND,
           (gdouble)audit.last_pts / GST_SECOND, sustain_seconds);
   } else {
     g_print("Controls decoder=%s audio=%s: video=%" G_GUINT64_FORMAT " audio=%" G_GUINT64_FORMAT
@@ -999,6 +1040,168 @@ static gboolean preroll_queue_test(gboolean old_limits) {
   return ok;
 }
 
+static void prepare_sustain_audio_test(Audit *audit) {
+  init_audit(audit, TRUE);
+  audit->sustain_seconds = 24;
+  test_segment(audit, 0, 1.0);
+  audit->audio.have_segment = TRUE;
+  for (guint frame = 0; frame < 2 * FRAME_COUNT; ++frame) {
+    const GstClockTime pts = gst_util_uint64_scale(frame, GST_SECOND, FPS);
+    /* Leave the last picture without a matching audio buffer. Each case
+     * must independently supply real final-interval coverage. */
+    if (frame + 1 < 2 * FRAME_COUNT)
+      observe_audio(audit, pts, 20 * GST_MSECOND, pts, TRUE);
+    observe_video(audit, frame % FRAME_COUNT, pts, pts, pts);
+  }
+}
+
+static void test_audio_event(Audit *audit, GstEvent *event) {
+  StreamData data = {audit, TRUE};
+  GstPadProbeInfo info = {0};
+  info.type = GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM;
+  info.data = event;
+  stream_event(NULL, &info, &data);
+  gst_event_unref(event);
+}
+
+static int sustain_audio_self_test(void) {
+  guint tests = 0;
+#define REQUIRE(condition) do { ++tests; if (!(condition)) { \
+  g_printerr("Sustained audio self-test failed at line %d\n", __LINE__); return 1; } } while (0)
+  Audit audit;
+  for (guint test = 0; test < 34; ++test) {
+    prepare_sustain_audio_test(&audit);
+    REQUIRE(!audit.failed && audit.total_video == 2 * FRAME_COUNT &&
+        audit.audio.coverage_end_pts <= audit.last_pts);
+    const GstClockTime duration = 24 * GST_SECOND;
+    gboolean expected = FALSE;
+    if (test == 0) {
+      observe_audio(&audit, 23980 * GST_MSECOND, 20 * GST_MSECOND,
+          23980 * GST_MSECOND, TRUE);
+      expected = TRUE;
+    } else if (test == 1) {
+      /* AAC priming may leave less than one final video frame of overlap. */
+      observe_audio(&audit, 23957333333ULL, 21333333, 23957333333ULL, TRUE);
+      expected = TRUE;
+    } else if (test >= 2 && test <= 6) {
+      observe_audio(&audit, 23957333333ULL, 42666667, 23957333333ULL, TRUE);
+      GstClockTime tail = test == 5 ? MAX_AV_SKEW :
+          test == 6 ? MAX_AV_SKEW + 1 : 10 * GST_MSECOND;
+      observe_audio(&audit, duration, tail, duration, FALSE);
+      if (test == 3 || test == 4)
+        observe_audio(&audit, duration + tail, tail, duration + tail, FALSE);
+      if (test == 4)
+        observe_audio(&audit, duration + 2 * tail, tail, duration + 2 * tail, FALSE);
+      REQUIRE(audit.audio.coverage_start_pts == 23957333333ULL &&
+          audit.audio.coverage_end_pts == duration &&
+          (test == 6 ? audit.failed : audit.audio.last_pts >= duration));
+      expected = test != 6;
+    } else if (test == 7) {
+      observe_audio(&audit, 23950 * GST_MSECOND, audit.last_pts - 23950 * GST_MSECOND,
+          23950 * GST_MSECOND, TRUE); /* Touching is not strict overlap. */
+      observe_audio(&audit, duration, 10 * GST_MSECOND, duration, FALSE);
+    } else if (test == 8) {
+      observe_audio(&audit, duration, 10 * GST_MSECOND, duration, FALSE); /* Padding alone. */
+    } else if (test >= 9 && test <= 13) {
+      GstClockTime pts = 23980 * GST_MSECOND;
+      GstClockTime length = 20 * GST_MSECOND;
+      GstClockTime clock = pts;
+      if (test == 9) pts = GST_CLOCK_TIME_NONE;
+      if (test == 10) length = 0;
+      if (test == 11) length = 250 * GST_MSECOND + 1;
+      if (test == 12) clock += MAX_CLOCK_LATE + 1;
+      if (test == 13) clock -= 5 * GST_MSECOND + 1;
+      observe_audio(&audit, pts, length, clock, TRUE);
+      REQUIRE(audit.failed && audit.audio.coverage_end_pts <= audit.last_pts);
+    } else if (test >= 14 && test <= 16) {
+      const guint64 before = audit.total_audio;
+      if (test == 14) {
+        audit.expected_seqnum = 42;
+        audit.audio.seqnum = 41;
+      } else if (test == 15) audit.audio.flushing = TRUE;
+      else audit.audio.have_segment = FALSE;
+      observe_audio(&audit, 23980 * GST_MSECOND, 20 * GST_MSECOND,
+          23980 * GST_MSECOND, TRUE);
+      REQUIRE(!audit.failed && audit.total_audio == before &&
+          audit.audio.coverage_end_pts <= audit.last_pts);
+    } else if (test == 17 || test == 18) {
+      observe_audio(&audit, 23980 * GST_MSECOND, 20 * GST_MSECOND,
+          23980 * GST_MSECOND, TRUE);
+      REQUIRE(audit.audio.coverage_end_pts == duration);
+      if (test == 17) {
+        test_audio_event(&audit, gst_event_new_flush_start());
+        REQUIRE(!GST_CLOCK_TIME_IS_VALID(audit.audio.coverage_end_pts));
+        observe_audio(&audit, duration, 10 * GST_MSECOND, duration, FALSE);
+        test_audio_event(&audit, gst_event_new_flush_stop(TRUE));
+      }
+      GstSegment segment;
+      gst_segment_init(&segment, GST_FORMAT_TIME);
+      test_audio_event(&audit, gst_event_new_segment(&segment));
+      REQUIRE(!GST_CLOCK_TIME_IS_VALID(audit.audio.coverage_start_pts) &&
+          !GST_CLOCK_TIME_IS_VALID(audit.audio.coverage_end_pts));
+      observe_audio(&audit, duration, 10 * GST_MSECOND, duration, FALSE);
+    } else if (test == 19) {
+      observe_audio(&audit, 23940 * GST_MSECOND, 80 * GST_MSECOND,
+          23940 * GST_MSECOND, TRUE);
+      observe_audio(&audit, 23960 * GST_MSECOND, 5 * GST_MSECOND,
+          23960 * GST_MSECOND, TRUE);
+      REQUIRE(audit.audio.coverage_end_pts == 24020 * GST_MSECOND &&
+          audit.audio.last_end_pts == 23965 * GST_MSECOND);
+      expected = TRUE; /* Keep the maximum-ending real pre-end interval. */
+    } else if (test == 20 || test == 21) {
+      /* Compare against the actual video PTS, not an assumed rounded tick. */
+      ++audit.last_pts;
+      const GstClockTime end = audit.last_pts + (test == 21 ? 1 : 0);
+      observe_audio(&audit, 23950 * GST_MSECOND, end - 23950 * GST_MSECOND,
+          23950 * GST_MSECOND, TRUE);
+      expected = test == 21;
+    } else if (test == 22) {
+      observe_audio(&audit, duration + 1, 10 * GST_MSECOND, duration + 1, FALSE);
+    } else if (test == 23) {
+      observe_audio(&audit, 23980 * GST_MSECOND, 220 * GST_MSECOND,
+          23980 * GST_MSECOND, TRUE);
+      observe_audio(&audit, duration, 10 * GST_MSECOND, duration, FALSE);
+      REQUIRE(audit.failed && audit.audio.coverage_end_pts <= audit.last_pts);
+    } else if (test >= 24 && test <= 26) {
+      observe_audio(&audit, 23980 * GST_MSECOND, 20 * GST_MSECOND,
+          23980 * GST_MSECOND, TRUE);
+      REQUIRE(audit.audio.coverage_end_pts == duration);
+      if (test == 24) {
+        audit.expected_seqnum = 42;
+        audit.audio.seqnum = 41;
+      } else if (test == 25) audit.audio.flushing = TRUE;
+      else audit.audio.have_segment = FALSE;
+      /* Even previously valid coverage must still belong to the current epoch. */
+    } else if (test == 33) {
+      observe_audio(&audit, 23980 * GST_MSECOND, 20 * GST_MSECOND,
+          23980 * GST_MSECOND, TRUE);
+      /* A later shorter interval must not hide an excessive earlier tail. */
+      observe_audio(&audit, duration, 200 * GST_MSECOND, duration, FALSE);
+      observe_audio(&audit, duration + 10 * GST_MSECOND, 10 * GST_MSECOND,
+          duration + 10 * GST_MSECOND, FALSE);
+      REQUIRE(audit.failed);
+    } else {
+      GstClockTime pts = 23980 * GST_MSECOND;
+      GstClockTime length = 20 * GST_MSECOND;
+      GstClockTime clock = pts;
+      if (test == 27) pts = audit.audio.last_raw_pts;
+      if (test == 28) audit.phase = PAUSED;
+      if (test == 29) audit.audio.segment.rate = 0.5;
+      if (test == 30) audit.audio.segment.stop = 23950 * GST_MSECOND;
+      if (test == 31) clock = GST_CLOCK_TIME_NONE;
+      if (test == 32) length = GST_CLOCK_TIME_NONE;
+      observe_audio(&audit, pts, length, clock, TRUE);
+      REQUIRE(audit.failed && audit.audio.coverage_end_pts <= audit.last_pts);
+    }
+    REQUIRE(expected ? sustain_complete(&audit) && !audit.failed :
+        !sustain_complete(&audit) && audit.failed);
+    g_mutex_clear(&audit.mutex);
+  }
+  g_print("GStreamer sustained audio hardware-free self-test: %u checks passed\n", tests);
+  return 0;
+#undef REQUIRE
+}
+
 static int sustain_self_test(void) {
   guint tests = 0;
 #define REQUIRE(condition) do { ++tests; if (!(condition)) { \
@@ -1021,29 +1224,6 @@ static int sustain_self_test(void) {
       observe_video(&audit, identity, pts, pts, pts);
     }
     REQUIRE(fault == 0 ? sustain_complete(&audit) : !sustain_complete(&audit) && audit.failed);
-    if (fault == 0) {
-      audit.audio_required = TRUE;
-      audit.total_audio = audit.av_pairs = 10;
-      audit.audio_nonzero = 1;
-      audit.audio.last_pts = 23980 * GST_MSECOND;
-      audit.audio.last_end_pts = 24 * GST_SECOND;
-      REQUIRE(sustain_complete(&audit));
-      /* AAC decoder priming/tail may leave less than one final video frame;
-       * validate a real interval overlap, not an exact decoded sample count. */
-      audit.audio.last_pts = 23957333333ULL;
-      audit.audio.last_end_pts = 23978666666ULL;
-      REQUIRE(sustain_complete(&audit));
-      audit.audio.last_end_pts = audit.last_pts;
-      REQUIRE(!sustain_complete(&audit) && audit.failed); /* No strict overlap. */
-      audit.failed = FALSE;
-      audit.audio.last_pts = 24 * GST_SECOND;
-      audit.audio.last_end_pts = 24020 * GST_MSECOND;
-      REQUIRE(!sustain_complete(&audit) && audit.failed); /* Only after video ended. */
-      audit.failed = FALSE;
-      audit.audio.last_pts = 23980 * GST_MSECOND;
-      audit.audio.last_end_pts = 24101 * GST_MSECOND;
-      REQUIRE(!sustain_complete(&audit) && audit.failed); /* Excessive tail. */
-    }
     g_mutex_clear(&audit.mutex);
   }
   init_audit(&audit, FALSE);
@@ -1055,6 +1235,7 @@ static int sustain_self_test(void) {
   }
   REQUIRE(audit.failed && !sustain_complete(&audit)); /* Extra frame cannot pass. */
   g_mutex_clear(&audit.mutex);
+  REQUIRE(sustain_audio_self_test() == 0);
   g_print("GStreamer sustained hardware-free self-test: %u checks passed\n", tests);
   return 0;
 #undef REQUIRE
