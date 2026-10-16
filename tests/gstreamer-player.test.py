@@ -426,6 +426,32 @@ class PolicyAndControlTests(unittest.TestCase):
         for secret in ("password", "secret", "private", "hidden", "example.test", "cdn.test"):
             self.assertNotIn(secret, control.health.error)
 
+    def test_remote_error_redacts_apostrophe_query_suffixes(self):
+        source = "https://origin.test/v?signature=original'ORIGINAL_TAIL"
+        redirect = "https://cdn.test/v?signature=redirect'REDIRECT_TAIL&token=REDIRECT_TOKEN"
+        for url in (source, redirect):
+            self.assertEqual(player.playback_input(url), url)
+        error = player.input_error(source, "Failed: " + source + " redirected " + redirect)
+        self.assertEqual(error, "Failed: <remote URL> redirected <remote URL>")
+
+    def test_remote_error_redacts_urls_inside_quoted_diagnostics(self):
+        source = "https://origin.test/video"
+        redirect = "https://user:password@cdn.test/v?signature=prefix'PRIVATE_TAIL"
+        for quote in ("'", '"'):
+            with self.subTest(quote=quote):
+                error = player.input_error(
+                    source, "Fetch failed for " + quote + redirect + quote + "; retry disabled")
+                self.assertIn("Fetch failed for", error)
+                self.assertIn("<remote URL>", error)
+                self.assertIn("retry disabled", error)
+                for secret in ("password", "cdn.test", "signature", "PRIVATE_TAIL"):
+                    self.assertNotIn(secret, error)
+
+    def test_local_error_preserves_path_and_url_details(self):
+        source = Path("/tmp/video's name.mp4")
+        message = "Could not open " + str(source) + "; see https://example.test/help?reason='missing'"
+        self.assertEqual(player.input_error(source, message), message)
+
 
 class ScaleConfigurationTests(unittest.TestCase):
     def controller(self, width=1280):

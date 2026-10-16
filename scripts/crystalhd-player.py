@@ -81,7 +81,10 @@ def playback_input(value):
 def input_error(source, message):
     if isinstance(source, str):
         message = message.replace(source, "<remote URL>")
-        message = re.sub(r"https?://[^\s\"'<>]+", "<remote URL>", message,
+        # Apostrophes are legal URL subdelimiters. Conservatively consume the
+        # full token, including diagnostic quotes, so a redirect's query suffix
+        # cannot survive masking just because it contains a quote.
+        message = re.sub(r"https?://[^\s<>]+", "<remote URL>", message,
                          flags=re.IGNORECASE)
     return message
 
