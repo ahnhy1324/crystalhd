@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Small local-file controller; GStreamer owns decoding, audio and the window."""
+"""Small file/HTTP(S) controller; GStreamer owns decoding, audio and the window."""
 
 import argparse
 import os
@@ -11,6 +11,7 @@ import sys
 import termios
 import time
 import tty
+from urllib.parse import urlsplit
 
 MAX_SOFTWARE_OUTPUT_DIMENSION = 4096
 MAX_SOFTWARE_OUTPUT_PIXELS = 4096 * 2160
@@ -22,6 +23,7 @@ HANDLED_BUS_MESSAGE_DETAILS = (
     "state-changed",
     "clock-lost",
     "latency",
+    "buffering",
 )
 
 
@@ -41,6 +43,47 @@ def local_file(value):
         return path
     except (OSError, ValueError) as error:
         raise argparse.ArgumentTypeError(f"unreadable local file: {value}: {error}") from error
+
+
+def playback_input(value):
+    # Keep real local filenames (including colons) and their Path API unchanged.
+    if not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", value):
+        return local_file(value)
+    try:
+        if Path(value).is_file():
+            return local_file(value)
+    except (OSError, ValueError):
+        # A signed URL can be longer than the filesystem's filename limit.
+        pass
+    try:
+        if (any(character.isspace() or ord(character) < 32 or ord(character) == 127
+                for character in value) or "\\" in value or
+                any(character in '<>"{}|^`' for character in value) or
+                re.search(r"%(?![0-9A-Fa-f]{2})", value)):
+            raise ValueError("invalid URL characters")
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() not in ("http", "https"):
+            raise ValueError("unsupported scheme")
+        authority = parsed.netloc.rsplit("@", 1)[-1]
+        bracket_tail = authority[authority.index("]") + 1:] if authority.startswith("[") else ""
+        if (not parsed.netloc or not parsed.hostname or parsed.port == 0 or
+                parsed.netloc.count("@") > 1 or authority.endswith(":") or
+                (bracket_tail and re.fullmatch(r":[0-9]+", bracket_tail) is None)):
+            raise ValueError("missing host or invalid port")
+    except ValueError as error:
+        # argparse must not echo credentials or signed query strings on failure.
+        raise argparse.ArgumentTypeError(
+            "input must be a readable local file or a valid HTTP(S) URL") from error
+    # Do not normalize escaping, query ordering or case in signed URLs.
+    return value
+
+
+def input_error(source, message):
+    if isinstance(source, str):
+        message = message.replace(source, "<remote URL>")
+        message = re.sub(r"https?://[^\s\"'<>]+", "<remote URL>", message,
+                         flags=re.IGNORECASE)
+    return message
 
 
 def hardware_scale_width(value):
@@ -85,7 +128,7 @@ def arguments(argv=None):
                         metavar="WIDTHxHEIGHT",
                         help="explicitly resize scaled CrystalHD output with GStreamer videoscale")
     parser.add_argument("--subtitles", type=local_file, metavar="FILE")
-    parser.add_argument("file", type=local_file, metavar="FILE")
+    parser.add_argument("file", type=playback_input, metavar="FILE_OR_HTTP_URL")
     args = parser.parse_args(argv)
     if args.mode != "hardware" and (args.scale_width or args.software_output_size):
         parser.error("--scale-width and --software-output-size require --hardware")
@@ -246,6 +289,8 @@ class Player:
         self.closed = False
         self.exit_code = 0
         self.rate = 1.0
+        self.buffering = False
+        self.is_live = False
         self.decoders = {}
         self.next_decoder = 0
         self.seek_target = None
@@ -257,7 +302,8 @@ class Player:
         self.pipeline = Gst.ElementFactory.make("playbin", "crystalhd-player")
         if self.pipeline is None:
             raise RuntimeError("playbin is unavailable; install gstreamer1.0-plugins-base")
-        self.pipeline.set_property("uri", args.file.as_uri())
+        self.pipeline.set_property("uri", args.file.as_uri() if isinstance(args.file, Path)
+                                   else args.file)
         if args.subtitles:
             self.pipeline.set_property("suburi", args.subtitles.as_uri())
         if args.mode == "software" or args.weave:
@@ -364,7 +410,8 @@ class Player:
                 self.decoder_removed(fields.get_value("token"))
         elif message.type == Gst.MessageType.ERROR:
             error, _debug = message.parse_error()
-            self.fail(f"{message.src.get_name()}: {error.message}")
+            self.fail(input_error(self.args.file,
+                                  f"{message.src.get_name()}: {error.message}"))
         elif message.type == Gst.MessageType.EOS:
             self.stop(self.health.finish())
         elif message.type == Gst.MessageType.ASYNC_DONE:
@@ -373,17 +420,48 @@ class Player:
             # ASYNC_DONE can precede the final PAUSED -> PLAYING transition.
             # Recheck readiness there so queued controls cannot remain stuck.
             self.seek_completed()
-        elif message.type == Gst.MessageType.CLOCK_LOST and not self.health.paused:
-            self.pipeline.set_state(Gst.State.PAUSED)
-            self.pipeline.set_state(Gst.State.PLAYING)
+        elif message.type == Gst.MessageType.CLOCK_LOST and not (
+                self.health.paused or self.buffering):
+            if self.set_state(Gst.State.PAUSED, "clock recovery pause failed"):
+                self.set_state(Gst.State.PLAYING, "clock recovery resume failed")
         elif message.type == Gst.MessageType.LATENCY:
             self.pipeline.recalculate_latency()
+        elif message.type == Gst.MessageType.BUFFERING:
+            self.buffering_changed(message.parse_buffering())
+
+    def set_state(self, state, failure):
+        result = self.pipeline.set_state(state)
+        if result == self.Gst.StateChangeReturn.FAILURE:
+            self.fail(failure)
+            return False
+        if result == self.Gst.StateChangeReturn.NO_PREROLL:
+            self.is_live = True
+        return True
+
+    def buffering_changed(self, percent):
+        if self.is_live:
+            return
+        buffering = percent < 100
+        if self.buffering == buffering:
+            return
+        self.buffering = buffering
+        # Only a human pause suspends the health timeout. Repeated BUFFERING
+        # messages must not renew startup/stall grace indefinitely.
+        if not self.health.paused:
+            state = self.Gst.State.PAUSED if buffering else self.Gst.State.PLAYING
+            if not self.set_state(state, "buffering state change failed"):
+                return
+            if self.is_live and buffering:
+                self.buffering = False
+                self.set_state(self.Gst.State.PLAYING, "live playback resume failed")
 
     def seek(self, offset=0.0, rate=None):
         Gst = self.Gst
         if self.seek_target is not None:
             position, current_rate = self.queued_seek or self.seek_target
         else:
+            if not self.can_seek():
+                return
             ok, position = self.pipeline.query_position(Gst.Format.TIME)
             if not ok:
                 print("Cannot seek: playback position is unavailable.", file=sys.stderr)
@@ -402,8 +480,25 @@ class Player:
             return
         self.submit_seek(position, wanted)
 
+    def can_seek(self):
+        Gst = self.Gst
+        if isinstance(self.args.file, str):
+            query = Gst.Query.new_seeking(Gst.Format.TIME)
+            if not self.pipeline.query(query):
+                print("Cannot seek: HTTP seekability is not available yet; "
+                      "playback settings are unchanged.", file=sys.stderr)
+                return False
+            if not query.parse_seeking()[1]:
+                print("Cannot seek: this HTTP source is not currently seekable; "
+                      "playback settings are unchanged.", file=sys.stderr)
+                return False
+        return True
+
     def submit_seek(self, position, wanted):
         Gst = self.Gst
+        # Recheck after an earlier flushing seek: HTTP seekability can change.
+        if not self.can_seek():
+            return
         accepted = self.pipeline.seek(wanted, Gst.Format.TIME,
                                       Gst.SeekFlags.FLUSH | Gst.SeekFlags.ACCURATE,
                                       Gst.SeekType.SET, position, Gst.SeekType.NONE, -1)
@@ -436,12 +531,10 @@ class Player:
             self.stop(self.health.finish())
         elif action == "pause":
             paused = not self.health.paused
-            state = self.Gst.State.PAUSED if paused else self.Gst.State.PLAYING
-            if self.pipeline.set_state(state) == self.Gst.StateChangeReturn.FAILURE:
-                self.fail("pause/resume state change failed")
-            else:
+            state = self.Gst.State.PAUSED if paused or self.buffering else self.Gst.State.PLAYING
+            if self.set_state(state, "pause/resume state change failed"):
                 self.health.pause(paused, time.monotonic())
-                print("Paused" if paused else "Playing", flush=True)
+                print("Paused" if paused else "Buffering" if self.buffering else "Playing", flush=True)
         elif action in ("back", "forward"):
             self.seek(-10.0 if action == "back" else 10.0)
         elif action in ("rate-half", "rate-normal", "rate-double"):
@@ -513,8 +606,10 @@ class Player:
                 self.sources.append(self.GLib.unix_signal_add(
                     self.GLib.PRIORITY_DEFAULT, number, self.interrupted, number))
             self.sources.append(self.GLib.timeout_add(250, self.tick))
-            if self.pipeline.set_state(self.Gst.State.PLAYING) == self.Gst.StateChangeReturn.FAILURE:
-                self.fail("could not start playback")
+            # NO_PREROLL on PAUSED identifies a live source before deciding
+            # whether subsequent BUFFERING messages should pause its clock.
+            if self.set_state(self.Gst.State.PAUSED, "could not preroll playback"):
+                self.set_state(self.Gst.State.PLAYING, "could not start playback")
             if not self.done:
                 self.loop.run()
         finally:
@@ -542,7 +637,7 @@ def main(argv=None):
         Gst.init(None)
         return Player(args, Gst, GLib).run()
     except (RuntimeError, OSError, ValueError, GLib.Error) as error:
-        print(f"crystalhd-play: {error}", file=sys.stderr)
+        print(f"crystalhd-play: {input_error(args.file, str(error))}", file=sys.stderr)
         return 1
 
 

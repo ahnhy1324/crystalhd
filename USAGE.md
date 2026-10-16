@@ -10,6 +10,7 @@ before choosing the card for a workload; Sunshine/Moonlight has a separate
 | Goal | Path | Current status |
 | --- | --- | --- |
 | Play a local file with audio, subtitles and controls | `crystalhd-play` | Recommended |
+| Play an HTTP(S) media URL | [Development player](#https-input-development) | Software transport tests; native network acceptance pending |
 | Build a media pipeline | GStreamer `crystalhddec` | Primary integration path |
 | Use an application that requires libva | CrystalHD VA-API driver | Experimental subset |
 | Keep a Broadcom-API application working | `libcrystalhd.so.3` | Compatibility API |
@@ -72,6 +73,38 @@ fallback:
 ```sh
 crystalhd-play --software "/path/to/video.mp4"
 ```
+
+### HTTP(S) input (development)
+
+HTTP(S) input is an unreleased frontend addition, not part of stable 1.0.0 or
+the immutable v1.1.0-rc.3. From a development checkout containing this change,
+use its wrapper with the installed GStreamer stack. Replace the example URL
+with your direct media URL, and close other CrystalHD sessions first:
+
+```sh
+./scripts/crystalhd-play --hardware 'https://media.example.test/video.mp4'
+./scripts/crystalhd-play --software 'http://media.example.test/video.mp4'
+```
+
+The URL is passed to GStreamer without rewriting its escaping or query string.
+HTTP transport needs `souphttpsrc` (Ubuntu: `gstreamer1.0-plugins-good`); HTTPS
+keeps the transport's normal certificate verification. This is not a web-page
+or YouTube URL resolver, and HLS/DASH have not been qualified. Codec limits and
+the hardware-output requirement remain unchanged: a URL does not enable
+software fallback. `--subtitles` still takes a local file.
+
+The controller handles [GStreamer network buffering](https://gstreamer.freedesktop.org/documentation/playback/playbin.html#buffering)
+without overriding a user pause. Seek and speed changes require a seekable
+stream/container and server support; a rejected operation leaves the accepted
+playback settings unchanged. Existing no-output limits remain 20 seconds at
+startup and 15 seconds after decoded output stalls, including network buffering
+(a deliberate user pause is exempt). Errors exit nonzero; there is no automatic
+reconnect. Close and restart the player to reconnect.
+
+Automated network coverage uses loopback HTTP with software video and fake
+audio/video sinks. Native CrystalHD HTTP(S), real TLS playback and physical
+A/V/network-recovery acceptance remain unverified; this is not a release-gate
+PASS or a reason to replace the currently qualified installed player.
 
 ### Explicit Weave playback
 
