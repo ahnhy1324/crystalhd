@@ -178,8 +178,28 @@ These are excerpts, not the full campaign. Only after all required stages
 with the same candidate/runtime identity, validate the aggregate:
 
 ```sh
-sh "$gate" evidence-check "$evidence_root" --manifest "$manifest"
+sh "$gate" evidence-check "$evidence_root" --manifest "$manifest" --maintenance-3h
 ```
+
+The current v1.1 maintenance qualification uses the explicit
+`soak --rc --maintenance-3h` profile for 720p30 High/AAC: exactly
+`--seconds 10800 --frames 324000`, with a matching complete 3-hour fixture.
+Pass the normal fixture identity, runtime and new external results path as
+for any soak. All other RC timing, correctness, resource, ownership and
+identity checks remain in force. Select `--maintenance-3h` again for the
+aggregate, as above; its distinct acceptance label is
+`maintenance-soak-720p30-10800`. Without that flag, the historical Phase 1
+720p soak and aggregate still require 8 hours / 864,000 pictures. A 3-hour
+result is not 8-hour evidence. Native/scaled Full-HD and the other gates
+retain their existing durations and counts.
+
+RC/oracle pin-balance snapshots read `/proc/sys/vm/stat_refresh` through the
+existing root/noninteractive-sudo path before sampling `/proc/vmstat`, as
+[documented by Linux](https://docs.kernel.org/admin-guide/sysctl/vm.html#stat-refresh).
+This flushes per-CPU accounting, not a persistent setting. Snapshots retain
+the raw balance and observation method; refresh failure is unavailable
+evidence, not a raw-counter fallback. Exact before/after equality is still
+required, with no retry, grace period or wait for zero.
 
 G0–G6 must all PASS for the final qualifying candidate, with an explicit
 experimental disposition and maintainer approval. Missing, stale, failed or
@@ -192,7 +212,7 @@ gates:
 | G0 — Recoverable reference | Before destructive candidate installation or testing: current known-good whole-system image on independent storage, verified integrity and rescue-media access, preserved configuration/source/fixtures and a concrete restore procedure. Prefer spare-disk restore-and-boot; without a spare, record `restore boot NOT TESTED` and obtain explicit operator acceptance. Integrity and recovery-media checks remain mandatory. |
 | G1 — LTS admission | Actual X61/BCM70015 on the selected supported Ubuntu LTS; record exact OS/kernel/userspace/graphics. Rebuild the preserved RC first, verify loaded/installed identities and real native/scaled/VA decode, then freeze any necessary corrected candidate. Preserve comparable LXQt/X11 settings and record differences. |
 | G2 — Correctness and compatibility | All 11 maintenance-oracle entries: defined counts, geometry/fields, PTS and pixels, valid EOS/drain and clean reopen. Candidate CI, native/i686/no-SSE and older supported kernel/GStreamer builds pass. Cover event wait/close/cancellation, mixed-version fallback, B-frame tail/replay, L0s restoration/force precedence and monitor-only close; distinguish mock from physical evidence. |
-| G3 — Core endurance and lifecycle | Clocked H.264+AAC 720p30: **8 h / 864,000 pictures**; qualified native H.264 High 1080p30: **2 h / 216,000 pictures**; **1,000** complete sessions; **100** complete admitted-codec cycles; **10** control cycles and final idle reload/reopen. Retain full timing/resource limits, pause/resume, seek, flush/replay and reopen; exclude unsupported native FHD 2x. No recovery retries/reloads may mask failures. |
+| G3 — Core endurance and lifecycle | Clocked H.264+AAC 720p30: **3 h / 324,000 pictures** with the explicit maintenance profile above; qualified native H.264 High 1080p30: **2 h / 216,000 pictures**; **1,000** complete sessions; **100** complete admitted-codec cycles; **10** control cycles and final idle reload/reopen. Retain full timing/resource limits, pause/resume, seek, flush/replay and reopen; exclude unsupported native FHD 2x. No recovery retries/reloads may mask failures. |
 | G4 — Retained new paths | Progressive Full-HD input → 1280-wide output: **2 h**, correct geometry/PAR, count/EOS, pixel checks and seek/native-reopen controls. Actual admitted VA event-RX worker: **at least 2 h**, with output progress, bounded resources and no lost wake/stuck retirement. GStreamer-only soak cannot establish VA-worker coverage. |
 | G5 — Installation and rollback | Final archive without `.git`, first install, RC/previous-package update, removal and rollback on direct/DKMS routes without mixed ownership. Fail before removal if prerequisites/builds fail; use idle-only unload and verify `crystalhd-check`, known decode/EOS and reopen. Distinguish staging from live installation. |
 | G6 — Documentation and final artifact | Follow #430 and the established #369 fresh-user, update, slow-FHD, Moonlight and failed-run journeys. Check links, quoted placeholders, prerequisites, success/errors, experimental scope, component identity and notices. Stable-tag instructions become available only after publication. Final metadata/payload changes need CI/build/archive/install checks and affected runtime rechecks. |

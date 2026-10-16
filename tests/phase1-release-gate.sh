@@ -58,6 +58,7 @@ stage_number=0
 active_watchdog=
 active_monitor=
 rc=no
+maintenance_3h=no
 acceptance=development
 scale_width=
 
@@ -105,8 +106,8 @@ usage:
   $0 --self-test
   $0 manifest-template
   $0 manifest-check FILE
-  $0 evidence-check EVIDENCE_ROOT [--manifest FILE]
-  $0 soak [--rc] --runtime source|installed --results DIR --fixture FILE \\
+  $0 evidence-check EVIDENCE_ROOT [--manifest FILE] [--maintenance-3h]
+  $0 soak [--rc [--maintenance-3h]] --runtime source|installed --results DIR --fixture FILE \\
      --input-sha256 HEX --codec h264 --profile PROFILE --geometry WIDTHxHEIGHT \\
      --field FIELD --frames N --seconds N [--timeout N] [--video-only] [--scale-width 1280]
   $0 churn [--rc] --runtime source|installed --results DIR --fixture FILE \\
@@ -127,6 +128,10 @@ Every hardware invocation requires a new absolute results directory outside
 the source tree.  churn and reload-sanity require a direct-library-compatible
 elementary stream (WMV3 may use ASF).  --rc enforces the Phase 1 acceptance
 duration/count for that mode; shorter configurable runs are development runs.
+The explicit --rc --maintenance-3h profile instead requires exactly 10800s /
+324000 pictures at 720p30 High/AAC, retaining all other RC checks. It is not
+historical 8-hour Phase 1 evidence. Select --maintenance-3h again for its
+aggregate evidence-check; default soak and aggregate acceptance stay unchanged.
 evidence-check defaults to the candidate's historical tests/phase1-oracle.tsv.
 Use --manifest with an absolute tracked candidate manifest to select maintenance
 evidence; its working copy and both captured oracles must match that revision.
@@ -188,12 +193,51 @@ valid_rc_soak()
     seconds_value=$2
     profile_value=$3
     audio_value=$4
+    maintenance_value=${5:-no}
     [ "$profile_value" = High ] && [ "$audio_value" = yes ] || return 1
+    case $maintenance_value in
+        yes) [ "$geometry_value" = 1280x720 ] && [ "$seconds_value" -eq 10800 ]; return ;;
+        no) ;;
+        *) return 1 ;;
+    esac
     case $geometry_value in
         1280x720) [ "$seconds_value" -eq 28800 ] ;;
         1920x1080) [ "$seconds_value" -ge 7200 ] && [ "$seconds_value" -le 14400 ] ;;
         *) return 1 ;;
     esac
+}
+
+valid_maintenance_selection()
+{
+    [ "$5" = no ] || {
+        [ "$5" = yes ] && [ "$1" = soak ] && [ "$2" = yes ] &&
+            [ "$3" = 1280x720 ] && [ -z "$4" ]
+    }
+}
+
+parse_evidence_options()
+{
+    [ "$#" -ge 1 ] && [ -n "$1" ] || return 1
+    evidence_root_option=$1
+    evidence_manifest_option=
+    evidence_maintenance_option=no
+    shift
+    while [ "$#" -gt 0 ]; do
+        case $1 in
+            --manifest)
+                [ "$#" -ge 2 ] && [ -n "$2" ] &&
+                    [ -z "$evidence_manifest_option" ] || return 1
+                evidence_manifest_option=$2
+                shift 2
+                ;;
+            --maintenance-3h)
+                [ "$evidence_maintenance_option" = no ] || return 1
+                evidence_maintenance_option=yes
+                shift
+                ;;
+            *) return 1 ;;
+        esac
+    done
 }
 
 valid_rc_controls()
@@ -394,13 +438,31 @@ module_refcount()
         "$MODULES_FILE"
 }
 
-pin_net()
+raw_pin_net()
 {
     awk '
         $1 == "nr_foll_pin_acquired" { acquired=$2; have_a=1 }
         $1 == "nr_foll_pin_released" { released=$2; have_r=1 }
         END { if (have_a && have_r) print acquired - released; else print "unavailable" }
-    ' /proc/vmstat 2>/dev/null || printf '%s\n' unavailable
+    ' "$PROC_ROOT/vmstat" 2>/dev/null || printf '%s\n' unavailable
+}
+
+pin_net()
+{
+    if [ "$rc" = yes ] || [ "$mode" = oracle ]; then
+        # A root read flushes per-CPU vmstat counters into the global totals.
+        # Do not wait/retry for a preferred balance or fall back on failure.
+        if ! root_exec cat /proc/sys/vm/stat_refresh >/dev/null 2>&1; then
+            printf '%s\n' unavailable
+            return
+        fi
+    fi
+    raw_pin_net
+}
+
+pin_balance_valid()
+{
+    printf '%s\n' "$1" | grep -Eq '^[0-9]+$' && [ "$1" = "$2" ]
 }
 
 device_idle()
@@ -513,6 +575,12 @@ capture_snapshot()
     {
         printf 'time=%s\n' "$(date --iso-8601=ns)"
         printf 'module_refcount=%s\n' "$(module_refcount)"
+        printf 'pin_net_raw=%s\n' "$(raw_pin_net)"
+        if [ "$rc" = yes ] || [ "$mode" = oracle ]; then
+            printf 'pin_net_method=root-read-stat_refresh\n'
+        else
+            printf 'pin_net_method=raw-vmstat\n'
+        fi
         printf 'pin_net=%s\n' "$(pin_net)"
         printf 'loaded_srcversion=%s\n' "$(cat /sys/module/crystalhd/srcversion 2>/dev/null || printf unavailable)"
         printf 'force_l0s_off=%s\n' "$(cat /sys/module/crystalhd/parameters/force_l0s_off 2>/dev/null || printf unavailable)"
@@ -1318,8 +1386,7 @@ finish_run()
     [ "$before_ref" = 0 ] && [ "$after_ref" = 0 ] || die "module refcount did not return to zero"
     before_pin=$(sed -n 's/^pin_net=//p' "$results/system-before.txt")
     after_pin=$(sed -n 's/^pin_net=//p' "$results/system-after.txt")
-    printf '%s\n' "$before_pin" | grep -Eq '^[0-9]+$' && \
-        [ "$before_pin" = "$after_pin" ] || \
+    pin_balance_valid "$before_pin" "$after_pin" || \
         die "global long-term pin balance is unavailable or changed: $before_pin -> $after_pin"
     before_force=$(sed -n 's/^force_l0s_off=//p' "$results/system-before.txt")
     after_force=$(sed -n 's/^force_l0s_off=//p' "$results/system-after.txt")
@@ -1349,7 +1416,9 @@ finish_run()
     printf 'result=PASS\nrevision=%s\nruntime=%s\nmode=%s\nrc=%s\nacceptance=%s\n' \
         "$revision" "$runtime" "$mode" "$rc" "$acceptance" > "$results/result.txt"
     finished=yes
-    if [ "$rc" = yes ]; then
+    if [ "$maintenance_3h" = yes ]; then
+        say "Maintenance 3h $mode gate passed; evidence: $results"
+    elif [ "$rc" = yes ]; then
         say "Phase 1 RC $mode gate passed; evidence: $results"
     else
         say "Phase 1 development $mode run passed; evidence: $results"
@@ -1408,7 +1477,13 @@ set_acceptance_label()
                     acceptance=soak-scaled-1080p30-to-1280x720-$seconds
                 else
                     case $geometry in
-                        1280x720) acceptance=soak-720p30-28800 ;;
+                        1280x720)
+                            if [ "$maintenance_3h" = yes ]; then
+                                acceptance=maintenance-soak-720p30-10800
+                            else
+                                acceptance=soak-720p30-28800
+                            fi
+                            ;;
                         1920x1080) acceptance=soak-1080p30-$seconds ;;
                     esac
                 fi
@@ -1476,6 +1551,8 @@ prepare_oracle()
 
 run_soak()
 {
+    valid_maintenance_selection "$mode" "$rc" "$geometry" "$scale_width" "$maintenance_3h" ||
+        die "--maintenance-3h requires --rc soak with native 1280x720 input"
     valid_scale_selection "$mode" "$geometry" "$field" "$scale_width" || \
         die "--scale-width requires soak with progressive 1920x1080 input and width 1280"
     [ "$codec" = h264 ] || die "soak requires H.264"
@@ -1493,8 +1570,8 @@ run_soak()
         [ "$audio_codec" = aac ] || die "audio soak fixture must contain AAC"
     fi
     if [ "$rc" = yes ]; then
-        valid_rc_soak "$geometry" "$seconds" "$profile" "$audio" || \
-            die "the Phase 1 RC soak requires High/AAC at 720p for 28800s or Full HD for 7200..14400s"
+        valid_rc_soak "$geometry" "$seconds" "$profile" "$audio" "$maintenance_3h" || \
+            die "RC soak requires High/AAC: 720p 28800s (explicit --maintenance-3h: 10800s), or native/scaled Full HD 7200..14400s"
     fi
     [ -n "$timeout_seconds" ] || timeout_seconds=$((seconds + 60))
     is_uint "$timeout_seconds" 32400 || die "invalid --timeout"
@@ -2118,10 +2195,15 @@ validate_evidence_fixture()
 
     case $fixture_evidence_name in
         soak-720p)
+            case $fixture_acceptance in
+                soak-720p30-28800) fixture_expected_frames=864000 ;;
+                maintenance-soak-720p30-10800) fixture_expected_frames=324000 ;;
+                *) return 1 ;;
+            esac
             [ "$fixture_codec" = h264 ] && [ "$fixture_profile" = High ] && \
                 [ "$fixture_geometry" = 1280x720 ] && \
                 [ "$fixture_field" = progressive ] && \
-                [ "$fixture_frames" -eq 864000 ] || return 1
+                [ "$fixture_frames" -eq "$fixture_expected_frames" ] || return 1
             ;;
         soak-1080p)
             fixture_seconds=${fixture_acceptance##*-}
@@ -2396,6 +2478,11 @@ check_evidence_set()
 {
     evidence_root=$1
     selected_manifest=${2:-}
+    case ${3:-no} in
+        no) expected_720p_acceptance=soak-720p30-28800 ;;
+        yes) expected_720p_acceptance=maintenance-soak-720p30-10800 ;;
+        *) error "invalid maintenance duration profile"; return 1 ;;
+    esac
     selected_manifest_relative=tests/phase1-oracle.tsv
     if [ -n "$selected_manifest" ]; then
         case $selected_manifest in /*) ;; *)
@@ -2435,7 +2522,7 @@ check_evidence_set()
     force_summary=
     for evidence_spec in \
         oracle:oracle:no:oracle-v1 \
-        soak-720p:soak:yes:soak-720p30-28800 \
+        "soak-720p:soak:yes:$expected_720p_acceptance" \
         soak-1080p:soak:yes:soak-1080p30 \
         churn:churn:yes:churn-1000 \
         round-robin:round-robin:yes:round-robin-100 \
@@ -2613,8 +2700,7 @@ check_evidence_set()
         before_session=$(evidence_value session_l0s_off "$system_before" 2>/dev/null || true)
         after_session=$(evidence_value session_l0s_off "$system_after" 2>/dev/null || true)
         [ "$before_ref" = 0 ] && [ "$after_ref" = 0 ] && \
-            printf '%s\n' "$before_pin" | grep -Eq '^[0-9]+$' && \
-            [ "$before_pin" = "$after_pin" ] && \
+            pin_balance_valid "$before_pin" "$after_pin" && \
             [ "$before_src" = "$fingerprint_module_src" ] && \
             [ "$after_src" = "$fingerprint_module_src" ] && \
             printf '%s\n' "$before_force" | grep -Eq '^[YN]$' && \
@@ -2691,7 +2777,11 @@ check_evidence_set()
         error "could not hash verified oracle manifest"
         return 1
     }
-    say "Phase 1 evidence set passed: revision=$reference_revision runtime=$reference_runtime"
+    if [ "$expected_720p_acceptance" = maintenance-soak-720p30-10800 ]; then
+        say "Maintenance 3h evidence set passed: revision=$reference_revision runtime=$reference_runtime"
+    else
+        say "Phase 1 evidence set passed: revision=$reference_revision runtime=$reference_runtime"
+    fi
     say "oracle_manifest=$selected_manifest_relative oracle_sha256=$evidence_manifest_hash"
     say "force_l0s_off:$force_summary"
 }
@@ -2723,6 +2813,40 @@ EOF
     chmod +x "$mock_ffprobe"
     FFPROBE=$mock_ffprobe
     tests=0
+
+    # Only the fake vmstat file is touched; the privileged refresh is a stub.
+    if ! (
+        PROC_ROOT=$tmp/pin-proc
+        mkdir "$PROC_ROOT"
+        printf 'nr_foll_pin_acquired 118\nnr_foll_pin_released 100\n' > "$PROC_ROOT/vmstat"
+        root_exec()
+        {
+            [ "$*" = 'cat /proc/sys/vm/stat_refresh' ] || return 2
+            printf 'refresh\n' >> "$tmp/pin-refresh-calls"
+            [ "$pin_refresh_failure" = no ] || return 1
+            printf 'nr_foll_pin_acquired 118\nnr_foll_pin_released 118\n' > "$PROC_ROOT/vmstat"
+        }
+        pin_refresh_failure=no
+        rc=no; mode=soak
+        [ "$(pin_net)" = 18 ] && [ ! -e "$tmp/pin-refresh-calls" ] || exit 1
+        rc=yes
+        [ "$(pin_net)" = 0 ] && [ "$(wc -l < "$tmp/pin-refresh-calls")" -eq 1 ] || exit 1
+        rc=no; mode=oracle
+        [ "$(pin_net)" = 0 ] && [ "$(wc -l < "$tmp/pin-refresh-calls")" -eq 2 ] || exit 1
+        pin_refresh_failure=yes
+        [ "$(pin_net)" = unavailable ] &&
+            [ "$(wc -l < "$tmp/pin-refresh-calls")" -eq 3 ] || exit 1
+        printf 'nr_foll_pin_acquired 118\n' > "$PROC_ROOT/vmstat"
+        rc=no; mode=soak
+        [ "$(pin_net)" = unavailable ] || exit 1
+        pin_balance_valid 0 0 && pin_balance_valid 7 7 &&
+            ! pin_balance_valid 0 18 && ! pin_balance_valid 18 0 &&
+            ! pin_balance_valid unavailable unavailable && ! pin_balance_valid -1 -1
+    ); then
+        error "self-test skipped or retried pin-stat refresh, hid its failure or relaxed exact pin balance"
+        return 1
+    fi
+    tests=$((tests + 7))
 
     # Exercise the actual reload/recovery helpers with a fake sysfs directory.
     # The command stub never invokes modprobe, udevadm or any hardware operation.
@@ -2974,6 +3098,46 @@ EOF
         ! valid_rc_soak 1280x720 28800 Main yes && \
         ! valid_rc_soak 1280x720 28800 High no
     tests=$((tests + 1))
+    if ! (
+        valid_rc_soak 1280x720 10800 High yes yes &&
+        ! valid_rc_soak 1280x720 10800 High yes &&
+        ! valid_rc_soak 1280x720 28800 High yes yes &&
+        ! valid_rc_soak 1280x720 10788 High yes yes &&
+        ! valid_rc_soak 1280x720 10812 High yes yes &&
+        ! valid_rc_soak 1920x1080 10800 High yes yes &&
+        ! valid_rc_soak 1280x720 10800 Main yes yes &&
+        ! valid_rc_soak 1280x720 10800 High no yes &&
+        valid_maintenance_selection soak yes 1280x720 '' yes &&
+        ! valid_maintenance_selection soak no 1280x720 '' yes &&
+        ! valid_maintenance_selection controls yes 1280x720 '' yes &&
+        ! valid_maintenance_selection soak yes 1920x1080 '' yes &&
+        ! valid_maintenance_selection soak yes 1280x720 1280 yes
+    ); then
+        error "self-test changed historical RC admission or accepted an invalid 3h maintenance profile"
+        return 1
+    fi
+    tests=$((tests + 1))
+    if ! (
+        parse_evidence_options /evidence --manifest /manifest --maintenance-3h &&
+        [ "$evidence_root_option" = /evidence ] &&
+        [ "$evidence_manifest_option" = /manifest ] &&
+        [ "$evidence_maintenance_option" = yes ] &&
+        parse_evidence_options /evidence --maintenance-3h --manifest /manifest &&
+        [ "$evidence_manifest_option" = /manifest ] &&
+        [ "$evidence_maintenance_option" = yes ] &&
+        parse_evidence_options /evidence &&
+        [ -z "$evidence_manifest_option" ] &&
+        [ "$evidence_maintenance_option" = no ] &&
+        ! parse_evidence_options /evidence --manifest &&
+        ! parse_evidence_options /evidence --manifest '' &&
+        ! parse_evidence_options /evidence --manifest /a --manifest /b &&
+        ! parse_evidence_options /evidence --maintenance-3h --maintenance-3h &&
+        ! parse_evidence_options /evidence --unknown
+    ); then
+        error "self-test accepted invalid aggregate options or lost the explicit 3h profile"
+        return 1
+    fi
+    tests=$((tests + 1))
     valid_rc_controls 1280x720 High yes no 10 && \
         ! valid_rc_controls 1920x1080 High yes no 10 && \
         ! valid_rc_controls 1280x720 High yes yes 10 && \
@@ -3026,6 +3190,28 @@ EOF
         return 1
     fi
     tests=$((tests + 5))
+
+    if ! (
+        run_timed() { printf '%s\n' "$@" > "$tmp/maintenance-soak-command"; }
+        audio_probe_value() { printf '%s\n' aac; }
+        mode=soak; rc=yes; maintenance_3h=yes
+        codec=h264; profile=High; geometry=1280x720; field=progressive
+        frames=324000; seconds=10800; audio=yes; timeout_seconds=; scale_width=
+        set_acceptance_label
+        [ "$acceptance" = maintenance-soak-720p30-10800 ] || exit 1
+        run_soak
+        [ "$(cat "$tmp/maintenance-soak-command")" = "$(printf '%s\n' soak 10890 \
+            "$plugin_dir/gstreamer-controls-test" "$fixture" \
+            --expect-geometry 1280x720 --sustain 10800 --timeout 10860 --audio)" ] || exit 1
+        if (seconds=10788; frames=323640; run_soak) >/dev/null 2>&1; then exit 1; fi
+        if (frames=323999; run_soak) >/dev/null 2>&1; then exit 1; fi
+        if (audio=no; run_soak) >/dev/null 2>&1; then exit 1; fi
+        if (rc=no; run_soak) >/dev/null 2>&1; then exit 1; fi
+    ); then
+        error "self-test failed 3h maintenance forwarding, exact frames, audio or RC guards"
+        return 1
+    fi
+    tests=$((tests + 1))
 
     validate_fixture "$fixture" "$sha" h264 High 1280x720 progressive 360 >/dev/null
     tests=$((tests + 1))
@@ -3514,6 +3700,46 @@ EOF
     }
     tests=$((tests + 1))
 
+    if check_evidence_set "$evidence_root" '' yes >/dev/null 2>&1; then
+        error "self-test accepted historical 8h evidence as the explicit 3h maintenance profile"
+        return 1
+    fi
+    for maintenance_file in result.txt identity.txt fixture.txt stages/0001-soak.progress; do
+        cp "$evidence_root/soak-720p/$maintenance_file" \
+            "$tmp/maintenance-$(basename -- "$maintenance_file")"
+    done
+    for maintenance_file in result.txt identity.txt; do
+        sed 's/^acceptance=soak-720p30-28800$/acceptance=maintenance-soak-720p30-10800/' \
+            "$tmp/maintenance-$maintenance_file" > "$evidence_root/soak-720p/$maintenance_file"
+    done
+    if check_evidence_set "$evidence_root" '' yes >/dev/null 2>&1; then
+        error "self-test accepted 864000 pictures with the 3h maintenance label"
+        return 1
+    fi
+    sed 's/^frames=864000$/frames=324000/' "$tmp/maintenance-fixture.txt" \
+        > "$evidence_root/soak-720p/fixture.txt"
+    if check_evidence_set "$evidence_root" '' yes >/dev/null 2>&1; then
+        error "self-test accepted stale 8h final progress with the 3h maintenance fixture"
+        return 1
+    fi
+    sed 's/frame-identity=863999 /frame-identity=323999 /; s/total-video=864000$/total-video=324000/' \
+        "$tmp/maintenance-0001-soak.progress" > "$evidence_root/soak-720p/stages/0001-soak.progress"
+    if check_evidence_set "$evidence_root" >/dev/null 2>&1; then
+        error "self-test accepted 3h maintenance evidence as historical 8h qualification"
+        return 1
+    fi
+    check_evidence_set "$evidence_root" '' yes > "$tmp/maintenance-evidence-check.log"
+    grep -F 'Maintenance 3h evidence set passed:' "$tmp/maintenance-evidence-check.log" \
+        >/dev/null || {
+        error "self-test did not distinguish the 3h maintenance aggregate result"
+        return 1
+    }
+    for maintenance_file in result.txt identity.txt fixture.txt stages/0001-soak.progress; do
+        cp "$tmp/maintenance-$(basename -- "$maintenance_file")" \
+            "$evidence_root/soak-720p/$maintenance_file"
+    done
+    tests=$((tests + 6))
+
     for scaled_evidence_file in result.txt identity.txt; do
         cp "$evidence_root/soak-1080p/$scaled_evidence_file" "$tmp/native-$scaled_evidence_file"
         sed 's/^acceptance=soak-1080p30-7200$/acceptance=soak-scaled-1080p30-to-1280x720-7200/' \
@@ -3895,14 +4121,11 @@ if [ "$#" -eq 2 ] && [ "$1" = manifest-check ]; then
     exit
 fi
 if [ "$#" -gt 0 ] && [ "$1" = evidence-check ]; then
-    case $# in
-        2) evidence_manifest_option= ;;
-        4) [ "$3" = --manifest ] && [ -n "$4" ] || usage
-           evidence_manifest_option=$4 ;;
-        *) usage ;;
-    esac
+    shift
+    parse_evidence_options "$@" || usage
     freeze_release_environment
-    check_evidence_set "$2" "$evidence_manifest_option"
+    check_evidence_set "$evidence_root_option" "$evidence_manifest_option" \
+        "$evidence_maintenance_option"
     exit
 fi
 [ "$#" -gt 0 ] || usage
@@ -3958,10 +4181,13 @@ while [ "$#" -gt 0 ]; do
         --audio) audio=yes; audio_explicit=yes ;;
         --skip-2x) skip_2x=yes ;;
         --rc) [ "$rc" = no ] || usage; rc=yes ;;
+        --maintenance-3h) [ "$maintenance_3h" = no ] || usage; maintenance_3h=yes ;;
         *) usage ;;
     esac
 done
 
+valid_maintenance_selection "$mode" "$rc" "$geometry" "$scale_width" "$maintenance_3h" ||
+    die "--maintenance-3h requires --rc soak with native 1280x720 input"
 valid_scale_selection "$mode" "$geometry" "$field" "$scale_width" || \
     die "--scale-width requires soak with progressive 1920x1080 input and width 1280"
 
