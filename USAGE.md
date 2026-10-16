@@ -325,19 +325,45 @@ drm_node=/dev/dri/renderDXXX
 LIBVA_DRIVER_NAME=crystalhd \
 ffmpeg -hide_banner -hwaccel vaapi -hwaccel_device "$drm_node" \
   -hwaccel_output_format vaapi -i "/path/to/interlaced-video.ts" \
-  -map 0:v:0 \
-  -vf 'hwdownload,format=nv12,bwdif=mode=send_field:parity=auto:deint=all' \
+  -map 0:v:0 -filter_threads 2 \
+  -vf 'hwdownload,format=nv12,format=yuv420p,bwdif=mode=send_field:parity=auto:deint=all' \
   -fps_mode passthrough -an -sn -f null -
 ```
 
 This null-output command verifies decode, readback and filtering; it does not
 play audio or display the result. `send_field` ordinarily turns 25 complete
-interlaced pictures/s into 50 progressive frames/s. That RC.2 qualification run
-wrote `framemd5` checksums and produced 1,500/1,500 frames plus clean EOS. On
-the reference Core 2 Duo T8100 that decode/readback/BWDIF/checksum run took
-33.95 seconds for 30 seconds of media, used 157% process CPU and 325,296 KiB
-maximum RSS. Null or displayed output was not timed separately, so this proves
-the filter path but neither certifies nor rules out real-time presentation.
+interlaced pictures/s into 50 progressive frames/s.
+
+Installed **RC.3** on the reference Core 2 Duo T8100 / FFmpeg 8.0.1 was timed
+on 2026-10-16 without input pacing, audio, display or checksums, using two
+filter threads. Existing `force_l0s_off=1`, `session_l0s_off=0` settings kept
+L0s disabled; no PCIe power settings were changed for this measurement.
+Each 30-second H.264 MBAFF fixture contains 750 pictures;
+all three repetitions returned the expected 750 or 1,500 outputs:
+
+| Path | 1920×1080i25 output fps | 1280×720i25 output fps |
+| --- | ---: | ---: |
+| Weave, NV12 readback | 39.29 | 80.39 |
+| Weave, converted to YUV420p | 38.23 | 79.96 |
+| CPU BWDIF `send_frame` | 32.27 | 70.22 |
+| CPU BWDIF `send_field` | 56.60 | 122.05 |
+
+These are achieved rates from median complete-process wall time, not the
+media's nominal 25/50 fps. Field-rate BWDIF processed 28.30 FHD input
+pictures/s, about 13% above this clip's 25-picture/s requirement before
+audio/display work. This is useful headroom, not a guarantee of smooth Kodi
+presentation or a pure hardware-decoder maximum. Decode, readback, format
+conversion, CPU filtering and process overhead are included; no per-frame
+filter latency or physical A/V offset was measured. See the
+[hardware results](HARDWARE-2026-09-13.md#rc3-interlaced-null-output-throughput-2026-10-16)
+for elapsed time, CPU, memory and measurement limits.
+That section also separates a RAM-backed CPU-filter cost comparison from
+hardware throughput; its whole-batch times are not live per-frame latency.
+
+The earlier unpublished RC.2 checksum run separately produced 1,500/1,500
+frames plus EOS in 33.95 seconds, at 157% process CPU and 325,296 KiB maximum
+RSS. It used `framemd5` and the older runtime; it is not the current null-output
+benchmark or a directly comparable filter-cost measurement.
 `deinterlace_vaapi=mode=bob` is not a substitute: this driver does not
 advertise a VA VPP deinterlacing filter. See the
 [VA component contract](filters/vaapi/README.md#interlaced-h264-weave-and-client-deinterlacing).
