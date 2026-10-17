@@ -362,6 +362,29 @@ class Player:
         pad = element.get_static_pad("src")
         if pad is not None:
             pad.add_probe(self.Gst.PadProbeType.BUFFER, self.decoder_output, token, name, klass)
+        if name == "crystalhddec" and self.args.scale_width:
+            pad = element.get_static_pad("sink")
+            if pad is not None:
+                pad.add_probe(self.Gst.PadProbeType.EVENT_DOWNSTREAM,
+                              self.decoder_input, token)
+
+    def decoder_input(self, _pad, info, token):
+        event = info.get_event()
+        if self.args.scale_width and event.type == self.Gst.EventType.CAPS:
+            caps = event.parse_caps()
+            if caps is not None and caps.get_size() == 1:
+                mode = caps.get_structure(0).get_string("interlace-mode")
+                if mode is not None and mode != "progressive":
+                    # The plugin already rejects this combination. playbin
+                    # may discard that branch's initialization error and play
+                    # audio alone, so retain the reason on our existing bus.
+                    self.post_observation("crystalhd-player-error", {
+                        "token": token,
+                        "message": "--scale-width requires progressive input "
+                                   f"(interlace-mode={mode}); omit --scale-width "
+                                   "for native interlaced playback",
+                    })
+        return self.Gst.PadProbeReturn.OK
 
     def decoder_output(self, pad, info, token, name, klass):
         buffer = info.get_buffer()
@@ -411,6 +434,9 @@ class Player:
                                      ("token", "name", "klass", "raw", "size", "observed")))
             elif fields.get_name() == "crystalhd-player-removed":
                 self.decoder_removed(fields.get_value("token"))
+            elif fields.get_name() == "crystalhd-player-error":
+                if fields.get_value("token") in self.decoders.values():
+                    self.fail(fields.get_value("message"))
         elif message.type == Gst.MessageType.ERROR:
             error, _debug = message.parse_error()
             self.fail(input_error(self.args.file,
