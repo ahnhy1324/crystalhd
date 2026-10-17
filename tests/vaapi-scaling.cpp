@@ -219,6 +219,8 @@ extern "C" void gbm_bo_destroy(gbm_bo *) { abort(); }
 extern "C" int gbm_bo_get_plane_count(gbm_bo *) { abort(); }
 extern "C" uint32_t gbm_bo_get_stride_for_plane(gbm_bo *, int) { abort(); }
 extern "C" uint32_t gbm_bo_get_offset(gbm_bo *, int) { abort(); }
+extern "C" int gbm_bo_get_fd_for_plane(gbm_bo *, int) { abort(); }
+extern "C" uint64_t gbm_bo_get_modifier(gbm_bo *) { abort(); }
 extern "C" int drmGetDevice2(int, uint32_t, drmDevicePtr *) { abort(); }
 extern "C" void drmFreeDevice(drmDevicePtr *) { abort(); }
 extern "C" int drmPrimeHandleToFD(int, uint32_t, uint32_t, int *) { abort(); }
