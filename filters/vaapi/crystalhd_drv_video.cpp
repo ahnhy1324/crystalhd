@@ -29,6 +29,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
@@ -637,6 +638,62 @@ struct SurfaceLayout {
   }
 };
 
+// Cache discovery metadata, not a DRM file or a backing allocation. Each
+// surface still opens/closes its own primary-node file, preserving GEM handle,
+// DRM-master and runtime-PM lifetime. Calls are serialized by Driver::mutex.
+struct PrimaryDrmNodeCache {
+  std::string path;
+  struct stat render_identity = {};
+  struct stat primary_identity = {};
+
+  static bool SameNode(const struct stat &left, const struct stat &right) {
+    return left.st_dev == right.st_dev && left.st_ino == right.st_ino &&
+           left.st_rdev == right.st_rdev;
+  }
+
+  int Open(int drm_fd) {
+    if (drm_fd < 0)
+      return -1;
+    struct stat render = {};
+    const bool have_render_identity = fstat(drm_fd, &render) == 0;
+    if (!path.empty() && have_render_identity &&
+        SameNode(render, render_identity)) {
+      const int fd = open(path.c_str(), O_RDWR | O_CLOEXEC);
+      struct stat primary = {};
+      if (fd >= 0 && fstat(fd, &primary) == 0 &&
+          SameNode(primary, primary_identity))
+        return fd;
+      if (fd >= 0)
+        close(fd);
+    }
+    path.clear();
+
+    drmDevicePtr device = nullptr;
+    int fd = -1;
+    if (drmGetDevice2(drm_fd, 0, &device) == 0 && device != nullptr &&
+        (device->available_nodes & (1U << DRM_NODE_PRIMARY)) != 0 &&
+        device->nodes != nullptr && device->nodes[DRM_NODE_PRIMARY] != nullptr) {
+      const char *node = device->nodes[DRM_NODE_PRIMARY];
+      fd = open(node, O_RDWR | O_CLOEXEC);
+      struct stat primary = {};
+      if (fd >= 0 && have_render_identity && fstat(fd, &primary) == 0) {
+        // Discovery caching is optional: failure to retain the path must not
+        // discard an otherwise successful allocation path or leak its fd.
+        try {
+          path = node;
+          render_identity = render;
+          primary_identity = primary;
+        } catch (const std::bad_alloc &) {
+          path.clear();
+        }
+      }
+    }
+    if (device != nullptr)
+      drmFreeDevice(&device);
+    return fd;
+  }
+};
+
 struct Surface {
   VASurfaceID id = VA_INVALID_SURFACE;
   unsigned int width = 0;
@@ -731,7 +788,8 @@ struct Surface {
                         unsigned int requested_width,
                         unsigned int requested_height,
                         uint32_t requested_fourcc,
-                        bool allow_experimental_i915_wc = false) {
+                        bool allow_experimental_i915_wc = false,
+                        PrimaryDrmNodeCache *primary_node_cache = nullptr) {
     width = requested_width;
     height = requested_height;
     fourcc = requested_fourcc;
@@ -786,14 +844,10 @@ struct Surface {
         bo = nullptr;
       }
     }
-    drmDevicePtr device = nullptr;
-    if (drm_fd >= 0 && drmGetDevice2(drm_fd, 0, &device) == 0 &&
-        device != nullptr &&
-        (device->available_nodes & (1U << DRM_NODE_PRIMARY)) != 0) {
-      dumb_drm_fd = open(device->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
-      drmFreeDevice(&device);
-    } else if (device != nullptr) {
-      drmFreeDevice(&device);
+    if (drm_fd >= 0) {
+      PrimaryDrmNodeCache uncached;
+      dumb_drm_fd = (primary_node_cache != nullptr ? primary_node_cache
+                                                  : &uncached)->Open(drm_fd);
     }
     if (dumb_drm_fd >= 0) {
       drm_mode_create_dumb create = {};
@@ -1885,18 +1939,14 @@ struct Driver {
   int decode_control_fd = -1;
   gbm_device *gbm = nullptr;
   int drm_fd = -1;
+  PrimaryDrmNodeCache primary_node_cache;
   bool experimental_i915_wc = false;
-  const bool vpp_disabled;
 
   explicit Driver(int requested_drm_fd,
                   int trace_output_fd = STDERR_FILENO)
       : trace(trace_output_fd), drm_fd(requested_drm_fd),
         experimental_i915_wc(ExperimentalI915WcRequested(
-            getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC"))),
-        vpp_disabled([] {
-          const char *value = getenv("CRYSTALHD_VAAPI_DISABLE_VPP");
-          return value != nullptr && strcmp(value, "1") == 0;
-        }()) {
+            getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC"))) {
     decode_control_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (requested_drm_fd >= 0)
       gbm = gbm_create_device(requested_drm_fd);
@@ -2488,9 +2538,8 @@ static bool IsDecodeProfile(VAProfile profile) {
          IsMpeg4Profile(profile) || IsVc1Profile(profile);
 }
 
-static bool IsSupportedProfile(const Driver *driver, VAProfile profile) {
-  return IsDecodeProfile(profile) ||
-         (profile == VAProfileNone && !driver->vpp_disabled);
+static bool IsSupportedProfile(VAProfile profile) {
+  return IsDecodeProfile(profile) || profile == VAProfileNone;
 }
 
 static bool IsValidConfig(VAProfile profile, VAEntrypoint entrypoint) {
@@ -5238,7 +5287,7 @@ static VAStatus Terminate(VADriverContextP context) {
   return status;
 }
 
-static VAStatus QueryConfigProfiles(VADriverContextP context, VAProfile *profiles,
+static VAStatus QueryConfigProfiles(VADriverContextP, VAProfile *profiles,
                                     int *count) {
   if (profiles == nullptr || count == nullptr)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
@@ -5247,17 +5296,14 @@ static VAStatus QueryConfigProfiles(VADriverContextP context, VAProfile *profile
       VAProfileNone, VAProfileMPEG2Simple, VAProfileMPEG2Main, VAProfileVC1Simple,
       VAProfileVC1Main, VAProfileVC1Advanced, VAProfileMPEG4Simple,
       VAProfileMPEG4AdvancedSimple};
-  *count = 0;
-  for (VAProfile profile : supported) {
-    if (IsSupportedProfile(GetDriver(context), profile))
-      profiles[(*count)++] = profile;
-  }
+  *count = sizeof(supported) / sizeof(supported[0]);
+  std::copy(std::begin(supported), std::end(supported), profiles);
   return VA_STATUS_SUCCESS;
 }
 
-static VAStatus QueryConfigEntrypoints(VADriverContextP context, VAProfile profile,
+static VAStatus QueryConfigEntrypoints(VADriverContextP, VAProfile profile,
                                        VAEntrypoint *entrypoints, int *count) {
-  if (!IsSupportedProfile(GetDriver(context), profile)) {
+  if (!IsSupportedProfile(profile)) {
     if (count != nullptr)
       *count = 0;
     return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
@@ -5270,10 +5316,10 @@ static VAStatus QueryConfigEntrypoints(VADriverContextP context, VAProfile profi
   return VA_STATUS_SUCCESS;
 }
 
-static VAStatus GetConfigAttributes(VADriverContextP context, VAProfile profile,
+static VAStatus GetConfigAttributes(VADriverContextP, VAProfile profile,
                                     VAEntrypoint entrypoint,
                                     VAConfigAttrib *attributes, int count) {
-  if (!IsSupportedProfile(GetDriver(context), profile))
+  if (!IsSupportedProfile(profile))
     return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
   if (!IsValidConfig(profile, entrypoint))
     return VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT;
@@ -5306,7 +5352,7 @@ static VAStatus GetConfigAttributes(VADriverContextP context, VAProfile profile,
 static VAStatus CreateConfig(VADriverContextP context, VAProfile profile,
                              VAEntrypoint entrypoint, VAConfigAttrib *, int,
                              VAConfigID *config_id) {
-  if (!IsSupportedProfile(GetDriver(context), profile))
+  if (!IsSupportedProfile(profile))
     return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
   if (!IsValidConfig(profile, entrypoint))
     return VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT;
@@ -5486,7 +5532,8 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
     if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_VA) {
       ok = surface->AllocateInternal(driver->gbm, driver->drm_fd, width, height,
                                      pixel_format,
-                                     driver->experimental_i915_wc);
+                                     driver->experimental_i915_wc,
+                                     &driver->primary_node_cache);
     } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 &&
                descriptor != nullptr) {
       const auto *descriptors =

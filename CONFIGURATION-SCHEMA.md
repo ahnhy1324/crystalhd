@@ -168,7 +168,6 @@ These current surfaces deliberately do not become ordinary merged keys:
 | `CRYSTALHD_CHROMIUM_CONFIG` <!-- schema-boundary:environment:CRYSTALHD_CHROMIUM_CONFIG=legacy-bootstrap --> | Selects the existing trusted shell file; it cannot recursively select the strict schema |
 | `crystalhd-play --subtitles` <!-- schema-boundary:player-flag:--subtitles=invocation-only --> | Per-media invocation input, never a saved preset/profile value |
 | `crystalhd-play --weave` <!-- schema-boundary:player-flag:--weave=invocation-only --> | Per-invocation interlaced passthrough selection, never a saved preset/profile value |
-| `CRYSTALHD_VAAPI_DISABLE_VPP` <!-- schema-boundary:environment:CRYSTALHD_VAAPI_DISABLE_VPP=runtime-only --> | Explicit process compatibility invocation only; no canonical key or saved preset/profile value. The inspector does not model or apply this capability restriction. |
 
 External loader selectors such as `LIBVA_DRIVER_NAME`, `VAAPI_FORCE_INDIRECT`,
 `GST_PLUGIN_PATH` and `LD_LIBRARY_PATH` remain owned by their respective

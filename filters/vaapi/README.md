@@ -93,25 +93,6 @@ source picture accounting and timing/output warnings still need qualification. S
 does not advertise VA VPP deinterlacing; no general Kodi interlace or
 hardware-Bob support is claimed.
 
-## Process VPP opt-out
-
-The development backend recognizes `CRYSTALHD_VAAPI_DISABLE_VPP=1`, snapshotted
-once at VA driver initialization. Only exactly `1` disables VPP; unset and
-other values preserve the default. An opted-out instance omits the VPP profile
-and entrypoint and rejects its config/attribute requests before allocating
-surfaces or a context. Decode capabilities remain available. This can reduce
-the cost of repeated unsupported deinterlacing probes in clients such as Kodi;
-it cannot stop a client's retries or supply deinterlacing.
-
-The restriction also disables legitimate unfiltered NV12 scaling and
-NV12-to-ARGB conversion for that process. Keep it unset for applications that
-need those operations. It is an explicit runtime-only invocation, not a
-persisted `crystalhd-config` key. Use Kodi Off/NONE for intended Weave playback;
-an initial capability probe may still occur. See the
-[optional invocation and qualification boundary](../../USAGE.md#kodi).
-This change is absent from published `v1.1.0-rc.3`; actual Kodi 22 performance
-with the opt-out remains unverified.
-
 ## Replay and end of stream
 
 BCM70015 firmware can retain output until later compressed pictures or a real

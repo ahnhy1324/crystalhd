@@ -159,13 +159,203 @@ struct MockFenceScope {
   ~MockFenceScope() { fence_io_mock = nullptr; }
 };
 
+// A discovery cache must never turn per-surface DRM files into a shared lease.
+// Model only the current thread's node files and owned DUMB allocations.
+struct NativeNodeMock {
+  static constexpr int render_fd = 8100;
+  struct File { bool primary; struct stat identity; };
+  struct Dumb { int fd; size_t size; uint32_t pitch; uint64_t offset; };
+  struct stat render = {}, primary = {};
+  char primary_path[64] = "/dev/dri/crystalhd-test-primary";
+  char *nodes[DRM_NODE_MAX] = {};
+  drmDevice device = {};
+  bool device_owned = false, no_primary = false, null_device = false;
+  bool fail_destroy = false;
+  unsigned fail_queries = 0, fail_opens = 0;
+  unsigned fail_render_stats = 0, fail_primary_stats = 0;
+  unsigned queries = 0, frees = 0, opens = 0, closes = 0;
+  unsigned render_stats = 0, primary_stats = 0;
+  unsigned creates = 0, destroys = 0, maps = 0, unmaps = 0;
+  unsigned invalid = 0;
+  int next_fd = 8200;
+  uint32_t next_handle = 1;
+  std::unordered_map<int, File> files;
+  std::unordered_map<uint32_t, Dumb> dumbs;
+  std::unordered_map<void *, std::unique_ptr<std::vector<uint8_t>>> mappings;
+
+  NativeNodeMock() {
+    render.st_dev = 10; render.st_ino = 20; render.st_rdev = 30;
+    primary.st_dev = 40; primary.st_ino = 50; primary.st_rdev = 60;
+    render.st_mode = primary.st_mode = S_IFCHR | 0600;
+  }
+  int Error() { errno = EIO; return -1; }
+  int Open(const char *path, int flags) {
+    ++opens;
+    if (strcmp(path, primary_path) != 0 || flags != (O_RDWR | O_CLOEXEC)) {
+      ++invalid;
+      return Error();
+    }
+    if (fail_opens != 0) { --fail_opens; return Error(); }
+    const int fd = next_fd++;
+    files.emplace(fd, File{true, primary});
+    return fd;
+  }
+  int Stat(int fd, struct stat *info) {
+    if (fd == render_fd) {
+      ++render_stats;
+      if (fail_render_stats != 0) { --fail_render_stats; return Error(); }
+      *info = render;
+      return 0;
+    }
+    const auto file = files.find(fd);
+    if (file == files.end()) { ++invalid; return Error(); }
+    ++primary_stats;
+    if (fail_primary_stats != 0) { --fail_primary_stats; return Error(); }
+    *info = file->second.identity;
+    return 0;
+  }
+  int Query(int fd, uint32_t flags, drmDevicePtr *result) {
+    ++queries;
+    *result = nullptr;
+    if (fd != render_fd || flags != 0 || device_owned) {
+      ++invalid;
+      return Error();
+    }
+    if (fail_queries != 0) { --fail_queries; return Error(); }
+    if (null_device)
+      return 0;
+    nodes[DRM_NODE_PRIMARY] = primary_path;
+    device.nodes = nodes;
+    device.available_nodes = no_primary ? 0 : (1U << DRM_NODE_PRIMARY);
+    device_owned = true;
+    *result = &device;
+    return 0;
+  }
+  void Free(drmDevicePtr *value) {
+    ++frees;
+    invalid += !device_owned || *value != &device;
+    device_owned = false;
+    *value = nullptr;
+  }
+  int Close(int fd) {
+    ++closes;
+    const auto file = files.find(fd);
+    if (file == files.end()) { ++invalid; return Error(); }
+    // Closing a surface's own DRM file also drops a failed DESTROY_DUMB handle.
+    if (file->second.primary)
+      for (auto it = dumbs.begin(); it != dumbs.end(); ) {
+        if (it->second.fd == fd) it = dumbs.erase(it);
+        else ++it;
+      }
+    files.erase(file);
+    return 0;
+  }
+  int Ioctl(int fd, unsigned long request, void *argument) {
+    const auto file = files.find(fd);
+    if (file == files.end() || !file->second.primary) {
+      ++invalid;
+      return Error();
+    }
+    if (request == DRM_IOCTL_MODE_CREATE_DUMB) {
+      auto *create = static_cast<drm_mode_create_dumb *>(argument);
+      if (create->bpp != 8) { ++invalid; return Error(); }
+      ++creates;
+      create->handle = next_handle++;
+      create->pitch = Align(create->width, 64);
+      create->size = static_cast<size_t>(create->pitch) * create->height;
+      dumbs.emplace(create->handle, Dumb{fd, static_cast<size_t>(create->size),
+                                        create->pitch, create->handle * 4096U});
+      return 0;
+    }
+    if (request == DRM_IOCTL_MODE_MAP_DUMB) {
+      auto *map = static_cast<drm_mode_map_dumb *>(argument);
+      const auto dumb = dumbs.find(map->handle);
+      if (dumb == dumbs.end() || dumb->second.fd != fd) {
+        ++invalid;
+        return Error();
+      }
+      map->offset = dumb->second.offset;
+      return 0;
+    }
+    if (request == DRM_IOCTL_MODE_DESTROY_DUMB) {
+      ++destroys;
+      const auto *destroy = static_cast<drm_mode_destroy_dumb *>(argument);
+      const auto dumb = dumbs.find(destroy->handle);
+      if (dumb == dumbs.end() || dumb->second.fd != fd) {
+        ++invalid;
+        return Error();
+      }
+      if (fail_destroy)
+        return Error();
+      dumbs.erase(dumb);
+      return 0;
+    }
+    ++invalid;
+    return Error();
+  }
+  int Prime(int fd, uint32_t handle, uint32_t flags, int *result) {
+    const auto dumb = dumbs.find(handle);
+    if (dumb == dumbs.end() || dumb->second.fd != fd ||
+        flags != (DRM_CLOEXEC | DRM_RDWR)) {
+      ++invalid;
+      return Error();
+    }
+    *result = next_fd++;
+    files.emplace(*result, File{false, primary});
+    return 0;
+  }
+  void *Map(size_t size, int prot, int flags, int fd, off_t offset) {
+    const auto dumb = std::find_if(dumbs.begin(), dumbs.end(),
+        [&](const auto &entry) {
+          return entry.second.fd == fd && entry.second.offset ==
+              static_cast<uint64_t>(offset) && entry.second.size == size;
+        });
+    if (dumb == dumbs.end() || prot != (PROT_READ | PROT_WRITE) ||
+        flags != MAP_SHARED) {
+      ++invalid;
+      errno = EIO;
+      return MAP_FAILED;
+    }
+    ++maps;
+    auto pixels = std::make_unique<std::vector<uint8_t>>(size);
+    void *address = pixels->data();
+    mappings.emplace(address, std::move(pixels));
+    return address;
+  }
+  int Unmap(void *address, size_t size) {
+    const auto mapping = mappings.find(address);
+    if (mapping == mappings.end() || mapping->second->size() != size) {
+      ++invalid;
+      return Error();
+    }
+    ++unmaps;
+    mappings.erase(mapping);
+    return 0;
+  }
+};
+
+thread_local NativeNodeMock *native_node_mock = nullptr;
+struct MockNativeNodeScope {
+  explicit MockNativeNodeScope(NativeNodeMock &mock) { native_node_mock = &mock; }
+  ~MockNativeNodeScope() { native_node_mock = nullptr; }
+};
+
 }  // namespace
 
 extern "C" int __real_open(const char *path, int flags, ...);
 extern "C" int __real_ioctl(int fd, unsigned long request, ...);
 extern "C" int __real_close(int fd);
+extern "C" int __real_fstat(int fd, struct stat *info);
+extern "C" int __real_drmGetDevice2(int fd, uint32_t flags, drmDevicePtr *device);
+extern "C" void __real_drmFreeDevice(drmDevicePtr *device);
+extern "C" int __real_drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags,
+                                         int *prime_fd);
+extern "C" void *__real_mmap(void *, size_t, int, int, int, off_t);
+extern "C" int __real_munmap(void *, size_t);
 
 extern "C" int __wrap_open(const char *path, int flags, ...) {
+  if (native_node_mock != nullptr)
+    return native_node_mock->Open(path, flags);
   if (fence_io_mock != nullptr)
     return fence_io_mock->Open(path, flags);
   if ((flags & O_CREAT) != 0 || (flags & O_TMPFILE) == O_TMPFILE) {
@@ -183,14 +373,49 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
   va_start(arguments, request);
   void *argument = va_arg(arguments, void *);
   va_end(arguments);
+  if (native_node_mock != nullptr)
+    return native_node_mock->Ioctl(fd, request, argument);
   return fence_io_mock != nullptr
              ? fence_io_mock->Ioctl(fd, request, argument)
              : __real_ioctl(fd, request, argument);
 }
 
 extern "C" int __wrap_close(int fd) {
+  if (native_node_mock != nullptr)
+    return native_node_mock->Close(fd);
   return fence_io_mock != nullptr ? fence_io_mock->Close(fd)
                                   : __real_close(fd);
+}
+
+extern "C" int __wrap_fstat(int fd, struct stat *info) {
+  return native_node_mock != nullptr ? native_node_mock->Stat(fd, info)
+                                     : __real_fstat(fd, info);
+}
+extern "C" int __wrap_drmGetDevice2(int fd, uint32_t flags, drmDevicePtr *device) {
+  return native_node_mock != nullptr ? native_node_mock->Query(fd, flags, device)
+                                     : __real_drmGetDevice2(fd, flags, device);
+}
+extern "C" void __wrap_drmFreeDevice(drmDevicePtr *device) {
+  if (native_node_mock != nullptr)
+    native_node_mock->Free(device);
+  else
+    __real_drmFreeDevice(device);
+}
+extern "C" int __wrap_drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags,
+                                         int *prime_fd) {
+  return native_node_mock != nullptr
+      ? native_node_mock->Prime(fd, handle, flags, prime_fd)
+      : __real_drmPrimeHandleToFD(fd, handle, flags, prime_fd);
+}
+extern "C" void *__wrap_mmap(void *address, size_t size, int prot, int flags,
+                              int fd, off_t offset) {
+  return native_node_mock != nullptr
+      ? native_node_mock->Map(size, prot, flags, fd, offset)
+      : __real_mmap(address, size, prot, flags, fd, offset);
+}
+extern "C" int __wrap_munmap(void *address, size_t size) {
+  return native_node_mock != nullptr ? native_node_mock->Unmap(address, size)
+                                     : __real_munmap(address, size);
 }
 
 extern "C" int __wrap_eventfd(unsigned int initial_value, int flags) {
@@ -207,113 +432,252 @@ void Require(bool value, const char *message) {
     throw std::runtime_error(message);
 }
 
-void VppOptOutCapabilitySnapshot() {
-  constexpr char variable[] = "CRYSTALHD_VAAPI_DISABLE_VPP";
-  struct RestoreEnvironment {
-    bool present;
-    std::string saved;
-    RestoreEnvironment()
-        : present(getenv("CRYSTALHD_VAAPI_DISABLE_VPP") != nullptr),
-          saved(present ? getenv("CRYSTALHD_VAAPI_DISABLE_VPP") : "") {}
-    ~RestoreEnvironment() {
-      if (present)
-        setenv("CRYSTALHD_VAAPI_DISABLE_VPP", saved.c_str(), 1);
-      else
-        unsetenv("CRYSTALHD_VAAPI_DISABLE_VPP");
-    }
-  } restore;
-  const char *values[] = {nullptr, "", "0", "01", "true", "1"};
-  for (const char *value : values) {
-    if (value == nullptr)
-      unsetenv(variable);
-    else
-      setenv(variable, value, 1);
-    const bool disabled = value != nullptr && strcmp(value, "1") == 0;
-    Driver driver{-1};
-    VADriverContext context = {};
-    context.pDriverData = &driver;
-    // Subsequent environment changes must not rewrite this instance's caps.
-    setenv(variable, disabled ? "0" : "1", 1);
-    VAProfile profiles[16] = {};
-    int count = 0;
-    Require(QueryConfigProfiles(&context, profiles, &count) == VA_STATUS_SUCCESS &&
-                count == (disabled ? 10 : 11) &&
-                (std::find(profiles, profiles + count, VAProfileNone) != profiles + count) == !disabled,
-            "only exact 1 hides VPP, with policy snapshotted at driver initialization");
-    const int profile_count = count;
-    VAEntrypoint entrypoint = VAEntrypointVLD;
-    count = 99;
-    const VAStatus expected = disabled ? VA_STATUS_ERROR_UNSUPPORTED_PROFILE
-                                       : VA_STATUS_SUCCESS;
-    Require(QueryConfigEntrypoints(&context, VAProfileNone, &entrypoint, &count) == expected &&
-                count == (disabled ? 0 : 1) &&
-                (disabled || entrypoint == VAEntrypointVideoProc),
-            "VPP entrypoints agree with the advertised profile list");
-    VAConfigAttrib attributes[] = {{VAConfigAttribRTFormat, 0xdead}};
-    Require(GetConfigAttributes(&context, VAProfileNone, VAEntrypointVideoProc,
-                                attributes, 1) == expected &&
-                attributes[0].value == (disabled ? 0xdeadU : VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32),
-            "disabled VPP attribute queries reject without publishing formats");
-    VAConfigID config = VA_INVALID_ID;
-    for (unsigned attempt = 0; attempt < (disabled ? 100U : 1U); ++attempt) {
-      Require(CreateConfig(&context, VAProfileNone, VAEntrypointVideoProc,
-                           nullptr, 0, &config) == expected,
-              "unsupported VPP probes stop at config creation");
-    }
-    if (disabled) {
-      Require(config == VA_INVALID_ID && driver.next_config == 1 &&
-                  driver.next_surface == 1 && driver.next_context == 1 &&
-                  driver.configs.empty() && driver.surfaces.empty() &&
-                  driver.contexts.empty() && driver.pending_vpp.empty(),
-              "repeated rejected probes publish no config or surface/context resources");
-    } else {
-      VASurfaceID surface = VA_INVALID_SURFACE;
-      VAContextID processor = VA_INVALID_ID;
-      Require(CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 16, 16,
+void DefaultVppCapabilitiesRemainAvailable() {
+  Driver driver{-1};
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  VAProfile profiles[16] = {};
+  int count = 0;
+  Require(QueryConfigProfiles(&context, profiles, &count) == VA_STATUS_SUCCESS &&
+              count == 11 &&
+              std::find(profiles, profiles + count, VAProfileNone) != profiles + count,
+          "default profile list still advertises video processing");
+  const int profile_count = count;
+  VAEntrypoint entrypoint = VAEntrypointVLD;
+  count = 99;
+  Require(QueryConfigEntrypoints(&context, VAProfileNone, &entrypoint, &count) ==
+                  VA_STATUS_SUCCESS && count == 1 &&
+              entrypoint == VAEntrypointVideoProc,
+          "default VPP entrypoint remains available");
+  VAConfigAttrib attributes[] = {{VAConfigAttribRTFormat, 0xdead}};
+  Require(GetConfigAttributes(&context, VAProfileNone, VAEntrypointVideoProc,
+                              attributes, 1) == VA_STATUS_SUCCESS &&
+              attributes[0].value == (VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32),
+          "default VPP keeps NV12 and ARGB render formats");
+  VAConfigID config = VA_INVALID_ID;
+  VASurfaceID surface = VA_INVALID_SURFACE;
+  VAContextID processor = VA_INVALID_ID;
+  Require(CreateConfig(&context, VAProfileNone, VAEntrypointVideoProc,
+                        nullptr, 0, &config) == VA_STATUS_SUCCESS &&
+              CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 16, 16,
                               &surface, 1, nullptr, 0) == VA_STATUS_SUCCESS &&
-                  CreateContext(&context, config, 16, 16, 0, &surface, 1,
-                                 &processor) == VA_STATUS_SUCCESS,
-              "ordinary VPP surface and context creation remain available by default");
-      uint32_t inputs[1] = {}, outputs[2] = {};
-      VAProcPipelineCaps caps = {};
-      caps.input_pixel_format = inputs;
-      caps.num_input_pixel_formats = 1;
-      caps.output_pixel_format = outputs;
-      caps.num_output_pixel_formats = 2;
-      unsigned filters = 99, capabilities = 99;
-      Require(QueryVideoProcPipelineCaps(&context, processor, nullptr, 0, &caps) == VA_STATUS_SUCCESS &&
-                  inputs[0] == VA_FOURCC_NV12 && outputs[0] == VA_FOURCC_NV12 &&
-                  outputs[1] == VA_FOURCC_ARGB &&
-                  QueryVideoProcFilters(&context, processor, nullptr, &filters) == VA_STATUS_SUCCESS &&
-                  filters == 0 &&
-                  QueryVideoProcFilterCaps(&context, processor, VAProcFilterDeinterlacing,
-                                           nullptr, &capabilities) == VA_STATUS_ERROR_UNSUPPORTED_FILTER &&
-                  capabilities == 0,
-              "default scaling/CSC caps remain truthful without inventing a DI filter");
-      Require(DestroyContext(&context, processor) == VA_STATUS_SUCCESS &&
-                  DestroySurfaces(&context, &surface, 1) == VA_STATUS_SUCCESS &&
-                  DestroyConfig(&context, config) == VA_STATUS_SUCCESS,
-              "default VPP resource teardown remains valid");
-    }
-    for (int index = 0; index < profile_count; ++index) {
-      const VAProfile profile = profiles[index];
-      if (!IsDecodeProfile(profile))
-        continue;
-      count = 0;
-      Require(QueryConfigEntrypoints(&context, profile, &entrypoint, &count) == VA_STATUS_SUCCESS &&
-                  count == 1 && entrypoint == VAEntrypointVLD &&
-                  CreateConfig(&context, profile, VAEntrypointVLD, nullptr, 0,
-                               &config) == VA_STATUS_SUCCESS,
-              "decode capability/config queries are independent of VPP opt-out");
-    }
-    Driver changed{-1};
-    VADriverContext changed_context = {};
-    changed_context.pDriverData = &changed;
-    Require(QueryConfigEntrypoints(&changed_context, VAProfileNone, &entrypoint, &count) ==
-                (disabled ? VA_STATUS_SUCCESS : VA_STATUS_ERROR_UNSUPPORTED_PROFILE) &&
-                QueryConfigEntrypoints(&context, VAProfileNone, &entrypoint, &count) == expected,
-            "separate driver instances retain independent initialization snapshots");
+              CreateContext(&context, config, 16, 16, 0, &surface, 1,
+                             &processor) == VA_STATUS_SUCCESS,
+          "ordinary VPP surface and context creation remain available");
+  uint32_t inputs[1] = {}, outputs[2] = {};
+  VAProcPipelineCaps caps = {};
+  caps.input_pixel_format = inputs;
+  caps.num_input_pixel_formats = 1;
+  caps.output_pixel_format = outputs;
+  caps.num_output_pixel_formats = 2;
+  unsigned filters = 99, capabilities = 99;
+  Require(QueryVideoProcPipelineCaps(&context, processor, nullptr, 0, &caps) ==
+                  VA_STATUS_SUCCESS &&
+              inputs[0] == VA_FOURCC_NV12 && outputs[0] == VA_FOURCC_NV12 &&
+              outputs[1] == VA_FOURCC_ARGB &&
+              QueryVideoProcFilters(&context, processor, nullptr, &filters) ==
+                  VA_STATUS_SUCCESS && filters == 0 &&
+              QueryVideoProcFilterCaps(&context, processor, VAProcFilterDeinterlacing,
+                                       nullptr, &capabilities) ==
+                  VA_STATUS_ERROR_UNSUPPORTED_FILTER && capabilities == 0,
+          "scaling/CSC caps remain truthful without inventing a DI filter");
+  Require(DestroyContext(&context, processor) == VA_STATUS_SUCCESS &&
+              DestroySurfaces(&context, &surface, 1) == VA_STATUS_SUCCESS &&
+              DestroyConfig(&context, config) == VA_STATUS_SUCCESS,
+          "default VPP resource teardown remains valid");
+  for (int index = 0; index < profile_count; ++index) {
+    const VAProfile profile = profiles[index];
+    if (!IsDecodeProfile(profile))
+      continue;
+    count = 0;
+    Require(QueryConfigEntrypoints(&context, profile, &entrypoint, &count) ==
+                    VA_STATUS_SUCCESS && count == 1 &&
+                entrypoint == VAEntrypointVLD &&
+                CreateConfig(&context, profile, VAEntrypointVLD, nullptr, 0,
+                             &config) == VA_STATUS_SUCCESS &&
+                DestroyConfig(&context, config) == VA_STATUS_SUCCESS,
+            "default decode capabilities remain unchanged");
   }
+}
+
+void NativeNodeCacheOwnsNoFiles() {
+  NativeNodeMock mock;
+  MockNativeNodeScope scope(mock);
+  std::vector<int> files;
+  {
+    PrimaryDrmNodeCache cache;
+    Require(cache.Open(-1) < 0 && mock.queries == 0 && mock.opens == 0,
+            "invalid render fd cannot query or open a node");
+    for (unsigned index = 0; index < 8; ++index) {
+      const int fd = cache.Open(mock.render_fd);
+      Require(fd >= 0 && std::find(files.begin(), files.end(), fd) == files.end(),
+              "every cache hit returns a fresh caller-owned DRM file");
+      files.push_back(fd);
+    }
+    Require(mock.queries == 1 && mock.frees == 1 && mock.opens == 8 &&
+                mock.render_stats == 8 && mock.primary_stats == 8,
+            "stable render and primary metadata avoid repeated libdrm discovery");
+  }
+  Require(mock.closes == 0 && mock.files.size() == 8,
+          "destroying the metadata cache does not close or retain caller files");
+  for (int fd : files)
+    Require(close(fd) == 0, "each caller closes its own node file");
+  Require(mock.files.empty() && !mock.device_owned && mock.invalid == 0,
+          "metadata cache has no hidden descriptor or device-object ownership");
+}
+
+void NativeNodeCacheInvalidatesChangedIdentities() {
+  for (bool render_changed : {false, true}) {
+    for (unsigned field = 0; field < 3; ++field) {
+      NativeNodeMock mock;
+      MockNativeNodeScope scope(mock);
+      PrimaryDrmNodeCache cache;
+      const int first = cache.Open(mock.render_fd);
+      struct stat &identity = render_changed ? mock.render : mock.primary;
+      if (field == 0) ++identity.st_dev;
+      else if (field == 1) ++identity.st_ino;
+      else ++identity.st_rdev;
+      const int changed = cache.Open(mock.render_fd);
+      const int stable = cache.Open(mock.render_fd);
+      Require(first >= 0 && changed >= 0 && stable >= 0 &&
+                  first != changed && changed != stable &&
+                  mock.queries == 2 && mock.frees == 2 &&
+                  mock.opens == (render_changed ? 3U : 4U) &&
+                  mock.closes == (render_changed ? 0U : 1U) &&
+                  mock.files.size() == 3,
+              "changed dev/inode/rdev invalidates and re-discovers the node");
+      for (int fd : {first, changed, stable}) close(fd);
+      Require(mock.files.empty() && !mock.device_owned && mock.invalid == 0,
+              "identity replacement closes only its rejected candidate file");
+    }
+  }
+}
+
+void NativeNodeCacheFailuresRetryWithoutLeases() {
+  for (unsigned mode = 0; mode < 6; ++mode) {
+    NativeNodeMock mock;
+    MockNativeNodeScope scope(mock);
+    PrimaryDrmNodeCache cache;
+    if (mode == 0) mock.fail_queries = 1;
+    if (mode == 1) mock.no_primary = true;
+    if (mode == 2) mock.null_device = true;
+    if (mode == 3) mock.fail_opens = 1;
+    if (mode == 4) mock.fail_primary_stats = 1;
+    if (mode == 5) mock.fail_render_stats = 1;
+    const int first = cache.Open(mock.render_fd);
+    Require((first >= 0) == (mode >= 4) && cache.path.empty(),
+            "lookup/open failure retries; failed identity never caches a valid file");
+    mock.no_primary = mock.null_device = false;
+    const int retry = cache.Open(mock.render_fd);
+    const int warm = cache.Open(mock.render_fd);
+    Require(retry >= 0 && warm >= 0 && retry != warm && mock.queries == 2 &&
+                !cache.path.empty(),
+            "a later successful lookup recovers and can cache metadata");
+    if (first >= 0) close(first);
+    close(retry); close(warm);
+    Require(mock.files.empty() && !mock.device_owned && mock.invalid == 0,
+            "failed lookup/stat does not leak or steal an owned file");
+  }
+  for (bool fail_stat : {false, true}) {
+    NativeNodeMock mock;
+    MockNativeNodeScope scope(mock);
+    PrimaryDrmNodeCache cache;
+    const int first = cache.Open(mock.render_fd);
+    if (fail_stat) mock.fail_primary_stats = 1;
+    else mock.fail_opens = 1;
+    const int recovered = cache.Open(mock.render_fd);
+    const int warm = cache.Open(mock.render_fd);
+    Require(first >= 0 && recovered >= 0 && warm >= 0 &&
+                mock.queries == 2 && mock.opens == 4 &&
+                mock.closes == (fail_stat ? 1U : 0U) && mock.files.size() == 3,
+            "failed warm open/stat invalidates and retries discovery immediately");
+    for (int fd : {first, recovered, warm}) close(fd);
+    Require(mock.files.empty() && !mock.device_owned && mock.invalid == 0,
+            "warm failure leaves no cached file lease");
+  }
+  {
+    NativeNodeMock mock;
+    MockNativeNodeScope scope(mock);
+    PrimaryDrmNodeCache cache;
+    const int first = cache.Open(mock.render_fd);
+    mock.fail_render_stats = 1;
+    const int unverified = cache.Open(mock.render_fd);
+    Require(unverified >= 0 && mock.queries == 2 && cache.path.empty(),
+            "failed warm render identity forces discovery without caching its result");
+    const int retry = cache.Open(mock.render_fd);
+    const int warm = cache.Open(mock.render_fd);
+    Require(first >= 0 && retry >= 0 && warm >= 0 && mock.queries == 3,
+            "render-stat recovery revalidates before restoring the metadata hit path");
+    for (int fd : {first, unverified, retry, warm}) close(fd);
+    Require(mock.files.empty() && !mock.device_owned && mock.invalid == 0,
+            "unverified render identity does not retain any primary file");
+  }
+}
+
+void NativeSurfaceFilesRetainOriginalLifetime() {
+  Driver driver{-1};
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  driver.drm_fd = NativeNodeMock::render_fd;
+  NativeNodeMock mock;
+  MockNativeNodeScope scope(mock);
+  struct CleanupUnderMock {
+    Driver &driver;
+    ~CleanupUnderMock() {
+      driver.contexts.clear();
+      driver.surfaces.clear();
+    }
+  } cleanup{driver};
+  for (unsigned cycle = 0; cycle < 2; ++cycle) {
+    VAConfigID config = VA_INVALID_ID;
+    VAContextID processor = VA_INVALID_ID;
+    VASurfaceID surfaces[8] = {};
+    Require(CreateConfig(&context, VAProfileNone, VAEntrypointVideoProc, nullptr, 0,
+                          &config) == VA_STATUS_SUCCESS &&
+                CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 1920, 1080,
+                                surfaces, 8, nullptr, 0) == VA_STATUS_SUCCESS &&
+                CreateContext(&context, config, 1920, 1080, 0, surfaces, 8,
+                               &processor) == VA_STATUS_SUCCESS,
+            "default full-HD VPP probe allocates its ordinary eight surfaces");
+    std::unordered_set<int> primary_files;
+    for (VASurfaceID id : surfaces) {
+      const auto surface = driver.surfaces.at(id);
+      Require(primary_files.insert(surface->dumb_drm_fd).second &&
+                  surface->planes[0] != nullptr && surface->planes[1] != nullptr &&
+                  surface->object_maps.size() == 1 && surface->object_fds.size() == 1 &&
+                  surface->pitch[0] == 1920,
+              "every surface still owns a distinct eagerly allocated and mapped file");
+    }
+    unsigned capabilities = 99;
+    Require(QueryVideoProcFilterCaps(&context, processor, VAProcFilterDeinterlacing,
+                                     nullptr, &capabilities) ==
+                    VA_STATUS_ERROR_UNSUPPORTED_FILTER && capabilities == 0 &&
+                mock.queries == 1 && mock.frees == 1 && mock.files.size() == 16 &&
+                mock.creates == 8 * (cycle + 1) && mock.maps == 8 * (cycle + 1),
+            "the same unsupported-DI sequence changes discovery cost, not caps/allocation timing");
+    Require(DestroyContext(&context, processor) == VA_STATUS_SUCCESS &&
+                DestroySurfaces(&context, surfaces, 7) == VA_STATUS_SUCCESS &&
+                mock.files.size() == 2 && mock.dumbs.size() == 1 &&
+                mock.mappings.size() == 1,
+            "destroying earlier surfaces preserves the last surface's own DRM file");
+    Require(DestroySurfaces(&context, surfaces + 7, 1) == VA_STATUS_SUCCESS &&
+                DestroyConfig(&context, config) == VA_STATUS_SUCCESS &&
+                mock.files.empty() && mock.dumbs.empty() && mock.mappings.empty(),
+            "the last surface closes its own file even while metadata stays cached");
+  }
+  {
+    Surface surface;
+    Require(surface.AllocateInternal(nullptr, mock.render_fd, 64, 32,
+                                      VA_FOURCC_NV12, false,
+                                      &driver.primary_node_cache),
+            "allocate a surface before a failed DUMB destroy");
+    mock.fail_destroy = true;
+  }
+  Require(mock.files.empty() && mock.dumbs.empty() && mock.mappings.empty() &&
+              mock.queries == 1 && mock.creates == 17 && mock.destroys == 17 &&
+              mock.maps == 17 && mock.unmaps == 17 && mock.invalid == 0 &&
+              driver.surfaces.empty() && driver.contexts.empty(),
+          "even failed DESTROY_DUMB retains the original last-file-close cleanup");
 }
 
 std::shared_ptr<Surface> Picture(uint64_t timestamp, uint8_t luma) {
@@ -1514,7 +1878,11 @@ int main(int argc, char **argv) {
       GenuineSwSyncCompletionStatuses();
       return 0;
     }
-    VppOptOutCapabilitySnapshot();
+    DefaultVppCapabilitiesRemainAvailable();
+    NativeNodeCacheOwnsNoFiles();
+    NativeNodeCacheInvalidatesChangedIdentities();
+    NativeNodeCacheFailuresRetryWithoutLeases();
+    NativeSurfaceFilesRetainOriginalLifetime();
     AbortPathsPublishErrorFences();
     RepeatedVppRetainsPicture();
     DirectCaptureKeepsQueuedVppPrivate();
@@ -1551,6 +1919,6 @@ int main(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 33 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 37 hardware-free regressions passed");
   return 0;
 }

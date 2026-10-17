@@ -438,7 +438,6 @@ unset CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP
 unset CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY
 unset CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US
 unset CRYSTALHD_VAAPI_DEBUG CRYSTALHD_VAAPI_TRACE
-unset CRYSTALHD_VAAPI_DISABLE_VPP
 LIBVA_DRIVER_NAME=crystalhd kodi
 ```
 
@@ -462,22 +461,6 @@ Use **Off/NONE** for Weave. Kodi may still perform an initial VPP capability
 probe even when deinterlacing is off. With Auto on interlaced pictures, some
 Kodi versions repeat unsupported deinterlacing probes once per picture
 ([#445](https://github.com/ahnhy1324/crystalhd/issues/445)).
-
-For a backend containing the development VPP opt-out change, this explicit
-process invocation makes those probes fail at config creation, before VPP
-surfaces or a context are allocated:
-
-```sh
-CRYSTALHD_VAAPI_DISABLE_VPP=1 LIBVA_DRIVER_NAME=crystalhd kodi
-```
-
-The opt-out disables **all** VA video processing in that process, including
-the otherwise supported unfiltered scaling and NV12-to-ARGB conversion. It
-does not stop Kodi retries, add a deinterlacer, or change Kodi's CPU-copy/filter
-helpers. Kodi 22 performance with this mitigation remains unverified. Unset
-the variable to retain ordinary VPP, or start other applications without it;
-the value is read once per VA driver instance. It has no saved configuration
-key. Published immutable `v1.1.0-rc.3` does not contain this change.
 
 Method availability and labels depend on the Kodi version/backend; see the
 [playback settings](https://kodi.wiki/view/Video_playback#Video_Settings) and
