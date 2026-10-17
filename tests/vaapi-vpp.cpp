@@ -432,6 +432,71 @@ void Require(bool value, const char *message) {
     throw std::runtime_error(message);
 }
 
+uint64_t ReadDecodeControlNotifications(Driver &driver) {
+  uint64_t notifications = 0;
+  const ssize_t bytes = read(driver.decode_control_fd, &notifications,
+                             sizeof(notifications));
+  if (bytes == -1 && errno == EAGAIN)
+    return 0;
+  Require(bytes == sizeof(notifications), "read decoder control eventfd");
+  return notifications;
+}
+
+void UnusedVppProbeDoesNotNotifyDecoder() {
+  // Kodi 22.0rc1 CVppPostproc::PreInit/Dispose call order, including its
+  // unconditional DI query after the empty filter list and individual surface
+  // destruction. Private CPU storage only; no DRM or decoder device opens.
+  Driver driver{-1};
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  const auto decoder = std::make_shared<DecodeContext>();
+  driver.contexts[100] = decoder;
+  VAConfigID config = VA_INVALID_ID;
+  VAContextID processor = VA_INVALID_ID;
+  std::array<VASurfaceID, 8> surfaces;
+  VASurfaceAttrib attribute = {};
+  attribute.type = VASurfaceAttribPixelFormat;
+  attribute.flags = VA_SURFACE_ATTRIB_SETTABLE;
+  attribute.value.type = VAGenericValueTypeInteger;
+  attribute.value.value.i = VA_FOURCC_NV12;
+  Require(CreateConfig(&context, VAProfileNone, VAEntrypointVideoProc,
+                       nullptr, 0, &config) == VA_STATUS_SUCCESS &&
+              CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 1920, 1088,
+                              surfaces.data(), surfaces.size(), &attribute, 1) ==
+                  VA_STATUS_SUCCESS &&
+              CreateContext(&context, config, 1920, 1088, 0, surfaces.data(),
+                            surfaces.size(), &processor) == VA_STATUS_SUCCESS,
+          "create stock Kodi VPP probe objects");
+  VAProcFilterType filters[VAProcFilterCount] = {};
+  unsigned filter_count = VAProcFilterCount;
+  VAProcFilterCapDeinterlacing capabilities[VAProcDeinterlacingCount] = {};
+  unsigned capability_count = VAProcDeinterlacingCount;
+  Require(QueryVideoProcFilters(&context, processor, filters, &filter_count) ==
+                  VA_STATUS_SUCCESS && filter_count == 0 &&
+              QueryVideoProcFilterCaps(&context, processor,
+                                       VAProcFilterDeinterlacing, capabilities,
+                                       &capability_count) ==
+                  VA_STATUS_ERROR_UNSUPPORTED_FILTER && capability_count == 0,
+          "probe truthfully rejects unsupported DI");
+  for (VASurfaceID surface : surfaces)
+    Require(SyncSurface(&context, surface) == VA_STATUS_SUCCESS,
+            "sync unused probe surface before disposal");
+  Require(DestroyContext(&context, processor) == VA_STATUS_SUCCESS,
+          "destroy unused VPP probe context");
+  for (VASurfaceID surface : surfaces)
+    Require(DestroySurfaces(&context, &surface, 1) == VA_STATUS_SUCCESS,
+            "destroy individual unused probe surface");
+  Require(DestroyConfig(&context, config) == VA_STATUS_SUCCESS &&
+              driver.surfaces.empty() && driver.contexts.size() == 1 &&
+              driver.contexts.at(100) == decoder && !decoder->retired,
+          "probe disposal preserves unrelated decoder and releases resources");
+  const uint64_t notifications = ReadDecodeControlNotifications(driver);
+  printf("Unused Kodi-order VPP probe: %llu decoder control notifications\n",
+         static_cast<unsigned long long>(notifications));
+  Require(notifications == 0,
+          "unused VPP probe must not wake the unrelated decoder");
+}
+
 void DefaultVppCapabilitiesRemainAvailable() {
   Driver driver{-1};
   VADriverContext context = {};
@@ -855,6 +920,64 @@ struct Fixture {
   }
 };
 
+void DecodeTeardownStillNotifies() {
+  for (bool closing_surface : {false, true}) {
+    Fixture fixture;
+    const uint64_t generation = fixture.decoder->generation;
+    if (closing_surface) {
+      fixture.decoder->closing = true;
+      VASurfaceID surface = 1;
+      Require(DestroySurfaces(&fixture.context, &surface, 1) == VA_STATUS_SUCCESS &&
+                  fixture.decoder->generation == generation,
+              "closing decoder surface retires without a second reset");
+    } else {
+      Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                  fixture.decoder->retired,
+              "decode context retires normally");
+    }
+    Require(ReadDecodeControlNotifications(fixture.driver) == 1,
+            "decoder teardown must still notify RX poll and condition waiters");
+  }
+}
+
+void PendingVppTeardownStillNotifies() {
+  for (bool destroy_target : {false, true}) {
+    Fixture fixture;
+    // Keep the queued operation available for deterministic cancellation
+    // checks, with no real device or asynchronous completion racing teardown.
+    fixture.driver.StopWorkers();
+    ReadDecodeControlNotifications(fixture.driver);
+    PendingVpp pending;
+    pending.decoder = fixture.decoder;
+    pending.source = fixture.decoder->decoded_frames.at(kTimestampStep);
+    pending.target = fixture.target;
+    pending.target_owner = fixture.target;
+    pending.sequence = 1;
+    pending.decoder_generation = fixture.decoder->generation;
+    pending.source->vpp_readers = 1;
+    fixture.target->vpp_writers = 1;
+    fixture.target->latest_vpp_sequence = 1;
+    fixture.driver.pending_vpp.push_back(pending);
+    if (destroy_target) {
+      VASurfaceID target = 2;
+      Require(DestroySurfaces(&fixture.context, &target, 1) == VA_STATUS_SUCCESS &&
+                  PendingVppCanceled(fixture.driver.pending_vpp.front()),
+              "destroyed pending VPP target cancels queued output");
+    } else {
+      Require(DestroyContext(&fixture.context, 2) == VA_STATUS_SUCCESS,
+              "processing-context teardown retains queued VPP notification");
+    }
+    Require(ReadDecodeControlNotifications(fixture.driver) == 1,
+            "pending VPP teardown must still notify workers and sync waiters");
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    ReleasePendingVpp(&fixture.driver, 1, VA_STATUS_ERROR_OPERATION_FAILED, false);
+    Require(fixture.driver.pending_vpp.empty() && fixture.target->failed &&
+                fixture.target->planes[0][0] == 99 &&
+                pending.source->vpp_readers == 0 && fixture.target->vpp_writers == 0,
+            "canceled VPP releases ownership without painting a substitute");
+  }
+}
+
 void RepeatedVppRetainsPicture() {
   Fixture fixture;
   fixture.SubmitParameters();
@@ -1195,6 +1318,8 @@ void ValidSurfaceTeardownRetiresQueuedEpoch() {
               fixture.decoder->generation == pending.decoder_generation + 1 &&
               PendingVppCanceled(pending),
           "valid teardown must retire private queued pictures with the pool");
+  Require(ReadDecodeControlNotifications(fixture.driver) == 1,
+          "decode surface reset must still wake the decoder");
 }
 
 void CanceledVppFailsWithoutOverwriting() {
@@ -2343,6 +2468,7 @@ int main(int argc, char **argv) {
       GenuineSwSyncCompletionStatuses();
       return 0;
     }
+    UnusedVppProbeDoesNotNotifyDecoder();
     DefaultVppCapabilitiesRemainAvailable();
     PipelineCapsIgnoreIncomingPixelFormatStorage();
     PipelineCapsBorrowedLifetimeAndErrors();
@@ -2351,6 +2477,8 @@ int main(int argc, char **argv) {
     NativeNodeCacheFailuresRetryWithoutLeases();
     NativeSurfaceFilesRetainOriginalLifetime();
     AbortPathsPublishErrorFences();
+    DecodeTeardownStillNotifies();
+    PendingVppTeardownStillNotifies();
     RepeatedVppRetainsPicture();
     DirectCaptureKeepsQueuedVppPrivate();
     InternalQueuedVppCompletesWithoutSwSync();
@@ -2391,6 +2519,6 @@ int main(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 44 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 47 hardware-free regressions passed");
   return 0;
 }

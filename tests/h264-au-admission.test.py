@@ -72,6 +72,26 @@ class FixtureTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "picture 60"):
                 admission.check_pixels(actual, reference)
 
+    def test_known_old_pictures_do_not_pass_an_ordered_oracle(self):
+        # Error recovery can repeat a known old picture with a correct total
+        # count. A membership-only oracle would accept it; presentation order
+        # must remain part of the comparison, including the pre-IDR tail.
+        rows = [f"0, {i}, {i}, 1, 2073600, {i:032x}\n" for i in range(75)]
+        with tempfile.TemporaryDirectory() as temporary:
+            reference = Path(temporary) / "reference.framemd5"
+            actual = Path(temporary) / "actual.framemd5"
+            reference.write_text("".join(rows))
+            for replacement in ((rows[20], rows[21]), (rows[24], rows[23])):
+                changed = rows[:]
+                changed[23:25] = replacement
+                actual.write_text("".join(changed))
+                observed = admission.pixels(actual)
+                expected = admission.pixels(reference)
+                self.assertEqual(len(observed), len(expected))
+                self.assertTrue(all(picture in expected for picture in observed))
+                with self.assertRaisesRegex(ValueError, "picture 23"):
+                    admission.check_pixels(actual, reference)
+
 
 if __name__ == "__main__":
     unittest.main()

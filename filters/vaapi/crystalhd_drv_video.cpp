@@ -5676,14 +5676,20 @@ static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
       return VA_STATUS_ERROR_INVALID_SURFACE;
   }
   std::unordered_set<DecodeContext *> reset_decoders;
+  // Fresh VPP probe surfaces have no decoder or queued conversion to wake.
+  // Keep cancellation notifications for queued VPP and decode waiters,
+  // including closing contexts that must not be reset a second time.
+  bool notify_workers = !driver->pending_vpp.empty();
   for (int i = 0; i < count; ++i) {
     auto surface = driver->surfaces.find(surface_ids[i]);
     for (const auto &entry : driver->contexts) {
-      if (entry.second->video_process || entry.second->closing)
+      if (entry.second->video_process)
         continue;
       if (entry.second->surface_timestamps.find(surface->second.get()) !=
           entry.second->surface_timestamps.end()) {
-        reset_decoders.insert(entry.second.get());
+        notify_workers = true;
+        if (!entry.second->closing)
+          reset_decoders.insert(entry.second.get());
       }
     }
     // A queued worker owns a shared_ptr after the VA ID is gone. Permanently
@@ -5723,7 +5729,8 @@ static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
     driver->trace.Emit(crystalhd_vaapi_trace::Event::ContextReset,
                        TraceFields(decode, nullptr));
   }
-  driver->NotifyDecodeWorker();
+  if (notify_workers)
+    driver->NotifyDecodeWorker();
   return reset_status;
 }
 
@@ -6012,7 +6019,10 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
   // The drain releases the lock. Another context insertion may rehash the
   // map, so never retain its iterator across that interval.
   driver->contexts.erase(context_id);
-  driver->NotifyDecodeWorker();
+  // Capability-only VPP contexts never opened the decoder or queued work.
+  // Their disposal must not interrupt an unrelated decoder's RX poll.
+  if (!decode->video_process || !driver->pending_vpp.empty())
+    driver->NotifyDecodeWorker();
   return status;
 }
 
