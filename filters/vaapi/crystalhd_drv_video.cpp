@@ -4003,6 +4003,18 @@ static VAStatus AdvanceMpeg4Epoch(Driver *driver, DecodeContext *decode) {
   return VA_STATUS_SUCCESS;
 }
 
+static bool LegacyH264PesOneShot(DecodeContext *decode, size_t bytes) {
+  if (!IsH264Profile(decode->profile) || decode->device == nullptr ||
+      bytes > crystalhd_access_unit_limits::kLegacyH264PesBytes)
+    return false;
+  // Query the preopened public handle even before OpenDecoder has populated
+  // is_70012. Unknown devices/versions retain the 512 KiB legacy guard.
+  BC_INFO_CRYSTAL version = {};
+  return DtsCrystalHDVersion(decode->device, &version) == BC_STS_SUCCESS &&
+      version.device == 1 && version.dilVersion.dilRelease == 3 &&
+      version.dilVersion.dilMajor == 22 && version.dilVersion.dilMinor == 0;
+}
+
 static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                                 unsigned int max_attempts = 32) {
   decode->input_backpressured = false;
@@ -4062,13 +4074,18 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                           "partial input escaped its H.264 access unit");
       }
       const size_t remaining = unit->bytes.size() - offset;
-      const bool fragmented_h264 = bounded_h264 &&
+      bool fragmented_h264 = bounded_h264 &&
           (offset != 0 || unit->bytes.size() >
                               crystalhd_access_unit_limits::kDtsInputChunkBytes);
       const CrystalHDFragmentInput fragment_input = H264FragmentInput();
-      if (fragmented_h264 && fragment_input == nullptr)
-        return FailDecode(driver, decode,
-                          "large H.264 input requires fragmented libcrystalhd input");
+      if (fragmented_h264 && fragment_input == nullptr) {
+        // Never reinterpret an unfinished modern AU as a legacy tail. The
+        // legacy public call owns one complete AU and one timestamp only.
+        if (offset != 0 || !LegacyH264PesOneShot(decode, unit->bytes.size()))
+          return FailDecode(driver, decode,
+                            "large H.264 input requires fragmented libcrystalhd input");
+        fragmented_h264 = false;
+      }
       const size_t transfer = fragmented_h264
           ? std::min(remaining,
                      crystalhd_access_unit_limits::kDtsInputChunkBytes)
@@ -4076,8 +4093,10 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
       const size_t reserve =
           transfer + (transfer / 60000 + 1) * 32 + 1024;
       /* The additive fragment API performs its own exact, zero-byte
-       * reservation. Keep the historical conservative precheck only for the
-       * otherwise-blocking legacy one-shot path. */
+       * reservation. A legacy Flea PES call can contain multiple <=65526-byte
+       * packets; reserve the WHOLE call before entering its blocking producer.
+       * This VA mutex excludes other input/EOS/lifecycle producers on this
+       * handle, and its DIL TX worker can only increase the available space. */
       if (!fragmented_h264 && DtsTxFreeSize(decode->device) < reserve) {
         decode->input_backpressured = true;
         break;
@@ -4638,7 +4657,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     // transaction before allocating/binding a picture or committing replay;
     // failing in PumpDecodeInput would also poison earlier retained output.
     if (bitstream.size() > crystalhd_access_unit_limits::kDtsInputChunkBytes &&
-        H264FragmentInput() == nullptr) {
+        H264FragmentInput() == nullptr &&
+        !LegacyH264PesOneShot(decode, bitstream.size())) {
       Debug("large H.264 input requires fragmented libcrystalhd input");
       return RejectH264Picture(driver, decode, VA_STATUS_ERROR_INVALID_PARAMETER);
     }

@@ -22,6 +22,10 @@ constexpr size_t kVaH264SubmissionBytes = 2U * 1024U * 1024U;
 constexpr size_t kReplayCacheBytes = 32U * 1024U * 1024U;
 // Match libcrystalhd's public bounded-fragment contract.
 constexpr size_t kDtsInputChunkBytes = 512U * 1024U;
+// Retained DIL 3.22 BCM70015 H.264/Annex-B input uses bounded PES packets,
+// not one ALIGN_BUF_SIZE copy per AU. A complete legacy call must still fit
+// its 1 MiB TX ring, including the conservative packet/header reservation.
+constexpr size_t kLegacyH264PesBytes = 768U * 1024U;
 
 static_assert(kH264Bytes <= kReplayCacheBytes,
               "one H.264 AU must fit in the replay cache");

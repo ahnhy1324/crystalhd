@@ -78,6 +78,13 @@ struct InputRecord {
 };
 struct DecoderMock {
   bool capacity = true;
+  uint32_t free_bytes = 1024 * 1024;
+  bool legacy_pes_family = false;
+  uint8_t version_device = 1;
+  uint16_t version_minor = 0;
+  BC_STATUS version_status = BC_STS_SUCCESS;
+  unsigned version_queries = 0;
+  bool legacy_busy_once = false;
   bool allow_reopen = false;
   size_t stall_after_inputs = std::numeric_limits<size_t>::max();
   unsigned int reopen_count = 0;
@@ -117,10 +124,17 @@ extern "C" BC_STATUS DtsDupOutputPollFd(HANDLE, int *fd) {
 }
 extern "C" BC_STATUS DtsCrystalHDVersion(HANDLE device, PBC_INFO_CRYSTAL version) {
   CheckDevice(device);
-  Require(active->allow_reopen && version != nullptr,
-          "version query belongs to an armed reopen");
+  Require(version != nullptr, "public device identification has an output");
+  ++active->version_queries;
+  if (active->version_status != BC_STS_SUCCESS)
+    return active->version_status;
   *version = {};
-  version->device = 1;
+  version->device = active->version_device;
+  if (active->legacy_pes_family) {
+    version->dilVersion.dilRelease = 3;
+    version->dilVersion.dilMajor = 22;
+    version->dilVersion.dilMinor = active->version_minor;
+  }
   return BC_STS_SUCCESS;
 }
 extern "C" BC_STATUS DtsSetInputFormat(HANDLE device, BC_INPUT_FORMAT *format) {
@@ -170,7 +184,7 @@ extern "C" BC_STATUS DtsIsEndOfStream(HANDLE, uint8_t *) { abort(); }
 extern "C" uint32_t DtsTxFreeSize(HANDLE device) {
   CheckDevice(device);
   return active->capacity && active->inputs.size() < active->stall_after_inputs
-             ? 1024 * 1024 : 0;
+             ? active->free_bytes : 0;
 }
 extern "C" BC_STATUS DtsProcInput(HANDLE device, uint8_t *bytes, uint32_t size,
                                     uint64_t timestamp, BOOL encrypted) {
@@ -179,6 +193,13 @@ extern "C" BC_STATUS DtsProcInput(HANDLE device, uint8_t *bytes, uint32_t size,
               !active->fragment_active,
           "ordinary complete input cannot interleave a fragmented AU");
   ++active->legacy_input_calls;
+  Require(active->capacity && active->inputs.size() < active->stall_after_inputs &&
+              active->free_bytes >= size + (size / 60000 + 1) * 32 + 1024,
+          "legacy input is entered only after reserving its complete wire footprint");
+  if (active->legacy_busy_once) {
+    active->legacy_busy_once = false;
+    return BC_STS_BUSY;
+  }
   active->inputs.push_back({timestamp,
                             std::vector<uint8_t>(bytes, bytes + size),
                             DTS_INPUT_FRAGMENT_FIRST |
@@ -717,6 +738,143 @@ void LargeH264AccessUnitBoundaryAndRecovery() {
                 LogicalInputs(overflow.mock.inputs).size() == 1 &&
                 !overflow.decode->replay.failed(),
             "a rejected oversized picture does not poison the next transaction");
+  }
+}
+
+void LegacyFleaPesAdmission() {
+  size_t overhead = 0;
+  {
+    Fixture f;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "measure the reconstructed Annex-B header bytes");
+    overhead = f.mock.inputs.at(0).bytes.size() - 3;
+  }
+  const auto bytes = [overhead](size_t assembled) {
+    std::vector<uint8_t> result(assembled - overhead, 0x55);
+    result[0] = 0x65;
+    return result;
+  };
+  constexpr size_t limit = crystalhd_access_unit_limits::kLegacyH264PesBytes;
+  static_assert(limit == 768U * 1024U, "legacy full-call admission stays below its TX ring");
+  for (size_t size : {crystalhd_access_unit_limits::kDtsInputChunkBytes + 1,
+                      size_t(564367), limit - 1, limit}) {
+    Fixture f;
+    crystalhd_test_fragment_input = nullptr;
+    f.mock.legacy_pes_family = true;
+    Require(SubmitH264(&f, bytes(size)) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 1 && f.mock.legacy_input_calls == 1 &&
+                f.mock.fragment_input_calls == 0 &&
+                f.mock.inputs[0].bytes.size() == size &&
+                f.mock.inputs[0].timestamp == kTimestampStep &&
+                f.decode->partial_input_timestamp == 0 &&
+                f.decode->partial_input_offset == 0 && !f.decode->replay.failed(),
+            "identified Flea PES admits one complete bounded AU with one timestamp");
+  }
+  {
+    Fixture f;
+    crystalhd_test_fragment_input = nullptr;
+    f.mock.legacy_pes_family = true;
+    f.mock.allow_reopen = true;
+    f.decode->decoder_open = f.decode->decoder_started = false;
+    f.decode->device_preopened = true;
+    Require(SubmitH264(&f, bytes(564367)) == VA_STATUS_SUCCESS &&
+                f.mock.version_queries >= 2 && f.mock.inputs.size() == 1 &&
+                f.decode->decoder_started,
+            "public identity is checked before first-picture admission and restored format startup");
+  }
+  for (unsigned mode = 0; mode < 4; ++mode) {
+    Fixture f;
+    crystalhd_test_fragment_input = nullptr;
+    f.mock.legacy_pes_family = mode != 0;
+    if (mode == 1) f.mock.version_device = 0;
+    if (mode == 2) f.mock.version_device = 2;
+    if (mode == 3) f.mock.version_status = BC_STS_ERROR;
+    Require(SubmitH264(&f, bytes(524289)) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                f.mock.version_queries != 0 && f.mock.inputs.empty() &&
+                f.decode->replay.cached_pictures() == 0 &&
+                f.decode->next_timestamp == kTimestampStep,
+            "unknown, Link and unidentifiable legacy implementations retain the 512 KiB guard");
+  }
+  {
+    Fixture f;
+    crystalhd_test_fragment_input = nullptr;
+    f.mock.legacy_pes_family = true;
+    f.mock.version_minor = 1;
+    Require(SubmitH264(&f, bytes(524289)) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                f.mock.inputs.empty(), "an unreviewed DIL version cannot opt into whole-AU admission");
+  }
+  {
+    Fixture f;
+    crystalhd_test_fragment_input = nullptr;
+    f.mock.legacy_pes_family = true;
+    Require(SubmitH264(&f, bytes(limit + 1)) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                f.mock.inputs.empty() && f.mock.legacy_input_calls == 0 &&
+                f.mock.fragment_input_calls == 0 &&
+                f.decode->replay.cached_pictures() == 0 && f.decode->pending.empty() &&
+                f.decode->decoded_frames.empty() &&
+                f.decode->next_timestamp == kTimestampStep &&
+                f.decode->next_submission_ordinal == 1 && !f.decode->replay.failed(),
+            "one byte above the legacy cap rejects before transport, replay or accepted identity");
+  }
+  for (bool late_busy : {false, true}) {
+    Fixture f;
+    crystalhd_test_fragment_input = nullptr;
+    f.mock.legacy_pes_family = true;
+    const size_t reserve = limit + (limit / 60000 + 1) * 32 + 1024;
+    f.mock.free_bytes = late_busy ? reserve : reserve - 1;
+    f.mock.legacy_busy_once = late_busy;
+    Require(SubmitH264(&f, bytes(limit)) == VA_STATUS_SUCCESS &&
+                f.decode->input_backpressured && f.mock.inputs.empty() &&
+                f.decode->replay.NextInput() != nullptr &&
+                f.decode->partial_input_timestamp == 0 &&
+                f.decode->partial_input_offset == 0 &&
+                f.mock.legacy_input_calls == (late_busy ? 1U : 0U),
+            "whole-call reservation or zero-byte BUSY leaves the complete AU pending");
+    f.mock.free_bytes = reserve;
+    Require(PumpDecodeInput(&f.driver, f.decode.get()) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 1 && f.mock.inputs[0].bytes.size() == limit &&
+                f.mock.inputs[0].timestamp == kTimestampStep &&
+                f.mock.fragment_input_calls == 0 &&
+                PumpDecodeInput(&f.driver, f.decode.get()) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 1 && f.decode->replay.NextInput() == nullptr,
+            "capacity progress admits the original whole AU exactly once without a second PTS");
+  }
+  {
+    Fixture f;
+    crystalhd_test_fragment_input = nullptr;
+    f.mock.legacy_pes_family = true;
+    f.mock.capacity = false;
+    Require(SubmitH264(&f, bytes(564367)) == VA_STATUS_SUCCESS,
+            "retain complete legacy input before a synthetic fragment-state fault");
+    f.decode->partial_input_timestamp = kTimestampStep;
+    f.decode->partial_input_offset = 1;
+    f.mock.capacity = true;
+    Require(PumpDecodeInput(&f.driver, f.decode.get()) == VA_STATUS_ERROR_DECODING_ERROR &&
+                f.mock.inputs.empty() && f.mock.legacy_input_calls == 0,
+            "legacy compatibility never reinterprets a modern partial AU as a new complete input");
+  }
+  {
+    Fixture f;
+    crystalhd_test_fragment_input = nullptr;
+    f.mock.legacy_pes_family = true;
+    Require(SubmitH264(&f, bytes(564367)) == VA_STATUS_SUCCESS &&
+                f.decode->replay.Seal() &&
+                SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 1,
+            "sealed legacy batch holds the following picture until real EOS");
+    const auto original = f.mock.inputs[0].bytes;
+    f.mock.allow_reopen = true;
+    Require(f.decode->replay.Observe(kTimestampStep) == CrystalHDDecodeReplay::Output::New &&
+                f.decode->replay.EndOfSequence() &&
+                PumpDecodeInput(&f.driver, f.decode.get()) == VA_STATUS_SUCCESS &&
+                f.mock.close_count == 1 && f.mock.reopen_count == 1 &&
+                f.mock.legacy_input_calls == 3 && f.mock.fragment_input_calls == 0 &&
+                f.mock.inputs.size() == 3 && f.mock.inputs[1].bytes == original &&
+                f.mock.inputs[1].timestamp == kTimestampStep &&
+                f.mock.inputs[2].timestamp == 2 * kTimestampStep &&
+                f.decode->partial_input_timestamp == 0 &&
+                f.decode->partial_input_offset == 0 && !f.decode->replay.failed(),
+            "EOS/reopen replays the exact whole IDR then advances the following picture once");
   }
 }
 
@@ -1723,6 +1881,7 @@ int main() {
     {"rejected H.264 ownership guards", RejectedH264OwnershipGuards},
     {"rejected H.264 promotion failure", RejectedH264PromotionFailure},
     {"large H.264 AU boundary and recovery", LargeH264AccessUnitBoundaryAndRecovery},
+    {"legacy Flea PES bounded whole-AU admission", LegacyFleaPesAdmission},
     {"rejected H.264 references require IDR", H264ReferenceRejectionRequiresIdr},
     {"allocation failure is transactional", AllocationFailureIsTransactional},
     {"private backing preserves captured pictures", PrivateBackingReusePreservesCapturedPictures},
