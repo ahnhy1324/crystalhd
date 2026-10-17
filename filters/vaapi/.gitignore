@@ -7,6 +7,7 @@
 /vaapi-buffer-handles-test
 /vaapi-cache-test
 /vaapi-private-backing-test
+/vaapi-conversion-test
 /vaapi-scaling-test
 /vaapi-mpeg2-test
 /vaapi-mpeg2-replay-test
