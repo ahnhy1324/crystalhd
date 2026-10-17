@@ -12,13 +12,16 @@ event-driven receive and optional output scaling. The existing
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29)
 remains available and unchanged.
 
-The published [1.1.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3)
-adds selected interlaced Weave playback and
-explicit hardware/software selection. It is a pre-release, not a replacement
-for stable 1.0.0; [RC installation and Weave usage](USAGE.md#explicit-weave-playback)
-are separate from the stable quick start below. Applications can apply their
-[own deinterlacing](USAGE.md#application-deinterlacing-after-weave); quality and
-synchronization tuning remain follow-up work.
+The **1.1.0-rc.4 candidate** includes selected interlaced Weave playback,
+explicit hardware/software selection and subsequent compatibility fixes.
+It is not a replacement for stable 1.0.0; [RC installation and Weave usage](USAGE.md#explicit-weave-playback)
+are separate from the stable quick start below. The published
+[RC.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3) remains unchanged.
+
+**Known issues:** interlaced playback can still show combing, stutter or A/V
+timing problems, depending on the application and host. Native hardware
+deinterlacing is unavailable. [Current limits and the planned v1.2 work](USAGE.md#known-issues-and-deinterlacing-roadmap)
+separate Weave playback from application-side filtering and unqualified paths.
 
 ## Compatibility
 

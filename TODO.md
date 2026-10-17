@@ -1,33 +1,34 @@
 # Open work
 
-Release status **2026-10-16**: [stable 1.0.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0)
-is unchanged. Published [v1.1.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3)
-adds selected interlaced
-Weave playback, finite MBAFF tail fixes and explicit HW/SW Weave selection.
-The maintainer approved RC publication with deinterlacing and sync tuning
-deferred; exact candidate checks and publication state are recorded in #430.
+Release status **2026-10-17**: [stable 1.0.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0)
+and published [v1.1.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3)
+remain unchanged. The `1.1.0-rc.4` candidate / package `3.10.7` adds compatibility
+and performance fixes; exact checks and publication state are recorded in #430.
+Selected Weave playback remains the scope, with the
+[known deinterlacing limits and planned v1.2 work](USAGE.md#known-issues-and-deinterlacing-roadmap)
+kept separate from current functionality.
 This is not stable v1.1.0 GO or a full-rate FHD/deinterlacing support claim.
 
 - [ ] [#430: v1.1.0 RC qualification and GO/HOLD](https://github.com/ahnhy1324/crystalhd/issues/430)
-  — qualify the published immutable RC before a separate stable-release GO.
-  The 11-codec oracle passes. Preserve the original audio-tail and later
-  scheduling FAILs; the audio-probe correction and explicit maintenance-only
-  3-hour profile are merged. The default-priority follow-up uses unchanged
-  installed RC3 and fixed qualification tools, with CPU/pressure diagnostics.
+  — qualify the exact RC4 payload before a separate stable-release GO.
+  Preserve RC3's oracle/endurance results, original audio-tail and later
+  scheduling FAILs, and subsequent dispositions; they are not new RC4 passes.
+  The corrected audio probe and explicit maintenance-only 3-hour profile remain.
   See the [current execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6192074709)
   for actual stage results; later gates are not PASS until executed.
 - [ ] [#429: External i386/BCM70015 acceptance](https://github.com/ahnhy1324/crystalhd/issues/429)
-  — primary-host results do not replace the reporter's Atom N280/i386/Kodi
-  combinations; keep unavailable external configurations marked NOT RUN.
-- [ ] [#436: deinterlacing and presentation follow-up](https://github.com/ahnhy1324/crystalhd/issues/436)
+  — preserve the reporter's installed RC3 mixed results; post-fix RC4
+  Atom N280/i386/Kodi acceptance is still pending. Primary-host results do
+  not replace it; keep unavailable external configurations marked NOT RUN.
+- [ ] [#436: planned v1.2 deinterlacing and presentation work](https://github.com/ahnhy1324/crystalhd/issues/436)
   — selected Weave playback and finite tail handling are included in the RC.
   Continue deinterlacing quality, physical sync/cadence tuning and FHD dropped-
   picture/resync investigation without claiming full-rate presentation.
   Hardware Bob remains separate research, not a playback-release prerequisite.
-- [ ] Player HTTP(S) input — implement and review a separate frontend change,
-  retaining local files, explicit hardware/software selection, bounded failures,
-  pause/seek/EOS and clean shutdown. Loopback software tests do not establish
-  native network decoding. This does not alter the immutable RC3 or its gates.
+- [ ] Player HTTP(S) acceptance — implementation is included in RC4, with
+  bounded errors and explicit hardware/software selection. Selected native
+  loopback HTTP decoding/EOS/reopen passed; HTTPS, physical A/V, network
+  seeking and Internet recovery remain unverified.
 
 - [x] [#369: CrystalHD 1.0.0 final gates and release](https://github.com/ahnhy1324/crystalhd/issues/369)
   — G0–G6 and experimental dispositions are complete. The exact commit and

@@ -1,5 +1,33 @@
 # History
 
+## 1.1.0-rc.4 — candidate
+
+Candidate bundle `1.1.0-rc.4` / module-DKMS package `3.10.7`; publication and
+exact-payload qualification are tracked in
+[#430](https://github.com/ahnhy1324/crystalhd/issues/430). Published RC.3 and the
+Phase 1 baseline remain unchanged. The legacy ioctl and `libcrystalhd.so.3`
+ABI are retained.
+
+- Reject competing VA decoder contexts early. Bound assembled H.264 hardware
+  submissions to 2 MiB and preserve pending output/next-IDR recovery when
+  large input is rejected, including with older libcrystalhd.
+- Correct VA VPP capability metadata, derived uploads and private queued
+  synchronization. Cache DRM discovery metadata to reduce setup overhead
+  without disabling scaling/CSC or weakening exposed-buffer fences.
+- Reuse bounded retired private CPU backing without reusing live pictures;
+  reduce scalar packed-pixel conversion overhead while retaining field-local
+  chroma and the no-SSE build path.
+- Improve damaged MPEG-2 admission, EOS diagnostics and healthy-picture PTS;
+  reject unsupported interlaced scaling explicitly rather than showing audio
+  alone.
+- Add bounded HTTP(S) input to `crystalhd-play` and correct module/runtime
+  discovery diagnostics. Selected loopback HTTP decoding is checked; HTTPS
+  and physical network-playback acceptance remain unverified.
+- Keep selected interlaced Weave playback separate from deinterlacing.
+  [Known Kodi/interlaced limits and planned v1.2 integration work](USAGE.md#known-issues-and-deinterlacing-roadmap)
+  remain open; this candidate adds neither hardware Bob nor a general
+  full-rate FHD/A/V qualification.
+
 ## 1.1.0-rc.3 — release candidate
 
 Pre-release scope is tracked in
