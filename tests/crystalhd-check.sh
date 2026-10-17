@@ -49,6 +49,16 @@ assert_contains()
 	esac
 }
 
+assert_not_contains()
+{
+	case "$check_output" in
+		*"$1"*)
+			printf '%s\n' "$check_output" >&2
+			fail "unexpected output: $1"
+			;;
+	esac
+}
+
 make_mocks()
 {
 	mkdir -p "$mock_dir"
@@ -103,6 +113,9 @@ case "$name" in
 		;;
 	pkg-config)
 		[ -z "${PKG_CONFIG_PATH+x}${PKG_CONFIG_LIBDIR+x}" ] || exit 77
+		if [ "${MOCK_NO_LIBVA_PC:-0}" -eq 1 ] && [ "$*" = '--exists libva' ]; then
+			exit 1
+		fi
 		case "$*" in
 			'--exists gstreamer-1.0'|'--exists libva') exit 0 ;;
 			'--variable=pluginsdir gstreamer-1.0') printf '%s\n' /usr/lib/gstreamer-1.0 ;;
@@ -120,6 +133,10 @@ case "$name" in
 		;;
 	vainfo)
 		[ -z "${LIBVA_DRIVERS_PATH+x}${LD_LIBRARY_PATH+x}" ] || exit 77
+		[ "${MOCK_VA_STATUS:-0}" -eq 0 ] || exit "$MOCK_VA_STATUS"
+		if [ -n "${MOCK_VA_FIRST_ATTEMPT:-}" ]; then
+			printf 'libva info: Trying to open %s\n' "$MOCK_VA_FIRST_ATTEMPT"
+		fi
 		if [ -n "${MOCK_VA_OPENED:-}" ]; then
 			printf 'libva info: Trying to open %s\n' "$MOCK_VA_OPENED"
 		else
@@ -201,6 +218,9 @@ run_check()
 		MOCK_DKMS_STATUS=${MOCK_DKMS_STATUS:-} \
 		MOCK_GST_PLUGIN=${MOCK_GST_PLUGIN:-} \
 		MOCK_LDD_NOT_FOUND=${MOCK_LDD_NOT_FOUND:-0} \
+		MOCK_NO_LIBVA_PC=${MOCK_NO_LIBVA_PC:-0} \
+		MOCK_VA_STATUS=${MOCK_VA_STATUS:-0} \
+		MOCK_VA_FIRST_ATTEMPT=${MOCK_VA_FIRST_ATTEMPT:-} \
 		MOCK_VA_OPENED=${MOCK_VA_OPENED:-} \
 		MOCK_FUSER_OUTPUT=${MOCK_FUSER_OUTPUT:-} \
 		MOCK_FUSER_STATUS=${MOCK_FUSER_STATUS:-1} \
@@ -238,6 +258,7 @@ assert_contains 'INFO: Selected module package: 3.10.1; bundle 1.0.0-rc.1'
 assert_contains 'OK: Library: staged ABI-compatible libcrystalhd.so.3 found'
 assert_contains 'OK: GStreamer: crystalhddec discovered'
 assert_contains 'OK: VA-API: libva initialized CrystalHD on /dev/dri/renderD128'
+assert_contains "OK: VA-API runtime driver file: $root/usr/lib/dri/crystalhd_drv_video.so"
 assert_contains 'SUMMARY:'
 assert_contains '0 WARN, 0 FAIL'
 [ "$before" = "$after" ] || fail 'the checker changed the inspected tree'
@@ -388,6 +409,50 @@ run_check "$root"
 assert_status 0
 assert_contains 'WARN: VA-API: libva opened /opt/stale/crystalhd_drv_video.so instead of installed'
 unset MOCK_VA_OPENED
+
+# Runtime packages need not include pkg-config's libva development metadata.
+make_root
+MOCK_NO_LIBVA_PC=1
+run_check "$root"
+assert_status 0
+assert_contains 'INFO: VA-API: libva driver-directory metadata is unavailable'
+assert_contains "OK: VA-API runtime driver file: $root/usr/lib/dri/crystalhd_drv_video.so"
+assert_contains 'VA-API discovery does not prove that a compressed stream decoded on CrystalHD hardware'
+assert_not_contains 'was not found in libva'
+
+# A failed runtime discovery cannot turn unavailable metadata into a missing file.
+MOCK_VA_STATUS=1
+run_check "$root"
+assert_status 0
+assert_contains 'WARN: VA-API: CrystalHD driver discovery failed'
+assert_not_contains 'VA-API runtime driver file:'
+assert_not_contains 'was not found in libva'
+unset MOCK_VA_STATUS
+
+# Successful discovery may log failed attempts before the actual loaded file.
+MOCK_VA_FIRST_ATTEMPT=/opt/unavailable/crystalhd_drv_video.so
+run_check "$root"
+assert_status 0
+assert_contains "OK: VA-API runtime driver file: $root/usr/lib/dri/crystalhd_drv_video.so"
+assert_not_contains 'using /opt/unavailable/'
+unset MOCK_VA_FIRST_ATTEMPT
+
+# A reported path alone is not proof of a readable runtime payload.
+MOCK_VA_OPENED=$root/absent/crystalhd_drv_video.so
+run_check "$root"
+assert_status 0
+assert_contains 'WARN: VA-API: runtime discovery succeeded but the reported driver file is not readable:'
+assert_not_contains 'OK: VA-API runtime driver file:'
+unset MOCK_NO_LIBVA_PC MOCK_VA_OPENED
+
+# Actual missing files remain distinct from missing directory metadata.
+make_root
+rm -f -- "$root/usr/lib/dri/crystalhd_drv_video.so"
+MOCK_VA_STATUS=1
+run_check "$root"
+assert_status 0
+assert_contains "WARN: VA-API: installed crystalhd_drv_video.so was not found in libva's driver directory"
+unset MOCK_VA_STATUS
 
 # A model-required firmware blob is a required-component failure.
 make_root

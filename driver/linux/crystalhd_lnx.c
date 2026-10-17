@@ -1810,8 +1810,9 @@ static int __init chd_dec_module_init(void)
 {
 	int rc;
 
-	printk(KERN_DEBUG "Loading crystalhd v%d.%d.%d\n",
-	       crystalhd_kmod_major, crystalhd_kmod_minor, crystalhd_kmod_rev);
+	printk(KERN_DEBUG "Loading crystalhd package %s (legacy ioctl %d.%d.%d)\n",
+	       CRYSTALHD_PACKAGE_VERSION, crystalhd_kmod_major,
+	       crystalhd_kmod_minor, crystalhd_kmod_rev);
 	if (force_l0s_off && session_l0s_off) {
 		pr_warn("crystalhd: force_l0s_off takes precedence; session_l0s_off ignored\n");
 		session_l0s_off = false;
@@ -1844,8 +1845,9 @@ module_init(chd_dec_module_init);
 
 static void __exit chd_dec_module_cleanup(void)
 {
-	printk(KERN_DEBUG "Unloading crystalhd %d.%d.%d\n",
-	       crystalhd_kmod_major, crystalhd_kmod_minor, crystalhd_kmod_rev);
+	printk(KERN_DEBUG "Unloading crystalhd package %s (legacy ioctl %d.%d.%d)\n",
+	       CRYSTALHD_PACKAGE_VERSION, crystalhd_kmod_major,
+	       crystalhd_kmod_minor, crystalhd_kmod_rev);
 
 #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 	crystalhd_fw_research_cleanup();

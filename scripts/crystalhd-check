@@ -586,8 +586,10 @@ if command -v pkg-config >/dev/null 2>&1 &&
 fi
 if [ -n "$va_driver" ] && [ -r "$va_driver" ]; then
     emit OK "VA-API driver file: $va_driver"
-else
+elif [ -n "$va_driver" ]; then
     emit WARN "VA-API: installed crystalhd_drv_video.so was not found in libva's driver directory"
+else
+    emit INFO "VA-API: libva driver-directory metadata is unavailable (pkg-config/libva.pc); checking runtime discovery separately"
 fi
 
 if [ -n "$drm_device" ]; then
@@ -602,8 +604,15 @@ if [ -n "$drm_device" ]; then
         va_status=$?
         if [ "$va_status" -eq 0 ]; then
             va_opened=$(printf '%s\n' "$va_output" |
-                sed -n "s/.*Trying to open \(.*crystalhd_drv_video\.so\).*/\1/p" | sed -n '1p')
+                sed -n "s/.*Trying to open \(.*crystalhd_drv_video\.so\).*/\1/p" | sed -n '$p')
             emit OK "VA-API: libva initialized CrystalHD on $drm_device${va_opened:+ using $va_opened}"
+            if [ -n "$va_opened" ]; then
+                if [ -r "$va_opened" ]; then
+                    emit OK "VA-API runtime driver file: $va_opened"
+                else
+                    emit WARN "VA-API: runtime discovery succeeded but the reported driver file is not readable: $va_opened"
+                fi
+            fi
             if [ -n "$va_opened" ] && [ -n "$va_driver" ] && [ -e "$va_driver" ]; then
                 va_opened_real=$(readlink -f "$va_opened" 2>/dev/null || printf '%s' "$va_opened")
                 va_driver_real=$(readlink -f "$va_driver" 2>/dev/null || printf '%s' "$va_driver")
