@@ -282,6 +282,8 @@ retest: its legacy H.264 path remains, its VA backend rejects the other codecs,
 and MPEG-4 is explicitly rejected by GStreamer. See the GStreamer and
 [VA-API](filters/vaapi/README.md) guides for the full contracts.
 
+Development builds after the immutable `v1.1.0-rc.3` add the following admission
+and recovery guards; the published RC3 does not contain them.
 The VA backend has a conservative **2 MiB assembled H.264 access-unit submission
 limit**, including reconstructed headers. Larger units are rejected before
 hardware/replay admission. Rejected reference pictures require a later actual

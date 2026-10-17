@@ -113,6 +113,8 @@ are discarded without changing immutable client pixels. H.264 access-unit
 delimiters are placed first in their timestamped packet so they cannot shift
 firmware timestamp association.
 
+The following admission/recovery guards are development changes after the
+immutable `v1.1.0-rc.3`; they are not present in that published candidate.
 The VA backend submits at most **2 MiB per assembled H.264 access unit**,
 including its reconstructed headers. This is a conservative submission policy,
 not the physical chip maximum: [#442](https://github.com/ahnhy1324/crystalhd/issues/442)
