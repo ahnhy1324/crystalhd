@@ -142,9 +142,8 @@ those paths or a reason to replace a qualified installation without testing.
 
 ### Explicit Weave playback
 
-`--weave` is included in the RC4 candidate, not the v1.0.0 installed by the
-stable quick start. After `v1.1.0-rc.4` is published, obtain that immutable RC
-source with:
+`--weave` is included in published RC4, not the v1.0.0 installed by the
+stable quick start. Obtain the immutable `v1.1.0-rc.4` source with:
 
 ```sh
 git clone --branch v1.1.0-rc.4 --single-branch \
@@ -454,8 +453,9 @@ hardware readback, not inside the card.
 
 ### Kodi
 
-Published RC.3 passed stock Kodi 21.3 progressive H.264 hardware-video and
-application-lifecycle checks on the reference X11 host. Kodi selected
+Published RC.3 and the fresh installed RC4 confirmation passed stock Kodi 21.3
+progressive H.264 hardware-video and application-lifecycle checks on the
+reference X11 host ([RC4 results](HARDWARE-2026-09-13.md#110-rc4-qualification--2026-10-18)). Kodi selected
 `ff-h264-vaapi` through the installed CrystalHD VA driver and played a
 120-second 1080p30 file to natural EOS; separate control runs passed seek,
 pause/resume, stop/reopen and quit. The qualified strict/default run had all
@@ -544,6 +544,9 @@ or GPUs. On the newer LTS host, VLC 3.0.23 selected CrystalHD VA/EGL and closed
 cleanly but logged late pictures; see the
 [dated LTS result](HARDWARE-2026-09-13.md#new-lts-qualification--2026-10-13).
 Neither progressive result establishes VLC interlaced/deinterlacing support.
+Fresh RC4 installation also passed two complete 12-second VLC 3.0.23
+hardware plays with EOS, process reopen and clean teardown; this bounded
+lifecycle check does not certify cadence or physical A/V.
 
 ## Realistic expectations
 

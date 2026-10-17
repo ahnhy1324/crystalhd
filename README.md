@@ -12,11 +12,14 @@ event-driven receive and optional output scaling. The existing
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29)
 remains available and unchanged.
 
-The **1.1.0-rc.4 candidate** includes selected interlaced Weave playback,
+Published [1.1.0-rc.4](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.4)
+includes selected interlaced Weave playback,
 explicit hardware/software selection and subsequent compatibility fixes.
 It is not a replacement for stable 1.0.0; [RC installation and Weave usage](USAGE.md#explicit-weave-playback)
 are separate from the stable quick start below. The published
 [RC.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3) remains unchanged.
+See the [RC4 qualification status](HARDWARE-2026-09-13.md#110-rc4-qualification--2026-10-18)
+for tested scope and remaining release gates; stable v1.1.0 is not published.
 
 **Known issues:** interlaced playback can still show combing, stutter or A/V
 timing problems, depending on the application and host. Native hardware
