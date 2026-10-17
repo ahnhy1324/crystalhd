@@ -134,15 +134,15 @@ bool ImagePattern(VADisplay display, const VAImage &image, uint8_t seed,
   return Check(vaUnmapBuffer(display, image.buf), "vaUnmapBuffer(image)") && success;
 }
 
-// Exercise VLC's public DeriveImage/AcquireBufferHandle path with an actual
-// DMA-BUF, including external writes. A derived snapshot must never write back
-// into its original decoded surface when the external handle is released.
-bool ImageHandleRoundTrip(VADisplay display, VASurfaceID surface,
-                          const VAImage &image, uint8_t seed) {
+// Exercise DeriveImage/AcquireBufferHandle on a cold, CPU-uploaded surface.
+// Releasing its writable DMA-BUF must commit the upload to that source; this
+// is not the independent snapshot contract of a retained decoded picture.
+bool ColdUploadImageHandleRoundTrip(VADisplay display, VASurfaceID surface,
+                                    const VAImage &image, uint8_t seed) {
   VABufferInfo info = {};
   info.mem_type = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
   if (!Check(vaAcquireBufferHandle(display, image.buf, &info),
-             "vaAcquireBufferHandle(NV12 snapshot)"))
+             "vaAcquireBufferHandle(cold NV12 upload)"))
     return false;
   const int fd = static_cast<int>(info.handle);
   bool success = info.mem_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME &&
@@ -194,7 +194,7 @@ bool ImageHandleRoundTrip(VADisplay display, VASurfaceID surface,
   if (map != MAP_FAILED)
     success = munmap(map, info.mem_size) == 0 && success;
   success = Check(vaReleaseBufferHandle(display, image.buf),
-                  "vaReleaseBufferHandle(NV12 snapshot)") && success;
+                  "vaReleaseBufferHandle(cold NV12 upload)") && success;
   errno = 0;
   success = fcntl(fd, F_GETFD) == -1 && errno == EBADF && success;
   if (success)
@@ -203,16 +203,29 @@ bool ImageHandleRoundTrip(VADisplay display, VASurfaceID surface,
   original.image_id = VA_INVALID_ID;
   if (success)
     success = Check(vaDeriveImage(display, surface, &original),
-                    "vaDeriveImage(original after external snapshot write)");
+                    "vaDeriveImage(source after external upload write)");
   if (success)
-    success = ImagePattern(display, original, seed, true);
+    success = ImagePattern(display, original, static_cast<uint8_t>(seed + 1), true);
+  // Leave the original upload pattern in place for later alias/export checks.
+  if (success)
+    success = ImagePattern(display, original, seed, false);
   if (original.image_id != VA_INVALID_ID)
     success = Check(vaDestroyImage(display, original.image_id),
-                    "vaDestroyImage(original snapshot)") && success;
+                    "vaDestroyImage(committed upload)") && success;
+  VAImage restored = {};
+  restored.image_id = VA_INVALID_ID;
+  if (success)
+    success = Check(vaDeriveImage(display, surface, &restored),
+                    "vaDeriveImage(restored upload source)");
+  if (success)
+    success = ImagePattern(display, restored, seed, true);
+  if (restored.image_id != VA_INVALID_ID)
+    success = Check(vaDestroyImage(display, restored.image_id),
+                    "vaDestroyImage(restored upload)") && success;
   if (!success)
-    fprintf(stderr, "DMA-BUF snapshot bytes, exclusivity or lifetime check failed\n");
+    fprintf(stderr, "DMA-BUF cold upload bytes, writeback, exclusivity or lifetime check failed\n");
   else
-    printf("NV12 DMA-BUF snapshot read/write and lifetime passed (%ux%u)\n",
+    printf("NV12 DMA-BUF cold upload writeback and lifetime passed (%ux%u)\n",
            image.width, image.height);
   return success;
 }
@@ -309,11 +322,11 @@ bool ImageRoundTrip(VADisplay display, VASurfaceID writer, VASurfaceID reader,
     success = ImagePattern(display, output, seed, true);
   if (success)
     success = Check(vaDeriveImage(display, reader, &derived),
-                     "vaDeriveImage(NV12 snapshot)");
+                     "vaDeriveImage(cold NV12 upload)");
   if (success)
     success = ImagePattern(display, derived, seed, true);
   if (success)
-    success = ImageHandleRoundTrip(display, reader, derived, seed);
+    success = ColdUploadImageHandleRoundTrip(display, reader, derived, seed);
   for (VAImage *image : {&derived, &output, &input}) {
     if (image->image_id != VA_INVALID_ID)
       success = Check(vaDestroyImage(display, image->image_id),
