@@ -171,6 +171,10 @@ h264-stream-check:
 h264-reference-check:
 	$(PYTHON3) -B tests/h264-reference-lifecycle.py --self-test
 
+.PHONY: h264-au-admission-check
+h264-au-admission-check:
+	$(PYTHON3) -B tests/h264-au-admission.test.py
+
 # Device-free, true-1080p60 source/encode/hash admission for issue #399.
 .PHONY: issue399-baseline-check
 issue399-baseline-check:
@@ -231,7 +235,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv tests/maintenance-oracl
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
 	sh tests/phase1-release-gate.sh manifest-check tests/maintenance-oracle.tsv
 
-check: configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check vc1-seek-oracle-check fw-research-check all
+check: configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check vc1-seek-oracle-check fw-research-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check

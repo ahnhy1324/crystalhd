@@ -572,21 +572,131 @@ void LargeH264AccessUnitBoundaryAndRecovery() {
             "one byte above 512 KiB switches atomically to FIRST/LAST fragments");
   }
 
-  std::vector<uint8_t> exact(
-      crystalhd_access_unit_limits::kH264Bytes - overhead, 0x55);
-  exact[0] = 0x65;
-  {
+  std::vector<uint8_t> submission_boundary(
+      crystalhd_access_unit_limits::kVaH264SubmissionBytes - overhead, 0x55);
+  submission_boundary[0] = 0x65;
+  for (int delta : {-1, 0, 1}) {
     Fixture boundary;
-    Require(SubmitH264(&boundary, exact) == VA_STATUS_SUCCESS &&
-                boundary.mock.inputs.size() == 16 &&
-                LogicalInputs(boundary.mock.inputs).size() == 1 &&
-                LogicalInputs(boundary.mock.inputs)[0].bytes.size() ==
-                    crystalhd_access_unit_limits::kH264Bytes &&
-                boundary.decode->replay.cached_bytes() ==
-                    crystalhd_access_unit_limits::kH264Bytes,
-            "exact assembled 8 MiB H.264 boundary is accepted and accounted");
+    auto bytes = submission_boundary;
+    if (delta < 0)
+      bytes.pop_back();
+    else if (delta > 0)
+      bytes.push_back(0x55);
+    const VAStatus expected = delta > 0
+        ? VA_STATUS_ERROR_INVALID_PARAMETER : VA_STATUS_SUCCESS;
+    Require(SubmitH264(&boundary, bytes) == expected &&
+                boundary.mock.legacy_input_calls == 0 &&
+                boundary.mock.fragment_input_calls == (delta > 0 ? 0U : 4U) &&
+                !boundary.decode->replay.failed(),
+            "VA submission policy checks the exact assembled 2 MiB boundary");
+    if (delta <= 0)
+      Require(LogicalInputs(boundary.mock.inputs).size() == 1 &&
+                  LogicalInputs(boundary.mock.inputs)[0].bytes.size() ==
+                      crystalhd_access_unit_limits::kVaH264SubmissionBytes + delta,
+              "admitted boundary preserves the complete logical AU bytes");
+    else
+      Require(boundary.decode->replay.cached_pictures() == 0 &&
+                  boundary.decode->next_timestamp == kTimestampStep &&
+                  boundary.decode->next_submission_ordinal == 1 &&
+                  boundary.decode->pending.empty() &&
+                  boundary.decode->decoded_frames.empty() &&
+                  !boundary.decode->sent_parameter_sets,
+              "a policy rejection commits no replay or picture binding");
+  }
+  {
+    Fixture pending;
+    Require(SubmitH264(&pending, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                SubmitH264(&pending, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "prepare retained pictures before a policy rejection");
+    const auto before_pending = pending.decode->pending;
+    const auto before_frames = pending.decode->decoded_frames;
+    const auto before_public = pending.driver.surfaces.at(1);
+    const uint64_t before_expected = before_public->expected_timestamp;
+    const uint64_t before_identity = before_public->decode_identity;
+    const uint64_t before_timestamp = pending.decode->next_timestamp;
+    const uint64_t before_submission = pending.decode->next_submission_ordinal;
+    const size_t before_cache = pending.decode->replay.cached_bytes();
+    auto rejected = submission_boundary;
+    rejected.push_back(0x55);
+    Require(SubmitH264(&pending, rejected) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                pending.mock.inputs.size() == 2 &&
+                pending.decode->pending == before_pending &&
+                pending.decode->decoded_frames == before_frames &&
+                pending.decode->next_timestamp == before_timestamp &&
+                pending.decode->next_submission_ordinal == before_submission &&
+                pending.decode->replay.cached_bytes() == before_cache &&
+                pending.decode->replay.outstanding() == 2 &&
+                !pending.decode->replay.failed() &&
+                before_public->expected_timestamp == before_expected &&
+                before_public->decode_identity == before_identity &&
+                !before_public->failed,
+            "policy rejection preserves retained output and public/replay identities");
+    Require(SubmitH264(&pending, {0x41, 0x88, 0x84}) ==
+                    VA_STATUS_ERROR_DECODING_ERROR &&
+                pending.mock.inputs.size() == 2 &&
+                pending.decode->next_timestamp == before_timestamp &&
+                pending.decode->pending == before_pending &&
+                pending.decode->decoded_frames == before_frames &&
+                !pending.decode->replay.failed(),
+            "dependent pictures wait for a real IDR after a rejected reference AU");
+    for (const auto &frame : before_frames)
+      Require(!frame.second->failed &&
+                  pending.decode->replay.Observe(frame.first) ==
+                      CrystalHDDecodeReplay::Output::New,
+              "earlier pictures remain completable after a policy rejection");
+    Require(SubmitH264(&pending, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                pending.mock.inputs.size() == 3 &&
+                pending.mock.inputs.back().timestamp == before_timestamp &&
+                !pending.decode->replay.failed(),
+            "the next actual IDR recovers at the unconsumed timestamp");
+    Require(SubmitH264(&pending, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                pending.mock.inputs.size() == 4,
+            "dependent input resumes only after the recovery IDR commits");
+  }
+  {
+    Fixture nonreference;
+    nonreference.picture.pic_fields.bits.reference_pic_flag = 1;
+    Require(SubmitH264(&nonreference, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "prepare an accepted reference before a non-reference rejection");
+    nonreference.picture.pic_fields.bits.reference_pic_flag = 0;
+    nonreference.slice.slice_type = 1;  // B slice, with nal_ref_idc zero below.
+    // A non-IDR omits SPS, so its reconstructed-header size differs from the
+    // IDR used for the exact-boundary cases above. Exceed the policy with the
+    // slice alone instead of accidentally admitting a smaller complete AU.
+    std::vector<uint8_t> discarded_b(
+        crystalhd_access_unit_limits::kVaH264SubmissionBytes + 1, 0x55);
+    discarded_b[0] = 0x01;
+    Require(SubmitH264(&nonreference, discarded_b) ==
+                    VA_STATUS_ERROR_INVALID_PARAMETER &&
+                nonreference.mock.inputs.size() == 1 &&
+                !nonreference.decode->replay.failed(),
+            "an oversized non-reference B picture is rejected transactionally");
+    nonreference.picture.pic_fields.bits.reference_pic_flag = 1;
+    nonreference.slice.slice_type = 0;
+    Require(SubmitH264(&nonreference, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                nonreference.mock.inputs.size() == 2,
+            "rejecting a non-reference B picture does not gate valid P input");
   }
 
+  static_assert(crystalhd_access_unit_limits::kH264Bytes == 8U * 1024U * 1024U,
+                "the hardware policy must not shrink the software allocation bound");
+  std::vector<uint8_t> exact(crystalhd_access_unit_limits::kH264Bytes - overhead,
+                             0x55);
+  exact[0] = 0x65;
+  {
+    Fixture software_bound;
+    Require(SubmitH264(&software_bound, exact) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                software_bound.mock.inputs.empty() &&
+                !software_bound.decode->replay.failed() &&
+                software_bound.decode->next_timestamp == kTimestampStep,
+            "the 8 MiB software assembly bound is not hardware admission");
+    auto raw = exact;
+    raw.resize(crystalhd_access_unit_limits::kH264Bytes, 0x55);
+    CrystalHDDecodeReplay allocation_bound;
+    Require(allocation_bound.Append(kTimestampStep, true, std::move(raw)) &&
+                allocation_bound.cached_bytes() == crystalhd_access_unit_limits::kH264Bytes,
+            "the independent replay allocation bound still permits 8 MiB");
+  }
   exact.push_back(0x55);
   {
     Fixture overflow;

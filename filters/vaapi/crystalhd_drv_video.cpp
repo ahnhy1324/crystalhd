@@ -4426,6 +4426,16 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     if (h264_status != VA_STATUS_SUCCESS)
       return h264_status == VA_STATUS_ERROR_INVALID_PARAMETER
           ? RejectH264Picture(decode, h264_status) : h264_status;
+    // The assembly allocation bound is not hardware acceptance evidence.
+    // Reject unqualified complete AUs before replay/picture identity changes;
+    // sending one can suppress all later output, including the next IDR.
+    if (bitstream.size() >
+        crystalhd_access_unit_limits::kVaH264SubmissionBytes) {
+      Debug("H.264 access unit exceeds VA submission policy: bytes=%zu limit=%zu",
+            bitstream.size(),
+            crystalhd_access_unit_limits::kVaH264SubmissionBytes);
+      return RejectH264Picture(decode, VA_STATUS_ERROR_INVALID_PARAMETER);
+    }
     // An older library cannot carry this complete AU. Reject the current
     // transaction before allocating/binding a picture or committing replay;
     // failing in PumpDecodeInput would also poison earlier retained output.
