@@ -741,6 +741,116 @@ void LargeH264AccessUnitBoundaryAndRecovery() {
   }
 }
 
+void QualifiedFleaProgressiveH264Headroom() {
+  constexpr size_t base = crystalhd_access_unit_limits::kVaH264SubmissionBytes;
+  constexpr size_t limit =
+      crystalhd_access_unit_limits::kVaFleaProgressiveH264SubmissionBytes;
+  static_assert(base == 2U * 1024U * 1024U && limit == 3014656U,
+                "fallback and qualified assembled policies stay separate");
+  size_t overhead = 0;
+  {
+    Fixture f;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                f.mock.version_queries == 0,
+            "ordinary modern input needs no headroom identification query");
+    overhead = f.mock.inputs.at(0).bytes.size() - 3;
+  }
+  const auto bytes = [overhead](size_t assembled) {
+    std::vector<uint8_t> result(assembled - overhead, 0x55);
+    result[0] = 0x65;
+    return result;
+  };
+  {
+    Fixture f;
+    f.mock.legacy_pes_family = true;
+    Require(SubmitH264(&f, bytes(base)) == VA_STATUS_SUCCESS &&
+                f.mock.version_queries == 0 &&
+                f.mock.fragment_input_calls == 4,
+            "even identified modern input at 2 MiB avoids extra version queries");
+  }
+  for (int delta : {-1, 0, 1}) {
+    Fixture f;
+    f.mock.legacy_pes_family = true;
+    const size_t assembled = limit + delta;
+    const auto slice = bytes(assembled);
+    const bool accepted = delta <= 0;
+    const size_t fragments = accepted
+        ? (assembled + crystalhd_access_unit_limits::kDtsInputChunkBytes - 1) /
+              crystalhd_access_unit_limits::kDtsInputChunkBytes
+        : 0;
+    Require(SubmitH264(&f, slice) == (accepted ? VA_STATUS_SUCCESS
+                                            : VA_STATUS_ERROR_INVALID_PARAMETER) &&
+                f.mock.version_queries == 1 && f.mock.legacy_input_calls == 0 &&
+                f.mock.fragment_input_calls == fragments &&
+                !f.decode->replay.failed(),
+            "known Flea progressive admission checks cap-1/cap/cap+1 before input");
+    if (accepted) {
+      const auto logical = LogicalInputs(f.mock.inputs);
+      Require(logical.size() == 1 && logical[0].bytes.size() == assembled &&
+                  logical[0].timestamp == kTimestampStep &&
+                  std::equal(slice.begin(), slice.end(),
+                             logical[0].bytes.end() - slice.size()) &&
+                  f.decode->partial_input_timestamp == 0 &&
+                  f.decode->partial_input_offset == 0,
+              "qualified headroom preserves exact bytes, one PTS and bounded fragments");
+    } else {
+      Require(f.mock.inputs.empty() && f.decode->replay.cached_pictures() == 0 &&
+                  f.decode->next_timestamp == kTimestampStep &&
+                  f.decode->next_submission_ordinal == 1 &&
+                  f.decode->pending.empty() && f.decode->decoded_frames.empty() &&
+                  !f.decode->sent_parameter_sets && f.decode->h264_waiting_for_idr,
+              "qualified overflow commits no input, replay or accepted identity");
+      Require(SubmitH264(&f, {0x41, 0x88, 0x84}) ==
+                      VA_STATUS_ERROR_DECODING_ERROR && f.mock.inputs.empty() &&
+                  SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                  f.mock.inputs.size() == 1 &&
+                  f.mock.inputs[0].timestamp == kTimestampStep &&
+                  !f.decode->h264_waiting_for_idr,
+              "overflow waits for a real IDR without consuming the recovery PTS");
+    }
+  }
+  {
+    Fixture f;
+    f.mock.legacy_pes_family = true;
+    crystalhd_test_fragment_input = nullptr;
+    Require(SubmitH264(&f, bytes(limit)) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                f.mock.inputs.empty() && f.mock.version_queries == 1 &&
+                f.decode->replay.cached_pictures() == 0 &&
+                f.decode->next_timestamp == kTimestampStep,
+            "qualified hardware headroom cannot bypass the legacy whole-call cap");
+  }
+  for (unsigned mode = 0; mode < 9; ++mode) {
+    Fixture f;
+    f.mock.legacy_pes_family = mode != 0;
+    if (mode == 1) f.mock.version_device = 0;
+    if (mode == 2) f.mock.version_device = 2;
+    if (mode == 3) f.mock.version_status = BC_STS_ERROR;
+    if (mode == 4) f.mock.version_minor = 1;
+    if (mode >= 5 && mode <= 7) {
+      f.picture.seq_fields.bits.frame_mbs_only_flag = 0;
+      f.picture.seq_fields.bits.mb_adaptive_frame_field_flag = mode == 5;
+      f.picture.pic_fields.bits.field_pic_flag = mode == 6;
+      f.picture.picture_height_in_mbs_minus1 = 1;
+      f.decode->height = 32;
+      Require(f.driver.surfaces.at(1)->AllocateInternal(
+                  nullptr, -1, 16, 32, VA_FOURCC_NV12),
+              "interlaced policy control has a valid two-row coded geometry");
+    }
+    if (mode == 8) f.picture.pic_fields.bits.field_pic_flag = 1;
+    std::vector<uint8_t> oversized(base + 1, 0x55);
+    oversized[0] = 0x65;
+    Require(SubmitH264(&f, oversized) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                f.mock.inputs.empty() && f.mock.legacy_input_calls == 0 &&
+                f.mock.fragment_input_calls == 0 &&
+                f.mock.version_queries == (mode < 5 ? 1U : 0U) &&
+                f.decode->replay.cached_pictures() == 0 &&
+                f.decode->pending.empty() && f.decode->decoded_frames.empty() &&
+                f.decode->next_timestamp == kTimestampStep &&
+                f.decode->next_submission_ordinal == 1,
+            "unknown/Link/version failure/MBAFF/field pictures retain the 2 MiB policy");
+  }
+}
+
 void LegacyFleaPesAdmission() {
   size_t overhead = 0;
   {
@@ -1881,6 +1991,7 @@ int main() {
     {"rejected H.264 ownership guards", RejectedH264OwnershipGuards},
     {"rejected H.264 promotion failure", RejectedH264PromotionFailure},
     {"large H.264 AU boundary and recovery", LargeH264AccessUnitBoundaryAndRecovery},
+    {"qualified Flea progressive H.264 headroom", QualifiedFleaProgressiveH264Headroom},
     {"legacy Flea PES bounded whole-AU admission", LegacyFleaPesAdmission},
     {"rejected H.264 references require IDR", H264ReferenceRejectionRequiresIdr},
     {"allocation failure is transactional", AllocationFailureIsTransactional},

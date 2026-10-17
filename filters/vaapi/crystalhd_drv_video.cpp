@@ -4003,16 +4003,31 @@ static VAStatus AdvanceMpeg4Epoch(Driver *driver, DecodeContext *decode) {
   return VA_STATUS_SUCCESS;
 }
 
-static bool LegacyH264PesOneShot(DecodeContext *decode, size_t bytes) {
-  if (!IsH264Profile(decode->profile) || decode->device == nullptr ||
-      bytes > crystalhd_access_unit_limits::kLegacyH264PesBytes)
+static bool KnownFleaH264Transport(DecodeContext *decode) {
+  if (!IsH264Profile(decode->profile) || decode->device == nullptr)
     return false;
   // Query the preopened public handle even before OpenDecoder has populated
-  // is_70012. Unknown devices/versions retain the 512 KiB legacy guard.
+  // is_70012. Unknown devices/versions cannot select a qualified allowance.
   BC_INFO_CRYSTAL version = {};
   return DtsCrystalHDVersion(decode->device, &version) == BC_STS_SUCCESS &&
       version.device == 1 && version.dilVersion.dilRelease == 3 &&
       version.dilVersion.dilMajor == 22 && version.dilVersion.dilMinor == 0;
+}
+
+static bool LegacyH264PesOneShot(DecodeContext *decode, size_t bytes) {
+  return bytes <= crystalhd_access_unit_limits::kLegacyH264PesBytes &&
+      KnownFleaH264Transport(decode);
+}
+
+static size_t H264SubmissionLimit(DecodeContext *decode, size_t bytes) {
+  const size_t base = crystalhd_access_unit_limits::kVaH264SubmissionBytes;
+  // frame_mbs_only excludes MBAFF/field-capable sequences; field_pic is an
+  // additional guard, not a progressive/interlaced classification by itself.
+  if (bytes > base && decode->picture.seq_fields.bits.frame_mbs_only_flag &&
+      !decode->picture.pic_fields.bits.field_pic_flag &&
+      KnownFleaH264Transport(decode))
+    return crystalhd_access_unit_limits::kVaFleaProgressiveH264SubmissionBytes;
+  return base;
 }
 
 static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
@@ -4646,13 +4661,15 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     // The assembly allocation bound is not hardware acceptance evidence.
     // Reject unqualified complete AUs before replay/picture identity changes;
     // sending one can suppress all later output, including the next IDR.
-    if (bitstream.size() >
-        crystalhd_access_unit_limits::kVaH264SubmissionBytes) {
+    const size_t submission_limit = H264SubmissionLimit(decode, bitstream.size());
+    if (bitstream.size() > submission_limit) {
       Debug("H.264 access unit exceeds VA submission policy: bytes=%zu limit=%zu",
-            bitstream.size(),
-            crystalhd_access_unit_limits::kVaH264SubmissionBytes);
+            bitstream.size(), submission_limit);
       return RejectH264Picture(driver, decode, VA_STATUS_ERROR_INVALID_PARAMETER);
     }
+    if (bitstream.size() > crystalhd_access_unit_limits::kVaH264SubmissionBytes)
+      Debug("H.264 access unit within VA submission policy: bytes=%zu limit=%zu",
+            bitstream.size(), submission_limit);
     // An older library cannot carry this complete AU. Reject the current
     // transaction before allocating/binding a picture or committing replay;
     // failing in PumpDecodeInput would also poison earlier retained output.
