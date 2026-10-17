@@ -18,9 +18,10 @@ Work from the root of the source version you want to install. A source archive
 works without `.git`. Keep the previous version's source/archive and any local
 CrystalHD `/etc/modprobe.d/` option files for rollback. Retain the previous
 revision's cached DKMS build for the running kernel as well. Read the DKMS
-revision from this source. The `1.1.0-rc.3` candidate uses
-module/DKMS revision `3.10.6`; the earlier frozen, unpublished `1.1.0-rc.2`
-uses `3.10.5`. Preserve any registered `3.10.5` source/build for rollback.
+revision from this source. The `1.1.0-rc.4` candidate uses
+module/DKMS revision `3.10.7`; published `1.1.0-rc.3` retains `3.10.6` and the
+earlier frozen, unpublished `1.1.0-rc.2` uses `3.10.5`. Preserve previous
+registered source/builds for rollback.
 Stable `1.0.0` uses `3.10.3`, and the published
 `v1.0.0-rc.1` retains `3.10.2`. A checkout identity does not mean an RC was
 published. Neither a retained source nor an existing registered source tree
@@ -130,12 +131,12 @@ do not delete arbitrary candidates listed by the check.
 
 For a new DKMS revision, follow [prepare](#prepare-the-source) and [install](#install-a-new-revision)
 from the new source. Keep the old revision/source until the new playback test
-passes. The `1.1.0-rc.3` candidate source uses module/DKMS revision `3.10.6`,
-upgrading the frozen `3.10.5` candidate or stable `3.10.3` without changing the
+passes. The `1.1.0-rc.4` candidate source uses module/DKMS revision `3.10.7`,
+upgrading RC.3's `3.10.6` or stable `3.10.3` without changing the
 `libcrystalhd.so.3` ABI. Use `dkms.conf` from the chosen source; a corrected RC
 payload must use a new revision rather than replacing a registered source
-tree. In particular, keep `/usr/src/crystalhd-3.10.5` unchanged when adding
-`/usr/src/crystalhd-3.10.6`.
+tree. In particular, keep `/usr/src/crystalhd-3.10.6` unchanged when adding
+`/usr/src/crystalhd-3.10.7`.
 
 If reinstalling the **same revision from unchanged source**, inspect its
 registered location first:

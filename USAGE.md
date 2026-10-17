@@ -10,7 +10,7 @@ before choosing the card for a workload; Sunshine/Moonlight has a separate
 | Goal | Path | Current status |
 | --- | --- | --- |
 | Play a local file with audio, subtitles and controls | `crystalhd-play` | Recommended |
-| Play an HTTP(S) media URL | [Development player](#https-input-development) | Native loopback HTTP checked; HTTPS and physical playback pending |
+| Play an HTTP(S) media URL | [RC4 player](#https-input-rc4) | Native loopback HTTP checked; HTTPS and physical playback pending |
 | Build a media pipeline | GStreamer `crystalhddec` | Primary integration path |
 | Use an application that requires libva | CrystalHD VA-API driver | Experimental subset |
 | Keep a Broadcom-API application working | `libcrystalhd.so.3` | Compatibility API |
@@ -22,6 +22,35 @@ before choosing the card for a workload; Sunshine/Moonlight has a separate
 The card decodes video. Audio decoding, subtitles, synchronization and display
 are provided by the frontend and the rest of the Linux media stack. Only one
 CrystalHD hardware decode session can be open at a time.
+
+## Known issues and deinterlacing roadmap
+
+- **Weave is not deinterlacing.** Hardware and software Weave retain both
+  fields, so moving edges can show combing or shaking. CrystalHD does not
+  provide native hardware Bob or a VA deinterlacing filter. Applications can
+  apply [CPU deinterlacing after Weave](#application-deinterlacing-after-weave),
+  with additional CPU cost; successful decode does not guarantee smooth FHD
+  presentation or calibrated A/V sync.
+- **Kodi 22 interlaced playback remains a compatibility limitation.** Auto can
+  repeatedly probe unavailable VA deinterlacing, with stutter, A/V drift and
+  increased CPU/memory use. RC4 reduces driver-side setup/allocation overhead
+  and fixes VA processing interoperability, but the reporting host's new-RC
+  cadence/A/V acceptance remains pending ([#445](https://github.com/ahnhy1324/crystalhd/issues/445),
+  [#429](https://github.com/ahnhy1324/crystalhd/issues/429)). Off/NONE selects
+  Weave, not a guaranteed remedy for every timing problem.
+- **Legacy client CPU requirements still apply.** On the reporter's Atom N280
+  / i386 / Kodi 22 build, Render Bob (6) crashed with SIGILL in
+  `libsse4-i486-linux.so`. Deinterlace (7) was not separately run on that host;
+  its compatibility is not established. The driver's `LEGACY_CPU=1` build
+  cannot remove ISA requirements from applications or their dependencies.
+
+The planned **v1.2 deinterlacing work** in
+[#436](https://github.com/ahnhy1324/crystalhd/issues/436) targets decode/readback/
+filter integration, field order, cadence and A/V validation. These are not
+capabilities added by this RC or a promise that every interlaced input will be
+fixed. The limitations above can remain until the relevant implementation and
+host-specific validation are complete; hardware deinterlacing remains separate
+research.
 
 ## Verify the installed stack
 
@@ -74,11 +103,11 @@ fallback:
 crystalhd-play --software "/path/to/video.mp4"
 ```
 
-### HTTP(S) input (development)
+### HTTP(S) input (RC4)
 
-HTTP(S) input is an unreleased frontend addition, not part of stable 1.0.0 or
-the immutable v1.1.0-rc.3. From a development checkout containing this change,
-use its wrapper. Replace the example URL
+The RC4 candidate includes HTTP(S) input; stable 1.0.0 and the immutable
+v1.1.0-rc.3 do not. From the RC4 source checkout, use its wrapper (or the
+matching installed `crystalhd-play`). Replace the example URL
 with your direct media URL, and close other CrystalHD sessions first:
 
 ```sh
@@ -108,18 +137,19 @@ Automated network coverage uses loopback HTTP with software video and fake
 audio/video sinks. Native BCM70015 loopback HTTP playback also passed selected
 360p and 720p30 H.264 video, EOS and local-file reopen with fake sinks.
 Real HTTPS/TLS, native network seeking, physical A/V and Internet
-recovery remain unverified. This unreleased player is not a release-gate PASS
-or a reason to replace the currently qualified installed player.
+recovery remain unverified. Inclusion in the RC is not a release-gate PASS for
+those paths or a reason to replace a qualified installation without testing.
 
 ### Explicit Weave playback
 
-`--weave` is available in [v1.1.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3),
-not the v1.0.0 installed by the stable quick start. To obtain the RC source:
+`--weave` is included in the RC4 candidate, not the v1.0.0 installed by the
+stable quick start. After `v1.1.0-rc.4` is published, obtain that immutable RC
+source with:
 
 ```sh
-git clone --branch v1.1.0-rc.3 --single-branch \
-  https://github.com/ahnhy1324/crystalhd.git crystalhd-rc3
-cd crystalhd-rc3
+git clone --branch v1.1.0-rc.4 --single-branch \
+  https://github.com/ahnhy1324/crystalhd.git crystalhd-rc4
+cd crystalhd-rc4
 ```
 
 Install the [dependencies and build](README.md#quick-start) from this directory,
@@ -320,8 +350,8 @@ retest: its legacy H.264 path remains, its VA backend rejects the other codecs,
 and MPEG-4 is explicitly rejected by GStreamer. See the GStreamer and
 [VA-API](filters/vaapi/README.md) guides for the full contracts.
 
-Development builds after the immutable `v1.1.0-rc.3` add the following admission
-and recovery guards; the published RC3 does not contain them.
+The RC4 candidate includes the following admission and recovery guards; the
+immutable `v1.1.0-rc.3` predates them.
 The VA backend has a conservative **2 MiB assembled H.264 access-unit submission
 limit**, including reconstructed headers. Larger units are rejected before
 hardware/replay admission. Rejected reference pictures require a later actual
@@ -424,7 +454,7 @@ hardware readback, not inside the card.
 
 ### Kodi
 
-The v1.1 RC passed stock Kodi 21.3 progressive H.264 hardware-video and
+Published RC.3 passed stock Kodi 21.3 progressive H.264 hardware-video and
 application-lifecycle checks on the reference X11 host. Kodi selected
 `ff-h264-vaapi` through the installed CrystalHD VA driver and played a
 120-second 1080p30 file to natural EOS; separate control runs passed seek,
@@ -444,8 +474,9 @@ LIBVA_DRIVER_NAME=crystalhd kodi
 Enable VA-API hardware acceleration in Kodi's video settings. During playback,
 verify both CrystalHD/`ff-h264-vaapi` in Kodi's debug log and an open hardware
 owner with `sudo fuser -v /dev/crystalhd`; the UI setting alone does not prove
-hardware decoding. No physical flash/click A/V PASS was recorded, and other
-Kodi releases and display backends remain unqualified.
+hardware decoding. No physical flash/click A/V PASS was recorded. Other
+Kodi releases and display backends are not generally qualified; stock Kodi 22
+has the [interlaced compatibility limits above](#known-issues-and-deinterlacing-roadmap).
 
 For the selected interlaced subset in Kodi 21.3, keep **VAAPI hardware
 acceleration enabled** for CrystalHD decoding. While playing, open the cog
@@ -462,7 +493,9 @@ probe even when deinterlacing is off. With Auto on interlaced pictures, some
 Kodi versions repeat unsupported deinterlacing probes once per picture
 ([#445](https://github.com/ahnhy1324/crystalhd/issues/445)).
 
-Method availability and labels depend on the Kodi version/backend; see the
+These explicit-filter observations are for Kodi 21.3 on the reference host,
+not a recommendation to select BWDIF/Render Bob on the reporter's Atom/Kodi 22
+build. Method availability and labels depend on the Kodi version/backend; see the
 [playback settings](https://kodi.wiki/view/Video_playback#Video_Settings) and
 [Kodi 21.3 implementation](https://github.com/xbmc/xbmc/blob/21.3-Omega/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp).
 Decoder selection is separate from filter selection: for a CPU-only control,
@@ -472,12 +505,13 @@ per-player choices, not settings applied by `crystalhd-config`.
 
 The v1.1 RC includes selected interlaced Weave playback, not general
 deinterlacing or full-rate FHD support. The earlier `f4d99d5` Kodi stalls are
-preserved in the hardware report; the later finite MBAFF input/tail fix
-completes all 750 decoder-oracle pictures with verified pixels/PTS and EOS,
-and passes live input-gap/explicit-close/reopen checks. Kodi completes admitted
-field pairs and can traverse the selected full file, but may discard pictures
-or resync under load; some FHD runs retain timing/render warnings and a bounded
-post-EOS empty-output wait. No incomplete surface is returned to hide a wait.
+preserved in the hardware report. During RC3 preparation, the later finite
+MBAFF input/tail fix completed all 750 decoder-oracle pictures with verified
+pixels/PTS and EOS, and passed live input-gap/explicit-close/reopen checks.
+Kodi traversed the selected full file but could discard pictures or resync
+under load; some FHD runs retained timing/render warnings and a bounded
+post-EOS empty-output wait. These are historical results, not fresh RC4
+qualification. No incomplete surface is returned to hide a wait.
 For an explicit HW/SW Weave selection use the
 [player commands above](#explicit-weave-playback). Kodi's VA-API acceleration
 setting selects hardware versus CPU decode; its deinterlacing method is a
@@ -485,12 +519,13 @@ separate setting. No driver
 deinterlacing capability is advertised; deinterlacing and sync tuning remain
 tracked in [#436](https://github.com/ahnhy1324/crystalhd/issues/436).
 
-On the source candidate, a selected 30-second 720i25 dialogue clip had
+During RC3 preparation (recorded in `a3fd609`), a selected 30-second 720i25 dialogue clip had
 subjectively aligned speech/lip motion in both no-deinterlace and explicit
 `Deinterlace` (BWDIF) comparisons; BWDIF reduced the visible shaking. Both
 ended normally. This is a useful playback check, not measured millisecond
 sync, a complete displayed-frame census or FHD support qualification.
 The CPU/no-deinterlace control showed similar shaking without using CrystalHD.
+These observations are not new RC4 playback or physical-sync measurements.
 
 ### VLC
 

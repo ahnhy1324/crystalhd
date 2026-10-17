@@ -84,14 +84,17 @@ resource and teardown results are in the
 Standalone FFmpeg CPU BWDIF after `hwdownload` completed the same fixture, but
 the driver still advertises no `VAProcFilterDeinterlacing` capability. See the
 [runnable command and performance boundary](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif).
-Stock Kodi 21.3 progressive hardware-video and lifecycle checks passed;
+Published RC.3 passed stock Kodi 21.3 progressive hardware-video and lifecycle checks;
 quantified physical A/V remains unqualified. Earlier RC.2 payload `f4d99d5` failed
 interlaced BWDIF/Render Bob playback. The `ec77b71` finite MBAFF input/tail fix
 is included in published RC.3, with complete decoder-oracle results, but Kodi
 source picture accounting and timing/output warnings still need qualification. See
 [Kodi qualification and remaining limits](../../USAGE.md#kodi). The driver
 does not advertise VA VPP deinterlacing; no general Kodi interlace or
-hardware-Bob support is claimed.
+hardware-Bob support is claimed. The RC4 candidate reduces repeated VPP setup
+and private-allocation overhead without disabling scaling/CSC; stock Kodi 22
+cadence/A/V acceptance on the reporting host remains pending. See the
+[known issues and planned v1.2 integration work](../../USAGE.md#known-issues-and-deinterlacing-roadmap).
 
 ## Replay and end of stream
 
@@ -113,8 +116,8 @@ are discarded without changing immutable client pixels. H.264 access-unit
 delimiters are placed first in their timestamped packet so they cannot shift
 firmware timestamp association.
 
-The following admission/recovery guards are development changes after the
-immutable `v1.1.0-rc.3`; they are not present in that published candidate.
+The RC4 candidate includes the following admission/recovery guards; the
+immutable `v1.1.0-rc.3` predates them.
 The VA backend submits at most **2 MiB per assembled H.264 access unit**,
 including its reconstructed headers. This is a conservative submission policy,
 not the physical chip maximum: [#442](https://github.com/ahnhy1324/crystalhd/issues/442)

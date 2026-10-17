@@ -22,12 +22,15 @@ For v1.1, follow **scope and diff audit → device-free gates and short native
 smoke → freeze exact candidate → maintainer RC GO → publish immutable RC →
 qualify that exact RC → final package and rollback checks → maintainer stable
 GO**. A version string in a checkout is preparation, not permission to publish
-`v1.1.0-rc.3` or `v1.1.0`.
+`v1.1.0-rc.4` or `v1.1.0`.
 
-The RC.3 interlaced scope is bounded playback with explicit hardware/software
+The v1.1 RC interlaced scope is bounded playback with explicit hardware/software
 Weave selection. Further deinterlacing and A/V synchronization tuning are
 deferred; qualitative playback observations do not establish universal
 frame-rate or physical timing guarantees.
+Known issues and the planned v1.2 integration work are documented in
+[USAGE.md](USAGE.md#known-issues-and-deinterlacing-roadmap). A roadmap entry
+does not resolve or close an outstanding compatibility report.
 
 ## Versions and compatibility
 
@@ -40,13 +43,17 @@ checkout alone does not announce a published release.
 
 | Identity | Current source | Purpose |
 | --- | --- | --- |
-| Bundle | `1.1.0-rc.3` | v1.1 release-candidate identity from `VERSION` |
-| DKMS / module package | `3.10.6` | Candidate package revision; distinct from frozen `3.10.5` and stable `3.10.3` |
+| Bundle | `1.1.0-rc.4` | v1.1 release-candidate identity from `VERSION` |
+| DKMS / module package | `3.10.7` | New candidate revision; published RC.3 retains `3.10.6`, stable retains `3.10.3` |
 | Driver ioctl version | `3.10.0` | Historical public API value, retained |
 | Library API / pkg-config | `3.22.0` | Historical library component identity, retained |
 | Library SONAME / file | `libcrystalhd.so.3` / `libcrystalhd.so.3.6` | Existing application linkage, retained |
 | GStreamer plugin / VA vendor string | `3.10.0` / `0.1` | Historical component labels; not the bundle identity |
 | Firmware | Existing BCM70012/BCM70015 images | Retain images, identities and license notices |
+
+The RC.4 candidate includes the reviewed post-RC.3 fixes and optional HTTP
+player input. Its exact installed payload requires fresh Gate A qualification;
+RC.3 results do not qualify RC.4. Publication and results are recorded in #430.
 
 Published [v1.1.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3)
 pins `51e5cdfe4c720da92dec54c72fc4f47c8382e43a`, bundle `1.1.0-rc.3` and
@@ -116,8 +123,8 @@ a fix or explicit withdrawal from the candidate.
 4. Complete #430 Gate A, including the declared short native smoke. Record the
    exact commit, source diff, feature list, limits, acknowledgements, release
    text and results, then obtain explicit maintainer RC GO before publishing
-   `v1.1.0-rc.3`. Never move published tags, including `v1.0.0-rc.1`,
-   `v1.0.0` and `phase1-baseline-2026-09-29`.
+   `v1.1.0-rc.4`. Never move published tags, including `v1.1.0-rc.3`,
+   `v1.0.0-rc.1`, `v1.0.0` and `phase1-baseline-2026-09-29`.
 
 ## Qualify the candidate
 
