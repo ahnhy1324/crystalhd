@@ -1,9 +1,11 @@
 # Open work
 
-Release status **2026-10-17**: [stable 1.0.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0)
-and published [v1.1.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3)
-remain unchanged. The `1.1.0-rc.4` candidate / package `3.10.7` adds compatibility
-and performance fixes; exact checks and publication state are recorded in #430.
+Release status **2026-10-18**: [stable 1.0.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0)
+and previous RCs remain unchanged. Published
+[v1.1.0-rc.4](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.4)
+/ package `3.10.7` adds compatibility and performance fixes; its
+[qualification summary](HARDWARE-2026-09-13.md#110-rc4-qualification--2026-10-18)
+distinguishes fresh checks, scoped unchanged-code reuse and remaining work.
 Selected Weave playback remains the scope, with the
 [known deinterlacing limits and planned v1.2 work](USAGE.md#known-issues-and-deinterlacing-roadmap)
 kept separate from current functionality.
@@ -14,12 +16,16 @@ This is not stable v1.1.0 GO or a full-rate FHD/deinterlacing support claim.
   Preserve RC3's oracle/endurance results, original audio-tail and later
   scheduling FAILs, and subsequent dispositions; they are not new RC4 passes.
   The corrected audio probe and explicit maintenance-only 3-hour profile remain.
-  See the [current execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6192074709)
-  for actual stage results; later gates are not PASS until executed.
+  Fresh RC4 VA endurance, correctness/lifecycle, scaled controls, Kodi/VLC and
+  direct/DKMS installation/rollback checks pass. Retained Moonlight testing is
+  blocked by source capture initialization; final-package checks and stable GO
+  remain separate. See the [current execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6231208771)
+  for actual results and preserved failures; omitted gates are not PASS.
 - [ ] [#429: External i386/BCM70015 acceptance](https://github.com/ahnhy1324/crystalhd/issues/429)
-  — preserve the reporter's installed RC3 mixed results; post-fix RC4
-  Atom N280/i386/Kodi acceptance is still pending. Primary-host results do
-  not replace it; keep unavailable external configurations marked NOT RUN.
+  — installed RC4 Atom N280/i386 results cover selected codec, player and
+  stock-Kodi paths; retain the original RC3 failures. Ordered B-pyramid
+  rejection recovery, exact Kodi output/physical A/V and the other open
+  checklist rows remain incomplete. Primary-host tests do not replace them.
 - [ ] [#436: planned v1.2 deinterlacing and presentation work](https://github.com/ahnhy1324/crystalhd/issues/436)
   — selected Weave playback and finite tail handling are included in the RC.
   Continue deinterlacing quality, physical sync/cadence tuning and FHD dropped-
