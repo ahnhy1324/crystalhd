@@ -22,9 +22,10 @@ This is not stable v1.1.0 GO or a full-rate FHD/deinterlacing support claim.
   remain separate. See the [current execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6231208771)
   for actual results and preserved failures; omitted gates are not PASS.
 - [ ] [#429: External i386/BCM70015 acceptance](https://github.com/ahnhy1324/crystalhd/issues/429)
-  — preserve the reporter's installed RC3 mixed results; post-fix RC4
-  Atom N280/i386/Kodi acceptance is still pending. Primary-host results do
-  not replace it; keep unavailable external configurations marked NOT RUN.
+  — installed RC4 Atom N280/i386 results cover selected codec, player and
+  stock-Kodi paths; retain the original RC3 failures. Ordered B-pyramid
+  rejection recovery, exact Kodi output/physical A/V and the other open
+  checklist rows remain incomplete. Primary-host tests do not replace them.
 - [ ] [#436: planned v1.2 deinterlacing and presentation work](https://github.com/ahnhy1324/crystalhd/issues/436)
   — selected Weave playback and finite tail handling are included in the RC.
   Continue deinterlacing quality, physical sync/cadence tuning and FHD dropped-

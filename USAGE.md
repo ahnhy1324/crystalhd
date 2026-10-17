@@ -34,10 +34,20 @@ CrystalHD hardware decode session can be open at a time.
 - **Kodi 22 interlaced playback remains a compatibility limitation.** Auto can
   repeatedly probe unavailable VA deinterlacing, with stutter, A/V drift and
   increased CPU/memory use. RC4 reduces driver-side setup/allocation overhead
-  and fixes VA processing interoperability, but the reporting host's new-RC
-  cadence/A/V acceptance remains pending ([#445](https://github.com/ahnhy1324/crystalhd/issues/445),
+  and fixes VA processing interoperability. The RC4 Atom/i386 report finds
+  that explicit Off avoids Auto's repeated probes and allows selected playback
+  through EOF/reopen; exact displayed-picture identity and physical A/V remain
+  unmeasured ([#445](https://github.com/ahnhy1324/crystalhd/issues/445),
   [#429](https://github.com/ahnhy1324/crystalhd/issues/429)). Off/NONE selects
-  Weave, not a guaranteed remedy for every timing problem.
+  Weave, not deinterlacing or a guarantee for every timing problem. Explicit
+  LIVE/LOW_LATENCY finite playback still has a known tail-timeout limitation.
+- **Oversized H.264 rejection is not general stream recovery.** RC4 passes
+  selected synthetic next-IDR controls, but a real B-pyramid rejection case
+  returns two stale pictures despite the expected total count. The development
+  [readback hardening](https://github.com/ahnhy1324/crystalhd/pull/459) instead
+  fails explicitly; complete recovery remains open in
+  [#429](https://github.com/ahnhy1324/crystalhd/issues/429). Neither result
+  broadens the 2 MiB assembled-submission policy.
 - **Legacy client CPU requirements still apply.** On the reporter's Atom N280
   / i386 / Kodi 22 build, Render Bob (6) crashed with SIGILL in
   `libsse4-i486-linux.so`. Deinterlace (7) was not separately run on that host;
