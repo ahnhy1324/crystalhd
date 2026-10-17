@@ -2072,7 +2072,8 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
     if (drop_reason != NULL) {
       self->mpeg2_dropped_inputs++;
       GST_ELEMENT_WARNING(self, STREAM, DECODE,
-          ("Skipping undecodable MPEG-2 input picture"),
+          ("Skipping undecodable MPEG-2 input frame %u: %s",
+           frame->system_frame_number, drop_reason),
           ("Input frame %u: %s; missing rows %u; accepted references %u; "
            "picture was not submitted to hardware",
            frame->system_frame_number, drop_reason, missing_rows, self->mpeg2_reference_pictures));

@@ -18,6 +18,7 @@ MAX_SOFTWARE_OUTPUT_PIXELS = 4096 * 2160
 HANDLED_BUS_MESSAGE_DETAILS = (
     "application",
     "error",
+    "warning",
     "eos",
     "async-done",
     "state-changed",
@@ -81,11 +82,12 @@ def playback_input(value):
 def input_error(source, message):
     if isinstance(source, str):
         message = message.replace(source, "<remote URL>")
-        # Apostrophes are legal URL subdelimiters. Conservatively consume the
-        # full token, including diagnostic quotes, so a redirect's query suffix
-        # cannot survive masking just because it contains a quote.
-        message = re.sub(r"https?://[^\s<>]+", "<remote URL>", message,
-                         flags=re.IGNORECASE)
+    # Apostrophes are legal URL subdelimiters. Conservatively consume the
+    # full token, including diagnostic quotes, so a redirect's query suffix
+    # cannot survive masking just because it contains a quote. Warnings for
+    # local input may also contain remote URLs from downstream elements.
+    message = re.sub(r"https?://[^\s<>]+", "<remote URL>", message,
+                     flags=re.IGNORECASE)
     return message
 
 
@@ -441,6 +443,10 @@ class Player:
             error, _debug = message.parse_error()
             self.fail(input_error(self.args.file,
                                   f"{message.src.get_name()}: {error.message}"))
+        elif message.type == Gst.MessageType.WARNING:
+            warning, _debug = message.parse_warning()
+            print("crystalhd-play: warning: " + input_error(self.args.file, warning.message),
+                  file=sys.stderr, flush=True)
         elif message.type == Gst.MessageType.EOS:
             self.stop(self.health.finish())
         elif message.type == Gst.MessageType.ASYNC_DONE:

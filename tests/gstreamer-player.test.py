@@ -139,7 +139,8 @@ class PolicyAndControlTests(unittest.TestCase):
             State=SimpleNamespace(PAUSED=1, PLAYING=2),
             StateChangeReturn=SimpleNamespace(FAILURE=0, SUCCESS=1, ASYNC=2, NO_PREROLL=3),
             MessageType=SimpleNamespace(APPLICATION=1, ERROR=2, EOS=3,
-                ASYNC_DONE=4, CLOCK_LOST=5, LATENCY=6, STATE_CHANGED=7, BUFFERING=8))
+                ASYNC_DONE=4, CLOCK_LOST=5, LATENCY=6, STATE_CHANGED=7, BUFFERING=8,
+                WARNING=9))
         control.args = SimpleNamespace(file=Path("/unused.ogg"))
         control.pipeline = mock.Mock()
         control.pipeline.query_position.return_value = (True, 12000)
@@ -166,6 +167,37 @@ class PolicyAndControlTests(unittest.TestCase):
             [mock.call(f"message::{detail}", callback)
              for detail in player.HANDLED_BUS_MESSAGE_DETAILS])
         self.assertNotIn(mock.call("message", callback), bus.connect.call_args_list)
+        self.assertIn(mock.call("message::warning", callback), bus.connect.call_args_list)
+
+    def test_warning_is_visible_private_and_nonfatal_for_local_and_remote_input(self):
+        remote = "https://user:password@example.test/v?token=secret"
+        redirect = "HTTPS://other:private@cdn.test/v?key=hidden'QUERY_TAIL"
+        for source in (Path("/unused.ogg"), remote):
+            with self.subTest(source_type=type(source).__name__):
+                control = self.controller()
+                control.args.file = source
+                control.exit_code = 0
+                control.health.frame(1, "theoradec", SOFTWARE, True, 512, 1)
+                before = vars(control.health).copy()
+                warning = mock.Mock(type=control.Gst.MessageType.WARNING)
+                warning.parse_warning.return_value = (SimpleNamespace(message=(
+                    "Skipping undecodable MPEG-2 input frame 414: missing coded rows "
+                    + remote + " redirected " + redirect)),
+                    "/private/build/source.c:123: secret-debug")
+                output = io.StringIO()
+                with contextlib.redirect_stderr(output):
+                    control.message(None, warning)
+                text = output.getvalue()
+                self.assertTrue(text.startswith("crystalhd-play: warning: "))
+                self.assertIn("input frame 414: missing coded rows", text)
+                self.assertIn("<remote URL>", text)
+                for secret in ("password", "secret", "private", "hidden", "QUERY_TAIL",
+                               "example.test", "cdn.test", "https", "source.c"):
+                    self.assertNotIn(secret, text)
+                self.assertEqual(vars(control.health), before)
+                self.assertEqual((control.exit_code, control.done), (0, False))
+                self.assertEqual(control.health.finish(), 0)
+                control.stop.assert_not_called()
 
     def test_all_subscribed_bus_messages_keep_their_existing_actions(self):
         def message(kind, src=None):
@@ -447,10 +479,11 @@ class PolicyAndControlTests(unittest.TestCase):
                 for secret in ("password", "cdn.test", "signature", "PRIVATE_TAIL"):
                     self.assertNotIn(secret, error)
 
-    def test_local_error_preserves_path_and_url_details(self):
+    def test_local_error_preserves_path_but_redacts_remote_url(self):
         source = Path("/tmp/video's name.mp4")
         message = "Could not open " + str(source) + "; see https://example.test/help?reason='missing'"
-        self.assertEqual(player.input_error(source, message), message)
+        self.assertEqual(player.input_error(source, message),
+                         "Could not open " + str(source) + "; see <remote URL>")
 
 
 class ScaleConfigurationTests(unittest.TestCase):
@@ -938,6 +971,34 @@ class GStreamerApiTests(unittest.TestCase):
         while context.pending():
             context.iteration(False)
         self.assertEqual(handled, [True])
+
+    def test_real_warning_bus_is_visible_nonfatal_and_excludes_extended_types(self):
+        control = self.make_player()
+        control.stop = mock.Mock()
+        before = vars(control.health).copy()
+        exit_code = control.exit_code
+        warning = self.GLib.Error.new_literal(self.Gst.StreamError.quark(),
+            "Skipping undecodable MPEG-2 input frame 414: missing coded rows",
+            int(self.Gst.StreamError.DECODE))
+        self.assertTrue(control.bus.post(self.Gst.Message.new_property_notify(
+            control.pipeline, "name", None)))
+        self.assertTrue(control.bus.post(self.Gst.Message.new_warning(
+            control.pipeline, warning, "/private/build/source.c:123: private debug")))
+        output = io.StringIO()
+        context = self.GLib.MainContext.default()
+        with contextlib.redirect_stderr(output):
+            while context.pending():
+                context.iteration(False)
+        lines = [line for line in output.getvalue().splitlines()
+                 if line.startswith("crystalhd-play:")]
+        self.assertEqual(lines, [
+            "crystalhd-play: warning: Skipping undecodable MPEG-2 input frame 414: missing coded rows"])
+        self.assertNotIn("/private/build/source.c", output.getvalue())
+        self.assertNotIn("private debug", output.getvalue())
+        self.assertEqual(vars(control.health), before)
+        self.assertEqual(control.exit_code, exit_code)
+        self.assertFalse(control.done)
+        control.stop.assert_not_called()
 
     def scale_caps_player(self, width, mode):
         result = self.make_player()

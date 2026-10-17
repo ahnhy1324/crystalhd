@@ -1348,9 +1348,20 @@ test_mpeg2_open_gop_admission(void)
   g_assert_cmpint(gst_harness_push(harness, new_mpeg2_picture(1, TRUE, FALSE)), ==, GST_FLOW_OK);
   for (i = 0; i < 2; i++) {
     GstMessage *message;
+    GError *warning = NULL;
+    gchar *debug = NULL;
+    gchar *expected;
     g_assert_cmpint(gst_harness_push(harness, new_mpeg2_picture(3, FALSE, FALSE)), ==, GST_FLOW_OK);
     message = gst_bus_pop_filtered(bus, GST_MESSAGE_WARNING);
     g_assert_nonnull(message);
+    gst_message_parse_warning(message, &warning, &debug);
+    expected = g_strdup_printf("Skipping undecodable MPEG-2 input frame %u: "
+        "B slice macroblock uses an unavailable reference", i + 1);
+    g_assert_cmpstr(warning->message, ==, expected);
+    g_assert_nonnull(strstr(debug, "missing rows 0; accepted references 1"));
+    g_free(expected);
+    g_free(debug);
+    g_error_free(warning);
     gst_message_unref(message);
   }
   g_assert_cmpuint(mock.accepted_count, ==, 1);
