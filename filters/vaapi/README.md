@@ -113,13 +113,27 @@ are discarded without changing immutable client pixels. H.264 access-unit
 delimiters are placed first in their timestamped packet so they cannot shift
 firmware timestamp association.
 
-The replay cache permits at most 8 MiB per H.264 access unit and 512 KiB per
-MPEG-2, MPEG-4 or VC-1 access unit, with 32 MiB or 512 access units total and
-8192 replayed units before pruning an obsolete reference prefix. Large H.264
-units are submitted automatically through bounded 512 KiB libcrystalhd
-fragments; applications must not split them. They require a matching
-libcrystalhd that exports `DtsProcInputFragment`; with an older library, the VA
-driver rejects the large unit before submitting a partial picture. Missing
+The following admission/recovery guards are development changes after the
+immutable `v1.1.0-rc.3`; they are not present in that published candidate.
+The VA backend submits at most **2 MiB per assembled H.264 access unit**,
+including its reconstructed headers. This is a conservative submission policy,
+not the physical chip maximum: [#442](https://github.com/ahnhy1324/crystalhd/issues/442)
+reported session-wide output loss at 3,112,960 bytes, while primary BCM70015
+pixel readback qualified 2 MiB and all pictures through the following IDR.
+Larger units are rejected before replay or picture identity is committed;
+earlier pending pictures remain valid. If a rejected picture is a reference,
+dependent input is rejected until an actual IDR commits, preserving the
+remaining reference chain. Rejecting a non-reference B picture does not require
+an IDR or block otherwise valid continuation.
+
+The independent software assembly/replay allocation bound remains 8 MiB per
+H.264 unit; it is not an 8 MiB hardware-decode claim. MPEG-2, MPEG-4 and VC-1
+retain 512 KiB per unit, with 32 MiB or 512 access units total and 8192 replayed
+units before pruning an obsolete reference prefix. Admitted H.264 units above
+512 KiB are submitted automatically through bounded libcrystalhd fragments;
+applications must not split them. They require a matching libcrystalhd that
+exports `DtsProcInputFragment`; with an older library, the VA driver rejects
+them before replay commit or submitting a partial picture. Missing
 IDR/I-root history or an exceeded limit is an error. Completed, non-outstanding
 ordinary B pictures may be omitted from MPEG-2 and VC-1 replay; stateful BI and
 reference history required by an open GOP remain. Synchronous
@@ -303,6 +317,35 @@ These process-local controls are for debugging, not ordinary playback:
 
 Do not publish trace or debug output without checking it for media bytes,
 paths and application metadata.
+
+### Bounded H.264 admission diagnostic
+
+`make h264-au-admission-check` validates the fixture/readback checker without
+hardware or FFmpeg. For a deliberate physical BCM70015 check, first create a
+new offline fixture directory with FFmpeg/libx264:
+
+```sh
+python3 -B tests/h264-au-admission.py prepare NEW_DIRECTORY
+```
+
+The separate `native` command requires explicit source-built VA/library
+directories and a supervising hardware owner with AC, temperature, scoped
+kernel-log, installed-module/PM identity and device-ownership guards. It never
+installs components or loads/reloads the module. Run only while the card is idle:
+
+```sh
+python3 -B tests/h264-au-admission.py native NEW_DIRECTORY \
+  --driver-directory VA_DIRECTORY --library-directory LIBRARY_DIRECTORY
+```
+
+It calibrates the driver's assembled header size, checks exact 512 KiB −1/0/+1,
+1 MiB, 1.5 MiB and 2 MiB units using 75 consumed luma hashes and the following
+IDR, then checks reopen. It stops at the first mismatch/error and never probes
+the known-failing larger units from #442. Routine seal messages with outstanding
+timestamps are normal progress; an EOS-before-completion failure is not. A
+native timeout reports the child PID without signaling it; the supervising
+owner controls recovery. This checks a conservative policy, not a physical
+maximum or a substitute for exact candidate/host identity records.
 
 ## Chromium launcher experiment
 
