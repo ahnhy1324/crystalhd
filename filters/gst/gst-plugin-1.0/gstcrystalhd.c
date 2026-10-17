@@ -83,7 +83,6 @@ typedef struct _GstCrystalHdDec {
   GstClockTime wmv3_last_duration;
   guint mpeg2_reference_pictures;
   gboolean mpeg2_frame_reference_tracking;
-  gboolean mpeg2_closed_gop;
   guint mpeg2_dropped_inputs;
   GQueue timestamps;
   GstVideoCodecState *input_state;
@@ -431,7 +430,6 @@ gst_crystalhd_clear_timestamps(GstCrystalHdDec *self)
   g_queue_clear_full(&self->timestamps, g_free);
   self->mpeg2_reference_pictures = 0;
   self->mpeg2_frame_reference_tracking = TRUE;
-  self->mpeg2_closed_gop = FALSE;
   self->mpeg2_dropped_inputs = 0;
   self->have_simple_picture_number = FALSE;
   self->wmv3_reordered_output = FALSE;
@@ -2032,7 +2030,6 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
     if (GST_BUFFER_FLAG_IS_SET(frame->input_buffer, GST_BUFFER_FLAG_DISCONT)) {
       self->mpeg2_reference_pictures = 0;
       self->mpeg2_frame_reference_tracking = TRUE;
-      self->mpeg2_closed_gop = FALSE;
     }
     gst_crystalhd_mpeg2_picture_headers(data, size, &mpeg2_picture);
     if (mpeg2_picture.have_sequence) {
@@ -2044,14 +2041,11 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
       self->codec.mpeg2_profile = mpeg2_picture.profile;
       self->codec.mpeg2_progressive_sequence = mpeg2_picture.progressive_sequence;
     }
-    if (mpeg2_picture.have_gop)
-      self->mpeg2_closed_gop = mpeg2_picture.closed_gop;
     /* Field-pair buffers, separately submitted fields and unproven headers
      * keep their existing admission semantics. Once such input is seen,
      * accepted-buffer counts cannot prove reference-frame availability.
      */
-    if (mpeg2_picture.picture_count != 1 || mpeg2_picture.picture_structure != 3 ||
-        !mpeg2_picture.have_minimum_picture_header)
+    if (!gst_crystalhd_mpeg2_known_frame(&self->codec, &mpeg2_picture))
       self->mpeg2_frame_reference_tracking = FALSE;
     missing_rows = gst_crystalhd_mpeg2_missing_rows(&self->codec, &mpeg2_picture);
     if (missing_rows != 0) {
@@ -2059,31 +2053,29 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
       if (mpeg2_picture.picture_type == 1 || mpeg2_picture.picture_type == 2) {
         self->mpeg2_reference_pictures = 0;
         self->mpeg2_frame_reference_tracking = TRUE;
-        self->mpeg2_closed_gop = FALSE;
       }
     } else if (mpeg2_picture.picture_type == 2 &&
                self->mpeg2_frame_reference_tracking &&
-               self->mpeg2_reference_pictures == 0) {
-      drop_reason = "P picture has no accepted I reference";
+               self->mpeg2_reference_pictures == 0 &&
+               (mpeg2_picture.slice_prediction & 1) != 0) {
+      drop_reason = "P slice macroblock uses an unavailable reference";
     }
-    /* An open GOP can begin with I, B, B in decode order although those B
-     * pictures precede I in display order and need the missing earlier
-     * reference. As in ordinary MPEG-2 software decoders, account for them
-     * before submission instead of creating tokens firmware cannot return.
-     * Closed-GOP B pictures may use only the already accepted I reference.
+    /* A single accepted I/P anchor is the backward reference for following
+     * B pictures in coded order. Only reject positive macroblock prediction
+     * use, not picture types or optional/open GOP flags: backward-only and
+     * intra B pictures can be decoded without an earlier forward reference.
      */
     if (mpeg2_picture.picture_type == 3 && self->mpeg2_frame_reference_tracking &&
-        (self->mpeg2_reference_pictures == 0 ||
-         (self->mpeg2_reference_pictures == 1 && !self->mpeg2_closed_gop)))
-      drop_reason = "B picture has an unavailable reference";
+        ((self->mpeg2_reference_pictures == 0 && mpeg2_picture.slice_prediction != 0) ||
+         (self->mpeg2_reference_pictures == 1 && (mpeg2_picture.slice_prediction & 1) != 0)))
+      drop_reason = "B slice macroblock uses an unavailable reference";
     if (drop_reason != NULL) {
       self->mpeg2_dropped_inputs++;
       GST_ELEMENT_WARNING(self, STREAM, DECODE,
           ("Skipping undecodable MPEG-2 input picture"),
-          ("Input frame %u: %s; missing rows %u; accepted references %u; closed GOP %d; "
+          ("Input frame %u: %s; missing rows %u; accepted references %u; "
            "picture was not submitted to hardware",
-           frame->system_frame_number, drop_reason, missing_rows, self->mpeg2_reference_pictures,
-           self->mpeg2_closed_gop));
+           frame->system_frame_number, drop_reason, missing_rows, self->mpeg2_reference_pictures));
       gst_buffer_unmap(frame->input_buffer, &map);
       return gst_video_decoder_drop_frame(decoder, frame);
     }
