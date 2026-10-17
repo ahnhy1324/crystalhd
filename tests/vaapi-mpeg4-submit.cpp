@@ -766,9 +766,9 @@ void UnsupportedToolsAndConfiguration() {
       case 11: picture.vop_fields.bits.alternate_vertical_scan_flag = 1; break;
     }
     Require(fixture.SubmitStatus(1, picture) != VA_STATUS_SUCCESS &&
-                fixture.mock.inputs.empty() && fixture.mock.opens == 0 &&
+                fixture.mock.inputs.empty() && fixture.mock.starts == 0 &&
                 fixture.decode->next_timestamp == kTimestampStep,
-            "unsupported MPEG-4 tool fails before hardware and token commit");
+            "unsupported MPEG-4 tool fails before decoder start and token commit");
     fixture.I(1);
   }
 
@@ -832,7 +832,7 @@ void UnsupportedToolsAndConfiguration() {
       auto slice = Slice(0, bytes.size(), 3);
       Require(fixture.SubmitStatus(1, picture, slice, bytes) !=
                       VA_STATUS_SUCCESS &&
-                  fixture.mock.inputs.empty() && fixture.mock.opens == 0 &&
+                  fixture.mock.inputs.empty() && fixture.mock.starts == 0 &&
                   fixture.decode->next_timestamp == kTimestampStep &&
                   !fixture.decode->mpeg4_timing.have_newest &&
                   fixture.decode->mpeg4_replay.cached_pictures() == 0,
@@ -850,7 +850,7 @@ void UnsupportedToolsAndConfiguration() {
     auto picture = Picture();
     picture.vol_fields.bits.resync_marker_disable = 0;
     Require(fixture.SubmitStatus(1, picture) != VA_STATUS_SUCCESS &&
-                fixture.mock.inputs.empty() && fixture.mock.opens == 0,
+                fixture.mock.inputs.empty() && fixture.mock.starts == 0,
             "resync-enabled Advanced Simple fails before hardware submission");
   }
 
@@ -892,7 +892,7 @@ void MalformedSlicesAndIq() {
     }
     Require(fixture.SubmitStatus(1, Picture(), slice, bytes) !=
                     VA_STATUS_SUCCESS &&
-                fixture.mock.inputs.empty() && fixture.mock.opens == 0,
+                fixture.mock.inputs.empty() && fixture.mock.starts == 0,
             "malformed or fragmented MPEG-4 slice cannot reach hardware");
   }
 
@@ -1029,6 +1029,8 @@ void ReferenceIdentity() {
     Fixture fixture;
     fixture.I(1);
     VAContextID foreign = VA_INVALID_ID;
+    Require(fixture.decode->CloseHardware() == BC_STS_SUCCESS,
+            "retire the first hardware session before assigning foreign reference ownership");
     Require(CreateContext(&fixture.context, fixture.config, 16, 16,
                           VA_PROGRESSIVE, nullptr, 0, &foreign) ==
                 VA_STATUS_SUCCESS,
