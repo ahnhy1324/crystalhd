@@ -5254,7 +5254,7 @@ static void RunVppWorker(Driver *driver) {
                           &driver->vpp_argb_staging,
                           operation.source.get(), operation.target.get(),
                           operation.source_region, operation.output_region,
-                          true);
+                          operation.write_timeline >= 0);
     }
     ReleasePendingVpp(driver, operation.sequence, status, true);
   }
@@ -6774,12 +6774,16 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       return finish_vpp(status);
     }
 
-    // Chromium does not synchronize processed VA surfaces itself. Import an
-    // unsignaled write fence into the destination DMA-BUF before returning;
-    // the compositor can queue the buffer, but cannot sample it until the
-    // worker has copied and flushed the complete frame.
-    const int write_timeline = BeginFencedWrite(target_surface.get());
-    if (write_timeline < 0) {
+    // An internal, never-exported target has no external GPU readers. Its VA
+    // consumers synchronize before reading; do not require privileged sw_sync
+    // access for that path. Export must not expose it while this write is
+    // pending. Imported or previously exported targets still need a fence:
+    // Chromium can queue them without synchronizing the processed VA surface.
+    const bool private_target = target_surface == target_owner &&
+                                !target_owner->layout.valid;
+    const int write_timeline = private_target
+                                   ? -1 : BeginFencedWrite(target_surface.get());
+    if (!private_target && write_timeline < 0) {
       Debug("could not fence asynchronous VPP target=%p",
             static_cast<void *>(target_surface.get()));
       return finish_vpp(VA_STATUS_ERROR_OPERATION_FAILED);
@@ -6801,10 +6805,10 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     pending.write_timeline = write_timeline;
     driver->pending_vpp.push_back(std::move(pending));
     driver->condition.notify_all();
-    Debug("queued fenced VPP sequence=%llu source_timestamp=%llu target=%p",
+    Debug("queued VPP sequence=%llu source_timestamp=%llu target=%p timeline=%d",
           static_cast<unsigned long long>(sequence),
           static_cast<unsigned long long>(timestamp),
-          static_cast<void *>(target_surface.get()));
+          static_cast<void *>(target_surface.get()), write_timeline);
     return finish_vpp(VA_STATUS_SUCCESS);
   }
   auto config = driver->configs.find(decode_context->config);
@@ -7654,6 +7658,15 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
       HasLiveBackingOwner(driver, initial_surface->second.get())) {
     Surface *initial_owner =
         BackingOwner(driver, initial_surface->second.get());
+    // WRITE_ONLY export skips the read synchronization below. Do not expose
+    // an internal target whose queued write has no external completion fence.
+    if (access == VA_EXPORT_SURFACE_WRITE_ONLY &&
+        std::any_of(driver->pending_vpp.begin(), driver->pending_vpp.end(),
+                    [&](const PendingVpp &pending) {
+                      return pending.target_owner.get() == initial_owner &&
+                             pending.write_timeline < 0;
+                    }))
+      return finish(VA_STATUS_ERROR_SURFACE_BUSY);
     if (initial_owner->image_write_locked ||
         ExperimentalWriteReservationPending(initial_owner))
       return finish(VA_STATUS_ERROR_SURFACE_BUSY);

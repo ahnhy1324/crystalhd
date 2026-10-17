@@ -264,7 +264,7 @@ NV12 PRIME2 exports default to separate R8 and GR88 layers. Request
 `VA_EXPORT_SURFACE_COMPOSED_LAYERS` for one two-plane NV12 layer. Read/default
 exports and derived snapshots wait for picture completion; cancellation or an
 identity change reports an error. Write-only exports remain nonblocking for
-target allocation.
+target allocation, but are busy during an unfenced internal VPP write.
 
 Aliases imported from a known DMA-BUF share their decode or display owner so
 completion remains synchronized. Every view of the same backing object must
@@ -281,8 +281,11 @@ is submitted. VPP sources remain available until the decode surface is reused
 or destroyed; a target with an outstanding writer is busy. Missing, canceled
 or retired pictures report errors rather than substitute other pixels. Clients
 must check VA surface status and must not treat fence signaling alone as proof
-of valid pixels. ARGB is rendered privately before it is copied under the write
-fence. A canceled or failed pending write closes its unsignaled timeline so its
+of valid pixels. Never-exported internal targets use VA synchronization and
+ordinary CPU cache synchronization, without requiring a `sw_sync` timeline.
+Previously exposed/imported targets retain write fences; ARGB is rendered
+privately before the final copy. A canceled or failed fenced write closes its
+unsignaled timeline so its
 fences fail with `-ENOENT`; successful writes flush pixel caches before the
 timeline advances.
 
