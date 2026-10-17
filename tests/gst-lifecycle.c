@@ -1535,6 +1535,63 @@ test_mpeg2_positive_prediction_proof(void)
 }
 
 static void
+test_mpeg2_drop_preserves_pending_timing(void)
+{
+  guint sparse;
+  for (sparse = 0; sparse < 2; sparse++) {
+    GstHarness *harness = new_mpeg2_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    GstBus *bus = gst_bus_new();
+    GstBuffer *input, *output;
+    GstMessage *message;
+    GstFormat format;
+    guint64 processed, dropped;
+    const GstClockTime start = sparse ? GST_SECOND : 0;
+    guint i;
+    gst_element_set_bus(harness->element, bus);
+    input = new_mpeg2_sliced_picture(1, TRUE);
+    if (sparse)
+      GST_BUFFER_PTS(input) = start;
+    g_assert_cmpint(gst_harness_push(harness, input), ==, GST_FLOW_OK);
+    output = gst_harness_pull(harness);
+    g_assert_cmpuint(GST_BUFFER_PTS(output), ==, start);
+    gst_buffer_unref(output);
+    mock.auto_output = FALSE;
+    for (i = 0; i < 2; i++)
+      g_assert_cmpint(gst_harness_push(harness,
+          new_mpeg2_sliced_picture(2, TRUE)), ==, GST_FLOW_OK);
+    g_assert_cmpuint(self->timestamps.length, ==, 2);
+    /* The real linked GstVideoDecoder must not guess a timestamp for this
+     * unsubmitted tail before the older accepted pictures finish. */
+    g_assert_cmpint(gst_harness_push(harness,
+        new_mpeg2_sliced_picture(2, FALSE)), ==, GST_FLOW_OK);
+    g_assert_cmpuint(mock.accepted_count, ==, 3);
+    g_assert_cmpuint(self->mpeg2_dropped_inputs, ==, 1);
+    g_assert_cmpuint(self->timestamps.length, ==, 2);
+    message = gst_bus_pop_filtered(bus, GST_MESSAGE_QOS);
+    g_assert_nonnull(message);
+    gst_message_parse_qos_stats(message, &format, &processed, &dropped);
+    g_assert_cmpint(format, ==, GST_FORMAT_BUFFERS);
+    g_assert_cmpuint(dropped, ==, 1);
+    gst_message_unref(message);
+    for (i = 1; i <= 2; i++)
+      queue_picture(mock.accepted[i], i + 1);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    for (i = 1; i <= 2; i++) {
+      output = gst_harness_pull(harness);
+      g_assert_cmpuint(GST_BUFFER_PTS(output), ==, start + i * 40 * GST_MSECOND);
+      g_assert_cmpuint(GST_BUFFER_DURATION(output), ==, 40 * GST_MSECOND);
+      gst_buffer_unref(output);
+    }
+    g_assert_cmpuint(self->timestamps.length, ==, 0);
+    g_assert_cmpint(gst_crystalhd_drain(GST_VIDEO_DECODER(self)), ==, GST_FLOW_OK);
+    gst_element_set_bus(harness->element, NULL);
+    gst_object_unref(bus);
+    gst_harness_teardown(harness);
+  }
+}
+
+static void
 test_mpeg2_new_sequence_invalidates_profile(void)
 {
   GstHarness *harness = new_mpeg2_decoder();
@@ -4803,6 +4860,7 @@ main(int argc, char **argv)
   g_test_add_func("/crystalhd/lifecycle/mpeg2-field-reference-proof", test_mpeg2_field_reference_proof_unchanged);
   g_test_add_func("/crystalhd/lifecycle/mpeg2-new-sequence-profile", test_mpeg2_new_sequence_invalidates_profile);
   g_test_add_func("/crystalhd/lifecycle/mpeg2-positive-prediction-proof", test_mpeg2_positive_prediction_proof);
+  g_test_add_func("/crystalhd/lifecycle/mpeg2-drop-pending-timing", test_mpeg2_drop_preserves_pending_timing);
   g_test_add_func("/crystalhd/lifecycle/eos-with-ready-output", test_eos_with_ready_output);
   g_test_add_func("/crystalhd/lifecycle/eos-before-late-output",
                   test_eos_before_late_output);

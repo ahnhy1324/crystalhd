@@ -2077,6 +2077,11 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
            "picture was not submitted to hardware",
            frame->system_frame_number, drop_reason, missing_rows, self->mpeg2_reference_pictures));
       gst_buffer_unmap(frame->input_buffer, &map);
+      /* Keep standard drop/QoS accounting, but this unsubmitted picture has
+       * no presentation time. In particular, do not advance the base-class
+       * timestamp estimator ahead of older pictures still in hardware.
+       */
+      GST_VIDEO_CODEC_FRAME_SET_DECODE_ONLY(frame);
       return gst_video_decoder_drop_frame(decoder, frame);
     }
   }
