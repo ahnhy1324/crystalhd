@@ -10,6 +10,7 @@
 
 namespace allocation_fault {
 thread_local bool fail_next = false;
+thread_local size_t fail_at_least = SIZE_MAX;
 bool Consume() {
   const bool fail = fail_next;
   fail_next = false;
@@ -17,6 +18,10 @@ bool Consume() {
 }
 void *Allocate(size_t bytes) {
   if (Consume()) throw std::bad_alloc();
+  if (bytes >= fail_at_least) {
+    fail_at_least = SIZE_MAX;
+    throw std::bad_alloc();
+  }
   if (void *result = std::malloc(bytes == 0 ? 1 : bytes)) return result;
   throw std::bad_alloc();
 }
@@ -1242,6 +1247,77 @@ void Output(Fixture *fixture, uint64_t timestamp, uint8_t luma) {
               VA_STATUS_SUCCESS, "process exact live hardware picture");
 }
 
+void PrivateBackingReusePreservesCapturedPictures() {
+  Fixture f;
+  Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+          "submit a strict private picture before cache reuse");
+  Output(&f, kTimestampStep, 40);
+  auto captured = std::make_shared<DecodeContext>();
+  captured->video_process = true;
+  captured->vpp_frame = f.decode->decoded_frames.at(kTimestampStep);
+  PendingVpp queued;
+  queued.source = captured->vpp_frame;
+  uint8_t *const first_backing = queued.source->storage.data();
+  const uint64_t first_identity = queued.source->decode_identity;
+  const auto original = queued.source->storage;
+  Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+          "submit the replacement before retiring its earlier private picture");
+  Output(&f, 2 * kTimestampStep, 60);
+  Require(f.decode->decoded_frames.size() == 1 &&
+              f.decode->decoded_frames.at(2 * kTimestampStep)->storage.data() != first_backing &&
+              f.decode->private_backing_pool->Cached().buffers == 0 &&
+              queued.source->storage == original && queued.source->decode_identity == first_identity,
+          "captured and queued VPP references keep retired immutable pixels out of the pool");
+  captured->vpp_frame.reset();
+  Require(f.decode->private_backing_pool->Cached().buffers == 0,
+          "a queued source still owns its storage after capture releases it");
+  queued.source.reset();
+  Require(f.decode->private_backing_pool->Cached().buffers == 1,
+          "final queued reference returns only its CPU backing");
+  Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+          "strict submission consumes a safely released backing");
+  const auto next = f.decode->decoded_frames.at(3 * kTimestampStep);
+  Require(next->storage.data() == first_backing && !next->direct_picture &&
+              !next->ready && !next->failed && next->frame_timestamp == 0 &&
+              next->expected_timestamp == 3 * kTimestampStep &&
+              next->decode_identity != first_identity &&
+              next->trace_submission_ordinal == 3 &&
+              std::all_of(next->storage.begin(), next->storage.end(),
+                          [](uint8_t byte) { return byte == 0; }),
+          "recycled storage starts zero with a fresh strict identity and timestamp");
+  Output(&f, 3 * kTimestampStep, 80);
+  for (unsigned plane = 0; plane < 2; ++plane)
+    for (unsigned row = 0; row < (plane == 0 ? 16U : 8U); ++row)
+      for (unsigned column = 0; column < next->pitch[plane]; ++column)
+        Require(next->planes[plane][row * next->pitch[plane] + column] ==
+                    (column >= 16 ? 0 : plane == 0 ? 80 : 128),
+                "reused decoded payload and every aligned padding byte are exact");
+}
+
+void PrivateBackingAllocationFailureIsTransactional() {
+  Fixture f;
+  Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+          "establish pending output before a private allocation failure");
+  const auto pending = f.decode->pending;
+  const auto frames = f.decode->decoded_frames;
+  const uint64_t timestamp = f.decode->next_timestamp;
+  const uint64_t identity = f.driver.surfaces.at(1)->decode_identity;
+  f.Begin();
+  f.Parameters(false);
+  allocation_fault::fail_at_least = 64 * (16 + 8);
+  const VAStatus status = EndPicture(&f.context, 1);
+  const bool consumed = allocation_fault::fail_at_least == SIZE_MAX;
+  allocation_fault::fail_at_least = SIZE_MAX;
+  Require(status == VA_STATUS_ERROR_ALLOCATION_FAILED && consumed &&
+              f.decode->pending == pending && f.decode->decoded_frames == frames &&
+              f.decode->next_timestamp == timestamp && f.mock.inputs.size() == 1 &&
+              f.driver.surfaces.at(1)->decode_identity == identity && !f.decode->replay.failed(),
+          "failed private backing allocation cannot retire output or publish replay/binding");
+  Output(&f, kTimestampStep, 40);
+  Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+          "a fresh submission still works after private allocation failure");
+}
+
 VABufferID Vpp(Fixture *fixture) {
   auto processor = std::make_shared<DecodeContext>();
   processor->video_process = true;
@@ -1421,6 +1497,8 @@ int main() {
     {"large H.264 AU boundary and recovery", LargeH264AccessUnitBoundaryAndRecovery},
     {"rejected H.264 references require IDR", H264ReferenceRejectionRequiresIdr},
     {"allocation failure is transactional", AllocationFailureIsTransactional},
+    {"private backing preserves captured pictures", PrivateBackingReusePreservesCapturedPictures},
+    {"private backing allocation failure is transactional", PrivateBackingAllocationFailureIsTransactional},
     {"visible crop surface geometry", VisibleCropSurfaceGeometry},
     {"buffer ordering and owned snapshot", BufferOrderAndSnapshot},
     {"missing matrix resets flat", MissingResetsFlat},

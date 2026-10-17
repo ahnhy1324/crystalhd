@@ -70,6 +70,7 @@ extern "C" {
 #include "crystalhd-mpeg4.h"
 #include "crystalhd-mpeg2.h"
 #include "crystalhd-mpeg2-replay.h"
+#include "crystalhd-private-backing.h"
 #include "crystalhd-trace.h"
 #include "crystalhd-vc1.h"
 #include "crystalhd-vc1-replay.h"
@@ -758,6 +759,7 @@ struct Surface {
   bool direct_picture = false;
 
   std::vector<uint8_t> storage;
+  std::weak_ptr<CrystalHDPrivateBackingPool> private_backing_pool;
   gbm_bo *bo = nullptr;
   void *map_data[2] = {};
   std::vector<void *> object_maps;
@@ -788,6 +790,35 @@ struct Surface {
       ioctl(dumb_drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
       close(dumb_drm_fd);
     }
+    if (bo == nullptr && dumb_drm_fd < 0 && object_fds.empty() &&
+        object_maps.empty() && !layout.valid && !direct_picture && !direct_backing) {
+      if (auto pool = private_backing_pool.lock())
+        pool->Recycle(std::move(storage));
+    }
+  }
+
+  bool AllocateCpuNv12(unsigned int requested_width,
+                        unsigned int requested_height,
+                        const std::shared_ptr<CrystalHDPrivateBackingPool> &pool = {}) {
+    if (requested_width > UINT_MAX - 63U)
+      return false;
+    const size_t stride = Align(requested_width, 64);
+    const size_t luma_rows = requested_height;
+    const size_t chroma_rows = luma_rows / 2 + luma_rows % 2;
+    if (luma_rows > SIZE_MAX - chroma_rows ||
+        (luma_rows + chroma_rows != 0 &&
+         stride > SIZE_MAX / (luma_rows + chroma_rows)))
+      return false;
+    const size_t bytes = stride * (luma_rows + chroma_rows);
+    storage = pool ? pool->Acquire(bytes) : std::vector<uint8_t>(bytes);
+    private_backing_pool = pool;
+    width = requested_width;
+    height = requested_height;
+    fourcc = VA_FOURCC_NV12;
+    pitch[0] = pitch[1] = static_cast<unsigned int>(stride);
+    planes[0] = storage.data();
+    planes[1] = bytes == 0 ? nullptr : planes[0] + stride * luma_rows;
+    return true;
   }
 
   bool AllocateInternal(gbm_device *gbm, int drm_fd,
@@ -897,13 +928,7 @@ struct Surface {
       close(dumb_drm_fd);
       dumb_drm_fd = -1;
     }
-    pitch[0] = Align(width, 64);
-    pitch[1] = pitch[0];
-    storage.resize(static_cast<size_t>(pitch[0]) * height +
-                   static_cast<size_t>(pitch[1]) * ((height + 1) / 2));
-    planes[0] = storage.data();
-    planes[1] = planes[0] + static_cast<size_t>(pitch[0]) * height;
-    return true;
+    return AllocateCpuNv12(width, height);
   }
 
   bool ImportPrime(gbm_device *gbm, const VADRMPRIMESurfaceDescriptor &desc) {
@@ -1696,6 +1721,7 @@ struct DecodeContext {
   uint64_t next_timestamp = kTimestampStep;
   std::unordered_map<uint64_t, VASurfaceID> pending;
   std::unordered_map<uint64_t, std::shared_ptr<Surface>> decoded_frames;
+  std::shared_ptr<CrystalHDPrivateBackingPool> private_backing_pool;
   H264FirstField h264_first_field;
   std::deque<std::shared_ptr<Surface>> experimental_ready;
   std::unordered_map<Surface *, uint64_t> surface_timestamps;
@@ -1871,6 +1897,9 @@ struct DecodeContext {
     experimental_ready.clear();
     experimental_last_delivered_ordinal = 0;
     decoded_frames.clear();
+    // A logical reset starts a new cache lifetime. Older externally retained
+    // pictures only have weak links and cannot return bytes to the new epoch.
+    private_backing_pool.reset();
     surface_timestamps.clear();
     replay = CrystalHDDecodeReplay(live_h264);
     mpeg2_replay = CrystalHDMpeg2Replay();
@@ -4543,21 +4572,31 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     }
   }
 
-  auto decoded_frame = std::make_shared<Surface>();
-  decoded_frame->id = target_id;
+  std::shared_ptr<Surface> decoded_frame;
   const bool direct_picture = decode->live_h264_fast_path &&
                               IsH264Profile(profile) &&
                               !decode->experimental_ready_remap &&
                               target_surface->direct_decode_eligible;
-  if (direct_picture) {
-    decoded_frame->width = target_surface->width;
-    decoded_frame->height = target_surface->height;
-    decoded_frame->direct_picture = true;
-    decoded_frame->decode_target = target_surface;
-  } else if (!decoded_frame->AllocateInternal(nullptr, -1, target_surface->width,
-                                       target_surface->height,
-                                       VA_FOURCC_NV12))
+  try {
+    decoded_frame = std::make_shared<Surface>();
+    decoded_frame->id = target_id;
+    if (direct_picture) {
+      decoded_frame->width = target_surface->width;
+      decoded_frame->height = target_surface->height;
+      decoded_frame->direct_picture = true;
+      decoded_frame->decode_target = target_surface;
+    } else {
+      if (!decode->private_backing_pool)
+        decode->private_backing_pool =
+            std::make_shared<CrystalHDPrivateBackingPool>();
+      if (!decoded_frame->AllocateCpuNv12(target_surface->width,
+                                         target_surface->height,
+                                         decode->private_backing_pool))
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    }
+  } catch (const std::bad_alloc &) {
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
   decoded_frame->h264_crop_unit_y = h264_crop_unit_y;
   if (decode->IsMpeg4() &&
       (decode->Mpeg4CachedPictures() >= kMpeg4ReplayPictures ||
