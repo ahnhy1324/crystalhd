@@ -890,6 +890,7 @@ void DirectCaptureKeepsQueuedVppPrivate() {
     fixture.decoder->decoded_frames[kTimestampStep] = picture;
     fixture.SubmitParameters();
     fixture.target->object_fds = {101};
+    fixture.target->layout.valid = true;  // Model an externally exposed backing.
     Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
                 fixture.driver.pending_vpp.size() == 1 &&
                 picture->vpp_readers == 1 && !picture->direct_backing,
@@ -925,6 +926,163 @@ void DirectCaptureKeepsQueuedVppPrivate() {
                 !mock.invalid && !mock.self_wait,
             "direct capture releases ownership without waiting on its own fence");
   }
+}
+
+void InternalQueuedVppCompletesWithoutSwSync() {
+  // Cover explicit synchronization, read/default export synchronization and
+  // cancellation. Only private memfds and the actual VPP worker are used.
+  for (unsigned mode = 0; mode < 4; ++mode) {
+    FenceIoMock mock;
+    MockFenceScope scope(mock);
+    Fixture fixture;
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      fixture.driver.stopping = true;
+    }
+    fixture.driver.condition.notify_all();
+    fixture.driver.vpp_worker.join();
+    fixture.driver.stopping = false;
+    const size_t size = fixture.target->storage.size();
+    const int fd = memfd_create("crystalhd-private-async-vpp", MFD_CLOEXEC);
+    Require(fd >= 0, "allocate private internal VPP backing");
+    fixture.target->object_fds = {fd};
+    mock.real_files.insert(fd);
+    Require(ftruncate(fd, size) == 0, "size private internal VPP backing");
+    void *mapping = mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                         MAP_SHARED, fd, 0);
+    Require(mapping != MAP_FAILED, "map private internal VPP backing");
+    fixture.target->object_maps = {mapping};
+    fixture.target->object_sizes = {size};
+    memcpy(mapping, fixture.target->storage.data(), size);
+    fixture.target->planes[0] = static_cast<uint8_t *>(mapping);
+    fixture.target->planes[1] = fixture.target->planes[0] +
+        fixture.target->pitch[0] * fixture.target->height;
+    const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    picture->ready = false;
+    mock.fail_open = true;  // No sw_sync node is available, even through mocks.
+    fixture.SubmitParameters();
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                fixture.driver.pending_vpp.size() == 1 &&
+                fixture.driver.pending_vpp.front().write_timeline == -1 &&
+                picture->vpp_readers == 1 && fixture.target->vpp_writers == 1 &&
+                !fixture.target->ready && !fixture.target->layout.valid &&
+                mock.events.empty(),
+            "internal decode-pending VPP queues without opening a timeline");
+    VASurfaceStatus state = VASurfaceReady;
+    VADRMPRIMESurfaceDescriptor prime = {};
+    Require(QuerySurfaceStatus(&fixture.context, 2, &state) == VA_STATUS_SUCCESS &&
+                state == VASurfaceRendering &&
+                SyncSurface2(&fixture.context, 2, 0) == VA_STATUS_ERROR_TIMEDOUT &&
+                ExportSurfaceHandle(&fixture.context, 2,
+                    VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                    VA_EXPORT_SURFACE_WRITE_ONLY, &prime) == VA_STATUS_ERROR_SURFACE_BUSY &&
+                prime.num_objects == 0 && !fixture.target->layout.valid &&
+                mock.events.empty(),
+            "pending unfenced pixels are neither ready nor writable-exportable");
+
+    // On assertion failure, wake and join a read exporter before Fixture joins
+    // its worker. Never leave a joinable thread or a blocked surface wait.
+    struct ExportJoin {
+      Driver *driver;
+      std::thread thread;
+      ~ExportJoin() {
+        if (!thread.joinable()) return;
+        {
+          std::lock_guard<std::mutex> lock(driver->mutex);
+          driver->stopping = true;
+        }
+        driver->condition.notify_all();
+        thread.join();
+      }
+    } exporter{&fixture.driver, {}};
+    VAStatus export_status = VA_STATUS_ERROR_OPERATION_FAILED;
+    bool export_waited = true;
+    if (mode == 1 || mode == 2) {
+      exporter.thread = std::thread([&] {
+        MockFenceScope worker_scope(mock);
+        export_status = ExportSurfaceHandle(&fixture.context, 2,
+            VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+            (mode == 1 ? VA_EXPORT_SURFACE_READ_ONLY : 0) |
+                VA_EXPORT_SURFACE_COMPOSED_LAYERS, &prime);
+      });
+      std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+      export_waited = fixture.driver.condition.wait_for(
+          lock, std::chrono::milliseconds(100),
+          [&] { return fixture.target->export_waiters == 1; });
+    }
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      if (mode == 3)
+        fixture.decoder->Reset();
+      else
+        picture->ready = true;
+    }
+    fixture.driver.vpp_worker = std::thread([&] {
+      MockFenceScope worker_scope(mock);
+      RunVppWorker(&fixture.driver);
+    });
+    const VAStatus status = SyncSurface2(&fixture.context, 2, 1000000000ULL);
+    if (exporter.thread.joinable()) exporter.thread.join();
+    Require(status == (mode == 3 ? VA_STATUS_ERROR_DECODING_ERROR : VA_STATUS_SUCCESS) &&
+                fixture.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
+                fixture.target->vpp_writers == 0 && export_waited,
+            "the real worker completes or cancels internal VPP and releases owners");
+    if (mode == 3) {
+      Require(fixture.target->failed && !fixture.target->ready &&
+                  memcmp(mapping, fixture.target->storage.data(), size) == 0 &&
+                  mock.events.empty(),
+              "unfenced cancellation preserves pixels without CPU writes");
+    } else {
+      Require(fixture.target->ready && !fixture.target->failed &&
+                  fixture.target->frame_timestamp == kTimestampStep &&
+                  mock.events == std::vector<std::string>{
+                      "start:" + std::to_string(fd), "end:" + std::to_string(fd)} &&
+                  mock.started.empty() && mock.handles.empty() && !mock.invalid &&
+                  !mock.self_wait,
+              "unfenced worker performs balanced CPU ownership, never fence operations");
+      for (unsigned plane = 0; plane < 2; ++plane)
+        for (unsigned row = 0; row < (plane == 0 ? 16U : 8U); ++row)
+          for (unsigned column = 0; column < 16; ++column)
+            Require(fixture.target->planes[plane][row * fixture.target->pitch[plane] + column] ==
+                        (plane == 0 ? 40 : 128),
+                    "internal asynchronous VPP commits every actual NV12 pixel");
+      if (mode == 1 || mode == 2) {
+        uint8_t exported_luma = 0;
+        const bool exported = export_status == VA_STATUS_SUCCESS &&
+            prime.num_objects == 1 && fixture.target->layout.valid &&
+            pread(prime.objects[0].fd, &exported_luma, 1, 0) == 1 && exported_luma == 40;
+        if (prime.num_objects != 0) {
+          mock.real_files.insert(prime.objects[0].fd);
+          close(prime.objects[0].fd);
+        }
+        Require(exported, "read/default export waits for committed real backing pixels");
+      }
+    }
+  }
+}
+
+void ExposedQueuedVppStillRequiresFence() {
+  FenceIoMock mock;
+  MockFenceScope scope(mock);
+  Fixture fixture;
+  {
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    fixture.driver.stopping = true;
+  }
+  fixture.driver.condition.notify_all();
+  fixture.driver.vpp_worker.join();
+  fixture.target->object_fds = {101};
+  fixture.target->layout.valid = true;
+  const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+  picture->ready = false;
+  mock.fail_open = true;
+  fixture.SubmitParameters();
+  Require(EndPicture(&fixture.context, 2) == VA_STATUS_ERROR_OPERATION_FAILED &&
+              fixture.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
+              fixture.target->vpp_writers == 0 && fixture.target->planes[0][0] == 99 &&
+              mock.events == std::vector<std::string>{"start:101", "open", "end:101"} &&
+              mock.started.empty() && mock.handles.empty() && !mock.invalid,
+          "exposed backing cannot fall back to unfenced writes after fence failure");
 }
 
 void ReuseBetweenRenderAndEndKeepsCapturedPicture() {
@@ -2195,6 +2353,8 @@ int main(int argc, char **argv) {
     AbortPathsPublishErrorFences();
     RepeatedVppRetainsPicture();
     DirectCaptureKeepsQueuedVppPrivate();
+    InternalQueuedVppCompletesWithoutSwSync();
+    ExposedQueuedVppStillRequiresFence();
     ReuseBetweenRenderAndEndKeepsCapturedPicture();
     ResetRejectsCapturedOldEpoch();
     MissingPictureIsNotSuccessfulFallback();
@@ -2231,6 +2391,6 @@ int main(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 42 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 44 hardware-free regressions passed");
   return 0;
 }
