@@ -267,7 +267,10 @@ surfaces, not imported aliases. A surviving alias of a destroyed owner is
 invalid, and reimport remains busy until pending writes finish.
 
 The minimal VPP path provides unfiltered NV12 scaling and NV12-to-ARGB
-conversion. A worker can wait for reordered hardware output while later input
+conversion. Pipeline capability format lists are borrowed, read-only driver
+metadata, valid until the VA display terminates. Read the returned pointers
+and counts; do not free them or assume supplied scratch arrays were filled.
+A worker can wait for reordered hardware output while later input
 is submitted. VPP sources remain available until the decode surface is reused
 or destroyed; a target with an outstanding writer is busy. Missing, canceled
 or retired pictures report errors rather than substitute other pixels. Clients

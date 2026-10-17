@@ -533,22 +533,20 @@ int main(int argc, char **argv) {
         "vaCreateContext(VideoProc)");
   }
 
-  uint32_t input_formats[2] = {};
-  uint32_t output_formats[2] = {};
   VAProcPipelineCaps caps = {};
-  caps.input_pixel_format = input_formats;
-  caps.num_input_pixel_formats = 2;
-  caps.output_pixel_format = output_formats;
-  caps.num_output_pixel_formats = 2;
   if (vpp_success) {
     vpp_success = Check(
         vaQueryVideoProcPipelineCaps(display, vpp_context, nullptr, 0, &caps),
         "vaQueryVideoProcPipelineCaps");
   }
   if (vpp_success &&
-      (!ContainsFormat(input_formats, caps.num_input_pixel_formats,
+      (caps.input_pixel_format == nullptr || caps.num_input_pixel_formats != 1 ||
+       caps.output_pixel_format == nullptr || caps.num_output_pixel_formats != 2 ||
+       !ContainsFormat(caps.input_pixel_format, caps.num_input_pixel_formats,
                        VA_FOURCC_NV12) ||
-       !ContainsFormat(output_formats, caps.num_output_pixel_formats,
+       !ContainsFormat(caps.output_pixel_format, caps.num_output_pixel_formats,
+                       VA_FOURCC_NV12) ||
+       !ContainsFormat(caps.output_pixel_format, caps.num_output_pixel_formats,
                        VA_FOURCC_ARGB))) {
     fprintf(stderr, "video processor formats are incomplete\n");
     vpp_success = false;

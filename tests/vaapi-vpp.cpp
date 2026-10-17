@@ -464,17 +464,15 @@ void DefaultVppCapabilitiesRemainAvailable() {
               CreateContext(&context, config, 16, 16, 0, &surface, 1,
                              &processor) == VA_STATUS_SUCCESS,
           "ordinary VPP surface and context creation remain available");
-  uint32_t inputs[1] = {}, outputs[2] = {};
   VAProcPipelineCaps caps = {};
-  caps.input_pixel_format = inputs;
-  caps.num_input_pixel_formats = 1;
-  caps.output_pixel_format = outputs;
-  caps.num_output_pixel_formats = 2;
   unsigned filters = 99, capabilities = 99;
   Require(QueryVideoProcPipelineCaps(&context, processor, nullptr, 0, &caps) ==
                   VA_STATUS_SUCCESS &&
-              inputs[0] == VA_FOURCC_NV12 && outputs[0] == VA_FOURCC_NV12 &&
-              outputs[1] == VA_FOURCC_ARGB &&
+              caps.num_input_pixel_formats == 1 && caps.input_pixel_format != nullptr &&
+              caps.num_output_pixel_formats == 2 && caps.output_pixel_format != nullptr &&
+              caps.input_pixel_format[0] == VA_FOURCC_NV12 &&
+              caps.output_pixel_format[0] == VA_FOURCC_NV12 &&
+              caps.output_pixel_format[1] == VA_FOURCC_ARGB &&
               QueryVideoProcFilters(&context, processor, nullptr, &filters) ==
                   VA_STATUS_SUCCESS && filters == 0 &&
               QueryVideoProcFilterCaps(&context, processor, VAProcFilterDeinterlacing,
@@ -498,6 +496,124 @@ void DefaultVppCapabilitiesRemainAvailable() {
                 DestroyConfig(&context, config) == VA_STATUS_SUCCESS,
             "default decode capabilities remain unchanged");
   }
+}
+
+struct PipelineCapsFixture {
+  Driver driver{-1};
+  VADriverContext context = {};
+  VAConfigID config = VA_INVALID_ID;
+  VAContextID processor = VA_INVALID_ID;
+  PipelineCapsFixture() {
+    context.pDriverData = &driver;
+    Require(CreateConfig(&context, VAProfileNone, VAEntrypointVideoProc,
+                          nullptr, 0, &config) == VA_STATUS_SUCCESS &&
+                CreateContext(&context, config, 0, 0, VA_PROGRESSIVE, nullptr, 0,
+                               &processor) == VA_STATUS_SUCCESS,
+            "create VPP context for output-capability queries");
+  }
+  ~PipelineCapsFixture() {
+    DestroyContext(&context, processor);
+    DestroyConfig(&context, config);
+  }
+  void Query(VAProcPipelineCaps *caps) {
+    Require(QueryVideoProcPipelineCaps(&context, processor, nullptr, 0, caps) ==
+                VA_STATUS_SUCCESS, "query borrowed VPP pipeline capabilities");
+    Require(caps->num_input_pixel_formats == 1 && caps->input_pixel_format != nullptr &&
+                caps->num_output_pixel_formats == 2 && caps->output_pixel_format != nullptr &&
+                caps->input_pixel_format[0] == VA_FOURCC_NV12 &&
+                caps->output_pixel_format[0] == VA_FOURCC_NV12 &&
+                caps->output_pixel_format[1] == VA_FOURCC_ARGB &&
+                caps->rotation_flags == (1U << VA_ROTATION_NONE) &&
+                caps->filter_flags == (VA_FILTER_SCALING_DEFAULT |
+                                      VA_FILTER_INTERPOLATION_NEAREST_NEIGHBOR) &&
+                caps->min_input_width == 16 && caps->min_input_height == 16 &&
+                caps->max_input_width == kMaxWidth && caps->max_input_height == kMaxHeight &&
+                caps->min_output_width == 16 && caps->min_output_height == 16 &&
+                caps->max_output_width == kMaxWidth && caps->max_output_height == kMaxHeight,
+            "returned arrays retain supported NV12/ARGB formats and pipeline limits");
+  }
+};
+
+void PipelineCapsIgnoreIncomingPixelFormatStorage() {
+  PipelineCapsFixture fixture;
+  VAProcPipelineCaps caps;
+  memset(&caps, 0xa5, sizeof(caps));
+  fixture.Query(&caps);
+
+  const long page_size = sysconf(_SC_PAGESIZE);
+  Require(page_size > 0, "discover guard-page size");
+  struct Guard {
+    size_t size;
+    void *address;
+    ~Guard() { if (address != MAP_FAILED) munmap(address, size); }
+  } guard{static_cast<size_t>(page_size),
+          mmap(nullptr, static_cast<size_t>(page_size), PROT_NONE,
+               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)};
+  Require(guard.address != MAP_FAILED, "allocate an inaccessible format-pointer guard");
+  uint32_t *unmapped = static_cast<uint32_t *>(guard.address);
+  for (unsigned phase = 0; phase < 2; ++phase) {
+    caps = {};
+    caps.input_pixel_format = unmapped;
+    caps.output_pixel_format = unmapped;
+    caps.num_input_pixel_formats = caps.num_output_pixel_formats = UINT32_MAX;
+    fixture.Query(&caps);  // Neither PROT_NONE nor unmapped memory may be touched.
+    if (phase == 0) {
+      Require(munmap(guard.address, guard.size) == 0, "unmap the guarded input address");
+      guard.address = MAP_FAILED;
+    }
+  }
+  for (uint32_t count : {0U, 1U, UINT32_MAX}) {
+    std::array<uint32_t, 4> input = {{11, 22, 33, 44}};
+    std::array<uint32_t, 4> output = {{55, 66, 77, 88}};
+    const auto original_input = input, original_output = output;
+    caps = {};
+    caps.input_pixel_format = input.data() + 1;
+    caps.output_pixel_format = output.data() + 1;
+    caps.num_input_pixel_formats = caps.num_output_pixel_formats = count;
+    fixture.Query(&caps);
+    Require(input == original_input && output == original_output &&
+                caps.input_pixel_format != input.data() + 1 &&
+                caps.output_pixel_format != output.data() + 1,
+            "zero/tiny/huge incoming counts cannot write caller canaries or limit output arrays");
+  }
+}
+
+void PipelineCapsBorrowedLifetimeAndErrors() {
+  PipelineCapsFixture first, second;
+  VAProcPipelineCaps original = {}, isolated = {}, repeated = {};
+  first.Query(&original);
+  second.Query(&isolated);
+  Require(original.input_pixel_format != isolated.input_pixel_format &&
+              original.output_pixel_format != isolated.output_pixel_format,
+          "separate live drivers own independent capability arrays");
+  for (unsigned index = 0; index < 3; ++index) {
+    memset(&repeated, 0x5a, sizeof(repeated));
+    first.Query(&repeated);
+    Require(memcmp(&original, &repeated, sizeof(original)) == 0,
+            "repeated queries preserve borrowed pointers and all returned metadata");
+  }
+  Require(DestroyContext(&first.context, first.processor) == VA_STATUS_SUCCESS &&
+              original.input_pixel_format[0] == VA_FOURCC_NV12 &&
+              original.output_pixel_format[1] == VA_FOURCC_ARGB &&
+              CreateContext(&first.context, first.config, 0, 0, VA_PROGRESSIVE,
+                             nullptr, 0, &first.processor) == VA_STATUS_SUCCESS,
+          "borrowed format arrays survive context retirement within their owning driver");
+  first.Query(&repeated);
+  Require(memcmp(&original, &repeated, sizeof(original)) == 0,
+          "a replacement VPP context sees the same valid driver-owned metadata");
+  Require(QueryVideoProcPipelineCaps(&first.context, first.processor, nullptr, 0,
+                                     nullptr) == VA_STATUS_ERROR_INVALID_PARAMETER,
+          "null pipeline capability output retains its invalid-parameter error");
+  std::array<unsigned char, sizeof(VAProcPipelineCaps)> poisoned;
+  poisoned.fill(0xa5);
+  memcpy(&repeated, poisoned.data(), poisoned.size());
+  Require(QueryVideoProcPipelineCaps(&first.context, VA_INVALID_ID, nullptr, 0,
+                                     &repeated) == VA_STATUS_ERROR_INVALID_CONTEXT &&
+              memcmp(&repeated, poisoned.data(), poisoned.size()) == 0 &&
+              QueryVideoProcPipelineCaps(&first.context, first.processor, nullptr, 1,
+                                         &repeated) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+              memcmp(&repeated, poisoned.data(), poisoned.size()) == 0,
+          "invalid context and nonzero filters reject before touching output or incoming pointers");
 }
 
 void NativeNodeCacheOwnsNoFiles() {
@@ -1879,6 +1995,8 @@ int main(int argc, char **argv) {
       return 0;
     }
     DefaultVppCapabilitiesRemainAvailable();
+    PipelineCapsIgnoreIncomingPixelFormatStorage();
+    PipelineCapsBorrowedLifetimeAndErrors();
     NativeNodeCacheOwnsNoFiles();
     NativeNodeCacheInvalidatesChangedIdentities();
     NativeNodeCacheFailuresRetryWithoutLeases();
@@ -1919,6 +2037,6 @@ int main(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 37 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 39 hardware-free regressions passed");
   return 0;
 }

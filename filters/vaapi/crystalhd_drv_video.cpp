@@ -1940,6 +1940,9 @@ struct Driver {
   gbm_device *gbm = nullptr;
   int drm_fd = -1;
   PrimaryDrmNodeCache primary_node_cache;
+  // Borrowed capability metadata, stable until this VA display terminates.
+  std::array<uint32_t, 1> vpp_input_formats = {{VA_FOURCC_NV12}};
+  std::array<uint32_t, 2> vpp_output_formats = {{VA_FOURCC_NV12, VA_FOURCC_ARGB}};
   bool experimental_i915_wc = false;
 
   explicit Driver(int requested_drm_fd,
@@ -5770,24 +5773,14 @@ static VAStatus QueryVideoProcPipelineCaps(VADriverContextP context,
   if (!IsVideoProcessContext(driver, context_id))
     return VA_STATUS_ERROR_INVALID_CONTEXT;
 
-  uint32_t *input_formats = caps->input_pixel_format;
-  const uint32_t input_capacity = caps->num_input_pixel_formats;
-  uint32_t *output_formats = caps->output_pixel_format;
-  const uint32_t output_capacity = caps->num_output_pixel_formats;
+  // Ordinary VPP clients use caps as an output record, including uninitialized
+  // extension fields. Never dereference incoming pointers: publish borrowed
+  // driver-owned format metadata, as with ordinary VPP color-standard lists.
   memset(caps, 0, sizeof(*caps));
-  caps->input_pixel_format = input_formats;
-  caps->output_pixel_format = output_formats;
-  caps->num_input_pixel_formats = 1;
-  caps->num_output_pixel_formats = 2;
-  if ((input_formats != nullptr && input_capacity < 1) ||
-      (output_formats != nullptr && output_capacity < 2))
-    return VA_STATUS_ERROR_MAX_NUM_EXCEEDED;
-  if (input_formats != nullptr)
-    input_formats[0] = VA_FOURCC_NV12;
-  if (output_formats != nullptr) {
-    output_formats[0] = VA_FOURCC_NV12;
-    output_formats[1] = VA_FOURCC_ARGB;
-  }
+  caps->input_pixel_format = driver->vpp_input_formats.data();
+  caps->output_pixel_format = driver->vpp_output_formats.data();
+  caps->num_input_pixel_formats = driver->vpp_input_formats.size();
+  caps->num_output_pixel_formats = driver->vpp_output_formats.size();
   caps->rotation_flags = 1U << VA_ROTATION_NONE;
   caps->filter_flags = VA_FILTER_SCALING_DEFAULT |
                        VA_FILTER_INTERPOLATION_NEAREST_NEIGHBOR;
