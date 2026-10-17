@@ -254,11 +254,17 @@ failure invalidates that image's contents. Export allocation requires a
 compatible linear GBM byte buffer, while CPU-only image access remains usable
 without one.
 
+Images derived from cold, unowned upload surfaces commit CPU writes on final
+unmap, or exported-image writes on handle release. The source is reserved
+while writable access is active; stale sources and failed commits report errors.
+Images derived from retained decode pictures remain independent readback
+snapshots and cannot overwrite decoder references.
+
 NV12 PRIME2 exports default to separate R8 and GR88 layers. Request
 `VA_EXPORT_SURFACE_COMPOSED_LAYERS` for one two-plane NV12 layer. Read/default
 exports and derived snapshots wait for picture completion; cancellation or an
 identity change reports an error. Write-only exports remain nonblocking for
-target allocation.
+target allocation, but are busy during an unfenced internal VPP write.
 
 Aliases imported from a known DMA-BUF share their decode or display owner so
 completion remains synchronized. Every view of the same backing object must
@@ -267,13 +273,19 @@ surfaces, not imported aliases. A surviving alias of a destroyed owner is
 invalid, and reimport remains busy until pending writes finish.
 
 The minimal VPP path provides unfiltered NV12 scaling and NV12-to-ARGB
-conversion. A worker can wait for reordered hardware output while later input
+conversion. Pipeline capability format lists are borrowed, read-only driver
+metadata, valid until the VA display terminates. Read the returned pointers
+and counts; do not free them or assume supplied scratch arrays were filled.
+A worker can wait for reordered hardware output while later input
 is submitted. VPP sources remain available until the decode surface is reused
 or destroyed; a target with an outstanding writer is busy. Missing, canceled
 or retired pictures report errors rather than substitute other pixels. Clients
 must check VA surface status and must not treat fence signaling alone as proof
-of valid pixels. ARGB is rendered privately before it is copied under the write
-fence. A canceled or failed pending write closes its unsignaled timeline so its
+of valid pixels. Never-exported internal targets use VA synchronization and
+ordinary CPU cache synchronization, without requiring a `sw_sync` timeline.
+Previously exposed/imported targets retain write fences; ARGB is rendered
+privately before the final copy. A canceled or failed fenced write closes its
+unsignaled timeline so its
 fences fail with `-ENOENT`; successful writes flush pixel caches before the
 timeline advances.
 
@@ -288,7 +300,8 @@ timeline advances.
 - NV12 images are limited to 1920x1088; odd dimensions retain complete UV pairs.
   Image copies reject busy surfaces and invalid rectangles. `vaPutImage` also
   rejects retained decode pictures and their aliases instead of invalidating
-  decoder reference identity. `vaDeriveImage` remains a readback snapshot, not a
+  decoder reference identity. For retained decode pictures, `vaDeriveImage`
+  remains a readback snapshot, not a
   writable direct alias; use `vaCreateImage`/`vaPutImage` for ordinary uploads.
 - one CrystalHD playback session at a time; another client receives hardware
   busy at decode-context creation if the device is already owned. Configuration
