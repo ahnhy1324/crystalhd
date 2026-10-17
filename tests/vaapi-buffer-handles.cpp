@@ -522,6 +522,13 @@ static void PendingReadIdentity() {
     std::fill(source->storage.begin(), source->storage.end(), 109);
     source->ready = true;
     source->expected_timestamp = source->frame_timestamp = 7 * kTimestampStep;
+    target->ready = false;
+    VADRMPRIMESurfaceDescriptor writable = {};
+    Require(f.table.vaExportSurfaceHandle(&f.context, 1, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+              VA_EXPORT_SURFACE_WRITE_ONLY, &writable) == VA_STATUS_SUCCESS,
+            "write-only allocation export remains available before any queued writer");
+    for (unsigned i = 0; i < writable.num_objects; ++i) close(writable.objects[i].fd);
+    writable = {};
     constexpr uint64_t sequence = 19;
     {
       std::lock_guard<std::mutex> lock(f.driver->mutex);
@@ -539,11 +546,10 @@ static void PendingReadIdentity() {
           VARectangle{0, 0, static_cast<uint16_t>(target->width), static_cast<uint16_t>(target->height)};
       f.driver->pending_vpp.push_back(pending);
     }
-    VADRMPRIMESurfaceDescriptor writable = {};
     Require(f.table.vaExportSurfaceHandle(&f.context, 1, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
-              VA_EXPORT_SURFACE_WRITE_ONLY, &writable) == VA_STATUS_SUCCESS,
-            "write-only export remains available without waiting for readable pixels");
-    for (unsigned i = 0; i < writable.num_objects; ++i) close(writable.objects[i].fd);
+              VA_EXPORT_SURFACE_WRITE_ONLY, &writable) == VA_STATUS_ERROR_SURFACE_BUSY &&
+              writable.num_objects == 0,
+            "manually queued unfenced writer cannot expose a write-only descriptor");
     VAStatus result = VA_STATUS_ERROR_OPERATION_FAILED;
     VAImage image = {};
     VADRMPRIMESurfaceDescriptor desc = {};
@@ -562,7 +568,7 @@ static void PendingReadIdentity() {
         const VARectangle region = {0, 0, static_cast<uint16_t>(target->width),
                                     static_cast<uint16_t>(target->height)};
         const VAStatus copied = ProcessVpp(&f.driver->vpp_scaler, &f.driver->vpp_argb_staging,
-                                           source.get(), target.get(), region, region, true);
+                                           source.get(), target.get(), region, region, false);
         Check(copied == VA_STATUS_SUCCESS, "actual pending VPP copy completes");
         ReleasePendingVpp(f.driver, sequence, copied, true);
       } else {
