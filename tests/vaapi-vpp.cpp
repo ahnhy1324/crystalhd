@@ -207,6 +207,115 @@ void Require(bool value, const char *message) {
     throw std::runtime_error(message);
 }
 
+void VppOptOutCapabilitySnapshot() {
+  constexpr char variable[] = "CRYSTALHD_VAAPI_DISABLE_VPP";
+  struct RestoreEnvironment {
+    bool present;
+    std::string saved;
+    RestoreEnvironment()
+        : present(getenv("CRYSTALHD_VAAPI_DISABLE_VPP") != nullptr),
+          saved(present ? getenv("CRYSTALHD_VAAPI_DISABLE_VPP") : "") {}
+    ~RestoreEnvironment() {
+      if (present)
+        setenv("CRYSTALHD_VAAPI_DISABLE_VPP", saved.c_str(), 1);
+      else
+        unsetenv("CRYSTALHD_VAAPI_DISABLE_VPP");
+    }
+  } restore;
+  const char *values[] = {nullptr, "", "0", "01", "true", "1"};
+  for (const char *value : values) {
+    if (value == nullptr)
+      unsetenv(variable);
+    else
+      setenv(variable, value, 1);
+    const bool disabled = value != nullptr && strcmp(value, "1") == 0;
+    Driver driver{-1};
+    VADriverContext context = {};
+    context.pDriverData = &driver;
+    // Subsequent environment changes must not rewrite this instance's caps.
+    setenv(variable, disabled ? "0" : "1", 1);
+    VAProfile profiles[16] = {};
+    int count = 0;
+    Require(QueryConfigProfiles(&context, profiles, &count) == VA_STATUS_SUCCESS &&
+                count == (disabled ? 10 : 11) &&
+                (std::find(profiles, profiles + count, VAProfileNone) != profiles + count) == !disabled,
+            "only exact 1 hides VPP, with policy snapshotted at driver initialization");
+    const int profile_count = count;
+    VAEntrypoint entrypoint = VAEntrypointVLD;
+    count = 99;
+    const VAStatus expected = disabled ? VA_STATUS_ERROR_UNSUPPORTED_PROFILE
+                                       : VA_STATUS_SUCCESS;
+    Require(QueryConfigEntrypoints(&context, VAProfileNone, &entrypoint, &count) == expected &&
+                count == (disabled ? 0 : 1) &&
+                (disabled || entrypoint == VAEntrypointVideoProc),
+            "VPP entrypoints agree with the advertised profile list");
+    VAConfigAttrib attributes[] = {{VAConfigAttribRTFormat, 0xdead}};
+    Require(GetConfigAttributes(&context, VAProfileNone, VAEntrypointVideoProc,
+                                attributes, 1) == expected &&
+                attributes[0].value == (disabled ? 0xdeadU : VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32),
+            "disabled VPP attribute queries reject without publishing formats");
+    VAConfigID config = VA_INVALID_ID;
+    for (unsigned attempt = 0; attempt < (disabled ? 100U : 1U); ++attempt) {
+      Require(CreateConfig(&context, VAProfileNone, VAEntrypointVideoProc,
+                           nullptr, 0, &config) == expected,
+              "unsupported VPP probes stop at config creation");
+    }
+    if (disabled) {
+      Require(config == VA_INVALID_ID && driver.next_config == 1 &&
+                  driver.next_surface == 1 && driver.next_context == 1 &&
+                  driver.configs.empty() && driver.surfaces.empty() &&
+                  driver.contexts.empty() && driver.pending_vpp.empty(),
+              "repeated rejected probes publish no config or surface/context resources");
+    } else {
+      VASurfaceID surface = VA_INVALID_SURFACE;
+      VAContextID processor = VA_INVALID_ID;
+      Require(CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 16, 16,
+                              &surface, 1, nullptr, 0) == VA_STATUS_SUCCESS &&
+                  CreateContext(&context, config, 16, 16, 0, &surface, 1,
+                                 &processor) == VA_STATUS_SUCCESS,
+              "ordinary VPP surface and context creation remain available by default");
+      uint32_t inputs[1] = {}, outputs[2] = {};
+      VAProcPipelineCaps caps = {};
+      caps.input_pixel_format = inputs;
+      caps.num_input_pixel_formats = 1;
+      caps.output_pixel_format = outputs;
+      caps.num_output_pixel_formats = 2;
+      unsigned filters = 99, capabilities = 99;
+      Require(QueryVideoProcPipelineCaps(&context, processor, nullptr, 0, &caps) == VA_STATUS_SUCCESS &&
+                  inputs[0] == VA_FOURCC_NV12 && outputs[0] == VA_FOURCC_NV12 &&
+                  outputs[1] == VA_FOURCC_ARGB &&
+                  QueryVideoProcFilters(&context, processor, nullptr, &filters) == VA_STATUS_SUCCESS &&
+                  filters == 0 &&
+                  QueryVideoProcFilterCaps(&context, processor, VAProcFilterDeinterlacing,
+                                           nullptr, &capabilities) == VA_STATUS_ERROR_UNSUPPORTED_FILTER &&
+                  capabilities == 0,
+              "default scaling/CSC caps remain truthful without inventing a DI filter");
+      Require(DestroyContext(&context, processor) == VA_STATUS_SUCCESS &&
+                  DestroySurfaces(&context, &surface, 1) == VA_STATUS_SUCCESS &&
+                  DestroyConfig(&context, config) == VA_STATUS_SUCCESS,
+              "default VPP resource teardown remains valid");
+    }
+    for (int index = 0; index < profile_count; ++index) {
+      const VAProfile profile = profiles[index];
+      if (!IsDecodeProfile(profile))
+        continue;
+      count = 0;
+      Require(QueryConfigEntrypoints(&context, profile, &entrypoint, &count) == VA_STATUS_SUCCESS &&
+                  count == 1 && entrypoint == VAEntrypointVLD &&
+                  CreateConfig(&context, profile, VAEntrypointVLD, nullptr, 0,
+                               &config) == VA_STATUS_SUCCESS,
+              "decode capability/config queries are independent of VPP opt-out");
+    }
+    Driver changed{-1};
+    VADriverContext changed_context = {};
+    changed_context.pDriverData = &changed;
+    Require(QueryConfigEntrypoints(&changed_context, VAProfileNone, &entrypoint, &count) ==
+                (disabled ? VA_STATUS_SUCCESS : VA_STATUS_ERROR_UNSUPPORTED_PROFILE) &&
+                QueryConfigEntrypoints(&context, VAProfileNone, &entrypoint, &count) == expected,
+            "separate driver instances retain independent initialization snapshots");
+  }
+}
+
 std::shared_ptr<Surface> Picture(uint64_t timestamp, uint8_t luma) {
   auto surface = std::make_shared<Surface>();
   Require(surface->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
@@ -1405,6 +1514,7 @@ int main(int argc, char **argv) {
       GenuineSwSyncCompletionStatuses();
       return 0;
     }
+    VppOptOutCapabilitySnapshot();
     AbortPathsPublishErrorFences();
     RepeatedVppRetainsPicture();
     DirectCaptureKeepsQueuedVppPrivate();
@@ -1441,6 +1551,6 @@ int main(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP identity/lifecycle/fences/images: 32 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 33 hardware-free regressions passed");
   return 0;
 }

@@ -69,10 +69,11 @@ ASPM switch, and unsupported topology is rejected.
 ## VA-API environment
 
 The H.264 policy controls are read when a VA decode context is created. The
-i915 and trace controls are read when the VA driver instance is initialized.
+i915, trace and VPP opt-out controls are read when the VA driver instance is initialized.
 
 | Control | Owner | Device/backend | Default and accepted values | Dependencies | Read/apply lifecycle | Safety | Public API |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `CRYSTALHD_VAAPI_DISABLE_VPP` <!-- config-surface:environment:CRYSTALHD_VAAPI_DISABLE_VPP --> | CrystalHD VA driver | All VA video processing in this process; decode capabilities remain available | Unset or anything other than exactly `1`: unchanged; `1`: no VPP profile/entrypoint/config | An explicit compatibility invocation; disables unfiltered scaling and NV12-to-ARGB as well as unsupported DI probes | Snapshot once at VA driver initialization; restart the process to change it | **Opt-in** — capability restriction; client retries may continue | Yes — runtime-only environment override, not a persisted schema key |
 | `CRYSTALHD_VAAPI_LIVE_H264` <!-- config-surface:environment:CRYSTALHD_VAAPI_LIVE_H264 --> | CrystalHD VA driver | H.264 VA decode; explicit live behavior is BCM70015-only | Unset: bounded finite-input replay; exactly `1`: long-running live/direct path; every other value selects strict replay | Client must provide later input or explicitly drain retained surfaces at context destruction | Snapshot at `vaCreateContext()` | **Experimental** | Yes — documented process environment |
 | `CRYSTALHD_VAAPI_LOW_LATENCY_H264` <!-- config-surface:environment:CRYSTALHD_VAAPI_LOW_LATENCY_H264 --> | CrystalHD VA driver | BCM70015 H.264 VA decode | Unset: automatic prefeed for eligible finite MBAFF frame AUs; exactly `1`: explicit H.264 prefeed; any other explicit value: off | Prefeed is independent of LIVE; explicit live streaming combines both controls; no A/V-sync guarantee | Snapshot at `vaCreateContext()` | **Experimental** for explicit selection; bounded automatic MBAFF behavior is part of ordinary finite decode | Yes — documented process environment |
 | `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP` <!-- config-surface:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP --> | CrystalHD VA driver | BCM70015 H.264 VA presentation experiment | Off; exactly `1` requests remapping | Requires live mode and low-latency mode, plus a valid policy and delay | Snapshot at `vaCreateContext()` | **Experimental** — deliberately does not preserve standard VA surface identity | Yes — documented process environment |
@@ -181,7 +182,8 @@ literal library/VA environment reads, CrystalHD-named variables in installed
 scripts, production GStreamer properties and explicit `crystalhd-play` options.
 Missing and stale rows both fail.
 
-The schema conformance check also classifies all 28 surfaces: 23 userspace
+The schema conformance check also classifies all 29 surfaces: 23 userspace
 surfaces map to 21 canonical keys, the two module parameters retain a separate
 module-load lifetime, `CRYSTALHD_CHROMIUM_CONFIG` remains a legacy bootstrap,
-and `--subtitles` and `--weave` remain invocation-only.
+`--subtitles` and `--weave` remain invocation-only, and the VPP opt-out remains
+an explicit runtime-only compatibility invocation that the inspector does not model or apply.

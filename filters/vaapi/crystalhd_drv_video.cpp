@@ -1884,12 +1884,17 @@ struct Driver {
   gbm_device *gbm = nullptr;
   int drm_fd = -1;
   bool experimental_i915_wc = false;
+  const bool vpp_disabled;
 
   explicit Driver(int requested_drm_fd,
                   int trace_output_fd = STDERR_FILENO)
       : trace(trace_output_fd), drm_fd(requested_drm_fd),
         experimental_i915_wc(ExperimentalI915WcRequested(
-            getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC"))) {
+            getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC"))),
+        vpp_disabled([] {
+          const char *value = getenv("CRYSTALHD_VAAPI_DISABLE_VPP");
+          return value != nullptr && strcmp(value, "1") == 0;
+        }()) {
     decode_control_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (requested_drm_fd >= 0)
       gbm = gbm_create_device(requested_drm_fd);
@@ -2479,6 +2484,11 @@ static bool IsVc1Profile(VAProfile profile) {
 static bool IsDecodeProfile(VAProfile profile) {
   return IsH264Profile(profile) || IsMpeg2Profile(profile) ||
          IsMpeg4Profile(profile) || IsVc1Profile(profile);
+}
+
+static bool IsSupportedProfile(const Driver *driver, VAProfile profile) {
+  return IsDecodeProfile(profile) ||
+         (profile == VAProfileNone && !driver->vpp_disabled);
 }
 
 static bool IsValidConfig(VAProfile profile, VAEntrypoint entrypoint) {
@@ -5210,29 +5220,30 @@ static VAStatus Terminate(VADriverContextP context) {
   return status;
 }
 
-static VAStatus QueryConfigProfiles(VADriverContextP, VAProfile *profiles,
+static VAStatus QueryConfigProfiles(VADriverContextP context, VAProfile *profiles,
                                     int *count) {
   if (profiles == nullptr || count == nullptr)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
-  profiles[0] = VAProfileH264ConstrainedBaseline;
-  profiles[1] = VAProfileH264Main;
-  profiles[2] = VAProfileH264High;
-  profiles[3] = VAProfileNone;
-  profiles[4] = VAProfileMPEG2Simple;
-  profiles[5] = VAProfileMPEG2Main;
-  profiles[6] = VAProfileVC1Simple;
-  profiles[7] = VAProfileVC1Main;
-  profiles[8] = VAProfileVC1Advanced;
-  profiles[9] = VAProfileMPEG4Simple;
-  profiles[10] = VAProfileMPEG4AdvancedSimple;
-  *count = 11;
+  const VAProfile supported[] = {
+      VAProfileH264ConstrainedBaseline, VAProfileH264Main, VAProfileH264High,
+      VAProfileNone, VAProfileMPEG2Simple, VAProfileMPEG2Main, VAProfileVC1Simple,
+      VAProfileVC1Main, VAProfileVC1Advanced, VAProfileMPEG4Simple,
+      VAProfileMPEG4AdvancedSimple};
+  *count = 0;
+  for (VAProfile profile : supported) {
+    if (IsSupportedProfile(GetDriver(context), profile))
+      profiles[(*count)++] = profile;
+  }
   return VA_STATUS_SUCCESS;
 }
 
-static VAStatus QueryConfigEntrypoints(VADriverContextP, VAProfile profile,
+static VAStatus QueryConfigEntrypoints(VADriverContextP context, VAProfile profile,
                                        VAEntrypoint *entrypoints, int *count) {
-  if (profile != VAProfileNone && !IsDecodeProfile(profile))
+  if (!IsSupportedProfile(GetDriver(context), profile)) {
+    if (count != nullptr)
+      *count = 0;
     return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
+  }
   if (entrypoints == nullptr || count == nullptr)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   entrypoints[0] = profile == VAProfileNone ? VAEntrypointVideoProc
@@ -5241,10 +5252,10 @@ static VAStatus QueryConfigEntrypoints(VADriverContextP, VAProfile profile,
   return VA_STATUS_SUCCESS;
 }
 
-static VAStatus GetConfigAttributes(VADriverContextP, VAProfile profile,
+static VAStatus GetConfigAttributes(VADriverContextP context, VAProfile profile,
                                     VAEntrypoint entrypoint,
                                     VAConfigAttrib *attributes, int count) {
-  if (profile != VAProfileNone && !IsDecodeProfile(profile))
+  if (!IsSupportedProfile(GetDriver(context), profile))
     return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
   if (!IsValidConfig(profile, entrypoint))
     return VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT;
@@ -5277,7 +5288,7 @@ static VAStatus GetConfigAttributes(VADriverContextP, VAProfile profile,
 static VAStatus CreateConfig(VADriverContextP context, VAProfile profile,
                              VAEntrypoint entrypoint, VAConfigAttrib *, int,
                              VAConfigID *config_id) {
-  if (profile != VAProfileNone && !IsDecodeProfile(profile))
+  if (!IsSupportedProfile(GetDriver(context), profile))
     return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
   if (!IsValidConfig(profile, entrypoint))
     return VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT;
