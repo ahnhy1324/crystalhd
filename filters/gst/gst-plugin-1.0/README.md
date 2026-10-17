@@ -232,6 +232,11 @@ counted harness for that claim. Final drain has a 10-second no-progress
 watchdog, renewed by successful delivery and suspended while stably paused.
 See [the bring-up guide](../../../BRINGUP.md) for failure diagnosis.
 
+MPEG-2 pictures with positively identified missing-reference prediction or
+missing coded frame rows are skipped before hardware submission with a warning.
+Inconclusive syntax keeps its existing decoding path. Skips are not decoded
+output: EOS still requires every submitted picture to finish.
+
 To exercise GStreamer's flushing seek in the same playback session:
 
 ```sh

@@ -718,6 +718,120 @@ test_drain_deadline(void)
 }
 
 static void
+test_mpeg2_picture_headers(void)
+{
+  guint8 bytes[] = { 0, 0, 1, 0xb8, 0, 0, 0, 0,
+                    0, 0, 1, 0, 0, 3 << 3 };
+  guint8 header[] = { 0, 0, 1, 0, 0, 0, 0xff, 0xff, 0 };
+  CrystalHdMpeg2Picture picture;
+  gsize size;
+  guint type;
+
+  for (size = 0; size < sizeof(bytes); size++) {
+    gst_crystalhd_mpeg2_picture_headers(bytes, size, &picture);
+    g_assert_cmpuint(picture.picture_type, ==, 0);
+  }
+  gst_crystalhd_mpeg2_picture_headers(bytes, sizeof(bytes), &picture);
+  g_assert_cmpuint(picture.picture_type, ==, 3);
+  bytes[7] = 0x40;
+  gst_crystalhd_mpeg2_picture_headers(bytes, sizeof(bytes), &picture);
+  gst_crystalhd_mpeg2_picture_headers(bytes + 8, sizeof(bytes) - 8, &picture);
+  g_assert_cmpuint(picture.picture_type, ==, 3);
+  for (type = 1; type <= 3; type++) {
+    header[5] = type << 3;
+    gst_crystalhd_mpeg2_picture_headers(header, 8, &picture);
+    g_assert_cmpint(picture.have_minimum_picture_header, ==, type == 1);
+    gst_crystalhd_mpeg2_picture_headers(header, sizeof(header), &picture);
+    g_assert_true(picture.have_minimum_picture_header);
+  }
+}
+
+static void
+test_mpeg2_first_slice_prediction(void)
+{
+  const struct { guint type, code, length, prediction; } cases[] = {
+    { 2, 1, 1, 1 }, { 2, 1, 2, 1 }, { 2, 1, 3, 1 },
+    { 2, 3, 5, 0 }, { 2, 2, 5, 1 }, { 2, 1, 5, 1 }, { 2, 1, 6, 0 },
+    { 3, 2, 2, 3 }, { 3, 3, 2, 3 },
+    { 3, 2, 3, 2 }, { 3, 3, 3, 2 },
+    { 3, 2, 4, 1 }, { 3, 3, 4, 1 },
+    { 3, 3, 5, 0 }, { 3, 2, 5, 3 },
+    { 3, 3, 6, 1 }, { 3, 2, 6, 2 }, { 3, 1, 6, 0 }
+  };
+  guint i;
+  for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+    const guint length = cases[i].length, code = cases[i].code;
+    guint8 bytes[] = { 0x0a | (code >> (length - 1)),
+        (code & ((1U << (length - 1)) - 1)) << (9 - length) };
+    g_assert_cmpuint(gst_crystalhd_mpeg2_first_slice_prediction(bytes, sizeof(bytes),
+        cases[i].type), ==, cases[i].prediction);
+    g_assert_cmpuint(gst_crystalhd_mpeg2_first_slice_prediction(bytes, 1,
+        cases[i].type), ==, 0);
+    bytes[0] |= 4; /* optional extra/intra slice header is not recognized */
+    g_assert_cmpuint(gst_crystalhd_mpeg2_first_slice_prediction(bytes, sizeof(bytes),
+        cases[i].type), ==, 0);
+    bytes[0] &= ~6U; /* non-one address increment */
+    g_assert_cmpuint(gst_crystalhd_mpeg2_first_slice_prediction(bytes, sizeof(bytes),
+        cases[i].type), ==, 0);
+    bytes[0] = (bytes[0] & 1) | 2; /* quantiser zero is reserved */
+    g_assert_cmpuint(gst_crystalhd_mpeg2_first_slice_prediction(bytes, sizeof(bytes),
+        cases[i].type), ==, 0);
+  }
+  {
+    const guint8 invalid[] = { 0x0a, 0 };
+    g_assert_cmpuint(gst_crystalhd_mpeg2_first_slice_prediction(invalid, sizeof(invalid), 2), ==, 0);
+    g_assert_cmpuint(gst_crystalhd_mpeg2_first_slice_prediction(invalid, sizeof(invalid), 3), ==, 0);
+  }
+}
+
+static void
+test_mpeg2_restricted_slice_rows(void)
+{
+  guint8 bytes[] = {
+    0, 0, 1, 0, 0, 8, 0xff, 0xff,
+    0, 0, 1, 0xb5, 0x8f, 0xff, 0xf3, 0, 0,
+    0, 0, 1, 1, 0x20,
+    0, 0, 1, 1, 0x30, /* more than one slice on the first row is legal */
+    0, 0, 1, 2, 0x20,
+    0, 0, 1, 3, 0x20
+  };
+  const guint8 incomplete_extension[] = {
+    0, 0, 1, 0, 0, 8, 0xff, 0xff,
+    0, 0, 1, 0xb5, 0x8f,
+    0, 0, 1, 1, 0x20
+  };
+  CrystalHdCodec codec = { .mpeg2_profile = 4, .mpeg2_height = 48,
+                           .mpeg2_progressive_sequence = TRUE };
+  CrystalHdMpeg2Picture picture;
+  gst_crystalhd_mpeg2_picture_headers(bytes, sizeof(bytes), &picture);
+  g_assert_cmpuint(gst_crystalhd_mpeg2_missing_rows(&codec, &picture), ==, 0);
+  gst_crystalhd_mpeg2_picture_headers(bytes, sizeof(bytes) - 5, &picture);
+  g_assert_cmpuint(gst_crystalhd_mpeg2_missing_rows(&codec, &picture), ==, 1);
+  codec.mpeg2_profile = 5;
+  g_assert_cmpuint(gst_crystalhd_mpeg2_missing_rows(&codec, &picture), ==, 1);
+  codec.mpeg2_profile = 0;
+  g_assert_cmpuint(gst_crystalhd_mpeg2_missing_rows(&codec, &picture), ==, 0);
+  codec.mpeg2_profile = 1; /* High/scalable and unknown profiles stay unchanged. */
+  g_assert_cmpuint(gst_crystalhd_mpeg2_missing_rows(&codec, &picture), ==, 0);
+  codec.mpeg2_profile = 4;
+  picture.picture_structure = 1;
+  g_assert_cmpuint(gst_crystalhd_mpeg2_missing_rows(&codec, &picture), ==, 0);
+  picture.picture_structure = 2;
+  g_assert_cmpuint(gst_crystalhd_mpeg2_missing_rows(&codec, &picture), ==, 0);
+  picture.picture_structure = 3;
+  picture.picture_count = 2;
+  g_assert_cmpuint(gst_crystalhd_mpeg2_missing_rows(&codec, &picture), ==, 0);
+  gst_crystalhd_mpeg2_picture_headers(incomplete_extension, sizeof(incomplete_extension), &picture);
+  g_assert_cmpuint(picture.picture_structure, ==, 0);
+  g_assert_cmpuint(gst_crystalhd_mpeg2_missing_rows(&codec, &picture), ==, 0);
+  gst_crystalhd_mpeg2_picture_headers(bytes, 8, &picture); /* no picture extension */
+  g_assert_cmpuint(gst_crystalhd_mpeg2_missing_rows(&codec, &picture), ==, 0);
+  gst_crystalhd_mpeg2_picture_headers(bytes, sizeof(bytes), &picture);
+  codec.mpeg2_progressive_sequence = FALSE; /* interlaced frame rounds to 32 lines */
+  g_assert_cmpuint(gst_crystalhd_mpeg2_missing_rows(&codec, &picture), ==, 1);
+}
+
+static void
 test_bdu_frames(void)
 {
   const guint8 stream[] = {
@@ -754,6 +868,9 @@ int main(int argc, char **argv)
   g_test_add_func("/crystalhd/codecs/frame-layer", test_frame_layer);
   g_test_add_func("/crystalhd/codecs/picture-size", test_picture_size);
   g_test_add_func("/crystalhd/codecs/drain-deadline", test_drain_deadline);
+  g_test_add_func("/crystalhd/codecs/mpeg2-picture-headers", test_mpeg2_picture_headers);
+  g_test_add_func("/crystalhd/codecs/mpeg2-first-slice-prediction", test_mpeg2_first_slice_prediction);
+  g_test_add_func("/crystalhd/codecs/mpeg2-restricted-slice-rows", test_mpeg2_restricted_slice_rows);
   g_test_add_func("/crystalhd/codecs/bdu-frames", test_bdu_frames);
   return g_test_run();
 }

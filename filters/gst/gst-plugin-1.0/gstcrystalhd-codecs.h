@@ -32,7 +32,145 @@ typedef struct {
   guint mpeg4_height;
   guint mpeg4_time_increment_resolution;
   guint mpeg4_time_increment_bits;
+  guint mpeg2_profile;
+  guint mpeg2_height;
+  gboolean mpeg2_progressive_sequence;
 } CrystalHdCodec;
+
+typedef struct {
+  guint picture_type;
+  guint picture_count;
+  guint picture_structure;
+  gboolean have_sequence;
+  guint height;
+  gboolean have_sequence_extension;
+  guint profile;
+  gboolean progressive_sequence;
+  gboolean have_minimum_picture_header;
+  guint slice_prediction;
+  guint64 slice_rows[3];
+} CrystalHdMpeg2Picture;
+
+static gsize
+gst_crystalhd_mpeg2_next_start_code(const guint8 *data, gsize size, gsize from)
+{
+  gsize i;
+  for (i = from; size >= 4 && i <= size - 4; i++)
+    if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1)
+      return i;
+  return size;
+}
+
+/* H.262 6.2.4 and Tables B.1/B.3/B.4: positive proof from only the first
+ * macroblock of a slice. Recognize quantiser_scale_code != 0,
+ * extra_bit_slice == 0 and address_increment == 1; other syntax is unknown.
+ * All inspected VLC bits must precede the next start code. Bits 1/2 mean
+ * forward/backward prediction. A P non-intra macroblock with no motion
+ * vectors still predicts from the previous reference with a zero vector.
+ * https://www.itu.int/rec/T-REC-H.262-199507-S/en
+ */
+static guint
+gst_crystalhd_mpeg2_first_slice_prediction(const guint8 *data, gsize size,
+                                          guint picture_type)
+{
+  guint bits;
+  if (size < 2 || (data[0] & 0xf8) == 0 ||
+      (data[0] & 4) != 0 || (data[0] & 2) == 0)
+    return 0;
+  bits = ((guint)(data[0] & 1) << 5) | (data[1] >> 3);
+  if (picture_type == 2) {
+    if ((bits & 32) != 0 || (bits & 48) == 16 || (bits & 56) == 8 ||
+        (bits & 62) == 4 || (bits & 62) == 2)
+      return 1;
+  } else if (picture_type == 3) {
+    if ((bits & 32) != 0 || (bits & 62) == 4)
+      return 3;
+    if ((bits & 48) == 16 || bits == 2)
+      return 2;
+    if ((bits & 56) == 8 || bits == 3)
+      return 1;
+  }
+  return 0;
+}
+
+/* Inspect byte-aligned headers and bounded first-macroblock prefixes, not
+ * decoded output or complete macroblock coverage. A parsed field pair may
+ * carry two picture headers and is excluded from frame-only admission.
+ */
+static void
+gst_crystalhd_mpeg2_picture_headers(const guint8 *data, gsize size,
+                                    CrystalHdMpeg2Picture *picture)
+{
+  gsize i;
+
+  memset(picture, 0, sizeof(*picture));
+  i = gst_crystalhd_mpeg2_next_start_code(data, size, 0);
+  while (i < size) {
+    const gsize next = gst_crystalhd_mpeg2_next_start_code(data, size, i + 4);
+    const gsize bytes = next - i;
+    const guint code = data[i + 3];
+    if (code == 0 && bytes >= 6) {
+      picture->picture_count++;
+      if (picture->picture_count == 1) {
+        picture->picture_type = (data[i + 5] >> 3) & 7;
+        picture->have_minimum_picture_header = picture->picture_type == 1
+            ? bytes >= 8 : ((picture->picture_type == 2 || picture->picture_type == 3) && bytes >= 9);
+      }
+    } else if (code == 0xb3 && bytes >= 8) {
+      picture->have_sequence = TRUE;
+      picture->height = ((guint)(data[i + 5] & 15) << 8) | data[i + 6];
+    } else if (code == 0xb5 && bytes >= 5) {
+      const guint extension = data[i + 4] >> 4;
+      if (extension == 1 && bytes >= 10) {
+        picture->have_sequence_extension = TRUE;
+        picture->profile = (data[i + 4] & 8) ? 0 : data[i + 4] & 7;
+        picture->progressive_sequence = (data[i + 5] & 8) != 0;
+        picture->height |= ((guint)(data[i + 6] >> 5) & 3) << 12;
+      } else if (extension == 8 && bytes >= 9 && picture->picture_count == 1) {
+        picture->picture_structure = data[i + 6] & 3;
+      }
+    } else if (code >= 1 && code <= 0xaf && picture->picture_count == 1) {
+      const guint row = code - 1;
+      picture->slice_rows[row / 64] |= G_GUINT64_CONSTANT(1) << (row % 64);
+      picture->slice_prediction |= gst_crystalhd_mpeg2_first_slice_prediction(
+          data + i + 4, bytes - 4, picture->picture_type);
+    }
+    i = next;
+  }
+}
+
+static gboolean
+gst_crystalhd_mpeg2_known_frame(const CrystalHdCodec *codec,
+                               const CrystalHdMpeg2Picture *picture)
+{
+  return (codec->mpeg2_profile == 4 || codec->mpeg2_profile == 5) &&
+      codec->mpeg2_height != 0 && codec->mpeg2_height <= 1088 &&
+      picture->picture_count == 1 && picture->picture_structure == 3 &&
+      picture->have_minimum_picture_header;
+}
+
+/* H.262 (1995), 6.1.2/6.1.2.2 and Table 8-5 require same-row slices and
+ * complete coverage for Main/Simple profiles. Multiple slices per row are
+ * legal. Missing a whole row proves damage; present rows do not prove that
+ * their macroblocks or entropy data are complete. Preserve field pictures,
+ * unknown profiles and incomplete headers for the established decoder path.
+ * https://www.itu.int/rec/T-REC-H.262-199507-S/en
+ */
+static guint
+gst_crystalhd_mpeg2_missing_rows(const CrystalHdCodec *codec,
+                                  const CrystalHdMpeg2Picture *picture)
+{
+  guint rows, row, missing = 0;
+  if (!gst_crystalhd_mpeg2_known_frame(codec, picture))
+    return 0;
+  rows = codec->mpeg2_progressive_sequence
+      ? (codec->mpeg2_height + 15) / 16 : 2 * ((codec->mpeg2_height + 31) / 32);
+  for (row = 0; row < rows; row++)
+    if ((picture->slice_rows[row / 64] &
+         (G_GUINT64_CONSTANT(1) << (row % 64))) == 0)
+      missing++;
+  return missing;
+}
 
 typedef struct {
   const guint8 *data;

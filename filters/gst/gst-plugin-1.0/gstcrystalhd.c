@@ -81,6 +81,9 @@ typedef struct _GstCrystalHdDec {
   gboolean wmv3_reordered_output;
   gboolean wmv3_timing_valid;
   GstClockTime wmv3_last_duration;
+  guint mpeg2_reference_pictures;
+  gboolean mpeg2_frame_reference_tracking;
+  guint mpeg2_dropped_inputs;
   GQueue timestamps;
   GstVideoCodecState *input_state;
   GstAdapter *parse_adapter;
@@ -425,6 +428,9 @@ static void
 gst_crystalhd_clear_timestamps(GstCrystalHdDec *self)
 {
   g_queue_clear_full(&self->timestamps, g_free);
+  self->mpeg2_reference_pictures = 0;
+  self->mpeg2_frame_reference_tracking = TRUE;
+  self->mpeg2_dropped_inputs = 0;
   self->have_simple_picture_number = FALSE;
   self->wmv3_reordered_output = FALSE;
   self->wmv3_timing_valid = TRUE;
@@ -1736,6 +1742,18 @@ gst_crystalhd_reopen_format(GstVideoDecoder *decoder, GstVideoCodecState *state,
     input_format.pMetaData = (guint8 *)metadata;
     input_format.metaDataSz = metadata_size;
   }
+  if (subtype == BC_MSUBTYPE_MPEG2VIDEO) {
+    CrystalHdMpeg2Picture metadata;
+    self->codec.mpeg2_height = input_format.height;
+    gst_crystalhd_mpeg2_picture_headers(input_format.pMetaData,
+                                        input_format.metaDataSz, &metadata);
+    if (metadata.have_sequence)
+      self->codec.mpeg2_height = metadata.height;
+    if (metadata.have_sequence_extension) {
+      self->codec.mpeg2_profile = metadata.profile;
+      self->codec.mpeg2_progressive_sequence = metadata.progressive_sequence;
+    }
+  }
 
   mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW | DTS_SKIP_TX_CHK_CPB |
          DTS_PLAYBACK_DROP_RPT_MODE | DTS_SINGLE_THREADED_MODE |
@@ -1967,6 +1985,7 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
   gboolean recovery_changed = FALSE;
   gboolean h264_has_parameter_sets = FALSE;
   gboolean submitted_recovery_sync = FALSE;
+  CrystalHdMpeg2Picture mpeg2_picture = { 0 };
 
   if (!self->decoder_started || frame->input_buffer == NULL)
     return gst_video_decoder_drop_frame(decoder, frame);
@@ -2004,6 +2023,68 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
                       ("Invalid compressed picture framing"), (NULL));
     gst_video_decoder_drop_frame(decoder, frame);
     return GST_FLOW_ERROR;
+  }
+  if (self->codec.subtype == BC_MSUBTYPE_MPEG2VIDEO) {
+    guint missing_rows;
+    const gchar *drop_reason = NULL;
+    if (GST_BUFFER_FLAG_IS_SET(frame->input_buffer, GST_BUFFER_FLAG_DISCONT)) {
+      self->mpeg2_reference_pictures = 0;
+      self->mpeg2_frame_reference_tracking = TRUE;
+    }
+    gst_crystalhd_mpeg2_picture_headers(data, size, &mpeg2_picture);
+    if (mpeg2_picture.have_sequence) {
+      self->codec.mpeg2_height = mpeg2_picture.height;
+      self->codec.mpeg2_profile = 0;
+      self->codec.mpeg2_progressive_sequence = FALSE;
+    }
+    if (mpeg2_picture.have_sequence_extension) {
+      self->codec.mpeg2_profile = mpeg2_picture.profile;
+      self->codec.mpeg2_progressive_sequence = mpeg2_picture.progressive_sequence;
+    }
+    /* Field-pair buffers, separately submitted fields and unproven headers
+     * keep their existing admission semantics. Once such input is seen,
+     * accepted-buffer counts cannot prove reference-frame availability.
+     */
+    if (!gst_crystalhd_mpeg2_known_frame(&self->codec, &mpeg2_picture))
+      self->mpeg2_frame_reference_tracking = FALSE;
+    missing_rows = gst_crystalhd_mpeg2_missing_rows(&self->codec, &mpeg2_picture);
+    if (missing_rows != 0) {
+      drop_reason = "coded frame is missing whole macroblock rows";
+      if (mpeg2_picture.picture_type == 1 || mpeg2_picture.picture_type == 2) {
+        self->mpeg2_reference_pictures = 0;
+        self->mpeg2_frame_reference_tracking = TRUE;
+      }
+    } else if (mpeg2_picture.picture_type == 2 &&
+               self->mpeg2_frame_reference_tracking &&
+               self->mpeg2_reference_pictures == 0 &&
+               (mpeg2_picture.slice_prediction & 1) != 0) {
+      drop_reason = "P slice macroblock uses an unavailable reference";
+    }
+    /* A single accepted I/P anchor is the backward reference for following
+     * B pictures in coded order. Only reject positive macroblock prediction
+     * use, not picture types or optional/open GOP flags: backward-only and
+     * intra B pictures can be decoded without an earlier forward reference.
+     */
+    if (mpeg2_picture.picture_type == 3 && self->mpeg2_frame_reference_tracking &&
+        ((self->mpeg2_reference_pictures == 0 && mpeg2_picture.slice_prediction != 0) ||
+         (self->mpeg2_reference_pictures == 1 && (mpeg2_picture.slice_prediction & 1) != 0)))
+      drop_reason = "B slice macroblock uses an unavailable reference";
+    if (drop_reason != NULL) {
+      self->mpeg2_dropped_inputs++;
+      GST_ELEMENT_WARNING(self, STREAM, DECODE,
+          ("Skipping undecodable MPEG-2 input frame %u: %s",
+           frame->system_frame_number, drop_reason),
+          ("Input frame %u: %s; missing rows %u; accepted references %u; "
+           "picture was not submitted to hardware",
+           frame->system_frame_number, drop_reason, missing_rows, self->mpeg2_reference_pictures));
+      gst_buffer_unmap(frame->input_buffer, &map);
+      /* Keep standard drop/QoS accounting, but this unsubmitted picture has
+       * no presentation time. In particular, do not advance the base-class
+       * timestamp estimator ahead of older pictures still in hardware.
+       */
+      GST_VIDEO_CODEC_FRAME_SET_DECODE_ONLY(frame);
+      return gst_video_decoder_drop_frame(decoder, frame);
+    }
   }
   if (self->codec.subtype == BC_MSUBTYPE_H264)
     h264_has_parameter_sets =
@@ -2163,6 +2244,11 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
     gst_video_decoder_drop_frame(decoder, frame);
     return GST_FLOW_ERROR;
   }
+
+  if (self->codec.subtype == BC_MSUBTYPE_MPEG2VIDEO &&
+      self->mpeg2_frame_reference_tracking &&
+      (mpeg2_picture.picture_type == 1 || mpeg2_picture.picture_type == 2))
+    self->mpeg2_reference_pictures = MIN(self->mpeg2_reference_pictures + 1, 2U);
 
   if (payload == CRYSTALHD_PAYLOAD_NOT_CODED) {
     /* An uncoded VOP has no output picture, but its header still advances the
@@ -2364,6 +2450,9 @@ done:
     self->draining = FALSE;
     if (flow == GST_FLOW_OK) {
       BC_DTS_STATUS final_status;
+      if (self->codec.subtype == BC_MSUBTYPE_MPEG2VIDEO && self->mpeg2_dropped_inputs != 0)
+        GST_INFO_OBJECT(self, "MPEG-2 input pictures explicitly skipped before hardware: %u",
+                         self->mpeg2_dropped_inputs);
       memset(&final_status, 0, sizeof(final_status));
       if (DtsGetDriverStatus(self->device, &final_status) == BC_STS_SUCCESS)
         GST_INFO_OBJECT(self,
