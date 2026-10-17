@@ -603,6 +603,157 @@ void LargeH264AccessUnitBoundaryAndRecovery() {
   }
 }
 
+void H264ReferenceRejectionRequiresIdr() {
+  std::vector<uint8_t> large(564322, 0x55);
+  large[0] = 0x65;
+  for (uint8_t rejected_header :
+       {uint8_t(0x65), uint8_t(0x41), uint8_t(0x05)}) {
+    Fixture f;
+    crystalhd_test_fragment_input = nullptr;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "establish an accepted IDR before rejecting a reference");
+    const auto pending = f.decode->pending;
+    const auto frames = f.decode->decoded_frames;
+    const uint64_t timestamp = f.decode->next_timestamp;
+    const size_t cached = f.decode->replay.cached_bytes();
+    large[0] = rejected_header;
+    Require(SubmitH264(&f, large) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                f.decode->h264_waiting_for_idr,
+            "unsubmitted reference P or actual IDR, even with invalid ref bits, requires a fresh IDR");
+    for (uint8_t dependent : {uint8_t(0x41), uint8_t(0x01)}) {
+      f.slice.slice_type = dependent == 0x01 ? 1 : 2;
+      Require(SubmitH264(&f, {dependent, 0x88, 0x84}) ==
+                      VA_STATUS_ERROR_DECODING_ERROR &&
+                  f.mock.inputs.size() == 1 && f.decode->pending == pending &&
+                  f.decode->decoded_frames == frames &&
+                  f.decode->next_timestamp == timestamp &&
+                  f.decode->replay.cached_bytes() == cached &&
+                  !f.decode->replay.failed(),
+              "dependent P/B and non-IDR I cannot mutate replay or picture bindings");
+    }
+    large[0] = 0x65;
+    Require(SubmitH264(&f, large) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                f.decode->h264_waiting_for_idr,
+            "another rejected IDR does not release the reference gate");
+    f.Begin();
+    f.Parameters();
+    allocation_fault::fail_next = true;
+    Require(EndPicture(&f.context, 1) == VA_STATUS_ERROR_ALLOCATION_FAILED &&
+                !allocation_fault::fail_next && f.decode->h264_waiting_for_idr,
+            "an IDR assembly allocation failure cannot release the gate");
+    Require(f.decode->replay.Observe(kTimestampStep) ==
+                    CrystalHDDecodeReplay::Output::New &&
+                !frames.at(kTimestampStep)->failed,
+            "the earlier accepted picture remains independently completable");
+    f.slice.slice_type = 2;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                !f.decode->h264_waiting_for_idr && f.mock.inputs.size() == 2 &&
+                f.mock.inputs.back().timestamp == timestamp &&
+                SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "only an accepted actual IDR restores following dependent submission");
+  }
+  {
+    Fixture f;
+    crystalhd_test_fragment_input = nullptr;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "establish the reference chain before dropping a nonreference B");
+    large[0] = 0x01;
+    f.slice.slice_type = 1;
+    Require(SubmitH264(&f, large) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                !f.decode->h264_waiting_for_idr,
+            "a size-rejected nonreference B cannot break the hardware reference chain");
+    f.slice.slice_type = 0;
+    Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 2 && !f.decode->replay.failed(),
+            "a following reference P remains admissible after nonreference rejection");
+  }
+  {
+    Fixture f;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "measure reconstructed headers for the assembler limit");
+    const size_t overhead = f.mock.inputs.front().bytes.size() - 3;
+    std::vector<uint8_t> overflow(
+        crystalhd_access_unit_limits::kH264Bytes - overhead + 1, 0x55);
+    overflow[0] = 0x65;
+    Require(SubmitH264(&f, overflow) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                f.decode->h264_waiting_for_idr && f.mock.inputs.size() == 1 &&
+                SubmitH264(&f, {0x41, 0x88, 0x84}) ==
+                    VA_STATUS_ERROR_DECODING_ERROR,
+            "assembled size overflow gates dependent input before replay commit");
+  }
+  for (bool retained_reference : {false, true}) {
+    Fixture f;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "establish a reference before RenderPicture size overflow");
+    f.Begin();
+    f.Render(f.Buffer(VAPictureParameterBufferType, &f.picture, sizeof(f.picture)));
+    f.Render(f.Buffer(VASliceParameterBufferType, &f.slice, sizeof(f.slice)));
+    if (retained_reference) {
+      const uint8_t retained[] = {0x41, 0x88, 0x84};
+      f.Render(f.Buffer(VASliceDataBufferType, retained, sizeof(retained)));
+    }
+    std::vector<uint8_t> overflow(crystalhd_access_unit_limits::kH264Bytes, 0x55);
+    overflow[0] = retained_reference ? 0x01 : 0x65;
+    VABufferID id = f.Buffer(VASliceDataBufferType, overflow.data(), overflow.size());
+    Require(RenderPicture(&f.context, 1, &id, 1) == VA_STATUS_ERROR_INVALID_BUFFER &&
+                f.decode->h264_waiting_for_idr &&
+                f.decode->slice_data.size() == (retained_reference ? 1U : 0U) &&
+                EndPicture(&f.context, 1) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                SubmitH264(&f, {0x41, 0x88, 0x84}) ==
+                    VA_STATUS_ERROR_DECODING_ERROR,
+            "Render overflow inspects rejected and retained NAL headers before copying bytes");
+  }
+  {
+    Fixture f;
+    crystalhd_test_fragment_input = nullptr;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                f.decode->replay.Seal(),
+            "seal accepted output before rejecting a replacement IDR");
+    large[0] = 0x65;
+    Require(SubmitH264(&f, large) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                f.decode->h264_waiting_for_idr &&
+                f.decode->replay.IsOutstanding(kTimestampStep),
+            "reference rejection preserves a sealed batch and its pending output");
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                !f.decode->h264_waiting_for_idr && f.mock.inputs.size() == 1 &&
+                SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 1,
+            "a queued committed IDR releases the gate without bypassing sealed transport ordering");
+    Require(f.decode->replay.Observe(kTimestampStep) ==
+                    CrystalHDDecodeReplay::Output::New &&
+                f.decode->replay.EndOfSequence(),
+            "old sealed output can still reach its genuine EOS boundary");
+    f.mock.allow_reopen = true;
+    Require(PumpDecodeInput(&f.driver, f.decode.get()) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 4 &&
+                f.mock.inputs[1].timestamp == kTimestampStep &&
+                f.mock.inputs[2].timestamp == 2 * kTimestampStep &&
+                f.mock.inputs[3].timestamp == 3 * kTimestampStep,
+            "reopen pumps the accepted IDR before its queued dependent P");
+  }
+  {
+    Fixture f;
+    crystalhd_test_fragment_input = nullptr;
+    large[0] = 0x65;
+    Require(SubmitH264(&f, large) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                f.decode->h264_waiting_for_idr &&
+                f.decode->CloseHardware(0) == BC_STS_SUCCESS &&
+                f.decode->h264_waiting_for_idr,
+            "hardware-only close cannot erase an unsubmitted reference gap");
+    Require(SubmitH264(&f, {0x41, 0x88, 0x84}) ==
+                    VA_STATUS_ERROR_DECODING_ERROR &&
+                f.decode->h264_waiting_for_idr && f.mock.reopen_count == 0,
+            "Begin/End preserve the gate and reject before reopening hardware");
+    Require(f.decode->Close(0) == BC_STS_SUCCESS &&
+                !f.decode->h264_waiting_for_idr,
+            "logical context close resets the reference gate");
+    f.decode->h264_waiting_for_idr = true;
+    Require(f.decode->Reset(0) == BC_STS_SUCCESS &&
+                !f.decode->h264_waiting_for_idr,
+            "logical context reset starts an independent reference lifetime");
+  }
+}
+
 void AllocationFailureIsTransactional() {
   Fixture buffers;
   const VABufferID expected = buffers.driver.next_buffer;
@@ -643,6 +794,7 @@ void AllocationFailureIsTransactional() {
                   VA_STATUS_ERROR_ALLOCATION_FAILED &&
               !allocation_fault::fail_next && buffers.mock.inputs.empty() &&
               !buffers.decode->replay.failed() &&
+              !buffers.decode->h264_waiting_for_idr &&
               buffers.decode->next_timestamp == kTimestampStep,
           "access-unit assembly allocation failure commits no replay state");
   Require(SubmitH264(&buffers, std::vector<uint8_t>{0x65, 0x88, 0x84}) ==
@@ -1157,6 +1309,7 @@ int main() {
   unsigned failures = 0;
   const std::pair<const char *, void (*)()> groups[] = {
     {"large H.264 AU boundary and recovery", LargeH264AccessUnitBoundaryAndRecovery},
+    {"rejected H.264 references require IDR", H264ReferenceRejectionRequiresIdr},
     {"allocation failure is transactional", AllocationFailureIsTransactional},
     {"visible crop surface geometry", VisibleCropSurfaceGeometry},
     {"buffer ordering and owned snapshot", BufferOrderAndSnapshot},

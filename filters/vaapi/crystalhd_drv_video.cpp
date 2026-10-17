@@ -93,7 +93,7 @@ static CrystalHDFragmentInput crystalhd_test_fragment_input = nullptr;
 
 namespace {
 
-static CrystalHDFragmentInput H264FragmentInput() {
+[[maybe_unused]] static CrystalHDFragmentInput H264FragmentInput() {
 #if defined(CRYSTALHD_VAAPI_TEST_FRAGMENT_INPUT)
   return crystalhd_test_fragment_input;
 #else
@@ -1598,6 +1598,10 @@ struct DecodeContext {
   BC_STATUS retained_close_status = BC_STS_SUCCESS;
   bool is_70012 = false;
   bool sent_parameter_sets = false;
+  // A reference AU rejected before submission leaves the client's reference
+  // chain ahead of the hardware. Preserve older output, but admit no dependent
+  // input until an actual IDR has committed a new ordered replay/binding.
+  bool h264_waiting_for_idr = false;
   // Bounded history is safe for ordinary finite input. Gap tolerance and
   // direct targets remain explicit live-stream policy; prefeed is independent
   // so a finite client can still drain its last picture through sealed EOS.
@@ -1822,6 +1826,7 @@ struct DecodeContext {
     vpp_frame.reset();
     vpp_decoder.reset();
     sent_parameter_sets = false;
+    h264_waiting_for_idr = false;
     return status;
   }
 
@@ -4123,6 +4128,25 @@ static std::vector<uint32_t> Vc1Configuration(const VAPictureParameterBufferVC1 
           range.chroma_flag, range.chroma_flag ? range.chroma : 0U};
 }
 
+static VAStatus RejectH264Picture(DecodeContext *decode, VAStatus status,
+                                  const uint8_t *rejected = nullptr,
+                                  size_t rejected_size = 0) {
+  const auto reference_vcl = [](const uint8_t *data, size_t size) {
+    if (data == nullptr || size == 0)
+      return false;
+    const unsigned type = data[0] & 0x1fU;
+    return type == 5 ||
+           (type >= 1 && type <= 4 && (data[0] & 0x60U) != 0);
+  };
+  if (reference_vcl(rejected, rejected_size) ||
+      std::any_of(decode->slice_data.begin(), decode->slice_data.end(),
+                  [&](const std::vector<uint8_t> &slice) {
+                    return reference_vcl(slice.data(), slice.size());
+                  }))
+    decode->h264_waiting_for_idr = true;
+  return status;
+}
+
 static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                               VAProfile profile) {
   if (decode->IsMpeg4() && decode->mpeg4_replay.failed())
@@ -4133,6 +4157,13 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
        decode->target == VA_INVALID_SURFACE || !decode->iq_matrix_valid ||
        !ValidateH264IqMatrix(decode->picture, profile, decode->iq_matrix)))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
+  const bool idr = IsH264Profile(profile) &&
+                   !decode->slice_data.front().empty() &&
+                   (decode->slice_data.front().front() & 0x1fU) == 5;
+  if (IsH264Profile(profile) && decode->h264_waiting_for_idr && !idr) {
+    Debug("H.264 input requires an actual IDR after a rejected reference picture");
+    return VA_STATUS_ERROR_DECODING_ERROR;
+  }
   if (decode->experimental_ready_remap &&
       std::any_of(decode->slices.begin(), decode->slices.end(),
                   [](const VASliceParameterBufferH264 &slice) {
@@ -4171,7 +4202,6 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
            decode->next_submission_ordinal))
     return VA_STATUS_ERROR_SURFACE_BUSY;
   std::vector<uint8_t> bitstream;
-  bool idr = false;
   bool mpeg4_discontinuity = false;
   const uint64_t timestamp = decode->next_timestamp;
   crystalhd_mpeg2::QuantMatrices next_matrices;
@@ -4360,8 +4390,6 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       try {
         std::vector<uint8_t> assembled;
         BeginAccessUnit(&assembled);
-        idr = !decode->slice_data.front().empty() &&
-              (decode->slice_data.front().front() & 0x1f) == 5;
         // An ordinary GOP can start with an IDR while earlier output is still
         // pending. Let the bitstream's IDR semantics handle reference pictures;
         // discarding pending output here loses real frames during playback.
@@ -4396,14 +4424,15 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     };
     const VAStatus h264_status = build_h264();
     if (h264_status != VA_STATUS_SUCCESS)
-      return h264_status;
+      return h264_status == VA_STATUS_ERROR_INVALID_PARAMETER
+          ? RejectH264Picture(decode, h264_status) : h264_status;
     // An older library cannot carry this complete AU. Reject the current
     // transaction before allocating/binding a picture or committing replay;
     // failing in PumpDecodeInput would also poison earlier retained output.
     if (bitstream.size() > crystalhd_access_unit_limits::kDtsInputChunkBytes &&
         H264FragmentInput() == nullptr) {
       Debug("large H.264 input requires fragmented libcrystalhd input");
-      return VA_STATUS_ERROR_INVALID_PARAMETER;
+      return RejectH264Picture(decode, VA_STATUS_ERROR_INVALID_PARAMETER);
     }
     Debug("submit surface=%u bytes=%zu slices=%zu", decode->target,
           bitstream.size(), decode->slice_data.size());
@@ -4549,6 +4578,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                        TraceFields(decode, target_surface.get(), timestamp));
 
   decode->sent_parameter_sets = true;
+  if (idr)
+    decode->h264_waiting_for_idr = false;
   VAStatus status = VA_STATUS_SUCCESS;
   if (decode->IsMpeg4() && !decode->mpeg4_draining_epochs.empty()) {
     // Establish the old epoch's EOS fence before consuming a marker that may
@@ -6456,7 +6487,10 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
         if (framed > limit || limit - framed < 4 ||
             buffer->second.data.size() > limit - framed - 4) {
           decode->second->h264_picture_invalid = true;
-          return VA_STATUS_ERROR_INVALID_BUFFER;
+          return RejectH264Picture(decode->second.get(),
+                                    VA_STATUS_ERROR_INVALID_BUFFER,
+                                    buffer->second.data.data(),
+                                    buffer->second.data.size());
         }
         try {
           decode->second->slice_data.push_back(buffer->second.data);
