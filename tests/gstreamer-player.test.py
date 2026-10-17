@@ -4,10 +4,13 @@
 import contextlib
 import importlib.util
 import io
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -134,9 +137,10 @@ class PolicyAndControlTests(unittest.TestCase):
             SeekFlags=SimpleNamespace(FLUSH=1, ACCURATE=2),
             SeekType=SimpleNamespace(SET=1, NONE=0),
             State=SimpleNamespace(PAUSED=1, PLAYING=2),
-            StateChangeReturn=SimpleNamespace(FAILURE=0, SUCCESS=1, ASYNC=2),
+            StateChangeReturn=SimpleNamespace(FAILURE=0, SUCCESS=1, ASYNC=2, NO_PREROLL=3),
             MessageType=SimpleNamespace(APPLICATION=1, ERROR=2, EOS=3,
-                ASYNC_DONE=4, CLOCK_LOST=5, LATENCY=6, STATE_CHANGED=7))
+                ASYNC_DONE=4, CLOCK_LOST=5, LATENCY=6, STATE_CHANGED=7, BUFFERING=8))
+        control.args = SimpleNamespace(file=Path("/unused.ogg"))
         control.pipeline = mock.Mock()
         control.pipeline.query_position.return_value = (True, 12000)
         control.pipeline.query_duration.return_value = (True, 60000)
@@ -144,6 +148,8 @@ class PolicyAndControlTests(unittest.TestCase):
         control.pipeline.set_state.return_value = 1
         control.pipeline.get_state.return_value = (1, 2, 0)
         control.rate = 1.0
+        control.buffering = False
+        control.is_live = False
         control.seek_target = None
         control.queued_seek = None
         control.health = player.PlaybackHealth("software", 0)
@@ -326,6 +332,126 @@ class PolicyAndControlTests(unittest.TestCase):
             control.control("quit")
         control.stop.assert_called_with(1)
 
+    def test_buffering_pauses_only_nonlive_and_keeps_stall_bounded(self):
+        control = self.controller()
+        control.health.frame(1, "theoradec", SOFTWARE, True, 512, 1)
+        message = SimpleNamespace(type=control.Gst.MessageType.BUFFERING,
+                                  parse_buffering=lambda: 20)
+        control.message(None, message)
+        control.message(None, message)
+        control.pipeline.set_state.assert_called_once_with(control.Gst.State.PAUSED)
+        self.assertFalse(control.health.paused)
+        self.assertEqual(control.health.anchor, 1)
+        self.assertIn("stalled", control.health.tick(17))
+        control.buffering_changed(100)
+        self.assertEqual(control.pipeline.set_state.call_args, mock.call(control.Gst.State.PLAYING))
+
+    def test_buffering_does_not_resume_a_human_pause(self):
+        control = self.controller()
+        with contextlib.redirect_stdout(io.StringIO()):
+            control.control("pause")
+            control.pipeline.set_state.reset_mock()
+            control.buffering_changed(10)
+            control.buffering_changed(100)
+        self.assertTrue(control.health.paused)
+        control.pipeline.set_state.assert_not_called()
+
+    def test_human_resume_while_buffering_waits_for_completion(self):
+        control = self.controller()
+        with contextlib.redirect_stdout(io.StringIO()):
+            control.buffering_changed(10)
+            control.control("pause")
+            control.control("pause")
+        self.assertFalse(control.health.paused)
+        self.assertEqual(control.pipeline.set_state.call_args, mock.call(control.Gst.State.PAUSED))
+        control.buffering_changed(100)
+        self.assertEqual(control.pipeline.set_state.call_args, mock.call(control.Gst.State.PLAYING))
+
+    def test_live_sources_ignore_buffering_and_no_preroll_is_respected(self):
+        control = self.controller()
+        control.is_live = True
+        control.buffering_changed(10)
+        control.pipeline.set_state.assert_not_called()
+        control = self.controller()
+        control.pipeline.set_state.side_effect = [control.Gst.StateChangeReturn.NO_PREROLL,
+                                                 control.Gst.StateChangeReturn.SUCCESS]
+        control.buffering_changed(10)
+        self.assertTrue(control.is_live)
+        self.assertFalse(control.buffering)
+        self.assertEqual(control.pipeline.set_state.call_args_list,
+                         [mock.call(control.Gst.State.PAUSED), mock.call(control.Gst.State.PLAYING)])
+
+    def test_clock_recovery_cannot_resume_buffering(self):
+        control = self.controller()
+        control.buffering = True
+        control.message(None, SimpleNamespace(type=control.Gst.MessageType.CLOCK_LOST))
+        control.pipeline.set_state.assert_not_called()
+
+    def test_buffering_state_change_failure_is_not_ignored(self):
+        control = self.controller()
+        control.pipeline.set_state.return_value = control.Gst.StateChangeReturn.FAILURE
+        control.buffering_changed(10)
+        self.assertEqual(control.health.error, "buffering state change failed")
+        control.stop.assert_called_once_with(1)
+
+    def test_nonseekable_http_does_not_change_rate_or_health(self):
+        for supported, seekable in ((False, False), (True, False), (True, True)):
+            with self.subTest(supported=supported, seekable=seekable):
+                control = self.controller()
+                control.args.file = "https://example.test/live.ogg"
+                query = mock.Mock()
+                query.parse_seeking.return_value = (0, seekable, 0, 60000)
+                control.Gst.Query = SimpleNamespace(new_seeking=lambda _format: query)
+                control.pipeline.query.return_value = supported
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    control.control("rate-double")
+                if supported and seekable:
+                    self.assertEqual(control.rate, 2.0)
+                    control.pipeline.seek.assert_called_once()
+                else:
+                    self.assertEqual(control.rate, 1.0)
+                    self.assertEqual(control.health.anchor, 0)
+                    self.assertIsNone(control.seek_target)
+                    control.pipeline.seek.assert_not_called()
+
+    def test_remote_error_redacts_original_and_redirect_urls(self):
+        control = self.controller()
+        control.args.file = "https://user:password@example.test/v?token=secret"
+        message = mock.Mock(type=control.Gst.MessageType.ERROR)
+        message.src.get_name.return_value = "source"
+        message.parse_error.return_value = (SimpleNamespace(message=(
+            "Not Found: " + control.args.file + " redirected https://other:private@cdn.test/?key=hidden")), None)
+        control.message(None, message)
+        self.assertIn("Not Found", control.health.error)
+        for secret in ("password", "secret", "private", "hidden", "example.test", "cdn.test"):
+            self.assertNotIn(secret, control.health.error)
+
+    def test_remote_error_redacts_apostrophe_query_suffixes(self):
+        source = "https://origin.test/v?signature=original'ORIGINAL_TAIL"
+        redirect = "https://cdn.test/v?signature=redirect'REDIRECT_TAIL&token=REDIRECT_TOKEN"
+        for url in (source, redirect):
+            self.assertEqual(player.playback_input(url), url)
+        error = player.input_error(source, "Failed: " + source + " redirected " + redirect)
+        self.assertEqual(error, "Failed: <remote URL> redirected <remote URL>")
+
+    def test_remote_error_redacts_urls_inside_quoted_diagnostics(self):
+        source = "https://origin.test/video"
+        redirect = "https://user:password@cdn.test/v?signature=prefix'PRIVATE_TAIL"
+        for quote in ("'", '"'):
+            with self.subTest(quote=quote):
+                error = player.input_error(
+                    source, "Fetch failed for " + quote + redirect + quote + "; retry disabled")
+                self.assertIn("Fetch failed for", error)
+                self.assertIn("<remote URL>", error)
+                self.assertIn("retry disabled", error)
+                for secret in ("password", "cdn.test", "signature", "PRIVATE_TAIL"):
+                    self.assertNotIn(secret, error)
+
+    def test_local_error_preserves_path_and_url_details(self):
+        source = Path("/tmp/video's name.mp4")
+        message = "Could not open " + str(source) + "; see https://example.test/help?reason='missing'"
+        self.assertEqual(player.input_error(source, message), message)
+
 
 class ScaleConfigurationTests(unittest.TestCase):
     def controller(self, width=1280):
@@ -457,14 +583,55 @@ class ArgumentTests(unittest.TestCase):
                         player.arguments(argv)
                     self.assertEqual(error.exception.code, 2)
 
-    def test_cli_rejects_directories_uris_missing_files_and_conflicting_modes(self):
+    def test_http_urls_are_preserved_without_touching_local_subtitles(self):
+        urls = ("http://example.test/video.mp4", "https://example.test:8443/a%2fb?b=2&a=1&sig=A%2Bz",
+                "HTTP://[::1]:8000/video.ogg", "https://user:password@example.test/a?token=secret",
+                "https://example.test/v?signature=" + "a" * 8192)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "captions.srt"
+            path.touch()
+            for url in urls:
+                with self.subTest(url=url):
+                    args = player.arguments(["--subtitles", str(path), url])
+                    self.assertEqual(args.file, url)
+                    self.assertEqual(args.subtitles, path)
+            colon = Path(directory) / "video:one.ogg"
+            colon.touch()
+            self.assertEqual(player.arguments([str(colon)]).file, colon)
+            previous = Path.cwd()
+            try:
+                os.chdir(directory)
+                self.assertEqual(player.arguments(["video:one.ogg"]).file, colon)
+            finally:
+                os.chdir(previous)
+
+    def test_malformed_or_unsupported_urls_are_rejected_without_echoing_secrets(self):
+        urls = ("ftp://user:secret@example.test/v", "file:///tmp/video.mp4",
+                "https:///secret", "http:secret", "https://user:secret@/v",
+                "https://example.test:secret/v", "https://example.test:65536/v",
+                "https://example.test:0/secret", "https://[::1/secret",
+                "https://example.test:/secret", "https://[::1]secret/video",
+                "https://user@secret@example.test/v",
+                "https://example.test/v?token=secret\n", "http://exam ple.test/secret",
+                "https://example.test/secret%xx", "https://example.test\\secret",
+                'https://example.test/"secret"', "https://example.test/secret\x00")
+        for url in urls:
+            output = io.StringIO()
+            with self.subTest(url=url), contextlib.redirect_stderr(output):
+                with self.assertRaises(SystemExit) as error:
+                    player.arguments([url])
+                self.assertEqual(error.exception.code, 2)
+                self.assertNotIn("secret", output.getvalue())
+
+    def test_cli_rejects_directories_missing_files_and_conflicting_modes(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "video.mp4"
             path.touch()
-            for args in ([directory], ["https://example.test/video.mp4"],
+            for args in ([directory],
                          [str(path) + ".missing"],
                          ["--hardware", "--software", str(path)],
-                         ["--subtitles", str(path) + ".missing", str(path)]):
+                         ["--subtitles", str(path) + ".missing", str(path)],
+                         ["--subtitles", "https://example.test/subtitles.srt", str(path)]):
                 with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()):
                     with self.assertRaises(SystemExit) as error:
                         player.arguments(args)
@@ -508,9 +675,9 @@ class GStreamerApiTests(unittest.TestCase):
         # Disable every hardware decoder before any test pipeline can start.
         player.configure_decoders(Gst, "software")
 
-    def make_player(self, mode="software", weave=False):
+    def make_player(self, mode="software", weave=False, source=None):
         args = SimpleNamespace(mode=mode, weave=weave,
-                               file=Path(self.temp.name) / "unused.ogg",
+                               file=source or Path(self.temp.name) / "unused.ogg",
                                subtitles=Path(self.temp.name) / "sub titles.srt",
                                scale_width=0, software_output_size=None)
         result = player.Player(args, self.Gst, self.GLib, {
@@ -518,6 +685,178 @@ class GStreamerApiTests(unittest.TestCase):
             "audio-sink": self.Gst.ElementFactory.make("fakesink")})
         self.addCleanup(result.close)
         return result
+
+    def http_fixture(self, *, indexed=False):
+        muxer = "matroskamux" if indexed else "oggmux"
+        for name in ("videotestsrc", "theoraenc", muxer, "filesink", "theoradec", "souphttpsrc"):
+            if self.Gst.ElementFactory.find(name) is None:
+                self.skipTest(f"optional HTTP software fixture needs {name}")
+        path = Path(self.temp.name) / ("http-video.mkv" if indexed else "http-video.ogg")
+        if not path.exists():
+            pipeline = self.Gst.parse_launch(
+                "videotestsrc num-buffers=12 ! "
+                "video/x-raw,width=32,height=32,framerate=12/1 ! theoraenc ! " +
+                muxer + " ! filesink name=out")
+            pipeline.get_by_name("out").set_property("location", str(path))
+            try:
+                self.assertNotEqual(pipeline.set_state(self.Gst.State.PLAYING),
+                                    self.Gst.StateChangeReturn.FAILURE)
+                message = pipeline.get_bus().timed_pop_filtered(
+                    5 * self.Gst.SECOND, self.Gst.MessageType.EOS | self.Gst.MessageType.ERROR)
+                self.assertIsNotNone(message)
+                self.assertEqual(message.type, self.Gst.MessageType.EOS)
+            finally:
+                pipeline.set_state(self.Gst.State.NULL)
+        return path.read_bytes()
+
+    @contextlib.contextmanager
+    def http_server(self, data, *, missing=False, stalled=False, ranges=False):
+        release = threading.Event()
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, _format, *_args):
+                pass
+
+            def do_GET(self):
+                if missing:
+                    self.send_error(404, "Not Found")
+                    return
+                start, end = 0, len(data) - 1
+                requested = self.headers.get("Range") if ranges else None
+                if requested:
+                    match = re.fullmatch(r"bytes=([0-9]+)-([0-9]*)", requested)
+                    if match is None or int(match.group(1)) >= len(data):
+                        self.send_error(416, "Range Not Satisfiable")
+                        return
+                    start = int(match.group(1))
+                    if match.group(2):
+                        end = min(end, int(match.group(2)))
+                self.send_response(206 if requested else 200)
+                self.send_header("Content-Type", "application/octet-stream")
+                if ranges:
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Content-Length", str(end - start + 1))
+                    if requested:
+                        self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+                # Without length/ranges, exercise a finite nonseekable source.
+                self.end_headers()
+                if stalled:
+                    release.wait(2)
+                    return
+                try:
+                    self.wfile.write(data[start:end + 1])
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever,
+                                  kwargs={"poll_interval": 0.05}, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}/video.ogg?token=private-test-token"
+        finally:
+            release.set()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def run_player(self, result):
+        output, error = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdin", new=io.StringIO()), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            code = result.run()
+        return code, output.getvalue(), error.getvalue()
+
+    def test_http_loopback_software_frames_eos_and_nonseekable_rate(self):
+        data = self.http_fixture()
+        with self.http_server(data) as url:
+            result = self.make_player(source=url)
+            result.pipeline.get_property("video-sink").set_property("sync", True)
+            attempted = []
+
+            def try_rate():
+                if not result.health.frames:
+                    return True
+                state, _current, _pending = result.pipeline.get_state(0)
+                if state == self.Gst.StateChangeReturn.ASYNC:
+                    return True
+                attempted.append(True)
+                result.seek(rate=2.0)
+                return False
+
+            result.sources.append(self.GLib.timeout_add(50, try_rate))
+            code, _output, error = self.run_player(result)
+        self.assertEqual(code, 0)
+        self.assertEqual(result.health.frames, 12)
+        self.assertTrue(attempted)
+        self.assertEqual(result.rate, 1.0)
+        self.assertIn("not currently seekable", error)
+        self.assertNotIn("private-test-token", error)
+
+    def test_http_range_source_accepts_time_seek_and_reaches_eos(self):
+        data = self.http_fixture(indexed=True)
+        with self.http_server(data, ranges=True) as url:
+            result = self.make_player(source=url)
+            sink = result.pipeline.get_property("video-sink")
+            sink.set_property("sync", True)
+            accepted = []
+            segments = []
+
+            def observe_segment(_pad, info):
+                event = info.get_event()
+                if event.type == self.Gst.EventType.SEGMENT:
+                    segment = event.parse_segment()
+                    segments.append((segment.rate, segment.start))
+                return self.Gst.PadProbeReturn.OK
+
+            sink.get_static_pad("sink").add_probe(
+                self.Gst.PadProbeType.EVENT_DOWNSTREAM, observe_segment)
+
+            def try_seek():
+                if not result.health.frames:
+                    return True
+                state, _current, _pending = result.pipeline.get_state(0)
+                if state == self.Gst.StateChangeReturn.ASYNC:
+                    return True
+                ok, _position = result.pipeline.query_position(self.Gst.Format.TIME)
+                if not ok:
+                    return True
+                result.submit_seek(self.Gst.SECOND // 2, 2.0)
+                accepted.append(result.seek_target is not None)
+                return False
+
+            result.sources.append(self.GLib.timeout_add(50, try_seek))
+            code, _output, error = self.run_player(result)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(accepted, [True], error)
+        self.assertEqual(result.rate, 2.0)
+        # Confirm the requested rate/position reached the sink, not just that
+        # the controller updated its own bookkeeping after seek returned true.
+        self.assertIn((2.0, self.Gst.SECOND // 2), segments)
+        self.assertIsNone(result.seek_target)
+        self.assertGreater(result.health.frames, 0)
+
+    def test_http_404_fails_without_frames_or_query_disclosure(self):
+        data = self.http_fixture()
+        with self.http_server(data, missing=True) as url:
+            result = self.make_player(source=url)
+            code, output, error = self.run_player(result)
+        self.assertEqual(code, 1)
+        self.assertEqual(result.health.frames, 0)
+        self.assertIsNotNone(result.health.error)
+        self.assertNotIn("private-test-token", output + error)
+        self.assertNotIn(url, output + error)
+
+    def test_http_unfinished_buffering_keeps_startup_timeout(self):
+        data = self.http_fixture()
+        with self.http_server(data, stalled=True) as url:
+            result = self.make_player(source=url)
+            with mock.patch.object(player.PlaybackHealth, "START_TIMEOUT", 0.2):
+                code, _output, error = self.run_player(result)
+        self.assertEqual(code, 1)
+        self.assertEqual(result.health.frames, 0)
+        self.assertIn("no decoded video output", error)
+        self.assertNotIn("private-test-token", error)
 
     def run_pipeline(self, description):
         result = self.make_player()
@@ -664,6 +1003,17 @@ class GStreamerApiTests(unittest.TestCase):
             "videotestsrc num-buffers=3 ! video/x-raw,width=32,height=32 ! "
             "theoraenc ! theoradec name=tested-decoder ! fakesink sync=false")
         self.assertEqual(code, 0)
+        self.assertEqual(result.health.frames, 3)
+
+    def test_live_software_source_is_detected_without_preroll(self):
+        for name in ("videotestsrc", "theoraenc", "theoradec", "fakesink"):
+            if self.Gst.ElementFactory.find(name) is None:
+                self.skipTest(f"optional live software API fixture needs {name}")
+        code, result = self.run_pipeline(
+            "videotestsrc is-live=true num-buffers=3 ! video/x-raw,width=32,height=32 ! "
+            "theoraenc ! theoradec name=tested-decoder ! fakesink sync=false")
+        self.assertEqual(code, 0)
+        self.assertTrue(result.is_live)
         self.assertEqual(result.health.frames, 3)
 
     def test_zero_video_frames_fail(self):
