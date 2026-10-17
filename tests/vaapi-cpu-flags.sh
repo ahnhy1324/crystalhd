@@ -98,5 +98,25 @@ if grep -Eq '[[:space:]](movdqu|packuswb|pavgb)[[:space:]]' \
     exit 1
 fi
 "$qemu" -cpu pentium2 "$tmp_dir/legacy"
+
+# Exercise the actual packed-pixel converters, not only cache policy, on the
+# non-SSE ISA. Section GC/abort stubs keep 32-bit graphics libraries optional.
+legacy_flags=$(make -s --no-print-directory -C "$repo_dir/filters/vaapi" \
+    LEGACY_CPU=1 CXX="$cxx -m32" print-cpu-flags)
+# shellcheck disable=SC2086
+$cxx -m32 -std=c++17 -O2 -Wall -Wextra -Werror \
+    -fno-tree-slp-vectorize -ffunction-sections -fdata-sections \
+    -D__LINUX_USER__ -I"$repo_dir/include" \
+    -I"$repo_dir/linux_lib/libcrystalhd" \
+    $($pkg_config --cflags libva libva-drm libdrm gbm libswscale) \
+    $legacy_flags "$repo_dir/tests/vaapi-conversion.cpp" \
+    -Wl,--gc-sections -pthread -o "$tmp_dir/legacy-conversion"
+objdump -d "$tmp_dir/legacy-conversion" > "$tmp_dir/legacy-conversion.disassembly"
+if grep -Eq '%([xyz]mm[0-9]+|mm[0-7])|[[:space:]](emms|femms|clflush|[lms]fence|[ls]dmxcsr)([[:space:]]|$)' \
+    "$tmp_dir/legacy-conversion.disassembly"; then
+    echo "legacy VA-API converter contains SIMD/cache instructions" >&2
+    exit 1
+fi
+"$qemu" -cpu pentium2 "$tmp_dir/legacy-conversion"
 printf '%s\n' \
     'VA-API i386 CPU policy: normal SSE2 conversion and Pentium2 legacy paths PASS'

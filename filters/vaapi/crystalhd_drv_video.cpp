@@ -2838,7 +2838,12 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
     for (; x + 1 < width; x += 2) {
       top_luma[x] = top[x * 2];
       top_luma[x + 1] = top[x * 2 + 2];
-      if (has_bottom) {
+      // Without SSE2, avoid a per-pair branch: the last odd row aliases
+      // top/bottom and both luma destinations, so repeated stores agree.
+#if defined(__SSE2__)
+      if (has_bottom)
+#endif
+      {
         bottom_luma[x] = bottom[x * 2];
         bottom_luma[x + 1] = bottom[x * 2 + 2];
       }
@@ -2945,7 +2950,17 @@ static bool CopyH264InterlacedToSurface(
   // whole-picture transfer. Downsample chroma within each field in either
   // case; averaging opposite fields produces temporal comb colors.
   for (unsigned int parity = 0; parity < 2; ++parity) {
+#if !defined(__SSE2__)
+    // Keep same-field source rows hot without keeping all five pixel
+    // pointers live in one scalar loop on register-limited 32-bit CPUs.
+    for (unsigned int row_pair = 0;
+         row_pair < field_rows && row_pair * 2U + parity < height;
+         row_pair += 2) {
+      for (unsigned int source_row = row_pair; source_row < row_pair + 2U;
+           ++source_row) {
+#else
     for (unsigned int source_row = 0; source_row < field_rows; ++source_row) {
+#endif
       const unsigned int destination_row = source_row * 2U + parity;
       if (destination_row >= height)
         break;
@@ -2971,8 +2986,13 @@ static bool CopyH264InterlacedToSurface(
       }
     }
 
+#if !defined(__SSE2__)
+      for (unsigned int source_row = row_pair; source_row + 1 < row_pair + 2U;
+           source_row += 2) {
+#else
     for (unsigned int source_row = 0; source_row + 1 < field_rows;
          source_row += 2) {
+#endif
       const unsigned int destination_row = source_row + parity;
       if (destination_row >= chroma_rows)
         break;
@@ -3009,6 +3029,9 @@ static bool CopyH264InterlacedToSurface(
             2U);
       }
     }
+#if !defined(__SSE2__)
+    }
+#endif
   }
   if (!surface->EndDecodedCpuWrite(used_i915_wc))
     return false;
