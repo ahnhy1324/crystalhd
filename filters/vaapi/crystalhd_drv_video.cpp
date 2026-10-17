@@ -722,6 +722,7 @@ struct Surface {
   uint64_t decode_identity = 0;
   // Begin/Render/End rejection ownership, separate from an accepted picture.
   uint64_t picture_transaction = 0;
+  uint64_t rejected_picture_transaction = 0;
   uint64_t trace_decode_identity = 0;
   uint64_t trace_context = 0;
   uint64_t trace_generation = 0;
@@ -4305,15 +4306,31 @@ static std::vector<uint32_t> Vc1Configuration(const VAPictureParameterBufferVC1 
           range.chroma_flag, range.chroma_flag ? range.chroma : 0U};
 }
 
-static VAStatus RejectH264Target(Driver *driver, DecodeContext *decode,
-                                 VAStatus status) {
+static bool PublicReadRejected(const Surface *owner) {
+  return owner->rejected_picture_transaction != 0 &&
+      owner->rejected_picture_transaction == owner->picture_transaction;
+}
+
+static std::shared_ptr<Surface> MarkRejectedH264Transaction(
+    Driver *driver, DecodeContext *decode) {
   const auto target = decode->h264_transaction_target.lock();
   const auto current = driver->surfaces.find(decode->target);
   if (!target || current == driver->surfaces.end() || current->second != target ||
       target->destroyed || target->backing_owner != VA_INVALID_SURFACE ||
       target->picture_transaction != decode->h264_target_transaction ||
-      target->decode_identity != decode->h264_target_identity ||
-      target->vpp_readers != 0 || target->vpp_writers != 0 ||
+      target->decode_identity != decode->h264_target_identity)
+    return {};
+  // This allocation-free public-read barrier is independent of accepted
+  // storage/readers. A late old completion cannot clear it; only a new writer
+  // transaction supersedes it. Never consult it for captured private reads.
+  target->rejected_picture_transaction = target->picture_transaction;
+  return target;
+}
+
+static VAStatus RejectH264Target(Driver *driver, DecodeContext *decode,
+                                 VAStatus status) {
+  const auto target = MarkRejectedH264Transaction(driver, decode);
+  if (!target || target->vpp_readers != 0 || target->vpp_writers != 0 ||
       target->export_waiters != 0 || target->image_write_locked ||
       target->experimental_read_export_armed || target->experimental_presentation)
     return status;
@@ -6694,6 +6711,8 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
       if (owner != driver->surfaces.end())
         source_owner = owner->second;
     }
+    if (PublicReadRejected(source_owner.get()))
+      return VA_STATUS_ERROR_DECODING_ERROR;
     if (ExperimentalPresentationBinding(driver, source_owner.get()) ||
         source_owner->experimental_write_lease ||
         source_owner->experimental_read_export_armed ||
@@ -6991,6 +7010,11 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     return VA_STATUS_ERROR_INVALID_CONFIG;
   const VAProfile profile = config->second.profile;
   VAStatus status = SubmitPicture(driver, decode_context.get(), profile);
+  // End consumes this transaction even for malformed/unsupported input or
+  // allocation failure. Recoverable Render errors remain replaceable before
+  // End; successful queued/backpressured submissions are not rejections.
+  if (status != VA_STATUS_SUCCESS && IsH264Profile(profile))
+    MarkRejectedH264Transaction(driver, decode_context.get());
   if (status != VA_STATUS_SUCCESS)
     Debug("EndPicture rejected status=%d profile=%d target=%u", status,
           profile, decode_context->target);
@@ -7063,6 +7087,8 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
     return status;
   };
 
+  if (PublicReadRejected(synchronized_surface.get()))
+    return finish(VA_STATUS_ERROR_DECODING_ERROR);
   if (ExperimentalWriteReservationPending(synchronized_surface.get()))
     return finish(VA_STATUS_ERROR_SURFACE_BUSY);
 
@@ -7160,7 +7186,7 @@ static VAStatus SynchronizeExportRead(
           ? surface : driver->surfaces.at(surface->backing_owner);
   if (owner->image_write_locked)
     return VA_STATUS_ERROR_SURFACE_BUSY;
-  if (owner->failed)
+  if (owner->failed || PublicReadRejected(owner.get()))
     return VA_STATUS_ERROR_DECODING_ERROR;
   if ((owner->ready || ExperimentalPresentationReadable(driver, owner.get())) &&
       owner->vpp_writers == 0)
@@ -7207,7 +7233,7 @@ static VAStatus QuerySurfaceStatus(VADriverContextP context,
   if (status == nullptr)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   Surface *owner = BackingOwner(driver, surface->second.get());
-  if (owner->failed)
+  if (owner->failed || PublicReadRejected(owner))
     return VA_STATUS_ERROR_DECODING_ERROR;
   if (ExperimentalWriteReservationPending(owner)) {
     *status = VASurfaceRendering;
@@ -7428,6 +7454,8 @@ static VAStatus GetImage(VADriverContextP context, VASurfaceID surface_id,
   if (image == driver->images.end())
     return VA_STATUS_ERROR_INVALID_IMAGE;
   Surface *owner = BackingOwner(driver, surface->second.get());
+  if (PublicReadRejected(owner))
+    return VA_STATUS_ERROR_DECODING_ERROR;
   if (ExperimentalPresentationBinding(driver, owner) ||
       owner->experimental_write_lease ||
       owner->experimental_read_export_armed ||

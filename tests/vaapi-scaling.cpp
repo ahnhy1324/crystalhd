@@ -1584,11 +1584,13 @@ void PrivateBackingAllocationFailureIsTransactional() {
               f.driver.surfaces.at(1)->decode_identity == identity && !f.decode->replay.failed(),
           "failed private backing allocation cannot retire output or publish replay/binding");
   Output(&f, kTimestampStep, 40);
+  Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_DECODING_ERROR,
+          "a consumed allocation-failed End cannot expose late old public output");
   Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS,
           "a fresh submission still works after private allocation failure");
 }
 
-VABufferID Vpp(Fixture *fixture) {
+VABufferID Vpp(Fixture *fixture, VASurfaceID source = 1) {
   auto processor = std::make_shared<DecodeContext>();
   processor->video_process = true;
   fixture->driver.contexts[2] = processor;
@@ -1597,9 +1599,45 @@ VABufferID Vpp(Fixture *fixture) {
           "allocate CPU VPP destination");
   fixture->driver.surfaces[2] = target;
   VAProcPipelineParameterBuffer pipeline = {};
-  pipeline.surface = 1;
+  pipeline.surface = source;
   return fixture->Buffer(VAProcPipelineParameterBufferType, &pipeline,
                           sizeof(pipeline));
+}
+
+void RequireRejectedPublicReads(Fixture *fixture, VASurfaceID surface = 1) {
+  Require(SyncSurface2(&fixture->context, surface, 0) == VA_STATUS_ERROR_DECODING_ERROR,
+          "new public sync cannot expose a rejected transaction");
+  VASurfaceStatus state = VASurfaceReady;
+  Require(QuerySurfaceStatus(&fixture->context, surface, &state) ==
+              VA_STATUS_ERROR_DECODING_ERROR,
+          "new public query cannot report rejected transaction READY");
+  VAImage image = {}, derived = {};
+  VAImageFormat format = {};
+  format.fourcc = VA_FOURCC_NV12;
+  Require(DeriveImage(&fixture->context, surface, &derived) ==
+              VA_STATUS_ERROR_DECODING_ERROR &&
+              CreateImage(&fixture->context, &format, 16, 16, &image) == VA_STATUS_SUCCESS,
+          "new derive rejects without preventing independent image allocation");
+  auto &storage = fixture->driver.buffers.at(image.buf).data;
+  std::fill(storage.begin(), storage.end(), 0x93);
+  Require(GetImage(&fixture->context, surface, 0, 0, 16, 16, image.image_id) ==
+              VA_STATUS_ERROR_DECODING_ERROR &&
+              std::all_of(storage.begin(), storage.end(), [](uint8_t v) { return v == 0x93; }),
+          "new GetImage rejects without changing destination bytes");
+  Require(DestroyImage(&fixture->context, image.image_id) == VA_STATUS_SUCCESS,
+          "independent destination remains releasable");
+  VADRMPRIMESurfaceDescriptor descriptor = {};
+  for (uint32_t access : {uint32_t(VA_EXPORT_SURFACE_READ_ONLY),
+                          uint32_t(VA_EXPORT_SURFACE_READ_WRITE), uint32_t(0)})
+    Require(ExportSurfaceHandle(&fixture->context, surface,
+                VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, access, &descriptor) ==
+                VA_STATUS_ERROR_DECODING_ERROR,
+            "new read/default export rejects before graphics or fd access");
+  VABufferID parameters = Vpp(fixture, surface);
+  Require(BeginPicture(&fixture->context, 2, 2) == VA_STATUS_SUCCESS &&
+              RenderPicture(&fixture->context, 2, &parameters, 1) ==
+                  VA_STATUS_ERROR_DECODING_ERROR,
+          "new VPP capture cannot acquire the old accepted picture through rejected public identity");
 }
 
 void RejectedH264TargetReadback() {
@@ -1781,6 +1819,11 @@ void RejectedH264OwnershipGuards() {
     if (mode == 4)
       Require(target->experimental_read_export_armed,
               "an earlier external reader guard is not cleared by rejection");
+    Require(PublicReadRejected(target.get()) == (mode < 5),
+            "only the still-current canonical transaction receives the read barrier");
+    if (mode == 5 || mode == 6)
+      Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS,
+              "rejection from an obsolete transaction cannot block a newer writer or public object");
   }
 }
 
@@ -1795,6 +1838,11 @@ void RejectedH264PromotionFailure() {
     const auto picture = target->decode_picture.lock();
     const uint64_t identity = target->decode_identity;
     const auto pending = f.decode->pending;
+    VAImage old_snapshot = {};
+    if (ready)
+      Require(DeriveImage(&f.context, 1, &old_snapshot) == VA_STATUS_SUCCESS,
+              "capture a detached old image before rejection");
+    ++picture->vpp_readers;
     f.Begin(); f.Parameters(false);
     f.decode->h264_waiting_for_idr = true;
     allocation_fault::fail_next = true;
@@ -1802,26 +1850,100 @@ void RejectedH264PromotionFailure() {
                 !allocation_fault::fail_next && target->decode_identity == identity &&
                 target->decode_picture.lock() == picture && picture->direct_backing == target &&
                 !target->failed && !picture->failed && picture->storage.empty() &&
-                f.decode->pending == pending && !f.decode->replay.failed(),
+                f.decode->pending == pending && !f.decode->replay.failed() &&
+                picture->vpp_readers == 1,
             "promotion allocation failure leaves accepted pixels, ownership and replay intact");
+    RequireRejectedPublicReads(&f);
     if (!ready) Output(&f, kTimestampStep, 40);
-    Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS &&
+    Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_DECODING_ERROR &&
                 target->planes[0][0] == 40 && picture->frame_timestamp == kTimestampStep,
-            "conservative allocation failure explicitly retains the prior accepted binding");
+            "promotion failure preserves private pixels but cannot publish old public success");
+    RequireRejectedPublicReads(&f);
+    {
+      std::unique_lock<std::mutex> lock(f.driver.mutex);
+      Require(SyncDecodeSurface(&f.driver, picture, &lock, 0) == VA_STATUS_SUCCESS &&
+                  picture->decode_identity == identity && picture->vpp_readers == 1 &&
+                  picture->direct_backing == target && !picture->failed,
+              "accepted private reads and leases survive both rejection and delayed completion");
+    }
+    if (ready) {
+      void *mapped = nullptr;
+      Require(MapBufferWithFlags(&f.context, old_snapshot.buf, &mapped, kImageMapRead) ==
+                  VA_STATUS_SUCCESS && static_cast<uint8_t *>(mapped)[0] == 40 &&
+                  UnmapBuffer(&f.context, old_snapshot.buf) == VA_STATUS_SUCCESS &&
+                  DestroyImage(&f.context, old_snapshot.image_id) == VA_STATUS_SUCCESS,
+              "an old derived snapshot remains readable and releasable after rejection");
+    }
+    auto alias = std::make_shared<Surface>();
+    alias->backing_owner = 1;
+    f.driver.surfaces[3] = alias;
+    RequireRejectedPublicReads(&f, 3);
+    const uint64_t rejected_transaction = target->picture_transaction;
+    ++target->vpp_writers;
+    Require(BeginPicture(&f.context, 1, 1) == VA_STATUS_ERROR_HW_BUSY &&
+                target->picture_transaction == rejected_transaction && PublicReadRejected(target.get()),
+            "failed Begin cannot supersede the rejected public transaction");
+    --target->vpp_writers;
     // A mismatched direct backing cannot be copied into the retained picture.
     // Even this promotion failure must not mark the old private picture failed.
     f.Begin(); f.Parameters(false);
+    Require(!PublicReadRejected(target.get()),
+            "a successful newer Begin supersedes only the prior public-read barrier");
     target->frame_timestamp = 2 * kTimestampStep;
     Require(EndPicture(&f.context, 1) == VA_STATUS_ERROR_OPERATION_FAILED &&
                 target->decode_identity == identity && !picture->failed &&
                 picture->direct_backing == target && picture->storage.empty(),
             "failed exact-backing validation commits no partial promotion");
+    RequireRejectedPublicReads(&f);
     target->frame_timestamp = kTimestampStep;
     Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_ERROR_DECODING_ERROR &&
                 target->failed && !picture->failed && !picture->direct_backing &&
                 picture->planes[0][0] == 40,
             "a later safe preservation can revoke public access without poisoning old pixels");
+    --picture->vpp_readers;
   }
+}
+
+void RejectedH264ConsumedEnd() {
+  for (unsigned mode = 0; mode < 3; ++mode) {
+    Fixture f;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "accept a picture before an unsuccessful consumed End");
+    Output(&f, kTimestampStep, 40);
+    const auto picture = f.decode->decoded_frames.at(kTimestampStep);
+    const auto pixels = picture->storage;
+    f.Begin();
+    if (mode != 0) {
+      if (mode == 1) f.picture.seq_fields.bits.frame_mbs_only_flag = 0;
+      f.Parameters();
+    }
+    if (mode == 2) allocation_fault::fail_next = true;
+    const VAStatus status = EndPicture(&f.context, 1);
+    Require(status == (mode == 0 ? VA_STATUS_ERROR_INVALID_PARAMETER :
+                       mode == 1 ? VA_STATUS_ERROR_UNSUPPORTED_PROFILE :
+                                   VA_STATUS_ERROR_ALLOCATION_FAILED) &&
+                !allocation_fault::fail_next && picture->storage == pixels && !picture->failed,
+            "malformed, unsupported and assembly-allocation End failures retain private output");
+    RequireRejectedPublicReads(&f);
+  }
+  Fixture f;
+  Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+          "establish a ready picture before recoverable Render input");
+  Output(&f, kTimestampStep, 40);
+  f.Begin();
+  uint8_t short_matrix = 1;
+  VABufferID bad = f.Buffer(VAIQMatrixBufferType, &short_matrix, sizeof(short_matrix));
+  Require(RenderPicture(&f.context, 1, &bad, 1) == VA_STATUS_ERROR_INVALID_BUFFER &&
+              !PublicReadRejected(f.driver.surfaces.at(1).get()),
+          "a replaceable Render error does not prematurely reject its transaction");
+  auto flat = Flat();
+  f.Render(f.Buffer(VAIQMatrixBufferType, &flat, sizeof(flat)));
+  f.Parameters();
+  f.End();
+  Output(&f, 2 * kTimestampStep, 80);
+  Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS &&
+              f.driver.surfaces.at(1)->planes[0][0] == 80,
+          "valid Render replacement commits its own readable picture");
 }
 
 void DirectLiveOutputAndReuse() {
@@ -1990,6 +2112,7 @@ int main() {
     {"rejected H.264 preserves accepted pictures", RejectedH264PreservesAcceptedPictures},
     {"rejected H.264 ownership guards", RejectedH264OwnershipGuards},
     {"rejected H.264 promotion failure", RejectedH264PromotionFailure},
+    {"rejected H.264 consumed End", RejectedH264ConsumedEnd},
     {"large H.264 AU boundary and recovery", LargeH264AccessUnitBoundaryAndRecovery},
     {"qualified Flea progressive H.264 headroom", QualifiedFleaProgressiveH264Headroom},
     {"legacy Flea PES bounded whole-AU admission", LegacyFleaPesAdmission},
