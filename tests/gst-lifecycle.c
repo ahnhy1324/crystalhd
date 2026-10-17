@@ -1281,6 +1281,180 @@ new_mpeg4_vop(GstClockTime pts, guint8 header0, guint8 header1)
 }
 
 static GstBuffer *
+new_mpeg2_picture(guint type, gboolean gop, gboolean closed)
+{
+  guint8 bytes[] = { 0, 0, 1, 0xb8, 0, 0, 0, 0,
+                    0, 0, 1, 0, 0, 0, 0xff, 0xff, 0,
+                    0, 0, 1, 0xb5, 0x8f, 0xff, 0xf3, 0, 0 };
+  const gsize offset = gop ? 0 : 8;
+  GstBuffer *buffer;
+  bytes[7] = closed ? 0x40 : 0;
+  bytes[13] = type << 3;
+  buffer = gst_buffer_new_allocate(NULL, sizeof(bytes) - offset, NULL);
+  gst_buffer_fill(buffer, 0, bytes + offset, sizeof(bytes) - offset);
+  GST_BUFFER_DURATION(buffer) = 40 * GST_MSECOND;
+  return buffer;
+}
+
+static GstBuffer *
+new_mpeg2_sliced_picture(guint type, gboolean complete)
+{
+  guint8 bytes[] = {
+    0, 0, 1, 0xb3, 1, 0, 0x20, 0x33,
+    0, 0, 1, 0xb5, 0x14, 0x4a, 0, 1, 0, 0,
+    0, 0, 1, 0, 0, 0, 0xff, 0xff, 0,
+    0, 0, 1, 0xb5, 0x8f, 0xff, 0xf3, 0, 0,
+    0, 0, 1, 1, 0x20,
+    0, 0, 1, 2, 0x20
+  };
+  GstBuffer *buffer;
+  const gsize size = sizeof(bytes) - (complete ? 0 : 5);
+  bytes[23] = type << 3;
+  buffer = gst_buffer_new_allocate(NULL, size, NULL);
+  gst_buffer_fill(buffer, 0, bytes, size);
+  GST_BUFFER_DURATION(buffer) = 40 * GST_MSECOND;
+  return buffer;
+}
+
+static void
+test_mpeg2_open_gop_admission(void)
+{
+  GstHarness *harness = new_mpeg2_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBus *bus = gst_bus_new();
+  guint i;
+  gst_element_set_bus(harness->element, bus);
+  g_assert_cmpint(gst_harness_push(harness, new_mpeg2_picture(1, TRUE, FALSE)), ==, GST_FLOW_OK);
+  for (i = 0; i < 2; i++) {
+    GstMessage *message;
+    g_assert_cmpint(gst_harness_push(harness, new_mpeg2_picture(3, FALSE, FALSE)), ==, GST_FLOW_OK);
+    message = gst_bus_pop_filtered(bus, GST_MESSAGE_WARNING);
+    g_assert_nonnull(message);
+    gst_message_unref(message);
+  }
+  g_assert_cmpuint(mock.accepted_count, ==, 1);
+  g_assert_cmpuint(self->mpeg2_dropped_inputs, ==, 2);
+  g_assert_cmpuint(self->timestamps.length + gst_harness_buffers_in_queue(harness), ==, 1);
+  g_assert_cmpint(gst_harness_push(harness, new_mpeg2_picture(2, FALSE, FALSE)), ==, GST_FLOW_OK);
+  g_assert_cmpint(gst_harness_push(harness, new_mpeg2_picture(3, FALSE, FALSE)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.accepted_count, ==, 3);
+  g_assert_cmpuint(self->mpeg2_reference_pictures, ==, 2);
+  g_assert_cmpint(gst_crystalhd_drain(GST_VIDEO_DECODER(self)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 3);
+  gst_element_set_bus(harness->element, NULL);
+  gst_object_unref(bus);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_mpeg2_closed_gop_and_discontinuity(void)
+{
+  GstHarness *harness = new_mpeg2_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *input;
+  g_assert_cmpint(gst_harness_push(harness, new_mpeg2_picture(1, TRUE, TRUE)), ==, GST_FLOW_OK);
+  g_assert_cmpint(gst_harness_push(harness, new_mpeg2_picture(3, FALSE, FALSE)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.accepted_count, ==, 2);
+  g_assert_cmpuint(self->mpeg2_dropped_inputs, ==, 0);
+  input = new_mpeg2_picture(3, FALSE, FALSE);
+  GST_BUFFER_FLAG_SET(input, GST_BUFFER_FLAG_DISCONT);
+  g_assert_cmpint(gst_harness_push(harness, input), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.accepted_count, ==, 2);
+  g_assert_cmpuint(self->mpeg2_reference_pictures, ==, 0);
+  g_assert_cmpuint(self->mpeg2_dropped_inputs, ==, 1);
+  g_assert_cmpint(gst_crystalhd_drain(GST_VIDEO_DECODER(self)), ==, GST_FLOW_OK);
+  g_assert_true(lifecycle_flush(GST_VIDEO_DECODER(self)));
+  g_assert_cmpuint(self->mpeg2_reference_pictures, ==, 0);
+  g_assert_false(self->mpeg2_closed_gop);
+  g_assert_cmpint(gst_harness_push(harness, new_mpeg2_picture(1, TRUE, FALSE)), ==, GST_FLOW_OK);
+  g_assert_cmpint(gst_harness_push(harness, new_mpeg2_picture(3, FALSE, FALSE)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(self->mpeg2_dropped_inputs, ==, 1);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_mpeg2_missing_valid_output_still_fails(void)
+{
+  GstHarness *harness = new_mpeg2_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_mpeg2_picture(1, TRUE, FALSE)), ==, GST_FLOW_OK);
+  g_assert_cmpint(gst_harness_push(harness, new_mpeg2_picture(3, FALSE, FALSE)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.accepted_count, ==, 1);
+  g_assert_cmpuint(self->mpeg2_dropped_inputs, ==, 1);
+  mock.early_eos = TRUE;
+  g_assert_cmpint(gst_crystalhd_drain(GST_VIDEO_DECODER(self)), ==, GST_FLOW_ERROR);
+  g_assert_cmpuint(self->timestamps.length, ==, 1);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_mpeg2_damaged_reference_recovery(void)
+{
+  GstHarness *harness = new_mpeg2_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  guint i;
+  const guint types[] = { 1, 2, 3, 2, 2, 3, 1, 2, 3 };
+  for (i = 0; i < G_N_ELEMENTS(types); i++)
+    g_assert_cmpint(gst_harness_push(harness,
+        new_mpeg2_sliced_picture(types[i], i != 3)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.accepted_count, ==, 6);
+  g_assert_cmpuint(self->mpeg2_dropped_inputs, ==, 3);
+  g_assert_cmpuint(self->mpeg2_reference_pictures, ==, 2);
+  g_assert_cmpint(gst_crystalhd_drain(GST_VIDEO_DECODER(self)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 6);
+  for (i = 0; i < 6; i++) {
+    guint8 byte;
+    GstBuffer *output = gst_harness_pull(harness);
+    g_assert_cmpuint(gst_buffer_extract(output, 0, &byte, 1), ==, 1);
+    g_assert_cmpuint(byte, ==, i + 1);
+    gst_buffer_unref(output);
+  }
+  gst_harness_teardown(harness);
+}
+
+static void
+test_mpeg2_field_reference_proof_unchanged(void)
+{
+  GstHarness *harness = new_mpeg2_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *input = new_mpeg2_picture(1, FALSE, FALSE);
+  guint8 top_field = 0xf1;
+  g_assert_cmpuint(gst_buffer_fill(input, 15, &top_field, 1), ==, 1);
+  g_assert_cmpint(gst_harness_push(harness, input), ==, GST_FLOW_OK);
+  g_assert_false(self->mpeg2_frame_reference_tracking);
+  g_assert_cmpint(gst_harness_push(harness, new_mpeg2_picture(3, FALSE, FALSE)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(mock.accepted_count, ==, 2);
+  g_assert_cmpuint(self->mpeg2_dropped_inputs, ==, 0);
+  g_assert_cmpint(gst_crystalhd_drain(GST_VIDEO_DECODER(self)), ==, GST_FLOW_OK);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_mpeg2_new_sequence_invalidates_profile(void)
+{
+  GstHarness *harness = new_mpeg2_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *input, *without_extension;
+  g_assert_cmpint(gst_harness_push(harness, new_mpeg2_sliced_picture(1, TRUE)), ==, GST_FLOW_OK);
+  g_assert_cmpuint(self->codec.mpeg2_profile, ==, 4);
+  input = new_mpeg2_sliced_picture(2, FALSE);
+  /* Keep the new sequence and picture, but omit its ten-byte sequence
+   * extension. A previous Main/progressive classification is no longer proof.
+   */
+  without_extension = gst_buffer_append(
+      gst_buffer_copy_region(input, GST_BUFFER_COPY_ALL, 0, 8),
+      gst_buffer_copy_region(input, GST_BUFFER_COPY_ALL, 18, (gsize)-1));
+  gst_buffer_unref(input);
+  g_assert_cmpint(gst_harness_push(harness, without_extension), ==, GST_FLOW_OK);
+  g_assert_cmpuint(self->codec.mpeg2_profile, ==, 0);
+  g_assert_cmpuint(mock.accepted_count, ==, 2);
+  g_assert_cmpuint(self->mpeg2_dropped_inputs, ==, 0);
+  g_assert_cmpint(gst_crystalhd_drain(GST_VIDEO_DECODER(self)), ==, GST_FLOW_OK);
+  gst_harness_teardown(harness);
+}
+
+static GstBuffer *
 new_mpeg4_input(GstClockTime pts)
 {
   return new_mpeg4_vop(pts, 0x10, 0x60);
@@ -4518,6 +4692,12 @@ main(int argc, char **argv)
   g_test_add_func("/crystalhd/lifecycle/status-probe-no-ready-peek",
                   test_status_probe_no_ready_peek);
   g_test_add_func("/crystalhd/lifecycle/incomplete-drain", test_incomplete_drain);
+  g_test_add_func("/crystalhd/lifecycle/mpeg2-open-gop-admission", test_mpeg2_open_gop_admission);
+  g_test_add_func("/crystalhd/lifecycle/mpeg2-closed-gop-and-discontinuity", test_mpeg2_closed_gop_and_discontinuity);
+  g_test_add_func("/crystalhd/lifecycle/mpeg2-missing-valid-output", test_mpeg2_missing_valid_output_still_fails);
+  g_test_add_func("/crystalhd/lifecycle/mpeg2-damaged-reference-recovery", test_mpeg2_damaged_reference_recovery);
+  g_test_add_func("/crystalhd/lifecycle/mpeg2-field-reference-proof", test_mpeg2_field_reference_proof_unchanged);
+  g_test_add_func("/crystalhd/lifecycle/mpeg2-new-sequence-profile", test_mpeg2_new_sequence_invalidates_profile);
   g_test_add_func("/crystalhd/lifecycle/eos-with-ready-output", test_eos_with_ready_output);
   g_test_add_func("/crystalhd/lifecycle/eos-before-late-output",
                   test_eos_before_late_output);

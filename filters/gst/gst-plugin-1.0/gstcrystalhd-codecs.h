@@ -32,7 +32,109 @@ typedef struct {
   guint mpeg4_height;
   guint mpeg4_time_increment_resolution;
   guint mpeg4_time_increment_bits;
+  guint mpeg2_profile;
+  guint mpeg2_height;
+  gboolean mpeg2_progressive_sequence;
 } CrystalHdCodec;
+
+typedef struct {
+  guint picture_type;
+  gboolean have_gop;
+  gboolean closed_gop;
+  guint picture_count;
+  guint picture_structure;
+  gboolean have_sequence;
+  guint height;
+  gboolean have_sequence_extension;
+  guint profile;
+  gboolean progressive_sequence;
+  gboolean have_minimum_picture_header;
+  guint64 slice_rows[3];
+} CrystalHdMpeg2Picture;
+
+static gsize
+gst_crystalhd_mpeg2_next_start_code(const guint8 *data, gsize size, gsize from)
+{
+  gsize i;
+  for (i = from; size >= 4 && i <= size - 4; i++)
+    if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1)
+      return i;
+  return size;
+}
+
+/* Inspect only byte-aligned headers; do not infer decoded macroblocks or
+ * successful output from compressed input. A parsed field pair may carry
+ * two picture headers, whose first picture identifies its reference class.
+ */
+static void
+gst_crystalhd_mpeg2_picture_headers(const guint8 *data, gsize size,
+                                    CrystalHdMpeg2Picture *picture)
+{
+  gsize i;
+
+  memset(picture, 0, sizeof(*picture));
+  i = gst_crystalhd_mpeg2_next_start_code(data, size, 0);
+  while (i < size) {
+    const gsize next = gst_crystalhd_mpeg2_next_start_code(data, size, i + 4);
+    const gsize bytes = next - i;
+    const guint code = data[i + 3];
+    if (code == 0xb8 && bytes >= 8 &&
+        picture->picture_type == 0) {
+      picture->have_gop = TRUE;
+      picture->closed_gop = (data[i + 7] & 0x40) != 0;
+    } else if (code == 0 && bytes >= 6) {
+      picture->picture_count++;
+      if (picture->picture_count == 1) {
+        picture->picture_type = (data[i + 5] >> 3) & 7;
+        picture->have_minimum_picture_header = picture->picture_type == 1
+            ? bytes >= 8 : ((picture->picture_type == 2 || picture->picture_type == 3) && bytes >= 9);
+      }
+    } else if (code == 0xb3 && bytes >= 8) {
+      picture->have_sequence = TRUE;
+      picture->height = ((guint)(data[i + 5] & 15) << 8) | data[i + 6];
+    } else if (code == 0xb5 && bytes >= 5) {
+      const guint extension = data[i + 4] >> 4;
+      if (extension == 1 && bytes >= 10) {
+        picture->have_sequence_extension = TRUE;
+        picture->profile = (data[i + 4] & 8) ? 0 : data[i + 4] & 7;
+        picture->progressive_sequence = (data[i + 5] & 8) != 0;
+        picture->height |= ((guint)(data[i + 6] >> 5) & 3) << 12;
+      } else if (extension == 8 && bytes >= 9 && picture->picture_count == 1) {
+        picture->picture_structure = data[i + 6] & 3;
+      }
+    } else if (code >= 1 && code <= 0xaf && picture->picture_count == 1) {
+      const guint row = code - 1;
+      picture->slice_rows[row / 64] |= G_GUINT64_CONSTANT(1) << (row % 64);
+    }
+    i = next;
+  }
+}
+
+/* H.262 (1995), 6.1.2/6.1.2.2 and Table 8-5 require same-row slices and
+ * complete coverage for Main/Simple profiles. Multiple slices per row are
+ * legal. Missing a whole row proves damage; present rows do not prove that
+ * their macroblocks or entropy data are complete. Preserve field pictures,
+ * unknown profiles and incomplete headers for the established decoder path.
+ * https://www.itu.int/rec/T-REC-H.262-199507-S/en
+ */
+static guint
+gst_crystalhd_mpeg2_missing_rows(const CrystalHdCodec *codec,
+                                  const CrystalHdMpeg2Picture *picture)
+{
+  guint rows, row, missing = 0;
+  if ((codec->mpeg2_profile != 4 && codec->mpeg2_profile != 5) ||
+      codec->mpeg2_height == 0 || codec->mpeg2_height > 1088 ||
+      picture->picture_count != 1 || picture->picture_structure != 3 ||
+      !picture->have_minimum_picture_header)
+    return 0;
+  rows = codec->mpeg2_progressive_sequence
+      ? (codec->mpeg2_height + 15) / 16 : 2 * ((codec->mpeg2_height + 31) / 32);
+  for (row = 0; row < rows; row++)
+    if ((picture->slice_rows[row / 64] &
+         (G_GUINT64_CONSTANT(1) << (row % 64))) == 0)
+      missing++;
+  return missing;
+}
 
 typedef struct {
   const guint8 *data;
