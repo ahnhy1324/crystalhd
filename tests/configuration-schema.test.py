@@ -69,17 +69,17 @@ class SchemaOracleTest(unittest.TestCase):
         mapped = {(kind, name) for kind, name, _key in map_matches}
         bounded = {(kind, name) for kind, name, _reason in boundary_matches}
 
-        self.assertEqual(len(inventory_matches), 29)
-        self.assertEqual(len(surfaces), 29)
+        self.assertEqual(len(inventory_matches), 28)
+        self.assertEqual(len(surfaces), 28)
         self.assertEqual(len(map_matches), 23)
         self.assertEqual(len(mapped), 23)
-        self.assertEqual(len(boundary_matches), 6)
-        self.assertEqual(len(bounded), 6)
+        self.assertEqual(len(boundary_matches), 5)
+        self.assertEqual(len(bounded), 5)
         self.assertFalse(mapped & bounded)
         self.assertEqual(mapped | bounded, surfaces)
         self.assertEqual(
             {reason for _kind, _name, reason in boundary_matches},
-            {"staged-module", "legacy-bootstrap", "invocation-only", "runtime-only"},
+            {"staged-module", "legacy-bootstrap", "invocation-only"},
         )
 
         marked_keys = SCHEMA_KEY_MARKER.findall(specification)
@@ -92,11 +92,6 @@ class SchemaOracleTest(unittest.TestCase):
             _CONFIG.ENVIRONMENT_TARGETS,
             {name for kind, name, _key in map_matches if kind == "environment"},
         )
-
-    def test_vpp_opt_out_is_runtime_only_without_a_canonical_key(self):
-        self.assertNotIn("CRYSTALHD_VAAPI_DISABLE_VPP", _CONFIG.ENVIRONMENT_TARGETS)
-        with self.assertRaises(SchemaError):
-            self.parse("[crystalhd]\nschema = 1\n[settings]\nvaapi.disable_vpp = true\n")
 
     def test_strict_document_and_profile_grammar(self):
         document = self.parse(
@@ -485,7 +480,7 @@ def main() -> int:
     if result.wasSuccessful():
         print(
             "configuration schema oracle: PASS "
-            "(21 canonical keys; 29 production surfaces classified; production core)"
+            "(21 canonical keys; 28 production surfaces classified; production core)"
         )
         return 0
     return 1
