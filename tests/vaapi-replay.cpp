@@ -2026,7 +2026,7 @@ static void ContextAdmissionRejectsBusyBeforePicture() {
 }
 
 static void ContextAdmissionFailuresPublishNothing() {
-  for (const auto failure : {
+  for (const auto &failure : {
            std::pair<BC_STATUS, VAStatus>{BC_STS_BUSY, VA_STATUS_ERROR_HW_BUSY},
            {BC_STS_DEC_EXIST_OPEN, VA_STATUS_ERROR_HW_BUSY},
            {BC_STS_ERR_USAGE, VA_STATUS_ERROR_OPERATION_FAILED},
