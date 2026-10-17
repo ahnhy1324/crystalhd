@@ -1268,6 +1268,197 @@ VAImage MakeImage(Fixture *fixture, int width = 16, int height = 16) {
   return image;
 }
 
+struct DerivedFixture : Fixture {
+  DerivedFixture() { source->id = 1; target->id = 2; }
+};
+
+VAStatus MapImageIntent(Fixture *fixture, VABufferID buffer, void **data,
+                        uint32_t flags) {
+  if (flags == UINT32_MAX) return MapBuffer(&fixture->context, buffer, data);
+#if VA_CHECK_VERSION(1, 21, 0)
+  return MapBuffer2(&fixture->context, buffer, data, flags);
+#else
+  return MapBufferWithFlags(&fixture->context, buffer, data, flags);
+#endif
+}
+
+void FillMappedNv12(const VAImage &image, void *data, uint8_t luma) {
+  auto *bytes = static_cast<uint8_t *>(data);
+  for (unsigned row = 0; row < image.height; ++row)
+    memset(bytes + image.offsets[0] + row * image.pitches[0], luma, image.width);
+  for (unsigned row = 0; row < (image.height + 1U) / 2; ++row)
+    for (unsigned column = 0; column < Align(image.width, 2); ++column)
+      bytes[image.offsets[1] + row * image.pitches[1] + column] =
+          static_cast<uint8_t>(luma + 1 + (column & 1));
+}
+
+void RequireNv12Pixels(const Surface &surface, uint8_t luma) {
+  for (unsigned row = 0; row < surface.height; ++row)
+    for (unsigned column = 0; column < surface.width; ++column)
+      Require(surface.planes[0][row * surface.pitch[0] + column] == luma,
+              "derived upload preserves every luma pixel");
+  for (unsigned row = 0; row < (surface.height + 1U) / 2; ++row)
+    for (unsigned column = 0; column < Align(surface.width, 2); ++column)
+      Require(surface.planes[1][row * surface.pitch[1] + column] ==
+                  luma + 1 + (column & 1), "derived upload preserves both chroma components");
+}
+
+void DerivedWritesCommitActualSurfacePixels() {
+  for (uint32_t flags : {2U, 0U, UINT32_MAX}) {
+    DerivedFixture fixture;
+    VAImage image = {}, readback = MakeImage(&fixture);
+    void *data = nullptr;
+    Require(DeriveImage(&fixture.context, 2, &image) == VA_STATUS_SUCCESS &&
+                MapImageIntent(&fixture, image.buf, &data, flags) == VA_STATUS_SUCCESS,
+            "cold NV12 derived image accepts explicit/default/legacy CPU writes");
+    FillMappedNv12(image, data, 61);
+    Require(!fixture.target->ready && fixture.target->vpp_writers == 1 &&
+                UnmapBuffer(&fixture.context, image.buf) == VA_STATUS_SUCCESS &&
+                fixture.target->ready && !fixture.target->failed,
+            "final unmap commits rather than merely editing an independent snapshot");
+    RequireNv12Pixels(*fixture.target, 61);
+    Require(GetImage(&fixture.context, 2, 0, 0, 16, 16, readback.image_id) == VA_STATUS_SUCCESS &&
+                fixture.driver.buffers.at(readback.buf).data ==
+                    fixture.driver.buffers.at(image.buf).data,
+            "public image readback sees the uploaded surface pixels");
+    auto output = Picture(0, 0); output->id = 3; fixture.driver.surfaces[3] = output;
+    VAProcPipelineParameterBuffer pipeline = {}; pipeline.surface = 2;
+    VABufferID parameters = VA_INVALID_ID;
+    Require(CreateBuffer(&fixture.context, 2, VAProcPipelineParameterBufferType,
+                          sizeof(pipeline), 1, &pipeline, &parameters) == VA_STATUS_SUCCESS &&
+                BeginPicture(&fixture.context, 2, 3) == VA_STATUS_SUCCESS &&
+                RenderPicture(&fixture.context, 2, &parameters, 1) == VA_STATUS_SUCCESS &&
+                EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+            "ordinary VPP consumes the uploaded source without a separate PutImage");
+    RequireNv12Pixels(*output, 61);
+  }
+  {
+    DerivedFixture fixture; VAImage image = {}; void *data = nullptr;
+    const auto original = fixture.target->storage;
+    Require(DeriveImage(&fixture.context, 2, &image) == VA_STATUS_SUCCESS &&
+                MapImageIntent(&fixture, image.buf, &data, 1) == VA_STATUS_SUCCESS,
+            "explicit READ mapping remains an independent image view");
+    FillMappedNv12(image, data, 77);
+    Require(MapImageIntent(&fixture, image.buf, &data, 2) == VA_STATUS_ERROR_SURFACE_BUSY &&
+                UnmapBuffer(&fixture.context, image.buf) == VA_STATUS_SUCCESS &&
+                fixture.target->storage == original && fixture.target->vpp_writers == 0,
+            "READ cannot be promoted while mapped or silently write back changed snapshot bytes");
+  }
+  for (bool read_failure : {true, false}) {
+    FenceIoMock mock; MockFenceScope scope(mock); DerivedFixture fixture;
+    VAImage image = {}; void *data = nullptr;
+    Require(DeriveImage(&fixture.context, 2, &image) == VA_STATUS_SUCCESS, "derive before sync fault");
+    fixture.target->object_fds = {101, 102, 103};
+    if (read_failure) {
+      mock.fail_read_end_fd = 102;
+      Require(MapImageIntent(&fixture, image.buf, &data, 0) == VA_STATUS_ERROR_OPERATION_FAILED &&
+                  data == nullptr && fixture.driver.buffers.at(image.buf).map_count == 0,
+              "failed DEFAULT refresh exposes no writable pointer or completed map");
+    } else {
+      Require(MapImageIntent(&fixture, image.buf, &data, 2) == VA_STATUS_SUCCESS, "map before write fault");
+      FillMappedNv12(image, data, 83); mock.fail_end_fd = 102;
+      Require(UnmapBuffer(&fixture.context, image.buf) == VA_STATUS_ERROR_OPERATION_FAILED &&
+                  fixture.target->failed && !fixture.target->ready,
+              "failed write cache completion never acknowledges a ready surface");
+    }
+    Require(fixture.target->vpp_writers == 0 && !fixture.target->image_write_locked &&
+                mock.started.empty() && mock.read_started.empty() && !mock.invalid,
+            "derived CPU failures release every reader and writer lease");
+  }
+}
+
+void DerivedWriteLeaseBlocksReuseAndSurvivesDestruction() {
+  DerivedFixture fixture; VAImage image = {}, another = MakeImage(&fixture); void *data = nullptr, *nested = nullptr;
+  Require(DeriveImage(&fixture.context, 2, &image) == VA_STATUS_SUCCESS &&
+              MapImageIntent(&fixture, image.buf, &data, 2) == VA_STATUS_SUCCESS &&
+              MapImageIntent(&fixture, image.buf, &nested, 2) == VA_STATUS_SUCCESS && nested == data,
+          "nested writable maps share one source reservation");
+  FillMappedNv12(image, data, 64);
+  Require(UnmapBuffer(&fixture.context, image.buf) == VA_STATUS_SUCCESS &&
+              fixture.target->vpp_writers == 1 && !fixture.target->ready &&
+              fixture.target->planes[0][0] == 99,
+          "non-final unmap cannot release ownership or publish partial pixels");
+  VAImage busy = {}; VADRMPRIMESurfaceDescriptor descriptor = {};
+  Require(BeginPicture(&fixture.context, 2, 2) == VA_STATUS_ERROR_HW_BUSY &&
+              PutImage(&fixture.context, 2, another.image_id, 0, 0, 16, 16, 0, 0, 16, 16) == VA_STATUS_ERROR_SURFACE_BUSY &&
+              DeriveImage(&fixture.context, 2, &busy) == VA_STATUS_ERROR_SURFACE_BUSY &&
+              SyncSurface2(&fixture.context, 2, 0) == VA_STATUS_ERROR_SURFACE_BUSY &&
+              DestroyImage(&fixture.context, image.image_id) == VA_STATUS_ERROR_SURFACE_BUSY &&
+              ExportSurfaceHandle(&fixture.context, 2, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                   VA_EXPORT_SURFACE_WRITE_ONLY, &descriptor) == VA_STATUS_ERROR_SURFACE_BUSY,
+          "mapped derived writer blocks picture/image/sync/destroy and write-only export reuse");
+  Require(UnmapBuffer(&fixture.context, image.buf) == VA_STATUS_SUCCESS &&
+              fixture.target->vpp_writers == 0 && !fixture.target->image_write_locked,
+          "only final unmap releases the reservation and commits pixels");
+  RequireNv12Pixels(*fixture.target, 64);
+  DerivedFixture destroyed; VAImage orphan = {}; void *orphan_data = nullptr;
+  const auto old_pixels = destroyed.target->storage;
+  Require(DeriveImage(&destroyed.context, 2, &orphan) == VA_STATUS_SUCCESS &&
+              MapImageIntent(&destroyed, orphan.buf, &orphan_data, 2) == VA_STATUS_SUCCESS,
+          "map a derived writer before source destruction");
+  FillMappedNv12(orphan, orphan_data, 92); VASurfaceID id = 2;
+  Require(DestroySurfaces(&destroyed.context, &id, 1) == VA_STATUS_SUCCESS,
+          "source destruction safely retires a mapped derived writer");
+  auto recycled = Picture(0, 17); recycled->id = id; destroyed.driver.surfaces[id] = recycled;
+  const auto recycled_pixels = recycled->storage;
+  Require(UnmapBuffer(&destroyed.context, orphan.buf) == VA_STATUS_ERROR_INVALID_SURFACE &&
+              destroyed.target->storage == old_pixels && recycled->storage == recycled_pixels &&
+              destroyed.target->vpp_writers == 0 && !destroyed.target->image_write_locked &&
+              destroyed.driver.buffers.at(orphan.buf).data_failed &&
+              DestroyImage(&destroyed.context, orphan.image_id) == VA_STATUS_SUCCESS,
+          "orphan final unmap fails without writing old/recycled pixels or leaking counters");
+  DerivedFixture captured; VAImage upload = {}; void *upload_data = nullptr;
+  auto output = Picture(0, 7); output->id = 3; captured.driver.surfaces[3] = output;
+  VAProcPipelineParameterBuffer pipeline = {}; pipeline.surface = 2;
+  VABufferID parameters = VA_INVALID_ID;
+  Require(CreateBuffer(&captured.context, 2, VAProcPipelineParameterBufferType,
+                        sizeof(pipeline), 1, &pipeline, &parameters) == VA_STATUS_SUCCESS &&
+              BeginPicture(&captured.context, 2, 3) == VA_STATUS_SUCCESS &&
+              RenderPicture(&captured.context, 2, &parameters, 1) == VA_STATUS_SUCCESS &&
+              DeriveImage(&captured.context, 2, &upload) == VA_STATUS_SUCCESS &&
+              MapImageIntent(&captured, upload.buf, &upload_data, 2) == VA_STATUS_SUCCESS,
+          "reserve a derived writer after VPP captures the same cold source");
+  FillMappedNv12(upload, upload_data, 71);
+  Require(EndPicture(&captured.context, 2) == VA_STATUS_ERROR_HW_BUSY &&
+              captured.target->vpp_readers == 0 && captured.driver.pending_vpp.empty() &&
+              captured.target->vpp_writers == 1 && captured.target->image_write_locked &&
+              UnmapBuffer(&captured.context, upload.buf) == VA_STATUS_SUCCESS &&
+              captured.target->ready && captured.target->vpp_writers == 0 &&
+              !captured.target->image_write_locked,
+          "stale VPP cannot acquire a reader that blocks the derived writer's final commit");
+  RequireNv12Pixels(*captured.target, 71);
+}
+
+void DerivedDefaultRefreshAndDecodedSnapshotsStayIndependent() {
+  DerivedFixture fixture; VAImage derived = {}, update = MakeImage(&fixture); void *data = nullptr;
+  Require(DeriveImage(&fixture.context, 2, &derived) == VA_STATUS_SUCCESS, "derive a cold image before upload");
+  FillMappedNv12(update, fixture.driver.buffers.at(update.buf).data.data(), 25);
+  Require(PutImage(&fixture.context, 2, update.image_id, 0, 0, 16, 16, 0, 0, 16, 16) == VA_STATUS_SUCCESS &&
+              MapImageIntent(&fixture, derived.buf, &data, 0) == VA_STATUS_SUCCESS &&
+              static_cast<uint8_t *>(data)[derived.offsets[0]] == 25 &&
+              static_cast<uint8_t *>(data)[derived.offsets[1]] == 26,
+          "DEFAULT refreshes stale derived bytes after an intervening PutImage");
+  static_cast<uint8_t *>(data)[derived.offsets[0]] = 66;
+  Require(UnmapBuffer(&fixture.context, derived.buf) == VA_STATUS_SUCCESS &&
+              fixture.target->planes[0][0] == 66 && fixture.target->planes[0][1] == 25 &&
+              fixture.target->planes[1][0] == 26 && fixture.target->planes[1][1] == 27,
+          "partial DEFAULT edits preserve refreshed luma/chroma rather than stale snapshot bytes");
+  VAImage decoded = {}; const auto original = fixture.source->storage;
+  const auto private_original = fixture.decoder->decoded_frames.at(kTimestampStep)->storage;
+  Require(DeriveImage(&fixture.context, 1, &decoded) == VA_STATUS_SUCCESS &&
+              MapImageIntent(&fixture, decoded.buf, &data, 2) == VA_STATUS_ERROR_OPERATION_FAILED,
+          "explicit WRITE cannot alter a retained decoded-picture snapshot");
+  for (uint32_t flags : {1U, UINT32_MAX}) {
+    Require(MapImageIntent(&fixture, decoded.buf, &data, flags) == VA_STATUS_SUCCESS,
+            "decoded READ and legacy snapshot maps remain available");
+    FillMappedNv12(decoded, data, 98);
+    Require(UnmapBuffer(&fixture.context, decoded.buf) == VA_STATUS_SUCCESS &&
+                fixture.source->storage == original &&
+                fixture.decoder->decoded_frames.at(kTimestampStep)->storage == private_original,
+            "decoded public pixels and immutable retained picture remain independent of snapshot edits");
+  }
+}
+
 void ImageReadFailuresAndDerivedRollback() {
   for (bool derive : {false, true}) {
     for (bool fail_start : {false, true}) {
@@ -2022,6 +2213,9 @@ int main(int argc, char **argv) {
     CpuSyncRetriesInterruptedAccess();
     CpuReadFailuresCannotCompleteCopies();
     ImageReadFailuresAndDerivedRollback();
+    DerivedWritesCommitActualSurfacePixels();
+    DerivedWriteLeaseBlocksReuseAndSurvivesDestruction();
+    DerivedDefaultRefreshAndDecodedSnapshotsStayIndependent();
     ImageGeometryAndOddNv12Roundtrip();
     ImageCopiesRejectInvalidAndBusyRectangles();
     PutImageCannotOverwriteRetainedDecodeIdentity();
@@ -2037,6 +2231,6 @@ int main(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 39 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 42 hardware-free regressions passed");
   return 0;
 }

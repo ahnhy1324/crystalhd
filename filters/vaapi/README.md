@@ -254,6 +254,12 @@ failure invalidates that image's contents. Export allocation requires a
 compatible linear GBM byte buffer, while CPU-only image access remains usable
 without one.
 
+Images derived from cold, unowned upload surfaces commit CPU writes on final
+unmap, or exported-image writes on handle release. The source is reserved
+while writable access is active; stale sources and failed commits report errors.
+Images derived from retained decode pictures remain independent readback
+snapshots and cannot overwrite decoder references.
+
 NV12 PRIME2 exports default to separate R8 and GR88 layers. Request
 `VA_EXPORT_SURFACE_COMPOSED_LAYERS` for one two-plane NV12 layer. Read/default
 exports and derived snapshots wait for picture completion; cancellation or an
@@ -291,7 +297,8 @@ timeline advances.
 - NV12 images are limited to 1920x1088; odd dimensions retain complete UV pairs.
   Image copies reject busy surfaces and invalid rectangles. `vaPutImage` also
   rejects retained decode pictures and their aliases instead of invalidating
-  decoder reference identity. `vaDeriveImage` remains a readback snapshot, not a
+  decoder reference identity. For retained decode pictures, `vaDeriveImage`
+  remains a readback snapshot, not a
   writable direct alias; use `vaCreateImage`/`vaPutImage` for ordinary uploads.
 - one CrystalHD playback session at a time; another client receives hardware
   busy at decode-context creation if the device is already owned. Configuration

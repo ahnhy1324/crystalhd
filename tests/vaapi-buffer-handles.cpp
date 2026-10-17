@@ -306,6 +306,9 @@ static void InvalidAndMapped() {
 static void SnapshotIsolation() {
   Fixture f;
   auto picture = f.Picture();
+  // A decoded picture is not an unowned upload target.
+  picture->id = 1;
+  picture->expected_timestamp = picture->frame_timestamp = kTimestampStep;
   const auto old_surface = picture->storage;
   VAImage snapshot = {};
   Require(f.table.vaDeriveImage(&f.context, 1, &snapshot) == VA_STATUS_SUCCESS, "derive the supported independent snapshot");
@@ -322,6 +325,69 @@ static void SnapshotIsolation() {
   Check(f.driver->buffers.at(snapshot.buf).data[0] == changed &&
         !std::memcmp(picture->planes[0], old_surface.data(), old_surface.size()) && picture->ready,
         "snapshot handle copy-back changes the image but never its source surface");
+}
+
+static void ColdDerivedHandleWriteThrough() {
+  for (unsigned failure = 0; failure != 6; ++failure) {
+    Fixture f;
+    auto picture = f.Picture();
+    picture->id = 1;
+    VAImage image = {};
+    Require(f.table.vaDeriveImage(&f.context, 1, &image) == VA_STATUS_SUCCESS,
+            "derive a cold unowned surface for external upload");
+    VABufferInfo info = {};
+    Require(f.Acquire(image.buf, &info) == VA_STATUS_SUCCESS,
+            "acquire a cold derived image for external write-through");
+    const int fd = static_cast<int>(info.handle);
+    Check(picture->image_write_locked && picture->vpp_writers == 1 && !picture->ready &&
+          f.driver->buffers.at(image.buf).derived_write_active,
+          "external derived-image ownership holds the source busy until release");
+    VADRMPRIMESurfaceDescriptor blocked = {};
+    Check(f.table.vaExportSurfaceHandle(&f.context, 1,
+            VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, VA_EXPORT_SURFACE_READ_ONLY,
+            &blocked) == VA_STATUS_ERROR_SURFACE_BUSY,
+          "an active external image writer cannot expose the source's stale pixels");
+    std::vector<uint8_t> pixels(image.data_size);
+    for (size_t index = 0; index < pixels.size(); ++index)
+      pixels[index] = static_cast<uint8_t>(index * 31U + 19U);
+    Require(pwrite(fd, pixels.data(), pixels.size(), 0) == static_cast<ssize_t>(pixels.size()),
+            "external API updates the complete exported Y and UV image");
+    if (failure == 1) io.fail_poll = true;
+    if (failure == 2) io.fail_sync = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
+    if (failure == 3) io.fail_sync = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+    if (failure == 4) io.fail_sync = DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE;
+    if (failure == 5) io.fail_sync = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
+    const VAStatus status = f.Release(image.buf);
+    Check((status == VA_STATUS_SUCCESS) == (failure == 0),
+          "cold external write-through reports every fence/read/write-cache failure");
+    Check(!picture->image_write_locked && picture->vpp_writers == 0 &&
+          !f.driver->buffers.at(image.buf).derived_write_active,
+          "successful and failed external writes both release the source lease");
+    Check(fcntl(fd, F_GETFD) == -1 && errno == EBADF && io.bos.empty() &&
+          io.export_fds.empty() && io.mappings.empty(),
+          "external write release consumes its handle and all export backing resources");
+    Check(f.driver->surfaces.at(1) == picture && picture->id == 1 &&
+          picture->expected_timestamp == 0 && picture->frame_timestamp == 0,
+          "write-through preserves the same unowned source identity");
+    if (failure == 0) {
+      bool equal = true;
+      for (unsigned plane = 0; plane != 2; ++plane) {
+        const unsigned rows = plane ? (image.height + 1U) / 2 : image.height;
+        const unsigned columns = plane ? (image.width + 1U) & ~1U : image.width;
+        for (unsigned row = 0; row < rows; ++row)
+          equal = std::memcmp(picture->planes[plane] + row * picture->pitch[plane],
+                              pixels.data() + image.offsets[plane] + row * image.pitches[plane],
+                              columns) == 0 && equal;
+      }
+      Check(equal && picture->ready && !picture->failed,
+            "released cold derived image commits every YUV pixel before reporting ready");
+    } else {
+      Check(!picture->ready && picture->failed && f.driver->buffers.at(image.buf).data_failed,
+            "failed external write cannot advertise stale ready source or image data");
+    }
+    Require(f.table.vaDestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS,
+            "committed or failed external derived image remains destroyable");
+  }
 }
 
 static void AcquireRollback() {
@@ -567,7 +633,8 @@ static void ExportLayouts() {
 
 int main() {
   for (auto test : {Registration, ExportLayouts, BorrowRoundTrip, InvalidAndMapped,
-                    SnapshotIsolation, AcquireRollback, ReleaseFailureInvalidates,
+                    SnapshotIsolation, ColdDerivedHandleWriteThrough,
+                    AcquireRollback, ReleaseFailureInvalidates,
                     DeriveFailureRollback, TerminateInvalidatesBorrow,
                     ReleaseWaitRehash, PendingReadIdentity}) {
     try { test(); }
