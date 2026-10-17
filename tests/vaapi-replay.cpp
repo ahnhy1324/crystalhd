@@ -265,6 +265,9 @@ struct DecodeIoMock {
   bool prefeed_busy_once = false;
   bool remainder_busy_once = false;
   bool allow_device_open = false;
+  bool exclusive_device_open = false;
+  bool device_owned = false;
+  BC_STATUS device_open_status = BC_STS_SUCCESS;
   bool report_bcm70012 = false;
   bool fail_set_input_format = false;
   bool invalid = false;
@@ -308,8 +311,13 @@ extern "C" BC_STATUS __wrap_DtsDeviceOpen(HANDLE *device, uint32_t mode) {
   ++decode_io_mock->open_attempts;
   decode_io_mock->invalid |= device == nullptr ||
                              (device != nullptr && *device != nullptr);
+  if (decode_io_mock->device_open_status != BC_STS_SUCCESS)
+    return decode_io_mock->device_open_status;
+  if (decode_io_mock->exclusive_device_open && decode_io_mock->device_owned)
+    return BC_STS_DEC_EXIST_OPEN;
   if (decode_io_mock->allow_device_open) {
     *device = decode_io_mock->handle();
+    decode_io_mock->device_owned = true;
     return BC_STS_SUCCESS;
   }
   return BC_STS_ERROR;  // An unexpected reopen must never touch real hardware.
@@ -393,6 +401,7 @@ extern "C" BC_STATUS __wrap_DtsDeviceClose(HANDLE device) {
     --decode_io_mock->device_close_busy;
     return BC_STS_BUSY;
   }
+  decode_io_mock->device_owned = false;
   return decode_io_mock->device_close_status;
 }
 
@@ -1927,6 +1936,135 @@ static void RetainedHandleClosesBeforeDecoderReopen() {
           "reopened decoder closes without leaving test ownership live");
 }
 
+static void ContextAdmissionRejectsBusyBeforePicture() {
+  DecodeIoMock io;
+  io.allow_device_open = true;
+  io.exclusive_device_open = true;
+  MockDecodeScope scope(io);
+  Driver first{-1}, second{-1};
+  VADriverContext context = {}, competing = {};
+  context.pDriverData = &first;
+  competing.pDriverData = &second;
+  VAConfigID config = VA_INVALID_ID, vpp_config = VA_INVALID_ID;
+  Require(CreateConfig(&context, VAProfileH264Main, VAEntrypointVLD,
+                       nullptr, 0, &config) == VA_STATUS_SUCCESS &&
+              CreateConfig(&context, VAProfileNone, VAEntrypointVideoProc,
+                           nullptr, 0, &vpp_config) == VA_STATUS_SUCCESS &&
+              io.open_attempts == 0,
+          "configuration capability queries never reserve the decoder");
+  second.configs[config] = {VAProfileH264Main, VAEntrypointVLD};
+  VAContextID id = VA_INVALID_ID;
+  Require(CreateContext(&context, config, 0, 16, 0, nullptr, 0, &id) ==
+                  VA_STATUS_ERROR_INVALID_PARAMETER &&
+              CreateContext(&context, config, 16, 16, 0, nullptr, 1, &id) ==
+                  VA_STATUS_ERROR_INVALID_PARAMETER &&
+              id == VA_INVALID_ID && first.contexts.empty() &&
+              io.open_attempts == 0,
+          "invalid contexts fail before admission without publishing an ID");
+  allocation_fault::fail_next = true;
+  Require(CreateContext(&context, config, 16, 16, 0, nullptr, 0, &id) ==
+                  VA_STATUS_ERROR_ALLOCATION_FAILED &&
+              id == VA_INVALID_ID && first.contexts.empty() &&
+              io.open_attempts == 0,
+          "allocation failure cannot acquire an unpublished session");
+  Require(CreateContext(&context, config, 16, 16, 0, nullptr, 0, &id) ==
+                  VA_STATUS_SUCCESS && io.open_attempts == 1,
+          "context creation acquires a real playback handle before any picture");
+  const auto decoder = first.contexts.at(id);
+  Require(decoder->device == io.handle() && decoder->device_preopened &&
+              !decoder->decoder_open && !decoder->decoder_started,
+          "admission retains the exact handle without opening a codec");
+  for (VADriverContextP contender : {&context, &competing}) {
+    VAContextID rejected = VA_INVALID_ID;
+    const unsigned before = io.open_attempts;
+    Require(CreateContext(contender, config, 16, 16, 0, nullptr, 0,
+                          &rejected) == VA_STATUS_ERROR_HW_BUSY &&
+                rejected == VA_INVALID_ID && first.contexts.size() == 1 &&
+                second.contexts.empty() && decoder->device_preopened,
+            "both same-driver and independent clients fail before picture submission");
+    Require(io.open_attempts == before + (contender == &context ? 0 : 1),
+            "locked local ownership rejects directly; independent clients use real admission");
+  }
+  const unsigned attempts = io.open_attempts;
+  VAContextID vpp = VA_INVALID_ID;
+  Require(CreateContext(&context, vpp_config, 0, 0, 0, nullptr, 0, &vpp) ==
+                  VA_STATUS_SUCCESS && !first.contexts.at(vpp)->device &&
+              DestroyContext(&context, vpp) == VA_STATUS_SUCCESS &&
+              io.open_attempts == attempts && io.device_close_calls == 0,
+          "VPP-only contexts coexist without owning or releasing playback");
+  Require(OpenDecoder(decoder.get(), 16, 16, nullptr, 0) == VA_STATUS_SUCCESS &&
+              !decoder->device_preopened && io.open_attempts == attempts &&
+              io.device_close_calls == 0,
+          "first submission consumes its exact admitted handle without a release race");
+  Require(decoder->CloseHardware(0) == BC_STS_SUCCESS &&
+              decoder->device == nullptr && !decoder->device_preopened &&
+              io.device_close_calls == 1 && !io.device_owned,
+          "later replay keeps the historical full-device close workaround");
+  io.device_owned = true;  // Another client wins the existing replay release window.
+  Require(OpenDecoder(decoder.get(), 16, 16, nullptr, 0) == VA_STATUS_ERROR_HW_BUSY &&
+              decoder->device == nullptr && !decoder->decoder_open &&
+              io.device_close_calls == 1,
+          "replay reacquisition loses cleanly without replacing or closing another owner");
+  io.device_owned = false;
+  Require(OpenDecoder(decoder.get(), 16, 16, nullptr, 0) == VA_STATUS_SUCCESS &&
+              io.open_attempts == attempts + 2 &&
+              decoder->device == io.handle() &&
+              decoder->Reset(0) == BC_STS_SUCCESS &&
+              decoder->device == nullptr && io.device_close_calls == 2 &&
+              DestroyContext(&context, id) == VA_STATUS_SUCCESS &&
+              first.contexts.empty() && !io.invalid,
+          "clean reacquisition and existing full reset release exactly their own device");
+  Require(CreateContext(&context, config, 16, 16, 0, nullptr, 0, &id) ==
+                  VA_STATUS_SUCCESS,
+          "a later context can acquire after the first retires");
+  io.device_close_busy = 1;
+  Require(DestroyContextWithTimeout(&context, id, 0) == VA_STATUS_ERROR_HW_BUSY &&
+              first.contexts.count(id) == 1 && io.device_owned &&
+              DestroyContextWithTimeout(&context, id, 0) == VA_STATUS_SUCCESS &&
+              first.contexts.empty() && !io.device_owned && !io.invalid,
+          "unused admitted contexts preserve non-consuming close ownership until retry");
+}
+
+static void ContextAdmissionFailuresPublishNothing() {
+  for (const auto &failure : {
+           std::pair<BC_STATUS, VAStatus>{BC_STS_BUSY, VA_STATUS_ERROR_HW_BUSY},
+           {BC_STS_DEC_EXIST_OPEN, VA_STATUS_ERROR_HW_BUSY},
+           {BC_STS_ERR_USAGE, VA_STATUS_ERROR_OPERATION_FAILED},
+           {BC_STS_IO_ERROR, VA_STATUS_ERROR_OPERATION_FAILED}}) {
+    DecodeIoMock io;
+    io.device_open_status = failure.first;
+    MockDecodeScope scope(io);
+    Driver driver{-1};
+    driver.configs[1] = {VAProfileH264Main, VAEntrypointVLD};
+    VADriverContext context = {};
+    context.pDriverData = &driver;
+    VAContextID id = VA_INVALID_ID;
+    Require(CreateContext(&context, 1, 16, 16, 0, nullptr, 0, &id) == failure.second &&
+                id == VA_INVALID_ID && driver.contexts.empty() &&
+                driver.next_context == 1 && !io.device_owned &&
+                io.device_close_calls == 0 && io.open_attempts == 1,
+            "failed real admission leaves no handle, context entry or published ID");
+  }
+  DecodeIoMock io;
+  io.allow_device_open = true;
+  io.fail_set_input_format = true;
+  MockDecodeScope scope(io);
+  Driver driver{-1};
+  driver.configs[1] = {VAProfileH264Main, VAEntrypointVLD};
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  VAContextID id = VA_INVALID_ID;
+  Require(CreateContext(&context, 1, 16, 16, 0, nullptr, 0, &id) == VA_STATUS_SUCCESS,
+          "codec setup failure starts from admitted context");
+  const auto decoder = driver.contexts.at(id);
+  Require(OpenDecoder(decoder.get(), 16, 16, nullptr, 0) == VA_STATUS_ERROR_OPERATION_FAILED &&
+              decoder->device == nullptr && !decoder->device_preopened &&
+              io.device_close_calls == 1 && !io.device_owned &&
+              DestroyContext(&context, id) == VA_STATUS_SUCCESS &&
+              io.device_close_calls == 1 && !io.invalid,
+          "failed first codec setup consumes its admitted lease exactly once");
+}
+
 static void RealH264SubmitCompletesFieldPairs() {
   for (bool direct : {false, true}) {
     for (bool bottom_first : {false, true}) {
@@ -2910,6 +3048,9 @@ static void ExperimentalReadyRemapGate() {
     assign("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP", remap_value);
     assign("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US", delay_value);
     assign("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY", policy_value);
+    DecodeIoMock io;
+    io.allow_device_open = true;
+    MockDecodeScope scope(io);
     Driver driver{-1};
     driver.configs[1] = {profile, VAEntrypointVLD};
     VADriverContext context = {};
@@ -3057,6 +3198,9 @@ static void ExperimentalReadyRemapGate() {
 }
 
 static void DefaultH264TransportIsBounded() {
+  DecodeIoMock io;
+  io.allow_device_open = true;
+  MockDecodeScope scope(io);
   SavedEnvironment live("CRYSTALHD_VAAPI_LIVE_H264");
   unsetenv("CRYSTALHD_VAAPI_LIVE_H264");
   Driver driver{-1};
@@ -7393,6 +7537,8 @@ int main() {
     OutputAllocationFailuresReleaseHardwareExactlyOnce();
     DeviceCloseRetriesNonConsumingBusy();
     RetainedHandleClosesBeforeDecoderReopen();
+    ContextAdmissionRejectsBusyBeforePicture();
+    ContextAdmissionFailuresPublishNothing();
     RealH264SubmitCompletesFieldPairs();
     TraceIdentityUsesImmutableTokenAndLiveAliasOwner();
     TraceReadExportReuseBoundary();

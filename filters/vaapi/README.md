@@ -310,7 +310,10 @@ timeline advances.
   decoder reference identity. `vaDeriveImage` remains a readback snapshot, not a
   writable direct alias; use `vaCreateImage`/`vaPutImage` for ordinary uploads.
 - one CrystalHD playback session at a time; another client receives hardware
-  busy until the active decoder closes
+  busy at decode-context creation if the device is already owned. Configuration
+  queries and VPP-only contexts do not reserve playback. The first codec start
+  reuses the admitted handle; later finite replay/reset still performs the
+  existing full-device close/reopen and reports a failed reacquisition normally
 - video processing is limited to unfiltered NV12 scaling and NV12-to-ARGB
   conversion; there is no VA VPP deinterlacing or rotation. Selected H.264
   field pairs use the decode-time Weave path described above

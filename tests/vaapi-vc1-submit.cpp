@@ -333,7 +333,7 @@ struct Fixture {
 };
 void NoCommit(const Fixture &f, uint64_t timestamp=kTimestampStep, size_t count=0) {
   Require(f.decode->next_timestamp==timestamp && f.mock.inputs.size()==count,"failed transaction has no token or input commit");
-  if (!count) Require(f.mock.opens==0 && f.decode->vc1_configuration.empty(),"invalid first input does not open/configure decoder");
+  if (!count) Require(f.mock.starts==0 && f.decode->vc1_configuration.empty(),"invalid first input does not start/configure decoder");
 }
 
 void Profiles() {
@@ -462,6 +462,7 @@ void PoisonAndRecovery() {
     for(unsigned variant=0;variant<15;++variant) {
       Fixture f(profile); auto in=Input(profile); f.Begin();
       VABufferID bad=VA_INVALID_ID;
+      VAContextID other=VA_INVALID_ID;
       if(variant<3) {
         Bytes bytes(sizeof(in.picture)+(int(variant)-1),0);
         bad=f.Buffer(VAPictureParameterBufferType,bytes.data(),bytes.size());
@@ -478,7 +479,7 @@ void PoisonAndRecovery() {
         bad=f.Buffer(VAPictureParameterBufferType,&in.picture,sizeof(in.picture));
         f.Render(bad); // Duplicate picture buffer poisons, not last-one-wins.
       } else if(variant==10) {
-        VAContextID other=VA_INVALID_ID;
+        Require(f.decode->CloseHardware()==BC_STS_SUCCESS,"release first session before creating foreign context");
         Require(CreateContext(&f.context,f.config,16,32,VA_PROGRESSIVE,nullptr,0,&other)==VA_STATUS_SUCCESS,"second context");
         bad=f.Buffer(VAPictureParameterBufferType,&in.picture,sizeof(in.picture),1,other);
       } else if(variant==11) {
@@ -495,6 +496,8 @@ void PoisonAndRecovery() {
       Require(f.RenderStatus(good)!=VA_STATUS_SUCCESS,"later valid buffer cannot clear poison");
       Require(EndPicture(&f.context,f.id)!=VA_STATUS_SUCCESS,"ignored Render error fails End");
       NoCommit(f); Require(!f.decode->vc1_picture.invalid && f.decode->vc1_picture.data.empty(),"End clears failed transaction storage");
+      if(other!=VA_INVALID_ID)
+        Require(DestroyContext(&f.context,other)==VA_STATUS_SUCCESS,"foreign owner closes before first-context recovery");
       f.Submit(1); Require(f.mock.inputs.size()==1,"fresh Begin recovers normally");
     }
   }
@@ -561,6 +564,7 @@ void References() {
       if(variant==7) in.picture.backward_reference_picture=1;
       if(variant==8) {
         VAContextID other=VA_INVALID_ID;
+        Require(f.decode->CloseHardware()==BC_STS_SUCCESS,"release first session before assigning foreign references");
         Require(CreateContext(&f.context,f.config,16,32,VA_PROGRESSIVE,nullptr,0,&other)==VA_STATUS_SUCCESS,"foreign context");
         f.driver.surfaces.at(4)->expected_timestamp=kTimestampStep;
         f.driver.contexts.at(other)->surface_timestamps[f.driver.surfaces.at(4).get()]=kTimestampStep;

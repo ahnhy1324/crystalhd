@@ -370,8 +370,8 @@ void MalformedBuffersPoison() {
       auto id = f.Buffer(type, data.data(), wrong);
       Require(f.RenderStatus(id) != VA_STATUS_SUCCESS, "wrong element size rejected immediately");
       Require(EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS, "ignored Render error poisons End");
-      Require(f.mock.inputs.empty() && !f.mock.opens && f.decode->next_timestamp == kTimestampStep,
-              "malformed input never opens/submits/advances");
+      Require(f.mock.inputs.empty() && !f.mock.starts && f.decode->next_timestamp == kTimestampStep,
+              "malformed input never starts/submits/advances");
       f.Submit(1); Require(f.mock.inputs.size() == 1, "fresh Begin recovers");
     }
   }
@@ -381,13 +381,13 @@ void MalformedBuffersPoison() {
     auto id = f.Buffer(picture ? VAPictureParameterBufferType : VAIQMatrixBufferType,
                        data.data(), data.size()/2, 2);
     Require(f.RenderStatus(id) != VA_STATUS_SUCCESS, "picture/IQ requires one element");
-    Require(EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.opens, "bad element count cannot submit");
+    Require(EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.starts, "bad element count cannot submit");
   }
   {
     Fixture f; auto p = Picture(); auto b = f.Buffer(VAPictureParameterBufferType, &p, sizeof(p));
     Require(BufferSetNumElements(&f.context, b, 0) == VA_STATUS_SUCCESS, "public buffer resized to zero elements");
     f.Begin(); Require(f.RenderStatus(b) != VA_STATUS_SUCCESS &&
-                       EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.opens,
+                       EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.starts,
                        "zero-element metadata is not a valid picture");
   }
   {
@@ -395,7 +395,7 @@ void MalformedBuffersPoison() {
     uint8_t unknown = 0;
     auto b = f.Buffer(VAImageBufferType, &unknown, sizeof(unknown));
     Require(f.RenderStatus(b) != VA_STATUS_SUCCESS &&
-            EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.opens,
+            EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.starts,
             "unknown decode payload poisons otherwise complete parameters");
   }
 }
@@ -403,7 +403,7 @@ void BadCallsContextsAndMissingPairs() {
   for (int count : {-1, 1}) {
     Fixture f; f.Begin();
     Require(RenderPicture(&f.context, f.id, nullptr, count) != VA_STATUS_SUCCESS, "invalid public array/count rejected");
-    Require(EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.opens, "invalid call poisons transaction");
+    Require(EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.starts, "invalid call poisons transaction");
     f.Submit(1);
   }
   {
@@ -414,18 +414,20 @@ void BadCallsContextsAndMissingPairs() {
   }
   {
     Fixture f; VAContextID other = VA_INVALID_ID;
+    Require(f.decode->CloseHardware() == BC_STS_SUCCESS,
+            "release the first session before creating a foreign decode context");
     Require(CreateContext(&f.context, f.config, 16, 32, VA_PROGRESSIVE, nullptr, 0, &other) == VA_STATUS_SUCCESS,
             "second public context");
     auto p = Picture(); auto b = f.Buffer(VAPictureParameterBufferType, &p, sizeof(p), 1, other);
     f.Begin(); Require(f.RenderStatus(b) != VA_STATUS_SUCCESS, "cross-context buffer rejected");
-    Require(EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.opens, "foreign buffer never opens hardware");
+    Require(EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.starts, "foreign buffer never starts decoding");
   }
   for (bool missing_data : {false, true}) {
     Fixture f; f.Begin(); auto p = Picture(); auto s = Slice(); auto bytes = SliceBytes(0);
     f.Render(f.Buffer(VAPictureParameterBufferType, &p, sizeof(p)));
     if (missing_data) f.Render(f.Buffer(VASliceParameterBufferType, &s, sizeof(s)));
     else f.Render(f.Buffer(VASliceDataBufferType, bytes.data(), bytes.size()));
-    Require(EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.opens, "unpaired parameters/data rejected");
+    Require(EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.starts, "unpaired parameters/data rejected");
   }
 }
 void UnsupportedPictureAndSlicePoison() {
@@ -445,7 +447,7 @@ void UnsupportedPictureAndSlicePoison() {
     auto c = f.Buffer(VASliceDataBufferType, data.data(), data.size());
     VABufferID ids[] = {a,b,c};
     (void)RenderPicture(&f.context, f.id, ids, 3);
-    Require(EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.opens && f.mock.inputs.empty(),
+    Require(EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.starts && f.mock.inputs.empty(),
             "unsupported field/interlaced/fragmented/range syntax fails before hardware");
     f.Submit(1);
   }
@@ -484,6 +486,8 @@ void ReferenceValidation() {
   }
   {
     Fixture f; f.Submit(1);
+    Require(f.decode->CloseHardware() == BC_STS_SUCCESS,
+            "retire the first hardware session before assigning foreign reference ownership");
     VAContextID foreign = VA_INVALID_ID;
     Require(CreateContext(&f.context, f.config, 16, 32, VA_PROGRESSIVE, nullptr, 0, &foreign) == VA_STATUS_SUCCESS,
             "independent reference owner context");

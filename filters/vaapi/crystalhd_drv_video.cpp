@@ -1590,6 +1590,7 @@ struct DecodeContext {
   std::array<uint8_t, 4> wmv3_metadata = {};
 
   HANDLE device = nullptr;
+  bool device_preopened = false;
   std::shared_ptr<OutputPollLease> output_poll;
   std::weak_ptr<OutputPollLease> armed_output_poll;
   bool decoder_open = false;
@@ -1794,6 +1795,7 @@ struct DecodeContext {
       decoder_open = false;
     }
     hardware_close_pending = false;
+    device_preopened = false;
     retained_close_status = BC_STS_SUCCESS;
     armed_output_poll.reset();
     output_poll.reset();
@@ -2505,33 +2507,49 @@ static bool ShouldAutoPrefeedH264(const DecodeContext &decode) {
          !decode.picture.pic_fields.bits.field_pic_flag;
 }
 
+static VAStatus OpenDevice(DecodeContext *decode) {
+  const uint32_t mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW |
+                  DTS_SKIP_TX_CHK_CPB | DTS_PLAYBACK_DROP_RPT_MODE |
+                  DTS_SINGLE_THREADED_MODE |
+                  DTS_DFLT_RESOLUTION(vdecRESOLUTION_1080p23_976);
+  HANDLE opened = nullptr;
+  const BC_STATUS status = DtsDeviceOpen(&opened, mode);
+  Debug("DtsDeviceOpen: %d", status);
+  if (status != BC_STS_SUCCESS) {
+    // ERR_USAGE can also be propagated from unrelated initialization failure;
+    // only the library's unambiguous ownership statuses mean hardware busy.
+    if (status == BC_STS_BUSY || status == BC_STS_DEC_EXIST_OPEN)
+      return VA_STATUS_ERROR_HW_BUSY;
+    return VA_STATUS_ERROR_OPERATION_FAILED;
+  }
+  if (opened == nullptr)
+    return VA_STATUS_ERROR_OPERATION_FAILED;
+  decode->device = opened;
+  return VA_STATUS_SUCCESS;
+}
+
 static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
                             unsigned int height = 0,
                             const std::array<uint8_t, 4> *wmv3_metadata = nullptr,
                             uint64_t close_timeout_ns = kDecodeTimeoutNs) {
   BC_INPUT_FORMAT input = {};
   BC_INFO_CRYSTAL version = {};
-  uint32_t mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW |
-                  DTS_SKIP_TX_CHK_CPB | DTS_PLAYBACK_DROP_RPT_MODE |
-                  DTS_SINGLE_THREADED_MODE |
-                  DTS_DFLT_RESOLUTION(vdecRESOLUTION_1080p23_976);
-
-  if (decode->device != nullptr) {
+  const bool reuse_admission = decode->device_preopened &&
+      !decode->hardware_close_pending && !decode->decoder_open &&
+      !decode->decoder_started;
+  decode->device_preopened = false;
+  if (decode->device != nullptr && !reuse_admission) {
     const BC_STATUS retained = decode->CloseHardware(close_timeout_ns);
     if (decode->device != nullptr)
       return VA_STATUS_ERROR_HW_BUSY;
     if (retained != BC_STS_SUCCESS)
       return VA_STATUS_ERROR_OPERATION_FAILED;
   }
-  HANDLE opened = nullptr;
-  BC_STATUS status = DtsDeviceOpen(&opened, mode);
-  Debug("DtsDeviceOpen: %d", status);
-  if (status != BC_STS_SUCCESS) {
-    if (status == BC_STS_BUSY || status == BC_STS_DEC_EXIST_OPEN)
-      return VA_STATUS_ERROR_HW_BUSY;
-    return VA_STATUS_ERROR_OPERATION_FAILED;
+  if (decode->device == nullptr) {
+    const VAStatus opened = OpenDevice(decode);
+    if (opened != VA_STATUS_SUCCESS)
+      return opened;
   }
-  decode->device = opened;
 
   int output_poll_fd = -1;
   if (DtsDupOutputPollFd != nullptr &&
@@ -2541,7 +2559,7 @@ static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
   else
     decode->output_poll.reset();
 
-  status = DtsCrystalHDVersion(decode->device, &version);
+  BC_STATUS status = DtsCrystalHDVersion(decode->device, &version);
   if (status != BC_STS_SUCCESS)
     goto fail;
   decode->is_70012 = version.device == 0;
@@ -5740,6 +5758,9 @@ static VAStatus QueryVideoProcPipelineCaps(VADriverContextP context,
 static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
                               int width, int height, int, VASurfaceID *targets,
                               int target_count, VAContextID *context_id) {
+  if (context_id == nullptr || target_count < 0 ||
+      (target_count != 0 && targets == nullptr))
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
   auto config = driver->configs.find(config_id);
@@ -5758,7 +5779,19 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
     if (driver->surfaces.find(targets[i]) == driver->surfaces.end())
       return VA_STATUS_ERROR_INVALID_SURFACE;
   }
-  auto decode = std::make_shared<DecodeContext>();
+  if (!video_process &&
+      std::any_of(driver->contexts.begin(), driver->contexts.end(),
+                  [](const auto &entry) {
+                    return !entry.second->video_process &&
+                           entry.second->device != nullptr;
+                  }))
+    return VA_STATUS_ERROR_HW_BUSY;
+  std::shared_ptr<DecodeContext> decode;
+  try {
+    decode = std::make_shared<DecodeContext>();
+  } catch (const std::bad_alloc &) {
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
   decode->config = config_id;
   decode->profile = config->second.profile;
   decode->width = std::max(width, 0);
@@ -5808,9 +5841,27 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   }
   if (decode->live_h264)
     decode->replay = CrystalHDDecodeReplay(true);
-  *context_id = driver->next_context++;
-  decode->id = *context_id;
-  driver->contexts[*context_id] = std::move(decode);
+  const VAContextID created = driver->next_context;
+  decode->id = created;
+  // Complete fallible container allocation before acquiring a real session.
+  // The driver lock keeps this entry private until admission succeeds.
+  try {
+    driver->contexts.emplace(created, decode);
+  } catch (const std::bad_alloc &) {
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
+  if (!video_process) {
+    const VAStatus opened = OpenDevice(decode.get());
+    if (opened != VA_STATUS_SUCCESS) {
+      driver->contexts.erase(created);
+      return opened;
+    }
+    // Consume this exact lease on the first submit. Later finite replay and
+    // reset retain their existing full-device close/reopen workaround.
+    decode->device_preopened = true;
+  }
+  ++driver->next_context;
+  *context_id = created;
   return VA_STATUS_SUCCESS;
 }
 
