@@ -939,6 +939,56 @@ class GStreamerApiTests(unittest.TestCase):
             context.iteration(False)
         self.assertEqual(handled, [True])
 
+    def scale_caps_player(self, width, mode):
+        result = self.make_player()
+        result.args.scale_width = width
+        sink = self.Gst.Pad.new("sink", self.Gst.PadDirection.SINK)
+        sink.set_event_function_full(lambda _pad, _parent, _event: True)
+        self.assertTrue(sink.set_active(True))
+        self.addCleanup(sink.set_active, False)
+        # Mock only the decoder factory/property boundary. Actual caps events
+        # cross its real sink pad; no decoder implementation or card is used.
+        decoder = mock.Mock()
+        decoder.get_factory.return_value = Factory("crystalhddec", HARDWARE)
+        decoder.find_property.return_value = object()
+        decoder.get_static_pad.side_effect = lambda name: sink if name == "sink" else None
+        result.element_setup(None, decoder)
+        caps = self.Gst.Caps.from_string(
+            "video/mpeg,mpegversion=2,systemstream=false,parsed=true,"
+            "width=1920,height=1088,framerate=25/1")
+        if mode is not None:
+            caps.set_value("interlace-mode", mode)
+        self.assertTrue(sink.send_event(self.Gst.Event.new_caps(caps)))
+        return result
+
+    def test_interlaced_scale_rejection_survives_audio_only_eos(self):
+        result = self.scale_caps_player(1440, "mixed")
+        # playbin can discard a failed video branch while audio reaches EOS.
+        result.post_observation("crystalhd-player-removed", {"token": 1})
+        self.assertTrue(result.bus.post(self.Gst.Message.new_eos(result.pipeline)))
+        with contextlib.redirect_stderr(io.StringIO()):
+            while True:
+                message = result.bus.timed_pop_filtered(0,
+                    self.Gst.MessageType.APPLICATION | self.Gst.MessageType.EOS)
+                if message is None:
+                    break
+                result.message(result.bus, message)
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("--scale-width requires progressive input", result.health.error)
+        self.assertIn("mixed", result.health.error)
+        self.assertIn("omit --scale-width", result.health.error)
+        self.assertEqual(result.health.finish(), 1)
+        self.assertNotIn("no output", result.health.error)
+
+    def test_scale_caps_probe_keeps_progressive_and_native_input(self):
+        for width, mode in ((1440, "progressive"), (0, "mixed"),
+                            (1440, None)):
+            with self.subTest(width=width, mode=mode):
+                result = self.scale_caps_player(width, mode)
+                self.assertIsNone(result.bus.timed_pop_filtered(
+                    0, self.Gst.MessageType.APPLICATION))
+                self.assertIsNone(result.health.error)
+
     def test_explicit_upscale_filter_has_expected_caps_and_quality_settings(self):
         for name in ("videoscale", "capsfilter"):
             if self.Gst.ElementFactory.find(name) is None:
