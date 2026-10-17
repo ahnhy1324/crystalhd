@@ -43,11 +43,12 @@ CrystalHD hardware decode session can be open at a time.
   LIVE/LOW_LATENCY finite playback still has a known tail-timeout limitation.
 - **Oversized H.264 rejection is not general stream recovery.** RC4 passes
   selected synthetic next-IDR controls, but a real B-pyramid rejection case
-  returns two stale pictures despite the expected total count. The development
-  [readback hardening](https://github.com/ahnhy1324/crystalhd/pull/459) instead
-  fails explicitly; complete recovery remains open in
-  [#429](https://github.com/ahnhy1324/crystalhd/issues/429). Neither result
-  broadens the 2 MiB assembled-submission policy.
+  returns two stale pictures despite the expected total count. The
+  [development changes](https://github.com/ahnhy1324/crystalhd/pull/459) add
+  qualified transport-specific headroom and decode that padded case fully;
+  generic out-of-policy rejection recovery remains open in
+  [#429](https://github.com/ahnhy1324/crystalhd/issues/429). These changes are
+  not part of the published RC4; see the [admission limits](#codec-boundaries).
 - **Legacy client CPU requirements still apply.** On the reporter's Atom N280
   / i386 / Kodi 22 build, Render Bob (6) crashed with SIGILL in
   `libsse4-i486-linux.so`. Deinterlace (7) was not separately run on that host;
@@ -369,6 +370,15 @@ not block valid continuation. This policy is not the chip's
 physical maximum, and the separate 8 MiB software allocation bound does not
 establish 8 MiB hardware decoding. Units above 512 KiB require a matching
 libcrystalhd with `DtsProcInputFragment`.
+
+The [development branch](https://github.com/ahnhy1324/crystalhd/pull/459), not
+published RC4, separately qualifies **3,014,656 bytes** for identified
+BCM70015/DIL 3.22.0 progressive frame-coded input. Unknown/BCM70012/interlaced
+paths retain 2 MiB. With the identified older Flea PES library, complete AUs up
+to **768 KiB** can use a fully reserved legacy call; larger units still need
+the fragment API. This restores the tested original/padded Sintel paths, not
+arbitrary oversized-input recovery or a silicon maximum. Exact tested code
+and headless results are in the [qualification summary](HARDWARE-2026-09-13.md#110-rc4-qualification--2026-10-18).
 
 ## VA-API, FFmpeg, Kodi and VLC
 

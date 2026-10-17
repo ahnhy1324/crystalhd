@@ -720,6 +720,9 @@ struct Surface {
   uint64_t frame_timestamp = 0;
   uint64_t latest_vpp_sequence = 0;
   uint64_t decode_identity = 0;
+  // Begin/Render/End rejection ownership, separate from an accepted picture.
+  uint64_t picture_transaction = 0;
+  uint64_t rejected_picture_transaction = 0;
   uint64_t trace_decode_identity = 0;
   uint64_t trace_context = 0;
   uint64_t trace_generation = 0;
@@ -1617,6 +1620,9 @@ struct DecodeContext {
   unsigned int stream_height = 0;
   bool video_process = false;
   VASurfaceID target = VA_INVALID_SURFACE;
+  std::weak_ptr<Surface> h264_transaction_target;
+  uint64_t h264_target_transaction = 0;
+  uint64_t h264_target_identity = 0;
   VASurfaceID vpp_source = VA_INVALID_SURFACE;
   std::shared_ptr<Surface> vpp_frame;
   std::shared_ptr<DecodeContext> vpp_decoder;
@@ -3998,6 +4004,33 @@ static VAStatus AdvanceMpeg4Epoch(Driver *driver, DecodeContext *decode) {
   return VA_STATUS_SUCCESS;
 }
 
+static bool KnownFleaH264Transport(DecodeContext *decode) {
+  if (!IsH264Profile(decode->profile) || decode->device == nullptr)
+    return false;
+  // Query the preopened public handle even before OpenDecoder has populated
+  // is_70012. Unknown devices/versions cannot select a qualified allowance.
+  BC_INFO_CRYSTAL version = {};
+  return DtsCrystalHDVersion(decode->device, &version) == BC_STS_SUCCESS &&
+      version.device == 1 && version.dilVersion.dilRelease == 3 &&
+      version.dilVersion.dilMajor == 22 && version.dilVersion.dilMinor == 0;
+}
+
+static bool LegacyH264PesOneShot(DecodeContext *decode, size_t bytes) {
+  return bytes <= crystalhd_access_unit_limits::kLegacyH264PesBytes &&
+      KnownFleaH264Transport(decode);
+}
+
+static size_t H264SubmissionLimit(DecodeContext *decode, size_t bytes) {
+  const size_t base = crystalhd_access_unit_limits::kVaH264SubmissionBytes;
+  // frame_mbs_only excludes MBAFF/field-capable sequences; field_pic is an
+  // additional guard, not a progressive/interlaced classification by itself.
+  if (bytes > base && decode->picture.seq_fields.bits.frame_mbs_only_flag &&
+      !decode->picture.pic_fields.bits.field_pic_flag &&
+      KnownFleaH264Transport(decode))
+    return crystalhd_access_unit_limits::kVaFleaProgressiveH264SubmissionBytes;
+  return base;
+}
+
 static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                                 unsigned int max_attempts = 32) {
   decode->input_backpressured = false;
@@ -4057,13 +4090,18 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                           "partial input escaped its H.264 access unit");
       }
       const size_t remaining = unit->bytes.size() - offset;
-      const bool fragmented_h264 = bounded_h264 &&
+      bool fragmented_h264 = bounded_h264 &&
           (offset != 0 || unit->bytes.size() >
                               crystalhd_access_unit_limits::kDtsInputChunkBytes);
       const CrystalHDFragmentInput fragment_input = H264FragmentInput();
-      if (fragmented_h264 && fragment_input == nullptr)
-        return FailDecode(driver, decode,
-                          "large H.264 input requires fragmented libcrystalhd input");
+      if (fragmented_h264 && fragment_input == nullptr) {
+        // Never reinterpret an unfinished modern AU as a legacy tail. The
+        // legacy public call owns one complete AU and one timestamp only.
+        if (offset != 0 || !LegacyH264PesOneShot(decode, unit->bytes.size()))
+          return FailDecode(driver, decode,
+                            "large H.264 input requires fragmented libcrystalhd input");
+        fragmented_h264 = false;
+      }
       const size_t transfer = fragmented_h264
           ? std::min(remaining,
                      crystalhd_access_unit_limits::kDtsInputChunkBytes)
@@ -4071,8 +4109,10 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
       const size_t reserve =
           transfer + (transfer / 60000 + 1) * 32 + 1024;
       /* The additive fragment API performs its own exact, zero-byte
-       * reservation. Keep the historical conservative precheck only for the
-       * otherwise-blocking legacy one-shot path. */
+       * reservation. A legacy Flea PES call can contain multiple <=65526-byte
+       * packets; reserve the WHOLE call before entering its blocking producer.
+       * This VA mutex excludes other input/EOS/lifecycle producers on this
+       * handle, and its DIL TX worker can only increase the available space. */
       if (!fragmented_h264 && DtsTxFreeSize(decode->device) < reserve) {
         decode->input_backpressured = true;
         break;
@@ -4266,7 +4306,78 @@ static std::vector<uint32_t> Vc1Configuration(const VAPictureParameterBufferVC1 
           range.chroma_flag, range.chroma_flag ? range.chroma : 0U};
 }
 
-static VAStatus RejectH264Picture(DecodeContext *decode, VAStatus status,
+static bool PublicReadRejected(const Surface *owner) {
+  return owner->rejected_picture_transaction != 0 &&
+      owner->rejected_picture_transaction == owner->picture_transaction;
+}
+
+static std::shared_ptr<Surface> MarkRejectedH264Transaction(
+    Driver *driver, DecodeContext *decode) {
+  const auto target = decode->h264_transaction_target.lock();
+  const auto current = driver->surfaces.find(decode->target);
+  if (!target || current == driver->surfaces.end() || current->second != target ||
+      target->destroyed || target->backing_owner != VA_INVALID_SURFACE ||
+      target->picture_transaction != decode->h264_target_transaction ||
+      target->decode_identity != decode->h264_target_identity)
+    return {};
+  // This allocation-free public-read barrier is independent of accepted
+  // storage/readers. A late old completion cannot clear it; only a new writer
+  // transaction supersedes it. Never consult it for captured private reads.
+  target->rejected_picture_transaction = target->picture_transaction;
+  return target;
+}
+
+static VAStatus RejectH264Target(Driver *driver, DecodeContext *decode,
+                                 VAStatus status) {
+  const auto target = MarkRejectedH264Transaction(driver, decode);
+  if (!target || target->vpp_readers != 0 || target->vpp_writers != 0 ||
+      target->export_waiters != 0 || target->image_write_locked ||
+      target->experimental_read_export_armed || target->experimental_presentation)
+    return status;
+  if (target->experimental_write_lease &&
+      (!decode->experimental_ready_remap ||
+       target->experimental_write_context != TraceId(decode->id, VA_INVALID_ID) ||
+       target->experimental_write_generation != decode->generation ||
+       target->experimental_write_submission_ordinal !=
+           decode->next_submission_ordinal))
+    return status;
+
+  // Reject the NEW public transaction, not previously accepted private output.
+  // A pending or captured direct picture needs independent storage before the
+  // public owner is revoked. Allocation failure must leave that binding intact.
+  try {
+    const auto picture = target->decode_picture.lock();
+    if (picture && picture->direct_backing) {
+      // Unlike ordinary reuse, rejection must not poison the earlier accepted
+      // picture if allocation or reading its backing fails. Stage the entire
+      // promotion before changing that picture's planes or ownership.
+      if (picture->direct_backing != target)
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+      Surface preserved;
+      if (!preserved.AllocateInternal(nullptr, -1, picture->width,
+                                       picture->height, VA_FOURCC_NV12) ||
+          (picture->ready && !picture->failed &&
+           (target->frame_timestamp != picture->frame_timestamp ||
+            !CopyNv12Surface(*target, &preserved))))
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+      picture->storage = std::move(preserved.storage);
+      for (unsigned int plane = 0; plane < 2; ++plane) {
+        picture->pitch[plane] = preserved.pitch[plane];
+        picture->planes[plane] = preserved.planes[plane];
+      }
+      picture->direct_backing.reset();
+    }
+  } catch (const std::bad_alloc &) {
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
+  EndTraceBinding(driver, target.get());
+  RevokeDecodeOwner(driver, target.get());
+  SetSurfaceState(driver, target.get(), false, true);
+  driver->condition.notify_all();
+  return status;
+}
+
+static VAStatus RejectH264Picture(Driver *driver, DecodeContext *decode, VAStatus status,
                                   const uint8_t *rejected = nullptr,
                                   size_t rejected_size = 0) {
   const auto reference_vcl = [](const uint8_t *data, size_t size) {
@@ -4282,7 +4393,7 @@ static VAStatus RejectH264Picture(DecodeContext *decode, VAStatus status,
                     return reference_vcl(slice.data(), slice.size());
                   }))
     decode->h264_waiting_for_idr = true;
-  return status;
+  return RejectH264Target(driver, decode, status);
 }
 
 static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
@@ -4300,7 +4411,7 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                    (decode->slice_data.front().front() & 0x1fU) == 5;
   if (IsH264Profile(profile) && decode->h264_waiting_for_idr && !idr) {
     Debug("H.264 input requires an actual IDR after a rejected reference picture");
-    return VA_STATUS_ERROR_DECODING_ERROR;
+    return RejectH264Target(driver, decode, VA_STATUS_ERROR_DECODING_ERROR);
   }
   if (decode->experimental_ready_remap &&
       std::any_of(decode->slices.begin(), decode->slices.end(),
@@ -4563,24 +4674,27 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     const VAStatus h264_status = build_h264();
     if (h264_status != VA_STATUS_SUCCESS)
       return h264_status == VA_STATUS_ERROR_INVALID_PARAMETER
-          ? RejectH264Picture(decode, h264_status) : h264_status;
+          ? RejectH264Picture(driver, decode, h264_status) : h264_status;
     // The assembly allocation bound is not hardware acceptance evidence.
     // Reject unqualified complete AUs before replay/picture identity changes;
     // sending one can suppress all later output, including the next IDR.
-    if (bitstream.size() >
-        crystalhd_access_unit_limits::kVaH264SubmissionBytes) {
+    const size_t submission_limit = H264SubmissionLimit(decode, bitstream.size());
+    if (bitstream.size() > submission_limit) {
       Debug("H.264 access unit exceeds VA submission policy: bytes=%zu limit=%zu",
-            bitstream.size(),
-            crystalhd_access_unit_limits::kVaH264SubmissionBytes);
-      return RejectH264Picture(decode, VA_STATUS_ERROR_INVALID_PARAMETER);
+            bitstream.size(), submission_limit);
+      return RejectH264Picture(driver, decode, VA_STATUS_ERROR_INVALID_PARAMETER);
     }
+    if (bitstream.size() > crystalhd_access_unit_limits::kVaH264SubmissionBytes)
+      Debug("H.264 access unit within VA submission policy: bytes=%zu limit=%zu",
+            bitstream.size(), submission_limit);
     // An older library cannot carry this complete AU. Reject the current
     // transaction before allocating/binding a picture or committing replay;
     // failing in PumpDecodeInput would also poison earlier retained output.
     if (bitstream.size() > crystalhd_access_unit_limits::kDtsInputChunkBytes &&
-        H264FragmentInput() == nullptr) {
+        H264FragmentInput() == nullptr &&
+        !LegacyH264PesOneShot(decode, bitstream.size())) {
       Debug("large H.264 input requires fragmented libcrystalhd input");
-      return RejectH264Picture(decode, VA_STATUS_ERROR_INVALID_PARAMETER);
+      return RejectH264Picture(driver, decode, VA_STATUS_ERROR_INVALID_PARAMETER);
     }
     Debug("submit surface=%u bytes=%zu slices=%zu", decode->target,
           bitstream.size(), decode->slice_data.size());
@@ -6220,6 +6334,7 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
     if (target_surface->second.get() != target_owner)
       ClearTraceIdentity(target_surface->second.get());
     RevokeDecodeOwner(driver, target_owner);
+    target_owner->picture_transaction = NextDecodeIdentity(driver);
     decode->second->target = target;
     // Chromium renders into an imported alias of an exported ARGB surface.
     // Track readiness on both aliases until VPP commits the exact frame.
@@ -6270,6 +6385,11 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
         decode->second->next_submission_ordinal;
   }
   decode->second->target = target;
+  target_surface->second->picture_transaction = NextDecodeIdentity(driver);
+  decode->second->h264_transaction_target = target_surface->second;
+  decode->second->h264_target_transaction =
+      target_surface->second->picture_transaction;
+  decode->second->h264_target_identity = target_surface->second->decode_identity;
   decode->second->have_picture = false;
   decode->second->h264_picture_invalid = false;
   decode->second->h264_framed_slice_bytes = 0;
@@ -6591,6 +6711,8 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
       if (owner != driver->surfaces.end())
         source_owner = owner->second;
     }
+    if (PublicReadRejected(source_owner.get()))
+      return VA_STATUS_ERROR_DECODING_ERROR;
     if (ExperimentalPresentationBinding(driver, source_owner.get()) ||
         source_owner->experimental_write_lease ||
         source_owner->experimental_read_export_armed ||
@@ -6706,7 +6828,7 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
         if (framed > limit || limit - framed < 4 ||
             buffer->second.data.size() > limit - framed - 4) {
           decode->second->h264_picture_invalid = true;
-          return RejectH264Picture(decode->second.get(),
+          return RejectH264Picture(driver, decode->second.get(),
                                     VA_STATUS_ERROR_INVALID_BUFFER,
                                     buffer->second.data.data(),
                                     buffer->second.data.size());
@@ -6888,10 +7010,16 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     return VA_STATUS_ERROR_INVALID_CONFIG;
   const VAProfile profile = config->second.profile;
   VAStatus status = SubmitPicture(driver, decode_context.get(), profile);
+  // End consumes this transaction even for malformed/unsupported input or
+  // allocation failure. Recoverable Render errors remain replaceable before
+  // End; successful queued/backpressured submissions are not rejections.
+  if (status != VA_STATUS_SUCCESS && IsH264Profile(profile))
+    MarkRejectedH264Transaction(driver, decode_context.get());
   if (status != VA_STATUS_SUCCESS)
     Debug("EndPicture rejected status=%d profile=%d target=%u", status,
           profile, decode_context->target);
   decode_context->target = VA_INVALID_SURFACE;
+  decode_context->h264_transaction_target.reset();
   decode_context->have_picture = false;
   decode_context->h264_picture_invalid = false;
   decode_context->h264_framed_slice_bytes = 0;
@@ -6959,6 +7087,8 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
     return status;
   };
 
+  if (PublicReadRejected(synchronized_surface.get()))
+    return finish(VA_STATUS_ERROR_DECODING_ERROR);
   if (ExperimentalWriteReservationPending(synchronized_surface.get()))
     return finish(VA_STATUS_ERROR_SURFACE_BUSY);
 
@@ -7056,7 +7186,7 @@ static VAStatus SynchronizeExportRead(
           ? surface : driver->surfaces.at(surface->backing_owner);
   if (owner->image_write_locked)
     return VA_STATUS_ERROR_SURFACE_BUSY;
-  if (owner->failed)
+  if (owner->failed || PublicReadRejected(owner.get()))
     return VA_STATUS_ERROR_DECODING_ERROR;
   if ((owner->ready || ExperimentalPresentationReadable(driver, owner.get())) &&
       owner->vpp_writers == 0)
@@ -7103,7 +7233,7 @@ static VAStatus QuerySurfaceStatus(VADriverContextP context,
   if (status == nullptr)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   Surface *owner = BackingOwner(driver, surface->second.get());
-  if (owner->failed)
+  if (owner->failed || PublicReadRejected(owner))
     return VA_STATUS_ERROR_DECODING_ERROR;
   if (ExperimentalWriteReservationPending(owner)) {
     *status = VASurfaceRendering;
@@ -7324,6 +7454,8 @@ static VAStatus GetImage(VADriverContextP context, VASurfaceID surface_id,
   if (image == driver->images.end())
     return VA_STATUS_ERROR_INVALID_IMAGE;
   Surface *owner = BackingOwner(driver, surface->second.get());
+  if (PublicReadRejected(owner))
+    return VA_STATUS_ERROR_DECODING_ERROR;
   if (ExperimentalPresentationBinding(driver, owner) ||
       owner->experimental_write_lease ||
       owner->experimental_read_export_armed ||
@@ -7394,6 +7526,7 @@ static VAStatus PutImageLocked(Driver *driver, VASurfaceID surface_id,
                                   image->second.va.offsets[0];
   const uint8_t *source_uv_plane = buffer->second.data.data() +
                                    image->second.va.offsets[1];
+  owner->picture_transaction = NextDecodeIdentity(driver);
   EndTraceBinding(driver, owner);
   if (surface->second.get() != owner)
     ClearTraceIdentity(surface->second.get());
@@ -7468,6 +7601,7 @@ static VAStatus PrepareDerivedWrite(Driver *driver, Buffer &buffer, bool refresh
       return status;
   }
   ++owner->vpp_writers;
+  owner->picture_transaction = NextDecodeIdentity(driver);
   owner->image_write_locked = true;
   buffer.derived_was_ready = owner->ready;
   owner->ready = false;
