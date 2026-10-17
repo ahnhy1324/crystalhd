@@ -405,17 +405,27 @@ void LargeH264AccessUnitBoundaryAndRecovery() {
   size_t overhead = 0;
   {
     Fixture legacy_library;
-    CrystalHDFragmentInput saved = crystalhd_test_fragment_input;
     crystalhd_test_fragment_input = nullptr;
     const VAStatus status = SubmitH264(&legacy_library, issue_au);
-    crystalhd_test_fragment_input = saved;
-    Require(status == VA_STATUS_ERROR_DECODING_ERROR &&
+    Require(status == VA_STATUS_ERROR_INVALID_PARAMETER &&
                 legacy_library.mock.inputs.empty() &&
                 legacy_library.mock.legacy_input_calls == 0 &&
                 legacy_library.mock.fragment_input_calls == 0 &&
                 legacy_library.decode->partial_input_timestamp == 0 &&
-                legacy_library.decode->partial_input_offset == 0,
-            "an older library without the additive symbol rejects a large AU before consuming a byte");
+                legacy_library.decode->partial_input_offset == 0 &&
+                !legacy_library.decode->replay.failed() &&
+                legacy_library.decode->replay.cached_pictures() == 0 &&
+                legacy_library.decode->next_timestamp == kTimestampStep &&
+                legacy_library.decode->pending.empty() &&
+                legacy_library.decode->decoded_frames.empty() &&
+                !legacy_library.decode->sent_parameter_sets,
+            "an older library rejects a large AU before consuming bytes or committing replay state");
+    Require(SubmitH264(&legacy_library, {0x65, 0x88, 0x84}) ==
+                    VA_STATUS_SUCCESS &&
+                legacy_library.mock.legacy_input_calls == 1 &&
+                legacy_library.mock.fragment_input_calls == 0 &&
+                !legacy_library.decode->replay.failed(),
+            "the same older-library context accepts the next actual IDR");
   }
   {
     Fixture normal;
@@ -485,6 +495,60 @@ void LargeH264AccessUnitBoundaryAndRecovery() {
   std::vector<uint8_t> transport_boundary(
       crystalhd_access_unit_limits::kDtsInputChunkBytes - overhead, 0x55);
   transport_boundary[0] = 0x65;
+  for (int delta : {-1, 0, 1}) {
+    Fixture legacy_library;
+    crystalhd_test_fragment_input = nullptr;
+    auto bytes = transport_boundary;
+    if (delta < 0)
+      bytes.pop_back();
+    else if (delta > 0)
+      bytes.push_back(0x55);
+    const VAStatus expected = delta > 0
+        ? VA_STATUS_ERROR_INVALID_PARAMETER : VA_STATUS_SUCCESS;
+    Require(SubmitH264(&legacy_library, bytes) == expected &&
+                legacy_library.mock.legacy_input_calls == (delta > 0 ? 0U : 1U) &&
+                legacy_library.mock.fragment_input_calls == 0 &&
+                !legacy_library.decode->replay.failed(),
+            "old-library admission checks the exact assembled 512 KiB boundary");
+  }
+  {
+    Fixture pending;
+    crystalhd_test_fragment_input = nullptr;
+    Require(SubmitH264(&pending, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                SubmitH264(&pending, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "prepare retained pictures before a rejected old-library AU");
+    const auto before_pending = pending.decode->pending;
+    const auto before_frames = pending.decode->decoded_frames;
+    const auto before_public = pending.driver.surfaces.at(1);
+    const uint64_t before_expected = before_public->expected_timestamp;
+    const uint64_t before_identity = before_public->decode_identity;
+    const uint64_t before_timestamp = pending.decode->next_timestamp;
+    const uint64_t before_submission = pending.decode->next_submission_ordinal;
+    const size_t before_cache = pending.decode->replay.cached_bytes();
+    Require(SubmitH264(&pending, issue_au) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                pending.mock.inputs.size() == 2 &&
+                pending.decode->pending == before_pending &&
+                pending.decode->decoded_frames == before_frames &&
+                pending.decode->next_timestamp == before_timestamp &&
+                pending.decode->next_submission_ordinal == before_submission &&
+                pending.decode->replay.cached_bytes() == before_cache &&
+                pending.decode->replay.outstanding() == 2 &&
+                !pending.decode->replay.failed() &&
+                before_public->expected_timestamp == before_expected &&
+                before_public->decode_identity == before_identity &&
+                !before_public->failed,
+            "rejection preserves earlier pictures and public/replay identities");
+    for (const auto &frame : before_frames)
+      Require(!frame.second->failed &&
+                  pending.decode->replay.Observe(frame.first) ==
+                      CrystalHDDecodeReplay::Output::New,
+              "earlier retained pictures remain completable after rejection");
+    Require(SubmitH264(&pending, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                pending.mock.inputs.size() == 3 &&
+                pending.mock.inputs.back().timestamp == before_timestamp &&
+                !pending.decode->replay.failed(),
+            "the next IDR uses the unconsumed timestamp and legacy input path");
+  }
   {
     Fixture boundary;
     Require(SubmitH264(&boundary, transport_boundary) == VA_STATUS_SUCCESS &&

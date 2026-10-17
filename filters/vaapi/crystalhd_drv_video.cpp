@@ -93,6 +93,14 @@ static CrystalHDFragmentInput crystalhd_test_fragment_input = nullptr;
 
 namespace {
 
+static CrystalHDFragmentInput H264FragmentInput() {
+#if defined(CRYSTALHD_VAAPI_TEST_FRAGMENT_INPUT)
+  return crystalhd_test_fragment_input;
+#else
+  return DtsProcInputFragment;
+#endif
+}
+
 constexpr uint64_t kDecodeTimeoutNs = 10ULL * 1000 * 1000 * 1000;
 constexpr uint64_t kDecodeBatchGraceNs = 100ULL * 1000 * 1000;
 constexpr uint64_t kBoundedH264InactivityGraceNs =
@@ -3909,12 +3917,7 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
       const bool fragmented_h264 = bounded_h264 &&
           (offset != 0 || unit->bytes.size() >
                               crystalhd_access_unit_limits::kDtsInputChunkBytes);
-      CrystalHDFragmentInput fragment_input =
-#if defined(CRYSTALHD_VAAPI_TEST_FRAGMENT_INPUT)
-          crystalhd_test_fragment_input;
-#else
-          DtsProcInputFragment;
-#endif
+      const CrystalHDFragmentInput fragment_input = H264FragmentInput();
       if (fragmented_h264 && fragment_input == nullptr)
         return FailDecode(driver, decode,
                           "large H.264 input requires fragmented libcrystalhd input");
@@ -4394,6 +4397,14 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     const VAStatus h264_status = build_h264();
     if (h264_status != VA_STATUS_SUCCESS)
       return h264_status;
+    // An older library cannot carry this complete AU. Reject the current
+    // transaction before allocating/binding a picture or committing replay;
+    // failing in PumpDecodeInput would also poison earlier retained output.
+    if (bitstream.size() > crystalhd_access_unit_limits::kDtsInputChunkBytes &&
+        H264FragmentInput() == nullptr) {
+      Debug("large H.264 input requires fragmented libcrystalhd input");
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    }
     Debug("submit surface=%u bytes=%zu slices=%zu", decode->target,
           bitstream.size(), decode->slice_data.size());
     if (decode->next_timestamp == kTimestampStep) {
