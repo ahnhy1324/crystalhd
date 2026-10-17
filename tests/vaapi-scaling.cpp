@@ -540,9 +540,9 @@ void LargeH264AccessUnitBoundaryAndRecovery() {
                 pending.decode->replay.outstanding() == 2 &&
                 !pending.decode->replay.failed() &&
                 before_public->expected_timestamp == before_expected &&
-                before_public->decode_identity == before_identity &&
-                !before_public->failed,
-            "rejection preserves earlier pictures and public/replay identities");
+                before_public->decode_identity != before_identity &&
+                before_public->failed,
+            "rejection preserves earlier private/replay identities but revokes the public target");
     for (const auto &frame : before_frames)
       Require(!frame.second->failed &&
                   pending.decode->replay.Observe(frame.first) ==
@@ -633,9 +633,9 @@ void LargeH264AccessUnitBoundaryAndRecovery() {
                 pending.decode->replay.outstanding() == 2 &&
                 !pending.decode->replay.failed() &&
                 before_public->expected_timestamp == before_expected &&
-                before_public->decode_identity == before_identity &&
-                !before_public->failed,
-            "policy rejection preserves retained output and public/replay identities");
+                before_public->decode_identity != before_identity &&
+                before_public->failed,
+            "policy rejection preserves retained output/replay but revokes the public target");
     Require(SubmitH264(&pending, {0x41, 0x88, 0x84}) ==
                     VA_STATUS_ERROR_DECODING_ERROR &&
                 pending.mock.inputs.size() == 2 &&
@@ -1332,6 +1332,228 @@ VABufferID Vpp(Fixture *fixture) {
                           sizeof(pipeline));
 }
 
+void RejectedH264TargetReadback() {
+  Fixture f;
+  Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+          "accept the old picture before public target reuse");
+  Output(&f, kTimestampStep, 40);
+  Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS,
+          "the old picture really was ready before the failed transaction");
+  std::vector<uint8_t> rejected(
+      crystalhd_access_unit_limits::kVaH264SubmissionBytes + 1, 0x55);
+  rejected[0] = 0x41;
+  Require(SubmitH264(&f, rejected) == VA_STATUS_ERROR_INVALID_PARAMETER,
+          "reject the new oversized reference picture before submission");
+  Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_DECODING_ERROR,
+          "failed new picture cannot sync successfully using old READY pixels");
+  VASurfaceStatus state = VASurfaceReady;
+  Require(QuerySurfaceStatus(&f.context, 1, &state) == VA_STATUS_ERROR_DECODING_ERROR,
+          "query cannot advertise the failed public transaction as ready");
+  VAImage derived = {};
+  Require(DeriveImage(&f.context, 1, &derived) == VA_STATUS_ERROR_DECODING_ERROR,
+          "derive cannot snapshot the old pixels as the rejected picture");
+  VAImageFormat format = {};
+  format.fourcc = VA_FOURCC_NV12;
+  VAImage image = {};
+  Require(CreateImage(&f.context, &format, 16, 16, &image) == VA_STATUS_SUCCESS,
+          "allocate an independent image for failed readback");
+  std::fill(f.driver.buffers.at(image.buf).data.begin(),
+            f.driver.buffers.at(image.buf).data.end(), 0x93);
+  Require(GetImage(&f.context, 1, 0, 0, 16, 16, image.image_id) ==
+              VA_STATUS_ERROR_DECODING_ERROR,
+          "GetImage cannot copy the failed public transaction");
+  void *mapped = nullptr;
+  Require(MapBuffer(&f.context, image.buf, &mapped) == VA_STATUS_SUCCESS &&
+              static_cast<uint8_t *>(mapped)[0] == 0x93 &&
+              UnmapBuffer(&f.context, image.buf) == VA_STATUS_SUCCESS,
+          "failed GetImage leaves the mapped destination untouched");
+  VADRMPRIMESurfaceDescriptor descriptor = {};
+  for (uint32_t access : {uint32_t(VA_EXPORT_SURFACE_READ_ONLY),
+                          uint32_t(VA_EXPORT_SURFACE_READ_WRITE), uint32_t(0)})
+    Require(ExportSurfaceHandle(&f.context, 1,
+                VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, access, &descriptor) ==
+                VA_STATUS_ERROR_DECODING_ERROR,
+            "read/default export rejects before any graphics or fd operation");
+  const VABufferID parameters = Vpp(&f);
+  Require(BeginPicture(&f.context, 2, 2) == VA_STATUS_SUCCESS &&
+              RenderPicture(&f.context, 2, const_cast<VABufferID *>(&parameters), 1) ==
+                  VA_STATUS_ERROR_DECODING_ERROR,
+          "new VPP capture cannot resurrect the revoked private binding");
+  Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_ERROR_DECODING_ERROR &&
+              SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_DECODING_ERROR,
+          "dependent rejection remains a public decode error");
+  Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+          "an admitted IDR starts a fresh public binding");
+  Output(&f, 2 * kTimestampStep, 80);
+  Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS &&
+              f.driver.surfaces.at(1)->planes[0][0] == 80,
+          "accepted recovery exposes its own pixels, not the rejected picture");
+}
+
+void RejectedH264PreservesAcceptedPictures() {
+  for (bool direct : {false, true}) {
+    for (bool ready : {false, true}) {
+      Fixture f;
+      if (direct) Live(&f);
+      Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+              "accept a picture before rejecting reuse");
+      if (ready) Output(&f, kTimestampStep, 40);
+      const auto target = f.driver.surfaces.at(1);
+      const auto picture = f.decode->decoded_frames.at(kTimestampStep);
+      const auto pending = f.decode->pending;
+      const auto frames = f.decode->decoded_frames;
+      const uint64_t identity = picture->decode_identity;
+      const uint64_t timestamp = f.decode->next_timestamp;
+      const size_t bytes = f.decode->replay.cached_bytes();
+      // Model an already retained private reader, not a new public read after
+      // rejection. Its lease and accepted timestamp must remain independent.
+      PendingVpp retained;
+      retained.source = picture;
+      ++picture->vpp_readers;
+      f.decode->h264_waiting_for_idr = true;
+      Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_ERROR_DECODING_ERROR &&
+                  target->failed && !target->ready &&
+                  target->decode_identity != identity && target->decode_picture.expired() &&
+                  f.decode->pending == pending && f.decode->decoded_frames == frames &&
+                  f.decode->next_timestamp == timestamp &&
+                  f.decode->replay.cached_bytes() == bytes && !f.decode->replay.failed() &&
+                  picture->decode_identity == identity && picture->vpp_readers == 1 &&
+                  !picture->failed && !picture->direct_backing,
+              "rejection revokes only the public target, retaining accepted private work and lease");
+      if (!ready) Output(&f, kTimestampStep, 40);
+      Require(target->failed && !target->ready &&
+                  SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_DECODING_ERROR &&
+                  picture->ready && !picture->failed && picture->planes[0][0] == 40 &&
+                  picture->frame_timestamp == kTimestampStep &&
+                  picture->expected_timestamp == kTimestampStep,
+              "late output completes the old private picture without reviving the rejected public target");
+      {
+        std::unique_lock<std::mutex> lock(f.driver.mutex);
+        Require(SyncDecodeSurface(&f.driver, picture, &lock, 0) == VA_STATUS_SUCCESS,
+                "a retained private reader still synchronizes its accepted exact picture");
+      }
+      --picture->vpp_readers;
+    }
+  }
+  for (bool ready : {false, true}) {
+    Fixture f;
+    Live(&f);
+    VABufferID parameters = Vpp(&f);
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "accept old output for a real VPP capture");
+    if (ready) Output(&f, kTimestampStep, 40);
+    Require(BeginPicture(&f.context, 2, 2) == VA_STATUS_SUCCESS &&
+                RenderPicture(&f.context, 2, &parameters, 1) == VA_STATUS_SUCCESS,
+            "capture the exact private picture before failed public reuse");
+    f.decode->h264_waiting_for_idr = true;
+    Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_ERROR_DECODING_ERROR,
+            "reject dependent public reuse after the earlier capture");
+    if (!ready) Output(&f, kTimestampStep, 40);
+    Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
+                f.driver.surfaces.at(2)->planes[0][0] == 40 &&
+                f.driver.surfaces.at(2)->frame_timestamp == kTimestampStep &&
+                f.driver.surfaces.at(1)->failed,
+            "already captured VPP keeps its exact accepted pixels and timestamp");
+  }
+}
+
+void RejectedH264OwnershipGuards() {
+  for (unsigned mode = 0; mode < 8; ++mode) {
+    Fixture f;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "establish a ready binding before a competing owner");
+    Output(&f, kTimestampStep, 40);
+    const auto target = f.driver.surfaces.at(1);
+    const auto picture = target->decode_picture.lock();
+    const uint64_t identity = target->decode_identity;
+    f.Begin(); f.Parameters(false);
+    f.decode->h264_waiting_for_idr = true;
+    switch (mode) {
+      case 0: ++target->vpp_readers; break;
+      case 1: ++target->vpp_writers; break;
+      case 2: ++target->export_waiters; break;
+      case 3:
+        target->experimental_write_lease = true;
+        target->experimental_write_context = 99;
+        target->experimental_write_generation = 8;
+        target->experimental_write_submission_ordinal = 9;
+        break;
+      case 4: target->experimental_read_export_armed = true; break;
+      case 5: {
+        auto other = std::make_shared<DecodeContext>();
+        other->config = 1;
+        f.driver.contexts[3] = other;
+        Require(BeginPicture(&f.context, 3, 1) == VA_STATUS_SUCCESS,
+                "a newer Begin supersedes rejection even before any commit");
+        break;
+      }
+      case 6: {
+        auto replacement = std::make_shared<Surface>();
+        Require(replacement->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
+                "replace the public object without reusing its ownership");
+        replacement->ready = true;
+        f.driver.surfaces[1] = replacement;
+        break;
+      }
+      case 7: target->backing_owner = 2; break;
+    }
+    Require(EndPicture(&f.context, 1) == VA_STATUS_ERROR_DECODING_ERROR &&
+                target->ready && !target->failed && target->decode_identity == identity &&
+                target->decode_picture.lock() == picture && !picture->failed &&
+                !f.decode->replay.failed(),
+            "a stale or busy rejection cannot revoke another owner or accepted private picture");
+    if (mode == 3)
+      Require(target->experimental_write_lease &&
+                  target->experimental_write_context == 99 &&
+                  target->experimental_write_generation == 8 &&
+                  target->experimental_write_submission_ordinal == 9,
+              "foreign experimental lease is completely unchanged");
+    if (mode == 4)
+      Require(target->experimental_read_export_armed,
+              "an earlier external reader guard is not cleared by rejection");
+  }
+}
+
+void RejectedH264PromotionFailure() {
+  for (bool ready : {false, true}) {
+    Fixture f;
+    Live(&f);
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "accept a direct picture before rejected promotion");
+    if (ready) Output(&f, kTimestampStep, 40);
+    const auto target = f.driver.surfaces.at(1);
+    const auto picture = target->decode_picture.lock();
+    const uint64_t identity = target->decode_identity;
+    const auto pending = f.decode->pending;
+    f.Begin(); f.Parameters(false);
+    f.decode->h264_waiting_for_idr = true;
+    allocation_fault::fail_next = true;
+    Require(EndPicture(&f.context, 1) == VA_STATUS_ERROR_ALLOCATION_FAILED &&
+                !allocation_fault::fail_next && target->decode_identity == identity &&
+                target->decode_picture.lock() == picture && picture->direct_backing == target &&
+                !target->failed && !picture->failed && picture->storage.empty() &&
+                f.decode->pending == pending && !f.decode->replay.failed(),
+            "promotion allocation failure leaves accepted pixels, ownership and replay intact");
+    if (!ready) Output(&f, kTimestampStep, 40);
+    Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS &&
+                target->planes[0][0] == 40 && picture->frame_timestamp == kTimestampStep,
+            "conservative allocation failure explicitly retains the prior accepted binding");
+    // A mismatched direct backing cannot be copied into the retained picture.
+    // Even this promotion failure must not mark the old private picture failed.
+    f.Begin(); f.Parameters(false);
+    target->frame_timestamp = 2 * kTimestampStep;
+    Require(EndPicture(&f.context, 1) == VA_STATUS_ERROR_OPERATION_FAILED &&
+                target->decode_identity == identity && !picture->failed &&
+                picture->direct_backing == target && picture->storage.empty(),
+            "failed exact-backing validation commits no partial promotion");
+    target->frame_timestamp = kTimestampStep;
+    Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_ERROR_DECODING_ERROR &&
+                target->failed && !picture->failed && !picture->direct_backing &&
+                picture->planes[0][0] == 40,
+            "a later safe preservation can revoke public access without poisoning old pixels");
+  }
+}
+
 void DirectLiveOutputAndReuse() {
   for (unsigned int mode = 0; mode < 3; ++mode) {
     Fixture f;
@@ -1494,6 +1716,10 @@ void DirectBackingReassignedBetweenVppBeginAndEnd() {
 int main() {
   unsigned failures = 0;
   const std::pair<const char *, void (*)()> groups[] = {
+    {"rejected H.264 target readback", RejectedH264TargetReadback},
+    {"rejected H.264 preserves accepted pictures", RejectedH264PreservesAcceptedPictures},
+    {"rejected H.264 ownership guards", RejectedH264OwnershipGuards},
+    {"rejected H.264 promotion failure", RejectedH264PromotionFailure},
     {"large H.264 AU boundary and recovery", LargeH264AccessUnitBoundaryAndRecovery},
     {"rejected H.264 references require IDR", H264ReferenceRejectionRequiresIdr},
     {"allocation failure is transactional", AllocationFailureIsTransactional},
