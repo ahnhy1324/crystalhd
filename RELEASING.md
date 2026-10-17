@@ -51,9 +51,16 @@ checkout alone does not announce a published release.
 | GStreamer plugin / VA vendor string | `3.10.0` / `0.1` | Historical component labels; not the bundle identity |
 | Firmware | Existing BCM70012/BCM70015 images | Retain images, identities and license notices |
 
-The RC.4 candidate includes the reviewed post-RC.3 fixes and optional HTTP
-player input. Its exact installed payload requires fresh Gate A qualification;
-RC.3 results do not qualify RC.4. Publication and results are recorded in #430.
+Published [RC.4](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.4)
+pins `a1492c0824fa38748804e92de435da22d99d85de` and includes the reviewed
+post-RC.3 fixes and optional HTTP player input. Its exact installed payload
+passed [fresh Gate A qualification](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6230790018).
+[Gate B results](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6231208771)
+and the [hardware summary](HARDWARE-2026-09-13.md#110-rc4-qualification--2026-10-18)
+distinguish fresh affected checks from explicitly justified unchanged-code RC.3
+reuse; neither an old aggregate nor publication itself qualifies changed code.
+The RC4 G0 exception is explicit, not independent restore/boot PASS. Final
+package checks and separate stable GO remain required.
 
 Published [v1.1.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3)
 pins `51e5cdfe4c720da92dec54c72fc4f47c8382e43a`, bundle `1.1.0-rc.3` and
