@@ -86,13 +86,14 @@ The exact replay, drain and presentation limitations are in the
 [VA-API guide](filters/vaapi/README.md#replay-and-end-of-stream). Unset all
 experimental variables to return to the ordinary path.
 
-The current `crystalhd-config` inspector still models prefeed as live-only.
-It can report finite prefeed inactive or reject a managed finite+prefeed
-request even though the VA backend accepts that native environment selection.
-This is an [inspector limitation](CONFIGURATION-SCHEMA.md#cross-setting-validation),
-not proof that runtime prefeed is disabled. The tool does not apply settings;
-the backend's [prefeed rules](filters/vaapi/README.md#replay-and-end-of-stream)
-remain authoritative.
+The `crystalhd-config` inspector accepts explicit prefeed independently of
+LIVE, but does not inspect per-AU automatic-prefeed eligibility or apply
+settings. A false `vaapi.h264.low_latency` means explicit prefeed was not
+requested, not that automatic prefeed is disabled: an absent native variable
+permits automatic selection, while any explicit non-`1` value suppresses it.
+READY remap still requires both live mode and explicit prefeed. See the
+[schema rules](CONFIGURATION-SCHEMA.md#cross-setting-validation) and backend
+[prefeed rules](filters/vaapi/README.md#replay-and-end-of-stream).
 
 ## Launcher and wrapper environment
 

@@ -95,6 +95,9 @@ class ConfigCliTest(unittest.TestCase):
         self.assertEqual(set(settings), set(CONFIG.RULES))
         self.assertEqual(len(settings), 21)
         self.assertEqual(settings["vaapi.h264.mode"]["effective"], "bounded")
+        self.assertFalse(settings["vaapi.h264.low_latency"]["effective"])
+        self.assertEqual(settings["vaapi.h264.low_latency"]["state"],
+                         "explicit-prefeed:not-requested")
         self.assertEqual(settings["player.decoder"]["effective"], "hardware")
         self.assertEqual(settings["player.decoder"]["state"],
                          "conditional:not-inspected:device-plugin-and-media")
@@ -296,11 +299,32 @@ class ConfigCliTest(unittest.TestCase):
         with self.assertRaises(CONFIG.SchemaError):
             CONFIG.parse_preset_manifest(b"#" * (CONFIG.MAXIMUM_BYTES + 1))
 
+    def test_managed_finite_prefeed_does_not_select_live_mode(self):
+        for mode in ("bounded", "strict"):
+            with self.subTest(mode=mode):
+                self.write_user(
+                    "[crystalhd]\nschema = 1\n[settings]\n"
+                    f'vaapi.h264.mode = "{mode}"\n'
+                    "vaapi.h264.low_latency = true\n"
+                )
+                base = ("--no-system-config", "--user-config",
+                        str(self.user_file), "--ignore-environment")
+                valid = self.run_cli("validate", *base)
+                self.assertEqual((valid.returncode, valid.stderr), (0, ""))
+                result = self.run_cli("show-effective", *base, "--format", "json")
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+                settings = {item["key"]: item for item in json.loads(result.stdout)["settings"]}
+                self.assertEqual(settings["vaapi.h264.mode"]["effective"], mode)
+                self.assertTrue(settings["vaapi.h264.low_latency"]["effective"])
+                self.assertEqual(settings["vaapi.h264.low_latency"]["state"],
+                                 "conditional:not-inspected:bcm70015-h264-prefeed")
+
     def test_environment_is_last_observable_layer_and_can_be_ignored(self):
         self.write_user(
             "[crystalhd]\nschema = 1\n[settings]\n"
             'vaapi.h264.mode = "live"\n'
             "vaapi.h264.low_latency = true\n"
+            "vaapi.h264.ready_remap = true\n"
         )
         environment = {"CRYSTALHD_VAAPI_LIVE_H264": "not-secret-but-redact-it"}
         base = (
@@ -317,9 +341,12 @@ class ConfigCliTest(unittest.TestCase):
         self.assertEqual(mode["origin"],
                          "environment:CRYSTALHD_VAAPI_LIVE_H264")
         self.assertEqual(mode["environment_receipt"]["raw"], "<redacted>")
-        self.assertFalse(settings["vaapi.h264.low_latency"]["effective"])
+        self.assertTrue(settings["vaapi.h264.low_latency"]["effective"])
         self.assertEqual(settings["vaapi.h264.low_latency"]["state"],
-                         "inactive:requires-live-fast-path")
+                         "conditional:not-inspected:bcm70015-h264-prefeed")
+        self.assertFalse(settings["vaapi.h264.ready_remap"]["effective"])
+        self.assertEqual(settings["vaapi.h264.ready_remap"]["state"],
+                         "inactive:requires-live-low-latency")
 
         ignored = self.run_cli(*(base + ("--ignore-environment",)),
                                environment=environment)
@@ -328,6 +355,35 @@ class ConfigCliTest(unittest.TestCase):
             item["key"]: item for item in json.loads(ignored.stdout)["settings"]
         }
         self.assertEqual(ignored_settings["vaapi.h264.mode"]["effective"], "live")
+        self.assertTrue(ignored_settings["vaapi.h264.low_latency"]["effective"])
+        self.assertTrue(ignored_settings["vaapi.h264.ready_remap"]["effective"])
+
+    def test_raw_finite_prefeed_reports_request_without_activating_ready(self):
+        for raw_live, mode in ((None, "bounded"), ("0", "strict"),
+                               ("private-live-value", "strict")):
+            with self.subTest(live=raw_live):
+                environment = {
+                    "CRYSTALHD_VAAPI_LOW_LATENCY_H264": "1",
+                    "CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP": "1",
+                }
+                if raw_live is not None:
+                    environment["CRYSTALHD_VAAPI_LIVE_H264"] = raw_live
+                result = self.run_cli("show-effective", *self.common(),
+                                      "--format", "json", environment=environment)
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+                self.assertNotIn("private-live-value", result.stdout)
+                settings = {item["key"]: item for item in json.loads(result.stdout)["settings"]}
+                self.assertEqual(settings["vaapi.h264.mode"]["effective"], mode)
+                prefeed = settings["vaapi.h264.low_latency"]
+                self.assertTrue(prefeed["effective"])
+                self.assertEqual(prefeed["origin"],
+                                 "environment:CRYSTALHD_VAAPI_LOW_LATENCY_H264")
+                self.assertEqual(prefeed["environment_receipt"]["raw"], "<redacted>")
+                self.assertEqual(prefeed["state"],
+                                 "conditional:not-inspected:bcm70015-h264-prefeed")
+                self.assertFalse(settings["vaapi.h264.ready_remap"]["effective"])
+                self.assertEqual(settings["vaapi.h264.ready_remap"]["state"],
+                                 "inactive:requires-live-low-latency")
 
     def test_environment_invalid_values_and_native_rejection_are_receipts(self):
         result = self.run_cli(
@@ -521,13 +577,14 @@ class ConfigCliTest(unittest.TestCase):
         self.write_user(
             "[crystalhd]\nschema = 1\n[settings]\n"
             "vaapi.h264.low_latency = true\n"
+            "vaapi.h264.ready_remap = true\n"
         )
         invalid = self.run_cli(
             "validate", "--no-system-config", "--user-config", str(self.user_file),
             "--ignore-environment",
         )
         self.assertEqual(invalid.returncode, 3)
-        self.assertIn("low latency requires live", invalid.stderr)
+        self.assertIn("READY remap requires live low-latency", invalid.stderr)
         self.assertNotIn(str(self.root), invalid.stderr)
 
     def test_safe_reader_rejects_symlink_modes_types_and_large_input(self):

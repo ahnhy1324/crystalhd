@@ -139,7 +139,7 @@ information remains in the production inventory.
 | --- | --- | --- |
 | `libcrystalhd.rx_pool_count` <!-- schema-key:libcrystalhd.rx_pool_count --><!-- schema-map:environment:CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT=libcrystalhd.rx_pool_count --> | Integer enum: `8`, `16` | `CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT`; decimal string |
 | `vaapi.h264.mode` <!-- schema-key:vaapi.h264.mode --><!-- schema-map:environment:CRYSTALHD_VAAPI_LIVE_H264=vaapi.h264.mode --> | String enum: `"bounded"`, `"strict"`, `"live"` | `CRYSTALHD_VAAPI_LIVE_H264`; respectively absent, a non-`1` value, or `1` |
-| `vaapi.h264.low_latency` <!-- schema-key:vaapi.h264.low_latency --><!-- schema-map:environment:CRYSTALHD_VAAPI_LOW_LATENCY_H264=vaapi.h264.low_latency --> | Boolean | `CRYSTALHD_VAAPI_LOW_LATENCY_H264`; true is `1`, false is absent |
+| `vaapi.h264.low_latency` <!-- schema-key:vaapi.h264.low_latency --><!-- schema-map:environment:CRYSTALHD_VAAPI_LOW_LATENCY_H264=vaapi.h264.low_latency --> | Boolean: explicit prefeed request | `CRYSTALHD_VAAPI_LOW_LATENCY_H264`; true is `1`, false is absent, allowing automatic per-AU selection; an explicit non-`1` raw value suppresses automatic prefeed |
 | `vaapi.h264.ready_remap` <!-- schema-key:vaapi.h264.ready_remap --><!-- schema-map:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP=vaapi.h264.ready_remap --> | Boolean | `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP`; true is `1`, false is absent |
 | `vaapi.h264.ready_policy` <!-- schema-key:vaapi.h264.ready_policy --><!-- schema-map:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY=vaapi.h264.ready_policy --> | String enum: `"previous"`, `"latest"` | `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY` |
 | `vaapi.h264.ready_delay_us` <!-- schema-key:vaapi.h264.ready_delay_us --><!-- schema-map:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US=vaapi.h264.ready_delay_us --> | Integer enum: `0`, `16667`, `33333`, `50000` | `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US`; decimal string |
@@ -246,12 +246,11 @@ A resolution report distinguishes:
 - a native application rejection, when the existing program refuses the
   combination rather than running with a fallback.
 
-For example, a valid managed `live` request with low latency enabled remains a
-valid transaction.  If raw `CRYSTALHD_VAAPI_LIVE_H264=0` then wins, the target
-request is `strict` and its raw environment origin remains visible. The current
-inspector reports low latency inactive under its older live-only model; this
-does not describe the current backend's finite-prefeed behavior (see below).
-It does not turn the raw override into a strict-schema error.
+For example, a valid managed `live` request with low latency and READY remap
+enabled remains a valid transaction. If raw `CRYSTALHD_VAAPI_LIVE_H264=0`
+then wins, the target request is `strict` and its raw environment origin
+remains visible. Explicit prefeed stays requested, but READY remap becomes
+inactive. The raw override is not a strict-schema error.
 
 Profile selection is always explicit.  The resolver must not inspect
 `argv[0]`, executable basenames, process names, desktop-file names, media paths
@@ -263,18 +262,18 @@ driver/library/plugin session is created.  They are not reread per frame.
 
 ## Cross-setting validation
 
-**Current prefeed inspection limitation:** the inspector's live-only
-low-latency model predates the backend's independent explicit prefeed and
-automatic eligible finite progressive/MBAFF prefeed. Its inactive/rejection result for
-finite prefeed is not a runtime verdict. This document describes the tool as
-implemented, not a correction to its code; native behavior is in the
-[VA environment inventory](CONFIGURATION.md#va-api-environment). READY remap
-still requires both explicit live and low-latency mode.
+Explicit H.264 prefeed is independent of live mode. A true
+`vaapi.h264.low_latency` is reported as conditional on the uninspected BCM70015
+H.264 prefeed path, not as proof of runtime activation. False means
+`explicit-prefeed:not-requested`, not that automatic prefeed is disabled:
+the inspector does not inspect per-AU progressive/MBAFF eligibility. An absent
+native variable permits automatic prefeed; any explicit non-`1` raw value
+suppresses it. Native behavior is in the
+[VA environment inventory](CONFIGURATION.md#va-api-environment).
 
 The current inspector rejects the following combinations in canonical preset,
 system, user, selected-profile and application layers:
 
-- `vaapi.h264.low_latency = true` unless H.264 mode is `live`;
 - `vaapi.h264.ready_remap = true` unless mode is `live` and low latency is
   true;
 - `chromium.experimental_hw_decode = true` unless
@@ -291,10 +290,10 @@ file—BCM70015 scaling, coded width, link topology and DRM/i915 availability—
 reported as conditional or unsupported during effective-setting inspection;
 they are never treated as silently successful.
 
-Raw target inspection follows that strict transaction. In its current model,
-a non-`1` raw live-mode value selects strict replay and makes a requested
-low-latency/READY path inactive; for prefeed, observe the limitation above. An
-unsupported raw READY policy or delay disables remapping while preserving the
+Raw target inspection follows that strict transaction. A non-`1` raw live-mode
+value selects strict replay without deactivating explicit prefeed. READY remap
+still requires live mode and explicit prefeed. An unsupported raw READY policy
+or delay disables remapping while preserving the
 exact rejected value and environment origin in diagnostics.  An invalid raw
 RX-pool value falls back to 16 with a fallback receipt.  The Chromium launcher
 does not silently deactivate raw experimental hardware mode without the raw
