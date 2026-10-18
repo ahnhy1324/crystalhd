@@ -658,10 +658,7 @@ def native_effect(requested):
     low_latency_requested = requested["vaapi.h264.low_latency"] is True
     if not low_latency_requested:
         effective["vaapi.h264.low_latency"] = False
-        activity["vaapi.h264.low_latency"] = "disabled"
-    elif effective["vaapi.h264.mode"] != "live":
-        effective["vaapi.h264.low_latency"] = False
-        activity["vaapi.h264.low_latency"] = "inactive:requires-live-fast-path"
+        activity["vaapi.h264.low_latency"] = "explicit-prefeed:not-requested"
 
     invalid_policy = isinstance(requested["vaapi.h264.ready_policy"], InvalidNativeValue)
     invalid_delay = isinstance(requested["vaapi.h264.ready_delay_us"], InvalidNativeValue)
@@ -675,7 +672,8 @@ def native_effect(requested):
     elif invalid_delay:
         effective["vaapi.h264.ready_remap"] = False
         activity["vaapi.h264.ready_remap"] = "inactive:invalid-ready-delay"
-    elif not effective["vaapi.h264.low_latency"]:
+    elif (effective["vaapi.h264.mode"] != "live"
+            or not effective["vaapi.h264.low_latency"]):
         effective["vaapi.h264.ready_remap"] = False
         activity["vaapi.h264.ready_remap"] = "inactive:requires-live-low-latency"
 
@@ -706,7 +704,7 @@ def native_effect(requested):
         )
     if effective["vaapi.h264.low_latency"]:
         activity["vaapi.h264.low_latency"] = (
-            "conditional:not-inspected:bcm70015-live-path"
+            "conditional:not-inspected:bcm70015-h264-prefeed"
         )
     if effective["vaapi.h264.ready_remap"]:
         activity["vaapi.h264.ready_remap"] = (
@@ -798,8 +796,6 @@ def resolve(system, user, presets, explicit_preset=None, explicit_profile=None,
 
 
 def validate_managed(values):
-    if values["vaapi.h264.low_latency"] and values["vaapi.h264.mode"] != "live":
-        raise SchemaError("low latency requires live H.264 mode")
     if values["vaapi.h264.ready_remap"] and (
             values["vaapi.h264.mode"] != "live"
             or not values["vaapi.h264.low_latency"]):

@@ -268,9 +268,42 @@ class SchemaOracleTest(unittest.TestCase):
         with self.assertRaises(SchemaError):
             resolve(system, user, presets, explicit_preset="missing")
 
+    def test_explicit_prefeed_is_independent_of_mode_in_every_managed_layer(self):
+        for mode in (None, "bounded", "strict", "live"):
+            assignments = "vaapi.h264.low_latency = true\n"
+            settings = {"vaapi.h264.low_latency": True}
+            if mode is not None:
+                assignments += f'vaapi.h264.mode = "{mode}"\n'
+                settings["vaapi.h264.mode"] = mode
+            header = "[crystalhd]\nschema = 1\n"
+            configured = self.parse(header + "[settings]\n" + assignments)
+            profile = self.parse(header + "[profile.prefeed]\n" + assignments)
+            cases = (
+                (self.empty(), self.empty(), {"default": settings}, None, {}, "preset:default"),
+                (configured, self.empty(), {"default": {}}, None, {}, "system"),
+                (self.empty(), configured, {"default": {}}, None, {}, "user"),
+                (profile, self.empty(), {"default": {}}, "prefeed", {}, "system-profile:prefeed"),
+                (self.empty(), profile, {"default": {}}, "prefeed", {}, "user-profile:prefeed"),
+                (self.empty(), self.empty(), {"default": {}}, None, settings, "application"),
+            )
+            for system, user, presets, selected, application, origin in cases:
+                with self.subTest(mode=mode, origin=origin):
+                    result = resolve(
+                        system, user, presets, explicit_profile=selected,
+                        application=application,
+                    )
+                    self.assertEqual(result.requested["vaapi.h264.mode"], mode or "bounded")
+                    self.assertEqual(result.effective["vaapi.h264.mode"], mode or "bounded")
+                    self.assertTrue(result.effective["vaapi.h264.low_latency"])
+                    self.assertEqual(result.origins["vaapi.h264.low_latency"], origin)
+                    self.assertEqual(
+                        result.activity["vaapi.h264.low_latency"],
+                        "conditional:not-inspected:bcm70015-h264-prefeed",
+                    )
+
     def test_cross_setting_conflicts_are_transactional_errors(self):
         invalid_layers = (
-            {"vaapi.h264.low_latency": True},
+            {"vaapi.h264.low_latency": True, "vaapi.h264.ready_remap": True},
             {"vaapi.h264.mode": "live", "vaapi.h264.ready_remap": True},
             {"chromium.experimental_hw_decode": True},
             {"player.software_output_size": "1280x720"},
@@ -312,19 +345,23 @@ class SchemaOracleTest(unittest.TestCase):
         invalid_system = self.parse(
             "[crystalhd]\nschema = 1\n[settings]\n"
             "vaapi.h264.low_latency = true\n"
+            "vaapi.h264.ready_remap = true\n"
         )
         invalid_user = self.parse(
             "[crystalhd]\nschema = 1\n[settings]\n"
             "vaapi.h264.low_latency = true\n"
+            "vaapi.h264.ready_remap = true\n"
         )
         invalid_profile = self.parse(
             "[crystalhd]\nschema = 1\n[profile.bad]\n"
             "vaapi.h264.low_latency = true\n"
+            "vaapi.h264.ready_remap = true\n"
         )
         managed_cases = (
             (invalid_system, self.empty(), None),
             (self.empty(), invalid_user, None),
             (invalid_profile, self.empty(), "bad"),
+            (self.empty(), invalid_profile, "bad"),
         )
         for system, user, profile in managed_cases:
             with self.subTest(profile=profile), self.assertRaises(SchemaError):
@@ -335,11 +372,21 @@ class SchemaOracleTest(unittest.TestCase):
                     explicit_profile=profile,
                     raw_environment={"CRYSTALHD_VAAPI_LIVE_H264": "1"},
                 )
+        for layer in ("preset", "application"):
+            with self.subTest(layer=layer), self.assertRaises(SchemaError):
+                invalid = {"vaapi.h264.low_latency": True, "vaapi.h264.ready_remap": True}
+                resolve(
+                    self.empty(), self.empty(),
+                    {"default": invalid if layer == "preset" else {}},
+                    application=invalid if layer == "application" else {},
+                    raw_environment={"CRYSTALHD_VAAPI_LIVE_H264": "1"},
+                )
 
-    def test_raw_mode_override_preserves_request_but_deactivates_low_latency(self):
+    def test_raw_mode_override_preserves_prefeed_but_deactivates_ready(self):
         managed = {
             "vaapi.h264.mode": "live",
             "vaapi.h264.low_latency": True,
+            "vaapi.h264.ready_remap": True,
         }
         result = resolve(
             self.empty(),
@@ -354,10 +401,16 @@ class SchemaOracleTest(unittest.TestCase):
             "environment:CRYSTALHD_VAAPI_LIVE_H264",
         )
         self.assertTrue(result.requested["vaapi.h264.low_latency"])
-        self.assertFalse(result.effective["vaapi.h264.low_latency"])
+        self.assertTrue(result.effective["vaapi.h264.low_latency"])
         self.assertEqual(
             result.activity["vaapi.h264.low_latency"],
-            "inactive:requires-live-fast-path",
+            "conditional:not-inspected:bcm70015-h264-prefeed",
+        )
+        self.assertTrue(result.requested["vaapi.h264.ready_remap"])
+        self.assertFalse(result.effective["vaapi.h264.ready_remap"])
+        self.assertEqual(
+            result.activity["vaapi.h264.ready_remap"],
+            "inactive:requires-live-low-latency",
         )
         receipt = next(
             item
@@ -367,6 +420,41 @@ class SchemaOracleTest(unittest.TestCase):
         self.assertEqual(receipt.raw, "0")
         self.assertEqual(receipt.requested, "strict")
         self.assertTrue(receipt.valid)
+
+    def test_raw_prefeed_and_ready_keep_independent_exact_one_semantics(self):
+        for raw_live, mode in ((None, "bounded"), ("0", "strict"),
+                               ("invalid", "strict"), ("1", "live")):
+            for raw_prefeed in ("1", "0", "", "01", "true"):
+                with self.subTest(live=raw_live, prefeed=raw_prefeed):
+                    environment = {
+                        "CRYSTALHD_VAAPI_LOW_LATENCY_H264": raw_prefeed,
+                        "CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP": "1",
+                    }
+                    if raw_live is not None:
+                        environment["CRYSTALHD_VAAPI_LIVE_H264"] = raw_live
+                    result = resolve(
+                        self.empty(), self.empty(), {"default": {}},
+                        raw_environment=environment,
+                    )
+                    self.assertEqual(result.effective["vaapi.h264.mode"], mode)
+                    self.assertEqual(result.effective["vaapi.h264.low_latency"], raw_prefeed == "1")
+                    self.assertEqual(result.activity["vaapi.h264.low_latency"],
+                        "conditional:not-inspected:bcm70015-h264-prefeed"
+                        if raw_prefeed == "1" else "explicit-prefeed:not-requested")
+                    ready = mode == "live" and raw_prefeed == "1"
+                    self.assertEqual(result.effective["vaapi.h264.ready_remap"], ready)
+                    self.assertEqual(result.activity["vaapi.h264.ready_remap"],
+                        "conditional:not-inspected:experimental-ready-path"
+                        if ready else "inactive:requires-live-low-latency")
+                    receipt = next(item for item in result.raw_receipts
+                        if item.variable == "CRYSTALHD_VAAPI_LOW_LATENCY_H264")
+                    self.assertEqual(receipt.raw, raw_prefeed)
+                    self.assertEqual(receipt.requested, raw_prefeed == "1")
+                    self.assertTrue(receipt.valid)
+        default = resolve(self.empty(), self.empty(), {"default": {}})
+        self.assertFalse(default.effective["vaapi.h264.low_latency"])
+        self.assertEqual(default.activity["vaapi.h264.low_latency"],
+                         "explicit-prefeed:not-requested")
 
     def test_invalid_raw_ready_values_disable_remap_without_schema_error(self):
         managed = {
@@ -400,6 +488,22 @@ class SchemaOracleTest(unittest.TestCase):
                 self.assertFalse(receipt.valid)
                 self.assertIsInstance(receipt.requested, InvalidNativeValue)
                 self.assertEqual(result.origins[receipt.key], f"environment:{variable}")
+
+        # Invalid policy/delay keeps priority over the live/prefeed prerequisite.
+        for invalid in (
+            {"CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US": "12345"},
+            {"CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US": "12345",
+             "CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY": "newest"},
+        ):
+            result = resolve(
+                self.empty(), self.empty(), {"default": managed},
+                raw_environment=dict(invalid, CRYSTALHD_VAAPI_LIVE_H264="0",
+                                     CRYSTALHD_VAAPI_LOW_LATENCY_H264="0"),
+            )
+            expected = "policy" if "CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY" in invalid else "delay"
+            self.assertFalse(result.effective["vaapi.h264.ready_remap"])
+            self.assertEqual(result.activity["vaapi.h264.ready_remap"],
+                             "inactive:invalid-ready-" + expected)
 
     def test_raw_adapter_fallback_and_launcher_rejection_are_receipts(self):
         result = resolve(
