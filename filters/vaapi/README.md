@@ -187,12 +187,13 @@ EOS. These policies do not affect other codecs, BCM70012's existing path or
 the library ABI, and the explicit live mode is not a general real-time
 streaming support claim.
 
-Finite-policy BCM70015 MBAFF frame pictures automatically send the next
-timestamped AUD/filler prefix, avoiding a wait for the next complete input AU.
-This does not predict slice data or complete a missing field. The last picture
-still uses the ordinary real-EOS drain above. Progressive pictures, separately
-coded fields/PAFF, other codecs, BCM70012 and explicit live mode do not gain
-automatic prefeed. Set `CRYSTALHD_VAAPI_LOW_LATENCY_H264=0` to disable it.
+Finite-policy BCM70015 progressive and MBAFF frame pictures automatically send
+the next timestamped AUD/filler prefix, avoiding a wait for the next complete
+input AU. This does not predict slice data, complete a missing field or remove
+the ordinary EOS/drain fallback: a one-picture probe or reordered tail can still
+require EOS. Separately coded fields/PAFF, other codecs, BCM70012 and explicit
+live mode do not gain automatic prefeed. Set
+`CRYSTALHD_VAAPI_LOW_LATENCY_H264=0` to disable it.
 
 On BCM70015, `CRYSTALHD_VAAPI_LOW_LATENCY_H264=1` explicitly enables H.264
 input prefeeding independently of the LIVE policy. With LIVE unset, finite
