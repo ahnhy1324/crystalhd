@@ -1,38 +1,38 @@
 # Open work
 
-Release status **2026-10-18**: [stable 1.0.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0)
+Release status **2026-10-19**: [stable 1.0.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0)
 and previous RCs remain unchanged. Published
-[v1.1.0-rc.4](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.4)
-/ package `3.10.7` adds compatibility and performance fixes; its
-[qualification summary](HARDWARE-2026-09-13.md#110-rc4-qualification--2026-10-18)
-distinguishes fresh checks, scoped unchanged-code reuse and remaining work.
+[v1.1.0-rc.5](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.5)
+/ package `3.10.8` adds VA decode/lifetime fixes; its
+[qualification summary](HARDWARE-2026-09-13.md#110-rc5-qualification--2026-10-19)
+distinguishes fresh candidate checks from remaining work.
 Selected Weave playback remains the scope, with the
 [known deinterlacing limits and planned v1.2 work](USAGE.md#known-issues-and-deinterlacing-roadmap)
 kept separate from current functionality.
 This is not stable v1.1.0 GO or a full-rate FHD/deinterlacing support claim.
 
 - [ ] [#430: v1.1.0 RC qualification and GO/HOLD](https://github.com/ahnhy1324/crystalhd/issues/430)
-  — prepare RC5 (`1.1.0-rc.5` / package `3.10.8`), complete fresh Gate A before
-  RC publication, then Gate B/final-package qualification before a separate
-  stable-release GO. See the [RC5 execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6247676972).
-  RC4 remains immutable.
-  Preserve RC3's oracle/endurance results, original audio-tail and later
-  scheduling FAILs, and subsequent dispositions; they are not new RC4 passes.
-  The corrected audio probe and explicit maintenance-only 3-hour profile remain.
-  Fresh RC4 VA endurance, correctness/lifecycle, scaled controls, Kodi/VLC and
-  direct/DKMS installation/rollback checks pass. Retained Moonlight testing is
-  blocked by source capture initialization; final-package checks and stable GO
-  remain separate. See the [RC4 execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6231208771)
-  for actual results and preserved failures; omitted gates are not PASS.
-  The [RC5 scope](HISTORY.md#110-rc5--candidate) includes subsequent bounded
-  H.264 admission, failed-read/lifetime and premature-EOS corrections; prior
-  development results do not qualify the new installed package.
+  — RC5 is published; fresh Gate A, the 11-fixture oracle, 3-hour 720p,
+  2-hour native/scaled FHD and core lifecycle/aggregate checks pass.
+  VA event-worker endurance/reopen and affected large-AU replay/seek checks
+  also pass. Long-HTTP output/EOS/reopen completed, but its shutdown-warning
+  raw FAIL/OBSERVED_NOT_PASS result is retained, not an unconditional gate PASS.
+  Fresh Moonlight source preparation fails with Sunshine 503 capture/encoding
+  initialization; three 60-minute modes/reopen remain NOT RUN/source BLOCKED.
+  Final installed 360+360-picture handoff also passes; explicit stable GO is
+  still required. See the
+  [RC5 execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6247676972).
+  Preserve older RC results and FAILs with their original identities; no
+  earlier result substitutes for a new candidate gate. Keep the existing
+  maintenance-only 3-hour profile and all other thresholds unchanged.
+  All existing issues stay open; physical A/V and external RC5 acceptance are
+  not inferred from the primary host's automated tests.
 - [ ] [#429: External i386/BCM70015 acceptance](https://github.com/ahnhy1324/crystalhd/issues/429)
   — installed RC4 Atom N280/i386 results cover selected codec, player and
   stock-Kodi paths; retain the original RC3 failures. Ordered B-pyramid
   rejection recovery, exact Kodi output/physical A/V and the other open
   checklist rows remain incomplete. Later primary-host long playback and
-  ELF32/no-SSE hardware controls are recorded in
+  ELF32 scalar-build hardware controls are recorded in
   [the focused investigation](https://github.com/ahnhy1324/crystalhd/issues/429#issuecomment-6245398250);
   they do not replace reporter-host or physical A/V acceptance.
 - [ ] [#436: planned v1.2 deinterlacing and presentation work](https://github.com/ahnhy1324/crystalhd/issues/436)

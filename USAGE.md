@@ -154,13 +154,13 @@ those paths or a reason to replace a qualified installation without testing.
 
 ### Explicit Weave playback
 
-`--weave` is included in published RC4, not the v1.0.0 installed by the
-stable quick start. Obtain the immutable `v1.1.0-rc.4` source with:
+`--weave` is included in published RC5, not the v1.0.0 installed by the
+stable quick start. Obtain the immutable `v1.1.0-rc.5` source with:
 
 ```sh
-git clone --branch v1.1.0-rc.4 --single-branch \
-  https://github.com/ahnhy1324/crystalhd.git crystalhd-rc4
-cd crystalhd-rc4
+git clone --branch v1.1.0-rc.5 --single-branch \
+  https://github.com/ahnhy1324/crystalhd.git crystalhd-rc5
+cd crystalhd-rc5
 ```
 
 Install the [dependencies and build](README.md#quick-start) from this directory,

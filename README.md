@@ -12,18 +12,17 @@ event-driven receive and optional output scaling. The existing
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29)
 remains available and unchanged.
 
-Published [1.1.0-rc.4](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.4)
-includes selected interlaced Weave playback,
-explicit hardware/software selection and subsequent compatibility fixes.
-It is not a replacement for stable 1.0.0; [RC installation and Weave usage](USAGE.md#explicit-weave-playback)
-are separate from the stable quick start below. The published
-[RC.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3) remains unchanged.
-See the [RC4 qualification status](HARDWARE-2026-09-13.md#110-rc4-qualification--2026-10-18)
-for tested scope and remaining release gates; stable v1.1.0 is not published.
-The current source prepares **1.1.0-rc.5 / module-DKMS 3.10.8** with further
-VA decode/lifetime fixes. Its fresh qualification is tracked in
-[#430's RC5 execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6247676972); RC4 results are not
-automatic RC5 passes. See the [change summary](HISTORY.md#110-rc5--candidate).
+Published [1.1.0-rc.5](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.5)
+includes selected interlaced Weave playback, explicit hardware/software
+selection and further VA decode/lifetime fixes; its module/DKMS package is
+`3.10.8`.
+It is not a replacement for stable 1.0.0;
+[RC5 install/update/rollback](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.5)
+and [Weave usage](USAGE.md#explicit-weave-playback) are separate from the stable
+quick start below. Earlier published RCs remain
+unchanged. See the [fresh RC5 qualification status](HARDWARE-2026-09-13.md#110-rc5-qualification--2026-10-19)
+for completed checks and remaining gates, and the [change summary](HISTORY.md#110-rc5--candidate).
+Stable v1.1.0 is not published.
 
 **Known issues:** interlaced playback can still show combing, stutter or A/V
 timing problems, depending on the application and host. Native hardware

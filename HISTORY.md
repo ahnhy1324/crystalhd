@@ -2,11 +2,12 @@
 
 ## 1.1.0-rc.5 — candidate
 
-Candidate bundle `1.1.0-rc.5` / module-DKMS package `3.10.8`; fresh
-qualification and publication are tracked in
-[#430](https://github.com/ahnhy1324/crystalhd/issues/430). Earlier published
-RCs, stable 1.0.0 and the Phase 1 baseline remain unchanged. This preparation
-does not declare the new candidate qualified or authorize stable publication.
+Published on 2026-10-18: bundle `1.1.0-rc.5` / module-DKMS package `3.10.8`,
+source `7f78d01e8103082bd08a62f459c8e20f77a1ec74`.
+[Fresh qualification](HARDWARE-2026-09-13.md#110-rc5-qualification--2026-10-19)
+continues under [#430](https://github.com/ahnhy1324/crystalhd/issues/430).
+Earlier published RCs, stable 1.0.0 and the Phase 1 baseline remain unchanged.
+Publication of this candidate is not stable v1.1.0 GO.
 
 - Admit qualified larger progressive H.264 units for identified BCM70015/DIL
   transport combinations, retaining conservative fallback limits. Preserve

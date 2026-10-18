@@ -22,7 +22,7 @@ For v1.1, follow **scope and diff audit → device-free gates and short native
 smoke → freeze exact candidate → maintainer RC GO → publish immutable RC →
 qualify that exact RC → final package and rollback checks → maintainer stable
 GO**. A version string in a checkout is preparation, not permission to publish
-`v1.1.0-rc.5` or `v1.1.0`.
+a new RC or stable tag. Already published RC5 is immutable.
 
 The v1.1 RC interlaced scope is bounded playback with explicit hardware/software
 Weave selection. Further deinterlacing and A/V synchronization tuning are
@@ -51,10 +51,19 @@ checkout alone does not announce a published release.
 | GStreamer plugin / VA vendor string | `3.10.0` / `0.1` | Historical component labels; not the bundle identity |
 | Firmware | Existing BCM70012/BCM70015 images | Retain images, identities and license notices |
 
-RC.5 preparation includes the [post-RC4 changes](HISTORY.md#110-rc5--candidate).
-Earlier process-local development checks and RC4 installation/endurance results
-retain their original identities; they are not new RC5 package passes. Record
-the frozen RC5 source, actual installed payload and fresh results in #430.
+Published [RC.5](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.5)
+pins `7f78d01e8103082bd08a62f459c8e20f77a1ec74` and includes the
+[post-RC4 changes](HISTORY.md#110-rc5--candidate). The tested public source
+archive and fork merge `5a05ac1` preserve the candidate payload.
+[Fresh RC5 results](HARDWARE-2026-09-13.md#110-rc5-qualification--2026-10-19)
+and [the execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6247676972)
+separate completed Gate A/core/VA/final installed checks from the preserved
+HTTP observation and blocked Moonlight source assessment.
+Earlier development and RC4 results retain their original identities, not new
+RC5 passes. Do not recreate or move its published tag; stable GO is separate.
+This subsequent six-guide documentation/usage correction changes no runtime
+or package bytes and does not claim new CI at its documentation commit;
+candidate CI remains attached to `7f78d01`.
 
 Published [RC.4](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.4)
 pins `a1492c0824fa38748804e92de435da22d99d85de` and includes the reviewed
@@ -64,8 +73,9 @@ passed [fresh Gate A qualification](https://github.com/ahnhy1324/crystalhd/issue
 and the [hardware summary](HARDWARE-2026-09-13.md#110-rc4-qualification--2026-10-18)
 distinguish fresh affected checks from explicitly justified unchanged-code RC.3
 reuse; neither an old aggregate nor publication itself qualifies changed code.
-The RC4 G0 exception is explicit, not independent restore/boot PASS. Final
-package checks and separate stable GO remain required.
+The RC4 G0 exception is explicit, not independent restore/boot PASS. That
+campaign's remaining work is historical; current candidate obligations are
+recorded in the RC5 summary above.
 
 Published [v1.1.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3)
 pins `51e5cdfe4c720da92dec54c72fc4f47c8382e43a`, bundle `1.1.0-rc.3` and
@@ -135,7 +145,7 @@ a fix or explicit withdrawal from the candidate.
 4. Complete #430 Gate A, including the declared short native smoke. Record the
    exact commit, source diff, feature list, limits, acknowledgements, release
    text and results, then obtain explicit maintainer RC GO before publishing
-   `v1.1.0-rc.5`. Never move published tags, including `v1.1.0-rc.4`, `v1.1.0-rc.3`,
+   the next RC. Never move published tags, including `v1.1.0-rc.5`, `v1.1.0-rc.4`, `v1.1.0-rc.3`,
    `v1.0.0-rc.1`, `v1.0.0` and `phase1-baseline-2026-09-29`.
 
 ## Qualify the candidate
