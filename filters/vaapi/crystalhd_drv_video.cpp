@@ -5771,6 +5771,24 @@ static VAStatus CreateSurfaces(VADriverContextP context, int width, int height,
                          surface_count, nullptr, 0);
 }
 
+static bool ObsoleteCompletedH264Surface(const DecodeContext &decode,
+                                         const Surface &surface,
+                                         uint64_t timestamp) {
+  if (!IsH264Profile(decode.profile) || decode.live_h264_fast_path ||
+      !surface.ready || surface.failed || PublicReadRejected(&surface) ||
+      surface.expected_timestamp != timestamp || surface.frame_timestamp != timestamp ||
+      decode.pending.count(timestamp) != 0 ||
+      !decode.replay.HasPrunedTimestamp(timestamp))
+    return false;
+  const auto picture = decode.decoded_frames.find(timestamp);
+  return picture != decode.decoded_frames.end() &&
+      surface.decode_picture.lock() == picture->second &&
+      surface.decode_identity == picture->second->decode_identity &&
+      picture->second->ready && !picture->second->failed &&
+      picture->second->frame_timestamp == timestamp &&
+      !picture->second->direct_backing;
+}
+
 static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
                                            VASurfaceID *surface_ids, int count,
                                            uint64_t close_timeout_ns) {
@@ -5799,11 +5817,20 @@ static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
     for (const auto &entry : driver->contexts) {
       if (entry.second->video_process)
         continue;
-      if (entry.second->surface_timestamps.find(surface->second.get()) !=
-          entry.second->surface_timestamps.end()) {
+      auto timestamp = entry.second->surface_timestamps.find(surface->second.get());
+      if (timestamp != entry.second->surface_timestamps.end()) {
         notify_workers = true;
-        if (!entry.second->closing)
-          reset_decoders.insert(entry.second.get());
+        if (!entry.second->closing) {
+          if (ObsoleteCompletedH264Surface(*entry.second, *surface->second,
+                                           timestamp->second)) {
+            // Drop only obsolete map owners. Captured private pixels keep
+            // their shared ownership; independent pending work is untouched.
+            entry.second->decoded_frames.erase(timestamp->second);
+            entry.second->surface_timestamps.erase(timestamp);
+          } else {
+            reset_decoders.insert(entry.second.get());
+          }
+        }
       }
     }
     // A queued worker owns a shared_ptr after the VA ID is gone. Permanently

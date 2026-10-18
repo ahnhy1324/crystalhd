@@ -187,6 +187,14 @@ class CrystalHDDecodeReplay {
   bool IsOutstanding(uint64_t timestamp) const {
     return outstanding_.count(timestamp) != 0;
   }
+  // For a previously accepted token, a newer retained actual-IDR root proves
+  // the old input is absent and no longer needed for reference reconstruction.
+  // MakeRoom's arbitrary live-history eviction cannot establish this proof.
+  bool HasPrunedTimestamp(uint64_t timestamp) const {
+    return !failed() && replayable_ && timestamp != 0 && !units_.empty() &&
+        units_.front().idr && timestamp < units_.front().timestamp &&
+        outstanding_.count(timestamp) == 0;
+  }
   bool replayable() const { return replayable_; }
   bool live_stream_started() const { return live_ && multiple_inputs_; }
 
