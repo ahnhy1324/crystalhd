@@ -144,8 +144,8 @@ constexpr uint32_t kStatusSkipReadyHeadPeek = 1U << 30;
 }
 
 static bool DecodeBatchGraceExpired(uint64_t elapsed_ns,
-                                    bool bounded_h264_history_lost = false) {
-  return elapsed_ns >= (bounded_h264_history_lost
+                                    bool bounded_h264_inactivity = false) {
+  return elapsed_ns >= (bounded_h264_inactivity
                             ? kBoundedH264InactivityGraceNs
                             : kDecodeBatchGraceNs);
 }
@@ -1701,7 +1701,7 @@ struct DecodeContext {
   bool live_h264_gap_tolerant = false;
   bool live_h264_fast_path = false;
   bool low_latency_h264 = false;
-  bool auto_mbaff_prefeed = false;
+  bool auto_h264_prefeed = false;
   bool input_backpressured = false;
   bool input_budget_exhausted = false;
   uint64_t partial_input_timestamp = 0;
@@ -2592,11 +2592,11 @@ static bool IsValidConfig(VAProfile profile, VAEntrypoint entrypoint) {
 }
 
 static bool ShouldAutoPrefeedH264(const DecodeContext &decode) {
-  return decode.auto_mbaff_prefeed && IsH264Profile(decode.profile) &&
+  return decode.auto_h264_prefeed && IsH264Profile(decode.profile) &&
          !decode.live_h264_fast_path && decode.device != nullptr &&
          decode.decoder_started && !decode.is_70012 &&
-         !decode.picture.seq_fields.bits.frame_mbs_only_flag &&
-         decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag &&
+         (decode.picture.seq_fields.bits.frame_mbs_only_flag ||
+          decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag) &&
          !decode.picture.pic_fields.bits.field_pic_flag;
 }
 
@@ -4202,10 +4202,23 @@ static VAStatus SealDecodeBatch(Driver *driver, DecodeContext *decode) {
   if (decode->is_70012)
     return VA_STATUS_SUCCESS;
   return decode->WithReplay([&](auto &replay) -> VAStatus {
-    if (!replay.CanSeal() || DtsTxFreeSize(decode->device) < 1024)
+    if (!replay.CanSeal())
       return VA_STATUS_SUCCESS;
-    Debug("seal batch on sync demand: %zu hardware timestamps outstanding",
-          replay.outstanding());
+    const uint32_t tx_free = DtsTxFreeSize(decode->device);
+    if (tx_free < 1024)
+      return VA_STATUS_SUCCESS;
+    // CanSeal means all queued AUs were sent; cached pictures are history.
+    Debug("seal batch on sync demand: %zu hardware timestamps outstanding "
+          "context=%u generation=%llu cached=%zu partial_ts=%llu partial_offset=%zu "
+          "prefed_ts=%llu backpressured=%u progress=%llu next_ordinal=%llu tx_free=%u",
+          replay.outstanding(), static_cast<unsigned int>(decode->id),
+          static_cast<unsigned long long>(decode->generation), replay.cached_pictures(),
+          static_cast<unsigned long long>(decode->partial_input_timestamp),
+          decode->partial_input_offset,
+          static_cast<unsigned long long>(decode->prefed_timestamp),
+          static_cast<unsigned int>(decode->input_backpressured),
+          static_cast<unsigned long long>(decode->transport_progress),
+          static_cast<unsigned long long>(decode->next_submission_ordinal), tx_free);
     if (!replay.Seal())
       return FailDecode(driver, decode, "could not seal decoder batch");
     if (DtsFlushInput(decode->device, 0) != BC_STS_SUCCESS)
@@ -5046,24 +5059,24 @@ static VAStatus SyncDecodeSurface(
     const uint64_t local_idle =
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             now - inactivity_start).count();
-    // Carry only time spent waiting in VA sync calls, and only after an unset
-    // H.264 policy has retired the prefix needed for a non-IDR restart. Time
-    // between calls can be an intentional player pause and is not inactivity.
-    const bool bounded_h264_history_lost =
-        !decode->is_70012 && decode->live_h264 &&
-        !decode->live_h264_gap_tolerant &&
-        decode->replay.live_stream_started() &&
-        !decode->replay.replayable();
+    // A fully submitted large AU can take longer than 100 ms to complete.
+    // Reuse the bounded history-loss grace; count actual sync waits, not player
+    // pauses. Queued/partial AUs and completed cache alone do not qualify.
+    const bool bounded_h264_inactivity =
+        !decode->is_70012 && IsH264Profile(decode->profile) &&
+        ((decode->live_h264 && !decode->live_h264_gap_tolerant &&
+          decode->replay.live_stream_started() &&
+          !decode->replay.replayable()) ||
+         decode->replay.HasOutstandingInputLargerThan(
+             crystalhd_access_unit_limits::kDtsInputChunkBytes));
     uint64_t idle = local_idle;
-    if (bounded_h264_history_lost) {
+    if (bounded_h264_inactivity) {
       const uint64_t accumulated = bounded_inactivity_base + local_idle;
       decode->sync_inactivity_ns =
           std::max(decode->sync_inactivity_ns, accumulated);
       idle = decode->sync_inactivity_ns;
     } else {
-      // Preserve the historical per-call inactivity rule for strict H.264 and
-      // every other codec. Only an unreplayable bounded BCM70015 H.264 stream
-      // needs to carry actual VA wait time across finite Sync calls.
+      // All other input retains the historical per-call inactivity rule.
       bounded_inactivity_base = 0;
       decode->sync_inactivity_ns = 0;
     }
@@ -5089,7 +5102,7 @@ static VAStatus SyncDecodeSurface(
         decode->replay.live_stream_started();
     if (!surface->ready && !decode->ReplaySealed() &&
         !retain_live_references &&
-        DecodeBatchGraceExpired(idle, bounded_h264_history_lost)) {
+        DecodeBatchGraceExpired(idle, bounded_h264_inactivity)) {
       Debug("sync batch inactivity: elapsed=%llu idle=%llu progress=%llu timestamp=%llu",
             static_cast<unsigned long long>(elapsed),
             static_cast<unsigned long long>(idle),
@@ -6065,10 +6078,10 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
       getenv("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
   decode->low_latency_h264 = h264 &&
       low_latency_h264 != nullptr && strcmp(low_latency_h264, "1") == 0;
-  // Keep progressive and explicit-live defaults unchanged. An explicit value
-  // (including 0) disables automatic MBAFF prefeed; accepted AUs retain their
+  // Complete progressive/MBAFF frame AUs may prefeed without live fast paths.
+  // An explicit value (including 0) disables automatic prefeed; AUs retain their
   // own eligibility so later sequence metadata cannot change replay behavior.
-  decode->auto_mbaff_prefeed = h264 && !decode->live_h264_fast_path &&
+  decode->auto_h264_prefeed = h264 && !decode->live_h264_fast_path &&
                                low_latency_h264 == nullptr;
   const char *experimental_ready_remap =
       getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP");
