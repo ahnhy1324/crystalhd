@@ -6,9 +6,12 @@ hardware video decoding for local files on BCM70015. CrystalHD handles video;
 the normal Linux media stack handles audio, subtitles, synchronization and
 display.
 
-**[CrystalHD 1.0.0 is available](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0).**
-The instructions below install that stable release, including playback fixes,
-event-driven receive and optional output scaling. The existing
+The instructions below target **CrystalHD 1.1.0 / module-DKMS 3.10.9**.
+The maintainer authorized final publication after package qualification;
+the `v1.1.0` tag commands become available **when that release is published**.
+Check [publication and qualification status](https://github.com/ahnhy1324/crystalhd/issues/430).
+For the previous stable release, use the instructions shipped with
+[v1.0.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0). The existing
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29)
 remains available and unchanged.
 
@@ -16,13 +19,14 @@ Published [1.1.0-rc.5](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.
 includes selected interlaced Weave playback, explicit hardware/software
 selection and further VA decode/lifetime fixes; its module/DKMS package is
 `3.10.8`.
-It is not a replacement for stable 1.0.0;
+It remains an immutable pre-release;
 [RC5 install/update/rollback](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.5)
-and [Weave usage](USAGE.md#explicit-weave-playback) are separate from the stable
+and [Weave usage](USAGE.md#explicit-weave-playback) are separate from the final
 quick start below. Earlier published RCs remain
 unchanged. See the [fresh RC5 qualification status](HARDWARE-2026-09-13.md#110-rc5-qualification--2026-10-19)
 for completed checks and remaining gates, and the [change summary](HISTORY.md#110-rc5--candidate).
-Stable v1.1.0 is not published.
+The [final-package qualification scope](HARDWARE-2026-09-13.md#110-final-package-qualification--2026-10-19)
+separates new package checks from the unchanged RC5 runtime evidence.
 
 **Known issues:** interlaced playback can still show combing, stutter or A/V
 timing problems, depending on the application and host. Native hardware
@@ -38,7 +42,7 @@ separate Weave playback from application-side filtering and unqualified paths.
 | Full-HD input with reduced card output | Optional hardware scaling reduces transfer traffic. Selected H.264 input reached about 65 pictures/s with the qualified L0s workaround active; software enlargement costs CPU and cannot recover detail. This is not native 1080p60 or a displayed-rate guarantee. |
 | Sunshine / Moonlight | Default frame-matching mode works at 720p30; with V-sync/pacing off, an experimental previous-frame mode achieved about 59 renderer submissions/s at 720p60 and 29 at 1080p30. These are measured rates, not a matched speedup over default matching. Physical streaming A/V offset and forced-loss recovery remain unverified. |
 | BCM70012 / older CPUs | Legacy BCM70012 compatibility and x86-64/i686 builds are retained. Recent BCM70012 and physical no-SSE hardware tests remain outstanding. |
-| Kodi | Stock Kodi 21.3 progressive hardware playback and lifecycle checks pass on the reference host. Selected interlaced Weave playback is included in the v1.1 RC with limited scope; deinterlacing and A/V synchronization tuning remain follow-up work. No general full-rate FHD or hardware-Bob claim; see [usage and limits](USAGE.md#kodi). |
+| Kodi | Stock Kodi 21.3 progressive hardware playback and lifecycle checks pass on the reference host. Selected interlaced Weave playback is included in 1.1 with limited scope; deinterlacing and A/V synchronization tuning remain follow-up work. No general full-rate FHD or hardware-Bob claim; see [usage and limits](USAGE.md#kodi). |
 | VA-API, VLC, browsers | VA-API is experimental. VLC 3.0.23 selects CrystalHD VA/EGL and closes cleanly on the LTS reference host, but logs late pictures. Chromium/YouTube hardware support is unverified. |
 
 Fresh BCM70015 qualification uses Ubuntu 26.04.1 LTS / Linux 7.0.0-38.
@@ -57,11 +61,11 @@ a kernel update. [DKMS](README.dkms) handles those later module rebuilds
 automatically. Choose one route; if DKMS already manages CrystalHD, follow its
 guide instead of this direct-install procedure.
 
-For a fresh stable-release checkout on Ubuntu:
+For a fresh 1.1.0 checkout on Ubuntu, once the release is published:
 
 ```sh
 sudo apt install git
-git clone --branch v1.0.0 https://github.com/ahnhy1324/crystalhd.git
+git clone --branch v1.1.0 https://github.com/ahnhy1324/crystalhd.git
 cd crystalhd
 
 sudo apt install build-essential pkg-config linux-headers-$(uname -r) \

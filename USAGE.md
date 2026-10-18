@@ -10,7 +10,7 @@ before choosing the card for a workload; Sunshine/Moonlight has a separate
 | Goal | Path | Current status |
 | --- | --- | --- |
 | Play a local file with audio, subtitles and controls | `crystalhd-play` | Recommended |
-| Play an HTTP(S) media URL | [RC4 player](#https-input-rc4) | Native loopback HTTP checked; HTTPS and physical playback pending |
+| Play an HTTP(S) media URL | [HTTP(S) player input](#https-input) | Native loopback HTTP checked; HTTPS and physical playback pending |
 | Build a media pipeline | GStreamer `crystalhddec` | Primary integration path |
 | Use an application that requires libva | CrystalHD VA-API driver | Experimental subset |
 | Keep a Broadcom-API application working | `libcrystalhd.so.3` | Compatibility API |
@@ -115,10 +115,10 @@ fallback:
 crystalhd-play --software "/path/to/video.mp4"
 ```
 
-### HTTP(S) input (RC4)
+### HTTP(S) input
 
-The RC4 candidate includes HTTP(S) input; stable 1.0.0 and the immutable
-v1.1.0-rc.3 do not. RC5 retains it. From the selected RC source checkout, use
+HTTP(S) input is included in RC4, RC5 and the 1.1.0 source; stable
+1.0.0 and the immutable v1.1.0-rc.3 do not contain it. From the selected source checkout, use
 its wrapper (or the matching installed `crystalhd-play`). Replace the example URL
 with your direct media URL, and close other CrystalHD sessions first:
 
@@ -128,7 +128,7 @@ with your direct media URL, and close other CrystalHD sessions first:
 ```
 
 The source wrapper prefers the checkout's plugin/library when its built
-GStreamer plugin is present; it is not a check of the installed RC payload.
+GStreamer plugin is present; it is not a check of the installed payload.
 
 The URL is passed to GStreamer without rewriting its escaping or query string.
 HTTP transport needs `souphttpsrc` (Ubuntu: `gstreamer1.0-plugins-good`); HTTPS
@@ -149,18 +149,20 @@ Automated network coverage uses loopback HTTP with software video and fake
 audio/video sinks. Native BCM70015 loopback HTTP playback also passed selected
 360p and 720p30 H.264 video, EOS and local-file reopen with fake sinks.
 Real HTTPS/TLS, native network seeking, physical A/V and Internet
-recovery remain unverified. Inclusion in the RC is not a release-gate PASS for
+recovery remain unverified. Inclusion in the source is not a release-gate PASS for
 those paths or a reason to replace a qualified installation without testing.
 
 ### Explicit Weave playback
 
-`--weave` is included in published RC5, not the v1.0.0 installed by the
-stable quick start. Obtain the immutable `v1.1.0-rc.5` source with:
+`--weave` is included in 1.1.0 and published RC5, not v1.0.0. The following
+final-tag commands become available when `v1.1.0` is published; check
+[#430](https://github.com/ahnhy1324/crystalhd/issues/430) for release status.
+Use `v1.1.0-rc.5` instead to select the earlier immutable candidate.
 
 ```sh
-git clone --branch v1.1.0-rc.5 --single-branch \
-  https://github.com/ahnhy1324/crystalhd.git crystalhd-rc5
-cd crystalhd-rc5
+git clone --branch v1.1.0 --single-branch \
+  https://github.com/ahnhy1324/crystalhd.git crystalhd
+cd crystalhd
 ```
 
 Install the [dependencies and build](README.md#quick-start) from this directory,

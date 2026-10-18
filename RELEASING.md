@@ -43,13 +43,21 @@ checkout alone does not announce a published release.
 
 | Identity | Current source | Purpose |
 | --- | --- | --- |
-| Bundle | `1.1.0-rc.5` | v1.1 release-candidate identity from `VERSION` |
-| DKMS / module package | `3.10.8` | New candidate revision; published RC.4 retains `3.10.7`, RC.3 `3.10.6`, stable `3.10.3` |
+| Bundle | `1.1.0` | Final source identity from `VERSION`; publication status in #430 |
+| DKMS / module package | `3.10.9` | New final revision; published RC.5 retains `3.10.8`, RC.4 `3.10.7`, stable 1.0.0 `3.10.3` |
 | Driver ioctl version | `3.10.0` | Historical public API value, retained |
 | Library API / pkg-config | `3.22.0` | Historical library component identity, retained |
 | Library SONAME / file | `libcrystalhd.so.3` / `libcrystalhd.so.3.6` | Existing application linkage, retained |
 | GStreamer plugin / VA vendor string | `3.10.0` / `0.1` | Historical component labels; not the bundle identity |
 | Firmware | Existing BCM70012/BCM70015 images | Retain images, identities and license notices |
+
+The maintainer has authorized stable 1.1.0 publication **after** the required
+final-package/G6 checks pass. Actual results and publication state are recorded
+in [#430](https://github.com/ahnhy1324/crystalhd/issues/430), not inferred from
+this version table. The [final-package qualification scope](HARDWARE-2026-09-13.md#110-final-package-qualification--2026-10-19)
+separates unchanged-code reuse from fresh final-payload obligations.
+Retain the RC5 rollback source/cache and all published tags unchanged; never
+install the final payload under registered revision `3.10.8`.
 
 Published [RC.5](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.5)
 pins `7f78d01e8103082bd08a62f459c8e20f77a1ec74` and includes the
@@ -61,9 +69,9 @@ separate completed Gate A/core/VA/final installed checks from the preserved
 HTTP observation and blocked Moonlight source assessment.
 Earlier development and RC4 results retain their original identities, not new
 RC5 passes. Do not recreate or move its published tag; stable GO is separate.
-This subsequent six-guide documentation/usage correction changes no runtime
-or package bytes and does not claim new CI at its documentation commit;
-candidate CI remains attached to `7f78d01`.
+The earlier six-guide follow-up `8cb8eb3` and selected A/V note `e53dd50`
+changed no runtime or package bytes; RC5 CI remains attached to `7f78d01`.
+That does not qualify the newly versioned final package above.
 
 Published [RC.4](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.4)
 pins `a1492c0824fa38748804e92de435da22d99d85de` and includes the reviewed

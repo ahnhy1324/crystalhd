@@ -1,5 +1,26 @@
 # History
 
+## 1.1.0
+
+Bundle `1.1.0` / module-DKMS package `3.10.9`. Publication is authorized after
+the required [final-package checks](HARDWARE-2026-09-13.md#110-final-package-qualification--2026-10-19)
+pass; [#430](https://github.com/ahnhy1324/crystalhd/issues/430) records the actual
+decision and publication state. RC5 and earlier releases remain immutable.
+
+- Incorporate the reviewed i686/SSE2 and scalar-build compatibility fixes,
+  bounded large-H.264 transport, failed-picture read/lifetime protection and
+  finite-input EOS/reopen corrections.
+- Include selected H.264 MBAFF Weave decoding and explicit hardware/software
+  player selection, without advertising a hardware deinterlacer or general
+  full-rate interlaced presentation.
+- Improve VA processing interoperability and setup/copy efficiency, plus
+  GStreamer MPEG-2 admission, timestamps and drain handling.
+- Add bounded HTTP(S) player input and read-only configuration inspection,
+  presets and redacted diagnostics. Configuration files do not apply settings;
+  HTTPS/network playback retains its documented unverified scope.
+- Preserve `libcrystalhd.so.3`, legacy ioctl and firmware identities. The final
+  package revision is distinct from RC5; it is not a new decoding implementation.
+
 ## 1.1.0-rc.5 — candidate
 
 Published on 2026-10-18: bundle `1.1.0-rc.5` / module-DKMS package `3.10.8`,

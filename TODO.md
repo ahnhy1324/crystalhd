@@ -9,7 +9,10 @@ distinguishes fresh candidate checks from remaining work.
 Selected Weave playback remains the scope, with the
 [known deinterlacing limits and planned v1.2 work](USAGE.md#known-issues-and-deinterlacing-roadmap)
 kept separate from current functionality.
-This is not stable v1.1.0 GO or a full-rate FHD/deinterlacing support claim.
+The current source prepares final `1.1.0` / package `3.10.9`. The maintainer
+authorized publication after the [required final-package checks](HARDWARE-2026-09-13.md#110-final-package-qualification--2026-10-19)
+pass; actual results and publication state are recorded in #430. This does not expand the tested scope to general
+full-rate FHD/deinterlacing support.
 
 - [ ] [#430: v1.1.0 RC qualification and GO/HOLD](https://github.com/ahnhy1324/crystalhd/issues/430)
   — RC5 is published; fresh Gate A, the 11-fixture oracle, 3-hour 720p,
@@ -19,14 +22,16 @@ This is not stable v1.1.0 GO or a full-rate FHD/deinterlacing support claim.
   raw FAIL/OBSERVED_NOT_PASS result is retained, not an unconditional gate PASS.
   Fresh Moonlight source preparation fails with Sunshine 503 capture/encoding
   initialization; three 60-minute modes/reopen remain NOT RUN/source BLOCKED.
-  Final installed 360+360-picture handoff also passes; explicit stable GO is
-  still required. See the
+  RC5's final installed 360+360-picture handoff also passes. Fresh final-package
+  CI/build/archive/install/RC5 rollback and affected smoke checks must pass
+  before the authorized stable publication; their current state is in #430. See the
   [RC5 execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6247676972).
   Preserve older RC results and FAILs with their original identities; no
   earlier result substitutes for a new candidate gate. Keep the existing
   maintenance-only 3-hour profile and all other thresholds unchanged.
-  All existing issues stay open; physical A/V and external RC5 acceptance are
-  not inferred from the primary host's automated tests.
+  All existing issues stay open. Selected local-player dialogue A/V has
+  subjective acceptance; quantitative timing, other frontends and external
+  final-package acceptance are not inferred from automated tests.
 - [ ] [#429: External i386/BCM70015 acceptance](https://github.com/ahnhy1324/crystalhd/issues/429)
   — installed RC4 Atom N280/i386 results cover selected codec, player and
   stock-Kodi paths; retain the original RC3 failures. Ordered B-pyramid
@@ -36,10 +41,14 @@ This is not stable v1.1.0 GO or a full-rate FHD/deinterlacing support claim.
   [the focused investigation](https://github.com/ahnhy1324/crystalhd/issues/429#issuecomment-6245398250);
   they do not replace reporter-host or physical A/V acceptance.
 - [ ] [#436: planned v1.2 deinterlacing and presentation work](https://github.com/ahnhy1324/crystalhd/issues/436)
-  — selected Weave playback and finite tail handling are included in the RC.
-  Continue deinterlacing quality, physical sync/cadence tuning and FHD dropped-
-  picture/resync investigation without claiming full-rate presentation.
-  Hardware Bob remains separate research, not a playback-release prerequisite.
+  — after final publication, prioritize a truthful CPU VA-VPP Bob path for
+  the existing Kodi Auto problem in [#445](https://github.com/ahnhy1324/crystalhd/issues/445):
+  actual filter execution, field order/timing, ownership, seek/EOS and
+  i686/scalar behavior before advertising capability. Query-only Weave or
+  returning unchanged Weave for Bob is not an implementation. Keep existing
+  Weave playback intact; physical cadence/sync and FHD performance require
+  their own measurements. Hardware Bob remains separate research, not a
+  prerequisite for this software integration.
 - [ ] Player HTTP(S) acceptance — implementation is included in RC4, with
   bounded errors and explicit hardware/software selection. Selected native
   loopback HTTP decoding/EOS/reopen passed; HTTPS, physical A/V, network
