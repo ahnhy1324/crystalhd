@@ -137,6 +137,13 @@ this qualified headroom and failed-public-read protection do not establish
 generic out-of-policy recovery or the chip's physical maximum. Previously
 accepted private pictures remain independent of a rejected public transaction.
 
+Development source applies this failed-`vaEndPicture()` public-read protection
+to every supported decode codec. New synchronization, image/export and VPP
+source reads report the rejected transaction instead of an earlier completed
+frame. Previously captured private pictures remain readable; a valid new
+picture transaction can reuse the surface. This is not stream-error recovery
+or a change to the published RC4.
+
 The independent software assembly/replay allocation bound remains 8 MiB per
 H.264 unit; it is not an 8 MiB hardware-decode claim. MPEG-2, MPEG-4 and VC-1
 retain 512 KiB per unit, with 32 MiB or 512 access units total and 8192 replayed
