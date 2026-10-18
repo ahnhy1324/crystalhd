@@ -20,6 +20,10 @@ are separate from the stable quick start below. The published
 [RC.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3) remains unchanged.
 See the [RC4 qualification status](HARDWARE-2026-09-13.md#110-rc4-qualification--2026-10-18)
 for tested scope and remaining release gates; stable v1.1.0 is not published.
+The current source prepares **1.1.0-rc.5 / module-DKMS 3.10.8** with further
+VA decode/lifetime fixes. Its fresh qualification is tracked in
+[#430's RC5 execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6247676972); RC4 results are not
+automatic RC5 passes. See the [change summary](HISTORY.md#110-rc5--candidate).
 
 **Known issues:** interlaced playback can still show combing, stutter or A/V
 timing problems, depending on the application and host. Native hardware

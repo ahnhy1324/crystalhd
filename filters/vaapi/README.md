@@ -130,7 +130,7 @@ dependent input is rejected until an actual IDR commits, preserving the
 remaining reference chain. Rejecting a non-reference B picture does not require
 an IDR or block otherwise valid continuation.
 
-The [development changes](https://github.com/ahnhy1324/crystalhd/pull/459)
+The [RC5 changes](https://github.com/ahnhy1324/crystalhd/pull/459)
 retain that conservative baseline, but admit up to **3,014,656 assembled bytes**
 for public-version-identified BCM70015/DIL 3.22.0 progressive frame-coded input.
 Unknown/BCM70012/interlaced paths retain 2 MiB. Input bytes are not rewritten;
@@ -138,19 +138,21 @@ this qualified headroom and failed-public-read protection do not establish
 generic out-of-policy recovery or the chip's physical maximum. Previously
 accepted private pictures remain independent of a rejected public transaction.
 
-Development source applies this failed-`vaEndPicture()` public-read protection
+RC5 applies this failed-`vaEndPicture()` public-read protection
 to every supported decode codec. New synchronization, image/export and VPP
 source reads report the rejected transaction instead of an earlier completed
 frame. Previously captured private pictures remain readable; a valid new
 picture transaction can reuse the surface. This is not stream-error recovery
-or a change to the published RC4.
+or a change to the published RC4. RC5 additionally preserves independent
+pending H.264 decoding when an obsolete completed surface is retired; that
+retirement must not reset unrelated accepted pictures.
 
 The independent software assembly/replay allocation bound remains 8 MiB per
 H.264 unit; it is not an 8 MiB hardware-decode claim. MPEG-2, MPEG-4 and VC-1
 retain 512 KiB per unit, with 32 MiB or 512 access units total and 8192 replayed
 units before pruning an obsolete reference prefix. Admitted H.264 units above
 512 KiB normally use `DtsProcInputFragment`, with at most 512 KiB per call;
-applications must not split them. Development source additionally allows the
+applications must not split them. RC5 additionally allows the
 identified older Flea PES library to send a complete AU up to **768 KiB** in
 one fully reserved legacy call. Unidentified older libraries retain 512 KiB;
 larger units require the fragment API and are otherwise rejected before replay
@@ -198,6 +200,12 @@ the ordinary EOS/drain fallback: a one-picture probe or reordered tail can still
 require EOS. Separately coded fields/PAFF, other codecs, BCM70012 and explicit
 live mode do not gain automatic prefeed. Set
 `CRYSTALHD_VAAPI_LOW_LATENCY_H264=0` to disable it.
+Automatic progressive prefeed and the large-AU grace above are RC5 changes;
+earlier RC4 only automatically prefed the eligible finite MBAFF subset.
+They do not implement general out-of-policy recovery, physical A/V timing or
+deinterlacing. Exact RC5 package qualification is tracked in
+[#430](https://github.com/ahnhy1324/crystalhd/issues/430); earlier development
+measurements retain their original source identities.
 
 On BCM70015, `CRYSTALHD_VAAPI_LOW_LATENCY_H264=1` explicitly enables H.264
 input prefeeding independently of the LIVE policy. With LIVE unset, finite

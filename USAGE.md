@@ -44,11 +44,12 @@ CrystalHD hardware decode session can be open at a time.
 - **Oversized H.264 rejection is not general stream recovery.** RC4 passes
   selected synthetic next-IDR controls, but a real B-pyramid rejection case
   returns two stale pictures despite the expected total count. The
-  [development changes](https://github.com/ahnhy1324/crystalhd/pull/459) add
+  [RC5 changes](https://github.com/ahnhy1324/crystalhd/pull/459) add
   qualified transport-specific headroom and decode that padded case fully;
   generic out-of-policy rejection recovery remains open in
   [#429](https://github.com/ahnhy1324/crystalhd/issues/429). These changes are
-  not part of the published RC4; see the [admission limits](#codec-boundaries).
+  not part of the published RC4. RC5 qualification is separate from those
+  development checks; see the [admission limits](#codec-boundaries).
 - **Legacy client CPU requirements still apply.** On the reporter's Atom N280
   / i386 / Kodi 22 build, Render Bob (6) crashed with SIGILL in
   `libsse4-i486-linux.so`. Deinterlace (7) was not separately run on that host;
@@ -117,8 +118,8 @@ crystalhd-play --software "/path/to/video.mp4"
 ### HTTP(S) input (RC4)
 
 The RC4 candidate includes HTTP(S) input; stable 1.0.0 and the immutable
-v1.1.0-rc.3 do not. From the RC4 source checkout, use its wrapper (or the
-matching installed `crystalhd-play`). Replace the example URL
+v1.1.0-rc.3 do not. RC5 retains it. From the selected RC source checkout, use
+its wrapper (or the matching installed `crystalhd-play`). Replace the example URL
 with your direct media URL, and close other CrystalHD sessions first:
 
 ```sh
@@ -371,14 +372,24 @@ physical maximum, and the separate 8 MiB software allocation bound does not
 establish 8 MiB hardware decoding. Units above 512 KiB require a matching
 libcrystalhd with `DtsProcInputFragment`.
 
-The [development branch](https://github.com/ahnhy1324/crystalhd/pull/459), not
-published RC4, separately qualifies **3,014,656 bytes** for identified
-BCM70015/DIL 3.22.0 progressive frame-coded input. Unknown/BCM70012/interlaced
+RC5 includes the [bounded admission changes](https://github.com/ahnhy1324/crystalhd/pull/459),
+not present in published RC4. Development controls qualified **3,014,656 bytes**
+for identified BCM70015/DIL 3.22.0 progressive frame-coded input. Unknown/BCM70012/interlaced
 paths retain 2 MiB. With the identified older Flea PES library, complete AUs up
 to **768 KiB** can use a fully reserved legacy call; larger units still need
 the fragment API. This restores the tested original/padded Sintel paths, not
 arbitrary oversized-input recovery or a silicon maximum. Exact tested code
-and headless results are in the [qualification summary](HARDWARE-2026-09-13.md#110-rc4-qualification--2026-10-18).
+and headless results are in the [qualification summary](HARDWARE-2026-09-13.md#110-rc4-qualification--2026-10-18);
+new RC5 package results are tracked in [#430](https://github.com/ahnhy1324/crystalhd/issues/430).
+
+For finite H.264 files, leave LIVE and LOW_LATENCY unset. RC5 automatically
+prefeeds eligible progressive/MBAFF frame pictures and avoids premature EOS
+while a fully submitted large AU is still outstanding. This is bounded
+finite-input handling, not an automatic streaming mode or deinterlacer. A
+genuine large-AU tail may take up to one second of inactivity inside Sync calls
+before EOS; ready output is not deliberately delayed. Explicit LIVE still
+requires subsequent input or an actual context drain for its reordered tail.
+See the [VA replay/EOS contract](filters/vaapi/README.md#replay-and-end-of-stream).
 
 ## VA-API, FFmpeg, Kodi and VLC
 
