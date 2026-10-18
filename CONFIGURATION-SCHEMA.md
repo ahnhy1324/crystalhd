@@ -265,7 +265,7 @@ driver/library/plugin session is created.  They are not reread per frame.
 
 **Current prefeed inspection limitation:** the inspector's live-only
 low-latency model predates the backend's independent explicit prefeed and
-automatic eligible finite-MBAFF prefeed. Its inactive/rejection result for
+automatic eligible finite progressive/MBAFF prefeed. Its inactive/rejection result for
 finite prefeed is not a runtime verdict. This document describes the tool as
 implemented, not a correction to its code; native behavior is in the
 [VA environment inventory](CONFIGURATION.md#va-api-environment). READY remap
