@@ -115,6 +115,8 @@ extern "C" void *gbm_bo_map(gbm_bo *, uint32_t, uint32_t, uint32_t, uint32_t, ui
 extern "C" void gbm_bo_unmap(gbm_bo *, void *) { abort(); }
 extern "C" void gbm_bo_destroy(gbm_bo *) { abort(); }
 extern "C" int gbm_bo_get_plane_count(gbm_bo *) { abort(); }
+extern "C" int gbm_bo_get_fd_for_plane(gbm_bo *, int) { abort(); }
+extern "C" uint64_t gbm_bo_get_modifier(gbm_bo *) { abort(); }
 extern "C" uint32_t gbm_bo_get_stride_for_plane(gbm_bo *, int) { abort(); }
 extern "C" uint32_t gbm_bo_get_offset(gbm_bo *, int) { abort(); }
 extern "C" int drmGetDevice2(int, uint32_t, drmDevicePtr *) { abort(); }
@@ -608,8 +610,117 @@ void BackpressureAndSimpleBRejection() {
 }
 }
 
+void RejectedConsumedEndReadback() {
+  for (VAProfile profile : {VAProfileMPEG2Simple, VAProfileMPEG2Main}) {
+    for (bool ready : {true, false}) {
+      Fixture f(profile);
+      f.Submit(1);
+      const auto target = f.driver.surfaces.at(1);
+      const auto picture = f.decode->decoded_frames.at(kTimestampStep);
+      const auto identity = picture->decode_identity;
+      const auto anchor = f.decode->mpeg2_replay.newest_anchor();
+      const auto original_input = f.mock.inputs.front().bytes;
+      if (ready) {
+        f.mock.Queue(kTimestampStep, f.width, f.height); f.Receive();
+        Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS,
+                "accepted completed public picture is initially readable");
+      }
+      VAImage snapshot = {};
+      if (ready)
+        Require(DeriveImage(&f.context, 1, &snapshot) == VA_STATUS_SUCCESS,
+                "capture an independent accepted image before rejection");
+      auto old_vpp = std::make_shared<DecodeContext>();
+      old_vpp->video_process = true;
+      f.driver.contexts[100] = old_vpp;
+      VAProcPipelineParameterBuffer pipeline = {};
+      pipeline.surface = 1;
+      VABufferID parameters = f.Buffer(VAProcPipelineParameterBufferType,
+                                       &pipeline, sizeof(pipeline));
+      Require(BeginPicture(&f.context, 100, 4) == VA_STATUS_SUCCESS &&
+                  RenderPicture(&f.context, 100, &parameters, 1) == VA_STATUS_SUCCESS &&
+                  old_vpp->vpp_frame == picture,
+              "capture the exact accepted private picture before rejection");
+      f.Begin(1);
+      Require(EndPicture(&f.context, f.id) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                  f.decode->target == VA_INVALID_SURFACE &&
+                  f.decode->next_timestamp == 2 * kTimestampStep &&
+                  f.mock.inputs.size() == 1 && f.mock.inputs.front().bytes == original_input &&
+                  f.decode->mpeg2_replay.newest_anchor() == anchor,
+              "empty End consumes only the new transaction, not accepted reference/input state");
+      Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_DECODING_ERROR,
+              "failed reused-target End cannot publish the old frame as new success");
+      if (!ready) {
+        f.mock.Queue(kTimestampStep, f.width, f.height); f.Receive();
+      }
+      Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_DECODING_ERROR,
+              "late accepted completion cannot clear the public rejection barrier");
+      VASurfaceStatus state = VASurfaceReady;
+      Require(QuerySurfaceStatus(&f.context, 1, &state) == VA_STATUS_ERROR_DECODING_ERROR,
+              "new query cannot report the rejected transaction READY");
+      VAImage derived = {}, destination = {};
+      VAImageFormat format = {}; format.fourcc = VA_FOURCC_NV12;
+      Require(DeriveImage(&f.context, 1, &derived) == VA_STATUS_ERROR_DECODING_ERROR &&
+                  CreateImage(&f.context, &format, f.width, f.height, &destination) == VA_STATUS_SUCCESS,
+              "new derive rejects while an independent destination remains allocatable");
+      auto &storage = f.driver.buffers.at(destination.buf).data;
+      std::fill(storage.begin(), storage.end(), 0x93);
+      Require(GetImage(&f.context, 1, 0, 0, f.width, f.height, destination.image_id) ==
+                  VA_STATUS_ERROR_DECODING_ERROR &&
+                  std::all_of(storage.begin(), storage.end(), [](uint8_t v) { return v == 0x93; }),
+              "new GetImage rejects without copying old pixels");
+      Require(DestroyImage(&f.context, destination.image_id) == VA_STATUS_SUCCESS,
+              "independent image remains releasable");
+      VADRMPRIMESurfaceDescriptor descriptor = {};
+      for (uint32_t access : {uint32_t(VA_EXPORT_SURFACE_READ_ONLY),
+                              uint32_t(VA_EXPORT_SURFACE_READ_WRITE), uint32_t(0)})
+        Require(ExportSurfaceHandle(&f.context, 1, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                    access, &descriptor) == VA_STATUS_ERROR_DECODING_ERROR,
+                "new read/default export rejects before graphics access");
+      auto new_vpp = std::make_shared<DecodeContext>();
+      new_vpp->video_process = true;
+      f.driver.contexts[101] = new_vpp;
+      Require(BeginPicture(&f.context, 101, 3) == VA_STATUS_SUCCESS &&
+                  RenderPicture(&f.context, 101, &parameters, 1) == VA_STATUS_ERROR_DECODING_ERROR,
+              "new VPP capture cannot acquire the rejected public picture");
+      const auto pixels = picture->storage;
+      {
+        std::unique_lock<std::mutex> lock(f.driver.mutex);
+        Require(SyncDecodeSurface(&f.driver, old_vpp->vpp_frame, &lock, 0) == VA_STATUS_SUCCESS &&
+                    picture->decode_identity == identity && picture->frame_timestamp == kTimestampStep &&
+                    picture->planes[0][0] == 128 && !picture->failed,
+                "old captured private pixels and timestamp remain readable");
+      }
+      if (ready) {
+        void *mapped = nullptr;
+        Require(MapBufferWithFlags(&f.context, snapshot.buf, &mapped, kImageMapRead) ==
+                    VA_STATUS_SUCCESS && static_cast<uint8_t *>(mapped)[0] == 128 &&
+                    UnmapBuffer(&f.context, snapshot.buf) == VA_STATUS_SUCCESS &&
+                    DestroyImage(&f.context, snapshot.image_id) == VA_STATUS_SUCCESS,
+                "old derived snapshot remains readable and releasable");
+      }
+      const auto rejected_transaction = target->picture_transaction;
+      ++target->vpp_writers;
+      Require(BeginPicture(&f.context, f.id, 1) == VA_STATUS_ERROR_HW_BUSY &&
+                  target->picture_transaction == rejected_transaction && PublicReadRejected(target.get()),
+              "failed Begin cannot supersede the rejection barrier");
+      --target->vpp_writers;
+      f.Submit(1);
+      Require(!PublicReadRejected(target.get()), "valid newer transaction supersedes the barrier");
+      f.mock.Queue(2 * kTimestampStep, f.width, f.height);
+      std::fill(f.mock.outputs.back().pixels.begin(), f.mock.outputs.back().pixels.end(), 80);
+      f.Receive();
+      Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS &&
+                  target->frame_timestamp == 2 * kTimestampStep && target->planes[0][0] == 80 &&
+                  old_vpp->vpp_frame == picture && picture->storage == pixels &&
+                  picture->frame_timestamp == kTimestampStep && !picture->failed,
+              "new accepted output is distinct while the old captured picture stays immutable");
+    }
+  }
+}
+
 int main() {
   const std::pair<const char *, void (*)()> tests[] = {
+    {"failed consumed End preserves private pictures and rejects new public reads", RejectedConsumedEndReadback},
     {"profiles and MPEG2 input format", ProfilesAndInputFormat},
     {"owned buffers and all public call orders", OwnedBuffersAndOrdering},
     {"slice arrays, groups and offsets", SliceGroupsAndOffsets},

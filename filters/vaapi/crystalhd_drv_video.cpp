@@ -1620,9 +1620,9 @@ struct DecodeContext {
   unsigned int stream_height = 0;
   bool video_process = false;
   VASurfaceID target = VA_INVALID_SURFACE;
-  std::weak_ptr<Surface> h264_transaction_target;
-  uint64_t h264_target_transaction = 0;
-  uint64_t h264_target_identity = 0;
+  std::weak_ptr<Surface> transaction_target;
+  uint64_t target_transaction = 0;
+  uint64_t target_identity = 0;
   VASurfaceID vpp_source = VA_INVALID_SURFACE;
   std::shared_ptr<Surface> vpp_frame;
   std::shared_ptr<DecodeContext> vpp_decoder;
@@ -4311,14 +4311,14 @@ static bool PublicReadRejected(const Surface *owner) {
       owner->rejected_picture_transaction == owner->picture_transaction;
 }
 
-static std::shared_ptr<Surface> MarkRejectedH264Transaction(
+static std::shared_ptr<Surface> MarkRejectedPictureTransaction(
     Driver *driver, DecodeContext *decode) {
-  const auto target = decode->h264_transaction_target.lock();
+  const auto target = decode->transaction_target.lock();
   const auto current = driver->surfaces.find(decode->target);
   if (!target || current == driver->surfaces.end() || current->second != target ||
       target->destroyed || target->backing_owner != VA_INVALID_SURFACE ||
-      target->picture_transaction != decode->h264_target_transaction ||
-      target->decode_identity != decode->h264_target_identity)
+      target->picture_transaction != decode->target_transaction ||
+      target->decode_identity != decode->target_identity)
     return {};
   // This allocation-free public-read barrier is independent of accepted
   // storage/readers. A late old completion cannot clear it; only a new writer
@@ -4329,7 +4329,7 @@ static std::shared_ptr<Surface> MarkRejectedH264Transaction(
 
 static VAStatus RejectH264Target(Driver *driver, DecodeContext *decode,
                                  VAStatus status) {
-  const auto target = MarkRejectedH264Transaction(driver, decode);
+  const auto target = MarkRejectedPictureTransaction(driver, decode);
   if (!target || target->vpp_readers != 0 || target->vpp_writers != 0 ||
       target->export_waiters != 0 || target->image_write_locked ||
       target->experimental_read_export_armed || target->experimental_presentation)
@@ -6386,10 +6386,10 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
   }
   decode->second->target = target;
   target_surface->second->picture_transaction = NextDecodeIdentity(driver);
-  decode->second->h264_transaction_target = target_surface->second;
-  decode->second->h264_target_transaction =
+  decode->second->transaction_target = target_surface->second;
+  decode->second->target_transaction =
       target_surface->second->picture_transaction;
-  decode->second->h264_target_identity = target_surface->second->decode_identity;
+  decode->second->target_identity = target_surface->second->decode_identity;
   decode->second->have_picture = false;
   decode->second->h264_picture_invalid = false;
   decode->second->h264_framed_slice_bytes = 0;
@@ -7010,16 +7010,16 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     return VA_STATUS_ERROR_INVALID_CONFIG;
   const VAProfile profile = config->second.profile;
   VAStatus status = SubmitPicture(driver, decode_context.get(), profile);
-  // End consumes this transaction even for malformed/unsupported input or
+  // Every decode profile consumes End even for malformed/unsupported input or
   // allocation failure. Recoverable Render errors remain replaceable before
   // End; successful queued/backpressured submissions are not rejections.
-  if (status != VA_STATUS_SUCCESS && IsH264Profile(profile))
-    MarkRejectedH264Transaction(driver, decode_context.get());
+  if (status != VA_STATUS_SUCCESS)
+    MarkRejectedPictureTransaction(driver, decode_context.get());
   if (status != VA_STATUS_SUCCESS)
     Debug("EndPicture rejected status=%d profile=%d target=%u", status,
           profile, decode_context->target);
   decode_context->target = VA_INVALID_SURFACE;
-  decode_context->h264_transaction_target.reset();
+  decode_context->transaction_target.reset();
   decode_context->have_picture = false;
   decode_context->h264_picture_invalid = false;
   decode_context->h264_framed_slice_bytes = 0;
