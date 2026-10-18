@@ -22,7 +22,7 @@ For v1.1, follow **scope and diff audit → device-free gates and short native
 smoke → freeze exact candidate → maintainer RC GO → publish immutable RC →
 qualify that exact RC → final package and rollback checks → maintainer stable
 GO**. A version string in a checkout is preparation, not permission to publish
-`v1.1.0-rc.4` or `v1.1.0`.
+`v1.1.0-rc.5` or `v1.1.0`.
 
 The v1.1 RC interlaced scope is bounded playback with explicit hardware/software
 Weave selection. Further deinterlacing and A/V synchronization tuning are
@@ -43,13 +43,18 @@ checkout alone does not announce a published release.
 
 | Identity | Current source | Purpose |
 | --- | --- | --- |
-| Bundle | `1.1.0-rc.4` | v1.1 release-candidate identity from `VERSION` |
-| DKMS / module package | `3.10.7` | New candidate revision; published RC.3 retains `3.10.6`, stable retains `3.10.3` |
+| Bundle | `1.1.0-rc.5` | v1.1 release-candidate identity from `VERSION` |
+| DKMS / module package | `3.10.8` | New candidate revision; published RC.4 retains `3.10.7`, RC.3 `3.10.6`, stable `3.10.3` |
 | Driver ioctl version | `3.10.0` | Historical public API value, retained |
 | Library API / pkg-config | `3.22.0` | Historical library component identity, retained |
 | Library SONAME / file | `libcrystalhd.so.3` / `libcrystalhd.so.3.6` | Existing application linkage, retained |
 | GStreamer plugin / VA vendor string | `3.10.0` / `0.1` | Historical component labels; not the bundle identity |
 | Firmware | Existing BCM70012/BCM70015 images | Retain images, identities and license notices |
+
+RC.5 preparation includes the [post-RC4 changes](HISTORY.md#110-rc5--candidate).
+Earlier process-local development checks and RC4 installation/endurance results
+retain their original identities; they are not new RC5 package passes. Record
+the frozen RC5 source, actual installed payload and fresh results in #430.
 
 Published [RC.4](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.4)
 pins `a1492c0824fa38748804e92de435da22d99d85de` and includes the reviewed
@@ -130,7 +135,7 @@ a fix or explicit withdrawal from the candidate.
 4. Complete #430 Gate A, including the declared short native smoke. Record the
    exact commit, source diff, feature list, limits, acknowledgements, release
    text and results, then obtain explicit maintainer RC GO before publishing
-   `v1.1.0-rc.4`. Never move published tags, including `v1.1.0-rc.3`,
+   `v1.1.0-rc.5`. Never move published tags, including `v1.1.0-rc.4`, `v1.1.0-rc.3`,
    `v1.0.0-rc.1`, `v1.0.0` and `phase1-baseline-2026-09-29`.
 
 ## Qualify the candidate

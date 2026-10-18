@@ -1,5 +1,30 @@
 # History
 
+## 1.1.0-rc.5 — candidate
+
+Candidate bundle `1.1.0-rc.5` / module-DKMS package `3.10.8`; fresh
+qualification and publication are tracked in
+[#430](https://github.com/ahnhy1324/crystalhd/issues/430). Earlier published
+RCs, stable 1.0.0 and the Phase 1 baseline remain unchanged. This preparation
+does not declare the new candidate qualified or authorize stable publication.
+
+- Admit qualified larger progressive H.264 units for identified BCM70015/DIL
+  transport combinations, retaining conservative fallback limits. Preserve
+  accepted private pictures while rejecting reads of a failed public decode
+  transaction across all supported codecs.
+- Preserve independent pending H.264 decode when obsolete completed surfaces
+  are retired; avoid unnecessary decoder resets.
+- Extend existing automatic finite-input prefeed to eligible progressive
+  H.264 frame pictures. Use the existing bounded one-second inactivity grace
+  while a fully submitted large H.264 unit remains outstanding, avoiding
+  premature EOS/replay without delaying already-ready output or treating a
+  player pause as decoder waiting.
+- Avoid redundant decoder-control wakeups when tearing down unused VPP
+  contexts, without disabling scaling/CSC or advertising deinterlacing.
+- Correct read-only configuration inspection: explicit prefeed is independent
+  of LIVE; automatic eligibility is not inferred from the inspector's boolean.
+  No new option, legacy ioctl or `libcrystalhd.so.3` ABI change is introduced.
+
 ## 1.1.0-rc.4 — candidate
 
 Candidate bundle `1.1.0-rc.4` / module-DKMS package `3.10.7`; publication and

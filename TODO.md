@@ -12,20 +12,29 @@ kept separate from current functionality.
 This is not stable v1.1.0 GO or a full-rate FHD/deinterlacing support claim.
 
 - [ ] [#430: v1.1.0 RC qualification and GO/HOLD](https://github.com/ahnhy1324/crystalhd/issues/430)
-  — qualify the exact RC4 payload before a separate stable-release GO.
+  — prepare RC5 (`1.1.0-rc.5` / package `3.10.8`), complete fresh Gate A before
+  RC publication, then Gate B/final-package qualification before a separate
+  stable-release GO. See the [RC5 execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6247676972).
+  RC4 remains immutable.
   Preserve RC3's oracle/endurance results, original audio-tail and later
   scheduling FAILs, and subsequent dispositions; they are not new RC4 passes.
   The corrected audio probe and explicit maintenance-only 3-hour profile remain.
   Fresh RC4 VA endurance, correctness/lifecycle, scaled controls, Kodi/VLC and
   direct/DKMS installation/rollback checks pass. Retained Moonlight testing is
   blocked by source capture initialization; final-package checks and stable GO
-  remain separate. See the [current execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6231208771)
+  remain separate. See the [RC4 execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6231208771)
   for actual results and preserved failures; omitted gates are not PASS.
+  The [RC5 scope](HISTORY.md#110-rc5--candidate) includes subsequent bounded
+  H.264 admission, failed-read/lifetime and premature-EOS corrections; prior
+  development results do not qualify the new installed package.
 - [ ] [#429: External i386/BCM70015 acceptance](https://github.com/ahnhy1324/crystalhd/issues/429)
   — installed RC4 Atom N280/i386 results cover selected codec, player and
   stock-Kodi paths; retain the original RC3 failures. Ordered B-pyramid
   rejection recovery, exact Kodi output/physical A/V and the other open
-  checklist rows remain incomplete. Primary-host tests do not replace them.
+  checklist rows remain incomplete. Later primary-host long playback and
+  ELF32/no-SSE hardware controls are recorded in
+  [the focused investigation](https://github.com/ahnhy1324/crystalhd/issues/429#issuecomment-6245398250);
+  they do not replace reporter-host or physical A/V acceptance.
 - [ ] [#436: planned v1.2 deinterlacing and presentation work](https://github.com/ahnhy1324/crystalhd/issues/436)
   — selected Weave playback and finite tail handling are included in the RC.
   Continue deinterlacing quality, physical sync/cadence tuning and FHD dropped-
