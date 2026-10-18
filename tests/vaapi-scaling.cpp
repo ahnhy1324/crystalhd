@@ -1946,6 +1946,100 @@ void RejectedH264ConsumedEnd() {
           "valid Render replacement commits its own readable picture");
 }
 
+void ObsoleteSurfaceRetirementPreservesIndependentDecode() {
+  // A newer sent IDR has retired the old prefix. Deleting its completed public
+  // target is not a seek and must not cancel the independent pending timeline.
+  for (bool retained_root : {false, true}) {
+    Fixture f;
+    for (VASurfaceID id : {2U, 3U}) {
+      auto target = std::make_shared<Surface>();
+      Require(target->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
+              "allocate independent decode target");
+      f.driver.surfaces[id] = target;
+    }
+    const auto submit = [&](VASurfaceID id, bool idr) {
+      Require(BeginPicture(&f.context, 1, id) == VA_STATUS_SUCCESS,
+              "begin a selected decode target");
+      f.Parameters(idr);
+      return EndPicture(&f.context, 1);
+    };
+    Require(submit(1, true) == VA_STATUS_SUCCESS, "accept original IDR");
+    Output(&f, kTimestampStep, 40);
+    const auto captured = f.decode->decoded_frames.at(kTimestampStep);
+    const auto pixels = captured->storage;
+    ++captured->vpp_readers;
+    Require(submit(2, !retained_root) == VA_STATUS_SUCCESS,
+            "accept the next independent IDR or dependent reference");
+    Output(&f, 2 * kTimestampStep, 60);
+    Require(f.decode->replay.cached_pictures() == (retained_root ? 2U : 1U) &&
+                f.decode->replay.replayable(),
+            "only an actual newer IDR prunes the complete old prefix");
+    Require(submit(3, false) == VA_STATUS_SUCCESS, "accept unrelated pending P");
+    const auto pending = f.driver.surfaces.at(3);
+    const auto private_pending = f.decode->decoded_frames.at(3 * kTimestampStep);
+    const uint64_t generation = f.decode->generation;
+    const auto original_inputs = f.mock.inputs.size();
+    VASurfaceID old = 1;
+    Require(DestroySurfaces(&f.context, &old, 1) == VA_STATUS_SUCCESS &&
+                f.driver.surfaces.count(old) == 0,
+            "destroy only the completed old public target");
+    if (retained_root) {
+      Require(f.mock.close_count == 1 && f.decode->generation == generation + 1 &&
+                  f.decode->device == nullptr && pending->failed && private_pending->failed,
+              "destroying a retained reference still resets and cancels dependent pending work");
+    } else {
+      Require(f.mock.close_count == 0 && f.decode->generation == generation &&
+                  f.decode->device == &f.mock && f.decode->replay.cached_pictures() == 2 &&
+                  f.decode->pending.count(3 * kTimestampStep) == 1 &&
+                  !pending->failed && !private_pending->failed &&
+                  f.decode->surface_timestamps.size() == 2 &&
+                  f.decode->decoded_frames.count(kTimestampStep) == 0,
+              "obsolete eviction releases only its map owners, not independent replay or pending input");
+      Output(&f, 3 * kTimestampStep, 80);
+      Require(submit(3, false) == VA_STATUS_SUCCESS &&
+                  f.mock.inputs.size() == original_inputs + 1 && f.mock.reopen_count == 0,
+              "valid P continuation keeps the original hardware session and IDR history");
+      Output(&f, 4 * kTimestampStep, 90);
+    }
+    {
+      std::unique_lock<std::mutex> lock(f.driver.mutex);
+      Require(SyncDecodeSurface(&f.driver, captured, &lock, 0) == VA_STATUS_SUCCESS &&
+                  captured->storage == pixels && captured->frame_timestamp == kTimestampStep &&
+                  !captured->failed,
+              "captured completed private pixels remain readable through public retirement");
+    }
+    --captured->vpp_readers;
+  }
+  {
+    Fixture f;
+    CrystalHDDecodeReplay::Limits limits;
+    limits.pictures = 2;
+    f.decode->live_h264 = true;
+    f.decode->replay = CrystalHDDecodeReplay(limits, true);
+    for (VASurfaceID id : {1U, 2U, 3U}) {
+      if (id != 1) {
+        auto target = std::make_shared<Surface>();
+        Require(target->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
+                "allocate bounded-history target");
+        f.driver.surfaces[id] = target;
+      }
+      Require(BeginPicture(&f.context, 1, id) == VA_STATUS_SUCCESS,
+              "begin bounded-history target");
+      f.Parameters(id == 1);
+      f.End();
+      if (id != 3) Output(&f, id * kTimestampStep, 40 + id * 10);
+    }
+    Require(!f.decode->replay.replayable() && f.decode->replay.cached_pictures() == 2,
+            "completed history eviction is not proof of a newer independent IDR");
+    const auto pending = f.driver.surfaces.at(3);
+    const uint64_t generation = f.decode->generation;
+    VASurfaceID old = 1;
+    Require(DestroySurfaces(&f.context, &old, 1) == VA_STATUS_SUCCESS &&
+                f.mock.close_count == 1 && f.decode->generation == generation + 1 && pending->failed,
+            "unreplayable old history retains the conservative surface-pool reset");
+  }
+}
+
 void DirectLiveOutputAndReuse() {
   for (unsigned int mode = 0; mode < 3; ++mode) {
     Fixture f;
@@ -2108,6 +2202,7 @@ void DirectBackingReassignedBetweenVppBeginAndEnd() {
 int main() {
   unsigned failures = 0;
   const std::pair<const char *, void (*)()> groups[] = {
+    {"obsolete surface retirement preserves independent decode", ObsoleteSurfaceRetirementPreservesIndependentDecode},
     {"rejected H.264 target readback", RejectedH264TargetReadback},
     {"rejected H.264 preserves accepted pictures", RejectedH264PreservesAcceptedPictures},
     {"rejected H.264 ownership guards", RejectedH264OwnershipGuards},
