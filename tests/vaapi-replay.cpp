@@ -6190,6 +6190,188 @@ static void DefaultBoundedH264StillDrainsFiniteTail() {
     fixture.CheckPicture(picture);
 }
 
+static void PrepareAcceptedH264Au(TeardownFixture &fixture, size_t bytes,
+                                  bool bounded_history = true) {
+  fixture.decoder->replay = CrystalHDDecodeReplay(bounded_history);
+  fixture.decoder->live_h264 = bounded_history;
+  Require(fixture.decoder->replay.Append(
+              kTimestampStep, true, std::vector<uint8_t>(bytes, 0x65)),
+          "retain one complete H.264 AU for the output-wait regression");
+  // Model a fully accepted logical AU. Fragment transport itself is covered
+  // separately; this fixture must not call an unwrapped fragment API.
+  SendNext(&fixture.decoder->replay, kTimestampStep);
+  fixture.io.inputs.push_back(kTimestampStep);
+  fixture.decoder->RecordTransportProgress();
+}
+
+static void LargeH264CompletionDoesNotInferEos() {
+  const size_t chunk = crystalhd_access_unit_limits::kDtsInputChunkBytes;
+  for (unsigned int control = 0; control < 3; ++control) {
+    TeardownFixture fixture(1);
+    const bool longer_grace = control != 1;
+    PrepareAcceptedH264Au(fixture, control == 1 ? chunk : chunk + 1,
+                          control != 2);
+    const uint64_t progress = fixture.decoder->transport_progress;
+    unsigned int callbacks = 0;
+    fixture.io.on_sleep = [&] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(140));
+      ++callbacks;
+      Require(fixture.decoder->transport_progress == progress,
+              "large-AU wait crosses 100 ms without synthetic transport progress");
+      if (longer_grace) {
+        // Return once without output: the production loop must observe the
+        // expired historical grace before the next callback supplies pixels.
+        fixture.io.on_sleep = [&] {
+          std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+          ++callbacks;
+          Require(!fixture.decoder->replay.sealed() &&
+                      std::count(fixture.io.events.begin(),
+                                 fixture.io.events.end(), "seal") == 0,
+                  "in-flight large H.264 AU must not infer EOS at 100 ms");
+          fixture.io.outputs.push_back(kTimestampStep);
+        };
+      }
+    };
+    Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS,
+            "delayed exact picture completes through the normal sync path");
+    Require(callbacks == (longer_grace ? 2U : 1U) &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                           "seal") == (longer_grace ? 0 : 1) &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                           "eos") == (longer_grace ? 0 : 1) &&
+                fixture.decoder->sync_inactivity_ns == 0 &&
+                fixture.io.open_attempts == 0 && !fixture.io.invalid,
+            "only AUs strictly above one chunk gain grace; output resets it");
+    fixture.CheckPicture(0);
+  }
+  Require(DecodeWaitStatus(VA_TIMEOUT_INFINITE, kDecodeTimeoutNs - 1) ==
+              VA_STATUS_SUCCESS &&
+              DecodeWaitStatus(VA_TIMEOUT_INFINITE, kDecodeTimeoutNs) ==
+                  VA_STATUS_ERROR_DECODING_ERROR &&
+              DecodeWaitStatus(7000000, 7000000) == VA_STATUS_ERROR_TIMEDOUT,
+          "large-AU grace never extends finite or exact ten-second deadlines");
+}
+
+static void LargeH264InactivitySurvivesFiniteSyncCalls() {
+  TeardownFixture fixture(1);
+  PrepareAcceptedH264Au(
+      fixture, crystalhd_access_unit_limits::kDtsInputChunkBytes + 1);
+  fixture.decoder->sync_inactivity_ns =
+      kBoundedH264InactivityGraceNs - 300ULL * 1000 * 1000;
+  const uint64_t before = fixture.decoder->sync_inactivity_ns;
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  Require(fixture.decoder->sync_inactivity_ns == before &&
+              SyncSurface2(&fixture.context, 1, 10ULL * 1000 * 1000) ==
+                  VA_STATUS_ERROR_TIMEDOUT &&
+              fixture.decoder->sync_inactivity_ns > before &&
+              fixture.decoder->sync_inactivity_ns <
+                  kBoundedH264InactivityGraceNs &&
+              !fixture.held[0]->ready && !fixture.held[0]->failed &&
+              fixture.held[0]->planes[0][0] == 99 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "seal") == 0,
+          "finite large-AU sync preserves only actual wait time and old pixels");
+  Require(SyncSurface2(&fixture.context, 1, 500ULL * 1000 * 1000) ==
+                  VA_STATUS_SUCCESS &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "seal") == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "eos") == 1 &&
+              fixture.decoder->replay.outstanding() == 0 &&
+              fixture.decoder->pending.empty() && !fixture.io.invalid,
+          "repeated finite waits still seal and drain a genuinely idle large tail");
+  fixture.CheckPicture(0);
+}
+
+static void OutstandingLargeInputUsesCurrentHardwareBatch() {
+  const size_t chunk = crystalhd_access_unit_limits::kDtsInputChunkBytes;
+  for (size_t bytes : {chunk - 1, chunk, chunk + 1}) {
+    CrystalHDDecodeReplay replay;
+    Require(replay.Append(1, true, std::vector<uint8_t>(bytes, 0x65)) &&
+                !replay.HasOutstandingInputLargerThan(chunk),
+            "queued large input is not a completed hardware submission");
+    SendNext(&replay, 1);
+    Require(replay.HasOutstandingInputLargerThan(chunk) == (bytes > chunk),
+            "outstanding input uses a strict transfer-size boundary");
+    Require(replay.Observe(1) == CrystalHDDecodeReplay::Output::New &&
+                !replay.HasOutstandingInputLargerThan(chunk),
+            "completed compressed history alone never extends inactivity");
+  }
+  CrystalHDDecodeReplay replay;
+  Require(replay.Append(1, true, {1}) &&
+              replay.Append(2, false, std::vector<uint8_t>(chunk + 1, 0x41)),
+          "retain small sent and large unsubmitted input");
+  SendNext(&replay, 1);
+  Require(!replay.HasOutstandingInputLargerThan(chunk),
+          "an unadvanced large AU remains excluded through partial transport");
+  SendNext(&replay, 2);
+  Require(replay.HasOutstandingInputLargerThan(chunk) &&
+              replay.Observe(2) == CrystalHDDecodeReplay::Output::New &&
+              !replay.HasOutstandingInputLargerThan(chunk),
+          "a completed large AU stops qualifying while a small AU stays pending");
+
+  CrystalHDDecodeReplay again;
+  Require(again.Append(1, true, std::vector<uint8_t>(chunk + 1, 0x65)),
+          "retain large replay root");
+  SendNext(&again, 1);
+  Require(again.Observe(1) == CrystalHDDecodeReplay::Output::New &&
+              again.Append(2, false, {2}),
+          "complete large root before sealing a small tail");
+  SendNext(&again, 2);
+  Require(again.Seal() && again.Append(3, false, {3}) &&
+              again.Observe(2) == CrystalHDDecodeReplay::Output::New &&
+              again.EndOfSequence() && again.Restarted() &&
+              !again.HasOutstandingInputLargerThan(chunk),
+          "completed large history is not outstanding before actual replay");
+  SendNext(&again, 1);
+  Require(again.HasOutstandingInputLargerThan(chunk) &&
+              again.Observe(1) == CrystalHDDecodeReplay::Output::Duplicate &&
+              !again.HasOutstandingInputLargerThan(chunk),
+          "actual replay qualifies until duplicate completion retires this batch");
+}
+
+static void CompletedLargeHistoryAndBcm70012KeepOrdinaryWaits() {
+  const size_t chunk = crystalhd_access_unit_limits::kDtsInputChunkBytes;
+  {
+    TeardownFixture fixture(2);
+    PrepareAcceptedH264Au(fixture, chunk + 1);
+    Require(fixture.decoder->replay.Append(2 * kTimestampStep, false, {2}),
+            "queue small tail after a large accepted picture");
+    SendNext(&fixture.decoder->replay, 2 * kTimestampStep);
+    fixture.io.inputs.push_back(2 * kTimestampStep);
+    fixture.io.outputs.push_back(kTimestampStep);
+    Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) ==
+                VA_STATUS_SUCCESS,
+            "finish large picture before waiting on the small tail");
+    fixture.io.on_sleep = [] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(140));
+    };
+    Require(SyncSurface(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                           "seal") == 1 &&
+                fixture.decoder->sync_inactivity_ns == 0 && !fixture.io.invalid,
+            "completed large cache does not extend a small pending tail's grace");
+    fixture.CheckPicture(0);
+    fixture.CheckPicture(1);
+  }
+  {
+    TeardownFixture fixture(1);
+    PrepareAcceptedH264Au(fixture, chunk + 1);
+    fixture.decoder->is_70012 = true;
+    fixture.io.on_sleep = [] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(140));
+    };
+    Require(SyncSurface2(&fixture.context, 1, 160ULL * 1000 * 1000) ==
+                VA_STATUS_ERROR_TIMEDOUT &&
+                fixture.decoder->sync_inactivity_ns == 0 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                           "seal") == 0 &&
+                !fixture.held[0]->ready && !fixture.held[0]->failed &&
+                fixture.held[0]->planes[0][0] == 99 && !fixture.io.invalid,
+            "BCM70012 retains its finite no-EOS wait without large-AU accounting");
+  }
+}
+
 static void DefaultBoundedH264PreservesShortUnreplayableGap() {
   Require(DecodeBatchGraceExpired(kDecodeBatchGraceNs) &&
               !DecodeBatchGraceExpired(kDecodeBatchGraceNs, true) &&
@@ -7652,6 +7834,10 @@ int main() {
     TransportProgressRequiresActualHardwareIo();
     ProgressingSyncDoesNotSealAnActiveStream();
     DefaultBoundedH264StillDrainsFiniteTail();
+    LargeH264CompletionDoesNotInferEos();
+    LargeH264InactivitySurvivesFiniteSyncCalls();
+    OutstandingLargeInputUsesCurrentHardwareBatch();
+    CompletedLargeHistoryAndBcm70012KeepOrdinaryWaits();
     DefaultBoundedH264PreservesShortUnreplayableGap();
     DefaultBoundedH264InactivitySurvivesFiniteSyncCalls();
     EarlyLiveGapPreservesIntactReplayHistory();

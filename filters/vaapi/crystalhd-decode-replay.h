@@ -187,6 +187,13 @@ class CrystalHDDecodeReplay {
   bool IsOutstanding(uint64_t timestamp) const {
     return outstanding_.count(timestamp) != 0;
   }
+  bool HasOutstandingInputLargerThan(size_t bytes) const {
+    for (size_t i = 0; i < cursor_; ++i)
+      if (units_[i].bytes.size() > bytes &&
+          outstanding_.count(units_[i].timestamp) != 0)
+        return true;
+    return false;
+  }
   // For a previously accepted token, a newer retained actual-IDR root proves
   // the old input is absent and no longer needed for reference reconstruction.
   // MakeRoom's arbitrary live-history eviction cannot establish this proof.

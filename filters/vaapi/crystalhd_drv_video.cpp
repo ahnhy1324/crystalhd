@@ -144,8 +144,8 @@ constexpr uint32_t kStatusSkipReadyHeadPeek = 1U << 30;
 }
 
 static bool DecodeBatchGraceExpired(uint64_t elapsed_ns,
-                                    bool bounded_h264_history_lost = false) {
-  return elapsed_ns >= (bounded_h264_history_lost
+                                    bool bounded_h264_inactivity = false) {
+  return elapsed_ns >= (bounded_h264_inactivity
                             ? kBoundedH264InactivityGraceNs
                             : kDecodeBatchGraceNs);
 }
@@ -5059,24 +5059,24 @@ static VAStatus SyncDecodeSurface(
     const uint64_t local_idle =
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             now - inactivity_start).count();
-    // Carry only time spent waiting in VA sync calls, and only after an unset
-    // H.264 policy has retired the prefix needed for a non-IDR restart. Time
-    // between calls can be an intentional player pause and is not inactivity.
-    const bool bounded_h264_history_lost =
-        !decode->is_70012 && decode->live_h264 &&
-        !decode->live_h264_gap_tolerant &&
-        decode->replay.live_stream_started() &&
-        !decode->replay.replayable();
+    // A fully submitted large AU can take longer than 100 ms to complete.
+    // Reuse the bounded history-loss grace; count actual sync waits, not player
+    // pauses. Queued/partial AUs and completed cache alone do not qualify.
+    const bool bounded_h264_inactivity =
+        !decode->is_70012 && IsH264Profile(decode->profile) &&
+        ((decode->live_h264 && !decode->live_h264_gap_tolerant &&
+          decode->replay.live_stream_started() &&
+          !decode->replay.replayable()) ||
+         decode->replay.HasOutstandingInputLargerThan(
+             crystalhd_access_unit_limits::kDtsInputChunkBytes));
     uint64_t idle = local_idle;
-    if (bounded_h264_history_lost) {
+    if (bounded_h264_inactivity) {
       const uint64_t accumulated = bounded_inactivity_base + local_idle;
       decode->sync_inactivity_ns =
           std::max(decode->sync_inactivity_ns, accumulated);
       idle = decode->sync_inactivity_ns;
     } else {
-      // Preserve the historical per-call inactivity rule for strict H.264 and
-      // every other codec. Only an unreplayable bounded BCM70015 H.264 stream
-      // needs to carry actual VA wait time across finite Sync calls.
+      // All other input retains the historical per-call inactivity rule.
       bounded_inactivity_base = 0;
       decode->sync_inactivity_ns = 0;
     }
@@ -5102,7 +5102,7 @@ static VAStatus SyncDecodeSurface(
         decode->replay.live_stream_started();
     if (!surface->ready && !decode->ReplaySealed() &&
         !retain_live_references &&
-        DecodeBatchGraceExpired(idle, bounded_h264_history_lost)) {
+        DecodeBatchGraceExpired(idle, bounded_h264_inactivity)) {
       Debug("sync batch inactivity: elapsed=%llu idle=%llu progress=%llu timestamp=%llu",
             static_cast<unsigned long long>(elapsed),
             static_cast<unsigned long long>(idle),

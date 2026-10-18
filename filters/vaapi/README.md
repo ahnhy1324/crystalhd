@@ -101,8 +101,9 @@ cadence/A/V acceptance on the reporting host remains pending. See the
 BCM70015 firmware can retain output until later compressed pictures or a real
 end-of-sequence marker arrive. For strict H.264 and the other codecs, the
 backend may seal the exact submitted batch after 100 ms without real
-input/output progress during synchronization. New input waits until all real
-output timestamps retire and drain completes through the firmware EOS marker
+input/output progress during synchronization, subject to the H.264 grace below.
+New input waits until all real output timestamps retire and drain completes
+through the firmware EOS marker
 or, for MPEG-4, the library EOS state; continued input then reopens the device
 and replays retained original access units.
 
@@ -162,10 +163,13 @@ reopen and replay. BCM70012 does not use this sealed-batch path.
 
 With `CRYSTALHD_VAAPI_LIVE_H264` unset, H.264 uses bounded transport history:
 completed history may retire within the limits above, while queued input and
-outstanding pictures are never discarded. While the retained prefix remains
-replayable the ordinary 100 ms rule applies. After that prefix has retired on
-BCM70015, only time actually spent waiting without progress inside VA sync
-calls is accumulated, and EOS is deferred to one second. Time between calls,
+outstanding pictures are never discarded. On BCM70015, EOS is deferred to one
+second when that prefix is no longer replayable or while a fully submitted
+H.264 AU larger than 512 KiB remains outstanding. Queued/partial AUs and
+completed cached history alone do not extend the grace. The large-AU exception is independent
+of the LIVE setting; it neither changes the live-gap policy below nor delays
+already-ready output. Only time actually spent waiting without
+progress inside VA sync calls is accumulated. Time between calls,
 including a player pause, is not counted. If this bounded grace eventually
 seals an unreplayable stream, continuation requires an actual IDR; dependent
 input is rejected rather than decoded with missing references.
