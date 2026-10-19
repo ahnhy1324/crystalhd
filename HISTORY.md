@@ -2,9 +2,11 @@
 
 ## 1.2.0 — in development
 
-- Add scalar field-local Bob sampling groundwork and i686/no-SSE regression
-  coverage. VA filter integration is not yet enabled; existing Weave and
-  advertised capabilities remain unchanged.
+- Implement CPU VA-VPP Bob for origin-aligned woven NV12 regions, with NV12/ARGB
+  output, independent Y/UV field sampling and Render-time filter snapshots.
+  Preserve zero-filter Weave/scaling and legacy ABI; single-field input,
+  nonzero-origin cropping and hardware Bob remain unsupported. Kodi, cadence and physical
+  A/V qualification remain separate from device-free filter checks.
 
 ## 1.1.0
 

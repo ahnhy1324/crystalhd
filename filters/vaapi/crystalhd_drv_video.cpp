@@ -75,6 +75,7 @@ extern "C" {
 #include "crystalhd-vc1.h"
 #include "crystalhd-vc1-replay.h"
 #include "crystalhd-wmv3.h"
+#include "crystalhd-vpp-bob.h"
 
 #if defined(__GNUC__)
 // Keep the plugin loadable with an older libcrystalhd.so.3. The optional
@@ -1387,6 +1388,12 @@ static bool GetLegacyLayout(const VASurfaceAttribExternalBuffers &desc,
   return true;
 }
 
+struct VppDeinterlace {
+  bool bob = false;
+  crystalhd_vpp_bob::FieldParity field =
+      crystalhd_vpp_bob::FieldParity::kTop;
+};
+
 static uint8_t ClampRgb(int value) {
   return static_cast<uint8_t>(std::clamp(value, 0, 255));
 }
@@ -1415,7 +1422,8 @@ static VAStatus ProcessVpp(SwsContext **scaler,
                            Surface *source, Surface *destination,
                            const VARectangle &source_region,
                            const VARectangle &output_region,
-                           bool destination_write_started = false) {
+                           bool destination_write_started = false,
+                           const VppDeinterlace &deinterlace = {}) {
   if (scaler == nullptr || source == nullptr || destination == nullptr ||
       source->fourcc != VA_FOURCC_NV12 ||
       (destination->fourcc != VA_FOURCC_NV12 &&
@@ -1429,6 +1437,53 @@ static VAStatus ProcessVpp(SwsContext **scaler,
        ((output_region.x | output_region.y | output_region.width |
          output_region.height) & 1U) != 0))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
+  if (deinterlace.bob) {
+    // An origin-zero visible extent may exclude coded padding, without
+    // changing field/chroma phase. Nonzero crop origins remain unsupported.
+    if (source == destination || source_region.x != 0 || source_region.y != 0 ||
+        output_region.x != 0 || output_region.y != 0 ||
+        ((source_region.width | output_region.width) & 1U) != 0 ||
+        !crystalhd_vpp_bob::Nv12FrameHeightsValid(source_region.height,
+                                                output_region.height))
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    const auto plane_fits = [](const uint8_t *plane, unsigned int pitch,
+                               uint64_t rows, uint64_t row_bytes) {
+      const uint64_t limit = std::numeric_limits<size_t>::max();
+      return plane != nullptr && rows != 0 && row_bytes != 0 &&
+             row_bytes <= limit && pitch >= row_bytes &&
+             rows - 1 <= (limit - row_bytes) / pitch;
+    };
+    uint64_t last_source_row = 0;
+    if (!plane_fits(source->planes[0], source->pitch[0], source_region.height,
+                    source_region.width) ||
+        !plane_fits(source->planes[1], source->pitch[1], source_region.height / 2,
+                    source_region.width) ||
+        !crystalhd_vpp_bob::SourcePlaneRow(
+            source_region.height, output_region.height, output_region.height - 1,
+            deinterlace.field, &last_source_row) ||
+        !crystalhd_vpp_bob::SourcePlaneRow(
+            source_region.height / 2, output_region.height / 2,
+            output_region.height / 2 - 1, deinterlace.field, &last_source_row))
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    if (destination->fourcc == VA_FOURCC_NV12) {
+      if (!plane_fits(destination->planes[0], destination->pitch[0],
+                      destination->height, destination->width) ||
+          !plane_fits(destination->planes[1], destination->pitch[1],
+                      (destination->height + 1U) / 2,
+                      Align(destination->width, 2)))
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+    } else {
+      const uint64_t row_bytes = static_cast<uint64_t>(destination->width) * 4;
+      // swscale uses signed-int strides; perform every size/stride check
+      // before acquiring CPU access or touching the shared destination.
+      if (!plane_fits(destination->planes[0], destination->pitch[0],
+                      destination->height, row_bytes) ||
+          row_bytes > INT_MAX || source->pitch[0] > INT_MAX / 2U ||
+          source->pitch[1] > INT_MAX / 2U ||
+          destination->height > std::numeric_limits<size_t>::max() / row_bytes)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+    }
+  }
   if (source->expected_timestamp != 0 &&
       source->frame_timestamp != source->expected_timestamp) {
     Debug("refusing mismatched VPP source expected=%llu produced=%llu",
@@ -1446,7 +1501,12 @@ static VAStatus ProcessVpp(SwsContext **scaler,
     // lightning-shaped mix of the old frame and black. Build a complete frame
     // privately, then touch the shared buffer only for the final row copies.
     const size_t staging_pitch = static_cast<size_t>(destination->width) * 4;
-    argb_staging->resize(staging_pitch * destination->height);
+    try {
+      argb_staging->resize(staging_pitch * destination->height);
+    } catch (const std::bad_alloc &) {
+      source->EndCpuRead();
+      return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    }
     const bool fills_destination =
         output_region.x == 0 && output_region.y == 0 &&
         output_region.width == destination->width &&
@@ -1463,8 +1523,13 @@ static VAStatus ProcessVpp(SwsContext **scaler,
         }
       }
     }
+    const unsigned int selected_parity = deinterlace.bob
+        ? static_cast<unsigned int>(deinterlace.field) : 0;
+    const unsigned int source_height = deinterlace.bob
+        ? source_region.height / 2 : source_region.height;
+    const unsigned int source_pitch_factor = deinterlace.bob ? 2 : 1;
     *scaler = sws_getCachedContext(
-        *scaler, source_region.width, source_region.height, AV_PIX_FMT_NV12,
+        *scaler, source_region.width, source_height, AV_PIX_FMT_NV12,
         output_region.width, output_region.height, AV_PIX_FMT_BGRA, SWS_POINT,
         nullptr, nullptr, nullptr);
     if (*scaler == nullptr) {
@@ -1473,14 +1538,17 @@ static VAStatus ProcessVpp(SwsContext **scaler,
     }
     const uint8_t *source_planes[4] = {
         source->planes[0] +
-            static_cast<size_t>(source_region.y) * source->pitch[0] +
+            static_cast<size_t>(source_region.y + selected_parity) *
+                source->pitch[0] +
             source_region.x,
         source->planes[1] +
-            static_cast<size_t>(source_region.y / 2) * source->pitch[1] +
+            static_cast<size_t>(source_region.y / 2 + selected_parity) *
+                source->pitch[1] +
             (source_region.x & ~1U),
         nullptr, nullptr};
-    const int source_pitches[4] = {static_cast<int>(source->pitch[0]),
-                                   static_cast<int>(source->pitch[1]), 0, 0};
+    const int source_pitches[4] = {
+        static_cast<int>(source->pitch[0] * source_pitch_factor),
+        static_cast<int>(source->pitch[1] * source_pitch_factor), 0, 0};
     uint8_t *destination_planes[4] = {
         argb_staging->data() +
             static_cast<size_t>(output_region.y) * staging_pitch +
@@ -1489,7 +1557,7 @@ static VAStatus ProcessVpp(SwsContext **scaler,
     const int destination_pitches[4] = {
         static_cast<int>(staging_pitch), 0, 0, 0};
     const int output_lines = sws_scale(
-        *scaler, source_planes, source_pitches, 0, source_region.height,
+        *scaler, source_planes, source_pitches, 0, source_height,
         destination_planes, destination_pitches);
     if (output_lines != output_region.height) {
       source->EndCpuRead();
@@ -1514,48 +1582,100 @@ static VAStatus ProcessVpp(SwsContext **scaler,
       source->EndCpuRead();
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
-    for (unsigned int row = 0; row < destination->height; ++row)
-      memset(destination->planes[0] +
-                 static_cast<size_t>(row) * destination->pitch[0],
-             16, destination->width);
-    for (unsigned int row = 0; row < (destination->height + 1) / 2; ++row)
-      memset(destination->planes[1] +
-                 static_cast<size_t>(row) * destination->pitch[1],
-             128, destination->width);
-    for (unsigned int row = 0; row < output_region.height; ++row) {
-      const unsigned int source_y = source_region.y +
-          static_cast<uint64_t>(row) * source_region.height /
-              output_region.height;
-      uint8_t *destination_y =
-          destination->planes[0] +
-          static_cast<size_t>(output_region.y + row) * destination->pitch[0] +
-          output_region.x;
-      for (unsigned int column = 0; column < output_region.width; ++column) {
-        const unsigned int source_x = source_region.x +
-            static_cast<uint64_t>(column) * source_region.width /
-                output_region.width;
-        destination_y[column] = source->planes[0][
-            static_cast<size_t>(source_y) * source->pitch[0] + source_x];
+    if (deinterlace.bob) {
+      if (output_region.width != destination->width ||
+          output_region.height != destination->height) {
+        for (unsigned int row = 0; row < destination->height; ++row)
+          memset(destination->planes[0] +
+                     static_cast<size_t>(row) * destination->pitch[0],
+                 16, destination->width);
+        for (unsigned int row = 0; row < (destination->height + 1U) / 2; ++row)
+          memset(destination->planes[1] +
+                     static_cast<size_t>(row) * destination->pitch[1],
+                 128, Align(destination->width, 2));
       }
-    }
-    for (unsigned int row = 0; row < output_region.height; row += 2) {
-      const unsigned int source_y = source_region.y +
-          static_cast<uint64_t>(row) * source_region.height /
-              output_region.height;
-      uint8_t *destination_uv =
-          destination->planes[1] +
-          static_cast<size_t>((output_region.y + row) / 2) *
-              destination->pitch[1] + output_region.x;
-      for (unsigned int column = 0; column + 1 < output_region.width;
-           column += 2) {
-        const unsigned int source_x = source_region.x +
-            static_cast<uint64_t>(column) * source_region.width /
+      // Each plane has its own physical-field row lattice. In particular,
+      // selected Y row / 2 is not the selected interlaced NV12 chroma row.
+      for (unsigned int plane = 0; plane != 2; ++plane) {
+        const unsigned int source_rows = plane == 0
+            ? source_region.height : source_region.height / 2;
+        const unsigned int target_rows = plane == 0
+            ? output_region.height : output_region.height / 2;
+        for (unsigned int row = 0; row < target_rows; ++row) {
+          uint64_t source_row = 0;
+          if (!crystalhd_vpp_bob::SourcePlaneRow(
+                  source_rows, target_rows, row, deinterlace.field,
+                  &source_row)) {
+            if (!destination_write_started)
+              destination->EndCpuWrite();
+            source->EndCpuRead();
+            return VA_STATUS_ERROR_INVALID_PARAMETER;
+          }
+          const uint8_t *input = source->planes[plane] +
+              static_cast<size_t>(source_row) * source->pitch[plane];
+          uint8_t *output = destination->planes[plane] +
+              static_cast<size_t>(row) * destination->pitch[plane];
+          if (source_region.width == output_region.width) {
+            memcpy(output, input, output_region.width);
+          } else if (plane == 0) {
+            for (unsigned int column = 0; column < output_region.width; ++column)
+              output[column] = input[static_cast<uint64_t>(column) *
+                  source_region.width / output_region.width];
+          } else {
+            for (unsigned int column = 0; column < output_region.width;
+                 column += 2) {
+              const unsigned int source_x = static_cast<uint64_t>(column) *
+                  source_region.width / output_region.width;
+              output[column] = input[source_x & ~1U];
+              output[column + 1] = input[(source_x & ~1U) + 1];
+            }
+          }
+        }
+      }
+    } else {
+      for (unsigned int row = 0; row < destination->height; ++row)
+        memset(destination->planes[0] +
+                   static_cast<size_t>(row) * destination->pitch[0],
+               16, destination->width);
+      for (unsigned int row = 0; row < (destination->height + 1) / 2; ++row)
+        memset(destination->planes[1] +
+                   static_cast<size_t>(row) * destination->pitch[1],
+               128, destination->width);
+      for (unsigned int row = 0; row < output_region.height; ++row) {
+        const unsigned int source_y = source_region.y +
+            static_cast<uint64_t>(row) * source_region.height /
+                output_region.height;
+        uint8_t *destination_y =
+            destination->planes[0] +
+            static_cast<size_t>(output_region.y + row) * destination->pitch[0] +
+            output_region.x;
+        for (unsigned int column = 0; column < output_region.width; ++column) {
+          const unsigned int source_x = source_region.x +
+              static_cast<uint64_t>(column) * source_region.width /
+                  output_region.width;
+          destination_y[column] = source->planes[0][
+              static_cast<size_t>(source_y) * source->pitch[0] + source_x];
+        }
+      }
+      for (unsigned int row = 0; row < output_region.height; row += 2) {
+        const unsigned int source_y = source_region.y +
+            static_cast<uint64_t>(row) * source_region.height /
+                output_region.height;
+        uint8_t *destination_uv =
+            destination->planes[1] +
+            static_cast<size_t>((output_region.y + row) / 2) *
+                destination->pitch[1] + output_region.x;
+        for (unsigned int column = 0; column + 1 < output_region.width;
+             column += 2) {
+          const unsigned int source_x = source_region.x +
+              static_cast<uint64_t>(column) * source_region.width /
                 output_region.width;
-        const size_t source_offset =
-            static_cast<size_t>(source_y / 2) * source->pitch[1] +
-            (source_x & ~1U);
-        destination_uv[column] = source->planes[1][source_offset];
-        destination_uv[column + 1] = source->planes[1][source_offset + 1];
+          const size_t source_offset =
+              static_cast<size_t>(source_y / 2) * source->pitch[1] +
+              (source_x & ~1U);
+          destination_uv[column] = source->planes[1][source_offset];
+          destination_uv[column + 1] = source->planes[1][source_offset + 1];
+        }
       }
     }
     if (!destination_write_started && !destination->EndCpuWrite()) {
@@ -1629,6 +1749,7 @@ struct DecodeContext {
   uint64_t vpp_generation = 0;
   VARectangle vpp_source_region = {};
   VARectangle vpp_output_region = {};
+  VppDeinterlace vpp_deinterlace;
   bool have_vpp_parameters = false;
   VAPictureParameterBufferH264 picture = {};
   bool have_picture = false;
@@ -1941,6 +2062,7 @@ struct PendingVpp {
   std::shared_ptr<Surface> target_owner;
   VARectangle source_region = {};
   VARectangle output_region = {};
+  VppDeinterlace deinterlace;
   uint64_t source_timestamp = 0;
   uint64_t sequence = 0;
   uint64_t decoder_generation = 0;
@@ -5443,7 +5565,8 @@ static void RunVppWorker(Driver *driver) {
                           &driver->vpp_argb_staging,
                           operation.source.get(), operation.target.get(),
                           operation.source_region, operation.output_region,
-                          operation.write_timeline >= 0);
+                          operation.write_timeline >= 0,
+                          operation.deinterlace);
     }
     ReleasePendingVpp(driver, operation.sequence, status, true);
   }
@@ -5962,9 +6085,55 @@ static bool IsVideoProcessContext(const Driver *driver,
   return context != driver->contexts.end() && context->second->video_process;
 }
 
+// The caller holds the driver mutex. Copy values, never retain a pointer into
+// a client buffer that may be mapped, changed or destroyed after RenderPicture.
+static VAStatus ReadVppDeinterlace(const Driver *driver, VAContextID context_id,
+                                  const VABufferID *filters,
+                                  unsigned int filter_count,
+                                  VppDeinterlace *result) {
+  if (result == nullptr || filter_count > 1 ||
+      (filter_count != 0 && filters == nullptr))
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
+  VppDeinterlace selected;
+  if (filter_count != 0) {
+    const auto found = driver->buffers.find(filters[0]);
+    if (found == driver->buffers.end())
+      return VA_STATUS_ERROR_INVALID_BUFFER;
+    const Buffer &buffer = found->second;
+    if (buffer.context != context_id ||
+        buffer.type != VAProcFilterParameterBufferType || buffer.data_failed ||
+        buffer.elements != 1 ||
+        buffer.element_size != sizeof(VAProcFilterParameterBufferDeinterlacing) ||
+        buffer.data.size() != sizeof(VAProcFilterParameterBufferDeinterlacing))
+      return VA_STATUS_ERROR_INVALID_BUFFER;
+    if (buffer.map_count != 0 || BufferBorrowed(buffer))
+      return VA_STATUS_ERROR_SURFACE_BUSY;
+    VAProcFilterParameterBufferDeinterlacing parameters = {};
+    memcpy(&parameters, buffer.data.data(), sizeof(parameters));
+    if (parameters.type != VAProcFilterDeinterlacing ||
+        parameters.algorithm != VAProcDeinterlacingBob)
+      return VA_STATUS_ERROR_UNSUPPORTED_FILTER;
+    constexpr uint32_t supported_flags = VA_DEINTERLACING_BOTTOM_FIELD_FIRST |
+                                         VA_DEINTERLACING_BOTTOM_FIELD;
+    // ONE_FIELD describes single-field *input storage*, not one output. The
+    // current Bob implementation requires both interleaved source fields.
+    if ((parameters.flags & ~supported_flags) != 0)
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    // Reserved padding has no implemented meaning. Some existing clients
+    // initialize only type/algorithm/flags; never make output depend on those
+    // padding bytes or interpret them as support for an unknown feature.
+    selected.bob = true;
+    selected.field = (parameters.flags & VA_DEINTERLACING_BOTTOM_FIELD) != 0
+        ? crystalhd_vpp_bob::FieldParity::kBottom
+        : crystalhd_vpp_bob::FieldParity::kTop;
+  }
+  *result = selected;
+  return VA_STATUS_SUCCESS;
+}
+
 static VAStatus QueryVideoProcFilters(VADriverContextP context,
                                       VAContextID context_id,
-                                      VAProcFilterType *,
+                                      VAProcFilterType *filters,
                                       unsigned int *filter_count) {
   if (filter_count == nullptr)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
@@ -5972,13 +6141,19 @@ static VAStatus QueryVideoProcFilters(VADriverContextP context,
   std::lock_guard<std::mutex> lock(driver->mutex);
   if (!IsVideoProcessContext(driver, context_id))
     return VA_STATUS_ERROR_INVALID_CONTEXT;
-  *filter_count = 0;
+  const unsigned int capacity = *filter_count;
+  *filter_count = 1;
+  if (filters == nullptr)
+    return VA_STATUS_SUCCESS;
+  if (capacity < 1)
+    return VA_STATUS_ERROR_MAX_NUM_EXCEEDED;
+  filters[0] = VAProcFilterDeinterlacing;
   return VA_STATUS_SUCCESS;
 }
 
 static VAStatus QueryVideoProcFilterCaps(VADriverContextP context,
                                          VAContextID context_id,
-                                         VAProcFilterType, void *,
+                                         VAProcFilterType filter, void *caps,
                                          unsigned int *capability_count) {
   if (capability_count == nullptr)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
@@ -5986,21 +6161,38 @@ static VAStatus QueryVideoProcFilterCaps(VADriverContextP context,
   std::lock_guard<std::mutex> lock(driver->mutex);
   if (!IsVideoProcessContext(driver, context_id))
     return VA_STATUS_ERROR_INVALID_CONTEXT;
-  *capability_count = 0;
-  return VA_STATUS_ERROR_UNSUPPORTED_FILTER;
+  const unsigned int capacity = *capability_count;
+  if (filter != VAProcFilterDeinterlacing) {
+    *capability_count = 0;
+    return VA_STATUS_ERROR_UNSUPPORTED_FILTER;
+  }
+  *capability_count = 1;
+  if (caps == nullptr)
+    return VA_STATUS_SUCCESS;
+  if (capacity < 1)
+    return VA_STATUS_ERROR_MAX_NUM_EXCEEDED;
+  VAProcFilterCapDeinterlacing capability = {};
+  capability.type = VAProcDeinterlacingBob;
+  memcpy(caps, &capability, sizeof(capability));
+  return VA_STATUS_SUCCESS;
 }
 
 static VAStatus QueryVideoProcPipelineCaps(VADriverContextP context,
                                            VAContextID context_id,
-                                           VABufferID *,
+                                           VABufferID *filters,
                                            unsigned int filter_count,
                                            VAProcPipelineCaps *caps) {
-  if (caps == nullptr || filter_count != 0)
+  if (caps == nullptr)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
   if (!IsVideoProcessContext(driver, context_id))
     return VA_STATUS_ERROR_INVALID_CONTEXT;
+  VppDeinterlace deinterlace;
+  const VAStatus filter_status = ReadVppDeinterlace(
+      driver, context_id, filters, filter_count, &deinterlace);
+  if (filter_status != VA_STATUS_SUCCESS)
+    return filter_status;
 
   // Ordinary VPP clients use caps as an output record, including uninitialized
   // extension fields. Never dereference incoming pointers: publish borrowed
@@ -6386,6 +6578,7 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
     decode->second->vpp_source = VA_INVALID_SURFACE;
     decode->second->vpp_frame.reset();
     decode->second->vpp_decoder.reset();
+    decode->second->vpp_deinterlace = {};
     decode->second->have_vpp_parameters = false;
     return VA_STATUS_SUCCESS;
   }
@@ -6719,13 +6912,20 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
   if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   if (decode->second->video_process) {
+    // A failed replacement Render must not leave an earlier filter snapshot
+    // available for EndPicture to commit as if the failed request succeeded.
+    decode->second->have_vpp_parameters = false;
+    decode->second->vpp_deinterlace = {};
     if (count != 1 || buffer_ids == nullptr)
       return VA_STATUS_ERROR_INVALID_PARAMETER;
     auto buffer = driver->buffers.find(buffer_ids[0]);
     if (buffer == driver->buffers.end() ||
+        buffer->second.context != context_id || buffer->second.data_failed ||
         buffer->second.type != VAProcPipelineParameterBufferType ||
         buffer->second.data.size() < sizeof(VAProcPipelineParameterBuffer))
       return VA_STATUS_ERROR_INVALID_BUFFER;
+    if (buffer->second.map_count != 0 || BufferBorrowed(buffer->second))
+      return VA_STATUS_ERROR_SURFACE_BUSY;
     const auto *parameters =
         reinterpret_cast<const VAProcPipelineParameterBuffer *>(
             buffer->second.data.data());
@@ -6737,10 +6937,35 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
       return VA_STATUS_ERROR_INVALID_SURFACE;
     constexpr uint32_t supported_filter_flags =
         VA_FILTER_SCALING_DEFAULT | VA_FILTER_INTERPOLATION_NEAREST_NEIGHBOR;
-    if (parameters->num_filters != 0 ||
-        (parameters->filter_flags & ~supported_filter_flags) != 0 ||
+    VppDeinterlace deinterlace;
+    const VAStatus filter_status = ReadVppDeinterlace(
+        driver, context_id, parameters->filters, parameters->num_filters,
+        &deinterlace);
+    if (filter_status != VA_STATUS_SUCCESS)
+      return filter_status;
+    // An explicit DI filter overrides vaPutSurface's field-selection hints.
+    const uint32_t supported_flags = supported_filter_flags |
+        (deinterlace.bob ? VA_TOP_FIELD | VA_BOTTOM_FIELD : 0);
+    if ((parameters->filter_flags & ~supported_flags) != 0 ||
         parameters->rotation_state != VA_ROTATION_NONE)
       return VA_STATUS_ERROR_UNSUPPORTED_FILTER;
+    if (deinterlace.bob &&
+        (parameters->num_forward_references != 0 ||
+         parameters->num_backward_references != 0 ||
+         parameters->num_additional_outputs != 0 ||
+         (parameters->pipeline_flags & ~VA_PROC_PIPELINE_FAST) != 0 ||
+         (parameters->input_surface_flag != VA_FRAME_PICTURE &&
+          parameters->input_surface_flag != VA_TOP_FIELD_FIRST &&
+          parameters->input_surface_flag != VA_BOTTOM_FIELD_FIRST) ||
+         parameters->output_surface_flag != VA_FRAME_PICTURE ||
+         parameters->mirror_state != VA_MIRROR_NONE ||
+         parameters->blend_state != nullptr ||
+         parameters->surface_color_standard != VAProcColorStandardNone ||
+         parameters->output_color_standard != VAProcColorStandardNone ||
+         std::any_of(std::begin(parameters->va_reserved),
+                     std::end(parameters->va_reserved),
+                     [](uint32_t value) { return value != 0; })))
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
 
     // Capture the exact picture when its parameters are submitted, not later
     // in EndPicture: a different thread may reuse the public decode surface
@@ -6751,6 +6976,9 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
       if (owner != driver->surfaces.end())
         source_owner = owner->second;
     }
+    if (deinterlace.bob &&
+        source_owner.get() == BackingOwner(driver, target->second.get()))
+      return VA_STATUS_ERROR_INVALID_SURFACE;
     if (PublicReadRejected(source_owner.get()))
       return VA_STATUS_ERROR_DECODING_ERROR;
     if (ExperimentalPresentationBinding(driver, source_owner.get()) ||
@@ -6806,6 +7034,7 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
         ? *parameters->output_region
         : VARectangle{0, 0, static_cast<uint16_t>(target->second->width),
                       static_cast<uint16_t>(target->second->height)};
+    decode->second->vpp_deinterlace = deinterlace;
     decode->second->have_vpp_parameters = true;
     driver->trace.Emit(crystalhd_vaapi_trace::Event::VppCapture,
                        TraceFields(source_decoder.get(), source_owner.get(),
@@ -6918,6 +7147,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       decode_context->vpp_source = VA_INVALID_SURFACE;
       decode_context->vpp_frame.reset();
       decode_context->vpp_decoder.reset();
+      decode_context->vpp_deinterlace = {};
       decode_context->have_vpp_parameters = false;
       return status;
     };
@@ -6936,6 +7166,9 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       if (owner != driver->surfaces.end())
         target_owner = owner->second;
     }
+    if (decode_context->vpp_deinterlace.bob &&
+        target_owner.get() == BackingOwner(driver, source->second.get()))
+      return finish_vpp(VA_STATUS_ERROR_INVALID_SURFACE);
     const std::shared_ptr<DecodeContext> source_decoder =
         decode_context->vpp_decoder;
     const std::shared_ptr<Surface> decoded_source = decode_context->vpp_frame;
@@ -6983,7 +7216,9 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
                                          decoded_source.get(),
                                          target_surface.get(),
                                          decode_context->vpp_source_region,
-                                         decode_context->vpp_output_region);
+                                         decode_context->vpp_output_region,
+                                         false,
+                                         decode_context->vpp_deinterlace);
       if (status == VA_STATUS_SUCCESS) {
         InheritTraceIdentity(target_surface.get(), *decoded_source);
         if (target_owner != target_surface)
@@ -7031,6 +7266,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     pending.target_owner = target_owner;
     pending.source_region = decode_context->vpp_source_region;
     pending.output_region = decode_context->vpp_output_region;
+    pending.deinterlace = decode_context->vpp_deinterlace;
     pending.source_timestamp = timestamp;
     pending.sequence = sequence;
     pending.decoder_generation = source_decoder

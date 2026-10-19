@@ -444,7 +444,7 @@ uint64_t ReadDecodeControlNotifications(Driver &driver) {
 
 void UnusedVppProbeDoesNotNotifyDecoder() {
   // Kodi 22.0rc1 CVppPostproc::PreInit/Dispose call order, including its
-  // unconditional DI query after the empty filter list and individual surface
+  // unconditional DI query and individual unused surface
   // destruction. Private CPU storage only; no DRM or decoder device opens.
   Driver driver{-1};
   VADriverContext context = {};
@@ -472,12 +472,14 @@ void UnusedVppProbeDoesNotNotifyDecoder() {
   VAProcFilterCapDeinterlacing capabilities[VAProcDeinterlacingCount] = {};
   unsigned capability_count = VAProcDeinterlacingCount;
   Require(QueryVideoProcFilters(&context, processor, filters, &filter_count) ==
-                  VA_STATUS_SUCCESS && filter_count == 0 &&
+                  VA_STATUS_SUCCESS && filter_count == 1 &&
+              filters[0] == VAProcFilterDeinterlacing &&
               QueryVideoProcFilterCaps(&context, processor,
                                        VAProcFilterDeinterlacing, capabilities,
                                        &capability_count) ==
-                  VA_STATUS_ERROR_UNSUPPORTED_FILTER && capability_count == 0,
-          "probe truthfully rejects unsupported DI");
+                  VA_STATUS_SUCCESS && capability_count == 1 &&
+              capabilities[0].type == VAProcDeinterlacingBob,
+          "unused probe truthfully discovers the implemented Bob filter");
   for (VASurfaceID surface : surfaces)
     Require(SyncSurface(&context, surface) == VA_STATUS_SUCCESS,
             "sync unused probe surface before disposal");
@@ -539,11 +541,11 @@ void DefaultVppCapabilitiesRemainAvailable() {
               caps.output_pixel_format[0] == VA_FOURCC_NV12 &&
               caps.output_pixel_format[1] == VA_FOURCC_ARGB &&
               QueryVideoProcFilters(&context, processor, nullptr, &filters) ==
-                  VA_STATUS_SUCCESS && filters == 0 &&
+                  VA_STATUS_SUCCESS && filters == 1 &&
               QueryVideoProcFilterCaps(&context, processor, VAProcFilterDeinterlacing,
                                        nullptr, &capabilities) ==
-                  VA_STATUS_ERROR_UNSUPPORTED_FILTER && capabilities == 0,
-          "scaling/CSC caps remain truthful without inventing a DI filter");
+                  VA_STATUS_SUCCESS && capabilities == 1,
+          "scaling/CSC caps remain available alongside CPU Bob");
   Require(DestroyContext(&context, processor) == VA_STATUS_SUCCESS &&
               DestroySurfaces(&context, &surface, 1) == VA_STATUS_SUCCESS &&
               DestroyConfig(&context, config) == VA_STATUS_SUCCESS,
@@ -678,7 +680,7 @@ void PipelineCapsBorrowedLifetimeAndErrors() {
               QueryVideoProcPipelineCaps(&first.context, first.processor, nullptr, 1,
                                          &repeated) == VA_STATUS_ERROR_INVALID_PARAMETER &&
               memcmp(&repeated, poisoned.data(), poisoned.size()) == 0,
-          "invalid context and nonzero filters reject before touching output or incoming pointers");
+          "invalid context or missing filter array rejects before touching output storage");
 }
 
 void NativeNodeCacheOwnsNoFiles() {
@@ -830,12 +832,12 @@ void NativeSurfaceFilesRetainOriginalLifetime() {
               "every surface still owns a distinct eagerly allocated and mapped file");
     }
     unsigned capabilities = 99;
-    Require(QueryVideoProcFilterCaps(&context, processor, VAProcFilterDeinterlacing,
+    Require(QueryVideoProcFilterCaps(&context, processor, VAProcFilterNoiseReduction,
                                      nullptr, &capabilities) ==
                     VA_STATUS_ERROR_UNSUPPORTED_FILTER && capabilities == 0 &&
                 mock.queries == 1 && mock.frees == 1 && mock.files.size() == 16 &&
                 mock.creates == 8 * (cycle + 1) && mock.maps == 8 * (cycle + 1),
-            "the same unsupported-DI sequence changes discovery cost, not caps/allocation timing");
+            "unsupported filter discovery preserves ordinary surface allocation lifetimes");
     Require(DestroyContext(&context, processor) == VA_STATUS_SUCCESS &&
                 DestroySurfaces(&context, surfaces, 7) == VA_STATUS_SUCCESS &&
                 mock.files.size() == 2 && mock.dumbs.size() == 1 &&
@@ -919,6 +921,512 @@ struct Fixture {
     }
   }
 };
+
+VAProcFilterParameterBufferDeinterlacing BobParameters(uint32_t flags = 0) {
+  VAProcFilterParameterBufferDeinterlacing parameters = {};
+  parameters.type = VAProcFilterDeinterlacing;
+  parameters.algorithm = VAProcDeinterlacingBob;
+  parameters.flags = flags;
+  return parameters;
+}
+
+VABufferID CreateBobFilter(Fixture &fixture, uint32_t flags = 0) {
+  auto parameters = BobParameters(flags);
+  VABufferID filter = VA_INVALID_ID;
+  Require(CreateBuffer(&fixture.context, 2, VAProcFilterParameterBufferType,
+                         sizeof(parameters), 1, &parameters, &filter) ==
+              VA_STATUS_SUCCESS,
+          "create a real Bob filter parameter buffer");
+  return filter;
+}
+
+void SetPipelineFilters(Fixture &fixture, VABufferID *filters,
+                        unsigned count) {
+  VAProcPipelineParameterBuffer parameters = {};
+  parameters.surface = 1;
+  parameters.filters = filters;
+  parameters.num_filters = count;
+  memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+         &parameters, sizeof(parameters));
+}
+
+void FillFieldRows(Surface &picture) {
+  for (unsigned plane = 0; plane < 2; ++plane)
+    for (unsigned row = 0; row < (plane == 0 ? 16U : 8U); ++row)
+      for (unsigned column = 0; column < 16; ++column)
+        picture.planes[plane][row * picture.pitch[plane] + column] =
+            static_cast<uint8_t>((plane == 0 ? 20 : 80) + row * 7 + column);
+}
+
+void RequireFieldRows(const Surface &target, unsigned parity, bool bob) {
+  Require(target.ready && !target.failed &&
+              target.expected_timestamp == kTimestampStep &&
+              target.frame_timestamp == kTimestampStep,
+          "Bob preserves the original source identity without synthesizing PTS");
+  for (unsigned plane = 0; plane < 2; ++plane)
+    for (unsigned row = 0; row < (plane == 0 ? 16U : 8U); ++row)
+      for (unsigned column = 0; column < 16; ++column) {
+        // Independent oracle: each selected physical field row occurs twice
+        // in BOTH planes. UV parity cannot be inferred by halving a Y row.
+        const unsigned selected_row = bob ? (row / 2) * 2 + parity : row;
+        const auto expected = static_cast<uint8_t>(
+            (plane == 0 ? 20 : 80) + selected_row * 7 + column);
+        Require(target.planes[plane][row * target.pitch[plane] + column] == expected,
+                "Bob copies only the selected physical Y and UV field");
+      }
+}
+
+void BobCapabilityEnumerationAndCapacity() {
+  Fixture fixture;
+  unsigned count = 0;
+  Require(QueryVideoProcFilters(&fixture.context, 2, nullptr, &count) ==
+                  VA_STATUS_SUCCESS && count == 1,
+          "null filter array queries the one implemented filter count");
+  std::array<VAProcFilterType, 3> filters = {{VAProcFilterCount,
+                                          VAProcFilterCount, VAProcFilterCount}};
+  const auto old_filters = filters;
+  count = 0;
+  Require(QueryVideoProcFilters(&fixture.context, 2, filters.data() + 1, &count) ==
+                  VA_STATUS_ERROR_MAX_NUM_EXCEEDED && count == 1 &&
+              filters == old_filters,
+          "short filter array returns the required size without writing canaries");
+  Require(QueryVideoProcFilters(&fixture.context, 2, filters.data() + 1, &count) ==
+                  VA_STATUS_SUCCESS && count == 1 &&
+              filters[0] == VAProcFilterCount &&
+              filters[1] == VAProcFilterDeinterlacing &&
+              filters[2] == VAProcFilterCount,
+          "filter enumeration writes exactly one deinterlacing entry");
+  Require(QueryVideoProcFilters(&fixture.context, 2, nullptr, nullptr) ==
+                  VA_STATUS_ERROR_INVALID_PARAMETER,
+          "filter count pointer remains mandatory");
+
+  count = 0;
+  Require(QueryVideoProcFilterCaps(&fixture.context, 2,
+              VAProcFilterDeinterlacing, nullptr, &count) == VA_STATUS_SUCCESS &&
+              count == 1,
+          "null deinterlacing output queries the one Bob capability");
+  std::array<VAProcFilterCapDeinterlacing, 3> caps;
+  memset(caps.data(), 0xa5, sizeof(caps));
+  const auto old_caps = caps;
+  count = 0;
+  Require(QueryVideoProcFilterCaps(&fixture.context, 2,
+              VAProcFilterDeinterlacing, caps.data() + 1, &count) ==
+                  VA_STATUS_ERROR_MAX_NUM_EXCEEDED && count == 1 &&
+              memcmp(caps.data(), old_caps.data(), sizeof(caps)) == 0,
+          "short Bob-capability array preserves all caller storage");
+  Require(QueryVideoProcFilterCaps(&fixture.context, 2,
+              VAProcFilterDeinterlacing, caps.data() + 1, &count) ==
+                  VA_STATUS_SUCCESS && count == 1 &&
+              caps[1].type == VAProcDeinterlacingBob &&
+              memcmp(&caps[0], &old_caps[0], sizeof(caps[0])) == 0 &&
+              memcmp(&caps[2], &old_caps[2], sizeof(caps[2])) == 0,
+          "Bob capability query writes one exact, isolated record");
+  for (uint32_t reserved : caps[1].va_reserved)
+    Require(reserved == 0, "Bob capability reserved fields are initialized");
+  count = 7;
+  Require(QueryVideoProcFilterCaps(&fixture.context, 2,
+              VAProcFilterNoiseReduction, caps.data() + 1, &count) ==
+                  VA_STATUS_ERROR_UNSUPPORTED_FILTER && count == 0,
+          "unimplemented filter types remain unsupported");
+}
+
+void BobPipelineFilterValidation() {
+  for (uint32_t flags : std::array<uint32_t, 4>{{0U, VA_DEINTERLACING_BOTTOM_FIELD_FIRST,
+                         VA_DEINTERLACING_BOTTOM_FIELD,
+                         VA_DEINTERLACING_BOTTOM_FIELD_FIRST |
+                             VA_DEINTERLACING_BOTTOM_FIELD}}) {
+    Fixture fixture;
+    VABufferID filter = CreateBobFilter(fixture, flags);
+    VAProcPipelineCaps caps = {};
+    Require(QueryVideoProcPipelineCaps(&fixture.context, 2, &filter, 1, &caps) ==
+                    VA_STATUS_SUCCESS && caps.num_forward_references == 0 &&
+                caps.num_backward_references == 0 &&
+                caps.input_pixel_format[0] == VA_FOURCC_NV12 &&
+                caps.output_pixel_format[0] == VA_FOURCC_NV12,
+            "all supported Bob field/order flags need no temporal reference frames");
+  }
+  {
+    // FFmpeg initializes the semantic filter fields, but need not zero this
+    // reserved ABI padding. It must not become an extra Bob request flag.
+    Fixture fixture;
+    FillFieldRows(*fixture.decoder->decoded_frames.at(kTimestampStep));
+    VABufferID filter = CreateBobFilter(fixture, VA_DEINTERLACING_BOTTOM_FIELD);
+    auto parameters = BobParameters(VA_DEINTERLACING_BOTTOM_FIELD);
+    for (uint32_t &reserved : parameters.va_reserved)
+      reserved = 0xa5a5a5a5U;
+    memcpy(fixture.driver.buffers.at(filter).data.data(), &parameters,
+           sizeof(parameters));
+    VAProcPipelineCaps caps = {};
+    Require(QueryVideoProcPipelineCaps(&fixture.context, 2, &filter, 1, &caps) ==
+                VA_STATUS_SUCCESS,
+            "FFmpeg reserved-filter-padding compatibility: capabilities remain Bob");
+    SetPipelineFilters(fixture, &filter, 1);
+    fixture.SubmitParameters();
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+            "FFmpeg reserved-filter-padding compatibility: semantic Bob still completes");
+    RequireFieldRows(*fixture.target, 1, true);
+  }
+  for (unsigned failure = 0; failure < 15; ++failure) {
+    Fixture fixture;
+    VABufferID filter = CreateBobFilter(fixture);
+    Buffer &buffer = fixture.driver.buffers.at(filter);
+    auto parameters = BobParameters();
+    switch (failure) {
+      case 0: parameters.algorithm = VAProcDeinterlacingWeave; break;
+      case 1: parameters.algorithm = VAProcDeinterlacingMotionAdaptive; break;
+      case 2: parameters.type = VAProcFilterNoiseReduction; break;
+      case 3: parameters.flags = VA_DEINTERLACING_ONE_FIELD; break;
+      case 4: parameters.flags = VA_DEINTERLACING_FMD_ENABLE; break;
+      case 5: parameters.flags = VA_DEINTERLACING_SCD_ENABLE; break;
+      case 6: parameters.flags = UINT32_MAX; break;
+      case 7:
+        ++buffer.element_size;
+        buffer.data.resize(buffer.element_size);
+        break;
+      case 8: buffer.type = VAPictureParameterBufferType; break;
+      case 9: buffer.context = 1; break;
+      case 10:
+        buffer.elements = 2;
+        buffer.data.resize(2 * sizeof(parameters));
+        break;
+      case 11:
+        --buffer.element_size;
+        buffer.data.resize(buffer.element_size);
+        break;
+      case 12: filter = VA_INVALID_ID; break;
+      case 13: {
+        void *mapped = nullptr;
+        Require(MapBuffer(&fixture.context, filter, &mapped) == VA_STATUS_SUCCESS,
+                "map the Bob buffer for a borrowed-input rejection");
+        break;
+      }
+      case 14: buffer.data_failed = true; break;
+    }
+    memcpy(buffer.data.data(), &parameters,
+           std::min(buffer.data.size(), sizeof(parameters)));
+    VAProcPipelineCaps caps;
+    memset(&caps, 0xa5, sizeof(caps));
+    const VAProcPipelineCaps original = caps;
+    Require(QueryVideoProcPipelineCaps(&fixture.context, 2, &filter, 1, &caps) !=
+                    VA_STATUS_SUCCESS &&
+                memcmp(&caps, &original, sizeof(caps)) == 0,
+            "invalid Bob filter rejects before publishing pipeline capabilities");
+    SetPipelineFilters(fixture, &filter, 1);
+    Require(BeginPicture(&fixture.context, 2, 2) == VA_STATUS_SUCCESS &&
+                RenderPicture(&fixture.context, 2, &fixture.parameters, 1) !=
+                    VA_STATUS_SUCCESS && !fixture.processor->have_vpp_parameters,
+            "the execution path rejects the same invalid or mapped Bob filter");
+    if (failure == 13)
+      Require(UnmapBuffer(&fixture.context, filter) == VA_STATUS_SUCCESS,
+              "release the mapped invalid-filter control");
+  }
+  Fixture fixture;
+  std::array<VABufferID, 2> filters = {{CreateBobFilter(fixture),
+                                      CreateBobFilter(fixture)}};
+  VAProcPipelineCaps caps = {};
+  Require(QueryVideoProcPipelineCaps(&fixture.context, 2, filters.data(), 2, &caps) !=
+              VA_STATUS_SUCCESS,
+          "more than one Bob filter is not an advertised pipeline");
+  SetPipelineFilters(fixture, filters.data(), filters.size());
+  Require(BeginPicture(&fixture.context, 2, 2) == VA_STATUS_SUCCESS &&
+              RenderPicture(&fixture.context, 2, &fixture.parameters, 1) !=
+                  VA_STATUS_SUCCESS,
+          "execution rejects an unsupported multi-filter pipeline");
+}
+
+void BobImmediatePixelsAndWeaveReset() {
+  Fixture fixture;
+  const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+  FillFieldRows(*picture);
+  const auto original = picture->storage;
+  for (uint32_t flags : std::array<uint32_t, 4>{{0U, VA_DEINTERLACING_BOTTOM_FIELD,
+                         VA_DEINTERLACING_BOTTOM_FIELD_FIRST,
+                         VA_DEINTERLACING_BOTTOM_FIELD_FIRST |
+                             VA_DEINTERLACING_BOTTOM_FIELD}}) {
+    VABufferID filter = CreateBobFilter(fixture, flags);
+    SetPipelineFilters(fixture, &filter, 1);
+    VAProcPipelineParameterBuffer pipeline;
+    auto &pipeline_buffer = fixture.driver.buffers.at(fixture.parameters);
+    memcpy(&pipeline, pipeline_buffer.data.data(), sizeof(pipeline));
+    // A deinterlacing filter explicitly chooses the output field. Opposite
+    // legacy pipeline hints must not silently replace that captured choice.
+    pipeline.filter_flags = (flags & VA_DEINTERLACING_BOTTOM_FIELD) != 0
+                                ? VA_TOP_FIELD : VA_BOTTOM_FIELD;
+    memcpy(pipeline_buffer.data.data(), &pipeline, sizeof(pipeline));
+    fixture.SubmitParameters();
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+            "complete a selected Bob field through the public VPP API");
+    RequireFieldRows(*fixture.target,
+        (flags & VA_DEINTERLACING_BOTTOM_FIELD) != 0 ? 1 : 0, true);
+    Require(picture->storage == original &&
+                fixture.decoder->decoded_frames.at(kTimestampStep) == picture,
+            "two field presentations never mutate or retire the woven source");
+  }
+  SetPipelineFilters(fixture, nullptr, 0);
+  fixture.SubmitParameters();
+  Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+          "zero-filter VPP remains available after a Bob request");
+  RequireFieldRows(*fixture.target, 0, false);
+}
+
+void BobFilterValuesAreCapturedAtRender() {
+  for (unsigned after_render = 0; after_render < 3; ++after_render) {
+    Fixture fixture;
+    FillFieldRows(*fixture.decoder->decoded_frames.at(kTimestampStep));
+    VABufferID filter = CreateBobFilter(fixture, VA_DEINTERLACING_BOTTOM_FIELD);
+    SetPipelineFilters(fixture, &filter, 1);
+    fixture.SubmitParameters();
+    if (after_render == 1) {
+      Require(DestroyBuffer(&fixture.context, filter) == VA_STATUS_SUCCESS,
+              "release a captured filter before VPP EndPicture");
+    } else {
+      void *mapped = nullptr;
+      Require(MapBuffer(&fixture.context, filter, &mapped) == VA_STATUS_SUCCESS,
+              "map captured filter for next-request mutation");
+      auto replacement = BobParameters();
+      replacement.algorithm = VAProcDeinterlacingWeave;
+      memcpy(mapped, &replacement, sizeof(replacement));
+      if (after_render == 0)
+        Require(UnmapBuffer(&fixture.context, filter) == VA_STATUS_SUCCESS,
+                "unmap a changed, already captured filter");
+    }
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+            "EndPicture uses its immutable Render-time Bob snapshot");
+    RequireFieldRows(*fixture.target, 1, true);
+    if (after_render == 2)
+      Require(UnmapBuffer(&fixture.context, filter) == VA_STATUS_SUCCESS,
+              "release a later mapping after captured VPP completes");
+  }
+}
+
+void BobQueuedSnapshotAndCancellation() {
+  for (bool cancel : {false, true}) {
+    Fixture fixture;
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    FillFieldRows(*picture);
+    picture->ready = false;
+    const auto untouched_target = fixture.target->storage;
+    VABufferID filter = CreateBobFilter(fixture, VA_DEINTERLACING_BOTTOM_FIELD);
+    SetPipelineFilters(fixture, &filter, 1);
+    fixture.SubmitParameters();
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                fixture.driver.pending_vpp.size() == 1 &&
+                fixture.driver.pending_vpp.front().deinterlace.bob &&
+                static_cast<unsigned>(
+                    fixture.driver.pending_vpp.front().deinterlace.field) == 1 &&
+                picture->vpp_readers == 1 && fixture.target->vpp_writers == 1,
+            "queued VPP retains its physical-field snapshot and read/write ownership");
+    Require(DestroyBuffer(&fixture.context, filter) == VA_STATUS_SUCCESS,
+            "queued Bob does not borrow its mutable filter buffer");
+    fixture.processor->vpp_deinterlace = {};
+    if (cancel)
+      fixture.decoder->Reset();
+    else
+      picture->ready = true;
+    fixture.driver.vpp_worker = std::thread([&] { RunVppWorker(&fixture.driver); });
+    const VAStatus status = SyncSurface2(&fixture.context, 2, 1000000000ULL);
+    Require(status == (cancel ? VA_STATUS_ERROR_DECODING_ERROR : VA_STATUS_SUCCESS) &&
+                fixture.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
+                fixture.target->vpp_writers == 0,
+            "the real worker completes or cancels Bob and releases all owners");
+    if (cancel)
+      Require(fixture.target->failed && !fixture.target->ready &&
+                  fixture.target->storage == untouched_target,
+              "canceled Bob never publishes replacement pixels");
+    else
+      RequireFieldRows(*fixture.target, 1, true);
+  }
+}
+
+void BobRejectedReplacementCannotReplayOldParameters() {
+  Fixture fixture;
+  FillFieldRows(*fixture.decoder->decoded_frames.at(kTimestampStep));
+  const auto untouched_target = fixture.target->storage;
+  VABufferID filter = CreateBobFilter(fixture, VA_DEINTERLACING_BOTTOM_FIELD);
+  SetPipelineFilters(fixture, &filter, 1);
+  fixture.SubmitParameters();
+  Require(fixture.processor->have_vpp_parameters,
+          "first Render captures a valid Bob transaction");
+  auto invalid = BobParameters(VA_DEINTERLACING_ONE_FIELD);
+  memcpy(fixture.driver.buffers.at(filter).data.data(), &invalid, sizeof(invalid));
+  Require(RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                  VA_STATUS_ERROR_INVALID_PARAMETER &&
+              !fixture.processor->have_vpp_parameters &&
+              EndPicture(&fixture.context, 2) == VA_STATUS_ERROR_INVALID_PARAMETER,
+          "a rejected replacement Render cannot submit the earlier valid Bob snapshot");
+  Require(fixture.target->storage == untouched_target && !fixture.target->ready &&
+              fixture.target->failed,
+          "failed Bob replacement never publishes stale output pixels");
+}
+
+void BobRejectsUnsupportedPipelineParameters() {
+  for (unsigned failure = 0; failure < 20; ++failure) {
+    Fixture fixture;
+    VABufferID filter = CreateBobFilter(fixture);
+    SetPipelineFilters(fixture, &filter, 1);
+    const auto untouched_target = fixture.target->storage;
+    fixture.SubmitParameters();
+    auto &buffer = fixture.driver.buffers.at(fixture.parameters);
+    VAProcPipelineParameterBuffer parameters;
+    memcpy(&parameters, buffer.data.data(), sizeof(parameters));
+    VABlendState blend = {};
+    VAStatus expected = VA_STATUS_ERROR_INVALID_PARAMETER;
+    switch (failure) {
+      case 0: parameters.input_surface_flag = VA_TOP_FIELD; break;
+      case 1: parameters.input_surface_flag = VA_BOTTOM_FIELD; break;
+      case 2:
+        // libva defines bit 31 of this field as surface encryption.
+        parameters.input_surface_flag = uint32_t{1} << 31;
+        break;
+      case 3:
+        parameters.input_surface_flag =
+            VA_TOP_FIELD_FIRST | VA_BOTTOM_FIELD_FIRST;
+        break;
+      case 4: parameters.output_surface_flag = VA_TOP_FIELD; break;
+      case 5: parameters.output_surface_flag = VA_TOP_FIELD_FIRST; break;
+      case 6: parameters.mirror_state = VA_MIRROR_HORIZONTAL; break;
+      case 7: parameters.mirror_state = VA_MIRROR_VERTICAL; break;
+      case 8: parameters.blend_state = &blend; break;
+      case 9: parameters.num_forward_references = 1; break;
+      case 10: parameters.num_backward_references = 1; break;
+      case 11: parameters.num_additional_outputs = 1; break;
+      case 12: parameters.va_reserved[0] = 1; break;
+      case 13: parameters.pipeline_flags = ~uint32_t{VA_PROC_PIPELINE_FAST}; break;
+      case 14: parameters.surface_color_standard = VAProcColorStandardBT709; break;
+      case 15: parameters.output_color_standard = VAProcColorStandardBT709; break;
+      case 16:
+        buffer.context = 1;
+        expected = VA_STATUS_ERROR_INVALID_BUFFER;
+        break;
+      case 17:
+        buffer.data_failed = true;
+        expected = VA_STATUS_ERROR_INVALID_BUFFER;
+        break;
+      case 18: {
+        void *mapped = nullptr;
+        Require(MapBuffer(&fixture.context, fixture.parameters, &mapped) ==
+                    VA_STATUS_SUCCESS,
+                "map a pipeline buffer after its valid Render snapshot");
+        expected = VA_STATUS_ERROR_SURFACE_BUSY;
+        break;
+      }
+      case 19: parameters.output_surface_flag = uint32_t{1} << 31; break;
+    }
+    memcpy(buffer.data.data(), &parameters, sizeof(parameters));
+    Require(RenderPicture(&fixture.context, 2, &fixture.parameters, 1) == expected &&
+                !fixture.processor->have_vpp_parameters,
+            "unsupported or borrowed Bob pipeline rejects its replacement Render");
+    if (failure == 18)
+      Require(UnmapBuffer(&fixture.context, fixture.parameters) == VA_STATUS_SUCCESS,
+              "release a rejected mapped pipeline before EndPicture");
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                fixture.target->storage == untouched_target &&
+                fixture.target->failed && !fixture.target->ready,
+            "invalid Bob pipeline cannot publish its earlier valid snapshot");
+  }
+}
+
+void BobRejectsCanonicalSourceTargetAlias() {
+  for (bool alias_source : {false, true}) {
+    Fixture fixture;
+    VABufferID filter = CreateBobFilter(fixture);
+    SetPipelineFilters(fixture, &filter, 1);
+    const auto untouched_target = fixture.target->storage;
+    fixture.SubmitParameters();
+    auto &buffer = fixture.driver.buffers.at(fixture.parameters);
+    VAProcPipelineParameterBuffer parameters;
+    memcpy(&parameters, buffer.data.data(), sizeof(parameters));
+    parameters.surface = 2;
+    if (alias_source) {
+      auto alias = Picture(0, 70);
+      alias->backing_owner = 2;
+      fixture.driver.surfaces[3] = alias;
+      parameters.surface = 3;
+    }
+    memcpy(buffer.data.data(), &parameters, sizeof(parameters));
+    Require(RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                    VA_STATUS_ERROR_INVALID_SURFACE &&
+                !fixture.processor->have_vpp_parameters &&
+                EndPicture(&fixture.context, 2) == VA_STATUS_ERROR_INVALID_PARAMETER,
+            "Bob rejects source/target identity even through a distinct alias ID");
+    Require(fixture.target->storage == untouched_target &&
+                fixture.target->failed && !fixture.target->ready,
+            "canonical in-place rejection never publishes old or partial Bob pixels");
+  }
+}
+
+void BobRejectsCroppedRegions() {
+  for (bool crop_source : {false, true}) {
+    for (VARectangle region : std::array<VARectangle, 3>{{
+             {0, 4, 16, 12}, {2, 0, 14, 16}, {0, 0, 16, 10}}}) {
+      Fixture fixture;
+      VABufferID filter = CreateBobFilter(fixture);
+      SetPipelineFilters(fixture, &filter, 1);
+      auto &buffer = fixture.driver.buffers.at(fixture.parameters);
+      VAProcPipelineParameterBuffer parameters;
+      memcpy(&parameters, buffer.data.data(), sizeof(parameters));
+      if (crop_source)
+        parameters.surface_region = &region;
+      else
+        parameters.output_region = &region;
+      memcpy(buffer.data.data(), &parameters, sizeof(parameters));
+      const auto original = fixture.target->storage;
+      Require(BeginPicture(&fixture.context, 2, 2) == VA_STATUS_SUCCESS,
+              "begin a cropped Bob negative control");
+      const VAStatus rendered =
+          RenderPicture(&fixture.context, 2, &fixture.parameters, 1);
+      Require(rendered != VA_STATUS_SUCCESS ||
+                  EndPicture(&fixture.context, 2) != VA_STATUS_SUCCESS,
+              "nonzero origins or unaligned heights cannot mix Bob field phase");
+      Require(fixture.target->storage == original,
+              "a rejected Bob crop leaves destination pixels untouched");
+    }
+  }
+  // Real clients can expose an origin-zero visible extent within coded
+  // padding. The mapper must use that extent, not the allocated height.
+  for (unsigned mode = 0; mode < 5; ++mode) {
+    Fixture fixture;
+    const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    FillFieldRows(*picture);
+    const auto original_source = picture->storage;
+    const uint32_t flags = mode == 0 ? 0 : mode - 1;
+    VABufferID filter = CreateBobFilter(fixture, flags);
+    SetPipelineFilters(fixture, mode == 0 ? nullptr : &filter, mode == 0 ? 0 : 1);
+    auto &buffer = fixture.driver.buffers.at(fixture.parameters);
+    VAProcPipelineParameterBuffer parameters;
+    memcpy(&parameters, buffer.data.data(), sizeof(parameters));
+    VARectangle visible = {0, 0, 16, 12};
+    parameters.surface_region = &visible;
+    parameters.output_region = &visible;
+    memcpy(buffer.data.data(), &parameters, sizeof(parameters));
+    fixture.SubmitParameters();
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                fixture.target->ready && !fixture.target->failed &&
+                fixture.target->frame_timestamp == kTimestampStep &&
+                fixture.target->expected_timestamp == kTimestampStep,
+            "origin-zero visible extents preserve complete-picture output and PTS");
+    const unsigned parity = (flags & VA_DEINTERLACING_BOTTOM_FIELD) != 0 ? 1 : 0;
+    for (unsigned plane = 0; plane < 2; ++plane) {
+      const unsigned visible_rows = plane == 0 ? 12 : 6;
+      const unsigned coded_rows = plane == 0 ? 16 : 8;
+      for (unsigned row = 0; row < coded_rows; ++row)
+        for (unsigned column = 0; column < 16; ++column) {
+          const unsigned selected_row = mode == 0 ? row : (row / 2) * 2 + parity;
+          const uint8_t expected = row < visible_rows
+              ? static_cast<uint8_t>((plane == 0 ? 20 : 80) +
+                                     selected_row * 7 + column)
+              : static_cast<uint8_t>(plane == 0 ? 16 : 128);
+          Require(fixture.target->planes[plane][row * fixture.target->pitch[plane] +
+                                                column] == expected,
+                  "visible Weave/Bob rows are exact and coded borders are neutral");
+        }
+    }
+    Require(picture->storage == original_source,
+            "visible-extent processing never changes the coded source picture");
+  }
+}
 
 void DecodeTeardownStillNotifies() {
   for (bool closing_surface : {false, true}) {
@@ -2479,6 +2987,15 @@ int main(int argc, char **argv) {
     AbortPathsPublishErrorFences();
     DecodeTeardownStillNotifies();
     PendingVppTeardownStillNotifies();
+    BobCapabilityEnumerationAndCapacity();
+    BobPipelineFilterValidation();
+    BobImmediatePixelsAndWeaveReset();
+    BobFilterValuesAreCapturedAtRender();
+    BobQueuedSnapshotAndCancellation();
+    BobRejectedReplacementCannotReplayOldParameters();
+    BobRejectsUnsupportedPipelineParameters();
+    BobRejectsCanonicalSourceTargetAlias();
+    BobRejectsCroppedRegions();
     RepeatedVppRetainsPicture();
     DirectCaptureKeepsQueuedVppPrivate();
     InternalQueuedVppCompletesWithoutSwSync();
@@ -2519,6 +3036,6 @@ int main(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 47 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 56 hardware-free regressions passed");
   return 0;
 }

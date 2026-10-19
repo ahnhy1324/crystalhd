@@ -30,8 +30,8 @@ H.264 MBAFF case described below:
   custom matrices. Omitted IQ buffers use flat-16 defaults for that picture;
   malformed buffers and zero active coefficients are rejected. Selected MBAFF
   field pairs emitted from one submitted VA frame/access unit are materialized
-  as a complete interlaced NV12 Weave frame; separately submitted PAFF fields,
-  VA VPP deinterlacing and pulldown are not supported.
+  as a complete interlaced NV12 Weave frame; separately submitted PAFF fields
+  and pulldown are not supported. CPU Bob is separate post-processing below.
 - MPEG-2 Simple I/P pictures through 720x576, and Main I/P/B pictures through
   1920x1088 coded size. Input must be 4:2:0 frame pictures with frame-predicted
   DCT, whole slices and no repeat-first-field or top-field-first flags. Picture
@@ -82,19 +82,43 @@ resource and teardown results are in the
 [hardware report](../../HARDWARE-2026-09-13.md#h264).
 
 Standalone FFmpeg CPU BWDIF after `hwdownload` completed the same fixture, but
-the driver still advertises no `VAProcFilterDeinterlacing` capability. See the
+published 1.1.0 advertises no `VAProcFilterDeinterlacing` capability. See the
 [runnable command and performance boundary](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif).
 Published RC.3 passed stock Kodi 21.3 progressive hardware-video and lifecycle checks;
 quantified physical A/V remains unqualified. Earlier RC.2 payload `f4d99d5` failed
 interlaced BWDIF/Render Bob playback. The `ec77b71` finite MBAFF input/tail fix
 is included in published RC.3, with complete decoder-oracle results, but Kodi
 source picture accounting and timing/output warnings still need qualification. See
-[Kodi qualification and remaining limits](../../USAGE.md#kodi). The driver
+[Kodi qualification and remaining limits](../../USAGE.md#kodi). Published 1.1.0
 does not advertise VA VPP deinterlacing; no general Kodi interlace or
 hardware-Bob support is claimed. The RC4 candidate reduces repeated VPP setup
-and private-allocation overhead without disabling scaling/CSC; stock Kodi 22
-cadence/A/V acceptance on the reporting host remains pending. See the
+and private-allocation overhead without disabling scaling/CSC. The RC4 stock
+Kodi 22 report confirms bounded Weave playback, not Bob or physical A/V
+qualification; Auto still retries unsupported DI on that release. See the
 [known issues and planned v1.2 integration work](../../USAGE.md#known-issues-and-deinterlacing-roadmap).
+
+### Development: CPU VA-VPP Bob
+
+The unreleased 1.2 branch implements `VAProcFilterDeinterlacing` / Bob on the
+CPU, after decode. It duplicates the selected field's rows independently in
+Y and UV; it is not hardware Bob, BWDIF or motion-adaptive filtering. Existing
+zero-filter Weave, scaling and CSC remain available.
+
+Initially, Bob requires separate source/target backing, both interleaved NV12
+input fields, origin-zero processing regions, even region widths and region
+heights divisible by four. NV12 or ARGB output may retain neutral coded padding
+outside that region. Nonzero-origin cropping, single-field input (`ONE_FIELD`), FMD/SCD, temporal references,
+additional outputs, rotation, mirroring and blending are rejected. Each request
+produces one progressive output. `BOTTOM_FIELD` selects physical parity;
+`BOTTOM_FIELD_FIRST` describes temporal order, not that selection. Clients own
+field-rate scheduling and output timestamps, normally submitting both fields.
+Filter settings are captured at Render and retained through queued work.
+
+Device-free pixel, API, ownership/cancellation and i686/no-SSE checks do not
+establish real-time FHD, stock Kodi/Atom compatibility or physical A/V sync.
+Those remain tracked in [#445](https://github.com/ahnhy1324/crystalhd/issues/445)
+and [#436](https://github.com/ahnhy1324/crystalhd/issues/436). Published 1.1.0 and
+its installed module are unchanged by this development branch.
 
 ## Replay and end of stream
 
@@ -341,8 +365,8 @@ timeline advances.
   queries and VPP-only contexts do not reserve playback. The first codec start
   reuses the admitted handle; later finite replay/reset still performs the
   existing full-device close/reopen and reports a failed reacquisition normally
-- video processing is limited to unfiltered NV12 scaling and NV12-to-ARGB
-  conversion; there is no VA VPP deinterlacing or rotation. Selected H.264
+- video processing supports NV12 scaling and NV12-to-ARGB conversion, plus the
+  bounded development CPU Bob path above; rotation is unsupported. Selected H.264
   field pairs use the decode-time Weave path described above
 - no VP8, VP9, AV1, or protected content
 - direct rendering requires writable NV12 DRM PRIME buffers

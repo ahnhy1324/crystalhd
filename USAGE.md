@@ -26,7 +26,7 @@ CrystalHD hardware decode session can be open at a time.
 ## Known issues and deinterlacing roadmap
 
 - **Weave is not deinterlacing.** Hardware and software Weave retain both
-  fields, so moving edges can show combing or shaking. CrystalHD does not
+  fields, so moving edges can show combing or shaking. Published 1.1.0 does not
   provide native hardware Bob or a VA deinterlacing filter. Applications can
   apply [CPU deinterlacing after Weave](#application-deinterlacing-after-weave),
   with additional CPU cost; successful decode does not guarantee smooth FHD
@@ -59,10 +59,14 @@ CrystalHD hardware decode session can be open at a time.
 The planned **v1.2 deinterlacing work** in
 [#436](https://github.com/ahnhy1324/crystalhd/issues/436) targets decode/readback/
 filter integration, field order, cadence and A/V validation. These are not
-capabilities added by this RC or a promise that every interlaced input will be
+capabilities added by published 1.1.0 or a promise that every interlaced input will be
 fixed. The limitations above can remain until the relevant implementation and
 host-specific validation are complete; hardware deinterlacing remains separate
 research.
+
+The separate 1.2 development branch implements a bounded
+[CPU VA-VPP Bob path](filters/vaapi/README.md#development-cpu-va-vpp-bob),
+not card-side deinterlacing or a newly qualified Kodi/Atom playback path.
 
 ## Verify the installed stack
 
@@ -475,10 +479,11 @@ The earlier unpublished RC.2 checksum run separately produced 1,500/1,500
 frames plus EOS in 33.95 seconds, at 157% process CPU and 325,296 KiB maximum
 RSS. It used `framemd5` and the older runtime; it is not the current null-output
 benchmark or a directly comparable filter-cost measurement.
-`deinterlace_vaapi=mode=bob` is not a substitute: this driver does not
-advertise a VA VPP deinterlacing filter. See the
-[VA component contract](filters/vaapi/README.md#interlaced-h264-weave-and-client-deinterlacing).
-For one progressive output per input picture instead, use `mode=send_frame`;
+On published 1.1.0, `deinterlace_vaapi=mode=bob` is not a substitute: that release
+does not advertise a VA VPP deinterlacing filter. The bounded 1.2 development
+implementation is described separately in the
+[VA component contract](filters/vaapi/README.md#development-cpu-va-vpp-bob).
+For one progressive BWDIF output per input picture instead, use `mode=send_frame`;
 this reduces output cadence, not the underlying decode work, and has different
 motion quality. The [BWDIF reference](https://ffmpeg.org/ffmpeg-filters.html#bwdif)
 defines its mode/parity options. These commands filter on the CPU after
@@ -548,8 +553,8 @@ qualification. No incomplete surface is returned to hide a wait.
 For an explicit HW/SW Weave selection use the
 [player commands above](#explicit-weave-playback). Kodi's VA-API acceleration
 setting selects hardware versus CPU decode; its deinterlacing method is a
-separate setting. No driver
-deinterlacing capability is advertised; deinterlacing and sync tuning remain
+separate setting. Published 1.1.0 advertises no VA driver
+deinterlacing capability; deinterlacing and sync tuning remain
 tracked in [#436](https://github.com/ahnhy1324/crystalhd/issues/436).
 
 During RC3 preparation (recorded in `a3fd609`), a selected 30-second 720i25 dialogue clip had

@@ -90,6 +90,19 @@ for bits in $build_bits; do
         -Wall -Wextra -Werror "$repo_dir/tests/vaapi-bob.cpp" \
         $cpu_flags -o "$build_dir/vaapi-bob"
     run_test "$build_dir/vaapi-bob"
+    # Exercise the real NV12 ProcessVpp kernel, not only its row mapper.
+    # Abort stubs keep this mode independent of 32-bit graphics libraries.
+    # shellcheck disable=SC2086
+    $cxx ${CPPFLAGS:-} ${CXXFLAGS:-} -m"$bits" -std=c++17 -O2 \
+        -Wall -Wextra -Werror -fno-tree-slp-vectorize \
+        -ffunction-sections -fdata-sections -D__LINUX_USER__ \
+        -DCRYSTALHD_BOB_NV12_ONLY -I"$repo_dir/include" \
+        -I"$repo_dir/linux_lib/libcrystalhd" \
+        $(pkg-config --cflags libva libva-drm libdrm gbm libswscale) \
+        "$repo_dir/tests/vaapi-bob-vpp.cpp" \
+        -Wl,--gc-sections,--wrap=ioctl -pthread $cpu_flags \
+        -o "$build_dir/vaapi-bob-vpp"
+    run_test "$build_dir/vaapi-bob-vpp"
     if [ "$legacy" -eq 1 ]; then
         # shellcheck disable=SC2086
         $cxx -std=c++11 -Wall -Wextra -Werror $cpu_flags \

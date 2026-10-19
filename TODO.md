@@ -34,12 +34,12 @@ expanding the released scope to general full-rate FHD/deinterlacing support.
   [the focused investigation](https://github.com/ahnhy1324/crystalhd/issues/429#issuecomment-6245398250);
   they do not replace reporter-host or physical A/V acceptance.
 - [ ] [#436: planned v1.2 deinterlacing and presentation work](https://github.com/ahnhy1324/crystalhd/issues/436)
-  — prioritize a truthful CPU VA-VPP Bob path for
+  — qualify the development CPU VA-VPP Bob path for
   the existing Kodi Auto problem in [#445](https://github.com/ahnhy1324/crystalhd/issues/445):
   actual filter execution, field order/timing, ownership, seek/EOS and
-  i686/scalar behavior before advertising capability. Query-only Weave or
-  returning unchanged Weave for Bob is not an implementation. Keep existing
-  Weave playback intact; physical cadence/sync and FHD performance require
+  i686/scalar behavior. The 1.2 branch implements origin-aligned CPU Bob with
+  device-free coverage; stock Kodi/Atom cadence and physical A/V remain open.
+  Keep existing Weave playback intact; physical cadence/sync and FHD performance require
   their own measurements. Hardware Bob remains separate research, not a
   prerequisite for this software integration.
 - [ ] Player HTTP(S) acceptance — implementation is included in RC4, with
