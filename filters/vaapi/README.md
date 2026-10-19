@@ -187,6 +187,12 @@ this qualified headroom and failed-public-read protection do not establish
 generic out-of-policy recovery or the chip's physical maximum. Previously
 accepted private pictures remain independent of a rejected public transaction.
 
+A [new RC5 reporter result](https://github.com/ahnhy1324/crystalhd/issues/468)
+finds some real B-pyramid input failing below that admitted byte limit, although
+the synthetic boundary fixture passes. The limit is not a guarantee for every
+stream. This compatibility defect is under investigation; neither a lower
+universal limit nor a longer timeout has been established as its fix.
+
 RC5 applies this failed-`vaEndPicture()` public-read protection
 to every supported decode codec. New synchronization, image/export and VPP
 source reads report the rejected transaction instead of an earlier completed

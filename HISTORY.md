@@ -7,6 +7,11 @@
   Preserve zero-filter Weave/scaling and legacy ABI; single-field input,
   nonzero-origin cropping and hardware Bob remain unsupported. Kodi, cadence and physical
   A/V qualification remain separate from device-free filter checks.
+- Keep VPP queue allocation failures transactional and prevent an older failed
+  request from invalidating a newer writer's output.
+- Preserve imported PRIME plane layouts on export and correct legacy batch
+  imports. Validate import spans and CSC strides before access, and initialize
+  complete chroma pairs in odd-width NV12 backgrounds.
 
 ## 1.1.0
 

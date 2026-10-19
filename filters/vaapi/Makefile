@@ -146,7 +146,7 @@ $(BOB_TEST): $(ROOTDIR)/tests/vaapi-bob.cpp crystalhd-vpp-bob.h
 $(BOB_VPP_TEST): $(ROOTDIR)/tests/vaapi-bob-vpp.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
 		-ffunction-sections -fdata-sections $< -o $@ \
-		-Wl,--gc-sections,--wrap=ioctl \
+		-Wl,--gc-sections,--wrap=ioctl,--wrap=sws_scale \
 		$(shell $(PKG_CONFIG) --libs gbm libdrm libswscale libavutil) \
 		-pthread $(CRYSTALHD_CPU_FLAGS)
 

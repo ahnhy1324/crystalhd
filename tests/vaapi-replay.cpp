@@ -2453,6 +2453,65 @@ static void TraceReadExportReuseBoundary() {
 
   {
     TraceEnvironment environment;
+    const int trace_fd = memfd_create("crystalhd-reuse-imported-planes", MFD_CLOEXEC);
+    Require(trace_fd >= 0, "allocate mapped-plane reuse trace sink");
+    {
+      Driver driver{-1, trace_fd};
+      auto decode = std::make_shared<DecodeContext>();
+      const size_t bytes = 16 * 16 * 3 / 2;
+      const int y = TraceBackingFd("crystalhd-reuse-imported-y", bytes);
+      const int duplicate_y = dup(y);
+      Require(duplicate_y >= 0, "duplicate mapped luma backing identity");
+      const int uv = TraceBackingFd("crystalhd-reuse-imported-uv", bytes);
+      const int unrelated = TraceBackingFd("crystalhd-reuse-imported-other", bytes);
+      const auto surface = InstallTraceReuseSurface(
+          &driver, decode, {y, duplicate_y, uv, unrelated});
+      VADRMPRIMESurfaceDescriptor imported = {};
+      imported.fourcc = VA_FOURCC_NV12;
+      imported.width = imported.height = 16;
+      imported.num_objects = 2;
+      imported.objects[0].fd = y;
+      imported.objects[1].fd = uv;
+      for (auto &object : imported.objects) {
+        object.size = bytes;
+        object.drm_format_modifier = DRM_FORMAT_MOD_LINEAR;
+      }
+      imported.num_layers = 1;
+      imported.layers[0].drm_format = DRM_FORMAT_NV12;
+      imported.layers[0].num_planes = 2;
+      imported.layers[0].object_index[1] = 1;
+      imported.layers[0].pitch[0] = imported.layers[0].pitch[1] = 16;
+      Require(GetPrimeLayout(imported, &surface->layout),
+              "register only the two actual exported mapped objects");
+      VADriverContext context = {};
+      context.pDriverData = &driver;
+      VADRMPRIMESurfaceDescriptor exported = {};
+      Require(ExportSurfaceHandle(&context, 1,
+                                  VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                  VA_EXPORT_SURFACE_READ_ONLY, &exported) ==
+                  VA_STATUS_SUCCESS && exported.num_objects == 2,
+              "arm reuse observation for both mapped plane objects");
+      ClosePrimeDescriptor(&exported);
+      probe_poll_calls = 0;
+      probe_poll_results = {{1, POLLOUT, 0}, {0, 0, 0}};
+      Require(BeginPicture(&context, 7, 1) == VA_STATUS_SUCCESS &&
+                  probe_poll_calls == 2 && probe_poll_results.empty(),
+              "mapped reuse probes chroma too, deduplicates luma and ignores unrelated fds");
+    }
+    const std::string trace = ReadTraceFd(trace_fd);
+    close(trace_fd);
+    const std::string probe = FindTraceEvent(
+        trace, "read_export_reuse_implicit_fence_probe");
+    Require(TraceFieldIs(probe, "identified_exported_object_count", 2) &&
+                TraceFieldIs(probe, "pollout_count", 1) &&
+                TraceFieldIs(probe, "not_pollout_count", 1) &&
+                TraceFieldIs(probe, "probe_error_count", 0) &&
+                TraceSignedFieldIs(probe, "outcome", -EAGAIN),
+            "an unsignaled chroma reader is not reported as fully idle reuse");
+  }
+
+  {
+    TraceEnvironment environment;
     const int trace_fd = memfd_create("crystalhd-reuse-gbm", MFD_CLOEXEC);
     Require(trace_fd >= 0, "allocate GBM-plane reuse trace sink");
     {

@@ -6,6 +6,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <stdexcept>
 
 namespace allocation_fault {
@@ -34,7 +35,32 @@ extern "C" BC_STATUS DtsDeviceClose(HANDLE) { abort(); }
 extern "C" BC_STATUS DtsStopDecoder(HANDLE) { abort(); }
 extern "C" BC_STATUS DtsCloseDecoder(HANDLE) { abort(); }
 
+#ifndef CRYSTALHD_BOB_NV12_ONLY
+namespace scale_fault {
+bool guard_invalid_stride = false;
+unsigned int rejected_calls = 0;
+}
+extern "C" int __real_sws_scale(SwsContext *, const uint8_t *const [], const int [],
+                                int, int, uint8_t *const [], const int []);
+extern "C" int __wrap_sws_scale(SwsContext *context, const uint8_t *const source[],
+    const int source_pitch[], int start, int height, uint8_t *const target[],
+    const int target_pitch[]) {
+  if (scale_fault::guard_invalid_stride &&
+      (source_pitch[0] < 0 || source_pitch[1] < 0)) {
+    ++scale_fault::rejected_calls;
+    return 0;  // Never let the pre-fix path dereference an invalid stride.
+  }
+  return __real_sws_scale(context, source, source_pitch, start, height, target,
+                           target_pitch);
+}
+#endif
+
 #ifdef CRYSTALHD_BOB_NV12_ONLY
+extern "C" gbm_bo *gbm_bo_import(gbm_device *, uint32_t, void *, uint32_t) { abort(); }
+extern "C" void *gbm_bo_map(gbm_bo *, uint32_t, uint32_t, uint32_t, uint32_t,
+                            uint32_t, uint32_t *, void **) { abort(); }
+extern "C" uint32_t gbm_bo_get_stride_for_plane(gbm_bo *, int) { abort(); }
+extern "C" uint32_t gbm_bo_get_offset(gbm_bo *, int) { abort(); }
 extern "C" SwsContext *sws_getCachedContext(SwsContext *, int, int, AVPixelFormat,
     int, int, AVPixelFormat, int, SwsFilter *, SwsFilter *, const double *) {
   abort();
@@ -210,6 +236,161 @@ void Pixels(unsigned int source_width, unsigned int source_height,
   Require(argb || staging.empty(), "NV12 Bob does not allocate full-frame staging");
 }
 
+void ZeroFilterOddWidthBackground() {
+  Surface source, target, reference;
+  Initialize(&source, 16, 16);
+  Initialize(&target, 17, 16);
+  Initialize(&reference, 17, 16);
+  Fill(&source);
+  const auto original = source.storage;
+  for (unsigned int plane = 0; plane != 2; ++plane) {
+    const unsigned int rows = plane == 0 ? 16 : 8;
+    const unsigned int row_bytes = plane == 0 ? 17 : 18;
+    for (unsigned int row = 0; row < rows; ++row) {
+      uint8_t *output = reference.planes[plane] +
+          static_cast<size_t>(row) * reference.pitch[plane];
+      std::fill_n(output, row_bytes, plane == 0 ? 16 : 128);
+      memcpy(output, source.planes[plane] +
+             static_cast<size_t>(row) * source.pitch[plane], 16);
+    }
+  }
+  Scaler scaler;
+  std::vector<uint8_t> staging;
+  const VARectangle visible = {0, 0, 16, 16};
+  Require(ProcessVpp(&scaler.value, &staging, &source, &target, Full(source),
+                     visible) == VA_STATUS_SUCCESS,
+          "zero-filter VPP accepts an even visible extent in an odd-width backing");
+  for (unsigned int row = 0; row < 8; ++row)
+    Require(target.planes[1][static_cast<size_t>(row) * target.pitch[1] + 16] == 128 &&
+                target.planes[1][static_cast<size_t>(row) * target.pitch[1] + 17] == 128,
+            "zero-filter background initializes both U and V of the final odd-width pair");
+  Require(target.storage == reference.storage,
+          "zero-filter visible pixels, neutral border and all pitch/outer guards match");
+  Require(source.storage == original && staging.empty(),
+          "zero-filter odd-width output preserves source and avoids ARGB staging");
+}
+
+#ifndef CRYSTALHD_BOB_NV12_ONLY
+void ZeroFilterArgbInvalidStrides() {
+  for (unsigned int plane = 0; plane != 2; ++plane) {
+    Surface source, target;
+    Initialize(&source, 16, 16);
+    Initialize(&target, 16, 16, true);
+    Fill(&source);
+    source.pitch[plane] = static_cast<unsigned int>(INT_MAX) + 1U;
+    source.object_fds.push_back(777);
+    target.object_fds.push_back(888);
+    const auto source_bytes = source.storage, target_bytes = target.storage;
+    const unsigned int before_io = io_calls, before_scale = scale_fault::rejected_calls;
+    Scaler scaler;
+    std::vector<uint8_t> staging;
+    scale_fault::guard_invalid_stride = true;
+    const VAStatus status = ProcessVpp(&scaler.value, &staging, &source, &target,
+                                       Full(source), Full(target));
+    scale_fault::guard_invalid_stride = false;
+    source.object_fds.clear();
+    target.object_fds.clear();
+    if (status != VA_STATUS_ERROR_INVALID_PARAMETER)
+      std::fprintf(stderr, "zero-filter ARGB invalid plane%u stride: status=%d io=%u safe_scale_rejections=%u staging=%zu\n",
+                   plane, status, io_calls - before_io,
+                   scale_fault::rejected_calls - before_scale, staging.size());
+    Require(status == VA_STATUS_ERROR_INVALID_PARAMETER,
+            "zero-filter ARGB rejects unsigned strides outside swscale's signed range");
+    Require(io_calls == before_io && scale_fault::rejected_calls == before_scale &&
+                staging.empty() && source.storage == source_bytes && target.storage == target_bytes,
+            "invalid zero-filter ARGB strides reject before CPU access, scaling or pixel writes");
+  }
+}
+#endif
+
+bool HasImportMapping() {
+  std::ifstream maps("/proc/self/maps");
+  Require(maps.good(), "inspect private imported-mapping lifetime");
+  std::string line;
+  while (std::getline(maps, line))
+    if (line.find("memfd:crystalhd-import-layout-boundary") != std::string::npos)
+      return true;
+  return false;
+}
+
+void ImportLayoutBounds() {
+  const unsigned int before_io = io_calls;
+  for (bool prime : {false, true}) {
+    for (unsigned int variant = 0; variant != 8; ++variant) {
+      Require(!HasImportMapping(), "no prior imported mapping remains live");
+      Surface client;
+      const int fd = memfd_create("crystalhd-import-layout-boundary", MFD_CLOEXEC);
+      Require(fd >= 0, "allocate a small private descriptor, never a device");
+      client.object_fds.push_back(fd);
+      Require(ftruncate(fd, 1024) == 0, "bound the private backing to one KiB");
+      unsigned int width = 16, height = 16, size = 384;
+      uint32_t pitches[2] = {16, 16}, offsets[2] = {0, 256};
+      switch (variant) {
+        case 1:
+          width = height = 17; size = 534;
+          pitches[0] = 20; pitches[1] = 22; offsets[1] = 340;
+          break;
+        case 2: offsets[0] = 128; offsets[1] = 0; size = 383; break;
+        case 3: size = 383; break;
+        case 4: pitches[0] = UINT32_MAX / 15U + 1U; break;
+        case 5: pitches[1] = UINT32_MAX / 7U + 1U; break;
+        case 6: pitches[0] = 15; break;
+        case 7: offsets[1] = size + 1; break;
+        default: break;
+      }
+      bool accepted = false;
+      std::vector<int> duplicates;
+      {
+        Surface imported;
+        imported.width = width;
+        imported.height = height;
+        if (prime) {
+          VADRMPRIMESurfaceDescriptor descriptor = {};
+          descriptor.fourcc = VA_FOURCC_NV12;
+          descriptor.width = width; descriptor.height = height;
+          descriptor.num_objects = descriptor.num_layers = 1;
+          descriptor.objects[0].fd = fd;
+          descriptor.objects[0].size = size;
+          descriptor.objects[0].drm_format_modifier = DRM_FORMAT_MOD_LINEAR;
+          descriptor.layers[0].drm_format = DRM_FORMAT_NV12;
+          descriptor.layers[0].num_planes = 2;
+          for (unsigned int plane = 0; plane != 2; ++plane) {
+            descriptor.layers[0].pitch[plane] = pitches[plane];
+            descriptor.layers[0].offset[plane] = offsets[plane];
+          }
+          accepted = imported.ImportPrime(nullptr, descriptor);
+        } else {
+          uintptr_t handle = static_cast<uintptr_t>(fd);
+          VASurfaceAttribExternalBuffers descriptor = {};
+          descriptor.pixel_format = VA_FOURCC_NV12;
+          descriptor.width = width; descriptor.height = height;
+          descriptor.data_size = size; descriptor.num_planes = 2;
+          descriptor.num_buffers = 1; descriptor.buffers = &handle;
+          for (unsigned int plane = 0; plane != 2; ++plane) {
+            descriptor.pitches[plane] = pitches[plane];
+            descriptor.offsets[plane] = offsets[plane];
+          }
+          accepted = imported.ImportLegacy(descriptor);
+        }
+        duplicates = imported.object_fds;
+        if (std::any_of(imported.object_maps.begin(), imported.object_maps.end(),
+                        [](void *mapping) { return mapping != nullptr && mapping != MAP_FAILED; }))
+          Require(HasImportMapping(), "the mapping observer sees each owned private file mapping");
+        // Intentionally never access any plane, even if an invalid import
+        // incorrectly succeeds. Destroy the imported resources before FAIL.
+      }
+      for (int duplicate : duplicates)
+        Require(duplicate != fd && fcntl(duplicate, F_GETFD) == -1 && errno == EBADF,
+                "successful or rejected import releases only its duplicated fd");
+      Require(fcntl(fd, F_GETFD) >= 0 && !HasImportMapping(),
+              "import teardown preserves the caller fd and removes every mapping");
+      Require(accepted == (variant < 2),
+              "actual import rejects short or overflowing plane spans on this ABI");
+    }
+  }
+  Require(io_calls == before_io, "layout validation never acquires DMA CPU access");
+}
+
 void Invalid() {
   for (unsigned int variant = 0; variant != 18; ++variant) {
     Surface source, target;
@@ -291,8 +472,22 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
   return 0;
 }
 
-int main() {
+int main(int argc, char **argv) {
   try {
+    if (argc == 2 && strcmp(argv[1], "--import-layout") == 0) {
+      ImportLayoutBounds();
+      std::printf("VA actual import-layout bounds/lifetime: %zu-bit %u checks PASS\n",
+                  sizeof(void *) * 8, checks);
+      return 0;
+    }
+#ifndef CRYSTALHD_BOB_NV12_ONLY
+    if (argc == 2 && strcmp(argv[1], "--argb-strides") == 0) {
+      ZeroFilterArgbInvalidStrides();
+      std::printf("VA zero-filter ARGB signed-stride rejection: %u checks PASS\n", checks);
+      return 0;
+    }
+#endif
+    Require(argc == 1, "usage: test [--import-layout|--argb-strides (native)]");
     for (unsigned int parity = 0; parity != 2; ++parity) {
       for (unsigned int height : {720U, 1080U, 1088U})
         Pixels(16, height, 16, height, false, parity);
@@ -315,8 +510,13 @@ int main() {
       Pixels(32, 1080, 16, 720, true, parity, false, {32, 1088}, {16, 736});
 #endif
     }
+    ZeroFilterOddWidthBackground();
+#ifndef CRYSTALHD_BOB_NV12_ONLY
+    ZeroFilterArgbInvalidStrides();
+#endif
     Invalid();
     AllocationFailure();
+    ImportLayoutBounds();
     std::printf("VA Bob actual VPP pixels/guards/CPU leases: %u checks PASS\n", checks);
     return 0;
   } catch (const std::exception &error) {

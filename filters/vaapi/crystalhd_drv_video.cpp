@@ -701,6 +701,15 @@ struct PrimaryDrmNodeCache {
   }
 };
 
+static bool ImportedPlaneFits(uint64_t bytes, uint64_t offset, uint64_t pitch,
+                               uint64_t rows, uint64_t row_bytes) {
+  // Subtraction/division keeps the last-row bound valid on i686 too; forming
+  // pitch * (rows - 1) in size_t can wrap before comparing it with the fd size.
+  return rows != 0 && row_bytes != 0 && pitch >= row_bytes && offset <= bytes &&
+         row_bytes <= bytes - offset &&
+         rows - 1 <= (bytes - offset - row_bytes) / pitch;
+}
+
 struct Surface {
   VASurfaceID id = VA_INVALID_SURFACE;
   unsigned int width = 0;
@@ -1005,6 +1014,15 @@ struct Surface {
     if (!linear)
       return false;
 
+    for (unsigned int plane = 0; plane < expected_planes; ++plane) {
+      const uint64_t rows = plane == 0 ? height : (uint64_t{height} + 1) / 2;
+      const uint64_t row_bytes = is_argb ? uint64_t{width} * 4
+          : (plane == 0 ? width : (uint64_t{width} + 1) & ~uint64_t{1});
+      if (!ImportedPlaneFits(desc.objects[plane_desc[plane].object].size,
+                              plane_desc[plane].offset, plane_desc[plane].pitch,
+                              rows, row_bytes))
+        return false;
+    }
     object_maps.resize(desc.num_objects, MAP_FAILED);
     object_sizes.resize(desc.num_objects);
     object_fds.resize(desc.num_objects, -1);
@@ -1020,17 +1038,6 @@ struct Surface {
         return false;
     }
     for (unsigned int plane = 0; plane < expected_planes; ++plane) {
-      const size_t rows = plane == 0 ? height : (height + 1) / 2;
-      const size_t row_bytes = is_argb
-          ? static_cast<size_t>(width) * 4
-          : (plane == 0 ? width : Align(width, 2));
-      const size_t object_size = object_sizes[plane_desc[plane].object];
-      if (plane_desc[plane].pitch < row_bytes || rows == 0 ||
-          plane_desc[plane].offset > object_size ||
-          static_cast<size_t>(plane_desc[plane].pitch) * (rows - 1) +
-                  row_bytes >
-              object_size - plane_desc[plane].offset)
-        return false;
       planes[plane] = static_cast<uint8_t *>(
                           object_maps[plane_desc[plane].object]) +
                       plane_desc[plane].offset;
@@ -1051,6 +1058,14 @@ struct Surface {
         desc.data_size == 0)
       return false;
 
+    for (unsigned int plane = 0; plane < expected_planes; ++plane) {
+      const uint64_t rows = plane == 0 ? height : (uint64_t{height} + 1) / 2;
+      const uint64_t row_bytes = is_argb ? uint64_t{width} * 4
+          : (plane == 0 ? width : (uint64_t{width} + 1) & ~uint64_t{1});
+      if (!ImportedPlaneFits(desc.data_size, desc.offsets[plane], desc.pitches[plane],
+                              rows, row_bytes))
+        return false;
+    }
     const int fd = dup(static_cast<int>(desc.buffers[0]));
     if (fd < 0)
       return false;
@@ -1063,15 +1078,6 @@ struct Surface {
 
     fourcc = is_argb ? VA_FOURCC_ARGB : VA_FOURCC_NV12;
     for (unsigned int plane = 0; plane < expected_planes; ++plane) {
-      const size_t rows = plane == 0 ? height : (height + 1) / 2;
-      const size_t row_bytes = is_argb
-          ? static_cast<size_t>(width) * 4
-          : (plane == 0 ? width : Align(width, 2));
-      if (desc.pitches[plane] < row_bytes || rows == 0 ||
-          desc.offsets[plane] > desc.data_size ||
-          static_cast<size_t>(desc.pitches[plane]) * (rows - 1) + row_bytes >
-              desc.data_size - desc.offsets[plane])
-        return false;
       pitch[plane] = desc.pitches[plane];
       planes[plane] = static_cast<uint8_t *>(object_maps[0]) +
                       desc.offsets[plane];
@@ -1437,6 +1443,16 @@ static VAStatus ProcessVpp(SwsContext **scaler,
        ((output_region.x | output_region.y | output_region.width |
          output_region.height) & 1U) != 0))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
+  if (destination->fourcc == VA_FOURCC_ARGB) {
+    // Both ordinary CSC and Bob pass signed-int strides to swscale. Reject
+    // unrepresentable strides and staging sizes before acquiring CPU access.
+    const unsigned int stride_factor = deinterlace.bob ? 2U : 1U;
+    const uint64_t row_bytes = uint64_t{destination->width} * 4;
+    if (row_bytes > INT_MAX || source->pitch[0] > INT_MAX / stride_factor ||
+        source->pitch[1] > INT_MAX / stride_factor ||
+        destination->height > std::numeric_limits<size_t>::max() / row_bytes)
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+  }
   if (deinterlace.bob) {
     // An origin-zero visible extent may exclude coded padding, without
     // changing field/chroma phase. Nonzero crop origins remain unsupported.
@@ -1474,13 +1490,8 @@ static VAStatus ProcessVpp(SwsContext **scaler,
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     } else {
       const uint64_t row_bytes = static_cast<uint64_t>(destination->width) * 4;
-      // swscale uses signed-int strides; perform every size/stride check
-      // before acquiring CPU access or touching the shared destination.
       if (!plane_fits(destination->planes[0], destination->pitch[0],
-                      destination->height, row_bytes) ||
-          row_bytes > INT_MAX || source->pitch[0] > INT_MAX / 2U ||
-          source->pitch[1] > INT_MAX / 2U ||
-          destination->height > std::numeric_limits<size_t>::max() / row_bytes)
+                      destination->height, row_bytes))
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
   }
@@ -1640,7 +1651,7 @@ static VAStatus ProcessVpp(SwsContext **scaler,
       for (unsigned int row = 0; row < (destination->height + 1) / 2; ++row)
         memset(destination->planes[1] +
                    static_cast<size_t>(row) * destination->pitch[1],
-               128, destination->width);
+               128, Align(destination->width, 2));
       for (unsigned int row = 0; row < output_region.height; ++row) {
         const unsigned int source_y = source_region.y +
             static_cast<uint64_t>(row) * source_region.height /
@@ -1740,7 +1751,7 @@ struct DecodeContext {
   unsigned int stream_height = 0;
   bool video_process = false;
   VASurfaceID target = VA_INVALID_SURFACE;
-  std::weak_ptr<Surface> transaction_target;
+  std::weak_ptr<Surface> transaction_target;  // Canonical backing owner for VPP.
   uint64_t target_transaction = 0;
   uint64_t target_identity = 0;
   VASurfaceID vpp_source = VA_INVALID_SURFACE;
@@ -2558,9 +2569,22 @@ static ReadExportReuseProbe ProbeTraceReadExportReuse(
   } else {
     if (owner->object_fds.empty())
       record_error(ENODEV);
-    else
-      // Non-GBM surface export currently exposes object_fds[0] only.
+    else if (!owner->layout.valid)
       probe_fd(owner->object_fds.front());
+    else {
+      // Mapped imports can export several independent plane objects. Match
+      // the registered export view, ignoring unrelated cached descriptors
+      // and probing each actual backing only once.
+      for (int fd : owner->object_fds) {
+        BackingIdentity identity;
+        if (GetBackingIdentity(fd, &identity) &&
+            std::find(owner->layout.objects.begin(), owner->layout.objects.end(),
+                       identity) != owner->layout.objects.end())
+          probe_fd(fd);
+      }
+      if (objects.size() != owner->layout.objects.size())
+        record_error(ENODEV);
+    }
   }
   fields.duration_ns = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -5753,6 +5777,15 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
   if ((format == VA_RT_FORMAT_YUV420 && pixel_format != VA_FOURCC_NV12) ||
       (format == VA_RT_FORMAT_RGB32 && pixel_format != VA_FOURCC_ARGB))
     return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
+  // PRIME2 supplies one descriptor per surface. Legacy PRIME instead
+  // supplies a single geometry descriptor with one buffers[] handle per
+  // surface; make a one-handle view only when calling the Surface importer.
+  const auto *legacy_descriptor = memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME
+      ? static_cast<const VASurfaceAttribExternalBuffers *>(descriptor) : nullptr;
+  if (legacy_descriptor != nullptr &&
+      (legacy_descriptor->buffers == nullptr ||
+       legacy_descriptor->num_buffers < surface_count))
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
   const auto pending_backing = [&](int fd) {
@@ -5781,11 +5814,9 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
         if (pending_backing(desc.objects[object].fd))
           return VA_STATUS_ERROR_SURFACE_BUSY;
     } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME && descriptor != nullptr) {
-      const auto &desc = static_cast<const VASurfaceAttribExternalBuffers *>(descriptor)[i];
-      if (desc.num_buffers != 1 || desc.buffers == nullptr ||
-          desc.buffers[0] > static_cast<uintptr_t>(INT_MAX))
+      if (legacy_descriptor->buffers[i] > static_cast<uintptr_t>(INT_MAX))
         return VA_STATUS_ERROR_ALLOCATION_FAILED;
-      if (pending_backing(static_cast<int>(desc.buffers[0])))
+      if (pending_backing(static_cast<int>(legacy_descriptor->buffers[i])))
         return VA_STATUS_ERROR_SURFACE_BUSY;
     }
   }
@@ -5806,13 +5837,18 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
     surface->rt_format = format;
     surface->fourcc = pixel_format;
     SurfaceLayout layout;
+    VASurfaceAttribExternalBuffers legacy_surface = {};
+    if (legacy_descriptor != nullptr) {
+      legacy_surface = *legacy_descriptor;
+      legacy_surface.num_buffers = 1;
+      legacy_surface.buffers = legacy_descriptor->buffers + i;
+    }
     if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 && descriptor != nullptr) {
       const auto &desc = static_cast<const VADRMPRIMESurfaceDescriptor *>(descriptor)[i];
       if (!GetPrimeLayout(desc, &layout))
         return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
     } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME && descriptor != nullptr) {
-      const auto &desc = static_cast<const VASurfaceAttribExternalBuffers *>(descriptor)[i];
-      if (!GetLegacyLayout(desc, &layout))
+      if (!GetLegacyLayout(legacy_surface, &layout))
         return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
     }
     for (const BackingIdentity &identity : layout.objects) {
@@ -5862,9 +5898,7 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
       ok = surface->ImportPrime(driver->gbm, descriptors[i]);
     } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME &&
                descriptor != nullptr) {
-      const auto *descriptors =
-          static_cast<const VASurfaceAttribExternalBuffers *>(descriptor);
-      ok = surface->ImportLegacy(descriptors[i]);
+      ok = surface->ImportLegacy(legacy_surface);
     }
     if (!ok)
       return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
@@ -6547,7 +6581,11 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
       !HasLiveBackingOwner(driver, target_surface->second.get()))
     return VA_STATUS_ERROR_INVALID_SURFACE;
   if (decode->second->video_process) {
-    Surface *target_owner = BackingOwner(driver, target_surface->second.get());
+    const std::shared_ptr<Surface> owner_surface =
+        target_surface->second->backing_owner == VA_INVALID_SURFACE
+            ? target_surface->second
+            : driver->surfaces.at(target_surface->second->backing_owner);
+    Surface *target_owner = owner_surface.get();
     if (target_owner->vpp_writers != 0 || target_owner->export_waiters != 0)
       return VA_STATUS_ERROR_HW_BUSY;
     // The experimental decode path deliberately excludes VPP and writable
@@ -6568,6 +6606,8 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
     RevokeDecodeOwner(driver, target_owner);
     target_owner->picture_transaction = NextDecodeIdentity(driver);
     decode->second->target = target;
+    decode->second->transaction_target = owner_surface;
+    decode->second->target_transaction = target_owner->picture_transaction;
     // Chromium renders into an imported alias of an exported ARGB surface.
     // Track readiness on both aliases until VPP commits the exact frame.
     target_surface->second->expected_timestamp = 0;
@@ -7132,10 +7172,11 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
         auto destination = driver->surfaces.find(decode_context->target);
         if (destination != driver->surfaces.end()) {
           Surface *owner = BackingOwner(driver, destination->second.get());
-          // Any failure after VPP Begin belongs to that stale transaction.
-          // If a newer experimental decode has acquired the backing, do not
-          // poison or otherwise mutate its reservation/presentation.
-          if (owner->vpp_writers == 0 && owner->export_waiters == 0 &&
+          // Failure belongs only to this Begin's backing transaction. A newer
+          // ordinary writer needs the same protection as experimental output.
+          if (decode_context->transaction_target.lock().get() == owner &&
+              owner->picture_transaction == decode_context->target_transaction &&
+              owner->vpp_writers == 0 && owner->export_waiters == 0 &&
               !ExperimentalPresentationBinding(driver, owner) &&
               !owner->experimental_write_lease &&
               !owner->experimental_read_export_armed &&
@@ -7144,6 +7185,8 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
         }
       }
       decode_context->target = VA_INVALID_SURFACE;
+      decode_context->transaction_target.reset();
+      decode_context->target_transaction = 0;
       decode_context->vpp_source = VA_INVALID_SURFACE;
       decode_context->vpp_frame.reset();
       decode_context->vpp_decoder.reset();
@@ -7250,15 +7293,6 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     // Chromium can queue them without synchronizing the processed VA surface.
     const bool private_target = target_surface == target_owner &&
                                 !target_owner->layout.valid;
-    const int write_timeline = private_target
-                                   ? -1 : BeginFencedWrite(target_surface.get());
-    if (!private_target && write_timeline < 0) {
-      Debug("could not fence asynchronous VPP target=%p",
-            static_cast<void *>(target_surface.get()));
-      return finish_vpp(VA_STATUS_ERROR_OPERATION_FAILED);
-    }
-    ++decoded_source->vpp_readers;
-    ++target_owner->vpp_writers;
     PendingVpp pending;
     pending.decoder = source_decoder;
     pending.source = decoded_source;
@@ -7272,8 +7306,25 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     pending.decoder_generation = source_decoder
                                      ? source_decoder->generation
                                      : 0;
-    pending.write_timeline = write_timeline;
-    driver->pending_vpp.push_back(std::move(pending));
+    // The worker cannot see this entry until the driver lock is released.
+    // Complete the fallible deque allocation before acquiring a CPU/fence
+    // lease or publishing reader/writer ownership.
+    try {
+      driver->pending_vpp.push_back(std::move(pending));
+    } catch (const std::bad_alloc &) {
+      return finish_vpp(VA_STATUS_ERROR_ALLOCATION_FAILED);
+    }
+    const int write_timeline = private_target
+                                   ? -1 : BeginFencedWrite(target_surface.get());
+    if (!private_target && write_timeline < 0) {
+      driver->pending_vpp.pop_back();
+      Debug("could not fence asynchronous VPP target=%p",
+            static_cast<void *>(target_surface.get()));
+      return finish_vpp(VA_STATUS_ERROR_OPERATION_FAILED);
+    }
+    driver->pending_vpp.back().write_timeline = write_timeline;
+    ++decoded_source->vpp_readers;
+    ++target_owner->vpp_writers;
     driver->condition.notify_all();
     Debug("queued VPP sequence=%llu source_timestamp=%llu target=%p timeline=%d",
           static_cast<unsigned long long>(sequence),
@@ -8203,6 +8254,82 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
   prime->fourcc = surface->second->fourcc;
   prime->width = surface->second->width;
   prime->height = surface->second->height;
+  if (surface->second->bo == nullptr && surface->second->layout.valid) {
+    // A mapped import can have separate Y/UV objects, plane offsets or padded
+    // strides. Re-export that exact registered view, not the internal DUMB
+    // allocation's assumed Y-at-zero/contiguous-UV layout.
+    const SurfaceLayout &imported_layout = surface->second->layout;
+    const unsigned expected_planes = prime->fourcc == VA_FOURCC_NV12 ? 2 : 1;
+    if ((prime->fourcc != VA_FOURCC_NV12 && prime->fourcc != VA_FOURCC_ARGB) ||
+        imported_layout.num_planes != expected_planes ||
+        imported_layout.objects.empty() || imported_layout.objects.size() > 4 ||
+        surface->second->object_fds.size() != surface->second->object_sizes.size())
+      return finish(VA_STATUS_ERROR_OPERATION_FAILED);
+    prime->num_objects = imported_layout.objects.size();
+    const auto failed_export = [&] {
+      for (unsigned object = 0; object < prime->num_objects; ++object) {
+        if (prime->objects[object].fd >= 0)
+          close(prime->objects[object].fd);
+        prime->objects[object].fd = -1;
+      }
+      prime->num_objects = 0;
+      return finish(VA_STATUS_ERROR_OPERATION_FAILED);
+    };
+    for (unsigned object = 0; object < prime->num_objects; ++object) {
+      bool found = false;
+      for (size_t stored = 0; stored < surface->second->object_fds.size(); ++stored) {
+        BackingIdentity identity;
+        if (!GetBackingIdentity(surface->second->object_fds[stored], &identity) ||
+            !(identity == imported_layout.objects[object]))
+          continue;
+        const size_t bytes = surface->second->object_sizes[stored];
+        if (bytes == 0 || bytes > UINT32_MAX)
+          return failed_export();
+        const int fd = fcntl(surface->second->object_fds[stored], F_DUPFD_CLOEXEC, 0);
+        if (fd < 0)
+          return failed_export();
+        prime->objects[object].fd = fd;
+        prime->objects[object].size = bytes;
+        // Nonlinear imports use GBM above; mapped imports are linear.
+        prime->objects[object].drm_format_modifier = DRM_FORMAT_MOD_LINEAR;
+        found = true;
+        break;
+      }
+      if (!found)
+        return failed_export();
+    }
+    const bool composed = prime->fourcc == VA_FOURCC_ARGB ||
+        (flags & VA_EXPORT_SURFACE_COMPOSED_LAYERS) != 0;
+    prime->num_layers = composed ? 1 : expected_planes;
+    if (composed) {
+      prime->layers[0].drm_format = prime->fourcc == VA_FOURCC_ARGB
+          ? DRM_FORMAT_ARGB8888 : DRM_FORMAT_NV12;
+      prime->layers[0].num_planes = expected_planes;
+    }
+    for (unsigned plane = 0; plane < expected_planes; ++plane) {
+      const auto &view = imported_layout.planes[plane];
+      const auto object = std::find(imported_layout.objects.begin(),
+                                    imported_layout.objects.end(), view.backing);
+      if (object == imported_layout.objects.end())
+        return failed_export();
+      const unsigned layer = composed ? 0 : plane;
+      const unsigned index = composed ? plane : 0;
+      if (!composed) {
+        prime->layers[layer].drm_format = plane == 0 ? DRM_FORMAT_R8 : DRM_FORMAT_GR88;
+        prime->layers[layer].num_planes = 1;
+      }
+      prime->layers[layer].object_index[index] = object - imported_layout.objects.begin();
+      prime->layers[layer].offset[index] = view.offset;
+      prime->layers[layer].pitch[index] = view.pitch;
+    }
+    SurfaceLayout layout;
+    if (!GetPrimeLayout(*prime, &layout) ||
+        !RegisterExportedLayout(driver, surface->second.get(), surface_id, layout))
+      return failed_export();
+    if (surface->second.get() == owner && explicit_read_only)
+      ArmTraceReadExport(driver, surface->second.get(), owner, trace_fields.operation);
+    return finish(VA_STATUS_SUCCESS);
+  }
   if (surface->second->fourcc == VA_FOURCC_ARGB) {
     const int fd = surface->second->bo != nullptr
                        ? gbm_bo_get_fd_for_plane(surface->second->bo, 0)

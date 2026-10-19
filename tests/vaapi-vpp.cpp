@@ -4,9 +4,44 @@
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
 
 #include <cerrno>
+#include <dirent.h>
 #include <linux/sync_file.h>
 #include <stdexcept>
 #include <string>
+
+namespace allocation_fault {
+thread_local bool fail_next = false;
+thread_local size_t only_size = 0, failed_size = 0;
+void *Allocate(size_t bytes) {
+  if (fail_next && (only_size == 0 || bytes == only_size)) {
+    fail_next = false;
+    failed_size = bytes;
+    throw std::bad_alloc();
+  }
+  if (void *result = std::malloc(bytes == 0 ? 1 : bytes)) return result;
+  throw std::bad_alloc();
+}
+}
+void *operator new(size_t bytes) { return allocation_fault::Allocate(bytes); }
+void *operator new[](size_t bytes) { return allocation_fault::Allocate(bytes); }
+void *operator new(size_t bytes, const std::nothrow_t &) noexcept {
+  try { return allocation_fault::Allocate(bytes); } catch (...) { return nullptr; }
+}
+void *operator new[](size_t bytes, const std::nothrow_t &) noexcept {
+  try { return allocation_fault::Allocate(bytes); } catch (...) { return nullptr; }
+}
+#if defined(__GNUC__) || defined(__clang__)
+#define CRYSTALHD_TEST_NOINLINE __attribute__((noinline))
+#else
+#define CRYSTALHD_TEST_NOINLINE
+#endif
+CRYSTALHD_TEST_NOINLINE void operator delete(void *p) noexcept { std::free(p); }
+CRYSTALHD_TEST_NOINLINE void operator delete[](void *p) noexcept { std::free(p); }
+CRYSTALHD_TEST_NOINLINE void operator delete(void *p, size_t) noexcept { std::free(p); }
+CRYSTALHD_TEST_NOINLINE void operator delete[](void *p, size_t) noexcept { std::free(p); }
+CRYSTALHD_TEST_NOINLINE void operator delete(void *p, const std::nothrow_t &) noexcept { std::free(p); }
+CRYSTALHD_TEST_NOINLINE void operator delete[](void *p, const std::nothrow_t &) noexcept { std::free(p); }
+#undef CRYSTALHD_TEST_NOINLINE
 
 extern "C" int __real_close(int fd);
 extern "C" int __real_eventfd(unsigned int initial_value, int flags);
@@ -1486,6 +1521,111 @@ void PendingVppTeardownStillNotifies() {
   }
 }
 
+void VppQueueAllocationFailureIsTransactional() {
+  for (bool exposed : {false, true}) {
+    FenceIoMock mock;
+    MockFenceScope scope(mock);
+    Fixture fixture;
+    fixture.driver.StopWorkers();
+    const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    picture->ready = false;
+    fixture.SubmitParameters();
+    if (exposed) {
+      fixture.target->layout.valid = true;
+      fixture.target->object_fds = {101};
+      mock.events.reserve(64);
+    }
+    // Find the next real deque-node allocation without assuming an ABI's
+    // block size. Workers are stopped; these sentinel entries never execute.
+    PendingVpp sentinel;
+    bool boundary = false;
+    for (size_t attempt = 0; attempt < 4096; ++attempt) {
+      allocation_fault::fail_next = true;
+      try {
+        fixture.driver.pending_vpp.push_back(sentinel);
+      } catch (const std::bad_alloc &) {
+        boundary = true;
+        break;
+      }
+    }
+    allocation_fault::fail_next = false;
+    Require(boundary && allocation_fault::failed_size >= sizeof(PendingVpp),
+            "locate the next actual VPP deque-node allocation");
+    const size_t queued_before = fixture.driver.pending_vpp.size();
+    const auto pixels = fixture.target->storage;
+    allocation_fault::only_size = allocation_fault::failed_size;
+    allocation_fault::fail_next = true;
+    VAStatus status = VA_STATUS_ERROR_OPERATION_FAILED;
+    bool escaped = false;
+    try {
+      status = EndPicture(&fixture.context, 2);
+    } catch (const std::bad_alloc &) {
+      escaped = true;
+    }
+    const bool injected = !allocation_fault::fail_next;
+    allocation_fault::fail_next = false;
+    allocation_fault::only_size = 0;
+    const bool queue_preserved = fixture.driver.pending_vpp.size() == queued_before;
+    const bool owners_released = picture->vpp_readers == 0 && fixture.target->vpp_writers == 0;
+    const bool fence_released = mock.started.empty() && mock.handles.empty() &&
+        (!mock.fence_created || mock.fence_status < 0) && !mock.self_wait && !mock.invalid &&
+        std::find(mock.events.begin(), mock.events.end(), "signal") == mock.events.end();
+    // Even an unfixed implementation must leave this CPU-only test safely
+    // destructible after recording its original leaked ownership/fence state.
+    if (mock.handles.count(FenceIoMock::timeline) != 0)
+      AbortFencedWrite(fixture.target.get(), FenceIoMock::timeline);
+    if (!queue_preserved)
+      ReleasePendingVpp(&fixture.driver, fixture.target->latest_vpp_sequence,
+                        VA_STATUS_ERROR_OPERATION_FAILED, false);
+    fixture.driver.pending_vpp.clear();
+    Require(injected && !escaped && status == VA_STATUS_ERROR_ALLOCATION_FAILED,
+            "VPP queue allocation failure returns ALLOCATION_FAILED without escaping the VA ABI");
+    Require(queue_preserved && owners_released && fence_released &&
+                fixture.target->storage == pixels && fixture.target->failed &&
+                !fixture.target->ready && fixture.processor->target == VA_INVALID_SURFACE &&
+                !fixture.processor->have_vpp_parameters,
+            "failed VPP enqueue preserves pixels and releases every queue/fence/transaction owner");
+    picture->ready = true;
+    fixture.SubmitParameters();
+    fixture.Complete(kTimestampStep, 40);
+    Require(picture->vpp_readers == 0 && fixture.target->vpp_writers == 0 &&
+                mock.started.empty() && mock.handles.empty() && !mock.self_wait && !mock.invalid,
+            "a fresh VPP request recovers after queue allocation failure");
+  }
+}
+
+void StaleVppFailurePreservesNewerWriter() {
+  Fixture fixture;
+  Require(BeginPicture(&fixture.context, 2, 2) == VA_STATUS_SUCCESS,
+          "begin the older VPP transaction without valid parameters");
+  auto newer = std::make_shared<DecodeContext>();
+  newer->video_process = true;
+  fixture.driver.contexts[3] = newer;
+  VAProcPipelineParameterBuffer pipeline = {};
+  pipeline.surface = 1;
+  VABufferID parameters = VA_INVALID_ID;
+  Require(CreateBuffer(&fixture.context, 3, VAProcPipelineParameterBufferType,
+                       sizeof(pipeline), 1, &pipeline, &parameters) == VA_STATUS_SUCCESS &&
+              BeginPicture(&fixture.context, 3, 2) == VA_STATUS_SUCCESS &&
+              RenderPicture(&fixture.context, 3, &parameters, 1) == VA_STATUS_SUCCESS &&
+              EndPicture(&fixture.context, 3) == VA_STATUS_SUCCESS,
+          "a newer ordinary VPP writer commits the shared target");
+  const uint64_t transaction = fixture.target->picture_transaction;
+  const auto pixels = fixture.target->storage;
+  Require(fixture.target->ready && !fixture.target->failed &&
+              fixture.target->frame_timestamp == kTimestampStep,
+          "the newer writer publishes its exact completed picture");
+  Require(EndPicture(&fixture.context, 2) == VA_STATUS_ERROR_INVALID_PARAMETER,
+          "the older unrendered VPP End still rejects and consumes its transaction");
+  Require(fixture.target->ready && !fixture.target->failed &&
+              fixture.target->picture_transaction == transaction &&
+              fixture.target->frame_timestamp == kTimestampStep &&
+              fixture.target->storage == pixels && fixture.target->vpp_writers == 0 &&
+              fixture.processor->target == VA_INVALID_SURFACE &&
+              !fixture.processor->have_vpp_parameters,
+          "a stale VPP failure cannot poison a newer ordinary writer's completed output");
+}
+
 void RepeatedVppRetainsPicture() {
   Fixture fixture;
   fixture.SubmitParameters();
@@ -2590,8 +2730,8 @@ void FirstExternalImportOwnsAliasesAndRollsBackAtomically() {
     mock.real_files.insert(fd);
     Require(ftruncate(fd, 512) == 0, "size private 16x16 NV12 import");
     VADRMPRIMESurfaceDescriptor prime[2] = {};
-    VASurfaceAttribExternalBuffers external[2] = {};
-    uintptr_t handle = fd;
+    VASurfaceAttribExternalBuffers external = {};
+    uintptr_t handles[2] = {static_cast<uintptr_t>(fd), static_cast<uintptr_t>(fd)};
     for (unsigned int i = 0; i < 2; ++i) {
       prime[i].fourcc = VA_FOURCC_NV12;
       prime[i].width = 16;
@@ -2606,17 +2746,15 @@ void FirstExternalImportOwnsAliasesAndRollsBackAtomically() {
       prime[i].layers[0].pitch[0] = 16;
       prime[i].layers[0].pitch[1] = 16;
       prime[i].layers[0].offset[1] = 256;
-      external[i].pixel_format = VA_FOURCC_NV12;
-      external[i].width = 16;
-      external[i].height = 16;
-      external[i].data_size = 512;
-      external[i].num_planes = 2;
-      external[i].pitches[0] = 16;
-      external[i].pitches[1] = 16;
-      external[i].offsets[1] = 256;
-      external[i].num_buffers = 1;
-      external[i].buffers = &handle;
     }
+    external.pixel_format = VA_FOURCC_NV12;
+    external.width = external.height = 16;
+    external.data_size = 512;
+    external.num_planes = 2;
+    external.pitches[0] = external.pitches[1] = 16;
+    external.offsets[1] = 256;
+    external.num_buffers = 2;
+    external.buffers = handles;
     VASurfaceAttrib attributes[2] = {};
     attributes[0].type = VASurfaceAttribMemoryType;
     attributes[0].value.type = VAGenericValueTypeInteger;
@@ -2624,7 +2762,7 @@ void FirstExternalImportOwnsAliasesAndRollsBackAtomically() {
                                        : VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
     attributes[1].type = VASurfaceAttribExternalBufferDescriptor;
     attributes[1].value.type = VAGenericValueTypePointer;
-    attributes[1].value.value.p = legacy ? static_cast<void *>(external)
+    attributes[1].value.value.p = legacy ? static_cast<void *>(&external)
                                        : static_cast<void *>(prime);
     VASurfaceID surfaces[2] = {VA_INVALID_SURFACE, VA_INVALID_SURFACE};
     auto create = [&] {
@@ -2640,16 +2778,19 @@ void FirstExternalImportOwnsAliasesAndRollsBackAtomically() {
             mock.real_files.insert(object);
       return status;
     };
-    // The second descriptor passes fd preflight but fails layout import,
-    // after the first descriptor has already created its canonical owner.
+    // PRIME2 has one descriptor per surface. Legacy PRIME instead has ONE
+    // descriptor with a handles array; make only its second handle unmappable.
+    Surface invalid_mapping;
+    invalid_mapping.object_fds = {eventfd(0, EFD_CLOEXEC)};
+    Require(invalid_mapping.object_fds[0] >= 0, "allocate unmappable batch handle");
     prime[1].objects[0].size = 0;
-    external[1].data_size = 0;
+    handles[1] = invalid_mapping.object_fds[0];
     Require(create() == VA_STATUS_ERROR_ALLOCATION_FAILED &&
                 fixture.driver.surfaces.size() == 2 &&
                 fixture.driver.backing_owners.empty(),
             "failed import batch must roll back surfaces and new backing identities");
     prime[1].objects[0].size = 512;
-    external[1].data_size = 512;
+    handles[1] = fd;
     Require(create() == VA_STATUS_SUCCESS,
             "import the same external backing twice without exporting it first");
     const auto first = fixture.driver.surfaces.at(surfaces[0]);
@@ -2659,8 +2800,9 @@ void FirstExternalImportOwnsAliasesAndRollsBackAtomically() {
             "the first external import must own every later same-backing alias");
     Require(BeginPicture(&fixture.context, 1, surfaces[0]) == VA_STATUS_SUCCESS,
             "canonical external imports remain accepted as decode targets");
-    prime[0].layers[0].offset[0] = external[0].offsets[0] = 16;
-    prime[0].layers[0].offset[1] = external[0].offsets[1] = 272;
+    prime[0].layers[0].offset[0] = external.offsets[0] = 16;
+    prime[0].layers[0].offset[1] = external.offsets[1] = 272;
+    external.num_buffers = 1;
     VASurfaceID incompatible = VA_INVALID_SURFACE;
     const size_t count = fixture.driver.surfaces.size();
     Require(CreateSurfaces2(&fixture.context, VA_RT_FORMAT_YUV420, 16, 16,
@@ -2669,8 +2811,8 @@ void FirstExternalImportOwnsAliasesAndRollsBackAtomically() {
                 incompatible == VA_INVALID_SURFACE &&
                 fixture.driver.surfaces.size() == count,
             "same-fd nonidentical valid plane views must not share picture identity");
-    prime[0].layers[0].offset[0] = external[0].offsets[0] = 0;
-    prime[0].layers[0].offset[1] = external[0].offsets[1] = 256;
+    prime[0].layers[0].offset[0] = external.offsets[0] = 0;
+    prime[0].layers[0].offset[1] = external.offsets[1] = 256;
     fixture.decoder->decoded_frames.at(kTimestampStep)->ready = false;
     Require(BeginPicture(&fixture.context, 2, surfaces[0]) == VA_STATUS_SUCCESS &&
                 RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
@@ -2751,6 +2893,253 @@ void DifferentLumaObjectsCannotAliasSharedChroma() {
   Require(DestroySurfaces(&fixture.context, &first, 1) == VA_STATUS_SUCCESS &&
               fixture.driver.backing_owners.empty(),
           "canonical teardown must remove every object identity");
+}
+
+void ImportedPrimeExportsPreservePlaneLayouts() {
+  for (unsigned representation = 0; representation < 3; ++representation) {
+    Fixture fixture;
+    Surface original_files, exported_files;
+    const bool argb = representation == 2;
+    VADRMPRIMESurfaceDescriptor imported = {};
+    imported.fourcc = argb ? VA_FOURCC_ARGB : VA_FOURCC_NV12;
+    imported.width = imported.height = 16;
+    imported.num_objects = representation == 0 ? 2 : 1;
+    for (unsigned object = 0; object < imported.num_objects; ++object) {
+      const int fd = memfd_create("crystalhd-private-export-layout", MFD_CLOEXEC);
+      Require(fd >= 0, "allocate private imported plane backing");
+      original_files.object_fds.push_back(fd);
+      Require(ftruncate(fd, 2048) == 0, "size private imported plane backing");
+      std::array<uint8_t, 2048> pixels;
+      for (unsigned byte = 0; byte < pixels.size(); ++byte)
+        pixels[byte] = static_cast<uint8_t>(11 + object * 67 + byte % 31);
+      Require(pwrite(fd, pixels.data(), pixels.size(), 0) ==
+                  static_cast<ssize_t>(pixels.size()),
+              "initialize distinguishable private plane bytes");
+      imported.objects[object].fd = fd;
+      imported.objects[object].size = pixels.size();
+      imported.objects[object].drm_format_modifier = DRM_FORMAT_MOD_LINEAR;
+    }
+    imported.num_layers = 1;
+    imported.layers[0].drm_format = argb ? DRM_FORMAT_ARGB8888 : DRM_FORMAT_NV12;
+    imported.layers[0].num_planes = argb ? 1 : 2;
+    imported.layers[0].offset[0] = 64;
+    imported.layers[0].pitch[0] = argb ? 80 : 20;
+    if (!argb) {
+      imported.layers[0].object_index[1] = representation == 0 ? 1 : 0;
+      imported.layers[0].offset[1] = representation == 0 ? 32 : 512;
+      imported.layers[0].pitch[1] = 20;
+    }
+    VASurfaceAttrib attributes[2] = {};
+    attributes[0].type = VASurfaceAttribMemoryType;
+    attributes[0].value.type = VAGenericValueTypeInteger;
+    attributes[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
+    attributes[1].type = VASurfaceAttribExternalBufferDescriptor;
+    attributes[1].value.type = VAGenericValueTypePointer;
+    attributes[1].value.value.p = &imported;
+    VASurfaceID surface = VA_INVALID_SURFACE;
+    Require(CreateSurfaces2(&fixture.context,
+                            argb ? VA_RT_FORMAT_RGB32 : VA_RT_FORMAT_YUV420,
+                            16, 16, &surface, 1, attributes, 2) == VA_STATUS_SUCCESS,
+            "import valid split-object or nonzero-offset surface layout");
+    SurfaceLayout expected;
+    Require(GetPrimeLayout(imported, &expected), "capture the original imported layout");
+    const auto import_duplicates = fixture.driver.surfaces.at(surface)->object_fds;
+    for (uint32_t layers : {uint32_t(VA_EXPORT_SURFACE_SEPARATE_LAYERS),
+                            uint32_t(VA_EXPORT_SURFACE_COMPOSED_LAYERS)}) {
+      VADRMPRIMESurfaceDescriptor exported = {};
+      const VAStatus status = ExportSurfaceHandle(&fixture.context, surface,
+          VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+          VA_EXPORT_SURFACE_READ_ONLY | layers, &exported);
+      for (unsigned object = 0; object < exported.num_objects; ++object)
+        if (exported.objects[object].fd >= 0)
+          exported_files.object_fds.push_back(exported.objects[object].fd);
+      Require(status == VA_STATUS_SUCCESS,
+              "valid imported multi-object/offset layouts remain exportable");
+      SurfaceLayout actual;
+      Require(exported.num_objects == imported.num_objects &&
+                  exported.num_layers == (argb || layers == VA_EXPORT_SURFACE_COMPOSED_LAYERS
+                                             ? 1U : 2U) &&
+                  GetPrimeLayout(exported, &actual) && actual == expected,
+              "export preserves every plane object, offset, stride and modifier");
+      for (unsigned plane = 0; plane < imported.layers[0].num_planes; ++plane) {
+        const unsigned layer = argb || layers == VA_EXPORT_SURFACE_COMPOSED_LAYERS
+            ? 0 : plane;
+        const unsigned index = layer == 0 ? plane : 0;
+        const unsigned object = exported.layers[layer].object_index[index];
+        const int original = imported.objects[imported.layers[0].object_index[plane]].fd;
+        const int duplicate = exported.objects[object].fd;
+        Require(duplicate != original && exported.objects[object].size == 2048 &&
+                    fcntl(original, F_GETFD) >= 0,
+                "export returns independent descriptors without consuming client handles");
+        const unsigned rows = plane == 0 ? 16 : 8;
+        const unsigned row_bytes = argb ? 64 : 16;
+        for (unsigned row = 0; row < rows; ++row)
+          for (unsigned column = 0; column < row_bytes; ++column) {
+            uint8_t input = 0, output = 0;
+            Require(pread(original, &input, 1,
+                          imported.layers[0].offset[plane] +
+                              row * imported.layers[0].pitch[plane] + column) == 1 &&
+                        pread(duplicate, &output, 1,
+                          exported.layers[layer].offset[index] +
+                              row * exported.layers[layer].pitch[index] + column) == 1 &&
+                        input == output,
+                    "re-exported plane bytes retain the imported pixel view");
+          }
+      }
+    }
+    Require(DestroySurfaces(&fixture.context, &surface, 1) == VA_STATUS_SUCCESS,
+            "destroy the imported VA surface after exporting both layer layouts");
+    for (int fd : import_duplicates)
+      Require(fcntl(fd, F_GETFD) == -1 && errno == EBADF,
+              "surface destruction closes only its own imported duplicates");
+    for (int fd : original_files.object_fds)
+      Require(fcntl(fd, F_GETFD) >= 0, "client import handles outlive the VA surface");
+    for (int fd : exported_files.object_fds)
+      Require(fcntl(fd, F_GETFD) >= 0, "export handles remain caller-owned after VA destruction");
+    for (unsigned failure = 0; failure < (argb ? 2U : 4U); ++failure) {
+      auto invalid = imported;
+      const unsigned plane = failure < 2 ? 0 : 1;
+      const unsigned object = invalid.layers[0].object_index[plane];
+      const unsigned rows = plane == 0 ? 16 : 8;
+      const unsigned row_bytes = argb ? 64 : 16;
+      if ((failure & 1U) == 0)
+        invalid.layers[0].pitch[plane] = UINT32_MAX / (rows - 1) + 1;
+      else
+        invalid.objects[object].size = invalid.layers[0].offset[plane] +
+            (rows - 1) * invalid.layers[0].pitch[plane] + row_bytes - 1;
+      attributes[1].value.value.p = &invalid;
+      VASurfaceID rejected = VA_INVALID_SURFACE;
+      Require(CreateSurfaces2(&fixture.context,
+                              argb ? VA_RT_FORMAT_RGB32 : VA_RT_FORMAT_YUV420,
+                              16, 16, &rejected, 1, attributes, 2) != VA_STATUS_SUCCESS &&
+                  fixture.driver.surfaces.size() == 2 &&
+                  fixture.driver.backing_owners.empty(),
+              "PRIME plane spans cannot wrap on i686 or exceed the object by one byte");
+      // No access to rejected plane pointers: malformed descriptors are
+      // rejected structurally, without a decode, DMA ioctl or device.
+    }
+  }
+}
+
+void LegacyPrimeBatchUsesOneDescriptorAndRollsBack() {
+  const auto fd_count = [] {
+    DIR *directory = opendir("/proc/self/fd");
+    Require(directory != nullptr, "inspect private regression descriptor lifetime");
+    size_t count = 0;
+    while (const dirent *entry = readdir(directory))
+      if (entry->d_name[0] != '.')
+        ++count;
+    closedir(directory);
+    return count;
+  };
+  for (unsigned scenario = 0; scenario < 4; ++scenario) {
+    Fixture fixture;
+    Surface files;
+    std::array<uintptr_t, 2> handles;
+    for (unsigned index = 0; index < handles.size(); ++index) {
+      const int fd = memfd_create("crystalhd-private-legacy-batch", MFD_CLOEXEC);
+      Require(fd >= 0, "allocate caller-owned legacy surface handle");
+      files.object_fds.push_back(fd);
+      Require(ftruncate(fd, 512) == 0, "size private legacy surface handle");
+      const uint8_t first_pixel = static_cast<uint8_t>(40 + index * 30);
+      Require(pwrite(fd, &first_pixel, 1, 0) == 1,
+              "give each batch handle a distinct first pixel");
+      handles[index] = fd;
+    }
+    if (scenario == 1)
+      handles[1] = handles[0];
+    if (scenario == 2) {
+      const int unmappable = eventfd(0, EFD_CLOEXEC);
+      Require(unmappable >= 0, "allocate valid but unmappable second batch handle");
+      files.object_fds.push_back(unmappable);
+      handles[1] = unmappable;
+    }
+    // Unlike PRIME2's descriptor array, legacy PRIME shares one geometry
+    // descriptor and supplies one buffers[] entry per requested surface.
+    VASurfaceAttribExternalBuffers external = {};
+    external.pixel_format = VA_FOURCC_NV12;
+    external.width = external.height = 16;
+    external.data_size = 512;
+    external.num_planes = 2;
+    external.pitches[0] = external.pitches[1] = 16;
+    external.offsets[1] = 256;
+    external.buffers = handles.data();
+    external.num_buffers = scenario == 3 ? 1 : handles.size();
+    VASurfaceAttrib attributes[2] = {};
+    attributes[0].type = VASurfaceAttribMemoryType;
+    attributes[0].value.type = VAGenericValueTypeInteger;
+    attributes[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+    attributes[1].type = VASurfaceAttribExternalBufferDescriptor;
+    attributes[1].value.type = VAGenericValueTypePointer;
+    attributes[1].value.value.p = &external;
+    VASurfaceID surfaces[2] = {VA_INVALID_SURFACE, VA_INVALID_SURFACE};
+    const size_t before = fd_count();
+    const VAStatus status = CreateSurfaces2(&fixture.context, VA_RT_FORMAT_YUV420,
+                                            16, 16, surfaces, 2, attributes, 2);
+    if (scenario >= 2) {
+      Require(status != VA_STATUS_SUCCESS && fixture.driver.surfaces.size() == 2 &&
+                  fixture.driver.backing_owners.empty() && fd_count() == before,
+              "invalid second handle or short legacy batch rolls back all ownership and fds");
+    } else {
+      Require(status == VA_STATUS_SUCCESS && surfaces[0] != surfaces[1],
+              "one legacy descriptor imports all requested buffers[] surfaces");
+      {
+        const auto first = fixture.driver.surfaces.at(surfaces[0]);
+        const auto second = fixture.driver.surfaces.at(surfaces[1]);
+        Require(first->planes[0][0] == 40 &&
+                    second->planes[0][0] == (scenario == 1 ? 40 : 70) &&
+                    first->backing_owner == VA_INVALID_SURFACE &&
+                    second->backing_owner ==
+                        (scenario == 1 ? surfaces[0] : VA_INVALID_SURFACE),
+                "legacy batch selects each handle and retains same-backing alias ownership");
+      }
+      Require(DestroySurfaces(&fixture.context, surfaces, 2) == VA_STATUS_SUCCESS &&
+                  fixture.driver.surfaces.size() == 2 &&
+                  fixture.driver.backing_owners.empty() && fd_count() == before,
+              "destroy both legacy imports without losing independent caller handles");
+    }
+    for (int fd : files.object_fds)
+      Require(fcntl(fd, F_GETFD) >= 0, "batch import never consumes caller-owned descriptors");
+  }
+  for (unsigned failure = 0; failure < 4; ++failure) {
+    Fixture fixture;
+    Surface file;
+    const int fd = memfd_create("crystalhd-private-legacy-span", MFD_CLOEXEC);
+    Require(fd >= 0, "allocate legacy span-rejection backing");
+    file.object_fds.push_back(fd);
+    Require(ftruncate(fd, 512) == 0, "size private legacy span-rejection backing");
+    uintptr_t handle = fd;
+    VASurfaceAttribExternalBuffers external = {};
+    external.pixel_format = VA_FOURCC_NV12;
+    external.width = external.height = 16;
+    external.data_size = 512;
+    external.num_planes = 2;
+    external.pitches[0] = external.pitches[1] = 16;
+    external.offsets[1] = 256;
+    external.num_buffers = 1;
+    external.buffers = &handle;
+    const unsigned plane = failure < 2 ? 0 : 1;
+    const unsigned rows = plane == 0 ? 16 : 8;
+    if ((failure & 1U) == 0)
+      external.pitches[plane] = UINT32_MAX / (rows - 1) + 1;
+    else
+      external.data_size = external.offsets[plane] +
+          (rows - 1) * external.pitches[plane] + 16 - 1;
+    VASurfaceAttrib attributes[2] = {};
+    attributes[0].type = VASurfaceAttribMemoryType;
+    attributes[0].value.type = VAGenericValueTypeInteger;
+    attributes[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+    attributes[1].type = VASurfaceAttribExternalBufferDescriptor;
+    attributes[1].value.type = VAGenericValueTypePointer;
+    attributes[1].value.value.p = &external;
+    VASurfaceID rejected = VA_INVALID_SURFACE;
+    const size_t before = fd_count();
+    Require(CreateSurfaces2(&fixture.context, VA_RT_FORMAT_YUV420, 16, 16,
+                            &rejected, 1, attributes, 2) != VA_STATUS_SUCCESS &&
+                fixture.driver.surfaces.size() == 2 &&
+                fixture.driver.backing_owners.empty() && fd_count() == before,
+            "legacy Y/UV spans reject 32-bit wrap and one-byte-short backing without leaks");
+  }
 }
 
 void DecodeTargetsRejectAliasesAndBusyWriters() {
@@ -2967,11 +3356,36 @@ void GenuineSwSyncCompletionStatuses() {
 }  // namespace
 
 int main(int argc, char **argv) {
-  if (argc > 2 || (argc == 2 && strcmp(argv[1], "--sw-sync") != 0)) {
-    fprintf(stderr, "usage: %s [--sw-sync]\n", argv[0]);
+  if (argc > 2 || (argc == 2 && strcmp(argv[1], "--sw-sync") != 0 &&
+                   strcmp(argv[1], "--lifecycle-failures") != 0 &&
+                   strcmp(argv[1], "--import-contracts") != 0)) {
+    fprintf(stderr, "usage: %s [--sw-sync|--lifecycle-failures|--import-contracts]\n", argv[0]);
     return 2;
   }
   try {
+    if (argc == 2 && (strcmp(argv[1], "--lifecycle-failures") == 0 ||
+                      strcmp(argv[1], "--import-contracts") == 0)) {
+      const std::pair<const char *, void (*)()> lifecycle[] = {
+          {"VPP queue allocation failure is transactional", VppQueueAllocationFailureIsTransactional},
+          {"stale VPP failure preserves newer writer", StaleVppFailurePreservesNewerWriter}};
+      const std::pair<const char *, void (*)()> imports[] = {
+          {"PRIME export preserves imported plane layout", ImportedPrimeExportsPreservePlaneLayouts},
+          {"legacy PRIME batch uses one descriptor", LegacyPrimeBatchUsesOneDescriptorAndRollsBack}};
+      const auto &groups = strcmp(argv[1], "--import-contracts") == 0
+          ? imports : lifecycle;
+      unsigned int failures = 0;
+      for (const auto &group : groups) {
+        try {
+          group.second();
+          printf("PASS %s\n", group.first);
+        } catch (const std::exception &error) {
+          ++failures;
+          fprintf(stderr, "FAIL %s: %s\n", group.first, error.what());
+        }
+      }
+      printf("VPP API regressions: 2 groups, %u failures\n", failures);
+      return failures == 0 ? 0 : 1;
+    }
     if (argc == 2) {
       GenuineSwSyncCompletionStatuses();
       return 0;
@@ -2987,6 +3401,8 @@ int main(int argc, char **argv) {
     AbortPathsPublishErrorFences();
     DecodeTeardownStillNotifies();
     PendingVppTeardownStillNotifies();
+    VppQueueAllocationFailureIsTransactional();
+    StaleVppFailurePreservesNewerWriter();
     BobCapabilityEnumerationAndCapacity();
     BobPipelineFilterValidation();
     BobImmediatePixelsAndWeaveReset();
@@ -3031,11 +3447,13 @@ int main(int argc, char **argv) {
     PendingBackingReimportIsRejectedBeforeMapping();
     FirstExternalImportOwnsAliasesAndRollsBackAtomically();
     DifferentLumaObjectsCannotAliasSharedChroma();
+    ImportedPrimeExportsPreservePlaneLayouts();
+    LegacyPrimeBatchUsesOneDescriptorAndRollsBack();
     DecodeTargetsRejectAliasesAndBusyWriters();
   } catch (const std::exception &error) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 56 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 60 hardware-free regressions passed");
   return 0;
 }

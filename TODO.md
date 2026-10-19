@@ -26,13 +26,15 @@ expanding the released scope to general full-rate FHD/deinterlacing support.
   subjective acceptance; quantitative timing, other frontends and external
   final-package acceptance are not inferred from automated tests.
 - [ ] [#429: External i386/BCM70015 acceptance](https://github.com/ahnhy1324/crystalhd/issues/429)
-  — installed RC4 Atom N280/i386 results cover selected codec, player and
-  stock-Kodi paths; retain the original RC3 failures. Ordered B-pyramid
-  rejection recovery, exact Kodi output/physical A/V and the other open
-  checklist rows remain incomplete. Later primary-host long playback and
-  ELF32 scalar-build hardware controls are recorded in
-  [the focused investigation](https://github.com/ahnhy1324/crystalhd/issues/429#issuecomment-6245398250);
-  they do not replace reporter-host or physical A/V acceptance.
+  — retain the RC3 failures and scoped RC4 results. The
+  [new RC5 reporter run](https://github.com/ahnhy1324/crystalhd/issues/429#issuecomment-6257883927)
+  adds three-version Kodi long-playback/EOS/reopen, native scalar VA playback
+  and short progressive/Off physical A/V measurements. Exact Kodi output
+  identity, interlaced Bob A/V, hour-long measured A/V drift and out-of-policy
+  B-pyramid recovery remain open; these are not new 1.2 Bob acceptance.
+- [ ] [#468: admitted real B-pyramid input can stop output](https://github.com/ahnhy1324/crystalhd/issues/468)
+  — reproduce the reporter's successful/failing padded pair and determine why
+  real content fails inside the size policy while the synthetic control passes.
 - [ ] [#436: planned v1.2 deinterlacing and presentation work](https://github.com/ahnhy1324/crystalhd/issues/436)
   — qualify the development CPU VA-VPP Bob path for
   the existing Kodi Auto problem in [#445](https://github.com/ahnhy1324/crystalhd/issues/445):
