@@ -629,6 +629,93 @@ void DefaultVppCapabilitiesRemainAvailable() {
   }
 }
 
+void ConfigRejectsUnsupportedProtectionTransactionally() {
+  for (bool vpp : {false, true}) {
+    Driver driver{-1};
+    VADriverContext context = {};
+    context.pDriverData = &driver;
+    const VAProfile profile = vpp ? VAProfileNone : VAProfileH264High;
+    const VAEntrypoint entrypoint = vpp ? VAEntrypointVideoProc : VAEntrypointVLD;
+    const auto accepts = [&](VAConfigAttrib *attributes, int count) {
+      const VAConfigID expected = driver.next_config;
+      const size_t previous_count = driver.configs.size();
+      VAConfigID output = VA_INVALID_ID;
+      Require(CreateConfig(&context, profile, entrypoint, attributes, count,
+                            &output) == VA_STATUS_SUCCESS &&
+                  output == expected && driver.next_config == expected + 1 &&
+                  driver.configs.size() == previous_count + 1 &&
+                  driver.configs.at(output).profile == profile &&
+                  driver.configs.at(output).entrypoint == entrypoint,
+              "ordinary or explicit unencrypted configurations remain available");
+    };
+    const auto rejects = [&](VAProfile requested_profile,
+                             VAEntrypoint requested_entrypoint,
+                             VAConfigAttrib *attributes, int count,
+                             VAStatus expected, bool null_output = false) {
+      const auto previous = driver.configs;
+      const VAConfigID next = driver.next_config;
+      constexpr VAConfigID sentinel = 0xdecafbadU;
+      VAConfigID output = sentinel;
+      const VAStatus status = CreateConfig(&context, requested_profile,
+          requested_entrypoint, attributes, count, null_output ? nullptr : &output);
+      Require(status == expected && output == sentinel && driver.next_config == next &&
+                  driver.configs.size() == previous.size() &&
+                  std::all_of(previous.begin(), previous.end(), [&](const auto &item) {
+                    const auto found = driver.configs.find(item.first);
+                    return found != driver.configs.end() &&
+                        found->second.profile == item.second.profile &&
+                        found->second.entrypoint == item.second.entrypoint;
+                  }),
+              "rejected config preserves every config, the next ID and output sentinel");
+    };
+    accepts(nullptr, 0);
+    VAConfigAttrib clear = {VAConfigAttribEncryption, 0};
+    accepts(&clear, 1);
+    VAConfigAttrib ordinary[] = {
+        {VAConfigAttribRTFormat, static_cast<uint32_t>(
+             vpp ? VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32 : VA_RT_FORMAT_YUV420)},
+        {VAConfigAttribEncryption, 0},
+        {VAConfigAttribMaxPictureWidth, kMaxWidth}};
+    accepts(ordinary, sizeof(ordinary) / sizeof(ordinary[0]));
+    for (uint32_t value : {1U, UINT32_MAX}) {
+      VAConfigAttrib encrypted = {VAConfigAttribEncryption, value};
+      VAConfigAttrib query = encrypted;
+      Require(GetConfigAttributes(&context, profile, entrypoint, &query, 1) ==
+                  VA_STATUS_SUCCESS && query.value == VA_ATTRIB_NOT_SUPPORTED,
+              "config rejection agrees with unsupported encryption query");
+      rejects(profile, entrypoint, &encrypted, 1, VA_STATUS_ERROR_ATTR_NOT_SUPPORTED);
+      VAConfigAttrib mixed[] = {ordinary[0], clear, encrypted, ordinary[2], clear};
+      rejects(profile, entrypoint, mixed, sizeof(mixed) / sizeof(mixed[0]),
+              VA_STATUS_ERROR_ATTR_NOT_SUPPORTED);
+    }
+#if VA_CHECK_VERSION(1, 11, 0)
+    for (VAConfigAttribType type : {
+             VAConfigAttribProtectedContentCipherAlgorithm,
+             VAConfigAttribProtectedContentCipherBlockSize,
+             VAConfigAttribProtectedContentCipherMode,
+             VAConfigAttribProtectedContentCipherSampleType,
+             VAConfigAttribProtectedContentUsage}) {
+      for (uint32_t value : {0U, 1U}) {
+        VAConfigAttrib protected_content = {type, value};
+        rejects(profile, entrypoint, &protected_content, 1,
+                VA_STATUS_ERROR_ATTR_NOT_SUPPORTED);
+      }
+    }
+#endif
+    rejects(profile, entrypoint, &clear, -1, VA_STATUS_ERROR_INVALID_PARAMETER);
+    rejects(profile, entrypoint, nullptr, 1, VA_STATUS_ERROR_INVALID_PARAMETER);
+    rejects(profile, entrypoint, nullptr, INT_MAX, VA_STATUS_ERROR_INVALID_PARAMETER);
+    rejects(profile, entrypoint, &clear, 1, VA_STATUS_ERROR_INVALID_PARAMETER, true);
+    rejects(static_cast<VAProfile>(INT_MAX), entrypoint, nullptr, -1,
+            VA_STATUS_ERROR_UNSUPPORTED_PROFILE, true);
+    rejects(profile, VAEntrypointEncSlice, nullptr, -1,
+            VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT, true);
+    while (!driver.configs.empty())
+      Require(DestroyConfig(&context, driver.configs.begin()->first) == VA_STATUS_SUCCESS,
+              "ordinary config cleanup remains available after rejection");
+  }
+}
+
 struct PipelineCapsFixture {
   Driver driver{-1};
   VADriverContext context = {};
@@ -3621,6 +3708,7 @@ int VppFullTestEntry(int argc, char **argv) {
     }
     UnusedVppProbeDoesNotNotifyDecoder();
     DefaultVppCapabilitiesRemainAvailable();
+    ConfigRejectsUnsupportedProtectionTransactionally();
     PipelineCapsIgnoreIncomingPixelFormatStorage();
     PipelineCapsBorrowedLifetimeAndErrors();
     NativeNodeCacheOwnsNoFiles();
@@ -3685,7 +3773,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 62 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 63 hardware-free regressions passed");
   return 0;
 }
 
@@ -3696,6 +3784,7 @@ int main(int argc, char **argv) {
   (void)argv;
   if (argc != 1) return 2;
   const std::pair<const char *, void (*)()> groups[] = {
+      {"configuration rejects unsupported protection transactionally", ConfigRejectsUnsupportedProtectionTransactionally},
 #ifdef CRYSTALHD_LEGACY_CPU
       {"legacy exposed stopped-source rejection", LegacyExposedStoppedVppRemainsRejected},
       {"legacy synchronous fallback: nine no-cache-operation modes", LegacyExposedColdVppFallbackCompletesBeforeReturning}};

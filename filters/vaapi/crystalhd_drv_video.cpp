@@ -5762,12 +5762,34 @@ static VAStatus GetConfigAttributes(VADriverContextP, VAProfile profile,
 }
 
 static VAStatus CreateConfig(VADriverContextP context, VAProfile profile,
-                             VAEntrypoint entrypoint, VAConfigAttrib *, int,
+                             VAEntrypoint entrypoint,
+                             VAConfigAttrib *attributes, int count,
                              VAConfigID *config_id) {
   if (!IsSupportedProfile(profile))
     return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
   if (!IsValidConfig(profile, entrypoint))
     return VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT;
+  if (config_id == nullptr || count < 0 ||
+      (count != 0 && attributes == nullptr))
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
+  for (int i = 0; i < count; ++i) {
+    switch (attributes[i].type) {
+      case VAConfigAttribEncryption:
+        if (attributes[i].value != 0)
+          return VA_STATUS_ERROR_ATTR_NOT_SUPPORTED;
+        break;
+#if VA_CHECK_VERSION(1, 11, 0)
+      case VAConfigAttribProtectedContentCipherAlgorithm:
+      case VAConfigAttribProtectedContentCipherBlockSize:
+      case VAConfigAttribProtectedContentCipherMode:
+      case VAConfigAttribProtectedContentCipherSampleType:
+      case VAConfigAttribProtectedContentUsage:
+        return VA_STATUS_ERROR_ATTR_NOT_SUPPORTED;
+#endif
+      default:
+        break;
+    }
+  }
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
   *config_id = driver->next_config++;
