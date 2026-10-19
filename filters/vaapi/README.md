@@ -120,6 +120,25 @@ Those remain tracked in [#445](https://github.com/ahnhy1324/crystalhd/issues/445
 and [#436](https://github.com/ahnhy1324/crystalhd/issues/436). Published 1.1.0 and
 its installed module are unchanged by this development branch.
 
+From an already built 1.2 source root with a compatible module running, a
+headless FFmpeg check for the selected H.264 MBAFF path is:
+
+```sh
+drm_node=/dev/dri/renderDXXX
+LIBVA_DRIVER_NAME=crystalhd LIBVA_DRIVERS_PATH="$PWD/filters/vaapi" \
+LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
+ffmpeg -hide_banner -hwaccel vaapi -hwaccel_device "$drm_node" \
+  -hwaccel_output_format vaapi -i "/path/to/mbaff-video.ts" \
+  -vf 'deinterlace_vaapi=mode=bob:rate=field,hwdownload,format=nv12' \
+  -fps_mode passthrough -an -sn -f null -
+```
+
+This produces no display or sound. The
+[bounded native comparison](../../HARDWARE-2026-09-13.md#12-development-cpu-va-bob--2026-10-19)
+verified 50 input pictures→100 field outputs against an independent same-run
+Weave-derived reference, plus frame-rate Bob and Weave reopen. It is not a
+throughput or Kodi acceptance result.
+
 ## Replay and end of stream
 
 BCM70015 firmware can retain output until later compressed pictures or a real
