@@ -1000,7 +1000,7 @@ class GStreamerApiTests(unittest.TestCase):
         self.assertFalse(control.done)
         control.stop.assert_not_called()
 
-    def scale_caps_player(self, width, mode):
+    def scale_caps_player(self, width, mode, h264=False):
         result = self.make_player()
         result.args.scale_width = width
         sink = self.Gst.Pad.new("sink", self.Gst.PadDirection.SINK)
@@ -1015,8 +1015,10 @@ class GStreamerApiTests(unittest.TestCase):
         decoder.get_static_pad.side_effect = lambda name: sink if name == "sink" else None
         result.element_setup(None, decoder)
         caps = self.Gst.Caps.from_string(
-            "video/mpeg,mpegversion=2,systemstream=false,parsed=true,"
-            "width=1920,height=1088,framerate=25/1")
+            ("video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+             "width=1920,height=1080,framerate=25/1") if h264 else
+            ("video/mpeg,mpegversion=2,systemstream=false,parsed=true,"
+             "width=1920,height=1088,framerate=25/1"))
         if mode is not None:
             caps.set_value("interlace-mode", mode)
         self.assertTrue(sink.send_event(self.Gst.Event.new_caps(caps)))
@@ -1035,7 +1037,7 @@ class GStreamerApiTests(unittest.TestCase):
                     break
                 result.message(result.bus, message)
         self.assertEqual(result.exit_code, 1)
-        self.assertIn("--scale-width requires progressive input", result.health.error)
+        self.assertIn("interlaced --scale-width requires BCM70015 H.264", result.health.error)
         self.assertIn("mixed", result.health.error)
         self.assertIn("omit --scale-width", result.health.error)
         self.assertEqual(result.health.finish(), 1)
@@ -1049,6 +1051,26 @@ class GStreamerApiTests(unittest.TestCase):
                 self.assertIsNone(result.bus.timed_pop_filtered(
                     0, self.Gst.MessageType.APPLICATION))
                 self.assertIsNone(result.health.error)
+
+    def test_scale_caps_probe_allows_h264_field_scaling(self):
+        for width, mode in ((1280, "interleaved"), (1280, "mixed"),
+                            (960, "interleaved")):
+            with self.subTest(width=width, mode=mode):
+                result = self.scale_caps_player(width, mode, h264=True)
+                self.assertIsNone(result.bus.timed_pop_filtered(
+                    0, self.Gst.MessageType.APPLICATION))
+                self.assertIsNone(result.health.error)
+
+    def test_scale_caps_probe_rejects_unqualified_h264_field_layout(self):
+        for width, mode in ((1280, "alternate"), (130, "interleaved")):
+            with self.subTest(width=width, mode=mode):
+                result = self.scale_caps_player(width, mode, h264=True)
+                message = result.bus.timed_pop_filtered(
+                    0, self.Gst.MessageType.APPLICATION)
+                self.assertIsNotNone(message)
+                result.message(result.bus, message)
+                self.assertEqual(result.exit_code, 1)
+                self.assertIn("multiple-of-16 width", result.health.error)
 
     def test_explicit_upscale_filter_has_expected_caps_and_quality_settings(self):
         for name in ("videoscale", "capsfilter"):

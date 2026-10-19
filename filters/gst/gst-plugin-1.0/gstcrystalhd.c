@@ -154,7 +154,7 @@ gst_crystalhd_getcaps(GstVideoDecoder *decoder, GstCaps *filter)
 {
   GstCrystalHdDec *self = GST_CRYSTALHD_DEC(decoder);
   GstCaps *output, *peer, *allowed, *caps, *input, *result;
-  guint scale_width, i, j, k;
+  guint scale_width, scan, i, j, k, mode;
   static const gchar *invariant_fields[] = {
     "framerate", "colorimetry", "chroma-site"
   };
@@ -167,24 +167,6 @@ gst_crystalhd_getcaps(GstVideoDecoder *decoder, GstCaps *filter)
   if (!gst_crystalhd_scale_width_valid(scale_width))
     return gst_caps_new_empty();
 
-  /* Scaling changes output geometry and PAR, not the encoded geometry.
-   * Prune incompatible output alternatives before projecting the remaining
-   * constraints upstream, so their framerates cannot leak into valid branches. */
-  output = gst_pad_get_pad_template_caps(GST_VIDEO_DECODER_SRC_PAD(decoder));
-  output = gst_caps_make_writable(output);
-  gst_caps_set_simple(output, "width", G_TYPE_INT, (gint)scale_width,
-                       "interlace-mode", G_TYPE_STRING, "progressive", NULL);
-  peer = gst_pad_peer_query_caps(GST_VIDEO_DECODER_SRC_PAD(decoder), output);
-  if (peer == NULL) {
-    gst_caps_unref(output);
-    return gst_caps_new_empty();
-  }
-  allowed = gst_caps_intersect_full(peer, output, GST_CAPS_INTERSECT_FIRST);
-  gst_caps_unref(peer);
-  gst_caps_unref(output);
-  if (gst_caps_is_empty(allowed))
-    return allowed;
-
   /* Preserve the base proxy's non-geometric video fields and every encoded
    * template restriction. Width/height/PAR describe different surfaces here.
    * Exact output height/PAR are still negotiated from the hardware result. */
@@ -193,23 +175,47 @@ gst_crystalhd_getcaps(GstVideoDecoder *decoder, GstCaps *filter)
   gst_caps_set_simple(input, "width", GST_TYPE_INT_RANGE, (gint)scale_width, 1920,
                        "height", GST_TYPE_INT_RANGE, 1, 1088, NULL);
   result = gst_caps_new_empty();
-  for (i = 0; i < gst_caps_get_size(input); ++i) {
-    for (j = 0; j < gst_caps_get_size(allowed); ++j) {
-      const GstStructure *downstream = gst_caps_get_structure(allowed, j);
-      GstStructure *upstream = gst_structure_copy(
-          gst_caps_get_structure(input, i));
-
-      for (k = 0; k < G_N_ELEMENTS(invariant_fields); ++k) {
-        const GValue *value = gst_structure_get_value(downstream,
-            invariant_fields[k]);
-        if (value != NULL)
-          gst_structure_set_value(upstream, invariant_fields[k], value);
-      }
-      gst_caps_append_structure_full(result, upstream,
-          gst_caps_features_copy(gst_caps_get_features(input, i)));
+  for (scan = 0; scan != 2; ++scan) {
+    /* Project each compatible scan branch separately: a mixed-only peer's
+     * rate must not admit progressive input or another codec. Compact scaled
+     * H.264 fields have only been qualified with 16-pixel-aligned pitches. */
+    if (scan != 0 && (scale_width & 15U) != 0)
+      continue;
+    output = gst_pad_get_pad_template_caps(GST_VIDEO_DECODER_SRC_PAD(decoder));
+    output = gst_caps_make_writable(output);
+    gst_caps_set_simple(output, "width", G_TYPE_INT, (gint)scale_width,
+        "interlace-mode", G_TYPE_STRING, scan == 0 ? "progressive" : "mixed", NULL);
+    peer = gst_pad_peer_query_caps(GST_VIDEO_DECODER_SRC_PAD(decoder), output);
+    if (peer == NULL) {
+      gst_caps_unref(output);
+      continue;
     }
+    allowed = gst_caps_intersect_full(peer, output, GST_CAPS_INTERSECT_FIRST);
+    gst_caps_unref(peer);
+    gst_caps_unref(output);
+    for (i = 0; i < gst_caps_get_size(input); ++i) {
+      const GstStructure *encoded = gst_caps_get_structure(input, i);
+      if (scan != 0 && !gst_structure_has_name(encoded, "video/x-h264"))
+        continue;
+      for (j = 0; j < gst_caps_get_size(allowed); ++j) {
+        const GstStructure *downstream = gst_caps_get_structure(allowed, j);
+        for (mode = 0; mode < (scan == 0 ? 1U : 2U); ++mode) {
+          GstStructure *upstream = gst_structure_copy(encoded);
+          gst_structure_set(upstream, "interlace-mode", G_TYPE_STRING,
+              scan == 0 ? "progressive" : (mode == 0 ? "interleaved" : "mixed"), NULL);
+          for (k = 0; k < G_N_ELEMENTS(invariant_fields); ++k) {
+            const GValue *value = gst_structure_get_value(downstream,
+                invariant_fields[k]);
+            if (value != NULL)
+              gst_structure_set_value(upstream, invariant_fields[k], value);
+          }
+          gst_caps_append_structure_full(result, upstream,
+              gst_caps_features_copy(gst_caps_get_features(input, i)));
+        }
+      }
+    }
+    gst_caps_unref(allowed);
   }
-  gst_caps_unref(allowed);
   gst_caps_unref(input);
   if (filter != NULL) {
     caps = gst_caps_intersect_full(filter, result, GST_CAPS_INTERSECT_FIRST);
@@ -410,10 +416,13 @@ gst_crystalhd_validate_scale_request(GstCrystalHdDec *self,
   if (gst_structure_has_field(structure, "interlace-mode")) {
     interlace_mode = gst_structure_get_string(structure, "interlace-mode");
     if (interlace_mode == NULL ||
-        g_strcmp0(interlace_mode, "progressive") != 0) {
+        (g_strcmp0(interlace_mode, "progressive") != 0 &&
+         (self->codec.subtype != BC_MSUBTYPE_H264 ||
+          (self->active_scale_width & 15U) != 0 ||
+          (g_strcmp0(interlace_mode, "interleaved") != 0 &&
+           g_strcmp0(interlace_mode, "mixed") != 0)))) {
       GST_ELEMENT_ERROR(self, STREAM, FORMAT,
-                        ("CrystalHD hardware scaling requires progressive "
-                         "input"),
+                        ("Unsupported CrystalHD scaled input scan mode"),
                         ("Input interlace-mode is %s",
                          interlace_mode != NULL ? interlace_mode :
                                                   "not a fixed string"));
@@ -802,7 +811,7 @@ gst_crystalhd_progressive_field_flags(guint32 pulldown, gboolean *top_first,
 
 static gboolean
 gst_crystalhd_validate_scaled_output(GstCrystalHdDec *self, guint width,
-                                     gboolean interlaced)
+                                     guint height, gboolean interlaced)
 {
   if (self->active_scale_width == 0)
     return TRUE;
@@ -814,10 +823,13 @@ gst_crystalhd_validate_scaled_output(GstCrystalHdDec *self, guint width,
                        self->active_scale_width, width));
     return FALSE;
   }
-  if (interlaced) {
+  if (interlaced && (self->is_70012 ||
+      self->codec.subtype != BC_MSUBTYPE_H264 || (width & 15U) != 0 ||
+      height == 0 || height > 1088 || (height & 3U) != 0)) {
     GST_ELEMENT_ERROR(self, STREAM, DECODE,
-                      ("CrystalHD hardware scaling returned interlaced output"),
-                      ("Scaled interlaced output has not been validated"));
+                      ("Unsupported CrystalHD scaled interlaced output"),
+                      ("Paired BCM70015 H.264 fields require aligned width "
+                       "and complete field geometry"));
     return FALSE;
   }
   return TRUE;
@@ -838,7 +850,7 @@ gst_crystalhd_configure_output(GstCrystalHdDec *self, guint width, guint height,
   gint scaled_par_n;
   gint scaled_par_d;
 
-  if (!gst_crystalhd_validate_scaled_output(self, width, interlaced))
+  if (!gst_crystalhd_validate_scaled_output(self, width, height, interlaced))
     return FALSE;
   if (width == 0 || height == 0 || width > 1920 || height > 1088) {
     GST_ERROR_OBJECT(self, "invalid output dimensions %ux%u", width, height);
@@ -937,7 +949,7 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
   *completed = NULL;
 
   interlaced = (output->PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0;
-  if (!gst_crystalhd_validate_scaled_output(self, width, interlaced))
+  if (!gst_crystalhd_validate_scaled_output(self, width, height, interlaced))
     return GST_FLOW_ERROR;
   if (interlaced && !self->is_70012 &&
       self->codec.subtype == BC_MSUBTYPE_H264) {
@@ -947,6 +959,13 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
       GST_ELEMENT_ERROR(self, STREAM, DECODE,
                         ("Invalid CrystalHD H.264 interlaced payload or identity"),
                         (NULL));
+      return GST_FLOW_ERROR;
+    }
+    if (self->active_scale_width != 0 &&
+        layout != CRYSTALHD_H264_PAYLOAD_FIELD) {
+      GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                        ("Scaled H.264 output must contain separate fields"),
+                        ("Whole Weave scaling has not been qualified"));
       return GST_FLOW_ERROR;
     }
     whole_weave = layout == CRYSTALHD_H264_PAYLOAD_WEAVE;

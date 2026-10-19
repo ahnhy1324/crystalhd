@@ -128,7 +128,7 @@ def arguments(argv=None):
     parser.add_argument("--weave", action="store_true",
                         help="preserve interlaced frames without deinterlacing; works with either decoder mode")
     parser.add_argument("--scale-width", type=hardware_scale_width, default=0, metavar="PIXELS",
-                        help="request an even BCM70015 output width from 128 to 1918 (0: native)")
+                        help="request an even BCM70015 output width from 128 to 1918 (interlaced H.264: multiple of 16; 0: native)")
     parser.add_argument("--software-output-size", type=output_size,
                         metavar="WIDTHxHEIGHT",
                         help="explicitly resize scaled CrystalHD output with GStreamer videoscale")
@@ -375,14 +375,19 @@ class Player:
         if self.args.scale_width and event.type == self.Gst.EventType.CAPS:
             caps = event.parse_caps()
             if caps is not None and caps.get_size() == 1:
-                mode = caps.get_structure(0).get_string("interlace-mode")
-                if mode is not None and mode != "progressive":
+                structure = caps.get_structure(0)
+                mode = structure.get_string("interlace-mode")
+                field_scale = (structure.get_name() == "video/x-h264" and
+                               mode in ("interleaved", "mixed") and
+                               self.args.scale_width % 16 == 0)
+                if mode is not None and mode != "progressive" and not field_scale:
                     # The plugin already rejects this combination. playbin
                     # may discard that branch's initialization error and play
                     # audio alone, so retain the reason on our existing bus.
                     self.post_observation("crystalhd-player-error", {
                         "token": token,
-                        "message": "--scale-width requires progressive input "
+                        "message": "interlaced --scale-width requires BCM70015 H.264 "
+                                   "field input and a multiple-of-16 width "
                                    f"(interlace-mode={mode}); omit --scale-width "
                                    "for native interlaced playback",
                     })
