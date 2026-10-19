@@ -1802,6 +1802,123 @@ void Output(Fixture *fixture, uint64_t timestamp, uint8_t luma) {
               VA_STATUS_SUCCESS, "process exact live hardware picture");
 }
 
+void SupersededPendingCpuBackingRetiresAfterCommit() {
+  constexpr unsigned dimension = 64;
+  constexpr size_t bytes = dimension * (dimension + dimension / 2);
+  Require(bytes > sizeof(Surface) + 512,
+          "the backing fault threshold excludes Surface/control-block allocations");
+  const auto output = [](Fixture *fixture, uint64_t timestamp, uint8_t luma) {
+    std::vector<uint8_t> pixels(dimension * dimension * 2, 128);
+    for (size_t i = 0; i < pixels.size(); i += 2) pixels[i] = luma;
+    BC_DTS_PROC_OUT reported = {};
+    reported.Ybuff = pixels.data();
+    reported.YBuffDoneSz = pixels.size() / 4;
+    reported.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+    reported.PicInfo.timeStamp = timestamp;
+    reported.PicInfo.width = reported.PicInfo.height = dimension;
+    Require(ProcessDecodedOutput(&fixture->driver, fixture->decode.get(), reported) ==
+                VA_STATUS_SUCCESS,
+            "process the exact CPU-backing regression picture");
+  };
+  {
+    Fixture f;
+    SetGeometry(&f, dimension, dimension, dimension, dimension);
+    f.mock.capacity = false;
+    const HANDLE device = f.decode->device;
+    const uint64_t generation = f.decode->generation;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "queue the first pending private picture without hardware output");
+    uint8_t *const first = f.decode->decoded_frames.at(kTimestampStep)->storage.data();
+    const uint64_t first_identity =
+        f.decode->decoded_frames.at(kTimestampStep)->decode_identity;
+    Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "commit the replacement before reclaiming unobservable old pixels");
+    f.Begin(); f.Parameters(false);
+    allocation_fault::fail_at_least = bytes;
+    const VAStatus status = EndPicture(&f.context, 1);
+    const bool consumed = allocation_fault::fail_at_least == SIZE_MAX;
+    allocation_fault::fail_at_least = SIZE_MAX;
+    Require(status == VA_STATUS_SUCCESS && !consumed &&
+                f.decode->pending.size() == 3 && f.decode->decoded_frames.size() == 3 &&
+                f.decode->replay.cached_pictures() == 3 && !f.decode->replay.failed() &&
+                f.decode->next_timestamp == 4 * kTimestampStep && f.mock.inputs.empty(),
+            "a third pending submission reuses retired CPU bytes without a fresh backing allocation");
+    Require(f.decode->decoded_frames.at(kTimestampStep)->storage.empty() &&
+                f.decode->decoded_frames.at(kTimestampStep)->planes[0] == nullptr &&
+                f.decode->decoded_frames.at(kTimestampStep)->planes[1] == nullptr &&
+                f.decode->decoded_frames.at(kTimestampStep)->width == dimension &&
+                f.decode->decoded_frames.at(kTimestampStep)->height == dimension &&
+                f.decode->decoded_frames.at(kTimestampStep)->decode_identity == first_identity &&
+                f.decode->decoded_frames.at(kTimestampStep)->expected_timestamp == kTimestampStep &&
+                !f.decode->decoded_frames.at(kTimestampStep)->ready &&
+                !f.decode->decoded_frames.at(kTimestampStep)->failed &&
+                f.decode->decoded_frames.at(2 * kTimestampStep)->storage.empty() &&
+                f.decode->decoded_frames.at(3 * kTimestampStep)->storage.size() == bytes &&
+                f.decode->decoded_frames.at(3 * kTimestampStep)->storage.data() == first &&
+                f.decode->private_backing_pool->Cached().buffers == 1 &&
+                f.decode->private_backing_pool->Cached().bytes == bytes,
+            "only superseded unobservable backing is recycled, not pending identities or geometry");
+    f.mock.capacity = true;
+    Require(PumpDecodeInput(&f.driver, f.decode.get()) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 3 && f.decode->replay.outstanding() == 3,
+            "all three accepted timestamps still reach transport exactly once");
+    const auto target = f.driver.surfaces.at(1);
+    const auto unchanged = target->storage;
+    output(&f, 2 * kTimestampStep, 0x22);
+    output(&f, kTimestampStep, 0x11);
+    Require(f.decode->pending.size() == 1 &&
+                f.decode->pending.count(3 * kTimestampStep) == 1 &&
+                f.decode->replay.outstanding() == 1 &&
+                target->storage == unchanged && !target->ready,
+            "late old outputs retire only their own tokens without touching the new public backing");
+    output(&f, 3 * kTimestampStep, 0x33);
+    Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS &&
+                target->planes[0][0] == 0x33 && f.decode->pending.empty() &&
+                f.decode->replay.outstanding() == 0 && !f.decode->replay.failed() &&
+                f.decode->device == device && f.decode->generation == generation &&
+                f.mock.close_count == 0 && f.mock.reopen_count == 0,
+            "the new binding receives only its real pixels without reset or lost accepted work");
+  }
+  {
+    Fixture f;
+    SetGeometry(&f, dimension, dimension, dimension, dimension);
+    f.mock.capacity = false;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "prepare an independently captured pending picture");
+    const auto captured = f.decode->decoded_frames.at(kTimestampStep);
+    uint8_t *const backing = captured->storage.data();
+    Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                captured->storage.size() == bytes && captured->storage.data() == backing &&
+                f.decode->private_backing_pool->Cached().buffers == 0,
+            "an existing strong private reader exempts a pending picture from backing retirement");
+    const auto pending = f.decode->pending;
+    const auto frames = f.decode->decoded_frames;
+    const uint64_t timestamp = f.decode->next_timestamp;
+    f.Begin(); f.Parameters(false);
+    allocation_fault::fail_at_least = bytes;
+    const VAStatus status = EndPicture(&f.context, 1);
+    const bool consumed = allocation_fault::fail_at_least == SIZE_MAX;
+    allocation_fault::fail_at_least = SIZE_MAX;
+    Require(status == VA_STATUS_ERROR_ALLOCATION_FAILED && consumed &&
+                f.decode->pending == pending && f.decode->decoded_frames == frames &&
+                f.decode->next_timestamp == timestamp && f.mock.inputs.empty() &&
+                captured->storage.size() == bytes && captured->storage.data() == backing &&
+                !captured->failed && !f.decode->replay.failed(),
+            "fresh allocation failure still preserves every captured pending picture before binding");
+    f.mock.capacity = true;
+    Require(PumpDecodeInput(&f.driver, f.decode.get()) == VA_STATUS_SUCCESS,
+            "captured accepted input remains transportable after the unrelated allocation error");
+    output(&f, kTimestampStep, 0x44);
+    Require(captured->ready && !captured->failed && captured->planes[0][0] == 0x44 &&
+                captured->frame_timestamp == kTimestampStep,
+            "the independently retained pending picture still receives its exact delayed pixels");
+    output(&f, 2 * kTimestampStep, 0x55);
+    Require(f.decode->pending.empty() && f.decode->replay.outstanding() == 0 &&
+                !f.decode->replay.failed() && captured->planes[0][0] == 0x44,
+            "allocation-error recovery does not lose unrelated accepted output");
+  }
+}
+
 void PrivateBackingReusePreservesCapturedPictures() {
   Fixture f;
   Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
@@ -1998,10 +2115,11 @@ void RejectedH264RecoveryRetainsDelayedReorderedPictures() {
   f.slice.slice_type = 0;
   Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS,
           "accept the future P anchor before its B picture");
+  // A real private reader must capture P before its public target is reused.
+  const auto old_p = f.decode->decoded_frames.at(2 * kTimestampStep);
   f.slice.slice_type = 1;
   Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS,
           "accept a reference B with genuine output still outstanding");
-  const auto old_p = f.decode->decoded_frames.at(2 * kTimestampStep);
   const auto old_b = f.decode->decoded_frames.at(3 * kTimestampStep);
   const auto target = f.driver.surfaces.at(1);
   const auto pending = f.decode->pending;
@@ -2626,6 +2744,7 @@ int main() {
     {"rejected H.264 references require IDR", H264ReferenceRejectionRequiresIdr},
     {"allocation failure is transactional", AllocationFailureIsTransactional},
     {"private backing preserves captured pictures", PrivateBackingReusePreservesCapturedPictures},
+    {"superseded pending CPU backing retires after commit", SupersededPendingCpuBackingRetiresAfterCommit},
     {"private backing allocation failure is transactional", PrivateBackingAllocationFailureIsTransactional},
     {"visible crop surface geometry", VisibleCropSurfaceGeometry},
     {"buffer ordering and owned snapshot", BufferOrderAndSnapshot},

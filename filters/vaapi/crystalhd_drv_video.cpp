@@ -4724,6 +4724,49 @@ static VAStatus RejectH264Picture(Driver *driver, DecodeContext *decode, VAStatu
   return RejectH264Target(driver, decode, status);
 }
 
+static bool UnobservedPendingCpuBacking(
+    const DecodeContext &decode, const std::shared_ptr<Surface> &picture,
+    VASurfaceID target, unsigned int width, unsigned int height) {
+  // The map and this submission's local candidate must be the ONLY owners.
+  // Captured private/VPP readers retain their full backing until final release.
+  if (!picture || picture.use_count() != 2 || !decode.private_backing_pool)
+    return false;
+  const Surface &old = *picture;
+  const auto pending = decode.pending.find(old.expected_timestamp);
+  const auto found = decode.decoded_frames.find(old.expected_timestamp);
+  if (old.id != target || old.expected_timestamp == 0 ||
+      pending == decode.pending.end() || pending->second != target ||
+      found == decode.decoded_frames.end() || found->second != picture ||
+      old.decode_identity == 0 || old.trace_decode_identity != old.decode_identity ||
+      old.trace_context != TraceId(decode.id, VA_INVALID_ID) ||
+      old.trace_generation != decode.generation || old.trace_submission_ordinal == 0 ||
+      old.destroyed || old.ready || old.failed || old.frame_timestamp != 0 ||
+      old.vpp_readers != 0 || old.vpp_writers != 0 || old.image_write_locked ||
+      old.export_waiters != 0 || old.backing_owner != VA_INVALID_SURFACE ||
+      old.direct_picture || old.direct_backing || !old.decode_target.expired() ||
+      !old.decode_picture.expired() || old.completed_decode_picture.picture ||
+      old.experimental_presentation || old.experimental_write_lease ||
+      old.experimental_ready_queued || old.experimental_read_export_armed ||
+      old.trace_read_export_armed || old.layout.valid || old.bo != nullptr ||
+      old.dumb_drm_fd >= 0 || old.dumb_handle != 0 || old.owned_i915_dumb ||
+      old.experimental_i915_wc || old.map_data[0] || old.map_data[1] ||
+      !old.object_maps.empty() || !old.object_sizes.empty() || !old.object_fds.empty() ||
+      old.private_backing_pool.lock() != decode.private_backing_pool ||
+      old.fourcc != VA_FOURCC_NV12 || old.width != width || old.height != height ||
+      width == 0 || height == 0 || width > UINT_MAX - 63U)
+    return false;
+  const size_t stride = Align(width, 64);
+  const size_t chroma_rows = height / 2U + height % 2U;
+  if (height > SIZE_MAX - chroma_rows ||
+      stride > SIZE_MAX / (height + chroma_rows))
+    return false;
+  const size_t bytes = stride * (height + chroma_rows);
+  return old.pitch[0] == stride && old.pitch[1] == stride &&
+      old.storage.size() == bytes &&
+      old.planes[0] == old.storage.data() &&
+      old.planes[1] == old.storage.data() + stride * height;
+}
+
 static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                               VAProfile profile) {
   if (decode->IsMpeg4() && decode->mpeg4_replay.failed())
@@ -5046,6 +5089,44 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     }
   }
 
+  const HANDLE retirement_device = decode->device;
+  const uint64_t retirement_generation = decode->generation;
+  const auto retirement_context = [&] {
+    // No reopen/drain callback may intervene between candidate capture and
+    // the ordinary binding commit. Other paths retain eager ownership.
+    return IsH264Profile(profile) && !decode->is_70012 &&
+        decode->device != nullptr && decode->device == retirement_device &&
+        decode->generation == retirement_generation &&
+        decode->decoder_open && decode->decoder_started &&
+        !decode->hardware_close_pending && !decode->closing && !decode->retired &&
+        !decode->destroy_prepared && !decode->live_h264_fast_path &&
+        !decode->experimental_ready_remap &&
+        decode->picture.seq_fields.bits.frame_mbs_only_flag &&
+        !decode->picture.pic_fields.bits.field_pic_flag &&
+        !decode->h264_first_field.valid;
+  };
+  std::shared_ptr<Surface> retirement_candidate;
+  uint64_t retirement_timestamp = 0;
+  uint64_t retirement_identity = 0;
+  if (retirement_context() &&
+      decode->transaction_target.lock() == target_surface &&
+      decode->target_transaction == target_surface->picture_transaction &&
+      !target_surface->ready && !target_surface->failed &&
+      !target_surface->image_write_locked &&
+      !target_surface->experimental_read_export_armed &&
+      !target_surface->trace_read_export_armed) {
+    auto previous = target_surface->decode_picture.lock();
+    if (UnobservedPendingCpuBacking(*decode, previous, target_id,
+                                    target_surface->width, target_surface->height) &&
+        target_surface->expected_timestamp == previous->expected_timestamp &&
+        target_surface->decode_identity == previous->decode_identity &&
+        decode->target_identity == previous->decode_identity) {
+      retirement_timestamp = previous->expected_timestamp;
+      retirement_identity = previous->decode_identity;
+      retirement_candidate = std::move(previous);
+    }
+  }
+
   std::shared_ptr<Surface> decoded_frame;
   const bool direct_picture = decode->live_h264_fast_path &&
                               IsH264Profile(profile) &&
@@ -5182,6 +5263,27 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   // accepted, not at hardware READY or at an inferred client PTS.
   target_surface->experimental_submitted_at_ns =
       decode->experimental_ready_remap ? MonotonicNowNs() : 0;
+
+  // New allocation, replay and ALL binding/map changes succeeded first. The
+  // superseded map-only CPU pixels can no longer be captured through this
+  // public target; ProcessDecodedOutput already discards that exact old case.
+  // Keep its pending token/geometry until real hardware output retires it.
+  if (retirement_context() && retirement_candidate &&
+      retirement_candidate->expected_timestamp == retirement_timestamp &&
+      retirement_candidate->decode_identity == retirement_identity &&
+      target_surface->decode_picture.lock() == decoded_frame &&
+      target_surface->expected_timestamp == timestamp &&
+      target_surface->decode_identity == decoded_frame->decode_identity &&
+      UnobservedPendingCpuBacking(*decode, retirement_candidate, target_id,
+                                  target_surface->width, target_surface->height)) {
+    std::vector<uint8_t> unused;
+    unused.swap(retirement_candidate->storage);
+    retirement_candidate->planes[0] = retirement_candidate->planes[1] = nullptr;
+    decode->private_backing_pool->Recycle(std::move(unused));
+  }
+  // A surviving local reference would defeat the output path's map-only
+  // check. Release it before ReceiveAvailable can process any old output.
+  retirement_candidate.reset();
 
   if (driver->trace.enabled())
     driver->trace.Emit(crystalhd_vaapi_trace::Event::SubmitBind,
