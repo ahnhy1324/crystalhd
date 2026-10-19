@@ -211,7 +211,12 @@ accepted private pictures remain independent of a rejected public transaction.
 A [new RC5 reporter result](https://github.com/ahnhy1324/crystalhd/issues/468)
 finds some real B-pyramid input failing below that admitted byte limit, although
 the synthetic boundary fixture passes. The limit is not a guarantee for every
-stream. The unreleased 1.2 branch adds a second admission check only for units
+stream. Installed-v1.1.0 observations identify an input-retention limitation:
+the failing single NAL exceeds the measured 2 MiB compressed-input ring, and
+its verified header disappears before the following AU supplies its delimiter.
+The [hardware report](../../HARDWARE-2026-09-13.md#h264-input-retention-investigation)
+separates this observation from the untraced internal reclamation path.
+The unreleased 1.2 branch adds a second admission check only for units
 above the ordinary 2 MiB assembled baseline: at most **2,093,056 estimated
 de-escaped bytes** across the assembled Annex B unit, including start codes and
 NAL headers. The existing 3,014,656-byte assembled cap remains. Only unambiguous,
@@ -227,9 +232,9 @@ limit. Ordinary units at or below 2 MiB assembled bytes are unchanged, so this
 does not establish protection for every near-2-MiB de-escaped input. Selected
 native controls verify rejection before the offending AU's DMA and fresh
 reopen, not same-context continuation. The formerly working 2,958,968-byte
-IDR250 control is intentionally rejected. Broader recovery and the firmware
-mechanism remain open; no new option, timeout, firmware or legacy ioctl change
-is introduced.
+IDR250 control is intentionally rejected. Exact firmware reclamation and
+broader recovery remain open; no new option, timeout, firmware or legacy ioctl
+change is introduced.
 
 RC5 applies this failed-`vaEndPicture()` public-read protection
 to every supported decode codec. New synchronization, image/export and VPP

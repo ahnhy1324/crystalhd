@@ -22,7 +22,9 @@
   [#468](https://github.com/ahnhy1324/crystalhd/issues/468), rejecting over-budget
   transactions before submission without rewriting input. Selected native
   controls qualify bounded rejection/fresh reopen, including intentionally
-  rejecting some formerly working input; the firmware mechanism remains open.
+  rejecting some formerly working input. Separate installed-v1.1.0 observations
+  establish a single-NAL input-retention limitation; exact firmware reclamation
+  and same-context recovery remain open.
 
 ## 1.1.0
 
