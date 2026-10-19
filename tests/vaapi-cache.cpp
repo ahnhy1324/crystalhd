@@ -4,6 +4,10 @@
 // (also retained by some sanitizer instrumentation) aborts if ever reached.
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
 
+// Keep the actual converter addressable for object-level ISA inspection even
+// when the compiler inlines every production call.
+[[gnu::used]] static const auto kIsaProbeYuy2Converter = &CopyYuy2ToSurface;
+
 #include <stdexcept>
 #include <string>
 
