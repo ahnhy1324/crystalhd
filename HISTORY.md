@@ -24,7 +24,10 @@
   controls qualify bounded rejection/fresh reopen, including intentionally
   rejecting some formerly working input. Separate installed-v1.1.0 observations
   establish a single-NAL input-retention limitation; exact firmware reclamation
-  and same-context recovery remain open.
+  and general client recovery remain open.
+- Recycle unobservable, superseded progressive H.264 CPU backing after a
+  successful surface rebind. Preserve pending identities, captured pictures
+  and eager allocation-failure behavior.
 
 ## 1.1.0
 
