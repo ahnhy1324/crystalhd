@@ -7024,6 +7024,272 @@ static void ProgressDoesNotExtendFiniteSyncDeadline() {
           "finite timeout does not reset hardware or generation state");
 }
 
+static void BindTeardownPicturesForVpp(TeardownFixture &fixture) {
+  fixture.decoder->id = 1;
+  fixture.driver.next_context = 2;
+  fixture.driver.next_surface = fixture.held.size() + 1;
+  fixture.driver.next_decode_identity = fixture.held.size() + 1;
+  for (unsigned int index = 0; index < fixture.held.size(); ++index) {
+    const uint64_t timestamp = (index + 1) * kTimestampStep;
+    const auto &surface = fixture.held[index];
+    const auto &picture = fixture.decoder->decoded_frames.at(timestamp);
+    for (const auto &frame : {surface, picture}) {
+      frame->id = index + 1;
+      frame->decode_identity = frame->trace_decode_identity = index + 1;
+      frame->trace_context = 1;
+      frame->trace_generation = fixture.decoder->generation;
+      frame->trace_submission_ordinal = index + 1;
+    }
+    surface->decode_picture = picture;
+  }
+}
+
+static void CheckNewBobAfterTeardown(TeardownFixture &fixture,
+                                    unsigned int index, bool readable,
+                                    int replacement_luma = -1) {
+  const auto &source = fixture.held.at(index);
+  auto target = std::make_shared<Surface>();
+  Require(target->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
+          "allocate private post-teardown Bob target");
+  target->id = fixture.driver.next_surface++;
+  fixture.driver.surfaces[target->id] = target;
+  VAConfigID config = VA_INVALID_ID;
+  VAContextID processor = VA_INVALID_ID;
+  Require(CreateConfig(&fixture.context, VAProfileNone, VAEntrypointVideoProc,
+                       nullptr, 0, &config) == VA_STATUS_SUCCESS &&
+              CreateContext(&fixture.context, config, 16, 16, 0, nullptr, 0,
+                            &processor) == VA_STATUS_SUCCESS,
+          "create a new VPP client after the decoder close attempt");
+  for (uint32_t flags : {uint32_t{0}, uint32_t{VA_DEINTERLACING_BOTTOM_FIELD}}) {
+    memset(target->storage.data(), 99, target->storage.size());
+    const auto original = target->storage;
+    VAProcFilterParameterBufferDeinterlacing filter = {};
+    filter.type = VAProcFilterDeinterlacing;
+    filter.algorithm = VAProcDeinterlacingBob;
+    filter.flags = flags;
+    VABufferID filter_id = VA_INVALID_ID, pipeline_id = VA_INVALID_ID;
+    Require(CreateBuffer(&fixture.context, processor,
+                         VAProcFilterParameterBufferType, sizeof(filter), 1,
+                         &filter, &filter_id) == VA_STATUS_SUCCESS,
+            "create exact physical-field Bob parameters");
+    VAProcPipelineParameterBuffer pipeline = {};
+    pipeline.surface = source->id;
+    pipeline.filters = &filter_id;
+    pipeline.num_filters = 1;
+    Require(CreateBuffer(&fixture.context, processor,
+                         VAProcPipelineParameterBufferType, sizeof(pipeline), 1,
+                         &pipeline, &pipeline_id) == VA_STATUS_SUCCESS &&
+                BeginPicture(&fixture.context, processor, target->id) ==
+                    VA_STATUS_SUCCESS,
+            "begin a fresh Bob request, not a previously captured VPP lease");
+    const VAStatus rendered =
+        RenderPicture(&fixture.context, processor, &pipeline_id, 1);
+    if (readable) {
+      Require(rendered == VA_STATUS_SUCCESS &&
+                  EndPicture(&fixture.context, processor) == VA_STATUS_SUCCESS &&
+                  target->ready && !target->failed &&
+                  target->frame_timestamp == source->frame_timestamp &&
+                  target->expected_timestamp == source->expected_timestamp &&
+                  target->trace_decode_identity == source->trace_decode_identity &&
+                  target->trace_context == source->trace_context &&
+                  target->trace_generation == source->trace_generation &&
+                  target->trace_submission_ordinal == source->trace_submission_ordinal,
+              "both newly submitted Bob fields retain the exact successfully drained picture identity");
+      for (unsigned int plane = 0; plane != 2; ++plane)
+        for (unsigned int row = 0; row != (plane == 0 ? 16U : 8U); ++row)
+          for (unsigned int column = 0; column != 16; ++column)
+            Require(target->planes[plane][row * target->pitch[plane] + column] ==
+                        (plane == 0 ? (replacement_luma < 0
+                            ? DecodeIoMock::Luma(source->expected_timestamp)
+                            : replacement_luma) : 128),
+                    "new Bob output contains the actual drained Y/UV pixels, not neutral or stale data");
+    } else {
+      Require(rendered != VA_STATUS_SUCCESS &&
+                  EndPicture(&fixture.context, processor) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                  !fixture.driver.contexts.at(processor)->vpp_frame &&
+                  !target->ready && target->storage == original,
+              "unfinished or failed close cannot expose a fresh immutable Bob source");
+    }
+    Require(target->vpp_writers == 0 && source->vpp_readers == 0 &&
+                fixture.driver.pending_vpp.empty() &&
+                DestroyBuffer(&fixture.context, pipeline_id) == VA_STATUS_SUCCESS &&
+                DestroyBuffer(&fixture.context, filter_id) == VA_STATUS_SUCCESS,
+            "each field completes or rejects without leaking queue/buffer ownership");
+  }
+  Require(DestroyContext(&fixture.context, processor) == VA_STATUS_SUCCESS &&
+              DestroyConfig(&fixture.context, config) == VA_STATUS_SUCCESS,
+          "release the independent post-teardown VPP client");
+  VASurfaceID target_id = target->id;
+  Require(DestroySurfaces(&fixture.context, &target_id, 1) == VA_STATUS_SUCCESS,
+          "release post-teardown Bob output without retiring held source pictures");
+}
+
+static void DrainedContextSupportsNewBobCaptures() {
+  TeardownFixture fixture(40);  // Exercise the real queued-input drain budget.
+  BindTeardownPicturesForVpp(fixture);
+  Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+              fixture.driver.contexts.count(1) == 0 &&
+              fixture.decoder->device == nullptr && fixture.decoder->pending.empty() &&
+              fixture.io.inputs.size() == 40 && fixture.io.outputs.empty(),
+          "drain every queued tail picture and consume successful decoder close");
+  const auto eos = std::find(fixture.io.events.begin(), fixture.io.events.end(), "eos");
+  const auto stop = std::find(fixture.io.events.begin(), fixture.io.events.end(), "stop");
+  Require(eos != fixture.io.events.end() && eos < stop,
+          "real tail EOS precedes the consuming close");
+  for (unsigned int index : {0U, 39U}) {
+    fixture.CheckPicture(index);
+    CheckNewBobAfterTeardown(fixture, index, true);
+  }
+  Require(!fixture.io.invalid && fixture.io.open_attempts == 0,
+          "post-close Bob requires no decoder reopen or new hardware call");
+}
+
+static void NewBobRequiresSuccessfulConsumingClose() {
+  {
+    TeardownFixture fixture(1);
+    BindTeardownPicturesForVpp(fixture);
+    fixture.io.device_close_busy = 1;
+    Require(DestroyContextWithTimeout(&fixture.context, 1, 0) == VA_STATUS_ERROR_HW_BUSY &&
+                fixture.decoder->device == fixture.io.handle() && fixture.held[0]->ready,
+            "a fully drained picture still has a non-consuming BUSY close");
+    CheckNewBobAfterTeardown(fixture, 0, false);
+    Require(DestroyContextWithTimeout(&fixture.context, 1, 0) == VA_STATUS_SUCCESS &&
+                fixture.decoder->device == nullptr && fixture.io.device_close_calls == 2,
+            "only the successful terminal retry consumes decoder ownership");
+    CheckNewBobAfterTeardown(fixture, 0, true);
+    Require(!fixture.io.invalid, "BUSY retry leaves no invalid DIL calls");
+  }
+  for (bool destroy_source : {false, true}) {
+    TeardownFixture fixture(1);
+    BindTeardownPicturesForVpp(fixture);
+    // A retained immutable picture must not authorize a stale public binding.
+    const auto old_picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    fixture.io.device_close_busy = 1;
+    Require(DestroyContextWithTimeout(&fixture.context, 1, 0) == VA_STATUS_ERROR_HW_BUSY &&
+                fixture.decoder->device == fixture.io.handle() && old_picture->ready,
+            "hold the fully drained immutable picture across non-consuming close");
+    CheckNewBobAfterTeardown(fixture, 0, false);
+    if (destroy_source) {
+      VASurfaceID id = 1;
+      Require(DestroySurfaces(&fixture.context, &id, 1) == VA_STATUS_SUCCESS &&
+                  fixture.driver.surfaces.count(1) == 0 && fixture.held[0]->destroyed &&
+                  fixture.decoder->device == fixture.io.handle(),
+              "destroy the public source between BUSY and terminal close without consuming its handle");
+    } else {
+      auto replacement = std::make_shared<Surface>();
+      Require(replacement->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
+              "allocate an ordinary VPP replacement source");
+      replacement->id = fixture.driver.next_surface++;
+      replacement->ready = true;
+      for (unsigned int plane = 0; plane != 2; ++plane)
+        for (unsigned int row = 0; row != (plane == 0 ? 16U : 8U); ++row)
+          memset(replacement->planes[plane] + row * replacement->pitch[plane],
+                 plane == 0 ? 80 : 128, 16);
+      fixture.driver.surfaces[replacement->id] = replacement;
+      VAConfigID config = VA_INVALID_ID;
+      VAContextID writer = VA_INVALID_ID;
+      VABufferID parameters = VA_INVALID_ID;
+      VAProcPipelineParameterBuffer pipeline = {};
+      pipeline.surface = replacement->id;
+      Require(CreateConfig(&fixture.context, VAProfileNone, VAEntrypointVideoProc,
+                           nullptr, 0, &config) == VA_STATUS_SUCCESS &&
+                  CreateContext(&fixture.context, config, 16, 16, 0, nullptr, 0,
+                                &writer) == VA_STATUS_SUCCESS &&
+                  CreateBuffer(&fixture.context, writer, VAProcPipelineParameterBufferType,
+                               sizeof(pipeline), 1, &pipeline, &parameters) == VA_STATUS_SUCCESS &&
+                  BeginPicture(&fixture.context, writer, 1) == VA_STATUS_SUCCESS &&
+                  RenderPicture(&fixture.context, writer, &parameters, 1) == VA_STATUS_SUCCESS &&
+                  EndPicture(&fixture.context, writer) == VA_STATUS_SUCCESS &&
+                  fixture.held[0]->ready && fixture.held[0]->frame_timestamp == 0 &&
+                  fixture.held[0]->expected_timestamp == 0 &&
+                  fixture.held[0]->trace_decode_identity == 0 &&
+                  fixture.decoder->device == fixture.io.handle(),
+              "a real VPP writer replaces the public binding while decoder close is still BUSY");
+      Require(DestroyBuffer(&fixture.context, parameters) == VA_STATUS_SUCCESS &&
+                  DestroyContext(&fixture.context, writer) == VA_STATUS_SUCCESS &&
+                  DestroyConfig(&fixture.context, config) == VA_STATUS_SUCCESS,
+              "release the replacement writer without affecting retained decoder ownership");
+      VASurfaceID id = replacement->id;
+      Require(DestroySurfaces(&fixture.context, &id, 1) == VA_STATUS_SUCCESS,
+              "release the separate ordinary replacement input");
+    }
+    Require(DestroyContextWithTimeout(&fixture.context, 1, 0) == VA_STATUS_SUCCESS &&
+                fixture.decoder->device == nullptr && fixture.io.device_close_calls == 2,
+            "consume successful close only after the public binding has changed");
+    CheckNewBobAfterTeardown(fixture, 0, !destroy_source, 80);
+    Require(old_picture->ready && !old_picture->failed &&
+                old_picture->expected_timestamp == kTimestampStep &&
+                old_picture->frame_timestamp == kTimestampStep &&
+                old_picture->planes[0][0] == DecodeIoMock::Luma(kTimestampStep) &&
+                old_picture->planes[1][0] == 128 && !fixture.io.invalid &&
+                (destroy_source || fixture.held[0]->decode_picture.lock() != old_picture),
+            "terminal close never republishes a destroyed/reused tuple or mutates an independently held picture");
+  }
+  {
+    TeardownFixture fixture(1);
+    BindTeardownPicturesForVpp(fixture);
+    const auto old_picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    const auto source = fixture.held[0];
+    fixture.io.device_close_busy = 1;
+    Require(DestroyContextWithTimeout(&fixture.context, 1, 0) == VA_STATUS_ERROR_HW_BUSY &&
+                source->ready && old_picture->ready,
+            "retain completed pixels while their original close remains BUSY");
+    const auto pixels = source->storage;
+    const uint64_t identity = source->decode_identity;
+    auto next_decoder = std::make_shared<DecodeContext>();
+    next_decoder->id = next_decoder->config = 99;
+    next_decoder->profile = VAProfileH264Main;
+    fixture.driver.configs[99] = {VAProfileH264Main, VAEntrypointVLD};
+    fixture.driver.contexts[99] = next_decoder;
+    Require(BeginPicture(&fixture.context, 99, 1) == VA_STATUS_SUCCESS &&
+                EndPicture(&fixture.context, 99) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                PublicReadRejected(source.get()) && source->ready && !source->failed &&
+                source->decode_identity == identity && source->storage == pixels,
+            "a real malformed H264 End rejects public reads without replacing accepted identity or pixels");
+    const uint64_t rejected_transaction = source->rejected_picture_transaction;
+    Require(BeginPicture(&fixture.context, 99, 1) == VA_STATUS_SUCCESS &&
+                !PublicReadRejected(source.get()) && rejected_transaction != 0 &&
+                source->picture_transaction != rejected_transaction &&
+                source->rejected_picture_transaction == rejected_transaction &&
+                source->expected_timestamp == kTimestampStep &&
+                source->frame_timestamp == kTimestampStep &&
+                source->decode_identity == identity && source->trace_decode_identity == identity &&
+                source->trace_context == 1 && source->trace_generation == fixture.decoder->generation &&
+                source->trace_submission_ordinal == 1 && source->storage == pixels &&
+                fixture.io.inputs == std::vector<uint64_t>{kTimestampStep} &&
+                fixture.io.open_attempts == 0,
+            "a second speculative Begin supersedes the current rejection marker, not its rejection history");
+    Require(DestroyContextWithTimeout(&fixture.context, 1, 0) == VA_STATUS_SUCCESS &&
+                fixture.decoder->device == nullptr && fixture.io.device_close_calls == 2,
+            "consume the old successful close after a rejected then superseded public transaction");
+    CheckNewBobAfterTeardown(fixture, 0, false);
+    Require(old_picture->ready && !old_picture->failed &&
+                old_picture->frame_timestamp == kTimestampStep &&
+                old_picture->planes[0][0] == DecodeIoMock::Luma(kTimestampStep) &&
+                source->storage == pixels && fixture.io.inputs.size() == 1 &&
+                fixture.io.open_attempts == 0 && !fixture.io.invalid &&
+                DestroyContext(&fixture.context, 99) == VA_STATUS_SUCCESS &&
+                DestroyConfig(&fixture.context, 99) == VA_STATUS_SUCCESS,
+            "rejection history prevents stale republication without changing previously held immutable pixels");
+  }
+  for (unsigned int failure = 0; failure != 5; ++failure) {
+    TeardownFixture fixture(1);
+    BindTeardownPicturesForVpp(fixture);
+    if (failure == 0) fixture.io.device_close_status = BC_STS_ERROR;
+    if (failure == 1) fixture.io.stop_status = BC_STS_ERROR;
+    if (failure == 2) fixture.io.decoder_close_status = BC_STS_ERROR;
+    if (failure == 3) fixture.io.early_eos = true;
+    if (failure == 4) fixture.io.fail_poll = true;
+    Require(DestroyContextWithTimeout(&fixture.context, 1, 0) ==
+                    (failure < 3 ? VA_STATUS_ERROR_OPERATION_FAILED
+                                 : VA_STATUS_ERROR_DECODING_ERROR) &&
+                fixture.decoder->device == nullptr && fixture.driver.contexts.count(1) == 0,
+            "consumed lifecycle/drain failure is not a successful completion lease");
+    CheckNewBobAfterTeardown(fixture, 0, false);
+    Require(!fixture.io.invalid, "failed close never invents a new decoder handle");
+  }
+}
+
 static void ContextTeardownDrainsAcceptedTailBeforeClose() {
   // More than PumpDecodeInput's per-call budget exercises accepted input still
   // waiting in the CPU queue as well as pictures already sent to the device.
@@ -8104,6 +8370,8 @@ int main() {
     ProgressDoesNotExtendFiniteSyncDeadline();
     RetryableBusySurvivesContextSurfaceAndDriverTeardown();
     ProtectedH264BufferCannotCommitEarlierParameters();
+    NewBobRequiresSuccessfulConsumingClose();
+    DrainedContextSupportsNewBobCaptures();
     ContextTeardownDrainsAcceptedTailBeforeClose();
     ContextDrainRejectsMutationAndSurvivesSurfaceRelease();
     WaitingSyncKeepsCompletedRetiredPicture();

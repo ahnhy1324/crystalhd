@@ -392,9 +392,12 @@ metadata, valid until the VA display terminates. Read the returned pointers
 and counts; do not free them or assume supplied scratch arrays were filled.
 A worker can wait for reordered hardware output while later input
 is submitted. VPP sources remain available until the decode surface is reused
-or destroyed; a target with an outstanding writer is busy. Missing, canceled
-or retired pictures report errors rather than substitute other pixels. Clients
-must check VA surface status and must not treat fence signaling alone as proof
+or destroyed; a target with an outstanding writer is busy. Missing pictures and
+canceled or reset epochs report errors rather than substitute other pixels.
+On the unreleased 1.2 branch, exact completed sources may remain readable after
+successful decoder-context close; this does not revive canceled work or
+rejected, reused or destroyed bindings. Clients must check VA surface status
+and must not treat fence signaling alone as proof
 of valid pixels. Never-exported internal targets use VA synchronization and
 ordinary CPU cache synchronization, without requiring a `sw_sync` timeline.
 Previously exposed/imported targets retain write fences; ARGB is rendered

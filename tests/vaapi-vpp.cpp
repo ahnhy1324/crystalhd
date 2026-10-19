@@ -1178,6 +1178,200 @@ void RequireFieldRows(const Surface &target, unsigned parity, bool bob) {
       }
 }
 
+std::weak_ptr<Surface> BindCompletedVppSource(Fixture &fixture, bool direct) {
+  auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+  if (direct) {
+    picture = std::make_shared<Surface>();
+    picture->width = picture->height = 16;
+    picture->fourcc = VA_FOURCC_NV12;
+    picture->direct_picture = true;
+    picture->direct_backing = fixture.source;
+    picture->decode_target = fixture.source;
+    fixture.decoder->decoded_frames[kTimestampStep] = picture;
+  } else {
+    FillFieldRows(*picture);
+  }
+  FillFieldRows(*fixture.source);
+  fixture.decoder->id = 1;
+  fixture.decoder->profile = VAProfileH264Main;
+  fixture.decoder->generation = 7;
+  fixture.decoder->width = fixture.decoder->height = 16;
+  fixture.source->direct_decode_eligible = direct;
+  for (const auto &surface : {fixture.source, picture}) {
+    surface->ready = true;
+    surface->failed = false;
+    surface->expected_timestamp = surface->frame_timestamp = kTimestampStep;
+    surface->decode_identity = surface->trace_decode_identity = 17;
+    surface->trace_context = 1;
+    surface->trace_generation = 7;
+    surface->trace_submission_ordinal = 9;
+  }
+  fixture.source->picture_transaction = 41;
+  fixture.source->decode_picture = picture;
+  return picture;
+}
+
+void CompletedDecoderCloseKeepsNewBobCapturesExact() {
+  for (bool direct : {false, true}) {
+    std::weak_ptr<Surface> public_lifetime, private_lifetime;
+    {
+      Fixture fixture;
+      private_lifetime = BindCompletedVppSource(fixture, direct);
+      const auto capture = [&](const char *phase) {
+        Require(BeginPicture(&fixture.context, 2, 2) == VA_STATUS_SUCCESS,
+                "begin a completed-source Bob request");
+        Require(RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                    VA_STATUS_SUCCESS, phase);
+      };
+      public_lifetime = fixture.source;
+      const auto public_pixels = fixture.source->storage;
+      Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                  fixture.driver.contexts.count(1) == 0 && fixture.decoder->retired &&
+                  fixture.decoder->device == nullptr && !fixture.source->destroyed &&
+                  fixture.source->ready && !fixture.source->failed &&
+                  fixture.source->storage == public_pixels,
+              "successful consuming decoder close retains the live exact public picture");
+      {
+        const auto retained = private_lifetime.lock();
+        Require(retained && !retained->direct_backing,
+                "successful close retains an already promoted immutable picture before any new capture");
+      }
+      for (unsigned parity : {0U, 1U}) {
+        VABufferID filter = CreateBobFilter(fixture,
+            parity != 0 ? VA_DEINTERLACING_BOTTOM_FIELD : 0);
+        SetPipelineFilters(fixture, &filter, 1);
+        capture(parity == 0 ? "capture retired top field" : "capture retired bottom field");
+        Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+                "a fresh Bob request can read a completed picture after decoder destruction");
+        RequireFieldRows(*fixture.target, parity, true);
+        Require(fixture.target->trace_context == 1 &&
+                    fixture.target->trace_generation == 7 &&
+                    fixture.target->trace_decode_identity == 17 &&
+                    fixture.target->trace_submission_ordinal == 9 &&
+                    fixture.source->storage == public_pixels &&
+                    fixture.source->expected_timestamp == kTimestampStep &&
+                    fixture.source->frame_timestamp == kTimestampStep &&
+                    fixture.source->decode_identity == 17 &&
+                    fixture.target->vpp_writers == 0 && fixture.driver.pending_vpp.empty(),
+                "both fields preserve source token and identity without inventing a presentation clock");
+      }
+
+      auto next_decoder = std::make_shared<DecodeContext>();
+      next_decoder->id = 4;
+      next_decoder->profile = VAProfileH264Main;
+      fixture.driver.contexts[4] = next_decoder;
+      const uint64_t accepted_transaction = fixture.source->picture_transaction;
+      Require(BeginPicture(&fixture.context, 4, 1) == VA_STATUS_SUCCESS &&
+                  fixture.source->picture_transaction != accepted_transaction,
+              "a speculative H264 Begin reserves a new transaction without replacing accepted pixels");
+      VABufferID begin_filter = CreateBobFilter(fixture);
+      SetPipelineFilters(fixture, &begin_filter, 1);
+      capture("capture accepted retired binding after speculative Begin");
+      Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+              "Begin alone preserves the completed accepted binding for a fresh Bob capture");
+      RequireFieldRows(*fixture.target, 0, true);
+      Require(DestroyContext(&fixture.context, 4) == VA_STATUS_SUCCESS,
+              "discard the unsubmitted new context without changing the accepted picture");
+
+      // Capture before a real newer writer replaces the public source. The
+      // earlier immutable read survives, but a fresh read sees the new pixels.
+      VABufferID filter = CreateBobFilter(fixture);
+      SetPipelineFilters(fixture, &filter, 1);
+      capture("capture retired binding before actual public rewrite");
+      auto writer = std::make_shared<DecodeContext>();
+      writer->video_process = true;
+      fixture.driver.contexts[3] = writer;
+      fixture.driver.surfaces[3] = Picture(0, 80);
+      VAProcPipelineParameterBuffer replacement = {};
+      replacement.surface = 3;
+      VABufferID buffer = VA_INVALID_ID;
+      Require(CreateBuffer(&fixture.context, 3, VAProcPipelineParameterBufferType,
+                           sizeof(replacement), 1, &replacement, &buffer) == VA_STATUS_SUCCESS &&
+                  BeginPicture(&fixture.context, 3, 1) == VA_STATUS_SUCCESS &&
+                  RenderPicture(&fixture.context, 3, &buffer, 1) == VA_STATUS_SUCCESS &&
+                  EndPicture(&fixture.context, 3) == VA_STATUS_SUCCESS,
+              "a new ordinary VPP writer replaces the completed-close public binding");
+      Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+              "the already captured immutable closed-context picture survives public reuse");
+      RequireFieldRows(*fixture.target, 0, true);
+      capture("capture replacement public binding after actual rewrite");
+      Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                  fixture.target->ready && !fixture.target->failed &&
+                  fixture.target->expected_timestamp == 0 && fixture.target->frame_timestamp == 0 &&
+                  fixture.target->trace_decode_identity == 0,
+              "new capture reads the replacement binding rather than resurrecting the closed picture");
+      for (unsigned plane = 0; plane != 2; ++plane)
+        for (unsigned row = 0; row != (plane == 0 ? 16U : 8U); ++row)
+          for (unsigned column = 0; column != 16; ++column)
+            Require(fixture.target->planes[plane][row * fixture.target->pitch[plane] + column] ==
+                        (plane == 0 ? 80 : 128),
+                    "replacement Y and UV bytes, not the retired field, reach a new output");
+    }
+    Require(public_lifetime.expired() && private_lifetime.expired(),
+            "completed-close ownership cannot retain a public/private direct-backing cycle");
+  }
+}
+
+void IneligibleDecoderCloseCannotGrantNewBobReads() {
+  for (unsigned mode = 0; mode != 9; ++mode) {
+    Fixture fixture;
+    BindCompletedVppSource(fixture, mode == 6);
+    if (mode == 0)
+      Require(fixture.decoder->Reset() == BC_STS_SUCCESS,
+              "reset discards the old epoch before a later successful empty destroy");
+    else if (mode == 1)
+      fixture.decoder->retained_close_status = BC_STS_ERROR;
+    else if (mode == 2)
+      fixture.source->failed = true;
+    else if (mode == 3)
+      ++fixture.source->decode_identity;
+    else if (mode == 4)
+      fixture.source->frame_timestamp = 2 * kTimestampStep;
+    else if (mode == 5)
+      fixture.source->rejected_picture_transaction = fixture.source->picture_transaction;
+    else if (mode == 7)
+      ++fixture.source->trace_generation;
+    else if (mode == 8)
+      ++fixture.source->trace_context;
+    const auto pixels = fixture.source->storage;
+    if (mode == 6) {
+      allocation_fault::failed_size = 0;
+      allocation_fault::only_size = fixture.source->storage.size();
+      allocation_fault::fail_next = true;
+    }
+    VAStatus closed;
+    try {
+      closed = DestroyContext(&fixture.context, 1);
+    } catch (...) {
+      allocation_fault::fail_next = false;
+      allocation_fault::only_size = 0;
+      throw;
+    }
+    allocation_fault::fail_next = false;
+    allocation_fault::only_size = 0;
+    if (mode == 6)
+      Require((closed == VA_STATUS_ERROR_ALLOCATION_FAILED ||
+               closed == VA_STATUS_ERROR_OPERATION_FAILED) &&
+                  allocation_fault::failed_size == pixels.size(),
+              "failed private promotion propagates failure instead of publishing a retained read");
+    else
+      Require(closed == (mode == 1 ? VA_STATUS_ERROR_OPERATION_FAILED : VA_STATUS_SUCCESS),
+              "completed-close controls distinguish reset, failed close and malformed public binding");
+    VABufferID filter = CreateBobFilter(fixture);
+    SetPipelineFilters(fixture, &filter, 1);
+    const auto untouched = fixture.target->storage;
+    Require(BeginPicture(&fixture.context, 2, 2) == VA_STATUS_SUCCESS &&
+                RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                    VA_STATUS_ERROR_DECODING_ERROR &&
+                !fixture.processor->have_vpp_parameters &&
+                EndPicture(&fixture.context, 2) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                fixture.target->storage == untouched && !fixture.target->ready &&
+                fixture.target->failed && fixture.source->storage == pixels &&
+                fixture.target->vpp_writers == 0 && fixture.driver.pending_vpp.empty(),
+            "reset, failure, mismatch, rejection and failed promotion never grant a new public read");
+  }
+}
+
 void BobCapabilityEnumerationAndCapacity() {
   Fixture fixture;
   unsigned count = 0;
@@ -3725,21 +3919,26 @@ void GenuineSwSyncCompletionStatuses() {
 int VppFullTestEntry(int argc, char **argv) {
   if (argc > 2 || (argc == 2 && strcmp(argv[1], "--sw-sync") != 0 &&
                    strcmp(argv[1], "--lifecycle-failures") != 0 &&
-                   strcmp(argv[1], "--import-contracts") != 0)) {
-    fprintf(stderr, "usage: %s [--sw-sync|--lifecycle-failures|--import-contracts]\n", argv[0]);
+                   strcmp(argv[1], "--import-contracts") != 0 &&
+                   strcmp(argv[1], "--completed-source") != 0)) {
+    fprintf(stderr, "usage: %s [--sw-sync|--lifecycle-failures|--import-contracts|--completed-source]\n", argv[0]);
     return 2;
   }
   try {
     if (argc == 2 && (strcmp(argv[1], "--lifecycle-failures") == 0 ||
-                      strcmp(argv[1], "--import-contracts") == 0)) {
+                      strcmp(argv[1], "--import-contracts") == 0 ||
+                      strcmp(argv[1], "--completed-source") == 0)) {
       const std::pair<const char *, void (*)()> lifecycle[] = {
           {"VPP queue allocation failure is transactional", VppQueueAllocationFailureIsTransactional},
           {"stale VPP failure preserves newer writer", StaleVppFailurePreservesNewerWriter}};
       const std::pair<const char *, void (*)()> imports[] = {
           {"PRIME export preserves imported plane layout", ImportedPrimeExportsPreservePlaneLayouts},
           {"legacy PRIME batch uses one descriptor", LegacyPrimeBatchUsesOneDescriptorAndRollsBack}};
+      const std::pair<const char *, void (*)()> completed[] = {
+          {"completed decoder close keeps new Bob captures exact", CompletedDecoderCloseKeepsNewBobCapturesExact},
+          {"ineligible decoder close cannot grant new Bob reads", IneligibleDecoderCloseCannotGrantNewBobReads}};
       const auto &groups = strcmp(argv[1], "--import-contracts") == 0
-          ? imports : lifecycle;
+          ? imports : strcmp(argv[1], "--completed-source") == 0 ? completed : lifecycle;
       unsigned int failures = 0;
       for (const auto &group : groups) {
         try {
@@ -3775,6 +3974,8 @@ int VppFullTestEntry(int argc, char **argv) {
     BobCapabilityEnumerationAndCapacity();
     BobPipelineFilterValidation();
     BobImmediatePixelsAndWeaveReset();
+    CompletedDecoderCloseKeepsNewBobCapturesExact();
+    IneligibleDecoderCloseCannotGrantNewBobReads();
     BobFilterValuesAreCapturedAtRender();
     BobQueuedSnapshotAndCancellation();
     BobRejectedReplacementCannotReplayOldParameters();
@@ -3825,7 +4026,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 64 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 66 hardware-free regressions passed");
   return 0;
 }
 
@@ -3838,6 +4039,8 @@ int main(int argc, char **argv) {
   const std::pair<const char *, void (*)()> groups[] = {
       {"configuration rejects unsupported protection transactionally", ConfigRejectsUnsupportedProtectionTransactionally},
       {"protected buffer creation is transactional", ProtectedBufferCreationIsTransactional},
+      {"completed decoder close keeps new Bob captures exact", CompletedDecoderCloseKeepsNewBobCapturesExact},
+      {"ineligible decoder close cannot grant new Bob reads", IneligibleDecoderCloseCannotGrantNewBobReads},
 #ifdef CRYSTALHD_LEGACY_CPU
       {"legacy exposed stopped-source rejection", LegacyExposedStoppedVppRemainsRejected},
       {"legacy synchronous fallback: nine no-cache-operation modes", LegacyExposedColdVppFallbackCompletesBeforeReturning}};

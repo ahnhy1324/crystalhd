@@ -710,6 +710,21 @@ static bool ImportedPlaneFits(uint64_t bytes, uint64_t offset, uint64_t pitch,
          rows - 1 <= (bytes - offset - row_bytes) / pitch;
 }
 
+// A successful decoder teardown can precede a filter's last use of its VA
+// surfaces. Retain only their exact completed, independently backed pictures;
+// this lease never retains a decoder or authorizes a different public binding.
+struct CompletedDecodePicture {
+  std::weak_ptr<Surface> owner;
+  std::shared_ptr<Surface> picture;
+  VASurfaceID surface = VA_INVALID_SURFACE;
+  uint64_t timestamp = 0;
+  uint64_t identity = 0;
+  uint64_t rejection_history = 0;
+  uint64_t context = 0;
+  uint64_t generation = 0;
+  uint64_t ordinal = 0;
+};
+
 struct Surface {
   VASurfaceID id = VA_INVALID_SURFACE;
   unsigned int width = 0;
@@ -769,6 +784,7 @@ struct Surface {
   std::shared_ptr<Surface> direct_backing;
   std::weak_ptr<Surface> decode_target;
   std::weak_ptr<Surface> decode_picture;
+  CompletedDecodePicture completed_decode_picture;
   bool direct_picture = false;
 
   std::vector<uint8_t> storage;
@@ -1867,6 +1883,9 @@ struct DecodeContext {
   uint64_t next_timestamp = kTimestampStep;
   std::unordered_map<uint64_t, VASurfaceID> pending;
   std::unordered_map<uint64_t, std::shared_ptr<Surface>> decoded_frames;
+  // Private until a successful consuming close. Close(BUSY) clears ordinary
+  // maps, so these exact candidates must survive its explicit retry.
+  std::vector<CompletedDecodePicture> retirement_candidates;
   std::shared_ptr<CrystalHDPrivateBackingPool> private_backing_pool;
   H264FirstField h264_first_field;
   std::deque<std::shared_ptr<Surface>> experimental_ready;
@@ -2068,6 +2087,7 @@ struct DecodeContext {
   }
 
   BC_STATUS Reset(uint64_t timeout_ns = kDecodeTimeoutNs) {
+    retirement_candidates.clear();
     ++generation;
     return Close(timeout_ns);
   }
@@ -2642,6 +2662,7 @@ static void RevokeDecodeOwner(Driver *driver, Surface *surface) {
   if (surface == nullptr)
     return;
   ClearTraceReadExport(surface);
+  surface->completed_decode_picture = {};
   surface->decode_picture.reset();
   surface->decode_identity = NextDecodeIdentity(driver);
 }
@@ -4538,6 +4559,85 @@ static bool PublicReadRejected(const Surface *owner) {
       owner->rejected_picture_transaction == owner->picture_transaction;
 }
 
+static bool CompletedDecodePictureMatches(
+    const Driver *driver, const std::shared_ptr<Surface> &owner,
+    const CompletedDecodePicture &completed, bool require_private = true) {
+  const auto current = driver->surfaces.find(completed.surface);
+  const auto &picture = completed.picture;
+  return owner && completed.owner.lock() == owner &&
+      current != driver->surfaces.end() && current->second == owner &&
+      owner->backing_owner == VA_INVALID_SURFACE && !owner->destroyed &&
+      owner->ready && !owner->failed && !PublicReadRejected(owner.get()) &&
+      owner->rejected_picture_transaction == completed.rejection_history &&
+      owner->vpp_writers == 0 && !owner->image_write_locked &&
+      !owner->experimental_presentation && !owner->experimental_write_lease &&
+      !owner->experimental_read_export_armed &&
+      completed.timestamp != 0 && completed.identity != 0 &&
+      owner->expected_timestamp == completed.timestamp &&
+      owner->frame_timestamp == completed.timestamp &&
+      owner->decode_identity == completed.identity &&
+      owner->trace_decode_identity == completed.identity &&
+      owner->trace_context == completed.context &&
+      owner->trace_generation == completed.generation &&
+      owner->trace_submission_ordinal == completed.ordinal &&
+      picture && picture.get() != owner.get() &&
+      owner->decode_picture.lock() == picture &&
+      !picture->destroyed && picture->ready && !picture->failed &&
+      picture->expected_timestamp == completed.timestamp &&
+      picture->frame_timestamp == completed.timestamp &&
+      picture->decode_identity == completed.identity &&
+      picture->trace_decode_identity == completed.identity &&
+      picture->trace_context == completed.context &&
+      picture->trace_generation == completed.generation &&
+      picture->trace_submission_ordinal == completed.ordinal &&
+      picture->width == owner->width && picture->height == owner->height &&
+      picture->fourcc == VA_FOURCC_NV12 &&
+      (!picture->direct_backing ||
+       (!require_private && picture->direct_backing == owner));
+}
+
+static VAStatus PrepareCompletedDecodePictures(Driver *driver,
+                                               DecodeContext *decode) {
+  // Build the complete candidate set before publishing any new ownership.
+  // A partial promotion is harmless, but a failure must grant no read lease.
+  decode->retirement_candidates.clear();
+  std::vector<CompletedDecodePicture> candidates;
+  try {
+    candidates.reserve(decode->surface_timestamps.size());
+    for (const auto &entry : driver->surfaces) {
+      const auto &owner = entry.second;
+      const auto token = decode->surface_timestamps.find(owner.get());
+      if (token == decode->surface_timestamps.end())
+        continue;
+      const auto picture = decode->decoded_frames.find(token->second);
+      if (picture == decode->decoded_frames.end())
+        continue;
+      CompletedDecodePicture completed;
+      completed.owner = owner;
+      completed.picture = picture->second;
+      completed.surface = entry.first;
+      completed.timestamp = token->second;
+      completed.identity = picture->second->decode_identity;
+      completed.rejection_history = owner->rejected_picture_transaction;
+      completed.context = TraceId(decode->id, VA_INVALID_ID);
+      completed.generation = decode->generation;
+      completed.ordinal = picture->second->trace_submission_ordinal;
+      if (!CompletedDecodePictureMatches(driver, owner, completed, false))
+        continue;
+      // A public strong lease on a direct-backed picture would form a cycle.
+      // Promote while the exact owner and its pixels are still available.
+      if (!PromoteDecodedPicture(picture->second) ||
+          !CompletedDecodePictureMatches(driver, owner, completed))
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+      candidates.push_back(std::move(completed));
+    }
+  } catch (const std::bad_alloc &) {
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
+  decode->retirement_candidates = std::move(candidates);
+  return VA_STATUS_SUCCESS;
+}
+
 static std::shared_ptr<Surface> MarkRejectedPictureTransaction(
     Driver *driver, DecodeContext *decode) {
   const auto target = decode->transaction_target.lock();
@@ -4550,6 +4650,7 @@ static std::shared_ptr<Surface> MarkRejectedPictureTransaction(
   // This allocation-free public-read barrier is independent of accepted
   // storage/readers. A late old completion cannot clear it; only a new writer
   // transaction supersedes it. Never consult it for captured private reads.
+  target->completed_decode_picture = {};
   target->rejected_picture_transaction = target->picture_transaction;
   return target;
 }
@@ -5061,6 +5162,7 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   decoded_frame->trace_generation = decode->generation;
   decoded_frame->trace_submission_ordinal = submission_ordinal;
   target_surface->decode_identity = decoded_frame->decode_identity;
+  target_surface->completed_decode_picture = {};
   target_surface->trace_decode_identity = decoded_frame->decode_identity;
   target_surface->trace_context = decoded_frame->trace_context;
   target_surface->trace_generation = decoded_frame->trace_generation;
@@ -6110,6 +6212,7 @@ static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
     driver->trace.Emit(crystalhd_vaapi_trace::Event::SurfaceDestroy,
                        TraceFields(nullptr, surface->second.get()));
     surface->second->destroyed = true;
+    surface->second->completed_decode_picture = {};
     for (auto owner = driver->backing_owners.begin();
          owner != driver->backing_owners.end();) {
       if (owner->second == surface_ids[i])
@@ -6475,8 +6578,12 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
       return VA_STATUS_ERROR_INVALID_CONTEXT;
     decode->closing = true;
     decode->destroy_status = VA_STATUS_SUCCESS;
-    if (!decode->video_process)
+    if (!decode->video_process) {
       decode->destroy_status = DrainClosingContext(driver, decode, &lock);
+      if (decode->destroy_status == VA_STATUS_SUCCESS)
+        decode->destroy_status = PrepareCompletedDecodePictures(driver,
+                                                                decode.get());
+    }
     decode->retired = true;
     ClearTraceReadExportsForContext(
         driver, TraceId(decode->id, VA_INVALID_ID), decode->generation);
@@ -6491,6 +6598,16 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
   if (decode->destroy_status == VA_STATUS_SUCCESS &&
       closed != BC_STS_SUCCESS)
     decode->destroy_status = VA_STATUS_ERROR_OPERATION_FAILED;
+  if (decode->destroy_status == VA_STATUS_SUCCESS) {
+    for (auto &completed : decode->retirement_candidates) {
+      const auto owner = completed.owner.lock();
+      // Close may have returned BUSY earlier. Another API user can destroy
+      // or replace the public binding before the consuming retry succeeds.
+      if (CompletedDecodePictureMatches(driver, owner, completed))
+        owner->completed_decode_picture = std::move(completed);
+    }
+  }
+  decode->retirement_candidates.clear();
   const VAStatus status = decode->destroy_status;
   crystalhd_vaapi_trace::Fields fields = TraceFields(decode.get(), nullptr);
   fields.outcome = status;
@@ -7164,8 +7281,14 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
       }
     }
     if (!frame) {
+      const auto &completed = source_owner->completed_decode_picture;
+      if (CompletedDecodePictureMatches(driver, source_owner, completed))
+        frame = completed.picture;
+    }
+    if (!frame) {
       // A timestamped source without its picture belongs to a retired decode
-      // epoch. Never acknowledge it by painting a different or neutral frame.
+      // epoch unless a successful consuming close retained that exact binding.
+      // Never acknowledge it by painting a different or neutral frame.
       if (timestamp != 0)
         return VA_STATUS_ERROR_DECODING_ERROR;
       if (!source_owner->ready || source_owner->failed)
@@ -8027,6 +8150,7 @@ static VAStatus PutImageLocked(Driver *driver, VASurfaceID surface_id,
                                   image->second.va.offsets[0];
   const uint8_t *source_uv_plane = buffer->second.data.data() +
                                    image->second.va.offsets[1];
+  owner->completed_decode_picture = {};
   owner->picture_transaction = NextDecodeIdentity(driver);
   EndTraceBinding(driver, owner);
   if (surface->second.get() != owner)
@@ -8102,6 +8226,7 @@ static VAStatus PrepareDerivedWrite(Driver *driver, Buffer &buffer, bool refresh
       return status;
   }
   ++owner->vpp_writers;
+  owner->completed_decode_picture = {};
   owner->picture_transaction = NextDecodeIdentity(driver);
   owner->image_write_locked = true;
   buffer.derived_was_ready = owner->ready;

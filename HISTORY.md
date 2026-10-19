@@ -8,6 +8,8 @@
   nonzero-origin cropping and hardware Bob remain unsupported. Bounded TFF/BFF
   pixel and headless FHD throughput controls do not establish displayed cadence,
   Atom performance, endurance or physical A/V acceptance.
+- Preserve completed decoder pictures for delayed Bob/VPP after successful
+  context close, without reviving canceled work or stale/rejected source bindings.
 - Keep VPP queue allocation failures transactional and prevent an older failed
   request from invalidating a newer writer's output.
 - Complete exposed, decode-pending VPP synchronously when fencing is unavailable,
