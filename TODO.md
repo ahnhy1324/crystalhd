@@ -33,16 +33,19 @@ expanding the released scope to general full-rate FHD/deinterlacing support.
   identity, interlaced Bob A/V, hour-long measured A/V drift and out-of-policy
   B-pyramid recovery remain open; these are not new 1.2 Bob acceptance.
 - [ ] [#468: admitted real B-pyramid input can stop output](https://github.com/ahnhy1324/crystalhd/issues/468)
-  — reproduce the reporter's successful/failing padded pair and determine why
-  real content fails inside the size policy while the synthetic control passes.
+  — the real-content failure is reproduced and the development extended-input
+  guard passes bounded native rejection/fresh-reopen controls, intentionally
+  rejecting some formerly working input. Determine the firmware mechanism and
+  broader recovery boundary; ordinary assembled inputs at/below 2 MiB are unchanged.
 - [ ] [#436: planned v1.2 deinterlacing and presentation work](https://github.com/ahnhy1324/crystalhd/issues/436)
   — qualify the development CPU VA-VPP Bob path for
   the existing Kodi Auto problem in [#445](https://github.com/ahnhy1324/crystalhd/issues/445):
   actual filter execution, field order/timing, ownership, seek/EOS and
-  i686/scalar behavior. The 1.2 branch implements origin-aligned CPU Bob with
-  device-free coverage; stock Kodi/Atom cadence and physical A/V remain open.
-  Keep existing Weave playback intact; physical cadence/sync and FHD performance require
-  their own measurements. Hardware Bob remains separate research, not a
+  i686/scalar behavior. The 1.2 branch has bounded native TFF/BFF pixel/clock and
+  short Kodi Auto/Off controls as well as device-free coverage. One headless
+  FHD Bob batch reaches 49.759 outputs/s, not demonstrated real-time 50p headroom.
+  Stock Kodi/Atom physical cadence, A/V and endurance remain open. Keep existing
+  Weave playback intact. Hardware Bob remains separate research, not a
   prerequisite for this software integration.
 - [ ] Player HTTP(S) acceptance — implementation is included in RC4, with
   bounded errors and explicit hardware/software selection. Selected native
@@ -75,7 +78,7 @@ expanding the released scope to general full-rate FHD/deinterlacing support.
 Acceptance checklists live in those issues. Current usage and support are in
 [README.md](README.md); the frozen hardware reference is in
 [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md). The stable release is bundle
-`1.0.0`, module/DKMS `3.10.3`; RC.1 (`1.0.0-rc.1` / `3.10.2`) and the
+`1.1.0`, module/DKMS `3.10.9`; stable 1.0.0, RC.1 (`1.0.0-rc.1` / `3.10.2`) and the
 Phase 1 baseline remain unchanged. Mandatory missing tests remain
 NOT RUN/HOLD; only optional work may be deferred. Historical Phase 1 and
 bounded RC evidence do not establish new LTS/full-duration passes.

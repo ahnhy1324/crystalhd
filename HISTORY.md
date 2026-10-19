@@ -5,8 +5,9 @@
 - Implement CPU VA-VPP Bob for origin-aligned woven NV12 regions, with NV12/ARGB
   output, independent Y/UV field sampling and Render-time filter snapshots.
   Preserve zero-filter Weave/scaling and legacy ABI; single-field input,
-  nonzero-origin cropping and hardware Bob remain unsupported. Kodi, cadence and physical
-  A/V qualification remain separate from device-free filter checks.
+  nonzero-origin cropping and hardware Bob remain unsupported. Bounded TFF/BFF
+  pixel and headless FHD throughput controls do not establish displayed cadence,
+  Atom performance, endurance or physical A/V acceptance.
 - Keep VPP queue allocation failures transactional and prevent an older failed
   request from invalidating a newer writer's output.
 - Preserve imported PRIME plane layouts on export and correct legacy batch
@@ -14,8 +15,9 @@
   complete chroma pairs in odd-width NV12 backgrounds.
 - Add an extended-H.264 de-escaped admission guard for
   [#468](https://github.com/ahnhy1324/crystalhd/issues/468), rejecting over-budget
-  transactions before submission without rewriting input. This development
-  containment still requires native qualification and firmware investigation.
+  transactions before submission without rewriting input. Selected native
+  controls qualify bounded rejection/fresh reopen, including intentionally
+  rejecting some formerly working input; the firmware mechanism remains open.
 
 ## 1.1.0
 

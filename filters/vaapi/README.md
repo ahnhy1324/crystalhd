@@ -136,8 +136,11 @@ ffmpeg -hide_banner -hwaccel vaapi -hwaccel_device "$drm_node" \
 This produces no display or sound. The
 [bounded native comparison](../../HARDWARE-2026-09-13.md#12-development-cpu-va-bob--2026-10-19)
 verified 50 input pictures→100 field outputs against an independent same-run
-Weave-derived reference, plus frame-rate Bob and Weave reopen. It is not a
-throughput or Kodi acceptance result.
+Weave-derived reference for both TFF and BFF, plus frame-rate Bob and Weave
+reopen. A separate startup-inclusive headless FHD batch reaches 49.759 Bob
+outputs/s: this does not demonstrate real-time 50p headroom, displayed cadence
+or physical A/V. Exact source identities, CPU/RSS and method are in that report;
+the short pixel controls are not themselves throughput or Kodi acceptance.
 
 For supported interlaced input with this development VA driver selected,
 Kodi's per-video deinterlace method **Auto** selects CPU Bob; **Off** retains
@@ -199,13 +202,16 @@ removed or rewritten. Over-budget transactions are rejected before input,
 replay or accepted-picture identity is committed, using the existing reference
 picture/next-IDR recovery rules.
 
-This is an unqualified development containment measure, not a completed fix for
+This is a bounded development containment measure, not a completed fix for
 [#468](https://github.com/ahnhy1324/crystalhd/issues/468). The 2 MiB minus 4 KiB
 cutoff is conservative policy, not a measured firmware reserve or proven chip
 limit. Ordinary units at or below 2 MiB assembled bytes are unchanged, so this
-does not establish protection for every near-2-MiB de-escaped input. Native
-qualification and the firmware mechanism remain open; no new option, timeout,
-firmware or legacy ioctl change is introduced.
+does not establish protection for every near-2-MiB de-escaped input. Selected
+native controls verify rejection before the offending AU's DMA and fresh
+reopen, not same-context continuation. The formerly working 2,958,968-byte
+IDR250 control is intentionally rejected. Broader recovery and the firmware
+mechanism remain open; no new option, timeout, firmware or legacy ioctl change
+is introduced.
 
 RC5 applies this failed-`vaEndPicture()` public-read protection
 to every supported decode codec. New synchronization, image/export and VPP
