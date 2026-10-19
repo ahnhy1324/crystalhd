@@ -117,8 +117,8 @@ crystalhd-play --software "/path/to/video.mp4"
 
 ### HTTP(S) input
 
-HTTP(S) input is included in RC4, RC5 and the 1.1.0 source; stable
-1.0.0 and the immutable v1.1.0-rc.3 do not contain it. From the selected source checkout, use
+HTTP(S) input is included in 1.1.0 and RC4/RC5; the earlier 1.0.0 and
+v1.1.0-rc.3 do not contain it. From the selected source checkout, use
 its wrapper (or the matching installed `crystalhd-play`). Replace the example URL
 with your direct media URL, and close other CrystalHD sessions first:
 
@@ -154,10 +154,8 @@ those paths or a reason to replace a qualified installation without testing.
 
 ### Explicit Weave playback
 
-`--weave` is included in 1.1.0 and published RC5, not v1.0.0. The following
-final-tag commands become available when `v1.1.0` is published; check
-[#430](https://github.com/ahnhy1324/crystalhd/issues/430) for release status.
-Use `v1.1.0-rc.5` instead to select the earlier immutable candidate.
+`--weave` is included in stable 1.1.0 and published RC5, not v1.0.0. Select
+the immutable stable release with:
 
 ```sh
 git clone --branch v1.1.0 --single-branch \
@@ -165,13 +163,15 @@ git clone --branch v1.1.0 --single-branch \
 cd crystalhd
 ```
 
+Use `v1.1.0-rc.5` instead to select the earlier immutable candidate.
+
 Install the [dependencies and build](README.md#quick-start) from this directory,
 then follow the [direct install/update](BRINGUP.md#direct-install-update-and-rollback)
 or [DKMS route](README.dkms), according to the existing module owner. Do not
-mix the two routes. Keep the published RC tag and previous rollback source
+mix the two routes. Keep published tags and the previous rollback source
 unchanged.
 
-After installing the RC, select the decoder and pass a complete interlaced
+After installation, select the decoder and pass a complete interlaced
 frame through without GStreamer's automatic deinterlacing:
 
 ```sh

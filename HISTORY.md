@@ -2,10 +2,12 @@
 
 ## 1.1.0
 
-Bundle `1.1.0` / module-DKMS package `3.10.9`. Publication is authorized after
-the required [final-package checks](HARDWARE-2026-09-13.md#110-final-package-qualification--2026-10-19)
-pass; [#430](https://github.com/ahnhy1324/crystalhd/issues/430) records the actual
-decision and publication state. RC5 and earlier releases remain immutable.
+Published on 2026-10-19: bundle `1.1.0` / module-DKMS package `3.10.9`,
+source `85f426d5545a53cc63dd512b355ab6f6c9668d61`.
+[Final-package qualification](HARDWARE-2026-09-13.md#110-final-package-qualification--2026-10-19)
+and [#430](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6256652744)
+record fresh final checks and scoped RC5 evidence reuse. RC5 and earlier
+releases remain immutable.
 
 - Incorporate the reviewed i686/SSE2 and scalar-build compatibility fixes,
   bounded large-H.264 transport, failed-picture read/lifetime protection and

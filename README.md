@@ -6,27 +6,18 @@ hardware video decoding for local files on BCM70015. CrystalHD handles video;
 the normal Linux media stack handles audio, subtitles, synchronization and
 display.
 
-The instructions below target **CrystalHD 1.1.0 / module-DKMS 3.10.9**.
-The maintainer authorized final publication after package qualification;
-the `v1.1.0` tag commands become available **when that release is published**.
-Check [publication and qualification status](https://github.com/ahnhy1324/crystalhd/issues/430).
+**[CrystalHD 1.1.0 is available](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0).**
+The instructions below install this stable bundle / module-DKMS `3.10.9`.
+See the [validated scope and limitations](HARDWARE-2026-09-13.md#110-final-package-qualification--2026-10-19)
+and [change summary](HISTORY.md#110) before deployment.
 For the previous stable release, use the instructions shipped with
 [v1.0.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0). The existing
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29)
 remains available and unchanged.
 
-Published [1.1.0-rc.5](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.5)
-includes selected interlaced Weave playback, explicit hardware/software
-selection and further VA decode/lifetime fixes; its module/DKMS package is
-`3.10.8`.
-It remains an immutable pre-release;
-[RC5 install/update/rollback](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.5)
-and [Weave usage](USAGE.md#explicit-weave-playback) are separate from the final
-quick start below. Earlier published RCs remain
-unchanged. See the [fresh RC5 qualification status](HARDWARE-2026-09-13.md#110-rc5-qualification--2026-10-19)
-for completed checks and remaining gates, and the [change summary](HISTORY.md#110-rc5--candidate).
-The [final-package qualification scope](HARDWARE-2026-09-13.md#110-final-package-qualification--2026-10-19)
-separates new package checks from the unchanged RC5 runtime evidence.
+Keep [RC5](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.5)
+source and cached module `3.10.8` for [rollback](BRINGUP.md#direct-install-update-and-rollback);
+published releases and their qualification records remain unchanged.
 
 **Known issues:** interlaced playback can still show combing, stutter or A/V
 timing problems, depending on the application and host. Native hardware
@@ -61,7 +52,7 @@ a kernel update. [DKMS](README.dkms) handles those later module rebuilds
 automatically. Choose one route; if DKMS already manages CrystalHD, follow its
 guide instead of this direct-install procedure.
 
-For a fresh 1.1.0 checkout on Ubuntu, once the release is published:
+For a fresh 1.1.0 checkout on Ubuntu:
 
 ```sh
 sudo apt install git

@@ -1,31 +1,24 @@
 # Open work
 
-Release status **2026-10-19**: [stable 1.0.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0)
-and previous RCs remain unchanged. Published
-[v1.1.0-rc.5](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.5)
-/ package `3.10.8` adds VA decode/lifetime fixes; its
-[qualification summary](HARDWARE-2026-09-13.md#110-rc5-qualification--2026-10-19)
-distinguishes fresh candidate checks from remaining work.
+Release status **2026-10-19**: [stable 1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0)
+/ package `3.10.9` is published. Previous stable releases and RCs remain unchanged.
+The [qualification summary](HARDWARE-2026-09-13.md#110-final-package-qualification--2026-10-19)
+distinguishes fresh final-package checks from scoped RC5 evidence reuse.
 Selected Weave playback remains the scope, with the
 [known deinterlacing limits and planned v1.2 work](USAGE.md#known-issues-and-deinterlacing-roadmap)
 kept separate from current functionality.
-The current source prepares final `1.1.0` / package `3.10.9`. The maintainer
-authorized publication after the [required final-package checks](HARDWARE-2026-09-13.md#110-final-package-qualification--2026-10-19)
-pass; actual results and publication state are recorded in #430. This does not expand the tested scope to general
-full-rate FHD/deinterlacing support.
+Development now turns to the existing v1.2 integration work below, without
+expanding the released scope to general full-rate FHD/deinterlacing support.
 
-- [ ] [#430: v1.1.0 RC qualification and GO/HOLD](https://github.com/ahnhy1324/crystalhd/issues/430)
-  — RC5 is published; fresh Gate A, the 11-fixture oracle, 3-hour 720p,
-  2-hour native/scaled FHD and core lifecycle/aggregate checks pass.
-  VA event-worker endurance/reopen and affected large-AU replay/seek checks
-  also pass. Long-HTTP output/EOS/reopen completed, but its shutdown-warning
-  raw FAIL/OBSERVED_NOT_PASS result is retained, not an unconditional gate PASS.
-  Fresh Moonlight source preparation fails with Sunshine 503 capture/encoding
-  initialization; three 60-minute modes/reopen remain NOT RUN/source BLOCKED.
-  RC5's final installed 360+360-picture handoff also passes. Fresh final-package
-  CI/build/archive/install/RC5 rollback and affected smoke checks must pass
-  before the authorized stable publication; their current state is in #430. See the
-  [RC5 execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6247676972).
+- [x] [#430: v1.1.0 release qualification and publication](https://github.com/ahnhy1324/crystalhd/issues/430)
+  — final-source CI/build/archive, direct/DKMS installation/RC5 rollback and
+  affected installed native/VA/player/Kodi checks pass. Publication and public
+  archive verification are complete under the maintainer's GO. See the
+  [final execution record](https://github.com/ahnhy1324/crystalhd/issues/430#issuecomment-6256652744).
+  RC5 endurance retains its original identity. HTTP's raw FAIL/OBSERVED_NOT_PASS
+  and Moonlight's three 60-minute modes/reopen NOT RUN/source BLOCKED remain
+  explicit limitations, not converted passes. This checkbox records completed
+  release work; all existing GitHub issues remain open.
   Preserve older RC results and FAILs with their original identities; no
   earlier result substitutes for a new candidate gate. Keep the existing
   maintenance-only 3-hour profile and all other thresholds unchanged.
@@ -41,7 +34,7 @@ full-rate FHD/deinterlacing support.
   [the focused investigation](https://github.com/ahnhy1324/crystalhd/issues/429#issuecomment-6245398250);
   they do not replace reporter-host or physical A/V acceptance.
 - [ ] [#436: planned v1.2 deinterlacing and presentation work](https://github.com/ahnhy1324/crystalhd/issues/436)
-  — after final publication, prioritize a truthful CPU VA-VPP Bob path for
+  — prioritize a truthful CPU VA-VPP Bob path for
   the existing Kodi Auto problem in [#445](https://github.com/ahnhy1324/crystalhd/issues/445):
   actual filter execution, field order/timing, ownership, seek/EOS and
   i686/scalar behavior before advertising capability. Query-only Weave or
