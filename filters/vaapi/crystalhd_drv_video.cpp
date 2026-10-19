@@ -1243,10 +1243,17 @@ static bool AbortFencedWrite(Surface *surface, int timeline,
 // so Chromium cannot yet enqueue a new read of this target. The imported
 // unsignaled write fence then protects the whole asynchronous interval.
 static int BeginFencedWrite(Surface *surface,
-                            const CpuCacheFlushOps &operations = CpuCacheFlush()) {
-  if (surface == nullptr || surface->object_fds.empty() ||
-      !operations.Available())
+                            const CpuCacheFlushOps &operations = CpuCacheFlush(),
+                            bool *synchronous_fallback = nullptr) {
+  if (synchronous_fallback != nullptr)
+    *synchronous_fallback = false;
+  if (surface == nullptr)
     return -1;
+  if (surface->object_fds.empty() || !operations.Available()) {
+    if (synchronous_fallback != nullptr)
+      *synchronous_fallback = true;
+    return -1;
+  }
   if (!surface->BeginCpuWrite())
     return -1;
 
@@ -1257,9 +1264,10 @@ static int BeginFencedWrite(Surface *surface,
   snprintf(create.name, sizeof(create.name), "crystalhd-vpp");
   if (timeline < 0 ||
       ioctl(timeline, SW_SYNC_IOC_CREATE_FENCE, &create) != 0) {
-    surface->EndCpuWrite();
-    if (timeline >= 0)
-      close(timeline);
+    const bool released = surface->EndCpuWrite();
+    const bool closed = timeline < 0 || close(timeline) == 0;
+    if (synchronous_fallback != nullptr)
+      *synchronous_fallback = released && closed;
     return -1;
   }
 
@@ -7226,15 +7234,27 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   const std::shared_ptr<DecodeContext> decode_context = decode->second;
   if (decode_context->video_process) {
+    const VASurfaceID request_target = decode_context->target;
+    const auto request_owner = decode_context->transaction_target.lock();
+    const uint64_t request_transaction = decode_context->target_transaction;
+    const auto same_request = [&] {
+      return decode_context->target == request_target &&
+          decode_context->transaction_target.lock() == request_owner &&
+          decode_context->target_transaction == request_transaction;
+    };
     auto finish_vpp = [&](VAStatus status) {
+      // A synchronous source wait may release the mutex. A later Begin/Render
+      // owns its own target and captured parameters; never consume them here.
+      if (!same_request())
+        return status;
       if (status != VA_STATUS_SUCCESS) {
-        auto destination = driver->surfaces.find(decode_context->target);
+        auto destination = driver->surfaces.find(request_target);
         if (destination != driver->surfaces.end()) {
           Surface *owner = BackingOwner(driver, destination->second.get());
           // Failure belongs only to this Begin's backing transaction. A newer
           // ordinary writer needs the same protection as experimental output.
-          if (decode_context->transaction_target.lock().get() == owner &&
-              owner->picture_transaction == decode_context->target_transaction &&
+          if (request_owner.get() == owner &&
+              owner->picture_transaction == request_transaction &&
               owner->vpp_writers == 0 && owner->export_waiters == 0 &&
               !ExperimentalPresentationBinding(driver, owner) &&
               !owner->experimental_write_lease &&
@@ -7373,9 +7393,11 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     } catch (const std::bad_alloc &) {
       return finish_vpp(VA_STATUS_ERROR_ALLOCATION_FAILED);
     }
+    bool synchronous_fallback = false;
     const int write_timeline = private_target
-                                   ? -1 : BeginFencedWrite(target_surface.get());
-    if (!private_target && write_timeline < 0) {
+        ? -1 : BeginFencedWrite(target_surface.get(), CpuCacheFlush(),
+                                &synchronous_fallback);
+    if (!private_target && write_timeline < 0 && !synchronous_fallback) {
       driver->pending_vpp.pop_back();
       Debug("could not fence asynchronous VPP target=%p",
             static_cast<void *>(target_surface.get()));
@@ -7384,6 +7406,48 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     driver->pending_vpp.back().write_timeline = write_timeline;
     ++decoded_source->vpp_readers;
     ++target_owner->vpp_writers;
+    if (!private_target && write_timeline < 0) {
+      // The target has external consumers, but no fence could be published.
+      // Retain normal ownership while waiting and finish all CPU writes before
+      // returning EndPicture; never expose an unfenced asynchronous writer.
+      driver->pending_vpp.back().worker_active = true;
+      const PendingVpp operation = driver->pending_vpp.back();
+      driver->condition.notify_all();
+      const auto canceled = [&] {
+        const auto processor = driver->contexts.find(context_id);
+        return driver->stopping || PendingVppCanceled(operation) ||
+            decode_context->closing || decode_context->retired ||
+            processor == driver->contexts.end() ||
+            processor->second != decode_context || !same_request() ||
+            target_owner->picture_transaction != request_transaction ||
+            decoded_source->expected_timestamp != operation.source_timestamp ||
+            std::none_of(driver->pending_vpp.begin(), driver->pending_vpp.end(),
+                         [&](const PendingVpp &queued) {
+                           return queued.sequence == operation.sequence;
+                         });
+      };
+      VAStatus status = VA_STATUS_ERROR_OPERATION_FAILED;
+      try {
+        if (!canceled())
+          status = SyncDecodeSurface(driver, operation.source, &lock,
+                                      kDecodeTimeoutNs,
+                                      [&canceled] { return canceled(); });
+      } catch (const std::bad_alloc &) {
+        status = VA_STATUS_ERROR_ALLOCATION_FAILED;
+      }
+      // Success alone does not prove this request still owns its destination:
+      // source completion and cancellation can occur in the same unlocked turn.
+      if (canceled())
+        status = VA_STATUS_ERROR_OPERATION_FAILED;
+      if (status == VA_STATUS_SUCCESS)
+        status = ProcessVpp(&driver->vpp_scaler, &driver->vpp_argb_staging,
+                            operation.source.get(), operation.target.get(),
+                            operation.source_region, operation.output_region,
+                            false, operation.deinterlace);
+      ReleasePendingVpp(driver, operation.sequence, status,
+                        status == VA_STATUS_SUCCESS);
+      return finish_vpp(status);
+    }
     driver->condition.notify_all();
     Debug("queued VPP sequence=%llu source_timestamp=%llu target=%p timeline=%d",
           static_cast<unsigned long long>(sequence),

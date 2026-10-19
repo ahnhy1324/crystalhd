@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Exercise the actual driver state machine with private memory only: no DRM
 // device, firmware, browser, or CrystalHD device is opened by these tests.
+#define DtsGetDriverStatus VppTestGetDriverStatus
+#define DtsStopDecoder VppTestStopDecoder
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
+#undef DtsGetDriverStatus
+#undef DtsStopDecoder
 
+#include <atomic>
 #include <cerrno>
 #include <dirent.h>
 #include <linux/sync_file.h>
@@ -188,6 +193,8 @@ struct FenceIoMock {
 };
 
 thread_local FenceIoMock *fence_io_mock = nullptr;
+thread_local unsigned int *synchronous_status_polls = nullptr;
+thread_local unsigned int *synchronous_decoder_stops = nullptr;
 
 struct MockFenceScope {
   explicit MockFenceScope(FenceIoMock &mock) { fence_io_mock = &mock; }
@@ -376,6 +383,24 @@ struct MockNativeNodeScope {
 };
 
 }  // namespace
+
+// Only an explicitly armed, device-less cold-source fixture may make progress
+// polls. No hardware or extra production API call is introduced by this shim.
+extern "C" BC_STATUS VppTestGetDriverStatus(HANDLE device,
+                                             BC_DTS_STATUS *status) {
+  if (synchronous_status_polls == nullptr || device != nullptr || status == nullptr)
+    return BC_STS_INV_ARG;
+  ++*synchronous_status_polls;
+  *status = {};
+  return BC_STS_SUCCESS;
+}
+
+extern "C" BC_STATUS VppTestStopDecoder(HANDLE device) {
+  if (synchronous_decoder_stops == nullptr || device != nullptr)
+    return BC_STS_INV_ARG;
+  ++*synchronous_decoder_stops;
+  return BC_STS_SUCCESS;
+}
 
 extern "C" int __real_open(const char *path, int flags, ...);
 extern "C" int __real_ioctl(int fd, unsigned long request, ...);
@@ -1854,6 +1879,161 @@ void ExposedQueuedVppStillRequiresFence() {
               mock.events == std::vector<std::string>{"start:101", "open", "end:101"} &&
               mock.started.empty() && mock.handles.empty() && !mock.invalid,
           "exposed backing cannot fall back to unfenced writes after fence failure");
+}
+
+void ExposedColdVppFallbackCompletesBeforeReturning() {
+  for (unsigned int mode = 0; mode != 9; ++mode) {
+    FenceIoMock mock;
+    MockFenceScope scope(mock);
+    Fixture fixture;
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    fixture.decoder->decoder_started = true;
+    fixture.target->object_fds = {101};
+    fixture.target->layout.valid = true;
+    const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    picture->ready = false;
+    const auto original = fixture.target->storage;
+    mock.fail_open = true;
+    fixture.SubmitParameters();
+    std::atomic<bool> finished{false};
+    VAStatus status = VA_STATUS_ERROR_OPERATION_FAILED;
+    unsigned int polls = 0;
+    struct Join {
+      Driver *driver;
+      std::thread thread;
+      ~Join() {
+        if (!thread.joinable()) return;
+        {
+          std::lock_guard<std::mutex> lock(driver->mutex);
+          driver->stopping = true;
+        }
+        driver->condition.notify_all();
+        thread.join();
+      }
+    } end{&fixture.driver, {}};
+    end.thread = std::thread([&] {
+      MockFenceScope thread_scope(mock);
+      synchronous_status_polls = &polls;
+      status = EndPicture(&fixture.context, 2);
+      synchronous_status_polls = nullptr;
+      finished.store(true);
+    });
+    {
+      std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+      Require(fixture.driver.condition.wait_for(lock, std::chrono::seconds(1), [&] {
+                return !fixture.driver.pending_vpp.empty() || finished.load();
+              }) && !finished.load() && fixture.driver.pending_vpp.size() == 1 &&
+                  fixture.driver.pending_vpp.front().worker_active &&
+                  picture->vpp_readers == 1 && fixture.target->vpp_writers == 1 &&
+                  !fixture.target->ready && !fixture.target->failed &&
+                  fixture.target->storage == original,
+              "exposed cold fallback retains owners and cannot return unready success");
+      if (mode == 1)
+        ++fixture.decoder->generation;
+      else if (mode == 2)
+        picture->failed = true;
+      else if (mode == 5)
+        mock.fail_start_fd = 101;
+      else if (mode == 6)
+        mock.fail_end_fd = 101;
+      if (mode == 0 || mode == 5 || mode == 6)
+        picture->ready = true;
+    }
+    std::shared_ptr<Surface> replacement;
+    if (mode == 3) {
+      Require(DestroyContext(&fixture.context, 2) == VA_STATUS_SUCCESS,
+              "destroy the waiting request's VPP context");
+    } else if (mode == 4) {
+      VASurfaceID target = 2;
+      Require(DestroySurfaces(&fixture.context, &target, 1) == VA_STATUS_SUCCESS,
+              "destroy the waiting request's target");
+    } else if (mode == 7) {
+      replacement = Picture(0, 77);
+      {
+        std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+        fixture.driver.surfaces[3] = replacement;
+      }
+      Require(BeginPicture(&fixture.context, 2, 3) == VA_STATUS_SUCCESS &&
+                  RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                      VA_STATUS_SUCCESS,
+              "a new Begin/Render uses a different target while the old End waits");
+    } else if (mode == 8) {
+      VASurfaceID source = 1;
+      unsigned int stops = 0;
+      const uint64_t generation = fixture.decoder->generation;
+      synchronous_decoder_stops = &stops;
+      const VAStatus destroyed = DestroySurfaces(&fixture.context, &source, 1);
+      synchronous_decoder_stops = nullptr;
+      Require(destroyed == VA_STATUS_SUCCESS && stops == 1 &&
+                  !fixture.decoder->decoder_started &&
+                  fixture.decoder->generation == generation + 1,
+              "destroy the waiting request's public source surface");
+    }
+    fixture.driver.condition.notify_all();
+    end.thread.join();
+    Require(fixture.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
+                fixture.target->vpp_writers == 0 && mock.started.empty() &&
+                mock.handles.empty() && !mock.self_wait && !mock.invalid,
+            "synchronous fallback completion/cancellation releases all owners exactly once");
+    if (mode == 0) {
+      Require(status == VA_STATUS_SUCCESS && fixture.target->ready &&
+                  !fixture.target->failed &&
+                  fixture.target->frame_timestamp == kTimestampStep &&
+                  fixture.target->planes[0][0] == 40 &&
+                  mock.events == std::vector<std::string>{
+                      "start:101", "open", "end:101", "start:101", "end:101"},
+              "without sw_sync, exposed output is actually committed before End succeeds");
+    } else {
+      Require(status != VA_STATUS_SUCCESS && !fixture.target->ready &&
+                  fixture.target->failed,
+              "failed/canceled synchronous conversion never acknowledges ready pixels");
+      if (mode != 6)
+        Require(fixture.target->storage == original,
+                "cancellation or failed CPU START never changes destination pixels");
+      if (mode == 7) {
+        Require(fixture.processor->target == 3 &&
+                    fixture.processor->have_vpp_parameters &&
+                    fixture.processor->vpp_frame == picture &&
+                    replacement->planes[0][0] == 77,
+                "old End cannot erase or poison newer Begin/Render parameters");
+        picture->ready = true;
+        Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                    replacement->ready && replacement->planes[0][0] == 40,
+                "the newer VPP transaction remains independently completable");
+      }
+    }
+  }
+}
+
+void UnsafeFenceFailuresCannotUseSynchronousFallback() {
+  for (unsigned int mode = 0; mode != 3; ++mode) {
+    FenceIoMock mock;
+    MockFenceScope scope(mock);
+    Fixture fixture;
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    fixture.target->object_fds = {101};
+    fixture.target->layout.valid = true;
+    const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    picture->ready = false;
+    if (mode == 0)
+      mock.fail_start_fd = 101;
+    else if (mode == 1) {
+      mock.fail_open = true;
+      mock.fail_end_fd = 101;
+    } else {
+      mock.fail_import_fd = 101;
+    }
+    fixture.SubmitParameters();
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_ERROR_OPERATION_FAILED &&
+                fixture.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
+                fixture.target->vpp_writers == 0 &&
+                fixture.target->planes[0][0] == 99 &&
+                mock.started.empty() && mock.handles.empty() &&
+                !mock.self_wait && !mock.invalid,
+            "CPU acquisition/cleanup or attempted-import failure cannot become synchronous success");
+  }
 }
 
 void ReuseBetweenRenderAndEndKeepsCapturedPicture() {
@@ -3416,6 +3596,8 @@ int main(int argc, char **argv) {
     DirectCaptureKeepsQueuedVppPrivate();
     InternalQueuedVppCompletesWithoutSwSync();
     ExposedQueuedVppStillRequiresFence();
+    ExposedColdVppFallbackCompletesBeforeReturning();
+    UnsafeFenceFailuresCannotUseSynchronousFallback();
     ReuseBetweenRenderAndEndKeepsCapturedPicture();
     ResetRejectsCapturedOldEpoch();
     MissingPictureIsNotSuccessfulFallback();
@@ -3454,6 +3636,6 @@ int main(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 60 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 62 hardware-free regressions passed");
   return 0;
 }
