@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "date": "2026-10-20",
+  "scope": "BCM70015 FHD H.264 card scaling, host field assembly and GStreamer scalerbob; not VA Bob or hardware deinterlacing",
+  "source": {
+    "gstreamer_player": "b047ce1cf4b299b3a6ad5117e0bec0754d729779",
+    "isolated_dil": "3617c4e06bb3597a719ff2dea0ee64b9b1097664",
+    "direct_field_probe": "502badf6bdd81c4e97606ac0ac6f1cf85c57f453",
+    "installed_bundle": "1.1.0",
+    "loaded_module": "3.10.9",
+    "module_srcversion": "287221A03F284BCA2A3C04B"
+  },
+  "environment": {
+    "os": "Ubuntu 26.04.1 LTS x86-64",
+    "kernel": "7.0.0-38-generic",
+    "cpu": "Core 2 Duo T8100 2.10 GHz",
+    "gstreamer": "1.28.2",
+    "force_l0s_off": true,
+    "session_l0s_off": false,
+    "installed_payload_or_firmware_modified": false
+  },
+  "direct_field_capture": {
+    "fixture": "native-single-field.json cases[2] uniform-TFF 1920x1080i25 generator",
+    "options": "50 0 NEW_PREFIX --scale-width 1280",
+    "inputs": 50,
+    "outputs": 100,
+    "picture_geometry": [1280, 720],
+    "field_geometry": [1280, 360],
+    "pitch_bytes": 2560,
+    "each_token_has_one_top_and_bottom": true,
+    "active_bytes": 92160000,
+    "reported_rx_done_dwords_per_field": 230440,
+    "reported_rx_bytes_including_trailers": 92176000,
+    "active_fraction_of_retained_native_capture": "4/9",
+    "comparison_scope": "unscaled bytes are the historical 2026-10-15 capture, not a new RX control or PCIe wire measurement",
+    "eos_ready_cleanup": [true, 0, "PASS"]
+  },
+  "scaled_weave_oracle": {
+    "inputs": 50,
+    "outputs": 50,
+    "comparison": "all active YUY2 bytes equal independently captured fields joined by input token, sorted by source packet PTS",
+    "pts_step_ns": 40000000,
+    "duration_ns": 40000000,
+    "caps": "YUY2 1280x720 mixed 25/1 PAR1/1",
+    "eos_null_close": "PASS"
+  },
+  "bob_benchmark": {
+    "fixture": "existing kodi-h264-1080i25-30s.mkv, 750 H.264 MBAFF pictures, stream-level TFF not uniform-parity acceptance",
+    "pipeline": "filesrc ! matroskademux ! h264parse ! identity sync=PACED ! crystalhddec scale-width=WIDTH ! deinterlace method=scalerbob fields=all ! appsink sync=false drop=false",
+    "runs_per_cell": 1,
+    "outputs_each_run": 1500,
+    "pts_step_and_duration_ns": 20000000,
+    "cpu_timer": "set_state(PLAYING)-to-EOS, includes state-change/device startup and DIL workers; construction/close excluded",
+    "cpu_percent_denominator": "one core",
+    "latency": "decoder sink AU arrival to appsink output, joined by PTS; two Bob outputs per AU",
+    "runs": [
+      {"scale_width": 0, "paced": false, "wall_s": 18.01711299, "cpu_s": 11.093432129, "outputs_s": 83.25418177887555, "maxrss_kib": 146684},
+      {"scale_width": 1280, "paced": false, "wall_s": 13.95037015, "cpu_s": 7.72576828, "outputs_s": 107.52402867245785, "maxrss_kib": 130484},
+      {"scale_width": 0, "paced": true, "wall_s": 30.168662512, "cpu_s": 12.874798772, "cpu_percent": 42.676067481874185, "au_to_output_p50_ms": 215.215759, "au_to_output_p95_ms": 339.864883, "maxrss_kib": 139792},
+      {"scale_width": 1280, "paced": true, "wall_s": 30.133057056, "cpu_s": 9.335324094, "cpu_percent": 30.98034187719822, "au_to_output_p50_ms": 194.84703, "au_to_output_p95_ms": 303.390558, "maxrss_kib": 124300}
+    ],
+    "eos_counts_pts_null_close": "PASS all four runs",
+    "bus_warning_error_count": 0,
+    "debug_warn_rows_per_run": 4,
+    "debug_warn_classes": ["Matroska Unknown TrackEntry subelement 0xec ignoring (twice)", "chroma-site ENCODED none", "invalid chroma-site using default"]
+  },
+  "qualification": {
+    "gstreamer_full_lifecycle_groups": "88 PASS",
+    "asan_ubsan_lsan_scaling_groups": "12 PASS",
+    "player_device_free_tests": "65 PASS",
+    "independent_production_and_test_review": "APPROVE",
+    "actual_candidate_and_card_observed": true,
+    "folded_pin_balance_before_after": [0, 0],
+    "module_refcount_before_after": [0, 0],
+    "aer_identity_pm_unchanged": true,
+    "new_kernel_faults": 0,
+    "original_collector_fail": "50 exact-pixel callbacks and EOS succeeded, then Python caps-object repr comparison failed; retained FAIL, device-free old RED/content-string GREEN followed by fresh PASS without production changes"
+  },
+  "not_measured": ["physical display cadence or A/V", "card-only or network E2E latency", "PCIe wire traffic", "power", "Atom or BCM70012", "sustained maximum or endurance", "VA card-scaled decoder surfaces", "hardware Bob, temporal DI or physical source leasing"]
+}

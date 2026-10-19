@@ -272,7 +272,23 @@ pixel aspect ratio that preserves the source display aspect ratio. The width is
 selected for each playback session and survives flush/reopen. It is not fixed
 at 1280, and it cannot be changed while a pipeline is playing.
 
-The hardware option is rejected for BCM70012 and interlaced input. The optional
+The hardware option is rejected for BCM70012. Published 1.1 supports progressive
+scaling only. With the matching **1.2 development plugin and player**, H.264
+interlaced input can also use a multiple-of-16 width:
+
+```sh
+crystalhd-play --hardware --scale-width 1280 "/path/to/video-1080i.mkv"
+```
+
+The card returns the smaller fields; the host still performs deinterlacing.
+Add `--weave` to preserve their interlaced lines instead. The player's selected
+deinterlacer may differ from the explicit GStreamer `scalerbob` used in the
+[bounded FHD-to-720 comparison](HARDWARE-2026-09-13.md#card-scaled-interlaced-h264-and-host-bob-2026-10-20).
+Other interlaced codecs, nonaligned widths and scaled whole-Weave payloads are
+not supported by this new path. This does not add card-side Bob or change the
+VA decoder surface-size contract.
+
+The optional
 `--software-output-size WIDTHxHEIGHT` stage requires a nonzero hardware scale
 width and performs an explicit bounded GStreamer resize with aspect-preserving
 borders. Both dimensions must be positive and even, neither may exceed 4096,

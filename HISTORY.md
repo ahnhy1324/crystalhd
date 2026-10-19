@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Allow aligned BCM70015 H.264 field scaling through the existing GStreamer
+  width option, preserving paired-field identity and rejecting scaled whole Weave.
 - Send library diagnostics to stderr so binary media written to stdout is not
   corrupted; preserve existing messages, log levels and caller-selected files.
 - Reduce resized/padded NV12 Bob CPU work without changing sampled pixels,
