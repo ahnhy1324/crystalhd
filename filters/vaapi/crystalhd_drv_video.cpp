@@ -1620,14 +1620,27 @@ static VAStatus ProcessVpp(SwsContext **scaler,
     if (deinterlace.bob) {
       if (output_region.width != destination->width ||
           output_region.height != destination->height) {
-        for (unsigned int row = 0; row < destination->height; ++row)
-          memset(destination->planes[0] +
-                     static_cast<size_t>(row) * destination->pitch[0],
-                 16, destination->width);
-        for (unsigned int row = 0; row < (destination->height + 1U) / 2; ++row)
-          memset(destination->planes[1] +
-                     static_cast<size_t>(row) * destination->pitch[1],
-                 128, Align(destination->width, 2));
+        // Bob permits only origin-zero extents. The visible rectangle is
+        // overwritten below, so initialize only its right and bottom borders.
+        for (unsigned int plane = 0; plane != 2; ++plane) {
+          const unsigned int rows = plane == 0
+              ? destination->height : (destination->height + 1U) / 2;
+          const unsigned int visible_rows = plane == 0
+              ? output_region.height : output_region.height / 2;
+          const unsigned int row_bytes = plane == 0
+              ? destination->width : Align(destination->width, 2);
+          if (row_bytes > output_region.width)
+            for (unsigned int row = 0; row < visible_rows; ++row)
+              memset(destination->planes[plane] +
+                         static_cast<size_t>(row) * destination->pitch[plane] +
+                         output_region.width,
+                     plane == 0 ? 16 : 128,
+                     row_bytes - output_region.width);
+          for (unsigned int row = visible_rows; row < rows; ++row)
+            memset(destination->planes[plane] +
+                       static_cast<size_t>(row) * destination->pitch[plane],
+                   plane == 0 ? 16 : 128, row_bytes);
+        }
       }
       // Each plane has its own physical-field row lattice. In particular,
       // selected Y row / 2 is not the selected interlaced NV12 chroma row.
@@ -1636,6 +1649,18 @@ static VAStatus ProcessVpp(SwsContext **scaler,
             ? source_region.height : source_region.height / 2;
         const unsigned int target_rows = plane == 0
             ? output_region.height : output_region.height / 2;
+        const bool same_width = source_region.width == output_region.width;
+        const unsigned int source_samples = plane == 0
+            ? source_region.width : source_region.width / 2;
+        const unsigned int target_samples = plane == 0
+            ? output_region.width : output_region.width / 2;
+        // floor(column * source_samples / target_samples), without a wide
+        // division per sample. The remainder stays below target_samples;
+        // geometry is uint16_t, so each addition fits unsigned int.
+        const unsigned int whole = same_width ? 0
+            : source_samples / target_samples;
+        const unsigned int remainder = same_width ? 0
+            : source_samples % target_samples;
         for (unsigned int row = 0; row < target_rows; ++row) {
           uint64_t source_row = 0;
           if (!crystalhd_vpp_bob::SourcePlaneRow(
@@ -1650,19 +1675,30 @@ static VAStatus ProcessVpp(SwsContext **scaler,
               static_cast<size_t>(source_row) * source->pitch[plane];
           uint8_t *output = destination->planes[plane] +
               static_cast<size_t>(row) * destination->pitch[plane];
-          if (source_region.width == output_region.width) {
+          if (same_width) {
             memcpy(output, input, output_region.width);
           } else if (plane == 0) {
-            for (unsigned int column = 0; column < output_region.width; ++column)
-              output[column] = input[static_cast<uint64_t>(column) *
-                  source_region.width / output_region.width];
+            unsigned int source_x = 0, phase = 0;
+            for (unsigned int column = 0; column < target_samples; ++column) {
+              output[column] = input[source_x];
+              source_x += whole;
+              phase += remainder;
+              if (phase >= target_samples) {
+                phase -= target_samples;
+                ++source_x;
+              }
+            }
           } else {
-            for (unsigned int column = 0; column < output_region.width;
-                 column += 2) {
-              const unsigned int source_x = static_cast<uint64_t>(column) *
-                  source_region.width / output_region.width;
-              output[column] = input[source_x & ~1U];
-              output[column + 1] = input[(source_x & ~1U) + 1];
+            unsigned int source_x = 0, phase = 0;
+            for (unsigned int column = 0; column < target_samples; ++column) {
+              output[column * 2] = input[source_x * 2];
+              output[column * 2 + 1] = input[source_x * 2 + 1];
+              source_x += whole;
+              phase += remainder;
+              if (phase >= target_samples) {
+                phase -= target_samples;
+                ++source_x;
+              }
             }
           }
         }

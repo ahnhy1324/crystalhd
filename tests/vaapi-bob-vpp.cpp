@@ -89,7 +89,8 @@ void Initialize(Surface *surface, unsigned int width, unsigned int height,
   surface->pitch[0] = width * (argb ? 4 : 1) + 5;
   surface->pitch[1] = argb ? 0 : width + 7;
   const size_t y_bytes = static_cast<size_t>(surface->pitch[0]) * height;
-  const size_t uv_bytes = argb ? 0 : static_cast<size_t>(surface->pitch[1]) * (height / 2);
+  const size_t uv_bytes = argb ? 0
+      : static_cast<size_t>(surface->pitch[1]) * ((height + 1U) / 2);
   surface->storage.assign(32 + y_bytes + 31 + uv_bytes + 64, 0xa5);
   surface->planes[0] = surface->storage.data() + 32;
   surface->planes[1] = argb ? nullptr : surface->planes[0] + y_bytes + 31;
@@ -499,6 +500,14 @@ int main(int argc, char **argv) {
       Pixels(12, 12, 8, 8, false, parity, false, {16, 16}, {12, 12});
       Pixels(16, 720, 16, 720, false, parity, false, {16, 736}, {16, 736});
       Pixels(32, 1080, 16, 720, false, parity, false, {32, 1088}, {16, 736});
+      // Exercise whole=0 and large whole steps at the uint16_t width limit,
+      // with independent Y samples / UV pairs and no large frame allocation.
+      Pixels(2, 4, 65534, 8, false, parity);
+      Pixels(65534, 8, 2, 4, false, parity);
+      Pixels(14, 12, 22, 8, false, parity);
+      // Odd backing dimensions include the final full neutral UV pair and
+      // ceil(height/2) row, but must leave pitch tails / outer guards intact.
+      Pixels(16, 12, 16, 12, false, parity, false, {16, 16}, {17, 17});
 #ifndef CRYSTALHD_BOB_NV12_ONLY
       Pixels(16, 720, 16, 720, true, parity);
       Pixels(32, 1080, 16, 720, true, parity);
