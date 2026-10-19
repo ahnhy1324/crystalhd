@@ -1983,6 +1983,130 @@ void RejectedH264TargetReadback() {
           "accepted recovery exposes its own pixels, not the rejected picture");
 }
 
+void RejectedH264RecoveryRetainsDelayedReorderedPictures() {
+  // Exercise driver-owned picture identities, not a simulated CABAC/DPB or
+  // client error-recovery policy. Old B/P output must remain independently
+  // completable after a recovery IDR rebinds their reused public target.
+  Fixture f;
+  f.mock.legacy_pes_family = true;
+  f.picture.num_ref_frames = 5;
+  f.picture.pic_fields.bits.reference_pic_flag = 1;
+  f.slice.slice_type = 2;
+  Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+          "accept an IDR before retaining delayed reordered pictures");
+  Output(&f, kTimestampStep, 0x11);
+  f.slice.slice_type = 0;
+  Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+          "accept the future P anchor before its B picture");
+  f.slice.slice_type = 1;
+  Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+          "accept a reference B with genuine output still outstanding");
+  const auto old_p = f.decode->decoded_frames.at(2 * kTimestampStep);
+  const auto old_b = f.decode->decoded_frames.at(3 * kTimestampStep);
+  const auto target = f.driver.surfaces.at(1);
+  const auto pending = f.decode->pending;
+  const auto frames = f.decode->decoded_frames;
+  const uint64_t timestamp = f.decode->next_timestamp;
+  const uint64_t ordinal = f.decode->next_submission_ordinal;
+  const size_t cache = f.decode->replay.cached_bytes();
+  const HANDLE device = f.decode->device;
+  const uint64_t generation = f.decode->generation;
+  std::vector<uint8_t> rejected(
+      crystalhd_access_unit_limits::kVaH264SubmissionBytes + 1, 0x55);
+  rejected[0] = 0x65;
+  f.slice.slice_type = 2;
+  // The picture/IQ/slice parameters now match the first IDR, so reuse its
+  // measured header bytes to distinguish the extended raw guard from the
+  // ordinary assembled cap or missing-fragment-transport rejection.
+  auto assembled_rejected = f.mock.inputs.front().bytes;
+  Require(assembled_rejected.size() > 3,
+          "the accepted first IDR supplies measured reconstructed headers");
+  assembled_rejected.resize(assembled_rejected.size() - 3);
+  assembled_rejected.insert(assembled_rejected.end(), rejected.begin(), rejected.end());
+  Require(assembled_rejected.size() >
+                  crystalhd_access_unit_limits::kVaH264SubmissionBytes &&
+              assembled_rejected.size() <=
+                  H264SubmissionLimit(f.decode.get(), assembled_rejected.size()) &&
+              !H264HeadroomDeescapedFits(assembled_rejected) &&
+              H264FragmentInput() != nullptr,
+          "the extended assembled/transport envelope permits this AU but its deescaped policy rejects it");
+  Require(SubmitH264(&f, rejected) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+              f.mock.inputs.size() == 3 && f.decode->h264_waiting_for_idr &&
+              f.decode->pending == pending && f.decode->decoded_frames == frames &&
+              f.decode->next_timestamp == timestamp &&
+              f.decode->next_submission_ordinal == ordinal &&
+              f.decode->replay.cached_bytes() == cache &&
+              f.decode->replay.outstanding() == 2 &&
+              !f.decode->replay.failed() && PublicReadRejected(target.get()),
+          "reference admission rejection preserves delayed work without consuming its recovery token");
+  f.slice.slice_type = 0;
+  Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_ERROR_DECODING_ERROR &&
+              f.mock.inputs.size() == 3 && f.decode->pending == pending &&
+              f.decode->decoded_frames == frames &&
+              f.decode->next_timestamp == timestamp &&
+              f.decode->next_submission_ordinal == ordinal &&
+              SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_DECODING_ERROR,
+          "dependent input cannot expose old public pixels or consume the recovery timestamp");
+
+  f.slice.slice_type = 2;
+  Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+              f.mock.inputs.size() == 4 &&
+              f.mock.inputs.back().timestamp == timestamp &&
+              !f.decode->h264_waiting_for_idr &&
+              f.decode->replay.outstanding() == 3 &&
+              f.decode->pending.count(2 * kTimestampStep) == 1 &&
+              f.decode->pending.count(3 * kTimestampStep) == 1 &&
+              !PublicReadRejected(target.get()),
+          "the real recovery IDR binds the same target before either delayed picture completes");
+  const auto recovery = f.decode->decoded_frames.at(timestamp);
+  const uint64_t identity = target->decode_identity;
+  const auto public_pixels = target->storage;
+  Output(&f, 3 * kTimestampStep, 0x33);
+  Output(&f, 2 * kTimestampStep, 0x22);
+  Require(old_b->ready && !old_b->failed && old_b->planes[0][0] == 0x33 &&
+              old_b->frame_timestamp == 3 * kTimestampStep &&
+              old_p->ready && !old_p->failed && old_p->planes[0][0] == 0x22 &&
+              old_p->frame_timestamp == 2 * kTimestampStep &&
+              target->storage == public_pixels && !target->ready && !target->failed &&
+              target->expected_timestamp == timestamp &&
+              target->decode_identity == identity && target->decode_picture.lock() == recovery &&
+              f.decode->pending.size() == 1 && f.decode->pending.count(timestamp) == 1 &&
+              f.decode->replay.outstanding() == 1 && !f.decode->replay.failed(),
+          "reordered old B/P output completes only its retained private pictures, not the recovery target");
+  {
+    std::unique_lock<std::mutex> lock(f.driver.mutex);
+    Require(SyncDecodeSurface(&f.driver, old_b, &lock, 0) == VA_STATUS_SUCCESS &&
+                SyncDecodeSurface(&f.driver, old_p, &lock, 0) == VA_STATUS_SUCCESS,
+            "both delayed accepted pictures remain independently readable after recovery rebinding");
+  }
+  Output(&f, 3 * kTimestampStep, 0xee);
+  Require(old_b->planes[0][0] == 0x33 && target->storage == public_pixels &&
+              f.decode->replay.outstanding() == 1 &&
+              f.decode->pending.count(timestamp) == 1,
+          "a repeated old output cannot replace accepted pixels or retire the recovery IDR");
+  Output(&f, timestamp, 0x44);
+  Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS &&
+              target->planes[0][0] == 0x44 &&
+              target->frame_timestamp == timestamp &&
+              target->decode_identity == identity &&
+              f.decode->pending.empty() && f.decode->replay.outstanding() == 0,
+          "only the recovery IDR's own output makes its new public transaction ready");
+  f.slice.slice_type = 0;
+  Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+              f.mock.inputs.size() == 5 &&
+              f.mock.inputs.back().timestamp == timestamp + kTimestampStep,
+          "following dependent input resumes after the recovery IDR");
+  Output(&f, timestamp + kTimestampStep, 0x55);
+  Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS &&
+              target->planes[0][0] == 0x55 &&
+              old_b->planes[0][0] == 0x33 && old_p->planes[0][0] == 0x22 &&
+              f.decode->pending.empty() && f.decode->replay.outstanding() == 0 &&
+              !f.decode->replay.failed() && f.decode->device == device &&
+              f.decode->generation == generation &&
+              f.mock.close_count == 0 && f.mock.reopen_count == 0,
+          "same-context continuation preserves every accepted picture without reset or stale public pixels");
+}
+
 void RejectedH264PreservesAcceptedPictures() {
   for (bool direct : {false, true}) {
     for (bool ready : {false, true}) {
@@ -2490,6 +2614,7 @@ int main() {
   const std::pair<const char *, void (*)()> groups[] = {
     {"obsolete surface retirement preserves independent decode", ObsoleteSurfaceRetirementPreservesIndependentDecode},
     {"rejected H.264 target readback", RejectedH264TargetReadback},
+    {"rejected H.264 recovery retains delayed reordered pictures", RejectedH264RecoveryRetainsDelayedReorderedPictures},
     {"rejected H.264 preserves accepted pictures", RejectedH264PreservesAcceptedPictures},
     {"rejected H.264 ownership guards", RejectedH264OwnershipGuards},
     {"rejected H.264 promotion failure", RejectedH264PromotionFailure},
