@@ -142,6 +142,11 @@ outputs/s: this does not demonstrate real-time 50p headroom, displayed cadence
 or physical A/V. Exact source identities, CPU/RSS and method are in that report;
 the short pixel controls are not themselves throughput or Kodi acceptance.
 
+Field-rate Bob with FFmpeg 8.0.1 `-stream_loop` is not lossless: hardware-context
+reconfiguration can discard one buffered picture at each boundary. Continuous
+concat-demuxer input passes a separate bounded control; this does not qualify
+that looping mode. See [the compatibility result in #445](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6257714172).
+
 For supported interlaced input with this development VA driver selected,
 Kodi's per-video deinterlace method **Auto** selects CPU Bob; **Off** retains
 Weave. Stock Kodi 21.3 passes the selected 30-second FHD control: Auto commits
