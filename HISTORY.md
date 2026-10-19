@@ -10,6 +10,9 @@
   Atom performance, endurance or physical A/V acceptance.
 - Keep VPP queue allocation failures transactional and prevent an older failed
   request from invalidating a newer writer's output.
+- Complete exposed, decode-pending VPP synchronously when fencing is unavailable,
+  retaining cancellation and CPU ownership checks rather than exposing an
+  unfenced asynchronous write.
 - Preserve imported PRIME plane layouts on export and correct legacy batch
   imports. Validate import spans and CSC strides before access, and initialize
   complete chroma pairs in odd-width NV12 backgrounds.

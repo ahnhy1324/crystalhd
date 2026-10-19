@@ -144,8 +144,14 @@ the short pixel controls are not themselves throughput or Kodi acceptance.
 
 For supported interlaced input with this development VA driver selected,
 Kodi's per-video deinterlace method **Auto** selects CPU Bob; **Off** retains
-Weave. Stock Kodi 21.3 passed a short
-native Auto/Off selection, natural-EOF and resource-return control. Kodi 22,
+Weave. Stock Kodi 21.3 passes the selected 30-second FHD control: Auto commits
+1,500 Bob outputs for 750 decoded pictures; Off uses no Bob. Both reach natural
+EOF and return resources cleanly; see the source-pinned hardware report above.
+Previously exported targets awaiting decode complete synchronously within the
+existing bounded wait when safe fence setup is unavailable, rather than
+publishing an unfenced asynchronous write. No root/debugfs permission change
+or new option is needed. CPU-access/cleanup and partial-import failures still
+reject. Kodi 22,
 Atom performance, actual display cadence and physical A/V still need acceptance.
 
 ## Replay and end of stream
