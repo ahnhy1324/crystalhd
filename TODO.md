@@ -18,11 +18,11 @@ expanding the released scope to general full-rate FHD/deinterlacing support.
   RC5 endurance retains its original identity. HTTP's raw FAIL/OBSERVED_NOT_PASS
   and Moonlight's three 60-minute modes/reopen NOT RUN/source BLOCKED remain
   explicit limitations, not converted passes. This checkbox records completed
-  release work; all existing GitHub issues remain open.
+  release work, not acceptance of those limitations.
   Preserve older RC results and FAILs with their original identities; no
   earlier result substitutes for a new candidate gate. Keep the existing
   maintenance-only 3-hour profile and all other thresholds unchanged.
-  All existing issues stay open. Selected local-player dialogue A/V has
+  Selected local-player dialogue A/V has
   subjective acceptance; quantitative timing, other frontends and external
   final-package acceptance are not inferred from automated tests.
 - [ ] [#429: External i386/BCM70015 acceptance](https://github.com/ahnhy1324/crystalhd/issues/429)

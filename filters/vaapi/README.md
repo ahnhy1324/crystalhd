@@ -158,8 +158,9 @@ publishing an unfenced asynchronous write. No root/debugfs permission change
 or new option is needed. CPU-access/cleanup and partial-import failures still
 reject. Kodi 21.3's second-field timestamp calculation depends on a previous
 temporal reference, while Bob correctly requires none; the current tracker logs
-show a 0/40 ms timestamp pattern, not demonstrated evenly timed 50p. Seek/Stop
-controls also retain warnings and multi-second seek recovery. See
+show a 0/40 ms timestamp pattern, not demonstrated evenly timed 50p. A separate
+branch trace attributes two reproduced seek/Stop buffer warnings to cancellation,
+not deadline expiry; seek-preroll drops and multi-second recovery remain. See
 [#445's compatibility evidence](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6257714172).
 Kodi 22, Atom performance, actual display cadence and physical A/V still need
 acceptance. **Off** retains Weave; the separate
