@@ -78,6 +78,14 @@ extern "C" ssize_t __wrap_read(int fd, void *buffer, size_t count) {
   return __real_read(fd, buffer, count);
 }
 
+extern "C" ssize_t __real___read_chk(int, void *, size_t, size_t);
+extern "C" ssize_t __wrap___read_chk(int fd, void *buffer, size_t count,
+                                     size_t buffer_size) {
+  if (fd == control_read_probe_fd)
+    ++control_read_probe_calls;
+  return __real___read_chk(fd, buffer, count, buffer_size);
+}
+
 extern "C" int __real_ioctl(int fd, unsigned long request, ...);
 extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
   va_list arguments;
@@ -285,6 +293,10 @@ struct DecodeIoMock {
   BC_STATUS stop_status = BC_STS_SUCCESS;
   BC_STATUS decoder_close_status = BC_STS_SUCCESS;
   BC_STATUS device_close_status = BC_STS_SUCCESS;
+  bool override_output = false;
+  BC_DTS_PROC_OUT overridden_output = {};
+  BC_STATUS overridden_output_status = BC_STS_SUCCESS;
+  BC_STATUS output_release_status = BC_STS_SUCCESS;
   std::vector<uint32_t> status_requests;
   std::thread::id output_thread;
   std::atomic<unsigned int> accepted_inputs{0};
@@ -515,6 +527,11 @@ extern "C" BC_STATUS __wrap_DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
     return __real_DtsProcOutputNoCopy(device, timeout, output);
   decode_io_mock->invalid |= device != decode_io_mock->handle() || timeout != 0;
   *output = {};
+  if (decode_io_mock->override_output) {
+    *output = decode_io_mock->overridden_output;
+    decode_io_mock->events.push_back("override-output");
+    return decode_io_mock->overridden_output_status;
+  }
   if (decode_io_mock->outputs.empty())
     return BC_STS_NO_DATA;
   const uint64_t timestamp = decode_io_mock->outputs.front();
@@ -555,7 +572,7 @@ extern "C" BC_STATUS __wrap_DtsReleaseOutputBuffs(HANDLE device, PVOID reserved,
   decode_io_mock->invalid |= device != decode_io_mock->handle() ||
                              reserved != nullptr || change;
   decode_io_mock->events.push_back("release");
-  return BC_STS_SUCCESS;
+  return decode_io_mock->output_release_status;
 }
 
 extern "C" int __real_usleep(useconds_t);
@@ -1053,6 +1070,119 @@ struct OutputFixture {
     decoder.decoded_frames[1] = private_frame;
   }
 };
+
+static void PrepareLinkOutput(OutputFixture *fixture) {
+  fixture->decoder.is_70012 = true;
+  fixture->pixels.assign(720U * fixture->output.PicInfo.height * 2U, 128);
+  for (size_t byte = 0; byte < fixture->pixels.size(); byte += 2)
+    fixture->pixels[byte] = 40;
+  fixture->output.Ybuff = fixture->pixels.data();
+  fixture->output.YBuffDoneSz = fixture->pixels.size() / 4;
+}
+
+static void EncryptedOutputNeverMaterializesOrCompletes() {
+  for (bool link : {false, true}) {
+    for (bool direct : {false, true}) {
+      for (unsigned int mode = 0; mode != 3; ++mode) {
+        OutputFixture fixture;
+        if (link) PrepareLinkOutput(&fixture);
+        if (direct) fixture.Direct();
+        if (mode != 0) fixture.output.PoutFlags |= BC_POUT_FLAGS_ENCRYPTED;
+        if (mode == 2) fixture.output.PicInfo.timeStamp = 0;
+        const auto public_pixels = fixture.public_frame->storage;
+        const auto private_pixels = fixture.private_frame->storage;
+        const auto picture = fixture.decoder.decoded_frames.at(1);
+        const VAStatus status = fixture.Process();
+        if (mode == 0) {
+          Require(status == VA_STATUS_SUCCESS && fixture.public_frame->ready &&
+                      fixture.public_frame->planes[0][0] == 40 &&
+                      (direct || fixture.private_frame->planes[0][0] == 40) &&
+                      fixture.decoder.replay.outstanding() == 0,
+                  "clear Link/Flea private/direct output still completes actual pixels");
+        } else {
+          Require(status == VA_STATUS_ERROR_DECODING_ERROR &&
+                      fixture.decoder.replay.failed() &&
+                      fixture.decoder.replay.outstanding() == 1 &&
+                      fixture.decoder.replay.IsOutstanding(1) &&
+                      fixture.decoder.decoded_frames.at(1) == picture &&
+                      fixture.decoder.pending.count(1) == 1 &&
+                      fixture.public_frame->storage == public_pixels &&
+                      fixture.private_frame->storage == private_pixels &&
+                      fixture.public_frame->frame_timestamp == 0 &&
+                      fixture.private_frame->frame_timestamp == 0 &&
+                      !fixture.public_frame->ready && fixture.public_frame->failed &&
+                      !fixture.private_frame->ready && fixture.private_frame->failed,
+                  "ENC-marked output fails before identity, retirement or private/direct pixel copy");
+        }
+      }
+    }
+  }
+}
+
+// Synthetic status/flag combinations exercise ownership rules, not evidence
+// that the hardware or DIL produces encrypted pictures in these conditions.
+static void EncryptedReceiveReleasesOnlyAcquiredOutput() {
+  const BC_STATUS statuses[] = {BC_STS_SUCCESS, BC_STS_NO_DATA, BC_STS_BUSY,
+                               BC_STS_TIMEOUT, BC_STS_ERROR, BC_STS_FMT_CHANGE};
+  for (bool direct : {false, true}) {
+    for (bool eos : {false, true}) {
+      for (bool completed : {false, true}) {
+        if (completed && !eos) continue;
+        for (BC_STATUS returned : statuses) {
+          for (bool release_failure : {false, true}) {
+            if (release_failure && returned != BC_STS_SUCCESS) continue;
+            DecodeIoMock io;
+            MockDecodeScope scope(io);
+            OutputFixture fixture;
+            if (direct) fixture.Direct();
+            if (completed)
+              Require(fixture.decoder.replay.Seal() &&
+                          fixture.Process() == VA_STATUS_SUCCESS,
+                      "prepare completed clear batch before synthetic ENC EOS");
+            fixture.decoder.prefed_timestamp = 2;
+            fixture.decoder.device = io.handle();
+            io.override_output = true;
+            io.overridden_output = fixture.output;
+            io.overridden_output.PoutFlags |= BC_POUT_FLAGS_ENCRYPTED;
+            if (eos) io.overridden_output.PicInfo.flags |= VDEC_FLAG_EOS;
+            io.overridden_output_status = returned;
+            io.output_release_status = release_failure ? BC_STS_ERROR : BC_STS_SUCCESS;
+            const auto public_pixels = fixture.public_frame->storage;
+            const auto private_pixels = fixture.private_frame->storage;
+            const size_t outstanding = fixture.decoder.replay.outstanding();
+            bool activity = false;
+            Require(ReceiveOne(&fixture.driver, &fixture.decoder, 0, &activity) ==
+                        VA_STATUS_ERROR_DECODING_ERROR &&
+                        activity == (returned == BC_STS_SUCCESS) &&
+                        fixture.decoder.replay.failed() &&
+                        fixture.decoder.prefed_timestamp == 2 &&
+                        fixture.decoder.replay.outstanding() == outstanding &&
+                        fixture.public_frame->storage == public_pixels &&
+                        fixture.private_frame->storage == private_pixels &&
+                        std::count(io.events.begin(), io.events.end(), "override-output") == 1 &&
+                        std::count(io.events.begin(), io.events.end(), "release") ==
+                            (returned == BC_STS_SUCCESS ? 1 : 0) &&
+                        !io.invalid,
+                    "ENC data/EOS fail closed and release exactly once only after successful acquisition");
+          }
+        }
+      }
+    }
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    OutputFixture clear;
+    if (direct) clear.Direct();
+    clear.decoder.device = io.handle();
+    io.override_output = true;
+    io.overridden_output = clear.output;
+    bool activity = false;
+    Require(ReceiveOne(&clear.driver, &clear.decoder, 0, &activity) == VA_STATUS_SUCCESS &&
+                activity && clear.decoder.replay.outstanding() == 0 &&
+                clear.public_frame->planes[0][0] == 40 &&
+                std::count(io.events.begin(), io.events.end(), "release") == 1 && !io.invalid,
+            "clear receive control retains successful processing and exactly-once release");
+  }
+}
 
 struct H264FieldFixture {
   Driver driver{-1};
@@ -4666,6 +4796,69 @@ struct TeardownFixture {
   }
 };
 
+static void ProtectedH264BufferCannotCommitEarlierParameters() {
+  const VABufferType types[] = {
+      VAProtectedSliceDataBufferType,
+#if VA_CHECK_VERSION(1, 11, 0)
+      VAProtectedSessionExecuteBufferType, VAEncryptionParameterBufferType,
+#endif
+  };
+  for (VABufferType type : types) {
+    TeardownFixture fixture(0);
+    fixture.decoder->config = 1;
+    fixture.decoder->profile = VAProfileH264Main;
+    fixture.decoder->height = 32;
+    fixture.decoder->auto_h264_prefeed = false;
+    fixture.driver.configs[1] = {VAProfileH264Main, VAEntrypointVLD};
+    auto target = std::make_shared<Surface>();
+    Require(target->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+            "allocate private protected-buffer rejection target");
+    memset(target->storage.data(), 99, target->storage.size());
+    fixture.driver.surfaces[1] = target;
+    const auto pixels = target->storage;
+    const auto prepare = [&] {
+      Require(BeginPicture(&fixture.context, 1, 1) == VA_STATUS_SUCCESS,
+              "begin ordinary H.264 transaction");
+      auto &decode = *fixture.decoder;
+      decode.have_picture = true;
+      decode.picture = {};
+      decode.picture.picture_height_in_mbs_minus1 = 1;
+      decode.picture.num_ref_frames = 1;
+      decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag = 1;
+      decode.picture.seq_fields.bits.direct_8x8_inference_flag = 1;
+      decode.picture.pic_fields.bits.deblocking_filter_control_present_flag = 1;
+      VASliceParameterBufferH264 slice = {};
+      slice.slice_type = 2;
+      decode.slices.push_back(slice);
+      decode.slice_data.push_back({0x65, 0x88, 0x84});
+    };
+    prepare();
+    Buffer unsupported;
+    unsupported.context = 1;
+    unsupported.type = type;
+    unsupported.element_size = unsupported.elements = 1;
+    unsupported.data = {1};
+    fixture.driver.buffers[17] = unsupported;  // Bypass CreateBuffer deliberately.
+    VABufferID id = 17;
+    Require(RenderPicture(&fixture.context, 1, &id, 1) ==
+                VA_STATUS_ERROR_UNSUPPORTED_BUFFERTYPE &&
+                fixture.decoder->h264_picture_invalid,
+            "already-constructed protected H.264 buffer invalidates the pending picture");
+    Require(EndPicture(&fixture.context, 1) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                fixture.decoder->target == VA_INVALID_SURFACE &&
+                fixture.io.inputs.empty() && fixture.io.open_attempts == 0 &&
+                fixture.decoder->replay.cached_pictures() == 0 && target->storage == pixels,
+            "ignored Render error cannot submit or expose previously accepted parameters");
+    prepare();
+    fixture.driver.buffers.at(17).type = VAEncCodedBufferType;
+    Require(RenderPicture(&fixture.context, 1, &id, 1) == VA_STATUS_SUCCESS &&
+                !fixture.decoder->h264_picture_invalid &&
+                EndPicture(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                fixture.io.inputs == std::vector<uint64_t>{kTimestampStep} && !fixture.io.invalid,
+            "fresh clear Begin recovers while unrelated buffer handling remains unchanged");
+  }
+}
+
 static void RetryableBusySurvivesContextSurfaceAndDriverTeardown() {
   {
     TeardownFixture fixture(1);
@@ -7849,6 +8042,8 @@ int main() {
     LiveStreamMarkerSurvivesReplayAndPruning();
     UnknownOutputNeverGuessesAndInvalidOutputFails();
     DuplicateOutputCannotMutateOrRetirePixels();
+    EncryptedOutputNeverMaterializesOrCompletes();
+    EncryptedReceiveReleasesOnlyAcquiredOutput();
     H264WholeWeavePreservesIdentityAndPixels();
     H264WholeWeaveRejectsMalformedOrPartialOutput();
     H264FieldPairsPreserveIdentityAndPixels();
@@ -7908,6 +8103,7 @@ int main() {
     InactiveSyncStillSealsItsExactFinalPicture(true);
     ProgressDoesNotExtendFiniteSyncDeadline();
     RetryableBusySurvivesContextSurfaceAndDriverTeardown();
+    ProtectedH264BufferCannotCommitEarlierParameters();
     ContextTeardownDrainsAcceptedTailBeforeClose();
     ContextDrainRejectsMutationAndSurvivesSurfaceRelease();
     WaitingSyncKeepsCompletedRetiredPicture();

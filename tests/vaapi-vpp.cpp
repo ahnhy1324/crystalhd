@@ -716,6 +716,57 @@ void ConfigRejectsUnsupportedProtectionTransactionally() {
   }
 }
 
+void ProtectedBufferCreationIsTransactional() {
+  Driver driver{-1};
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  driver.contexts[1] = std::make_shared<DecodeContext>();
+  driver.contexts[2] = std::make_shared<DecodeContext>();
+  driver.contexts.at(2)->video_process = true;
+  const uint8_t bytes[] = {0x65, 0x88};
+  const VABufferType protected_types[] = {
+      VAProtectedSliceDataBufferType,
+#if VA_CHECK_VERSION(1, 11, 0)
+      VAProtectedSessionExecuteBufferType, VAEncryptionParameterBufferType,
+#endif
+  };
+  for (VAContextID owner : {1U, 2U, VA_INVALID_ID}) {
+    for (VABufferType type : {VASliceDataBufferType, VAEncCodedBufferType}) {
+      VABufferID ordinary = VA_INVALID_ID;
+      Require(CreateBuffer(&context, owner, type, sizeof(bytes), 1,
+                            const_cast<uint8_t *>(bytes), &ordinary) == VA_STATUS_SUCCESS &&
+                  driver.buffers.at(ordinary).context == owner &&
+                  driver.buffers.at(ordinary).type == type &&
+                  driver.buffers.at(ordinary).data == std::vector<uint8_t>(bytes, bytes + sizeof(bytes)),
+              "ordinary and unrelated buffer creation remain unchanged");
+    }
+    for (VABufferType type : protected_types) {
+      for (bool allocation_failure : {false, true}) {
+        const auto previous = driver.buffers;
+        const VABufferID next = driver.next_buffer;
+        constexpr VABufferID sentinel = 0xdecafbadU;
+        VABufferID output = sentinel;
+        allocation_fault::fail_next = allocation_failure;
+        const VAStatus status = CreateBuffer(&context, owner, type, sizeof(bytes), 1,
+                                             const_cast<uint8_t *>(bytes), &output);
+        const bool allocation_untouched = allocation_fault::fail_next == allocation_failure;
+        allocation_fault::fail_next = false;
+        Require(status == VA_STATUS_ERROR_UNSUPPORTED_BUFFERTYPE && allocation_untouched &&
+                    output == sentinel && driver.next_buffer == next &&
+                    driver.buffers.size() == previous.size() &&
+                    std::all_of(previous.begin(), previous.end(), [&](const auto &item) {
+                      const auto found = driver.buffers.find(item.first);
+                      return found != driver.buffers.end() &&
+                          found->second.context == item.second.context &&
+                          found->second.type == item.second.type &&
+                          found->second.data == item.second.data;
+                    }),
+                "protected buffer rejection precedes allocation and preserves all IDs/data");
+      }
+    }
+  }
+}
+
 struct PipelineCapsFixture {
   Driver driver{-1};
   VADriverContext context = {};
@@ -3709,6 +3760,7 @@ int VppFullTestEntry(int argc, char **argv) {
     UnusedVppProbeDoesNotNotifyDecoder();
     DefaultVppCapabilitiesRemainAvailable();
     ConfigRejectsUnsupportedProtectionTransactionally();
+    ProtectedBufferCreationIsTransactional();
     PipelineCapsIgnoreIncomingPixelFormatStorage();
     PipelineCapsBorrowedLifetimeAndErrors();
     NativeNodeCacheOwnsNoFiles();
@@ -3773,7 +3825,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 63 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 64 hardware-free regressions passed");
   return 0;
 }
 
@@ -3785,6 +3837,7 @@ int main(int argc, char **argv) {
   if (argc != 1) return 2;
   const std::pair<const char *, void (*)()> groups[] = {
       {"configuration rejects unsupported protection transactionally", ConfigRejectsUnsupportedProtectionTransactionally},
+      {"protected buffer creation is transactional", ProtectedBufferCreationIsTransactional},
 #ifdef CRYSTALHD_LEGACY_CPU
       {"legacy exposed stopped-source rejection", LegacyExposedStoppedVppRemainsRejected},
       {"legacy synchronous fallback: nine no-cache-operation modes", LegacyExposedColdVppFallbackCompletesBeforeReturning}};

@@ -93,7 +93,7 @@ $(VPP_TEST): $(ROOTDIR)/tests/vaapi-vpp.cpp crystalhd_drv_video.cpp $(BACKEND_HE
 $(REPLAY_TEST): $(ROOTDIR)/tests/vaapi-replay.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ \
 		-L$(ROOTDIR)/linux_lib/libcrystalhd -Wl,--wrap=ioctl,--wrap=usleep \
-		-Wl,--wrap=poll,--wrap=__poll_chk,--wrap=read \
+		-Wl,--wrap=poll,--wrap=__poll_chk,--wrap=read,--wrap=__read_chk \
 		-Wl,--wrap=gbm_bo_get_plane_count,--wrap=gbm_bo_get_fd_for_plane \
 		-Wl,--wrap=DtsDeviceOpen,--wrap=DtsDupOutputPollFd \
 		-Wl,--wrap=DtsOpenDecoder,--wrap=DtsSetColorSpace \

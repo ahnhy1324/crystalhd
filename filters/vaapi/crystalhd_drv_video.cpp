@@ -3613,6 +3613,8 @@ static H264InterlacedPayload ClassifyH264InterlacedPayload(
 static VAStatus ProcessDecodedOutputImpl(
     Driver *driver, DecodeContext *decode, const BC_DTS_PROC_OUT &reported,
     OutputProcessingState *processing) {
+  if ((reported.PoutFlags & BC_POUT_FLAGS_ENCRYPTED) != 0)
+    return FailDecode(driver, decode, "encrypted output is unsupported");
   BC_DTS_PROC_OUT output = reported;
   H264FirstField paired_first_field;
   bool h264_field_pair = false;
@@ -4034,6 +4036,14 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
         static_cast<unsigned long long>(output.PicInfo.timeStamp),
         output.PicInfo.picture_number, output.PicInfo.sess_num,
         output.PicInfo.width, output.PicInfo.height, decode->width, decode->height);
+  if ((output.PoutFlags & BC_POUT_FLAGS_ENCRYPTED) != 0) {
+    if (status == BC_STS_SUCCESS) {
+      *activity = true;
+      if (DtsReleaseOutputBuffs(decode->device, nullptr, FALSE) != BC_STS_SUCCESS)
+        return FailDecode(driver, decode, "encrypted output release failed");
+    }
+    return FailDecode(driver, decode, "encrypted output is unsupported");
+  }
   if ((output.PicInfo.flags & VDEC_FLAG_EOS) != 0) {
     // Only the actual firmware marker ends a sealed batch. Library idle/EOS
     // counters are not evidence that every submitted picture was produced.
@@ -6500,6 +6510,19 @@ static VAStatus DestroyContext(VADriverContextP context,
   return DestroyContextWithTimeout(context, context_id, kDecodeTimeoutNs);
 }
 
+static bool IsProtectedBufferType(VABufferType type) {
+  switch (type) {
+    case VAProtectedSliceDataBufferType:
+#if VA_CHECK_VERSION(1, 11, 0)
+    case VAProtectedSessionExecuteBufferType:
+    case VAEncryptionParameterBufferType:
+#endif
+      return true;
+    default:
+      return false;
+  }
+}
+
 static VAStatus CreateBuffer(VADriverContextP context, VAContextID context_id,
                              VABufferType type, unsigned int element_size,
                              unsigned int elements, void *data,
@@ -6513,6 +6536,8 @@ static VAStatus CreateBuffer(VADriverContextP context, VAContextID context_id,
   }
   if (buffer_id == nullptr || element_size == 0 || elements == 0)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
+  if (IsProtectedBufferType(type))
+    return VA_STATUS_ERROR_UNSUPPORTED_BUFFERTYPE;
   if (elements > std::numeric_limits<size_t>::max() / element_size)
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
   try {
@@ -7185,6 +7210,10 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
     auto buffer = driver->buffers.find(buffer_ids[i]);
     if (buffer == driver->buffers.end())
       return VA_STATUS_ERROR_INVALID_BUFFER;
+    if (IsProtectedBufferType(buffer->second.type)) {
+      decode->second->h264_picture_invalid = true;
+      return VA_STATUS_ERROR_UNSUPPORTED_BUFFERTYPE;
+    }
     switch (buffer->second.type) {
       case VAPictureParameterBufferType:
         if (buffer->second.data.size() < sizeof(VAPictureParameterBufferH264))
