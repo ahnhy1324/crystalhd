@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Send library diagnostics to stderr so binary media written to stdout is not
+  corrupted; preserve existing messages, log levels and caller-selected files.
 - Implement CPU VA-VPP Bob for origin-aligned woven NV12 regions, with NV12/ARGB
   output, independent Y/UV field sampling and Render-time filter snapshots.
   Preserve zero-filter Weave/scaling and legacy ABI; single-field input,

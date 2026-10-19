@@ -31,6 +31,7 @@
 
 #include <pthread.h>
 #include <semaphore.h>
+#include <stdio.h>
 #include "bc_dts_glob_lnx.h"
 #include "libcrystalhd_parser.h"
 
@@ -48,7 +49,7 @@ enum _bc_ldil_log_level{
 
 #define LDIL_PRINTS_ON 1
 #if LDIL_PRINTS_ON
-#define DebugLog_Trace(_tl, fmt, args...)	printf(fmt, ##args);
+#define DebugLog_Trace(_tl, fmt, args...)	fprintf(stderr, fmt, ##args);
 #else
 #define DebugLog_Trace(_tl, fmt, args...)
 #endif
