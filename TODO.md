@@ -44,7 +44,10 @@ expanding the released scope to general full-rate FHD/deinterlacing support.
   i686/scalar behavior. The 1.2 branch has bounded native TFF/BFF pixel/clock and
   short Kodi Auto/Off controls as well as device-free coverage. One headless
   FHD Bob batch reaches 49.759 outputs/s, not demonstrated real-time 50p headroom.
-  Stock Kodi/Atom physical cadence, A/V and endurance remain open. Keep existing
+  A separate three-hour 720i25 headless concat run passes 540,000 exact Bob outputs,
+  EOF and fresh Weave reopen; default FFmpeg stream-loop remains 296/300 FAIL
+  ([scope and retained failures](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6257714172)).
+  Stock Kodi/Atom physical cadence, A/V and displayed endurance remain open. Keep existing
   Weave playback intact. Hardware Bob remains separate research, not a
   prerequisite for this software integration.
 - [ ] Player HTTP(S) acceptance — implementation is included in RC4, with
