@@ -370,9 +370,10 @@ struct Fixture {
     picture.num_ref_frames = 1;
     picture.pic_fields.bits.transform_8x8_mode_flag = 1;
   }
-  VABufferID Buffer(VABufferType type, const void *data, size_t size) {
+  VABufferID Buffer(VABufferType type, const void *data, size_t size,
+                    VAContextID context_id = 1) {
     VABufferID id = VA_INVALID_ID;
-    Require(CreateBuffer(&context, 1, type, size, 1, const_cast<void *>(data), &id) == VA_STATUS_SUCCESS,
+    Require(CreateBuffer(&context, context_id, type, size, 1, const_cast<void *>(data), &id) == VA_STATUS_SUCCESS,
             "real buffer creation");
     return id;
   }
@@ -1601,7 +1602,7 @@ VABufferID Vpp(Fixture *fixture, VASurfaceID source = 1) {
   VAProcPipelineParameterBuffer pipeline = {};
   pipeline.surface = source;
   return fixture->Buffer(VAProcPipelineParameterBufferType, &pipeline,
-                          sizeof(pipeline));
+                          sizeof(pipeline), 2);
 }
 
 void RequireRejectedPublicReads(Fixture *fixture, VASurfaceID surface = 1) {
@@ -2182,7 +2183,8 @@ void DirectBackingReassignedBetweenVppBeginAndEnd() {
   f.driver.contexts[3] = source_decoder;
   VAProcPipelineParameterBuffer pipeline = {};
   pipeline.surface = 2;
-  auto parameters = f.Buffer(VAProcPipelineParameterBufferType, &pipeline, sizeof(pipeline));
+  auto parameters = f.Buffer(VAProcPipelineParameterBufferType, &pipeline,
+                              sizeof(pipeline), 2);
   Require(BeginPicture(&f.context, 2, 1) == VA_STATUS_SUCCESS, "begin VPP into decode backing");
   f.Begin(); f.Parameters(); f.End();
   auto picture = f.decode->decoded_frames.at(kTimestampStep);
