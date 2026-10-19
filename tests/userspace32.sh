@@ -82,6 +82,14 @@ for bits in $build_bits; do
     printf '%s-bit raw-frame public-header incremental rebuild passed\n' "$bits"
     cpu_flags=$(make -s --no-print-directory -C "$build_dir/linux_lib/libcrystalhd" \
         LEGACY_CPU="$legacy" CXX="$cxx -m$bits" print-cpu-flags)
+    # Bob plane sampling is pure scalar code: exercise both i386 and the
+    # strict non-SSE CPU through the same policy as the library regressions.
+    # Compiler and user flags intentionally expand into arguments.
+    # shellcheck disable=SC2086
+    $cxx ${CPPFLAGS:-} ${CXXFLAGS:-} -m"$bits" -std=c++17 -O2 \
+        -Wall -Wextra -Werror "$repo_dir/tests/vaapi-bob.cpp" \
+        $cpu_flags -o "$build_dir/vaapi-bob"
+    run_test "$build_dir/vaapi-bob"
     if [ "$legacy" -eq 1 ]; then
         # shellcheck disable=SC2086
         $cxx -std=c++11 -Wall -Wextra -Werror $cpu_flags \

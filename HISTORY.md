@@ -1,5 +1,11 @@
 # History
 
+## 1.2.0 — in development
+
+- Add scalar field-local Bob sampling groundwork and i686/no-SSE regression
+  coverage. VA filter integration is not yet enabled; existing Weave and
+  advertised capabilities remain unchanged.
+
 ## 1.1.0
 
 Published on 2026-10-19: bundle `1.1.0` / module-DKMS package `3.10.9`,

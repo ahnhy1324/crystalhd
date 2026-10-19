@@ -16,6 +16,7 @@ CACHE_TEST := vaapi-cache-test
 PRIVATE_BACKING_TEST := vaapi-private-backing-test
 CONVERSION_TEST := vaapi-conversion-test
 SCALING_TEST := vaapi-scaling-test
+BOB_TEST := vaapi-bob-test
 MPEG2_TEST := vaapi-mpeg2-test
 MPEG2_REPLAY_TEST := vaapi-mpeg2-replay-test
 MPEG2_SUBMIT_TEST := vaapi-mpeg2-submit-test
@@ -136,6 +137,10 @@ $(SCALING_TEST): $(ROOTDIR)/tests/vaapi-scaling.cpp crystalhd_drv_video.cpp $(BA
 		-ffunction-sections -fdata-sections $< -o $@ \
 		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm libdrm) -pthread $(CRYSTALHD_CPU_FLAGS)
 
+# Pure field-local sampling; no graphics, decoder or device dependency.
+$(BOB_TEST): $(ROOTDIR)/tests/vaapi-bob.cpp crystalhd-vpp-bob.h
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ $(CRYSTALHD_CPU_FLAGS)
+
 $(MPEG2_SUBMIT_TEST): $(ROOTDIR)/tests/vaapi-mpeg2-submit.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
 		-ffunction-sections -fdata-sections $< -o $@ \
@@ -166,7 +171,7 @@ $(SEEK_TEST): $(ROOTDIR)/tests/vaapi-seek.cpp $(ROOTDIR)/tests/ffmpeg-profile-co
 		$(shell $(PKG_CONFIG) --cflags libavcodec libavformat libavutil libva) $< -o $@ \
 		$(shell $(PKG_CONFIG) --libs libavcodec libavformat libavutil libva) $(CRYSTALHD_CPU_FLAGS)
 
-check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(PRIVATE_BACKING_TEST) $(CONVERSION_TEST) $(SCALING_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST)
+check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(PRIVATE_BACKING_TEST) $(CONVERSION_TEST) $(SCALING_TEST) $(BOB_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST)
 	readelf -Ws $(DRIVER) | grep -q '__vaDriverInit_'
 	readelf -Ws $(DRIVER) | grep -q '__vaDriverInit_1_20'
 	./$(H264_TEST)
@@ -184,6 +189,7 @@ check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER
 	./$(PRIVATE_BACKING_TEST)
 	./$(CONVERSION_TEST)
 	./$(SCALING_TEST)
+	./$(BOB_TEST)
 	LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd):$(LD_LIBRARY_PATH) ./$(VPP_TEST)
 	LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd):$(LD_LIBRARY_PATH) ./$(REPLAY_TEST)
 	LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd):$(LD_LIBRARY_PATH) ./$(BUFFER_TEST)
@@ -208,8 +214,8 @@ uninstall:
 	rm -f -- "$(DESTDIR)$(DRIVERDIR)/$(DRIVER)"
 
 clean:
-	rm -f $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(PRIVATE_BACKING_TEST) $(CONVERSION_TEST) $(SCALING_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST) $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
+	rm -f $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(PRIVATE_BACKING_TEST) $(CONVERSION_TEST) $(SCALING_TEST) $(BOB_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST) $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
 
 include $(ROOTDIR)/cpu.mk
-$(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(PRIVATE_BACKING_TEST) $(CONVERSION_TEST) $(SCALING_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST): $(CRYSTALHD_BUILD_DEPS)
+$(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(PRIVATE_BACKING_TEST) $(CONVERSION_TEST) $(SCALING_TEST) $(BOB_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST): $(CRYSTALHD_BUILD_DEPS)
 $(DRIVER) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST): $(ROOTDIR)/linux_lib/libcrystalhd/libcrystalhd.so
