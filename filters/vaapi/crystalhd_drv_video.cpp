@@ -4177,6 +4177,56 @@ static size_t H264SubmissionLimit(DecodeContext *decode, size_t bytes) {
   return base;
 }
 
+static bool H264HeadroomDeescapedFits(const std::vector<uint8_t> &bytes) {
+  constexpr size_t budget =
+      crystalhd_access_unit_limits::kVaFleaProgressiveH264DeescapedBytes;
+  if (bytes.size() <= budget)
+    return true;
+  size_t total = 0;
+  const auto add = [&](size_t count) {
+    if (count > budget - total)
+      return false;
+    total += count;
+    return true;
+  };
+  const auto nal_fits = [&](size_t begin, size_t end) {
+    unsigned int zeros = 0;
+    for (size_t i = begin; i < end; ++i) {
+      // Only unambiguous, nonterminal emulation prevention can reduce the
+      // estimate. Count literal/terminal 03 and overlong zero runs as data.
+      if (zeros == 2 && bytes[i] == 3 && i + 1 < end && bytes[i + 1] <= 3) {
+        zeros = 0;
+        continue;
+      }
+      if (!add(1))
+        return false;
+      zeros = bytes[i] == 0 ? std::min(zeros + 1, 3U) : 0;
+    }
+    return true;
+  };
+  // Count every reconstructed start code and NAL header. Partition first so
+  // an escape-looking suffix cannot borrow a byte from the next NAL prefix.
+  size_t begin = 0;
+  for (size_t i = 0; i < bytes.size();) {
+    size_t prefix = 0;
+    if (bytes.size() - i >= 3 && bytes[i] == 0 && bytes[i + 1] == 0) {
+      if (bytes[i + 2] == 1)
+        prefix = 3;
+      else if (bytes.size() - i >= 4 && bytes[i + 2] == 0 && bytes[i + 3] == 1)
+        prefix = 4;
+    }
+    if (prefix != 0) {
+      if (!nal_fits(begin, i) || !add(prefix))
+        return false;
+      i += prefix;
+      begin = i;
+    } else {
+      ++i;
+    }
+  }
+  return nal_fits(begin, bytes.size());
+}
+
 static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                                 unsigned int max_attempts = 32) {
   decode->input_backpressured = false;
@@ -4841,6 +4891,15 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     if (bitstream.size() > submission_limit) {
       Debug("H.264 access unit exceeds VA submission policy: bytes=%zu limit=%zu",
             bitstream.size(), submission_limit);
+      return RejectH264Picture(driver, decode, VA_STATUS_ERROR_INVALID_PARAMETER);
+    }
+    // Only constrain the separately qualified extended envelope. The ordinary
+    // baseline is preserved; this is containment, not universal AU acceptance.
+    if (bitstream.size() > crystalhd_access_unit_limits::kVaH264SubmissionBytes &&
+        !H264HeadroomDeescapedFits(bitstream)) {
+      Debug("H.264 extended input exceeds de-escaped admission policy: "
+            "assembled_bytes=%zu deescaped_budget=%zu", bitstream.size(),
+            crystalhd_access_unit_limits::kVaFleaProgressiveH264DeescapedBytes);
       return RejectH264Picture(driver, decode, VA_STATUS_ERROR_INVALID_PARAMETER);
     }
     if (bitstream.size() > crystalhd_access_unit_limits::kVaH264SubmissionBytes)

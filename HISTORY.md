@@ -12,6 +12,10 @@
 - Preserve imported PRIME plane layouts on export and correct legacy batch
   imports. Validate import spans and CSC strides before access, and initialize
   complete chroma pairs in odd-width NV12 backgrounds.
+- Add an extended-H.264 de-escaped admission guard for
+  [#468](https://github.com/ahnhy1324/crystalhd/issues/468), rejecting over-budget
+  transactions before submission without rewriting input. This development
+  containment still requires native qualification and firmware investigation.
 
 ## 1.1.0
 

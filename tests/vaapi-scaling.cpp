@@ -244,6 +244,8 @@ extern "C" int gbm_bo_get_fd_for_plane(gbm_bo *, int) { abort(); }
 extern "C" uint64_t gbm_bo_get_modifier(gbm_bo *) { abort(); }
 extern "C" int drmGetDevice2(int, uint32_t, drmDevicePtr *) { abort(); }
 extern "C" void drmFreeDevice(drmDevicePtr *) { abort(); }
+extern "C" drmVersionPtr drmGetVersion(int) { abort(); }
+extern "C" void drmFreeVersion(drmVersionPtr) { abort(); }
 extern "C" int drmPrimeHandleToFD(int, uint32_t, uint32_t, int *) { abort(); }
 extern "C" void sws_freeContext(SwsContext *) { abort(); }
 extern "C" SwsContext *sws_getCachedContext(SwsContext *, int, int, AVPixelFormat,
@@ -756,18 +758,41 @@ void QualifiedFleaProgressiveH264Headroom() {
             "ordinary modern input needs no headroom identification query");
     overhead = f.mock.inputs.at(0).bytes.size() - 3;
   }
-  const auto bytes = [overhead](size_t assembled) {
+  const auto raw_bytes = [overhead](size_t assembled) {
     std::vector<uint8_t> result(assembled - overhead, 0x55);
     result[0] = 0x65;
+    return result;
+  };
+  // This is an escaped transport fixture, not evidence that an equally large
+  // unescaped slice is accepted by firmware. Repeated 00 00 03 bytes keep the
+  // complete Annex-B deescaped size below the separate headroom budget.
+  const auto bytes = [overhead](size_t assembled) {
+    std::vector<uint8_t> result(assembled - overhead, 0);
+    result[0] = 0x65;
+    for (size_t i = 3; i < result.size(); i += 3) result[i] = 3;
     return result;
   };
   {
     Fixture f;
     f.mock.legacy_pes_family = true;
-    Require(SubmitH264(&f, bytes(base)) == VA_STATUS_SUCCESS &&
+    Require(SubmitH264(&f, raw_bytes(base)) == VA_STATUS_SUCCESS &&
                 f.mock.version_queries == 0 &&
                 f.mock.fragment_input_calls == 4,
             "even identified modern input at 2 MiB avoids extra version queries");
+  }
+  {
+    Fixture f;
+    f.mock.legacy_pes_family = true;
+    Require(SubmitH264(&f, raw_bytes(limit)) ==
+                    VA_STATUS_ERROR_INVALID_PARAMETER &&
+                f.mock.inputs.empty() && f.mock.version_queries == 1 &&
+                f.decode->replay.cached_pictures() == 0 &&
+                f.decode->next_timestamp == kTimestampStep &&
+                f.decode->next_submission_ordinal == 1 &&
+                f.decode->pending.empty() && f.decode->decoded_frames.empty() &&
+                !f.decode->sent_parameter_sets && f.decode->h264_waiting_for_idr &&
+                !f.decode->replay.failed(),
+            "qualified EBSP cap alone does not admit a large unescaped AU");
   }
   for (int delta : {-1, 0, 1}) {
     Fixture f;
@@ -849,6 +874,265 @@ void QualifiedFleaProgressiveH264Headroom() {
                 f.decode->next_timestamp == kTimestampStep &&
                 f.decode->next_submission_ordinal == 1,
             "unknown/Link/version failure/MBAFF/field pictures retain the 2 MiB policy");
+  }
+}
+
+// Independent reference for these valid, nonterminal escaped fixtures. The
+// conservative policy does not subtract a terminal 03 or one after an overlong
+// zero run. No fixture EPB here overlaps a NAL prefix; malformed/boundary forms
+// are checked separately below rather than borrowed as expected escape bytes.
+size_t ReferenceH264DeescapedBytes(const std::vector<uint8_t> &bytes) {
+  size_t removed = 0;
+  for (size_t i = 2; i < bytes.size(); ++i)
+    if (bytes[i - 2] == 0 && bytes[i - 1] == 0 && bytes[i] == 3 &&
+        (i == 2 || bytes[i - 3] != 0) &&
+        i + 1 < bytes.size() && bytes[i + 1] <= 3)
+      ++removed;
+  return bytes.size() - removed;
+}
+
+void QualifiedH264DeescapedAdmissionAndRecovery() {
+  constexpr size_t base = crystalhd_access_unit_limits::kVaH264SubmissionBytes;
+  // This is an empirical containment policy, not a claimed hardware limit.
+  constexpr size_t budget = 2U * 1024U * 1024U - 4U * 1024U;
+  std::vector<uint8_t> prefix;
+  {
+    Fixture f;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "measure the complete reconstructed Annex-B prefix");
+    prefix = f.mock.inputs.at(0).bytes;
+    prefix.resize(prefix.size() - 3);
+  }
+  const size_t prefix_raw = ReferenceH264DeescapedBytes(prefix);
+  const auto bytes = [prefix_raw](size_t deescaped) {
+    // Exactly 5000 EPBs make budget +/-1 larger than the ordinary 2 MiB
+    // assembled policy without approaching the qualified EBSP cap.
+    constexpr size_t epbs = 5000;
+    std::vector<uint8_t> result = {0x65, 0x88, 0x84};
+    for (size_t i = 0; i < epbs; ++i)
+      result.insert(result.end(), {0, 0, 3});
+    result.push_back(0);  // Also makes the final EPB's next byte valid.
+    const size_t raw = prefix_raw + 3 + epbs * 2 + 1;
+    Require(raw < deescaped, "deescaped boundary has room for inert tail bytes");
+    result.resize(result.size() + deescaped - raw, 0x55);
+    return result;
+  };
+  for (int delta : {-1, 0, 1}) {
+    Fixture f;
+    f.mock.legacy_pes_family = true;
+    const auto slice = bytes(budget + delta);
+    auto assembled = prefix;
+    assembled.insert(assembled.end(), slice.begin(), slice.end());
+    Require(assembled.size() > base &&
+                ReferenceH264DeescapedBytes(assembled) == budget + delta,
+            "raw boundary is measured over the complete assembled Annex-B AU");
+    const bool accepted = delta <= 0;
+    Require(SubmitH264(&f, slice) == (accepted ? VA_STATUS_SUCCESS
+                                            : VA_STATUS_ERROR_INVALID_PARAMETER),
+            "qualified deescaped admission checks budget-1/budget/budget+1");
+    if (accepted) {
+      const auto logical = LogicalInputs(f.mock.inputs);
+      Require(logical.size() == 1 && logical[0].bytes == assembled &&
+                  logical[0].timestamp == kTimestampStep &&
+                  f.mock.fragment_input_calls ==
+                      (assembled.size() +
+                       crystalhd_access_unit_limits::kDtsInputChunkBytes - 1) /
+                          crystalhd_access_unit_limits::kDtsInputChunkBytes &&
+                  f.mock.legacy_input_calls == 0 &&
+                  f.decode->partial_input_timestamp == 0 &&
+                  f.decode->partial_input_offset == 0 &&
+                  !f.decode->replay.failed(),
+              "raw-admitted input preserves all encoded bytes, PTS and fragments");
+    } else {
+      Require(f.mock.inputs.empty() && f.mock.fragment_input_calls == 0 &&
+                  f.mock.legacy_input_calls == 0 &&
+                  f.decode->replay.cached_pictures() == 0 &&
+                  f.decode->pending.empty() && f.decode->decoded_frames.empty() &&
+                  f.decode->next_timestamp == kTimestampStep &&
+                  f.decode->next_submission_ordinal == 1 &&
+                  !f.decode->sent_parameter_sets &&
+                  f.decode->h264_waiting_for_idr && !f.decode->replay.failed(),
+              "raw rejection consumes no input, replay, accepted picture or PTS");
+    }
+  }
+  for (unsigned next : {0U, 1U, 2U, 3U, 4U, 255U}) {
+    Fixture f;
+    f.mock.legacy_pes_family = true;
+    auto slice = bytes(budget);
+    // The terminator after the last 00 00 03 is followed only by 0x55,
+    // so changing it cannot accidentally remove an adjacent second EPB.
+    slice[3 + 5000 * 3] = uint8_t(next);
+    auto assembled = prefix;
+    assembled.insert(assembled.end(), slice.begin(), slice.end());
+    const bool accepted = next <= 3;
+    Require(ReferenceH264DeescapedBytes(assembled) ==
+                    budget + (accepted ? 0U : 1U) &&
+                SubmitH264(&f, slice) ==
+                    (accepted ? VA_STATUS_SUCCESS
+                              : VA_STATUS_ERROR_INVALID_PARAMETER),
+            "only an EPB followed by 0..3 reduces qualified deescaped accounting");
+    if (accepted)
+      Require(LogicalInputs(f.mock.inputs).at(0).bytes == assembled,
+              "deescaped accounting never rewrites the encoded device input");
+    else
+      Require(f.mock.inputs.empty() && f.decode->replay.cached_pictures() == 0,
+              "an invalid EPB cannot disguise an over-budget raw AU");
+  }
+  const std::vector<std::vector<uint8_t>> boundary_tails = {
+      {0, 0, 3, 0},                 // Valid nonterminal EPB: subtract one.
+      {0, 3},                       // Only one preceding zero: literal data.
+      {0, 0, 3},                    // Terminal 03: count conservatively.
+      {0, 0, 0, 3, 0},              // Overlong zero run: count conservatively.
+      {0, 0, 3, 0, 0, 1, 0x41},     // Cannot borrow the next 3-byte NAL prefix.
+      {0, 0, 3, 0, 0, 0, 1, 0x41},  // Nor the next 4-byte NAL prefix.
+  };
+  for (size_t index = 0; index < boundary_tails.size(); ++index) {
+    Fixture f;
+    f.mock.legacy_pes_family = true;
+    auto slice = bytes(budget + 1);
+    const auto &tail = boundary_tails[index];
+    std::copy(tail.begin(), tail.end(), slice.end() - tail.size());
+    // Replacing inert tail bytes changes no assembled byte count. Only the
+    // first, fully contained and unambiguous EPB removes one from budget+1.
+    const bool accepted = index == 0;
+    Require(SubmitH264(&f, slice) ==
+                    (accepted ? VA_STATUS_SUCCESS
+                              : VA_STATUS_ERROR_INVALID_PARAMETER),
+            "ambiguous, terminal or cross-NAL 03 cannot reduce the raw budget");
+    if (accepted) {
+      auto assembled = prefix;
+      assembled.insert(assembled.end(), slice.begin(), slice.end());
+      Require(LogicalInputs(f.mock.inputs).at(0).bytes == assembled,
+              "a contained EPB changes accounting but not submitted bytes");
+    } else {
+      Require(f.mock.inputs.empty() && f.decode->replay.cached_pictures() == 0,
+              "ambiguous escape bytes reject before transport or replay");
+    }
+  }
+  for (int delta : {0, 1}) {
+    Fixture f;
+    f.mock.legacy_pes_family = true;
+    // Two slice-data buffers contribute a second start code and NAL header.
+    // Each raw NAL is small; admission must count their complete AU together.
+    auto first = bytes(budget - 5 + delta);
+    std::vector<uint8_t> second(first.begin() + first.size() / 2, first.end());
+    first.resize(first.size() / 2);
+    second.insert(second.begin(), 0x41);
+    auto assembled = prefix;
+    assembled.insert(assembled.end(), first.begin(), first.end());
+    assembled.insert(assembled.end(), {0, 0, 0, 1});
+    assembled.insert(assembled.end(), second.begin(), second.end());
+    Require(ReferenceH264DeescapedBytes(assembled) == budget + delta &&
+                first.size() < base && second.size() < base,
+            "aggregate fixture has two individually small NALs at the raw AU boundary");
+    f.Begin();
+    f.Render(f.Buffer(VAPictureParameterBufferType, &f.picture, sizeof(f.picture)));
+    for (const auto *data : {&first, &second}) {
+      f.Render(f.Buffer(VASliceParameterBufferType, &f.slice, sizeof(f.slice)));
+      f.Render(f.Buffer(VASliceDataBufferType, data->data(), data->size()));
+    }
+    Require(EndPicture(&f.context, 1) ==
+                    (delta == 0 ? VA_STATUS_SUCCESS
+                                : VA_STATUS_ERROR_INVALID_PARAMETER),
+            "qualified deescaped budget applies to the aggregate, not each NAL separately");
+    if (delta == 0)
+      Require(LogicalInputs(f.mock.inputs).at(0).bytes == assembled,
+              "multiple NALs retain all original bytes and start-code boundaries");
+    else
+      Require(f.mock.inputs.empty() && f.decode->replay.cached_pictures() == 0,
+              "aggregate raw overflow cannot partially enter transport or replay");
+  }
+  {
+    Fixture f;
+    f.mock.legacy_pes_family = true;
+    f.picture.pic_fields.bits.reference_pic_flag = 1;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "retain accepted private pictures before raw headroom rejection");
+    const auto before_pending = f.decode->pending;
+    const auto before_frames = f.decode->decoded_frames;
+    const auto target = f.driver.surfaces.at(1);
+    const auto expected = target->expected_timestamp;
+    const auto identity = target->decode_identity;
+    const auto timestamp = f.decode->next_timestamp;
+    const auto ordinal = f.decode->next_submission_ordinal;
+    const auto cache = f.decode->replay.cached_bytes();
+    Require(SubmitH264(&f, bytes(budget + 1)) ==
+                    VA_STATUS_ERROR_INVALID_PARAMETER &&
+                f.mock.inputs.size() == 2 &&
+                f.decode->pending == before_pending &&
+                f.decode->decoded_frames == before_frames &&
+                f.decode->next_timestamp == timestamp &&
+                f.decode->next_submission_ordinal == ordinal &&
+                f.decode->replay.cached_bytes() == cache &&
+                f.decode->replay.outstanding() == 2 &&
+                !f.decode->replay.failed() &&
+                target->expected_timestamp == expected &&
+                target->decode_identity != identity && target->failed &&
+                target->rejected_picture_transaction == target->picture_transaction,
+            "raw rejection preserves prior private pictures/replay but revokes its public transaction");
+    Require(SubmitH264(&f, {0x41, 0x88, 0x84}) ==
+                    VA_STATUS_ERROR_DECODING_ERROR &&
+                f.mock.inputs.size() == 2 &&
+                f.decode->next_timestamp == timestamp &&
+                f.decode->pending == before_pending &&
+                f.decode->decoded_frames == before_frames,
+            "rejected reference AU establishes an IDR barrier without consuming PTS");
+    for (const auto &frame : before_frames)
+      Require(!frame.second->failed &&
+                  f.decode->replay.Observe(frame.first) ==
+                      CrystalHDDecodeReplay::Output::New,
+              "earlier accepted pictures remain completable after raw rejection");
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 3 &&
+                f.mock.inputs.back().timestamp == timestamp &&
+                !f.decode->h264_waiting_for_idr && !f.decode->replay.failed() &&
+                SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 4,
+            "real IDR resumes at the unconsumed PTS and releases dependent input");
+  }
+  {
+    Fixture f;
+    f.mock.legacy_pes_family = true;
+    f.picture.pic_fields.bits.reference_pic_flag = 1;
+    Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS,
+            "retain an accepted reference before raw non-reference rejection");
+    const auto before_pending = f.decode->pending;
+    const auto before_frames = f.decode->decoded_frames;
+    const auto timestamp = f.decode->next_timestamp;
+    const auto ordinal = f.decode->next_submission_ordinal;
+    const auto cache = f.decode->replay.cached_bytes();
+    f.picture.pic_fields.bits.reference_pic_flag = 0;
+    f.slice.slice_type = 1;
+    auto nonreference_b = bytes(budget + 128);
+    nonreference_b[0] = 0x01;  // Non-IDR B picture with nal_ref_idc zero.
+    Require(prefix_raw < 128 && nonreference_b.size() > base &&
+                nonreference_b.size() + prefix.size() <
+                    crystalhd_access_unit_limits::kVaFleaProgressiveH264SubmissionBytes,
+            "non-IDR raw overflow remains above budget despite its shorter prefix");
+    Require(SubmitH264(&f, nonreference_b) ==
+                    VA_STATUS_ERROR_INVALID_PARAMETER &&
+                f.mock.inputs.size() == 1 &&
+                f.mock.legacy_input_calls == 1 &&
+                f.mock.fragment_input_calls == 0 &&
+                f.decode->pending == before_pending &&
+                f.decode->decoded_frames == before_frames &&
+                f.decode->next_timestamp == timestamp &&
+                f.decode->next_submission_ordinal == ordinal &&
+                f.decode->replay.cached_bytes() == cache &&
+                f.decode->replay.outstanding() == 1 &&
+                !f.decode->h264_waiting_for_idr && !f.decode->replay.failed(),
+            "raw non-reference rejection preserves retained output without imposing an IDR barrier");
+    for (const auto &frame : before_frames)
+      Require(!frame.second->failed,
+              "raw non-reference rejection leaves accepted private pictures valid");
+    f.picture.pic_fields.bits.reference_pic_flag = 1;
+    f.slice.slice_type = 0;
+    Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 2 &&
+                f.mock.inputs.back().timestamp == timestamp &&
+                !f.decode->h264_waiting_for_idr && !f.decode->replay.failed(),
+            "dependent P input resumes at the unconsumed PTS without another IDR");
   }
 }
 
@@ -2212,6 +2496,7 @@ int main() {
     {"rejected H.264 consumed End", RejectedH264ConsumedEnd},
     {"large H.264 AU boundary and recovery", LargeH264AccessUnitBoundaryAndRecovery},
     {"qualified Flea progressive H.264 headroom", QualifiedFleaProgressiveH264Headroom},
+    {"qualified H.264 deescaped admission and recovery", QualifiedH264DeescapedAdmissionAndRecovery},
     {"legacy Flea PES bounded whole-AU admission", LegacyFleaPesAdmission},
     {"rejected H.264 references require IDR", H264ReferenceRejectionRequiresIdr},
     {"allocation failure is transactional", AllocationFailureIsTransactional},

@@ -20,6 +20,12 @@ constexpr size_t kVaH264SubmissionBytes = 2U * 1024U * 1024U;
 // Separately qualified BCM70015 / DIL 3.22.0 progressive frame-coded allowance;
 // this is an assembled submission policy, not a general chip maximum.
 constexpr size_t kVaFleaProgressiveH264SubmissionBytes = 3014656U;
+// Additional conservative policy for that extended allowance, not a measured
+// firmware allocation or a general decoder maximum. #468 reproduces loss of
+// output below the wire-size cap when escape-stripped input approaches 2 MiB.
+// Keep a chosen 4 KiB margin; ordinary <=2 MiB admission remains unchanged.
+constexpr size_t kVaFleaProgressiveH264DeescapedBytes =
+    kVaH264SubmissionBytes - 4096U;
 constexpr size_t kReplayCacheBytes = 32U * 1024U * 1024U;
 // Match libcrystalhd's public bounded-fragment contract.
 constexpr size_t kDtsInputChunkBytes = 512U * 1024U;

@@ -190,8 +190,22 @@ accepted private pictures remain independent of a rejected public transaction.
 A [new RC5 reporter result](https://github.com/ahnhy1324/crystalhd/issues/468)
 finds some real B-pyramid input failing below that admitted byte limit, although
 the synthetic boundary fixture passes. The limit is not a guarantee for every
-stream. This compatibility defect is under investigation; neither a lower
-universal limit nor a longer timeout has been established as its fix.
+stream. The unreleased 1.2 branch adds a second admission check only for units
+above the ordinary 2 MiB assembled baseline: at most **2,093,056 estimated
+de-escaped bytes** across the assembled Annex B unit, including start codes and
+NAL headers. The existing 3,014,656-byte assembled cap remains. Only unambiguous,
+nonterminal emulation-prevention bytes reduce that estimate; no input bytes are
+removed or rewritten. Over-budget transactions are rejected before input,
+replay or accepted-picture identity is committed, using the existing reference
+picture/next-IDR recovery rules.
+
+This is an unqualified development containment measure, not a completed fix for
+[#468](https://github.com/ahnhy1324/crystalhd/issues/468). The 2 MiB minus 4 KiB
+cutoff is conservative policy, not a measured firmware reserve or proven chip
+limit. Ordinary units at or below 2 MiB assembled bytes are unchanged, so this
+does not establish protection for every near-2-MiB de-escaped input. Native
+qualification and the firmware mechanism remain open; no new option, timeout,
+firmware or legacy ioctl change is introduced.
 
 RC5 applies this failed-`vaEndPicture()` public-read protection
 to every supported decode codec. New synchronization, image/export and VPP
