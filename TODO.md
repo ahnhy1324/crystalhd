@@ -52,7 +52,9 @@ expanding the released scope to general full-rate FHD/deinterlacing support.
   A separate three-hour 720i25 headless concat run passes 540,000 exact Bob outputs,
   EOF and fresh Weave reopen; default FFmpeg stream-loop remains 296/300 FAIL
   ([scope and retained failures](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6257714172)).
-  Stock Kodi/Atom physical cadence, A/V and displayed endurance remain open. Keep existing
+  Kodi21.3 directly observed Bob metadata still duplicates each field-pair PTS;
+  one seek takes its 5-second cache-startup fallback. Uniform presentation is not
+  qualified. Stock Kodi/Atom physical cadence, A/V and displayed endurance remain open. Keep existing
   Weave playback intact. Hardware Bob remains separate research, not a
   prerequisite for this software integration.
 - [ ] Player HTTP(S) acceptance — implementation is included in RC4, with

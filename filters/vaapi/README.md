@@ -156,9 +156,14 @@ Previously exported targets awaiting decode complete synchronously within the
 existing bounded wait when safe fence setup is unavailable, rather than
 publishing an unfenced asynchronous write. No root/debugfs permission change
 or new option is needed. CPU-access/cleanup and partial-import failures still
-reject. Kodi 21.3's second-field timestamp calculation depends on a previous
-temporal reference, while Bob correctly requires none; the current tracker logs
-show a 0/40 ms timestamp pattern, not demonstrated evenly timed 50p. A separate
+reject. A passive Kodi 21.3 observation of all 1,500 successful post-processing
+outputs confirms equal PTS within each field pair, with approximately 40 ms
+between source pictures, not uniformly timed 50p. Its second-field adjustment
+uses a previous temporal reference, while Bob correctly requires none; all 750
+second-field adjustments were skipped. These are output metadata, not measured
+screen presentation times. One separate seek selects Kodi's 5-second cache
+startup fallback while video remains in its starting state; the underlying
+startup delay is not fully attributed. A separate
 branch trace attributes two reproduced seek/Stop buffer warnings to cancellation,
 not deadline expiry; seek-preroll drops and multi-second recovery remain. See
 [#445's compatibility evidence](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6257714172).
