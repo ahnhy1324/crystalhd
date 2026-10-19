@@ -5057,6 +5057,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     }
     // Only constrain the separately qualified extended envelope. The ordinary
     // baseline is preserved; this is containment, not universal AU acceptance.
+    // #468 measures signed-firmware CDB retention loss for a large single NAL.
+    // Affected input needs caller-selected software decode, not a longer wait.
     if (bitstream.size() > crystalhd_access_unit_limits::kVaH264SubmissionBytes &&
         !H264HeadroomDeescapedFits(bitstream)) {
       Debug("H.264 extended input exceeds de-escaped admission policy: "

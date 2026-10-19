@@ -226,16 +226,26 @@ removed or rewritten. Over-budget transactions are rejected before input,
 replay or accepted-picture identity is committed, using the existing reference
 picture/next-IDR recovery rules.
 
-This is a bounded development containment measure, not a completed fix for
-[#468](https://github.com/ahnhy1324/crystalhd/issues/468). The 2 MiB minus 4 KiB
+This is bounded development containment for the documented
+[#468 compatibility limitation](https://github.com/ahnhy1324/crystalhd/issues/468),
+not full decoding repair. The 2 MiB minus 4 KiB
 cutoff is conservative policy, not a measured firmware reserve or proven chip
 limit. Ordinary units at or below 2 MiB assembled bytes are unchanged, so this
 does not establish protection for every near-2-MiB de-escaped input. Selected
 native controls verify rejection before the offending AU's DMA and fresh
-reopen, not same-context continuation. The formerly working 2,958,968-byte
+reopen. The formerly working 2,958,968-byte
 IDR250 control is intentionally rejected. Exact firmware reclamation and
-broader recovery remain open; no new option, timeout, firmware or legacy ioctl
-change is introduced.
+broader recovery remain research; no new option, timeout, firmware or legacy
+ioctl change is introduced. This describes the measured signed-firmware and
+configuration behavior, not a universal BCM70015 silicon limit.
+
+For uninterrupted playback of affected input, select software decoding.
+Published v1.1.0 remains affected; unreleased 1.2 rejects selected over-budget
+input rather than decoding it. After a hardware error, close that decode context
+and reopen supported input. A separate deliberate-client-discard test reaches
+all 192 pictures from the next actual IDR on one context; ordinary players are
+not thereby given automatic recovery. Longer timeouts or disabling prefeed
+did not resolve the retained failure.
 
 RC5 applies this failed-`vaEndPicture()` public-read protection
 to every supported decode codec. New synchronization, image/export and VPP

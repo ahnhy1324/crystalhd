@@ -32,13 +32,16 @@ expanding the released scope to general full-rate FHD/deinterlacing support.
   and short progressive/Off physical A/V measurements. Exact Kodi output
   identity, interlaced Bob A/V, hour-long measured A/V drift and out-of-policy
   B-pyramid recovery remain open; these are not new 1.2 Bob acceptance.
-- [ ] [#468: admitted real B-pyramid input can stop output](https://github.com/ahnhy1324/crystalhd/issues/468)
+- [x] [#468: admitted real B-pyramid input can stop output](https://github.com/ahnhy1324/crystalhd/issues/468)
   — the real-content failure is reproduced and the development extended-input
   guard passes bounded native rejection/fresh-reopen controls, intentionally
   rejecting some formerly working input. A single-NAL input-retention limitation
   is now [measured](HARDWARE-2026-09-13.md#h264-input-retention-investigation);
-  exact firmware reclamation and broader recovery remain open. Ordinary
-  assembled inputs at/below 2 MiB are unchanged.
+  disposition is a signed-firmware/configuration compatibility limitation,
+  not full decoding repair. Affected continuous playback uses software decode;
+  hardware failure permits a clean reopen of supported input. Internal reclamation
+  remains research, not a closure prerequisite. Ordinary assembled inputs
+  at/below 2 MiB are unchanged.
 - [ ] [#436: planned v1.2 deinterlacing and presentation work](https://github.com/ahnhy1324/crystalhd/issues/436)
   — qualify the development CPU VA-VPP Bob path for
   the existing Kodi Auto problem in [#445](https://github.com/ahnhy1324/crystalhd/issues/445):
