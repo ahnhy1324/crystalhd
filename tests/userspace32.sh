@@ -103,6 +103,42 @@ for bits in $build_bits; do
         -Wl,--gc-sections,--wrap=ioctl -pthread $cpu_flags \
         -o "$build_dir/vaapi-bob-vpp"
     run_test "$build_dir/vaapi-bob-vpp"
+    # Exercise actual EndPicture/ownership/cancellation, not only syntax or
+    # pixels. The selected test entry and abort-only SDK boundaries need no
+    # target-architecture graphics, scaler or decoder shared libraries.
+    # shellcheck disable=SC2086
+    $cxx ${CPPFLAGS:-} ${CXXFLAGS:-} -m"$bits" -std=c++17 -O2 \
+        -Wall -Wextra -Werror -fno-tree-slp-vectorize \
+        -ffunction-sections -fdata-sections -D__LINUX_USER__ \
+        -DCRYSTALHD_VPP_CPU_ONLY -I"$repo_dir/include" \
+        -I"$repo_dir/linux_lib/libcrystalhd" \
+        $(pkg-config --cflags libva libva-drm libdrm gbm libswscale) \
+        "$repo_dir/tests/vaapi-vpp.cpp" \
+        -Wl,--gc-sections,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=eventfd \
+        -Wl,--wrap=fstat,--wrap=drmGetDevice2,--wrap=drmFreeDevice \
+        -Wl,--wrap=drmPrimeHandleToFD,--wrap=mmap,--wrap=munmap \
+        -pthread $cpu_flags -o "$build_dir/vaapi-vpp-cpu"
+    LC_ALL=C readelf -h "$build_dir/vaapi-vpp-cpu" > "$build_dir/vaapi-vpp-cpu.elf"
+    grep -Eq "Class:[[:space:]]+ELF$bits" "$build_dir/vaapi-vpp-cpu.elf"
+    if [ "$bits" -eq 32 ]; then
+        grep -Eq 'Machine:[[:space:]]+Intel 80386' "$build_dir/vaapi-vpp-cpu.elf"
+    fi
+    LC_ALL=C readelf -d "$build_dir/vaapi-vpp-cpu" > "$build_dir/vaapi-vpp-cpu.dynamic"
+    if awk '/NEEDED/ { sub(/^.*\[/, ""); sub(/\].*$/, ""); print }' \
+        "$build_dir/vaapi-vpp-cpu.dynamic" | \
+        grep -Ev '^(libstdc\+\+\.so\.6|libgcc_s\.so\.1|libc\.so\.6|libm\.so\.6|libpthread\.so\.0|librt\.so\.1|libdl\.so\.2|libatomic\.so\.1)$'; then
+        echo "CPU-only VPP test unexpectedly depends on a non-runtime shared library" >&2
+        exit 1
+    fi
+    if [ "$legacy" -eq 1 ]; then
+        objdump -d "$build_dir/vaapi-vpp-cpu" > "$build_dir/vaapi-vpp-cpu.disassembly"
+        if grep -Eq '%([xyz]mm[0-9]+|mm[0-7])|[[:space:]](emms|femms|clflush|[lms]fence|[ls]dmxcsr)([[:space:]]|$)' \
+            "$build_dir/vaapi-vpp-cpu.disassembly"; then
+            echo "legacy VPP state test contains SIMD/cache instructions" >&2
+            exit 1
+        fi
+    fi
+    run_test "$build_dir/vaapi-vpp-cpu"
     if [ "$legacy" -eq 1 ]; then
         # shellcheck disable=SC2086
         $cxx -std=c++11 -Wall -Wextra -Werror $cpu_flags \

@@ -14,6 +14,10 @@
 #include <stdexcept>
 #include <string>
 
+#ifdef CRYSTALHD_VPP_CPU_ONLY
+#include "vaapi-vpp-cpu-stubs.h"
+#endif
+
 namespace allocation_fault {
 thread_local bool fail_next = false;
 thread_local size_t only_size = 0, failed_size = 0;
@@ -1881,7 +1885,12 @@ void ExposedQueuedVppStillRequiresFence() {
           "exposed backing cannot fall back to unfenced writes after fence failure");
 }
 
-void ExposedColdVppFallbackCompletesBeforeReturning() {
+void ExerciseExposedColdVppFallback(bool cache_ops_available) {
+  Require(CpuCacheFlush().Available() == cache_ops_available,
+          "exercise the actual CPU cache-operation capability, never a fabricated one");
+  const std::vector<std::string> initial_events = cache_ops_available
+      ? std::vector<std::string>{"start:101", "open", "end:101"}
+      : std::vector<std::string>{};
   for (unsigned int mode = 0; mode != 9; ++mode) {
     FenceIoMock mock;
     MockFenceScope scope(mock);
@@ -1927,7 +1936,7 @@ void ExposedColdVppFallbackCompletesBeforeReturning() {
                   fixture.driver.pending_vpp.front().worker_active &&
                   picture->vpp_readers == 1 && fixture.target->vpp_writers == 1 &&
                   !fixture.target->ready && !fixture.target->failed &&
-                  fixture.target->storage == original,
+                  fixture.target->storage == original && mock.events == initial_events,
               "exposed cold fallback retains owners and cannot return unready success");
       if (mode == 1)
         ++fixture.decoder->generation;
@@ -1977,17 +1986,25 @@ void ExposedColdVppFallbackCompletesBeforeReturning() {
                 mock.handles.empty() && !mock.self_wait && !mock.invalid,
             "synchronous fallback completion/cancellation releases all owners exactly once");
     if (mode == 0) {
+      auto expected_events = initial_events;
+      expected_events.insert(expected_events.end(), {"start:101", "end:101"});
       Require(status == VA_STATUS_SUCCESS && fixture.target->ready &&
                   !fixture.target->failed &&
                   fixture.target->frame_timestamp == kTimestampStep &&
                   fixture.target->planes[0][0] == 40 &&
-                  mock.events == std::vector<std::string>{
-                      "start:101", "open", "end:101", "start:101", "end:101"},
+                  mock.events == expected_events,
               "without sw_sync, exposed output is actually committed before End succeeds");
     } else {
       Require(status != VA_STATUS_SUCCESS && !fixture.target->ready &&
                   fixture.target->failed,
               "failed/canceled synchronous conversion never acknowledges ready pixels");
+      auto expected_events = initial_events;
+      if (mode == 5)
+        expected_events.push_back("start:101");
+      else if (mode == 6)
+        expected_events.insert(expected_events.end(), {"start:101", "end:101"});
+      Require(mock.events == expected_events,
+              "cancellation never writes; actual CPU START/END failures retain exact events");
       if (mode != 6)
         Require(fixture.target->storage == original,
                 "cancellation or failed CPU START never changes destination pixels");
@@ -2005,6 +2022,36 @@ void ExposedColdVppFallbackCompletesBeforeReturning() {
     }
   }
 }
+
+void ExposedColdVppFallbackCompletesBeforeReturning() {
+  ExerciseExposedColdVppFallback(true);
+}
+
+#if defined(CRYSTALHD_VPP_CPU_ONLY) && defined(CRYSTALHD_LEGACY_CPU)
+void LegacyExposedColdVppFallbackCompletesBeforeReturning() {
+  ExerciseExposedColdVppFallback(false);
+}
+
+void LegacyExposedStoppedVppRemainsRejected() {
+  Require(!CpuCacheFlush().Available(), "legacy CPU has no special cache-operation path");
+  FenceIoMock mock;
+  MockFenceScope scope(mock);
+  Fixture fixture;
+  fixture.driver.StopWorkers();
+  fixture.target->object_fds = {101};
+  fixture.target->layout.valid = true;
+  const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+  picture->ready = false;
+  fixture.SubmitParameters();
+  Require(EndPicture(&fixture.context, 2) == VA_STATUS_ERROR_OPERATION_FAILED &&
+              fixture.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
+              fixture.target->vpp_writers == 0 && fixture.target->planes[0][0] == 99 &&
+              fixture.target->failed && !fixture.target->ready &&
+              mock.events.empty() && mock.started.empty() && mock.handles.empty() &&
+              !mock.invalid && !mock.self_wait,
+          "stopped legacy source rejects without CPU/fence events or altered pixels/owners");
+}
+#endif
 
 void UnsafeFenceFailuresCannotUseSynchronousFallback() {
   for (unsigned int mode = 0; mode != 3; ++mode) {
@@ -3535,7 +3582,9 @@ void GenuineSwSyncCompletionStatuses() {
 
 }  // namespace
 
-int main(int argc, char **argv) {
+// Keep the complete entry globally compiled for syntax coverage. CPU-only
+// section-GC builds retain only their selected state-machine groups below.
+int VppFullTestEntry(int argc, char **argv) {
   if (argc > 2 || (argc == 2 && strcmp(argv[1], "--sw-sync") != 0 &&
                    strcmp(argv[1], "--lifecycle-failures") != 0 &&
                    strcmp(argv[1], "--import-contracts") != 0)) {
@@ -3638,4 +3687,38 @@ int main(int argc, char **argv) {
   }
   puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 62 hardware-free regressions passed");
   return 0;
+}
+
+int main(int argc, char **argv) {
+#ifndef CRYSTALHD_VPP_CPU_ONLY
+  return VppFullTestEntry(argc, argv);
+#else
+  (void)argv;
+  if (argc != 1) return 2;
+  const std::pair<const char *, void (*)()> groups[] = {
+#ifdef CRYSTALHD_LEGACY_CPU
+      {"legacy exposed stopped-source rejection", LegacyExposedStoppedVppRemainsRejected},
+      {"legacy synchronous fallback: nine no-cache-operation modes", LegacyExposedColdVppFallbackCompletesBeforeReturning}};
+#else
+      {"exposed stopped-source rejection", ExposedQueuedVppStillRequiresFence},
+      {"synchronous fallback: nine completion/cancellation modes", ExposedColdVppFallbackCompletesBeforeReturning},
+      {"unsafe CPU/import failures: three rejection modes", UnsafeFenceFailuresCannotUseSynchronousFallback}};
+#endif
+  unsigned failures = 0;
+  for (const auto &group : groups) {
+    try {
+      group.second();
+      printf("PASS %s\n", group.first);
+    } catch (const std::exception &error) {
+      ++failures;
+      fprintf(stderr, "FAIL %s: %s\n", group.first, error.what());
+    }
+  }
+#ifdef CRYSTALHD_LEGACY_CPU
+  puts("Unsafe fence-import path: NOT RUN; unavailable with real legacy cache capabilities");
+#endif
+  printf("VA-API CPU VPP fallback: %zu groups, %u failures\n",
+         sizeof(groups) / sizeof(groups[0]), failures);
+  return failures == 0 ? 0 : 1;
+#endif
 }
