@@ -5622,11 +5622,23 @@ static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
     SetSurfaceState(driver, operation.target.get(),
                     successful_commit, !successful_commit);
   }
-  Debug("%s VPP sequence=%llu source_timestamp=%llu target=%p status=%d",
+  Debug("%s VPP sequence=%llu source_timestamp=%llu target=%p status=%d "
+        "expected_timestamp=%llu decoder_context=%u captured_generation=%llu "
+        "current_generation=%llu source_ready=%d source_failed=%d decoder_retired=%d "
+        "source_destroyed=%d target_destroyed=%d target_owner_destroyed=%d target_superseded=%d",
         committed ? "committed" : "discarded",
         static_cast<unsigned long long>(operation.sequence),
         static_cast<unsigned long long>(operation.source->frame_timestamp),
-        static_cast<void *>(operation.target.get()), status);
+        static_cast<void *>(operation.target.get()), status,
+        static_cast<unsigned long long>(operation.source_timestamp),
+        operation.decoder ? operation.decoder->id : VA_INVALID_ID,
+        static_cast<unsigned long long>(operation.decoder_generation),
+        static_cast<unsigned long long>(operation.decoder ? operation.decoder->generation : 0),
+        operation.source->ready, operation.source->failed,
+        operation.decoder && operation.decoder->retired,
+        operation.source->destroyed, operation.target->destroyed,
+        operation.target_owner->destroyed,
+        operation.target_owner->latest_vpp_sequence != operation.sequence);
   crystalhd_vaapi_trace::Fields fields =
       TraceFields(nullptr, operation.target.get(),
                   operation.source->frame_timestamp);

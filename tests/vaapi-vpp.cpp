@@ -2003,6 +2003,7 @@ void DirectCaptureKeepsQueuedVppPrivate() {
     FenceIoMock mock;
     MockFenceScope scope(mock);
     Fixture fixture;
+    fixture.decoder->id = 1;  // Real decoder ID, independent of optional TRACE.
     // Drive the queued lifecycle deterministically on the mocking thread.
     // The real worker would race these manual completion/cancellation steps.
     {
@@ -2036,8 +2037,63 @@ void DirectCaptureKeepsQueuedVppPrivate() {
     if (cancel) {
       fixture.decoder->Reset();
       Require(PendingVppCanceled(pending), "decoder retirement cancels direct capture epoch");
+      // The source is still cold and its mutable expectation can change;
+      // DEBUG must distinguish both from the immutable queued token/epoch.
+      picture->expected_timestamp = 3 * kTimestampStep;
+      Require(picture->frame_timestamp == 0 && !picture->ready &&
+                  pending.source_timestamp == kTimestampStep &&
+                  picture->trace_context == 0 &&
+                  fixture.decoder->generation != pending.decoder_generation,
+              "cold canceled source differs from queued identity and generation");
+      const char *old_debug = getenv("CRYSTALHD_VAAPI_DEBUG");
+      const bool had_debug = old_debug != nullptr;
+      const std::string old_debug_value = had_debug ? old_debug : "";
+      struct FileCloser {
+        void operator()(FILE *stream) const {
+          if (fclose(stream) != 0) std::abort();
+        }
+      };
+      std::unique_ptr<FILE, FileCloser> log(tmpfile());
+      Require(log != nullptr && fflush(stderr) == 0, "prepare private DEBUG capture");
+      const int saved_stderr = dup(STDERR_FILENO);
+      Require(saved_stderr >= 0, "save stderr for scoped DEBUG capture");
+      struct RestoreDebug {
+        int descriptor;
+        bool had_value;
+        const std::string &value;
+        ~RestoreDebug() {
+          bool clean = fflush(stderr) == 0;
+          clean = (dup2(descriptor, STDERR_FILENO) >= 0) && clean;
+          clean = (close(descriptor) == 0) && clean;
+          clean = ((had_value ? setenv("CRYSTALHD_VAAPI_DEBUG", value.c_str(), 1)
+                              : unsetenv("CRYSTALHD_VAAPI_DEBUG")) == 0) && clean;
+          if (!clean) std::abort();
+        }
+      } restore{saved_stderr, had_debug, old_debug_value};
+      Require(setenv("CRYSTALHD_VAAPI_DEBUG", "1", 1) == 0 &&
+                  dup2(fileno(log.get()), STDERR_FILENO) >= 0,
+              "capture only the existing release diagnostic");
       ReleasePendingVpp(&fixture.driver, pending.sequence,
-                         VA_STATUS_ERROR_OPERATION_FAILED, false);
+                        VA_STATUS_ERROR_OPERATION_FAILED, false);
+      Require(fflush(stderr) == 0 && fseek(log.get(), 0, SEEK_SET) == 0,
+              "read completed release diagnostic");
+      char bytes[2048];
+      const size_t size = fread(bytes, 1, sizeof(bytes), log.get());
+      Require(size < sizeof(bytes) && !ferror(log.get()), "bounded DEBUG capture");
+      const std::string text(bytes, size);
+      Require(text.find("discarded VPP sequence=" + std::to_string(pending.sequence) +
+                        " source_timestamp=0 target=") != std::string::npos &&
+                  text.find("expected_timestamp=" + std::to_string(pending.source_timestamp) +
+                            " decoder_context=1 captured_generation=" +
+                            std::to_string(pending.decoder_generation) +
+                            " current_generation=" + std::to_string(fixture.decoder->generation)) !=
+                      std::string::npos &&
+                  text.find("expected_timestamp=" + std::to_string(picture->expected_timestamp)) ==
+                      std::string::npos &&
+                  text.find("source_ready=0 source_failed=0 decoder_retired=0 "
+                            "source_destroyed=0 target_destroyed=0 target_owner_destroyed=0 "
+                            "target_superseded=0") != std::string::npos,
+              "DEBUG preserves completed0 and exposes immutable queued identity/cancellation state");
       Require(fixture.target->failed && fixture.target->planes[0][0] == 99 &&
                   mock.fence_status < 0,
               "canceled capture preserves destination and publishes error fence");
