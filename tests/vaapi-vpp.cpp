@@ -2064,7 +2064,8 @@ void DirectCaptureKeepsQueuedVppPrivate() {
         ~RestoreDebug() {
           bool clean = fflush(stderr) == 0;
           clean = (dup2(descriptor, STDERR_FILENO) >= 0) && clean;
-          clean = (close(descriptor) == 0) && clean;
+          // This is our private stdio duplicate, not a mocked fence handle.
+          clean = (__real_close(descriptor) == 0) && clean;
           clean = ((had_value ? setenv("CRYSTALHD_VAAPI_DEBUG", value.c_str(), 1)
                               : unsetenv("CRYSTALHD_VAAPI_DEBUG")) == 0) && clean;
           if (!clean) std::abort();
