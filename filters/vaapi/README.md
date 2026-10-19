@@ -139,6 +139,12 @@ verified 50 input pictures→100 field outputs against an independent same-run
 Weave-derived reference, plus frame-rate Bob and Weave reopen. It is not a
 throughput or Kodi acceptance result.
 
+For supported interlaced input with this development VA driver selected,
+Kodi's per-video deinterlace method **Auto** selects CPU Bob; **Off** retains
+Weave. Stock Kodi 21.3 passed a short
+native Auto/Off selection, natural-EOF and resource-return control. Kodi 22,
+Atom performance, actual display cadence and physical A/V still need acceptance.
+
 ## Replay and end of stream
 
 BCM70015 firmware can retain output until later compressed pictures or a real
