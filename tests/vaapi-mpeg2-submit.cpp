@@ -123,6 +123,9 @@ extern "C" int drmGetDevice2(int, uint32_t, drmDevicePtr *) { abort(); }
 extern "C" void drmFreeDevice(drmDevicePtr *) { abort(); }
 extern "C" int drmPrimeHandleToFD(int, uint32_t, uint32_t, int *) { abort(); }
 extern "C" void sws_freeContext(SwsContext *) { abort(); }
+extern "C" const int *sws_getCoefficients(int) { abort(); }
+extern "C" int sws_setColorspaceDetails(SwsContext *, const int *, int,
+    const int *, int, int, int, int) { abort(); }
 extern "C" SwsContext *sws_getCachedContext(SwsContext *, int, int, AVPixelFormat,
     int, int, AVPixelFormat, int, SwsFilter *, SwsFilter *, const double *) { abort(); }
 extern "C" int sws_scale(SwsContext *, const uint8_t *const [], const int [],
