@@ -333,6 +333,50 @@
     "independent_raw_review": "APPROVE scoped metrics, proof, counters, pixel receipt and clean boundaries",
     "not_claimed": ["generic CI or release qualification", "general-stream or epoch recovery support", "physical display cadence or A/V", "VA Bob", "hardware or temporal deinterlacing", "card-only latency or maximum throughput"]
   },
+  "uncropped_1088_geometry": {
+    "date": "2026-10-20",
+    "source_checkout": "7384f88c7d4b41e4068a8841737831e8db9ce399",
+    "isolated_dil_source": "3b81b1d6ecb8caf5095879b285019a47574c9755",
+    "probe": "unchanged tests/fw-single-field-decode.cpp from source_checkout; -Werror build and self-test PASS",
+    "module": "installed 3.10.9, srcversion 287221A03F284BCA2A3C04B; same environment and PM as above",
+    "fixture": "native-single-field.json cases[2], uniform-TFF H.264 MBAFF 1920x1080i25, 50 input packets",
+    "preparation": {
+      "crop_only": "Stock FFmpeg stream copy with h264_metadata=crop_bottom=0, -copyts and -mpegts_copyts 1; decoded size 1920x1088",
+      "crop_only_byte_check": "All 50 VCL NALs (2667329 bytes), every non-SPS NAL and packet PTS/DTS unchanged; two SPS NALs changed",
+      "va_sps": "Invoke actual production BuildSps with the original SPS decoder parameters; replace SPS and remove SEI, retaining original PPS/VCL and packet PTS/DTS. This is SPS-equivalent, not a full VA AU reconstruction or adapter run",
+      "va_picture_parameters": "High; width_mbs_minus1=119, height_mbs_minus1=67, num_ref_frames=4, log2_max_frame_num_minus4=0, pic_order_cnt_type=0, log2_max_pic_order_cnt_lsb_minus4=2, frame_mbs_only=0, mb_adaptive_frame_field=1, direct_8x8_inference=1, gaps_allowed=0",
+      "va_sps_differences": "No crop; VUI 1/60 fixed instead of 1/50 non-fixed, pic_struct_present=0, max_num_reorder_frames=0. Demux-derived packet duration changes 3600 to 3000 ticks at 90 kHz; PTS/DTS themselves remain identical",
+      "software_reference": "CPU decode crop-only input with extractplanes=y and fps_mode passthrough; 50 full 1920x1088 luma pictures"
+    },
+    "native_runs": {
+      "options": "50 0 NEW_PREFIX, then a separate open with 50 0 NEW_PREFIX --scale-width 1280; each variant uses fresh outputs",
+      "inputs_each": 50,
+      "fields_each": 100,
+      "runs": [
+        {"sps": "crop-only", "scale_width": 0, "picture": [1920, 1088], "field": [1920, 544], "pitch": 3840, "active_bytes": 208896000, "client": "PASS", "controller": "HOLD: missing RSS at process teardown; retained"},
+        {"sps": "crop-only", "scale_width": 1280, "picture": [1280, 724], "field": [1280, 362], "pitch": 2560, "active_bytes": 92672000, "client": "PASS", "controller": "PASS"},
+        {"sps": "production BuildSps", "scale_width": 0, "picture": [1920, 1088], "field": [1920, 544], "pitch": 3840, "active_bytes": 208896000, "client": "PASS", "controller": "PASS"},
+        {"sps": "production BuildSps", "scale_width": 1280, "picture": [1280, 724], "field": [1280, 362], "pitch": 2560, "active_bytes": 92672000, "client": "PASS", "controller": "PASS"}
+      ],
+      "all_runs": "Exact 50 tokens with both parities, contiguous offsets and validated extents; each field reports active bytes plus 160; EOS=1, marker=1, ready=0, normal exit/cleanup and unchanged resource boundaries",
+      "controller_disposition": "Original crop-only native HOLD unchanged; complete retained pixels reviewed offline, not a retroactive RSS-monitoring PASS. Subsequent controller accepts absent RSS only after that owned child exits within 250 ms; a still-live child fails. No native repeat or automatic retry"
+    },
+    "pixel_comparisons": {
+      "crop_only_native": "Join packet-ordinal tokens by PTS, weave top/even and bottom/odd rows: all 50 full-1088 luma pictures (104448000 bytes) equal software",
+      "production_sps_vs_crop_only": "Every YUY2 byte equals the same token/parity: 208896000 bytes native and 92672000 scaled; 100/100 fields each, zero differences",
+      "output_order": "Crop-only pairs arrive in PTS order; production-SPS pairs arrive in input packet order. Both production-SPS runs change 39 of 50 pair positions and have 20 PTS backsteps in arrival order. Keyed pixel equality is not presentation-order/cadence acceptance",
+      "historical_720_prefix_comparison": "Against the earlier cropped 720 capture, the first 360 rows of each new 362-row field differ in all 100 fields: 2730254 of 46080000 Y bytes and 3358352 of 46080000 chroma bytes, spanning field rows 6-359. Historical DIL 3617c4e versus current 3b81b1d: an observation, not a controlled crop-only causal or quality oracle. Do not assume trimming four frame rows reproduces the earlier 720 pixels"
+    },
+    "software_reorder_control": {
+      "exact_production_sps_decoded_pictures": 43,
+      "diagnostic_reorder2_decoded_pictures": 50,
+      "isolation": "Changing only SPS max_num_reorder_frames from 0 to 2 restores 50 ffprobe-decoded pictures; all 50 full-1088 luma pictures equal crop-only software. Every non-SPS NAL and packet PTS/DTS/duration matches the exact-SPS variant",
+      "disposition": "Original software HOLD retained. This isolates software reorder behavior, not card picture loss: exact production SPS on card returns all 50 pictures. Diagnostic reorder2 was not sent to hardware and no production SPS policy changed"
+    },
+    "independent_raw_review": "PASS scoped metadata, keyed pixels and clean boundaries; original controller/software HOLDs retained",
+    "integration_boundary": "Current standard VA decode must preserve its original full-size public source. Separate VPP reads that source; integrated DecProcessing also needs the original decode target plus a distinct processed output. A lone smaller capture does not fulfill either contract",
+    "not_claimed": ["VA card-scaling integration", "correct scaled visible-region mapping", "scaled software-quality oracle", "ordered presentation or physical A/V", "throughput or PCIe wire measurements", "hardware deinterlacing", "installation or module changes"]
+  },
   "qualification": {
     "gstreamer_full_lifecycle_groups": "88 PASS",
     "asan_ubsan_lsan_scaling_groups": "12 PASS",

@@ -181,14 +181,21 @@ their guards.
   unpaced throughput, CPU/RSS, unique outputs, gaps/drops, EOS and reopen for
   native FHD+BWDIF versus card-720+BWDIF+enlargement. Measure physical A/V
   separately when observable; batch wall time is not per-frame latency.
-- [ ] Check visible-height 1080 separately from VA coded-height 1088 before
-  frontend integration. CPU Bob already tests visible 1080 inside 1088 backing
-  at 720 output for both parities; this is not a card-capture result. VA rebuilds
-  an uncropped SPS, unlike the tested GStreamer input. Measure its actual scaled
-  capture geometry before designing integration that preserves public decoded
-  surfaces. Only then evaluate READY on an eligible input, keeping
-  B-frame limitations and original payload timestamps explicit. Reuse the
-  baseline and completed benchmarks instead of repeating unrelated gates.
+- [x] Measure coded-height 1088 separately from visible-height 1080. Both a
+  crop-only input and the actual VA `BuildSps` output return 1280x724 / 362-row
+  fields at width 1280, with all 50 token pairs and clean EOS. Native/scaled
+  pixels match between these inputs by token/parity; their return order differs.
+  The [receipt](tests/fixtures/issue436/card-scaled-bob.json) preserves the
+  original collector/software HOLDs and separates these observations from VA
+  adapter or presentation acceptance.
+- [ ] Establish scaled visible-region mapping and preserve the original public
+  decoded surface before VA card-scaling integration. Trimming 724 to 720 is not
+  an established pixel-equivalent crop. Separate VPP and standard integrated
+  processing cannot replace the required full-size decode target with only a
+  smaller capture. CPU Bob already covers visible 1080 inside 1088 backing at 720
+  for both parities; that is not this missing card-output contract. Only then
+  evaluate READY on an eligible input, retaining B-frame limitations and payload
+  timestamps. Reuse completed benchmarks instead of repeating unrelated gates.
 
 ## VA-API compatibility backlog (#445 / #436)
 
