@@ -201,6 +201,15 @@ void CheckTail(const std::vector<uint8_t> &actual, const std::vector<uint8_t> &t
           std::equal(tail.begin(), tail.end(), actual.end()-tail.size()),
           "each slice preserves its own data-buffer-relative offset and exact bytes");
 }
+bool SequenceProgressive(const std::vector<uint8_t> &bytes) {
+  for (size_t n = 0; n + 6 <= bytes.size(); ++n) {
+    if (bytes[n] || bytes[n+1] || bytes[n+2] != 1 ||
+        bytes[n+3] != 0xb5 || bytes[n+4] >> 4 != 1) continue;
+    size_t bit = (n + 4) * 8 + 4 + 8;
+    return ReadBits(bytes, &bit, 1) != 0;
+  }
+  throw std::runtime_error("submitted I picture has no sequence extension");
+}
 
 struct Fixture {
   DecoderMock mock;
@@ -443,7 +452,7 @@ void UnsupportedPictureAndSlicePoison() {
   for (unsigned variant = 0; variant < 9; ++variant) {
     Fixture f; f.Begin(); auto p = Picture(); auto s = Slice(); auto data = SliceBytes(0);
     if (variant == 0) p.picture_coding_extension.bits.picture_structure = 1;
-    if (variant == 1) p.picture_coding_extension.bits.progressive_frame = 0;
+    if (variant == 1) p.picture_coding_extension.bits.picture_structure = 2;
     if (variant == 2) p.picture_coding_extension.bits.frame_pred_frame_dct = 0;
     if (variant == 3) p.picture_coding_extension.bits.repeat_first_field = 1;
     if (variant == 4) p.picture_coding_extension.bits.top_field_first = 1;
@@ -457,8 +466,94 @@ void UnsupportedPictureAndSlicePoison() {
     VABufferID ids[] = {a,b,c};
     (void)RenderPicture(&f.context, f.id, ids, 3);
     Require(EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.starts && f.mock.inputs.empty(),
-            "unsupported field/interlaced/fragmented/range syntax fails before hardware");
+            "unsupported field/repeat/fragmented/range syntax fails before hardware");
     f.Submit(1);
+  }
+}
+void InterlacedSequenceAdmission() {
+  for (unsigned top_first : {0U, 1U}) {
+    Fixture f(VAProfileMPEG2Main, 640, 368);
+    // The interlaced 360-line visible image has a 24-row coded grid. The
+    // decoder context/allocation may retain its usual 16-line padding.
+    auto picture = Picture(640, 360);
+    picture.picture_coding_extension.bits.progressive_frame = 0;
+    picture.picture_coding_extension.bits.frame_pred_frame_dct = 0;
+    picture.picture_coding_extension.bits.top_field_first = top_first;
+    const auto slice = Slice(23); const auto data = SliceBytes(23);
+    f.Begin(1);
+    f.Render(f.Buffer(VAPictureParameterBufferType, &picture, sizeof(picture)));
+    f.Render(f.Buffer(VASliceParameterBufferType, &slice, sizeof(slice)));
+    f.Render(f.Buffer(VASliceDataBufferType, data.data(), data.size()));
+    f.End();
+    Require(f.mock.inputs.size() == 1 && f.decode->have_mpeg2_sequence &&
+            !f.decode->mpeg2_progressive_sequence &&
+            !SequenceProgressive(f.mock.inputs.front().bytes),
+            "public Main TFF/BFF submit emits an interlaced sequence");
+    CheckTail(f.mock.inputs.front().bytes, data);
+    for (unsigned type : {2U, 3U}) {
+      picture.picture_coding_type = type;
+      picture.forward_reference_picture = 1;
+      picture.backward_reference_picture = type == 3 ? 2 : VA_INVALID_SURFACE;
+      f.Begin(type); f.Parameters(picture); f.End();
+    }
+    Require(f.mock.inputs.size() == 3 && f.decode->mpeg2_replay.cached_pictures() == 3,
+            "public interlaced I/P/B uses the existing MPEG-2 reference transport");
+  }
+  for (unsigned variant = 0; variant < 3; ++variant) {
+    Fixture f(variant == 0 ? VAProfileMPEG2Simple : VAProfileMPEG2Main,
+              16, variant == 2 ? 368 : 32);
+    auto picture = Picture(16, variant == 2 ? 362 : 32);
+    picture.picture_coding_extension.bits.progressive_frame = 0;
+    if (variant == 1) picture.picture_coding_extension.bits.repeat_first_field = 1;
+    f.Begin(); f.Parameters(picture);
+    Require(EndPicture(&f.context, f.id) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+            f.mock.opens == 1 && !f.mock.starts && f.mock.format.width == 0 &&
+            !f.decode->have_mpeg2_sequence &&
+            f.decode->mpeg2_replay.cached_pictures() == 0,
+            "Simple interlace, RFF and incomplete chroma rows fail before decoder configuration");
+    f.Submit(2);
+    Require(f.decode->have_mpeg2_sequence && f.decode->mpeg2_progressive_sequence &&
+            SequenceProgressive(f.mock.inputs.front().bytes),
+            "a rejected first interlaced request does not latch sequence mode");
+  }
+}
+void SequenceModeLifetime() {
+  for (bool progressive : {false, true}) {
+    Fixture f;
+    f.mock.capacity = false;
+    auto picture = Picture();
+    picture.picture_coding_extension.bits.progressive_frame = progressive;
+    f.Begin(1); f.Parameters(picture); f.End();
+    Require(f.decode->have_mpeg2_sequence &&
+            f.decode->mpeg2_progressive_sequence == progressive &&
+            f.mock.inputs.empty(),
+            "accepted backpressured AU freezes sequence mode before transport");
+    const auto *accepted = f.decode->mpeg2_replay.Find(kTimestampStep);
+    Require(accepted && SequenceProgressive(accepted->bytes) == progressive,
+            "frozen sequence bit matches the owned first AU");
+    const auto token = f.decode->next_timestamp;
+    const auto count = f.decode->mpeg2_replay.cached_pictures();
+    picture.picture_coding_extension.bits.progressive_frame = !progressive;
+    for (bool close_hardware : {false, true}) {
+      if (close_hardware)
+        Require(f.decode->CloseHardware() == BC_STS_SUCCESS,
+                "transport-only close succeeds without a lease");
+      f.Begin(2); f.Parameters(picture);
+      Require(EndPicture(&f.context, f.id) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+              f.decode->have_mpeg2_sequence &&
+              f.decode->mpeg2_progressive_sequence == progressive &&
+              f.decode->next_timestamp == token &&
+              f.decode->mpeg2_replay.cached_pictures() == count &&
+              f.mock.inputs.empty() && f.mock.opens == 1,
+              "mode changes fail atomically even after transport-only close");
+    }
+    Require(f.decode->Close() == BC_STS_SUCCESS && !f.decode->have_mpeg2_sequence,
+            "logical context reset clears the sequence contract");
+    f.Begin(3); f.Parameters(picture); f.End();
+    Require(f.decode->have_mpeg2_sequence &&
+            f.decode->mpeg2_progressive_sequence != progressive &&
+            f.decode->mpeg2_replay.cached_pictures() == 1,
+            "a fresh logical epoch may accept the other sequence mode");
   }
 }
 void ReferenceValidation() {
@@ -737,6 +832,8 @@ int main() {
     {"malformed buffers poison and recover", MalformedBuffersPoison},
     {"bad calls, context and pair ownership", BadCallsContextsAndMissingPairs},
     {"unsupported picture/slice syntax", UnsupportedPictureAndSlicePoison},
+    {"Main interlaced public submission and bounded syntax", InterlacedSequenceAdmission},
+    {"frozen MPEG-2 sequence mode and logical reset", SequenceModeLifetime},
     {"reference identity and unready anchors", ReferenceValidation},
     {"late poison and immutable reference snapshot", LatePoisonAndReferenceSnapshot},
     {"visible versus allocated geometry", VisibleAndAllocatedGeometry},

@@ -1437,6 +1437,174 @@ struct H264WeaveFixture : H264FieldFixture {
   }
 };
 
+struct Mpeg2FieldFixture : H264FieldFixture {
+  explicit Mpeg2FieldFixture(unsigned int width = 16)
+      : H264FieldFixture(false, false, VA_FOURCC_NV12, width) {
+    decoder.profile = VAProfileMPEG2Main;
+    decoder.stream_width = width;
+    decoder.stream_height = 32;
+    decoder.have_mpeg2_sequence = true;
+    decoder.mpeg2_progressive_sequence = false;
+    decoder.replay = CrystalHDDecodeReplay();
+    Require(decoder.mpeg2_replay.Append(1, CrystalHDMpeg2Replay::Kind::I, 0, 0, {1}) &&
+                decoder.mpeg2_replay.InputSent(),
+            "submit frame-coded MPEG-2 I picture to its own replay model");
+  }
+};
+
+static void Mpeg2FieldPairsPreserveIdentityPixelsAndReplay() {
+  for (bool bottom_first : {false, true}) {
+    for (unsigned width : {16U, 18U}) {
+      Mpeg2FieldFixture fixture(width);
+      auto &decode = fixture.decoder;
+      BC_DTS_PROC_OUT first = fixture.Output(bottom_first, bottom_first,
+          bottom_first ? &fixture.bottom : &fixture.top);
+      BC_DTS_PROC_OUT second = fixture.Output(!bottom_first, bottom_first,
+          bottom_first ? &fixture.top : &fixture.bottom);
+      Require(ProcessDecodedOutput(&fixture.driver, &decode, first) == VA_STATUS_SUCCESS &&
+                  decode.h264_first_field.valid && decode.mpeg2_replay.outstanding() == 1 &&
+                  decode.pending.count(1) == 1 && !fixture.public_frame->ready &&
+                  !fixture.private_frame->ready && decode.replay.outstanding() == 0,
+              "MPEG-2 first field retains its own replay token without early readiness");
+      Require(ProcessDecodedOutput(&fixture.driver, &decode, second) == VA_STATUS_SUCCESS &&
+                  !decode.h264_first_field.valid && decode.mpeg2_replay.outstanding() == 0 &&
+                  decode.pending.empty() && fixture.public_frame->ready &&
+                  fixture.private_frame->ready && fixture.public_frame->frame_timestamp == 1,
+              "MPEG-2 complementary field completes exactly one picture");
+      fixture.CheckPixels(*fixture.public_frame);
+      fixture.CheckPixels(*fixture.private_frame);
+      const auto frozen = fixture.public_frame->storage;
+      Require(ProcessDecodedOutput(&fixture.driver, &decode, first) == VA_STATUS_SUCCESS &&
+                  !decode.h264_first_field.valid && fixture.public_frame->storage == frozen,
+              "retired MPEG-2 field cannot start a pair or overwrite pixels");
+    }
+  }
+  Mpeg2FieldFixture fixture;
+  auto &decode = fixture.decoder;
+  auto top = fixture.Output(false, false, &fixture.top);
+  auto bottom = fixture.Output(true, false, &fixture.bottom);
+  Require(decode.mpeg2_replay.Seal() &&
+              ProcessDecodedOutput(&fixture.driver, &decode, top) == VA_STATUS_SUCCESS &&
+              ProcessDecodedOutput(&fixture.driver, &decode, bottom) == VA_STATUS_SUCCESS &&
+              decode.mpeg2_replay.EndOfSequence() &&
+              decode.mpeg2_replay.Append(2, CrystalHDMpeg2Replay::Kind::P, 1, 0, {2}) &&
+              decode.mpeg2_replay.Restarted() && decode.mpeg2_replay.InputSent(),
+          "restart retained MPEG-2 anchor after sealed EOS");
+  decode.decoded_frames.erase(1);
+  const auto frozen = fixture.public_frame->storage;
+  Require(ProcessDecodedOutput(&fixture.driver, &decode, top) == VA_STATUS_SUCCESS &&
+              decode.h264_first_field.valid && decode.h264_first_field.replay_duplicate &&
+              decode.h264_first_field.pixels.empty() && decode.mpeg2_replay.IsOutstanding(1),
+          "first replayed MPEG-2 field retains metadata, not duplicate pixels");
+  Require(ProcessDecodedOutput(&fixture.driver, &decode, bottom) == VA_STATUS_SUCCESS &&
+              !decode.h264_first_field.valid && !decode.mpeg2_replay.IsOutstanding(1) &&
+              fixture.public_frame->storage == frozen,
+          "validated duplicate MPEG-2 pair retires once without replacing completed pixels");
+}
+
+static void Mpeg2FieldPairsRejectMalformedAndPreserveRetainedPictures() {
+  for (unsigned fault = 0; fault < 12; ++fault) {
+    Mpeg2FieldFixture fixture;
+    auto first = fixture.Output(false, false, &fixture.top);
+    auto second = fixture.Output(true, false, &fixture.bottom);
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, first) == VA_STATUS_SUCCESS,
+            "retain first MPEG-2 field before fault");
+    switch (fault) {
+      case 0: second.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD; break;
+      case 1: second.PicInfo.timeStamp = 2; break;
+      case 2: ++fixture.private_frame->decode_identity; break;
+      case 3: ++fixture.decoder.generation; break;
+      case 4: second.PicInfo.width -= 2; break;
+      case 5: second.PicInfo.flags |= VDEC_FLAG_BOTTOM_FIRST; break;
+      case 6: --second.YBuffDoneSz; break;
+      case 7: ++second.PicInfo.picture_number; break;
+      case 8: ++second.PicInfo.sess_num; break;
+      case 9: ++second.PicInfo.picture_meta_payload; break;
+      case 10: second.PicInfo.flags = 0; break;
+      case 11: second.YBuffDoneSz *= 2; break;
+    }
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, second) ==
+                VA_STATUS_ERROR_DECODING_ERROR && fixture.decoder.mpeg2_replay.failed() &&
+                !fixture.decoder.h264_first_field.valid && !fixture.public_frame->ready &&
+                fixture.private_frame->failed,
+            "mismatched, short or ambiguous MPEG-2 fields fail without publishing pixels");
+  }
+  for (bool retained : {false, true}) {
+    Mpeg2FieldFixture fixture;
+    auto first = fixture.Output(false, false, &fixture.top);
+    auto second = fixture.Output(true, false, &fixture.bottom);
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, first) == VA_STATUS_SUCCESS,
+            "hold MPEG-2 field before public target reuse");
+    std::shared_ptr<Surface> captured = retained ? fixture.private_frame : nullptr;
+    std::weak_ptr<Surface> old = fixture.private_frame;
+    auto replacement = std::make_shared<Surface>();
+    fixture.public_frame->expected_timestamp = 2;
+    fixture.public_frame->decode_identity = 42;
+    fixture.public_frame->decode_picture = replacement;
+    const auto untouched = fixture.public_frame->storage;
+    fixture.private_frame.reset();
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, second) == VA_STATUS_SUCCESS &&
+                fixture.decoder.mpeg2_replay.outstanding() == 0 &&
+                fixture.decoder.decoded_frames.empty() && fixture.decoder.pending.empty() &&
+                fixture.public_frame->storage == untouched && !fixture.public_frame->ready &&
+                !fixture.public_frame->failed,
+            "MPEG-2 pair cannot overwrite a rebound public picture");
+    if (retained) {
+      Require(captured->ready && captured->frame_timestamp == 1,
+              "retained MPEG-2 picture still receives its own fields");
+      fixture.CheckPixels(*captured);
+    } else {
+      Require(old.expired(), "unretained MPEG-2 pair releases its copied source and owner");
+    }
+  }
+}
+
+static void Mpeg2FieldPartialEosCloseAndRelease() {
+  {
+    Mpeg2FieldFixture fixture;
+    auto first = fixture.Output(false, false, &fixture.top);
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, first) == VA_STATUS_SUCCESS &&
+                fixture.decoder.CloseHardware() == BC_STS_SUCCESS &&
+                !fixture.decoder.h264_first_field.valid &&
+                fixture.decoder.have_mpeg2_sequence && !fixture.decoder.mpeg2_progressive_sequence &&
+                fixture.decoder.mpeg2_replay.IsOutstanding(1),
+            "hardware-only close keeps frozen MPEG-2 sequence and replay, not partial pixels");
+    Require(fixture.decoder.Close() == BC_STS_SUCCESS &&
+                !fixture.decoder.have_mpeg2_sequence && fixture.decoder.mpeg2_progressive_sequence &&
+                fixture.decoder.mpeg2_replay.outstanding() == 0,
+            "logical MPEG-2 reset clears sequence and field lifetime");
+  }
+  for (bool allocation_failure : {false, true}) {
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    Mpeg2FieldFixture fixture;
+    fixture.decoder.device = io.handle();
+    fixture.decoder.decoder_open = fixture.decoder.decoder_started = true;
+    io.output_width = 16; io.output_height = 32;
+    io.pixels.resize(16 * 16 * 2);
+    io.events.reserve(8);
+    io.outputs.push_back(1);
+    io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD);
+    bool activity = false;
+    if (allocation_failure) {
+      allocation_fault::fail_next = true;
+      Require(ReceiveOne(&fixture.driver, &fixture.decoder, 0, &activity) ==
+                  VA_STATUS_ERROR_ALLOCATION_FAILED && activity && !allocation_fault::fail_next,
+              "MPEG-2 field allocation failure is contained");
+    } else {
+      io.outputs.push_back(0);
+      Require(ReceiveAvailable(&fixture.driver, &fixture.decoder) ==
+                  VA_STATUS_ERROR_DECODING_ERROR,
+              "MPEG-2 EOS cannot complete an unmatched field");
+    }
+    Require(fixture.decoder.mpeg2_replay.failed() && !fixture.decoder.h264_first_field.valid &&
+                fixture.public_frame->failed && !fixture.public_frame->ready && !io.invalid &&
+                std::count(io.events.begin(), io.events.end(), "release") ==
+                    (allocation_failure ? 1 : 2),
+            "failed MPEG-2 partial picture releases each acquired hardware buffer exactly once");
+  }
+}
+
 static void H264WholeWeavePreservesIdentityAndPixels() {
   for (bool direct : {false, true}) {
     for (uint32_t fourcc : {VA_FOURCC_NV12, VA_FOURCC_ARGB}) {
@@ -10037,6 +10205,13 @@ static void NeutralAuxiliaryContracts() {
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::strcmp(argv[1], "--mpeg2-fields") == 0) {
+      Mpeg2FieldPairsPreserveIdentityPixelsAndReplay();
+      Mpeg2FieldPairsRejectMalformedAndPreserveRetainedPictures();
+      Mpeg2FieldPartialEosCloseAndRelease();
+      std::puts("VA-API MPEG-2 frame-coded TFF/BFF: exact pixels, replay, ownership, EOS and release PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--card-scaling") == 0) {
       CardScalingPublicIdentityAndGeometry();
       std::puts("VA-API integrated card scaling: setup, geometry, TFF/BFF, identity reuse and faults PASS");
@@ -10083,6 +10258,9 @@ int main(int argc, char **argv) {
     EncryptedOutputNeverMaterializesOrCompletes();
     EncryptedReceiveReleasesOnlyAcquiredOutput();
     H264WholeWeavePreservesIdentityAndPixels();
+    Mpeg2FieldPairsPreserveIdentityPixelsAndReplay();
+    Mpeg2FieldPairsRejectMalformedAndPreserveRetainedPictures();
+    Mpeg2FieldPartialEosCloseAndRelease();
     H264WholeWeaveRejectsMalformedOrPartialOutput();
     H264FieldPairsPreserveIdentityAndPixels();
     ReplayedH264FieldsRetainMetadataWithoutPixels();

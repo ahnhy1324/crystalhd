@@ -113,14 +113,21 @@ inline bool ValidPicture(const VAPictureParameterBufferMPEG2 &picture,
                          const SequenceOptions &sequence,
                          const PictureOptions &options) {
   const auto &p = picture.picture_coding_extension.bits;
+  // The supported interlaced subset is Main-profile frame pictures without
+  // repeated fields. Mixed progressive/interlaced sequences need a separate
+  // sequence-mode contract; a VA picture does not carry progressive_sequence.
+  // Field-local 4:2:0 output also requires complete pairs of chroma field rows.
   if ((sequence.profile != VAProfileMPEG2Simple &&
        sequence.profile != VAProfileMPEG2Main) ||
       (sequence.level != 10 && sequence.level != 8 &&
        sequence.level != 6 && sequence.level != 4) ||
       (sequence.profile == VAProfileMPEG2Simple && sequence.level != 8) ||
-      !sequence.progressive_sequence || p.picture_structure != 3 ||
-      !p.progressive_frame || !p.frame_pred_frame_dct ||
-      p.repeat_first_field || p.top_field_first ||
+      p.picture_structure != 3 || p.repeat_first_field ||
+      bool(p.progressive_frame) != sequence.progressive_sequence ||
+      (sequence.progressive_sequence &&
+       (!p.frame_pred_frame_dct || p.top_field_first)) ||
+      (!sequence.progressive_sequence &&
+       (sequence.profile != VAProfileMPEG2Main || (picture.vertical_size & 3U))) ||
       picture.horizontal_size == 0 || picture.vertical_size == 0 ||
       picture.horizontal_size > 1920 || picture.vertical_size > 1088 ||
       ((picture.horizontal_size | picture.vertical_size) & 1U) ||
@@ -170,14 +177,20 @@ struct Slice {
 
 namespace detail {
 inline bool ValidSlice(const Slice &slice,
-                       const VAPictureParameterBufferMPEG2 &picture) {
+                       const VAPictureParameterBufferMPEG2 &picture,
+                       bool progressive_sequence) {
   const auto &p = slice.parameters;
+  // H.262 6.1.2: interlaced frame pictures pad the macroblock grid to a pair
+  // of field rows. For example, a 360-line picture has 24 rows, not 23.
+  const unsigned rows = progressive_sequence
+      ? (picture.vertical_size + 15U) / 16U
+      : 2U * ((picture.vertical_size + 31U) / 32U);
   if (slice.data == nullptr || p.slice_data_flag != VA_SLICE_DATA_FLAG_ALL ||
       p.slice_data_size < 5 || p.slice_data_size > kMaxAccessUnitBytes ||
       p.slice_data_offset > slice.size ||
       p.slice_data_size > slice.size - p.slice_data_offset ||
       p.slice_horizontal_position >= (picture.horizontal_size + 15U) / 16U ||
-      p.slice_vertical_position >= (picture.vertical_size + 15U) / 16U ||
+      p.slice_vertical_position >= rows ||
       p.quantiser_scale_code < 1 || p.quantiser_scale_code > 31 ||
       (p.intra_slice_flag != 0 && p.intra_slice_flag != 1)) return false;
   const uint8_t *data = slice.data + p.slice_data_offset;
@@ -224,7 +237,7 @@ inline bool Assemble(const VAPictureParameterBufferMPEG2 &picture,
   if (!detail::UpdateMatrices(current, update, &next)) return false;
   size_t slice_bytes = 0;
   for (const Slice &slice : slices) {
-    if (!detail::ValidSlice(slice, picture) ||
+    if (!detail::ValidSlice(slice, picture, sequence.progressive_sequence) ||
         slice.parameters.slice_data_size > kMaxAccessUnitBytes - slice_bytes)
       return false;
     slice_bytes += slice.parameters.slice_data_size;

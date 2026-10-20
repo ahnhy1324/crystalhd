@@ -143,7 +143,9 @@ void Parse(const std::vector<uint8_t> &bytes,
   reader.Equal(1, p.top_field_first); reader.Equal(1, p.frame_pred_frame_dct);
   reader.Equal(1, p.concealment_motion_vectors); reader.Equal(1, p.q_scale_type);
   reader.Equal(1, p.intra_vlc_format); reader.Equal(1, p.alternate_scan);
-  reader.Equal(1, p.repeat_first_field); reader.Equal(1, 1); reader.Equal(1, 1);
+  reader.Equal(1, p.repeat_first_field);
+  reader.Equal(1, p.progressive_frame); // chroma_420_type
+  reader.Equal(1, p.progressive_frame);
   reader.Equal(1, 0);
   reader.Start(0xb5); reader.Equal(4, 3);
   for (const auto &list : matrices.lists) {
@@ -351,6 +353,56 @@ void Rejections() {
   }
 }
 
+void InterlacedFrames() {
+  ++groups;
+  for (unsigned type : {1U, 2U, 3U})
+    for (unsigned height : {360U, 480U, 576U, 1080U, 1088U})
+      for (unsigned top_first : {0U, 1U})
+        for (unsigned frame_pred : {0U, 1U})
+          for (bool emit_sequence : {false, true}) {
+            auto picture = Picture(type, 640, height);
+            auto &p = picture.picture_coding_extension.bits;
+            p.progressive_frame = 0;
+            p.top_field_first = top_first;
+            p.frame_pred_frame_dct = frame_pred;
+            auto sequence = Sequence(); sequence.progressive_sequence = false;
+            const mpeg::PictureOptions options{1023, emit_sequence};
+            // Use the final coded row, including the interlaced padding row.
+            const auto slice = Slice(2U * ((height + 31U) / 32U) - 1U, 3);
+            const auto current = mpeg::DefaultQuantMatrices(); auto next = current;
+            std::vector<uint8_t> bytes;
+            Require(mpeg::Assemble(picture, nullptr, current, {slice.View()},
+                                   sequence, options, &bytes, &next),
+                    "Main frame-coded TFF/BFF I/P/B syntax accepted");
+            Parse(bytes, picture, sequence, options, current, {slice.View()});
+            Require(next.lists == current.lists, "interlaced assembly preserves IQ state");
+          }
+  for (unsigned mode = 0; mode < 7; ++mode) {
+    Fixture f;
+    f.sequence.progressive_sequence = false;
+    f.picture.picture_coding_extension.bits.progressive_frame = 0;
+    switch (mode) {
+      case 0: f.sequence.profile = VAProfileMPEG2Simple;
+              f.sequence.level = 8; f.picture.picture_coding_type = 1; break;
+      case 1: f.picture.picture_coding_extension.bits.picture_structure = 1; break;
+      case 2: f.picture.picture_coding_extension.bits.picture_structure = 2; break;
+      case 3: f.picture.picture_coding_extension.bits.repeat_first_field = 1; break;
+      case 4: f.picture.picture_coding_extension.bits.progressive_frame = 1; break;
+      case 5: f.sequence.progressive_sequence = true; break;
+      case 6: f.picture.vertical_size = 362; break;
+    }
+    f.Reject();
+  }
+  for (unsigned height : {360U, 480U, 1080U, 1088U}) {
+    Fixture f;
+    f.sequence.progressive_sequence = false;
+    f.picture.picture_coding_extension.bits.progressive_frame = 0;
+    f.picture.vertical_size = height;
+    f.slice = Slice(2U * ((height + 31U) / 32U));
+    f.Reject(); // the first row beyond the interlaced coded grid
+  }
+}
+
 void SliceRanges() {
   ++groups;
   const auto picture = Picture(); const auto sequence = Sequence();
@@ -432,7 +484,7 @@ int main(int argc, char **argv) {
   try {
     if (argc == 2 && std::strcmp(argv[1], "--stream") == 0) { Stream(); return 0; }
     if (argc != 1) throw std::runtime_error("usage: vaapi-mpeg2-test [--stream]");
-    Defaults(); Headers(); Matrices(); Rejections(); SliceRanges(); Capacity();
+    Defaults(); Headers(); Matrices(); Rejections(); InterlacedFrames(); SliceRanges(); Capacity();
     std::printf("MPEG-2 assembly: %u groups, %u checks PASS\n", groups, checks);
     return 0;
   } catch (const std::exception &error) {

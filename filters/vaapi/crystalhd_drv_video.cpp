@@ -1917,6 +1917,9 @@ struct OutputPollLease {
   int fd = -1;
 };
 
+// Shared compact-field lifetime for H.264 and the bounded MPEG-2 Main path.
+// The historical name also identifies H.264-only early Bob/auxiliary users;
+// those policies are not enabled for MPEG-2 by sharing the pair storage.
 struct H264FirstField {
   bool valid = false;
   bool replay_duplicate = false;
@@ -2021,6 +2024,11 @@ struct DecodeContext {
   } mpeg2_picture;
   crystalhd_mpeg2::QuantMatrices mpeg2_matrices =
       crystalhd_mpeg2::DefaultQuantMatrices();
+  // VA omits progressive_sequence. Reconstruct a fixed sequence mode from
+  // the first accepted frame picture; mixed progressive/interlaced sequences
+  // require a new context rather than guessing original sequence headers.
+  bool have_mpeg2_sequence = false;
+  bool mpeg2_progressive_sequence = true;
   struct Mpeg4Picture {
     VAPictureParameterBufferMPEG4 picture = {};
     VAIQMatrixBufferMPEG4 iq = {};
@@ -2339,6 +2347,8 @@ struct DecodeContext {
     mpeg2_replay = CrystalHDMpeg2Replay();
     mpeg2_picture = Mpeg2Picture();
     mpeg2_matrices = crystalhd_mpeg2::DefaultQuantMatrices();
+    have_mpeg2_sequence = false;
+    mpeg2_progressive_sequence = true;
     mpeg4_replay = CrystalHDMpeg4Replay();
     mpeg4_draining_epochs.clear();
     mpeg4_picture = Mpeg4Picture();
@@ -3953,6 +3963,22 @@ static VAStatus ValidateH264AuxiliaryOutput(Driver *driver, DecodeContext *decod
   return VA_STATUS_SUCCESS;
 }
 
+static CrystalHDDecodeReplay::Output InspectInterlacedOutput(
+    const DecodeContext &decode, uint64_t timestamp) {
+  if (!decode.IsMpeg2())
+    return decode.replay.Inspect(timestamp);
+  using Output = CrystalHDDecodeReplay::Output;
+  if (decode.mpeg2_replay.failed())
+    return Output::Invalid;
+  const auto *unit = decode.mpeg2_replay.Find(timestamp);
+  if (unit == nullptr)
+    return Output::Unknown;
+  if (unit->completed)
+    return Output::Duplicate;
+  return decode.mpeg2_replay.IsOutstanding(timestamp) ? Output::New
+                                                     : Output::Invalid;
+}
+
 // No hardware calls: tests exercise the same exact-once/immutable-picture
 // processing used for both normal decoding and IDR-prefix replay.
 static VAStatus ProcessDecodedOutputImpl(
@@ -3966,6 +3992,11 @@ static VAStatus ProcessDecodedOutputImpl(
   bool h264_weave = false;
   const bool h264_interlaced = IsH264Profile(decode->profile) &&
       (output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0;
+  const bool mpeg2_interlaced = decode->profile == VAProfileMPEG2Main &&
+      !decode->is_70012 && decode->have_mpeg2_sequence &&
+      !decode->mpeg2_progressive_sequence &&
+      (output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0;
+  const bool paired_interlaced = h264_interlaced || mpeg2_interlaced;
   // BCM70012 resolves the application's token through DtsFetchMdata. That
   // lookup removes the entry while returning the first field, so a second
   // field carrying zero can only inherit the already-held first field's
@@ -4027,11 +4058,11 @@ static VAStatus ProcessDecodedOutputImpl(
   }
   if (decode->h264_first_field.valid && h264_weave)
     return FailDecode(driver, decode,
-                      "whole H.264 picture interrupted a field pair");
-  if (decode->h264_first_field.valid && !h264_interlaced)
+                      "whole picture interrupted a field pair");
+  if (decode->h264_first_field.valid && !paired_interlaced)
     return FailDecode(driver, decode,
-                      "progressive output interrupted an H.264 field pair");
-  if (h264_interlaced && !h264_weave) {
+                      "non-field output interrupted a field pair");
+  if (paired_interlaced && !h264_weave) {
     const uint32_t field_type =
         output.PicInfo.flags & VDEC_FLAG_BOTTOMFIELD;
     const bool field_type_valid = field_type == VDEC_FLAG_TOPFIELD ||
@@ -4046,10 +4077,12 @@ static VAStatus ProcessDecodedOutputImpl(
         : width;
     const uint64_t field_bytes = static_cast<uint64_t>(padded_width) *
                                  2U * (height / 2U);
-    const auto inspection = decode->replay.Inspect(output.PicInfo.timeStamp);
+    const auto inspection = InspectInterlacedOutput(*decode, output.PicInfo.timeStamp);
     const bool replay_duplicate =
         inspection == CrystalHDDecodeReplay::Output::Duplicate &&
-        decode->replay.IsOutstanding(output.PicInfo.timeStamp);
+        (decode->IsMpeg2()
+             ? decode->mpeg2_replay.IsOutstanding(output.PicInfo.timeStamp)
+             : decode->replay.IsOutstanding(output.PicInfo.timeStamp));
     const bool new_picture =
         inspection == CrystalHDDecodeReplay::Output::New;
     if (decode->is_70012 && output.PicInfo.timeStamp == 0 &&
@@ -4059,7 +4092,7 @@ static VAStatus ProcessDecodedOutputImpl(
     if (!decode->h264_first_field.valid &&
         !new_picture && !replay_duplicate) {
       if (inspection == CrystalHDDecodeReplay::Output::Invalid)
-        return FailDecode(driver, decode, decode->ReplayFailure());
+        return FailDecode(driver, decode, "interlaced output has no submitted token");
       return VA_STATUS_SUCCESS;
     }
 
@@ -4081,12 +4114,18 @@ static VAStatus ProcessDecodedOutputImpl(
           decoded->second->expected_timestamp == output.PicInfo.timeStamp &&
           decoded->second->decode_identity != 0 &&
           decoded->second->trace_generation == decode->generation &&
-          FitsH264CodedGeometry(*decoded->second, width, height, crop_unit_y))) &&
+          (mpeg2_interlaced
+              ? decoded->second->width >= width && decoded->second->height >= height
+              : FitsH264CodedGeometry(*decoded->second, width, height, crop_unit_y)))) &&
         field_bytes <= std::numeric_limits<size_t>::max() &&
-        static_cast<uint64_t>(output.YBuffDoneSz) * 4U >= field_bytes;
+        static_cast<uint64_t>(output.YBuffDoneSz) * 4U >= field_bytes &&
+        // MPEG-2 has only the separate-field path qualified here. Never
+        // reinterpret an ambiguous whole-picture transfer as its first half.
+        (!mpeg2_interlaced ||
+         static_cast<uint64_t>(output.YBuffDoneSz) * 4U < field_bytes * 2U);
     if (!valid_field)
       return FailDecode(driver, decode,
-                        "invalid H.264 field geometry/data or ownership");
+                        "invalid interlaced field geometry/data or ownership");
 
     if (!decode->h264_first_field.valid) {
       std::vector<uint8_t> pixels;
@@ -4132,7 +4171,7 @@ static VAStatus ProcessDecodedOutputImpl(
         first.is_70012 != decode->is_70012 || first.bottom == bottom ||
         first.bottom_first != bottom_first)
       return FailDecode(driver, decode,
-                        "H.264 fields have mismatched identity, parity, order or geometry");
+                        "fields have mismatched identity, parity, order or geometry");
     paired_first_field = std::move(decode->h264_first_field);
     decode->h264_first_field = H264FirstField();
     // Identity has already been checked against decoded_frames. Do not let
@@ -4408,7 +4447,7 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
       return FailDecode(driver, decode, "EOS before H.264 auxiliary output retired");
     if (decode->h264_first_field.valid)
       return FailDecode(driver, decode,
-                        "EOS arrived with an incomplete H.264 field pair");
+                        "EOS arrived with an incomplete field pair");
     // DIVX firmware can expose its EOS marker before the final reordered
     // picture becomes ready. Keep the batch sealed and continue polling; once
     // every accepted timestamp arrives, DtsIsEndOfStream (or a later marker)
@@ -4524,7 +4563,7 @@ static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode,
     if (status != BC_STS_SUCCESS)
       return decode->h264_first_field.valid
           ? FailDecode(driver, decode,
-                       "hardware status failed during an H.264 field pair")
+                       "hardware status failed during an incomplete field pair")
           : VA_STATUS_ERROR_DECODING_ERROR;
     if (decoder_status.ReadyListCount == 0)
       return CompleteMpeg4EndOfStream(driver, decode);
@@ -5375,6 +5414,11 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     if (target_surface->width < stream_width ||
         target_surface->height < stream_height)
       return VA_STATUS_ERROR_INVALID_SURFACE;
+    const bool progressive_sequence =
+        picture.picture_coding_extension.bits.progressive_frame != 0;
+    if (decode->have_mpeg2_sequence &&
+        progressive_sequence != decode->mpeg2_progressive_sequence)
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
     if ((picture.picture_coding_type == 2 &&
          pending.forward != decode->mpeg2_replay.newest_anchor()) ||
         (picture.picture_coding_type == 3 &&
@@ -5386,7 +5430,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       for (const auto &parameters : pending.parameters[group])
         slices.push_back({parameters, pending.data[group].data(), pending.data[group].size()});
     const crystalhd_mpeg2::SequenceOptions sequence = {
-        profile, profile == VAProfileMPEG2Simple ? 8U : 4U, true, false,
+        profile, profile == VAProfileMPEG2Simple ? 8U : 4U,
+        progressive_sequence, false,
         1, 5, 0, 0, 0x3ffff, 112};
     // VA provides neither original temporal_reference nor frame rate/GOP
     // headers. Firmware picture identity comes from the exact input timestamp;
@@ -5721,6 +5766,9 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                                    pending.backward, std::move(bitstream)))
       return FailDecode(driver, decode, decode->mpeg2_replay.failure());
     decode->mpeg2_matrices = next_matrices;
+    decode->have_mpeg2_sequence = true;
+    decode->mpeg2_progressive_sequence =
+        pending.picture.picture_coding_extension.bits.progressive_frame != 0;
     decode->stream_width = stream_width;
     decode->stream_height = stream_height;
   } else if (decode->IsMpeg4()) {

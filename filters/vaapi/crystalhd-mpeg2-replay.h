@@ -10,8 +10,9 @@
 #include <utility>
 #include <vector>
 
-// Progressive, non-droppable I/P/B pictures only. Each I AU must contain a
-// complete restartable codec configuration. Actual bitstream construction and
+// Non-droppable frame-coded I/P/B pictures; the caller retires interlaced
+// output only after its complete field pair. Each I AU must contain a complete
+// restartable codec configuration. Actual bitstream construction and
 // codec timing are deliberately outside this model. All calls are serialized
 // by the caller, as with the existing replay helper.
 class CrystalHDMpeg2Replay {
