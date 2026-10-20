@@ -196,6 +196,11 @@ their guards.
   for both parities; that is not this missing card-output contract. Only then
   evaluate READY on an eligible input, retaining B-frame limitations and payload
   timestamps. Reuse completed benchmarks instead of repeating unrelated gates.
+- [x] Reduce the first-field Bob private NV12 view to half height without
+  changing the public decode surface. Both-parity pixel/lifetime tests,
+  no-SSE controls, CPU cost comparison and a bounded native regression pass
+  ([results](HARDWARE-2026-09-13.md#compact-first-field-bob-and-argb-borders--2026-10-20)).
+  This host-memory optimization does not resolve the VA card-scaling contract.
 
 ## VA-API compatibility backlog (#445 / #436)
 
