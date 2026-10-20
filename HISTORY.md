@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Reject unsupported decode-integrated VA processing requests; preserve
+  ordinary decoding and separate VPP/Bob contexts.
 - Wait directly for BCM70015 firmware-command completion instead of adding
   a fixed 50 ms delay; retain IRQ fencing, reply ownership and timeout recovery.
 - Reject device opens when TX buffers or the worker cannot be created;

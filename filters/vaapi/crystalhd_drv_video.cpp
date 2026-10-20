@@ -6562,6 +6562,11 @@ static VAStatus CreateConfig(VADriverContextP context, VAProfile profile,
             attributes[i].value != VA_DEC_SLICE_MODE_NORMAL)
           return VA_STATUS_ERROR_ATTR_NOT_SUPPORTED;
         break;
+      case VAConfigAttribDecProcessing:
+        // Separate VPP after readback is not integrated decode processing.
+        if (attributes[i].value != VA_DEC_PROCESSING_NONE)
+          return VA_STATUS_ERROR_ATTR_NOT_SUPPORTED;
+        break;
       case VAConfigAttribEncryption:
         if (attributes[i].value != 0)
           return VA_STATUS_ERROR_ATTR_NOT_SUPPORTED;

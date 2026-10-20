@@ -465,7 +465,11 @@ surfaces, not imported aliases. A surviving alias of a destroyed owner is
 invalid, and reimport remains busy until pending writes finish.
 
 The minimal VPP path provides unfiltered NV12 scaling and NV12-to-ARGB
-conversion. Pipeline capability format lists are borrowed, read-only driver
+conversion in a separate video-processing context. Decode-integrated processing
+(`VAConfigAttribDecProcessing`) is not supported: omission or
+`VA_DEC_PROCESSING_NONE` retains ordinary decode; enabling processing is rejected. Separate VPP/Bob
+support does not imply card-side scaled decode output.
+Pipeline capability format lists are borrowed, read-only driver
 metadata, valid until the VA display terminates. Read the returned pointers
 and counts; do not free them or assume supplied scratch arrays were filled.
 A worker can wait for reordered hardware output while later input

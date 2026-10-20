@@ -680,14 +680,16 @@ void ConfigAttributesMatchAdvertisedSupport() {
     const VAEntrypoint entrypoint = decode ? VAEntrypointVLD : VAEntrypointVideoProc;
     VAConfigAttrib advertised[] = {{VAConfigAttribRTFormat, 0},
         {VAConfigAttribDecSliceMode, 0},
-        {VAConfigAttribRateControl, 0}};
-    Require(GetConfigAttributes(&context, profile, entrypoint, advertised, 3) ==
+        {VAConfigAttribRateControl, 0},
+        {VAConfigAttribDecProcessing, 0}};
+    Require(GetConfigAttributes(&context, profile, entrypoint, advertised, 4) ==
                     VA_STATUS_SUCCESS &&
                 advertised[0].value == static_cast<uint32_t>(decode ? VA_RT_FORMAT_YUV420
                     : VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32) &&
                 advertised[1].value == static_cast<uint32_t>(decode
                     ? VA_DEC_SLICE_MODE_NORMAL : VA_ATTRIB_NOT_SUPPORTED) &&
-                advertised[2].value == VA_ATTRIB_NOT_SUPPORTED,
+                advertised[2].value == VA_ATTRIB_NOT_SUPPORTED &&
+                advertised[3].value == VA_ATTRIB_NOT_SUPPORTED,
             "config admission is checked against the actual advertised masks");
     const auto accepts = [&](VAConfigAttrib *attributes, int count) {
       VAConfigID output = VA_INVALID_ID;
@@ -704,6 +706,32 @@ void ConfigAttributesMatchAdvertisedSupport() {
     VAConfigAttrib ordinary[] = {{VAConfigAttribRTFormat, VA_RT_FORMAT_YUV420},
         {VAConfigAttribEncryption, 0}, {VAConfigAttribMaxPictureWidth, kMaxWidth}};
     accepts(ordinary, 3);
+    VAConfigAttrib no_processing = {VAConfigAttribDecProcessing, VA_DEC_PROCESSING_NONE};
+    accepts(&no_processing, 1);
+    VAConfigAttrib ordinary_no_processing[] = {ordinary[0], no_processing, ordinary[1]};
+    accepts(ordinary_no_processing, 3);
+    for (uint32_t processing : {static_cast<uint32_t>(VA_DEC_PROCESSING), 2U,
+                                VA_ATTRIB_NOT_SUPPORTED}) {
+      VAConfigAttrib unsupported = {VAConfigAttribDecProcessing, processing};
+      rejects(profile, entrypoint, &unsupported, 1, VA_STATUS_ERROR_ATTR_NOT_SUPPORTED);
+      VAConfigAttrib enabled_then_none[] = {ordinary[0], unsupported, no_processing};
+      rejects(profile, entrypoint, enabled_then_none, 3, VA_STATUS_ERROR_ATTR_NOT_SUPPORTED);
+      VAConfigAttrib none_then_enabled[] = {no_processing, ordinary[0], unsupported};
+      rejects(profile, entrypoint, none_then_enabled, 3, VA_STATUS_ERROR_ATTR_NOT_SUPPORTED);
+    }
+    const auto previous_ids = ids();
+    const size_t previous_configs = driver.configs.size();
+    VAConfigID untouched = 0xdecafbadU;
+    VAConfigAttrib processing = {VAConfigAttribDecProcessing, VA_DEC_PROCESSING};
+    allocation_fault::fail_next = true;
+    const VAStatus processing_status = CreateConfig(&context, profile, entrypoint,
+        &processing, 1, &untouched);
+    const bool allocation_unreached = allocation_fault::fail_next;
+    allocation_fault::fail_next = false;
+    Require(processing_status == VA_STATUS_ERROR_ATTR_NOT_SUPPORTED &&
+                allocation_unreached && untouched == 0xdecafbadU &&
+                ids() == previous_ids && driver.configs.size() == previous_configs,
+            "unsupported integrated decode processing rejects before any config allocation");
     if (decode) {
       VAConfigAttrib normal = {VAConfigAttribDecSliceMode, VA_DEC_SLICE_MODE_NORMAL};
       accepts(&normal, 1);
@@ -4708,6 +4736,7 @@ int main(int argc, char **argv) {
   (void)argv;
   if (argc != 1) return 2;
   const std::pair<const char *, void (*)()> groups[] = {
+      {"configuration matches advertised support", ConfigAttributesMatchAdvertisedSupport},
       {"private first-field Bob pixels preserve public readiness", FirstFieldCpuViewPreservesPublicReadiness},
       {"configuration rejects unsupported protection transactionally", ConfigRejectsUnsupportedProtectionTransactionally},
       {"protected buffer creation is transactional", ProtectedBufferCreationIsTransactional},

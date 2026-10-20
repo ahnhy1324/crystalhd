@@ -57,10 +57,12 @@ expanding the released scope to general full-rate FHD/deinterlacing support.
   qualified. Selected 720i25 dialogue A/V and controls have qualitative maintainer
   confirmation; calibrated/FHD timing and displayed endurance remain open. The
   [native Atom report](https://github.com/ahnhy1324/crystalhd/pull/467#issuecomment-6272584392)
-  adds passing tests/pixel controls but failing Kodi Bob timing and LIVE-EOS.
-  Keep existing
-  Weave playback intact. Hardware Bob remains separate research, not a
-  prerequisite for this software integration.
+  adds passing tests/pixel controls but failing Kodi Bob timing and LIVE-EOS
+  on its earlier source. A [current-userspace stock Kodi control](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6289514942)
+  completes all 750 originals / 1,500 Bob operations and natural EOF under
+  LIVE+LL; presentation and current Atom acceptance remain open.
+  Keep existing Weave playback intact. Hardware Bob remains separate research,
+  not a prerequisite for this software integration.
 - [ ] Player HTTP(S) acceptance — implementation is included in RC4, with
   bounded errors and explicit hardware/software selection. Selected native
   loopback HTTP decoding/EOS/reopen passed; HTTPS, physical A/V, network
@@ -180,7 +182,11 @@ their guards.
   native FHD+BWDIF versus card-720+BWDIF+enlargement. Measure physical A/V
   separately when observable; batch wall time is not per-frame latency.
 - [ ] Check visible-height 1080 separately from VA coded-height 1088 before
-  frontend integration. Only then evaluate READY on an eligible input, keeping
+  frontend integration. CPU Bob already tests visible 1080 inside 1088 backing
+  at 720 output for both parities; this is not a card-capture result. VA rebuilds
+  an uncropped SPS, unlike the tested GStreamer input. Measure its actual scaled
+  capture geometry before designing integration that preserves public decoded
+  surfaces. Only then evaluate READY on an eligible input, keeping
   B-frame limitations and original payload timestamps explicit. Reuse the
   baseline and completed benchmarks instead of repeating unrelated gates.
 
@@ -195,8 +201,10 @@ Missing optional VA operations are not all release requirements.
   original references and public pixels without inferring EOS from an input gap.
   Exact-source mid-gap/EOF Bob and source synchronization complete before close;
   all 50 original NV12/PTS comparisons pass afterward. Actual close drains private
-  output/EOS separately. Keep the earlier private Kodi 750/1,500 result distinct
-  from final-source and general LIVE acceptance. See [the scoped result](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6286955966).
+  output/EOS separately. The [current-userspace stock Kodi control](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6289514942)
+  independently completes 750 originals / 1,500 Bob operations and natural EOF
+  with the stable kernel. This replaces neither the earlier private-prototype
+  record nor general LIVE/presentation acceptance. See [the pixel/continuation result](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6286955966).
   A pinned drain/replay checkpoint prototype passed a short own-client
   continuation and pixel control, but is not enabled: stock Kodi required
   243-picture reconstruction (5.66 s) and exceeded its 2 s output wait.
@@ -212,8 +220,9 @@ Missing optional VA operations are not all release requirements.
   native i386/Atom, FHD displayed cadence and physical A/V, broader LIVE inputs
   and seek recovery. The bounded 10.100-second seek avoids the earlier long-GOP
   preroll and 5-second startup fallback, but video acknowledgement still arrives
-  1.474 seconds after the demuxer seek log; this is not a same-version A/B or
-  warning-free acceptance.
+  about 1.47 seconds after the demuxer seek log (1.466 seconds with current
+  userspace/stable kernel). This is not E2E, a same-version A/B, qualification
+  of the new kernel wait path in Kodi, or warning-free acceptance.
   Keep existing tail/API/pixel successes separate from these qualifications.
 - [x] P1 — Validate requested RT formats and slice modes; retain selected output
   formats through queries, context lifetime and target binding without restricting
