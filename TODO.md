@@ -229,6 +229,16 @@ Prioritize correctness within the advertised decode/VPP subset, using the
 [existing compatibility investigation](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6257714172).
 Missing optional VA operations are not all release requirements.
 
+- [x] Extend VA MPEG-2 Main to uniform frame-coded TFF/BFF. At `cf3449f`,
+  stock FFmpeg Weave/Bob each pass two fresh processes per field order:
+  600 outputs match the unchanged GStreamer field-layout reference, with
+  correct PTS steps, EOS and clean shutdown. See the
+  [bounded result](HARDWARE-2026-09-13.md#mpeg-2-main-frame-coded-interlace--2026-10-21).
+- [ ] Broaden codec acceptance beyond that MPEG-2 sample: FHD interlace and
+  presentation first; separately establish contracts for RFF/telecine,
+  field-coded input and mixed sequence mode before advertising them.
+  VC-1 interlace and additional MPEG-4 syntax remain separate unsupported
+  subsets, not capabilities unlocked by the H.264 scaling change.
 - [x] P0 — Implement nonterminal completion for eligible BCM70015 MBAFF LIVE Bob.
   `2c79f1e` supplies a separately owned non-reference intra picture, retaining
   original references and public pixels without inferring EOS from an input gap.

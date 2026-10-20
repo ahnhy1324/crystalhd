@@ -1,7 +1,7 @@
 # CrystalHD VA-API driver
 
 This backend exposes H.264 decoding through the standard VA-API VLD interface,
-with progressive MPEG-2 Simple/Main, MPEG-4 Part 2 Simple/Advanced Simple,
+with bounded MPEG-2 Simple/Main, progressive MPEG-4 Part 2 Simple/Advanced Simple,
 standard WMV3 Simple/Main and VC-1 Advanced support on BCM70015. BCM70012
 retains its H.264 path but is not recently hardware-validated; the other
 codecs are rejected on that device.
@@ -23,7 +23,7 @@ For the separately characterized live-stream integration, see the top-level
 ## Supported decode subset
 
 The backend supports these progressive BCM70015 inputs, plus the selected
-H.264 MBAFF case described below:
+H.264 MBAFF and development MPEG-2 frame-coded interlaced cases described below:
 
 - H.264 Constrained Baseline, Main and High. Reconstruction preserves each
   picture's effective 4x4 and active 8x8 scaling lists, including JVT and
@@ -33,10 +33,21 @@ H.264 MBAFF case described below:
   as a complete interlaced NV12 Weave frame; separately submitted PAFF fields
   and pulldown are not supported. CPU Bob is separate post-processing below.
 - MPEG-2 Simple I/P pictures through 720x576, and Main I/P/B pictures through
-  1920x1088 coded size. Input must be 4:2:0 frame pictures with frame-predicted
-  DCT, whole slices and no repeat-first-field or top-field-first flags. Picture
+  1920x1088 coded size. Input uses 4:2:0 frame pictures, whole slices and no
+  repeat-first-field flag. Progressive pictures require `frame_pred_frame_dct=1`
+  and a clear top-field-first flag. Picture
   parameters, inherited quantization matrices and start-coded slice bytes are
-  preserved. Visible dimensions cannot change within a context.
+  preserved. **1.2 development** also accepts Main frame-coded TFF/BFF
+  interlace with either value of `frame_pred_frame_dct`, preserving macroblock
+  motion/DCT syntax. Complete field pairs are assembled into NV12 Weave for
+  ordinary CPU Bob/VPP. The first accepted picture fixes the
+  reconstructed sequence mode; VA does not supply the original sequence flag.
+  Mixed progressive/interlaced mode, separately submitted field pictures, RFF
+  and Simple-profile interlace remain unsupported. Interlaced height must be
+  divisible by four. Visible dimensions and sequence mode cannot change within
+  a context. Stock FFmpeg passes the bounded
+  [640×360 TFF/BFF Weave and Bob checks](../../HARDWARE-2026-09-13.md#mpeg-2-main-frame-coded-interlace--2026-10-21);
+  this is not general FHD/interlace or physical A/V qualification.
 - MPEG-4 Part 2 Simple/Advanced Simple levels 3/5, rectangular 8-bit 4:2:0,
   H.263 quantization and one whole slice per picture through 1920x1088.
   Simple-profile I/P video-packet resynchronization is accepted only when the

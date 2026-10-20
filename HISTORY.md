@@ -2,6 +2,9 @@
 
 ## 1.2.0 — in development
 
+- Accept bounded MPEG-2 Main frame-coded TFF/BFF through VA, reconstructing
+  a fixed sequence mode and retiring each decode token only after both fields.
+  Preserve field-local chroma, replay identity and ordinary CPU Bob integration.
 - Reject missing VA subpicture-format count outputs instead of dereferencing
   them; retain the empty format list and unsupported subpicture functionality.
 - Honor full-range NV12 in VA VPP/Bob ARGB conversion and black padding;
