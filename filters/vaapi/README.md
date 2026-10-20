@@ -171,6 +171,10 @@ Selected 720i25 dialogue now has qualitative maintainer A/V/motion confirmation,
 including pause/resume and both seeks; calibrated timing and actual displayed
 cadence remain unmeasured. The [native Atom report](https://github.com/ahnhy1324/crystalhd/pull/467#issuecomment-6272584392)
 passes tests and TFF/BFF pixel controls, but Kodi Bob timing and LIVE-EOS fail.
+For finite Bob playback, leave `CRYSTALHD_VAAPI_LIVE_H264` and
+`CRYSTALHD_VAAPI_LOW_LATENCY_H264` unset. The explicit LIVE+LL path also has a
+reproduced primary-host stall before EOF: VPP waits for a complementary field
+and times out without a prior generation change or source destruction.
 General FHD/Atom Bob playback is not qualified. **Off** retains Weave; the separate
 [FFmpeg BWDIF path](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif)
 remains available.
