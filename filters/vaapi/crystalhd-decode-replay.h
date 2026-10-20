@@ -41,6 +41,10 @@ class CrystalHDDecodeReplay {
 
   bool Append(uint64_t timestamp, bool idr, std::vector<uint8_t> bytes,
               bool prefeed = false) {
+    // A checkpoint owns the entire reconstruction prefix. Capacity pressure
+    // cannot evict it, poison accepted work or consume the refused token.
+    if (checkpoint_ && !CanAppendWhileCheckpointing(bytes.size()))
+      return false;
     Prune();
     if (failed() || timestamp == 0 || bytes.empty() ||
         (last_timestamp_ == 0 && !idr) || timestamp <= last_timestamp_)
@@ -48,7 +52,7 @@ class CrystalHDDecodeReplay {
     if (bytes.size() > limits_.picture_bytes ||
         bytes.size() > limits_.cache_bytes)
       return Fail("compressed IDR replay cache limit exceeded");
-    if (live_)
+    if (live_ && !checkpoint_)
       MakeRoom(bytes.size());
     if (!HasRoom(bytes.size()))
       return Fail("compressed IDR replay cache limit exceeded");
@@ -93,6 +97,29 @@ class CrystalHDDecodeReplay {
     return phase_ == Phase::Running && cursor_ == units_.size() &&
            !outstanding_.empty();
   }
+  // This is an internal, recoverable drain, not a claim that LIVE input ended.
+  // Reserve one maximum AU and one slot for a dependent continuation, and the
+  // whole old batch's replay work (including its not-yet-complete tail).
+  bool CanCheckpoint() const {
+    return live_ && !checkpoint_ && replayable_ && CanSeal() &&
+        !units_.empty() && units_.front().idr &&
+        HasRoom(limits_.picture_bytes) &&
+        replay_work_ <= limits_.replay_pictures &&
+        units_.size() <= limits_.replay_pictures - replay_work_;
+  }
+  bool Checkpoint() {
+    if (!CanCheckpoint())
+      return false;
+    checkpoint_ = true;
+    checkpoint_replaying_ = false;
+    checkpoint_count_ = units_.size();
+    return Seal();
+  }
+  bool checkpointing() const { return checkpoint_; }
+  bool CanAppendWhileCheckpointing(size_t bytes) const {
+    return !checkpoint_ ||
+        (bytes != 0 && bytes <= limits_.picture_bytes && HasRoom(bytes));
+  }
   bool Seal() {
     if (!CanSeal())
       return Fail("cannot seal a batch with unsubmitted input");
@@ -128,6 +155,7 @@ class CrystalHDDecodeReplay {
     if (units_.empty() || !units_.front().idr)
       return Fail("no retained IDR prefix for decoder restart");
     phase_ = Phase::Running;
+    checkpoint_replaying_ = checkpoint_;
     // A batch may finish every picture only after it was sealed, when pruning
     // is prohibited. Reclaim its completed old IDR prefixes before replay;
     // otherwise regular IDRs would still eventually exhaust the bounded cache.
@@ -143,13 +171,17 @@ class CrystalHDDecodeReplay {
       if (unit.timestamp != timestamp)
         continue;
       const bool expected = outstanding_.erase(timestamp) != 0;
-      if (unit.completed)
+      if (unit.completed) {
+        if (FinishCheckpoint())
+          Prune();
         return Output::Duplicate;
+      }
       if (!expected) {
         Fail("output timestamp was not submitted to this hardware batch");
         return Output::Invalid;
       }
       unit.completed = true;
+      FinishCheckpoint();
       Prune();
       return Output::New;
     }
@@ -174,6 +206,8 @@ class CrystalHDDecodeReplay {
   }
 
   bool Fail(const char *reason) {
+    checkpoint_ = checkpoint_replaying_ = false;
+    checkpoint_count_ = 0;
     phase_ = Phase::Failed;
     failure_ = reason;
     return false;
@@ -240,6 +274,8 @@ class CrystalHDDecodeReplay {
     }
   }
   void Prune() {
+    if (checkpoint_)
+      return;
     if (phase_ != Phase::Running && !(live_ && phase_ == Phase::Ended))
       return;
     size_t prefix = 0;
@@ -261,6 +297,17 @@ class CrystalHDDecodeReplay {
     replay_work_ = 0;
   }
 
+  bool FinishCheckpoint() {
+    if (!checkpoint_ || !checkpoint_replaying_ || cursor_ < checkpoint_count_)
+      return false;
+    for (size_t i = 0; i < checkpoint_count_; ++i)
+      if (outstanding_.count(units_[i].timestamp) != 0)
+        return false;
+    checkpoint_ = checkpoint_replaying_ = false;
+    checkpoint_count_ = 0;
+    return true;
+  }
+
   Limits limits_;
   std::deque<AccessUnit> units_;
   std::unordered_set<uint64_t> outstanding_;
@@ -273,6 +320,9 @@ class CrystalHDDecodeReplay {
   bool live_ = false;
   bool multiple_inputs_ = false;
   bool replayable_ = true;
+  bool checkpoint_ = false;
+  bool checkpoint_replaying_ = false;
+  size_t checkpoint_count_ = 0;
   Phase phase_ = Phase::Running;
   const char *failure_ = "decoder replay failed";
 };

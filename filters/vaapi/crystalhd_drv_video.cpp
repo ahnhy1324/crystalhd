@@ -4592,7 +4592,8 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
   });
 }
 
-static VAStatus SealDecodeBatch(Driver *driver, DecodeContext *decode) {
+static VAStatus SealDecodeBatch(Driver *driver, DecodeContext *decode,
+                                bool checkpoint = false) {
   decode->CancelPendingPrefeed();
   // The exact EOS marker path below is implemented for BCM70015. Keep
   // BCM70012 on its existing bounded-wait path until separately validated.
@@ -4601,6 +4602,15 @@ static VAStatus SealDecodeBatch(Driver *driver, DecodeContext *decode) {
   return decode->WithReplay([&](auto &replay) -> VAStatus {
     if (!replay.CanSeal())
       return VA_STATUS_SUCCESS;
+    if (checkpoint) {
+      if constexpr (std::is_same<std::decay_t<decltype(replay)>,
+                                 CrystalHDDecodeReplay>::value) {
+        if (!replay.CanCheckpoint())
+          return VA_STATUS_SUCCESS;
+      } else {
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+      }
+    }
     const uint32_t tx_free = DtsTxFreeSize(decode->device);
     if (tx_free < 1024)
       return VA_STATUS_SUCCESS;
@@ -4616,7 +4626,13 @@ static VAStatus SealDecodeBatch(Driver *driver, DecodeContext *decode) {
           static_cast<unsigned int>(decode->input_backpressured),
           static_cast<unsigned long long>(decode->transport_progress),
           static_cast<unsigned long long>(decode->next_submission_ordinal), tx_free);
-    if (!replay.Seal())
+    bool sealed;
+    if constexpr (std::is_same<std::decay_t<decltype(replay)>,
+                               CrystalHDDecodeReplay>::value)
+      sealed = checkpoint ? replay.Checkpoint() : replay.Seal();
+    else
+      sealed = replay.Seal();
+    if (!sealed)
       return FailDecode(driver, decode, "could not seal decoder batch");
     if (DtsFlushInput(decode->device, 0) != BC_STS_SUCCESS)
       return FailDecode(driver, decode, "could not seal decoder batch");
@@ -5240,6 +5256,12 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       Debug("large H.264 input requires fragmented libcrystalhd input");
       return RejectH264Picture(driver, decode, VA_STATUS_ERROR_INVALID_PARAMETER);
     }
+    // A recoverable LIVE drain owns its complete actual-IDR prefix until
+    // replayed output retires it. Refuse excess input before allocation or
+    // binding; never evict accepted reference history to make a new AU fit.
+    // As with other rejected reference AUs, subsequent input needs a real IDR.
+    if (!decode->replay.CanAppendWhileCheckpointing(bitstream.size()))
+      return RejectH264Picture(driver, decode, VA_STATUS_ERROR_HW_BUSY);
     Debug("submit surface=%u bytes=%zu slices=%zu", decode->target,
           bitstream.size(), decode->slice_data.size());
     if (decode->next_timestamp == kTimestampStep) {
@@ -5572,7 +5594,8 @@ static VAStatus SyncDecodeSurface(
     Driver *driver, const std::shared_ptr<Surface> &surface,
     std::unique_lock<std::mutex> *driver_lock, uint64_t timeout_ns,
     const std::function<bool()> &canceled = {},
-    const std::function<VAStatus(bool *)> &private_vpp_ready = {}) {
+    const std::function<VAStatus(bool *)> &private_vpp_ready = {},
+    const VppDeinterlace *vpp_deinterlace = nullptr) {
   if (driver_lock == nullptr || !driver_lock->owns_lock())
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   if (canceled && canceled())
@@ -5753,22 +5776,36 @@ static VAStatus SyncDecodeSurface(
     // Seal only after transport inactivity, not while a live stream or retained
     // prefix replay still makes real input/output progress. Keep the absolute
     // sync deadline above: unrelated progress cannot hide a missing picture.
-    // A second accepted live picture distinguishes streaming from a one-frame
-    // decoder probe. An input gap is not EOF, even while history is replayable:
-    // sealing would needlessly reopen the device when input resumes. Explicit
-    // context drain still seals the final accepted pictures.
+    // Ordinary LIVE gaps retain references. Bob's complementary-field demand
+    // can instead drain a recoverable checkpoint: the exact first field is
+    // already released, but its complement needs an actual EOS. Pin the IDR
+    // reconstruction history before that EOS, including incoming continuation.
     const bool retain_live_references =
         decode->live_h264_gap_tolerant &&
         decode->replay.live_stream_started();
+    const auto &first = decode->h264_first_field;
+    const bool checkpoint = retain_live_references && vpp_deinterlace &&
+        vpp_deinterlace->bob &&
+        ((vpp_deinterlace->field == crystalhd_vpp_bob::FieldParity::kBottom) !=
+            first.bottom) &&
+        decode->live_h264_fast_path && !decode->experimental_ready_remap &&
+        !decode->is_70012 && !decode->closing && !decode->destroy_prepared &&
+        !decode->retired && !decode->hardware_close_pending &&
+        decode->partial_input_timestamp == 0 && decode->partial_input_offset == 0 &&
+        first.valid && !first.replay_duplicate && !first.is_70012 &&
+        first.picture == surface && first.timestamp == expected_timestamp &&
+        first.generation == generation && first.decode_identity != 0 &&
+        first.decode_identity == surface->decode_identity &&
+        decode->replay.CanCheckpoint();
     if (!surface->ready && !decode->ReplaySealed() &&
-        !retain_live_references &&
+        (!retain_live_references || checkpoint) &&
         DecodeBatchGraceExpired(idle, bounded_h264_inactivity)) {
       Debug("sync batch inactivity: elapsed=%llu idle=%llu progress=%llu timestamp=%llu",
             static_cast<unsigned long long>(elapsed),
             static_cast<unsigned long long>(idle),
             static_cast<unsigned long long>(decode->transport_progress),
             static_cast<unsigned long long>(expected_timestamp));
-      status = SealDecodeBatch(driver, decode.get());
+      status = SealDecodeBatch(driver, decode.get(), checkpoint);
       if (status != VA_STATUS_SUCCESS)
         return status;
     }
@@ -6108,7 +6145,7 @@ static void RunVppWorker(Driver *driver) {
                                        PrepareFirstFieldBob(operation, &first_field_view);
                                    *ready = first_field_view != nullptr;
                                    return prepared;
-                                 });
+                                 }, &operation.deinterlace);
     }
 
     auto completed = std::find_if(
@@ -8069,7 +8106,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
                                             operation, &first_field_view);
                                         *ready = first_field_view != nullptr;
                                         return prepared;
-                                      });
+                                      }, &operation.deinterlace);
       } catch (const std::bad_alloc &) {
         status = VA_STATUS_ERROR_ALLOCATION_FAILED;
       }

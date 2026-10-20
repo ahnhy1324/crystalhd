@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Add bounded, pinned LIVE Bob tail checkpoints while preserving ordinary
+  input-gap references and original dependent-input replay.
 - Honor negotiated VA render formats in queries and output bindings, reject
   unsupported VPP/display requests, and release obsolete Render captures.
 - Avoid full-device reopen during fully drained finite H.264 reference replay
