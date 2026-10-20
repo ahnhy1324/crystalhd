@@ -255,7 +255,11 @@ Missing optional VA operations are not all release requirements.
   1920×1088i25 and 1920×1080i29.97 Weave/Bob produce 1,074 exact outputs across
   eight fresh processes, with EOS and clean close. No codec code change needed;
   this does not qualify damaged whole captures or real-time presentation.
-- [ ] Complete broader MPEG-2 presentation acceptance; establish contracts for RFF/telecine,
+- [x] Admit bounded progressive Main MPEG-2 TFF/RFF without guessing cadence.
+  `fc39d09` preserves original FFmpeg repeat/PTS/duration metadata; selected
+  720×480 soft-RFF and whole-frame-repeat cases pass six native opens, exact
+  pixels and EOS. [Scope](HARDWARE-2026-09-13.md#mpeg-2-progressive-repeat-flags--2026-10-21).
+- [ ] Complete broader MPEG-2 RFF/telecine presentation acceptance and contracts for
   field-coded input and mixed sequence mode before advertising them.
   VC-1 interlace and additional MPEG-4 syntax remain separate unsupported
   subsets, not capabilities unlocked by the H.264 scaling change.

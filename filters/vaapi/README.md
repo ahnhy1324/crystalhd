@@ -35,23 +35,35 @@ H.264 MBAFF and development MPEG-2 frame-coded interlaced cases described below:
   as a complete interlaced NV12 Weave frame; separately submitted PAFF fields
   and pulldown are not supported. CPU Bob is separate post-processing below.
 - MPEG-2 Simple I/P pictures through 720x576, and Main I/P/B pictures through
-  1920x1088 coded size. Input uses 4:2:0 frame pictures, whole slices and no
-  repeat-first-field flag. Progressive pictures require `frame_pred_frame_dct=1`
-  and a clear top-field-first flag. Picture
+  1920x1088 coded size. Input uses 4:2:0 frame pictures and whole slices.
+  Progressive pictures require `frame_pred_frame_dct=1`; ordinary input has
+  clear TFF/RFF flags, with the bounded Main-profile exception below. Caller picture
   parameters, inherited quantization matrices and start-coded slice bytes are
   preserved. **1.2 development** also accepts Main frame-coded TFF/BFF
   interlace with either value of `frame_pred_frame_dct`, preserving macroblock
   motion/DCT syntax. Complete field pairs are assembled into NV12 Weave for
   ordinary CPU Bob/VPP. The first accepted picture fixes the
   reconstructed sequence mode; VA does not supply the original sequence flag.
-  Mixed progressive/interlaced mode, separately submitted field pictures, RFF
-  and Simple-profile interlace remain unsupported. Interlaced height must be
+  Mixed progressive/interlaced mode, separately submitted field pictures,
+  RFF with `progressive_frame=0` and Simple-profile interlace remain unsupported.
+  Interlaced height must be
   divisible by four. Visible dimensions and sequence mode cannot change within
   a context. Stock FFmpeg passes the bounded
   [SD and selected FHD TFF/BFF Weave/Bob checks](../../HARDWARE-2026-09-13.md#mpeg-2-main-frame-coded-interlace--2026-10-21),
   including clean real-capture intervals at 1920×1088i25 and 1920×1080i29.97.
   These establish exact output, EOS and fresh-process reopen, not real-time
   FHD playback, broad interlace conformance or physical A/V qualification.
+  **Progressive Main TFF/RFF:** the internal headers may normalize display flags
+  when progressive and interlaced macroblock-row counts agree
+  (`ceil(height/16) == 2*ceil(height/32)`). This excludes flagged 360/720-line
+  input and Simple-profile repeats. One stored picture is returned per input;
+  the client retains its original repetition, PTS and duration rather than the
+  backend guessing the omitted sequence flag. The selected
+  [720×480 soft-RFF and whole-frame-repeat checks](../../HARDWARE-2026-09-13.md#mpeg-2-progressive-repeat-flags--2026-10-21)
+  pass exact pixels, original FFmpeg metadata, EOS and reopen. No extra option
+  is needed. The synchronous EOS/replay path took about 22 s per 24 pictures,
+  including the ordinary control: this is decoder correctness, not usable
+  real-time RFF/telecine playback qualification.
 - MPEG-4 Part 2 Simple/Advanced Simple levels 3/5, rectangular 8-bit 4:2:0,
   H.263 quantization and one whole slice per picture through 1920x1088.
   Simple-profile I/P video-packet resynchronization is accepted only when the
