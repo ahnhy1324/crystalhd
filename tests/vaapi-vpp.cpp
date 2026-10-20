@@ -3981,6 +3981,87 @@ void GenuineSwSyncCompletionStatuses() {
 
 }  // namespace
 
+// Manually admitted private latch: tests helper/pixels, not RX-release validation.
+static void ExerciseFirstFieldCpuView(bool bottom, unsigned visible) {
+  auto decoder = std::make_shared<DecodeContext>();
+  auto source = std::make_shared<Surface>();
+  Require(source->AllocateCpuNv12(16, 32), "source allocation");
+  decoder->profile = VAProfileH264Main;
+  decoder->generation = 3;
+  source->expected_timestamp = 1;
+  source->decode_identity = 41;
+  source->trace_generation = 3;
+  decoder->decoded_frames[1] = source;
+  Require(decoder->replay.Append(1, true, {1}), "append actual fixture token");
+  const auto *unit = decoder->replay.NextInput();
+  Require(unit && unit->timestamp == 1 && decoder->replay.InputSent(), "submit token");
+  std::vector<uint8_t> fields[2];
+  for (unsigned f = 0; f != 2; ++f) {
+    fields[f].resize(16 * 16 * 2);
+    for (unsigned y = 0; y != 16; ++y)
+      for (unsigned x = 0; x != 16; x += 2) {
+        const size_t at = (y * 16 + x) * 2;
+        fields[f][at] = static_cast<uint8_t>(20 + 80*f + y + x);
+        fields[f][at+2] = static_cast<uint8_t>(21 + 80*f + y + x);
+        fields[f][at+1] = static_cast<uint8_t>(40 + 70*f + y + x);
+        fields[f][at+3] = static_cast<uint8_t>(60 + 60*f + y + x);
+      }
+  }
+  auto &first = decoder->h264_first_field;
+  first.valid = true;
+  first.bottom = first.bottom_first = bottom;
+  first.timestamp = 1;
+  first.decode_identity = 41;
+  first.generation = 3;
+  first.picture = source;
+  first.width = 16;
+  first.height = 32;
+  first.source_pitch = 32;
+  first.pixels = fields[bottom ? 1 : 0];
+  PendingVpp operation;
+  operation.source = source;
+  operation.decoder = decoder;
+  operation.source_timestamp = 1;
+  operation.decoder_generation = 3;
+  operation.deinterlace.bob = true;
+  operation.deinterlace.field = bottom ? crystalhd_vpp_bob::FieldParity::kBottom
+                                      : crystalhd_vpp_bob::FieldParity::kTop;
+  std::shared_ptr<Surface> view;
+  Require(PrepareFirstFieldBob(operation, &view) == VA_STATUS_SUCCESS && view,
+        "private first temporal parity view");
+  Require(!source->ready && source->frame_timestamp == 0 && first.valid &&
+        decoder->replay.outstanding() == 1, "no public completion/retirement");
+  Surface complete, actual, expected;
+  Require(complete.AllocateCpuNv12(16, 32) && actual.AllocateCpuNv12(8, 16) &&
+        expected.AllocateCpuNv12(8, 16), "oracle allocations");
+  const uint8_t *pair[2] = {fields[0].data(), fields[1].data()};
+  Require(CopyH264InterlacedToSurface(&complete, pair, 16, 32, 32, 1), "full pair");
+  SwsContext *scaler = nullptr;
+  std::vector<uint8_t> staging;
+  const VARectangle region = {0, 0, 16, static_cast<uint16_t>(visible)};
+  const VARectangle output = {0, 0, 8, 16};
+  Require(ProcessVpp(&scaler, &staging, view.get(), &actual, region, output,
+                   false, operation.deinterlace) == VA_STATUS_SUCCESS &&
+        ProcessVpp(&scaler, &staging, &complete, &expected, region, output,
+                   false, operation.deinterlace) == VA_STATUS_SUCCESS, "Bob both views");
+  Require(scaler == nullptr, "no software-scaler dependency");
+  for (unsigned p = 0; p != 2; ++p)
+    for (unsigned y = 0; y != (p ? 8U : 16U); ++y)
+      Require(!memcmp(actual.planes[p] + y*actual.pitch[p],
+                    expected.planes[p] + y*expected.pitch[p], 8), "active YUV equality");
+  operation.deinterlace.field = bottom ? crystalhd_vpp_bob::FieldParity::kTop
+                                      : crystalhd_vpp_bob::FieldParity::kBottom;
+  view.reset();
+  Require(PrepareFirstFieldBob(operation, &view) == VA_STATUS_SUCCESS && !view,
+        "opposite parity remains unavailable");
+  Require(!source->ready && decoder->replay.outstanding() == 1, "negative preserves owner");
+}
+
+static void FirstFieldCpuViewPreservesPublicReadiness() {
+  for (bool bottom : {false, true})
+    for (unsigned visible : {32U, 28U}) ExerciseFirstFieldCpuView(bottom, visible);
+}
+
 // Keep the complete entry globally compiled for syntax coverage. CPU-only
 // section-GC builds retain only their selected state-machine groups below.
 int VppFullTestEntry(int argc, char **argv) {
@@ -4041,6 +4122,7 @@ int VppFullTestEntry(int argc, char **argv) {
     BobCapabilityEnumerationAndCapacity();
     BobPipelineFilterValidation();
     BobImmediatePixelsAndWeaveReset();
+    FirstFieldCpuViewPreservesPublicReadiness();
     CompletedDecoderCloseKeepsNewBobCapturesExact();
     IneligibleDecoderCloseCannotGrantNewBobReads();
     BobFilterValuesAreCapturedAtRender();
@@ -4093,7 +4175,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 66 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 67 hardware-free regressions passed");
   return 0;
 }
 
@@ -4104,6 +4186,7 @@ int main(int argc, char **argv) {
   (void)argv;
   if (argc != 1) return 2;
   const std::pair<const char *, void (*)()> groups[] = {
+      {"private first-field Bob pixels preserve public readiness", FirstFieldCpuViewPreservesPublicReadiness},
       {"configuration rejects unsupported protection transactionally", ConfigRejectsUnsupportedProtectionTransactionally},
       {"protected buffer creation is transactional", ProtectedBufferCreationIsTransactional},
       {"completed decoder close keeps new Bob captures exact", CompletedDecoderCloseKeepsNewBobCapturesExact},
