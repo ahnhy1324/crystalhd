@@ -592,7 +592,17 @@ retain the canonical owner's rules.
 All enlargement and Bob above run on the **CPU**, not the card or display GPU.
 The card still transfers only the small picture, so returning FHD host pixels
 does not undo the PCIe reduction; it does add CPU/memory work and cannot restore
-detail removed by downscaling. The separate
+detail removed by downscaling. Prefer **one-pass Bob→FHD** when no separate
+720p intermediate is needed. At `e636182`, bounded native finite and LIVE+prefeed
+tests each passed two opens, 100 exact small pictures and 16 exact FHD returns;
+LIVE also passed 24 FHD Bob outputs across four input gaps before explicit close.
+Selected ready-picture API+sync samples were 6.37–25.50 ms for direct Bob→FHD,
+versus 34.41–41.99 ms for the second-stage enlargement alone on the T8100.
+These are not sustained fps or display-latency measurements: four LIVE
+bottom-field completion waits still took 153–158 ms. Full scope is in the
+[existing receipt](../../tests/fixtures/issue436/card-scaled-bob.json)
+(`va_scaled_return_extension`).
+The separate
 [GStreamer BWDIF recipe](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif)
 uses a different filter. Its throughput is not a VA Bob performance claim.
 

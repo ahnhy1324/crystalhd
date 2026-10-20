@@ -166,7 +166,7 @@ results in the [existing receipt](tests/fixtures/issue436/card-scaled-bob.json).
 The separate [BWDIF qualification](HARDWARE-2026-09-13.md#card-scaling-with-stock-bwdif--2026-10-20)
 now covers bounded TFF/BFF reopen, complete pixels/PTS and CPU enlargement.
 This does not qualify other interlaced codecs or physical presentation.
-VA now exposes opt-in finite H.264 decode-integrated card scaling, qualified
+VA now exposes opt-in H.264 decode-integrated card scaling, qualified
 below. Separate VA VPP resizing still happens on the host after readback and
 does not reduce PCIe traffic. Ordinary clients must explicitly select the
 integrated API to obtain smaller card output; stock FFmpeg/Kodi do not do so.
@@ -212,10 +212,20 @@ integrated API to obtain smaller card output; stock FFmpeg/Kodi do not do so.
   both parities across two opens. See the existing receipt's
   `va_decode_processing` section. Ordinary FFmpeg/Kodi do not request this
   integrated API; no automatic stock-player or physical-presentation claim.
-- [ ] Extend the explicitly finite integrated path only with measured LIVE/READY
-  eligibility, preserving B-frame restrictions, payload timestamps and actual
-  small readback. Qualify additional stream geometries/parities and client
-  selection separately. Reuse completed benchmarks instead of repeating unrelated gates.
+- [x] Extend integrated scaling to explicit LIVE/prefeed while retaining exact
+  small-output identity and rejecting READY remapping. At `e636182`, finite and
+  LIVE each pass two opens / 100 exact pictures. Four LIVE input gaps complete
+  Bob before explicit close, with unchanged non-IDR continuation and separately
+  retired auxiliary output. This is bounded correctness, not steady cadence.
+- [x] Return card720 through CPU Bob directly to FHD or through Bob720 then FHD.
+  Correct completed-VPP source ownership and field-preserving Weave resizing;
+  all 56 selected native FHD outputs and 16 intermediate720 outputs match their
+  pixel references. One-pass Bob→FHD avoids the slower second host scaler.
+  [Usage and measured limits](filters/vaapi/README.md#returning-the-small-output-as-progressive-video-or-fhd).
+- [ ] Qualify additional stream geometries/parities, client selection and
+  sustained LIVE/display cadence separately; four measured LIVE bottom-field
+  completion waits still take 153–158 ms. READY remapping is not enabled for
+  integrated scaling. Reuse completed benchmarks instead of unrelated gates.
 - [x] Reduce the first-field Bob private NV12 view to half height without
   changing the public decode surface. Both-parity pixel/lifetime tests,
   no-SSE controls, CPU cost comparison and a bounded native regression pass
