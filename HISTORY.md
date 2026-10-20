@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Avoid full-device reopen during fully drained finite H.264 reference replay
+  when the library explicitly supports fresh-channel reuse; retain legacy fallback.
 - Retry unsent H.264 prefeed after TX backpressure without requiring another
   input picture; cancel obsolete requests without claiming timestamp ownership.
 - Complete first-temporal-field Bob from a released, operation-private H.264
