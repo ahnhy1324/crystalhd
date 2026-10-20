@@ -45,6 +45,9 @@ SwsContext *sws_getCachedContext(SwsContext *, int, int, AVPixelFormat, int, int
     AVPixelFormat, int, SwsFilter *, SwsFilter *, const double *) { VppCpuUnexpectedCall(__func__); }
 int sws_scale(SwsContext *, const uint8_t *const [], const int [], int, int,
               uint8_t *const [], const int []) { VppCpuUnexpectedCall(__func__); }
+const int *sws_getCoefficients(int) { VppCpuUnexpectedCall(__func__); }
+int sws_setColorspaceDetails(SwsContext *, const int *, int, const int *, int,
+                             int, int, int) { VppCpuUnexpectedCall(__func__); }
 void sws_freeContext(SwsContext *context) {
   if (context != nullptr) VppCpuUnexpectedCall(__func__);
 }

@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Honor full-range NV12 in VA VPP/Bob ARGB conversion and black padding;
+  preserve default-range output and reject unsupported range conversions.
 - Store first-field Bob's private NV12 view at half height, preserving public
   decode surfaces, field/chroma samples and pending-picture ownership.
 - Keep vectorized ARGB conversion tails private and restore output borders

@@ -1380,6 +1380,226 @@ std::shared_ptr<Surface> PrivateArgbOutput() {
   return surface;
 }
 
+void VppFullRangeArgbUsesDeclaredInput() {
+  Fixture fixture;
+  fixture.target = PrivateArgbOutput();
+  fixture.driver.surfaces[2] = fixture.target;
+  auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+  constexpr uint8_t levels[] = {0, 16, 128, 235, 255};
+  for (unsigned row = 0; row < picture->height; ++row)
+    memset(picture->planes[0] + row * picture->pitch[0],
+           levels[row % 5], picture->width);
+  VAProcPipelineParameterBuffer pipeline = {};
+  pipeline.surface = 1;
+  pipeline.input_color_properties.color_range = VA_SOURCE_RANGE_FULL;
+  pipeline.output_color_properties.color_range = VA_SOURCE_RANGE_FULL;
+  memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+         &pipeline, sizeof(pipeline));
+  fixture.SubmitParameters();
+  // Render owns a value snapshot: later client buffer changes are irrelevant.
+  pipeline.input_color_properties.color_range = VA_SOURCE_RANGE_REDUCED;
+  memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+         &pipeline, sizeof(pipeline));
+  Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+          "full-range ARGB conversion completes");
+  for (unsigned row = 0; row < picture->height; ++row)
+    for (unsigned column = 0; column < picture->width; ++column) {
+      const uint8_t *pixel = fixture.target->planes[0] +
+          row * fixture.target->pitch[0] + column * 4;
+      // Neutral full-range YCbCr is exactly R=G=B=Y, independently of swscale.
+      Require(pixel[0] == levels[row % 5] && pixel[1] == levels[row % 5] &&
+                  pixel[2] == levels[row % 5] && pixel[3] == 255,
+              "declared full-range neutral Y must remain the same RGB level");
+    }
+}
+
+void VppColorRangeArgbReuseAndBob() {
+  for (unsigned mode = 0; mode < 3; ++mode) {
+    Fixture fixture;
+    fixture.target = PrivateArgbOutput();
+    fixture.driver.surfaces[2] = fixture.target;
+    const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    for (unsigned row = 0; row < picture->height; ++row)
+      memset(picture->planes[0] + row * picture->pitch[0],
+             row % 2 == 0 ? 16 : 235, picture->width);
+    const auto original = picture->storage;
+    VABufferID filter = mode == 0 ? VA_INVALID_ID : CreateBobFilter(
+        fixture, mode == 2 ? VA_DEINTERLACING_BOTTOM_FIELD : 0);
+    // Legacy swscale has a different rounding path for its final limited-range
+    // row. Preserve that output exactly, rather than widening a pixel tolerance.
+    // This fresh context never receives the new range setup or cached state.
+    std::vector<uint8_t> legacy(128 * picture->height + 64, 0);
+    const unsigned parity = mode == 2 ? 1 : 0;
+    const int source_height = mode == 0 ? picture->height : picture->height / 2;
+    std::unique_ptr<SwsContext, decltype(&sws_freeContext)> reference(
+        sws_getContext(picture->width, source_height, AV_PIX_FMT_NV12,
+                       picture->width, picture->height, AV_PIX_FMT_BGRA,
+                       SWS_POINT, nullptr, nullptr, nullptr), &sws_freeContext);
+    Require(reference != nullptr, "construct independent default-range legacy reference");
+    const uint8_t *input[] = {picture->planes[0] + parity * picture->pitch[0],
+                             picture->planes[1] + parity * picture->pitch[1], nullptr, nullptr};
+    const int input_pitch[] = {static_cast<int>(picture->pitch[0] * (mode == 0 ? 1 : 2)),
+                               static_cast<int>(picture->pitch[1] * (mode == 0 ? 1 : 2)), 0, 0};
+    uint8_t *output[] = {legacy.data(), nullptr, nullptr, nullptr};
+    const int output_pitch[] = {128, 0, 0, 0};
+    Require(sws_scale(reference.get(), input, input_pitch, 0, source_height,
+                       output, output_pitch) == static_cast<int>(picture->height),
+            "legacy range reference produces every row");
+    for (uint8_t range : {VA_SOURCE_RANGE_FULL, VA_SOURCE_RANGE_REDUCED,
+                         VA_SOURCE_RANGE_UNKNOWN, VA_SOURCE_RANGE_FULL}) {
+      VAProcPipelineParameterBuffer pipeline = {};
+      pipeline.surface = 1;
+      pipeline.input_color_properties.color_range = range;
+      pipeline.output_color_properties.color_range = VA_SOURCE_RANGE_UNKNOWN;
+      pipeline.filters = mode == 0 ? nullptr : &filter;
+      pipeline.num_filters = mode == 0 ? 0 : 1;
+      memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+             &pipeline, sizeof(pipeline));
+      fixture.SubmitParameters();
+      Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+              "cached ARGB scaler accepts successive range/Bob requests");
+      for (unsigned row = 0; row < picture->height; ++row)
+        for (unsigned column = 0; column < picture->width; ++column) {
+          const unsigned parity = mode == 0 ? row % 2 : mode - 1;
+          const uint8_t expected = parity == 0 ? 16 : 235;
+          const uint8_t *pixel = fixture.target->planes[0] +
+              row * fixture.target->pitch[0] + column * 4;
+          const bool exact = range == VA_SOURCE_RANGE_FULL
+              ? pixel[0] == expected && pixel[1] == expected && pixel[2] == expected && pixel[3] == 255
+              : memcmp(pixel, legacy.data() + row * 128 + column * 4, 4) == 0;
+          Require(exact,
+                  "full/limited/default range changes reset cached CSC for both Bob fields");
+        }
+      Require(picture->storage == original, "range conversion keeps source immutable");
+    }
+  }
+}
+
+void VppColorRangeNv12PreservesSamples() {
+  for (bool bob : {false, true})
+    for (uint8_t input : {VA_SOURCE_RANGE_UNKNOWN, VA_SOURCE_RANGE_REDUCED,
+                          VA_SOURCE_RANGE_FULL})
+      for (bool explicit_output : {false, true}) {
+        Fixture fixture;
+        const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+        const auto original = picture->storage;
+        VABufferID filter = bob ? CreateBobFilter(fixture) : VA_INVALID_ID;
+        VARectangle output = {0, 0, 8, 8};
+        VAProcPipelineParameterBuffer pipeline = {};
+        pipeline.surface = 1;
+        pipeline.output_region = &output;
+        pipeline.input_color_properties.color_range = input;
+        pipeline.output_color_properties.color_range = explicit_output
+            ? (input == VA_SOURCE_RANGE_FULL ? VA_SOURCE_RANGE_FULL : VA_SOURCE_RANGE_REDUCED)
+            : VA_SOURCE_RANGE_UNKNOWN;
+        pipeline.filters = bob ? &filter : nullptr;
+        pipeline.num_filters = bob ? 1 : 0;
+        memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+               &pipeline, sizeof(pipeline));
+        fixture.SubmitParameters();
+        Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+                "same-range NV12 copy/Bob needs no range conversion");
+        for (unsigned row = 0; row < fixture.target->height; ++row)
+          for (unsigned column = 0; column < fixture.target->width; ++column)
+            Require(fixture.target->planes[0][row * fixture.target->pitch[0] + column] ==
+                        (row < 8 && column < 8 ? 40 : input == VA_SOURCE_RANGE_FULL ? 0 : 16),
+                    "NV12 preserves active samples and uses range-correct black padding");
+        for (unsigned row = 0; row < fixture.target->height / 2; ++row)
+          for (unsigned column = 0; column < fixture.target->width; ++column)
+            Require(fixture.target->planes[1][row * fixture.target->pitch[1] + column] == 128,
+                    "NV12 neutral chroma is independent of range");
+        Require(picture->storage == original, "NV12 range handling never mutates the source");
+      }
+}
+
+void VppColorRangeRejectsUnsupportedRequests() {
+  for (bool argb : {false, true})
+    for (uint8_t input : {0U, 1U, 2U, 3U, 255U})
+      for (uint8_t output : {0U, 1U, 2U, 3U, 255U}) {
+        const bool supported = input <= VA_SOURCE_RANGE_FULL && output <= VA_SOURCE_RANGE_FULL &&
+            (argb ? output != VA_SOURCE_RANGE_REDUCED
+                  : output == VA_SOURCE_RANGE_UNKNOWN ||
+                    (input == VA_SOURCE_RANGE_FULL) == (output == VA_SOURCE_RANGE_FULL));
+        if (supported) continue;
+        Fixture fixture;
+        if (argb) {
+          fixture.target = PrivateArgbOutput();
+          fixture.driver.surfaces[2] = fixture.target;
+        }
+        const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+        const auto original = fixture.target->storage;
+        // An invalid replacement cannot retain an earlier valid snapshot.
+        fixture.SubmitParameters();
+        VAProcPipelineParameterBuffer pipeline = {};
+        pipeline.surface = 1;
+        pipeline.input_color_properties.color_range = input;
+        pipeline.output_color_properties.color_range = output;
+        memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+               &pipeline, sizeof(pipeline));
+        Require(RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                    VA_STATUS_ERROR_INVALID_PARAMETER &&
+                    !fixture.processor->have_vpp_parameters && !fixture.processor->vpp_frame &&
+                    picture->vpp_readers == 0 && fixture.target->vpp_writers == 0 &&
+                    fixture.driver.pending_vpp.empty() && fixture.target->storage == original,
+                "unsupported range rejects before capture, queue, CPU ownership or pixels");
+        Require(EndPicture(&fixture.context, 2) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                    fixture.target->storage == original,
+                "invalid range replacement cannot replay the old accepted request");
+      }
+}
+
+void VppColorRangeQueuedSnapshotAndCancellation() {
+  for (bool cancel : {false, true})
+    for (unsigned mode = 0; mode < 3; ++mode) {
+      Fixture fixture;
+      fixture.driver.StopWorkers();
+      fixture.driver.stopping = false;
+      fixture.target = PrivateArgbOutput();
+      fixture.driver.surfaces[2] = fixture.target;
+      const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+      for (unsigned row = 0; row < picture->height; ++row)
+        memset(picture->planes[0] + row * picture->pitch[0], 16, picture->width);
+      const auto original = picture->storage;
+      const auto untouched = fixture.target->storage;
+      picture->ready = false;
+      VABufferID filter = mode == 0 ? VA_INVALID_ID : CreateBobFilter(
+          fixture, mode == 2 ? VA_DEINTERLACING_BOTTOM_FIELD : 0);
+      VAProcPipelineParameterBuffer pipeline = {};
+      pipeline.surface = 1;
+      pipeline.input_color_properties.color_range = VA_SOURCE_RANGE_FULL;
+      pipeline.filters = mode == 0 ? nullptr : &filter;
+      pipeline.num_filters = mode == 0 ? 0 : 1;
+      memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+             &pipeline, sizeof(pipeline));
+      fixture.SubmitParameters();
+      Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                  fixture.driver.pending_vpp.size() == 1,
+              "cold full-range source queues a value-owned conversion");
+      Require(DestroyBuffer(&fixture.context, fixture.parameters) == VA_STATUS_SUCCESS,
+              "pending range does not borrow the client buffer");
+      if (cancel) fixture.decoder->Reset();
+      else picture->ready = true;
+      fixture.driver.vpp_worker = std::thread([&] { RunVppWorker(&fixture.driver); });
+      Require(SyncSurface2(&fixture.context, 2, 1000000000ULL) ==
+                  (cancel ? VA_STATUS_ERROR_DECODING_ERROR : VA_STATUS_SUCCESS) &&
+                  fixture.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
+                  fixture.target->vpp_writers == 0 && picture->storage == original,
+              "full-range worker success/cancellation preserves source and releases owners");
+      if (cancel) {
+        Require(fixture.target->storage == untouched,
+                "canceled color conversion publishes no pixels");
+      } else {
+        for (unsigned row = 0; row < fixture.target->height; ++row)
+          for (unsigned column = 0; column < fixture.target->width; ++column) {
+            const uint8_t *pixel = fixture.target->planes[0] +
+                row * fixture.target->pitch[0] + column * 4;
+            Require(pixel[0] == 16 && pixel[1] == 16 && pixel[2] == 16 && pixel[3] == 255,
+                    "queued CSC/Bob retains full-range interpretation after End resets context");
+          }
+      }
+    }
+}
+
 void SelectedRtFormatSurvivesConfigAndContextLifetime() {
   for (uint32_t format : {static_cast<uint32_t>(VA_RT_FORMAT_YUV420),
                          static_cast<uint32_t>(VA_RT_FORMAT_RGB32),
@@ -4592,11 +4812,18 @@ static void FirstFieldCpuViewPreservesPublicReadiness() {
 // section-GC builds retain only their selected state-machine groups below.
 int VppFullTestEntry(int argc, char **argv) {
   if (argc == 2 && (strcmp(argv[1], "--config-attributes") == 0 ||
+                    strcmp(argv[1], "--color-range") == 0 ||
                     strcmp(argv[1], "--display-attributes") == 0 ||
                     strcmp(argv[1], "--selected-rt-formats") == 0 ||
                     strcmp(argv[1], "--pipeline-semantics") == 0)) {
     try {
-      if (strcmp(argv[1], "--config-attributes") == 0)
+      if (strcmp(argv[1], "--color-range") == 0) {
+        VppFullRangeArgbUsesDeclaredInput();
+        VppColorRangeArgbReuseAndBob();
+        VppColorRangeNv12PreservesSamples();
+        VppColorRangeRejectsUnsupportedRequests();
+        VppColorRangeQueuedSnapshotAndCancellation();
+      } else if (strcmp(argv[1], "--config-attributes") == 0)
         ConfigAttributesMatchAdvertisedSupport();
       else if (strcmp(argv[1], "--display-attributes") == 0)
         UnsupportedDisplayAttributesAreNotSuccessful();
@@ -4656,6 +4883,11 @@ int VppFullTestEntry(int argc, char **argv) {
     UnsupportedDisplayAttributesAreNotSuccessful();
     SelectedRtFormatSurvivesConfigAndContextLifetime();
     VppMeaningfulSemanticsAreValidatedBeforeCapture();
+    VppFullRangeArgbUsesDeclaredInput();
+    VppColorRangeArgbReuseAndBob();
+    VppColorRangeNv12PreservesSamples();
+    VppColorRangeRejectsUnsupportedRequests();
+    VppColorRangeQueuedSnapshotAndCancellation();
     ConfigRejectsUnsupportedProtectionTransactionally();
     ProtectedBufferCreationIsTransactional();
     PipelineCapsIgnoreIncomingPixelFormatStorage();
@@ -4725,7 +4957,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 71 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 76 hardware-free regressions passed");
   return 0;
 }
 
@@ -4737,6 +4969,8 @@ int main(int argc, char **argv) {
   if (argc != 1) return 2;
   const std::pair<const char *, void (*)()> groups[] = {
       {"configuration matches advertised support", ConfigAttributesMatchAdvertisedSupport},
+      {"NV12 range preserves samples and background", VppColorRangeNv12PreservesSamples},
+      {"unsupported color ranges reject before capture", VppColorRangeRejectsUnsupportedRequests},
       {"private first-field Bob pixels preserve public readiness", FirstFieldCpuViewPreservesPublicReadiness},
       {"configuration rejects unsupported protection transactionally", ConfigRejectsUnsupportedProtectionTransactionally},
       {"protected buffer creation is transactional", ProtectedBufferCreationIsTransactional},

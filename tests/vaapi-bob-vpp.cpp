@@ -67,6 +67,9 @@ extern "C" SwsContext *sws_getCachedContext(SwsContext *, int, int, AVPixelForma
 }
 extern "C" int sws_scale(SwsContext *, const uint8_t *const [], const int [],
     int, int, uint8_t *const [], const int []) { abort(); }
+extern "C" const int *sws_getCoefficients(int) { abort(); }
+extern "C" int sws_setColorspaceDetails(SwsContext *, const int *, int,
+    const int *, int, int, int, int) { abort(); }
 extern "C" void sws_freeContext(SwsContext *context) { if (context) abort(); }
 #endif
 
@@ -200,6 +203,55 @@ void ReferenceArgb(const Surface &source, Surface *target, unsigned int parity,
 #endif
 
 struct Geometry { unsigned int width = 0, height = 0; };
+
+void FullRangeBobPixels(unsigned int parity, bool compact, bool argb) {
+  Surface source, field, target, expected;
+  Initialize(&source, 32, 1088);
+  Initialize(&target, 18, 736, argb);
+  Initialize(&expected, 18, 736, argb);
+  for (unsigned row = 0; row < source.height; ++row)
+    memset(source.planes[0] + row * source.pitch[0], row % 2 ? 235 : 16, source.width);
+  for (unsigned row = 0; row < source.height / 2; ++row)
+    memset(source.planes[1] + row * source.pitch[1], 128, source.width);
+  if (compact) {
+    Initialize(&field, source.width, source.height / 2);
+    for (unsigned plane = 0; plane < 2; ++plane)
+      for (unsigned row = 0; row < field.height / (plane == 0 ? 1 : 2); ++row)
+        memcpy(field.planes[plane] + row * field.pitch[plane],
+               source.planes[plane] + (row * 2 + parity) * source.pitch[plane], source.width);
+  }
+  const auto original = source.storage;
+  const auto original_field = field.storage;
+  // Full-range neutral Y maps exactly to RGB=Y. Bob's selected field is
+  // constant, so this independent oracle also covers resizing 1080→720.
+  const uint8_t luma = parity == 0 ? 16 : 235;
+  for (unsigned row = 0; row < expected.height; ++row)
+    for (unsigned column = 0; column < expected.width; ++column) {
+      const uint8_t value = row < 720 && column < 16 ? luma : 0;
+      uint8_t *pixel = expected.planes[0] + row * expected.pitch[0] + column * (argb ? 4 : 1);
+      pixel[0] = value;
+      if (argb) {
+        pixel[1] = pixel[2] = value;
+        pixel[3] = 255;
+      }
+    }
+  if (!argb)
+    for (unsigned row = 0; row < expected.height / 2; ++row)
+      memset(expected.planes[1] + row * expected.pitch[1], 128, expected.width);
+  Scaler scaler;
+  std::vector<uint8_t> staging;
+  VppDeinterlace bob;
+  bob.bob = true;
+  bob.field = static_cast<crystalhd_vpp_bob::FieldParity>(parity);
+  Require(ProcessVpp(&scaler.value, &staging, compact ? &field : &source, &target,
+                     {0, 0, 32, 1080}, {0, 0, 16, 720}, false, bob, compact,
+                     VppColorRange{true}) == VA_STATUS_SUCCESS,
+          "full-range Bob converts either compact or woven source");
+  Require(target.storage == expected.storage,
+          "full-range coded1088/visible1080→720 pixels, borders and guards match independent oracle");
+  Require(source.storage == original && field.storage == original_field,
+          "full-range Bob preserves both source layouts");
+}
 
 void Pixels(unsigned int source_width, unsigned int source_height,
              unsigned int target_width, unsigned int target_height,
@@ -673,6 +725,12 @@ int main(int argc, char **argv) {
 #endif
     Require(argc == 1, "usage: test [--import-layout|--argb-strides (native)]");
     for (unsigned int parity = 0; parity != 2; ++parity) {
+      for (bool compact : {false, true}) {
+        FullRangeBobPixels(parity, compact, false);
+#ifndef CRYSTALHD_BOB_NV12_ONLY
+        FullRangeBobPixels(parity, compact, true);
+#endif
+      }
       for (unsigned int height : {32U, 1088U})
         CompactConversion(32, height, parity);
       CompactConversion(14, 32, parity, {18, 19});

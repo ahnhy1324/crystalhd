@@ -1456,6 +1456,11 @@ struct VppDeinterlace {
       crystalhd_vpp_bob::FieldParity::kTop;
 };
 
+struct VppColorRange {
+  // UNKNOWN retains the historical limited-range YUV interpretation.
+  bool source_full = false;
+};
+
 static uint8_t ClampRgb(int value) {
   return static_cast<uint8_t>(std::clamp(value, 0, 255));
 }
@@ -1486,7 +1491,8 @@ static VAStatus ProcessVpp(SwsContext **scaler,
                            const VARectangle &output_region,
                            bool destination_write_started = false,
                            const VppDeinterlace &deinterlace = {},
-                           bool source_is_field = false) {
+                           bool source_is_field = false,
+                           const VppColorRange &color_range = {}) {
   // Only the operation-private first-field view has compact storage. Keep
   // the original full-frame rectangle for field sampling, but validate its
   // physical rows against the real half-height allocation.
@@ -1608,6 +1614,16 @@ static VAStatus ProcessVpp(SwsContext **scaler,
       source->EndCpuRead();
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
+    // Range is active even without VAProcColorStandardExplicit. Set it on
+    // every operation: getCachedContext may retain a prior full-range input.
+    // Keep the existing default matrix; this is not a gamut/transfer change.
+    const int *coefficients = sws_getCoefficients(SWS_CS_DEFAULT);
+    if (sws_setColorspaceDetails(*scaler, coefficients,
+                                color_range.source_full ? 1 : 0,
+                                coefficients, 1, 0, 1 << 16, 1 << 16) < 0) {
+      source->EndCpuRead();
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    }
     const uint8_t *source_planes[4] = {
         source->planes[0] +
             static_cast<size_t>(source_region.y + selected_parity) *
@@ -1676,6 +1692,7 @@ static VAStatus ProcessVpp(SwsContext **scaler,
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
   } else {
+    const uint8_t black_luma = color_range.source_full ? 0 : 16;
     if (!destination_write_started && !destination->BeginCpuWrite()) {
       source->EndCpuRead();
       return VA_STATUS_ERROR_OPERATION_FAILED;
@@ -1697,12 +1714,12 @@ static VAStatus ProcessVpp(SwsContext **scaler,
               memset(destination->planes[plane] +
                          static_cast<size_t>(row) * destination->pitch[plane] +
                          output_region.width,
-                     plane == 0 ? 16 : 128,
+                     plane == 0 ? black_luma : 128,
                      row_bytes - output_region.width);
           for (unsigned int row = visible_rows; row < rows; ++row)
             memset(destination->planes[plane] +
                        static_cast<size_t>(row) * destination->pitch[plane],
-                   plane == 0 ? 16 : 128, row_bytes);
+                   plane == 0 ? black_luma : 128, row_bytes);
         }
       }
       // Each plane has its own physical-field row lattice. In particular,
@@ -1772,7 +1789,7 @@ static VAStatus ProcessVpp(SwsContext **scaler,
       for (unsigned int row = 0; row < destination->height; ++row)
         memset(destination->planes[0] +
                    static_cast<size_t>(row) * destination->pitch[0],
-               16, destination->width);
+               black_luma, destination->width);
       for (unsigned int row = 0; row < (destination->height + 1) / 2; ++row)
         memset(destination->planes[1] +
                    static_cast<size_t>(row) * destination->pitch[1],
@@ -1903,6 +1920,7 @@ struct DecodeContext {
   VARectangle vpp_source_region = {};
   VARectangle vpp_output_region = {};
   VppDeinterlace vpp_deinterlace;
+  VppColorRange vpp_color_range;
   bool have_vpp_parameters = false;
   VAPictureParameterBufferH264 picture = {};
   bool have_picture = false;
@@ -2268,6 +2286,7 @@ struct PendingVpp {
   VARectangle source_region = {};
   VARectangle output_region = {};
   VppDeinterlace deinterlace;
+  VppColorRange color_range;
   uint64_t source_timestamp = 0;
   uint64_t sequence = 0;
   uint64_t decoder_generation = 0;
@@ -6453,7 +6472,8 @@ static void RunVppWorker(Driver *driver) {
                           operation.target.get(),
                           operation.source_region, operation.output_region,
                           operation.write_timeline >= 0,
-                          operation.deinterlace, first_field_view != nullptr);
+                          operation.deinterlace, first_field_view != nullptr,
+                          operation.color_range);
     }
     ReleasePendingVpp(driver, operation.sequence, status, true);
   }
@@ -7101,7 +7121,8 @@ static VAStatus ReadVppDeinterlace(const Driver *driver, VAContextID context_id,
 // Validate only active semantics, before capturing a picture or acquiring any
 // backing lease. Unused pointers and inactive color metadata are not requests.
 static bool VppPipelineSemanticsSupported(
-    const VAProcPipelineParameterBuffer &p, const Surface &target, bool bob) {
+    const VAProcPipelineParameterBuffer &p, const Surface &target, bool bob,
+    VppColorRange *color_range) {
   if (p.num_forward_references != 0 || p.num_backward_references != 0 ||
       p.num_additional_outputs != 0 ||
       (p.pipeline_flags & ~VA_PROC_PIPELINE_FAST) != 0 ||
@@ -7135,11 +7156,24 @@ static bool VppPipelineSemanticsSupported(
       p.output_background_color != 0xff000000U)
     return false;
 
-  // Preserve existing color-property handling: clients also forward range and
-  // chroma location for ordinary Bob/copy/CSC, not just conversion requests.
-  // Selectable range/chroma conversion needs separate capability and pixel
-  // qualification. Primaries/transfer/matrix apply only with the explicit
-  // color standard rejected above; ignore inactive values and padding.
+  const uint8_t input_range = p.input_color_properties.color_range;
+  const uint8_t output_range = p.output_color_properties.color_range;
+  if (input_range > VA_SOURCE_RANGE_FULL || output_range > VA_SOURCE_RANGE_FULL)
+    return false;
+  const bool source_full = input_range == VA_SOURCE_RANGE_FULL;
+  if (target.fourcc == VA_FOURCC_ARGB) {
+    // RGB output is full-range. Reduced-range RGB is not implemented.
+    if (output_range == VA_SOURCE_RANGE_REDUCED)
+      return false;
+  } else if (output_range != VA_SOURCE_RANGE_UNKNOWN &&
+             (output_range == VA_SOURCE_RANGE_FULL) != source_full) {
+    // NV12 copy/Bob preserves samples; UNKNOWN output inherits the input.
+    // Do not acknowledge an actual YUV range conversion that never happened.
+    return false;
+  }
+  color_range->source_full = source_full;
+  // Primaries/transfer/matrix apply only with the explicit color standard
+  // rejected above; inactive values and reserved padding remain ignored.
   return true;
 }
 
@@ -7644,6 +7678,7 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
     decode->second->vpp_frame.reset();
     decode->second->vpp_decoder.reset();
     decode->second->vpp_deinterlace = {};
+    decode->second->vpp_color_range = {};
     decode->second->have_vpp_parameters = false;
     return VA_STATUS_SUCCESS;
   }
@@ -7981,6 +8016,7 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
     // available for EndPicture to commit as if the failed request succeeded.
     decode->second->have_vpp_parameters = false;
     decode->second->vpp_deinterlace = {};
+    decode->second->vpp_color_range = {};
     // Discard the obsolete, unsubmitted capture too. Submitted work carries
     // its own references; this snapshot has not acquired any backing lease.
     decode->second->vpp_source = VA_INVALID_SURFACE;
@@ -8020,8 +8056,9 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
     if ((parameters->filter_flags & ~supported_flags) != 0 ||
         parameters->rotation_state != VA_ROTATION_NONE)
       return VA_STATUS_ERROR_UNSUPPORTED_FILTER;
+    VppColorRange color_range;
     if (!VppPipelineSemanticsSupported(*parameters, *target->second,
-                                       deinterlace.bob))
+                                       deinterlace.bob, &color_range))
       return VA_STATUS_ERROR_INVALID_PARAMETER;
 
     // Capture the exact picture when its parameters are submitted, not later
@@ -8098,6 +8135,7 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
         : VARectangle{0, 0, static_cast<uint16_t>(target->second->width),
                       static_cast<uint16_t>(target->second->height)};
     decode->second->vpp_deinterlace = deinterlace;
+    decode->second->vpp_color_range = color_range;
     decode->second->have_vpp_parameters = true;
     driver->trace.Emit(crystalhd_vaapi_trace::Event::VppCapture,
                        TraceFields(source_decoder.get(), source_owner.get(),
@@ -8230,6 +8268,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       decode_context->vpp_frame.reset();
       decode_context->vpp_decoder.reset();
       decode_context->vpp_deinterlace = {};
+      decode_context->vpp_color_range = {};
       decode_context->have_vpp_parameters = false;
       return status;
     };
@@ -8300,7 +8339,8 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
                                          decode_context->vpp_source_region,
                                          decode_context->vpp_output_region,
                                          false,
-                                         decode_context->vpp_deinterlace);
+                                         decode_context->vpp_deinterlace, false,
+                                         decode_context->vpp_color_range);
       if (status == VA_STATUS_SUCCESS) {
         InheritTraceIdentity(target_surface.get(), *decoded_source);
         if (target_owner != target_surface)
@@ -8340,6 +8380,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     pending.source_region = decode_context->vpp_source_region;
     pending.output_region = decode_context->vpp_output_region;
     pending.deinterlace = decode_context->vpp_deinterlace;
+    pending.color_range = decode_context->vpp_color_range;
     pending.source_timestamp = timestamp;
     pending.sequence = sequence;
     pending.decoder_generation = source_decoder
@@ -8411,7 +8452,8 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
                             first_field_view ? first_field_view.get() : operation.source.get(),
                             operation.target.get(),
                             operation.source_region, operation.output_region,
-                            false, operation.deinterlace, first_field_view != nullptr);
+                            false, operation.deinterlace, first_field_view != nullptr,
+                            operation.color_range);
       ReleasePendingVpp(driver, operation.sequence, status,
                         status == VA_STATUS_SUCCESS);
       return finish_vpp(status);
