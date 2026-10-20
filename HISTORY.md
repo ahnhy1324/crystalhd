@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Retry unsent H.264 prefeed after TX backpressure without requiring another
+  input picture; cancel obsolete requests without claiming timestamp ownership.
 - Complete first-temporal-field Bob from a released, operation-private H.264
   field without marking the decoded frame ready or changing EOS/replay policy.
 - Allow aligned BCM70015 H.264 field scaling through the existing GStreamer

@@ -6124,6 +6124,111 @@ static void LiveH264InterlacedPrefeedKeepsExactFieldOwnership() {
   }
 }
 
+static void DeferredH264PrefeedRetriesWithoutNewInput() {
+  for (unsigned mode = 0; mode != 15; ++mode) {
+    TeardownFixture fixture(2);
+    auto &decode = *fixture.decoder;
+    decode.replay = CrystalHDDecodeReplay(true);
+    decode.next_timestamp = 2 * kTimestampStep;
+    decode.output_poll = std::make_shared<OutputPollLease>(-1);
+    decode.armed_output_poll = decode.output_poll;
+    Require(!NeedsDecodeControlWake(decode), "already armed RX lease needs no timer wake");
+    const auto first = TestH264AccessUnit(true, 1);
+    const auto second = TestH264AccessUnit(false, 2);
+    // Exercise the captured automatic policy, not mutable newest metadata.
+    Require(decode.replay.Append(kTimestampStep, true, first, true), "queue retry AU");
+    fixture.io.prefeed_busy_once = mode != 1;
+    if (mode == 1) fixture.io.tx_free_size = 1100; // real AU fits, 170-byte prefix does not.
+    Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                decode.prefed_timestamp == 0 && decode.transport_progress == 1 &&
+                decode.replay.outstanding() == 1 && decode.input_backpressured &&
+                NeedsDecodeControlWake(decode) &&
+                decode.pending_prefeed_timestamp == 2 * kTimestampStep &&
+                decode.pending_prefeed_generation == decode.generation,
+            "unsent prefix never owns a timestamp or counts as progress");
+    size_t prior_calls = fixture.io.input_calls.size();
+    if (mode == 0) {
+      fixture.io.prefeed_busy_once = true;
+      Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                  fixture.io.input_calls.size() == prior_calls + 1 &&
+                  !fixture.io.input_calls.back().accepted &&
+                  decode.pending_prefeed_timestamp == 2 * kTimestampStep &&
+                  decode.prefed_timestamp == 0 && decode.transport_progress == 1 &&
+                  decode.input_backpressured && NeedsDecodeControlWake(decode),
+              "repeated BUSY gets one attempt per turn without progress or lost ownership");
+      prior_calls = fixture.io.input_calls.size();
+    }
+    fixture.io.tx_free_size = 1024 * 1024;
+    switch (mode) {
+      case 2:
+        Require(decode.replay.Append(2 * kTimestampStep, false, second), "real AU supersedes retry");
+        decode.next_timestamp = 3 * kTimestampStep;
+        break;
+      case 3: ++decode.generation; break;
+      case 4: decode.next_timestamp = 3 * kTimestampStep; break;
+      case 5: Require(decode.replay.Seal(), "seal cancels deferred prefix"); break;
+      case 6:
+        Require(decode.replay.Observe(kTimestampStep) == CrystalHDDecodeReplay::Output::New,
+                "completed work needs no speculative retry");
+        decode.pending.clear();
+        break;
+      case 7: decode.closing = true; break;
+      case 8: decode.retired = true; break;
+      case 9: decode.destroy_prepared = true; break;
+      case 10: decode.hardware_close_pending = true; break;
+      case 11:
+        Require(decode.replay.Seal() &&
+                    decode.replay.Observe(kTimestampStep) == CrystalHDDecodeReplay::Output::New &&
+                    decode.replay.EndOfSequence(), "EOS revokes unsent retry");
+        break;
+      case 12:
+        Require(decode.CloseHardware() == BC_STS_SUCCESS, "close revokes unsent retry");
+        break;
+      case 13:
+        Require(decode.Reset() == BC_STS_SUCCESS, "reset revokes unsent retry");
+        break;
+      case 14:
+        Require(FailDecode(&fixture.driver, &decode, "test deferred-prefix cancellation") ==
+                    VA_STATUS_ERROR_DECODING_ERROR, "failure revokes unsent retry");
+        break;
+      default: break;
+    }
+    Require(PumpDecodeInput(&fixture.driver, &decode) ==
+                (mode == 14 ? VA_STATUS_ERROR_DECODING_ERROR : VA_STATUS_SUCCESS),
+            "retry/cancellation stays within the existing pump contract");
+    if (mode < 2) {
+      Require(fixture.io.input_calls.size() == prior_calls + 1 &&
+                  fixture.io.input_calls.back().accepted &&
+                  fixture.io.input_calls.back().timestamp == 2 * kTimestampStep &&
+                  fixture.io.input_calls.back().bytes == ExpectedH264LowLatencyPrefeed() &&
+                  decode.prefed_timestamp == 2 * kTimestampStep &&
+                  decode.transport_progress == 2 && decode.pending_prefeed_timestamp == 0 &&
+                  !NeedsDecodeControlWake(decode),
+              "BUSY/space retry sends the same prefix once without a new real AU");
+      Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                  fixture.io.input_calls.size() == prior_calls + 1 && decode.transport_progress == 2,
+              "accepted retry is never duplicated");
+      Require(decode.replay.Append(2 * kTimestampStep, false, second), "queue actual prefed successor");
+      decode.next_timestamp = 3 * kTimestampStep;
+      Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                  fixture.io.input_calls.back().timestamp == 0 &&
+                  fixture.io.input_calls.back().bytes == second && decode.prefed_timestamp == 0,
+              "only an accepted retry makes actual successor timestamp zero");
+    } else {
+      Require(fixture.io.input_calls.size() == prior_calls + (mode == 2 ? 1U : 0U) &&
+                  decode.prefed_timestamp == 0 &&
+                  decode.pending_prefeed_timestamp == 0 &&
+                  decode.transport_progress == (mode == 2 ? 2U : 1U),
+              "obsolete unsent prefix cannot escape or refresh transport progress");
+      if (mode == 2)
+        Require(fixture.io.input_calls.back().timestamp == 2 * kTimestampStep &&
+                    fixture.io.input_calls.back().bytes == second,
+                "real input wins with its original nonzero timestamp");
+    }
+    Require(!fixture.io.invalid, "retry preserves DIL handle and input ownership");
+  }
+}
+
 static void LiveH264PrefeedBusyFallback() {
   {
     TeardownFixture fixture(2);
@@ -8747,6 +8852,7 @@ static void AutonomousWorkerStopsAfterTransportFailure() {
 int main(int argc, char **argv) {
   try {
     if (argc == 2 && std::strcmp(argv[1], "--live-bob-tail") == 0) {
+      DeferredH264PrefeedRetriesWithoutNewInput();
       FirstTemporalBobDoesNotCompleteDecodePicture();
       FirstTemporalBobRejectsMismatchedLatch();
       FirstH264FieldRefreshesTransportGrace();
@@ -8755,6 +8861,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     Require(argc == 1, "usage: vaapi-replay-test [--live-bob-tail]");
+    DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobDoesNotCompleteDecodePicture();
     FirstTemporalBobRejectsMismatchedLatch();
     SealedBatchQueuesAndReplays();
