@@ -9214,7 +9214,7 @@ static VAPictureParameterBufferH264 NeutralPicture(unsigned width, unsigned heig
 }
 
 static void NeutralAuxSyntaxIsSelfContained() {
-  for (const auto size : {std::make_pair(16U,32U), {1280U,736U}, {1920U,1088U}}) {
+  for (const auto &size : {std::make_pair(16U,32U), {1280U,736U}, {1920U,1088U}}) {
     const auto p = NeutralPicture(size.first, size.second);
     std::vector<uint8_t> stream;
     Require(BuildH264NeutralIntra(p, &stream) && stream.size() <= 16384, "bounded variable geometry");

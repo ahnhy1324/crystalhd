@@ -163,12 +163,23 @@ reject. A passive Kodi 21.3 observation of all 1,500 successful post-processing
 outputs confirms equal PTS within each field pair, with approximately 40 ms
 between source pictures, not uniformly timed 50p. Its second-field adjustment
 uses a previous temporal reference, while Bob correctly requires none; all 750
-second-field adjustments were skipped. These are output metadata, not measured
-screen presentation times. One separate seek selects Kodi's 5-second cache
-startup fallback while video remains in its starting state; the underlying
-startup delay is not fully attributed. A separate
-branch trace attributes two reproduced seek/Stop buffer warnings to cancellation,
-not deadline expiry; seek-preroll drops and multi-second recovery remain. See
+second-field adjustments were skipped. The pinned stock Kodi 21.3 source confirms
+this client-side timestamp dependency. VA VPP has no output-PTS return field;
+advertising false temporal references would not be a valid driver fix. These are
+output metadata, not measured screen presentation times. The existing FFmpeg
+VA field-rate Bob control independently passes 100 ordered outputs at 20 ms PTS
+intervals; this does not establish Kodi presentation cadence.
+
+The earlier 10.000-second seek landed at 0.021 seconds, before the fixture's next
+keyframe at 10.021 seconds, and selected Kodi's 5-second cache startup fallback.
+A bounded `2c79f1e` control seeking to 10.100 seconds lands at 10.021 seconds and
+receives video-start acknowledgement 1.474 seconds after the demuxer seek log,
+without that fallback.
+The source versions differ, so this is not a controlled latency improvement or
+complete attribution of the old delay. Seek/Stop buffer warnings remain; a prior
+branch trace attributed its two warnings to cancellation, not deadline expiry.
+Neither the new warnings nor physical presentation are classified by that old
+trace. See
 [#445's compatibility evidence](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6257714172).
 Selected 720i25 dialogue now has qualitative maintainer A/V/motion confirmation,
 including pause/resume and both seeks; calibrated timing and actual displayed
@@ -179,12 +190,16 @@ For finite Bob playback, leave `CRYSTALHD_VAAPI_LIVE_H264` and
 reproduced pre-EOF stall with `d1b3788`. With `9a3b08b`, the selected stock Kodi
 control admits all 750 pictures without that midstream timeout, but final-field
 drain still exceeds Kodi's EOF wait; close-time completion is not a playback PASS.
-A private prototype of the non-reference auxiliary-picture fix passed a bounded
-stock Kodi LIVE+LL control: all 750 original pictures and 1,500 Bob outputs completed before
-the close-time EOS, without decoder restart or application changes. The auxiliary
-picture is never presented. This resolves that selected tail stall, not the
-separate field-pair PTS/cadence or physical A/V qualifications; unrelated Kodi
-environment errors remain recorded in [#445](https://github.com/ahnhy1324/crystalhd/issues/445).
+`2c79f1e` implements a private non-reference intra picture for eligible BCM70015
+MBAFF LIVE Bob completion. Its exact-source 50-picture control completes both
+mid-input-gap and EOF Bob/source synchronization before close; subsequent full
+NV12/PTS comparisons match all 50 originals. The auxiliary is never presented,
+and an input gap is not treated as EOS. The earlier private precursor passed a
+bounded stock Kodi LIVE+LL control: all 750 originals and 1,500 Bob outputs
+completed before close-time EOS without decoder restart or application changes.
+That precursor run is not a stock-Kodi qualification of the final commit.
+The separate PTS/cadence and physical A/V limits, prior failures and unrelated
+Kodi environment errors remain recorded in [#445](https://github.com/ahnhy1324/crystalhd/issues/445).
 General FHD/Atom Bob playback is not qualified. **Off** retains Weave; the separate
 [FFmpeg BWDIF path](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif)
 remains available.

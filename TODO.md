@@ -190,30 +190,31 @@ Prioritize correctness within the advertised decode/VPP subset, using the
 [existing compatibility investigation](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6257714172).
 Missing optional VA operations are not all release requirements.
 
-- [ ] P0 — Separate decoder reorder, genuine field completion and client drain.
-  Use the recorded unchanged-input SW decode/BWDIF comparison at a withheld
-  non-IDR and real EOF; a returned VA handle is not proof its pixels are ready.
-  Preserve private first-field Bob and finite EOS/reference replay, including negotiated
-  channel reuse. For LIVE, establish a real nonterminal completion mechanism
-  before changing policy: an input gap is not EOF. Require both genuine field
-  identities, retained-pixel safety, EOS and reopen; do not repeat the already
-  negative filler-only trials or synthesize the missing field from SW's EOF clone.
+- [x] P0 — Implement nonterminal completion for eligible BCM70015 MBAFF LIVE Bob.
+  `2c79f1e` supplies a separately owned non-reference intra picture, retaining
+  original references and public pixels without inferring EOS from an input gap.
+  Exact-source mid-gap/EOF Bob and source synchronization complete before close;
+  all 50 original NV12/PTS comparisons pass afterward. Actual close drains private
+  output/EOS separately. Keep the earlier private Kodi 750/1,500 result distinct
+  from final-source and general LIVE acceptance. See [the scoped result](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6286955966).
   A pinned drain/replay checkpoint prototype passed a short own-client
   continuation and pixel control, but is not enabled: stock Kodi required
   243-picture reconstruction (5.66 s) and exceeded its 2 s output wait.
-  Cache/work bounds do not bound client latency. Preserve ordinary LIVE gap
-  semantics and finite-only channel reuse until a genuine nonterminal
-  completion/latency contract is established; do not widen timeouts or
-  repeat the same checkpoint as a proposed compatibility fix.
-- [ ] P0 — Resolve the remaining presentation compatibility boundary without
-  app patches. SW BWDIF owns field-output PTS; VA Bob returns pixels, while the
-  inspected Kodi zero-reference path retains duplicate pair PTS. Reuse the
-  existing FFmpeg VA field-PTS control, and fix driver queue, fence or ownership
-  behavior only where a cause is demonstrated. Record a proven compatibility
-  limit if the presentation contract cannot be repaired within this backend. Never claim
-  false temporal references or retime decode-identity tokens as a workaround.
-  Acceptance requires distinct ordered output PTS, complete tail and measured
-  cadence/A/V; existing API/EOF successes do not replace those checks.
+  Cache/work bounds do not bound client latency. Preserve that failure and the
+  negative filler-only trials; do not widen timeouts or synthesize missing fields.
+- [x] P0 — Attribute the stock Kodi 21.3 duplicate field-PTS boundary. Its
+  second-field timestamp calculation requires prior-picture metadata that the
+  zero-reference Bob path discards. Source and the existing 1,500-output trace
+  agree. VA VPP cannot return output PTS; retain truthful zero temporal references
+  and immutable decode tokens. The existing FFmpeg VA field-rate control passes
+  100 outputs at 20 ms PTS intervals without an application patch.
+- [ ] P0 — Complete remaining presentation/reporter acceptance: current-source
+  native i386/Atom, FHD displayed cadence and physical A/V, broader LIVE inputs
+  and seek recovery. The bounded 10.100-second seek avoids the earlier long-GOP
+  preroll and 5-second startup fallback, but video acknowledgement still arrives
+  1.474 seconds after the demuxer seek log; this is not a same-version A/B or
+  warning-free acceptance.
+  Keep existing tail/API/pixel successes separate from these qualifications.
 - [x] P1 — Validate requested RT formats and slice modes; retain selected output
   formats through queries, context lifetime and target binding without restricting
   VPP input. Zero-filter VPP and Bob reject unsupported meaningful requests while
