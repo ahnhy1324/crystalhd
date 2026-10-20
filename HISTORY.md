@@ -8,6 +8,8 @@
   corrupted; preserve existing messages, log levels and caller-selected files.
 - Reduce resized/padded NV12 Bob CPU work without changing sampled pixels,
   chroma pairing, CPU-access ownership or the no-SSE path.
+- Avoid a redundant DMA-BUF CPU-write acquisition when VPP fencing is
+  unavailable; retain synchronous completion and failure cleanup guarantees.
 - Implement CPU VA-VPP Bob for origin-aligned woven NV12 regions, with NV12/ARGB
   output, independent Y/UV field sampling and Render-time filter snapshots.
   Preserve zero-filter Weave/scaling and legacy ABI; single-field input,

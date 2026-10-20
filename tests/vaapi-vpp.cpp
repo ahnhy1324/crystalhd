@@ -2269,7 +2269,7 @@ void ExposedQueuedVppStillRequiresFence() {
   Require(EndPicture(&fixture.context, 2) == VA_STATUS_ERROR_OPERATION_FAILED &&
               fixture.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
               fixture.target->vpp_writers == 0 && fixture.target->planes[0][0] == 99 &&
-              mock.events == std::vector<std::string>{"start:101", "open", "end:101"} &&
+              mock.events == std::vector<std::string>{"open"} &&
               mock.started.empty() && mock.handles.empty() && !mock.invalid,
           "exposed backing cannot fall back to unfenced writes after fence failure");
 }
@@ -2278,7 +2278,7 @@ void ExerciseExposedColdVppFallback(bool cache_ops_available) {
   Require(CpuCacheFlush().Available() == cache_ops_available,
           "exercise the actual CPU cache-operation capability, never a fabricated one");
   const std::vector<std::string> initial_events = cache_ops_available
-      ? std::vector<std::string>{"start:101", "open", "end:101"}
+      ? std::vector<std::string>{"open"}
       : std::vector<std::string>{};
   for (unsigned int mode = 0; mode != 9; ++mode) {
     FenceIoMock mock;
@@ -2456,7 +2456,8 @@ void UnsafeFenceFailuresCannotUseSynchronousFallback() {
     if (mode == 0)
       mock.fail_start_fd = 101;
     else if (mode == 1) {
-      mock.fail_open = true;
+      fixture.target->object_fds = {101, 102};
+      mock.fail_start_fd = 102;
       mock.fail_end_fd = 101;
     } else {
       mock.fail_import_fd = 101;
@@ -2626,21 +2627,24 @@ void CpuWriteStartUnwindsAcquiredPrefix() {
           "failed CPU acquisition must leave no ownership");
 }
 
-void FencedWriteStartFailureDoesNotOpenTimeline() {
+void FencedWriteStartFailureClosesUnpublishedFence() {
   FenceIoMock mock;
   MockFenceScope scope(mock);
   Surface surface;
   surface.object_fds = {101, 102, 103};
   mock.fail_start_fd = 102;
-  Require(BeginFencedWrite(&surface) == -1, "fenced CPU START must fail");
+  bool fallback = true;
+  Require(BeginFencedWrite(&surface, CpuCacheFlush(), &fallback) == -1 && !fallback,
+          "fenced CPU START must fail without synchronous fallback");
   Require(mock.events == std::vector<std::string>{
-              "start:101", "start:102", "end:101"},
-          "failed CPU acquisition must not create a timeline");
+              "open", "create", "start:101", "start:102", "end:101",
+              "close:7002", "close:7001"},
+          "failed CPU acquisition unwinds its prefix and closes the unpublished fence");
   Require(mock.started.empty() && mock.handles.empty() && !mock.invalid,
           "failed fenced acquisition must not leak ownership or handles");
 }
 
-void FenceCreationFailureReleasesOwnership() {
+void FenceCreationFailureAvoidsCpuOwnership() {
   for (bool fail_open : {true, false}) {
     FenceIoMock mock;
     MockFenceScope scope(mock);
@@ -2648,8 +2652,14 @@ void FenceCreationFailureReleasesOwnership() {
     surface.object_fds = {101, 102};
     mock.fail_open = fail_open;
     mock.fail_create = !fail_open;
-    Require(BeginFencedWrite(&surface) == -1,
+    bool fallback = false;
+    Require(BeginFencedWrite(&surface, CpuCacheFlush(), &fallback) == -1 && fallback,
             "timeline open or fence creation failure must be reported");
+    const std::vector<std::string> expected = fail_open
+        ? std::vector<std::string>{"open"}
+        : std::vector<std::string>{"open", "create", "close:7001"};
+    Require(mock.events == expected,
+            "unavailable fence must not acquire CPU ownership of an untouched target");
     Require(mock.started.empty() && mock.handles.empty() &&
                 mock.imported.empty() && !mock.signaled && !mock.self_wait &&
                 !mock.invalid,
@@ -4054,8 +4064,8 @@ int VppFullTestEntry(int argc, char **argv) {
     MalformedSurfaceTeardownIsAtomic();
     ValidSurfaceTeardownRetiresQueuedEpoch();
     CpuWriteStartUnwindsAcquiredPrefix();
-    FencedWriteStartFailureDoesNotOpenTimeline();
-    FenceCreationFailureReleasesOwnership();
+    FencedWriteStartFailureClosesUnpublishedFence();
+    FenceCreationFailureAvoidsCpuOwnership();
     PartialFenceImportAbortsBeforeCpuEnd();
     CompletedFenceSignalsBeforeCpuEnd();
     VppCpuOwnershipFailuresAreNotSuccessfulFrames();

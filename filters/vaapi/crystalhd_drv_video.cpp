@@ -1270,9 +1270,10 @@ static int BeginFencedWrite(Surface *surface,
       *synchronous_fallback = true;
     return -1;
   }
-  if (!surface->BeginCpuWrite())
-    return -1;
-
+  // Establish local fence capability before taking CPU ownership. If sw_sync
+  // is unavailable, the synchronous fallback has not touched this target and
+  // need not wait on its external readers until the source is actually ready.
+  // The fence remains unpublished until CPU START succeeds below.
   int timeline = open(kSwSyncPath, O_RDWR | O_CLOEXEC);
   SwSyncCreateFenceData create = {};
   create.value = 1;
@@ -1280,10 +1281,17 @@ static int BeginFencedWrite(Surface *surface,
   snprintf(create.name, sizeof(create.name), "crystalhd-vpp");
   if (timeline < 0 ||
       ioctl(timeline, SW_SYNC_IOC_CREATE_FENCE, &create) != 0) {
-    const bool released = surface->EndCpuWrite();
     const bool closed = timeline < 0 || close(timeline) == 0;
     if (synchronous_fallback != nullptr)
-      *synchronous_fallback = released && closed;
+      *synchronous_fallback = closed;
+    return -1;
+  }
+
+  if (!surface->BeginCpuWrite()) {
+    // BeginCpuWrite already unwound any acquired object prefix. No fence was
+    // imported, so close only these local handles; do not issue another END.
+    close(create.fence);
+    close(timeline);
     return -1;
   }
 
