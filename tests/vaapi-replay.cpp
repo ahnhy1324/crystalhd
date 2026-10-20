@@ -8653,10 +8653,12 @@ static void FirstTemporalBobRejectsMismatchedLatch() {
   }
 }
 
+static VAPictureParameterBufferH264 NeutralPicture(unsigned width, unsigned height);
+
 static void LiveBobTailWithUnfenceableExposedTarget() {
-  enum class Tail { Complete, Cancel, Drain };
+  enum class Tail { Complete, Cancel, Drain, Auxiliary };
   for (bool bottom_first : {false, true}) {
-    for (Tail tail : {Tail::Complete, Tail::Cancel, Tail::Drain}) {
+    for (Tail tail : {Tail::Complete, Tail::Cancel, Tail::Drain, Tail::Auxiliary}) {
       TeardownFixture fixture(2);
       auto &decode = *fixture.decoder;
       decode.profile = VAProfileH264Main;
@@ -8691,6 +8693,13 @@ static void LiveBobTailWithUnfenceableExposedTarget() {
         Require(decode.replay.Append(token, picture == 1,
                                       TestH264AccessUnit(picture == 1, picture)),
                 "accept each real AU before its independent successor prefix");
+        if (tail == Tail::Auxiliary) {
+          H264Auxiliary::Syntax syntax;
+          syntax.picture = NeutralPicture(16, 32);
+          syntax.generation = decode.generation;
+          syntax.device = decode.device;
+          decode.auxiliary.syntax.emplace(token, syntax);
+        }
         decode.next_timestamp = (picture + 1) * kTimestampStep;
         Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS,
                 "send real live input and its syntactic successor prefix");
@@ -8707,6 +8716,16 @@ static void LiveBobTailWithUnfenceableExposedTarget() {
                   decode.prefed_timestamp == 3 * kTimestampStep &&
                   decode.pending.count(3 * kTimestampStep) == 0,
               "a cold final source and a prefed-only successor remain distinct owners");
+      const auto public_pixels = fixture.held[1]->storage;
+      const auto held_field = decode.h264_first_field.pixels;
+      const uint64_t ordinal = decode.next_submission_ordinal;
+      const size_t input_calls = fixture.io.input_calls.size();
+      std::vector<uint8_t> expected_auxiliary;
+      if (tail == Tail::Auxiliary)
+        Require(decode.auxiliary.candidate_timestamp == token &&
+                    BuildH264NeutralIntra(decode.auxiliary.candidate.picture,
+                                          &expected_auxiliary),
+                "only the actually submitted final AU supplies auxiliary syntax");
 
       if (tail == Tail::Drain) {
         fixture.io.early_eos = true;
@@ -8766,7 +8785,48 @@ static void LiveBobTailWithUnfenceableExposedTarget() {
                   RenderPicture(&fixture.context, processor, &pipeline_id, 1) == VA_STATUS_SUCCESS,
               "capture the exact final live picture through Begin/Render");
       unsigned int waits = 0;
-      if (tail != Tail::Drain) {
+      const auto supply_after_auxiliary = [&] {
+        Require(decode.auxiliary.pending && decode.auxiliary.needs_eos &&
+                    decode.auxiliary.timestamp == 3 * kTimestampStep &&
+                    fixture.io.input_calls.size() == input_calls + 2 &&
+                    fixture.io.input_calls[input_calls].accepted &&
+                    fixture.io.input_calls[input_calls].timestamp == 0 &&
+                    fixture.io.input_calls[input_calls].bytes == expected_auxiliary &&
+                    fixture.io.input_calls.back().accepted &&
+                    fixture.io.input_calls.back().timestamp == 4 * kTimestampStep &&
+                    fixture.io.input_calls.back().bytes == H264LowLatencyPrefeed() &&
+                    decode.next_timestamp == 4 * kTimestampStep &&
+                    decode.next_submission_ordinal == ordinal &&
+                    decode.pending.size() == 1 && decode.pending.count(token) == 1 &&
+                    decode.replay.outstanding() == 1 &&
+                    !decode.replay.IsOutstanding(3 * kTimestampStep) &&
+                    decode.h264_first_field.pixels == held_field && !source->ready &&
+                    fixture.held[1]->storage == public_pixels &&
+                    target->storage == original && !target->ready &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 0,
+                "public EndPicture submits private auxiliary before any original complement is available");
+        queue_field(token, second);
+      };
+      if (tail == Tail::Auxiliary) {
+        fixture.io.on_sleep = [&] {
+          ++waits;
+          if (decode.auxiliary.pending) {
+            supply_after_auxiliary();
+            return;
+          }
+          Require(fixture.io.input_calls.size() == input_calls &&
+                      fixture.io.outputs.empty() && !source->ready,
+                  "no mock output or auxiliary is supplied before the real idle grace");
+          std::this_thread::sleep_for(std::chrono::nanoseconds(kDecodeBatchGraceNs) +
+                                      std::chrono::milliseconds(1));
+          fixture.io.on_sleep = [&] {
+            ++waits;
+            // A missing EndPicture-to-auxiliary hook fails here, not after
+            // the ten-second production deadline or a fabricated completion.
+            supply_after_auxiliary();
+          };
+        };
+      } else if (tail != Tail::Drain) {
         fixture.io.on_sleep = [&] {
           ++waits;
           Require(fixture.driver.pending_vpp.size() == 1 &&
@@ -8797,7 +8857,8 @@ static void LiveBobTailWithUnfenceableExposedTarget() {
                     !target->ready && target->failed && target->storage == original,
                 "pool cancellation reproduces End1 then Sync23 without writing fallback pixels");
       } else {
-        Require(waits == (tail == Tail::Complete ? 1U : 0U) &&
+        Require((tail == Tail::Auxiliary ? waits >= 1 && waits <= 2 :
+                     waits == (tail == Tail::Complete ? 1U : 0U)) &&
                     ended == VA_STATUS_SUCCESS && target->ready && !target->failed &&
                     target->frame_timestamp == token && target->expected_timestamp == token &&
                     target->trace_decode_identity == source->trace_decode_identity &&
@@ -8811,9 +8872,47 @@ static void LiveBobTailWithUnfenceableExposedTarget() {
                           (plane == 0 ? DecodeIoMock::Luma(token) : 128),
                       "successful combined Bob output contains every real active Y/UV byte");
       }
+      if (tail == Tail::Auxiliary) {
+        Require(source->ready && fixture.held[1]->ready &&
+                    decode.replay.outstanding() == 0 && decode.pending.empty() &&
+                    !decode.h264_first_field.valid && decode.auxiliary.pending &&
+                    decode.auxiliary.needs_eos && !decode.replay.sealed() &&
+                    decode.next_submission_ordinal == ordinal && fixture.io.open_attempts == 0,
+                "only the real complement completes Bob; private output debt remains without EOS/reopen");
+        fixture.CheckPicture(1);
+        const auto completed_pixels = target->storage;
+        H264WeaveFixture auxiliary_output;
+        auxiliary_output.output.PicInfo.timeStamp = 3 * kTimestampStep;
+        auxiliary_output.output.PicInfo.flags &= ~VDEC_FLAG_UNKNOWN_SRC;
+        auxiliary_output.raw.timeStamp = 3 * kTimestampStep / 20000U;
+        auxiliary_output.raw.flags = VDEC_FLAG_FIELDPAIR;
+        auxiliary_output.WritePib();
+        fixture.io.override_output = true;
+        fixture.io.overridden_output = auxiliary_output.output;
+        bool activity = false;
+        Require(ReceiveOne(&fixture.driver, &decode, 0, &activity) == VA_STATUS_SUCCESS &&
+                    activity && !decode.auxiliary.pending && decode.auxiliary.needs_eos &&
+                    decode.replay.outstanding() == 0 && target->storage == completed_pixels &&
+                    target->frame_timestamp == token && decode.next_submission_ordinal == ordinal,
+                "validated and released auxiliary retires only private debt, never public pixels or PTS");
+        fixture.io.override_output = false;
+        fixture.io.early_eos = true; // Every original and auxiliary already retired.
+        Require(std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 0 &&
+                    DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                    decode.device == nullptr && decode.retired &&
+                    target->storage == completed_pixels && source->ready &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 1 &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1 &&
+                    fixture.io.open_attempts == 0,
+                "explicit close alone flushes and consumes the actual auxiliary-tail EOS");
+        Require(std::find(fixture.io.events.begin(), fixture.io.events.end(), "eos") <
+                    std::find(fixture.io.events.begin(), fixture.io.events.end(), "stop"),
+                "actual EOS precedes terminal decoder teardown");
+      }
       Require(std::count(fixture.io.events.begin(), fixture.io.events.end(), "release") ==
-                  (tail == Tail::Cancel ? 3 : tail == Tail::Drain ? 5 : 4) &&
-                  (tail == Tail::Drain ||
+                  (tail == Tail::Cancel ? 3 : tail == Tail::Drain ? 5 :
+                   tail == Tail::Auxiliary ? 6 : 4) &&
+                  (tail == Tail::Drain || tail == Tail::Auxiliary ||
                    std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 0) &&
                   DestroyBuffer(&fixture.context, pipeline_id) == VA_STATUS_SUCCESS &&
                   DestroyBuffer(&fixture.context, filter_id) == VA_STATUS_SUCCESS &&
