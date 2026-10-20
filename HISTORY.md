@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Remove per-pixel division from scalar NV12 VPP resizing, preserving exact
+  crop/chroma sampling, interleaved field rows and output padding without SSE.
 - Preserve field/chroma lattices in explicit interleaved VA VPP scaling, and
   retain completed VPP pixels/identity when chaining Bob and enlargement.
   Allow explicit LIVE/prefeed with H.264 card scaling; keep finite defaults

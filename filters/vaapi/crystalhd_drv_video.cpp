@@ -1901,6 +1901,11 @@ static VAStatus ProcessVpp(SwsContext **scaler,
         memset(destination->planes[1] +
                    static_cast<size_t>(row) * destination->pitch[1],
                128, Align(destination->width, 2));
+      // Exactly floor(column * source_width / output_width), without a
+      // wide division per pixel. Rectangle extents are uint16_t, so the
+      // quotient/remainder steps and phase additions fit unsigned int.
+      const unsigned int y_whole = source_region.width / output_region.width;
+      const unsigned int y_remainder = source_region.width % output_region.width;
       for (unsigned int row = 0; row < output_region.height; ++row) {
         const unsigned int source_y = source_region.y +
             (preserve_fields
@@ -1912,14 +1917,23 @@ static VAStatus ProcessVpp(SwsContext **scaler,
             destination->planes[0] +
             static_cast<size_t>(output_region.y + row) * destination->pitch[0] +
             output_region.x;
+        unsigned int source_x = source_region.x, phase = 0;
         for (unsigned int column = 0; column < output_region.width; ++column) {
-          const unsigned int source_x = source_region.x +
-              static_cast<uint64_t>(column) * source_region.width /
-                  output_region.width;
           destination_y[column] = source->planes[0][
               static_cast<size_t>(source_y) * source->pitch[0] + source_x];
+          source_x += y_whole;
+          phase += y_remainder;
+          if (phase >= output_region.width) {
+            phase -= output_region.width;
+            ++source_x;
+          }
         }
       }
+      // Generic crops may have odd x/width. Advance in byte coordinates,
+      // then align each selected UV pair, retaining the original phase.
+      const unsigned int uv_step = 2U * source_region.width;
+      const unsigned int uv_whole = uv_step / output_region.width;
+      const unsigned int uv_remainder = uv_step % output_region.width;
       for (unsigned int row = 0; row < output_region.height; row += 2) {
         const unsigned int source_uv_row = preserve_fields
             ? source_region.y / 2 +
@@ -1931,16 +1945,20 @@ static VAStatus ProcessVpp(SwsContext **scaler,
             destination->planes[1] +
             static_cast<size_t>((output_region.y + row) / 2) *
                 destination->pitch[1] + output_region.x;
+        unsigned int source_x = source_region.x, phase = 0;
         for (unsigned int column = 0; column + 1 < output_region.width;
              column += 2) {
-          const unsigned int source_x = source_region.x +
-              static_cast<uint64_t>(column) * source_region.width /
-                output_region.width;
           const size_t source_offset =
               static_cast<size_t>(source_uv_row) * source->pitch[1] +
               (source_x & ~1U);
           destination_uv[column] = source->planes[1][source_offset];
           destination_uv[column + 1] = source->planes[1][source_offset + 1];
+          source_x += uv_whole;
+          phase += uv_remainder;
+          if (phase >= output_region.width) {
+            phase -= output_region.width;
+            ++source_x;
+          }
         }
       }
     }

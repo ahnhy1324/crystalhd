@@ -453,6 +453,80 @@ void ZeroFilterOddWidthBackground() {
           "zero-filter odd-width output preserves source and avoids ARGB staging");
 }
 
+void ZeroFilterNv12ExactResize() {
+  struct Case {
+    unsigned width, height, target_width, target_height;
+    VARectangle source, target;
+    bool interleaved = false, full_range = false;
+  };
+  const Case cases[] = {
+      {1280, 720, 1920, 1080, {0, 0, 1280, 720}, {0, 0, 1920, 1080}},
+      {1920, 1088, 1280, 720, {0, 0, 1920, 1080}, {0, 0, 1280, 720}},
+      {1280, 720, 1920, 1080, {0, 0, 1280, 720}, {0, 0, 1920, 1080}, true},
+      {1920, 1088, 1280, 720, {0, 0, 1920, 1080}, {0, 0, 1280, 720}, true},
+      {1284, 728, 1925, 1091, {2, 3, 1280, 721}, {2, 4, 1920, 1080}},
+      {1284, 728, 1925, 1091, {2, 4, 1280, 720}, {2, 4, 1920, 1080}, true},
+      {1920, 1080, 1920, 1080, {0, 0, 1920, 1080}, {0, 0, 1920, 1080}},
+      {1920, 1080, 1920, 1080, {0, 0, 1920, 1080}, {0, 0, 1920, 1080}, true},
+      {36, 28, 31, 25, {3, 3, 29, 23}, {2, 4, 26, 20}},
+      {36, 28, 31, 25, {3, 3, 29, 23}, {2, 4, 26, 20}, false, true},
+      {36, 28, 31, 25, {3, 3, 26, 21}, {2, 4, 26, 20}},
+      {1280, 720, 4, 4, {1, 1, 1279, 719}, {0, 0, 4, 4}},
+      {4, 4, 1280, 720, {1, 1, 3, 3}, {0, 0, 1280, 720}},
+      {32, 32, 25, 25, {2, 4, 24, 24}, {2, 4, 16, 16}, true, true},
+      {65535, 4, 65534, 4, {0, 0, 65535, 4}, {0, 0, 65534, 4}},
+      {65535, 4, 2, 4, {0, 0, 65535, 4}, {0, 0, 2, 4}},
+      {2, 4, 65534, 4, {0, 0, 2, 4}, {0, 0, 65534, 4}},
+      {65534, 4, 65530, 4, {0, 0, 65534, 4}, {0, 0, 65530, 4}, true}};
+  const unsigned before_io = io_calls;
+  for (const auto &test : cases) {
+    Surface source, target, expected;
+    Initialize(&source, test.width, test.height);
+    Initialize(&target, test.target_width, test.target_height);
+    Initialize(&expected, test.target_width, test.target_height);
+    Fill(&source);
+    const auto original = source.storage;
+    const auto &src = test.source;
+    const auto &dst = test.target;
+    // Independent multiplication/division oracle, including the old generic
+    // odd-origin UV phase. Never use the production horizontal accumulator.
+    for (unsigned plane = 0; plane < 2; ++plane) {
+      const unsigned unit = plane ? 2 : 1;
+      for (unsigned row = 0; row < (expected.height + unit - 1) / unit; ++row)
+        std::fill_n(expected.planes[plane] + size_t(row) * expected.pitch[plane],
+                    plane ? Align(expected.width, 2) : expected.width,
+                    plane ? 128 : test.full_range ? 0 : 16);
+      for (unsigned row = 0; row < dst.height / unit; ++row) {
+        const unsigned source_row = test.interleaved
+            ? src.y / unit + uint64_t(row / 2) * (src.height / unit / 2) /
+                  (dst.height / unit / 2) * 2 + row % 2
+            : (src.y + uint64_t(row * unit) * src.height / dst.height) / unit;
+        for (unsigned column = 0; column < dst.width; column += unit) {
+          unsigned source_column = src.x + uint64_t(column) * src.width / dst.width;
+          if (plane) source_column &= ~1U;
+          for (unsigned byte = 0; byte < unit; ++byte)
+            expected.planes[plane][size_t(dst.y / unit + row) * expected.pitch[plane] +
+                                   dst.x + column + byte] =
+                source.planes[plane][size_t(source_row) * source.pitch[plane] +
+                                     source_column + byte];
+        }
+      }
+    }
+    Scaler scaler;
+    std::vector<uint8_t> staging;
+    const VppColorRange range{test.full_range};
+    Require(ProcessVpp(&scaler.value, &staging, &source, &target, src, dst,
+                        false, {}, false, range, test.interleaved) == VA_STATUS_SUCCESS,
+            "zero-filter progressive/Weave resize completes");
+    Require(target.storage == expected.storage && source.storage == original,
+            "resize keeps exact Y/UV samples, all borders, pitch/outer guards and source bytes");
+    Require(target.ready && !target.failed && target.expected_timestamp == 12345 &&
+                target.frame_timestamp == 12345 && staging.empty() && scaler.value == nullptr,
+            "NV12 resize keeps identity and requires no ARGB staging or software scaler");
+  }
+  Require(io_calls == before_io, "private resize regression performs no device access");
+}
+
 #ifndef CRYSTALHD_BOB_NV12_ONLY
 void ZeroFilterArgbBorders() {
   for (bool full : {false, true}) {
@@ -776,6 +850,7 @@ int main(int argc, char **argv) {
 #endif
     }
     ZeroFilterOddWidthBackground();
+    ZeroFilterNv12ExactResize();
 #ifndef CRYSTALHD_BOB_NV12_ONLY
     ZeroFilterArgbInvalidStrides();
     ZeroFilterArgbBorders();
