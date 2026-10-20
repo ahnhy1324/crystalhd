@@ -213,19 +213,21 @@ Missing optional VA operations are not all release requirements.
   false temporal references or retime decode-identity tokens as a workaround.
   Acceptance requires distinct ordered output PTS, complete tail and measured
   cadence/A/V; existing API/EOF successes do not replace those checks.
-- [ ] P1 — Make Query/Create/Render agree. Validate requested RT formats and
-  decode slice modes against advertised masks; reject unimplemented meaningful
-  mirror, blend, reference, additional-output and color requests for zero-filter
-  VPP as well as Bob. Device-free regressions must preserve supported defaults
-  and reject before ID allocation, ownership or output mutation.
+- [x] P1 — Validate requested RT formats and slice modes; retain selected output
+  formats through queries, context lifetime and target binding without restricting
+  VPP input. Zero-filter VPP and Bob reject unsupported meaningful requests while
+  retaining valid defaults/no-ops. Device-free regressions verify ID/pixel/lease
+  safety and release obsolete unsubmitted captures after rejected replacements.
 - [ ] P2 — Define color conversion explicitly. Direct packed-output `StoreArgb`
   uses fixed limited-range BT.601 coefficients; VPP ARGB uses swscale without
   explicit matrix/range negotiation. Neither establishes selectable BT.709 or
-  full-range support. Reject unsupported explicit matrix/range semantics
-  consistently; add conversions
-  only with independent pixel oracles and matching advertised capabilities.
-- [ ] P2 — Improve truthful diagnostics: unsupported display attributes must
-  not silently succeed. Evaluate `vaQuerySurfaceError` using only information
+  full-range conversion support. Explicit color standards are rejected; existing
+  range/chroma metadata handling is retained for ordinary client pipelines, not
+  qualified as selectable conversion. Add conversions only with independent
+  pixel oracles and matching advertised capabilities.
+- [x] P2 — Unsupported display attributes return an error; valid empty requests
+  remain no-ops. Invalid arguments do not access or change caller attributes.
+- [ ] P2 — Evaluate `vaQuerySurfaceError` using only information
   actually available for the exact live surface; do not invent macroblock or
   hardware-reset details. Cover invalid IDs, lifetime and unsupported requests.
 

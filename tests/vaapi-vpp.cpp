@@ -3,9 +3,11 @@
 // device, firmware, browser, or CrystalHD device is opened by these tests.
 #define DtsGetDriverStatus VppTestGetDriverStatus
 #define DtsStopDecoder VppTestStopDecoder
+#define DtsDeviceOpen VppTestDeviceOpen
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
 #undef DtsGetDriverStatus
 #undef DtsStopDecoder
+#undef DtsDeviceOpen
 
 #include <atomic>
 #include <cerrno>
@@ -56,6 +58,8 @@ extern "C" int __real_close(int fd);
 extern "C" int __real_eventfd(unsigned int initial_value, int flags);
 
 namespace {
+
+unsigned int device_open_attempts = 0;
 
 // Only the current test thread's descriptor calls are mocked. Other VPP
 // tests still exercise the real driver state machine, and the wrappers never
@@ -406,6 +410,12 @@ extern "C" BC_STATUS VppTestStopDecoder(HANDLE device) {
   return BC_STS_SUCCESS;
 }
 
+extern "C" BC_STATUS VppTestDeviceOpen(HANDLE *device, uint32_t) {
+  ++device_open_attempts;
+  if (device != nullptr) *device = nullptr;
+  return BC_STS_INV_ARG;  // A regressed target guard must never reach hardware.
+}
+
 extern "C" int __real_open(const char *path, int flags, ...);
 extern "C" int __real_ioctl(int fd, unsigned long request, ...);
 extern "C" int __real_close(int fd);
@@ -627,6 +637,184 @@ void DefaultVppCapabilitiesRemainAvailable() {
                 DestroyConfig(&context, config) == VA_STATUS_SUCCESS,
             "default decode capabilities remain unchanged");
   }
+}
+
+void ConfigAttributesMatchAdvertisedSupport() {
+  Driver driver{-1};
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  const auto ids = [&] {
+    return std::array<uint64_t, 8>{{driver.next_config, driver.next_surface,
+        driver.next_context, driver.next_buffer, driver.next_image,
+        driver.next_vpp_sequence, driver.next_decode_identity, driver.next_trace_call}};
+  };
+  const auto rejects = [&](VAProfile profile, VAEntrypoint entrypoint,
+                           VAConfigAttrib *attributes, int count,
+                           VAStatus expected, bool null_output = false) {
+    const auto previous = driver.configs;
+    const auto previous_ids = ids();
+    constexpr VAConfigID sentinel = 0xdecafbadU;
+    VAConfigID output = sentinel;
+    const VAStatus status = CreateConfig(&context, profile, entrypoint,
+        attributes, count, null_output ? nullptr : &output);
+    Require(status == expected, "unsupported config request returns the exact API error");
+    Require(output == sentinel && ids() == previous_ids &&
+                driver.configs.size() == previous.size() &&
+                std::all_of(previous.begin(), previous.end(), [&](const auto &item) {
+                  const auto found = driver.configs.find(item.first);
+                  return found != driver.configs.end() &&
+                      found->second.profile == item.second.profile &&
+                      found->second.entrypoint == item.second.entrypoint &&
+                      found->second.rt_format == item.second.rt_format;
+                }),
+            "rejected config leaves every existing config, ID and output untouched");
+  };
+  VAProfile profiles[32] = {};
+  int profile_count = 0;
+  Require(QueryConfigProfiles(&context, profiles, &profile_count) == VA_STATUS_SUCCESS &&
+              profile_count > 0 && profile_count <= 32,
+          "inspect the actual advertised decode and VPP profiles");
+  for (int index = 0; index < profile_count; ++index) {
+    const VAProfile profile = profiles[index];
+    const bool decode = IsDecodeProfile(profile);
+    const VAEntrypoint entrypoint = decode ? VAEntrypointVLD : VAEntrypointVideoProc;
+    VAConfigAttrib advertised[] = {{VAConfigAttribRTFormat, 0},
+        {VAConfigAttribDecSliceMode, 0},
+        {VAConfigAttribRateControl, 0}};
+    Require(GetConfigAttributes(&context, profile, entrypoint, advertised, 3) ==
+                    VA_STATUS_SUCCESS &&
+                advertised[0].value == static_cast<uint32_t>(decode ? VA_RT_FORMAT_YUV420
+                    : VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32) &&
+                advertised[1].value == static_cast<uint32_t>(decode
+                    ? VA_DEC_SLICE_MODE_NORMAL : VA_ATTRIB_NOT_SUPPORTED) &&
+                advertised[2].value == VA_ATTRIB_NOT_SUPPORTED,
+            "config admission is checked against the actual advertised masks");
+    const auto accepts = [&](VAConfigAttrib *attributes, int count) {
+      VAConfigID output = VA_INVALID_ID;
+      const VAConfigID next = driver.next_config;
+      const size_t previous = driver.configs.size();
+      Require(CreateConfig(&context, profile, entrypoint, attributes, count, &output) ==
+                      VA_STATUS_SUCCESS && output == next &&
+                  driver.next_config == next + 1 && driver.configs.size() == previous + 1 &&
+                  driver.configs.at(output).profile == profile &&
+                  driver.configs.at(output).entrypoint == entrypoint,
+              "omitted/default or supported explicit config attributes remain accepted");
+    };
+    accepts(nullptr, 0);
+    VAConfigAttrib ordinary[] = {{VAConfigAttribRTFormat, VA_RT_FORMAT_YUV420},
+        {VAConfigAttribEncryption, 0}, {VAConfigAttribMaxPictureWidth, kMaxWidth}};
+    accepts(ordinary, 3);
+    if (decode) {
+      VAConfigAttrib normal = {VAConfigAttribDecSliceMode, VA_DEC_SLICE_MODE_NORMAL};
+      accepts(&normal, 1);
+    } else {
+      for (uint32_t format : {static_cast<uint32_t>(VA_RT_FORMAT_RGB32), advertised[0].value}) {
+        VAConfigAttrib rgb = {VAConfigAttribRTFormat, format};
+        accepts(&rgb, 1);
+      }
+    }
+    for (uint32_t format : {0U, static_cast<uint32_t>(VA_RT_FORMAT_YUV422),
+                           advertised[0].value | VA_RT_FORMAT_YUV422,
+                           VA_ATTRIB_NOT_SUPPORTED}) {
+      VAConfigAttrib bad = {VAConfigAttribRTFormat, format};
+      rejects(profile, entrypoint, &bad, 1, VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT);
+      VAConfigAttrib mixed[] = {ordinary[0], bad, ordinary[1]};
+      rejects(profile, entrypoint, mixed, 3, VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT);
+    }
+    if (decode) {
+      VAConfigAttrib rgb = {VAConfigAttribRTFormat, VA_RT_FORMAT_RGB32};
+      rejects(profile, entrypoint, &rgb, 1, VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT);
+    }
+    for (uint32_t mode : {0U, static_cast<uint32_t>(VA_DEC_SLICE_MODE_BASE),
+                         static_cast<uint32_t>(VA_DEC_SLICE_MODE_NORMAL | VA_DEC_SLICE_MODE_BASE),
+                         VA_ATTRIB_NOT_SUPPORTED}) {
+      VAConfigAttrib bad = {VAConfigAttribDecSliceMode, mode};
+      rejects(profile, entrypoint, &bad, 1, VA_STATUS_ERROR_ATTR_NOT_SUPPORTED);
+      VAConfigAttrib mixed[] = {ordinary[0], bad, ordinary[1]};
+      rejects(profile, entrypoint, mixed, 3, VA_STATUS_ERROR_ATTR_NOT_SUPPORTED);
+    }
+    if (!decode) {
+      VAConfigAttrib normal = {VAConfigAttribDecSliceMode, VA_DEC_SLICE_MODE_NORMAL};
+      rejects(profile, entrypoint, &normal, 1, VA_STATUS_ERROR_ATTR_NOT_SUPPORTED);
+    }
+    rejects(profile, entrypoint, ordinary, -1, VA_STATUS_ERROR_INVALID_PARAMETER);
+    rejects(profile, entrypoint, nullptr, 1, VA_STATUS_ERROR_INVALID_PARAMETER);
+    rejects(profile, entrypoint, ordinary, 1, VA_STATUS_ERROR_INVALID_PARAMETER, true);
+  }
+  Require(GetConfigAttributes(&context, VAProfileH264Main, VAEntrypointVLD,
+                              nullptr, 0) == VA_STATUS_SUCCESS,
+          "empty config query accepts an unused null array");
+  Require(GetConfigAttributes(&context, VAProfileH264Main, VAEntrypointVLD,
+                              nullptr, 1) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+              GetConfigAttributes(&context, VAProfileH264Main, VAEntrypointVLD,
+                                  nullptr, -1) == VA_STATUS_ERROR_INVALID_PARAMETER,
+          "malformed config queries reject before accessing their attribute array");
+  const VAConfigID existing = driver.configs.begin()->first;
+  VAProfile profile = VAProfileNone;
+  VAEntrypoint entrypoint = VAEntrypointVLD;
+  int count = -1;
+  Require(QueryConfigAttributes(&context, existing, &profile, &entrypoint, nullptr, &count) ==
+                  VA_STATUS_SUCCESS && count > 0,
+          "config query permits a count-only request");
+  Require(QueryConfigAttributes(&context, existing, nullptr, &entrypoint, nullptr, &count) ==
+                  VA_STATUS_ERROR_INVALID_PARAMETER &&
+              QueryConfigAttributes(&context, existing, &profile, nullptr, nullptr, &count) ==
+                  VA_STATUS_ERROR_INVALID_PARAMETER &&
+              QueryConfigAttributes(&context, existing, &profile, &entrypoint, nullptr, nullptr) ==
+                  VA_STATUS_ERROR_INVALID_PARAMETER,
+          "config query validates every required output before dereference");
+  const auto previous_ids = ids();
+  const size_t previous_count = driver.configs.size();
+  VAConfigID output = 0xdecafbadU;
+  allocation_fault::fail_next = true;
+  const VAStatus allocation_status = CreateConfig(&context, VAProfileH264Main,
+      VAEntrypointVLD, nullptr, 0, &output);
+  allocation_fault::fail_next = false;
+  Require(allocation_status == VA_STATUS_ERROR_ALLOCATION_FAILED &&
+              output == 0xdecafbadU && ids() == previous_ids &&
+              driver.configs.size() == previous_count,
+          "config allocation failure preserves the caller output and every ID");
+  while (!driver.configs.empty())
+    Require(DestroyConfig(&context, driver.configs.begin()->first) == VA_STATUS_SUCCESS,
+            "accepted configs remain normally destroyable after negative requests");
+}
+
+void UnsupportedDisplayAttributesAreNotSuccessful() {
+  Driver driver{-1};
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  VADisplayAttribute attribute = {};
+  attribute.type = VADisplayAttribBrightness;
+  attribute.min_value = -100;
+  attribute.max_value = 100;
+  attribute.value = 17;
+  attribute.flags = VA_DISPLAY_ATTRIB_GETTABLE | VA_DISPLAY_ATTRIB_SETTABLE;
+  const auto original = attribute;
+  int count = -1;
+  Require(QueryDisplayAttributes(&context, &attribute, &count) == VA_STATUS_SUCCESS &&
+              count == 0 && memcmp(&attribute, &original, sizeof(attribute)) == 0,
+          "no display attributes are advertised and the unused output array stays untouched");
+  Require(QueryDisplayAttributes(&context, nullptr, &count) == VA_STATUS_SUCCESS && count == 0,
+          "empty display capability query accepts a null unused array");
+  for (auto operation : {GetDisplayAttributes, SetDisplayAttributes}) {
+    Require(operation(&context, nullptr, 0) == VA_STATUS_SUCCESS,
+            "zero-count display operations remain successful no-ops");
+    for (VADisplayAttribType type : {VADisplayAttribBrightness, VADisplayAttribRotation,
+                                    VADisplayAttribHue}) {
+      attribute.type = type;
+      const auto before = attribute;
+      Require(operation(&context, &attribute, 1) == VA_STATUS_ERROR_ATTR_NOT_SUPPORTED,
+              "unadvertised display controls return ATTR_NOT_SUPPORTED, never silent success");
+      Require(memcmp(&attribute, &before, sizeof(attribute)) == 0 &&
+                  driver.configs.empty() && driver.next_config == 1,
+              "unsupported display get/set preserves caller bytes and driver resources");
+    }
+    Require(operation(&context, nullptr, 1) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                operation(&context, &attribute, -1) == VA_STATUS_ERROR_INVALID_PARAMETER,
+            "malformed display get/set rejects before processing attributes");
+  }
+  Require(QueryDisplayAttributes(&context, &attribute, nullptr) == VA_STATUS_ERROR_INVALID_PARAMETER,
+          "display capability query requires a count output");
 }
 
 void ConfigRejectsUnsupportedProtectionTransactionally() {
@@ -1150,6 +1338,175 @@ void SetPipelineFilters(Fixture &fixture, VABufferID *filters,
   parameters.num_filters = count;
   memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
          &parameters, sizeof(parameters));
+}
+
+std::shared_ptr<Surface> PrivateArgbOutput() {
+  auto surface = Picture(0, 99);
+  surface->fourcc = VA_FOURCC_ARGB;
+  surface->rt_format = VA_RT_FORMAT_RGB32;
+  surface->pitch[0] = surface->width * 4;
+  surface->pitch[1] = 0;
+  surface->storage.assign(surface->pitch[0] * surface->height, 99);
+  surface->planes[0] = surface->storage.data();
+  surface->planes[1] = nullptr;
+  return surface;
+}
+
+void SelectedRtFormatSurvivesConfigAndContextLifetime() {
+  for (uint32_t format : {static_cast<uint32_t>(VA_RT_FORMAT_YUV420),
+                         static_cast<uint32_t>(VA_RT_FORMAT_RGB32),
+                         static_cast<uint32_t>(VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32)}) {
+    Fixture fixture;
+    fixture.driver.next_context = 3;
+    auto argb = PrivateArgbOutput();
+    fixture.target->rt_format = VA_RT_FORMAT_YUV420;
+    fixture.driver.surfaces[3] = argb;
+    fixture.driver.next_surface = 4;
+    VAConfigAttrib requested = {VAConfigAttribRTFormat, format};
+    VAConfigID config = VA_INVALID_ID;
+    Require(CreateConfig(&fixture.context, VAProfileNone, VAEntrypointVideoProc,
+                          &requested, 1, &config) == VA_STATUS_SUCCESS,
+            "create an explicit selected-format VPP configuration");
+    VAConfigAttrib attributes[16] = {};
+    VAProfile profile = VAProfileH264High;
+    VAEntrypoint entrypoint = VAEntrypointVLD;
+    int count = 0;
+    Require(QueryConfigAttributes(&fixture.context, config, &profile, &entrypoint,
+                                  attributes, &count) == VA_STATUS_SUCCESS &&
+                profile == VAProfileNone && entrypoint == VAEntrypointVideoProc &&
+                count > 0 && count <= 16 &&
+                std::any_of(attributes, attributes + count, [&](const auto &attribute) {
+                  return attribute.type == VAConfigAttribRTFormat && attribute.value == format;
+                }),
+            "config query reports the selected mask, not the broader capability mask");
+    VASurfaceAttrib surfaces[16] = {};
+    unsigned surface_count = 16;
+    Require(QuerySurfaceAttributes(&fixture.context, config, surfaces, &surface_count) ==
+                    VA_STATUS_SUCCESS && surface_count <= 16,
+            "query selected config surface formats");
+    std::unordered_set<uint32_t> pixels;
+    for (unsigned index = 0; index < surface_count; ++index)
+      if (surfaces[index].type == VASurfaceAttribPixelFormat)
+        pixels.insert(surfaces[index].value.value.i);
+    Require(pixels.count(VA_FOURCC_NV12) == ((format & VA_RT_FORMAT_YUV420) != 0) &&
+                pixels.count(VA_FOURCC_ARGB) == ((format & VA_RT_FORMAT_RGB32) != 0) &&
+                pixels.size() == static_cast<size_t>((format & VA_RT_FORMAT_YUV420 ? 1 : 0) +
+                                                     (format & VA_RT_FORMAT_RGB32 ? 1 : 0)),
+            "surface attributes expose only selected output pixel formats");
+    VASurfaceID valid = (format & VA_RT_FORMAT_YUV420) ? 2 : 3;
+    const VASurfaceID wrong = valid == 2 ? 3 : 2;
+    VAContextID processor = VA_INVALID_ID;
+    if (format != (VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32)) {
+      VASurfaceID targets[] = {valid, wrong};
+      const auto next = fixture.driver.next_context;
+      const auto contexts = fixture.driver.contexts.size();
+      Require(CreateContext(&fixture.context, config, 16, 16, 0, targets, 2, &processor) ==
+                      VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT && processor == VA_INVALID_ID &&
+                  fixture.driver.next_context == next && fixture.driver.contexts.size() == contexts,
+              "CreateContext rejects an opposite-format target atomically");
+    }
+    Require(CreateContext(&fixture.context, config, 16, 16, 0, &valid, 1, &processor) ==
+                VA_STATUS_SUCCESS,
+            "CreateContext accepts the selected output format");
+    VAProcPipelineCaps caps = {};
+    Require(QueryVideoProcPipelineCaps(&fixture.context, processor, nullptr, 0, &caps) ==
+                    VA_STATUS_SUCCESS && caps.num_input_pixel_formats == 1 &&
+                caps.input_pixel_format[0] == VA_FOURCC_NV12 &&
+                caps.num_output_pixel_formats == pixels.size() &&
+                std::all_of(caps.output_pixel_format,
+                    caps.output_pixel_format + caps.num_output_pixel_formats,
+                    [&](uint32_t pixel) { return pixels.count(pixel) == 1; }),
+            "pipeline caps retain NV12 input independently of selected output formats");
+    Require(DestroyConfig(&fixture.context, config) == VA_STATUS_SUCCESS,
+            "destroy config while its independently configured context remains live");
+    VAProcPipelineCaps retained_caps = {};
+    Require(QueryVideoProcPipelineCaps(&fixture.context, processor, nullptr, 0, &retained_caps) ==
+                    VA_STATUS_SUCCESS && retained_caps.num_output_pixel_formats == pixels.size() &&
+                std::all_of(retained_caps.output_pixel_format,
+                    retained_caps.output_pixel_format + retained_caps.num_output_pixel_formats,
+                    [&](uint32_t pixel) { return pixels.count(pixel) == 1; }),
+            "context keeps its selected pipeline caps after the config is destroyed");
+    if (format != (VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32)) {
+      const auto target = fixture.driver.surfaces.at(wrong);
+      const auto storage = target->storage;
+      const auto transaction = target->picture_transaction;
+      const auto identity = fixture.driver.next_decode_identity;
+      const auto timestamp = target->expected_timestamp;
+      const auto completed = target->frame_timestamp;
+      const bool ready = target->ready, failed = target->failed;
+      Require(BeginPicture(&fixture.context, processor, wrong) ==
+                      VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT &&
+                  target->storage == storage && target->picture_transaction == transaction &&
+                  target->expected_timestamp == timestamp && target->frame_timestamp == completed &&
+                  target->ready == ready && target->failed == failed &&
+                  target->vpp_readers == 0 && target->vpp_writers == 0 &&
+                  fixture.driver.next_decode_identity == identity &&
+                  fixture.driver.contexts.at(processor)->target == VA_INVALID_SURFACE,
+              "Begin rejects wrong output before target mutation, even after config destruction");
+    }
+    VAProcPipelineParameterBuffer pipeline = {};
+    pipeline.surface = 1;
+    VABufferID buffer = VA_INVALID_ID;
+    if (valid == 3) {
+      // FFmpeg forwards decoded LEFT chroma metadata even for an RGB output;
+      // do not confuse ordinary client metadata with a new CSC capability.
+      pipeline.input_color_properties.chroma_sample_location =
+          pipeline.output_color_properties.chroma_sample_location =
+              VA_CHROMA_SITING_VERTICAL_CENTER | VA_CHROMA_SITING_HORIZONTAL_LEFT;
+      pipeline.input_color_properties.color_range = VA_SOURCE_RANGE_REDUCED;
+      pipeline.output_color_properties.color_range = VA_SOURCE_RANGE_FULL;
+    }
+    Require(CreateBuffer(&fixture.context, processor, VAProcPipelineParameterBufferType,
+                          sizeof(pipeline), 1, &pipeline, &buffer) == VA_STATUS_SUCCESS &&
+                BeginPicture(&fixture.context, processor, valid) == VA_STATUS_SUCCESS &&
+                RenderPicture(&fixture.context, processor, &buffer, 1) == VA_STATUS_SUCCESS &&
+                EndPicture(&fixture.context, processor) == VA_STATUS_SUCCESS &&
+                SyncSurface2(&fixture.context, valid, 0) == VA_STATUS_SUCCESS &&
+                fixture.driver.surfaces.at(valid)->ready &&
+                !fixture.driver.surfaces.at(valid)->failed,
+            "selected output still permits NV12 input and actual VPP completion after config destruction");
+    if (valid == 3) {
+      // An independent fresh library conversion checks format admission/copy,
+      // not a new matrix/range algorithm. Preserve swscale's actual integer
+      // rounding/dither rather than assuming one constant RGB value per frame.
+      std::array<uint8_t, 16 * 24 + 64> nv12;
+      std::fill_n(nv12.data(), 16 * 16, 40);
+      std::fill(nv12.begin() + 16 * 16, nv12.end(), 128);
+      std::array<uint8_t, 16 * 16 * 4 + 64> expected = {};
+      SwsContext *oracle = sws_getContext(16, 16, AV_PIX_FMT_NV12, 16, 16,
+          AV_PIX_FMT_BGRA, SWS_POINT, nullptr, nullptr, nullptr);
+      Require(oracle != nullptr, "allocate a separate reference conversion context");
+      const uint8_t *input[] = {nv12.data(), nv12.data() + 16 * 16, nullptr, nullptr};
+      const int input_pitch[] = {16, 16, 0, 0};
+      uint8_t *output[] = {expected.data(), nullptr, nullptr, nullptr};
+      const int output_pitch[] = {16 * 4, 0, 0, 0};
+      const int rows = sws_scale(oracle, input, input_pitch, 0, 16, output, output_pitch);
+      sws_freeContext(oracle);
+      Require(rows == 16, "independent reference contains every output row");
+      for (unsigned row = 0; row < 16; ++row)
+        Require(memcmp(argb->planes[0] + row * argb->pitch[0],
+                       expected.data() + row * 64, 64) == 0,
+                "selected ARGB output matches every active byte of the independent conversion");
+    }
+    Require(DestroyContext(&fixture.context, processor) == VA_STATUS_SUCCESS,
+            "selected-format VPP context closes normally");
+    VAConfigAttrib decode_format = {VAConfigAttribRTFormat, VA_RT_FORMAT_YUV420};
+    Require(CreateConfig(&fixture.context, VAProfileH264Main, VAEntrypointVLD,
+                          &decode_format, 1, &config) == VA_STATUS_SUCCESS,
+            "create selected decode config without opening a decoder");
+    VASurfaceID wrong_decode = 3;
+    processor = VA_INVALID_ID;
+    const auto next = fixture.driver.next_context;
+    const auto opens = device_open_attempts;
+    Require(CreateContext(&fixture.context, config, 16, 16, 0, &wrong_decode, 1, &processor) ==
+                    VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT && processor == VA_INVALID_ID &&
+                fixture.driver.next_context == next,
+            "wrong decode output rejects before attempting any DIL device open");
+    Require(device_open_attempts == opens,
+            "wrong decode output never calls the device-free open failure stub");
+    Require(DestroyConfig(&fixture.context, config) == VA_STATUS_SUCCESS,
+            "unused decode config teardown remains ordinary");
+  }
 }
 
 void FillFieldRows(Surface &picture) {
@@ -1721,6 +2078,147 @@ void BobRejectsUnsupportedPipelineParameters() {
                 fixture.target->storage == untouched_target &&
                 fixture.target->failed && !fixture.target->ready,
             "invalid Bob pipeline cannot publish its earlier valid snapshot");
+  }
+}
+
+void VppMeaningfulSemanticsAreValidatedBeforeCapture() {
+  for (bool bob : {false, true}) {
+    for (unsigned variant = 0; variant < 17; ++variant) {
+      Fixture fixture;
+      VABufferID filter = bob ? CreateBobFilter(fixture) : VA_INVALID_ID;
+      SetPipelineFilters(fixture, bob ? &filter : nullptr, bob ? 1 : 0);
+      const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+      const long picture_owners = picture.use_count(), decoder_owners = fixture.decoder.use_count();
+      fixture.SubmitParameters();
+      const auto source = fixture.source->storage, target = fixture.target->storage;
+      auto &buffer = fixture.driver.buffers.at(fixture.parameters);
+      VAProcPipelineParameterBuffer parameters;
+      memcpy(&parameters, buffer.data.data(), sizeof(parameters));
+      VABlendState blend = {};
+      VAHdrMetaData hdr = {};
+      VARectangle partial = {0, 0, 8, 8};
+      switch (variant) {
+        case 0: parameters.mirror_state = VA_MIRROR_HORIZONTAL; break;
+        case 1: parameters.blend_state = &blend; break;
+        case 2: parameters.num_forward_references = 1; break;
+        case 3: parameters.num_backward_references = 1; break;
+        case 4: parameters.num_additional_outputs = 1; break;
+        case 5: parameters.pipeline_flags = ~uint32_t{VA_PROC_PIPELINE_FAST}; break;
+        case 6: parameters.surface_color_standard = VAProcColorStandardBT709; break;
+        case 7: parameters.output_color_standard = VAProcColorStandardBT709; break;
+        case 8: parameters.processing_mode = VAProcPowerSavingMode; break;
+        case 9: parameters.output_hdr_metadata = &hdr; break;
+        case 10: parameters.input_surface_flag = VA_TOP_FIELD; break;
+        case 11: parameters.output_surface_flag = VA_BOTTOM_FIELD; break;
+        case 12: parameters.input_surface_flag = uint32_t{1} << 31; break;
+        case 13: parameters.output_surface_flag = uint32_t{1} << 31; break;
+        case 14:
+          parameters.output_region = &partial;
+          parameters.output_background_color = 0xff00ff00;
+          break;
+        case 15: parameters.surface_color_standard = VAProcColorStandardExplicit; break;
+        case 16: parameters.output_color_standard = VAProcColorStandardExplicit; break;
+      }
+      memcpy(buffer.data.data(), &parameters, sizeof(parameters));
+      Require(RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                      VA_STATUS_ERROR_INVALID_PARAMETER,
+              "meaningful unsupported zero-filter/Bob request returns INVALID_PARAMETER");
+      Require(!fixture.processor->have_vpp_parameters && !fixture.processor->vpp_frame &&
+                  !fixture.processor->vpp_decoder &&
+                  fixture.processor->vpp_source == VA_INVALID_SURFACE &&
+                  fixture.processor->vpp_generation == 0 &&
+                  picture.use_count() == picture_owners &&
+                  fixture.decoder.use_count() == decoder_owners &&
+                  fixture.driver.pending_vpp.empty() && fixture.target->vpp_writers == 0,
+              "rejected replacement releases its obsolete capture without acquiring a new picture");
+      Require(EndPicture(&fixture.context, 2) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                  fixture.source->storage == source && fixture.target->storage == target &&
+                  fixture.target->failed && !fixture.target->ready,
+              "rejected semantics cannot replay a prior valid snapshot or change pixels");
+    }
+    for (unsigned variant = 0; variant < 18; ++variant) {
+      if (bob && variant >= 12 && variant <= 15) continue;
+      Fixture fixture;
+      VABufferID filter = bob ? CreateBobFilter(fixture) : VA_INVALID_ID;
+      SetPipelineFilters(fixture, bob ? &filter : nullptr, bob ? 1 : 0);
+      auto &buffer = fixture.driver.buffers.at(fixture.parameters);
+      VAProcPipelineParameterBuffer parameters;
+      memcpy(&parameters, buffer.data.data(), sizeof(parameters));
+      VARectangle partial = {0, 0, 8, 8};
+      VASurfaceID unused = VA_INVALID_SURFACE;
+      switch (variant) {
+        case 1: parameters.pipeline_flags = VA_PROC_PIPELINE_FAST; break;
+        case 2: parameters.input_surface_flag = VA_TOP_FIELD_FIRST; break;
+        case 3: parameters.input_surface_flag = VA_BOTTOM_FIELD_FIRST; break;
+        case 4:
+          parameters.forward_references = parameters.backward_references =
+              parameters.additional_outputs = &unused;
+          break;
+        case 5:
+          parameters.input_color_properties.colour_primaries = 9;
+          parameters.input_color_properties.transfer_characteristics = 16;
+          parameters.output_color_properties.matrix_coefficients = 9;
+          break;
+        case 6:
+          parameters.input_color_properties.reserved[0] = 0xff;
+          parameters.output_color_properties.reserved[1] = 0xff;
+          break;
+        case 7:
+          parameters.input_color_properties.color_range =
+              parameters.output_color_properties.color_range = VA_SOURCE_RANGE_REDUCED;
+          break;
+        case 8:
+          parameters.input_color_properties.color_range =
+              parameters.output_color_properties.color_range = VA_SOURCE_RANGE_FULL;
+          break;
+        case 9:
+          parameters.input_color_properties.color_range =
+              parameters.output_color_properties.color_range = VA_SOURCE_RANGE_REDUCED;
+          parameters.output_region = &partial;
+          break;
+        case 10:
+          parameters.output_region = &partial;
+          parameters.output_background_color = 0xff000000;
+          break;
+        case 11: parameters.output_background_color = 0xff00ff00; break;
+        case 12:
+          parameters.input_color_properties.chroma_sample_location =
+              parameters.output_color_properties.chroma_sample_location =
+                  VA_CHROMA_SITING_VERTICAL_TOP | VA_CHROMA_SITING_HORIZONTAL_LEFT;
+          break;
+        case 13:
+          parameters.input_surface_flag = parameters.output_surface_flag = VA_TOP_FIELD_FIRST;
+          break;
+        case 14: parameters.va_reserved[0] = 1; break;
+        case 15:
+          parameters.input_surface_flag = parameters.output_surface_flag = VA_BOTTOM_FIELD_FIRST;
+          break;
+        case 16: parameters.output_region = &partial; break;
+        case 17:
+          // Actual FFmpeg8 H.264 LEFT metadata maps to 2|4=6 on both
+          // sides of Bob. Range/siting interpretation remains a P2 task.
+          for (auto *properties : {&parameters.input_color_properties,
+                                    &parameters.output_color_properties}) {
+            properties->chroma_sample_location =
+                VA_CHROMA_SITING_VERTICAL_CENTER | VA_CHROMA_SITING_HORIZONTAL_LEFT;
+            properties->color_range = VA_SOURCE_RANGE_REDUCED;
+            properties->colour_primaries = properties->transfer_characteristics =
+                properties->matrix_coefficients = 1;
+          }
+          break;
+      }
+      const auto source = fixture.source->storage;
+      memcpy(buffer.data.data(), &parameters, sizeof(parameters));
+      fixture.SubmitParameters();
+      Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                  fixture.target->ready && !fixture.target->failed &&
+                  fixture.target->planes[0][0] == 40 && fixture.source->storage == source &&
+                  fixture.driver.pending_vpp.empty() && fixture.target->vpp_writers == 0,
+              "default/no-op semantics keep ordinary pixels and source ownership intact");
+      if (variant == 9 || variant == 10 || variant == 16)
+        Require(fixture.target->planes[0][15 * fixture.target->pitch[0] + 15] == 16,
+                "partial default/reduced-range output retains supported neutral black padding");
+    }
   }
 }
 
@@ -4065,6 +4563,26 @@ static void FirstFieldCpuViewPreservesPublicReadiness() {
 // Keep the complete entry globally compiled for syntax coverage. CPU-only
 // section-GC builds retain only their selected state-machine groups below.
 int VppFullTestEntry(int argc, char **argv) {
+  if (argc == 2 && (strcmp(argv[1], "--config-attributes") == 0 ||
+                    strcmp(argv[1], "--display-attributes") == 0 ||
+                    strcmp(argv[1], "--selected-rt-formats") == 0 ||
+                    strcmp(argv[1], "--pipeline-semantics") == 0)) {
+    try {
+      if (strcmp(argv[1], "--config-attributes") == 0)
+        ConfigAttributesMatchAdvertisedSupport();
+      else if (strcmp(argv[1], "--display-attributes") == 0)
+        UnsupportedDisplayAttributesAreNotSuccessful();
+      else if (strcmp(argv[1], "--selected-rt-formats") == 0)
+        SelectedRtFormatSurvivesConfigAndContextLifetime();
+      else
+        VppMeaningfulSemanticsAreValidatedBeforeCapture();
+      puts("VA-API config/display attribute admission PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API attribute admission failed: %s\n", error.what());
+      return 1;
+    }
+  }
   if (argc > 2 || (argc == 2 && strcmp(argv[1], "--sw-sync") != 0 &&
                    strcmp(argv[1], "--lifecycle-failures") != 0 &&
                    strcmp(argv[1], "--import-contracts") != 0 &&
@@ -4106,6 +4624,10 @@ int VppFullTestEntry(int argc, char **argv) {
     }
     UnusedVppProbeDoesNotNotifyDecoder();
     DefaultVppCapabilitiesRemainAvailable();
+    ConfigAttributesMatchAdvertisedSupport();
+    UnsupportedDisplayAttributesAreNotSuccessful();
+    SelectedRtFormatSurvivesConfigAndContextLifetime();
+    VppMeaningfulSemanticsAreValidatedBeforeCapture();
     ConfigRejectsUnsupportedProtectionTransactionally();
     ProtectedBufferCreationIsTransactional();
     PipelineCapsIgnoreIncomingPixelFormatStorage();
@@ -4175,7 +4697,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 67 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 71 hardware-free regressions passed");
   return 0;
 }
 

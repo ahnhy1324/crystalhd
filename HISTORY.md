@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Honor negotiated VA render formats in queries and output bindings, reject
+  unsupported VPP/display requests, and release obsolete Render captures.
 - Avoid full-device reopen during fully drained finite H.264 reference replay
   when the library explicitly supports fresh-channel reuse; retain legacy fallback.
 - Retry unsent H.264 prefeed after TX backpressure without requiring another

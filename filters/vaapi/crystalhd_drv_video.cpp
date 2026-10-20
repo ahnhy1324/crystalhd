@@ -517,6 +517,7 @@ static bool BuildPps(const VAPictureParameterBufferH264 &picture,
 struct Config {
   VAProfile profile = VAProfileNone;
   VAEntrypoint entrypoint = VAEntrypointVLD;
+  uint32_t rt_format = 0;
 };
 
 // Image exports use independent backing, never decoder-reference memory.
@@ -1835,6 +1836,7 @@ struct DecodeContext {
   VAContextID id = VA_INVALID_ID;
   VAConfigID config = VA_INVALID_ID;
   VAProfile profile = VAProfileH264Main;
+  uint32_t rt_format = 0;
   unsigned int width = 0;
   unsigned int height = 0;
   unsigned int stream_width = 0;
@@ -6198,6 +6200,25 @@ static VAStatus QueryConfigEntrypoints(VADriverContextP, VAProfile profile,
   return VA_STATUS_SUCCESS;
 }
 
+static uint32_t SupportedConfigRtFormats(VAProfile profile) {
+  return profile == VAProfileNone
+             ? VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32
+             : VA_RT_FORMAT_YUV420;
+}
+
+static uint32_t ConfigRtFormats(const Config &config) {
+  return config.rt_format != 0 ? config.rt_format
+                                : SupportedConfigRtFormats(config.profile);
+}
+
+static uint32_t SurfaceRtFormat(const Surface &surface) {
+  if (surface.fourcc == VA_FOURCC_NV12)
+    return VA_RT_FORMAT_YUV420;
+  if (surface.fourcc == VA_FOURCC_ARGB)
+    return VA_RT_FORMAT_RGB32;
+  return 0;
+}
+
 static VAStatus GetConfigAttributes(VADriverContextP, VAProfile profile,
                                     VAEntrypoint entrypoint,
                                     VAConfigAttrib *attributes, int count) {
@@ -6205,12 +6226,12 @@ static VAStatus GetConfigAttributes(VADriverContextP, VAProfile profile,
     return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
   if (!IsValidConfig(profile, entrypoint))
     return VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT;
+  if (count < 0 || (count != 0 && attributes == nullptr))
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
   for (int i = 0; i < count; ++i) {
     switch (attributes[i].type) {
       case VAConfigAttribRTFormat:
-        attributes[i].value = IsDecodeProfile(profile)
-                                  ? VA_RT_FORMAT_YUV420
-                                  : VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32;
+        attributes[i].value = SupportedConfigRtFormats(profile);
         break;
       case VAConfigAttribDecSliceMode:
         attributes[i].value = IsDecodeProfile(profile)
@@ -6242,8 +6263,20 @@ static VAStatus CreateConfig(VADriverContextP context, VAProfile profile,
   if (config_id == nullptr || count < 0 ||
       (count != 0 && attributes == nullptr))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
+  uint32_t rt_format = SupportedConfigRtFormats(profile);
   for (int i = 0; i < count; ++i) {
     switch (attributes[i].type) {
+      case VAConfigAttribRTFormat:
+        if (attributes[i].value == 0 ||
+            (attributes[i].value & ~SupportedConfigRtFormats(profile)) != 0)
+          return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
+        rt_format = attributes[i].value;
+        break;
+      case VAConfigAttribDecSliceMode:
+        if (!IsDecodeProfile(profile) ||
+            attributes[i].value != VA_DEC_SLICE_MODE_NORMAL)
+          return VA_STATUS_ERROR_ATTR_NOT_SUPPORTED;
+        break;
       case VAConfigAttribEncryption:
         if (attributes[i].value != 0)
           return VA_STATUS_ERROR_ATTR_NOT_SUPPORTED;
@@ -6262,8 +6295,15 @@ static VAStatus CreateConfig(VADriverContextP context, VAProfile profile,
   }
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
-  *config_id = driver->next_config++;
-  driver->configs[*config_id] = {profile, entrypoint};
+  const VAConfigID created = driver->next_config;
+  try {
+    if (!driver->configs.emplace(created, Config{profile, entrypoint, rt_format}).second)
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+  } catch (const std::bad_alloc &) {
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
+  ++driver->next_config;
+  *config_id = created;
   return VA_STATUS_SUCCESS;
 }
 
@@ -6278,6 +6318,8 @@ static VAStatus QueryConfigAttributes(VADriverContextP context,
                                       VAConfigID config_id, VAProfile *profile,
                                       VAEntrypoint *entrypoint,
                                       VAConfigAttrib *attributes, int *count) {
+  if (profile == nullptr || entrypoint == nullptr || count == nullptr)
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
   auto config = driver->configs.find(config_id);
@@ -6287,9 +6329,7 @@ static VAStatus QueryConfigAttributes(VADriverContextP context,
   *entrypoint = config->second.entrypoint;
   if (attributes != nullptr) {
     attributes[0].type = VAConfigAttribRTFormat;
-    attributes[0].value = IsDecodeProfile(config->second.profile)
-                              ? VA_RT_FORMAT_YUV420
-                              : VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32;
+    attributes[0].value = ConfigRtFormats(config->second);
   }
   *count = 1;
   return VA_STATUS_SUCCESS;
@@ -6623,8 +6663,10 @@ static VAStatus QuerySurfaceAttributes(VADriverContextP context,
   if (config == driver->configs.end())
     return VA_STATUS_ERROR_INVALID_CONFIG;
 
-  const bool video_process = config->second.entrypoint == VAEntrypointVideoProc;
-  const unsigned int required = video_process ? 7 : 6;
+  const uint32_t rt_format = ConfigRtFormats(config->second);
+  const unsigned int required = 5 +
+      ((rt_format & VA_RT_FORMAT_YUV420) != 0) +
+      ((rt_format & VA_RT_FORMAT_RGB32) != 0);
   if (attributes == nullptr) {
     *count = required;
     return VA_STATUS_SUCCESS;
@@ -6642,11 +6684,13 @@ static VAStatus QuerySurfaceAttributes(VADriverContextP context,
     attribute.value.value.i = value;
     return attribute;
   };
-  attributes[0] = integer_attribute(
-      VASurfaceAttribPixelFormat,
-      VA_SURFACE_ATTRIB_GETTABLE | VA_SURFACE_ATTRIB_SETTABLE, VA_FOURCC_NV12);
-  unsigned int index = 1;
-  if (video_process) {
+  unsigned int index = 0;
+  if ((rt_format & VA_RT_FORMAT_YUV420) != 0) {
+    attributes[index++] = integer_attribute(
+        VASurfaceAttribPixelFormat,
+        VA_SURFACE_ATTRIB_GETTABLE | VA_SURFACE_ATTRIB_SETTABLE, VA_FOURCC_NV12);
+  }
+  if ((rt_format & VA_RT_FORMAT_RGB32) != 0) {
     attributes[index++] = integer_attribute(
         VASurfaceAttribPixelFormat,
         VA_SURFACE_ATTRIB_GETTABLE | VA_SURFACE_ATTRIB_SETTABLE,
@@ -6725,6 +6769,51 @@ static VAStatus ReadVppDeinterlace(const Driver *driver, VAContextID context_id,
   return VA_STATUS_SUCCESS;
 }
 
+// Validate only active semantics, before capturing a picture or acquiring any
+// backing lease. Unused pointers and inactive color metadata are not requests.
+static bool VppPipelineSemanticsSupported(
+    const VAProcPipelineParameterBuffer &p, const Surface &target, bool bob) {
+  if (p.num_forward_references != 0 || p.num_backward_references != 0 ||
+      p.num_additional_outputs != 0 ||
+      (p.pipeline_flags & ~VA_PROC_PIPELINE_FAST) != 0 ||
+      p.mirror_state != VA_MIRROR_NONE || p.blend_state != nullptr ||
+      p.surface_color_standard != VAProcColorStandardNone ||
+      p.output_color_standard != VAProcColorStandardNone ||
+      p.processing_mode != VAProcDefaultMode || p.output_hdr_metadata != nullptr)
+    return false;
+  if (p.input_surface_flag != VA_FRAME_PICTURE &&
+      p.input_surface_flag != VA_TOP_FIELD_FIRST &&
+      p.input_surface_flag != VA_BOTTOM_FIELD_FIRST)
+    return false;
+  if (p.output_surface_flag != VA_FRAME_PICTURE &&
+      (bob || p.output_surface_flag != p.input_surface_flag))
+    return false;
+  // Preserve the existing explicit-Bob reserved-field contract. Do not extend
+  // it to ordinary VPP or inspect padding in color/filter structures.
+  if (bob && std::any_of(std::begin(p.va_reserved), std::end(p.va_reserved),
+                         [](uint32_t value) { return value != 0; }))
+    return false;
+
+  const auto whole = [](const VARectangle *region, const Surface &surface) {
+    return region == nullptr ||
+        (region->x == 0 && region->y == 0 &&
+         region->width == surface.width && region->height == surface.height);
+  };
+  const bool whole_output = whole(p.output_region, target);
+  // The existing padding implementation supports neutral black, not arbitrary
+  // background colors. A full output has no background pixels to convert.
+  if (!whole_output && p.output_background_color != 0 &&
+      p.output_background_color != 0xff000000U)
+    return false;
+
+  // Preserve existing color-property handling: clients also forward range and
+  // chroma location for ordinary Bob/copy/CSC, not just conversion requests.
+  // Selectable range/chroma conversion needs separate capability and pixel
+  // qualification. Primaries/transfer/matrix apply only with the explicit
+  // color standard rejected above; ignore inactive values and padding.
+  return true;
+}
+
 static VAStatus QueryVideoProcFilters(VADriverContextP context,
                                       VAContextID context_id,
                                       VAProcFilterType *filters,
@@ -6793,9 +6882,16 @@ static VAStatus QueryVideoProcPipelineCaps(VADriverContextP context,
   // driver-owned format metadata, as with ordinary VPP color-standard lists.
   memset(caps, 0, sizeof(*caps));
   caps->input_pixel_format = driver->vpp_input_formats.data();
-  caps->output_pixel_format = driver->vpp_output_formats.data();
   caps->num_input_pixel_formats = driver->vpp_input_formats.size();
-  caps->num_output_pixel_formats = driver->vpp_output_formats.size();
+  const auto &decode = *driver->contexts.at(context_id);
+  const uint32_t rt_format = decode.rt_format != 0
+                                ? decode.rt_format
+                                : SupportedConfigRtFormats(VAProfileNone);
+  caps->output_pixel_format = driver->vpp_output_formats.data() +
+      ((rt_format & VA_RT_FORMAT_YUV420) != 0 ? 0 : 1);
+  caps->num_output_pixel_formats =
+      ((rt_format & VA_RT_FORMAT_YUV420) != 0) +
+      ((rt_format & VA_RT_FORMAT_RGB32) != 0);
   caps->rotation_flags = 1U << VA_ROTATION_NONE;
   caps->filter_flags = VA_FILTER_SCALING_DEFAULT |
                        VA_FILTER_INTERPOLATION_NEAREST_NEIGHBOR;
@@ -6831,8 +6927,11 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
         (width > 720 || height > 576))))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   for (int i = 0; i < target_count; ++i) {
-    if (driver->surfaces.find(targets[i]) == driver->surfaces.end())
+    const auto target = driver->surfaces.find(targets[i]);
+    if (target == driver->surfaces.end())
       return VA_STATUS_ERROR_INVALID_SURFACE;
+    if ((SurfaceRtFormat(*target->second) & ConfigRtFormats(config->second)) == 0)
+      return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   }
   if (!video_process &&
       std::any_of(driver->contexts.begin(), driver->contexts.end(),
@@ -6849,6 +6948,7 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   }
   decode->config = config_id;
   decode->profile = config->second.profile;
+  decode->rt_format = ConfigRtFormats(config->second);
   decode->width = std::max(width, 0);
   decode->height = std::max(height, 0);
   decode->video_process = video_process;
@@ -7169,6 +7269,13 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
   if (target_surface == driver->surfaces.end() ||
       !HasLiveBackingOwner(driver, target_surface->second.get()))
     return VA_STATUS_ERROR_INVALID_SURFACE;
+  const uint32_t rt_format = decode->second->rt_format != 0
+      ? decode->second->rt_format
+      : (decode->second->video_process
+             ? SupportedConfigRtFormats(VAProfileNone)
+             : VA_RT_FORMAT_YUV420);
+  if ((SurfaceRtFormat(*target_surface->second) & rt_format) == 0)
+    return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   if (decode->second->video_process) {
     const std::shared_ptr<Surface> owner_surface =
         target_surface->second->backing_owner == VA_INVALID_SURFACE
@@ -7545,6 +7652,12 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
     // available for EndPicture to commit as if the failed request succeeded.
     decode->second->have_vpp_parameters = false;
     decode->second->vpp_deinterlace = {};
+    // Discard the obsolete, unsubmitted capture too. Submitted work carries
+    // its own references; this snapshot has not acquired any backing lease.
+    decode->second->vpp_source = VA_INVALID_SURFACE;
+    decode->second->vpp_frame.reset();
+    decode->second->vpp_decoder.reset();
+    decode->second->vpp_generation = 0;
     if (count != 1 || buffer_ids == nullptr)
       return VA_STATUS_ERROR_INVALID_PARAMETER;
     auto buffer = driver->buffers.find(buffer_ids[0]);
@@ -7578,22 +7691,8 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
     if ((parameters->filter_flags & ~supported_flags) != 0 ||
         parameters->rotation_state != VA_ROTATION_NONE)
       return VA_STATUS_ERROR_UNSUPPORTED_FILTER;
-    if (deinterlace.bob &&
-        (parameters->num_forward_references != 0 ||
-         parameters->num_backward_references != 0 ||
-         parameters->num_additional_outputs != 0 ||
-         (parameters->pipeline_flags & ~VA_PROC_PIPELINE_FAST) != 0 ||
-         (parameters->input_surface_flag != VA_FRAME_PICTURE &&
-          parameters->input_surface_flag != VA_TOP_FIELD_FIRST &&
-          parameters->input_surface_flag != VA_BOTTOM_FIELD_FIRST) ||
-         parameters->output_surface_flag != VA_FRAME_PICTURE ||
-         parameters->mirror_state != VA_MIRROR_NONE ||
-         parameters->blend_state != nullptr ||
-         parameters->surface_color_standard != VAProcColorStandardNone ||
-         parameters->output_color_standard != VAProcColorStandardNone ||
-         std::any_of(std::begin(parameters->va_reserved),
-                     std::end(parameters->va_reserved),
-                     [](uint32_t value) { return value != 0; })))
+    if (!VppPipelineSemanticsSupported(*parameters, *target->second,
+                                       deinterlace.bob))
       return VA_STATUS_ERROR_INVALID_PARAMETER;
 
     // Capture the exact picture when its parameters are submitted, not later
@@ -9158,16 +9257,22 @@ static VAStatus DeassociateSubpicture(VADriverContextP, VASubpictureID,
 
 static VAStatus QueryDisplayAttributes(VADriverContextP, VADisplayAttribute *,
                                        int *count) {
+  if (count == nullptr)
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
   *count = 0;
   return VA_STATUS_SUCCESS;
 }
-static VAStatus GetDisplayAttributes(VADriverContextP, VADisplayAttribute *,
-                                     int) {
-  return VA_STATUS_SUCCESS;
+static VAStatus GetDisplayAttributes(VADriverContextP, VADisplayAttribute *attributes,
+                                     int count) {
+  if (count < 0 || (count != 0 && attributes == nullptr))
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
+  return count == 0 ? VA_STATUS_SUCCESS : VA_STATUS_ERROR_ATTR_NOT_SUPPORTED;
 }
-static VAStatus SetDisplayAttributes(VADriverContextP, VADisplayAttribute *,
-                                     int) {
-  return VA_STATUS_SUCCESS;
+static VAStatus SetDisplayAttributes(VADriverContextP, VADisplayAttribute *attributes,
+                                     int count) {
+  if (count < 0 || (count != 0 && attributes == nullptr))
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
+  return count == 0 ? VA_STATUS_SUCCESS : VA_STATUS_ERROR_ATTR_NOT_SUPPORTED;
 }
 
 }  // namespace
