@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Reject unsupported H.264 chroma/bit-depth parameters in ordinary VA decode
+  as well as integrated scaling; preserve reference recovery after rejection.
 - Accept bounded MPEG-2 Main frame-coded TFF/BFF through VA, reconstructing
   a fixed sequence mode and retiring each decode token only after both fields.
   Preserve field-local chroma, replay identity and ordinary CPU Bob integration.

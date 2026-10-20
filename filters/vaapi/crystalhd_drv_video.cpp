@@ -332,10 +332,22 @@ static bool ValidateH264ProcessingGeometry(
              static_cast<uint64_t>(capture_height) * visible_width;
 }
 
+static bool SupportedH264PictureFormat(
+    const VAPictureParameterBufferH264 &picture) {
+  // These fields describe input syntax, not the negotiated NV12 output.
+  // The reconstructed SPS and this decoder path support only 8-bit 4:2:0.
+  return picture.seq_fields.bits.chroma_format_idc == 1 &&
+         !picture.seq_fields.bits.residual_colour_transform_flag &&
+         picture.bit_depth_luma_minus8 == 0 &&
+         picture.bit_depth_chroma_minus8 == 0;
+}
+
 static bool BuildSps(const VAPictureParameterBufferH264 &picture,
                      VAProfile profile, std::vector<uint8_t> *output,
                      unsigned int visible_width = 0,
                      unsigned int visible_height = 0) {
+  if (!SupportedH264PictureFormat(picture))
+    return false;
   BitWriter bits;
   uint8_t profile_idc;
   unsigned int height_in_map_units;
@@ -5306,6 +5318,11 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
        decode->target == VA_INVALID_SURFACE || !decode->iq_matrix_valid ||
        !ValidateH264IqMatrix(decode->picture, profile, decode->iq_matrix)))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
+  // Validate every AU, including continuations that reuse the existing SPS.
+  // Dropping a reference picture must also gate its dependent pictures until
+  // an actual accepted IDR, without changing earlier private output.
+  if (IsH264Profile(profile) && !SupportedH264PictureFormat(decode->picture))
+    return RejectH264Picture(driver, decode, VA_STATUS_ERROR_UNSUPPORTED_PROFILE);
   const bool idr = IsH264Profile(profile) &&
                    !decode->slice_data.front().empty() &&
                    (decode->slice_data.front().front() & 0x1fU) == 5;
@@ -5333,11 +5350,7 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     return VA_STATUS_ERROR_INVALID_SURFACE;
   const std::shared_ptr<Surface> target_surface = surface->second;
   if (decode->decode_processing) {
-    if (decode->picture.seq_fields.bits.chroma_format_idc != 1 ||
-        decode->picture.seq_fields.bits.residual_colour_transform_flag ||
-        decode->picture.bit_depth_luma_minus8 != 0 ||
-        decode->picture.bit_depth_chroma_minus8 != 0 ||
-        decode->picture.pic_fields.bits.field_pic_flag ||
+    if (decode->picture.pic_fields.bits.field_pic_flag ||
         (!decode->picture.seq_fields.bits.frame_mbs_only_flag &&
          !decode->picture.seq_fields.bits.mb_adaptive_frame_field_flag))
       return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;

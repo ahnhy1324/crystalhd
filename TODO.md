@@ -166,11 +166,10 @@ results in the [existing receipt](tests/fixtures/issue436/card-scaled-bob.json).
 The separate [BWDIF qualification](HARDWARE-2026-09-13.md#card-scaling-with-stock-bwdif--2026-10-20)
 now covers bounded TFF/BFF reopen, complete pixels/PTS and CPU enlargement.
 This does not qualify other interlaced codecs or physical presentation.
-VA still has no card-scaling control and expects native stream geometry. Existing VA
-VPP resizing happens on the host after readback, so it does not reduce PCIe
-traffic or establish field-preserving vertical scaling. Keep these boundaries
-until the adapters are implemented and validated, rather than just removing
-their guards.
+VA now exposes opt-in finite H.264 decode-integrated card scaling, qualified
+below. Separate VA VPP resizing still happens on the host after readback and
+does not reduce PCIe traffic. Ordinary clients must explicitly select the
+integrated API to obtain smaller card output; stock FFmpeg/Kodi do not do so.
 
 - [x] Capture the existing uniform-TFF 2-second / 50-picture fixture with
   `tests/fw-single-field-decode.cpp --scale-width 1280`: actual 1280x360

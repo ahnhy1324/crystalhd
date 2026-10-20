@@ -374,6 +374,7 @@ int main()
 	picture.picture_width_in_mbs_minus1 = 119;
 	picture.picture_height_in_mbs_minus1 = 67;
 	picture.num_ref_frames = 4;
+	picture.seq_fields.bits.chroma_format_idc = 1;
 	picture.seq_fields.bits.frame_mbs_only_flag = 1;
 	picture.seq_fields.bits.direct_8x8_inference_flag = 1;
 	picture.seq_fields.bits.log2_max_frame_num_minus4 = 0;
@@ -408,6 +409,28 @@ int main()
 		assert(sps == explicit_default && sps == full_visible);
 		assert(BuildSps(picture, expected.profile, &cropped, 1920, 1080));
 		CheckSpsGeometry(cropped, 67, true, false, 4);
+		// Profile/output-format selection does not validate caller-supplied
+		// picture syntax. Never rewrite unsupported input as 8-bit 4:2:0.
+		for (unsigned int fault = 0; fault < 8; ++fault) {
+			auto invalid = picture;
+			switch (fault) {
+			case 0: invalid.seq_fields.bits.chroma_format_idc = 0; break;
+			case 1: invalid.seq_fields.bits.chroma_format_idc = 2; break;
+			case 2: invalid.seq_fields.bits.chroma_format_idc = 3; break;
+			case 3: invalid.seq_fields.bits.residual_colour_transform_flag = 1; break;
+			case 4: invalid.bit_depth_luma_minus8 = 1; break;
+			case 5: invalid.bit_depth_chroma_minus8 = 1; break;
+			case 6: invalid.bit_depth_luma_minus8 = 255; break;
+			case 7: invalid.bit_depth_chroma_minus8 = 255; break;
+			}
+			const std::vector<uint8_t> prior = {0xaa, 0x55};
+			std::vector<uint8_t> rejected_format = prior;
+			assert(!BuildSps(invalid, expected.profile, &rejected_format));
+			assert(rejected_format == prior);
+			assert(!BuildSps(invalid, expected.profile, &rejected_format,
+					 1920, 1080));
+			assert(rejected_format == prior);
+		}
 
 		assert(BuildPps(picture, slice, expected.profile, FlatMatrix(), &pps));
 		CheckAnnexBNal(pps, 8);

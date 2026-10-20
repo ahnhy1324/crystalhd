@@ -25,7 +25,9 @@ For the separately characterized live-stream integration, see the top-level
 The backend supports these progressive BCM70015 inputs, plus the selected
 H.264 MBAFF and development MPEG-2 frame-coded interlaced cases described below:
 
-- H.264 Constrained Baseline, Main and High. Reconstruction preserves each
+- H.264 Constrained Baseline, Main and High, with 8-bit 4:2:0 input.
+  Other chroma formats, separate colour planes and higher bit depths are
+  rejected rather than reconstructed as 8-bit 4:2:0. Reconstruction preserves each
   picture's effective 4x4 and active 8x8 scaling lists, including JVT and
   custom matrices. Omitted IQ buffers use flat-16 defaults for that picture;
   malformed buffers and zero active coefficients are rejected. Selected MBAFF

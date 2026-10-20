@@ -413,6 +413,96 @@ VAStatus SubmitH264(Fixture *fixture, const std::vector<uint8_t> &bytes) {
   return EndPicture(&fixture->context, 1);
 }
 
+void H264UnsupportedPixelFormatsAreTransactional() {
+  unsigned wrongly_admitted = 0;
+  for (unsigned kind = 0; kind < 3; ++kind) {
+    for (unsigned fault = 0; fault < 6; ++fault) {
+      Fixture f;
+      Require(!f.decode->decode_processing, "exercise ordinary H.264, not card processing");
+      if (kind != 0)
+        Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                    f.decode->sent_parameter_sets,
+                "establish ordinary SPS before testing unsupported continuation");
+      const auto valid = f.picture;
+      switch (fault) {
+        case 0: f.picture.seq_fields.bits.chroma_format_idc = 0; break;
+        case 1: f.picture.seq_fields.bits.chroma_format_idc = 2; break;
+        case 2: f.picture.seq_fields.bits.chroma_format_idc = 3; break;
+        case 3: f.picture.seq_fields.bits.residual_colour_transform_flag = 1; break;
+        case 4: f.picture.bit_depth_luma_minus8 = 1; break;
+        case 5: f.picture.bit_depth_chroma_minus8 = 1; break;
+      }
+      f.slice.slice_type = kind == 0 ? 2 : kind == 1 ? 0 : 1;
+      const auto inputs = f.mock.inputs;
+      const auto pending = f.decode->pending;
+      const auto frames = f.decode->decoded_frames;
+      const auto timestamps = f.decode->surface_timestamps;
+      const uint64_t timestamp = f.decode->next_timestamp;
+      const uint64_t ordinal = f.decode->next_submission_ordinal;
+      const size_t cached_bytes = f.decode->replay.cached_bytes();
+      const size_t cached_pictures = f.decode->replay.cached_pictures();
+      const size_t outstanding = f.decode->replay.outstanding();
+      const auto legacy_calls = f.mock.legacy_input_calls;
+      const auto fragment_calls = f.mock.fragment_input_calls;
+      const bool sent_sps = f.decode->sent_parameter_sets;
+      const uint8_t header = kind == 0 ? 0x65 : kind == 1 ? 0x41 : 0x01;
+      const auto status = SubmitH264(&f, {header, 0x88, 0x84});
+      if (status != VA_STATUS_ERROR_UNSUPPORTED_PROFILE) {
+        ++wrongly_admitted;
+        std::fprintf(stderr, "unsupported H264 format fault=%u input_kind=%u status=%d expected=%d\n",
+                     fault, kind, status, VA_STATUS_ERROR_UNSUPPORTED_PROFILE);
+        continue;
+      }
+      Require(f.mock.inputs.size() == inputs.size() &&
+                  f.mock.legacy_input_calls == legacy_calls &&
+                  f.mock.fragment_input_calls == fragment_calls &&
+                  f.decode->pending == pending && f.decode->decoded_frames == frames &&
+                  f.decode->surface_timestamps == timestamps &&
+                  f.decode->next_timestamp == timestamp &&
+                  f.decode->next_submission_ordinal == ordinal &&
+                  f.decode->replay.cached_bytes() == cached_bytes &&
+                  f.decode->replay.cached_pictures() == cached_pictures &&
+                  f.decode->replay.outstanding() == outstanding &&
+                  !f.decode->replay.failed() &&
+                  f.decode->sent_parameter_sets == sent_sps &&
+                  f.decode->partial_input_timestamp == 0 &&
+                  f.decode->partial_input_offset == 0,
+              "unsupported format cannot submit bytes or consume accepted replay/picture identity");
+      for (size_t n = 0; n < inputs.size(); ++n)
+        Require(f.mock.inputs[n].timestamp == inputs[n].timestamp &&
+                    f.mock.inputs[n].bytes == inputs[n].bytes &&
+                    f.mock.inputs[n].fragment_flags == inputs[n].fragment_flags,
+                "unsupported continuation cannot rewrite previously submitted bytes");
+      for (const auto &frame : frames)
+        Require(!frame.second->failed && frame.second->expected_timestamp == frame.first &&
+                    f.decode->replay.IsOutstanding(frame.first),
+                "unsupported new format preserves earlier immutable output ownership");
+      Require(f.decode->h264_waiting_for_idr == (kind != 2),
+              "only rejected reference VCL breaks the accepted reference chain");
+      f.picture = valid;
+      f.slice.slice_type = 0;
+      if (kind != 2) {
+        Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_ERROR_DECODING_ERROR &&
+                    f.mock.inputs.size() == inputs.size() &&
+                    f.decode->next_timestamp == timestamp && f.decode->pending == pending &&
+                    f.decode->decoded_frames == frames &&
+                    f.decode->replay.cached_bytes() == cached_bytes,
+                "valid dependent input remains blocked after rejected unsupported reference");
+        Require(SubmitH264(&f, {0x65, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                    !f.decode->h264_waiting_for_idr &&
+                    f.mock.inputs.back().timestamp == timestamp,
+                "valid actual IDR recovers at the unconsumed timestamp");
+      }
+      Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_SUCCESS &&
+                  !f.decode->h264_waiting_for_idr && !f.decode->replay.failed() &&
+                  f.mock.inputs.size() == inputs.size() + (kind == 2 ? 1 : 2),
+              "valid continuation survives nonreference rejection or resumes after recovery IDR");
+    }
+  }
+  Require(wrongly_admitted == 0,
+          "ordinary H.264 must reject every unsupported first/continuation pixel format");
+}
+
 std::vector<InputRecord> LogicalInputs(
     const std::vector<InputRecord> &fragments) {
   std::vector<InputRecord> inputs;
@@ -2737,9 +2827,21 @@ void DirectBackingReassignedBetweenVppBeginAndEnd() {
 }
 }
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--pixel-format") == 0) {
+    try {
+      H264UnsupportedPixelFormatsAreTransactional();
+      std::printf("PASS ordinary H264 pixel-format admission: 18 first/reference/nonreference cases, %u checks\n", checks);
+      return 0;
+    } catch (const std::exception &error) {
+      std::fprintf(stderr, "FAIL ordinary H264 pixel-format admission: %s\n", error.what());
+      return 1;
+    }
+  }
+  if (argc != 1) return 2;
   unsigned failures = 0;
   const std::pair<const char *, void (*)()> groups[] = {
+    {"ordinary H.264 pixel-format admission", H264UnsupportedPixelFormatsAreTransactional},
     {"obsolete surface retirement preserves independent decode", ObsoleteSurfaceRetirementPreservesIndependentDecode},
     {"rejected H.264 target readback", RejectedH264TargetReadback},
     {"rejected H.264 recovery retains delayed reordered pictures", RejectedH264RecoveryRetainsDelayedReorderedPictures},

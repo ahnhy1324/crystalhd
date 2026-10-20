@@ -4776,6 +4776,7 @@ void DecodeTargetsRejectAliasesAndBusyWriters() {
   // coded width guaranteeing even the pre-fix path cannot open hardware.
   fixture.decoder->target = 3;
   fixture.decoder->have_picture = true;
+  fixture.decoder->picture.seq_fields.bits.chroma_format_idc = 1;
   fixture.decoder->slices.resize(1);
   fixture.decoder->slice_data = {{0x65}};
   fixture.decoder->width = 32;

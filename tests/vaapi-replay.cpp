@@ -3085,6 +3085,7 @@ static void RealH264SubmitCompletesFieldPairs() {
       decoder.picture.picture_width_in_mbs_minus1 = 0;
       decoder.picture.picture_height_in_mbs_minus1 = 1;
       decoder.picture.num_ref_frames = 1;
+      decoder.picture.seq_fields.bits.chroma_format_idc = 1;
       decoder.picture.seq_fields.bits.frame_mbs_only_flag = 0;
       decoder.picture.seq_fields.bits.mb_adaptive_frame_field_flag = 1;
       decoder.picture.seq_fields.bits.direct_8x8_inference_flag = 1;
@@ -4241,6 +4242,7 @@ static void ExperimentalReadyRemapGate() {
   DecodeContext decode;
   decode.experimental_ready_remap = true;
   decode.have_picture = true;
+  decode.picture.seq_fields.bits.chroma_format_idc = 1;
   decode.target = 1;
   decode.slices.resize(1);
   decode.slices.front().slice_type = 1;
@@ -5688,6 +5690,7 @@ static void ProtectedH264BufferCannotCommitEarlierParameters() {
       decode.picture = {};
       decode.picture.picture_height_in_mbs_minus1 = 1;
       decode.picture.num_ref_frames = 1;
+      decode.picture.seq_fields.bits.chroma_format_idc = 1;
       decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag = 1;
       decode.picture.seq_fields.bits.direct_8x8_inference_flag = 1;
       decode.picture.pic_fields.bits.deblocking_filter_control_present_flag = 1;
@@ -6526,6 +6529,7 @@ static void AutomaticProgressivePrefeedUsesSubmissionSnapshot() {
               "begin automatic-prefeed production submission");
       decode->picture.picture_height_in_mbs_minus1 = 1;
       decode->picture.num_ref_frames = 1;
+      decode->picture.seq_fields.bits.chroma_format_idc = 1;
       decode->picture.seq_fields.bits.frame_mbs_only_flag = !paff;
       decode->picture.seq_fields.bits.direct_8x8_inference_flag = 1;
       decode->have_picture = true;
