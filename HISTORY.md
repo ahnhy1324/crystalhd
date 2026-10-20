@@ -2,8 +2,8 @@
 
 ## 1.2.0 — in development
 
-- Complete recoverable LIVE Bob tails through pinned reference replay and
-  negotiated fresh-channel reuse; preserve ordinary input-gap references.
+- Avoid allocating/copying duplicate H.264 replay-field pixels while retaining
+  paired-field validation, output release and completed-picture ownership.
 - Honor negotiated VA render formats in queries and output bindings, reject
   unsupported VPP/display requests, and release obsolete Render captures.
 - Avoid full-device reopen during fully drained finite H.264 reference replay

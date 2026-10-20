@@ -182,6 +182,9 @@ drain still exceeds Kodi's EOF wait; close-time completion is not a playback PAS
 General FHD/Atom Bob playback is not qualified. **Off** retains Weave; the separate
 [FFmpeg BWDIF path](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif)
 remains available.
+An automatic LIVE drain/replay checkpoint prototype is not enabled: a short
+continuation/pixel control passed, but stock Kodi's 243-picture reconstruction
+took 5.66 s and exceeded its 2 s output wait. It did not qualify LIVE playback.
 
 ## Replay and end of stream
 

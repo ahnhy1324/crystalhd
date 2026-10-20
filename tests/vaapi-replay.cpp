@@ -910,165 +910,6 @@ static void LiveEosNeverSkipsAnAcceptedContinuation() {
           "live mode does not relax the finite replay-work bound");
 }
 
-static CrystalHDDecodeReplay CheckpointSeed(
-    CrystalHDDecodeReplay::Limits limits, bool live = true) {
-  CrystalHDDecodeReplay replay(limits, live);
-  Require(replay.Append(1, true, {1, 1, 1, 1}) &&
-              replay.Append(2, false, {2, 2, 2, 2}),
-          "retain the actual IDR and dependent picture for a checkpoint");
-  SendNext(&replay, 1);
-  SendNext(&replay, 2);
-  Require(replay.Observe(1) == CrystalHDDecodeReplay::Output::New &&
-              replay.CanSeal() && replay.replayable(),
-          "checkpoint seed has intact history and one outstanding picture");
-  return replay;
-}
-
-static void LiveCheckpointAdmissionIsNonmutating() {
-  CrystalHDDecodeReplay::Limits limits;
-  limits.picture_bytes = 8;
-  limits.cache_bytes = 16;
-  limits.pictures = 3;
-  limits.replay_pictures = 2;
-  for (unsigned refusal = 0; refusal < 8; ++refusal) {
-    auto constrained = limits;
-    if (refusal == 0) constrained.cache_bytes = 15;
-    if (refusal == 1) constrained.pictures = 2;
-    if (refusal == 2) constrained.replay_pictures = 1;
-    if (refusal == 7) constrained.cache_bytes = 12;
-    auto replay = CheckpointSeed(constrained, refusal != 3);
-    if (refusal == 4)
-      Require(replay.Observe(2) == CrystalHDDecodeReplay::Output::New,
-              "complete all input before testing the no-outstanding guard");
-    if (refusal == 5)
-      Require(replay.Append(3, false, {3}),
-              "queued but unsubmitted input cannot be checkpointed");
-    if (refusal == 6)
-      Require(replay.Seal(), "an ordinary sealed batch is not a new checkpoint");
-    const auto bytes = replay.cached_bytes(), pictures = replay.cached_pictures();
-    const auto outstanding = replay.outstanding();
-    const bool sealed = replay.sealed(), reconstructible = replay.replayable();
-    Require(!replay.CanCheckpoint() && !replay.Checkpoint() &&
-                !replay.checkpointing() && !replay.failed() &&
-                replay.cached_bytes() == bytes && replay.cached_pictures() == pictures &&
-                replay.outstanding() == outstanding && replay.sealed() == sealed &&
-                replay.replayable() == reconstructible,
-            "checkpoint refusal preserves the accepted batch, history and phase");
-    if (refusal == 0 || refusal == 7) {
-      // The preserved counterexample fits the new AU only by evicting the old
-      // IDR. Refuse the checkpoint, not the ordinary nonterminal LIVE input.
-      Require(replay.Append(3, false, std::vector<uint8_t>(8, 3)) &&
-                  !replay.sealed() && !replay.replayable() &&
-                  replay.NextInput()->timestamp == 3 && !replay.failed(),
-              "insufficient checkpoint reserve leaves normal LIVE continuation available");
-    }
-  }
-  CrystalHDDecodeReplay empty(limits, true);
-  Require(!empty.CanCheckpoint() && !empty.Checkpoint() && !empty.failed(),
-          "an empty stream is not an actual retained IDR checkpoint");
-  auto exact = CheckpointSeed(limits);
-  Require(exact.CanCheckpoint() && exact.Checkpoint() && exact.checkpointing() &&
-              exact.sealed() && !exact.CanCheckpoint() && !exact.Checkpoint() &&
-              exact.checkpointing() && !exact.failed(),
-          "exact byte, slot and replay-work reserve admits exactly one checkpoint");
-}
-
-static void LiveCheckpointPinsUntilEveryOldDuplicateRetires() {
-  CrystalHDDecodeReplay::Limits limits;
-  limits.picture_bytes = 8;
-  limits.cache_bytes = 16;
-  limits.pictures = 3;
-  limits.replay_pictures = 8;
-  auto replay = CheckpointSeed(limits);
-  Require(replay.Checkpoint() && replay.CanAppendWhileCheckpointing(8) &&
-              !replay.CanAppendWhileCheckpointing(9) &&
-              replay.Append(3, false, std::vector<uint8_t>(8, 3)),
-          "a queued non-IDR uses the reserved capacity without replacing history");
-  const auto rejects_full_append = [&] {
-    Require(!replay.CanAppendWhileCheckpointing(1) &&
-                !replay.Append(4, false, {4}) && !replay.failed() &&
-                replay.checkpointing() && replay.replayable() &&
-                replay.cached_bytes() == 16 && replay.cached_pictures() == 3 &&
-                replay.Inspect(1) == CrystalHDDecodeReplay::Output::Duplicate,
-            "a full pinned cache refuses input without evicting history or consuming its token");
-  };
-  rejects_full_append();
-  Require(replay.NextInput() == nullptr && !replay.NeedsRestart() &&
-              replay.Observe(2) == CrystalHDDecodeReplay::Output::New &&
-              replay.Observe(1) == CrystalHDDecodeReplay::Output::Duplicate &&
-              replay.checkpointing() && replay.EndOfSequence() && replay.NeedsRestart(),
-          "old tail and genuine EOS retire before any queued input is submitted");
-  rejects_full_append();
-  Require(replay.Restarted() && replay.checkpointing() &&
-              replay.NextInput()->timestamp == 1 && replay.NextInput()->idr &&
-              replay.NextInput()->bytes == std::vector<uint8_t>({1, 1, 1, 1}),
-          "restart begins with the exact pinned original IDR");
-  SendNext(&replay, 1);
-  Require(replay.Observe(1) == CrystalHDDecodeReplay::Output::Duplicate &&
-              replay.checkpointing() && replay.NextInput()->timestamp == 2 &&
-              replay.NextInput()->bytes == std::vector<uint8_t>({2, 2, 2, 2}),
-          "one retired duplicate cannot unpin an unsubmitted old reference");
-  SendNext(&replay, 2);
-  Require(replay.checkpointing() && replay.NextInput()->timestamp == 3 &&
-              replay.NextInput()->bytes == std::vector<uint8_t>(8, 3),
-          "all old input submitted is insufficient while its duplicate output remains");
-  SendNext(&replay, 3);
-  Require(replay.Observe(3) == CrystalHDDecodeReplay::Output::New &&
-              replay.checkpointing(),
-          "a reordered new output cannot retire the old reference pin");
-  Require(replay.Observe(2) == CrystalHDDecodeReplay::Output::Duplicate &&
-              !replay.checkpointing() && replay.outstanding() == 0,
-          "only the final old duplicate releases the completed checkpoint");
-  Require(replay.Append(4, false, {4}) && !replay.failed() &&
-              replay.NextInput()->timestamp == 4,
-          "the same previously refused token remains available after safe unpin");
-}
-
-static void LiveCheckpointPreservesWorkAndLostHistoryGuards() {
-  CrystalHDDecodeReplay::Limits limits;
-  limits.picture_bytes = 8;
-  limits.cache_bytes = 32;
-  limits.pictures = 8;
-  limits.replay_pictures = 2;
-  auto work = CheckpointSeed(limits);
-  Require(work.Checkpoint() && work.Append(3, false, {3}) &&
-              work.Observe(2) == CrystalHDDecodeReplay::Output::New &&
-              work.EndOfSequence() && work.Restarted(),
-          "admit a checkpoint at the exact cumulative replay-work boundary");
-  SendNext(&work, 1);
-  SendNext(&work, 2);
-  SendNext(&work, 3);
-  Require(work.Observe(2) == CrystalHDDecodeReplay::Output::Duplicate &&
-              work.checkpointing() &&
-              work.Observe(1) == CrystalHDDecodeReplay::Output::Duplicate &&
-              !work.checkpointing() && work.CanSeal() && work.replayable() &&
-              !work.CanCheckpoint() && !work.Checkpoint() && !work.failed(),
-          "checkpoint completion cannot reset cumulative replay-work accounting");
-
-  limits.cache_bytes = 8;
-  limits.pictures = 8;
-  limits.replay_pictures = 16;
-  auto lost = CheckpointSeed(limits);
-  Require(lost.Append(3, false, {3}) && !lost.replayable(),
-          "ordinary LIVE pressure may lose completed reference history");
-  SendNext(&lost, 3);
-  const auto outstanding = lost.outstanding(), bytes = lost.cached_bytes();
-  Require(!lost.CanCheckpoint() && !lost.Checkpoint() && !lost.failed() &&
-              !lost.checkpointing() && lost.outstanding() == outstanding &&
-              lost.cached_bytes() == bytes,
-          "a lost reference prefix never becomes a reconstructible checkpoint");
-  Require(lost.Seal() &&
-              lost.Observe(2) == CrystalHDDecodeReplay::Output::New &&
-              lost.Observe(3) == CrystalHDDecodeReplay::Output::New &&
-              lost.EndOfSequence() && !lost.NeedsRestart(),
-          "ordinary explicit finite drain remains valid after checkpoint refusal");
-  CrystalHDDecodeReplay failed(limits, true);
-  failed.Fail("test terminal state");
-  Require(!failed.CanCheckpoint() && !failed.Checkpoint() && failed.failed() &&
-              !failed.checkpointing(),
-          "checkpoint refusal cannot revive a terminal transport");
-}
-
 static void LiveStreamMarkerSurvivesReplayAndPruning() {
   for (bool live : {false, true}) {
     CrystalHDDecodeReplay replay(live);
@@ -1780,6 +1621,106 @@ static std::shared_ptr<Surface> RebindH264PublicSurface(
   return replacement;
 }
 
+static void ReplayedH264FieldsRetainMetadataWithoutPixels() {
+  for (bool is_70012 : {false, true}) {
+    for (bool bottom_first : {false, true}) {
+      for (unsigned fault = 0; fault < 13; ++fault) {
+        if (is_70012 && fault != 0) continue;
+        DecodeIoMock io;
+        MockDecodeScope scope(io);
+        H264FieldFixture fixture(false, is_70012);
+        auto first = fixture.Output(bottom_first, bottom_first,
+            bottom_first ? &fixture.bottom : &fixture.top);
+        auto second = fixture.Output(!bottom_first, bottom_first,
+            bottom_first ? &fixture.top : &fixture.bottom);
+        Require(fixture.decoder.replay.Seal() &&
+                    ProcessDecodedOutput(&fixture.driver, &fixture.decoder, first) == VA_STATUS_SUCCESS &&
+                    ProcessDecodedOutput(&fixture.driver, &fixture.decoder, second) == VA_STATUS_SUCCESS &&
+                    fixture.decoder.replay.EndOfSequence() &&
+                    fixture.decoder.replay.Append(2, false, {2}) &&
+                    fixture.decoder.replay.Restarted(),
+                "complete the original pair before replaying its real reference input");
+        SendNext(&fixture.decoder.replay, 1);
+        fixture.decoder.decoded_frames.erase(1);
+        const auto public_pixels = fixture.public_frame->storage;
+        const auto private_pixels = fixture.private_frame->storage;
+        const auto unchanged = [&] {
+          return fixture.public_frame->storage == public_pixels &&
+              fixture.private_frame->storage == private_pixels &&
+              fixture.public_frame->ready && !fixture.public_frame->failed &&
+              fixture.private_frame->ready && !fixture.private_frame->failed &&
+              fixture.public_frame->expected_timestamp == 1 &&
+              fixture.public_frame->frame_timestamp == 1 &&
+              fixture.public_frame->decode_identity == 41 &&
+              fixture.private_frame->frame_timestamp == 1 &&
+              fixture.decoder.pending.empty() && fixture.decoder.decoded_frames.empty();
+        };
+        // Deliberately different duplicate pixels must never reach either
+        // retained picture, and their first field need not be retained at all.
+        std::fill(fixture.top.begin(), fixture.top.end(), 0);
+        std::fill(fixture.bottom.begin(), fixture.bottom.end(), 0);
+        io.override_output = true;
+        io.overridden_output = first;
+        io.events.reserve(8);
+        fixture.decoder.device = io.handle();
+        if (fault == 1) io.output_release_status = BC_STS_ERROR;
+        if (fault == 12) allocation_fault::fail_next = true;
+        bool activity = false;
+        const VAStatus first_status = ReceiveOne(&fixture.driver, &fixture.decoder, 0, &activity);
+        const bool no_allocation = allocation_fault::fail_next;
+        allocation_fault::fail_next = false;
+        Require(activity && std::count(io.events.begin(), io.events.end(), "release") == 1 &&
+                    unchanged() && !io.invalid,
+                "each acquired duplicate field releases once without changing retained public/private pictures");
+        if (fault == 1) {
+          Require(first_status == VA_STATUS_ERROR_DECODING_ERROR &&
+                      fixture.decoder.replay.failed() && !fixture.decoder.h264_first_field.valid,
+                  "failed first-field release cannot leave replay metadata armed");
+          continue;
+        }
+        const auto &held = fixture.decoder.h264_first_field;
+        Require(first_status == VA_STATUS_SUCCESS && held.valid && held.replay_duplicate &&
+                    held.pixels.empty() && !held.picture && held.decode_identity == 0 &&
+                    held.timestamp == 1 && held.generation == fixture.decoder.generation &&
+                    held.bottom == bottom_first && held.bottom_first == bottom_first &&
+                    held.is_70012 == is_70012 && held.width == fixture.decoder.width &&
+                    held.height == 32 && held.source_pitch == (is_70012 ? 720U : 16U) * 2U &&
+                    held.picture_number == first.PicInfo.picture_number &&
+                    held.sess_num == first.PicInfo.sess_num &&
+                    held.picture_meta_payload == first.PicInfo.picture_meta_payload &&
+                    fixture.decoder.replay.IsOutstanding(1) &&
+                    (fault != 12 || no_allocation),
+                "replayed first field retains exact metadata but no pixel allocation or picture owner");
+        switch (fault) {
+          case 2: second.PicInfo.flags = first.PicInfo.flags; break;
+          case 3: second.PicInfo.timeStamp = 2; break;
+          case 4: ++fixture.decoder.generation; break;
+          case 5: ++second.PicInfo.picture_number; break;
+          case 6: ++second.PicInfo.sess_num; break;
+          case 7: ++second.PicInfo.picture_meta_payload; break;
+          case 8: second.PicInfo.width = 14; break;
+          case 9: --second.YBuffDoneSz; break;
+          case 10: second.PicInfo.flags ^= VDEC_FLAG_BOTTOM_FIRST; break;
+          case 11: io.output_release_status = BC_STS_ERROR; break;
+          default: break;
+        }
+        if (is_70012) second.PicInfo.timeStamp = 0;
+        io.overridden_output = second;
+        const VAStatus second_status = ReceiveOne(&fixture.driver, &fixture.decoder, 0, &activity);
+        const bool valid = fault == 0 || fault == 12;
+        Require(second_status == (valid ? VA_STATUS_SUCCESS : VA_STATUS_ERROR_DECODING_ERROR) &&
+                    fixture.decoder.replay.failed() == !valid &&
+                    !fixture.decoder.h264_first_field.valid &&
+                    fixture.decoder.h264_first_field.pixels.empty() &&
+                    (!valid || !fixture.decoder.replay.IsOutstanding(1)) &&
+                    std::count(io.events.begin(), io.events.end(), "release") == 2 &&
+                    unchanged() && !io.invalid,
+                "only the matching released duplicate pair retires replay; malformed/release failures stay terminal");
+      }
+    }
+  }
+}
+
 static void H264FieldPairsRespectStaleAndRetainedOwnership() {
   {
     H264FieldFixture fixture;
@@ -2394,130 +2335,6 @@ static void H264ReplayReopenEligibilityAndFailureOwnership() {
             "early and late fresh-channel setup failures consume the retained device exactly once");
   }
   std::puts("H264 replay restart: 16 eligibility, 5 retirement-failure and 2 setup-failure cases PASS");
-}
-
-static void LiveCheckpointReopenPreservesQualifiedOwnership() {
-  const auto prepare = [](DecodeContext &decode, DecodeIoMock &io) {
-    decode.device = io.handle();
-    decode.decoder_open = decode.decoder_started = true;
-    decode.profile = VAProfileH264Main;
-    decode.width = decode.height = 16;
-    decode.generation = 7;
-    decode.live_h264 = decode.live_h264_gap_tolerant = decode.live_h264_fast_path = true;
-    decode.replay = CrystalHDDecodeReplay(true);
-    io.library_capabilities = DTS_LIB_CAP_FLEA_H264_DRAINED_REOPEN;
-    Require(decode.replay.Append(kTimestampStep, true, {1}) &&
-                decode.replay.InputSent() && decode.replay.Checkpoint() &&
-                decode.replay.Observe(kTimestampStep) == CrystalHDDecodeReplay::Output::New &&
-                decode.replay.EndOfSequence() &&
-                decode.replay.Append(2 * kTimestampStep, false, {2}) &&
-                decode.replay.checkpointing() && decode.replay.NeedsRestart(),
-            "prepare a genuinely drained LIVE checkpoint with a dependent continuation");
-  };
-  for (unsigned mode = 0; mode < 7; ++mode) {
-    DecodeIoMock io;
-    MockDecodeScope scope(io);
-    DecodeContext decode;
-    prepare(decode, io);
-    if (mode == 1) io.library_capabilities = 0;
-    if (mode == 2) io.library_capabilities = 1U << 1;
-    if (mode == 3) io.library_capabilities_status = BC_STS_ERROR;
-    if (mode == 4) crystalhd_test_library_capabilities = nullptr;
-    if (mode == 5) decode.experimental_ready_remap = true;
-    if (mode == 6) {
-      decode.replay = CrystalHDDecodeReplay(true);
-      Require(decode.replay.Append(kTimestampStep, true, {1}) &&
-                  decode.replay.InputSent() && decode.replay.Checkpoint(),
-              "an undrained LIVE checkpoint still owns real hardware output");
-    }
-    const int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-    Require(fd >= 0, "allocate the previous LIVE output-poll lease");
-    auto held_poll = std::make_shared<OutputPollLease>(fd);
-    decode.output_poll = held_poll;
-    decode.armed_output_poll = held_poll;
-    Require(decode.CloseHardwareForH264Replay(0) == BC_STS_SUCCESS &&
-                decode.device == (mode == 0 ? io.handle() : nullptr) &&
-                decode.device_preopened == (mode == 0) &&
-                io.device_close_calls == (mode == 0 ? 0U : 1U) &&
-                io.library_capability_queries == (mode < 4 ? 1U : 0U) &&
-                !decode.output_poll && decode.armed_output_poll.expired() &&
-                !decode.decoder_open && !decode.decoder_started &&
-                decode.generation == 7 && fcntl(fd, F_GETFD) >= 0 && !io.invalid,
-            "only negotiated, drained, non-READY LIVE checkpoints retain their exact device");
-    if (mode == 0) {
-      unsigned duplicates = 0, fresh = 0;
-      for (unsigned cycle = 0; cycle < 2; ++cycle) {
-        Require(OpenDecoder(&decode) == VA_STATUS_SUCCESS &&
-                    decode.replay.Restarted(),
-                "fresh LIVE channels consume the same preopened device");
-        while (const auto *unit = decode.replay.NextInput()) {
-          const uint64_t token = unit->timestamp;
-          const bool completed = unit->completed;
-          Require(decode.replay.InputSent(), "resubmit each original checkpoint unit");
-          const auto output = decode.replay.Observe(token);
-          Require(output == (completed ? CrystalHDDecodeReplay::Output::Duplicate
-                                       : CrystalHDDecodeReplay::Output::New),
-                  "each reused channel preserves exact old/new output disposition");
-          completed ? ++duplicates : ++fresh;
-        }
-        Require(!decode.replay.checkpointing() && decode.replay.outstanding() == 0 &&
-                    decode.device == io.handle() && io.open_attempts == 0 &&
-                    io.device_close_calls == 0 && io.decoder_open_calls == cycle + 1 &&
-                    io.capture_start_calls == cycle + 1 && decode.generation == 7,
-                "completed LIVE replay neither recreates the device nor changes its public generation");
-        if (cycle == 0) {
-          Require(decode.replay.Append(3 * kTimestampStep, false, {3}) &&
-                      decode.replay.InputSent() && decode.replay.Checkpoint() &&
-                      decode.replay.Observe(3 * kTimestampStep) == CrystalHDDecodeReplay::Output::New &&
-                      decode.replay.EndOfSequence() &&
-                      decode.replay.Append(4 * kTimestampStep, false, {4}),
-                  "a later independent checkpoint retains the whole original reference prefix");
-          decode.output_poll = held_poll;
-          decode.armed_output_poll = held_poll;
-          Require(decode.CloseHardwareForH264Replay(0) == BC_STS_SUCCESS &&
-                      decode.device_preopened && !decode.output_poll &&
-                      decode.armed_output_poll.expired() && fcntl(fd, F_GETFD) >= 0,
-                  "a second qualified Stop/Close cycle also clears only current poll ownership");
-        }
-      }
-      Require(duplicates == 4 && fresh == 2 && io.decoder_open_handle == io.handle() &&
-                  std::count(io.events.begin(), io.events.end(), "stop") == 2 &&
-                  std::count(io.events.begin(), io.events.end(), "close-decoder") == 2 &&
-                  io.library_capability_queries == 2 && io.device_close_calls == 0 &&
-                  decode.CloseHardware(0) == BC_STS_SUCCESS && decode.device == nullptr &&
-                  io.device_close_calls == 1 && !io.invalid,
-              "two actual channel cycles reuse one handle; ordinary final device close remains terminal");
-    }
-    held_poll.reset();
-    errno = 0;
-    Require(fcntl(fd, F_GETFD) == -1 && errno == EBADF,
-            "the final old poll owner alone closes its descriptor");
-  }
-  for (unsigned fault = 0; fault < 5; ++fault) {
-    DecodeIoMock io;
-    MockDecodeScope scope(io);
-    DecodeContext decode;
-    prepare(decode, io);
-    io.stop_status = fault == 0 || fault == 4 ? BC_STS_ERROR :
-                     fault == 1 ? BC_STS_BUSY : BC_STS_SUCCESS;
-    io.decoder_close_status = fault == 2 ? BC_STS_ERROR :
-                              fault == 3 ? BC_STS_BUSY : BC_STS_SUCCESS;
-    io.device_close_busy = fault == 4 ? 1 : 0;
-    const BC_STATUS expected = fault == 4 ? BC_STS_BUSY :
-        fault == 0 || fault == 2 ? BC_STS_ERROR : BC_STS_SUCCESS;
-    Require(decode.CloseHardwareForH264Replay(0) == expected &&
-                !decode.device_preopened && io.device_close_calls == 1 &&
-                io.library_capability_queries == 1 &&
-                decode.device == (fault == 4 ? io.handle() : nullptr) &&
-                decode.hardware_close_pending == (fault == 4) && !io.invalid,
-            "LIVE checkpoint Stop/Close failure or BUSY retains the existing terminal-cleanup contract");
-    if (fault == 4) {
-      io.stop_status = io.decoder_close_status = BC_STS_SUCCESS;
-      Require(decode.CloseHardware(0) == BC_STS_ERROR && decode.device == nullptr &&
-                  io.device_close_calls == 2 && !decode.hardware_close_pending,
-              "non-consuming LIVE DeviceClose preserves its first error until terminal retry");
-    }
-  }
 }
 
 static void ContextAdmissionRejectsBusyBeforePicture() {
@@ -7997,38 +7814,17 @@ static void FirstTemporalBobRejectsMismatchedLatch() {
   }
 }
 
-static void LiveBobTailWithUnfenceableExposedTarget(bool checkpoint_only = false,
-                                                  bool qualified_reuse = false) {
-  enum class Tail { Complete, Cancel, Drain, Checkpoint, CheckpointCancel, WeaveGap };
+static void LiveBobTailWithUnfenceableExposedTarget() {
+  enum class Tail { Complete, Cancel, Drain };
   for (bool bottom_first : {false, true}) {
-    for (Tail tail : {Tail::Complete, Tail::Cancel, Tail::Drain,
-                      Tail::Checkpoint, Tail::CheckpointCancel, Tail::WeaveGap}) {
-      const bool checkpoint_case = tail == Tail::Checkpoint ||
-                                   tail == Tail::CheckpointCancel;
-      if (checkpoint_only && !checkpoint_case && tail != Tail::WeaveGap) continue;
-      if (qualified_reuse && tail != Tail::Checkpoint) continue;
+    for (Tail tail : {Tail::Complete, Tail::Cancel, Tail::Drain}) {
       TeardownFixture fixture(2);
-      if (qualified_reuse)
-        fixture.io.library_capabilities = DTS_LIB_CAP_FLEA_H264_DRAINED_REOPEN;
       auto &decode = *fixture.decoder;
       decode.profile = VAProfileH264Main;
       decode.height = fixture.io.output_height = 32;
       decode.live_h264 = decode.live_h264_gap_tolerant = true;
       decode.live_h264_fast_path = decode.low_latency_h264 = true;
-      VAConfigID source_config = VA_INVALID_ID;
-      if (checkpoint_case) {
-        Require(CreateConfig(&fixture.context, VAProfileH264Main, VAEntrypointVLD,
-                             nullptr, 0, &source_config) == VA_STATUS_SUCCESS,
-                "give the checkpoint source its real decode API configuration");
-        decode.config = source_config;
-        CrystalHDDecodeReplay::Limits limits;
-        limits.picture_bytes = 128;
-        limits.cache_bytes = 512;
-        limits.pictures = 3;
-        decode.replay = CrystalHDDecodeReplay(limits, true);
-      } else {
-        decode.replay = CrystalHDDecodeReplay(true);
-      }
+      decode.replay = CrystalHDDecodeReplay(true);
       for (unsigned int index = 0; index != 2; ++index) {
         const uint64_t token = (index + 1) * kTimestampStep;
         for (const auto &picture : {fixture.held[index],
@@ -8123,55 +7919,15 @@ static void LiveBobTailWithUnfenceableExposedTarget(bool checkpoint_only = false
               "create complementary-field wait or completed-drain Bob parameters");
       VAProcPipelineParameterBuffer pipeline = {};
       pipeline.surface = 2;
-      pipeline.filters = tail == Tail::WeaveGap ? nullptr : &filter_id;
-      pipeline.num_filters = tail == Tail::WeaveGap ? 0 : 1;
+      pipeline.filters = &filter_id;
+      pipeline.num_filters = 1;
       Require(CreateBuffer(&fixture.context, processor, VAProcPipelineParameterBufferType,
                            sizeof(pipeline), 1, &pipeline, &pipeline_id) == VA_STATUS_SUCCESS &&
                   BeginPicture(&fixture.context, processor, target->id) == VA_STATUS_SUCCESS &&
                   RenderPicture(&fixture.context, processor, &pipeline_id, 1) == VA_STATUS_SUCCESS,
               "capture the exact final live picture through Begin/Render");
       unsigned int waits = 0;
-      std::function<void()> wait_for_checkpoint;
-      if (checkpoint_case || tail == Tail::WeaveGap) {
-        fixture.io.early_eos = true;
-        wait_for_checkpoint = [&] {
-          ++waits;
-          Require(fixture.driver.pending_vpp.size() == 1 &&
-                      source->vpp_readers == 1 && target->vpp_writers == 1 &&
-                      !source->ready && !target->ready && target->storage == original,
-                  "a cold field wait retains exact source/target ownership before completion");
-          if (waits == 1) {
-            Require(!decode.replay.sealed() && !decode.replay.checkpointing(),
-                    "a new complementary wait does not immediately declare EOS");
-            std::this_thread::sleep_for(std::chrono::milliseconds(140));
-            fixture.io.on_sleep = wait_for_checkpoint;
-            return;
-          }
-          Require(waits == 2, "one bounded idle turn reaches the checkpoint decision");
-          if (tail == Tail::WeaveGap) {
-            Require(!decode.replay.sealed() && !decode.replay.checkpointing() &&
-                        std::count(fixture.io.events.begin(), fixture.io.events.end(),
-                                   "seal") == 0,
-                    "zero-filter VPP's readiness callback cannot turn a LIVE gap into a checkpoint");
-            queue_field(token, second);
-            return;
-          }
-          Require(decode.replay.sealed() && decode.replay.checkpointing() &&
-                      decode.h264_first_field.valid &&
-                      fixture.io.outputs == std::deque<uint64_t>{0},
-                  "only complementary Bob demand pins history before its actual EOS");
-          if (tail == Tail::CheckpointCancel) {
-            VASurfaceID source_id = 2;
-            Require(DestroySurfacesWithTimeout(&fixture.context, &source_id, 1, 0) ==
-                        VA_STATUS_SUCCESS && !decode.replay.checkpointing(),
-                    "actual source-pool cancellation clears the checkpoint in its old generation");
-          } else {
-            fixture.io.outputs.push_front(token);
-            fixture.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | order | second);
-          }
-        };
-        fixture.io.on_sleep = wait_for_checkpoint;
-      } else if (tail != Tail::Drain) {
+      if (tail != Tail::Drain) {
         fixture.io.on_sleep = [&] {
           ++waits;
           Require(fixture.driver.pending_vpp.size() == 1 &&
@@ -8194,17 +7950,15 @@ static void LiveBobTailWithUnfenceableExposedTarget(bool checkpoint_only = false
       Require(fixture.driver.pending_vpp.empty() && source->vpp_readers == 0 &&
                   target->vpp_writers == 0 && !fixture.io.invalid,
               "all combined tail paths release queued readers and writers exactly once");
-      if (tail == Tail::Cancel || tail == Tail::CheckpointCancel) {
-        Require(waits == (checkpoint_case ? 2U : 1U) &&
-                    ended == VA_STATUS_ERROR_OPERATION_FAILED &&
+      if (tail == Tail::Cancel) {
+        Require(waits == 1 && ended == VA_STATUS_ERROR_OPERATION_FAILED &&
                     SyncSurface2(&fixture.context, target->id, 0) ==
                         VA_STATUS_ERROR_DECODING_ERROR &&
                     decode.generation == generation + 1 && !decode.h264_first_field.valid &&
                     !target->ready && target->failed && target->storage == original,
                 "pool cancellation reproduces End1 then Sync23 without writing fallback pixels");
       } else {
-        Require(waits == (checkpoint_case || tail == Tail::WeaveGap ? 2U :
-                          tail == Tail::Complete ? 1U : 0U) &&
+        Require(waits == (tail == Tail::Complete ? 1U : 0U) &&
                     ended == VA_STATUS_SUCCESS && target->ready && !target->failed &&
                     target->frame_timestamp == token && target->expected_timestamp == token &&
                     target->trace_decode_identity == source->trace_decode_identity &&
@@ -8218,158 +7972,15 @@ static void LiveBobTailWithUnfenceableExposedTarget(bool checkpoint_only = false
                           (plane == 0 ? DecodeIoMock::Luma(token) : 128),
                       "successful combined Bob output contains every real active Y/UV byte");
       }
-      if (tail == Tail::Checkpoint) {
-        Require(decode.replay.checkpointing() && !decode.replay.sealed() &&
-                    decode.replay.outstanding() == 0 && !decode.replay.NeedsRestart() &&
-                    !decode.h264_first_field.valid && decode.generation == generation,
-                "real EOS completes the old pair without inventing a following AU or dropping its pin");
-        const auto old_source = source->storage, old_target = target->storage;
-        const HANDLE old_device = decode.device;
-        const int old_poll_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-        Require(old_poll_fd >= 0, "retain an unlocked old output-poll descriptor");
-        auto old_poll = std::make_shared<OutputPollLease>(old_poll_fd);
-        decode.output_poll = old_poll;
-        decode.armed_output_poll = old_poll;
-        Require(!source->direct_backing && source->object_fds.empty() &&
-                    target->layout.valid && target->object_fds.empty(),
-                "the copied-source/exposed-target model holds no decoder RX or DMA-BUF lease");
-        auto next_public = std::make_shared<Surface>();
-        auto next_private = std::make_shared<Surface>();
-        const uint64_t next_token = 3 * kTimestampStep;
-        const VASurfaceID next_id = fixture.driver.next_surface++;
-        for (const auto &picture : {next_public, next_private}) {
-          Require(picture->AllocateCpuNv12(16, 32), "allocate a real dependent continuation");
-          picture->id = next_id;
-          picture->expected_timestamp = next_token;
-          picture->decode_identity = picture->trace_decode_identity = 3;
-          picture->trace_context = decode.id;
-          picture->trace_generation = generation;
-          picture->trace_submission_ordinal = 3;
-          picture->h264_crop_unit_y = 4;
-        }
-        next_public->decode_picture = next_private;
-        fixture.driver.surfaces[next_id] = next_public;
-        decode.decoded_frames[next_token] = next_private;
-        decode.surface_timestamps[next_public.get()] = next_token;
-        decode.pending[next_token] = next_id;
-        Require(decode.replay.Append(next_token, false, TestH264AccessUnit(false, 3)),
-                "retain the actual next P, never replace it with a synthetic IDR");
-        decode.next_timestamp = 4 * kTimestampStep;
-        auto refused = std::make_shared<Surface>();
-        Require(refused->AllocateCpuNv12(16, 32), "allocate the next client target");
-        refused->id = fixture.driver.next_surface++;
-        std::fill(refused->storage.begin(), refused->storage.end(), 99);
-        fixture.driver.surfaces[refused->id] = refused;
-        const auto prepare_submission = [&](bool idr) {
-          Require(BeginPicture(&fixture.context, 1, refused->id) == VA_STATUS_SUCCESS,
-                  "begin a real submission against the checkpoint capacity guard");
-          decode.have_picture = true;
-          decode.picture.picture_height_in_mbs_minus1 = 1;
-          decode.picture.num_ref_frames = 1;
-          decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag = 1;
-          decode.picture.seq_fields.bits.direct_8x8_inference_flag = 1;
-          decode.picture.pic_fields.bits.deblocking_filter_control_present_flag = 1;
-          VASliceParameterBufferH264 slice = {};
-          slice.slice_type = idr ? 2 : 0;
-          decode.slices.push_back(slice);
-          decode.slice_data.push_back({uint8_t(idr ? 0x65 : 0x41), 0x88, 0x84});
-        };
-        prepare_submission(false);
-        const auto accepted_frames = decode.decoded_frames;
-        const auto accepted_pending = decode.pending;
-        const auto accepted_bindings = decode.surface_timestamps;
-        const auto identities = fixture.driver.next_decode_identity;
-        const auto next_ordinal = decode.next_submission_ordinal;
-        const auto refused_pixels = refused->storage;
-        const VAStatus refused_status = EndPicture(&fixture.context, 1);
-        if (refused_status != VA_STATUS_ERROR_HW_BUSY)
-          std::fprintf(stderr, "checkpoint capacity status=%d expected=%d\n",
-                       refused_status, VA_STATUS_ERROR_HW_BUSY);
-        Require(refused_status == VA_STATUS_ERROR_HW_BUSY,
-                "a full pinned checkpoint rejects the real AU with HW_BUSY");
-        Require(decode.h264_waiting_for_idr && !decode.replay.failed() &&
-                    decode.replay.checkpointing() && decode.decoded_frames == accepted_frames &&
-                    decode.pending == accepted_pending &&
-                    decode.surface_timestamps == accepted_bindings &&
-                    decode.next_timestamp == 4 * kTimestampStep &&
-                    decode.next_submission_ordinal == next_ordinal &&
-                    // Rejection deliberately assigns one quarantine identity,
-                    // not an accepted picture/token or a new replay binding.
-                    fixture.driver.next_decode_identity == identities + 1 &&
-                    refused->storage == refused_pixels && refused->decode_picture.expired() &&
-                    refused->decode_identity == identities &&
-                    refused->trace_decode_identity == 0 && PublicReadRejected(refused.get()) &&
-                    fixture.io.input_calls.size() == 4,
-                "capacity rejection precedes new picture allocation/binding and preserves all accepted owners");
-        fixture.io.allow_device_open = true;
-        Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
-                    fixture.io.input_calls.size() == 8 && decode.generation == generation &&
-                    decode.replay.checkpointing() && decode.device == old_device &&
-                    fixture.io.open_attempts == (qualified_reuse ? 0U : 1U) &&
-                    fixture.io.device_close_calls == (qualified_reuse ? 0U : 1U) &&
-                    fixture.io.decoder_open_calls == 1 && fixture.io.capture_start_calls == 1 &&
-                    fixture.io.decoder_open_handle == old_device &&
-                    std::count(fixture.io.events.begin(), fixture.io.events.end(), "stop") == 1 &&
-                    std::count(fixture.io.events.begin(), fixture.io.events.end(), "close-decoder") == 1 &&
-                    !decode.output_poll && decode.armed_output_poll.expired() &&
-                    fcntl(old_poll_fd, F_GETFD) >= 0,
-                "checkpoint continuation reopens transport and resubmits the reference prefix");
-        for (unsigned picture = 1; picture <= 3; ++picture) {
-          const auto &call = fixture.io.input_calls[3 + picture];
-          Require(call.accepted && call.timestamp == picture * kTimestampStep &&
-                      call.bytes == TestH264AccessUnit(picture == 1, picture),
-                  "checkpoint replay preserves each accepted original AU and token");
-          queue_field(picture * kTimestampStep, first);
-          queue_field(picture * kTimestampStep, second);
-        }
-        Require(ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
-                    !decode.replay.checkpointing() && decode.replay.outstanding() == 0 &&
-                    decode.pending.empty() && next_private->ready && next_public->ready &&
-                    source->storage == old_source && target->storage == old_target &&
-                    !fixture.io.invalid,
-                "old replay duplicates release the pin without rewriting held source/Bob pixels");
-        for (unsigned plane = 0; plane != 2; ++plane)
-          for (unsigned row = 0; row != (plane == 0 ? 32U : 16U); ++row)
-            for (unsigned column = 0; column != 16; ++column)
-              Require(next_public->planes[plane][row * next_public->pitch[plane] + column] ==
-                          (plane == 0 ? DecodeIoMock::Luma(next_token) : 128),
-                      "the dependent continuation completes every actual output byte");
-        prepare_submission(false);
-        Require(EndPicture(&fixture.context, 1) == VA_STATUS_ERROR_DECODING_ERROR &&
-                    decode.h264_waiting_for_idr && fixture.io.input_calls.size() == 8 &&
-                    refused->storage == refused_pixels,
-                "free capacity does not excuse a dependent P after rejected reference input");
-        prepare_submission(true);
-        Require(EndPicture(&fixture.context, 1) == VA_STATUS_SUCCESS &&
-                    !decode.h264_waiting_for_idr && decode.pending.count(4 * kTimestampStep) == 1 &&
-                    fixture.io.input_calls.size() == 10,
-                "only a genuinely accepted IDR clears the reference rejection gate");
-        queue_field(4 * kTimestampStep, first);
-        queue_field(4 * kTimestampStep, second);
-        Require(ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
-                    refused->ready && !refused->failed &&
-                    refused->frame_timestamp == 4 * kTimestampStep &&
-                    decode.pending.empty() && decode.replay.outstanding() == 0 &&
-                    source->storage == old_source && target->storage == old_target &&
-                    !fixture.io.invalid,
-                "the recovery IDR produces its actual pair without modifying retained old pixels");
-        old_poll.reset();
-        errno = 0;
-        Require(fcntl(old_poll_fd, F_GETFD) == -1 && errno == EBADF,
-                "retained copied pixels outlive closure of the final old poll owner");
-      }
       Require(std::count(fixture.io.events.begin(), fixture.io.events.end(), "release") ==
-                  (tail == Tail::Cancel || tail == Tail::CheckpointCancel ? 3 :
-                   tail == Tail::Checkpoint ? 13 : tail == Tail::Drain ? 5 : 4) &&
-                  std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") ==
-                      (tail == Tail::Drain || checkpoint_case ? 1 : 0) &&
+                  (tail == Tail::Cancel ? 3 : tail == Tail::Drain ? 5 : 4) &&
+                  (tail == Tail::Drain ||
+                   std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 0) &&
                   DestroyBuffer(&fixture.context, pipeline_id) == VA_STATUS_SUCCESS &&
                   DestroyBuffer(&fixture.context, filter_id) == VA_STATUS_SUCCESS &&
                   DestroyContext(&fixture.context, processor) == VA_STATUS_SUCCESS &&
-                  DestroyConfig(&fixture.context, config) == VA_STATUS_SUCCESS &&
-                  (!checkpoint_case ||
-                   DestroyConfig(&fixture.context, source_config) == VA_STATUS_SUCCESS),
-              "only explicit drain or qualified Bob demand emits EOS, with every output released once");
+                  DestroyConfig(&fixture.context, config) == VA_STATUS_SUCCESS,
+              "only explicit drain emits EOS and every acquired field/output is released once");
     }
   }
 }
@@ -9549,23 +9160,15 @@ static void AutonomousWorkerStopsAfterTransportFailure() {
 
 int main(int argc, char **argv) {
   try {
-    if (argc == 2 && std::strcmp(argv[1], "--live-checkpoint") == 0) {
-      LiveCheckpointAdmissionIsNonmutating();
-      LiveCheckpointPinsUntilEveryOldDuplicateRetires();
-      LiveCheckpointPreservesWorkAndLostHistoryGuards();
-      LiveHistoryRestoresOnlyAtAnIntactActualIdr();
-      LiveEosNeverSkipsAnAcceptedContinuation();
-      LiveCheckpointReopenPreservesQualifiedOwnership();
-      LiveBobTailWithUnfenceableExposedTarget(true);
-      LiveBobTailWithUnfenceableExposedTarget(true, true);
-      std::puts("VA-API LIVE checkpoint: bounded admission, pinned reference replay and exact duplicate retirement PASS");
+    if (argc == 2 && std::strcmp(argv[1], "--h264-replay-metadata") == 0) {
+      ReplayedH264FieldsRetainMetadataWithoutPixels();
+      std::puts("VA-API replayed H264 fields: metadata-only pairing, immutable pixels and release failures PASS");
       return 0;
     }
     if (argc == 2 && std::strcmp(argv[1], "--h264-replay-reopen") == 0) {
       for (unsigned capability : {1U, 0U, 2U, 3U})
         LiveH264InterlacedPrefeedKeepsExactFieldOwnership(true, capability);
       H264ReplayReopenEligibilityAndFailureOwnership();
-      LiveCheckpointReopenPreservesQualifiedOwnership();
       std::puts("VA-API H264 finite replay: qualified reuse, legacy/error full reopen, TFF/BFF ownership and pixels PASS");
       return 0;
     }
@@ -9578,7 +9181,7 @@ int main(int argc, char **argv) {
       std::puts("VA-API private first-field Bob, progress/grace and LIVE tail: TFF/BFF pixels, ownership, cancellation and explicit drain PASS");
       return 0;
     }
-    Require(argc == 1, "usage: vaapi-replay-test [--live-checkpoint|--live-bob-tail|--h264-replay-reopen]");
+    Require(argc == 1, "usage: vaapi-replay-test [--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
     DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobDoesNotCompleteDecodePicture();
     FirstTemporalBobRejectsMismatchedLatch();
@@ -9588,9 +9191,6 @@ int main(int argc, char **argv) {
     BoundedLiveStreamRetainsEveryOutstandingPicture();
     LiveHistoryRestoresOnlyAtAnIntactActualIdr();
     LiveEosNeverSkipsAnAcceptedContinuation();
-    LiveCheckpointAdmissionIsNonmutating();
-    LiveCheckpointPinsUntilEveryOldDuplicateRetires();
-    LiveCheckpointPreservesWorkAndLostHistoryGuards();
     LiveStreamMarkerSurvivesReplayAndPruning();
     UnknownOutputNeverGuessesAndInvalidOutputFails();
     DuplicateOutputCannotMutateOrRetirePixels();
@@ -9599,6 +9199,7 @@ int main(int argc, char **argv) {
     H264WholeWeavePreservesIdentityAndPixels();
     H264WholeWeaveRejectsMalformedOrPartialOutput();
     H264FieldPairsPreserveIdentityAndPixels();
+    ReplayedH264FieldsRetainMetadataWithoutPixels();
     H264FieldPairsRespectStaleAndRetainedOwnership();
     H264Bcm70012SecondFieldTokenRecoveryIsNarrow();
     H264FieldPairRejectsPartialOrMismatchedOutput();
@@ -9608,7 +9209,6 @@ int main(int argc, char **argv) {
     DeviceCloseRetriesNonConsumingBusy();
     RetainedHandleClosesBeforeDecoderReopen();
     H264ReplayReopenEligibilityAndFailureOwnership();
-    LiveCheckpointReopenPreservesQualifiedOwnership();
     ContextAdmissionRejectsBusyBeforePicture();
     ContextAdmissionFailuresPublishNothing();
     RealH264SubmitCompletesFieldPairs();
@@ -9639,7 +9239,6 @@ int main(int argc, char **argv) {
     LiveH264InterlacedPrefeedKeepsExactFieldOwnership();
     FirstH264FieldRefreshesTransportGrace();
     LiveBobTailWithUnfenceableExposedTarget();
-    LiveBobTailWithUnfenceableExposedTarget(true, true);
     LiveH264PrefeedBusyFallback();
     LiveH264PrefeedEligibilityAndGhostGuard();
     TransportProgressRequiresActualHardwareIo();

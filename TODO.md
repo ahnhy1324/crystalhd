@@ -198,12 +198,13 @@ Missing optional VA operations are not all release requirements.
   before changing policy: an input gap is not EOF. Require both genuine field
   identities, retained-pixel safety, EOS and reopen; do not repeat the already
   negative filler-only trials or synthesize the missing field from SW's EOF clone.
-  A bounded drain/replay checkpoint is another candidate, not implemented:
-  it must pin the complete actual-IDR prefix through EOS/restart and bound
-  queued-input capacity/replay work. A pre-seal `replayable()` check alone is
-  insufficient because live input can evict history while the batch is sealed.
-  Existing same-device reuse is finite-only; LIVE leases and the gap/replay
-  latency cost need separate qualification, not a widened timeout.
+  A pinned drain/replay checkpoint prototype passed a short own-client
+  continuation and pixel control, but is not enabled: stock Kodi required
+  243-picture reconstruction (5.66 s) and exceeded its 2 s output wait.
+  Cache/work bounds do not bound client latency. Preserve ordinary LIVE gap
+  semantics and finite-only channel reuse until a genuine nonterminal
+  completion/latency contract is established; do not widen timeouts or
+  repeat the same checkpoint as a proposed compatibility fix.
 - [ ] P0 — Resolve the remaining presentation compatibility boundary without
   app patches. SW BWDIF owns field-output PTS; VA Bob returns pixels, while the
   inspected Kodi zero-reference path retains duplicate pair PTS. Reuse the
