@@ -450,7 +450,10 @@ void BadCallsContextsAndMissingPairs() {
 }
 void UnsupportedPictureAndSlicePoison() {
   for (unsigned variant = 0; variant < 9; ++variant) {
-    Fixture f; f.Begin(); auto p = Picture(); auto s = Slice(); auto data = SliceBytes(0);
+    // A 16-line progressive grid and paired-field grid differ. Display flags
+    // remain unsupported there even when they are safe for an equal-row grid.
+    Fixture f(VAProfileMPEG2Main, 16, variant == 3 || variant == 4 ? 16 : 32);
+    f.Begin(); auto p = Picture(f.width, f.height); auto s = Slice(); auto data = SliceBytes(0);
     if (variant == 0) p.picture_coding_extension.bits.picture_structure = 1;
     if (variant == 1) p.picture_coding_extension.bits.picture_structure = 2;
     if (variant == 2) p.picture_coding_extension.bits.frame_pred_frame_dct = 0;
@@ -468,6 +471,82 @@ void UnsupportedPictureAndSlicePoison() {
     Require(EndPicture(&f.context, f.id) != VA_STATUS_SUCCESS && !f.mock.starts && f.mock.inputs.empty(),
             "unsupported field/repeat/fragmented/range syntax fails before hardware");
     f.Submit(1);
+  }
+}
+void ProgressiveDisplayFlags() {
+  for (unsigned flags = 0; flags < 4; ++flags) {
+    Fixture f(VAProfileMPEG2Main, 720, 480);
+    const auto iq = Custom(flags);
+    for (unsigned kind : {1U, 2U, 3U}) {
+      auto picture = Picture(720, 480, kind,
+          kind == 1 ? VA_INVALID_SURFACE : 1, kind == 3 ? 2 : VA_INVALID_SURFACE);
+      picture.picture_coding_extension.bits.top_field_first = flags & 1;
+      picture.picture_coding_extension.bits.repeat_first_field = (flags >> 1) & 1;
+      const auto original = picture;
+      f.Begin(kind);
+      const auto buffer = f.Buffer(VAPictureParameterBufferType, &picture, sizeof(picture));
+      f.Render(buffer);
+      f.Render(f.Buffer(VAIQMatrixBufferType, &iq, sizeof(iq)));
+      const auto slice = Slice(29); const auto data = SliceBytes(29);
+      f.Render(f.Buffer(VASliceParameterBufferType, &slice, sizeof(slice)));
+      f.Render(f.Buffer(VASliceDataBufferType, data.data(), data.size()));
+      Require(!std::memcmp(&f.decode->mpeg2_picture.picture, &original, sizeof(original)),
+              "owned pending picture retains original display flags and references");
+      f.End();
+      Require(!std::memcmp(f.driver.buffers.at(buffer).data.data(), &original, sizeof(original)) &&
+              !std::memcmp(&picture, &original, sizeof(original)),
+              "public and caller picture buffers are never canonicalized in place");
+      Require(f.mock.inputs.size() == kind && f.decode->mpeg2_progressive_sequence,
+              "each original I/P/B produces one progressive transport AU");
+      const auto *unit = f.decode->mpeg2_replay.Find(kind * kTimestampStep);
+      Require(unit && unit->forward == (kind == 1 ? 0 : kTimestampStep) &&
+              unit->backward == (kind == 3 ? 2 * kTimestampStep : 0),
+              "normalization retains original reference identity");
+      auto canonical = original;
+      canonical.picture_coding_extension.bits.top_field_first = 0;
+      canonical.picture_coding_extension.bits.repeat_first_field = 0;
+      const crystalhd_mpeg2::SequenceOptions sequence = {
+          VAProfileMPEG2Main, 4, true, false, 1, 5, 0, 0, 0x3ffff, 112};
+      auto matrices = crystalhd_mpeg2::DefaultQuantMatrices(), next = matrices;
+      std::vector<uint8_t> expected;
+      Require(crystalhd_mpeg2::Assemble(canonical, &iq, matrices,
+          {{slice, data.data(), data.size()}}, sequence, {0, kind == 1}, &expected, &next),
+          "independent canonical request assembles");
+      Require(unit->bytes == expected && f.mock.inputs.back().bytes == expected,
+              "public transport and replay retain exact canonical pixels request");
+      CheckMatrices(unit->bytes, iq); CheckTail(unit->bytes, data);
+      if (kind == 1) Require(SequenceProgressive(unit->bytes), "normalized sequence is progressive");
+    }
+  }
+  for (unsigned variant = 0; variant < 9; ++variant) {
+    const unsigned height = variant == 5 ? 360 : variant == 6 ? 720 : 480;
+    Fixture f(variant == 0 ? VAProfileMPEG2Simple : VAProfileMPEG2Main, 720, height);
+    f.Submit(1);
+    const auto before = f.mock.inputs.size(), cached = f.decode->mpeg2_replay.cached_pictures();
+    const auto timestamp = f.decode->next_timestamp;
+    const auto matrices = f.decode->mpeg2_matrices.lists;
+    const auto opens = f.mock.opens, starts = f.mock.starts;
+    auto picture = Picture(720, height, 2, 1);
+    auto &p = picture.picture_coding_extension.bits;
+    p.top_field_first = p.repeat_first_field = 1;
+    auto slice = Slice(); auto data = SliceBytes(0); auto iq = Custom(17);
+    if (variant == 1) p.picture_structure = 1;
+    if (variant == 2) p.picture_structure = 2;
+    if (variant == 3) p.frame_pred_frame_dct = 0;
+    if (variant == 4) p.progressive_frame = 0;
+    if (variant == 7) { slice = Slice(30); data = SliceBytes(30); }
+    if (variant == 8) iq.intra_quantiser_matrix[1] = 0;
+    f.Begin(2);
+    f.Render(f.Buffer(VAPictureParameterBufferType, &picture, sizeof(picture)));
+    f.Render(f.Buffer(VAIQMatrixBufferType, &iq, sizeof(iq)));
+    f.Render(f.Buffer(VASliceParameterBufferType, &slice, sizeof(slice)));
+    f.Render(f.Buffer(VASliceDataBufferType, data.data(), data.size()));
+    Require(EndPicture(&f.context, f.id) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+            f.mock.inputs.size() == before && f.mock.opens == opens && f.mock.starts == starts &&
+            f.decode->next_timestamp == timestamp && f.decode->mpeg2_matrices.lists == matrices &&
+            f.decode->mpeg2_replay.cached_pictures() == cached &&
+            f.decode->have_mpeg2_sequence && f.decode->mpeg2_progressive_sequence,
+            "out-of-scope repeat syntax fails atomically before transport or state mutation");
   }
 }
 void InterlacedSequenceAdmission() {
@@ -518,11 +597,14 @@ void InterlacedSequenceAdmission() {
   }
 }
 void SequenceModeLifetime() {
+  for (bool display_flags : {false, true})
   for (bool progressive : {false, true}) {
     Fixture f;
     f.mock.capacity = false;
     auto picture = Picture();
     picture.picture_coding_extension.bits.progressive_frame = progressive;
+    picture.picture_coding_extension.bits.top_field_first = progressive && display_flags;
+    picture.picture_coding_extension.bits.repeat_first_field = progressive && display_flags;
     f.Begin(1); f.Parameters(picture); f.End();
     Require(f.decode->have_mpeg2_sequence &&
             f.decode->mpeg2_progressive_sequence == progressive &&
@@ -534,6 +616,8 @@ void SequenceModeLifetime() {
     const auto token = f.decode->next_timestamp;
     const auto count = f.decode->mpeg2_replay.cached_pictures();
     picture.picture_coding_extension.bits.progressive_frame = !progressive;
+    picture.picture_coding_extension.bits.top_field_first = !progressive && display_flags;
+    picture.picture_coding_extension.bits.repeat_first_field = !progressive && display_flags;
     for (bool close_hardware : {false, true}) {
       if (close_hardware)
         Require(f.decode->CloseHardware() == BC_STS_SUCCESS,
@@ -832,6 +916,7 @@ int main() {
     {"malformed buffers poison and recover", MalformedBuffersPoison},
     {"bad calls, context and pair ownership", BadCallsContextsAndMissingPairs},
     {"unsupported picture/slice syntax", UnsupportedPictureAndSlicePoison},
+    {"progressive display flags preserve pixels request and caller ownership", ProgressiveDisplayFlags},
     {"Main interlaced public submission and bounded syntax", InterlacedSequenceAdmission},
     {"frozen MPEG-2 sequence mode and logical reset", SequenceModeLifetime},
     {"reference identity and unready anchors", ReferenceValidation},

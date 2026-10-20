@@ -403,6 +403,69 @@ void InterlacedFrames() {
   }
 }
 
+void ProgressiveDisplayFlags() {
+  ++groups;
+  for (unsigned type : {1U, 2U, 3U})
+    for (unsigned height : {32U, 480U, 576U, 1080U, 1088U})
+      for (unsigned flags = 0; flags < 4; ++flags)
+        for (bool emit_sequence : {false, true}) {
+          auto picture = Picture(type, 720, height);
+          auto &p = picture.picture_coding_extension.bits;
+          p.top_field_first = flags & 1;
+          p.repeat_first_field = (flags >> 1) & 1;
+          p.intra_dc_precision = flags;
+          p.concealment_motion_vectors = flags & 1;
+          p.q_scale_type = (flags >> 1) & 1;
+          p.intra_vlc_format = flags & 1;
+          p.alternate_scan = (flags >> 1) & 1;
+          picture.forward_reference_picture = 17;
+          picture.backward_reference_picture = 29;
+          const auto original = picture;
+          auto canonical = picture;
+          canonical.picture_coding_extension.bits.top_field_first = 0;
+          canonical.picture_coding_extension.bits.repeat_first_field = 0;
+          const auto sequence = Sequence();
+          const mpeg::PictureOptions options{1023, emit_sequence};
+          const auto slice = Slice((height + 15U) / 16U - 1U, 3, true, 2);
+          const auto slice_bytes = slice.bytes;
+          const auto iq = Custom(15), original_iq = iq;
+          const auto current = mpeg::DefaultQuantMatrices();
+          auto next = current, canonical_next = current;
+          std::vector<uint8_t> actual, expected;
+          Require(mpeg::Assemble(canonical, &iq, current, {slice.View()}, sequence,
+                                 options, &expected, &canonical_next),
+                  "ordinary progressive canonical input is unchanged");
+          Require(mpeg::Assemble(picture, &iq, current, {slice.View()}, sequence,
+                                 options, &actual, &next),
+                  "bounded progressive display flags do not reject stored pixels");
+          Require(actual == expected && next.lists == canonical_next.lists,
+                  "display flags change neither canonical bytes nor effective IQ");
+          Parse(actual, canonical, sequence, options, next, {slice.View()});
+          Require(!std::memcmp(&picture, &original, sizeof(picture)) &&
+                  !std::memcmp(&iq, &original_iq, sizeof(iq)) && slice.bytes == slice_bytes,
+                  "original flags, references, IQ and slice storage remain immutable");
+        }
+  for (unsigned variant = 0; variant < 10; ++variant) {
+    Fixture f;
+    f.picture = Picture(1, 720, 480);
+    auto &p = f.picture.picture_coding_extension.bits;
+    p.repeat_first_field = p.top_field_first = 1;
+    switch (variant) {
+      case 0: f.sequence.profile = VAProfileMPEG2Simple; f.sequence.level = 8; break;
+      case 1: p.picture_structure = 1; break;
+      case 2: p.picture_structure = 2; break;
+      case 3: p.frame_pred_frame_dct = 0; break;
+      case 4: p.progressive_frame = 0; f.sequence.progressive_sequence = false; break;
+      case 5: f.sequence.progressive_sequence = false; break;
+      case 6: f.picture.vertical_size = 360; break;
+      case 7: f.picture.vertical_size = 720; break;
+      case 8: f.slice = Slice(30); break;
+      case 9: f.iq.intra_quantiser_matrix[1] = 0; break;
+    }
+    f.Reject();
+  }
+}
+
 void SliceRanges() {
   ++groups;
   const auto picture = Picture(); const auto sequence = Sequence();
@@ -484,7 +547,8 @@ int main(int argc, char **argv) {
   try {
     if (argc == 2 && std::strcmp(argv[1], "--stream") == 0) { Stream(); return 0; }
     if (argc != 1) throw std::runtime_error("usage: vaapi-mpeg2-test [--stream]");
-    Defaults(); Headers(); Matrices(); Rejections(); InterlacedFrames(); SliceRanges(); Capacity();
+    Defaults(); Headers(); Matrices(); Rejections(); InterlacedFrames();
+    ProgressiveDisplayFlags(); SliceRanges(); Capacity();
     std::printf("MPEG-2 assembly: %u groups, %u checks PASS\n", groups, checks);
     return 0;
   } catch (const std::exception &error) {

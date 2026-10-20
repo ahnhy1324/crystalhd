@@ -109,10 +109,25 @@ class Bits {
   unsigned position_ = 0;
 };
 
+inline bool CanNormalizeDisplayFlags(const VAPictureParameterBufferMPEG2 &picture,
+                                     const SequenceOptions &sequence) {
+  const auto &p = picture.picture_coding_extension.bits;
+  // VA omits the original progressive_sequence, so TFF/RFF cannot identify
+  // soft-field versus whole-frame repetition. The caller retains that cadence.
+  // For frame-predicted progressive FRAME pictures, TFF does not affect motion
+  // prediction. Equal macroblock grids let us emit one progressive stored
+  // picture without changing slice interpretation or padded reference edges.
+  return sequence.profile == VAProfileMPEG2Main && sequence.progressive_sequence &&
+      p.picture_structure == 3 && p.progressive_frame && p.frame_pred_frame_dct &&
+      (picture.vertical_size + 15U) / 16U ==
+          2U * ((picture.vertical_size + 31U) / 32U);
+}
+
 inline bool ValidPicture(const VAPictureParameterBufferMPEG2 &picture,
                          const SequenceOptions &sequence,
                          const PictureOptions &options) {
   const auto &p = picture.picture_coding_extension.bits;
+  const bool normalize_display_flags = CanNormalizeDisplayFlags(picture, sequence);
   // The supported interlaced subset is Main-profile frame pictures without
   // repeated fields. Mixed progressive/interlaced sequences need a separate
   // sequence-mode contract; a VA picture does not carry progressive_sequence.
@@ -122,10 +137,10 @@ inline bool ValidPicture(const VAPictureParameterBufferMPEG2 &picture,
       (sequence.level != 10 && sequence.level != 8 &&
        sequence.level != 6 && sequence.level != 4) ||
       (sequence.profile == VAProfileMPEG2Simple && sequence.level != 8) ||
-      p.picture_structure != 3 || p.repeat_first_field ||
+      p.picture_structure != 3 || (p.repeat_first_field && !normalize_display_flags) ||
       bool(p.progressive_frame) != sequence.progressive_sequence ||
       (sequence.progressive_sequence &&
-       (!p.frame_pred_frame_dct || p.top_field_first)) ||
+       (!p.frame_pred_frame_dct || (p.top_field_first && !normalize_display_flags))) ||
       (!sequence.progressive_sequence &&
        (sequence.profile != VAProfileMPEG2Main || (picture.vertical_size & 3U))) ||
       picture.horizontal_size == 0 || picture.vertical_size == 0 ||
@@ -267,6 +282,7 @@ inline bool Assemble(const VAPictureParameterBufferMPEG2 &picture,
   bits.Put(1, 0); // extra_bit_picture
   bits.Start(0xb5); bits.Put(4, 8);
   const auto &p = picture.picture_coding_extension.bits;
+  const bool normalize_display_flags = detail::CanNormalizeDisplayFlags(picture, sequence);
   for (unsigned component = 0; component < 4; ++component) {
     const bool active = component < 2
         ? picture.picture_coding_type != 1 || p.concealment_motion_vectors
@@ -274,10 +290,12 @@ inline bool Assemble(const VAPictureParameterBufferMPEG2 &picture,
     bits.Put(4, active ? ((picture.f_code >> (12 - component * 4)) & 15) : 15);
   }
   bits.Put(2, p.intra_dc_precision); bits.Put(2, p.picture_structure);
-  bits.Put(1, p.top_field_first); bits.Put(1, p.frame_pred_frame_dct);
+  bits.Put(1, normalize_display_flags ? 0 : p.top_field_first);
+  bits.Put(1, p.frame_pred_frame_dct);
   bits.Put(1, p.concealment_motion_vectors); bits.Put(1, p.q_scale_type);
   bits.Put(1, p.intra_vlc_format); bits.Put(1, p.alternate_scan);
-  bits.Put(1, p.repeat_first_field); bits.Put(1, p.progressive_frame); // chroma_420_type
+  bits.Put(1, normalize_display_flags ? 0 : p.repeat_first_field);
+  bits.Put(1, p.progressive_frame); // chroma_420_type
   bits.Put(1, p.progressive_frame); bits.Put(1, 0); // no composite display extension
   bits.Start(0xb5); bits.Put(4, 3);
   // Emit every effective list, avoiding dependence on the hardware's previous

@@ -2,6 +2,10 @@
 
 ## 1.2.0 — in development
 
+- Accept bounded MPEG-2 Main progressive-frame TFF/RFF input by normalizing
+  only internal display flags, with frame prediction and equal macroblock grids.
+  Preserve original picture metadata, reference/slice/IQ data and caller-owned
+  repeat timing; field pictures and mixed sequence modes remain unsupported.
 - Remove per-pixel division from scalar NV12 VPP resizing, preserving exact
   crop/chroma sampling, interleaved field rows and output padding without SSE.
 - Preserve field/chroma lattices in explicit interleaved VA VPP scaling, and
