@@ -315,5 +315,64 @@ inline bool Assemble(const VAPictureParameterBufferMPEG2 &picture,
   *next_matrices = next;
   return true;
 }
+
+// Non-reference B picture copying the newest decoded I/P anchor. The caller
+// must own a valid backward reference and decide whether auxiliary submission
+// is qualified for its stream; syntax support here is not a completion or
+// performance claim. No sequence/GOP/EOS or reference-state update is emitted.
+// Repeating the exact active IQ snapshot must not reset it to default matrices.
+inline bool AssembleBackwardCopy(unsigned width, unsigned height,
+                                 const SequenceOptions &sequence,
+                                 const QuantMatrices &current,
+                                 unsigned temporal_reference,
+                                 std::vector<uint8_t> *output) {
+  // Bound before narrowing to VA's dimension fields or allocating any rows.
+  if (output == nullptr || width == 0 || height == 0 ||
+      width > 1920 || height > 1088 || ((width | height) & 1U) ||
+      sequence.profile != VAProfileMPEG2Main || !sequence.progressive_sequence ||
+      sequence.low_delay || !detail::ValidMatrices(current)) return false;
+  VAPictureParameterBufferMPEG2 picture = {};
+  picture.horizontal_size = width;
+  picture.vertical_size = height;
+  picture.forward_reference_picture = picture.backward_reference_picture = VA_INVALID_SURFACE;
+  picture.picture_coding_type = 3;
+  picture.f_code = 0x1111;
+  picture.picture_coding_extension.bits.picture_structure = 3;
+  picture.picture_coding_extension.bits.frame_pred_frame_dct = 1;
+  picture.picture_coding_extension.bits.progressive_frame = 1;
+  const PictureOptions options{temporal_reference, false};
+  if (!detail::ValidPicture(picture, sequence, options)) return false;
+  const unsigned columns = (width + 15U) / 16U;
+  const unsigned rows = (height + 15U) / 16U;
+  std::vector<std::vector<uint8_t>> row_data;
+  row_data.reserve(rows);
+  for (unsigned row = 0; row < rows; ++row) {
+    detail::Bits bits;
+    bits.Start(static_cast<uint8_t>(row + 1));
+    bits.Put(5, 1); bits.Put(1, 0); // quantiser_scale_code, extra_bit_slice
+    for (unsigned column = 0; column < columns; ++column) {
+      // H.262 tables B.1/B.4/B.10: increment=1, backward-only/no pattern,
+      // zero x/y vector. Each slice resets the predictor to zero. Frame
+      // prediction and f_code=1 need no motion type, field select or residual.
+      bits.Put(1, 1); bits.Put(3, 2); bits.Put(1, 1); bits.Put(1, 1);
+    }
+    bits.Align();
+    row_data.push_back(std::move(bits.bytes));
+  }
+  std::vector<Slice> slices;
+  slices.reserve(rows);
+  for (unsigned row = 0; row < rows; ++row) {
+    VASliceParameterBufferMPEG2 parameters = {};
+    parameters.slice_data_size = row_data[row].size();
+    parameters.slice_data_flag = VA_SLICE_DATA_FLAG_ALL;
+    parameters.macroblock_offset = 38;
+    parameters.slice_vertical_position = row;
+    parameters.quantiser_scale_code = 1;
+    slices.push_back({parameters, row_data[row].data(), row_data[row].size()});
+  }
+  QuantMatrices unchanged;
+  return Assemble(picture, nullptr, current, slices, sequence, options,
+                  output, &unchanged);
+}
 } // namespace crystalhd_mpeg2
 #endif

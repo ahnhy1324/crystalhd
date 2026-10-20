@@ -2,6 +2,10 @@
 
 ## 1.2.0 — in development
 
+- Advance eligible synchronous MPEG-2 Main progressive output with private
+  non-reference B pictures instead of repeatedly sealing and reopening the
+  device. Preserve original pictures, references and caller timing; separately
+  drain auxiliary output and retain full-device EOS/replay fallback.
 - Accept bounded MPEG-2 Main progressive-frame TFF/RFF input by normalizing
   only internal display flags, with frame prediction and equal macroblock grids.
   Preserve original picture metadata, reference/slice/IQ data and caller-owned

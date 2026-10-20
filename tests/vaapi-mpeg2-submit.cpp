@@ -20,6 +20,9 @@ struct MockOutput {
 };
 struct DecoderMock {
   bool capacity = true, opened = false, leased = false;
+  bool release_error = false, close_busy = false;
+  unsigned input_calls = 0, fail_input_call = 0, complete_after_input = 0;
+  uint64_t complete_token = 0;
   unsigned opens = 0, closes = 0, starts = 0, stops = 0, flushes = 0, releases = 0;
   BC_INPUT_FORMAT format = {};
   std::vector<InputRecord> inputs;
@@ -75,7 +78,9 @@ extern "C" BC_STATUS DtsStopDecoder(HANDLE device) {
 }
 extern "C" BC_STATUS DtsCloseDecoder(HANDLE device) { CheckDevice(device); return BC_STS_SUCCESS; }
 extern "C" BC_STATUS DtsDeviceClose(HANDLE device) {
-  CheckDevice(device); ++active->closes; active->opened = false; return BC_STS_SUCCESS;
+  CheckDevice(device);
+  if (active->close_busy) return BC_STS_BUSY;
+  ++active->closes; active->opened = false; return BC_STS_SUCCESS;
 }
 extern "C" BC_STATUS DtsGetDriverStatus(HANDLE device, BC_DTS_STATUS *status) {
   CheckDevice(device); *status = {}; status->ReadyListCount = active->outputs.size(); return BC_STS_SUCCESS;
@@ -90,7 +95,10 @@ extern "C" BC_STATUS DtsProcInput(HANDLE device, uint8_t *bytes, uint32_t size,
                                   uint64_t timestamp, BOOL encrypted) {
   CheckDevice(device);
   Require(bytes && size && timestamp && !encrypted, "complete owned timestamped input");
+  if (++active->input_calls == active->fail_input_call) return BC_STS_ERROR;
   active->inputs.push_back({timestamp, std::vector<uint8_t>(bytes, bytes+size)});
+  if (active->input_calls == active->complete_after_input)
+    active->Queue(active->complete_token, active->format.width, active->format.height);
   return BC_STS_SUCCESS;
 }
 extern "C" BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t, BC_DTS_PROC_OUT *output) {
@@ -101,11 +109,13 @@ extern "C" BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t, BC_DTS_PROC_OU
   output->PicInfo.timeStamp = next.timestamp;
   output->PicInfo.width = next.width; output->PicInfo.height = next.height;
   output->PicInfo.flags = next.eos ? VDEC_FLAG_EOS : 0;
+  output->b422Mode = OUTPUT_MODE422_YUY2;
   output->Ybuff = next.pixels.data(); output->YBuffDoneSz = next.pixels.size()/4;
   active->leased = true; return BC_STS_SUCCESS;
 }
 extern "C" BC_STATUS DtsReleaseOutputBuffs(HANDLE device, PVOID, BOOL change) {
   CheckDevice(device); Require(active->leased && !change, "release exactly the returned picture lease");
+  if (active->release_error) return BC_STS_ERROR;
   active->leased = false; ++active->releases; active->outputs.pop_front(); return BC_STS_SUCCESS;
 }
 extern "C" BC_STATUS DtsFlushInput(HANDLE device, uint32_t mode) {
@@ -794,6 +804,192 @@ void BackpressureAndSimpleBRejection() {
             "Simple profile rejects B pictures even when their references are valid");
   }
 }
+
+void PrivateMpeg2Completion() {
+  Fixture f;
+  auto matrix = Custom(19);
+  f.Begin(1); f.Parameters(Picture(), &matrix); f.End();
+  f.Submit(2, 2, 1);
+  const auto first = f.driver.surfaces.at(1);
+  const auto ordinal = f.decode->next_submission_ordinal;
+  const auto pending = f.decode->pending;
+  const auto real = f.mock.inputs;
+  // Staging a later picture must not replace the last actually sent IQ/syntax.
+  f.Begin(3); auto future = Custom(73); f.Parameters(Picture(16,32,3,1,2), &future);
+  Require(TryMpeg2Auxiliary(&f.driver, f.decode.get(), first) == VA_STATUS_SUCCESS &&
+              f.mock.inputs.size() == 4,
+          "held previous anchor gets two private backward-copy B pictures");
+  Require(f.decode->pending == pending && f.decode->next_submission_ordinal == ordinal &&
+              f.decode->next_timestamp == 5*kTimestampStep && !first->ready &&
+              f.decode->mpeg2_replay.cached_pictures() == 2,
+          "auxiliaries own tokens but no public picture, ordinal or replay entry");
+  CheckMatrices(f.mock.inputs[2].bytes, matrix);
+  Require(f.mock.inputs[2].bytes == f.mock.inputs[3].bytes &&
+              f.mock.inputs[0].bytes == real[0].bytes && f.mock.inputs[1].bytes == real[1].bytes,
+          "generated copies preserve current IQ and all original AU bytes");
+  Require(TryMpeg2Auxiliary(&f.driver, f.decode.get(), first) == VA_STATUS_SUCCESS &&
+              f.mock.inputs.size() == 4, "one bounded attempt per last real input");
+  f.mock.Queue(kTimestampStep,16,32); f.mock.Queue(2*kTimestampStep,16,32); f.Receive();
+  Require(f.decode->pending.empty() && f.decode->mpeg2_auxiliary.PendingCount() == 2 &&
+              HasAutonomousDecodeWork(f.decode), "public completion leaves private output debt serviced");
+  f.mock.Queue(3*kTimestampStep,16,32); f.mock.Queue(4*kTimestampStep,16,32); f.Receive();
+  Require(f.decode->mpeg2_auxiliary.PendingCount() == 0 && f.decode->pending.empty() &&
+              f.decode->decoded_frames.size() == 2, "auxiliary output is released without a public surface");
+  Require(SealDecodeBatch(&f.driver, f.decode.get()) == VA_STATUS_SUCCESS && f.mock.flushes == 0,
+          "idle private completion is not EOF");
+  f.decode->closing = true;
+  Require(SealDecodeBatch(&f.driver, f.decode.get()) == VA_STATUS_SUCCESS && f.mock.flushes == 1,
+          "explicit close seals an auxiliary-only tail");
+  f.mock.Eos(); f.Receive();
+  Require(!f.decode->mpeg2_auxiliary.needs_eos, "only actual EOS retires the private stream tail");
+}
+
+void PrivateMpeg2BCompletion() {
+  Fixture f;
+  f.Submit(1); f.Submit(2,2,1); f.Submit(3,3,1,2);
+  const auto original = f.mock.inputs.back();
+  const auto b = f.driver.surfaces.at(3);
+  Require(TryMpeg2Auxiliary(&f.driver, f.decode.get(), b) == VA_STATUS_SUCCESS &&
+              f.mock.inputs.size() == 4 && f.mock.inputs.back().bytes == original.bytes &&
+              f.mock.inputs.back().timestamp == 4*kTimestampStep,
+          "latest B receives an exact nonreference clone with its own token");
+  f.mock.Queue(3*kTimestampStep,16,32); f.Receive();
+  Require(b->ready && !f.decode->mpeg2_replay.Find(3*kTimestampStep) &&
+              f.decode->mpeg2_auxiliary.PendingCount() == 1,
+          "original B pruning cannot forget its accepted auxiliary debt");
+  f.mock.Queue(4*kTimestampStep,16,32); f.Receive();
+  Require(f.decode->mpeg2_auxiliary.PendingCount() == 0 && f.mock.releases == 2,
+          "private clone retires after output release");
+  f.mock.Queue(4*kTimestampStep,16,32);
+  Require(ReceiveAvailable(&f.driver, f.decode.get()) == VA_STATUS_ERROR_DECODING_ERROR &&
+              !f.mock.leased, "duplicate auxiliary output is not an ignored unknown timestamp");
+}
+
+void PrivateMpeg2CompletionRejection() {
+  for (unsigned mode = 0; mode < 14; ++mode) {
+    Fixture f(mode == 0 ? VAProfileMPEG2Simple : VAProfileMPEG2Main);
+    f.Submit(1); f.Submit(2,2,1);
+    const auto first = f.driver.surfaces.at(1);
+    if (mode == 1) f.decode->is_70012 = true;
+    if (mode == 2) f.decode->partial_input_timestamp = kTimestampStep;
+    if (mode == 3) f.decode->closing = true;
+    if (mode == 4) f.mock.capacity = false;
+    if (mode == 5) first->ready = true;
+    if (mode == 6) ++f.decode->generation;
+    if (mode == 7) {
+      f.mock.capacity = false;
+      f.Submit(3,3,1,2);
+      f.mock.capacity = true;
+    }
+    if (mode == 8) f.decode->mpeg2_replay.Seal();
+    if (mode == 9) f.decode->mpeg2_auxiliary.candidate.device = &f.driver;
+    if (mode == 10) f.decode->mpeg2_auxiliary.candidate.eligible = false;
+    if (mode == 11) f.decode->mpeg2_auxiliary.replayed = true;
+    if (mode == 12) f.decode->processing_geometry.enabled = true;
+    if (mode == 13)
+      for (auto &entry : f.decode->mpeg2_auxiliary.outputs)
+        entry.timestamp = 99*kTimestampStep;
+    const auto next = f.decode->next_timestamp;
+    Require(TryMpeg2Auxiliary(&f.driver, f.decode.get(), first) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 2 && f.decode->next_timestamp == next,
+            "ineligible, queued, backpressured or stale demand cannot inject auxiliary bytes");
+  }
+}
+
+void PrivateMpeg2SyncAndFailures() {
+  {
+    Fixture f; f.Submit(1); f.Submit(2,2,1);
+    Require(SyncSurface2(&f.context,1,0) == VA_STATUS_ERROR_TIMEDOUT &&
+                f.mock.inputs.size() == 2, "zero-timeout public sync cannot inject work");
+    f.mock.complete_after_input = 4; f.mock.complete_token = kTimestampStep;
+    Require(SyncSurface2(&f.context,1,50000000) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 4 && f.mock.flushes == 0 && f.mock.opens == 1,
+            "actual public sync advances exact original without EOS/restart");
+    Require(f.driver.surfaces.at(1)->frame_timestamp == kTimestampStep &&
+                f.decode->next_submission_ordinal == 3 &&
+                f.decode->mpeg2_auxiliary.PendingCount() == 2,
+            "sync completion preserves original identity and auxiliary debt");
+  }
+  for (unsigned failure = 1; failure <= 2; ++failure) {
+    Fixture f; f.Submit(1); f.Submit(2,2,1);
+    f.mock.fail_input_call = f.mock.input_calls + failure;
+    Require(TryMpeg2Auxiliary(&f.driver,f.decode.get(),f.driver.surfaces.at(1)) ==
+                VA_STATUS_ERROR_DECODING_ERROR && f.decode->ReplayFailed() &&
+                f.decode->mpeg2_auxiliary.PendingCount() == failure-1,
+            "failed whole/second auxiliary call is terminal and retains accepted debt");
+    const auto calls = f.mock.input_calls;
+    Require(TryMpeg2Auxiliary(&f.driver,f.decode.get(),f.driver.surfaces.at(1)) ==
+                VA_STATUS_SUCCESS && f.mock.input_calls == calls,
+            "uncertain input failure never retries auxiliary bytes");
+  }
+  {
+    Fixture f; f.Submit(1); f.Submit(2,2,1);
+    Require(TryMpeg2Auxiliary(&f.driver,f.decode.get(),f.driver.surfaces.at(1)) == VA_STATUS_SUCCESS,
+            "prepare private output debt");
+    Require(SealDecodeBatch(&f.driver,f.decode.get()) == VA_STATUS_SUCCESS,
+            "existing real-input EOS fallback remains available");
+    f.mock.Eos();
+    Require(ReceiveAvailable(&f.driver,f.decode.get()) == VA_STATUS_ERROR_DECODING_ERROR &&
+                !f.mock.leased && f.decode->mpeg2_auxiliary.PendingCount() == 2,
+            "actual early EOS releases its lease but cannot hide missing auxiliaries");
+  }
+  {
+    Fixture f; f.Submit(1); f.Submit(2,2,1);
+    Require(TryMpeg2Auxiliary(&f.driver,f.decode.get(),f.driver.surfaces.at(1)) == VA_STATUS_SUCCESS,
+            "prepare release-error case");
+    f.mock.Queue(3*kTimestampStep,16,32); f.mock.release_error = true;
+    Require(ReceiveAvailable(&f.driver,f.decode.get()) == VA_STATUS_ERROR_DECODING_ERROR &&
+                f.decode->mpeg2_auxiliary.PendingCount() == 2 && f.mock.leased,
+            "output debt cannot retire before successful lease release");
+    // The mock has no kernel terminal containment; consume its synthetic lease
+    // solely to let fixture teardown model the already-failed channel.
+    f.mock.release_error = false; f.mock.leased = false; f.mock.outputs.clear();
+  }
+  {
+    Fixture f; f.Submit(1); f.Submit(2,2,1);
+    Require(TryMpeg2Auxiliary(&f.driver,f.decode.get(),f.driver.surfaces.at(1)) == VA_STATUS_SUCCESS,
+            "prepare non-consuming close");
+    f.mock.close_busy = true;
+    Require(f.decode->CloseHardware(0) == BC_STS_BUSY && f.decode->device == &f.mock &&
+                f.decode->hardware_close_pending &&
+                f.decode->mpeg2_auxiliary.PendingCount() == 2 &&
+                f.decode->mpeg2_auxiliary.aborted,
+            "BUSY close retains exact ownership ledger without permitting more decode");
+    f.mock.close_busy = false;
+    Require(f.decode->CloseHardware(0) == BC_STS_SUCCESS && !f.decode->device &&
+                f.decode->mpeg2_auxiliary.PendingCount() == 0,
+            "only consuming close clears aborted private ownership");
+  }
+}
+
+void PrivateMpeg2NormalizedAndNewAnchor() {
+  std::vector<uint8_t> first_i, first_p;
+  for (unsigned flags = 0; flags < 4; ++flags) {
+    Fixture f;
+    auto i = Picture(), p = Picture(16,32,2,1);
+    i.picture_coding_extension.bits.repeat_first_field = flags & 1;
+    i.picture_coding_extension.bits.top_field_first = flags >> 1;
+    p.picture_coding_extension = i.picture_coding_extension;
+    f.Begin(1); f.Parameters(i); f.End();
+    f.Begin(2); f.Parameters(p); f.End();
+    if (!flags) { first_i = f.mock.inputs[0].bytes; first_p = f.mock.inputs[1].bytes; }
+    Require(f.mock.inputs[0].bytes == first_i && f.mock.inputs[1].bytes == first_p &&
+                TryMpeg2Auxiliary(&f.driver,f.decode.get(),f.driver.surfaces.at(1)) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 4 &&
+                i.picture_coding_extension.bits.repeat_first_field == (flags & 1),
+            "existing display normalization preserves original/caller metadata and completion eligibility");
+  }
+  {
+    Fixture f; f.Submit(1); f.Submit(2,2,1);
+    const auto newer = Custom(91);
+    f.Begin(3); f.Parameters(Picture(), &newer); f.End();
+    Require(TryMpeg2Auxiliary(&f.driver,f.decode.get(),f.driver.surfaces.at(1)) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 3, "obsolete anchor is not current lookahead target");
+    Require(TryMpeg2Auxiliary(&f.driver,f.decode.get(),f.driver.surfaces.at(2)) == VA_STATUS_SUCCESS &&
+                f.mock.inputs.size() == 5, "new I advances only its actual previous anchor demand");
+    CheckMatrices(f.mock.inputs[3].bytes, newer);
+  }
+}
 }
 
 void RejectedConsumedEndReadback() {
@@ -924,6 +1120,11 @@ int main() {
     {"visible versus allocated geometry", VisibleAndAllocatedGeometry},
     {"actual EOS reopen and original replay", SealedReplayOriginalBytes},
     {"backpressure and Simple profile restriction", BackpressureAndSimpleBRejection},
+    {"private MPEG2 anchor completion and explicit tail EOS", PrivateMpeg2Completion},
+    {"private MPEG2 exact B clone and output debt", PrivateMpeg2BCompletion},
+    {"private MPEG2 completion rejection boundaries", PrivateMpeg2CompletionRejection},
+    {"private MPEG2 public sync and terminal failure ownership", PrivateMpeg2SyncAndFailures},
+    {"private MPEG2 normalized display flags and new anchor", PrivateMpeg2NormalizedAndNewAnchor},
   };
   unsigned failed = 0;
   for (const auto &test : tests) {

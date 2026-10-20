@@ -531,6 +531,114 @@ void Capacity() {
   Require(!mpeg::Assemble(picture, nullptr, state, {slice.View(), slice.View()}, sequence, {0, true}, &bytes, &next), "aggregate slice capacity bounded");
 }
 
+void BackwardCopy() {
+  ++groups;
+  struct Geometry { unsigned width, height, level; };
+  // Syntax coverage is not a claim of native completion/performance at each
+  // geometry. The runtime caller owns its measured admission and reference.
+  const Geometry geometries[] = {{2,2,10}, {18,34,10}, {352,288,10},
+      {640,360,8}, {720,480,8}, {720,576,8}, {1280,720,6},
+      {1440,1088,6}, {1920,1080,4}, {1920,1088,4}};
+  for (const auto &geometry : geometries)
+    for (unsigned temporal_reference : {0U,1023U})
+      for (bool custom : {false,true}) {
+        auto matrices = mpeg::DefaultQuantMatrices();
+        if (custom) {
+          for (size_t list = 0; list < matrices.lists.size(); ++list)
+            for (size_t i = 0; i < 64; ++i)
+              matrices.lists[list][i] = 1 + (i * 11 + list * 37) % 255;
+          matrices.lists[0][0] = matrices.lists[2][0] = 8;
+        }
+        const auto original_matrices = matrices;
+        auto sequence = Sequence(); sequence.level = geometry.level;
+        const auto original_sequence = sequence;
+        std::vector<uint8_t> bytes{0x12,0x34};
+        Require(mpeg::AssembleBackwardCopy(geometry.width, geometry.height,
+                    sequence, matrices, temporal_reference, &bytes),
+                "bounded backward-only auxiliary assembled");
+        Reader reader{bytes};
+        reader.Start(0); // No sequence or GOP header may precede the B picture.
+        reader.Equal(10, temporal_reference); reader.Equal(3, 3);
+        reader.Equal(16, 0xffff); reader.Equal(4, 7); reader.Equal(4, 7);
+        reader.Equal(1, 0);
+        reader.Start(0xb5); reader.Equal(4, 8);
+        reader.Equal(16, 0x1111); reader.Equal(2, 0); reader.Equal(2, 3);
+        reader.Equal(1, 0); reader.Equal(1, 1); reader.Equal(5, 0);
+        reader.Equal(1, 1); reader.Equal(1, 1); reader.Equal(1, 0);
+        reader.Start(0xb5); reader.Equal(4, 3);
+        for (const auto &list : matrices.lists) {
+          reader.Equal(1, 1);
+          for (uint8_t value : list) reader.Equal(8, value);
+        }
+        reader.Align();
+        const unsigned columns = (geometry.width + 15) / 16;
+        const unsigned rows = (geometry.height + 15) / 16;
+        for (unsigned row = 0; row < rows; ++row) {
+          reader.Start(row + 1);
+          reader.Equal(5, 1); reader.Equal(1, 0); // Quantizer and extra_bit_slice.
+          for (unsigned column = 0; column < columns; ++column) {
+            reader.Equal(1, 1); // address_increment=1, H.262 table B.1
+            reader.Equal(3, 2); // backward-only, no coded pattern, table B.4
+            reader.Equal(1, 1); reader.Equal(1, 1); // zero vector x/y, table B.10
+          }
+          reader.Align();
+        }
+        Require(reader.position == bytes.size() * 8,
+                "complete explicit grid with no coefficients or trailing EOS");
+        Require(bytes.size() == 279 + rows * (4 + (6 + columns * 6 + 7) / 8) &&
+                bytes.size() <= 6739, "bounded generated size including exact IQ snapshot");
+        Require(matrices.lists == original_matrices.lists &&
+                !std::memcmp(&sequence, &original_sequence, sizeof(sequence)),
+                "auxiliary changes neither active IQ nor sequence state");
+      }
+  for (unsigned mode = 0; mode < 22; ++mode) {
+    unsigned width = 720, height = 480, temporal_reference = 0;
+    auto sequence = Sequence();
+    auto matrices = mpeg::DefaultQuantMatrices();
+    switch (mode) {
+      case 0: width = 0; break;
+      case 1: height = 0; break;
+      case 2: width = 719; break;
+      case 3: height = 479; break;
+      case 4: width = 1922; break;
+      case 5: height = 1090; break;
+      case 6: width = std::numeric_limits<unsigned>::max(); break;
+      case 7: height = std::numeric_limits<unsigned>::max(); break;
+      case 8: sequence.profile = VAProfileMPEG2Simple; sequence.level = 8; break;
+      case 9: sequence.profile = VAProfileH264Main; break;
+      case 10: sequence.progressive_sequence = false; break;
+      case 11: sequence.low_delay = true; break;
+      case 12: sequence.level = 7; break;
+      case 13: sequence.level = 10; break;
+      case 14: sequence.level = 8; height = 720; break;
+      case 15: sequence.level = 6; width = 1920; break;
+      case 16: temporal_reference = 1024; break;
+      case 17: matrices.lists[0][0] = 16; break;
+      case 18: matrices.lists[2][0] = 16; break;
+      case 19: sequence.bit_rate = 0; break;
+      case 20: sequence.frame_rate_code = 9; break;
+      case 21: sequence.aspect_ratio_information = 0; break;
+    }
+    std::vector<uint8_t> bytes{0x12,0x34};
+    const auto original = matrices;
+    Require(!mpeg::AssembleBackwardCopy(width, height, sequence, matrices,
+                                       temporal_reference, &bytes),
+            "invalid auxiliary rejected before assembly");
+    Require(bytes == std::vector<uint8_t>({0x12,0x34}) && matrices.lists == original.lists,
+            "failed auxiliary leaves caller output and IQ unchanged");
+  }
+  for (size_t list = 0; list < 4; ++list)
+    for (size_t i = 0; i < 64; ++i) {
+      auto matrices = mpeg::DefaultQuantMatrices(); matrices.lists[list][i] = 0;
+      std::vector<uint8_t> bytes{0x12,0x34};
+      Require(!mpeg::AssembleBackwardCopy(720, 480, Sequence(), matrices, 0, &bytes) &&
+              bytes == std::vector<uint8_t>({0x12,0x34}),
+              "zero IQ entry rejected transactionally");
+    }
+  Require(!mpeg::AssembleBackwardCopy(720, 480, Sequence(),
+              mpeg::DefaultQuantMatrices(), 0, nullptr), "null auxiliary output rejected");
+}
+
 // This emits a tiny real I-picture stream for an optional external software
 // decoder check. It is not a CrystalHD firmware/replay or VA profile claim.
 void Stream() {
@@ -548,7 +656,7 @@ int main(int argc, char **argv) {
     if (argc == 2 && std::strcmp(argv[1], "--stream") == 0) { Stream(); return 0; }
     if (argc != 1) throw std::runtime_error("usage: vaapi-mpeg2-test [--stream]");
     Defaults(); Headers(); Matrices(); Rejections(); InterlacedFrames();
-    ProgressiveDisplayFlags(); SliceRanges(); Capacity();
+    ProgressiveDisplayFlags(); SliceRanges(); Capacity(); BackwardCopy();
     std::printf("MPEG-2 assembly: %u groups, %u checks PASS\n", groups, checks);
     return 0;
   } catch (const std::exception &error) {
