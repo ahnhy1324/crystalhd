@@ -81,6 +81,9 @@ extern "C" {
 // Keep the plugin loadable with an older libcrystalhd.so.3. The optional
 // output-event API is negotiated only when the symbol is present.
 extern "C" BC_STATUS DtsDupOutputPollFd(HANDLE, int *) __attribute__((weak));
+// Older libraries retain the qualified full-device replay restart. Only an
+// explicit lifecycle capability enables retaining their device handle.
+extern "C" BC_STATUS DtsGetLibraryCapabilities(uint32_t *) __attribute__((weak));
 // Large H.264 AUs use this additive libcrystalhd contract when available;
 // ordinary bounded AUs retain the legacy DtsProcInput path.
 extern "C" BC_STATUS DtsProcInputFragment(
@@ -90,11 +93,19 @@ extern "C" BC_STATUS DtsProcInputFragment(
 
 using CrystalHDFragmentInput = BC_STATUS (*)(
     HANDLE, uint8_t *, uint32_t, uint64_t, BOOL, uint32_t);
+using CrystalHDLibraryCapabilitiesQuery = BC_STATUS (*)(uint32_t *);
 #if defined(CRYSTALHD_VAAPI_TEST_FRAGMENT_INPUT)
 static CrystalHDFragmentInput crystalhd_test_fragment_input = nullptr;
 #endif
+#if defined(CRYSTALHD_VAAPI_TEST_LIBRARY_CAPABILITIES)
+static CrystalHDLibraryCapabilitiesQuery crystalhd_test_library_capabilities = nullptr;
+#endif
 
 namespace {
+
+#ifndef CRYSTALHD_H264_TEST_BUILD
+static bool IsH264Profile(VAProfile profile);
+#endif
 
 [[maybe_unused]] static CrystalHDFragmentInput H264FragmentInput() {
 #if defined(CRYSTALHD_VAAPI_TEST_FRAGMENT_INPUT)
@@ -102,6 +113,17 @@ namespace {
 #else
   return DtsProcInputFragment;
 #endif
+}
+
+[[maybe_unused]] static bool SupportsDrainedH264ChannelReopen() {
+#if defined(CRYSTALHD_VAAPI_TEST_LIBRARY_CAPABILITIES)
+  const auto query = crystalhd_test_library_capabilities;
+#else
+  const auto query = DtsGetLibraryCapabilities;
+#endif
+  uint32_t capabilities = 0;
+  return query != nullptr && query(&capabilities) == BC_STS_SUCCESS &&
+         (capabilities & DTS_LIB_CAP_FLEA_H264_DRAINED_REOPEN) != 0;
 }
 
 constexpr uint64_t kDecodeTimeoutNs = 10ULL * 1000 * 1000 * 1000;
@@ -2013,7 +2035,29 @@ struct DecodeContext {
 
   ~DecodeContext() { Close(); }
 
+  enum class HardwareClosePurpose { Device, H264Replay };
+
   BC_STATUS CloseHardware(uint64_t timeout_ns = kDecodeTimeoutNs) {
+    return CloseHardwareImpl(timeout_ns, HardwareClosePurpose::Device);
+  }
+
+  BC_STATUS CloseHardwareForH264Replay(uint64_t timeout_ns = kDecodeTimeoutNs) {
+    return CloseHardwareImpl(timeout_ns, HardwareClosePurpose::H264Replay);
+  }
+
+  BC_STATUS CloseHardwareImpl(uint64_t timeout_ns, HardwareClosePurpose purpose) {
+    // A successful EOS has retired every hardware output before this private
+    // replay restart. Completed pictures own copied pixels, not RX leases.
+    // Never infer this contract from a version number or another optional API.
+    const bool retain_device = purpose == HardwareClosePurpose::H264Replay &&
+        IsH264Profile(profile) && !is_70012 && !live_h264_fast_path &&
+        device != nullptr && decoder_open && decoder_started &&
+        !closing && !retired && !destroy_prepared && !hardware_close_pending &&
+        retained_close_status == BC_STS_SUCCESS && replay.NeedsRestart() &&
+        replay.outstanding() == 0 && !h264_first_field.valid &&
+        partial_input_timestamp == 0 && partial_input_offset == 0 &&
+        prefed_timestamp == 0 && pending_prefeed_timestamp == 0 &&
+        SupportsDrainedH264ChannelReopen();
     CancelPendingPrefeed();
     BC_STATUS result = retained_close_status;
     const auto deadline = std::chrono::steady_clock::now() +
@@ -2068,6 +2112,19 @@ struct DecodeContext {
       } else if (result == BC_STS_SUCCESS) {
         result = status;
       }
+    }
+    if (retain_device && !lifecycle_busy && result == BC_STS_SUCCESS &&
+        !decoder_open && !decoder_started) {
+      // Both STOP and CLOSE succeeded independently. Recreate the firmware
+      // channel/DPB, not the device or its TX worker. Failed/BUSY teardown still
+      // falls through to the original full-device cleanup below.
+      hardware_close_pending = false;
+      retained_close_status = BC_STS_SUCCESS;
+      armed_output_poll.reset();
+      output_poll.reset();
+      clear_abort_state();
+      device_preopened = true;
+      return BC_STS_SUCCESS;
     }
     if (device != nullptr) {
       BC_STATUS status = BC_STS_SUCCESS;
@@ -4393,13 +4450,13 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
     if (replay.failed())
       return VA_STATUS_ERROR_DECODING_ERROR;
     if (replay.NeedsRestart()) {
-      // EOS terminates reference state. The legacy channel-only flush leaves
-      // library/firmware state behind after repeated drains; reopen the complete
-      // device before replaying the retained reference prefix. Immutable frames,
-      // client generation and compressed input ownership stay untouched.
+      // EOS terminates reference state. A qualified library may replace a fully
+      // stopped/closed H.264 channel on its retained device; all other cases
+      // retain full-device reopen. This is never the legacy channel-only FLUSH.
+      // Immutable frames, client generation and actual replay input stay owned.
       Debug("restart sealed decoder; replay %zu cached access units",
             replay.cached_pictures());
-      const BC_STATUS status = decode->CloseHardware();
+      const BC_STATUS status = decode->CloseHardwareForH264Replay();
       if (status != BC_STS_SUCCESS)
         return FailDecode(driver, decode, "hardware close for replay failed");
       if (OpenDecoder(decode) != VA_STATUS_SUCCESS || !replay.Restarted())

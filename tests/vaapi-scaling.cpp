@@ -2,6 +2,9 @@
 // Real VA submission and replay ownership, private CPU surfaces and deterministic
 // Dts calls only. Unexpected device/graphics/ioctl entry points abort.
 #define CRYSTALHD_VAAPI_TEST_FRAGMENT_INPUT 1
+// These fixtures model the legacy full-device restart contract. Explicit
+// same-device channel negotiation is exercised by vaapi-replay.cpp instead.
+#define CRYSTALHD_VAAPI_TEST_LIBRARY_CAPABILITIES 1
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
 #include <cstdlib>
 #include <new>

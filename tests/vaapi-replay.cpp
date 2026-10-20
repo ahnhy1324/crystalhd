@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Production replay state and output processing with private CPU memory only.
 // No device, decoder, capture, firmware, or DRM operation is started.
+#define CRYSTALHD_VAAPI_TEST_LIBRARY_CAPABILITIES 1
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
 #include <cstdlib>
 #include <new>
@@ -285,6 +286,12 @@ struct DecodeIoMock {
   unsigned int output_width = 16;
   unsigned int output_height = 16;
   unsigned int open_attempts = 0;
+  unsigned int decoder_open_calls = 0;
+  unsigned int capture_start_calls = 0;
+  HANDLE decoder_open_handle = nullptr;
+  uint32_t library_capabilities = 0;
+  BC_STATUS library_capabilities_status = BC_STS_SUCCESS;
+  unsigned int library_capability_queries = 0;
   unsigned int output_polls = 0;
   unsigned int eos_queries = 0;
   unsigned int eos_after_queries = 0;
@@ -292,6 +299,7 @@ struct DecodeIoMock {
   unsigned int device_close_calls = 0;
   BC_STATUS stop_status = BC_STS_SUCCESS;
   BC_STATUS decoder_close_status = BC_STS_SUCCESS;
+  BC_STATUS capture_start_status = BC_STS_SUCCESS;
   BC_STATUS device_close_status = BC_STS_SUCCESS;
   bool override_output = false;
   BC_DTS_PROC_OUT overridden_output = {};
@@ -311,10 +319,30 @@ struct DecodeIoMock {
 // clear it only after Driver has joined that thread. Production Dts calls are
 // serialized by Driver::mutex, so the shared mock observes the same ordering.
 static DecodeIoMock *decode_io_mock = nullptr;
+static BC_STATUS MockLibraryCapabilities(uint32_t *capabilities);
 struct MockDecodeScope {
-  explicit MockDecodeScope(DecodeIoMock &mock) { decode_io_mock = &mock; }
-  ~MockDecodeScope() { decode_io_mock = nullptr; }
+  CrystalHDLibraryCapabilitiesQuery previous_capabilities;
+  explicit MockDecodeScope(DecodeIoMock &mock)
+      : previous_capabilities(crystalhd_test_library_capabilities) {
+    decode_io_mock = &mock;
+    crystalhd_test_library_capabilities = MockLibraryCapabilities;
+  }
+  ~MockDecodeScope() {
+    crystalhd_test_library_capabilities = previous_capabilities;
+    decode_io_mock = nullptr;
+  }
 };
+
+static BC_STATUS MockLibraryCapabilities(uint32_t *capabilities) {
+  if (capabilities == nullptr)
+    return BC_STS_INV_ARG;
+  *capabilities = 0;
+  if (decode_io_mock == nullptr)
+    return BC_STS_NOT_IMPL;
+  ++decode_io_mock->library_capability_queries;
+  *capabilities = decode_io_mock->library_capabilities;
+  return decode_io_mock->library_capabilities_status;
+}
 
 extern "C" BC_STATUS __real_DtsDeviceOpen(HANDLE *, uint32_t);
 extern "C" BC_STATUS __wrap_DtsDeviceOpen(HANDLE *device, uint32_t mode) {
@@ -379,13 +407,29 @@ extern "C" BC_STATUS __wrap_DtsSetInputFormat(
     decode_io_mock->invalid |= device != decode_io_mock->handle(); \
     return BC_STS_SUCCESS; \
   }
-MOCK_OPEN_OPERATION(DtsOpenDecoder, (HANDLE device, uint32_t stream_type),
-                    (device, stream_type))
 MOCK_OPEN_OPERATION(DtsSetColorSpace, (HANDLE device, BC_OUTPUT_FORMAT format),
                     (device, format))
 MOCK_OPEN_OPERATION(DtsStartDecoder, (HANDLE device), (device))
-MOCK_OPEN_OPERATION(DtsStartCapture, (HANDLE device), (device))
 #undef MOCK_OPEN_OPERATION
+
+extern "C" BC_STATUS __real_DtsOpenDecoder(HANDLE, uint32_t);
+extern "C" BC_STATUS __wrap_DtsOpenDecoder(HANDLE device, uint32_t stream_type) {
+  if (decode_io_mock == nullptr)
+    return __real_DtsOpenDecoder(device, stream_type);
+  decode_io_mock->invalid |= device != decode_io_mock->handle();
+  ++decode_io_mock->decoder_open_calls;
+  decode_io_mock->decoder_open_handle = device;
+  return BC_STS_SUCCESS;
+}
+
+extern "C" BC_STATUS __real_DtsStartCapture(HANDLE);
+extern "C" BC_STATUS __wrap_DtsStartCapture(HANDLE device) {
+  if (decode_io_mock == nullptr)
+    return __real_DtsStartCapture(device);
+  decode_io_mock->invalid |= device != decode_io_mock->handle();
+  ++decode_io_mock->capture_start_calls;
+  return decode_io_mock->capture_start_status;
+}
 
 #define MOCK_CLOSE_OPERATION(name, event, result) \
   extern "C" BC_STATUS __real_##name(HANDLE); \
@@ -2064,6 +2108,133 @@ static void RetainedHandleClosesBeforeDecoderReopen() {
   Require(decoder.CloseHardware(0) == BC_STS_SUCCESS &&
               decoder.device == nullptr && !io.invalid,
           "reopened decoder closes without leaving test ownership live");
+}
+
+static void H264ReplayReopenEligibilityAndFailureOwnership() {
+  const auto prepare = [](DecodeContext &decode, DecodeIoMock &io) {
+    decode.device = io.handle();
+    decode.decoder_open = decode.decoder_started = true;
+    decode.profile = VAProfileH264Main;
+    decode.width = decode.height = 16;
+    decode.generation = 7;
+    decode.next_timestamp = 3 * kTimestampStep;
+    io.library_capabilities = DTS_LIB_CAP_FLEA_H264_DRAINED_REOPEN;
+    Require(decode.replay.Append(kTimestampStep, true, {1}) &&
+                decode.replay.InputSent() && decode.replay.Seal() &&
+                decode.replay.Observe(kTimestampStep) == CrystalHDDecodeReplay::Output::New &&
+                decode.replay.EndOfSequence() &&
+                decode.replay.Append(2 * kTimestampStep, false, {2}),
+            "prepare an actually ended transport with one queued continuation");
+  };
+  for (unsigned mode = 0; mode < 16; ++mode) {
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    DecodeContext decode;
+    prepare(decode, io);
+    switch (mode) {
+      case 1: decode.is_70012 = true; break;
+      case 2: decode.profile = VAProfileMPEG2Main; break;
+      case 3: decode.live_h264_fast_path = true; break;
+      case 4: decode.closing = true; break;
+      case 5: decode.retired = true; break;
+      case 6: decode.destroy_prepared = true; break;
+      case 7: decode.hardware_close_pending = true; break;
+      case 8: decode.retained_close_status = BC_STS_IO_ERROR; break;
+      case 9: decode.h264_first_field.valid = true; break;
+      case 10: decode.partial_input_timestamp = 2 * kTimestampStep; break;
+      case 11: decode.partial_input_offset = 1; break;
+      case 12: decode.prefed_timestamp = 3 * kTimestampStep; break;
+      case 13: decode.pending_prefeed_timestamp = 3 * kTimestampStep; break;
+      case 14:
+      case 15:
+        decode.replay = CrystalHDDecodeReplay();
+        Require(decode.replay.Append(kTimestampStep, true, {1}) &&
+                    decode.replay.InputSent(), "prepare an unended transport");
+        if (mode == 14)
+          Require(decode.replay.Observe(kTimestampStep) == CrystalHDDecodeReplay::Output::New,
+                  "completed input is not proof of actual EOS");
+        break;
+      default: break;
+    }
+    const int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    Require(fd >= 0, "allocate old output-poll lease");
+    auto held_poll = std::make_shared<OutputPollLease>(fd);
+    decode.output_poll = held_poll;
+    decode.armed_output_poll = held_poll;
+    const BC_STATUS expected = mode == 8 ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
+    Require(decode.CloseHardwareForH264Replay(0) == expected &&
+                decode.device == (mode == 0 ? io.handle() : nullptr) &&
+                decode.device_preopened == (mode == 0) &&
+                io.device_close_calls == (mode == 0 ? 0U : 1U) &&
+                io.library_capability_queries == (mode == 0 ? 1U : 0U) &&
+                !decode.decoder_open && !decode.decoder_started &&
+                !decode.output_poll && decode.armed_output_poll.expired() &&
+                decode.prefed_timestamp == 0 && decode.pending_prefeed_timestamp == 0 &&
+                !decode.h264_first_field.valid && decode.partial_input_timestamp == 0 &&
+                decode.partial_input_offset == 0 && decode.generation == 7 && !io.invalid,
+            "only the exact drained replay state may retain a device; all gates retire normally");
+    Require(fcntl(fd, F_GETFD) >= 0,
+            "an unlocked poll owner keeps the old descriptor alive after current/armed clear");
+    held_poll.reset();
+    errno = 0;
+    Require(fcntl(fd, F_GETFD) == -1 && errno == EBADF,
+            "the last old output-poll owner alone closes its descriptor");
+    if (mode == 0)
+      Require(decode.CloseHardware(0) == BC_STS_SUCCESS && decode.device == nullptr &&
+                  !decode.device_preopened && io.device_close_calls == 1 &&
+                  io.library_capability_queries == 1,
+              "ordinary hardware close remains terminal even for a qualified retained device");
+  }
+  for (unsigned fault = 0; fault < 5; ++fault) {
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    DecodeContext decode;
+    prepare(decode, io);
+    io.stop_status = fault == 0 || fault == 4 ? BC_STS_ERROR :
+                     fault == 1 ? BC_STS_BUSY : BC_STS_SUCCESS;
+    io.decoder_close_status = fault == 2 ? BC_STS_ERROR :
+                              fault == 3 ? BC_STS_BUSY : BC_STS_SUCCESS;
+    io.device_close_busy = fault == 4 ? 1 : 0;
+    const auto old_poll = std::make_shared<OutputPollLease>(-1);
+    decode.output_poll = old_poll;
+    decode.armed_output_poll = old_poll;
+    const BC_STATUS expected = fault == 4 ? BC_STS_BUSY :
+        fault == 0 || fault == 2 ? BC_STS_ERROR : BC_STS_SUCCESS;
+    Require(decode.CloseHardwareForH264Replay(0) == expected &&
+                !decode.device_preopened && io.device_close_calls == 1 &&
+                io.library_capability_queries == 1 &&
+                decode.device == (fault == 4 ? io.handle() : nullptr) &&
+                decode.hardware_close_pending == (fault == 4) &&
+                decode.output_poll == (fault == 4 ? old_poll : nullptr) && !io.invalid,
+            "failed or BUSY decoder retirement can only take the existing terminal-device path");
+    if (fault == 4) {
+      io.stop_status = io.decoder_close_status = BC_STS_SUCCESS;
+      Require(decode.CloseHardware(0) == BC_STS_ERROR && decode.device == nullptr &&
+                  !decode.device_preopened && !decode.output_poll &&
+                  decode.armed_output_poll.expired() && io.device_close_calls == 2,
+              "non-consuming DeviceClose preserves the first error and poll owner until terminal retry");
+    }
+  }
+  for (bool late_failure : {false, true}) {
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    DecodeContext decode;
+    prepare(decode, io);
+    Require(decode.CloseHardwareForH264Replay(0) == BC_STS_SUCCESS &&
+                decode.device_preopened && io.device_close_calls == 0,
+            "prepare a retained device before fresh-channel setup failure");
+    io.fail_set_input_format = !late_failure;
+    io.capture_start_status = late_failure ? BC_STS_ERROR : BC_STS_SUCCESS;
+    Require(OpenDecoder(&decode) == VA_STATUS_ERROR_OPERATION_FAILED &&
+                decode.device == nullptr && !decode.device_preopened &&
+                !decode.decoder_open && !decode.decoder_started &&
+                !decode.output_poll && decode.armed_output_poll.expired() &&
+                io.open_attempts == 0 && io.device_close_calls == 1 &&
+                io.decoder_open_calls == (late_failure ? 1U : 0U) &&
+                io.capture_start_calls == (late_failure ? 1U : 0U) && !io.invalid,
+            "early and late fresh-channel setup failures consume the retained device exactly once");
+  }
+  std::puts("H264 replay restart: 16 eligibility, 5 retirement-failure and 2 setup-failure cases PASS");
 }
 
 static void ContextAdmissionRejectsBusyBeforePicture() {
@@ -5873,12 +6044,24 @@ static void LiveH264SpeculativePrefeedSequence() {
           "only actual access units complete and EOS retires the guard token");
 }
 
-static void LiveH264InterlacedPrefeedKeepsExactFieldOwnership() {
+static void LiveH264InterlacedPrefeedKeepsExactFieldOwnership(
+    bool finite_replay_only = false, unsigned capability_mode = 1) {
   enum class Tail { Complete, Ghost, Flush, FiniteReplay, ContextDrain };
   for (bool bottom_first : {false, true}) {
     for (Tail tail : {Tail::Complete, Tail::Ghost, Tail::Flush,
                       Tail::FiniteReplay, Tail::ContextDrain}) {
+      if (finite_replay_only && tail != Tail::FiniteReplay)
+        continue;
       TeardownFixture fixture(5);
+      if (tail == Tail::FiniteReplay) {
+        Require(capability_mode < 4, "known library capability test mode");
+        fixture.io.library_capabilities = capability_mode == 0 ? 0 :
+            DTS_LIB_CAP_FLEA_H264_DRAINED_REOPEN;
+        if (capability_mode == 2)
+          fixture.io.library_capabilities_status = BC_STS_ERROR;
+        if (capability_mode == 3)
+          crystalhd_test_library_capabilities = nullptr;
+      }
       auto &decode = *fixture.decoder;
       decode.id = 1;
       decode.generation = 3;
@@ -6031,10 +6214,36 @@ static void LiveH264InterlacedPrefeedKeepsExactFieldOwnership() {
                   "accept a dependent continuation only with intact replay history");
           decode.next_timestamp = 6 * kTimestampStep;
           fixture.io.allow_device_open = true;
-          Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
-                      fixture.io.open_attempts == 1 &&
+          const HANDLE retained_device = decode.device;
+          const VAStatus restarted = PumpDecodeInput(&fixture.driver, &decode);
+          const unsigned device_reopens = capability_mode == 1 ? 0 : 1;
+          if (fixture.io.open_attempts != device_reopens ||
+              fixture.io.device_close_calls != device_reopens)
+            std::fprintf(stderr,
+                "finite replay lifecycle: device-open=%u device-close=%u channel-open=%u stop=%zu channel-close=%zu capture-start=%u\n",
+                fixture.io.open_attempts, fixture.io.device_close_calls,
+                fixture.io.decoder_open_calls,
+                static_cast<size_t>(std::count(fixture.io.events.begin(),
+                                               fixture.io.events.end(), "stop")),
+                static_cast<size_t>(std::count(fixture.io.events.begin(),
+                                               fixture.io.events.end(), "close-decoder")),
+                fixture.io.capture_start_calls);
+          Require(restarted == VA_STATUS_SUCCESS &&
+                      fixture.io.open_attempts == device_reopens &&
+                      fixture.io.device_close_calls == device_reopens &&
+                      fixture.io.library_capability_queries ==
+                          (capability_mode == 3 ? 0U : 1U) &&
+                      fixture.io.decoder_open_calls == 1 &&
+                      fixture.io.capture_start_calls == 1 &&
+                      std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                                 "stop") == 1 &&
+                      std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                                 "close-decoder") == 1 &&
+                      decode.device == retained_device &&
+                      fixture.io.decoder_open_handle == retained_device &&
+                      decode.generation == 3 &&
                       fixture.io.input_calls.size() == 14,
-                  "finite continuation reopens and replays original reference input");
+                  "finite continuation reuses only a qualified library device and replays original reference input");
           for (unsigned int picture = 1; picture <= 5; ++picture) {
             const auto &call = fixture.io.input_calls[7 + picture];
             Require(call.accepted && call.timestamp == picture * kTimestampStep &&
@@ -8851,6 +9060,13 @@ static void AutonomousWorkerStopsAfterTransportFailure() {
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::strcmp(argv[1], "--h264-replay-reopen") == 0) {
+      for (unsigned capability : {1U, 0U, 2U, 3U})
+        LiveH264InterlacedPrefeedKeepsExactFieldOwnership(true, capability);
+      H264ReplayReopenEligibilityAndFailureOwnership();
+      std::puts("VA-API H264 finite replay: qualified reuse, legacy/error full reopen, TFF/BFF ownership and pixels PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--live-bob-tail") == 0) {
       DeferredH264PrefeedRetriesWithoutNewInput();
       FirstTemporalBobDoesNotCompleteDecodePicture();
@@ -8860,7 +9076,7 @@ int main(int argc, char **argv) {
       std::puts("VA-API private first-field Bob, progress/grace and LIVE tail: TFF/BFF pixels, ownership, cancellation and explicit drain PASS");
       return 0;
     }
-    Require(argc == 1, "usage: vaapi-replay-test [--live-bob-tail]");
+    Require(argc == 1, "usage: vaapi-replay-test [--live-bob-tail|--h264-replay-reopen]");
     DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobDoesNotCompleteDecodePicture();
     FirstTemporalBobRejectsMismatchedLatch();
@@ -8886,6 +9102,7 @@ int main(int argc, char **argv) {
     OutputAllocationFailuresReleaseHardwareExactlyOnce();
     DeviceCloseRetriesNonConsumingBusy();
     RetainedHandleClosesBeforeDecoderReopen();
+    H264ReplayReopenEligibilityAndFailureOwnership();
     ContextAdmissionRejectsBusyBeforePicture();
     ContextAdmissionFailuresPublishNothing();
     RealH264SubmitCompletesFieldPairs();

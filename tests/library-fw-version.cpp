@@ -722,6 +722,23 @@ static void CheckRuntimeControlGuard()
 
 int main()
 {
+	ResetRuntime();
+	track_call = true;
+	runtime_call = true;
+	Check(DtsGetLibraryCapabilities(nullptr) == BC_STS_INV_ARG,
+	      "library capabilities reject NULL without a device");
+	struct { uint32_t before, flags, after; } caps = {0x12345678U, ~0U, 0x87654321U};
+	Check(DtsGetLibraryCapabilities(&caps.flags) == BC_STS_SUCCESS &&
+	      caps.flags == DTS_LIB_CAP_FLEA_H264_DRAINED_REOPEN,
+	      "library capabilities overwrite only the known explicit contract bit");
+	Check(caps.before == 0x12345678U && caps.after == 0x87654321U,
+	      "library capability output respects scalar bounds");
+	Check(!open_calls && !seek_calls && !tell_calls && !read_calls &&
+	      !close_calls && !allocation_calls && !free_calls &&
+	      !runtime_allocation_calls && !runtime_release_calls &&
+	      !runtime_driver_calls && !runtime_control_acquires && !runtime_control_releases,
+	      "library capabilities need no file, allocation, control or device operation");
+	track_call = runtime_call = false;
 	CheckInvalidArguments();
 	CheckEarlyMarkerAndPublicOutputs();
 	CheckKnownLayoutsAndLimit();

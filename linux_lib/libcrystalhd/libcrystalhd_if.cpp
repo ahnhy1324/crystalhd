@@ -1117,6 +1117,14 @@ DtsDupOutputPollFd(
 	return BC_STS_SUCCESS;
 }
 
+DRVIFLIB_API BC_STATUS DtsGetLibraryCapabilities(uint32_t *flags)
+{
+	if (!flags)
+		return BC_STS_INV_ARG;
+	*flags = DTS_LIB_CAP_FLEA_H264_DRAINED_REOPEN;
+	return BC_STS_SUCCESS;
+}
+
 DRVIFLIB_API BC_STATUS
 DtsGetVersion(
     HANDLE  hDevice,

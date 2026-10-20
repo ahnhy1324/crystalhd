@@ -272,6 +272,16 @@ DtsGetVersion(
     uint32_t *DilVer
     );
 
+/* Optional userspace-only query; absent in older libcrystalhd.so.3 builds.
+ * This bit supports a fresh Flea H.264 channel on a retained device after
+ * drained EOS and independently successful StopDecoder + CloseDecoder.
+ * It does not preserve firmware/DPB state or permit failed/BUSY close or held
+ * RX leases to be reused, and is not a general all-stream capability.
+ * No device is needed. NULL returns BC_STS_INV_ARG; success overwrites flags.
+ */
+#define DTS_LIB_CAP_FLEA_H264_DRAINED_REOPEN (1U << 0)
+DRVIFLIB_API BC_STATUS DtsGetLibraryCapabilities(uint32_t *flags);
+
 /*****************************************************************************
 
 Function name:
