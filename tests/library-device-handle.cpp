@@ -78,6 +78,18 @@ static unsigned failed_aligned_occurrence;
 static unsigned matching_aligned_calls;
 static bool aligned_failure_fired;
 
+enum class LockFailure { None, Attribute, Type, Mutex };
+static LockFailure lock_failure;
+static bool lock_failure_fired;
+static const pthread_mutexattr_t *context_attribute_address;
+static pthread_mutexattr_t context_attribute;
+static bool context_attribute_live, context_recursive;
+static pthread_mutex_t *context_mutex;
+static bool context_mutex_live;
+static unsigned attribute_init_calls, attribute_type_calls, attribute_destroy_calls;
+static unsigned context_mutex_init_calls, context_mutex_destroy_calls;
+static unsigned invalid_attribute_use, invalid_mutex_use;
+
 static bc_dil_glob_s shared_state;
 
 static void Check(bool condition, const char *message)
@@ -128,6 +140,120 @@ static bool IsLiveAllocation(const void *pointer)
 extern "C" void *__real_malloc(size_t);
 extern "C" void __real_free(void *);
 extern "C" int __real_posix_memalign(void **, size_t, size_t);
+extern "C" int __real_pthread_mutexattr_init(pthread_mutexattr_t *);
+extern "C" int __real_pthread_mutexattr_settype(pthread_mutexattr_t *, int);
+extern "C" int __real_pthread_mutexattr_destroy(pthread_mutexattr_t *);
+extern "C" int __real_pthread_mutex_init(pthread_mutex_t *, const pthread_mutexattr_t *);
+extern "C" int __real_pthread_mutex_destroy(pthread_mutex_t *);
+extern "C" int __real_pthread_mutex_lock(pthread_mutex_t *);
+extern "C" int __real_pthread_mutex_unlock(pthread_mutex_t *);
+
+/* Keep the attribute in fixture-owned storage so OLD-code failure cases can
+ * be inspected and cleaned up even after DtsInitLock's stack frame returned.
+ * Invalid mutex operations are counted, never passed to pthreads. */
+extern "C" int __wrap_pthread_mutexattr_init(pthread_mutexattr_t *attribute)
+{
+	if (!track_allocations || context_attribute_address)
+		return __real_pthread_mutexattr_init(attribute);
+	context_attribute_address = attribute;
+	++attribute_init_calls;
+	if (lock_failure == LockFailure::Attribute) {
+		lock_failure_fired = true;
+		return ENOMEM;
+	}
+	const int status = __real_pthread_mutexattr_init(&context_attribute);
+	context_attribute_live = status == 0;
+	return status;
+}
+
+extern "C" int __wrap_pthread_mutexattr_settype(pthread_mutexattr_t *attribute,
+					       int type)
+{
+	if (attribute != context_attribute_address)
+		return __real_pthread_mutexattr_settype(attribute, type);
+	++attribute_type_calls;
+	if (!context_attribute_live) {
+		++invalid_attribute_use;
+		return EINVAL;
+	}
+	Check(type == PTHREAD_MUTEX_RECURSIVE, "context requires a recursive mutex");
+	if (lock_failure == LockFailure::Type) {
+		lock_failure_fired = true;
+		return EINVAL;
+	}
+	const int status = __real_pthread_mutexattr_settype(&context_attribute, type);
+	context_recursive = status == 0 && type == PTHREAD_MUTEX_RECURSIVE;
+	return status;
+}
+
+extern "C" int __wrap_pthread_mutexattr_destroy(pthread_mutexattr_t *attribute)
+{
+	if (attribute != context_attribute_address)
+		return __real_pthread_mutexattr_destroy(attribute);
+	++attribute_destroy_calls;
+	if (!context_attribute_live) {
+		++invalid_attribute_use;
+		return EINVAL;
+	}
+	const int status = __real_pthread_mutexattr_destroy(&context_attribute);
+	if (!status)
+		context_attribute_live = false;
+	return status;
+}
+
+extern "C" int __wrap_pthread_mutex_init(pthread_mutex_t *mutex,
+					 const pthread_mutexattr_t *attribute)
+{
+	if (!attribute || attribute != context_attribute_address)
+		return __real_pthread_mutex_init(mutex, attribute);
+	context_mutex = mutex;
+	++context_mutex_init_calls;
+	if (!context_attribute_live || !context_recursive) {
+		++invalid_attribute_use;
+		return EINVAL;
+	}
+	if (lock_failure == LockFailure::Mutex) {
+		lock_failure_fired = true;
+		return EAGAIN;
+	}
+	const int status = __real_pthread_mutex_init(mutex, &context_attribute);
+	context_mutex_live = status == 0;
+	return status;
+}
+
+extern "C" int __wrap_pthread_mutex_destroy(pthread_mutex_t *mutex)
+{
+	if (mutex == context_mutex) {
+		++context_mutex_destroy_calls;
+		if (!context_mutex_live) {
+			++invalid_mutex_use;
+			return EINVAL;
+		}
+		const int status = __real_pthread_mutex_destroy(mutex);
+		if (!status)
+			context_mutex_live = false;
+		return status;
+	}
+	return __real_pthread_mutex_destroy(mutex);
+}
+
+extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t *mutex)
+{
+	if (mutex == context_mutex && !context_mutex_live) {
+		++invalid_mutex_use;
+		return EINVAL;
+	}
+	return __real_pthread_mutex_lock(mutex);
+}
+
+extern "C" int __wrap_pthread_mutex_unlock(pthread_mutex_t *mutex)
+{
+	if (mutex == context_mutex && !context_mutex_live) {
+		++invalid_mutex_use;
+		return EINVAL;
+	}
+	return __real_pthread_mutex_unlock(mutex);
+}
 
 extern "C" void *__wrap_malloc(size_t size)
 {
@@ -394,6 +520,15 @@ static void BeginCase(int descriptor)
 	failed_aligned_occurrence = 0;
 	matching_aligned_calls = 0;
 	aligned_failure_fired = false;
+	lock_failure = LockFailure::None;
+	lock_failure_fired = false;
+	context_attribute_address = nullptr;
+	context_attribute_live = context_recursive = false;
+	context_mutex = nullptr;
+	context_mutex_live = false;
+	attribute_init_calls = attribute_type_calls = attribute_destroy_calls = 0;
+	context_mutex_init_calls = context_mutex_destroy_calls = 0;
+	invalid_attribute_use = invalid_mutex_use = 0;
 	std::memset(tracked_allocations, 0, sizeof(tracked_allocations));
 	track_allocations = true;
 }
@@ -405,6 +540,14 @@ static void EndCase(const char *message)
 		live += tracked_allocations[index] != nullptr;
 	Check(!allocation_overflow, "allocation tracking remains bounded");
 	Check(live == 0 && tracked_frees == tracked_count, message);
+	Check(!context_attribute_live, "initialized context attributes are destroyed");
+	Check(!context_mutex_live, "initialized context mutex is destroyed after cleanup");
+	Check(!invalid_attribute_use && !invalid_mutex_use,
+	      "failed synchronization objects are never used or destroyed");
+	if (context_attribute_live) {
+		__real_pthread_mutexattr_destroy(&context_attribute);
+		context_attribute_live = false;
+	}
 	track_allocations = false;
 	for (size_t index = 0; index < tracked_count; ++index) {
 		if (tracked_allocations[index]) {
@@ -539,6 +682,15 @@ static void CheckOpenSuccess(int descriptor)
 	if (open_status == BC_STS_SUCCESS && device) {
 		Check(DtsGetContext(device)->DevHandle == descriptor,
 		      "the context preserves the exact descriptor");
+		DtsLock(DtsGetContext(device));
+		const int nested = pthread_mutex_trylock(&DtsGetContext(device)->thLock);
+		Check(nested == 0, "successful context lock supports nested ownership");
+		if (!nested)
+			pthread_mutex_unlock(&DtsGetContext(device)->thLock);
+		DtsUnLock(DtsGetContext(device));
+		Check(attribute_init_calls == 1 && attribute_type_calls == 1 &&
+		      attribute_destroy_calls == 1 && !context_attribute_live,
+		      "successful initialization releases its temporary mutex attributes");
 		Check(DtsDeviceClose(device) == BC_STS_SUCCESS,
 		      "monitor-mode device close succeeds");
 	}
@@ -739,7 +891,59 @@ static void CheckInitAllocationFailure(size_t size, unsigned occurrence,
 	      "partial initialization detaches shared memory once");
 	CheckIoctls(0, commands,
 	      "partial initialization preserves cleanup command ordering");
+	Check(context_mutex_init_calls == 1 && context_mutex_destroy_calls == 1 &&
+	      attribute_destroy_calls == 1 && !invalid_mutex_use,
+	      "later allocation failure cleans up its initialized mutex exactly once");
 	EndCase("partial initialization releases every allocation");
+}
+
+static void CheckContextLockFailure(LockFailure failure, bool internal)
+{
+	BeginCase(0);
+	lock_failure = failure;
+	raw_close_expected = true;
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	if (internal) {
+		std::memset(&shared_state, 0, sizeof(shared_state));
+		shared_state.gHwInitSts = initial_hw_state;
+		bc_dil_glob_ptr = &shared_state;
+	}
+	HANDLE context = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	const BC_STATUS status = internal ?
+		DtsInitInterface(0, &context, DTS_MONITOR_MODE) :
+		DtsDeviceOpen(&context, DTS_MONITOR_MODE);
+	Check(lock_failure_fired && status == BC_STS_INSUFF_RES,
+	      "each context lock setup failure reports insufficient resources");
+	Check(context == nullptr,
+	      "lock setup failure cannot publish a cleanup-unsafe partial context");
+	/* OLD-code RED remains bounded: wrappers reject invalid mutex operations
+	 * without executing undefined pthread behavior during fallback cleanup. */
+	if (context) {
+		raw_close_expected = false;
+		DtsReleaseInterface(DtsGetContext(context));
+	}
+	Check(attribute_init_calls == 1 &&
+	      attribute_type_calls == (failure == LockFailure::Attribute ? 0U : 1U) &&
+	      context_mutex_init_calls == (failure == LockFailure::Mutex ? 1U : 0U),
+	      "lock initialization stops at the first failed operation");
+	Check(attribute_destroy_calls == (failure == LockFailure::Attribute ? 0U : 1U) &&
+	      !context_attribute_live && context_mutex_destroy_calls == 0 &&
+	      !invalid_attribute_use && !invalid_mutex_use,
+	      "lock failure destroys only a successfully initialized attribute");
+	Check(thread_create_calls == 0 && thread_join_calls == 0 && ioctl_count == 0,
+	      "lock failure reaches neither worker setup nor driver commands");
+	Check(firmware_push_calls == 0 && firmware_link_calls == 0 &&
+	      firmware_init_calls == 0 && shared_state.gHwInitSts == initial_hw_state,
+	      "lock failure leaves hardware initialization untouched");
+	Check(open_calls == (internal ? 0U : 1U) &&
+	      close_calls == (internal ? 0U : 1U) &&
+	      (internal || closed_fd == 0) &&
+	      shared_attach_calls == (internal ? 0U : 1U) &&
+	      shared_detach_calls == (internal ? 0U : 1U),
+	      "internal failure retains caller ownership; public failure closes and detaches once");
+	Check(tracked_count == 1 && tracked_frees == 1,
+	      "lock failure frees its unpublished context before any pool allocation");
+	EndCase("context lock failure leaves no allocation");
 }
 
 static void CheckWorkerSetupFailure(size_t aligned_size, int create_error,
@@ -928,6 +1132,9 @@ int main()
 		BC_MAX_SW_VOUT_BUFFS * sizeof(DTS_MPOOL_TYPE), 1,
 		DTS_PLAYBACK_MODE, {BCM_IOC_RELEASE});
 	for (bool internal : {false, true}) {
+		for (LockFailure failure : {LockFailure::Attribute, LockFailure::Type,
+		                           LockFailure::Mutex})
+			CheckContextLockFailure(failure, internal);
 		CheckWorkerSetupFailure(CIRC_TX_BUF_SIZE, 0, internal);
 		CheckWorkerSetupFailure(ALIGN_BUF_SIZE, 0, internal);
 		CheckWorkerSetupFailure(CIRC_TX_BUF_SIZE, 0, internal, 2);

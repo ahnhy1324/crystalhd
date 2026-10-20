@@ -195,6 +195,7 @@ for bits in $build_bits; do
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_parser.cpp"
                 section_wrap=-Wl,--wrap=open,--wrap=close,--wrap=ioctl,--wrap=malloc,--wrap=free,--wrap=posix_memalign
                 section_wrap="$section_wrap -Wl,--wrap=pthread_create,--wrap=pthread_join,--wrap=shmget,--wrap=shmat,--wrap=shmdt,--wrap=shmctl"
+                section_wrap="$section_wrap -Wl,--wrap=pthread_mutexattr_init,--wrap=pthread_mutexattr_settype,--wrap=pthread_mutexattr_destroy,--wrap=pthread_mutex_init,--wrap=pthread_mutex_destroy,--wrap=pthread_mutex_lock,--wrap=pthread_mutex_unlock"
                 section_wrap="$section_wrap -Wl,--wrap=_Z15DtsPushFwToFleaPvPc,--wrap=_Z19DtsPushAuthFwToLinkPvPc,--wrap=_Z15DtsFWInitializePvj" ;;
             capture)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \

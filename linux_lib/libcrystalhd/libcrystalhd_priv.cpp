@@ -296,20 +296,27 @@ static uint32_t DtsConfiguredRxPoolCount()
 	return BC_MAX_SW_VOUT_BUFFS;
 }
 
-static void DtsInitLock(DTS_LIB_CONTEXT	*Ctx)
+static BC_STATUS DtsInitLock(DTS_LIB_CONTEXT *Ctx)
 {
-	//Create mutex
-	int ret;
 	pthread_mutexattr_t thLockattr;
-	ret = pthread_mutexattr_init(&thLockattr);
-	if(ret)
+	int ret = pthread_mutexattr_init(&thLockattr);
+	if (ret) {
 		DebugLog_Trace(LDIL_DBG, "Error initializing attributes\n");
+		return BC_STS_INSUFF_RES;
+	}
 	ret = pthread_mutexattr_settype(&thLockattr, PTHREAD_MUTEX_RECURSIVE);
-	if(ret)
+	if (ret) {
 		DebugLog_Trace(LDIL_DBG, "Error setting type of mutex\n");
+		pthread_mutexattr_destroy(&thLockattr);
+		return BC_STS_INSUFF_RES;
+	}
 	ret = pthread_mutex_init(&Ctx->thLock, &thLockattr);
-	if(ret)
+	pthread_mutexattr_destroy(&thLockattr);
+	if (ret) {
 		DebugLog_Trace(LDIL_DBG, "Error initializing mutex\n");
+		return BC_STS_INSUFF_RES;
+	}
+	return BC_STS_SUCCESS;
 }
 static void DtsDelLock(DTS_LIB_CONTEXT	*Ctx)
 {
@@ -1639,18 +1646,13 @@ static uint32_t DtsFreeIoctlDataPool(DTS_LIB_CONTEXT *Ctx)
 // Name: DtsAllocMemPools
 // Description: Allocate memory for application specific configs and RxBuffs
 //------------------------------------------------------------------------
-BC_STATUS DtsAllocMemPools(DTS_LIB_CONTEXT *Ctx)
+/* The recursive context mutex is initialized, but need not be held. */
+static BC_STATUS DtsAllocMemPoolsInitialized(DTS_LIB_CONTEXT *Ctx)
 {
 	uint32_t	i, Sz;
 	DTS_MPOOL_TYPE	*mp;
 	BC_IOCTL_DATA *pIoData;
 	BC_STATUS	sts = BC_STS_SUCCESS;
-
-	if(!Ctx){
-		return BC_STS_INV_ARG;
-	}
-
-	DtsInitLock(Ctx);
 
 	for(i=0; i< BC_IOCTL_DATA_POOL_SIZE; i++){
 		pIoData = (BC_IOCTL_DATA *) malloc(sizeof(BC_IOCTL_DATA));
@@ -1707,6 +1709,15 @@ BC_STATUS DtsAllocMemPools(DTS_LIB_CONTEXT *Ctx)
 
 	return BC_STS_SUCCESS;
 }
+BC_STATUS DtsAllocMemPools(DTS_LIB_CONTEXT *Ctx)
+{
+	if (!Ctx)
+		return BC_STS_INV_ARG;
+	const BC_STATUS sts = DtsInitLock(Ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+	return DtsAllocMemPoolsInitialized(Ctx);
+}
 BC_STATUS DtsAllocMemPools_dbg(DTS_LIB_CONTEXT *Ctx)
 {
 	uint32_t	i;
@@ -1716,7 +1727,9 @@ BC_STATUS DtsAllocMemPools_dbg(DTS_LIB_CONTEXT *Ctx)
 		return BC_STS_INV_ARG;
 	}
 
-	DtsInitLock(Ctx);
+	const BC_STATUS sts = DtsInitLock(Ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
 	for(i=0; i< BC_IOCTL_DATA_POOL_SIZE; i++){
 		pIoData = (BC_IOCTL_DATA *) malloc(sizeof(BC_IOCTL_DATA));
@@ -2221,7 +2234,13 @@ BC_STATUS DtsInitInterface(int hDevice, HANDLE *RetCtx, uint32_t mode)
 	}
 	Ctx->VidParams.pMetaData = NULL;
 
-	sts = DtsAllocMemPools(Ctx);
+	sts = DtsInitLock(Ctx);
+	if (sts != BC_STS_SUCCESS) {
+		/* Cleanup uses thLock; never publish a context without that mutex. */
+		free(Ctx);
+		return sts;
+	}
+	sts = DtsAllocMemPoolsInitialized(Ctx);
 	if(sts != BC_STS_SUCCESS){
 		DebugLog_Trace(LDIL_DBG,"DtsAllocMemPools failed Sts:%d\n",sts);
 		*RetCtx = (HANDLE)Ctx;

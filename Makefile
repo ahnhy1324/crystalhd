@@ -43,6 +43,7 @@ library-check:
 				test_sources="linux_lib/libcrystalhd/libcrystalhd_int_if.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp" ;; \
 			device-handle) test_wrap=-Wl,--wrap=open,--wrap=close,--wrap=ioctl,--wrap=malloc,--wrap=free,--wrap=posix_memalign; \
 				test_wrap="$$test_wrap -Wl,--wrap=pthread_create,--wrap=pthread_join,--wrap=shmget,--wrap=shmat,--wrap=shmdt,--wrap=shmctl"; \
+				test_wrap="$$test_wrap -Wl,--wrap=pthread_mutexattr_init,--wrap=pthread_mutexattr_settype,--wrap=pthread_mutexattr_destroy,--wrap=pthread_mutex_init,--wrap=pthread_mutex_destroy,--wrap=pthread_mutex_lock,--wrap=pthread_mutex_unlock"; \
 				test_wrap="$$test_wrap -Wl,--wrap=_Z15DtsPushFwToFleaPvPc,--wrap=_Z19DtsPushAuthFwToLinkPvPc,--wrap=_Z15DtsFWInitializePvj"; \
 				test_sources="linux_lib/libcrystalhd/libcrystalhd_if.cpp linux_lib/libcrystalhd/libcrystalhd_int_if.cpp"; \
 				test_sources="$$test_sources linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp"; \
