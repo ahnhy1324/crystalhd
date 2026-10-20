@@ -7124,6 +7124,174 @@ static void CheckNewBobAfterTeardown(TeardownFixture &fixture,
           "release post-teardown Bob output without retiring held source pictures");
 }
 
+static void LiveBobTailWithUnfenceableExposedTarget() {
+  enum class Tail { Complete, Cancel, Drain };
+  for (bool bottom_first : {false, true}) {
+    for (Tail tail : {Tail::Complete, Tail::Cancel, Tail::Drain}) {
+      TeardownFixture fixture(2);
+      auto &decode = *fixture.decoder;
+      decode.profile = VAProfileH264Main;
+      decode.height = fixture.io.output_height = 32;
+      decode.live_h264 = decode.live_h264_gap_tolerant = true;
+      decode.live_h264_fast_path = decode.low_latency_h264 = true;
+      decode.replay = CrystalHDDecodeReplay(true);
+      for (unsigned int index = 0; index != 2; ++index) {
+        const uint64_t token = (index + 1) * kTimestampStep;
+        for (const auto &picture : {fixture.held[index],
+                                   decode.decoded_frames.at(token)}) {
+          Require(picture->AllocateInternal(nullptr, -1, 16, 32,
+                                            VA_FOURCC_NV12),
+                  "allocate the combined live Bob field-pair fixture");
+          memset(picture->storage.data(), 99, picture->storage.size());
+          picture->expected_timestamp = token;
+          picture->h264_crop_unit_y = 4;
+        }
+      }
+      BindTeardownPicturesForVpp(fixture);
+      const uint32_t order = bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0;
+      const uint32_t first = bottom_first ? VDEC_FLAG_BOTTOMFIELD
+                                          : VDEC_FLAG_TOPFIELD;
+      const uint32_t second = bottom_first ? VDEC_FLAG_TOPFIELD
+                                           : VDEC_FLAG_BOTTOMFIELD;
+      const auto queue_field = [&](uint64_t token, uint32_t parity) {
+        fixture.io.outputs.push_back(token);
+        fixture.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | order | parity);
+      };
+      for (unsigned int picture = 1; picture <= 2; ++picture) {
+        const uint64_t token = picture * kTimestampStep;
+        Require(decode.replay.Append(token, picture == 1,
+                                      TestH264AccessUnit(picture == 1, picture)),
+                "accept each real AU before its independent successor prefix");
+        decode.next_timestamp = (picture + 1) * kTimestampStep;
+        Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS,
+                "send real live input and its syntactic successor prefix");
+        queue_field(token, first);
+        if (picture == 1) queue_field(token, second);
+        Require(ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS,
+                "complete the first picture but hold the final complementary field");
+      }
+      const uint64_t token = 2 * kTimestampStep;
+      const auto source = decode.decoded_frames.at(token);
+      const uint64_t generation = decode.generation;
+      Require(source->frame_timestamp == 0 && !source->ready &&
+                  decode.h264_first_field.valid && decode.replay.outstanding() == 1 &&
+                  decode.prefed_timestamp == 3 * kTimestampStep &&
+                  decode.pending.count(3 * kTimestampStep) == 0,
+              "a cold final source and a prefed-only successor remain distinct owners");
+
+      if (tail == Tail::Drain) {
+        fixture.io.early_eos = true;
+        fixture.io.on_sleep = [&] {
+          Require(fixture.io.outputs == std::deque<uint64_t>{0} &&
+                      decode.h264_first_field.valid && !source->ready,
+                  "explicit drain seals before the simulated final complementary field");
+          fixture.io.outputs.push_front(token);
+          fixture.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | order | second);
+        };
+        Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                    source->ready && !source->failed && decode.retired &&
+                    decode.pending.empty() && decode.replay.outstanding() == 0 &&
+                    decode.prefed_timestamp == 0 && decode.device == nullptr &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 1 &&
+                    std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1,
+                "explicit decoder drain finishes the exact pair before consuming close");
+      }
+
+      auto target = std::make_shared<Surface>();
+      Require(target->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+              "allocate the exposed Bob target without accessing a device");
+      target->id = fixture.driver.next_surface++;
+      target->layout.valid = true;
+      // Exercise the established no-fence-transport branch, not a real
+      // sw_sync open failure. No DMA-BUF or debugfs operation is attempted.
+      Require(target->object_fds.empty(), "the model has no external fence transport");
+      memset(target->storage.data(), 99, target->storage.size());
+      const auto original = target->storage;
+      fixture.driver.surfaces[target->id] = target;
+      VAConfigID config = VA_INVALID_ID;
+      VAContextID processor = VA_INVALID_ID;
+      Require(CreateConfig(&fixture.context, VAProfileNone, VAEntrypointVideoProc,
+                           nullptr, 0, &config) == VA_STATUS_SUCCESS &&
+                  CreateContext(&fixture.context, config, 16, 32, 0, nullptr, 0,
+                                &processor) == VA_STATUS_SUCCESS,
+              "create a real VPP API client for the held live picture");
+      VAProcFilterParameterBufferDeinterlacing filter = {};
+      filter.type = VAProcFilterDeinterlacing;
+      filter.algorithm = VAProcDeinterlacingBob;
+      filter.flags = bottom_first ? VA_DEINTERLACING_BOTTOM_FIELD_FIRST |
+                                       VA_DEINTERLACING_BOTTOM_FIELD : 0;
+      VABufferID filter_id = VA_INVALID_ID, pipeline_id = VA_INVALID_ID;
+      Require(CreateBuffer(&fixture.context, processor, VAProcFilterParameterBufferType,
+                           sizeof(filter), 1, &filter, &filter_id) == VA_STATUS_SUCCESS,
+              "create first-temporal-field Bob parameters");
+      VAProcPipelineParameterBuffer pipeline = {};
+      pipeline.surface = 2;
+      pipeline.filters = &filter_id;
+      pipeline.num_filters = 1;
+      Require(CreateBuffer(&fixture.context, processor, VAProcPipelineParameterBufferType,
+                           sizeof(pipeline), 1, &pipeline, &pipeline_id) == VA_STATUS_SUCCESS &&
+                  BeginPicture(&fixture.context, processor, target->id) == VA_STATUS_SUCCESS &&
+                  RenderPicture(&fixture.context, processor, &pipeline_id, 1) == VA_STATUS_SUCCESS,
+              "capture the exact final live picture through Begin/Render");
+      unsigned int waits = 0;
+      if (tail != Tail::Drain) {
+        fixture.io.on_sleep = [&] {
+          ++waits;
+          Require(fixture.driver.pending_vpp.size() == 1 &&
+                      fixture.driver.pending_vpp.front().worker_active &&
+                      source->vpp_readers == 1 && target->vpp_writers == 1 &&
+                      !target->ready && target->storage == original &&
+                      !decode.replay.sealed(),
+                  "unfenceable End waits with balanced ownership, never unfinished pixels");
+          if (tail == Tail::Complete) {
+            queue_field(token, second);
+          } else {
+            VASurfaceID source_id = 2;
+            Require(DestroySurfacesWithTimeout(&fixture.context, &source_id, 1, 0) ==
+                        VA_STATUS_SUCCESS,
+                    "actual source-pool retirement cancels the waiting final pair");
+          }
+        };
+      }
+      const VAStatus ended = EndPicture(&fixture.context, processor);
+      Require(fixture.driver.pending_vpp.empty() && source->vpp_readers == 0 &&
+                  target->vpp_writers == 0 && !fixture.io.invalid,
+              "all combined tail paths release queued readers and writers exactly once");
+      if (tail == Tail::Cancel) {
+        Require(waits == 1 && ended == VA_STATUS_ERROR_OPERATION_FAILED &&
+                    SyncSurface2(&fixture.context, target->id, 0) ==
+                        VA_STATUS_ERROR_DECODING_ERROR &&
+                    decode.generation == generation + 1 && !decode.h264_first_field.valid &&
+                    !target->ready && target->failed && target->storage == original,
+                "pool cancellation reproduces End1 then Sync23 without writing fallback pixels");
+      } else {
+        Require(waits == (tail == Tail::Complete ? 1U : 0U) &&
+                    ended == VA_STATUS_SUCCESS && target->ready && !target->failed &&
+                    target->frame_timestamp == token && target->expected_timestamp == token &&
+                    target->trace_decode_identity == source->trace_decode_identity &&
+                    target->trace_generation == generation &&
+                    SyncSurface2(&fixture.context, target->id, 0) == VA_STATUS_SUCCESS,
+                "natural pair completion or successful explicit drain yields exact Bob identity");
+        for (unsigned int plane = 0; plane != 2; ++plane)
+          for (unsigned int row = 0; row != (plane == 0 ? 32U : 16U); ++row)
+            for (unsigned int column = 0; column != 16; ++column)
+              Require(target->planes[plane][row * target->pitch[plane] + column] ==
+                          (plane == 0 ? DecodeIoMock::Luma(token) : 128),
+                      "successful combined Bob output contains every real active Y/UV byte");
+      }
+      Require(std::count(fixture.io.events.begin(), fixture.io.events.end(), "release") ==
+                  (tail == Tail::Cancel ? 3 : tail == Tail::Drain ? 5 : 4) &&
+                  (tail == Tail::Drain ||
+                   std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 0) &&
+                  DestroyBuffer(&fixture.context, pipeline_id) == VA_STATUS_SUCCESS &&
+                  DestroyBuffer(&fixture.context, filter_id) == VA_STATUS_SUCCESS &&
+                  DestroyContext(&fixture.context, processor) == VA_STATUS_SUCCESS &&
+                  DestroyConfig(&fixture.context, config) == VA_STATUS_SUCCESS,
+              "only explicit drain emits EOS and every acquired field/output is released once");
+    }
+  }
+}
+
 static void DrainedContextSupportsNewBobCaptures() {
   TeardownFixture fixture(40);  // Exercise the real queued-input drain budget.
   BindTeardownPicturesForVpp(fixture);
@@ -8297,8 +8465,14 @@ static void AutonomousWorkerStopsAfterTransportFailure() {
           "query-only frontend observes the terminal worker failure");
 }
 
-int main() {
+int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::strcmp(argv[1], "--live-bob-tail") == 0) {
+      LiveBobTailWithUnfenceableExposedTarget();
+      std::puts("VA-API LIVE Bob tail model: TFF/BFF completion, cancellation and explicit drain PASS");
+      return 0;
+    }
+    Require(argc == 1, "usage: vaapi-replay-test [--live-bob-tail]");
     SealedBatchQueuesAndReplays();
     RejectIncompleteAndUnboundedReplay();
     ReclaimOnlyCompletedIdrPrefixes();
@@ -8349,6 +8523,7 @@ int main() {
     AutomaticH264PrefeedSnapshotsAcceptedSequence();
     LiveH264SpeculativePrefeedSequence();
     LiveH264InterlacedPrefeedKeepsExactFieldOwnership();
+    LiveBobTailWithUnfenceableExposedTarget();
     LiveH264PrefeedBusyFallback();
     LiveH264PrefeedEligibilityAndGhostGuard();
     TransportProgressRequiresActualHardwareIo();
