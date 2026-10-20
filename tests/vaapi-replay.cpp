@@ -7124,6 +7124,99 @@ static void CheckNewBobAfterTeardown(TeardownFixture &fixture,
           "release post-teardown Bob output without retiring held source pictures");
 }
 
+static void FirstH264FieldRefreshesTransportGrace() {
+  enum class Case { Grace, Pair, Unknown, ReleaseFailure, SameParity, Duplicate, Ghost };
+  for (Case test : {Case::Grace, Case::Pair, Case::Unknown, Case::ReleaseFailure,
+                    Case::SameParity, Case::Duplicate, Case::Ghost}) {
+    TeardownFixture fixture(1);
+    auto &decode = *fixture.decoder;
+    decode.profile = VAProfileH264Main;
+    decode.height = fixture.io.output_height = 32;
+    for (const auto &picture : {fixture.held[0], decode.decoded_frames.at(kTimestampStep)}) {
+      Require(picture->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+              "allocate first-field progress fixture");
+      memset(picture->storage.data(), 99, picture->storage.size());
+      picture->expected_timestamp = kTimestampStep;
+      picture->h264_crop_unit_y = 4;
+    }
+    BindTeardownPicturesForVpp(fixture);
+    Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS,
+            "submit the actual finite picture before observing field progress");
+    const uint64_t progress = decode.transport_progress;
+    const auto queue = [&](uint64_t token, bool bottom) {
+      fixture.io.outputs.push_back(token);
+      fixture.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC |
+          (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD));
+    };
+    const auto receive = [&] {
+      bool activity = false;
+      return ReceiveOne(&fixture.driver, &decode, 0, &activity);
+    };
+    if (test == Case::Grace) {
+      unsigned waits = 0;
+      fixture.io.on_sleep = [&] {
+        ++waits;
+        // The next poll has fresh hardware work even though the OLD idle
+        // deadline passed. Only successful field acquisition may renew it.
+        std::this_thread::sleep_for(std::chrono::nanoseconds(kDecodeBatchGraceNs) +
+                                    std::chrono::milliseconds(10));
+        std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+        queue(kTimestampStep, false);
+        fixture.io.on_sleep = [&] {
+          ++waits;
+          std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+          Require(decode.h264_first_field.valid && !fixture.held[0]->ready &&
+                      decode.replay.outstanding() == 1 && !decode.replay.sealed() &&
+                      decode.transport_progress == progress + 1 &&
+                      std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 0,
+                  "fresh first field renews idle grace without EOS or early picture completion");
+          queue(kTimestampStep, true);
+        };
+      };
+      Require(SyncSurface2(&fixture.context, 1, 2ULL * 1000 * 1000 * 1000) ==
+                  VA_STATUS_SUCCESS && waits == 2 &&
+                  decode.transport_progress == progress + 2 &&
+                  decode.replay.outstanding() == 0 && !decode.replay.sealed() &&
+                  fixture.io.open_attempts == 0,
+              "complement within renewed grace completes without EOS/restart");
+      fixture.CheckPicture(0);
+    } else {
+      if (test == Case::ReleaseFailure) fixture.io.output_release_status = BC_STS_ERROR;
+      if (test == Case::Ghost) decode.prefed_timestamp = 2 * kTimestampStep;
+      queue(test == Case::Unknown || test == Case::Ghost ? 2 * kTimestampStep : kTimestampStep, false);
+      const VAStatus status = receive();
+      if (test == Case::Unknown || test == Case::ReleaseFailure || test == Case::Ghost) {
+        Require((status == VA_STATUS_SUCCESS) == (test == Case::Unknown) &&
+                    decode.transport_progress == progress && !fixture.held[0]->ready,
+                "unknown, speculative and failed-release fields are not transport progress");
+      } else {
+        Require(status == VA_STATUS_SUCCESS && decode.transport_progress == progress + 1 &&
+                    decode.h264_first_field.valid && decode.replay.outstanding() == 1 &&
+                    !fixture.held[0]->ready && fixture.held[0]->frame_timestamp == 0,
+                "one validated released first field is progress, not a completed picture");
+        queue(kTimestampStep, test != Case::SameParity);
+        const VAStatus second = receive();
+        if (test == Case::SameParity) {
+          Require(second != VA_STATUS_SUCCESS && decode.transport_progress == progress + 1,
+                  "same-parity rejection cannot refresh transport grace");
+        } else {
+          Require(second == VA_STATUS_SUCCESS && decode.transport_progress == progress + 2 &&
+                      decode.replay.outstanding() == 0 && !decode.h264_first_field.valid,
+                  "complementary pair preserves the existing single completion increment");
+          fixture.CheckPicture(0);
+          if (test == Case::Duplicate) {
+            queue(kTimestampStep, false);
+            Require(receive() == VA_STATUS_SUCCESS && decode.transport_progress == progress + 2 &&
+                        !decode.h264_first_field.valid,
+                    "unsolicited completed-picture duplicate cannot refresh grace");
+          }
+        }
+      }
+    }
+    Require(!fixture.io.invalid, "first-field progress uses only mocked owned hardware calls");
+  }
+}
+
 static void LiveBobTailWithUnfenceableExposedTarget() {
   enum class Tail { Complete, Cancel, Drain };
   for (bool bottom_first : {false, true}) {
@@ -8468,8 +8561,9 @@ static void AutonomousWorkerStopsAfterTransportFailure() {
 int main(int argc, char **argv) {
   try {
     if (argc == 2 && std::strcmp(argv[1], "--live-bob-tail") == 0) {
+      FirstH264FieldRefreshesTransportGrace();
       LiveBobTailWithUnfenceableExposedTarget();
-      std::puts("VA-API LIVE Bob tail model: TFF/BFF completion, cancellation and explicit drain PASS");
+      std::puts("VA-API first-field progress/grace and LIVE Bob tail model: TFF/BFF completion, cancellation and explicit drain PASS");
       return 0;
     }
     Require(argc == 1, "usage: vaapi-replay-test [--live-bob-tail]");
@@ -8523,6 +8617,7 @@ int main(int argc, char **argv) {
     AutomaticH264PrefeedSnapshotsAcceptedSequence();
     LiveH264SpeculativePrefeedSequence();
     LiveH264InterlacedPrefeedKeepsExactFieldOwnership();
+    FirstH264FieldRefreshesTransportGrace();
     LiveBobTailWithUnfenceableExposedTarget();
     LiveH264PrefeedBusyFallback();
     LiveH264PrefeedEligibilityAndGhostGuard();

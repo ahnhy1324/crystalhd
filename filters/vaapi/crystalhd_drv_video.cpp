@@ -4157,12 +4157,18 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
   *activity = true;
   const size_t outstanding = decode->WithReplay(
       [](auto &replay) { return replay.outstanding(); });
+  const bool had_first_field = decode->h264_first_field.valid;
   const VAStatus result = ProcessDecodedOutput(driver, decode, output);
   status = DtsReleaseOutputBuffs(decode->device, nullptr, FALSE);
   if (status != BC_STS_SUCCESS)
     return FailDecode(driver, decode, "hardware output release failed");
-  if (result == VA_STATUS_SUCCESS && decode->WithReplay(
-          [](auto &replay) { return replay.outstanding(); }) < outstanding)
+  // A newly validated first field is real hardware progress even though its
+  // picture must remain outstanding until the complementary field arrives.
+  // Count it only after successful output release, never for unknown repeats
+  // or a failed acquisition/pair. Do not publish picture readiness early.
+  if (result == VA_STATUS_SUCCESS &&
+      ((!had_first_field && decode->h264_first_field.valid) ||
+       decode->WithReplay([](auto &replay) { return replay.outstanding(); }) < outstanding))
     decode->RecordTransportProgress();
   return result;
 }

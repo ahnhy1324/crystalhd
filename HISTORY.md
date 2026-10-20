@@ -10,6 +10,8 @@
   chroma pairing, CPU-access ownership or the no-SSE path.
 - Avoid a redundant DMA-BUF CPU-write acquisition when VPP fencing is
   unavailable; retain synchronous completion and failure cleanup guarantees.
+- Count a validated, released H.264 first field as transport progress so an
+  active field pair is not prematurely treated as an idle decode batch.
 - Implement CPU VA-VPP Bob for origin-aligned woven NV12 regions, with NV12/ARGB
   output, independent Y/UV field sampling and Render-time filter snapshots.
   Preserve zero-filter Weave/scaling and legacy ABI; single-field input,
