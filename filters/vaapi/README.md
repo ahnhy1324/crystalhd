@@ -466,9 +466,9 @@ invalid, and reimport remains busy until pending writes finish.
 
 The minimal VPP path provides unfiltered NV12 scaling and NV12-to-ARGB
 conversion in a separate video-processing context. Decode-integrated processing
-(`VAConfigAttribDecProcessing`) is not supported: omission or
-`VA_DEC_PROCESSING_NONE` retains ordinary decode; enabling processing is rejected. Separate VPP/Bob
-support does not imply card-side scaled decode output.
+is a separate, opt-in H.264 development path described below; omission or
+`VA_DEC_PROCESSING_NONE` retains ordinary decode. Separate VPP/Bob does not
+implicitly enable the card scaler.
 On the unreleased 1.2 branch, VPP/Bob honors declared full-range NV12 for
 ARGB conversion; UNKNOWN input retains the existing limited-range interpretation.
 NV12 output preserves the input range, with range-correct black padding.
@@ -493,6 +493,37 @@ privately before the final copy. A canceled or failed fenced write closes its
 unsignaled timeline so its
 fences fail with `-ENOENT`; successful writes flush pixel caches before the
 timeline advances.
+
+### Development: decode-integrated card scaling
+
+An H.264 VLD client can explicitly create its configuration with
+`VAConfigAttribDecProcessing = VA_DEC_PROCESSING`. For each decoded picture,
+submit a `VAProcPipelineParameterBufferType` in the **decode context**, alongside
+the usual picture and slice buffers:
+
+- `surface` is the original coded-size decode target; `additional_outputs`
+  contains one different, smaller NV12 surface.
+- `surface_region` explicitly supplies the origin-zero visible rectangle,
+  using the full coded width. `output_region` is the entire smaller target.
+  For example, coded 1920×1088, visible 1920×1080 and output 1280×720.
+- Only an exact aspect-preserving downscale is accepted. Output width is even
+  and at least 128; MBAFF additionally requires width divisible by 16 and height
+  divisible by four. Visible crop and output geometry stay fixed per context.
+- The card scales before readback. Original reconstruction stays in the
+  firmware DPB: the original VA handle supports decode completion/reference
+  identity, **not** image readback, export, upload or separate VPP input.
+  Only the small additional output has host pixels and can feed CPU Bob/VPP.
+- Supply internally allocated, previously unexposed surfaces. A processed pool
+  can be reused after completion; `vaCreateImage`/`vaGetImage` takes a readback
+  snapshot without making the target externally writable.
+
+This initial path uses finite replay on BCM70015. Explicit LIVE, low-latency
+and READY-remap experiments, arbitrary crop/height, extra filters and BCM70012
+are rejected. The default VLD path and published 1.1 are unchanged. Stock
+FFmpeg/Kodi do not request integrated processing, so this does not automatically
+accelerate their separate `scale_vaapi`/VPP calls. Native output/pixel/lifecycle
+qualification is tracked in [TODO](../../TODO.md#card-720-output-deinterlace-then-enlarge);
+capability advertisement alone is not hardware acceptance.
 
 ## Limitations
 

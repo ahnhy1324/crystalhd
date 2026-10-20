@@ -147,6 +147,10 @@ extern "C" BC_STATUS DtsSetInputFormat(HANDLE device, BC_INPUT_FORMAT *format) {
           "reopen restores the H.264 input format");
   return BC_STS_SUCCESS;
 }
+extern "C" BC_STATUS DtsSetScaleParams(HANDLE, BC_SCALING_PARAMS *) {
+  Require(false, "ordinary H.264 never requests card scaling");
+  return BC_STS_ERROR;
+}
 extern "C" BC_STATUS DtsOpenDecoder(HANDLE device, uint32_t stream_type) {
   CheckDevice(device);
   Require(active->allow_reopen && stream_type == BC_STREAM_TYPE_ES,

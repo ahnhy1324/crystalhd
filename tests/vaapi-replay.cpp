@@ -10,9 +10,14 @@
 
 namespace allocation_fault {
 thread_local bool fail_next = false;
+thread_local size_t fail_size = 0;
 void *Allocate(size_t bytes) {
   if (fail_next) {
     fail_next = false;
+    throw std::bad_alloc();
+  }
+  if (fail_size != 0 && bytes == fail_size) {
+    fail_size = 0;
     throw std::bad_alloc();
   }
   if (void *result = std::malloc(bytes == 0 ? 1 : bytes))
@@ -266,6 +271,11 @@ struct DecodeIoMock {
   std::deque<uint32_t> picture_flags;
   std::vector<uint8_t> pixels;
   std::vector<std::string> events;
+  std::vector<std::string> setup_events;
+  BC_INPUT_FORMAT input_format = {};
+  BC_SCALING_PARAMS scaling = {};
+  unsigned int scale_calls = 0;
+  BC_STATUS scale_status = BC_STS_SUCCESS;
   std::function<void()> on_sleep;
   bool early_eos = false;
   bool zero_timestamp_picture = false;
@@ -395,8 +405,25 @@ extern "C" BC_STATUS __wrap_DtsSetInputFormat(
     return __real_DtsSetInputFormat(device, format);
   decode_io_mock->invalid |= device != decode_io_mock->handle() ||
                              format == nullptr;
+  decode_io_mock->setup_events.push_back("input-format");
+  if (format != nullptr)
+    decode_io_mock->input_format = *format;
   return decode_io_mock->fail_set_input_format ? BC_STS_ERROR
                                                 : BC_STS_SUCCESS;
+}
+
+extern "C" BC_STATUS __real_DtsSetScaleParams(HANDLE, BC_SCALING_PARAMS *);
+extern "C" BC_STATUS __wrap_DtsSetScaleParams(
+    HANDLE device, BC_SCALING_PARAMS *scaling) {
+  if (decode_io_mock == nullptr)
+    return __real_DtsSetScaleParams(device, scaling);
+  decode_io_mock->invalid |= device != decode_io_mock->handle() ||
+                             scaling == nullptr;
+  decode_io_mock->setup_events.push_back("scale");
+  ++decode_io_mock->scale_calls;
+  if (scaling != nullptr)
+    decode_io_mock->scaling = *scaling;
+  return decode_io_mock->scale_status;
 }
 
 #define MOCK_OPEN_OPERATION(name, arguments, validation) \
@@ -419,6 +446,7 @@ extern "C" BC_STATUS __wrap_DtsOpenDecoder(HANDLE device, uint32_t stream_type) 
   decode_io_mock->invalid |= device != decode_io_mock->handle();
   ++decode_io_mock->decoder_open_calls;
   decode_io_mock->decoder_open_handle = device;
+  decode_io_mock->setup_events.push_back("open-decoder");
   return BC_STS_SUCCESS;
 }
 
@@ -2464,6 +2492,403 @@ static void ContextAdmissionFailuresPublishNothing() {
               DestroyContext(&context, id) == VA_STATUS_SUCCESS &&
               io.device_close_calls == 1 && !io.invalid,
           "failed first codec setup consumes its admitted lease exactly once");
+}
+
+static void CardScalingSetupOrderAndFailures() {
+  for (unsigned int fault = 0; fault < 4; ++fault) {
+    DecodeIoMock io;
+    io.allow_device_open = true;
+    io.report_bcm70012 = fault == 1;
+    io.scale_status = fault == 2 ? BC_STS_ERROR : BC_STS_SUCCESS;
+    io.fail_set_input_format = fault == 3;
+    MockDecodeScope scope(io);
+    DecodeContext decoder;
+    decoder.width = 1920;
+    decoder.height = 1088;
+    decoder.processing_geometry = {true, 1920, 1080, 1280, 720};
+    const VAStatus status = OpenDecoder(&decoder);
+    if (fault == 0) {
+      Require(status == VA_STATUS_SUCCESS &&
+                  io.setup_events == std::vector<std::string>{
+                      "input-format", "scale", "open-decoder"} &&
+                  io.input_format.width == 1920 &&
+                  io.input_format.height == 1088 &&
+                  io.scaling.sWidth == 1280 && io.scaling.sHeight == 0 &&
+                  io.scaling.DNR == 0 &&
+                  decoder.CaptureWidth() == 1280 &&
+                  decoder.CaptureHeight() == 720 &&
+                  decoder.StreamWidth() == 1920 &&
+                  decoder.StreamHeight() == 1088,
+              "card width is configured after coded input and before decoder open");
+      Require(decoder.CloseHardware() == BC_STS_SUCCESS &&
+                  decoder.processing_geometry.enabled &&
+                  OpenDecoder(&decoder) == VA_STATUS_SUCCESS &&
+                  io.scale_calls == 2 &&
+                  io.setup_events == std::vector<std::string>{
+                      "input-format", "scale", "open-decoder",
+                      "input-format", "scale", "open-decoder"},
+              "hardware-only reopen reapplies frozen scale before opening");
+    } else {
+      Require(status == VA_STATUS_ERROR_OPERATION_FAILED &&
+                  decoder.device == nullptr && !decoder.decoder_open &&
+                  !decoder.decoder_started && io.device_close_calls == 1 &&
+                  io.decoder_open_calls == 0 &&
+                  io.scale_calls == (fault == 2 ? 1U : 0U),
+              "unsupported card or setup failure closes only its own device");
+    }
+    Require(!io.invalid, "scale setup uses only the admitted mock device");
+  }
+  DecodeIoMock io;
+  io.allow_device_open = true;
+  MockDecodeScope scope(io);
+  DecodeContext ordinary;
+  ordinary.width = 1920;
+  ordinary.height = 1088;
+  Require(OpenDecoder(&ordinary) == VA_STATUS_SUCCESS &&
+              io.scale_calls == 0 &&
+              io.setup_events == std::vector<std::string>{
+                  "input-format", "open-decoder"},
+          "ordinary VLD never enables the card scaler");
+}
+
+struct CardProcessingFixture {
+  DecodeIoMock io;
+  MockDecodeScope scope{io};
+  Driver driver{-1};
+  VADriverContext context = {};
+  VAContextID id = VA_INVALID_ID;
+  VAConfigID config = VA_INVALID_ID;
+  std::shared_ptr<DecodeContext> decoder;
+  bool bottom_first = false;
+  bool interlaced = true;
+
+  explicit CardProcessingFixture(bool bff = false, bool fields = true)
+      : bottom_first(bff), interlaced(fields) {
+    io.allow_device_open = true;
+    context.pDriverData = &driver;
+    VAConfigAttrib processing = {VAConfigAttribDecProcessing, VA_DEC_PROCESSING};
+    Require(CreateConfig(&context, VAProfileH264Main, VAEntrypointVLD,
+                         &processing, 1, &config) == VA_STATUS_SUCCESS &&
+                CreateContext(&context, config, 1920, 1088, 0, nullptr, 0,
+                              &id) == VA_STATUS_SUCCESS,
+            "public decode-processing config admits a coded-size context");
+    decoder = driver.contexts.at(id);
+    decoder->live_h264 = false;
+    decoder->auto_h264_prefeed = false;
+    for (VASurfaceID surface_id : {1U, 2U, 11U, 12U}) {
+      const bool original = surface_id < 10;
+      auto surface = std::make_shared<Surface>();
+      Require(surface->AllocateInternal(nullptr, -1,
+                  original ? 1920 : 1280, original ? 1088 : 720,
+                  VA_FOURCC_NV12), "allocate public processing surfaces");
+      surface->id = surface_id;
+      surface->ready = true;
+      driver.surfaces[surface_id] = surface;
+    }
+  }
+
+  VAStatus Render(VASurfaceID original, VASurfaceID output,
+                  unsigned visible_height = 1080, unsigned syntax_fault = 0) {
+    VAStatus status = BeginPicture(&context, id, original);
+    if (status != VA_STATUS_SUCCESS)
+      return status;
+    VAPictureParameterBufferH264 picture = {};
+    picture.picture_width_in_mbs_minus1 = 119;
+    picture.picture_height_in_mbs_minus1 = 67;
+    picture.num_ref_frames = 1;
+    picture.seq_fields.bits.chroma_format_idc = 1;
+    picture.seq_fields.bits.frame_mbs_only_flag = !interlaced;
+    picture.seq_fields.bits.mb_adaptive_frame_field_flag = interlaced;
+    picture.seq_fields.bits.direct_8x8_inference_flag = 1;
+    picture.pic_fields.bits.deblocking_filter_control_present_flag = 1;
+    switch (syntax_fault) {
+      case 1: picture.seq_fields.bits.chroma_format_idc = 0; break;
+      case 2: picture.seq_fields.bits.chroma_format_idc = 2; break;
+      case 3: picture.seq_fields.bits.residual_colour_transform_flag = 1; break;
+      case 4: picture.bit_depth_luma_minus8 = 1; break;
+      case 5: picture.bit_depth_chroma_minus8 = 1; break;
+      case 6: picture.pic_fields.bits.field_pic_flag = 1; break;
+      case 7: picture.seq_fields.bits.mb_adaptive_frame_field_flag = 0; break;
+    }
+    VASliceParameterBufferH264 slice = {};
+    slice.slice_type = 2;
+    uint8_t bytes[] = {0x65, 0x88, 0x84};
+    VARectangle source = {0, 0, 1920, static_cast<uint16_t>(visible_height)};
+    VAProcPipelineParameterBuffer pipeline = {};
+    pipeline.surface = original;
+    pipeline.surface_region = &source;
+    pipeline.num_additional_outputs = 1;
+    pipeline.additional_outputs = &output;
+    pipeline.input_surface_flag = pipeline.output_surface_flag =
+        !interlaced ? VA_FRAME_PICTURE :
+            bottom_first ? VA_BOTTOM_FIELD_FIRST : VA_TOP_FIELD_FIRST;
+    VABufferID buffers[4] = {};
+    Require(CreateBuffer(&context, id, VAPictureParameterBufferType,
+                         sizeof(picture), 1, &picture, &buffers[0]) == VA_STATUS_SUCCESS &&
+                CreateBuffer(&context, id, VASliceParameterBufferType,
+                             sizeof(slice), 1, &slice, &buffers[1]) == VA_STATUS_SUCCESS &&
+                CreateBuffer(&context, id, VASliceDataBufferType,
+                             sizeof(bytes), 1, bytes, &buffers[2]) == VA_STATUS_SUCCESS &&
+                CreateBuffer(&context, id, VAProcPipelineParameterBufferType,
+                             sizeof(pipeline), 1, &pipeline, &buffers[3]) == VA_STATUS_SUCCESS,
+            "create public processing parameters");
+    status = RenderPicture(&context, id, buffers, 4);
+    // All geometry and output IDs must have been copied at Render, not read
+    // again when the caller destroys its buffers or mutates pointed-to data.
+    source.height = 1088;
+    output = VA_INVALID_SURFACE;
+    for (const auto buffer : buffers)
+      Require(DestroyBuffer(&context, buffer) == VA_STATUS_SUCCESS,
+              "Render snapshots survive destruction of all client buffers");
+    return status;
+  }
+
+  VAStatus Submit(VASurfaceID original, VASurfaceID output) {
+    const VAStatus status = Render(original, output);
+    return status == VA_STATUS_SUCCESS ? EndPicture(&context, id) : status;
+  }
+
+  void Complete(uint64_t token) {
+    io.output_width = 1280;
+    io.output_height = 720;
+    if (!interlaced) {
+      io.outputs.push_back(token);
+      io.picture_flags.push_back(0);
+      Require(ReceiveAvailable(&driver, decoder.get()) == VA_STATUS_SUCCESS,
+              "scaled progressive picture completes through real output handling");
+      return;
+    }
+    const uint32_t order = bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0;
+    for (const bool bottom : {bottom_first, !bottom_first}) {
+      io.outputs.push_back(token);
+      io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | order |
+          (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD));
+    }
+    Require(ReceiveAvailable(&driver, decoder.get()) == VA_STATUS_SUCCESS,
+            "scaled top/bottom fields complete through real output handling");
+  }
+};
+
+static void CardScalingProgressiveOutput() {
+  CardProcessingFixture fixture(false, false);
+  Require(fixture.Submit(1, 11) == VA_STATUS_SUCCESS && fixture.io.scale_calls == 1,
+          "progressive processing takes the explicit card-scale path");
+  const auto original = fixture.driver.surfaces.at(1);
+  const auto output = fixture.driver.surfaces.at(11);
+  const auto picture = original->opaque_picture;
+  Require(picture && picture->width == 1280 && picture->height == 720 &&
+              picture->h264_crop_unit_y == 2,
+          "progressive capture retains its crop unit and reduced allocation");
+  fixture.Complete(kTimestampStep);
+  Require(picture->ready && output->ready &&
+              output->frame_timestamp == kTimestampStep &&
+              picture->frame_timestamp == kTimestampStep &&
+              fixture.decoder->pending.empty() &&
+              fixture.decoder->replay.outstanding() == 0 &&
+              !fixture.decoder->h264_first_field.valid &&
+              SyncSurface2(&fixture.context, 1, 0) == VA_STATUS_SUCCESS &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "release") == 1 && !fixture.io.invalid,
+          "one progressive output completes both exact handles and releases once");
+  // This is a constant-plane transport oracle, not scaler-quality evidence.
+  // Native comparison independently checks nonuniform card-resampled pixels.
+  for (const auto &surface : {picture, output}) {
+    for (unsigned row = 0; row < 720; ++row)
+      for (unsigned column = 0; column < 1280; ++column)
+        Require(surface->planes[0][static_cast<size_t>(row) * surface->pitch[0] + column] ==
+                    DecodeIoMock::Luma(kTimestampStep),
+                "scaled progressive output copies every expected luma sample");
+    for (unsigned row = 0; row < 360; ++row)
+      for (unsigned column = 0; column < 1280; ++column)
+        Require(surface->planes[1][static_cast<size_t>(row) * surface->pitch[1] + column] == 128,
+                "scaled progressive output copies every expected chroma sample");
+  }
+}
+
+static void CardScalingPreAcceptFailuresPreserveOwnership() {
+  for (unsigned fault = 1; fault <= 7; ++fault) {
+    CardProcessingFixture fixture;
+    Require(fixture.Render(1, 11, 1080, fault) == VA_STATUS_SUCCESS &&
+                EndPicture(&fixture.context, fixture.id) == VA_STATUS_ERROR_UNSUPPORTED_PROFILE &&
+                fixture.io.inputs.empty() && fixture.io.scale_calls == 0 &&
+                fixture.decoder->pending.empty() &&
+                !fixture.driver.surfaces.at(1)->opaque_reference,
+            "processing rejects unsupported chroma/depth or separate-field syntax before input");
+  }
+  for (const bool crop_phase : {false, true}) {
+    CardProcessingFixture fixture;
+    auto output = std::make_shared<Surface>();
+    Require(output->AllocateInternal(nullptr, -1,
+                crop_phase ? 1280 : 150, crop_phase ? 724 : 80,
+                VA_FOURCC_NV12), "allocate field-geometry rejection target");
+    output->id = 13;
+    output->ready = true;
+    fixture.driver.surfaces[13] = output;
+    Require(fixture.Render(1, 13, crop_phase ? 1086 : 1024) == VA_STATUS_SUCCESS &&
+                EndPicture(&fixture.context, fixture.id) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                fixture.io.inputs.empty() && fixture.io.scale_calls == 0 &&
+                !fixture.driver.surfaces.at(1)->opaque_reference,
+            "picture-aware admission rejects MBAFF crop phase or nonaligned card width");
+  }
+  {
+    CardProcessingFixture fixture;
+    Require(fixture.Render(1, 11) == VA_STATUS_SUCCESS,
+            "capture processing request before a competing output transaction");
+    const auto original = fixture.driver.surfaces.at(1);
+    const auto output = fixture.driver.surfaces.at(11);
+    VAConfigID vpp_config = VA_INVALID_ID;
+    VAContextID vpp_context = VA_INVALID_ID;
+    Require(CreateConfig(&fixture.context, VAProfileNone, VAEntrypointVideoProc,
+                         nullptr, 0, &vpp_config) == VA_STATUS_SUCCESS &&
+                CreateContext(&fixture.context, vpp_config, 1280, 720, 0,
+                              nullptr, 0, &vpp_context) == VA_STATUS_SUCCESS &&
+                BeginPicture(&fixture.context, vpp_context, 11) == VA_STATUS_SUCCESS,
+            "another public context starts a new transaction on the captured output");
+    const uint64_t transaction = output->picture_transaction;
+    const auto pixels = output->storage;
+    Require(transaction != fixture.decoder->processing_target_transaction &&
+                EndPicture(&fixture.context, fixture.id) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                output->picture_transaction == transaction && !output->failed &&
+                output->storage == pixels && !original->opaque_reference &&
+                !original->opaque_picture && fixture.io.inputs.empty() &&
+                fixture.io.scale_calls == 0 && fixture.decoder->pending.empty(),
+            "stale processing End cannot steal, fail or modify a newer output writer");
+  }
+  for (const bool private_backing : {false, true}) {
+    CardProcessingFixture fixture;
+    Require(fixture.Render(1, 11) == VA_STATUS_SUCCESS,
+            "capture processing request before allocation failure");
+    const auto original = fixture.driver.surfaces.at(1);
+    const auto output = fixture.driver.surfaces.at(11);
+    const auto pixels = output->storage;
+    const uint64_t transaction = output->picture_transaction;
+    if (private_backing)
+      allocation_fault::fail_size = 1280U * 720U * 3U / 2U;
+    else
+      allocation_fault::fail_next = true;
+    const VAStatus status = EndPicture(&fixture.context, fixture.id);
+    const bool fault_consumed = !allocation_fault::fail_next &&
+                               allocation_fault::fail_size == 0;
+    allocation_fault::fail_next = false;
+    allocation_fault::fail_size = 0;
+    Require(status == VA_STATUS_ERROR_ALLOCATION_FAILED && fault_consumed &&
+                !original->opaque_reference && !original->opaque_picture &&
+                !output->decode_picture.lock() && output->storage == pixels &&
+                output->picture_transaction == transaction &&
+                fixture.decoder->decoded_frames.empty() &&
+                fixture.decoder->pending.empty() &&
+                fixture.decoder->next_timestamp == kTimestampStep &&
+                !fixture.decoder->processing_geometry.enabled &&
+                fixture.io.inputs.empty() && fixture.io.scale_calls == 0,
+            "SPS or small private-buffer allocation failure publishes no opaque identity or input");
+    Require(fixture.Submit(1, 11) == VA_STATUS_SUCCESS,
+            "a fresh transaction recovers after pre-accept allocation failure");
+    fixture.Complete(kTimestampStep);
+  }
+}
+
+static void CardScalingPublicIdentityAndGeometry() {
+  CardScalingSetupOrderAndFailures();
+  CardScalingProgressiveOutput();
+  CardScalingPreAcceptFailuresPreserveOwnership();
+  for (const bool bottom_first : {false, true}) {
+    CardProcessingFixture fixture(bottom_first);
+    Require(fixture.Submit(1, 11) == VA_STATUS_SUCCESS &&
+                fixture.io.scale_calls == 1 &&
+                fixture.io.input_format.height == 1088,
+            "public integrated processing submits cropped SPS with coded input geometry");
+    const auto original = fixture.driver.surfaces.at(1);
+    const auto output = fixture.driver.surfaces.at(11);
+    const auto first = original->opaque_picture;
+    Require(first && first == output->decode_picture.lock() &&
+                first->width == 1280 && first->height == 720 &&
+                first->storage.size() == first->pitch[0] * 1080U &&
+                original->opaque_reference && !original->ready,
+            "only the small private capture is allocated and bound to both handles");
+    VASurfaceStatus original_status = VASurfaceReady;
+    Require(QuerySurfaceStatus(&fixture.context, 1, &original_status) == VA_STATUS_SUCCESS &&
+                original_status == VASurfaceRendering,
+            "opaque reference reports real pending decode completion");
+    fixture.Complete(kTimestampStep);
+    Require(first->ready && output->ready &&
+                output->frame_timestamp == kTimestampStep &&
+                first->frame_timestamp == kTimestampStep &&
+                QuerySurfaceStatus(&fixture.context, 1, &original_status) == VA_STATUS_SUCCESS &&
+                original_status == VASurfaceReady &&
+                SyncSurface2(&fixture.context, 1, 0) == VA_STATUS_SUCCESS,
+            "opaque original and additional output share exact completion, not full-size pixels");
+    VAImage image = {};
+    Require(DeriveImage(&fixture.context, 1, &image) == VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT,
+            "opaque original cannot export stale full-size backing");
+    const auto first_pixels = first->storage;
+    Require(fixture.Submit(2, 11) == VA_STATUS_SUCCESS &&
+                original->opaque_picture == first &&
+                fixture.driver.surfaces.at(2)->opaque_picture != first,
+            "additional-output reuse does not rebind an older opaque original");
+    fixture.Complete(2 * kTimestampStep);
+    Require(first->storage == first_pixels && first->frame_timestamp == kTimestampStep &&
+                SyncSurface2(&fixture.context, 1, 0) == VA_STATUS_SUCCESS,
+            "retained original completion and pixels survive output reuse");
+    const auto second = fixture.driver.surfaces.at(2)->opaque_picture;
+    Require(fixture.Submit(1, 12) == VA_STATUS_SUCCESS &&
+                original->opaque_picture != first &&
+                fixture.driver.surfaces.at(11)->decode_picture.lock() == second,
+            "original-reference reuse does not steal the previous additional output");
+    fixture.Complete(3 * kTimestampStep);
+    Require(fixture.io.scale_calls == 1 &&
+                fixture.decoder->CaptureHeight() == 720 && !fixture.io.invalid,
+            "stable geometry does not reconfigure a live decoder");
+    auto alternative = std::make_shared<Surface>();
+    Require(alternative->AllocateInternal(nullptr, -1, 960, 540, VA_FOURCC_NV12),
+            "allocate rejected midstream alternative");
+    alternative->id = 13;
+    alternative->ready = true;
+    fixture.driver.surfaces[13] = alternative;
+    const size_t inputs = fixture.io.inputs.size();
+    Require(fixture.Render(2, 13) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                fixture.io.inputs.size() == inputs &&
+                fixture.decoder->processing_geometry.capture_width == 1280,
+            "midstream scaling change is rejected before input or geometry mutation");
+  }
+  {
+    CardProcessingFixture fixture;
+    auto wrong_height = std::make_shared<Surface>();
+    Require(wrong_height->AllocateInternal(nullptr, -1, 1280, 724, VA_FOURCC_NV12),
+            "allocate rounded-height counterexample");
+    wrong_height->id = 13;
+    wrong_height->ready = true;
+    fixture.driver.surfaces[13] = wrong_height;
+    Require(fixture.Render(1, 13, 1088) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                fixture.io.inputs.empty() && fixture.io.scale_calls == 0,
+            "1088-to-724 rounded geometry cannot impersonate a visible 720 capture");
+  }
+  for (const unsigned fault : {0U, 1U, 2U}) {
+    CardProcessingFixture fixture;
+    Require(fixture.Submit(1, 11) == VA_STATUS_SUCCESS,
+            "submit before scaled field fault");
+    const unsigned height = fault == 2 ? 724 : 720;
+    std::vector<uint8_t> pixels(1280U * (height / 2U) * 2U, 128);
+    BC_DTS_PROC_OUT first = {};
+    first.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+    first.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD;
+    first.PicInfo.width = 1280;
+    first.PicInfo.height = height;
+    first.PicInfo.timeStamp = kTimestampStep;
+    first.Ybuff = pixels.data();
+    first.YBuffDoneSz = pixels.size() / 4;
+    if (fault == 1)
+      --first.YBuffDoneSz;
+    VAStatus status = ProcessDecodedOutput(&fixture.driver, fixture.decoder.get(), first);
+    if (fault == 0) {
+      Require(status == VA_STATUS_SUCCESS, "retain valid scaled first field");
+      status = ProcessDecodedOutput(&fixture.driver, fixture.decoder.get(), first);
+    }
+    Require(status == VA_STATUS_ERROR_DECODING_ERROR &&
+                fixture.decoder->replay.failed() &&
+                !fixture.driver.surfaces.at(11)->ready &&
+                fixture.driver.surfaces.at(1)->opaque_picture->failed,
+            "duplicate parity, short extent or actual 724-line field fails both identities closed");
+  }
 }
 
 static void RealH264SubmitCompletesFieldPairs() {
@@ -9612,6 +10037,11 @@ static void NeutralAuxiliaryContracts() {
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::strcmp(argv[1], "--card-scaling") == 0) {
+      CardScalingPublicIdentityAndGeometry();
+      std::puts("VA-API integrated card scaling: setup, geometry, TFF/BFF, identity reuse and faults PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--h264-replay-metadata") == 0) {
       ReplayedH264FieldsRetainMetadataWithoutPixels();
       std::puts("VA-API replayed H264 fields: metadata-only pairing, immutable pixels and release failures PASS");
@@ -9667,6 +10097,7 @@ int main(int argc, char **argv) {
     H264ReplayReopenEligibilityAndFailureOwnership();
     ContextAdmissionRejectsBusyBeforePicture();
     ContextAdmissionFailuresPublishNothing();
+    CardScalingPublicIdentityAndGeometry();
     RealH264SubmitCompletesFieldPairs();
     TraceIdentityUsesImmutableTokenAndLiveAliasOwner();
     TraceReadExportReuseBoundary();

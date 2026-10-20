@@ -10,8 +10,9 @@
   decode surfaces, field/chroma samples and pending-picture ownership.
 - Keep vectorized ARGB conversion tails private and restore output borders
   after conversion, including unaligned widths and offset output rectangles.
-- Reject unsupported decode-integrated VA processing requests; preserve
-  ordinary decoding and separate VPP/Bob contexts.
+- Add opt-in H.264 decode-integrated card scaling with explicit visible crop,
+  opaque original reference handles and a separate smaller NV12 output.
+  Preserve ordinary VLD and separate VPP/Bob; reject unsupported processing.
 - Wait directly for BCM70015 firmware-command completion instead of adding
   a fixed 50 ms delay; retain IRQ fencing, reply ownership and timeout recovery.
 - Reject device opens when TX buffers or the worker cannot be created;

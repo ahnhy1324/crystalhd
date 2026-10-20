@@ -16,6 +16,7 @@ BC_STATUS DtsDeviceClose(HANDLE) { VppCpuUnexpectedCall(__func__); }
 BC_STATUS DtsOpenDecoder(HANDLE, uint32_t) { VppCpuUnexpectedCall(__func__); }
 BC_STATUS DtsCloseDecoder(HANDLE) { VppCpuUnexpectedCall(__func__); }
 BC_STATUS DtsSetInputFormat(HANDLE, BC_INPUT_FORMAT *) { VppCpuUnexpectedCall(__func__); }
+BC_STATUS DtsSetScaleParams(HANDLE, BC_SCALING_PARAMS *) { VppCpuUnexpectedCall(__func__); }
 BC_STATUS DtsSetColorSpace(HANDLE, BC_OUTPUT_FORMAT) { VppCpuUnexpectedCall(__func__); }
 BC_STATUS DtsStartDecoder(HANDLE) { VppCpuUnexpectedCall(__func__); }
 BC_STATUS DtsStartCapture(HANDLE) { VppCpuUnexpectedCall(__func__); }
@@ -34,6 +35,7 @@ void gbm_bo_unmap(gbm_bo *, void *) { VppCpuUnexpectedCall(__func__); }
 void gbm_bo_destroy(gbm_bo *) { VppCpuUnexpectedCall(__func__); }
 uint32_t gbm_bo_get_stride_for_plane(gbm_bo *, int) { VppCpuUnexpectedCall(__func__); }
 uint32_t gbm_bo_get_offset(gbm_bo *, int) { VppCpuUnexpectedCall(__func__); }
+uint64_t gbm_bo_get_modifier(gbm_bo *) { VppCpuUnexpectedCall(__func__); }
 
 drmVersionPtr drmGetVersion(int) { VppCpuUnexpectedCall(__func__); }
 void drmFreeVersion(drmVersionPtr) { VppCpuUnexpectedCall(__func__); }

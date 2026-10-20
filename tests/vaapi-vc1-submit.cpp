@@ -67,6 +67,10 @@ extern "C" BC_STATUS DtsSetInputFormat(HANDLE device, BC_INPUT_FORMAT *format) {
   active->format.pMetaData = nullptr; // The mock takes ownership, never retains a borrowed pointer.
   return BC_STS_SUCCESS;
 }
+extern "C" BC_STATUS DtsSetScaleParams(HANDLE, BC_SCALING_PARAMS *) {
+  Require(false, "ordinary VC-1 never requests card scaling");
+  return BC_STS_ERROR;
+}
 extern "C" BC_STATUS DtsOpenDecoder(HANDLE device, uint32_t stream) {
   CheckDevice(device); Require(stream == BC_STREAM_TYPE_ES, "elementary stream mode"); return BC_STS_SUCCESS;
 }

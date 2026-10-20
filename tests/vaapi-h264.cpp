@@ -331,7 +331,8 @@ private:
 
 static void CheckSpsGeometry(const std::vector<uint8_t> &sps,
 			     unsigned int expected_height_in_map_units_minus1,
-			     bool frame_mbs_only, bool mbaff)
+			     bool frame_mbs_only, bool mbaff,
+			     unsigned int expected_crop_bottom = 0)
 {
 	SpsReader reader(sps);
 	const unsigned int profile = reader.Bits(8);
@@ -355,6 +356,14 @@ static void CheckSpsGeometry(const std::vector<uint8_t> &sps,
 	assert(reader.Bit() == frame_mbs_only);
 	if (!frame_mbs_only)
 		assert(reader.Bit() == mbaff);
+	reader.Bit(); // direct_8x8_inference_flag
+	assert(reader.Bit() == (expected_crop_bottom != 0));
+	if (expected_crop_bottom != 0) {
+		assert(reader.UE() == 0); // frame_crop_left_offset
+		assert(reader.UE() == 0); // frame_crop_right_offset
+		assert(reader.UE() == 0); // frame_crop_top_offset
+		assert(reader.UE() == expected_crop_bottom);
+	}
 }
 
 int main()
@@ -393,6 +402,12 @@ int main()
 		CheckAnnexBNal(sps, 7);
 		assert(sps[5] == expected.profile_idc);
 		CheckSpsGeometry(sps, 67, true, false);
+		std::vector<uint8_t> explicit_default, full_visible, cropped;
+		assert(BuildSps(picture, expected.profile, &explicit_default, 0, 0));
+		assert(BuildSps(picture, expected.profile, &full_visible, 1920, 1088));
+		assert(sps == explicit_default && sps == full_visible);
+		assert(BuildSps(picture, expected.profile, &cropped, 1920, 1080));
+		CheckSpsGeometry(cropped, 67, true, false, 4);
 
 		assert(BuildPps(picture, slice, expected.profile, FlatMatrix(), &pps));
 		CheckAnnexBNal(pps, 8);
@@ -405,6 +420,18 @@ int main()
 	std::vector<uint8_t> interlaced_sps;
 	assert(BuildSps(picture, VAProfileH264High, &interlaced_sps));
 	CheckSpsGeometry(interlaced_sps, 33, false, true);
+	std::vector<uint8_t> interlaced_cropped;
+	assert(BuildSps(picture, VAProfileH264High, &interlaced_cropped,
+			1920, 1080));
+	CheckSpsGeometry(interlaced_cropped, 33, false, true, 2);
+	for (const auto &visible : {
+			std::pair<unsigned int, unsigned int>{1920, 1082},
+			{1920, 1089}, {1918, 1080}, {0, 1080}, {1920, 0}}) {
+		std::vector<uint8_t> invalid_crop = {0xaa, 0x55};
+		assert(!BuildSps(picture, VAProfileH264High, &invalid_crop,
+				 visible.first, visible.second));
+		assert(invalid_crop == std::vector<uint8_t>({0xaa, 0x55}));
+	}
 	picture.picture_height_in_mbs_minus1 = 66;
 	std::vector<uint8_t> invalid_interlaced_sps = {0xaa, 0x55};
 	assert(!BuildSps(picture, VAProfileH264High, &invalid_interlaced_sps));
@@ -412,6 +439,26 @@ int main()
 	picture.picture_height_in_mbs_minus1 = 67;
 	picture.seq_fields.bits.frame_mbs_only_flag = 1;
 	picture.seq_fields.bits.mb_adaptive_frame_field_flag = 0;
+	assert(ValidateH264ProcessingGeometry(1920, 1088, 1920, 1080,
+					     1280, 720));
+	assert(ValidateH264ProcessingGeometry(1920, 1088, 1920, 1080,
+					     960, 540));
+	assert(ValidateH264ProcessingGeometry(1920, 1088, 1920, 1080,
+					     1312, 738));
+	assert(!ValidateH264ProcessingGeometry(1920, 1088, 1920, 1088,
+					      1280, 724));
+	assert(!ValidateH264ProcessingGeometry(1920, 1088, 1918, 1080,
+					      1280, 720));
+	assert(!ValidateH264ProcessingGeometry(1920, 1088, 1920, 1080,
+					      1920, 1080));
+	assert(!ValidateH264ProcessingGeometry(1920, 1088, 1920, 1080,
+					      1280, 722));
+	assert(!ValidateH264ProcessingGeometry(1920, 1088, 1920, 1080,
+					      64, 36));
+	assert(!ValidateH264ProcessingGeometry(1920, 1088, 1920, 1080,
+					      944, 531));
+	assert(!ValidateH264ProcessingGeometry(1920, 1090, 1920, 1080,
+					      1280, 720));
 
 	std::vector<uint8_t> rejected;
 	assert(!BuildSps(picture, VAProfileNone, &rejected));

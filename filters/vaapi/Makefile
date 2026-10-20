@@ -100,6 +100,7 @@ $(REPLAY_TEST): $(ROOTDIR)/tests/vaapi-replay.cpp crystalhd_drv_video.cpp $(BACK
 		-Wl,--wrap=DtsStartDecoder,--wrap=DtsStartCapture \
 		-Wl,--wrap=DtsDeviceClose,--wrap=DtsStopDecoder \
 		-Wl,--wrap=DtsCloseDecoder,--wrap=DtsCrystalHDVersion,--wrap=DtsSetInputFormat \
+		-Wl,--wrap=DtsSetScaleParams \
 		-Wl,--wrap=DtsGetDriverStatus,--wrap=DtsTxFreeSize \
 		-Wl,--wrap=DtsIsEndOfStream \
 		-Wl,--wrap=DtsProcInput,--wrap=DtsFlushInput,--wrap=DtsProcOutputNoCopy \

@@ -367,6 +367,19 @@
       "output_order": "Crop-only pairs arrive in PTS order; production-SPS pairs arrive in input packet order. Both production-SPS runs change 39 of 50 pair positions and have 20 PTS backsteps in arrival order. Keyed pixel equality is not presentation-order/cadence acceptance",
       "historical_720_prefix_comparison": "Against the earlier cropped 720 capture, the first 360 rows of each new 362-row field differ in all 100 fields: 2730254 of 46080000 Y bytes and 3358352 of 46080000 chroma bytes, spanning field rows 6-359. Historical DIL 3617c4e versus current 3b81b1d: an observation, not a controlled crop-only causal or quality oracle. Do not assume trimming four frame rows reproduces the earlier 720 pixels"
     },
+    "same_dil_crop_comparison": {
+      "analysis_date": "2026-10-21",
+      "method": "Offline comparison of retained captures only. Join all 50 packet tokens and both spatial parities; compare every contiguous 360-row subwindow of each 362-row field. No new hardware run",
+      "cropped_capture": "bwdif_reopen_and_cost direct uniform-TFF opens at checkout 18b626f, qualified DIL 3b81b1d; both opens match all 100 fields",
+      "uncropped_capture": "This section's crop-only 1280x724 capture at checkout 7384f88, the same qualified DIL 3b81b1d and stable module/PM",
+      "samples_per_component_group": 46080000,
+      "comparisons": [
+        {"field_row_offset": 0, "different_fields": 100, "different_y": 2730254, "different_uv": 3358352, "changed_field_rows": [6, 359]},
+        {"field_row_offset": 1, "different_fields": 100, "different_y": 3485262, "different_uv": 4249240, "changed_field_rows": [0, 359]},
+        {"field_row_offset": 2, "different_fields": 100, "different_y": 3938233, "different_uv": 4597072, "changed_field_rows": [0, 359]}
+      ],
+      "conclusion": "Removes the historical DIL-version confound and rules out simple row cropping as a pixel-equivalent replacement for the card's visible-cropped 720 output. Does not identify vertical interpolation/phase, establish visual severity or solve original-source lifetime"
+    },
     "software_reorder_control": {
       "exact_production_sps_decoded_pictures": 43,
       "diagnostic_reorder2_decoded_pictures": 50,

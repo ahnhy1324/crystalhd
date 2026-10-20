@@ -665,7 +665,8 @@ void ConfigAttributesMatchAdvertisedSupport() {
                   return found != driver.configs.end() &&
                       found->second.profile == item.second.profile &&
                       found->second.entrypoint == item.second.entrypoint &&
-                      found->second.rt_format == item.second.rt_format;
+                      found->second.rt_format == item.second.rt_format &&
+                      found->second.decode_processing == item.second.decode_processing;
                 }),
             "rejected config leaves every existing config, ID and output untouched");
   };
@@ -689,7 +690,8 @@ void ConfigAttributesMatchAdvertisedSupport() {
                 advertised[1].value == static_cast<uint32_t>(decode
                     ? VA_DEC_SLICE_MODE_NORMAL : VA_ATTRIB_NOT_SUPPORTED) &&
                 advertised[2].value == VA_ATTRIB_NOT_SUPPORTED &&
-                advertised[3].value == VA_ATTRIB_NOT_SUPPORTED,
+                advertised[3].value == static_cast<uint32_t>(IsH264Profile(profile)
+                    ? VA_DEC_PROCESSING : VA_ATTRIB_NOT_SUPPORTED),
             "config admission is checked against the actual advertised masks");
     const auto accepts = [&](VAConfigAttrib *attributes, int count) {
       VAConfigID output = VA_INVALID_ID;
@@ -703,6 +705,8 @@ void ConfigAttributesMatchAdvertisedSupport() {
               "omitted/default or supported explicit config attributes remain accepted");
     };
     accepts(nullptr, 0);
+    Require(!driver.configs.at(driver.next_config - 1).decode_processing,
+            "ordinary omitted processing keeps the existing decode contract");
     VAConfigAttrib ordinary[] = {{VAConfigAttribRTFormat, VA_RT_FORMAT_YUV420},
         {VAConfigAttribEncryption, 0}, {VAConfigAttribMaxPictureWidth, kMaxWidth}};
     accepts(ordinary, 3);
@@ -713,7 +717,23 @@ void ConfigAttributesMatchAdvertisedSupport() {
     for (uint32_t processing : {static_cast<uint32_t>(VA_DEC_PROCESSING), 2U,
                                 VA_ATTRIB_NOT_SUPPORTED}) {
       VAConfigAttrib unsupported = {VAConfigAttribDecProcessing, processing};
-      rejects(profile, entrypoint, &unsupported, 1, VA_STATUS_ERROR_ATTR_NOT_SUPPORTED);
+      if (processing == VA_DEC_PROCESSING && IsH264Profile(profile)) {
+        accepts(&unsupported, 1);
+        const auto id = driver.next_config - 1;
+        Require(driver.configs.at(id).decode_processing,
+                "only explicit H.264 processing opts into card-scaled output");
+        VAProfile queried_profile;
+        VAEntrypoint queried_entrypoint;
+        VAConfigAttrib selected[2] = {};
+        int selected_count = 0;
+        Require(QueryConfigAttributes(&context, id, &queried_profile,
+                    &queried_entrypoint, selected, &selected_count) == VA_STATUS_SUCCESS &&
+                    selected_count == 2 &&
+                    selected[1].type == VAConfigAttribDecProcessing &&
+                    selected[1].value == VA_DEC_PROCESSING,
+                "config query preserves explicit integrated processing");
+      } else
+        rejects(profile, entrypoint, &unsupported, 1, VA_STATUS_ERROR_ATTR_NOT_SUPPORTED);
       VAConfigAttrib enabled_then_none[] = {ordinary[0], unsupported, no_processing};
       rejects(profile, entrypoint, enabled_then_none, 3, VA_STATUS_ERROR_ATTR_NOT_SUPPORTED);
       VAConfigAttrib none_then_enabled[] = {no_processing, ordinary[0], unsupported};
@@ -728,10 +748,12 @@ void ConfigAttributesMatchAdvertisedSupport() {
         &processing, 1, &untouched);
     const bool allocation_unreached = allocation_fault::fail_next;
     allocation_fault::fail_next = false;
-    Require(processing_status == VA_STATUS_ERROR_ATTR_NOT_SUPPORTED &&
-                allocation_unreached && untouched == 0xdecafbadU &&
+    Require(processing_status == (IsH264Profile(profile)
+                    ? VA_STATUS_ERROR_ALLOCATION_FAILED
+                    : VA_STATUS_ERROR_ATTR_NOT_SUPPORTED) &&
+                allocation_unreached == !IsH264Profile(profile) && untouched == 0xdecafbadU &&
                 ids() == previous_ids && driver.configs.size() == previous_configs,
-            "unsupported integrated decode processing rejects before any config allocation");
+            "processing admission and allocation failure preserve existing configs");
     if (decode) {
       VAConfigAttrib normal = {VAConfigAttribDecSliceMode, VA_DEC_SLICE_MODE_NORMAL};
       accepts(&normal, 1);
@@ -1410,6 +1432,161 @@ struct Fixture {
     }
   }
 };
+
+struct DecodeProcessingFixture : Fixture {
+  VARectangle visible{0, 0, 256, 24};
+  VAProcPipelineParameterBuffer pipeline{};
+  VASurfaceID output = 2;
+
+  DecodeProcessingFixture() {
+    driver.StopWorkers();
+    decoder->id = 1;
+    decoder->decode_processing = true;
+    decoder->width = 256;
+    decoder->height = 32;
+    decoder->surface_timestamps.clear();
+    decoder->decoded_frames.clear();
+    source = std::make_shared<Surface>();
+    target = std::make_shared<Surface>();
+    Require(source->AllocateInternal(nullptr, -1, 256, 32, VA_FOURCC_NV12) &&
+                target->AllocateInternal(nullptr, -1, 128, 12, VA_FOURCC_NV12),
+            "allocate coded original and scaled processing output");
+    source->id = 1;
+    target->id = 2;
+    source->ready = target->ready = true;
+    driver.surfaces[1] = source;
+    driver.surfaces[2] = target;
+    pipeline.surface = 1;
+    pipeline.surface_region = &visible;
+    pipeline.num_additional_outputs = 1;
+    pipeline.additional_outputs = &output;
+    Require(CreateBuffer(&context, 1, VAProcPipelineParameterBufferType,
+                          sizeof(pipeline), 1, &pipeline, &parameters) == VA_STATUS_SUCCESS,
+            "create integrated processing parameters");
+  }
+
+  VAStatus Render() {
+    memcpy(driver.buffers.at(parameters).data.data(), &pipeline, sizeof(pipeline));
+    return RenderPicture(&context, 1, &parameters, 1);
+  }
+};
+
+void DecodeProcessingAdmissionIsExplicitAndCaptured() {
+  DecodeProcessingFixture fixture;
+  unsigned count = 77;
+  VAProcPipelineCaps caps{};
+  Require(QueryVideoProcFilters(&fixture.context, 1, nullptr, &count) == VA_STATUS_SUCCESS &&
+              count == 0 &&
+              QueryVideoProcPipelineCaps(&fixture.context, 1, nullptr, 0, &caps) ==
+                  VA_STATUS_SUCCESS && caps.num_additional_outputs == 1 &&
+              caps.num_output_pixel_formats == 1 &&
+              caps.output_pixel_format[0] == VA_FOURCC_NV12 &&
+              caps.min_output_width == 128,
+          "integrated decoder exposes one scaled NV12 output, not host Bob filters");
+  Require(QueryVideoProcFilterCaps(&fixture.context, 1, VAProcFilterDeinterlacing,
+                                   nullptr, &count) == VA_STATUS_ERROR_UNSUPPORTED_FILTER &&
+              count == 0,
+          "card scaling does not advertise a hardware deinterlacer");
+  const auto original = fixture.source->storage;
+  const auto output = fixture.target->storage;
+  Require(BeginPicture(&fixture.context, 1, 1) == VA_STATUS_SUCCESS &&
+              fixture.Render() == VA_STATUS_SUCCESS,
+          "integrated H.264 processing captures the additional output");
+  Require(fixture.decoder->processing_request.enabled &&
+              fixture.decoder->processing_request.visible_height == 24 &&
+              fixture.decoder->processing_request.capture_width == 128 &&
+              fixture.decoder->processing_request.capture_height == 12 &&
+              fixture.decoder->processing_target == 2 &&
+              fixture.decoder->have_processing_parameters &&
+              !fixture.source->opaque_reference &&
+              fixture.source->storage == original && fixture.target->storage == output,
+          "Render captures geometry without publishing pixels or making the original opaque");
+  fixture.visible.height = 16;
+  fixture.output = 1;
+  Require(fixture.decoder->processing_request.visible_height == 24 &&
+              fixture.decoder->processing_target == 2,
+          "captured geometry and output ID do not borrow client pointers");
+  Require(DestroyBuffer(&fixture.context, fixture.parameters) == VA_STATUS_SUCCESS &&
+              fixture.decoder->have_processing_parameters,
+          "buffer destruction does not invalidate the captured processing descriptor");
+
+  for (unsigned invalid = 0; invalid != 13; ++invalid) {
+    DecodeProcessingFixture rejected;
+    Require(BeginPicture(&rejected.context, 1, 1) == VA_STATUS_SUCCESS,
+            "begin bounded invalid processing request");
+    switch (invalid) {
+      case 0: rejected.visible.x = 2; break;
+      case 1: rejected.visible.width = 240; break;
+      case 2: rejected.visible.height = 22; break;
+      case 3: rejected.pipeline.num_additional_outputs = 0; break;
+      case 4: rejected.pipeline.num_additional_outputs = 2; break;
+      case 5: rejected.output = 1; break;
+      case 6: rejected.target->external_accessed = true; break;
+      case 7: rejected.target->opaque_reference = true; break;
+      case 8: rejected.source->external_accessed = true; break;
+      case 9: rejected.pipeline.num_filters = 1; break;
+      case 10: rejected.pipeline.mirror_state = VA_MIRROR_HORIZONTAL; break;
+      case 11: rejected.pipeline.input_surface_flag = VA_TOP_FIELD; break;
+      case 12:
+        Require(rejected.Render() == VA_STATUS_SUCCESS, "capture before duplicate rejection");
+        break;
+    }
+    const auto before = rejected.target->storage;
+    const unsigned opens = device_open_attempts;
+    Require(rejected.Render() != VA_STATUS_SUCCESS &&
+                rejected.decoder->h264_picture_invalid &&
+                !rejected.decoder->have_processing_parameters &&
+                rejected.decoder->processing_target == VA_INVALID_SURFACE &&
+                rejected.driver.pending_vpp.empty() &&
+                rejected.target->storage == before && device_open_attempts == opens,
+            "invalid or duplicate processing cannot commit stale output or touch hardware");
+  }
+}
+
+void OpaqueDecodeOriginalRejectsPixelAccess() {
+  DecodeProcessingFixture fixture;
+  fixture.source->opaque_reference = true;
+  fixture.source->opaque_context = 1;
+  const auto original = fixture.source->storage;
+  VAImageFormat format{};
+  format.fourcc = VA_FOURCC_NV12;
+  format.byte_order = VA_LSB_FIRST;
+  format.bits_per_pixel = 12;
+  VAImage image{};
+  Require(CreateImage(&fixture.context, &format, 256, 32, &image) == VA_STATUS_SUCCESS,
+          "create independent readback image");
+  VAImage derived{};
+  VADRMPRIMESurfaceDescriptor exported{};
+  for (uint32_t access : {VA_EXPORT_SURFACE_READ_ONLY, VA_EXPORT_SURFACE_WRITE_ONLY,
+                          VA_EXPORT_SURFACE_READ_WRITE})
+    Require(ExportSurfaceHandle(&fixture.context, 1,
+                VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, access, &exported) ==
+                    VA_STATUS_ERROR_INVALID_SURFACE,
+            "opaque references never export unpopulated original pixels");
+  Require(DeriveImage(&fixture.context, 1, &derived) == VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT &&
+              GetImage(&fixture.context, 1, 0, 0, 256, 32, image.image_id) ==
+                  VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT &&
+              PutImage(&fixture.context, 1, image.image_id, 0, 0, 256, 32,
+                       0, 0, 256, 32) == VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT &&
+              BeginPicture(&fixture.context, 2, 1) == VA_STATUS_ERROR_INVALID_SURFACE,
+          "opaque references reject image read/write and ordinary VPP target access");
+  fixture.decoder->decode_processing = false;
+  Require(BeginPicture(&fixture.context, 1, 1) == VA_STATUS_ERROR_INVALID_SURFACE,
+          "ordinary decode cannot reuse an opaque processing reference");
+  fixture.decoder->decode_processing = true;
+  Require(BeginPicture(&fixture.context, 1, 1) == VA_STATUS_SUCCESS,
+          "owning processing context may reuse its opaque reference handle");
+  VAProcPipelineParameterBuffer pipeline{};
+  pipeline.surface = 1;
+  VABufferID vpp = VA_INVALID_ID;
+  Require(CreateBuffer(&fixture.context, 2, VAProcPipelineParameterBufferType,
+                        sizeof(pipeline), 1, &pipeline, &vpp) == VA_STATUS_SUCCESS &&
+              BeginPicture(&fixture.context, 2, 2) == VA_STATUS_SUCCESS &&
+              RenderPicture(&fixture.context, 2, &vpp, 1) ==
+                  VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT &&
+              fixture.source->storage == original,
+          "separate VPP cannot read opaque originals as blank or upscaled pixels");
+}
 
 VAProcFilterParameterBufferDeinterlacing BobParameters(uint32_t flags = 0) {
   VAProcFilterParameterBufferDeinterlacing parameters = {};
@@ -4887,9 +5064,14 @@ int VppFullTestEntry(int argc, char **argv) {
                     strcmp(argv[1], "--display-attributes") == 0 ||
                     strcmp(argv[1], "--subpicture-formats") == 0 ||
                     strcmp(argv[1], "--selected-rt-formats") == 0 ||
+                    strcmp(argv[1], "--decode-processing") == 0 ||
                     strcmp(argv[1], "--pipeline-semantics") == 0)) {
     try {
-      if (strcmp(argv[1], "--color-range") == 0) {
+      if (strcmp(argv[1], "--decode-processing") == 0) {
+        ConfigAttributesMatchAdvertisedSupport();
+        DecodeProcessingAdmissionIsExplicitAndCaptured();
+        OpaqueDecodeOriginalRejectsPixelAccess();
+      } else if (strcmp(argv[1], "--color-range") == 0) {
         VppFullRangeArgbUsesDeclaredInput();
         VppColorRangeArgbReuseAndBob();
         VppColorRangeNv12PreservesSamples();
@@ -4956,6 +5138,8 @@ int VppFullTestEntry(int argc, char **argv) {
     UnusedVppProbeDoesNotNotifyDecoder();
     DefaultVppCapabilitiesRemainAvailable();
     ConfigAttributesMatchAdvertisedSupport();
+    DecodeProcessingAdmissionIsExplicitAndCaptured();
+    OpaqueDecodeOriginalRejectsPixelAccess();
     UnsupportedDisplayAttributesAreNotSuccessful();
     EmptySubpictureFormatsValidateCount();
     UnsupportedSurfaceErrorsDoNotInventDetails();
@@ -5035,7 +5219,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 78 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 80 hardware-free regressions passed");
   return 0;
 }
 
@@ -5043,10 +5227,12 @@ int main(int argc, char **argv) {
 #ifndef CRYSTALHD_VPP_CPU_ONLY
   return VppFullTestEntry(argc, argv);
 #else
-  (void)argv;
-  if (argc != 1) return 2;
+  const bool processing_only = argc == 2 && strcmp(argv[1], "--decode-processing") == 0;
+  if (argc != 1 && !processing_only) return 2;
   const std::pair<const char *, void (*)()> groups[] = {
       {"configuration matches advertised support", ConfigAttributesMatchAdvertisedSupport},
+      {"card scaling captures explicit additional output", DecodeProcessingAdmissionIsExplicitAndCaptured},
+      {"opaque decode originals reject pixel access", OpaqueDecodeOriginalRejectsPixelAccess},
       {"empty subpicture formats validate count", EmptySubpictureFormatsValidateCount},
       {"unsupported surface errors disclose no invented details", UnsupportedSurfaceErrorsDoNotInventDetails},
       {"NV12 range preserves samples and background", VppColorRangeNv12PreservesSamples},
@@ -5065,7 +5251,13 @@ int main(int argc, char **argv) {
       {"unsafe CPU/import failures: three rejection modes", UnsafeFenceFailuresCannotUseSynchronousFallback}};
 #endif
   unsigned failures = 0;
+  unsigned selected = 0;
   for (const auto &group : groups) {
+    if (processing_only && group.second != ConfigAttributesMatchAdvertisedSupport &&
+        group.second != DecodeProcessingAdmissionIsExplicitAndCaptured &&
+        group.second != OpaqueDecodeOriginalRejectsPixelAccess)
+      continue;
+    ++selected;
     try {
       group.second();
       printf("PASS %s\n", group.first);
@@ -5075,10 +5267,10 @@ int main(int argc, char **argv) {
     }
   }
 #ifdef CRYSTALHD_LEGACY_CPU
-  puts("Unsafe fence-import path: NOT RUN; unavailable with real legacy cache capabilities");
+  if (!processing_only)
+    puts("Unsafe fence-import path: NOT RUN; unavailable with real legacy cache capabilities");
 #endif
-  printf("VA-API CPU VPP fallback: %zu groups, %u failures\n",
-         sizeof(groups) / sizeof(groups[0]), failures);
+  printf("VA-API CPU VPP fallback: %u groups, %u failures\n", selected, failures);
   return failures == 0 ? 0 : 1;
 #endif
 }

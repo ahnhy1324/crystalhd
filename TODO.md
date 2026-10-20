@@ -151,6 +151,9 @@ settings, thresholds or preserved failures to run them.
 
 ### Card 720 output, deinterlace, then enlarge
 
+Development order: complete VA scaling integration before expanding codec
+admission. Keep card-side transfer savings separate from host VPP corrections.
+
 Target: **1080i25 decode → field-preserving card 720i25 output → CPU BWDIF
 720p50 → display-side enlargement to 1080p50**, preferably using the display
 GPU rather than adding a second FHD CPU filter. At the same pixel format,
@@ -198,12 +201,15 @@ their guards.
   The [receipt](tests/fixtures/issue436/card-scaled-bob.json) preserves the
   original collector/software HOLDs and separates these observations from VA
   adapter or presentation acceptance.
-- [ ] Establish scaled visible-region mapping and preserve the original public
-  decoded surface before VA card-scaling integration. Trimming 724 to 720 is not
-  an established pixel-equivalent crop. Separate VPP and standard integrated
-  processing cannot replace the required full-size decode target with only a
-  smaller capture. CPU Bob already covers visible 1080 inside 1088 backing at 720
-  for both parities; that is not this missing card-output contract. Only then
+- [ ] Qualify VA decode-integrated card scaling with explicit visible geometry
+  and separate processed output. Trimming 724 to 720 is not
+  pixel-equivalent: a same-DIL comparison of retained captures rejects all three
+  possible field-row crops (see the existing receipt). The opt-in implementation
+  applies SPS cropping before scaling, keeps original reconstruction in the
+  firmware DPB and exposes only the small additional output as host pixels.
+  Original reference handles reject image/export/VPP access. Native
+  coded-1088/visible-1080 → 720 output, pixels, EOS and reopen still need
+  qualification; ordinary FFmpeg/Kodi do not request this integrated API. Only then
   evaluate READY on an eligible input, retaining B-frame limitations and payload
   timestamps. Reuse completed benchmarks instead of repeating unrelated gates.
 - [x] Reduce the first-field Bob private NV12 view to half height without
