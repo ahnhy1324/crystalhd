@@ -27,6 +27,16 @@ static unsigned open_calls;
 static unsigned close_calls;
 static int closed_fd;
 static unsigned thread_create_calls;
+static unsigned thread_join_calls;
+static int thread_create_status;
+static pthread_t thread_create_id;
+static DTS_LIB_CONTEXT *thread_context;
+static bool thread_id_published_privately;
+static bool thread_buffers_ready_at_create;
+static bool thread_buffers_live_at_join;
+static bool thread_join_required;
+static bool unexpected_thread_join;
+static bool allocation_freed_before_join;
 static unsigned shared_attach_calls;
 static unsigned shared_detach_calls;
 static unsigned shared_nattch;
@@ -63,6 +73,10 @@ static size_t failed_malloc_size;
 static unsigned failed_malloc_occurrence;
 static unsigned matching_malloc_calls;
 static bool malloc_failure_fired;
+static size_t failed_aligned_size;
+static unsigned failed_aligned_occurrence;
+static unsigned matching_aligned_calls;
+static bool aligned_failure_fired;
 
 static bc_dil_glob_s shared_state;
 
@@ -93,11 +107,22 @@ static void TrackFree(void *pointer)
 		return;
 	for (size_t index = 0; index < tracked_count; ++index) {
 		if (tracked_allocations[index] == pointer) {
+			allocation_freed_before_join |= thread_join_required;
 			tracked_allocations[index] = nullptr;
 			++tracked_frees;
 			return;
 		}
 	}
+}
+
+static bool IsLiveAllocation(const void *pointer)
+{
+	if (!pointer)
+		return false;
+	for (size_t index = 0; index < tracked_count; ++index)
+		if (tracked_allocations[index] == pointer)
+			return true;
+	return false;
 }
 
 extern "C" void *__real_malloc(size_t);
@@ -125,6 +150,11 @@ extern "C" void __wrap_free(void *pointer)
 extern "C" int __wrap_posix_memalign(void **pointer, size_t alignment,
 				      size_t size)
 {
+	if (failed_aligned_occurrence && failed_aligned_size == size &&
+	    ++matching_aligned_calls == failed_aligned_occurrence) {
+		aligned_failure_fired = true;
+		return ENOMEM;
+	}
 	const int status = __real_posix_memalign(pointer, alignment, size);
 	if (status == 0)
 		TrackAllocation(*pointer);
@@ -219,11 +249,38 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 }
 
 extern "C" int __wrap_pthread_create(pthread_t *thread,
-				       const pthread_attr_t *,
-				       void *(*)(void *), void *)
+				       const pthread_attr_t *attributes,
+				       void *(*entry)(void *), void *argument)
 {
 	++thread_create_calls;
-	*thread = pthread_t();
+	Check(attributes == nullptr && entry == txThreadProc,
+	      "worker creation uses its exact entry and default joinable attributes");
+	thread_context = static_cast<DTS_LIB_CONTEXT *>(argument);
+	thread_buffers_ready_at_create =
+		IsLiveAllocation(thread_context->circBuf.buffer) &&
+		IsLiveAllocation(thread_context->alignBuf) &&
+		IsLiveAllocation(thread_context->txScratch);
+	/* POSIX leaves this output unspecified on failure: poison it deliberately. */
+	*thread = thread_create_id;
+	thread_id_published_privately = thread != &thread_context->htxThread &&
+		thread_context->htxThread == pthread_t();
+	thread_join_required = thread_create_status == 0 &&
+		thread_create_id != pthread_t();
+	return thread_create_status;
+}
+
+extern "C" int __wrap_pthread_join(pthread_t thread, void **)
+{
+	++thread_join_calls;
+	if (!thread_join_required || thread != thread_create_id) {
+		unexpected_thread_join = true;
+		return ESRCH;
+	}
+	thread_buffers_live_at_join = IsLiveAllocation(thread_context) &&
+		IsLiveAllocation(thread_context->circBuf.buffer) &&
+		IsLiveAllocation(thread_context->alignBuf) &&
+		IsLiveAllocation(thread_context->txScratch);
+	thread_join_required = false;
 	return 0;
 }
 
@@ -302,6 +359,16 @@ static void BeginCase(int descriptor)
 	close_calls = 0;
 	closed_fd = -2;
 	thread_create_calls = 0;
+	thread_join_calls = 0;
+	thread_create_status = 0;
+	thread_create_id = pthread_t();
+	thread_context = nullptr;
+	thread_id_published_privately = false;
+	thread_buffers_ready_at_create = false;
+	thread_buffers_live_at_join = false;
+	thread_join_required = false;
+	unexpected_thread_join = false;
+	allocation_freed_before_join = false;
 	shared_attach_calls = 0;
 	shared_detach_calls = 0;
 	shared_nattch = 0;
@@ -323,6 +390,10 @@ static void BeginCase(int descriptor)
 	failed_malloc_occurrence = 0;
 	matching_malloc_calls = 0;
 	malloc_failure_fired = false;
+	failed_aligned_size = 0;
+	failed_aligned_occurrence = 0;
+	matching_aligned_calls = 0;
+	aligned_failure_fired = false;
 	std::memset(tracked_allocations, 0, sizeof(tracked_allocations));
 	track_allocations = true;
 }
@@ -671,6 +742,96 @@ static void CheckInitAllocationFailure(size_t size, unsigned occurrence,
 	EndCase("partial initialization releases every allocation");
 }
 
+static void CheckWorkerSetupFailure(size_t aligned_size, int create_error,
+				    bool internal, unsigned occurrence = 1)
+{
+	BeginCase(0);
+	failed_aligned_size = aligned_size;
+	failed_aligned_occurrence = aligned_size ? occurrence : 0;
+	thread_create_status = create_error;
+	thread_create_id = static_cast<pthread_t>(0x1234);
+	if (internal) {
+		/* The internal caller already owns the shared-memory attachment. */
+		std::memset(&shared_state, 0, sizeof(shared_state));
+		bc_dil_glob_ptr = &shared_state;
+	}
+	HANDLE context = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	const BC_STATUS status = internal ?
+		DtsInitInterface(0, &context, DTS_MONITOR_MODE) :
+		DtsDeviceOpen(&context, DTS_MONITOR_MODE);
+	Check(status == BC_STS_INSUFF_RES,
+	      "worker setup failure reports insufficient resources");
+	Check(aligned_size ? aligned_failure_fired : thread_create_calls == 1,
+	      "the selected worker setup fault is exercised");
+	Check(thread_create_calls == (aligned_size ? 0U : 1U),
+	      "all aligned buffers must exist before worker creation");
+	if (internal) {
+		Check(context != nullptr,
+		      "internal setup failure returns its caller-owned partial context");
+		Check(open_calls == 0 && close_calls == 0 && ioctl_count == 0 &&
+		      shared_attach_calls == 0 && shared_detach_calls == 0,
+		      "internal setup failure leaves cleanup to its caller");
+		if (context) {
+			Check(DtsGetContext(context)->htxThread == pthread_t(),
+			      "failed setup never publishes an uncreated worker ID");
+			Check(DtsReleaseInterface(DtsGetContext(context)) == BC_STS_SUCCESS,
+			      "caller can release the partial context exactly once");
+		}
+	} else {
+		Check(context == nullptr,
+		      "public worker setup failure publishes no handle");
+		/* Keep the OLD-code RED bounded if it incorrectly publishes success. */
+		if (context)
+			Check(DtsDeviceClose(context) == BC_STS_SUCCESS,
+			      "unexpected successful handle still closes safely in the fixture");
+	}
+	if (create_error)
+		Check(thread_id_published_privately,
+		      "pthread_create writes only a private temporary until success");
+	Check(thread_join_calls == 0 && !unexpected_thread_join,
+	      "failed setup never joins a failed or uncreated worker");
+	Check(!thread_join_required && !allocation_freed_before_join,
+	      "failed setup has no live worker when backing is freed");
+	Check(open_calls == (internal ? 0U : 1U) && close_calls == 1 &&
+	      closed_fd == 0 && shared_attach_calls == (internal ? 0U : 1U) &&
+	      shared_detach_calls == 1,
+	      "setup failure consumes exactly the owned descriptor and attachment");
+	CheckIoctls(0, {BCM_IOC_RELEASE},
+	      "setup failure performs no downstream hardware initialization");
+	EndCase("worker setup failure releases every partial allocation");
+}
+
+static void CheckWorkerJoinOrdering()
+{
+	BeginCase(0);
+	thread_create_id = static_cast<pthread_t>(0x5678);
+	HANDLE device = nullptr;
+	const BC_STATUS status = DtsDeviceOpen(&device, DTS_MONITOR_MODE);
+	Check(status == BC_STS_SUCCESS && device,
+	      "successful worker setup publishes its device handle");
+	Check(thread_create_calls == 1 && thread_id_published_privately &&
+	      thread_buffers_ready_at_create,
+	      "worker starts only after buffers exist and its ID remains private");
+	if (device) {
+		Check(DtsGetContext(device)->htxThread == thread_create_id,
+		      "successful create publishes the exact joinable worker ID");
+		Check(DtsDeviceClose(device) == BC_STS_SUCCESS,
+		      "successful joinable worker lifetime closes normally");
+	}
+	Check(thread_join_calls == 1 && !unexpected_thread_join &&
+	      thread_buffers_live_at_join && !thread_join_required &&
+	      !allocation_freed_before_join,
+	      "cleanup joins the successful worker before freeing its buffers or context");
+	Check(open_calls == 1 && close_calls == 1 && closed_fd == 0 &&
+	      shared_attach_calls == 1 && shared_detach_calls == 1,
+	      "joinable worker lifetime balances descriptor and shared ownership");
+	CheckIoctls(0,
+		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
+		 BCM_IOC_RELEASE},
+		"joinable worker lifetime preserves normal hardware command ordering");
+	EndCase("joinable worker lifetime releases every allocation");
+}
+
 static void CheckOpenFailure(unsigned long command, bool syscall_failure,
 			     bool cleanup_failure, BC_STATUS expected,
 			     std::initializer_list<unsigned long> commands)
@@ -766,6 +927,14 @@ int main()
 	CheckInitAllocationFailure(
 		BC_MAX_SW_VOUT_BUFFS * sizeof(DTS_MPOOL_TYPE), 1,
 		DTS_PLAYBACK_MODE, {BCM_IOC_RELEASE});
+	for (bool internal : {false, true}) {
+		CheckWorkerSetupFailure(CIRC_TX_BUF_SIZE, 0, internal);
+		CheckWorkerSetupFailure(ALIGN_BUF_SIZE, 0, internal);
+		CheckWorkerSetupFailure(CIRC_TX_BUF_SIZE, 0, internal, 2);
+		CheckWorkerSetupFailure(0, EAGAIN, internal);
+		CheckWorkerSetupFailure(0, ENOMEM, internal);
+	}
+	CheckWorkerJoinOrdering();
 	CheckOpenSuccess(0);
 	CheckOpenSuccess(99);
 	CheckTerminalDecoderOwnership();

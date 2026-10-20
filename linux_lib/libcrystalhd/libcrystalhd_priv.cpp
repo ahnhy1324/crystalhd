@@ -2184,7 +2184,7 @@ BC_STATUS DtsInitInterface(int hDevice, HANDLE *RetCtx, uint32_t mode)
 
 	DTS_LIB_CONTEXT *Ctx = NULL;
 	BC_STATUS	sts = BC_STS_SUCCESS;
-	pthread_attr_t thread_attr;
+	pthread_t tx_thread;
 	int ret = 0;
 
 	if (!RetCtx)
@@ -2237,22 +2237,26 @@ BC_STATUS DtsInitInterface(int hDevice, HANDLE *RetCtx, uint32_t mode)
 		}
 	}
 
-	// Allocate circular buffer
-	if(BC_STS_SUCCESS != txBufInit(&Ctx->circBuf, CIRC_TX_BUF_SIZE))
-		sts = BC_STS_INSUFF_RES;
-
-	pthread_attr_init(&thread_attr);
-	pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_JOINABLE);
-	pthread_create(&Ctx->htxThread, &thread_attr, txThreadProc, Ctx);
-	pthread_attr_destroy(&thread_attr);
-
+	/* Return partial ownership to the caller on every remaining failure.
+	 * No worker may observe incomplete buffers or fail an allocation later. */
+	*RetCtx = (HANDLE)Ctx;
+	sts = txBufInit(&Ctx->circBuf, CIRC_TX_BUF_SIZE);
+	if(sts != BC_STS_SUCCESS)
+		return sts;
 	ret = posix_memalign((void**)&Ctx->alignBuf, 128, ALIGN_BUF_SIZE);
 	if(ret)
-		sts = BC_STS_INSUFF_RES;
+		return BC_STS_INSUFF_RES;
+	ret = posix_memalign((void**)&Ctx->txScratch, 128, CIRC_TX_BUF_SIZE);
+	if(ret)
+		return BC_STS_INSUFF_RES;
 
-	*RetCtx = (HANDLE)Ctx;
-
-	return sts;
+	/* Default attributes are joinable. A failed create leaves its output
+	 * unspecified, so publish the thread ID only after successful creation. */
+	ret = pthread_create(&tx_thread, NULL, txThreadProc, Ctx);
+	if(ret)
+		return BC_STS_INSUFF_RES;
+	Ctx->htxThread = tx_thread;
+	return BC_STS_SUCCESS;
 }
 
 //------------------------------------------------------------------------
@@ -2295,6 +2299,7 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 	txBufFree(&Ctx->circBuf);
 	if(Ctx->alignBuf)
 		free(Ctx->alignBuf);
+	free(Ctx->txScratch);
 
 	if(Ctx->DevHandle >= 0)
 	{
@@ -3573,14 +3578,13 @@ static BC_STATUS DtsRestoreAfterResume(DTS_LIB_CONTEXT *Ctx)
 void * txThreadProc(void *ctx)
 {
 	DTS_LIB_CONTEXT* Ctx = (DTS_LIB_CONTEXT*)ctx;
-	uint8_t* localBuffer;
+	uint8_t *const localBuffer = Ctx->txScratch;
 	uint32_t szDataToSend;
 	BC_STATUS sts;
 	uint32_t dramOff;
 	uint8_t encrypted = 0;
 	HANDLE hDevice = (HANDLE)Ctx;
 	BC_DTS_STATUS pStat = {};
-	int ret = 0;
 	uint32_t waitForPictCount = 0;
 	uint32_t numPicCaptured = 0;
 	uint64_t fleaIdleSince = 0;
@@ -3591,10 +3595,6 @@ void * txThreadProc(void *ctx)
 	/* Input push is a latched condition wake, so normal idle status checks do
 	 * not set submission latency. Keep EOS observation on its legacy cadence. */
 	const uint32_t idleWaitMs = 50;
-
-	ret = posix_memalign((void**)&localBuffer, 128, CIRC_TX_BUF_SIZE);
-	if(ret)
-		return FALSE;
 
 	for (;;)
 	{
@@ -3827,8 +3827,6 @@ void * txThreadProc(void *ctx)
 		}
 	}
 
-	free(localBuffer);
-	localBuffer = NULL;
 	return FALSE;
 }
 

@@ -704,7 +704,9 @@ static void test_case(Point point, bool stop, bool timeout, bool queued_tail = f
     pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
     pthread_mutex_init(&context.thLock, &attr);
     pthread_mutexattr_destroy(&attr);
-    if (txBufInit(&context.circBuf, CIRC_TX_BUF_SIZE) != BC_STS_SUCCESS ||
+    if (posix_memalign(reinterpret_cast<void **>(&context.txScratch), 128,
+                       CIRC_TX_BUF_SIZE) != 0 ||
+        txBufInit(&context.circBuf, CIRC_TX_BUF_SIZE) != BC_STS_SUCCESS ||
         txBufPush(&context.circBuf, const_cast<uint8_t *>(packet), sizeof(packet)) != BC_STS_SUCCESS)
         std::abort();
     if (queued_tail && txBufPush(&context.circBuf, const_cast<uint8_t *>(packet), sizeof(packet)) != BC_STS_SUCCESS)
@@ -819,6 +821,7 @@ static void test_case(Point point, bool stop, bool timeout, bool queued_tail = f
                 timeout, queued_tail, fail_first_flush, result, first_polls, first_flushes, first_stops, retired_before_return,
                 run.dma_retired, run.last_flush, run.last_stop);
     txBufFree(&context.circBuf);
+    std::free(context.txScratch);
     std::free(context.alignBuf);
     pthread_mutex_destroy(&context.thLock);
     observed = nullptr;
@@ -844,7 +847,9 @@ static void test_device_close(Point point)
     pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
     pthread_mutex_init(&context.thLock, &attr);
     pthread_mutexattr_destroy(&attr);
-    if (txBufInit(&context.circBuf, CIRC_TX_BUF_SIZE) != BC_STS_SUCCESS ||
+    if (posix_memalign(reinterpret_cast<void **>(&context.txScratch), 128,
+                       CIRC_TX_BUF_SIZE) != 0 ||
+        txBufInit(&context.circBuf, CIRC_TX_BUF_SIZE) != BC_STS_SUCCESS ||
         txBufPush(&context.circBuf, const_cast<uint8_t *>(packet), sizeof(packet)) != BC_STS_SUCCESS)
         std::abort();
     std::thread worker([&] {
@@ -885,6 +890,7 @@ static void test_device_close(Point point)
                 point == Point::Popped ? "popped" : "dma", result,
                 run.join_calls, run.release_while_owned);
     txBufFree(&context.circBuf);
+    std::free(context.txScratch);
     pthread_mutex_destroy(&context.thLock);
     observed = nullptr;
     bc_dil_glob_ptr = nullptr;
@@ -1177,6 +1183,8 @@ struct RecoveryFixture {
         pthread_mutex_init(&context.thLock, &attr);
         pthread_mutexattr_destroy(&attr);
         if (!context.alignBuf ||
+            posix_memalign(reinterpret_cast<void **>(&context.txScratch), 128,
+                           CIRC_TX_BUF_SIZE) != 0 ||
             txBufInit(&context.circBuf, CIRC_TX_BUF_SIZE) != BC_STS_SUCCESS ||
             txBufPush(&context.circBuf, const_cast<uint8_t *>(packet),
                       sizeof(packet)) != BC_STS_SUCCESS)
@@ -1186,6 +1194,7 @@ struct RecoveryFixture {
     ~RecoveryFixture()
     {
         txBufFree(&context.circBuf);
+        std::free(context.txScratch);
         std::free(context.alignBuf);
         pthread_mutex_destroy(&context.thLock);
         observed = nullptr;

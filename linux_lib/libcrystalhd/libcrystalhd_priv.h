@@ -409,6 +409,8 @@ typedef struct _DTS_LIB_CONTEXT{
 	pid_t			ProcessID;
 	uint32_t		nRefNum;
 	uint32_t		DrvMode;
+	/* Allocated before TX worker creation; owned until terminal join/release. */
+	uint8_t			*txScratch;
 
 }DTS_LIB_CONTEXT;
 

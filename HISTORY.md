@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Reject device opens when TX buffers or the worker cannot be created;
+  allocate worker scratch before startup and release it only after joining.
 - Correct hardware-initialization status: HWINIT no longer skips firmware
   upload/INIT, failed setup remains retryable, and in-progress setup is not
   reported as complete. Preserve existing successful playback and teardown.
