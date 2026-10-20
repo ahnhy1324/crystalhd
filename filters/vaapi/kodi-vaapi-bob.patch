@@ -1,0 +1,121 @@
+Kodi VAAPI zero-reference Bob compatibility patch
+Base: xbmc/xbmc a3a448d26b8d560a65655dab2cd122994dc4e146 (21.3-Omega)
+Source: https://github.com/xbmc/xbmc/tree/a3a448d26b8d560a65655dab2cd122994dc4e146
+License: LGPL-2.1-or-later, as in the modified Kodi source files; retain their notices.
+
+This patch is not applied or installed by CrystalHD. Rebuild Kodi locally after
+applying it to the stated baseline. A full patched Kodi build is not qualified here.
+It preserves genuine VPP reference requirements and uses the previous successful
+source PTS interval only when a zero-reference Bob second output lacks ptsLast.
+The first unknown interval is unchanged; this is not a general VFR-duration proof.
+Bob alone reports synchronous postprocessing to avoid prioritizing its blocking
+Filter over queued output; other postprocessing methods keep the existing policy.
+
+From a clean checkout of the exact Kodi baseline:
+  git apply --check /path/to/kodi-vaapi-bob.patch
+  git apply /path/to/kodi-vaapi-bob.patch
+
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.h
+@@ -606,6 +606,8 @@
+   int m_currentIdx;
+   int m_frameCount;
+   EINTERLACEMETHOD m_vppMethod;
++  double m_lastPts;
++  double m_frameTime;
+   ReadyToDispose m_cbDispose = nullptr;
+   COutput *m_pOut = nullptr;
+ };
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp
+@@ -25,6 +25,7 @@
+ #include "windowing/GraphicContext.h"
+
+ #include <array>
++#include <cmath>
+ #include <mutex>
+
+ #include <drm_fourcc.h>
+@@ -2364,6 +2365,8 @@
+
+ CVppPostproc::CVppPostproc()
+ {
++  m_lastPts = DVD_NOPTS_VALUE;
++  m_frameTime = 0;
+ }
+
+ CVppPostproc::~CVppPostproc()
+@@ -2478,6 +2481,8 @@
+
+ bool CVppPostproc::Init(EINTERLACEMETHOD method)
+ {
++  m_lastPts = DVD_NOPTS_VALUE;
++  m_frameTime = 0;
+   m_forwardRefs = 0;
+   m_backwardRefs = 0;
+   m_currentIdx = 0;
+@@ -2496,6 +2501,8 @@
+   }
+
+   m_vppMethod = method;
++  m_lastPts = DVD_NOPTS_VALUE;
++  m_frameTime = 0;
+   m_forwardRefs = 0;
+   m_backwardRefs = 0;
+
+@@ -2761,6 +2768,15 @@
+   // set pts for 2nd frame
+   if (m_step && pts != DVD_NOPTS_VALUE && ptsLast != DVD_NOPTS_VALUE)
+     outPic.DVDPic.pts += (pts-ptsLast)/2;
++  else if (m_step && m_vppMethod == VS_INTERLACEMETHOD_VAAPI_BOB &&
++           m_forwardRefs == 0 && m_backwardRefs == 0 &&
++           pts != DVD_NOPTS_VALUE && std::isfinite(pts) && pts == m_lastPts &&
++           m_frameTime > 0 && std::isfinite(m_frameTime))
++  {
++    const double secondPts = outPic.DVDPic.pts + m_frameTime / 2;
++    if (std::isfinite(secondPts) && secondPts > outPic.DVDPic.pts)
++      outPic.DVDPic.pts = secondPts;
++  }
+
+   if (pipelineParams->surface == VA_INVALID_SURFACE)
+     return false;
+@@ -2785,6 +2801,21 @@
+     return false;
+   }
+
++  // Keep scalar timing independently of the VPP temporal-reference window.
++  // Only a successfully processed source picture establishes a new interval.
++  if (m_step == 0)
++  {
++    m_frameTime = 0;
++    if (pts != DVD_NOPTS_VALUE && m_lastPts != DVD_NOPTS_VALUE &&
++        std::isfinite(pts) && std::isfinite(m_lastPts))
++    {
++      const double interval = pts - m_lastPts;
++      if (interval > 0 && std::isfinite(interval))
++        m_frameTime = interval;
++    }
++    m_lastPts = pts != DVD_NOPTS_VALUE && std::isfinite(pts) ? pts : DVD_NOPTS_VALUE;
++  }
++
+   m_step++;
+   outPic.videoSurface = m_videoSurfaces.GetFree(surf);
+   outPic.source = this;
+@@ -2823,6 +2854,8 @@
+
+ void CVppPostproc::Flush()
+ {
++  m_lastPts = DVD_NOPTS_VALUE;
++  m_frameTime = 0;
+   // release all decoded pictures
+   auto it = m_decodedPics.begin();
+   while (it != m_decodedPics.end())
+@@ -2834,7 +2867,7 @@
+
+ bool CVppPostproc::DoesSync()
+ {
+-  return false;
++  return m_vppMethod == VS_INTERLACEMETHOD_VAAPI_BOB;
+ }
+
+ bool CVppPostproc::WantsPic()

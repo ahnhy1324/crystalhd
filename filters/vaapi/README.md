@@ -164,7 +164,15 @@ outputs confirms equal PTS within each field pair, with approximately 40 ms
 between source pictures, not uniformly timed 50p. Its second-field adjustment
 uses a previous temporal reference, while Bob correctly requires none; all 750
 second-field adjustments were skipped. These are output metadata, not measured
-screen presentation times. One separate seek selects Kodi's 5-second cache
+screen presentation times. An optional [Kodi source patch](kodi-vaapi-bob.patch)
+keeps timing history independently of GPU references and uses conservative
+output scheduling for Bob only. It targets upstream `a3a448d`; it requires a Kodi
+rebuild and is **not applied by CrystalHD installation**. An equivalent private
+process diagnostic with VA runtime `9a3b08b` completes all 1,500 outputs, corrects
+749 second-field timestamps from observed source intervals and closes cleanly.
+The first pair's unknown interval remains unchanged. This is not a full Kodi
+source-build qualification, general VFR timing or measured screen cadence/A/V.
+One separate seek selects Kodi's 5-second cache
 startup fallback while video remains in its starting state; the underlying
 startup delay is not fully attributed. A separate
 branch trace attributes two reproduced seek/Stop buffer warnings to cancellation,
@@ -176,8 +184,9 @@ cadence remain unmeasured. The [native Atom report](https://github.com/ahnhy1324
 passes tests and TFF/BFF pixel controls, but Kodi Bob timing and LIVE-EOS fail.
 For finite Bob playback, leave `CRYSTALHD_VAAPI_LIVE_H264` and
 `CRYSTALHD_VAAPI_LOW_LATENCY_H264` unset. The explicit LIVE+LL path also has a
-reproduced primary-host stall before EOF: VPP waits for a complementary field
-and times out without a prior generation change or source destruction.
+reproduced pre-EOF stall with `d1b3788`. With `9a3b08b`, the selected stock Kodi
+control admits all 750 pictures without that midstream timeout, but final-field
+drain still exceeds Kodi's EOF wait; close-time completion is not a playback PASS.
 General FHD/Atom Bob playback is not qualified. **Off** retains Weave; the separate
 [FFmpeg BWDIF path](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif)
 remains available.
