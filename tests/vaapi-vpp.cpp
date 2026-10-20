@@ -4567,7 +4567,7 @@ static void ExerciseFirstFieldCpuView(bool bottom, unsigned visible) {
   const VARectangle region = {0, 0, 16, static_cast<uint16_t>(visible)};
   const VARectangle output = {0, 0, 8, 16};
   Require(ProcessVpp(&scaler, &staging, view.get(), &actual, region, output,
-                   false, operation.deinterlace) == VA_STATUS_SUCCESS &&
+                   false, operation.deinterlace, true) == VA_STATUS_SUCCESS &&
         ProcessVpp(&scaler, &staging, &complete, &expected, region, output,
                    false, operation.deinterlace) == VA_STATUS_SUCCESS, "Bob both views");
   Require(scaler == nullptr, "no software-scaler dependency");

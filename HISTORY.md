@@ -2,6 +2,10 @@
 
 ## 1.2.0 — in development
 
+- Store first-field Bob's private NV12 view at half height, preserving public
+  decode surfaces, field/chroma samples and pending-picture ownership.
+- Keep vectorized ARGB conversion tails private and restore output borders
+  after conversion, including unaligned widths and offset output rectangles.
 - Reject unsupported decode-integrated VA processing requests; preserve
   ordinary decoding and separate VPP/Bob contexts.
 - Wait directly for BCM70015 firmware-command completion instead of adding

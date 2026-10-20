@@ -7631,6 +7631,57 @@ static void FirstH264FieldRefreshesTransportGrace() {
   }
 }
 
+static void FirstTemporalBobUsesCompactStorage() {
+  for (bool bottom : {false, true}) {
+    H264FieldFixture fixture;
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    fixture.decoder.device = io.handle();
+    io.override_output = true;
+    io.overridden_output = fixture.Output(bottom, bottom,
+                                          bottom ? &fixture.bottom : &fixture.top);
+    bool activity = false;
+    Require(ReceiveOne(&fixture.driver, &fixture.decoder, 0, &activity) ==
+                VA_STATUS_SUCCESS && activity,
+            "compact Bob starts with a validated and released first field");
+    PendingVpp operation;
+    operation.source = fixture.private_frame;
+    operation.decoder = std::shared_ptr<DecodeContext>(&fixture.decoder,
+                                                       [](DecodeContext *) {});
+    operation.source_timestamp = 1;
+    operation.decoder_generation = 3;
+    operation.deinterlace.bob = true;
+    operation.deinterlace.field = bottom ? crystalhd_vpp_bob::FieldParity::kBottom
+                                         : crystalhd_vpp_bob::FieldParity::kTop;
+    const auto source_pixels = fixture.private_frame->storage;
+    const auto public_pixels = fixture.public_frame->storage;
+    const auto held_pixels = fixture.decoder.h264_first_field.pixels;
+    std::shared_ptr<Surface> view;
+    Require(PrepareFirstFieldBob(operation, &view) == VA_STATUS_SUCCESS && view,
+            "prepare exact first temporal field");
+    const unsigned field_height = (fixture.private_frame->height + 1U) / 2U;
+    Require(view->width == fixture.private_frame->width &&
+                view->height == field_height &&
+                view->storage.size() == static_cast<size_t>(view->pitch[0]) *
+                    (field_height + (field_height + 1U) / 2U),
+            "first-field Bob stores only compact field Y/UV rows, not a full Weave frame");
+    Require(fixture.private_frame->storage == source_pixels &&
+                fixture.public_frame->storage == public_pixels &&
+                fixture.decoder.h264_first_field.pixels == held_pixels &&
+                fixture.decoder.h264_first_field.valid &&
+                !fixture.private_frame->ready && !fixture.public_frame->ready &&
+                fixture.decoder.replay.outstanding() == 1 && !io.invalid,
+            "compaction preserves held field, public pixels and pending decode ownership");
+    const auto compact_pixels = view->storage;
+    fixture.decoder.h264_first_field = H264FirstField{};
+    Require(view->storage == compact_pixels && view->ready &&
+                view->frame_timestamp == 1 && !fixture.private_frame->ready &&
+                fixture.decoder.replay.outstanding() == 1,
+            "private compact view owns pixels independently of later latch release");
+    fixture.decoder.device = nullptr;
+  }
+}
+
 static void FirstTemporalBobDoesNotCompleteDecodePicture() {
   for (bool bottom_first : {false, true}) {
     for (unsigned visible_height : {32U, 28U}) {
@@ -7764,7 +7815,7 @@ static void FirstTemporalBobDoesNotCompleteDecodePicture() {
 }
 
 static void FirstTemporalBobRejectsMismatchedLatch() {
-  for (unsigned fault = 0; fault != 17; ++fault) {
+  for (unsigned fault = 0; fault != 20; ++fault) {
     H264FieldFixture fixture;
     DecodeIoMock io;
     MockDecodeScope scope(io);
@@ -7799,6 +7850,9 @@ static void FirstTemporalBobRejectsMismatchedLatch() {
       case 14: first.source_pitch = 0; break;
       case 15: fixture.private_frame->expected_timestamp = 2; break;
       case 16: ++fixture.private_frame->trace_generation; break;
+      case 17: fixture.private_frame->image_write_locked = true; break;
+      case 18: fixture.decoder.hardware_close_pending = true; break;
+      case 19: ++operation.decoder_generation; break;
     }
     std::shared_ptr<Surface> view;
     const VAStatus status = PrepareFirstFieldBob(operation, &view);
@@ -9573,6 +9627,7 @@ int main(int argc, char **argv) {
     if (argc == 2 && std::strcmp(argv[1], "--live-bob-tail") == 0) {
       NeutralAuxiliaryContracts();
       DeferredH264PrefeedRetriesWithoutNewInput();
+      FirstTemporalBobUsesCompactStorage();
       FirstTemporalBobDoesNotCompleteDecodePicture();
       FirstTemporalBobRejectsMismatchedLatch();
       FirstH264FieldRefreshesTransportGrace();
@@ -9583,6 +9638,7 @@ int main(int argc, char **argv) {
     Require(argc == 1, "usage: vaapi-replay-test [--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
     NeutralAuxiliaryContracts();
     DeferredH264PrefeedRetriesWithoutNewInput();
+    FirstTemporalBobUsesCompactStorage();
     FirstTemporalBobDoesNotCompleteDecodePicture();
     FirstTemporalBobRejectsMismatchedLatch();
     SealedBatchQueuesAndReplays();

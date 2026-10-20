@@ -1485,13 +1485,24 @@ static VAStatus ProcessVpp(SwsContext **scaler,
                            const VARectangle &source_region,
                            const VARectangle &output_region,
                            bool destination_write_started = false,
-                           const VppDeinterlace &deinterlace = {}) {
+                           const VppDeinterlace &deinterlace = {},
+                           bool source_is_field = false) {
+  // Only the operation-private first-field view has compact storage. Keep
+  // the original full-frame rectangle for field sampling, but validate its
+  // physical rows against the real half-height allocation.
+  VARectangle source_storage_region = source_region;
+  if (source_is_field) {
+    if (!deinterlace.bob || source_region.x != 0 || source_region.y != 0 ||
+        (source_region.height & 3U) != 0)
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    source_storage_region.height /= 2;
+  }
   if (scaler == nullptr || source == nullptr || destination == nullptr ||
       source->fourcc != VA_FOURCC_NV12 ||
       (destination->fourcc != VA_FOURCC_NV12 &&
        destination->fourcc != VA_FOURCC_ARGB) ||
       (destination->fourcc == VA_FOURCC_ARGB && argb_staging == nullptr) ||
-      !RectFits(source_region, *source) ||
+      !RectFits(source_storage_region, *source) ||
       !RectFits(output_region, *destination))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   if (source->pitch[1] < Align(source->width, 2) ||
@@ -1499,15 +1510,20 @@ static VAStatus ProcessVpp(SwsContext **scaler,
        ((output_region.x | output_region.y | output_region.width |
          output_region.height) & 1U) != 0))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
+  size_t argb_staging_pitch = 0;
   if (destination->fourcc == VA_FOURCC_ARGB) {
     // Both ordinary CSC and Bob pass signed-int strides to swscale. Reject
     // unrepresentable strides and staging sizes before acquiring CPU access.
-    const unsigned int stride_factor = deinterlace.bob ? 2U : 1U;
+    const unsigned int stride_factor = deinterlace.bob && !source_is_field ? 2U : 1U;
     const uint64_t row_bytes = uint64_t{destination->width} * 4;
-    if (row_bytes > INT_MAX || source->pitch[0] > INT_MAX / stride_factor ||
+    // Give swscale's vectorized row tail private space even when an output
+    // rectangle ends at an unaligned surface edge. Never publish that tail.
+    const uint64_t padded_row_bytes = (row_bytes + 63U) / 64U * 64U + 64U;
+    if (padded_row_bytes > INT_MAX || source->pitch[0] > INT_MAX / stride_factor ||
         source->pitch[1] > INT_MAX / stride_factor ||
-        destination->height > std::numeric_limits<size_t>::max() / row_bytes)
+        destination->height > std::numeric_limits<size_t>::max() / padded_row_bytes)
       return VA_STATUS_ERROR_INVALID_PARAMETER;
+    argb_staging_pitch = static_cast<size_t>(padded_row_bytes);
   }
   if (deinterlace.bob) {
     // An origin-zero visible extent may exclude coded padding, without
@@ -1526,9 +1542,10 @@ static VAStatus ProcessVpp(SwsContext **scaler,
              rows - 1 <= (limit - row_bytes) / pitch;
     };
     uint64_t last_source_row = 0;
-    if (!plane_fits(source->planes[0], source->pitch[0], source_region.height,
+    const unsigned int source_rows = source_storage_region.height;
+    if (!plane_fits(source->planes[0], source->pitch[0], source_rows,
                     source_region.width) ||
-        !plane_fits(source->planes[1], source->pitch[1], source_region.height / 2,
+        !plane_fits(source->planes[1], source->pitch[1], source_rows / 2,
                     source_region.width) ||
         !crystalhd_vpp_bob::SourcePlaneRow(
             source_region.height, output_region.height, output_region.height - 1,
@@ -1567,7 +1584,7 @@ static VAStatus ProcessVpp(SwsContext **scaler,
     // that buffer halfway through the conversion and display a diagonal or
     // lightning-shaped mix of the old frame and black. Build a complete frame
     // privately, then touch the shared buffer only for the final row copies.
-    const size_t staging_pitch = static_cast<size_t>(destination->width) * 4;
+    const size_t staging_pitch = argb_staging_pitch;
     try {
       argb_staging->resize(staging_pitch * destination->height);
     } catch (const std::bad_alloc &) {
@@ -1578,23 +1595,11 @@ static VAStatus ProcessVpp(SwsContext **scaler,
         output_region.x == 0 && output_region.y == 0 &&
         output_region.width == destination->width &&
         output_region.height == destination->height;
-    if (!fills_destination) {
-      for (unsigned int row = 0; row < destination->height; ++row) {
-        uint8_t *line = argb_staging->data() +
-                        static_cast<size_t>(row) * staging_pitch;
-        for (unsigned int column = 0; column < destination->width; ++column) {
-          line[column * 4] = 0;
-          line[column * 4 + 1] = 0;
-          line[column * 4 + 2] = 0;
-          line[column * 4 + 3] = 255;
-        }
-      }
-    }
-    const unsigned int selected_parity = deinterlace.bob
+    const unsigned int selected_parity = deinterlace.bob && !source_is_field
         ? static_cast<unsigned int>(deinterlace.field) : 0;
     const unsigned int source_height = deinterlace.bob
         ? source_region.height / 2 : source_region.height;
-    const unsigned int source_pitch_factor = deinterlace.bob ? 2 : 1;
+    const unsigned int source_pitch_factor = deinterlace.bob && !source_is_field ? 2 : 1;
     *scaler = sws_getCachedContext(
         *scaler, source_region.width, source_height, AV_PIX_FMT_NV12,
         output_region.width, output_region.height, AV_PIX_FMT_BGRA, SWS_POINT,
@@ -1630,6 +1635,32 @@ static VAStatus ProcessVpp(SwsContext **scaler,
       source->EndCpuRead();
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
+    if (!fills_destination) {
+      // A SIMD row tail can extend into the right border. Initialize borders
+      // after conversion, not before it, while preserving every active pixel.
+      const unsigned int left = static_cast<unsigned int>(output_region.x);
+      const unsigned int right = left + output_region.width;
+      const unsigned int top = static_cast<unsigned int>(output_region.y);
+      const unsigned int bottom = top + output_region.height;
+      for (unsigned int row = 0; row < destination->height; ++row) {
+        uint8_t *line = argb_staging->data() +
+                        static_cast<size_t>(row) * staging_pitch;
+        const auto blacken = [line](unsigned int begin, unsigned int end) {
+          for (unsigned int column = begin; column < end; ++column) {
+            line[column * 4] = 0;
+            line[column * 4 + 1] = 0;
+            line[column * 4 + 2] = 0;
+            line[column * 4 + 3] = 255;
+          }
+        };
+        if (row < top || row >= bottom) {
+          blacken(0, destination->width);
+        } else {
+          blacken(0, left);
+          blacken(right, destination->width);
+        }
+      }
+    }
     if (!destination_write_started && !destination->BeginCpuWrite()) {
       source->EndCpuRead();
       return VA_STATUS_ERROR_OPERATION_FAILED;
@@ -1638,7 +1669,7 @@ static VAStatus ProcessVpp(SwsContext **scaler,
       memcpy(destination->planes[0] +
                  static_cast<size_t>(row) * destination->pitch[0],
              argb_staging->data() + static_cast<size_t>(row) * staging_pitch,
-             staging_pitch);
+             static_cast<size_t>(destination->width) * 4);
     }
     if (!destination_write_started && !destination->EndCpuWrite()) {
       source->EndCpuRead();
@@ -1703,6 +1734,8 @@ static VAStatus ProcessVpp(SwsContext **scaler,
             source->EndCpuRead();
             return VA_STATUS_ERROR_INVALID_PARAMETER;
           }
+          if (source_is_field)
+            source_row /= 2;
           const uint8_t *input = source->planes[plane] +
               static_cast<size_t>(source_row) * source->pitch[plane];
           uint8_t *output = destination->planes[plane] +
@@ -3184,13 +3217,14 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
 static bool CopyH264InterlacedToSurface(
     Surface *surface, const uint8_t *const fields[2], unsigned int source_width,
     unsigned int source_height, size_t field_pitch, uint64_t timestamp,
-    unsigned int field_mask = 3) {
+    unsigned int field_mask = 3, bool compact_field = false) {
   // A single parity is used only by the operation-private Bob view below.
   // Public decode surfaces always use both fields and complete as before.
   if (surface == nullptr || field_mask == 0 || field_mask > 3 ||
       ((field_mask & 1U) && fields[0] == nullptr) ||
       ((field_mask & 2U) && fields[1] == nullptr) ||
       (field_mask != 3 && surface->fourcc != VA_FOURCC_NV12) ||
+      (compact_field && (field_mask == 3 || surface->fourcc != VA_FOURCC_NV12)) ||
       source_width == 0 || (source_width & 1U) != 0 || source_height == 0 ||
       source_height % 4U != 0 || field_pitch < source_width * 2U)
     return false;
@@ -3198,7 +3232,8 @@ static bool CopyH264InterlacedToSurface(
   const unsigned int width =
       std::min<unsigned int>(source_width, surface->width);
   const unsigned int height =
-      std::min<unsigned int>(source_height, surface->height);
+      std::min<unsigned int>(source_height / (compact_field ? 2U : 1U),
+                             surface->height);
   const unsigned int field_rows = source_height / 2U;
 
   bool used_i915_wc = false;
@@ -3276,14 +3311,16 @@ static bool CopyH264InterlacedToSurface(
     // Keep same-field source rows hot without keeping all five pixel
     // pointers live in one scalar loop on register-limited 32-bit CPUs.
     for (unsigned int row_pair = 0;
-         row_pair < field_rows && row_pair * 2U + parity < height;
+         row_pair < field_rows &&
+             (compact_field ? row_pair : row_pair * 2U + parity) < height;
          row_pair += 2) {
       for (unsigned int source_row = row_pair; source_row < row_pair + 2U;
            ++source_row) {
 #else
     for (unsigned int source_row = 0; source_row < field_rows; ++source_row) {
 #endif
-      const unsigned int destination_row = source_row * 2U + parity;
+      const unsigned int destination_row = compact_field
+          ? source_row : source_row * 2U + parity;
       if (destination_row >= height)
         break;
       const uint8_t *source = fields[parity] +
@@ -3315,7 +3352,8 @@ static bool CopyH264InterlacedToSurface(
     for (unsigned int source_row = 0; source_row + 1 < field_rows;
          source_row += 2) {
 #endif
-      const unsigned int destination_row = source_row + parity;
+      const unsigned int destination_row = compact_field
+          ? source_row / 2U : source_row + parity;
       if (destination_row >= chroma_rows)
         break;
       const uint8_t *first_row = fields[parity] +
@@ -5698,8 +5736,8 @@ static VAStatus DecodeWaitState(const DecodeContext &decode, Surface *surface,
   return VA_STATUS_ERROR_HW_BUSY;
 }
 
-// The private result is valid ONLY for this operation's selected first temporal
-// parity. It never enters a public surface/map or changes decode readiness.
+// The compact private result is valid ONLY for this operation's selected first
+// temporal parity. It never enters a public surface/map or changes readiness.
 // The caller holds Driver::mutex, including the successful RX-release boundary.
 static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
                                     std::shared_ptr<Surface> *view) {
@@ -5733,7 +5771,8 @@ static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
     return VA_STATUS_ERROR_DECODING_ERROR;
   try {
     auto prepared = std::make_shared<Surface>();
-    if (!prepared->AllocateCpuNv12(source->width, source->height))
+    if (!prepared->AllocateCpuNv12(source->width,
+                                   source->height / 2U + source->height % 2U))
       return VA_STATUS_ERROR_ALLOCATION_FAILED;
     prepared->expected_timestamp = operation.source_timestamp;
     const uint8_t *fields[2] = {};
@@ -5741,7 +5780,7 @@ static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
     if (!CopyH264InterlacedToSurface(prepared.get(), fields, first.width,
                                     first.height, first.source_pitch,
                                     operation.source_timestamp,
-                                    bottom ? 2U : 1U))
+                                    bottom ? 2U : 1U, true))
       return VA_STATUS_ERROR_OPERATION_FAILED;
     *view = std::move(prepared);
   } catch (const std::bad_alloc &) {
@@ -6414,7 +6453,7 @@ static void RunVppWorker(Driver *driver) {
                           operation.target.get(),
                           operation.source_region, operation.output_region,
                           operation.write_timeline >= 0,
-                          operation.deinterlace);
+                          operation.deinterlace, first_field_view != nullptr);
     }
     ReleasePendingVpp(driver, operation.sequence, status, true);
   }
@@ -8372,7 +8411,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
                             first_field_view ? first_field_view.get() : operation.source.get(),
                             operation.target.get(),
                             operation.source_region, operation.output_region,
-                            false, operation.deinterlace);
+                            false, operation.deinterlace, first_field_view != nullptr);
       ReleasePendingVpp(driver, operation.sequence, status,
                         status == VA_STATUS_SUCCESS);
       return finish_vpp(status);

@@ -204,8 +204,9 @@ struct Geometry { unsigned int width = 0, height = 0; };
 void Pixels(unsigned int source_width, unsigned int source_height,
              unsigned int target_width, unsigned int target_height,
              bool argb, unsigned int parity, bool write_started = false,
-             Geometry source_storage = {}, Geometry target_storage = {}) {
-  Surface source, target, reference;
+             Geometry source_storage = {}, Geometry target_storage = {},
+             bool compact = false) {
+  Surface source, target, reference, field;
   Initialize(&source, source_storage.width ? source_storage.width : source_width,
               source_storage.height ? source_storage.height : source_height);
   Initialize(&target, target_storage.width ? target_storage.width : target_width,
@@ -217,6 +218,21 @@ void Pixels(unsigned int source_width, unsigned int source_height,
                                  static_cast<uint16_t>(target_height)};
   Fill(&source);
   const auto original = source.storage;
+  if (compact) {
+    Initialize(&field, source.width, (source.height + 1U) / 2U);
+    for (unsigned int plane = 0; plane != 2; ++plane) {
+      const unsigned int rows = source.height / (plane == 0 ? 2 : 4);
+      for (unsigned int row = 0; row != rows; ++row)
+        memcpy(field.planes[plane] + static_cast<size_t>(row) * field.pitch[plane],
+               source.planes[plane] +
+                   static_cast<size_t>(row * 2U + parity) * source.pitch[plane],
+               source.width);
+    }
+    field.ready = true;
+    field.failed = false;
+    field.expected_timestamp = field.frame_timestamp = source.frame_timestamp;
+  }
+  const auto original_field = field.storage;
   if (!argb) ReferenceNv12(source, &reference, parity, src, dst);
 #ifndef CRYSTALHD_BOB_NV12_ONLY
   else ReferenceArgb(source, &reference, parity, src, dst);
@@ -226,15 +242,129 @@ void Pixels(unsigned int source_width, unsigned int source_height,
   VppDeinterlace request;
   request.bob = true;
   request.field = static_cast<crystalhd_vpp_bob::FieldParity>(parity);
-  Require(ProcessVpp(&scaler.value, &staging, &source, &target, src,
-                     dst, write_started, request) == VA_STATUS_SUCCESS,
+  Require(ProcessVpp(&scaler.value, &staging, compact ? &field : &source,
+                     &target, src, dst, write_started, request, compact) == VA_STATUS_SUCCESS,
           "actual Bob VPP succeeds");
+  if (target.storage != reference.storage) {
+    const size_t offset = static_cast<size_t>(std::mismatch(target.storage.begin(),
+        target.storage.end(), reference.storage.begin()).first - target.storage.begin());
+    std::fprintf(stderr, "Bob mismatch: %ux%u in %ux%u -> %ux%u in %ux%u "
+                  "argb=%u parity=%u compact=%u offset=%zu actual=%u expected=%u\n",
+                  source_width, source_height, source.width, source.height,
+                  target_width, target_height, target.width, target.height,
+                  argb, parity, compact, offset, target.storage[offset], reference.storage[offset]);
+  }
   Require(target.storage == reference.storage,
           "actual Bob pixels/padded rows/outer guards match independent field reference");
   Require(source.storage == original, "source field pixels remain immutable");
+  Require(field.storage == original_field, "compact field pixels/guards remain immutable");
   Require(target.ready && !target.failed && target.expected_timestamp == 12345 &&
               target.frame_timestamp == 12345, "completed Bob picture identity published");
   Require(argb || staging.empty(), "NV12 Bob does not allocate full-frame staging");
+}
+
+void CompactConversion(unsigned int width, unsigned int height,
+                       unsigned int parity, Geometry backing = {}) {
+  Surface actual, reference;
+  Initialize(&actual, backing.width ? backing.width : width,
+              backing.height ? backing.height : height / 2U);
+  Initialize(&reference, actual.width, actual.height);
+  const size_t pitch = static_cast<size_t>(width) * 2U + 11U;
+  std::vector<uint8_t> packed(31U + pitch * (height / 2U) + 64U, 0xa7);
+  uint8_t *pixels = packed.data() + 31U;
+  for (unsigned int row = 0; row != height / 2U; ++row)
+    for (unsigned int column = 0; column != width; column += 2U) {
+      uint8_t *pair = pixels + static_cast<size_t>(row) * pitch + column * 2U;
+      pair[0] = static_cast<uint8_t>(20U + 70U * parity + (row + column) % 97U);
+      pair[2] = static_cast<uint8_t>(21U + 70U * parity + (row + column) % 97U);
+      pair[1] = static_cast<uint8_t>(40U + 60U * parity + (row + column) % 83U);
+      pair[3] = static_cast<uint8_t>(60U + 50U * parity + (row + column) % 71U);
+    }
+  const auto original = packed;
+  const unsigned int rows = std::min(height / 2U, actual.height);
+  const unsigned int columns = std::min(width, actual.width);
+  for (unsigned int plane = 0; plane != 2; ++plane) {
+    const unsigned int output_rows = plane == 0 ? actual.height : (actual.height + 1U) / 2U;
+    const unsigned int output_bytes = plane == 0 ? actual.width : (actual.width + 1U) & ~1U;
+    for (unsigned int row = 0; row != output_rows; ++row)
+      std::fill_n(reference.planes[plane] + static_cast<size_t>(row) * reference.pitch[plane],
+                   output_bytes, plane == 0 ? 16 : 128);
+  }
+  for (unsigned int row = 0; row != rows; ++row)
+    for (unsigned int column = 0; column != columns; ++column)
+      reference.planes[0][static_cast<size_t>(row) * reference.pitch[0] + column] =
+          pixels[static_cast<size_t>(row) * pitch + column * 2U];
+  for (unsigned int row = 0; row < (rows + 1U) / 2U; ++row)
+    for (unsigned int column = 0; column != columns; ++column) {
+      const size_t top = static_cast<size_t>(row * 2U) * pitch + column * 2U + 1U;
+      reference.planes[1][static_cast<size_t>(row) * reference.pitch[1] + column] =
+          static_cast<uint8_t>((static_cast<unsigned int>(pixels[top]) +
+                               pixels[top + pitch] + 1U) / 2U);
+    }
+  const uint8_t *fields[2] = {};
+  fields[parity] = pixels;
+  Require(CopyH264InterlacedToSurface(&actual, fields, width, height, pitch,
+                                      12345, 1U << parity, true),
+          "packed first field converts directly into compact NV12");
+  Require(actual.storage == reference.storage,
+          "compact conversion matches independent luma/same-field rounded chroma and padding");
+  Require(packed == original && actual.ready && actual.frame_timestamp == 12345,
+          "compact conversion preserves packed source/guards and exact timestamp");
+}
+
+void InvalidCompact() {
+  for (unsigned int variant = 0; variant != 7; ++variant) {
+    Surface source, target;
+    Initialize(&source, 16, 4);
+    Initialize(&target, 16, 8);
+    Fill(&source);
+    VARectangle src = {0, 0, 16, 8};
+    const VARectangle dst = Full(target);
+    VppDeinterlace request;
+    request.bob = true;
+    switch (variant) {
+      case 0: request.bob = false; break;
+      case 1: src.x = 2; src.width -= 2; break;
+      case 2: src.y = 2; src.height -= 4; break;
+      case 3: src.height = 6; break;
+      case 4: src.height = 12; break;
+      case 5: request.field = static_cast<crystalhd_vpp_bob::FieldParity>(2); break;
+      case 6: source.frame_timestamp = 1; break;
+    }
+    source.object_fds.push_back(777);
+    target.object_fds.push_back(888);
+    const auto before_source = source.storage, before_target = target.storage;
+    const unsigned int before_io = io_calls;
+    Scaler scaler;
+    std::vector<uint8_t> staging;
+    const VAStatus status = ProcessVpp(&scaler.value, &staging, &source, &target,
+                                        src, dst, false, request, true);
+    source.object_fds.clear();
+    target.object_fds.clear();
+    Require(status == (variant == 6 ? VA_STATUS_ERROR_DECODING_ERROR
+                                   : VA_STATUS_ERROR_INVALID_PARAMETER),
+            "invalid compact-field contract or timestamp is rejected");
+    Require(io_calls == before_io && source.storage == before_source &&
+                target.storage == before_target && staging.empty(),
+            "invalid compact field leaves bytes/guards/leases untouched");
+  }
+}
+
+void InvalidCompactConversion() {
+  for (bool argb : {false, true}) {
+    Surface target;
+    Initialize(&target, 16, 4, argb);
+    std::vector<uint8_t> packed(16U * 4U * 2U, 0x72);
+    const uint8_t *fields[2] = {packed.data(), packed.data()};
+    const auto before = target.storage;
+    const unsigned int before_io = io_calls;
+    target.object_fds.push_back(888);
+    const bool converted = CopyH264InterlacedToSurface(&target, fields, 16, 8, 32,
+                                                       12345, argb ? 1U : 3U, true);
+    target.object_fds.clear();
+    Require(!converted && target.storage == before && io_calls == before_io,
+            "compact conversion rejects both-field and ARGB targets before access");
+  }
 }
 
 void ZeroFilterOddWidthBackground() {
@@ -272,6 +402,59 @@ void ZeroFilterOddWidthBackground() {
 }
 
 #ifndef CRYSTALHD_BOB_NV12_ONLY
+void ZeroFilterArgbBorders() {
+  for (bool full : {false, true}) {
+    Surface source, target, reference;
+    Initialize(&source, 16, 16);
+    Initialize(&target, full ? 23U : 25U, full ? 9U : 13U, true);
+    Initialize(&reference, target.width, target.height, true);
+    Fill(&source);
+    const auto original = source.storage;
+    const VARectangle src = {2, 2, 14, 12};
+    const VARectangle dst = full ? Full(target) : VARectangle{1, 2, 22, 8};
+    // Render only the visible rectangle into a tight independent reference,
+    // then place its logical bytes in an opaque-black guarded destination.
+    Scaler oracle;
+    oracle.value = sws_getContext(src.width, src.height, AV_PIX_FMT_NV12,
+        dst.width, dst.height, AV_PIX_FMT_BGRA, SWS_POINT, nullptr, nullptr, nullptr);
+    Require(oracle.value != nullptr, "zero-filter ARGB reference scaler");
+    const uint8_t *input[] = {
+        source.planes[0] + static_cast<size_t>(src.y) * source.pitch[0] + src.x,
+        source.planes[1] + static_cast<size_t>(src.y / 2) * source.pitch[1] + src.x,
+        nullptr, nullptr};
+    const int input_pitch[] = {static_cast<int>(source.pitch[0]),
+                                static_cast<int>(source.pitch[1]), 0, 0};
+    const size_t row_bytes = static_cast<size_t>(dst.width) * 4U;
+    std::vector<uint8_t> rgb(row_bytes * dst.height + 64U, 0);
+    uint8_t *output[] = {rgb.data(), nullptr, nullptr, nullptr};
+    const int output_pitch[] = {static_cast<int>(row_bytes), 0, 0, 0};
+    Require(sws_scale(oracle.value, input, input_pitch, 0, src.height,
+                        output, output_pitch) == dst.height,
+            "zero-filter independent reference covers every visible row");
+    for (unsigned int row = 0; row != target.height; ++row)
+      for (unsigned int column = 0; column != target.width; ++column) {
+        uint8_t *pixel = reference.planes[0] +
+            static_cast<size_t>(row) * reference.pitch[0] + column * 4U;
+        pixel[0] = pixel[1] = pixel[2] = 0;
+        pixel[3] = 255;
+      }
+    for (unsigned int row = 0; row != dst.height; ++row)
+      memcpy(reference.planes[0] +
+                 static_cast<size_t>(dst.y + row) * reference.pitch[0] + dst.x * 4U,
+             rgb.data() + static_cast<size_t>(row) * row_bytes, row_bytes);
+    Scaler scaler;
+    std::vector<uint8_t> staging;
+    Require(ProcessVpp(&scaler.value, &staging, &source, &target, src, dst) ==
+                VA_STATUS_SUCCESS,
+            "ordinary ARGB conversion accepts offset rectangles and odd full output");
+    Require(target.storage == reference.storage && source.storage == original,
+            "ordinary ARGB visible bytes, four black borders and every guard are exact");
+    Require(target.ready && !target.failed && target.frame_timestamp == 12345 &&
+                target.expected_timestamp == 12345,
+            "ordinary ARGB rectangle publishes only complete exact-identity output");
+  }
+}
+
 void ZeroFilterArgbInvalidStrides() {
   for (unsigned int plane = 0; plane != 2; ++plane) {
     Surface source, target;
@@ -490,6 +673,21 @@ int main(int argc, char **argv) {
 #endif
     Require(argc == 1, "usage: test [--import-layout|--argb-strides (native)]");
     for (unsigned int parity = 0; parity != 2; ++parity) {
+      for (unsigned int height : {32U, 1088U})
+        CompactConversion(32, height, parity);
+      CompactConversion(14, 32, parity, {18, 19});
+      CompactConversion(14, 32, parity, {18, 13});
+      CompactConversion(32, 32, parity, {16, 12});
+      Pixels(1920, 1080, 1280, 720, false, parity, false,
+              {1920, 1088}, {1280, 736}, true);
+      Pixels(14, 12, 22, 8, false, parity, false, {16, 17}, {23, 9}, true);
+      Pixels(16, 32, 16, 32, false, parity, true, {}, {}, true);
+#ifndef CRYSTALHD_BOB_NV12_ONLY
+      Pixels(1920, 1080, 1280, 720, true, parity, false,
+              {1920, 1088}, {1280, 736}, true);
+      Pixels(14, 12, 22, 8, true, parity, false, {16, 17}, {23, 9});
+      Pixels(14, 12, 22, 8, true, parity, false, {16, 17}, {23, 9}, true);
+#endif
       for (unsigned int height : {720U, 1080U, 1088U})
         Pixels(16, height, 16, height, false, parity);
       Pixels(32, 1080, 16, 720, false, parity);
@@ -522,8 +720,11 @@ int main(int argc, char **argv) {
     ZeroFilterOddWidthBackground();
 #ifndef CRYSTALHD_BOB_NV12_ONLY
     ZeroFilterArgbInvalidStrides();
+    ZeroFilterArgbBorders();
 #endif
     Invalid();
+    InvalidCompact();
+    InvalidCompactConversion();
     AllocationFailure();
     ImportLayoutBounds();
     std::printf("VA Bob actual VPP pixels/guards/CPU leases: %u checks PASS\n", checks);
