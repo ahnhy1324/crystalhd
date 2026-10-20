@@ -2276,8 +2276,8 @@ BC_STATUS crystalhd_flea_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd)
 	spin_unlock_irqrestore(&hw->lock, flags);
 	crystalhd_fw_research_command_posted(hw, fw_cmd);
 
-	msleep_interruptible(50);
-
+	/* The acknowledged mailbox IRQ is the completion fence. Its latched
+	 * state also covers a response that arrives before entering the wait. */
 	/* FW commands should complete even if we got a signal from the upper layer. */
 	sts = crystalhd_hw_fw_cmd_wait(hw);
 	if (sts == BC_STS_TIMEOUT) {

@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Wait directly for BCM70015 firmware-command completion instead of adding
+  a fixed 50 ms delay; retain IRQ fencing, reply ownership and timeout recovery.
 - Reject device opens when TX buffers or the worker cannot be created;
   allocate worker scratch before startup and release it only after joining.
 - Correct hardware-initialization status: HWINIT no longer skips firmware

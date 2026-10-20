@@ -85,6 +85,8 @@ static bool interrupt_transaction_enter;
 static bool complete_before_publication;
 static unsigned wait_calls;
 static bool transport_mailbox_posted;
+static bool complete_after_publication;
+static bool observe_transport_wait, transport_wait_entered;
 static unsigned research_locked_seen, research_unlocked_seen;
 
 static void crystalhd_hw_fw_cmd_complete(struct crystalhd_hw *hw);
@@ -139,6 +141,12 @@ static int TestWait(wait_queue_head_t *event)
         return 0;
     }
     if (pthread_mutex_lock(&event->lock)) abort();
+    if (observe_transport_wait) {
+        pthread_mutex_lock(&audit_lock);
+        transport_wait_entered = true;
+        pthread_cond_broadcast(&audit_changed);
+        pthread_mutex_unlock(&audit_lock);
+    }
     while (!hardware.fwcmd_evt_sts)
         if (pthread_cond_wait(&event->changed, &event->lock)) abort();
     if (pthread_mutex_unlock(&event->lock)) abort();
@@ -197,6 +205,10 @@ static void crystalhd_fw_research_command_posted(struct crystalhd_hw *hw,
 	if (pthread_mutex_unlock(&hw->lock))
 		abort();
 	research_unlocked_seen++;
+	if (complete_after_publication) {
+		complete_after_publication = false;
+		crystalhd_hw_fw_cmd_complete(hw);
+	}
 }
 
 #include "fw-command-functions.h"
@@ -242,6 +254,8 @@ static void InitHardware(void)
     complete_before_publication = false;
     wait_calls = 0;
     transport_mailbox_posted = false;
+    complete_after_publication = false;
+    observe_transport_wait = transport_wait_entered = false;
     research_locked_seen = research_unlocked_seen = 0;
     pthread_mutex_lock(&audit_lock);
     mutex_attempts = 0;
@@ -738,7 +752,7 @@ static void AssertMutexHeld(struct mutex *mutex)
 
 static int TestSleep(unsigned milliseconds)
 {
-    Check(milliseconds == 50, "production mailbox wait retains its bounded delay");
+    Check(milliseconds == 50, "Link retains its existing pre-wait delay");
     sleeps++;
     return 0;
 }
@@ -891,6 +905,91 @@ static void InitTransfer(BC_FW_CMD *command, uint32_t id, bool stale)
     wait_mode = WAIT_COMPLETE_IMMEDIATELY;
 }
 
+struct transport_thread {
+    BC_FW_CMD *command;
+    BC_STATUS status;
+    bool finished;
+};
+
+static void *RunFleaTransport(void *argument)
+{
+    struct transport_thread *thread = argument;
+
+    thread->status = crystalhd_flea_do_fw_cmd(&hardware, thread->command);
+    pthread_mutex_lock(&audit_lock);
+    thread->finished = true;
+    pthread_cond_broadcast(&audit_changed);
+    pthread_mutex_unlock(&audit_lock);
+    return NULL;
+}
+
+static void FleaCompletionTiming(void)
+{
+    unsigned early;
+
+    for (early = 0; early < 2; early++) {
+        BC_FW_CMD command, original;
+        BC_STATUS status;
+
+        InitTransfer(&command, eCMD_C011_DEC_CHAN_STATUS, true);
+        original = command;
+        /* Neither case synthesizes completion on entry to TestWait. The
+         * early IRQ is latched after publication, outside the hardware lock;
+         * the delayed IRQ is supplied only after the transport blocks. */
+        wait_mode = WAIT_BLOCK;
+        if (early) {
+            complete_after_publication = true;
+            status = crystalhd_flea_do_fw_cmd(&hardware, &command);
+            Check(!complete_after_publication && hardware.fwcmd_event.wakeups == 1,
+                  "an IRQ before waiting remains latched through the transport");
+        } else {
+            struct transport_thread thread = { .command = &command };
+            pthread_t worker;
+
+            observe_transport_wait = true;
+            if (pthread_create(&worker, NULL, RunFleaTransport, &thread)) abort();
+            pthread_mutex_lock(&audit_lock);
+            while (!transport_wait_entered && !thread.finished)
+                pthread_cond_wait(&audit_changed, &audit_lock);
+            Check(transport_wait_entered && !thread.finished,
+                  "Flea enters the completion wait instead of returning before its IRQ");
+            pthread_mutex_unlock(&audit_lock);
+            /* Acquiring the event lock confirms TestWait reached cond_wait.
+             * Keep the worker blocked while examining its pre-IRQ state. */
+            if (pthread_mutex_lock(&hardware.fwcmd_event.lock)) abort();
+            Check(transfer_writes == 1 && transfer_reads == 1 &&
+                  mailbox_posts == 1 && !mailbox_reads && !reply_owner_checks &&
+                  !postprocess_owner_checks && WordsZero(command.rsp, FW_CMD_BUFF_SZ),
+                  "an uncompleted command cannot read or publish its response");
+            Check(hardware.fwcmd_pending && hardware.fwcmd_active &&
+                  hardware.FwCmdCnt == 1 && !hardware.fwcmd_evt_sts &&
+                  !hardware.fwcmd_poisoned,
+                  "the blocked transport retains its pending command and reply ownership");
+            if (pthread_mutex_unlock(&hardware.fwcmd_event.lock)) abort();
+            crystalhd_hw_fw_cmd_complete(&hardware);
+            if (pthread_join(worker, NULL)) abort();
+            status = thread.status;
+        }
+        Check(status == BC_STS_SUCCESS && !sleeps && wait_calls == 1,
+              "Flea relies on completion without an unconditional pre-wait sleep");
+        Check(transfer_writes == 1 && transfer_reads == 2 && mailbox_posts == 1 &&
+              mailbox_reads == 1 && reply_owner_checks == 1 &&
+              !memcmp(command.rsp, response_words, sizeof(command.rsp)),
+              "both IRQ timings return exactly the completed firmware reply");
+        Check(!memcmp(command.cmd, original.cmd, sizeof(command.cmd)) &&
+              command.flags == original.flags && command.add_data == original.add_data,
+              "completion timing cannot change command or ancillary ABI fields");
+        Check(!hardware.fwcmd_pending && !hardware.fwcmd_active &&
+              !hardware.FwCmdCnt && !hardware.fwcmd_poisoned &&
+              hardware.fwcmd_evt_sts == 1 && hardware.fwcmd_event.wakeups == 1,
+              "each completed transport balances ownership and consumes only one IRQ");
+        CheckUnlocked(&hardware.lock, "completed transport releases the hardware lock");
+        CheckUnlocked(&hardware.fwcmd_mutex.native,
+                      "completed transport releases mailbox serialization");
+        DestroyHardware();
+    }
+}
+
 static void ReplyReadFailure(void)
 {
     BC_STATUS (*const execute[])(struct crystalhd_hw *, BC_FW_CMD *) = {
@@ -942,7 +1041,7 @@ static void ReplyReadFailure(void)
                           hardware.fwcmd_evt_sts == 1,
                           "completed reply-read failure quarantines without inventing outstanding work");
                     Check(transfer_reads == 2 && transfer_writes == 1 &&
-                          mailbox_posts == 1 && mailbox_reads == 1 && sleeps == 1 && !power_wakes,
+                          mailbox_posts == 1 && mailbox_reads == 1 && sleeps == generation && !power_wakes,
                           "failure performs only the original single command and reply attempt");
                     CheckUnlocked(&hardware.lock, "reply failure releases hardware serialization");
                     CheckUnlocked(&hardware.fwcmd_mutex.native,
@@ -1107,7 +1206,7 @@ static void ReplyAdmissionAndWaitFailure(void)
                 Check(execute[generation](&hardware, &command) == expected[fault - 3],
                       "timeout and interrupted/failed wait preserve their transport status");
                 Check(transfer_reads == 1 && transfer_writes == 1 &&
-                      !mailbox_reads && mailbox_posts == 1 && sleeps == 1,
+                      !mailbox_reads && mailbox_posts == 1 && sleeps == generation,
                       "wait failure cannot read or postprocess a reply");
                 Check(hardware.fwcmd_poisoned && !hardware.fwcmd_pending &&
                       hardware.FwCmdCnt == 1 && !hardware.fwcmd_active,
@@ -1509,7 +1608,7 @@ static void FirmwareWakeFailure(void)
                       "late IRQ after failed wake cannot clear quarantine or underflow count");
             } else {
                 Check(transfer_writes == 1 && transfer_reads == 2 && mailbox_posts == 1 &&
-                      mailbox_reads == 1 && sleeps == 1 && wait_calls == 1,
+                      mailbox_reads == 1 && !sleeps && wait_calls == 1,
                       "successful wake preserves the complete existing mailbox transaction");
             }
             DestroyHardware();
@@ -1527,6 +1626,7 @@ int main(void)
     TimeoutBoundaryAndReset();
     SerializedCommands();
     SerializedOuterOwners();
+    FleaCompletionTiming();
     ReplyReadFailure();
     ReplyRangeAndFirmwareStatus();
     ReplyAdmissionAndWaitFailure();
