@@ -2052,7 +2052,9 @@ struct DecodeContext {
     // replay restart. Completed pictures own copied pixels, not RX leases.
     // Never infer this contract from a version number or another optional API.
     const bool retain_device = purpose == HardwareClosePurpose::H264Replay &&
-        IsH264Profile(profile) && !is_70012 && !live_h264_fast_path &&
+        IsH264Profile(profile) && !is_70012 &&
+        (!live_h264_fast_path ||
+         (replay.checkpointing() && !experimental_ready_remap)) &&
         device != nullptr && decoder_open && decoder_started &&
         !closing && !retired && !destroy_prepared && !hardware_close_pending &&
         retained_close_status == BC_STS_SUCCESS && replay.NeedsRestart() &&
