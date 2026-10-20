@@ -469,6 +469,12 @@ conversion in a separate video-processing context. Decode-integrated processing
 (`VAConfigAttribDecProcessing`) is not supported: omission or
 `VA_DEC_PROCESSING_NONE` retains ordinary decode; enabling processing is rejected. Separate VPP/Bob
 support does not imply card-side scaled decode output.
+On the unreleased 1.2 branch, VPP/Bob honors declared full-range NV12 for
+ARGB conversion; UNKNOWN input retains the existing limited-range interpretation.
+NV12 output preserves the input range, with range-correct black padding.
+Explicit NV12 range changes and reduced-range ARGB output are rejected.
+Explicit color standards, matrix/primaries/transfer conversion and selectable
+chroma-site conversion remain unsupported; this is not general color management.
 Pipeline capability format lists are borrowed, read-only driver
 metadata, valid until the VA display terminates. Read the returned pointers
 and counts; do not free them or assume supplied scratch arrays were filled.

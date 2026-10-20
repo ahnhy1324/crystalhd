@@ -377,6 +377,94 @@
     "integration_boundary": "Current standard VA decode must preserve its original full-size public source. Separate VPP reads that source; integrated DecProcessing also needs the original decode target plus a distinct processed output. A lone smaller capture does not fulfill either contract",
     "not_claimed": ["VA card-scaling integration", "correct scaled visible-region mapping", "scaled software-quality oracle", "ordered presentation or physical A/V", "throughput or PCIe wire measurements", "hardware deinterlacing", "installation or module changes"]
   },
+  "bwdif_reopen_and_cost": {
+    "date": "2026-10-20",
+    "source_checkout": "18b626f3f558a05e1c04ecccbad967a02347b0fd",
+    "gstreamer": "unchanged b047ce1cf4b299b3a6ad5117e0bec0754d729779",
+    "isolated_dil": "unchanged qualified 3b81b1d6ecb8caf5095879b285019a47574c9755",
+    "environment": "Same Ubuntu 26.04.1/Core 2 Duo/module/PM above; stock FFmpeg 8.0.1, libavfilter 11.4.100, libavutil 60.8.100; no installed or external-app changes",
+    "client": "Private own C++ GStreamer appsink-to-stock-libavfilter client, -Werror build; single filter thread, preserves actual per-picture field order/PTS, explicit filter EOF; this qualifies existing GStreamer output, not the new VA color change",
+    "filter": "scale=iw:ih:flags=bilinear:interl=1,format=pix_fmts=yuv420p,bwdif=mode=send_field:parity=auto:deint=all; optional progressive scale=1920:1080:flags=bilinear; output yuv420p",
+    "direct_reopen": {
+      "cases": [
+        "uniform TFF",
+        "uniform BFF"
+      ],
+      "sessions_per_process": 2,
+      "inputs_per_session": 50,
+      "fields_per_session": 100,
+      "result": "PASS: complete tokens/both parities, EOS/ready=0/close, refcount zero between opens; TFF all bytes match retained 3617c4e capture, BFF second epoch matches first (no historical BFF oracle)",
+      "bff_fixture": "Same native-single-field.json cases[2] generator, substituting tinterlace=mode=interleave_bottom and x264 bff=1; 50 packets/frames, 25 Hz, all software frames BFF/interlaced and SEI pic_struct=4"
+    },
+    "correctness": {
+      "result": "PASS separate CPU-only comparison after hardware; original controller pixel-PENDING labels retained",
+      "cases": [
+        "TFF native FHD",
+        "TFF card720",
+        "TFF card720 plus CPU FHD enlargement",
+        "BFF card720",
+        "BFF card720 plus CPU FHD enlargement"
+      ],
+      "sessions_per_case": 2,
+      "inputs_per_session": 50,
+      "outputs_per_session": 100,
+      "comparison": "Every input YUY2 byte and every output YUV420p byte, all input/output PTS steps and durations; exact 40/20 ms after normalizing retained origins (direct 1.48 s, GStreamer 0.78 s); not identical absolute PTS",
+      "reference": "Independent top/even and bottom/odd field assembly keyed by token and source packet PTS; TFF/BFF scaled references from this direct capture, native TFF from retained original full-size capture. Output reference uses the same stock BWDIF implementation, not an independent algorithm",
+      "limits": "Each geometry compared to its own reference; different resolutions are not pixel-identical; no new BFF native-FHD filter control",
+      "lifecycle": "PASS same-PID reopen, Gst EOS, filter EOF, normal NULL close and resource return in all ten epochs"
+    },
+    "benchmark": {
+      "fixture": "Existing kodi-h264-1080i25-30s.mkv, 750 pictures",
+      "pipeline": "filesrc ! demux ! h264parse ! identity sync=PACED ! crystalhddec scale-width=WIDTH ! appsink sync=false; copy woven YUY2 to the stock filter above",
+      "cells": "WIDTH=0/native, WIDTH=1280/card720, WIDTH=1280 with CPU FHD enlargement; each unpaced and timestamp-paced 25-picture/s finite input, not uniformly spaced AU arrivals",
+      "repetitions": 3,
+      "inputs_per_run": 750,
+      "outputs_per_run": 1500,
+      "outputs_total": 27000,
+      "result": "PASS counts, unique 20 ms output timeline, EOS/filter EOF/close and all resource boundaries in all 18 runs; no benchmark pixel dump or pixel-equality claim",
+      "scheduling": "Serial, no concurrent local builds/tests/software decode/benchmarks; round order native/card720/up, then reverse, then card720/native/up; each unpaced then paced",
+      "cpu_scope": "PLAYING through filter EOF; process CPU includes DIL workers, input copies/filter/bookkeeping; excludes graph construction and NULL cleanup; one-core denominator; RSS is fresh-process peak",
+      "latency_scope": "Decoder input-pad AU to post-BWDIF host output, not card-only or network/display E2E; unpaced backlog is not decoder service time",
+      "delivery": "Paced wall outputs 49.63-49.77/s include startup/drain; PTS is exactly 50/s but host deliveries burst, with maximum gaps 163-175 ms; not smooth physical playback",
+      "outlier": "Keep r3-card720-up-unpaced 76.7638 outputs/s and p95 5413.89 ms; no proven cause or exclusion",
+      "rows": [
+        {"run":"r1-card720-paced","outputs_per_second":49.7728,"cpu_percent_one_core":43.6056,"peak_rss_kib":266700,"au_host_p50_ms":264.15,"au_host_p95_ms":349.134,"host_gap_p95_ms":89.3362,"host_gap_max_ms":162.9978},
+        {"run":"r1-card720-unpaced","outputs_per_second":107.624,"cpu_percent_one_core":69.1772,"peak_rss_kib":272548,"au_host_p50_ms":2714.18,"au_host_p95_ms":2815.01,"host_gap_p95_ms":18.6261,"host_gap_max_ms":53.5688},
+        {"run":"r1-card720-up-paced","outputs_per_second":49.6564,"cpu_percent_one_core":62.7499,"peak_rss_kib":269504,"au_host_p50_ms":277.729,"au_host_p95_ms":388.597,"host_gap_p95_ms":84.6292,"host_gap_max_ms":168.6541},
+        {"run":"r1-card720-up-unpaced","outputs_per_second":85.2305,"cpu_percent_one_core":100.8161,"peak_rss_kib":276356,"au_host_p50_ms":3750.38,"au_host_p95_ms":3890.45,"host_gap_p95_ms":14.4,"host_gap_max_ms":24.7929},
+        {"run":"r1-native-paced","outputs_per_second":49.6378,"cpu_percent_one_core":67.062,"peak_rss_kib":282568,"au_host_p50_ms":287.516,"au_host_p95_ms":400.237,"host_gap_p95_ms":73.4304,"host_gap_max_ms":175.1505},
+        {"run":"r1-native-unpaced","outputs_per_second":76.5657,"cpu_percent_one_core":101.3643,"peak_rss_kib":289144,"au_host_p50_ms":4183.79,"au_host_p95_ms":4362.63,"host_gap_p95_ms":18.9358,"host_gap_max_ms":35.2846},
+        {"run":"r2-card720-paced","outputs_per_second":49.7721,"cpu_percent_one_core":44.5957,"peak_rss_kib":266656,"au_host_p50_ms":264.294,"au_host_p95_ms":349.334,"host_gap_p95_ms":87.9622,"host_gap_max_ms":163.2516},
+        {"run":"r2-card720-unpaced","outputs_per_second":107.692,"cpu_percent_one_core":69.3149,"peak_rss_kib":272660,"au_host_p50_ms":2666.2,"au_host_p95_ms":2778.3,"host_gap_p95_ms":18.7866,"host_gap_max_ms":46.4368},
+        {"run":"r2-card720-up-paced","outputs_per_second":49.6587,"cpu_percent_one_core":62.5247,"peak_rss_kib":269772,"au_host_p50_ms":277.086,"au_host_p95_ms":377.916,"host_gap_p95_ms":87.8112,"host_gap_max_ms":168.43},
+        {"run":"r2-card720-up-unpaced","outputs_per_second":86.0384,"cpu_percent_one_core":100.9803,"peak_rss_kib":276180,"au_host_p50_ms":3714.23,"au_host_p95_ms":3867.02,"host_gap_p95_ms":14.2247,"host_gap_max_ms":17.7084},
+        {"run":"r2-native-paced","outputs_per_second":49.632,"cpu_percent_one_core":67.1109,"peak_rss_kib":282100,"au_host_p50_ms":286.8,"au_host_p95_ms":394.586,"host_gap_p95_ms":73.0873,"host_gap_max_ms":171.6857},
+        {"run":"r2-native-unpaced","outputs_per_second":77.3555,"cpu_percent_one_core":101.4756,"peak_rss_kib":288952,"au_host_p50_ms":4226.96,"au_host_p95_ms":4367.98,"host_gap_p95_ms":18.4655,"host_gap_max_ms":39.5263},
+        {"run":"r3-card720-paced","outputs_per_second":49.7723,"cpu_percent_one_core":43.9556,"peak_rss_kib":266956,"au_host_p50_ms":262.9,"au_host_p95_ms":348.56,"host_gap_p95_ms":89.2825,"host_gap_max_ms":163.4545},
+        {"run":"r3-card720-unpaced","outputs_per_second":107.7395,"cpu_percent_one_core":69.4039,"peak_rss_kib":272920,"au_host_p50_ms":2714.21,"au_host_p95_ms":2814.86,"host_gap_p95_ms":18.546,"host_gap_max_ms":47.8793},
+        {"run":"r3-card720-up-paced","outputs_per_second":49.6583,"cpu_percent_one_core":62.2818,"peak_rss_kib":269752,"au_host_p50_ms":277.476,"au_host_p95_ms":378.388,"host_gap_p95_ms":82.4269,"host_gap_max_ms":168.2813},
+        {"run":"r3-card720-up-unpaced","outputs_per_second":76.7638,"cpu_percent_one_core":93.7555,"peak_rss_kib":276240,"au_host_p50_ms":3977.48,"au_host_p95_ms":5413.89,"host_gap_p95_ms":19.2504,"host_gap_max_ms":55.8801},
+        {"run":"r3-native-paced","outputs_per_second":49.6333,"cpu_percent_one_core":67.2873,"peak_rss_kib":282728,"au_host_p50_ms":286.723,"au_host_p95_ms":394.48,"host_gap_p95_ms":73.1596,"host_gap_max_ms":170.7621},
+        {"run":"r3-native-unpaced","outputs_per_second":77.1384,"cpu_percent_one_core":101.6963,"peak_rss_kib":289320,"au_host_p50_ms":4235.35,"au_host_p95_ms":4389.71,"host_gap_p95_ms":18.7677,"host_gap_max_ms":26.6945}
+      ]
+    },
+    "field_order_control": {
+      "long_fixture": "Stream field_order=tt, SEI pic_struct=3 count16 / =4 count734, but all 750 software-decoded frames and all hardware runs are BFF",
+      "earlier_two_second_fixture": "Fresh software and retained native metadata both contain 50 BFF pictures despite mixed SEI labels",
+      "result": "Uniform TFF and BFF controls distinguish parity correctly; mixed SEI labels do not qualify changing decoded field order",
+      "not_run": "No new mixed-parity native test: assumed mixed decoded order failed software preflight, not a driver failure"
+    },
+    "boundary": "PASS actual plugin/DIL/libavfilter mappings and card ownership, balanced pins/refcount, unchanged AER/kernel/module/PM after every hardware run; no forced termination/retry",
+    "not_claimed": [
+      "VA card-scaling integration",
+      "card-side hardware deinterlacing",
+      "physical A/V or display cadence",
+      "changing decoded field order",
+      "network E2E",
+      "Atom/BCM70012",
+      "power or endurance"
+    ]
+  },
   "qualification": {
     "gstreamer_full_lifecycle_groups": "88 PASS",
     "asan_ubsan_lsan_scaling_groups": "12 PASS",

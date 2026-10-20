@@ -160,7 +160,9 @@ filter work; decode remains FHD and enlargement cannot restore lost detail.
 GStreamer's `scale-width` now accepts the validated aligned BCM70015 H.264
 separate-field cases, with native capture, field assembly and host scalerbob
 results in the [existing receipt](tests/fixtures/issue436/card-scaled-bob.json).
-This does not qualify other interlaced codecs or BWDIF plus enlargement.
+The separate [BWDIF qualification](HARDWARE-2026-09-13.md#card-scaling-with-stock-bwdif--2026-10-20)
+now covers bounded TFF/BFF reopen, complete pixels/PTS and CPU enlargement.
+This does not qualify other interlaced codecs or physical presentation.
 VA still has no card-scaling control and expects native stream geometry. Existing VA
 VPP resizing happens on the host after readback, so it does not reduce PCIe
 traffic or establish field-preserving vertical scaling. Keep these boundaries
@@ -174,13 +176,21 @@ their guards.
   new measurement or a scaled-reopen qualification.
 - [x] Pair the captured fields into 50 scaled Weave pictures; all active YUY2
   bytes match independent same-token assembly in that receipt.
-- [ ] Verify scaled native reopen and compare BWDIF's 100 progressive outputs
-  against the unscaled FHD path using the same input. Keep uniform TFF, BFF
-  and mixed per-picture parity as distinct cases.
-- [ ] If correctness passes, compare paced 25-input/50-output playback and
-  unpaced throughput, CPU/RSS, unique outputs, gaps/drops, EOS and reopen for
-  native FHD+BWDIF versus card-720+BWDIF+enlargement. Measure physical A/V
-  separately when observable; batch wall time is not per-frame latency.
+- [x] Verify scaled native reopen and BWDIF's 100 progressive outputs. Uniform
+  FHD TFF and BFF each pass two same-process scaled opens. Five two-open filter
+  conditions cover TFF native/720/enlarged and BFF 720/enlarged: all input and
+  progressive-output bytes/PTS match their respective field-derived references.
+  Different resolutions are not pixel-identical; the filter reference uses the
+  same stock BWDIF implementation, not an independent algorithm.
+- [x] Compare paced 25-input/50-output and unpaced native FHD+BWDIF,
+  card-720+BWDIF, and card-720+BWDIF+CPU enlargement: three rounds per cell,
+  all 27,000 outputs, PTS, EOS and clean close pass. Preserve CPU/RSS, latency,
+  burst gaps and the slower enlargement round in the existing receipt.
+- [ ] Qualify physical A/V/display cadence and genuinely changing decoded
+  field order separately. Mixed SEI labels are not a decoded-parity oracle:
+  the existing 30-second fixture produces 750 BFF pictures in both software
+  and hardware despite its stream-level TFF label. Batch wall time is not
+  per-frame latency; these headless passes do not establish smooth presentation.
 - [x] Measure coded-height 1088 separately from visible-height 1080. Both a
   crop-only input and the actual VA `BuildSps` output return 1280x724 / 362-row
   fields at width 1280, with all 50 token pairs and clean EOS. Native/scaled
@@ -241,12 +251,13 @@ Missing optional VA operations are not all release requirements.
   VPP input. Zero-filter VPP and Bob reject unsupported meaningful requests while
   retaining valid defaults/no-ops. Device-free regressions verify ID/pixel/lease
   safety and release obsolete unsubmitted captures after rejected replacements.
-- [ ] P2 — Define color conversion explicitly. Direct packed-output `StoreArgb`
-  uses fixed limited-range BT.601 coefficients; VPP ARGB uses swscale without
-  explicit matrix/range negotiation. Neither establishes selectable BT.709 or
-  full-range conversion support. Explicit color standards are rejected; existing
-  range/chroma metadata handling is retained for ordinary client pipelines, not
-  qualified as selectable conversion. Add conversions only with independent
+- [ ] P2 — Complete color conversion beyond range handling. `18b626f` fixes
+  declared full-range NV12→ARGB and NV12 black padding; default/limited pixels
+  are preserved, and unsupported range conversions reject before capture.
+  Independent neutral-pixel, cache-transition, queued ownership and both-parity
+  Bob controls pass. Direct packed-output `StoreArgb` still uses fixed limited
+  BT.601; selectable matrices/chroma sites/primaries/transfer remain unimplemented.
+  Explicit color standards stay rejected. Add these only with independent
   pixel oracles and matching advertised capabilities.
 - [x] P2 — Unsupported display attributes return an error; valid empty requests
   remain no-ops. Invalid arguments do not access or change caller attributes.
