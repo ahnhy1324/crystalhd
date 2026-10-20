@@ -2730,7 +2730,8 @@ struct CardProcessingFixture {
   bool bottom_first = false;
   bool interlaced = true;
 
-  explicit CardProcessingFixture(bool bff = false, bool fields = true)
+  explicit CardProcessingFixture(bool bff = false, bool fields = true,
+                                 bool keep_policy = false)
       : bottom_first(bff), interlaced(fields) {
     io.allow_device_open = true;
     context.pDriverData = &driver;
@@ -2741,8 +2742,10 @@ struct CardProcessingFixture {
                               &id) == VA_STATUS_SUCCESS,
             "public decode-processing config admits a coded-size context");
     decoder = driver.contexts.at(id);
-    decoder->live_h264 = false;
-    decoder->auto_h264_prefeed = false;
+    if (!keep_policy) {
+      decoder->live_h264 = false;
+      decoder->auto_h264_prefeed = false;
+    }
     for (VASurfaceID surface_id : {1U, 2U, 11U, 12U}) {
       const bool original = surface_id < 10;
       auto surface = std::make_shared<Surface>();
@@ -2756,7 +2759,8 @@ struct CardProcessingFixture {
   }
 
   VAStatus Render(VASurfaceID original, VASurfaceID output,
-                  unsigned visible_height = 1080, unsigned syntax_fault = 0) {
+                  unsigned visible_height = 1080, unsigned syntax_fault = 0,
+                  bool idr = true) {
     VAStatus status = BeginPicture(&context, id, original);
     if (status != VA_STATUS_SUCCESS)
       return status;
@@ -2779,8 +2783,8 @@ struct CardProcessingFixture {
       case 7: picture.seq_fields.bits.mb_adaptive_frame_field_flag = 0; break;
     }
     VASliceParameterBufferH264 slice = {};
-    slice.slice_type = 2;
-    uint8_t bytes[] = {0x65, 0x88, 0x84};
+    slice.slice_type = idr ? 2 : 0;
+    uint8_t bytes[] = {static_cast<uint8_t>(idr ? 0x65 : 0x41), 0x88, 0x84};
     VARectangle source = {0, 0, 1920, static_cast<uint16_t>(visible_height)};
     VAProcPipelineParameterBuffer pipeline = {};
     pipeline.surface = original;
@@ -3056,6 +3060,190 @@ static void CardScalingPublicIdentityAndGeometry() {
                 !fixture.driver.surfaces.at(11)->ready &&
                 fixture.driver.surfaces.at(1)->opaque_picture->failed,
             "duplicate parity, short extent or actual 724-line field fails both identities closed");
+  }
+}
+
+static void CardScalingLivePolicyAndOwnership() {
+  SavedEnvironment saved_live("CRYSTALHD_VAAPI_LIVE_H264");
+  SavedEnvironment saved_low("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
+  SavedEnvironment saved_ready("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP");
+  const auto set_policy = [](const char *name, int value) {
+    if (value < 0) unsetenv(name);
+    else setenv(name, value ? "1" : "0", 1);
+  };
+  for (int live : {-1, 0, 1}) {
+    for (int low : {-1, 0, 1}) {
+      for (bool ready : {false, true}) {
+        set_policy("CRYSTALHD_VAAPI_LIVE_H264", live);
+        set_policy("CRYSTALHD_VAAPI_LOW_LATENCY_H264", low);
+        set_policy("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP", ready ? 1 : -1);
+        DecodeIoMock io;
+        io.allow_device_open = true;
+        MockDecodeScope scope(io);
+        Driver driver(-1);
+        VADriverContext context = {};
+        context.pDriverData = &driver;
+        VAConfigID config = VA_INVALID_ID;
+        VAContextID id = VA_INVALID_ID;
+        VAConfigAttrib processing = {VAConfigAttribDecProcessing, VA_DEC_PROCESSING};
+        Require(CreateConfig(&context, VAProfileH264Main, VAEntrypointVLD,
+                             &processing, 1, &config) == VA_STATUS_SUCCESS,
+                "processing policy matrix creates a public config");
+        const VAStatus status = CreateContext(&context, config, 1920, 1088, 0,
+                                             nullptr, 0, &id);
+        if (ready) {
+          Require(status == VA_STATUS_ERROR_ATTR_NOT_SUPPORTED &&
+                      id == VA_INVALID_ID && driver.contexts.empty() &&
+                      io.open_attempts == 0 && io.inputs.empty(),
+                  "READY cannot remap exact processing references, before any device open");
+        } else {
+          Require(status == VA_STATUS_SUCCESS, "LIVE/LOW are independent processing policies");
+          const auto decoder = driver.contexts.at(id);
+          Require(decoder->decode_processing && decoder->live_h264 == (live == 1) &&
+                      decoder->live_h264_gap_tolerant == (live == 1) &&
+                      decoder->live_h264_fast_path == (live == 1) &&
+                      decoder->low_latency_h264 == (low == 1) &&
+                      decoder->auto_h264_prefeed == (live != 1 && low < 0) &&
+                      !decoder->experimental_ready_remap && io.inputs.empty() &&
+                      io.scale_calls == 0,
+                  "unset processing policy stays finite; explicit LIVE and LOW remain separate");
+          Require(DestroyContext(&context, id) == VA_STATUS_SUCCESS &&
+                      io.device_close_calls == 1 && driver.contexts.empty(),
+                  "policy-only contexts release their device without decoding");
+        }
+        Require(DestroyConfig(&context, config) == VA_STATUS_SUCCESS && !io.invalid,
+                "policy matrix owns and releases only its mock resources");
+      }
+    }
+  }
+
+  set_policy("CRYSTALHD_VAAPI_LIVE_H264", 1);
+  set_policy("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP", -1);
+  for (bool prefeed : {false, true}) {
+    set_policy("CRYSTALHD_VAAPI_LOW_LATENCY_H264", prefeed ? 1 : 0);
+    for (bool bottom_first : {false, true}) {
+      CardProcessingFixture fixture(bottom_first, true, true);
+      auto &decode = *fixture.decoder;
+      auto &io = fixture.io;
+      io.prefeed_busy_once = prefeed;
+      Require(fixture.Submit(1, 11) == VA_STATUS_SUCCESS,
+              "live processing accepts the first actual IDR with small output");
+      const auto first = fixture.driver.surfaces.at(1)->opaque_picture;
+      Require(first && first == fixture.driver.surfaces.at(11)->decode_picture.lock() &&
+                  first->width == 1280 && first->height == 720 &&
+                  decode.pending.at(kTimestampStep) == 11 &&
+                  decode.replay.outstanding() == 1 &&
+                  io.inputs == std::vector<uint64_t>{kTimestampStep},
+              "only the actual AU owns a small picture and opaque reference");
+      if (prefeed) {
+        Require(io.input_calls.size() == 2 && !io.input_calls.back().accepted &&
+                    io.input_calls.back().bytes == H264LowLatencyPrefeed() &&
+                    decode.pending_prefeed_timestamp == 2 * kTimestampStep &&
+                    decode.prefed_timestamp == 0,
+                "BUSY prefix retains only a bounded transport retry, not a picture");
+        Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                    io.input_calls.size() == 3 && io.input_calls.back().accepted &&
+                    decode.pending_prefeed_timestamp == 0 &&
+                    decode.prefed_timestamp == 2 * kTimestampStep &&
+                    decode.replay.outstanding() == 1 && decode.pending.size() == 1,
+                "retry accepts the same prefix without new input or output ownership");
+      }
+      const size_t prior_calls = io.input_calls.size();
+      Require(fixture.Render(2, 12, 1080, 0, false) == VA_STATUS_SUCCESS &&
+                  EndPicture(&fixture.context, fixture.id) == VA_STATUS_SUCCESS,
+              "actual non-IDR continuation preserves integrated scaling geometry");
+      const auto second = fixture.driver.surfaces.at(2)->opaque_picture;
+      const auto &continuation = io.input_calls.at(prior_calls);
+      const std::vector<uint8_t> non_idr_slice = {0x41, 0x88, 0x84};
+      Require(second && second != first &&
+                  second == fixture.driver.surfaces.at(12)->decode_picture.lock() &&
+                  decode.pending.at(2 * kTimestampStep) == 12 &&
+                  decode.replay.live_stream_started() &&
+                  io.inputs == std::vector<uint64_t>{kTimestampStep, 2 * kTimestampStep} &&
+                  continuation.accepted &&
+                  continuation.bytes.size() >= non_idr_slice.size() &&
+                  std::equal(non_idr_slice.rbegin(), non_idr_slice.rend(),
+                             continuation.bytes.rbegin()) &&
+                  continuation.timestamp == (prefeed ? 0 : 2 * kTimestampStep) &&
+                  io.input_calls.size() == prior_calls + (prefeed ? 2U : 1U) &&
+                  decode.prefed_timestamp == (prefeed ? 3 * kTimestampStep : 0) &&
+                  decode.pending.size() == 2,
+              "non-IDR consumes an accepted prefix with zero transport tag but exact logical identity");
+      fixture.Complete(kTimestampStep);
+      const auto first_pixels = first->storage;
+      io.output_width = 1280;
+      io.output_height = 720;
+      const auto queue_field = [&](bool bottom) {
+        io.outputs.push_back(2 * kTimestampStep);
+        io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC |
+            (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0) |
+            (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD));
+      };
+      queue_field(bottom_first);
+      Require(ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                  decode.h264_first_field.valid && !second->ready &&
+                  decode.replay.outstanding() == 1,
+              "first scaled field remains paired to the exact outstanding picture");
+      PendingVpp operation;
+      operation.source = second;
+      operation.decoder = fixture.decoder;
+      operation.source_timestamp = 2 * kTimestampStep;
+      operation.decoder_generation = decode.generation;
+      operation.deinterlace.bob = true;
+      operation.deinterlace.field = bottom_first ? crystalhd_vpp_bob::FieldParity::kBottom
+                                                : crystalhd_vpp_bob::FieldParity::kTop;
+      std::shared_ptr<Surface> compact;
+      Surface fhd;
+      SwsContext *scaler = nullptr;
+      Require(PrepareFirstFieldBob(operation, &compact) == VA_STATUS_SUCCESS && compact &&
+                  compact->width == 1280 && compact->height == 360 &&
+                  fhd.AllocateCpuNv12(1920, 1080) &&
+                  ProcessVpp(&scaler, nullptr, compact.get(), &fhd,
+                             VARectangle{0, 0, 1280, 720}, VARectangle{0, 0, 1920, 1080},
+                             false, operation.deinterlace, true) == VA_STATUS_SUCCESS &&
+                  scaler == nullptr && fhd.ready &&
+                  fhd.frame_timestamp == 2 * kTimestampStep && !second->ready &&
+                  !fixture.driver.surfaces.at(12)->ready && decode.h264_first_field.valid,
+              "private scaled first-field Bob can return FHD without completing its original");
+      // Constant-plane transport/geometry oracle only; nonuniform field and
+      // chroma resampling have independent VPP and native pixel oracles.
+      for (unsigned row = 0; row < 1080; ++row)
+        Require(fhd.planes[0][static_cast<size_t>(row) * fhd.pitch[0]] ==
+                    DecodeIoMock::Luma(2 * kTimestampStep) &&
+                    fhd.planes[0][static_cast<size_t>(row) * fhd.pitch[0] + 1919] ==
+                    DecodeIoMock::Luma(2 * kTimestampStep),
+                "early FHD Bob addresses every logical output row within its allocation");
+      const auto gap_start = std::chrono::steady_clock::now();
+      Require(SyncSurface2(&fixture.context, 2, 150ULL * 1000 * 1000) ==
+                  VA_STATUS_ERROR_TIMEDOUT &&
+                  std::chrono::steady_clock::now() - gap_start >= std::chrono::milliseconds(100) &&
+                  std::count(io.events.begin(), io.events.end(), "seal") == 0 &&
+                  !decode.replay.sealed() && !decode.replay.failed() &&
+                  decode.h264_first_field.valid && decode.replay.outstanding() == 1 &&
+                  !second->ready && first->storage == first_pixels,
+              "explicit LIVE survives an idle gap beyond 100 ms without inferred EOS or remapping");
+      queue_field(!bottom_first);
+      // Preserve the real queued complement, suppress the generic mock's
+      // duplicate full-frame output, then request an explicit finite drain.
+      io.early_eos = true;
+      Require(SealDecodeBatch(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                  ReceiveAvailable(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                  second->ready && fixture.driver.surfaces.at(12)->ready &&
+                  SyncSurface2(&fixture.context, 2, 0) == VA_STATUS_SUCCESS &&
+                  SyncSurface2(&fixture.context, 1, 0) == VA_STATUS_SUCCESS &&
+                  second->frame_timestamp == 2 * kTimestampStep &&
+                  first->storage == first_pixels && !decode.h264_first_field.valid &&
+                  decode.replay.outstanding() == 0 && decode.pending.empty() &&
+                  decode.prefed_timestamp == 0 && io.prefed_timestamp == 0 &&
+                  std::count(io.events.begin(), io.events.end(), "seal") == 1 &&
+                  std::count(io.events.begin(), io.events.end(), "eos") == 1,
+              "explicit EOS follows both real fields and retires only the orphan prefix");
+      Require(DestroyContext(&fixture.context, fixture.id) == VA_STATUS_SUCCESS &&
+                  fixture.driver.contexts.empty() && decode.device == nullptr &&
+                  io.device_close_calls == 1 && io.outputs.empty() &&
+                  io.picture_flags.empty() && io.scale_calls == 1 && !io.invalid,
+              "live scaled context closes without leaked hardware, outputs or reconfiguration");
+    }
   }
 }
 
@@ -10216,6 +10404,11 @@ int main(int argc, char **argv) {
       std::puts("VA-API MPEG-2 frame-coded TFF/BFF: exact pixels, replay, ownership, EOS and release PASS");
       return 0;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--card-scaling-live") == 0) {
+      CardScalingLivePolicyAndOwnership();
+      std::puts("VA-API live card scaling: policy matrix, prefix retry, exact TFF/BFF ownership, early FHD Bob, idle gap and explicit EOS PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--card-scaling") == 0) {
       CardScalingPublicIdentityAndGeometry();
       std::puts("VA-API integrated card scaling: setup, geometry, TFF/BFF, identity reuse and faults PASS");
@@ -10244,7 +10437,7 @@ int main(int argc, char **argv) {
       std::puts("VA-API private first-field Bob, progress/grace and LIVE tail: TFF/BFF pixels, ownership, cancellation and explicit drain PASS");
       return 0;
     }
-    Require(argc == 1, "usage: vaapi-replay-test [--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
+    Require(argc == 1, "usage: vaapi-replay-test [--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
     NeutralAuxiliaryContracts();
     DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobUsesCompactStorage();
@@ -10280,6 +10473,7 @@ int main(int argc, char **argv) {
     ContextAdmissionRejectsBusyBeforePicture();
     ContextAdmissionFailuresPublishNothing();
     CardScalingPublicIdentityAndGeometry();
+    CardScalingLivePolicyAndOwnership();
     RealH264SubmitCompletesFieldPairs();
     TraceIdentityUsesImmutableTokenAndLiveAliasOwner();
     TraceReadExportReuseBoundary();

@@ -808,6 +808,15 @@ struct CompletedDecodePicture {
   uint64_t ordinal = 0;
 };
 
+// A committed VPP output is not a decoder-owned picture. Its timestamp must
+// survive another VPP stage without admitting retired decoder bindings.
+struct CompletedVppPicture {
+  uint64_t sequence = 0;
+  uint64_t transaction = 0;
+  uint64_t identity = 0;
+  uint64_t timestamp = 0;
+};
+
 struct Surface {
   VASurfaceID id = VA_INVALID_SURFACE;
   unsigned int width = 0;
@@ -874,6 +883,10 @@ struct Surface {
   std::weak_ptr<Surface> decode_target;
   std::weak_ptr<Surface> decode_picture;
   CompletedDecodePicture completed_decode_picture;
+  CompletedVppPicture completed_vpp_picture;
+  // A writable DMA-BUF fd cannot be revoked. Do not certify later public
+  // pixels as an immutable timestamped VPP result on that backing.
+  bool vpp_external_write_exposed = false;
   bool direct_picture = false;
 
   std::vector<uint8_t> storage;
@@ -1549,6 +1562,15 @@ static bool RectFits(const VARectangle &rectangle, const Surface &surface) {
              surface.height;
 }
 
+static bool InterleavedVppRegionsValid(const VARectangle &source,
+                                       const VARectangle &output,
+                                       uint32_t output_fourcc) {
+  return ((source.x | source.width | output.width) & 1U) == 0 &&
+         ((source.y | source.height | output.height) & 3U) == 0 &&
+         (output_fourcc != VA_FOURCC_NV12 || (output.x & 1U) == 0) &&
+         (output.y & (output_fourcc == VA_FOURCC_NV12 ? 3U : 1U)) == 0;
+}
+
 static VAStatus ProcessVpp(SwsContext **scaler,
                            std::vector<uint8_t> *argb_staging,
                            Surface *source, Surface *destination,
@@ -1557,7 +1579,8 @@ static VAStatus ProcessVpp(SwsContext **scaler,
                            bool destination_write_started = false,
                            const VppDeinterlace &deinterlace = {},
                            bool source_is_field = false,
-                           const VppColorRange &color_range = {}) {
+                           const VppColorRange &color_range = {},
+                           bool preserve_fields = false) {
   // Only the operation-private first-field view has compact storage. Keep
   // the original full-frame rectangle for field sampling, but validate its
   // physical rows against the real half-height allocation.
@@ -1581,16 +1604,27 @@ static VAStatus ProcessVpp(SwsContext **scaler,
        ((output_region.x | output_region.y | output_region.width |
          output_region.height) & 1U) != 0))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
+  // Interleaved scaling resamples each physical field independently. NV12's
+  // chroma rows have their own alternating field lattice: an even luma crop
+  // alone is insufficient to preserve that phase. This is not deinterlacing.
+  if (preserve_fields &&
+      (deinterlace.bob || source_is_field || source == destination ||
+       !InterleavedVppRegionsValid(source_region, output_region,
+                                   destination->fourcc)))
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
   size_t argb_staging_pitch = 0;
   if (destination->fourcc == VA_FOURCC_ARGB) {
     // Both ordinary CSC and Bob pass signed-int strides to swscale. Reject
     // unrepresentable strides and staging sizes before acquiring CPU access.
-    const unsigned int stride_factor = deinterlace.bob && !source_is_field ? 2U : 1U;
+    const unsigned int stride_factor =
+        preserve_fields || (deinterlace.bob && !source_is_field) ? 2U : 1U;
     const uint64_t row_bytes = uint64_t{destination->width} * 4;
     // Give swscale's vectorized row tail private space even when an output
     // rectangle ends at an unaligned surface edge. Never publish that tail.
     const uint64_t padded_row_bytes = (row_bytes + 63U) / 64U * 64U + 64U;
-    if (padded_row_bytes > INT_MAX || source->pitch[0] > INT_MAX / stride_factor ||
+    if (padded_row_bytes > static_cast<uint64_t>(INT_MAX) /
+                              (preserve_fields ? 2U : 1U) ||
+        source->pitch[0] > INT_MAX / stride_factor ||
         source->pitch[1] > INT_MAX / stride_factor ||
         destination->height > std::numeric_limits<size_t>::max() / padded_row_bytes)
       return VA_STATUS_ERROR_INVALID_PARAMETER;
@@ -1668,12 +1702,15 @@ static VAStatus ProcessVpp(SwsContext **scaler,
         output_region.height == destination->height;
     const unsigned int selected_parity = deinterlace.bob && !source_is_field
         ? static_cast<unsigned int>(deinterlace.field) : 0;
-    const unsigned int source_height = deinterlace.bob
+    const unsigned int source_height = deinterlace.bob || preserve_fields
         ? source_region.height / 2 : source_region.height;
-    const unsigned int source_pitch_factor = deinterlace.bob && !source_is_field ? 2 : 1;
+    const unsigned int source_pitch_factor =
+        preserve_fields || (deinterlace.bob && !source_is_field) ? 2 : 1;
+    const unsigned int output_height =
+        preserve_fields ? output_region.height / 2 : output_region.height;
     *scaler = sws_getCachedContext(
         *scaler, source_region.width, source_height, AV_PIX_FMT_NV12,
-        output_region.width, output_region.height, AV_PIX_FMT_BGRA, SWS_POINT,
+        output_region.width, output_height, AV_PIX_FMT_BGRA, SWS_POINT,
         nullptr, nullptr, nullptr);
     if (*scaler == nullptr) {
       source->EndCpuRead();
@@ -1689,32 +1726,37 @@ static VAStatus ProcessVpp(SwsContext **scaler,
       source->EndCpuRead();
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
-    const uint8_t *source_planes[4] = {
-        source->planes[0] +
-            static_cast<size_t>(source_region.y + selected_parity) *
-                source->pitch[0] +
-            source_region.x,
-        source->planes[1] +
-            static_cast<size_t>(source_region.y / 2 + selected_parity) *
-                source->pitch[1] +
-            (source_region.x & ~1U),
-        nullptr, nullptr};
-    const int source_pitches[4] = {
-        static_cast<int>(source->pitch[0] * source_pitch_factor),
-        static_cast<int>(source->pitch[1] * source_pitch_factor), 0, 0};
-    uint8_t *destination_planes[4] = {
-        argb_staging->data() +
-            static_cast<size_t>(output_region.y) * staging_pitch +
-            static_cast<size_t>(output_region.x) * 4,
-        nullptr, nullptr, nullptr};
-    const int destination_pitches[4] = {
-        static_cast<int>(staging_pitch), 0, 0, 0};
-    const int output_lines = sws_scale(
-        *scaler, source_planes, source_pitches, 0, source_height,
-        destination_planes, destination_pitches);
-    if (output_lines != output_region.height) {
-      source->EndCpuRead();
-      return VA_STATUS_ERROR_OPERATION_FAILED;
+    // TFF/BFF describe temporal order, not the physical even/odd row layout.
+    // Convert both fields into alternating staging rows, retaining both times.
+    for (unsigned int field = 0; field < (preserve_fields ? 2U : 1U); ++field) {
+      const unsigned int parity = preserve_fields ? field : selected_parity;
+      const uint8_t *source_planes[4] = {
+          source->planes[0] +
+              static_cast<size_t>(source_region.y + parity) *
+                  source->pitch[0] +
+              source_region.x,
+          source->planes[1] +
+              static_cast<size_t>(source_region.y / 2 + parity) *
+                  source->pitch[1] +
+              (source_region.x & ~1U),
+          nullptr, nullptr};
+      const int source_pitches[4] = {
+          static_cast<int>(source->pitch[0] * source_pitch_factor),
+          static_cast<int>(source->pitch[1] * source_pitch_factor), 0, 0};
+      uint8_t *destination_planes[4] = {
+          argb_staging->data() +
+              static_cast<size_t>(output_region.y + field) * staging_pitch +
+              static_cast<size_t>(output_region.x) * 4,
+          nullptr, nullptr, nullptr};
+      const int destination_pitches[4] = {
+          static_cast<int>(staging_pitch * (preserve_fields ? 2U : 1U)), 0, 0, 0};
+      const int output_lines = sws_scale(
+          *scaler, source_planes, source_pitches, 0, source_height,
+          destination_planes, destination_pitches);
+      if (output_lines != static_cast<int>(output_height)) {
+        source->EndCpuRead();
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+      }
     }
     if (!fills_destination) {
       // A SIMD row tail can extend into the right border. Initialize borders
@@ -1861,8 +1903,11 @@ static VAStatus ProcessVpp(SwsContext **scaler,
                128, Align(destination->width, 2));
       for (unsigned int row = 0; row < output_region.height; ++row) {
         const unsigned int source_y = source_region.y +
-            static_cast<uint64_t>(row) * source_region.height /
-                output_region.height;
+            (preserve_fields
+                 ? static_cast<uint64_t>(row / 2) * (source_region.height / 2) /
+                       (output_region.height / 2) * 2 + row % 2
+                 : static_cast<uint64_t>(row) * source_region.height /
+                       output_region.height);
         uint8_t *destination_y =
             destination->planes[0] +
             static_cast<size_t>(output_region.y + row) * destination->pitch[0] +
@@ -1876,9 +1921,12 @@ static VAStatus ProcessVpp(SwsContext **scaler,
         }
       }
       for (unsigned int row = 0; row < output_region.height; row += 2) {
-        const unsigned int source_y = source_region.y +
-            static_cast<uint64_t>(row) * source_region.height /
-                output_region.height;
+        const unsigned int source_uv_row = preserve_fields
+            ? source_region.y / 2 +
+                  static_cast<uint64_t>(row / 4) * (source_region.height / 4) /
+                      (output_region.height / 4) * 2 + (row / 2) % 2
+            : (source_region.y + static_cast<uint64_t>(row) *
+                   source_region.height / output_region.height) / 2;
         uint8_t *destination_uv =
             destination->planes[1] +
             static_cast<size_t>((output_region.y + row) / 2) *
@@ -1889,7 +1937,7 @@ static VAStatus ProcessVpp(SwsContext **scaler,
               static_cast<uint64_t>(column) * source_region.width /
                 output_region.width;
           const size_t source_offset =
-              static_cast<size_t>(source_y / 2) * source->pitch[1] +
+              static_cast<size_t>(source_uv_row) * source->pitch[1] +
               (source_x & ~1U);
           destination_uv[column] = source->planes[1][source_offset];
           destination_uv[column + 1] = source->planes[1][source_offset + 1];
@@ -2013,6 +2061,7 @@ struct DecodeContext {
   VARectangle vpp_output_region = {};
   VppDeinterlace vpp_deinterlace;
   VppColorRange vpp_color_range;
+  bool vpp_preserve_fields = false;
   bool have_vpp_parameters = false;
   VAPictureParameterBufferH264 picture = {};
   bool have_picture = false;
@@ -2399,6 +2448,7 @@ struct PendingVpp {
   VARectangle output_region = {};
   VppDeinterlace deinterlace;
   VppColorRange color_range;
+  bool preserve_fields = false;
   uint64_t source_timestamp = 0;
   uint64_t sequence = 0;
   uint64_t decoder_generation = 0;
@@ -2960,6 +3010,7 @@ static void RevokeDecodeOwner(Driver *driver, Surface *surface) {
     return;
   ClearTraceReadExport(surface);
   surface->completed_decode_picture = {};
+  surface->completed_vpp_picture = {};
   surface->decode_picture.reset();
   surface->decode_identity = NextDecodeIdentity(driver);
 }
@@ -3006,12 +3057,16 @@ static void SetSurfaceState(Driver *driver, Surface *surface, bool ready,
                             bool failed) {
   if (surface == nullptr)
     return;
+  if (!ready || failed)
+    surface->completed_vpp_picture = {};
   if (failed)
     RetireFailedExperimentalState(surface);
   surface->ready = ready;
   surface->failed = failed;
   Surface *owner = BackingOwner(driver, surface);
   if (owner != surface) {
+    if (!ready || failed)
+      owner->completed_vpp_picture = {};
     if (failed)
       RetireFailedExperimentalState(owner);
     owner->ready = ready;
@@ -3624,6 +3679,56 @@ static bool CopyNv12Surface(const Surface &source, Surface *destination) {
   destination->failed = false;
   destination->frame_timestamp = source.frame_timestamp;
   return true;
+}
+
+static void RetainCompletedVppPicture(Surface *owner) {
+  owner->completed_vpp_picture = {};
+  if (!owner->ready || owner->failed || owner->destroyed ||
+      owner->vpp_external_write_exposed ||
+      owner->vpp_writers != 0 || owner->image_write_locked ||
+      owner->latest_vpp_sequence == 0 ||
+      owner->expected_timestamp != owner->frame_timestamp)
+    return;
+  owner->completed_vpp_picture = {owner->latest_vpp_sequence,
+      owner->picture_transaction, owner->decode_identity,
+      owner->expected_timestamp};
+}
+
+static bool CompletedVppPictureMatches(const Surface &owner) {
+  const auto &completed = owner.completed_vpp_picture;
+  return owner.ready && !owner.failed && !owner.destroyed &&
+      !owner.vpp_external_write_exposed &&
+      owner.vpp_writers == 0 && !owner.image_write_locked &&
+      completed.sequence != 0 &&
+      completed.sequence == owner.latest_vpp_sequence &&
+      completed.transaction == owner.picture_transaction &&
+      completed.identity == owner.decode_identity &&
+      completed.timestamp == owner.expected_timestamp &&
+      completed.timestamp == owner.frame_timestamp;
+}
+
+static VAStatus SnapshotCompletedVppPicture(
+    const Surface &owner, std::shared_ptr<Surface> *picture) {
+  // Only chained consumers pay for this private copy. The first VPP output
+  // remains zero-extra-copy and may be reused after this RenderPicture call.
+  if (owner.fourcc != VA_FOURCC_NV12)
+    return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
+  try {
+    auto snapshot = std::make_shared<Surface>();
+    if (!snapshot->AllocateInternal(nullptr, -1, owner.width, owner.height,
+                                     VA_FOURCC_NV12))
+      return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    if (!CopyNv12Surface(owner, snapshot.get()))
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    snapshot->rt_format = VA_RT_FORMAT_YUV420;
+    snapshot->expected_timestamp = owner.expected_timestamp;
+    snapshot->decode_identity = owner.decode_identity;
+    InheritTraceIdentity(snapshot.get(), owner);
+    *picture = std::move(snapshot);
+  } catch (const std::bad_alloc &) {
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
+  return VA_STATUS_SUCCESS;
 }
 
 static bool PromoteDecodedPicture(const std::shared_ptr<Surface> &picture) {
@@ -6436,6 +6541,8 @@ static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
       operation.target_owner->vpp_writers == 0) {
     SetSurfaceState(driver, operation.target.get(),
                     successful_commit, !successful_commit);
+    if (successful_commit)
+      RetainCompletedVppPicture(operation.target_owner.get());
   }
   Debug("%s VPP sequence=%llu source_timestamp=%llu target=%p status=%d "
         "expected_timestamp=%llu decoder_context=%u captured_generation=%llu "
@@ -6715,7 +6822,7 @@ static void RunVppWorker(Driver *driver) {
                           operation.source_region, operation.output_region,
                           operation.write_timeline >= 0,
                           operation.deinterlace, first_field_view != nullptr,
-                          operation.color_range);
+                          operation.color_range, operation.preserve_fields);
     }
     ReleasePendingVpp(driver, operation.sequence, status, true);
   }
@@ -7112,6 +7219,9 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
       return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
     surface->direct_decode_eligible =
         memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_VA;
+    surface->vpp_external_write_exposed =
+        surface->backing_owner == VA_INVALID_SURFACE &&
+        memory_type != VA_SURFACE_ATTRIB_MEM_TYPE_VA;
     surface->layout = layout;
     if (surface->backing_owner == VA_INVALID_SURFACE)
       surface->ready = true;
@@ -7632,8 +7742,8 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   const bool h264 = !video_process && IsH264Profile(decode->profile);
   const bool live_h264_fast_path =
       live_h264 != nullptr && strcmp(live_h264, "1") == 0;
-  decode->live_h264 = h264 && !decode->decode_processing &&
-      (live_h264 == nullptr || live_h264_fast_path);
+  decode->live_h264 = h264 &&
+      (live_h264_fast_path || (!decode->decode_processing && live_h264 == nullptr));
   decode->live_h264_gap_tolerant = h264 && live_h264_fast_path;
   decode->live_h264_fast_path = h264 && live_h264_fast_path;
   const char *low_latency_h264 =
@@ -7647,12 +7757,12 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
                                low_latency_h264 == nullptr;
   const char *experimental_ready_remap =
       getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP");
-  // Explicit decode processing currently uses finite replay. Never silently
-  // reinterpret a requested live/READY experiment as this separate contract.
+  // Processing keeps its finite default, but explicit LIVE and prefeed use
+  // the same compressed-input policy with separate small output ownership.
+  // READY remapping would violate the opaque original's exact-picture promise.
   if (decode->decode_processing &&
-      (live_h264_fast_path || decode->low_latency_h264 ||
-       (experimental_ready_remap != nullptr &&
-        strcmp(experimental_ready_remap, "1") == 0)))
+      experimental_ready_remap != nullptr &&
+      strcmp(experimental_ready_remap, "1") == 0)
     return VA_STATUS_ERROR_ATTR_NOT_SUPPORTED;
   const char *experimental_ready_delay =
       getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US");
@@ -8007,6 +8117,7 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
     decode->second->vpp_decoder.reset();
     decode->second->vpp_deinterlace = {};
     decode->second->vpp_color_range = {};
+    decode->second->vpp_preserve_fields = false;
     decode->second->have_vpp_parameters = false;
     return VA_STATUS_SUCCESS;
   }
@@ -8422,6 +8533,7 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
     decode->second->have_vpp_parameters = false;
     decode->second->vpp_deinterlace = {};
     decode->second->vpp_color_range = {};
+    decode->second->vpp_preserve_fields = false;
     // Discard the obsolete, unsubmitted capture too. Submitted work carries
     // its own references; this snapshot has not acquired any backing lease.
     decode->second->vpp_source = VA_INVALID_SURFACE;
@@ -8468,6 +8580,25 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
     if (!VppPipelineSemanticsSupported(*parameters, *target->second,
                                        deinterlace.bob, &color_range))
       return VA_STATUS_ERROR_INVALID_PARAMETER;
+    const bool preserve_fields = !deinterlace.bob &&
+        parameters->input_surface_flag != VA_FRAME_PICTURE &&
+        parameters->input_surface_flag == parameters->output_surface_flag;
+    const VARectangle source_region = parameters->surface_region != nullptr
+        ? *parameters->surface_region
+        : VARectangle{0, 0, static_cast<uint16_t>(source->second->width),
+                      static_cast<uint16_t>(source->second->height)};
+    const VARectangle output_region = parameters->output_region != nullptr
+        ? *parameters->output_region
+        : VARectangle{0, 0, static_cast<uint16_t>(target->second->width),
+                      static_cast<uint16_t>(target->second->height)};
+    // Invalid field geometry must fail before a cold source is captured,
+    // queued, or given an external target's unsignaled write fence.
+    if (preserve_fields &&
+        (!RectFits(source_region, *source->second) ||
+         !RectFits(output_region, *target->second) ||
+         !InterleavedVppRegionsValid(source_region, output_region,
+                                     target->second->fourcc)))
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
 
     // Capture the exact picture when its parameters are submitted, not later
     // in EndPicture: a different thread may reuse the public decode surface
@@ -8478,7 +8609,7 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
       if (owner != driver->surfaces.end())
         source_owner = owner->second;
     }
-    if (deinterlace.bob &&
+    if ((deinterlace.bob || preserve_fields) &&
         source_owner.get() == BackingOwner(driver, target->second.get()))
       return VA_STATUS_ERROR_INVALID_SURFACE;
     if (PublicReadRejected(source_owner.get()))
@@ -8516,6 +8647,12 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
       if (CompletedDecodePictureMatches(driver, source_owner, completed))
         frame = completed.picture;
     }
+    if (!frame && CompletedVppPictureMatches(*source_owner)) {
+      const VAStatus captured =
+          SnapshotCompletedVppPicture(*source_owner, &frame);
+      if (captured != VA_STATUS_SUCCESS)
+        return captured;
+    }
     if (!frame) {
       // A timestamped source without its picture belongs to a retired decode
       // epoch unless a successful consuming close retained that exact binding.
@@ -8534,16 +8671,11 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
     decode->second->vpp_generation = source_decoder
                                         ? source_decoder->generation
                                         : 0;
-    decode->second->vpp_source_region = parameters->surface_region != nullptr
-        ? *parameters->surface_region
-        : VARectangle{0, 0, static_cast<uint16_t>(source->second->width),
-                      static_cast<uint16_t>(source->second->height)};
-    decode->second->vpp_output_region = parameters->output_region != nullptr
-        ? *parameters->output_region
-        : VARectangle{0, 0, static_cast<uint16_t>(target->second->width),
-                      static_cast<uint16_t>(target->second->height)};
+    decode->second->vpp_source_region = source_region;
+    decode->second->vpp_output_region = output_region;
     decode->second->vpp_deinterlace = deinterlace;
     decode->second->vpp_color_range = color_range;
+    decode->second->vpp_preserve_fields = preserve_fields;
     decode->second->have_vpp_parameters = true;
     driver->trace.Emit(crystalhd_vaapi_trace::Event::VppCapture,
                        TraceFields(source_decoder.get(), source_owner.get(),
@@ -8689,6 +8821,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       decode_context->vpp_decoder.reset();
       decode_context->vpp_deinterlace = {};
       decode_context->vpp_color_range = {};
+      decode_context->vpp_preserve_fields = false;
       decode_context->have_vpp_parameters = false;
       return status;
     };
@@ -8707,7 +8840,8 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       if (owner != driver->surfaces.end())
         target_owner = owner->second;
     }
-    if (decode_context->vpp_deinterlace.bob &&
+    if ((decode_context->vpp_deinterlace.bob ||
+         decode_context->vpp_preserve_fields) &&
         target_owner.get() == BackingOwner(driver, source->second.get()))
       return finish_vpp(VA_STATUS_ERROR_INVALID_SURFACE);
     const std::shared_ptr<DecodeContext> source_decoder =
@@ -8760,7 +8894,8 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
                                          decode_context->vpp_output_region,
                                          false,
                                          decode_context->vpp_deinterlace, false,
-                                         decode_context->vpp_color_range);
+                                         decode_context->vpp_color_range,
+                                         decode_context->vpp_preserve_fields);
       if (status == VA_STATUS_SUCCESS) {
         InheritTraceIdentity(target_surface.get(), *decoded_source);
         if (target_owner != target_surface)
@@ -8769,6 +8904,8 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       SetSurfaceState(driver, target_surface.get(),
                       status == VA_STATUS_SUCCESS,
                       status != VA_STATUS_SUCCESS);
+      if (status == VA_STATUS_SUCCESS)
+        RetainCompletedVppPicture(target_owner.get());
       crystalhd_vaapi_trace::Fields fields =
           TraceFields(nullptr, target_surface.get(), timestamp);
       fields.operation = sequence;
@@ -8801,6 +8938,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     pending.output_region = decode_context->vpp_output_region;
     pending.deinterlace = decode_context->vpp_deinterlace;
     pending.color_range = decode_context->vpp_color_range;
+    pending.preserve_fields = decode_context->vpp_preserve_fields;
     pending.source_timestamp = timestamp;
     pending.sequence = sequence;
     pending.decoder_generation = source_decoder
@@ -8873,7 +9011,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
                             operation.target.get(),
                             operation.source_region, operation.output_region,
                             false, operation.deinterlace, first_field_view != nullptr,
-                            operation.color_range);
+                            operation.color_range, operation.preserve_fields);
       ReleasePendingVpp(driver, operation.sequence, status,
                         status == VA_STATUS_SUCCESS);
       return finish_vpp(status);
@@ -9762,8 +9900,14 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
     if (status == VA_STATUS_SUCCESS) {
       const auto exported = driver->surfaces.find(surface_id);
       if (exported != driver->surfaces.end() &&
-          HasLiveBackingOwner(driver, exported->second.get()))
-        BackingOwner(driver, exported->second.get())->external_accessed = true;
+          HasLiveBackingOwner(driver, exported->second.get())) {
+        Surface *owner = BackingOwner(driver, exported->second.get());
+        owner->external_accessed = true;
+        if (!explicit_read_only) {
+          owner->vpp_external_write_exposed = true;
+          owner->completed_vpp_picture = {};
+        }
+      }
     }
     if (trace_enabled) {
       const auto current_surface = driver->surfaces.find(surface_id);

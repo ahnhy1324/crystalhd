@@ -335,10 +335,151 @@ bool ImageRoundTrip(VADisplay display, VASurfaceID writer, VASurfaceID reader,
   return success;
 }
 
+// CPU VPP through real libva/DRM surfaces, not CrystalHD decoding or card SCL.
+// Evaluate the NV12 nearest-sample oracle independently for both field lattices.
+bool ScaledImagePattern(VADisplay display, const VAImage &image,
+                        unsigned int source_width, unsigned int source_height,
+                        bool interleaved, uint8_t seed) {
+  if (image.format.fourcc != VA_FOURCC_NV12 || image.num_planes != 2 ||
+      image.width == 0 || image.height == 0)
+    return false;
+  for (unsigned int plane = 0; plane < 2; ++plane) {
+    const size_t rows = image.height >> plane;
+    if (rows == 0 || image.pitches[plane] < image.width ||
+        static_cast<size_t>(image.offsets[plane]) +
+            (rows - 1) * image.pitches[plane] + image.width > image.data_size)
+      return false;
+  }
+  void *mapped = nullptr;
+  if (!Check(vaMapBuffer(display, image.buf, &mapped), "vaMapBuffer(scaled NV12)"))
+    return false;
+  bool success = mapped != nullptr;
+  const auto *bytes = static_cast<const uint8_t *>(mapped);
+  for (unsigned int plane = 0; success && plane < 2; ++plane) {
+    const unsigned int rows = image.height >> plane;
+    const unsigned int source_rows = source_height >> plane;
+    const unsigned int unit = 1U << plane;
+    for (unsigned int row = 0; success && row < rows; ++row) {
+      const unsigned int source_row = interleaved
+          ? 2 * ((row / 2) * (source_rows / 2) / (rows / 2)) + row % 2
+          : row * source_rows / rows;
+      for (unsigned int column = 0; column < image.width; ++column) {
+        const unsigned int source_column =
+            ((column / unit) * (source_width / unit) / (image.width / unit)) *
+                unit + column % unit;
+        const uint8_t expected = static_cast<uint8_t>(
+            seed + plane * 71 + source_row * 13 + source_column * 37);
+        if (bytes[image.offsets[plane] +
+                  static_cast<size_t>(row) * image.pitches[plane] + column] != expected) {
+          fprintf(stderr, "scaled NV12 mismatch at plane %u row %u column %u\n",
+                  plane, row, column);
+          success = false;
+          break;
+        }
+      }
+    }
+  }
+  return Check(vaUnmapBuffer(display, image.buf), "vaUnmapBuffer(scaled NV12)") &&
+         success;
+}
+
+bool FieldScaling(VADisplay display, unsigned int width, unsigned int storage_height,
+                  unsigned int visible_height, unsigned int output_width,
+                  unsigned int output_height, uint32_t flags) {
+  constexpr uint8_t seed = 67;
+  VASurfaceID source = VA_INVALID_SURFACE, output = VA_INVALID_SURFACE;
+  VAConfigID config = VA_INVALID_ID;
+  VAContextID context = VA_INVALID_ID;
+  VABufferID buffer = VA_INVALID_ID;
+  VAImage input_image = {}, output_image = {};
+  input_image.image_id = output_image.image_id = VA_INVALID_ID;
+  VAImageFormat format = {};
+  format.fourcc = VA_FOURCC_NV12;
+  format.byte_order = VA_LSB_FIRST;
+  format.bits_per_pixel = 12;
+  bool success =
+      Check(vaCreateSurfaces(display, VA_RT_FORMAT_YUV420, width, storage_height,
+                             &source, 1, nullptr, 0), "vaCreateSurfaces(field source)") &&
+      Check(vaCreateSurfaces(display, VA_RT_FORMAT_YUV420, output_width, output_height,
+                             &output, 1, nullptr, 0), "vaCreateSurfaces(field output)") &&
+      Check(vaCreateImage(display, &format, width, storage_height, &input_image),
+             "vaCreateImage(field upload)") &&
+      ImagePattern(display, input_image, seed, false) &&
+      Check(vaPutImage(display, source, input_image.image_id, 0, 0, width,
+                        storage_height, 0, 0, width, storage_height), "vaPutImage(field source)") &&
+      Check(vaCreateConfig(display, VAProfileNone, VAEntrypointVideoProc, nullptr,
+                           0, &config), "vaCreateConfig(field scaling)") &&
+      Check(vaCreateContext(display, config, 0, 0, VA_PROGRESSIVE, nullptr, 0,
+                            &context), "vaCreateContext(field scaling)");
+  VARectangle src = {0, 0, static_cast<uint16_t>(width),
+                     static_cast<uint16_t>(visible_height)};
+  VARectangle dst = {0, 0, static_cast<uint16_t>(output_width),
+                     static_cast<uint16_t>(output_height)};
+  VAProcPipelineParameterBuffer parameters = {};
+  parameters.surface = source;
+  parameters.surface_region = &src;
+  parameters.output_region = &dst;
+  parameters.input_surface_flag = parameters.output_surface_flag = flags;
+  if (success)
+    success =
+        Check(vaCreateBuffer(display, context, VAProcPipelineParameterBufferType,
+                             sizeof(parameters), 1, &parameters, &buffer),
+               "vaCreateBuffer(field scaling)") &&
+        Check(vaBeginPicture(display, context, output), "vaBeginPicture(field scaling)") &&
+        Check(vaRenderPicture(display, context, &buffer, 1), "vaRenderPicture(field scaling)") &&
+        Check(vaEndPicture(display, context), "vaEndPicture(field scaling)");
+  bool ready = false;
+  for (unsigned int attempt = 0; success && attempt < 1000; ++attempt) {
+    VASurfaceStatus status = VASurfaceRendering;
+    success = Check(vaQuerySurfaceStatus(display, output, &status),
+                     "vaQuerySurfaceStatus(field scaling)");
+    if (success && status == VASurfaceReady) {
+      ready = true;
+      break;
+    }
+    usleep(1000);
+  }
+  if (success && !ready) {
+    fprintf(stderr, "CPU field scaling did not complete within polling budget\n");
+    success = false;
+  }
+  if (success)
+    success =
+        Check(vaSyncSurface(display, output), "vaSyncSurface(field scaling)") &&
+        Check(vaCreateImage(display, &format, output_width, output_height, &output_image),
+               "vaCreateImage(field readback)") &&
+        Check(vaGetImage(display, output, 0, 0, output_width, output_height,
+                         output_image.image_id), "vaGetImage(field readback)") &&
+        ScaledImagePattern(display, output_image, width, visible_height,
+                           flags != VA_FRAME_PICTURE, seed) &&
+        Check(vaGetImage(display, source, 0, 0, width, storage_height,
+                         input_image.image_id), "vaGetImage(unchanged source)") &&
+        ImagePattern(display, input_image, seed, true);
+  if (buffer != VA_INVALID_ID)
+    success = Check(vaDestroyBuffer(display, buffer), "vaDestroyBuffer(field scaling)") && success;
+  if (context != VA_INVALID_ID)
+    success = Check(vaDestroyContext(display, context), "vaDestroyContext(field scaling)") && success;
+  if (config != VA_INVALID_ID)
+    success = Check(vaDestroyConfig(display, config), "vaDestroyConfig(field scaling)") && success;
+  for (VAImage *image : {&output_image, &input_image})
+    if (image->image_id != VA_INVALID_ID)
+      success = Check(vaDestroyImage(display, image->image_id), "vaDestroyImage(field scaling)") && success;
+  for (VASurfaceID *surface : {&output, &source})
+    if (*surface != VA_INVALID_SURFACE)
+      success = Check(vaDestroySurfaces(display, surface, 1), "vaDestroySurfaces(field scaling)") && success;
+  printf("CPU VPP/real DRM %ux%u (storage %u) -> %ux%u flags=%#x: %s\n",
+         width, visible_height, storage_height, output_width, output_height, flags,
+         success ? "PASS" : "FAIL");
+  return success;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
-  const char *device_path = argc > 1 ? argv[1] : "/dev/dri/renderD128";
+  const bool field_scaling = argc > 1 && strcmp(argv[1], "--field-scaling") == 0;
+  const char *device_path = field_scaling
+      ? (argc > 2 ? argv[2] : "/dev/dri/renderD128")
+      : (argc > 1 ? argv[1] : "/dev/dri/renderD128");
   int drm_fd = open(device_path, O_RDWR | O_CLOEXEC);
   if (drm_fd < 0) {
     fprintf(stderr, "open %s failed: %s\n", device_path, strerror(errno));
@@ -352,6 +493,26 @@ int main(int argc, char **argv) {
                                    "vaInitialize")) {
     close(drm_fd);
     return 1;
+  }
+
+  if (field_scaling) {
+    bool success = true;
+    for (uint32_t flags : {VA_FRAME_PICTURE, VA_TOP_FIELD_FIRST, VA_BOTTOM_FIELD_FIRST}) {
+      for (const auto &size : {std::initializer_list<unsigned int>{12, 12, 12, 8, 8},
+                              {8, 8, 8, 12, 12}, {1920, 1088, 1080, 1280, 720},
+                              {1280, 720, 720, 1920, 1080}}) {
+        const unsigned int *p = size.begin();
+        if (!FieldScaling(display, p[0], p[1], p[2], p[3], p[4], flags)) {
+          success = false;
+          break;
+        }
+      }
+      if (!success)
+        break;
+    }
+    success = Check(vaTerminate(display), "vaTerminate(field scaling)") && success;
+    close(drm_fd);
+    return success ? 0 : 1;
   }
 
   constexpr unsigned int width = 128;

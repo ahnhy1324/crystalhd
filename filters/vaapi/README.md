@@ -530,20 +530,71 @@ the usual picture and slice buffers:
   can be reused after completion; `vaCreateImage`/`vaGetImage` takes a readback
   snapshot without making the target externally writable.
 
-This initial path uses finite replay on BCM70015. Explicit LIVE, low-latency
-and READY-remap experiments, arbitrary crop/height, extra filters and BCM70012
-are rejected. The default VLD path and published 1.1 are unchanged. Stock
+This BCM70015 path defaults to finite replay. Explicit
+`CRYSTALHD_VAAPI_LIVE_H264=1` enables the existing live-gap policy;
+`CRYSTALHD_VAAPI_LOW_LATENCY_H264=1` independently enables prefeed. Both
+preserve exact-picture identity. Once streaming has started, explicit LIVE
+retains references across input gaps; prefeed alone does not change finite
+drain policy. READY remapping, arbitrary crop/height, extra decode-time filters and
+BCM70012 are rejected. The default VLD path and published 1.1 are unchanged. Stock
 FFmpeg/Kodi do not request integrated processing, so this does not automatically
 accelerate their separate `scale_vaapi`/VPP calls.
 
 At `87e0306`, the finite FHD TFF test completed two opens with 50 pictures each:
-only 1280×720 fields were received, all 100 assembled NV12 pictures matched the
+only 1280×720 picture geometry / 360-row fields were received, all 100 assembled NV12 pictures matched the
 independently joined card-output reference, and EOS/reopen/cleanup passed.
 Ordinary CPU VA Bob then matched both field parities of the first and last
 small pictures across two opens (eight exact outputs). This qualifies the
 explicit API connection, not stock-player selection, live cadence or physical
 A/V. See the [measurement receipt](../../tests/fixtures/issue436/card-scaled-bob.json)
 and [remaining scope](../../TODO.md#card-720-output-deinterlace-then-enlarge).
+
+#### Returning the small output as progressive video or FHD
+
+Use the **small additional output**, not the opaque original decode handle,
+as the source of a separate `VAEntrypointVideoProc` context:
+
+| Requested result | Host-side processing after card readback |
+| --- | --- |
+| 720p | CPU VA Bob into a 1280×720 target |
+| 1080p | CPU VA Bob directly into a 1920×1080 target (one VPP operation) |
+| Bob 720p, then 1080p | Bob into 1280×720, synchronize it, then zero-filter progressive VPP into 1920×1080 |
+| 1080 interleaved Weave | Zero-filter field-preserving enlargement; this does **not** deinterlace |
+
+For Bob, use a `VAProcFilterParameterBufferDeinterlacing` with
+`algorithm = VAProcDeinterlacingBob`, select each field's parity, and submit its
+buffer through the pipeline's `filters`/`num_filters`. Set `surface_region`
+to `{0, 0, 1280, 720}` and `output_region` to the full selected target; declare
+the source's TFF/BFF ordering and `output_surface_flag = VA_FRAME_PICTURE`.
+Filter `flags = VA_DEINTERLACING_BOTTOM_FIELD` selects bottom; clear that bit
+for top. Ordering flags alone do not select the requested field.
+For the second stage after Bob, use no filters and FRAME→FRAME flags. Field-rate
+output requires two Bob requests and caller-assigned field timestamps; VPP
+does not schedule playback or generate the application's PTS.
+
+For Weave enlargement, use matching `VA_TOP_FIELD_FIRST` or
+`VA_BOTTOM_FIELD_FIRST` input/output flags. The scaler keeps the two Y and UV
+field lattices separate. Source-region X/width and output width must be even;
+source-region Y/height and destination height must be multiples of four;
+NV12 destination X must be even and Y a multiple of four; ARGB destination Y
+must be even. Prefer origin-zero
+full-picture regions. Do not label woven pixels progressive to request
+deinterlacing.
+
+A completed internal NV12 VPP result can feed another VPP stage after
+synchronization. The next Render captures its exact pixels and original identity
+before reuse; this adds one private copy only for chained VPP. Rejected, pending
+or failed timestamped output is not a valid replacement. Writable DMA-BUF export
+or externally supplied writable backing cannot provide this immutable-result
+contract; use internal intermediate targets. Read-only aliases of our backing
+retain the canonical owner's rules.
+
+All enlargement and Bob above run on the **CPU**, not the card or display GPU.
+The card still transfers only the small picture, so returning FHD host pixels
+does not undo the PCIe reduction; it does add CPU/memory work and cannot restore
+detail removed by downscaling. The separate
+[GStreamer BWDIF recipe](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif)
+uses a different filter. Its throughput is not a VA Bob performance claim.
 
 ## Limitations
 

@@ -2,6 +2,10 @@
 
 ## 1.2.0 — in development
 
+- Preserve field/chroma lattices in explicit interleaved VA VPP scaling, and
+  retain completed VPP pixels/identity when chaining Bob and enlargement.
+  Allow explicit LIVE/prefeed with H.264 card scaling; keep finite defaults
+  and reject READY remapping of its exact original/processed bindings.
 - Reject unsupported H.264 chroma/bit-depth parameters in ordinary VA decode
   as well as integrated scaling; preserve reference recovery after rejection.
 - Accept bounded MPEG-2 Main frame-coded TFF/BFF through VA, reconstructing

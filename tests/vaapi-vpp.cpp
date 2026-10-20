@@ -1628,6 +1628,245 @@ std::shared_ptr<Surface> PrivateArgbOutput() {
   return surface;
 }
 
+void VppInterleavedScalingPreservesFieldRows() {
+  struct Geometry {
+    unsigned width, height, output_width, output_height;
+    VARectangle source, output;
+  };
+  const Geometry cases[] = {
+      {16, 16, 16, 16, {0, 0, 16, 12}, {0, 0, 16, 8}},
+      {1920, 1088, 1280, 720, {0, 0, 1920, 1080}, {0, 0, 1280, 720}},
+      {16, 16, 16, 16, {0, 0, 16, 8}, {0, 0, 16, 12}},
+      {32, 32, 24, 24, {2, 4, 24, 24}, {2, 4, 16, 16}}};
+  for (uint32_t field_order : {VA_TOP_FIELD_FIRST, VA_BOTTOM_FIELD_FIRST})
+   for (const auto &geometry : cases) {
+    Fixture fixture;
+    auto picture = std::make_shared<Surface>();
+    fixture.source = std::make_shared<Surface>();
+    fixture.target = std::make_shared<Surface>();
+    for (const auto &surface : {picture, fixture.source}) {
+      Require(surface->AllocateInternal(nullptr, -1, geometry.width, geometry.height,
+                                        VA_FOURCC_NV12), "allocate field source");
+      surface->ready = true;
+      surface->expected_timestamp = surface->frame_timestamp = kTimestampStep;
+    }
+    Require(fixture.target->AllocateInternal(nullptr, -1, geometry.output_width,
+                                              geometry.output_height, VA_FOURCC_NV12),
+            "allocate scaled field target");
+    fixture.driver.surfaces[1] = fixture.source;
+    fixture.driver.surfaces[2] = fixture.target;
+    fixture.decoder->surface_timestamps.clear();
+    fixture.decoder->surface_timestamps[fixture.source.get()] = kTimestampStep;
+    fixture.decoder->decoded_frames[kTimestampStep] = picture;
+    for (unsigned plane = 0; plane != 2; ++plane)
+      for (unsigned row = 0; row < picture->height / (plane == 0 ? 1 : 2); ++row)
+        for (unsigned column = 0; column < picture->width; ++column)
+          picture->planes[plane][row * picture->pitch[plane] + column] =
+              (row % 2 == 0 ? 20 : 150) + (row / 2 + column / 2) % 64;
+    const auto original = picture->storage;
+    VARectangle input = geometry.source;
+    VARectangle output = geometry.output;
+    VAProcPipelineParameterBuffer pipeline = {};
+    pipeline.surface = 1;
+    pipeline.surface_region = &input;
+    pipeline.output_region = &output;
+    pipeline.input_surface_flag = pipeline.output_surface_flag = field_order;
+    memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+           &pipeline, sizeof(pipeline));
+    fixture.SubmitParameters();
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+            "interleaved scaling succeeds through the public VPP pipeline");
+    for (unsigned plane = 0; plane != 2; ++plane) {
+      const unsigned divisor = plane == 0 ? 1 : 2;
+      const unsigned rows = output.height / divisor;
+      for (unsigned row = 0; row < rows; ++row) {
+        const unsigned source_row = input.y / divisor +
+            (row / 2) * (input.height / divisor / 2) / (rows / 2) * 2 + row % 2;
+        for (unsigned column = 0; column < output.width; ++column) {
+          unsigned source_column = input.x +
+              (plane == 0 ? column : column & ~1U) * input.width / output.width;
+          if (plane != 0) source_column = (source_column & ~1U) + column % 2;
+          const uint8_t expected = picture->planes[plane][
+              source_row * picture->pitch[plane] + source_column];
+          Require(fixture.target->planes[plane][
+                      (output.y / divisor + row) * fixture.target->pitch[plane] +
+                      output.x + column] == expected,
+                  "interleaved NV12 scaling must not mix top and bottom row lattices");
+        }
+      }
+    }
+    Require(picture->storage == original,
+            "field scaling leaves the full public decoded picture intact");
+  }
+}
+
+void VppInterleavedArgbScalingAndQueuedSnapshot() {
+  for (uint32_t field_order : {VA_TOP_FIELD_FIRST, VA_BOTTOM_FIELD_FIRST})
+    for (unsigned mode = 0; mode != 3; ++mode) {
+      Fixture fixture;
+      fixture.driver.StopWorkers();
+      fixture.driver.stopping = false;
+      fixture.target = PrivateArgbOutput();
+      fixture.driver.surfaces[2] = fixture.target;
+      auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+      // Neutral full-range fields have independently predictable RGB samples.
+      for (unsigned row = 0; row < picture->height; ++row)
+        memset(picture->planes[0] + row * picture->pitch[0],
+               row % 2 == 0 ? 48 : 192, picture->width);
+      const auto original = picture->storage;
+      const auto untouched = fixture.target->storage;
+      picture->ready = mode == 0;
+      VARectangle input = {0, 0, 16, 12};
+      VARectangle output = {0, 0, 16, 8};
+      VAProcPipelineParameterBuffer pipeline = {};
+      pipeline.surface = 1;
+      pipeline.surface_region = &input;
+      pipeline.output_region = &output;
+      pipeline.input_surface_flag = pipeline.output_surface_flag = field_order;
+      pipeline.input_color_properties.color_range = VA_SOURCE_RANGE_FULL;
+      memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+             &pipeline, sizeof(pipeline));
+      fixture.SubmitParameters();
+      // Both field layout and rectangles are value snapshots, not client leases.
+      pipeline.input_surface_flag = pipeline.output_surface_flag = VA_FRAME_PICTURE;
+      input.height = 16;
+      output.height = 16;
+      memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+             &pipeline, sizeof(pipeline));
+      Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+              "interleaved ARGB processing completes or queues");
+      if (mode != 0) {
+        Require(fixture.driver.pending_vpp.size() == 1,
+                "cold interleaved source captures a pending operation");
+        Require(DestroyBuffer(&fixture.context, fixture.parameters) == VA_STATUS_SUCCESS,
+                "queued field layout does not borrow client parameters");
+        if (mode == 2) fixture.decoder->Reset();
+        else picture->ready = true;
+        fixture.driver.vpp_worker = std::thread([&] { RunVppWorker(&fixture.driver); });
+        Require(SyncSurface2(&fixture.context, 2, 1000000000ULL) ==
+                    (mode == 2 ? VA_STATUS_ERROR_DECODING_ERROR : VA_STATUS_SUCCESS),
+                "interleaved worker handles completion and cancellation");
+      }
+      Require(picture->storage == original && fixture.driver.pending_vpp.empty() &&
+                  picture->vpp_readers == 0 && fixture.target->vpp_writers == 0,
+              "interleaved processing preserves source pixels and releases all owners");
+      if (mode == 2) {
+        Require(fixture.target->storage == untouched,
+                "canceled interleaved conversion publishes no pixels");
+        continue;
+      }
+      for (unsigned row = 0; row < fixture.target->height; ++row)
+        for (unsigned column = 0; column < fixture.target->width; ++column) {
+          const uint8_t *pixel = fixture.target->planes[0] +
+              row * fixture.target->pitch[0] + column * 4;
+          const uint8_t expected = row >= 8 ? 0 : (row % 2 == 0 ? 48 : 192);
+          Require(pixel[0] == expected && pixel[1] == expected &&
+                      pixel[2] == expected && pixel[3] == 255,
+                  "interleaved ARGB preserves both fields and neutral black borders");
+        }
+    }
+}
+
+void VppInterleavedInvalidGeometryRejectsBeforeCapture() {
+  for (unsigned invalid = 0; invalid != 7; ++invalid) {
+    FenceIoMock mock;
+    MockFenceScope scope(mock);
+    Fixture fixture;
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    fixture.target->layout.valid = true;
+    fixture.target->object_fds = {101};
+    auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    picture->ready = false;
+    const auto original = fixture.target->storage;
+    VARectangle input = {0, 0, 16, 12}, output = {0, 0, 16, 8};
+    switch (invalid) {
+      case 0: input.y = 2; break;
+      case 1: input.height = 10; break;
+      case 2: output.y = 2; break;
+      case 3: output.height = 6; break;
+      case 4: input.x = 1; input.width = 14; break;
+      case 5: output.width = 15; break;
+      case 6: output.x = 1; output.width = 14; break;
+    }
+    VAProcPipelineParameterBuffer pipeline = {};
+    pipeline.surface = 1;
+    pipeline.surface_region = &input;
+    pipeline.output_region = &output;
+    pipeline.input_surface_flag = pipeline.output_surface_flag = VA_TOP_FIELD_FIRST;
+    memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+           &pipeline, sizeof(pipeline));
+    Require(BeginPicture(&fixture.context, 2, 2) == VA_STATUS_SUCCESS &&
+                RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                    VA_STATUS_ERROR_INVALID_PARAMETER,
+            "invalid interleaved geometry rejects before capturing a cold source");
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                mock.events.empty() && fixture.driver.pending_vpp.empty() &&
+                picture->vpp_readers == 0 && fixture.target->vpp_writers == 0 &&
+                fixture.target->storage == original &&
+                !fixture.processor->vpp_frame,
+            "invalid field geometry creates no fence, lease, queued work or pixel writes");
+    fixture.target->object_fds.clear();
+  }
+}
+
+void VppInterleavedArgbChromaMatchesCompactedFields() {
+  Fixture fixture;
+  fixture.target = PrivateArgbOutput();
+  fixture.driver.surfaces[2] = fixture.target;
+  auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+  for (unsigned row = 0; row < 16; ++row)
+    for (unsigned x = 0; x < 16; ++x)
+      picture->planes[0][row * picture->pitch[0] + x] = 40 + row * 5 + x;
+  for (unsigned row = 0; row < 8; ++row)
+    for (unsigned x = 0; x < 16; x += 2) {
+      picture->planes[1][row * picture->pitch[1] + x] = row % 2 ? 180 : 80;
+      picture->planes[1][row * picture->pitch[1] + x + 1] = row % 2 ? 80 : 180;
+    }
+  const auto original = picture->storage;
+  for (uint32_t field_order : {VA_TOP_FIELD_FIRST, VA_BOTTOM_FIELD_FIRST})
+    for (uint8_t range : {VA_SOURCE_RANGE_FULL, VA_SOURCE_RANGE_REDUCED}) {
+      VARectangle input{0, 0, 16, 12}, output{0, 0, 16, 8};
+      VAProcPipelineParameterBuffer pipeline{};
+      pipeline.surface = 1;
+      pipeline.surface_region = &input; pipeline.output_region = &output;
+      pipeline.input_surface_flag = pipeline.output_surface_flag = field_order;
+      pipeline.input_color_properties.color_range = range;
+      memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(), &pipeline, sizeof(pipeline));
+      fixture.SubmitParameters();
+      Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+              "colored interleaved ARGB conversion completes");
+      for (unsigned parity = 0; parity < 2; ++parity) {
+        // Independently materialize each physical Y/UV field contiguously.
+        // The production path instead supplies doubled strides to swscale.
+        std::vector<uint8_t> compact(16 * 9 + 64), expected(128 * 4 + 64);
+        for (unsigned plane = 0; plane < 2; ++plane)
+          for (unsigned row = 0; row < (plane ? 3U : 6U); ++row)
+            memcpy(compact.data() + (plane ? 16 * 6 : 0) + row * 16,
+                   picture->planes[plane] + (row * 2 + parity) * picture->pitch[plane], 16);
+        SwsContext *oracle = sws_getContext(16, 6, AV_PIX_FMT_NV12, 16, 4,
+            AV_PIX_FMT_BGRA, SWS_POINT, nullptr, nullptr, nullptr);
+        Require(oracle != nullptr, "independent compact-field CSC context");
+        const int *matrix = sws_getCoefficients(SWS_CS_DEFAULT);
+        Require(sws_setColorspaceDetails(oracle, matrix, range == VA_SOURCE_RANGE_FULL,
+                    matrix, 1, 0, 1 << 16, 1 << 16) == 0, "independent CSC range");
+        const uint8_t *source[] = {compact.data(), compact.data() + 16 * 6, nullptr, nullptr};
+        const int pitches[] = {16, 16, 0, 0};
+        uint8_t *destination[] = {expected.data(), nullptr, nullptr, nullptr};
+        const int destination_pitches[] = {128, 0, 0, 0};
+        const int rows = sws_scale(oracle, source, pitches, 0, 6, destination, destination_pitches);
+        sws_freeContext(oracle);
+        Require(rows == 4, "independent compact-field CSC returns every row");
+        for (unsigned row = 0; row < 4; ++row)
+          Require(memcmp(fixture.target->planes[0] +
+                             (row * 2 + parity) * fixture.target->pitch[0],
+                         expected.data() + row * 128, 64) == 0,
+                  "ARGB field chroma/row phase matches independently compacted fields exactly");
+      }
+      Require(picture->storage == original, "colored CSC preserves source fields");
+    }
+}
+
 void VppFullRangeArgbUsesDeclaredInput() {
   Fixture fixture;
   fixture.target = PrivateArgbOutput();
@@ -2416,6 +2655,294 @@ void BobImmediatePixelsAndWeaveReset() {
   Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
           "zero-filter VPP remains available after a Bob request");
   RequireFieldRows(*fixture.target, 0, false);
+}
+
+void Bob720ReturnsFhdThroughDirectAndTwoStageVpp() {
+  Fixture fixture;
+  auto picture = std::make_shared<Surface>();
+  fixture.source = std::make_shared<Surface>();
+  fixture.target = std::make_shared<Surface>();
+  auto intermediate = std::make_shared<Surface>();
+  auto staged = std::make_shared<Surface>();
+  for (const auto &surface : {picture, fixture.source, intermediate})
+    Require(surface->AllocateInternal(nullptr, -1, 1280, 720, VA_FOURCC_NV12),
+            "allocate 720 input/intermediate");
+  for (const auto &surface : {fixture.target, staged})
+    Require(surface->AllocateInternal(nullptr, -1, 1920, 1080, VA_FOURCC_NV12),
+            "allocate FHD return target");
+  fixture.driver.surfaces[1] = fixture.source;
+  fixture.driver.surfaces[2] = fixture.target;
+  fixture.driver.surfaces[3] = intermediate;
+  fixture.driver.surfaces[4] = staged;
+  fixture.decoder->surface_timestamps.clear();
+  fixture.decoder->surface_timestamps[fixture.source.get()] = kTimestampStep;
+  fixture.decoder->decoded_frames[kTimestampStep] = picture;
+  for (const auto &surface : {fixture.source, picture}) {
+    surface->ready = true;
+    surface->expected_timestamp = surface->frame_timestamp = kTimestampStep;
+  }
+  for (unsigned plane = 0; plane < 2; ++plane)
+    for (unsigned row = 0; row < (plane ? 360U : 720U); ++row)
+      for (unsigned x = 0; x < 1280; ++x)
+        picture->planes[plane][row * picture->pitch[plane] + x] =
+            static_cast<uint8_t>((plane * 37 + row * 13 + x * 7) % 251);
+  const auto original = picture->storage;
+  const auto submit = [&](VASurfaceID source, VASurfaceID target,
+                           uint32_t order, int parity) {
+    VABufferID filter = parity < 0 ? VA_INVALID_ID : CreateBobFilter(fixture,
+        (parity ? VA_DEINTERLACING_BOTTOM_FIELD : 0) |
+        (order == VA_BOTTOM_FIELD_FIRST ? VA_DEINTERLACING_BOTTOM_FIELD_FIRST : 0));
+    VAProcPipelineParameterBuffer pipeline{};
+    pipeline.surface = source;
+    pipeline.input_surface_flag = order;
+    pipeline.output_surface_flag = VA_FRAME_PICTURE;
+    pipeline.filters = parity < 0 ? nullptr : &filter;
+    pipeline.num_filters = parity < 0 ? 0 : 1;
+    memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(), &pipeline, sizeof(pipeline));
+    const auto begin = BeginPicture(&fixture.context, 2, target);
+    const auto render = begin == VA_STATUS_SUCCESS
+        ? RenderPicture(&fixture.context, 2, &fixture.parameters, 1) : begin;
+    if (begin != VA_STATUS_SUCCESS || render != VA_STATUS_SUCCESS)
+      fprintf(stderr, "FHD chain source=%u target=%u parity=%d begin=%d render=%d\n",
+              source, target, parity, begin, render);
+    Require(begin == VA_STATUS_SUCCESS && render == VA_STATUS_SUCCESS,
+            "capture actual Bob/scale public VPP transaction");
+    if (filter != VA_INVALID_ID)
+      Require(DestroyBuffer(&fixture.context, filter) == VA_STATUS_SUCCESS,
+              "captured Bob filter may be destroyed before End");
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                SyncSurface2(&fixture.context, target, 0) == VA_STATUS_SUCCESS,
+            "complete actual Bob/scale public VPP transaction");
+  };
+  for (uint32_t order : {VA_TOP_FIELD_FIRST, VA_BOTTOM_FIELD_FIRST})
+    for (unsigned parity = 0; parity < 2; ++parity) {
+      submit(1, 2, order, parity);
+      submit(1, 3, order, parity);
+      const auto bob_pixels = intermediate->storage;
+      submit(3, 4, VA_FRAME_PICTURE, -1);
+      for (unsigned plane = 0; plane < 2; ++plane) {
+        const unsigned rows = plane ? 540 : 1080;
+        const unsigned source_rows = plane ? 360 : 720;
+        const unsigned unit = plane ? 2 : 1;
+        for (unsigned row = 0; row < rows; ++row) {
+          // Direct Bob uses one physical field; two-stage Bob duplicates that
+          // field at 720 first, then a progressive nearest-neighbor scale.
+          const unsigned direct_row = uint64_t(row) * (source_rows / 2) / rows * 2 + parity;
+          const unsigned intermediate_row = uint64_t(row) * source_rows / rows;
+          const unsigned staged_row = intermediate_row / 2 * 2 + parity;
+          for (unsigned x = 0; x < 1920 / unit; ++x) {
+            const unsigned sx = uint64_t(x) * (1280 / unit) / (1920 / unit);
+            for (unsigned component = 0; component < unit; ++component) {
+              const unsigned column = x * unit + component;
+              const unsigned source_column = sx * unit + component;
+              Require(fixture.target->planes[plane][row * fixture.target->pitch[plane] + column] ==
+                          picture->planes[plane][direct_row * picture->pitch[plane] + source_column] &&
+                          staged->planes[plane][row * staged->pitch[plane] + column] ==
+                          picture->planes[plane][staged_row * picture->pitch[plane] + source_column],
+                      "FHD direct and staged Y/UV outputs follow independent exact sample maps");
+            }
+          }
+        }
+      }
+      Require(picture->storage == original && intermediate->storage == bob_pixels &&
+                  fixture.decoder->decoded_frames.at(kTimestampStep) == picture &&
+                  fixture.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
+                  intermediate->vpp_readers == 0 && intermediate->vpp_writers == 0 &&
+                  fixture.target->vpp_writers == 0 && staged->vpp_writers == 0,
+              "FHD returns preserve both source lifetimes and release VPP leases");
+      for (const auto &surface : {fixture.target, intermediate, staged})
+        Require(surface->ready && !surface->failed &&
+                    surface->expected_timestamp == kTimestampStep &&
+                    surface->frame_timestamp == kTimestampStep,
+                "FHD return retains original picture identity without fabricated timestamps");
+    }
+}
+
+void CompletedVppOutputsRetainChainedSnapshots() {
+  for (bool queued : {false, true})
+    for (unsigned replacement = 0; replacement < 5; ++replacement) {
+      Fixture f;
+      f.driver.StopWorkers(); f.driver.stopping = false;
+      auto picture = f.decoder->decoded_frames.at(kTimestampStep);
+      FillFieldRows(*picture);
+      picture->ready = !queued;
+      VABufferID filter = CreateBobFilter(f);
+      SetPipelineFilters(f, &filter, 1);
+      auto downstream = std::make_shared<DecodeContext>(); downstream->video_process = true;
+      f.driver.contexts[3] = downstream;
+      auto result = Picture(0, 99); f.driver.surfaces[3] = result;
+      // Also exercise canonical-owner lookup through an ordinary alias ID.
+      auto alias = Picture(0, 7); alias->backing_owner = 2;
+      f.driver.surfaces[4] = alias;
+      VAProcPipelineParameterBuffer next{}; next.surface = replacement == 0 ? 4 : 2;
+      VABufferID parameters = VA_INVALID_ID;
+      Require(CreateBuffer(&f.context, 3, VAProcPipelineParameterBufferType,
+                            sizeof(next), 1, &next, &parameters) == VA_STATUS_SUCCESS,
+              "create independent downstream VPP context and parameters");
+      const auto capture = [&] {
+        Require(BeginPicture(&f.context, 3, 3) == VA_STATUS_SUCCESS, "begin downstream VPP");
+        return RenderPicture(&f.context, 3, &parameters, 1);
+      };
+      f.SubmitParameters();
+      Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS, "first Bob completes or queues");
+      if (queued) {
+        Require(f.driver.pending_vpp.size() == 1 && capture() != VA_STATUS_SUCCESS &&
+                    !downstream->have_vpp_parameters && f.driver.pending_vpp.size() == 1,
+                "pending upstream VPP is not mistaken for a completed chained source");
+        Require(EndPicture(&f.context, 3) == VA_STATUS_ERROR_INVALID_PARAMETER,
+                "failed pending-source Render cannot commit a downstream frame");
+        picture->ready = true;
+        f.driver.vpp_worker = std::thread([&] { RunVppWorker(&f.driver); });
+        Require(SyncSurface2(&f.context, 2, 1000000000ULL) == VA_STATUS_SUCCESS,
+                "queued upstream VPP completes before downstream capture");
+        f.driver.StopWorkers(); f.driver.stopping = false;
+      }
+      const auto original = f.target->storage;
+      Require(capture() == VA_STATUS_SUCCESS, "capture immutable completed VPP pixels");
+      Require(downstream->vpp_frame && downstream->vpp_frame.get() != f.target.get() &&
+                  downstream->vpp_frame->storage == original && !downstream->vpp_decoder,
+              "completed VPP capture owns private pixels before upstream reuse");
+      if (replacement == 0) {
+        VABufferID bottom = CreateBobFilter(f, VA_DEINTERLACING_BOTTOM_FIELD);
+        SetPipelineFilters(f, &bottom, 1);
+        f.SubmitParameters();
+        Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS && f.target->storage != original,
+                "upstream target may produce a different selected field after capture");
+      } else if (replacement == 1) {
+        VAImageFormat format{};
+        format.fourcc = VA_FOURCC_NV12; format.byte_order = VA_LSB_FIRST; format.bits_per_pixel = 12;
+        VAImage image{};
+        Require(CreateImage(&f.context, &format, 16, 16, &image) == VA_STATUS_SUCCESS,
+                "create upload replacing captured upstream output");
+        auto &bytes = f.driver.buffers.at(image.buf).data;
+        for (unsigned plane = 0; plane < 2; ++plane)
+          for (unsigned row = 0; row < (plane ? 8U : 16U); ++row)
+            memset(bytes.data() + image.offsets[plane] + row * image.pitches[plane], plane ? 128 : 200, 16);
+        Require(PutImage(&f.context, 2, image.image_id, 0, 0, 16, 16, 0, 0, 16, 16) == VA_STATUS_SUCCESS &&
+                    f.target->storage != original && DestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS,
+                "ordinary upload replaces upstream pixels after private capture");
+      } else if (replacement == 2) {
+        VABufferID invalid = VA_INVALID_ID;
+        Require(BeginPicture(&f.context, 2, 2) == VA_STATUS_SUCCESS &&
+                    RenderPicture(&f.context, 2, &invalid, 1) == VA_STATUS_ERROR_INVALID_BUFFER &&
+                    EndPicture(&f.context, 2) == VA_STATUS_ERROR_INVALID_PARAMETER,
+                "rejected new upstream write revokes old completion provenance");
+      } else if (replacement == 3) {
+        picture->ready = false;
+        f.SubmitParameters();
+        Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS && f.driver.pending_vpp.size() == 1,
+                "new upstream write can queue after downstream snapshot");
+        f.decoder->Reset();
+        f.driver.vpp_worker = std::thread([&] { RunVppWorker(&f.driver); });
+        Require(SyncSurface2(&f.context, 2, 1000000000ULL) == VA_STATUS_ERROR_DECODING_ERROR,
+                "upstream epoch cancellation fails its pending output");
+        f.driver.StopWorkers(); f.driver.stopping = false;
+      } else {
+        Require(DestroyContext(&f.context, 2) == VA_STATUS_SUCCESS,
+                "completed VPP pixels outlive their producer context");
+      }
+      Require(EndPicture(&f.context, 3) == VA_STATUS_SUCCESS && result->storage == original &&
+                  result->ready && !result->failed && result->expected_timestamp == kTimestampStep &&
+                  result->frame_timestamp == kTimestampStep && f.driver.pending_vpp.empty() &&
+                  picture->vpp_readers == 0 && f.target->vpp_readers == 0 &&
+                  f.target->vpp_writers == 0 && result->vpp_writers == 0,
+              "downstream immutable pixels/timestamp survive upstream reuse/upload/reject/cancel");
+      if (replacement == 2 || replacement == 3) {
+        const auto untouched = result->storage;
+        Require(capture() != VA_STATUS_SUCCESS && !downstream->have_vpp_parameters &&
+                    EndPicture(&f.context, 3) == VA_STATUS_ERROR_INVALID_PARAMETER && result->storage == untouched,
+                "new capture cannot resurrect a failed upstream completion marker");
+      }
+    }
+  Fixture forged;
+  // Timestamp equality and ready=true alone do not establish a completed VPP
+  // operation; old decode-epoch rejection must remain effective.
+  forged.driver.surfaces[3] = Picture(kTimestampStep, 55);
+  VAProcPipelineParameterBuffer pipeline{}; pipeline.surface = 3;
+  memcpy(forged.driver.buffers.at(forged.parameters).data.data(), &pipeline, sizeof(pipeline));
+  Require(BeginPicture(&forged.context, 2, 2) == VA_STATUS_SUCCESS &&
+              RenderPicture(&forged.context, 2, &forged.parameters, 1) == VA_STATUS_ERROR_DECODING_ERROR,
+          "ready timestamp without decoder/VPP provenance remains rejected");
+  Fixture allocation;
+  VABufferID filter = CreateBobFilter(allocation);
+  SetPipelineFilters(allocation, &filter, 1);
+  allocation.SubmitParameters();
+  Require(EndPicture(&allocation.context, 2) == VA_STATUS_SUCCESS,
+          "prepare completed source for snapshot allocation failure");
+  auto destination = Picture(0, 99); allocation.driver.surfaces[3] = destination;
+  const auto untouched = destination->storage;
+  VAProcPipelineParameterBuffer next{}; next.surface = 2;
+  memcpy(allocation.driver.buffers.at(allocation.parameters).data.data(), &next, sizeof(next));
+  Require(BeginPicture(&allocation.context, 2, 3) == VA_STATUS_SUCCESS,
+          "begin snapshot allocation failure control");
+  allocation_fault::fail_next = true;
+  const VAStatus failed = RenderPicture(&allocation.context, 2, &allocation.parameters, 1);
+  const bool injected = !allocation_fault::fail_next;
+  allocation_fault::fail_next = false;
+  Require(injected && failed == VA_STATUS_ERROR_ALLOCATION_FAILED &&
+              !allocation.processor->vpp_frame && !allocation.processor->have_vpp_parameters &&
+              allocation.driver.pending_vpp.empty() && allocation.target->vpp_readers == 0 &&
+              destination->vpp_writers == 0 && destination->storage == untouched &&
+              CompletedVppPictureMatches(*allocation.target) &&
+              EndPicture(&allocation.context, 2) == VA_STATUS_ERROR_INVALID_PARAMETER,
+          "failed snapshot allocation preserves source provenance and leaks no capture/lease/pixels");
+  Require(BeginPicture(&allocation.context, 2, 3) == VA_STATUS_SUCCESS &&
+              RenderPicture(&allocation.context, 2, &allocation.parameters, 1) == VA_STATUS_SUCCESS &&
+              EndPicture(&allocation.context, 2) == VA_STATUS_SUCCESS &&
+              destination->storage == allocation.target->storage,
+          "fresh snapshot retry succeeds after allocation failure");
+}
+
+void ExternalWritersCannotAuthorizeCompletedVppSources() {
+  for (unsigned exposure = 0; exposure < 3; ++exposure) {
+    Fixture f;
+    f.driver.StopWorkers(); f.driver.stopping = false;
+    auto picture = f.decoder->decoded_frames.at(kTimestampStep);
+    FillFieldRows(*picture);
+    picture->ready = exposure != 1;
+    // Model the sticky provenance of a separately imported/external-writer
+    // backing; no real DRM export or device access occurs in this fixture.
+    f.target->vpp_external_write_exposed = exposure == 2;
+    VABufferID filter = CreateBobFilter(f);
+    SetPipelineFilters(f, &filter, 1);
+    f.SubmitParameters();
+    Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS, "upstream exposed-output operation submits");
+    std::shared_ptr<Surface> captured;
+    if (exposure == 0) {
+      Require(CompletedVppPictureMatches(*f.target) &&
+                  SnapshotCompletedVppPicture(*f.target, &captured) == VA_STATUS_SUCCESS,
+              "capture immutable completed VPP before external writer exposure");
+      Require(captured && captured.get() != f.target.get(), "pre-exposure snapshot owns its pixels");
+    }
+    const auto original = exposure == 0 ? captured->storage : std::vector<uint8_t>{};
+    // Leave any old marker in place deliberately: the sticky exposure guard
+    // itself must reject it, and a later completion must not recreate it.
+    f.target->vpp_external_write_exposed = true;
+    if (exposure == 1) {
+      Require(f.driver.pending_vpp.size() == 1, "exposure can occur while VPP is pending");
+      picture->ready = true;
+      f.driver.vpp_worker = std::thread([&] { RunVppWorker(&f.driver); });
+      Require(SyncSurface2(&f.context, 2, 1000000000ULL) == VA_STATUS_SUCCESS,
+              "pending exposed target may finish without granting chain provenance");
+      f.driver.StopWorkers(); f.driver.stopping = false;
+    }
+    Require(!CompletedVppPictureMatches(*f.target), "external writer invalidates completed-source authority");
+    if (exposure != 0)
+      Require(f.target->completed_vpp_picture.sequence == 0, "completion cannot reauthorize exposed backing");
+    auto output = Picture(0, 99); f.driver.surfaces[3] = output;
+    VAProcPipelineParameterBuffer pipeline{}; pipeline.surface = 2;
+    memcpy(f.driver.buffers.at(f.parameters).data.data(), &pipeline, sizeof(pipeline));
+    Require(BeginPicture(&f.context, 2, 3) == VA_STATUS_SUCCESS &&
+                RenderPicture(&f.context, 2, &f.parameters, 1) == VA_STATUS_ERROR_DECODING_ERROR &&
+                !f.processor->have_vpp_parameters &&
+                EndPicture(&f.context, 2) == VA_STATUS_ERROR_INVALID_PARAMETER,
+            "external-writer timestamped VPP output cannot be captured as immutable");
+    if (captured) {
+      memset(f.target->planes[0], 211, f.target->pitch[0] * f.target->height);
+      Require(captured->storage == original && captured->frame_timestamp == kTimestampStep,
+              "already captured private pixels survive later external writes");
+    }
+  }
 }
 
 void BobFilterValuesAreCapturedAtRender() {
@@ -5060,6 +5587,40 @@ static void FirstFieldCpuViewPreservesPublicReadiness() {
 // Keep the complete entry globally compiled for syntax coverage. CPU-only
 // section-GC builds retain only their selected state-machine groups below.
 int VppFullTestEntry(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--interleaved-scaling") == 0) {
+    try {
+      VppInterleavedScalingPreservesFieldRows();
+      VppInterleavedArgbScalingAndQueuedSnapshot();
+      VppInterleavedInvalidGeometryRejectsBeforeCapture();
+      VppInterleavedArgbChromaMatchesCompactedFields();
+      puts("VA-API interleaved scaling pixels/geometry/lifetime PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API interleaved scaling failed: %s\n", error.what());
+      return 1;
+    }
+  }
+  if (argc == 2 && strcmp(argv[1], "--bob-fhd-return") == 0) {
+    try {
+      Bob720ReturnsFhdThroughDirectAndTwoStageVpp();
+      puts("VA-API 720 Bob to FHD direct/staged pixels/identity/lifetime PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API FHD return failed: %s\n", error.what());
+      return 1;
+    }
+  }
+  if (argc == 2 && strcmp(argv[1], "--vpp-chaining") == 0) {
+    try {
+      CompletedVppOutputsRetainChainedSnapshots();
+      ExternalWritersCannotAuthorizeCompletedVppSources();
+      puts("VA-API completed VPP chaining/snapshot/provenance PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API VPP chaining failed: %s\n", error.what());
+      return 1;
+    }
+  }
   if (argc == 2 && (strcmp(argv[1], "--config-attributes") == 0 ||
                     strcmp(argv[1], "--color-range") == 0 ||
                     strcmp(argv[1], "--display-attributes") == 0 ||
@@ -5146,6 +5707,10 @@ int VppFullTestEntry(int argc, char **argv) {
     UnsupportedSurfaceErrorsDoNotInventDetails();
     SelectedRtFormatSurvivesConfigAndContextLifetime();
     VppMeaningfulSemanticsAreValidatedBeforeCapture();
+    VppInterleavedScalingPreservesFieldRows();
+    VppInterleavedArgbScalingAndQueuedSnapshot();
+    VppInterleavedInvalidGeometryRejectsBeforeCapture();
+    VppInterleavedArgbChromaMatchesCompactedFields();
     VppFullRangeArgbUsesDeclaredInput();
     VppColorRangeArgbReuseAndBob();
     VppColorRangeNv12PreservesSamples();
@@ -5167,6 +5732,9 @@ int VppFullTestEntry(int argc, char **argv) {
     BobCapabilityEnumerationAndCapacity();
     BobPipelineFilterValidation();
     BobImmediatePixelsAndWeaveReset();
+    Bob720ReturnsFhdThroughDirectAndTwoStageVpp();
+    CompletedVppOutputsRetainChainedSnapshots();
+    ExternalWritersCannotAuthorizeCompletedVppSources();
     FirstFieldCpuViewPreservesPublicReadiness();
     CompletedDecoderCloseKeepsNewBobCapturesExact();
     IneligibleDecoderCloseCannotGrantNewBobReads();
@@ -5220,7 +5788,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 80 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 87 hardware-free regressions passed");
   return 0;
 }
 
@@ -5237,6 +5805,8 @@ int main(int argc, char **argv) {
       {"empty subpicture formats validate count", EmptySubpictureFormatsValidateCount},
       {"unsupported surface errors disclose no invented details", UnsupportedSurfaceErrorsDoNotInventDetails},
       {"NV12 range preserves samples and background", VppColorRangeNv12PreservesSamples},
+      {"interleaved NV12 scaling preserves field lattices", VppInterleavedScalingPreservesFieldRows},
+      {"720 Bob returns FHD through direct and staged VPP", Bob720ReturnsFhdThroughDirectAndTwoStageVpp},
       {"unsupported color ranges reject before capture", VppColorRangeRejectsUnsupportedRequests},
       {"private first-field Bob pixels preserve public readiness", FirstFieldCpuViewPreservesPublicReadiness},
       {"configuration rejects unsupported protection transactionally", ConfigRejectsUnsupportedProtectionTransactionally},
