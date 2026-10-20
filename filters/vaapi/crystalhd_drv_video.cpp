@@ -27,6 +27,7 @@
 #endif
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -1832,6 +1833,22 @@ struct H264FirstField {
   std::vector<uint8_t> pixels;
 };
 
+// A non-reference intra picture can advance retained H.264 output without
+// sealing live input. Its output never owns a public picture or timestamp.
+struct H264Auxiliary {
+  struct Syntax {
+    VAPictureParameterBufferH264 picture{};
+    uint64_t generation = 0;
+    HANDLE device = nullptr;
+  };
+  std::map<uint64_t, Syntax> syntax;
+  Syntax candidate{};
+  uint64_t candidate_timestamp = 0, generation = 0, timestamp = 0;
+  HANDLE device = nullptr;
+  bool ever = false, pending = false, needs_eos = false;
+  bool eos_only = false, ended = false;
+};
+
 struct DecodeContext {
   VAContextID id = VA_INVALID_ID;
   VAConfigID config = VA_INVALID_ID;
@@ -1959,6 +1976,7 @@ struct DecodeContext {
   std::vector<CompletedDecodePicture> retirement_candidates;
   std::shared_ptr<CrystalHDPrivateBackingPool> private_backing_pool;
   H264FirstField h264_first_field;
+  H264Auxiliary auxiliary;
   std::deque<std::shared_ptr<Surface>> experimental_ready;
   std::unordered_map<Surface *, uint64_t> surface_timestamps;
   CrystalHDDecodeReplay replay;
@@ -2065,6 +2083,11 @@ struct DecodeContext {
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::nanoseconds(timeout_ns);
     const auto clear_abort_state = [&] {
+      if (auxiliary.ever)
+        Debug("H.264 auxiliary close token=%llu pending=%d needs_eos=%d ended=%d",
+                     static_cast<unsigned long long>(auxiliary.timestamp),
+                     auxiliary.pending, auxiliary.needs_eos, auxiliary.ended);
+      auxiliary = H264Auxiliary();
       prefed_timestamp = 0;
       mpeg4_simple_picture_number = 0;
       have_mpeg4_simple_picture_number = false;
@@ -3712,6 +3735,9 @@ static void MarkPendingPicturesFailed(Driver *driver, DecodeContext *decode) {
 
 static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
                             const char *reason) {
+  decode->auxiliary.candidate_timestamp = 0;
+  decode->auxiliary.syntax.clear();
+  decode->auxiliary.pending = decode->auxiliary.needs_eos = false;
   decode->CancelPendingPrefeed();
   decode->h264_first_field = H264FirstField();
   decode->partial_input_timestamp = 0;
@@ -3746,6 +3772,27 @@ static H264InterlacedPayload ClassifyH264InterlacedPayload(
     default:
       return H264InterlacedPayload::Invalid;
   }
+}
+
+static VAStatus ValidateH264AuxiliaryOutput(Driver *driver, DecodeContext *decode,
+                                          const BC_DTS_PROC_OUT &out) {
+  const auto &aux = decode->auxiliary;
+  const uint64_t extent = static_cast<uint64_t>(out.PicInfo.width) * 2U *
+                          out.PicInfo.height;
+  if (!aux.pending || out.PicInfo.timeStamp != aux.timestamp ||
+      aux.generation != decode->generation || aux.device != decode->device ||
+      decode->is_70012 || !(out.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) ||
+      (out.PoutFlags & BC_POUT_FLAGS_ENCRYPTED) != 0 ||
+      ClassifyH264InterlacedPayload(out) != H264InterlacedPayload::Weave ||
+      out.PicInfo.width != decode->StreamWidth() ||
+      out.PicInfo.height != decode->StreamHeight() ||
+      (out.PicInfo.height & 3U) != 0 || !out.Ybuff ||
+      !(out.PoutFlags & BC_POUT_FLAGS_PIB_VALID) ||
+      extent > static_cast<uint64_t>(out.YBuffDoneSz) * 4U)
+    return FailDecode(driver, decode, "H.264 auxiliary full-height ownership/extent");
+  // Known synthetic frame-coded MBAFF output is one full-height record;
+  // metadata still carries INTERLACED_SRC. No public pixels or pair are made.
+  return VA_STATUS_SUCCESS;
 }
 
 // No hardware calls: tests exercise the same exact-once/immutable-picture
@@ -4194,6 +4241,8 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
     if (status == BC_STS_SUCCESS &&
         DtsReleaseOutputBuffs(decode->device, nullptr, FALSE) != BC_STS_SUCCESS)
       return FailDecode(driver, decode, "EOS output release failed");
+    if (decode->auxiliary.pending)
+      return FailDecode(driver, decode, "EOS before H.264 auxiliary output retired");
     if (decode->h264_first_field.valid)
       return FailDecode(driver, decode,
                         "EOS arrived with an incomplete H.264 field pair");
@@ -4213,8 +4262,16 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
     // the already-ended MPEG-4 batch.
     if (decode->IsMpeg4() && decode->Mpeg4TransportReplay().ended())
       return VA_STATUS_SUCCESS;
-    if (!decode->WithReplay([](auto &replay) { return replay.EndOfSequence(); }))
+    if (!decode->auxiliary.eos_only &&
+        !decode->WithReplay([](auto &replay) { return replay.EndOfSequence(); }))
       return FailDecode(driver, decode, decode->ReplayFailure());
+    if (decode->auxiliary.ever) {
+      Debug("H.264 auxiliary actual_eos token=%llu eos_only=%d",
+                   static_cast<unsigned long long>(decode->auxiliary.timestamp),
+                   decode->auxiliary.eos_only);
+      decode->auxiliary.needs_eos = decode->auxiliary.eos_only = false;
+      decode->auxiliary.ended = true;
+    }
     // DtsFlushInput discards an unbound speculative prefix, but retain its
     // identity until the actual firmware EOS marker proves no picture escaped
     // from it. CloseHardware also clears this state on every abort/restart.
@@ -4237,10 +4294,24 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
   const size_t outstanding = decode->WithReplay(
       [](auto &replay) { return replay.outstanding(); });
   const bool had_first_field = decode->h264_first_field.valid;
-  const VAStatus result = ProcessDecodedOutput(driver, decode, output);
+  const bool auxiliary = decode->auxiliary.ever &&
+      output.PicInfo.timeStamp == decode->auxiliary.timestamp;
+  const VAStatus result = auxiliary
+      ? ValidateH264AuxiliaryOutput(driver, decode, output)
+      : ProcessDecodedOutput(driver, decode, output);
   status = DtsReleaseOutputBuffs(decode->device, nullptr, FALSE);
   if (status != BC_STS_SUCCESS)
     return FailDecode(driver, decode, "hardware output release failed");
+  if (auxiliary && result == VA_STATUS_SUCCESS) {
+    decode->auxiliary.pending = false;
+    decode->RecordTransportProgress();
+    Debug("H.264 auxiliary output_released token=%llu ordinal=%u session=%u meta=%u flags=%u layout=full_height",
+                 static_cast<unsigned long long>(output.PicInfo.timeStamp),
+                 output.PicInfo.picture_number, output.PicInfo.sess_num,
+                 output.PicInfo.picture_meta_payload, output.PicInfo.flags);
+    driver->condition.notify_all();
+    return VA_STATUS_SUCCESS;
+  }
   // A newly validated first field is real hardware progress even though its
   // picture must remain outstanding until the complementary field arrives.
   // Count it only after successful output release, never for unknown repeats
@@ -4395,6 +4466,49 @@ static bool H264HeadroomDeescapedFits(const std::vector<uint8_t> &bytes) {
   return nal_fits(begin, bytes.size());
 }
 
+// Neutral I16x16/DC CAVLC picture. Never emits SPS or
+// replaces PPS0; immutable accepted-AU syntax supplies frame_num and POC.
+static bool BuildH264NeutralIntra(const VAPictureParameterBufferH264 &p,
+                                std::vector<uint8_t> *bytes) {
+  const auto &s = p.seq_fields.bits;
+  const unsigned frame_bits = s.log2_max_frame_num_minus4 + 4;
+  const unsigned poc_bits = s.log2_max_pic_order_cnt_lsb_minus4 + 4;
+  const unsigned width = (static_cast<unsigned>(p.picture_width_in_mbs_minus1) + 1) * 16U;
+  const unsigned height = (static_cast<unsigned>(p.picture_height_in_mbs_minus1) + 1) * 16U;
+  if (width > 1920 || height > 1088 || (height & 31U) != 0 ||
+      p.bit_depth_luma_minus8 || p.bit_depth_chroma_minus8 ||
+      s.chroma_format_idc != 1 || s.residual_colour_transform_flag ||
+      s.frame_mbs_only_flag || !s.mb_adaptive_frame_field_flag ||
+      s.pic_order_cnt_type != 0 || p.pic_fields.bits.field_pic_flag ||
+      frame_bits > 16 || poc_bits > 16 ||
+      p.frame_num >= (1U << frame_bits) || p.CurrPic.TopFieldOrderCnt < 0)
+    return false;
+  bytes->clear();
+  AppendNal(bytes, 9, 0, std::vector<uint8_t>{0x10});
+  BitWriter pps;
+  pps.PutUE(254); pps.PutUE(0);
+  pps.PutBit(false); pps.PutBit(false);
+  pps.PutUE(0); pps.PutUE(0); pps.PutUE(0);
+  pps.PutBit(false); pps.PutBits(2, 0);
+  pps.PutSE(0); pps.PutSE(0); pps.PutSE(0);
+  pps.PutBit(true); pps.PutBit(false); pps.PutBit(false);
+  AppendNal(bytes, 8, 3, pps.FinishRbsp());
+  BitWriter slice;
+  slice.PutUE(0); slice.PutUE(2); slice.PutUE(254);
+  slice.PutBits(frame_bits, p.frame_num);
+  slice.PutBit(false); // frame-coded MBAFF slice
+  slice.PutBits(poc_bits, static_cast<uint32_t>(p.CurrPic.TopFieldOrderCnt) &
+                             ((1U << poc_bits) - 1));
+  slice.PutSE(0); slice.PutUE(1); // default QP, deblocking disabled
+  for (unsigned mb = 0; mb < (width / 16U) * (height / 16U); ++mb) {
+    if ((mb & 1U) == 0) slice.PutBit(false);
+    slice.PutUE(3); slice.PutUE(0); slice.PutSE(0);
+    slice.PutBit(true); // luma DC coeff_token TotalCoeff=0, nC=0
+  }
+  AppendNal(bytes, 1, 0, slice.FinishRbsp());
+  return bytes->size() <= 16U * 1024U;
+}
+
 static VAStatus RetryPendingH264Prefeed(Driver *driver, DecodeContext *decode,
                                       bool *attempted) {
   if (decode->pending_prefeed_timestamp == 0)
@@ -4455,6 +4569,8 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
     if (replay.failed())
       return VA_STATUS_ERROR_DECODING_ERROR;
     if (replay.NeedsRestart()) {
+      if (decode->auxiliary.ever)
+        return FailDecode(driver, decode, "H.264 auxiliary forbids decoder replay/restart");
       // EOS terminates reference state. A qualified library may replace a fully
       // stopped/closed H.264 channel on its retained device; all other cases
       // retain full-device reopen. This is never the legacy channel-only FLUSH.
@@ -4477,6 +4593,8 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
       const auto *unit = replay.NextInput();
       if (unit == nullptr)
         break;
+      if (decode->auxiliary.ever && decode->auxiliary.ended)
+        return FailDecode(driver, decode, "H.264 auxiliary forbids input after EOS");
       const uint64_t input_timestamp = unit->timestamp;
       bool prefeed_after_unit = false;
       if constexpr (std::is_same<std::decay_t<decltype(replay)>,
@@ -4564,8 +4682,33 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
       }
       decode->partial_input_timestamp = 0;
       decode->partial_input_offset = 0;
+      H264Auxiliary::Syntax auxiliary_candidate;
+      bool have_auxiliary_candidate = false;
+      if constexpr (std::is_same<std::decay_t<decltype(replay)>,
+                                 CrystalHDDecodeReplay>::value) {
+        // Never use mutable later picture metadata or a stale older AU.
+        decode->auxiliary.candidate_timestamp = 0;
+        auto syntax = decode->auxiliary.syntax.find(input_timestamp);
+        if (syntax != decode->auxiliary.syntax.end()) {
+          if (!unit->completed && !decode->is_70012 &&
+              decode->live_h264_fast_path && decode->live_h264_gap_tolerant &&
+              syntax->second.generation == decode->generation &&
+              syntax->second.device == decode->device) {
+            auxiliary_candidate = syntax->second;
+            have_auxiliary_candidate = true;
+          }
+          decode->auxiliary.syntax.erase(syntax);
+        }
+      }
       if (!replay.InputSent())
         return FailDecode(driver, decode, "compressed input submission failed");
+      if (have_auxiliary_candidate) {
+        decode->auxiliary.candidate = auxiliary_candidate;
+        decode->auxiliary.candidate_timestamp = input_timestamp;
+        Debug("H.264 auxiliary candidate source=%llu generation=%llu syntax_only=1",
+                     static_cast<unsigned long long>(input_timestamp),
+                     static_cast<unsigned long long>(decode->generation));
+      }
       if (driver->trace.enabled())
         driver->trace.Emit(crystalhd_vaapi_trace::Event::InputSent,
                            TraceDecodeTokenFields(driver, decode,
@@ -4602,8 +4745,21 @@ static VAStatus SealDecodeBatch(Driver *driver, DecodeContext *decode) {
   if (decode->is_70012)
     return VA_STATUS_SUCCESS;
   return decode->WithReplay([&](auto &replay) -> VAStatus {
-    if (!replay.CanSeal())
+    if (!replay.CanSeal()) {
+      // Auxiliary work is not a real replay unit. Only explicit close
+      // may flush it when every real input/output has already completed.
+      if (!decode->closing || !decode->auxiliary.needs_eos ||
+          decode->auxiliary.eos_only || decode->ReplaySealed() ||
+          replay.NextInput() != nullptr || replay.outstanding() != 0)
+        return VA_STATUS_SUCCESS;
+      if (DtsTxFreeSize(decode->device) < 1024) return VA_STATUS_SUCCESS;
+      if (DtsFlushInput(decode->device, 0) != BC_STS_SUCCESS)
+        return FailDecode(driver, decode, "H.264 auxiliary explicit EOS failed");
+      decode->auxiliary.eos_only = true;
+      Debug("H.264 auxiliary flush0 real_outstanding=0 auxiliary_pending=%d explicit_close=1",
+                   decode->auxiliary.pending);
       return VA_STATUS_SUCCESS;
+    }
     const uint32_t tx_free = DtsTxFreeSize(decode->device);
     if (tx_free < 1024)
       return VA_STATUS_SUCCESS;
@@ -4623,6 +4779,9 @@ static VAStatus SealDecodeBatch(Driver *driver, DecodeContext *decode) {
       return FailDecode(driver, decode, "could not seal decoder batch");
     if (DtsFlushInput(decode->device, 0) != BC_STS_SUCCESS)
       return FailDecode(driver, decode, "could not seal decoder batch");
+    if (decode->auxiliary.ever)
+      Debug("H.264 auxiliary flush0 real_outstanding=%zu auxiliary_pending=%d explicit_close=%d",
+                   replay.outstanding(), decode->auxiliary.pending, decode->closing);
     return VA_STATUS_SUCCESS;
   });
 }
@@ -4652,14 +4811,16 @@ static VAStatus DrainClosingContext(
     // Reset can retire every logical picture before a terminal DeviceClose
     // reports BUSY.  A following context destroy then has ownership to close,
     // but no decode work to fail.
-    if (!HasLivePendingPictures(driver, *decode) && !decode->ReplaySealed())
+    if (!HasLivePendingPictures(driver, *decode) && !decode->ReplaySealed() &&
+        !decode->auxiliary.needs_eos)
       return VA_STATUS_SUCCESS;
     return FailDecode(driver, decode.get(),
                       "context has retained terminal hardware ownership");
   }
   const uint64_t generation = decode->generation;
   const auto start = std::chrono::steady_clock::now();
-  while (HasLivePendingPictures(driver, *decode) || decode->ReplaySealed()) {
+  while (HasLivePendingPictures(driver, *decode) || decode->ReplaySealed() ||
+         decode->auxiliary.needs_eos) {
     if (decode->retired || decode->generation != generation)
       return VA_STATUS_ERROR_INVALID_CONTEXT;
     if (driver->stopping)
@@ -4678,7 +4839,8 @@ static VAStatus DrainClosingContext(
       status = SealDecodeBatch(driver, decode.get());
     if (status != VA_STATUS_SUCCESS)
       return FailDecode(driver, decode.get(), "context drain failed");
-    if (!HasLivePendingPictures(driver, *decode) && !decode->ReplaySealed())
+    if (!HasLivePendingPictures(driver, *decode) && !decode->ReplaySealed() &&
+        !decode->auxiliary.needs_eos)
       break;
     const std::shared_ptr<OutputPollLease> output_poll = decode->output_poll;
     driver_lock->unlock();
@@ -5386,6 +5548,23 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                                      ShouldAutoPrefeedH264(*decode))) {
     return FailDecode(driver, decode, decode->replay.failure());
   }
+  if (IsH264Profile(profile) && decode->live_h264_fast_path &&
+      decode->live_h264_gap_tolerant) {
+    // Append already applied the replay cache/picture admission bounds.
+    // One syntax record per not-yet-InputSent AU shares that bound.
+    if (decode->auxiliary.syntax.size() >= decode->replay.cached_pictures())
+      return FailDecode(driver, decode, "syntax snapshot/replay ownership mismatch");
+    try {
+      H264Auxiliary::Syntax syntax;
+      syntax.picture = decode->picture;
+      syntax.generation = decode->generation;
+      syntax.device = decode->device;
+      if (!decode->auxiliary.syntax.emplace(timestamp, syntax).second)
+        return FailDecode(driver, decode, "H.264 syntax snapshot duplicate");
+    } catch (const std::bad_alloc &) {
+      return FailDecode(driver, decode, "H.264 syntax snapshot allocation");
+    }
+  }
   decode->next_timestamp += kTimestampStep;
   decoded_frame->rt_format = VA_RT_FORMAT_YUV420;
   decoded_frame->expected_timestamp = timestamp;
@@ -5571,11 +5750,101 @@ static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
   return VA_STATUS_SUCCESS;
 }
 
+static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
+                               const std::shared_ptr<Surface> &surface,
+                               const VppDeinterlace *demand, uint64_t idle) {
+  auto &aux = decode->auxiliary;
+  const auto &first = decode->h264_first_field;
+  if (!demand || !demand->bob || idle < kDecodeBatchGraceNs || aux.pending ||
+      !decode->live_h264_fast_path || !decode->live_h264_gap_tolerant ||
+      !aux.candidate_timestamp || !first.valid || first.replay_duplicate ||
+      first.bottom == (demand->field == crystalhd_vpp_bob::FieldParity::kBottom) ||
+      first.timestamp != surface->expected_timestamp ||
+      aux.candidate_timestamp < first.timestamp ||
+      aux.candidate.generation != decode->generation ||
+      aux.candidate.device != decode->device ||
+      first.generation != decode->generation || !first.picture ||
+      decode->is_70012 || !IsH264Profile(decode->profile) ||
+      decode->experimental_ready_remap || decode->closing || decode->retired ||
+      decode->destroy_prepared || decode->hardware_close_pending ||
+      !decode->decoder_open || !decode->decoder_started || !decode->device ||
+      decode->ReplayFailed() || decode->ReplaySealed() ||
+      decode->replay.NeedsRestart() || !decode->replay.CanSeal() ||
+      decode->replay.NextInput() != nullptr || decode->partial_input_timestamp ||
+      decode->partial_input_offset || driver->stopping)
+    return VA_STATUS_SUCCESS;
+  const auto picture = decode->decoded_frames.find(first.timestamp);
+  const auto pending = decode->pending.find(first.timestamp);
+  if (picture == decode->decoded_frames.end() || pending == decode->pending.end() ||
+      picture->second != first.picture || first.decode_identity == 0 ||
+      first.decode_identity != picture->second->decode_identity)
+    return FailDecode(driver, decode, "H.264 auxiliary lost original ownership");
+  const uint64_t token = decode->next_timestamp;
+  if (!token || token > std::numeric_limits<uint64_t>::max() - kTimestampStep ||
+      decode->pending.count(token) || decode->decoded_frames.count(token) ||
+      (decode->prefed_timestamp && decode->prefed_timestamp != token) ||
+      (decode->pending_prefeed_timestamp &&
+       (decode->pending_prefeed_timestamp != token ||
+        decode->pending_prefeed_generation != decode->generation)))
+    return FailDecode(driver, decode, "H.264 auxiliary timestamp reservation");
+  std::vector<uint8_t> payload;
+  try {
+    if (!BuildH264NeutralIntra(aux.candidate.picture, &payload))
+      return VA_STATUS_SUCCESS;
+  } catch (const std::bad_alloc &) {
+    return FailDecode(driver, decode, "neutral picture allocation");
+  }
+  const size_t bytes = payload.size();
+  const size_t reservation = bytes + (bytes / 60000 + 1) * 32 + 1024;
+  if (DtsTxFreeSize(decode->device) < reservation) {
+    decode->input_backpressured = true;
+    return VA_STATUS_SUCCESS;
+  }
+  const bool consume = decode->prefed_timestamp == token;
+  Debug("H.264 auxiliary qualified source=%llu token=%llu bytes=%zu generation=%llu consume_prefeed=%d idle_ns=%llu",
+               static_cast<unsigned long long>(first.timestamp),
+               static_cast<unsigned long long>(token), bytes,
+               static_cast<unsigned long long>(decode->generation), consume,
+               static_cast<unsigned long long>(idle));
+  // One whole-call reservation; any non-success is terminal, never retried.
+  const BC_STATUS status = DtsProcInput(decode->device, payload.data(),
+      static_cast<uint32_t>(bytes), consume ? 0 : token, FALSE);
+  if (status != BC_STS_SUCCESS)
+    return FailDecode(driver, decode, "H.264 auxiliary input failed (no retry)");
+  aux.timestamp = token; aux.ever = aux.pending = aux.needs_eos = true;
+  aux.generation = decode->generation;
+  aux.device = decode->device;
+  aux.eos_only = aux.ended = false;
+  aux.candidate_timestamp = 0;
+  decode->next_timestamp += kTimestampStep;
+  decode->CancelPendingPrefeed();
+  if (consume) decode->prefed_timestamp = 0;
+  decode->RecordTransportProgress();
+  Debug("H.264 auxiliary input_sent token=%llu transport_timestamp=%llu bytes=%zu public_picture=0 public_ordinal_advanced=0",
+               static_cast<unsigned long long>(token),
+               static_cast<unsigned long long>(consume ? 0 : token), bytes);
+  // Delimit the synthetic slice with the ordinary next-AU prefix. The next
+  // original AU consumes this prefix without acquiring an auxiliary identity.
+  decode->pending_prefeed_timestamp = decode->next_timestamp;
+  decode->pending_prefeed_generation = decode->generation;
+  bool postprefix_attempted = false;
+  const VAStatus postprefix_status =
+      RetryPendingH264Prefeed(driver, decode, &postprefix_attempted);
+  Debug("H.264 auxiliary postprefix token=%llu attempted=%d accepted=%d pending=%d status=%d",
+               static_cast<unsigned long long>(decode->next_timestamp),
+               postprefix_attempted, decode->prefed_timestamp == decode->next_timestamp,
+               decode->pending_prefeed_timestamp != 0, postprefix_status);
+  if (postprefix_status != VA_STATUS_SUCCESS) return postprefix_status;
+  driver->condition.notify_all();
+  return VA_STATUS_SUCCESS;
+}
+
 static VAStatus SyncDecodeSurface(
     Driver *driver, const std::shared_ptr<Surface> &surface,
     std::unique_lock<std::mutex> *driver_lock, uint64_t timeout_ns,
     const std::function<bool()> &canceled = {},
-    const std::function<VAStatus(bool *)> &private_vpp_ready = {}) {
+    const std::function<VAStatus(bool *)> &private_vpp_ready = {},
+    const VppDeinterlace *private_demand = nullptr) {
   if (driver_lock == nullptr || !driver_lock->owns_lock())
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   if (canceled && canceled())
@@ -5753,6 +6022,18 @@ static VAStatus SyncDecodeSurface(
     }
     if (wait_status != VA_STATUS_SUCCESS)
       return wait_status;
+    if (private_vpp_ready && private_demand) {
+      const uint64_t before = decode->transport_progress;
+      status = TryH264Auxiliary(driver, decode.get(), surface, private_demand, idle);
+      if (status != VA_STATUS_SUCCESS) return status;
+      // A newly accepted real auxiliary input is progress, not an EOF trigger.
+      if (before != decode->transport_progress) {
+        progress = decode->transport_progress;
+        inactivity_start = now;
+        bounded_inactivity_base = 0;
+        idle = 0;
+      }
+    }
     // Seal only after transport inactivity, not while a live stream or retained
     // prefix replay still makes real input/output progress. Keep the absolute
     // sync deadline above: unrelated progress cannot hide a missing picture.
@@ -5897,6 +6178,7 @@ static bool HasAutonomousDecodeWork(
          decode->decoder_started && !decode->hardware_close_pending &&
          !decode->ReplayFailed() &&
          (!decode->pending.empty() || decode->ReplaySealed() ||
+          decode->auxiliary.pending || decode->auxiliary.eos_only ||
           decode->pending_prefeed_timestamp != 0);
 }
 
@@ -6111,7 +6393,7 @@ static void RunVppWorker(Driver *driver) {
                                        PrepareFirstFieldBob(operation, &first_field_view);
                                    *ready = first_field_view != nullptr;
                                    return prepared;
-                                 });
+                                 }, &operation.deinterlace);
     }
 
     auto completed = std::find_if(
@@ -8072,7 +8354,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
                                             operation, &first_field_view);
                                         *ready = first_field_view != nullptr;
                                         return prepared;
-                                      });
+                                      }, &operation.deinterlace);
       } catch (const std::bad_alloc &) {
         status = VA_STATUS_ERROR_ALLOCATION_FAILED;
       }

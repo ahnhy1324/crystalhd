@@ -2,6 +2,9 @@
 
 ## 1.2.0 — in development
 
+- Advance stalled LIVE H.264 MBAFF Bob output with a private non-reference
+  intra picture, preserving original frames and references without inferring
+  EOS from an input gap. Drain the private output separately at explicit close.
 - Avoid allocating/copying duplicate H.264 replay-field pixels while retaining
   paired-field validation, output release and completed-picture ownership.
 - Honor negotiated VA render formats in queries and output bindings, reject

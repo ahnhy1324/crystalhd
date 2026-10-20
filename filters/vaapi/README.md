@@ -179,6 +179,12 @@ For finite Bob playback, leave `CRYSTALHD_VAAPI_LIVE_H264` and
 reproduced pre-EOF stall with `d1b3788`. With `9a3b08b`, the selected stock Kodi
 control admits all 750 pictures without that midstream timeout, but final-field
 drain still exceeds Kodi's EOF wait; close-time completion is not a playback PASS.
+A private prototype of the non-reference auxiliary-picture fix passed a bounded
+stock Kodi LIVE+LL control: all 750 original pictures and 1,500 Bob outputs completed before
+the close-time EOS, without decoder restart or application changes. The auxiliary
+picture is never presented. This resolves that selected tail stall, not the
+separate field-pair PTS/cadence or physical A/V qualifications; unrelated Kodi
+environment errors remain recorded in [#445](https://github.com/ahnhy1324/crystalhd/issues/445).
 General FHD/Atom Bob playback is not qualified. **Off** retains Weave; the separate
 [FFmpeg BWDIF path](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif)
 remains available.
@@ -307,12 +313,22 @@ input is rejected rather than decoded with missing references.
 For experimental long-running H.264 input,
 `CRYSTALHD_VAAPI_LIVE_H264=1` also enables the direct decode-output path and,
 after a second original picture is accepted, does not infer EOS from an
-input-delivery gap. Final pictures then require subsequent input or explicit
+input-delivery gap. Final pictures generally require subsequent input or explicit
 context drain; the absolute ten-second synchronization deadline still applies.
+For BCM70015 8-bit 4:2:0 MBAFF frame pictures with POC type 0, an opposite-field
+Bob request stalled for 100 ms may instead send a small non-reference intra
+picture and the next AUD/filler prefix. Its syntax comes from the last fully
+submitted original picture. The original complementary field must still arrive
+before Bob completes; the auxiliary output owns no public surface or PTS and is
+discarded only after validation and hardware-buffer release. This advances the
+selected retained tail without sealing live input or changing reference pictures.
+Only one auxiliary can be outstanding, and explicit context close still drains
+its firmware EOS obligation. Other syntax and non-Bob requests retain the existing
+wait/drain policy; this is not a general EOF detector or a new user option.
 For finite files with stock FFmpeg, leave this variable unset:
 `vaSyncSurface()` waits for one surface and is not an EOF or drain signal. In
-explicit live mode the last reordered pictures can therefore remain held until
-subsequent input, or until a client retains the output surfaces and calls
+explicit live mode outside that Bob path, the last reordered pictures can remain
+held until subsequent input, or until a client retains the output surfaces and calls
 `vaDestroyContext()` to perform the explicit drain before downloading them.
 Setting the variable to `0`, or to any value other than exactly `1`, selects
 strict replay.

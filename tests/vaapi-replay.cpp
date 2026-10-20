@@ -9158,6 +9158,404 @@ static void AutonomousWorkerStopsAfterTransportFailure() {
           "query-only frontend observes the terminal worker failure");
 }
 
+struct NeutralSyntaxReader {
+  std::vector<uint8_t> bytes;
+  size_t bit = 0;
+  uint32_t Bits(unsigned count) {
+    Require(count <= 32 && bit + count <= bytes.size() * 8, "neutral syntax bounds");
+    uint32_t value = 0;
+    while (count--) { value = (value << 1) | ((bytes[bit / 8] >> (7 - bit % 8)) & 1); ++bit; }
+    return value;
+  }
+  uint32_t UE() {
+    unsigned zeros = 0;
+    while (!Bits(1)) Require(++zeros < 31, "bounded neutral Exp-Golomb");
+    return ((1U << zeros) - 1) + Bits(zeros);
+  }
+  void End() {
+    Require(Bits(1) == 1, "RBSP stop bit");
+    while (bit < bytes.size() * 8) Require(Bits(1) == 0, "RBSP zero padding");
+  }
+};
+
+static std::vector<std::pair<uint8_t, NeutralSyntaxReader>> NeutralParseNals(
+    const std::vector<uint8_t> &stream) {
+  std::vector<size_t> starts;
+  for (size_t i = 0; i + 4 < stream.size(); ++i)
+    if (!stream[i] && !stream[i+1] && !stream[i+2] && stream[i+3] == 1) starts.push_back(i);
+  Require(starts.size() == 3 && starts.front() == 0, "only AUD/PPS/nonref slice");
+  std::vector<std::pair<uint8_t, NeutralSyntaxReader>> result;
+  for (size_t n = 0; n < starts.size(); ++n) {
+    NeutralSyntaxReader reader;
+    unsigned zeros = 0;
+    const size_t end = n + 1 < starts.size() ? starts[n+1] : stream.size();
+    for (size_t i = starts[n] + 5; i < end; ++i) {
+      if (zeros == 2 && stream[i] == 3) {
+        Require(i + 1 < end && stream[i+1] <= 3, "valid emulation prevention");
+        zeros = 0; continue;
+      }
+      reader.bytes.push_back(stream[i]);
+      zeros = stream[i] == 0 ? zeros + 1 : 0;
+    }
+    result.emplace_back(stream[starts[n]+4], std::move(reader));
+  }
+  return result;
+}
+
+static VAPictureParameterBufferH264 NeutralPicture(unsigned width, unsigned height) {
+  VAPictureParameterBufferH264 p{};
+  p.picture_width_in_mbs_minus1 = width / 16 - 1;
+  p.picture_height_in_mbs_minus1 = height / 16 - 1;
+  p.seq_fields.bits.chroma_format_idc = 1;
+  p.seq_fields.bits.mb_adaptive_frame_field_flag = 1;
+  p.seq_fields.bits.log2_max_pic_order_cnt_lsb_minus4 = 2;
+  p.frame_num = 7; p.CurrPic.TopFieldOrderCnt = 18;
+  return p;
+}
+
+static void NeutralAuxSyntaxIsSelfContained() {
+  for (const auto size : {std::make_pair(16U,32U), {1280U,736U}, {1920U,1088U}}) {
+    const auto p = NeutralPicture(size.first, size.second);
+    std::vector<uint8_t> stream;
+    Require(BuildH264NeutralIntra(p, &stream) && stream.size() <= 16384, "bounded variable geometry");
+    auto nals = NeutralParseNals(stream);
+    Require(nals[0].first == 9 && nals[1].first == 0x68 && nals[2].first == 1,
+            "AUD, reserved PPS and nonreference nonIDR I only; no SPS");
+    auto &a = nals[0].second; Require(a.Bits(3) == 0, "AUD intra type"); a.End();
+    auto &pps = nals[1].second;
+    Require(pps.UE() == 254 && pps.UE() == 0 && pps.Bits(2) == 0 &&
+                pps.UE() == 0 && pps.UE() == 0 && pps.UE() == 0 &&
+                pps.Bits(3) == 0 && pps.UE() == 0 && pps.UE() == 0 && pps.UE() == 0 &&
+                pps.Bits(3) == 4, "PPS CAVLC no groups/default QP/no weighted prediction");
+    pps.End();
+    auto &slice = nals[2].second;
+    Require(slice.UE() == 0 && slice.UE() == 2 && slice.UE() == 254 &&
+                slice.Bits(4) == 7 && slice.Bits(1) == 0 && slice.Bits(6) == 18 &&
+                slice.UE() == 0 && slice.UE() == 1, "exact frame_num/POC frame slice header");
+    const unsigned count = size.first / 16 * (size.second / 16);
+    for (unsigned mb = 0; mb < count; ++mb) {
+      if (!(mb & 1)) Require(slice.Bits(1) == 0, "MBAFF frame-coded pair");
+      Require(slice.UE() == 3 && slice.UE() == 0 && slice.UE() == 0 && slice.Bits(1) == 1,
+              "I16 DC zero residual for every macroblock");
+    }
+    slice.End();
+  }
+  for (unsigned fault = 0; fault < 14; ++fault) {
+    auto p = NeutralPicture(1920, 1088);
+    switch (fault) {
+      case 0: p.picture_width_in_mbs_minus1 = 120; break;
+      case 1: p.picture_height_in_mbs_minus1 = 66; break;
+      case 2: p.bit_depth_luma_minus8 = 1; break;
+      case 3: p.bit_depth_chroma_minus8 = 1; break;
+      case 4: p.seq_fields.bits.chroma_format_idc = 2; break;
+      case 5: p.seq_fields.bits.residual_colour_transform_flag = 1; break;
+      case 6: p.seq_fields.bits.frame_mbs_only_flag = 1; break;
+      case 7: p.seq_fields.bits.mb_adaptive_frame_field_flag = 0; break;
+      case 8: p.seq_fields.bits.pic_order_cnt_type = 1; break;
+      case 9: p.pic_fields.bits.field_pic_flag = 1; break;
+      case 10: p.seq_fields.bits.log2_max_frame_num_minus4 = 13; break;
+      case 11: p.seq_fields.bits.log2_max_pic_order_cnt_lsb_minus4 = 13; break;
+      case 12: p.frame_num = 16; break;
+      case 13: p.CurrPic.TopFieldOrderCnt = -1; break;
+    }
+    std::vector<uint8_t> rejected;
+    Require(!BuildH264NeutralIntra(p, &rejected), "unsupported neutral syntax rejected");
+  }
+}
+constexpr uint64_t kNeutralAuxToken = 2 * kTimestampStep;
+
+static void NeutralAuxBegin(H264WeaveFixture *fixture, DecodeIoMock *io) {
+  auto &decode = fixture->decoder;
+  decode.device = io->handle();
+  decode.auxiliary.ever = decode.auxiliary.pending = decode.auxiliary.needs_eos = true;
+  decode.auxiliary.timestamp = kNeutralAuxToken;
+  decode.auxiliary.generation = decode.generation;
+  decode.auxiliary.device = decode.device;
+  fixture->output.PicInfo.timeStamp = kNeutralAuxToken;
+  fixture->output.PicInfo.flags &= ~VDEC_FLAG_UNKNOWN_SRC;
+  fixture->raw.timeStamp = kNeutralAuxToken / 20000U;
+  fixture->raw.flags = VDEC_FLAG_FIELDPAIR;
+  fixture->WritePib();
+  Require(ClassifyH264InterlacedPayload(fixture->output) == H264InterlacedPayload::Weave,
+          "auxiliary fixture has complete PIB and exact converted timestamp");
+  io->override_output = true;
+  io->events.reserve(16);
+}
+
+static VAStatus NeutralAuxReceive(H264WeaveFixture *fixture, DecodeIoMock *io) {
+  io->overridden_output = fixture->output;
+  bool activity = false;
+  const VAStatus status = ReceiveOne(&fixture->driver, &fixture->decoder, 0, &activity);
+  Require(activity && !io->invalid, "one owned mocked auxiliary output is acquired");
+  return status;
+}
+
+static void NeutralAuxWeavePreservesHeldOriginal() {
+  for (bool direct : {false, true}) {
+    for (bool bottom_first : {false, true}) {
+      DecodeIoMock io;
+      MockDecodeScope scope(io);
+      H264WeaveFixture fixture(direct);
+      auto first = fixture.Output(bottom_first, bottom_first,
+          bottom_first ? &fixture.bottom : &fixture.top);
+      auto second = fixture.Output(!bottom_first, bottom_first,
+          bottom_first ? &fixture.top : &fixture.bottom);
+      Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, first) == VA_STATUS_SUCCESS,
+              "hold the genuine original field before a full-Weave auxiliary");
+      const auto held = fixture.decoder.h264_first_field;
+      const auto public_pixels = fixture.public_frame->storage;
+      const auto private_pixels = fixture.private_frame->storage;
+      const uint64_t next_timestamp = fixture.decoder.next_timestamp;
+      const uint64_t next_ordinal = fixture.decoder.next_submission_ordinal;
+      NeutralAuxBegin(&fixture, &io);
+      Require(NeutralAuxReceive(&fixture, &io) == VA_STATUS_SUCCESS &&
+                  !fixture.decoder.auxiliary.pending &&
+                  fixture.decoder.auxiliary.needs_eos &&
+                  fixture.decoder.h264_first_field.valid &&
+                  fixture.decoder.h264_first_field.timestamp == held.timestamp &&
+                  fixture.decoder.h264_first_field.decode_identity == held.decode_identity &&
+                  fixture.decoder.h264_first_field.generation == held.generation &&
+                  fixture.decoder.h264_first_field.picture == held.picture &&
+                  fixture.decoder.h264_first_field.pixels == held.pixels &&
+                  fixture.decoder.replay.IsOutstanding(kTimestampStep) &&
+                  !fixture.decoder.replay.IsOutstanding(kNeutralAuxToken) &&
+                  fixture.decoder.pending.size() == 1 &&
+                  fixture.decoder.pending.count(kTimestampStep) == 1 &&
+                  fixture.decoder.decoded_frames.size() == 1 &&
+                  fixture.decoder.decoded_frames.count(kTimestampStep) == 1 &&
+                  fixture.public_frame->storage == public_pixels &&
+                  fixture.private_frame->storage == private_pixels &&
+                  !fixture.public_frame->ready && !fixture.private_frame->ready &&
+                  !fixture.public_frame->failed && !fixture.private_frame->failed &&
+                  fixture.decoder.next_timestamp == next_timestamp &&
+                  fixture.decoder.next_submission_ordinal == next_ordinal &&
+                  std::count(io.events.begin(), io.events.end(), "release") == 1,
+              "one released auxiliary retires only its ledger; genuine first field and public owner stay unchanged");
+      Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, second) == VA_STATUS_SUCCESS &&
+                  !fixture.decoder.h264_first_field.valid &&
+                  fixture.decoder.replay.outstanding() == 0 &&
+                  fixture.public_frame->ready && fixture.private_frame->ready,
+              "only the actual original complement completes its picture after auxiliary retirement");
+      fixture.CheckPixels(*fixture.public_frame);
+      if (!direct) fixture.CheckPixels(*fixture.private_frame);
+      const auto completed_pixels = fixture.public_frame->storage;
+      Require(NeutralAuxReceive(&fixture, &io) == VA_STATUS_ERROR_DECODING_ERROR &&
+                  fixture.decoder.replay.failed() && !fixture.decoder.auxiliary.pending &&
+                  fixture.public_frame->storage == completed_pixels &&
+                  fixture.public_frame->ready && !fixture.public_frame->failed &&
+                  std::count(io.events.begin(), io.events.end(), "release") == 2,
+              "repeated accepted auxiliary token cannot rewrite completed public pixels");
+    }
+  }
+}
+
+static void NeutralAuxWeaveFaultsFailClosed() {
+  for (unsigned fault = 0; fault < 16; ++fault) {
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    H264WeaveFixture fixture;
+    auto first = fixture.Output(false, false, &fixture.top);
+    auto second = fixture.Output(true, false, &fixture.bottom);
+    Require(ProcessDecodedOutput(&fixture.driver, &fixture.decoder, first) == VA_STATUS_SUCCESS &&
+                ProcessDecodedOutput(&fixture.driver, &fixture.decoder, second) == VA_STATUS_SUCCESS,
+            "complete the real picture before isolated auxiliary faults");
+    const auto public_pixels = fixture.public_frame->storage;
+    const auto private_pixels = fixture.private_frame->storage;
+    const uint64_t next_timestamp = fixture.decoder.next_timestamp;
+    const uint64_t next_ordinal = fixture.decoder.next_submission_ordinal;
+    NeutralAuxBegin(&fixture, &io);
+    switch (fault) {
+      case 0: fixture.output.YBuffDoneSz = (fixture.PayloadBytes() - 4U) / 4U; break;
+      case 1: ++fixture.decoder.generation; break;
+      case 2: fixture.decoder.auxiliary.device = nullptr; break;
+      case 3: io.output_release_status = BC_STS_ERROR; break;
+      case 4: ++fixture.raw.timeStamp; fixture.WritePib(); break;
+      case 5: ++fixture.raw.picture_number; fixture.WritePib(); break;
+      case 6: ++fixture.raw.sess_num; fixture.WritePib(); break;
+      case 7: ++fixture.raw.picture_meta_payload; fixture.WritePib(); break;
+      case 8: fixture.raw.flags |= 0x800U; fixture.WritePib(); break;
+      case 9: fixture.output.PoutFlags &= ~BC_POUT_FLAGS_PIB_VALID; break;
+      case 10: fixture.output.PicInfo.flags &= ~VDEC_FLAG_INTERLACED_SRC; break;
+      case 11: fixture.output.Ybuff = nullptr; break;
+      case 12: fixture.decoder.auxiliary.pending = false; break;
+      case 13: fixture.WriteWord(fixture.pixels.size() - 8U, 14); break;
+      case 14: fixture.WriteWord(fixture.PayloadBytes(), fixture.output.PicInfo.picture_number + 1); break;
+      case 15: fixture.output.YBuffDoneSz = (fixture.PayloadBytes() + 4U) / 4U; break;
+    }
+    Require(NeutralAuxReceive(&fixture, &io) == VA_STATUS_ERROR_DECODING_ERROR &&
+                fixture.decoder.replay.failed() && !fixture.decoder.auxiliary.pending &&
+                fixture.public_frame->storage == public_pixels &&
+                fixture.private_frame->storage == private_pixels &&
+                fixture.public_frame->ready && !fixture.public_frame->failed &&
+                fixture.private_frame->ready && !fixture.private_frame->failed &&
+                fixture.public_frame->frame_timestamp == kTimestampStep &&
+                fixture.private_frame->frame_timestamp == kTimestampStep &&
+                fixture.decoder.pending.empty() && fixture.decoder.replay.outstanding() == 0 &&
+                fixture.decoder.next_timestamp == next_timestamp &&
+                fixture.decoder.next_submission_ordinal == next_ordinal &&
+                std::count(io.events.begin(), io.events.end(), "release") == 1,
+            "short extent, stale owner, release error or malformed full PIB fails closed without public mutation");
+  }
+}
+
+static void NeutralAuxSequentialRetirementIsBounded() {
+  DecodeIoMock io;
+  MockDecodeScope scope(io);
+  H264WeaveFixture fixture;
+  NeutralAuxBegin(&fixture, &io);
+  auto &d = fixture.decoder;
+  const auto original = fixture.public_frame->storage;
+  for (uint64_t i = 2; i < 132; ++i) {
+    d.auxiliary.timestamp = i * kTimestampStep;
+    d.auxiliary.pending = true;
+    fixture.output.PicInfo.timeStamp = d.auxiliary.timestamp;
+    fixture.raw.timeStamp = d.auxiliary.timestamp / 20000;
+    fixture.WritePib();
+    Require(NeutralAuxReceive(&fixture, &io) == VA_STATUS_SUCCESS &&
+                !d.auxiliary.pending && d.auxiliary.ever && d.auxiliary.needs_eos &&
+                d.auxiliary.syntax.empty() && d.pending.size() == 1 &&
+                d.decoded_frames.size() == 1 && d.replay.outstanding() == 1 &&
+                fixture.public_frame->storage == original,
+            "over64 sequential auxiliary retirements add no public owner/history ledger");
+  }
+}
+
+static void NeutralAuxOldUnknownKeepsOriginalPolicy() {
+  DecodeIoMock io;
+  MockDecodeScope scope(io);
+  H264FieldFixture fixture(false, false, VA_FOURCC_NV12, 16, 10 * kTimestampStep);
+  auto &d = fixture.decoder;
+  d.device = io.handle();
+  d.auxiliary.ever = true;
+  d.auxiliary.timestamp = 20 * kTimestampStep;
+  d.auxiliary.generation = d.generation;
+  d.auxiliary.device = d.device;
+  auto old = fixture.Output(false, false, &fixture.top);
+  old.PicInfo.timeStamp = kTimestampStep;
+  Require(d.replay.Inspect(old.PicInfo.timeStamp) == CrystalHDDecodeReplay::Output::Unknown,
+          "old/pruned token has no current replay owner");
+  io.override_output = true;
+  io.overridden_output = old;
+  bool activity = false;
+  Require(ReceiveOne(&fixture.driver, &d, 0, &activity) == VA_STATUS_SUCCESS &&
+              activity && !d.replay.failed() && !d.h264_first_field.valid &&
+              d.replay.outstanding() == 1 && !fixture.public_frame->ready &&
+              std::count(io.events.begin(), io.events.end(), "release") == 1,
+          "auxiliary history does not turn harmless unknown old real output into failure");
+}
+
+static void NeutralAuxInputSnapshotSurvivesPendingOutput() {
+  TeardownFixture fixture(1);
+  auto &d = *fixture.decoder;
+  d.profile = VAProfileH264Main;
+  d.live_h264_fast_path = d.live_h264_gap_tolerant = true;
+  d.auxiliary.ever = d.auxiliary.pending = d.auxiliary.needs_eos = true;
+  d.auxiliary.timestamp = 99 * kTimestampStep;
+  d.auxiliary.generation = d.generation - 1;
+  d.auxiliary.device = d.device;
+  // Use a newly queued real AU, not mutable latest picture fields.
+  d.replay = CrystalHDDecodeReplay(true);
+  const uint64_t token = 100 * kTimestampStep;
+  Require(d.replay.Append(token, true, std::vector<uint8_t>{0,0,1,0x65,0x80}),
+          "admit actual queued input");
+  H264Auxiliary::Syntax syntax;
+  syntax.picture = NeutralPicture(16, 32);
+  syntax.generation = d.generation; syntax.device = d.device;
+  d.auxiliary.syntax.emplace(token, syntax);
+  d.picture = {}; // Deliberately incompatible mutable newer metadata.
+  Require(PumpDecodeInput(&fixture.driver, &d, 1) == VA_STATUS_SUCCESS &&
+              d.auxiliary.pending && d.auxiliary.timestamp == 99 * kTimestampStep &&
+              d.auxiliary.generation == d.generation - 1 &&
+              d.auxiliary.device == d.device &&
+              d.auxiliary.candidate_timestamp == token && d.auxiliary.syntax.empty() &&
+              d.auxiliary.candidate.picture.frame_num == 7 &&
+              d.auxiliary.candidate.picture.CurrPic.TopFieldOrderCnt == 18,
+          "real InputSent preserves latest syntax without rebinding the pending auxiliary owner");
+}
+
+static void NeutralAuxiliaryTriggerOwnsOnlyTransport() {
+  for (bool prefix_busy : {false, true}) {
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    H264FieldFixture fixture(false, false, VA_FOURCC_NV12, 16, kTimestampStep);
+    auto &d = fixture.decoder;
+    d.device = io.handle();
+    d.decoder_open = d.decoder_started = true;
+    d.live_h264_fast_path = d.live_h264_gap_tolerant = true;
+    d.next_timestamp = 2 * kTimestampStep;
+    d.prefed_timestamp = io.prefed_timestamp = d.next_timestamp;
+    d.auxiliary.candidate.picture = NeutralPicture(16, 32);
+    d.auxiliary.candidate.generation = d.generation;
+    d.auxiliary.candidate.device = d.device;
+    d.auxiliary.candidate_timestamp = kTimestampStep;
+    auto first = fixture.Output(false, false, &fixture.top);
+    Require(ProcessDecodedOutput(&fixture.driver, &d, first) == VA_STATUS_SUCCESS &&
+                d.h264_first_field.valid && !fixture.private_frame->ready,
+            "real top field establishes missing-complement demand");
+    const auto held = d.h264_first_field.pixels;
+    const auto pixels = fixture.public_frame->storage;
+    const auto ordinal = d.next_submission_ordinal;
+    VppDeinterlace demand{};
+    demand.field = crystalhd_vpp_bob::FieldParity::kBottom;
+    Require(TryH264Auxiliary(&fixture.driver, &d, fixture.public_frame,
+                            &demand, kDecodeBatchGraceNs) == VA_STATUS_SUCCESS &&
+                io.input_calls.empty() && !d.auxiliary.ever &&
+                d.next_timestamp == 2 * kTimestampStep,
+            "zero-filter demand never injects auxiliary data");
+    demand.bob = true;
+    io.prefeed_busy_once = prefix_busy;
+    std::vector<uint8_t> expected;
+    Require(BuildH264NeutralIntra(d.auxiliary.candidate.picture, &expected),
+            "construct expected payload for transport byte comparison");
+    Require(TryH264Auxiliary(&fixture.driver, &d, fixture.public_frame,
+                            &demand, kDecodeBatchGraceNs) == VA_STATUS_SUCCESS &&
+                io.input_calls.size() == 2 && io.input_calls[0].accepted &&
+                io.input_calls[0].timestamp == 0 && io.input_calls[0].bytes == expected &&
+                io.inputs == std::vector<uint64_t>{2 * kTimestampStep} &&
+                d.auxiliary.timestamp == 2 * kTimestampStep &&
+                d.auxiliary.pending && d.auxiliary.needs_eos && d.auxiliary.ever &&
+                d.auxiliary.generation == d.generation && d.auxiliary.device == d.device &&
+                !d.auxiliary.candidate_timestamp && d.next_timestamp == 3 * kTimestampStep &&
+                d.next_submission_ordinal == ordinal && d.pending.size() == 1 &&
+                d.pending.count(kTimestampStep) && d.decoded_frames.size() == 1 &&
+                d.replay.outstanding() == 1 && !d.replay.IsOutstanding(2 * kTimestampStep) &&
+                d.h264_first_field.pixels == held && fixture.public_frame->storage == pixels &&
+                !fixture.public_frame->ready && !fixture.private_frame->ready,
+            "auxiliary consumes accepted prefix once without public owner/ordinal/readiness");
+    Require(io.input_calls[1].bytes == H264LowLatencyPrefeed() &&
+                io.input_calls[1].timestamp == 3 * kTimestampStep &&
+                io.input_calls[1].accepted == !prefix_busy,
+            "successor delimiter uses ordinary prefix transport");
+    if (prefix_busy) {
+      Require(d.pending_prefeed_timestamp == 3 * kTimestampStep && !d.prefed_timestamp &&
+                  d.input_backpressured, "BUSY prefix remains pending without replaying dummy");
+      bool attempted = false;
+      Require(RetryPendingH264Prefeed(&fixture.driver, &d, &attempted) == VA_STATUS_SUCCESS &&
+                  attempted && io.input_calls.size() == 3 && io.input_calls.back().accepted &&
+                  io.input_calls.back().timestamp == 3 * kTimestampStep &&
+                  io.inputs.size() == 1,
+              "retry sends only delimiter, never auxiliary payload twice");
+    }
+    Require(d.prefed_timestamp == 3 * kTimestampStep && !d.pending_prefeed_timestamp &&
+                !io.invalid, "next real AU retains exactly one accepted speculative prefix");
+    const auto calls = io.input_calls.size();
+    Require(TryH264Auxiliary(&fixture.driver, &d, fixture.public_frame,
+                            &demand, kDecodeBatchGraceNs) == VA_STATUS_SUCCESS &&
+                io.input_calls.size() == calls,
+            "pending auxiliary serializes a repeated complementary-field request");
+  }
+}
+
+static void NeutralAuxiliaryContracts() {
+  NeutralAuxiliaryTriggerOwnsOnlyTransport();
+  NeutralAuxSyntaxIsSelfContained();
+  NeutralAuxWeavePreservesHeldOriginal();
+  NeutralAuxWeaveFaultsFailClosed();
+  NeutralAuxSequentialRetirementIsBounded();
+  NeutralAuxOldUnknownKeepsOriginalPolicy();
+  NeutralAuxInputSnapshotSurvivesPendingOutput();
+}
+
 int main(int argc, char **argv) {
   try {
     if (argc == 2 && std::strcmp(argv[1], "--h264-replay-metadata") == 0) {
@@ -9173,6 +9571,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     if (argc == 2 && std::strcmp(argv[1], "--live-bob-tail") == 0) {
+      NeutralAuxiliaryContracts();
       DeferredH264PrefeedRetriesWithoutNewInput();
       FirstTemporalBobDoesNotCompleteDecodePicture();
       FirstTemporalBobRejectsMismatchedLatch();
@@ -9182,6 +9581,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     Require(argc == 1, "usage: vaapi-replay-test [--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
+    NeutralAuxiliaryContracts();
     DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobDoesNotCompleteDecodePicture();
     FirstTemporalBobRejectsMismatchedLatch();
