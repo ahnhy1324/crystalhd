@@ -164,15 +164,7 @@ outputs confirms equal PTS within each field pair, with approximately 40 ms
 between source pictures, not uniformly timed 50p. Its second-field adjustment
 uses a previous temporal reference, while Bob correctly requires none; all 750
 second-field adjustments were skipped. These are output metadata, not measured
-screen presentation times. An optional [Kodi source patch](kodi-vaapi-bob.patch)
-keeps timing history independently of GPU references and uses conservative
-output scheduling for Bob only. It targets upstream `a3a448d`; it requires a Kodi
-rebuild and is **not applied by CrystalHD installation**. An equivalent private
-process diagnostic with VA runtime `9a3b08b` completes all 1,500 outputs, corrects
-749 second-field timestamps from observed source intervals and closes cleanly.
-The first pair's unknown interval remains unchanged. This is not a full Kodi
-source-build qualification, general VFR timing or measured screen cadence/A/V.
-One separate seek selects Kodi's 5-second cache
+screen presentation times. One separate seek selects Kodi's 5-second cache
 startup fallback while video remains in its starting state; the underlying
 startup delay is not fully attributed. A separate
 branch trace attributes two reproduced seek/Stop buffer warnings to cancellation,
