@@ -48,8 +48,10 @@ H.264 MBAFF and development MPEG-2 frame-coded interlaced cases described below:
   and Simple-profile interlace remain unsupported. Interlaced height must be
   divisible by four. Visible dimensions and sequence mode cannot change within
   a context. Stock FFmpeg passes the bounded
-  [640×360 TFF/BFF Weave and Bob checks](../../HARDWARE-2026-09-13.md#mpeg-2-main-frame-coded-interlace--2026-10-21);
-  this is not general FHD/interlace or physical A/V qualification.
+  [SD and selected FHD TFF/BFF Weave/Bob checks](../../HARDWARE-2026-09-13.md#mpeg-2-main-frame-coded-interlace--2026-10-21),
+  including clean real-capture intervals at 1920×1088i25 and 1920×1080i29.97.
+  These establish exact output, EOS and fresh-process reopen, not real-time
+  FHD playback, broad interlace conformance or physical A/V qualification.
 - MPEG-4 Part 2 Simple/Advanced Simple levels 3/5, rectangular 8-bit 4:2:0,
   H.263 quantization and one whole slice per picture through 1920x1088.
   Simple-profile I/P video-packet resynchronization is accepted only when the
@@ -596,15 +598,20 @@ detail removed by downscaling. Prefer **one-pass Bob→FHD** when no separate
 720p intermediate is needed. At `e636182`, bounded native finite and LIVE+prefeed
 tests each passed two opens, 100 exact small pictures and 16 exact FHD returns;
 LIVE also passed 24 FHD Bob outputs across four input gaps before explicit close.
-Selected ready-picture API+sync samples were 6.37–25.50 ms for direct Bob→FHD,
-versus 34.41–41.99 ms for the second-stage enlargement alone on the T8100.
+The scalar enlargement optimization at `9affe1f` reduces the isolated
+720→FHD kernel from 30.00 to 7.41 ms on the T8100, with identical pixels and
+no SSE requirement. In the follow-up finite card test, second-stage API+sync
+samples are 11.78–16.37 ms; direct Bob→FHD samples are 6.35–23.70 ms.
 These are not sustained fps or display-latency measurements: four LIVE
 bottom-field completion waits still took 153–158 ms. Full scope is in the
 [existing receipt](../../tests/fixtures/issue436/card-scaled-bob.json)
-(`va_scaled_return_extension`).
+(`va_scaled_return_extension` and `host_resize_optimization`).
 The separate
 [GStreamer BWDIF recipe](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif)
 uses a different filter. Its throughput is not a VA Bob performance claim.
+An additional [GStreamer scalerbob physical check](../../HARDWARE-2026-09-13.md#card720--bob--fhd-physical-playback--2026-10-21)
+confirmed speech/lip sync and no persistent problem, but still dropped late
+frames during clocked output. It does not qualify this VA path's presentation.
 
 ## Limitations
 

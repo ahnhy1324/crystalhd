@@ -222,6 +222,14 @@ integrated API to obtain smaller card output; stock FFmpeg/Kodi do not do so.
   all 56 selected native FHD outputs and 16 intermediate720 outputs match their
   pixel references. One-pass Bob→FHD avoids the slower second host scaler.
   [Usage and measured limits](filters/vaapi/README.md#returning-the-small-output-as-progressive-video-or-fhd).
+- [x] Remove per-pixel division from the scalar host NV12 enlargement path.
+  `9affe1f` preserves exact crop/field/chroma pixels and reduces the controlled
+  720→FHD kernel from 30.00 to 7.41 ms; affected native return/reopen and legacy
+  no-SSE checks pass. This does not change card decode or LIVE completion waits.
+- [x] Obtain the selected GStreamer card720→Bob→FHD operator A/V observation:
+  speech/lip sync aligned, no persistent problem. Clocked no-drop acceptance
+  remains open; the trace locates drops after complete hardware decoding.
+  [Scope and limits](HARDWARE-2026-09-13.md#card720--bob--fhd-physical-playback--2026-10-21).
 - [ ] Qualify additional stream geometries/parities, client selection and
   sustained LIVE/display cadence separately; four measured LIVE bottom-field
   completion waits still take 153–158 ms. READY remapping is not enabled for
@@ -243,8 +251,11 @@ Missing optional VA operations are not all release requirements.
   600 outputs match the unchanged GStreamer field-layout reference, with
   correct PTS steps, EOS and clean shutdown. See the
   [bounded result](HARDWARE-2026-09-13.md#mpeg-2-main-frame-coded-interlace--2026-10-21).
-- [ ] Broaden codec acceptance beyond that MPEG-2 sample: FHD interlace and
-  presentation first; separately establish contracts for RFF/telecine,
+- [x] Extend selected MPEG-2 acceptance to real-capture FHD TFF/BFF intervals.
+  1920×1088i25 and 1920×1080i29.97 Weave/Bob produce 1,074 exact outputs across
+  eight fresh processes, with EOS and clean close. No codec code change needed;
+  this does not qualify damaged whole captures or real-time presentation.
+- [ ] Complete broader MPEG-2 presentation acceptance; establish contracts for RFF/telecine,
   field-coded input and mixed sequence mode before advertising them.
   VC-1 interlace and additional MPEG-4 syntax remain separate unsupported
   subsets, not capabilities unlocked by the H.264 scaling change.

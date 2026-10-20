@@ -585,6 +585,42 @@
     "boundary_and_review": "PASS exit0, actual private plugin/DIL/card mappings, zero pins/refcount, unchanged AER/module/PM, normal kernel open/capture/close only; independent production, controller, saved-byte and raw-log review APPROVE",
     "not_claimed": ["stock FFmpeg/Kodi automatically selecting integrated scaling", "native BFF or additional codec/geometry qualification", "smooth network-live or sustained 50/60fps", "hardware DI or display-GPU enlargement", "physical A/V or E2E latency", "Atom/BCM70012", "physical PPB leasing or standalone MFD"]
   },
+  "host_resize_optimization": {
+    "date": "2026-10-21",
+    "source": "9affe1f107697f4b269d0736e0cf5f0abb9df58f",
+    "change": "Exact horizontal quotient/remainder sampling replaces per-pixel division in generic NV12 resizing; no new option, SSE dependency, vertical/field/odd-crop change or ownership change",
+    "cpu_method": "Same T8100; actual scalar ProcessVpp, 14 conditions, old/new binaries in balanced order, three runs of 30 calls each; wall is median of run p50, CPU is median of per-run mean CPU time per call; no concurrent builders/decoder",
+    "cpu_wall_ms_before_after": {
+      "progressive_720_to_fhd": [30.003, 7.413],
+      "weave_720_to_fhd": [29.999, 7.399],
+      "progressive_fhd_to_720": [13.287, 3.201]
+    },
+    "cpu_ms_per_call_before_after": {
+      "progressive_720_to_fhd": [30.170, 7.458],
+      "weave_720_to_fhd": [30.096, 7.421],
+      "progressive_fhd_to_720": [13.335, 3.231]
+    },
+    "device_free": "PASS independent exact-pixel/source/padding/identity oracle; 18 permanent resize cases, native kernel725 checks, i686/no-SSE523, same binary Pentium-II523, ASAN/UBSAN/leaks523, full87 VPP API groups and production Werror",
+    "native_finite": "PASS two opens, 100 original NV12 pictures and packet PTS reference-equal, 16 exact FHD returns and eight intermediate720 outputs; actual candidate/card observed; EOS/close/reopen and zero pin/refcount/AER/module/PM/kernel boundaries preserved",
+    "native_enlargement_api_sync_ms_before_after": {"samples_each": 8, "range_before": [34.410, 41.988], "range_after": [11.780, 16.370], "median_before": 35.131, "median_after": 12.3365},
+    "review": "Independent production, integer bounds/odd UV phase, native receipt and raw-log reviews APPROVE",
+    "scope": "Host CPU resizing only; not new LIVE, physical A/V, sustained FPS, GPU/card DI, E2E latency or native Atom qualification"
+  },
+  "physical_gstreamer_av": {
+    "date": "2026-10-21",
+    "scope": "Separate GStreamer frontend, unchanged plugin b047ce1 and DIL 3b81b1d; not VA integrated-scaling physical qualification",
+    "input": "30-second speech clip: field-preserving upsampled 720i content coded1920x1080 TFF25, 750 pictures, original AAC and audio offset retained; not native-FHD detail",
+    "path": "Card1280x720 -> CPU scalerbob all fields50 -> CPU1920x1080 -> synchronized xvimagesink UYVY and pulsesink/GstPulseSinkClock; actual panel1024x768@60",
+    "operator_observation": "PASS qualitative speech/lip sync and no persistent playback problem; not calibrated latency or zero dropped frames",
+    "observed_playback": {"decoder": 749, "bob": 1474, "fhd": 1473, "sink_rendered": 1472, "sink_dropped": 1, "eos": true, "strict_count_status": "FAIL"},
+    "headless_control": "PASS750 unique hardware-completed system_frame_number0..749,750 decoder/card outputs,1500 Bob/FHD/sink outputs, no missing or duplicate PTS and no QoS",
+    "clocked_trace": {"hardware_completed": 750, "decoder": 749, "bob": 1491, "fhd": 1491, "sink_input": 1486, "sink_rendered": 1484, "sink_dropped": 2, "strict_count_status": "FAIL"},
+    "confirmed_cause": "In the clocked trace, GstVideoDecoder drops1 completed picture for QoS, deinterlace7 fields, post-FHD videoconvert5 outputs and sink2. All750 hardware IDs complete; not firmware/EOS loss. This does not retrospectively locate every loss in the earlier operator-observed run.",
+    "early_color_conversion_probe": "Converting to UYVY at720 after Bob makes post-FHD converter passthrough, but747 decoder outputs/746 card720 after pre-filter conversion/1475 Bob,FHD,sink-input/1474 rendered+1 sink-drop does not improve on the traced control's1484 rendered. StrictFAIL retained; no production change adopted.",
+    "harness_setup_failures": "Two earlier private-filter attempts failed before usable playback: forced downstream progressive50 caps propagated backwards, then incoming interleaved caps conflicted with the plugin's mixed caps. Offline negotiation reproduced both; correcting only the private filter enabled physical playback. Original FAILs retained; no driver or installed-file change.",
+    "boundary": "All completed runs natural EOS/player exit0, actual plugin/DIL/card ownership, clean pin/refcount/AER/kernel/module/PM boundaries; strict controller FAIL preserved where counts are incomplete",
+    "not_claimed": ["zero-drop clocked output", "new VA or Kodi physical acceptance", "native-FHD source detail or panel", "calibrated physical A/V or E2E latency", "new LIVE throughput"]
+  },
   "qualification": {
     "gstreamer_full_lifecycle_groups": "88 PASS",
     "asan_ubsan_lsan_scaling_groups": "12 PASS",
