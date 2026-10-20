@@ -155,20 +155,24 @@ GPU rather than adding a second FHD CPU filter. At the same pixel format,
 1280x720 has 44.4% of FHD's active pixels, so it could reduce PCIe payload and
 filter work; decode remains FHD and enlargement cannot restore lost detail.
 
-GStreamer's production `scale-width` currently rejects interlaced input/output;
-VA has no card-scaling control and expects native stream geometry. Existing VA
+GStreamer's `scale-width` now accepts the validated aligned BCM70015 H.264
+separate-field cases, with native capture, field assembly and host scalerbob
+results in the [existing receipt](tests/fixtures/issue436/card-scaled-bob.json).
+This does not qualify other interlaced codecs or BWDIF plus enlargement.
+VA still has no card-scaling control and expects native stream geometry. Existing VA
 VPP resizing happens on the host after readback, so it does not reduce PCIe
 traffic or establish field-preserving vertical scaling. Keep these boundaries
 until the adapters are implemented and validated, rather than just removing
 their guards.
 
-- [ ] Reuse the existing uniform-TFF 2-second / 50-picture fixture and
-  `tests/fw-single-field-decode.cpp --scale-width 1280`, with normal field
-  output and no omission. Verify actual geometry/extent (expected 1280x360
-  per field, not assumed from the requested width), 100 fields, 50 unique
-  input identities, both parities, EOS, cleanup and native reopen.
-- [ ] Pair fields from the same input into 50 Weave pictures; verify retained
-  field order/content before filtering. Compare BWDIF's 100 progressive outputs
+- [x] Capture the existing uniform-TFF 2-second / 50-picture fixture with
+  `tests/fw-single-field-decode.cpp --scale-width 1280`: actual 1280x360
+  fields, 100 outputs, both parities per token, EOS and cleanup pass in the
+  [receipt](tests/fixtures/issue436/card-scaled-bob.json). This is not a
+  new measurement or a scaled-reopen qualification.
+- [x] Pair the captured fields into 50 scaled Weave pictures; all active YUY2
+  bytes match independent same-token assembly in that receipt.
+- [ ] Verify scaled native reopen and compare BWDIF's 100 progressive outputs
   against the unscaled FHD path using the same input. Keep uniform TFF, BFF
   and mixed per-picture parity as distinct cases.
 - [ ] If correctness passes, compare paced 25-input/50-output playback and
@@ -179,3 +183,56 @@ their guards.
   frontend integration. Only then evaluate READY on an eligible input, keeping
   B-frame limitations and original payload timestamps explicit. Reuse the
   baseline and completed benchmarks instead of repeating unrelated gates.
+
+## VA-API compatibility backlog (#445 / #436)
+
+Prioritize correctness within the advertised decode/VPP subset, using the
+[existing compatibility investigation](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6257714172).
+Missing optional VA operations are not all release requirements.
+
+- [ ] P0 — Separate decoder reorder, genuine field completion and client drain.
+  Use the recorded unchanged-input SW decode/BWDIF comparison at a withheld
+  non-IDR and real EOF; a returned VA handle is not proof its pixels are ready.
+  Preserve private first-field Bob and finite EOS/reference replay, including negotiated
+  channel reuse. For LIVE, establish a real nonterminal completion mechanism
+  before changing policy: an input gap is not EOF. Require both genuine field
+  identities, retained-pixel safety, EOS and reopen; do not repeat the already
+  negative filler-only trials or synthesize the missing field from SW's EOF clone.
+  A bounded drain/replay checkpoint is another candidate, not implemented:
+  it must pin the complete actual-IDR prefix through EOS/restart and bound
+  queued-input capacity/replay work. A pre-seal `replayable()` check alone is
+  insufficient because live input can evict history while the batch is sealed.
+  Existing same-device reuse is finite-only; LIVE leases and the gap/replay
+  latency cost need separate qualification, not a widened timeout.
+- [ ] P0 — Resolve the remaining presentation compatibility boundary without
+  app patches. SW BWDIF owns field-output PTS; VA Bob returns pixels, while the
+  inspected Kodi zero-reference path retains duplicate pair PTS. Reuse the
+  existing FFmpeg VA field-PTS control, and fix driver queue, fence or ownership
+  behavior only where a cause is demonstrated. Record a proven compatibility
+  limit if the presentation contract cannot be repaired within this backend. Never claim
+  false temporal references or retime decode-identity tokens as a workaround.
+  Acceptance requires distinct ordered output PTS, complete tail and measured
+  cadence/A/V; existing API/EOF successes do not replace those checks.
+- [ ] P1 — Make Query/Create/Render agree. Validate requested RT formats and
+  decode slice modes against advertised masks; reject unimplemented meaningful
+  mirror, blend, reference, additional-output and color requests for zero-filter
+  VPP as well as Bob. Device-free regressions must preserve supported defaults
+  and reject before ID allocation, ownership or output mutation.
+- [ ] P2 — Define color conversion explicitly. Direct packed-output `StoreArgb`
+  uses fixed limited-range BT.601 coefficients; VPP ARGB uses swscale without
+  explicit matrix/range negotiation. Neither establishes selectable BT.709 or
+  full-range support. Reject unsupported explicit matrix/range semantics
+  consistently; add conversions
+  only with independent pixel oracles and matching advertised capabilities.
+- [ ] P2 — Improve truthful diagnostics: unsupported display attributes must
+  not silently succeed. Evaluate `vaQuerySurfaceError` using only information
+  actually available for the exact live surface; do not invent macroblock or
+  hardware-reset details. Cover invalid IDs, lifetime and unsupported requests.
+
+Intentional unsupported scope includes legacy `vaPutSurface` presentation,
+subpictures/palettes/display controls, temporal deinterlacing and other unexposed
+VPP transforms, encoding, protected playback and codecs outside advertised
+profiles. Do not advertise these merely to make an application probe succeed.
+Use the [libva API contract](https://github.com/intel/libva/blob/2.23.0/va/va.h)
+and [VPP contract](https://github.com/intel/libva/blob/2.23.0/va/va_vpp.h) for
+feature-specific acceptance, not a blanket claim of full VA-API conformance.
