@@ -259,6 +259,11 @@ Missing optional VA operations are not all release requirements.
   `fc39d09` preserves original FFmpeg repeat/PTS/duration metadata; selected
   720×480 soft-RFF and whole-frame-repeat cases pass six native opens, exact
   pixels and EOS. [Scope](HARDWARE-2026-09-13.md#mpeg-2-progressive-repeat-flags--2026-10-21).
+- [x] Remove repeated EOS/reopen from eligible progressive Main MPEG-2 sync.
+  `dee7182` preserves exact originals and retires private auxiliary output;
+  selected 24-picture cases use one EOS/no restart. The existing 180-picture
+  fixture passes synchronous and pipelined clients with measured CPU/throughput.
+  [Results and fallback limits](HARDWARE-2026-09-13.md#mpeg-2-synchronous-completion--2026-10-21).
 - [ ] Complete broader MPEG-2 RFF/telecine presentation acceptance and contracts for
   field-coded input and mixed sequence mode before advertising them.
   VC-1 interlace and additional MPEG-4 syntax remain separate unsupported

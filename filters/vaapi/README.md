@@ -61,9 +61,13 @@ H.264 MBAFF and development MPEG-2 frame-coded interlaced cases described below:
   backend guessing the omitted sequence flag. The selected
   [720×480 soft-RFF and whole-frame-repeat checks](../../HARDWARE-2026-09-13.md#mpeg-2-progressive-repeat-flags--2026-10-21)
   pass exact pixels, original FFmpeg metadata, EOS and reopen. No extra option
-  is needed. The synchronous EOS/replay path took about 22 s per 24 pictures,
-  including the ordinary control: this is decoder correctness, not usable
-  real-time RFF/telecine playback qualification.
+  is needed. Eligible progressive Main synchronization now uses separately
+  owned non-reference B pictures to advance output without repeated EOS/reopen;
+  original pictures and client timing remain unchanged. The
+  [measured completion improvement](../../HARDWARE-2026-09-13.md#mpeg-2-synchronous-completion--2026-10-21)
+  includes canonical and repeat-flag inputs. Newest-anchor-only demands and
+  post-replay channels retain the existing EOS fallback. This does not qualify
+  general telecine presentation, real-time FHD or physical A/V.
 - MPEG-4 Part 2 Simple/Advanced Simple levels 3/5, rectangular 8-bit 4:2:0,
   H.263 quantization and one whole slice per picture through 1920x1088.
   Simple-profile I/P video-packet resynchronization is accepted only when the
