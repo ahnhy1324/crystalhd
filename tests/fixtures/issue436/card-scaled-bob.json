@@ -1,7 +1,8 @@
 {
   "schema": 1,
   "date": "2026-10-20",
-  "scope": "BCM70015 FHD H.264 card scaling, host field assembly and GStreamer scalerbob; not VA Bob or hardware deinterlacing",
+  "scope": "BCM70015 FHD H.264 card scaling and host processing; historical GStreamer results and later finite VA decode-processing results have separate source identities",
+  "revision_scope": "Top-level date, source, qualification and not_measured retain the original GStreamer scope. Later sections apply only to their own recorded revisions; va_decode_processing adds the 2026-10-21 VA result without relabeling historical measurements or integration_boundary",
   "source": {
     "gstreamer_player": "b047ce1cf4b299b3a6ad5117e0bec0754d729779",
     "isolated_dil": "3617c4e06bb3597a719ff2dea0ee64b9b1097664",
@@ -486,6 +487,43 @@
       "Atom/BCM70012",
       "power or endurance"
     ]
+  },
+  "va_decode_processing": {
+    "date": "2026-10-21",
+    "source": "87e0306277cccb1fc0778561f9c8b1a332559886",
+    "isolated_dil": "unchanged 3b81b1d6ecb8caf5095879b285019a47574c9755",
+    "loaded_module": "unchanged 3.10.9, srcversion 287221A03F284BCA2A3C04B",
+    "environment": "Same Ubuntu 26.04.1/Core 2 Duo/kernel/module/PM above; private VA plugin, no installed payload, firmware or external-application changes",
+    "client": "Private direct-libva client using stock demux/parser; existing 50-picture uniform-TFF 1920x1080i25 fixture only",
+    "contract": "Explicit H.264 VA_DEC_PROCESSING: coded 1920x1088 originals are opaque reference handles, not readable full-size pixels; explicit origin-zero 1920x1080 visible region and one distinct 1280x720 NV12 additional output; finite mode only, ordinary VA_DEC_PROCESSING_NONE unchanged",
+    "historical_boundary_correction": "The earlier integration_boundary inference was too broad: retaining the original decode-reference identity does not require exporting full-size host pixels in this explicit configuration. The new path rejects original GetImage/DeriveImage/export/VPP reads instead of fabricating them; physical source leasing or standalone MFD is not established",
+    "native_capture": {
+      "observation": "native-1, two finite opens in one process with reused processed-output pool",
+      "inputs_and_pictures_per_open": 50,
+      "fields_per_open": 100,
+      "picture_geometry": [1280, 720],
+      "field_geometry": [1280, 360],
+      "reported_bytes_per_field": 921760,
+      "active_yuy2_bytes_per_field": 921600,
+      "full_size_readback_records": 0,
+      "transfer_scope": "All 200 successful output records report 1280x720; reported Y completion includes 160 trailer bytes per field, not physical PCIe wire bytes",
+      "pixel_comparison": "PASS: all 100 NV12 pictures, 138240000 active bytes, zero mismatches in Y/U/V top/bottom components against retained native scaled fields joined by input token and original packet PTS; no software scaling or hash comparison",
+      "opaque_and_lifetime": "PASS original GetImage/DeriveImage/export refusal before and after processed-pool reuse; retained original identities do not acquire another picture's pixels",
+      "eos_reopen_close": "PASS both finite epochs"
+    },
+    "host_va_bob": {
+      "observation": "native-bob-1, same two 50-picture finite opens followed by ordinary VA VideoProc Bob after decoder close",
+      "sources_per_open": "first and last scaled picture, both field parities",
+      "outputs": 8,
+      "output_geometry": [1280, 720],
+      "active_bytes_compared": 11059200,
+      "byte_mismatches": 0,
+      "oracle": "Independent duplication of selected physical field rows in Y and UV; decoded source bytes unchanged after both parities",
+      "result": "PASS scaled additional output to host CPU VA Bob; not card-side deinterlacing or a throughput benchmark"
+    },
+    "boundary": "PASS in both native attempts: intended private plugin/DIL mappings and actual card ownership, clean exit, zero pins/refcount, unchanged AER/module/PM and no new kernel fault",
+    "review": "Independent raw-log, client/oracle and pixel-result review; original collector pixel-PENDING labels retained, separate offline comparison and Bob validation PASS",
+    "not_claimed": ["stock FFmpeg/Kodi integrated-scaling compatibility", "live or prefeed qualification", "hardware deinterlacing", "physical A/V or GPU enlargement", "PCIe wire measurements", "power", "maximum throughput or endurance", "BCM70012", "physical PPB leasing or standalone MFD"]
   },
   "qualification": {
     "gstreamer_full_lifecycle_groups": "88 PASS",

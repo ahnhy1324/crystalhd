@@ -201,17 +201,22 @@ their guards.
   The [receipt](tests/fixtures/issue436/card-scaled-bob.json) preserves the
   original collector/software HOLDs and separates these observations from VA
   adapter or presentation acceptance.
-- [ ] Qualify VA decode-integrated card scaling with explicit visible geometry
+- [x] Qualify finite H.264 VA decode-integrated card scaling with explicit visible geometry
   and separate processed output. Trimming 724 to 720 is not
   pixel-equivalent: a same-DIL comparison of retained captures rejects all three
   possible field-row crops (see the existing receipt). The opt-in implementation
   applies SPS cropping before scaling, keeps original reconstruction in the
   firmware DPB and exposes only the small additional output as host pixels.
-  Original reference handles reject image/export/VPP access. Native
-  coded-1088/visible-1080 → 720 output, pixels, EOS and reopen still need
-  qualification; ordinary FFmpeg/Kodi do not request this integrated API. Only then
-  evaluate READY on an eligible input, retaining B-frame limitations and payload
-  timestamps. Reuse completed benchmarks instead of repeating unrelated gates.
+  Original reference handles reject image/export/VPP access. At `87e0306`,
+  native coded-1088/visible-1080 → 720 output, all 100 NV12 pictures across
+  two opens, EOS and clean reopen pass; first/last-picture CPU VA Bob also passes
+  both parities across two opens. See the existing receipt's
+  `va_decode_processing` section. Ordinary FFmpeg/Kodi do not request this
+  integrated API; no automatic stock-player or physical-presentation claim.
+- [ ] Extend the explicitly finite integrated path only with measured LIVE/READY
+  eligibility, preserving B-frame restrictions, payload timestamps and actual
+  small readback. Qualify additional stream geometries/parities and client
+  selection separately. Reuse completed benchmarks instead of repeating unrelated gates.
 - [x] Reduce the first-field Bob private NV12 view to half height without
   changing the public decode surface. Both-parity pixel/lifetime tests,
   no-SSE controls, CPU cost comparison and a bounded native regression pass

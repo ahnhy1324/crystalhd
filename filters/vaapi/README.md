@@ -521,9 +521,16 @@ This initial path uses finite replay on BCM70015. Explicit LIVE, low-latency
 and READY-remap experiments, arbitrary crop/height, extra filters and BCM70012
 are rejected. The default VLD path and published 1.1 are unchanged. Stock
 FFmpeg/Kodi do not request integrated processing, so this does not automatically
-accelerate their separate `scale_vaapi`/VPP calls. Native output/pixel/lifecycle
-qualification is tracked in [TODO](../../TODO.md#card-720-output-deinterlace-then-enlarge);
-capability advertisement alone is not hardware acceptance.
+accelerate their separate `scale_vaapi`/VPP calls.
+
+At `87e0306`, the finite FHD TFF test completed two opens with 50 pictures each:
+only 1280×720 fields were received, all 100 assembled NV12 pictures matched the
+independently joined card-output reference, and EOS/reopen/cleanup passed.
+Ordinary CPU VA Bob then matched both field parities of the first and last
+small pictures across two opens (eight exact outputs). This qualifies the
+explicit API connection, not stock-player selection, live cadence or physical
+A/V. See the [measurement receipt](../../tests/fixtures/issue436/card-scaled-bob.json)
+and [remaining scope](../../TODO.md#card-720-output-deinterlace-then-enlarge).
 
 ## Limitations
 

@@ -285,8 +285,10 @@ Add `--weave` to preserve their interlaced lines instead. The player's selected
 deinterlacer may differ from the explicit GStreamer `scalerbob` used in the
 [bounded FHD-to-720 comparison](HARDWARE-2026-09-13.md#card-scaled-interlaced-h264-and-host-bob-2026-10-20).
 Other interlaced codecs, nonaligned widths and scaled whole-Weave payloads are
-not supported by this new path. This does not add card-side Bob or change the
-VA decoder surface-size contract.
+not supported by this new path. This does not add card-side Bob.
+VA clients have a separate, explicit
+[decode-integrated scaling API](filters/vaapi/README.md#development-decode-integrated-card-scaling);
+ordinary FFmpeg/Kodi VPP calls do not select it automatically.
 
 The optional
 `--software-output-size WIDTHxHEIGHT` stage requires a nonzero hardware scale
