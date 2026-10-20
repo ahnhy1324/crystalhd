@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Complete first-temporal-field Bob from a released, operation-private H.264
+  field without marking the decoded frame ready or changing EOS/replay policy.
 - Allow aligned BCM70015 H.264 field scaling through the existing GStreamer
   width option, preserving paired-field identity and rejecting scaled whole Weave.
 - Send library diagnostics to stderr so binary media written to stdout is not

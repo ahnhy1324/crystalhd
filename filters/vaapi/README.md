@@ -113,6 +113,9 @@ produces one progressive output. `BOTTOM_FIELD` selects physical parity;
 `BOTTOM_FIELD_FIRST` describes temporal order, not that selection. Clients own
 field-rate scheduling and output timestamps, normally submitting both fields.
 Filter settings are captured at Render and retained through queued work.
+For BCM70015 H.264, a validated first temporal field can satisfy its Bob request through
+a private view before the full decoded frame is ready. Opposite-field Bob,
+Weave and ordinary surface synchronization still require the genuine pair.
 
 Device-free pixel, API, ownership/cancellation and i686/no-SSE checks do not
 establish real-time FHD, stock Kodi/Atom compatibility or physical A/V sync.

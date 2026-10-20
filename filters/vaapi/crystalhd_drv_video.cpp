@@ -3094,8 +3094,14 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
 
 static bool CopyH264InterlacedToSurface(
     Surface *surface, const uint8_t *const fields[2], unsigned int source_width,
-    unsigned int source_height, size_t field_pitch, uint64_t timestamp) {
-  if (surface == nullptr || fields[0] == nullptr || fields[1] == nullptr ||
+    unsigned int source_height, size_t field_pitch, uint64_t timestamp,
+    unsigned int field_mask = 3) {
+  // A single parity is used only by the operation-private Bob view below.
+  // Public decode surfaces always use both fields and complete as before.
+  if (surface == nullptr || field_mask == 0 || field_mask > 3 ||
+      ((field_mask & 1U) && fields[0] == nullptr) ||
+      ((field_mask & 2U) && fields[1] == nullptr) ||
+      (field_mask != 3 && surface->fourcc != VA_FOURCC_NV12) ||
       source_width == 0 || (source_width & 1U) != 0 || source_height == 0 ||
       source_height % 4U != 0 || field_pitch < source_width * 2U)
     return false;
@@ -3175,6 +3181,8 @@ static bool CopyH264InterlacedToSurface(
   // whole-picture transfer. Downsample chroma within each field in either
   // case; averaging opposite fields produces temporal comb colors.
   for (unsigned int parity = 0; parity < 2; ++parity) {
+    if ((field_mask & (1U << parity)) == 0)
+      continue;
 #if !defined(__SSE2__)
     // Keep same-field source rows hot without keeping all five pixel
     // pointers live in one scalar loop on register-limited 32-bit CPUs.
@@ -5404,10 +5412,63 @@ static VAStatus DecodeWaitState(const DecodeContext &decode, Surface *surface,
   return VA_STATUS_ERROR_HW_BUSY;
 }
 
+// The private result is valid ONLY for this operation's selected first temporal
+// parity. It never enters a public surface/map or changes decode readiness.
+// The caller holds Driver::mutex, including the successful RX-release boundary.
+static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
+                                    std::shared_ptr<Surface> *view) {
+  if (view == nullptr)
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
+  const auto &source = operation.source;
+  const auto &decoder = operation.decoder;
+  if (!operation.deinterlace.bob || !source || !decoder || source->ready ||
+      source->failed || source->destroyed || source->image_write_locked ||
+      source->fourcc != VA_FOURCC_NV12 || decoder->is_70012 ||
+      !IsH264Profile(decoder->profile) || decoder->closing || decoder->retired ||
+      decoder->hardware_close_pending || decoder->ReplayFailed() ||
+      decoder->generation != operation.decoder_generation ||
+      source->expected_timestamp != operation.source_timestamp)
+    return VA_STATUS_SUCCESS;
+  const H264FirstField &first = decoder->h264_first_field;
+  const bool bottom = operation.deinterlace.field ==
+                      crystalhd_vpp_bob::FieldParity::kBottom;
+  const auto picture = decoder->decoded_frames.find(operation.source_timestamp);
+  if (!first.valid || first.replay_duplicate || first.is_70012 ||
+      first.bottom != bottom || first.bottom_first != bottom ||
+      first.timestamp != operation.source_timestamp || first.picture != source ||
+      first.decode_identity == 0 || first.decode_identity != source->decode_identity ||
+      first.generation != operation.decoder_generation ||
+      source->trace_generation != operation.decoder_generation ||
+      picture == decoder->decoded_frames.end() || picture->second != source ||
+      !decoder->replay.IsOutstanding(operation.source_timestamp))
+    return VA_STATUS_SUCCESS;
+  if (first.source_pitch == 0 || first.height == 0 ||
+      first.height / 2U > first.pixels.size() / first.source_pitch)
+    return VA_STATUS_ERROR_DECODING_ERROR;
+  try {
+    auto prepared = std::make_shared<Surface>();
+    if (!prepared->AllocateCpuNv12(source->width, source->height))
+      return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    prepared->expected_timestamp = operation.source_timestamp;
+    const uint8_t *fields[2] = {};
+    fields[bottom ? 1 : 0] = first.pixels.data();
+    if (!CopyH264InterlacedToSurface(prepared.get(), fields, first.width,
+                                    first.height, first.source_pitch,
+                                    operation.source_timestamp,
+                                    bottom ? 2U : 1U))
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    *view = std::move(prepared);
+  } catch (const std::bad_alloc &) {
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
+  return VA_STATUS_SUCCESS;
+}
+
 static VAStatus SyncDecodeSurface(
     Driver *driver, const std::shared_ptr<Surface> &surface,
     std::unique_lock<std::mutex> *driver_lock, uint64_t timeout_ns,
-    const std::function<bool()> &canceled = {}) {
+    const std::function<bool()> &canceled = {},
+    const std::function<VAStatus(bool *)> &private_vpp_ready = {}) {
   if (driver_lock == nullptr || !driver_lock->owns_lock())
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   if (canceled && canceled())
@@ -5415,6 +5476,12 @@ static VAStatus SyncDecodeSurface(
   const VAStatus initial_state = DecodeSurfaceState(surface.get());
   if (initial_state != VA_STATUS_ERROR_HW_BUSY)
     return initial_state;
+  if (private_vpp_ready) {
+    bool ready = false;
+    const VAStatus status = private_vpp_ready(&ready);
+    if (status != VA_STATUS_SUCCESS || ready)
+      return status;
+  }
   std::shared_ptr<DecodeContext> decode;
   for (auto &entry : driver->contexts) {
     if (!entry.second->decoder_started ||
@@ -5514,6 +5581,16 @@ static VAStatus SyncDecodeSurface(
     if (status == VA_STATUS_SUCCESS &&
         (surface->ready || presentation_ready()))
       break;
+    // Bob alone may consume a released first field. This is not an EOS or a
+    // full-picture completion, and ordinary SyncSurface has no such callback.
+    if (status == VA_STATUS_SUCCESS && private_vpp_ready) {
+      if (canceled && canceled())
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+      bool ready = false;
+      status = private_vpp_ready(&ready);
+      if (status != VA_STATUS_SUCCESS || ready)
+        return status;
+    }
     // The immediately preceding picture commonly becomes READY while this
     // call is already waiting for the exact requested picture.  Reconsider
     // the bounded candidate after harvesting output; checking only once in
@@ -5675,10 +5752,13 @@ static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
   Debug("%s VPP sequence=%llu source_timestamp=%llu target=%p status=%d "
         "expected_timestamp=%llu decoder_context=%u captured_generation=%llu "
         "current_generation=%llu source_ready=%d source_failed=%d decoder_retired=%d "
-        "source_destroyed=%d target_destroyed=%d target_owner_destroyed=%d target_superseded=%d",
+        "source_destroyed=%d target_destroyed=%d target_owner_destroyed=%d target_superseded=%d "
+        "completed_source_timestamp=%llu",
         committed ? "committed" : "discarded",
         static_cast<unsigned long long>(operation.sequence),
-        static_cast<unsigned long long>(operation.source->frame_timestamp),
+        static_cast<unsigned long long>(successful_commit
+                                            ? operation.source_timestamp
+                                            : operation.source->frame_timestamp),
         static_cast<void *>(operation.target.get()), status,
         static_cast<unsigned long long>(operation.source_timestamp),
         operation.decoder ? operation.decoder->id : VA_INVALID_ID,
@@ -5688,10 +5768,12 @@ static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
         operation.decoder && operation.decoder->retired,
         operation.source->destroyed, operation.target->destroyed,
         operation.target_owner->destroyed,
-        operation.target_owner->latest_vpp_sequence != operation.sequence);
+        operation.target_owner->latest_vpp_sequence != operation.sequence,
+        static_cast<unsigned long long>(operation.source->frame_timestamp));
   crystalhd_vaapi_trace::Fields fields =
       TraceFields(nullptr, operation.target.get(),
-                  operation.source->frame_timestamp);
+                  successful_commit ? operation.source_timestamp
+                                    : operation.source->frame_timestamp);
   fields.operation = operation.sequence;
   fields.outcome = status;
   driver->trace.Emit(successful_commit
@@ -5903,6 +5985,7 @@ static void RunVppWorker(Driver *driver) {
 
     selected->worker_active = true;
     const PendingVpp operation = *selected;
+    std::shared_ptr<Surface> first_field_view;
     VAStatus status = VA_STATUS_SUCCESS;
     if (operation.source->expected_timestamp !=
         operation.source_timestamp) {
@@ -5915,6 +5998,11 @@ static void RunVppWorker(Driver *driver) {
       status = SyncDecodeSurface(driver, operation.source, &lock,
                                  VA_TIMEOUT_INFINITE, [&] {
                                    return PendingVppCanceled(operation);
+                                 }, [&](bool *ready) {
+                                   const VAStatus prepared =
+                                       PrepareFirstFieldBob(operation, &first_field_view);
+                                   *ready = first_field_view != nullptr;
+                                   return prepared;
                                  });
     }
 
@@ -5932,7 +6020,8 @@ static void RunVppWorker(Driver *driver) {
     if (status == VA_STATUS_SUCCESS) {
       status = ProcessVpp(&driver->vpp_scaler,
                           &driver->vpp_argb_staging,
-                          operation.source.get(), operation.target.get(),
+                          first_field_view ? first_field_view.get() : operation.source.get(),
+                          operation.target.get(),
                           operation.source_region, operation.output_region,
                           operation.write_timeline >= 0,
                           operation.deinterlace);
@@ -7767,11 +7856,18 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
                          });
       };
       VAStatus status = VA_STATUS_ERROR_OPERATION_FAILED;
+      std::shared_ptr<Surface> first_field_view;
       try {
         if (!canceled())
           status = SyncDecodeSurface(driver, operation.source, &lock,
                                       kDecodeTimeoutNs,
-                                      [&canceled] { return canceled(); });
+                                      [&canceled] { return canceled(); },
+                                      [&](bool *ready) {
+                                        const VAStatus prepared = PrepareFirstFieldBob(
+                                            operation, &first_field_view);
+                                        *ready = first_field_view != nullptr;
+                                        return prepared;
+                                      });
       } catch (const std::bad_alloc &) {
         status = VA_STATUS_ERROR_ALLOCATION_FAILED;
       }
@@ -7781,7 +7877,8 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
         status = VA_STATUS_ERROR_OPERATION_FAILED;
       if (status == VA_STATUS_SUCCESS)
         status = ProcessVpp(&driver->vpp_scaler, &driver->vpp_argb_staging,
-                            operation.source.get(), operation.target.get(),
+                            first_field_view ? first_field_view.get() : operation.source.get(),
+                            operation.target.get(),
                             operation.source_region, operation.output_region,
                             false, operation.deinterlace);
       ReleasePendingVpp(driver, operation.sequence, status,

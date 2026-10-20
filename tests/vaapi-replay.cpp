@@ -7217,6 +7217,189 @@ static void FirstH264FieldRefreshesTransportGrace() {
   }
 }
 
+static void FirstTemporalBobDoesNotCompleteDecodePicture() {
+  for (bool bottom_first : {false, true}) {
+    for (unsigned visible_height : {32U, 28U}) {
+     for (unsigned route : {0U, 1U, 2U}) { // pre-latched, arrives while waiting, worker
+      H264FieldFixture fixture;
+      DecodeIoMock io;
+      MockDecodeScope scope(io);
+      auto decoder = std::shared_ptr<DecodeContext>(&fixture.decoder,
+                                                   [](DecodeContext *) {});
+      fixture.driver.contexts[decoder->id] = decoder;
+      decoder->device = io.handle();
+      decoder->decoder_started = true;
+      decoder->live_h264 = decoder->live_h264_gap_tolerant = true;
+      VADriverContext context = {};
+      context.pDriverData = &fixture.driver;
+      auto receive = [&](bool bottom) {
+        io.override_output = true;
+        io.overridden_output = fixture.Output(bottom, bottom_first,
+                                              bottom ? &fixture.bottom : &fixture.top);
+        bool activity = false;
+        const VAStatus status = ReceiveOne(&fixture.driver, decoder.get(), 0, &activity);
+        io.override_output = false;
+        Require(status == VA_STATUS_SUCCESS && activity,
+                "acquire and release the exact real field before Bob reads it");
+      };
+      if (route != 1) receive(bottom_first);
+      auto target = std::make_shared<Surface>();
+      Require(target->AllocateCpuNv12(8, 16), "allocate scaled private Bob target");
+      target->id = 2;
+      target->layout.valid = route != 2; // Synchronous fallback or private worker.
+      fixture.driver.surfaces[2] = target;
+      VAConfigID config = VA_INVALID_ID;
+      VAContextID processor = VA_INVALID_ID;
+      Require(CreateConfig(&context, VAProfileNone, VAEntrypointVideoProc, nullptr, 0,
+                           &config) == VA_STATUS_SUCCESS &&
+                  CreateContext(&context, config, 8, 16, 0,
+                                nullptr, 0, &processor) == VA_STATUS_SUCCESS,
+              "create first-field Bob API context");
+      VAProcFilterParameterBufferDeinterlacing filter = {};
+      filter.type = VAProcFilterDeinterlacing;
+      filter.algorithm = VAProcDeinterlacingBob;
+      filter.flags = bottom_first ? VA_DEINTERLACING_BOTTOM_FIELD_FIRST |
+                                        VA_DEINTERLACING_BOTTOM_FIELD : 0;
+      VABufferID filter_id = VA_INVALID_ID, pipeline_id = VA_INVALID_ID;
+      VARectangle region = {0, 0, 16, static_cast<uint16_t>(visible_height)};
+      Require(CreateBuffer(&context, processor, VAProcFilterParameterBufferType,
+                           sizeof(filter), 1, &filter, &filter_id) == VA_STATUS_SUCCESS,
+              "create exact first temporal parity filter");
+      VAProcPipelineParameterBuffer pipeline = {};
+      pipeline.surface = 1;
+      pipeline.surface_region = &region;
+      pipeline.filters = &filter_id;
+      pipeline.num_filters = 1;
+      Require(CreateBuffer(&context, processor, VAProcPipelineParameterBufferType,
+                           sizeof(pipeline), 1, &pipeline, &pipeline_id) == VA_STATUS_SUCCESS &&
+                  BeginPicture(&context, processor, 2) == VA_STATUS_SUCCESS &&
+                  RenderPicture(&context, processor, &pipeline_id, 1) == VA_STATUS_SUCCESS,
+              "capture first-field Bob without changing the public decode binding");
+      unsigned waits = 0;
+      io.on_sleep = [&] {
+        ++waits;
+        std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+        receive(route == 1 ? bottom_first : !bottom_first);
+        if (route == 1) {
+          io.on_sleep = [&] {
+            ++waits;
+            std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+            receive(!bottom_first); // Baseline terminates without a 10s wait.
+          };
+        }
+      };
+      const VAStatus ended = EndPicture(&context, processor);
+      if (route == 2 && ended == VA_STATUS_SUCCESS) {
+        std::thread worker([&] { RunVppWorker(&fixture.driver); });
+        {
+          std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+          fixture.driver.condition.wait_for(lock, std::chrono::seconds(2), [&] {
+            return fixture.driver.pending_vpp.empty();
+          });
+          fixture.driver.stopping = true;
+          fixture.driver.condition.notify_all();
+        }
+        worker.join();
+        fixture.driver.stopping = false;
+      }
+      Require(ended == VA_STATUS_SUCCESS && waits == (route == 1 ? 1U : 0U) &&
+                  target->ready && target->frame_timestamp == 1 &&
+                  !fixture.private_frame->ready && !fixture.public_frame->ready &&
+                  fixture.private_frame->frame_timestamp == 0 &&
+                  decoder->h264_first_field.valid && decoder->replay.outstanding() == 1 &&
+                  !decoder->replay.sealed() && decoder->generation == 3 &&
+                  SyncSurface2(&context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT,
+              "first temporal Bob completes before complement without completing public decode");
+      io.on_sleep = {};
+      const auto early_pixels = target->storage;
+      receive(!bottom_first);
+      Require(fixture.private_frame->ready && !decoder->h264_first_field.valid &&
+                  decoder->replay.outstanding() == 0 && target->storage == early_pixels,
+              "complement completes the original picture without mutating early Bob");
+      Surface oracle;
+      Require(oracle.AllocateCpuNv12(8, 16), "allocate completed-pair Bob oracle");
+      VppDeinterlace bob;
+      bob.bob = true;
+      bob.field = bottom_first ? crystalhd_vpp_bob::FieldParity::kBottom
+                               : crystalhd_vpp_bob::FieldParity::kTop;
+      const VARectangle output_region = {0, 0, 8, 16};
+      Require(ProcessVpp(&fixture.driver.vpp_scaler, &fixture.driver.vpp_argb_staging,
+                         fixture.private_frame.get(), &oracle, region, output_region,
+                         false, bob) == VA_STATUS_SUCCESS,
+              "derive the existing completed-Weave Bob pixel oracle");
+      for (unsigned plane = 0; plane != 2; ++plane)
+        for (unsigned row = 0; row != (plane ? (oracle.height + 1) / 2 : oracle.height); ++row)
+          Require(memcmp(target->planes[plane] + row * target->pitch[plane],
+                         oracle.planes[plane] + row * oracle.pitch[plane], 8) == 0,
+                  "every active early Bob Y/U/V byte equals completed-Weave Bob");
+      Require(fixture.driver.pending_vpp.empty() &&
+                  fixture.private_frame->vpp_readers == 0 && target->vpp_writers == 0 &&
+                  !io.invalid && io.open_attempts == 0,
+              "early Bob balances leases without decoder reopen");
+      Require(DestroyBuffer(&context, pipeline_id) == VA_STATUS_SUCCESS &&
+                  DestroyBuffer(&context, filter_id) == VA_STATUS_SUCCESS &&
+                  DestroyContext(&context, processor) == VA_STATUS_SUCCESS &&
+                  DestroyConfig(&context, config) == VA_STATUS_SUCCESS,
+              "release the private first-field API fixtures");
+      fixture.driver.contexts.erase(decoder->id);
+      decoder->device = nullptr;
+      decoder->decoder_started = false;
+     }
+    }
+  }
+}
+
+static void FirstTemporalBobRejectsMismatchedLatch() {
+  for (unsigned fault = 0; fault != 17; ++fault) {
+    H264FieldFixture fixture;
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    fixture.decoder.device = io.handle();
+    io.override_output = true;
+    io.overridden_output = fixture.Output(false, false, &fixture.top);
+    bool activity = false;
+    Require(ReceiveOne(&fixture.driver, &fixture.decoder, 0, &activity) == VA_STATUS_SUCCESS,
+            "negative views start with a validated and released first field");
+    PendingVpp operation;
+    operation.source = fixture.private_frame;
+    operation.decoder = std::shared_ptr<DecodeContext>(&fixture.decoder, [](DecodeContext *) {});
+    operation.source_timestamp = 1;
+    operation.decoder_generation = 3;
+    operation.deinterlace.bob = true;
+    auto &first = fixture.decoder.h264_first_field;
+    switch (fault) {
+      case 0: operation.deinterlace.field = crystalhd_vpp_bob::FieldParity::kBottom; break;
+      case 1: first.bottom_first = true; break;
+      case 2: first.timestamp = 2; break;
+      case 3: ++first.decode_identity; break;
+      case 4: ++first.generation; break;
+      case 5: fixture.private_frame->failed = true; break;
+      case 6: fixture.private_frame->destroyed = true; break;
+      case 7: fixture.decoder.retired = true; break;
+      case 8: first.replay_duplicate = true; break;
+      case 9: first.is_70012 = true; break;
+      case 10: fixture.decoder.closing = true; break;
+      case 11: first.picture = fixture.public_frame; break;
+      case 12: allocation_fault::fail_next = true; break;
+      case 13: first.pixels.resize(first.pixels.size() - 1); break;
+      case 14: first.source_pitch = 0; break;
+      case 15: fixture.private_frame->expected_timestamp = 2; break;
+      case 16: ++fixture.private_frame->trace_generation; break;
+    }
+    std::shared_ptr<Surface> view;
+    const VAStatus status = PrepareFirstFieldBob(operation, &view);
+    const VAStatus expected = fault == 12 ? VA_STATUS_ERROR_ALLOCATION_FAILED :
+        (fault == 13 || fault == 14) ? VA_STATUS_ERROR_DECODING_ERROR : VA_STATUS_SUCCESS;
+    Require(status == expected &&
+                !view && !allocation_fault::fail_next && first.valid &&
+                fixture.decoder.replay.outstanding() == 1 &&
+                !fixture.private_frame->ready && fixture.private_frame->frame_timestamp == 0 &&
+                !fixture.public_frame->ready && !io.invalid,
+            "mismatched/canceled/OOM first-field views cannot publish or retire a picture");
+    fixture.decoder.device = nullptr;
+  }
+}
+
 static void LiveBobTailWithUnfenceableExposedTarget() {
   enum class Tail { Complete, Cancel, Drain };
   for (bool bottom_first : {false, true}) {
@@ -7311,12 +7494,15 @@ static void LiveBobTailWithUnfenceableExposedTarget() {
       VAProcFilterParameterBufferDeinterlacing filter = {};
       filter.type = VAProcFilterDeinterlacing;
       filter.algorithm = VAProcDeinterlacingBob;
-      filter.flags = bottom_first ? VA_DEINTERLACING_BOTTOM_FIELD_FIRST |
-                                       VA_DEINTERLACING_BOTTOM_FIELD : 0;
+      // These existing wait/cancel cases exercise the missing complement,
+      // not the newly readable first temporal field tested above.
+      const bool selected_bottom = tail == Tail::Drain ? bottom_first : !bottom_first;
+      filter.flags = (bottom_first ? VA_DEINTERLACING_BOTTOM_FIELD_FIRST : 0) |
+                     (selected_bottom ? VA_DEINTERLACING_BOTTOM_FIELD : 0);
       VABufferID filter_id = VA_INVALID_ID, pipeline_id = VA_INVALID_ID;
       Require(CreateBuffer(&fixture.context, processor, VAProcFilterParameterBufferType,
                            sizeof(filter), 1, &filter, &filter_id) == VA_STATUS_SUCCESS,
-              "create first-temporal-field Bob parameters");
+              "create complementary-field wait or completed-drain Bob parameters");
       VAProcPipelineParameterBuffer pipeline = {};
       pipeline.surface = 2;
       pipeline.filters = &filter_id;
@@ -8561,12 +8747,16 @@ static void AutonomousWorkerStopsAfterTransportFailure() {
 int main(int argc, char **argv) {
   try {
     if (argc == 2 && std::strcmp(argv[1], "--live-bob-tail") == 0) {
+      FirstTemporalBobDoesNotCompleteDecodePicture();
+      FirstTemporalBobRejectsMismatchedLatch();
       FirstH264FieldRefreshesTransportGrace();
       LiveBobTailWithUnfenceableExposedTarget();
-      std::puts("VA-API first-field progress/grace and LIVE Bob tail model: TFF/BFF completion, cancellation and explicit drain PASS");
+      std::puts("VA-API private first-field Bob, progress/grace and LIVE tail: TFF/BFF pixels, ownership, cancellation and explicit drain PASS");
       return 0;
     }
     Require(argc == 1, "usage: vaapi-replay-test [--live-bob-tail]");
+    FirstTemporalBobDoesNotCompleteDecodePicture();
+    FirstTemporalBobRejectsMismatchedLatch();
     SealedBatchQueuesAndReplays();
     RejectIncompleteAndUnboundedReplay();
     ReclaimOnlyCompletedIdrPrefixes();
