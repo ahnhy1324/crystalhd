@@ -2,6 +2,9 @@
 
 ## 1.2.0 — in development
 
+- Correct hardware-initialization status: HWINIT no longer skips firmware
+  upload/INIT, failed setup remains retryable, and in-progress setup is not
+  reported as complete. Preserve existing successful playback and teardown.
 - Advance stalled LIVE H.264 MBAFF Bob output with a private non-reference
   intra picture, preserving original frames and references without inferring
   EOS from an input gap. Drain the private output separately at explicit close.

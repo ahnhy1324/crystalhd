@@ -543,32 +543,31 @@ BC_STATUS DtsSetupHardware(HANDLE hDevice, BOOL IgnClkChk)
 	if (input_busy)
 		return BC_STS_BUSY;
 
-	if( !IgnClkChk){
-		if(Ctx->DevId == BC_PCI_DEVID_LINK || Ctx->DevId == BC_PCI_DEVID_FLEA){
-			if(DtsGetHwInitSts() != BC_DIL_HWINIT_NOT_YET){
-				DebugLog_Trace(LDIL_DBG," HW init already?\n");
-				return BC_STS_SUCCESS;
-			}
-		}
-	}
-
-	DtsSetHwInitSts(BC_DIL_HWINIT_IN_PROGRESS);
-
-    if (Ctx->DevId == BC_PCI_DEVID_LINK)
-        sts = DtsPushAuthFwToLink(hDevice,NULL);
-	else if (Ctx->DevId == BC_PCI_DEVID_FLEA)
-		sts = DtsPushFwToFlea(hDevice,NULL);
-	else {
+	if (Ctx->DevId != BC_PCI_DEVID_LINK && Ctx->DevId != BC_PCI_DEVID_FLEA) {
 		DebugLog_Trace(LDIL_DBG,"HW Type not found\n");
 		return BC_STS_ERROR;
 	}
+	const uint32_t init_state = DtsGetHwInitSts();
+	/* Only DONE is a successful shortcut. Even a forced reset must not
+	 * overwrite an initializer's in-progress state. This call owns the state
+	 * transition only after admission, and every owned failure makes it retryable. */
+	if (init_state == BC_DIL_HWINIT_IN_PROGRESS)
+		return BC_STS_BUSY;
+	if (init_state != BC_DIL_HWINIT_NOT_YET && init_state != BC_DIL_HWINIT_DONE)
+		return BC_STS_ERROR;
+	if (!IgnClkChk && init_state == BC_DIL_HWINIT_DONE)
+		return BC_STS_SUCCESS;
 
-	if(sts != BC_STS_SUCCESS){
-		return sts;
-	}
+	DtsSetHwInitSts(BC_DIL_HWINIT_IN_PROGRESS);
+
+	if (Ctx->DevId == BC_PCI_DEVID_LINK)
+		sts = DtsPushAuthFwToLink(hDevice,NULL);
+	else
+		sts = DtsPushFwToFlea(hDevice,NULL);
 
 	/* Initialize Firmware interface */
-	sts = DtsFWInitialize(hDevice,0);
+	if (sts == BC_STS_SUCCESS)
+		sts = DtsFWInitialize(hDevice,0);
 
 	if (sts == BC_STS_SUCCESS)
 		DtsSetHwInitSts(BC_DIL_HWINIT_DONE);
@@ -721,9 +720,6 @@ DtsDeviceOpen(
 	else{
 		globMode = DtsGetOPMode();
 	}
-
-	if (mode == DTS_HWINIT_MODE)
-		DtsSetHwInitSts(BC_DIL_HWINIT_IN_PROGRESS);
 
 	drvHandle = open(CRYSTALHD_API_DEV_NAME, O_RDWR);
 	if(drvHandle < 0)

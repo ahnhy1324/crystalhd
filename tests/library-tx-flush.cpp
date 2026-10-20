@@ -96,6 +96,14 @@ static struct {
     std::vector<uint8_t> power_states;
 } recovery;
 
+enum class SetupCommand { FleaPush, LinkPush, Initialize };
+static struct {
+    bool active;
+    BC_STATUS push_status, initialize_status;
+    std::vector<SetupCommand> calls;
+    std::vector<uint32_t> states;
+} setup_commands;
+
 static std::thread *late_recovery_owner;
 static bool late_owner_ready, late_owner_release;
 static BC_STATUS late_owner_status;
@@ -487,9 +495,23 @@ BC_STATUS DtsFWDrop(HANDLE, uint32_t) { std::abort(); }
 BC_STATUS DtsSetProgressive(HANDLE, uint32_t) { return control_call(); }
 BC_STATUS DtsSetVideoClock(HANDLE, uint32_t) { return control_call(); }
 BC_STATUS DtsSetTSMode(HANDLE, uint32_t) { return control_call(); }
-BC_STATUS DtsPushFwToFlea(HANDLE, char *) { return control_call(); }
-BC_STATUS DtsPushAuthFwToLink(HANDLE, char *) { return control_call(); }
-BC_STATUS DtsFWInitialize(HANDLE, uint32_t) { return control_call(); }
+static BC_STATUS setup_command(HANDLE device, SetupCommand command)
+{
+    if (!setup_commands.active)
+        return control_call();
+    ++run.control_calls;
+    check(device == observed, "setup command retains its exact fixture handle");
+    setup_commands.calls.push_back(command);
+    setup_commands.states.push_back(DtsGetHwInitSts());
+    return command == SetupCommand::Initialize ?
+        setup_commands.initialize_status : setup_commands.push_status;
+}
+BC_STATUS DtsPushFwToFlea(HANDLE device, char *)
+{ return setup_command(device, SetupCommand::FleaPush); }
+BC_STATUS DtsPushAuthFwToLink(HANDLE device, char *)
+{ return setup_command(device, SetupCommand::LinkPush); }
+BC_STATUS DtsFWInitialize(HANDLE device, uint32_t)
+{ return setup_command(device, SetupCommand::Initialize); }
 /* Only unexecuted pixel-copy paths need these symbols. */
 BC_STATUS DtsCopyRawDataToOutBuff(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *)
 { std::abort(); }
@@ -1171,6 +1193,114 @@ struct RecoveryFixture {
         recovery.active = false;
     }
 };
+
+struct SetupCommandScope {
+    SetupCommandScope()
+    {
+        setup_commands = {};
+        setup_commands.active = true;
+        setup_commands.push_status = BC_STS_SUCCESS;
+        setup_commands.initialize_status = BC_STS_SUCCESS;
+    }
+    ~SetupCommandScope() { setup_commands.active = false; }
+};
+
+static void test_setup_hardware_initialization_state()
+{
+    for (const uint32_t device : {BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA}) {
+        const SetupCommand push = device == BC_PCI_DEVID_LINK ?
+            SetupCommand::LinkPush : SetupCommand::FleaPush;
+        {
+            RecoveryFixture fixture(device);
+            SetupCommandScope commands;
+            setup_commands.push_status = BC_STS_FW_AUTH_FAILED;
+            check(DtsSetupHardware(&fixture.context, false) == BC_STS_FW_AUTH_FAILED &&
+                  DtsGetHwInitSts() == BC_DIL_HWINIT_NOT_YET &&
+                  setup_commands.calls == std::vector<SetupCommand>{push},
+                  "failed firmware push returns the original error and leaves initialization retryable");
+            setup_commands.push_status = BC_STS_SUCCESS;
+            check(DtsSetupHardware(&fixture.context, false) == BC_STS_SUCCESS &&
+                  DtsGetHwInitSts() == BC_DIL_HWINIT_DONE &&
+                  setup_commands.calls == std::vector<SetupCommand>{push, push, SetupCommand::Initialize} &&
+                  setup_commands.states == std::vector<uint32_t>(3, BC_DIL_HWINIT_IN_PROGRESS),
+                  "retry after failed push actually uploads and initializes before publishing DONE");
+        }
+        {
+            RecoveryFixture fixture(device);
+            SetupCommandScope commands;
+            setup_commands.initialize_status = BC_STS_FW_CMD_ERR;
+            check(DtsSetupHardware(&fixture.context, false) == BC_STS_FW_CMD_ERR &&
+                  DtsGetHwInitSts() == BC_DIL_HWINIT_NOT_YET &&
+                  setup_commands.calls == std::vector<SetupCommand>{push, SetupCommand::Initialize},
+                  "failed firmware initialization does not publish DONE or hide its original error");
+            setup_commands.initialize_status = BC_STS_SUCCESS;
+            check(DtsSetupHardware(&fixture.context, false) == BC_STS_SUCCESS &&
+                  DtsGetHwInitSts() == BC_DIL_HWINIT_DONE &&
+                  setup_commands.calls == std::vector<SetupCommand>{push, SetupCommand::Initialize,
+                                                                    push, SetupCommand::Initialize} &&
+                  setup_commands.states == std::vector<uint32_t>(4, BC_DIL_HWINIT_IN_PROGRESS),
+                  "retry after initialization failure repeats the complete firmware transaction");
+        }
+        {
+            RecoveryFixture fixture(device);
+            SetupCommandScope commands;
+            DtsSetHwInitSts(BC_DIL_HWINIT_DONE);
+            check(DtsSetupHardware(&fixture.context, false) == BC_STS_SUCCESS &&
+                  DtsGetHwInitSts() == BC_DIL_HWINIT_DONE && setup_commands.calls.empty() &&
+                  run.control_calls == 0,
+                  "completed initialization remains a no-command fast path unless forced");
+            check(DtsSetupHardware(&fixture.context, true) == BC_STS_SUCCESS &&
+                  DtsGetHwInitSts() == BC_DIL_HWINIT_DONE &&
+                  setup_commands.calls == std::vector<SetupCommand>{push, SetupCommand::Initialize} &&
+                  setup_commands.states == std::vector<uint32_t>(2, BC_DIL_HWINIT_IN_PROGRESS),
+                  "forced setup replaces a completed initialization with a complete successful transaction");
+        }
+        for (const bool forced : {false, true}) {
+            RecoveryFixture fixture(device);
+            SetupCommandScope commands;
+            DtsSetHwInitSts(BC_DIL_HWINIT_IN_PROGRESS);
+            check(DtsSetupHardware(&fixture.context, forced) == BC_STS_BUSY &&
+                  DtsGetHwInitSts() == BC_DIL_HWINIT_IN_PROGRESS &&
+                  setup_commands.calls.empty() && run.control_calls == 0,
+                  "an in-progress initializer remains BUSY without firmware commands or state clearing");
+        }
+        for (const bool forced : {false, true}) {
+            RecoveryFixture fixture(device);
+            SetupCommandScope commands;
+            DtsSetHwInitSts(UINT32_MAX);
+            check(DtsSetupHardware(&fixture.context, forced) == BC_STS_ERROR &&
+                  DtsGetHwInitSts() == UINT32_MAX && setup_commands.calls.empty() &&
+                  run.control_calls == 0,
+                  "unknown initialization state is rejected without firmware commands or state changes");
+        }
+    }
+    {
+        RecoveryFixture fixture(UINT32_MAX);
+        SetupCommandScope commands;
+        check(DtsSetupHardware(&fixture.context, false) == BC_STS_ERROR &&
+              DtsGetHwInitSts() == BC_DIL_HWINIT_NOT_YET &&
+              setup_commands.calls.empty() && run.control_calls == 0,
+              "an unknown hardware type cannot poison initialization state");
+        fixture.context.DevId = BC_PCI_DEVID_FLEA;
+        check(DtsSetupHardware(&fixture.context, false) == BC_STS_SUCCESS &&
+              DtsGetHwInitSts() == BC_DIL_HWINIT_DONE &&
+              setup_commands.calls == std::vector<SetupCommand>{SetupCommand::FleaPush,
+                                                                SetupCommand::Initialize} &&
+              setup_commands.states == std::vector<uint32_t>(2, BC_DIL_HWINIT_IN_PROGRESS),
+              "a supported retry after unknown hardware performs actual setup instead of false success");
+    }
+    for (const uint32_t state : {BC_DIL_HWINIT_IN_PROGRESS, BC_DIL_HWINIT_DONE}) {
+        for (const bool forced : {false, true}) {
+            RecoveryFixture fixture(UINT32_MAX);
+            SetupCommandScope commands;
+            DtsSetHwInitSts(state);
+            check(DtsSetupHardware(&fixture.context, forced) == BC_STS_ERROR &&
+                  DtsGetHwInitSts() == state && setup_commands.calls.empty() &&
+                  run.control_calls == 0,
+                  "unknown hardware validation leaves another initializer's incoming state untouched");
+        }
+    }
+}
 
 static std::vector<RecoveryStage> expected_recovery_stages(uint32_t device)
 {
@@ -1937,6 +2067,7 @@ static void test_join_publishes_worker_retirement()
 
 int main()
 {
+	test_setup_hardware_initialization_state();
 	test_join_publishes_worker_retirement();
     test_device_close_control_race();
     test_flush_rearms_config_after_old_input_retires();

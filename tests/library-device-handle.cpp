@@ -33,6 +33,13 @@ static unsigned shared_nattch;
 static bool raw_close_expected;
 static bool expect_recovery_owner_during_close;
 static bool recovery_owner_seen_during_close;
+static uint32_t expected_mode;
+static uint32_t initial_hw_state;
+static unsigned firmware_push_calls;
+static unsigned firmware_link_calls;
+static unsigned firmware_init_calls;
+static BC_STATUS firmware_push_status;
+static BC_STATUS firmware_init_status;
 
 struct IoctlRecord {
 	int fd;
@@ -184,8 +191,8 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 		data->u.VerInfo.DriverRevision = 0;
 		break;
 	case BCM_IOC_NOTIFY_MODE:
-		Check(data->u.NotifyMode.Mode == DTS_MONITOR_MODE,
-		      "open notifies the selected monitor mode");
+		Check(data->u.NotifyMode.Mode == expected_mode,
+		      "open notifies the selected mode");
 		break;
 	case BCM_IOC_RELEASE:
 	case BCM_IOC_FW_CMD:
@@ -220,6 +227,41 @@ extern "C" int __wrap_pthread_create(pthread_t *thread,
 	return 0;
 }
 
+/* These internal SDK functions have C++ linkage; public DtsDeviceOpen does not. */
+extern "C" BC_STATUS __wrap__Z15DtsPushFwToFleaPvPc(HANDLE device, char *path)
+{
+	++firmware_push_calls;
+	const DTS_LIB_CONTEXT *context = DtsGetContext(device);
+	Check(expected_mode == DTS_HWINIT_MODE && context &&
+	      context->OpMode == DTS_HWINIT_MODE &&
+	      context->DevId == BC_PCI_DEVID_FLEA && path == nullptr,
+	      "hardware-init uploads firmware for its exact Flea context");
+	Check(DtsGetHwInitSts() == BC_DIL_HWINIT_IN_PROGRESS &&
+	      firmware_init_calls == 0,
+	      "hardware-init claims progress before uploading, never after INIT");
+	return firmware_push_status;
+}
+
+extern "C" BC_STATUS __wrap__Z19DtsPushAuthFwToLinkPvPc(HANDLE, char *)
+{
+	++firmware_link_calls;
+	Check(false, "Flea hardware-init never selects the Link loader");
+	return BC_STS_ERROR;
+}
+
+extern "C" BC_STATUS __wrap__Z15DtsFWInitializePvj(HANDLE device, uint32_t reserved)
+{
+	++firmware_init_calls;
+	const DTS_LIB_CONTEXT *context = DtsGetContext(device);
+	Check(expected_mode == DTS_HWINIT_MODE && context &&
+	      context->OpMode == DTS_HWINIT_MODE && reserved == 0,
+	      "hardware-init initializes its exact context");
+	Check(DtsGetHwInitSts() == BC_DIL_HWINIT_IN_PROGRESS &&
+	      firmware_push_calls == 1 && firmware_push_status == BC_STS_SUCCESS,
+	      "firmware INIT follows exactly one successful upload");
+	return firmware_init_status;
+}
+
 extern "C" int __wrap_shmget(key_t, size_t, int)
 {
 	return 17;
@@ -229,6 +271,7 @@ extern "C" void *__wrap_shmat(int, const void *, int)
 {
 	++shared_attach_calls;
 	std::memset(&shared_state, 0, sizeof(shared_state));
+	shared_state.gHwInitSts = initial_hw_state;
 	return &shared_state;
 }
 
@@ -262,6 +305,10 @@ static void BeginCase(int descriptor)
 	shared_attach_calls = 0;
 	shared_detach_calls = 0;
 	shared_nattch = 0;
+	expected_mode = DTS_MONITOR_MODE;
+	initial_hw_state = BC_DIL_HWINIT_NOT_YET;
+	firmware_push_calls = firmware_link_calls = firmware_init_calls = 0;
+	firmware_push_status = firmware_init_status = BC_STS_SUCCESS;
 	raw_close_expected = false;
 	ioctl_count = 0;
 	failed_command = 0;
@@ -663,6 +710,44 @@ static void CheckSystemOpenFailure()
 	EndCase("system open failure leaves no allocation");
 }
 
+static void CheckHardwareInitOpen(uint32_t initial_state, BC_STATUS push_status,
+				 BC_STATUS init_status, BC_STATUS expected,
+				 unsigned pushes, unsigned initializations)
+{
+	BeginCase(0);
+	expected_mode = DTS_HWINIT_MODE;
+	initial_hw_state = initial_state;
+	firmware_push_status = push_status;
+	firmware_init_status = init_status;
+	HANDLE device = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	Check(DtsDeviceOpen(&device, DTS_HWINIT_MODE) == expected,
+	      "public hardware-init preserves success or its exact setup error");
+	Check(firmware_push_calls == pushes && firmware_init_calls == initializations &&
+	      firmware_link_calls == 0,
+	      "public hardware-init executes the required upload/INIT exactly once or neither");
+	Check((device != nullptr) == (expected == BC_STS_SUCCESS),
+	      "only completed or already-DONE hardware-init publishes a handle");
+	if (device) {
+		Check(shared_state.gHwInitSts == BC_DIL_HWINIT_NOT_YET,
+		      "successful hardware-init preserves its existing post-open status reset");
+		Check(DtsDeviceClose(device) == BC_STS_SUCCESS,
+		      "hardware-init handle closes normally without a decoder channel");
+	}
+	if (initial_state == BC_DIL_HWINIT_NOT_YET)
+		Check(shared_state.gHwInitSts == BC_DIL_HWINIT_NOT_YET,
+		      "failed owned setup or normal close leaves no stale initialization progress");
+	Check(open_calls == 1 && close_calls == 1 && closed_fd == 0 &&
+	      thread_create_calls == 1,
+	      "hardware-init balances its exact device/interface lifetime");
+	Check(shared_attach_calls == 1 && shared_detach_calls == 1,
+	      "hardware-init balances its shared-memory attachment");
+	CheckIoctls(0,
+		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
+		 BCM_IOC_RELEASE},
+		"mocked setup adds no real firmware I/O and preserves terminal release ordering");
+	EndCase("hardware-init success/failure releases every allocation");
+}
+
 int main()
 {
 	CheckCommandOwnership();
@@ -692,6 +777,16 @@ int main()
 		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
 		 BCM_IOC_RELEASE});
 	CheckSystemOpenFailure();
+	CheckHardwareInitOpen(BC_DIL_HWINIT_NOT_YET, BC_STS_SUCCESS,
+		BC_STS_SUCCESS, BC_STS_SUCCESS, 1, 1);
+	CheckHardwareInitOpen(BC_DIL_HWINIT_NOT_YET, BC_STS_IO_XFR_ERROR,
+		BC_STS_SUCCESS, BC_STS_IO_XFR_ERROR, 1, 0);
+	CheckHardwareInitOpen(BC_DIL_HWINIT_NOT_YET, BC_STS_SUCCESS,
+		BC_STS_FW_CMD_ERR, BC_STS_FW_CMD_ERR, 1, 1);
+	CheckHardwareInitOpen(BC_DIL_HWINIT_DONE, BC_STS_SUCCESS,
+		BC_STS_SUCCESS, BC_STS_SUCCESS, 0, 0);
+	CheckHardwareInitOpen(BC_DIL_HWINIT_IN_PROGRESS, BC_STS_SUCCESS,
+		BC_STS_SUCCESS, BC_STS_BUSY, 0, 0);
 	std::printf("Library device handles: %u checks, %u failures\n",
 	            checks, failures);
 	return failures ? 1 : 0;
