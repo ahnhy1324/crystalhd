@@ -426,6 +426,15 @@
       "cpu_scope": "PLAYING through filter EOF; process CPU includes DIL workers, input copies/filter/bookkeeping; excludes graph construction and NULL cleanup; one-core denominator; RSS is fresh-process peak",
       "latency_scope": "Decoder input-pad AU to post-BWDIF host output, not card-only or network/display E2E; unpaced backlog is not decoder service time",
       "delivery": "Paced wall outputs 49.63-49.77/s include startup/drain; PTS is exactly 50/s but host deliveries burst, with maximum gaps 163-175 ms; not smooth physical playback",
+      "retained_timing_analysis": {
+        "scope": "nine paced runs, retained TSV analysis only; no new measurement",
+        "au_arrival_order": "Sort by actual arrival, not the PTS-sorted AU TSV. All nine paced runs have 250 arrival-order PTS decreases and 197 AU gaps over 60 ms; median gap 1.367-1.498 ms, maximum 160.050-160.669 ms",
+        "filter_neighbor": "1498 of 1500 outputs per run follow the next copied input picture; last two are EOF drain. Matched input-to-output time includes that wait, not just computation",
+        "next_input_to_output_p95_ms_ranges": {"native": [26.330, 26.517], "card720": [17.875, 18.000], "card720_up": [31.221, 34.737]},
+        "timestamp_scope": "Input log follows appsink pull, mapping, AVFrame allocation and full YUY2 copy. Later time includes conversion/filter/enlargement and scheduling. Stage percentiles cannot be summed to obtain total latency percentiles",
+        "cause_limit": "Decoder-sink bursts are observed, not attributed solely to PTS pacing: GStreamer identity prefers valid DTS, but this capture lacks DTS/segment/pre-identity times and cannot separate pacing from backpressure",
+        "example": "Native r1 maximum 175.150529 ms output gap includes an already-167.705501 ms next-input gap; first new AU follows the previous input copy by 141.728608 ms. Not a filter-only stall"
+      },
       "outlier": "Keep r3-card720-up-unpaced 76.7638 outputs/s and p95 5413.89 ms; no proven cause or exclusion",
       "rows": [
         {"run":"r1-card720-paced","outputs_per_second":49.7728,"cpu_percent_one_core":43.6056,"peak_rss_kib":266700,"au_host_p50_ms":264.15,"au_host_p95_ms":349.134,"host_gap_p95_ms":89.3362,"host_gap_max_ms":162.9978},
