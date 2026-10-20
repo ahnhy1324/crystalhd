@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Reject missing VA subpicture-format count outputs instead of dereferencing
+  them; retain the empty format list and unsupported subpicture functionality.
 - Honor full-range NV12 in VA VPP/Bob ARGB conversion and black padding;
   preserve default-range output and reject unsupported range conversions.
 - Store first-field Bob's private NV12 view at half height, preserving public

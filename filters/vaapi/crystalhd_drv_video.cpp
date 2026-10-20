@@ -9590,6 +9590,8 @@ static VAStatus SetImagePalette(VADriverContextP, VAImageID, unsigned char *) {
 
 static VAStatus QuerySubpictureFormats(VADriverContextP, VAImageFormat *,
                                        unsigned int *, unsigned int *count) {
+  if (count == nullptr)
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
   *count = 0;
   return VA_STATUS_SUCCESS;
 }

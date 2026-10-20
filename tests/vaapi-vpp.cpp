@@ -845,6 +845,77 @@ void UnsupportedDisplayAttributesAreNotSuccessful() {
           "display capability query requires a count output");
 }
 
+void EmptySubpictureFormatsValidateCount() {
+  Driver driver{-1};
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  VAImageFormat format;
+  memset(&format, 0xa5, sizeof(format));
+  const auto original = format;
+  unsigned int flags = 0x5a5a5a5aU;
+  const unsigned int original_flags = flags;
+  const unsigned int initial_opens = device_open_attempts;
+  for (bool with_format : {false, true}) {
+    for (bool with_flags : {false, true}) {
+      unsigned int count = UINT_MAX;
+      Require(QuerySubpictureFormats(&context, with_format ? &format : nullptr,
+                                      with_flags ? &flags : nullptr, &count) ==
+                  VA_STATUS_SUCCESS && count == 0,
+              "empty subpicture query permits unused format and flag arrays");
+      Require(QuerySubpictureFormats(&context, with_format ? &format : nullptr,
+                                      with_flags ? &flags : nullptr, nullptr) ==
+                  VA_STATUS_ERROR_INVALID_PARAMETER,
+              "subpicture query rejects a missing count output");
+      Require(memcmp(&format, &original, sizeof(format)) == 0 &&
+                  flags == original_flags && device_open_attempts == initial_opens &&
+                  driver.surfaces.empty() && driver.configs.empty(),
+              "subpicture probes preserve caller arrays and acquire no resources");
+    }
+  }
+}
+
+void UnsupportedSurfaceErrorsDoNotInventDetails() {
+  Driver driver{-1};
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  const unsigned int initial_opens = device_open_attempts;
+  auto ready = std::make_shared<Surface>();
+  auto failed = std::make_shared<Surface>();
+  auto destroyed = std::make_shared<Surface>();
+  ready->ready = true;
+  failed->failed = true;
+  destroyed->destroyed = true;
+  driver.surfaces[1] = ready;
+  driver.surfaces[2] = failed;
+  driver.surfaces[3] = destroyed;
+  for (VASurfaceID id : {VASurfaceID(1), VASurfaceID(2), VASurfaceID(3),
+                          VA_INVALID_SURFACE}) {
+    for (VAStatus status : {VA_STATUS_SUCCESS, VA_STATUS_ERROR_DECODING_ERROR,
+                            VA_STATUS_ERROR_HW_BUSY,
+                            static_cast<VAStatus>(VA_STATUS_ERROR_UNKNOWN)}) {
+      int sentinel = 17;
+      void *details = &sentinel;
+      Require(QuerySurfaceError(&context, id, status, &details) ==
+                  VA_STATUS_ERROR_UNIMPLEMENTED && details == nullptr && sentinel == 17 &&
+                  QuerySurfaceError(&context, id, status, nullptr) ==
+                      VA_STATUS_ERROR_UNIMPLEMENTED,
+              "unsupported error queries return no invented macroblock or reset details");
+      Require(driver.surfaces.size() == 3 && driver.surfaces.at(1) == ready &&
+                  driver.surfaces.at(2) == failed && driver.surfaces.at(3) == destroyed &&
+                  ready->ready && !ready->failed && !ready->destroyed &&
+                  !failed->ready && failed->failed && !failed->destroyed &&
+                  !destroyed->ready && !destroyed->failed && destroyed->destroyed &&
+                  device_open_attempts == initial_opens && driver.pending_vpp.empty(),
+              "unsupported diagnostics leave surface state and lifetime unchanged");
+    }
+  }
+  driver.surfaces.erase(3);
+  void *details = destroyed.get();
+  Require(QuerySurfaceError(&context, 3, VA_STATUS_ERROR_DECODING_ERROR, &details) ==
+              VA_STATUS_ERROR_UNIMPLEMENTED && details == nullptr && destroyed->destroyed,
+          "removed IDs do not expose retained surface storage as diagnostic data");
+}
+
 void ConfigRejectsUnsupportedProtectionTransactionally() {
   for (bool vpp : {false, true}) {
     Driver driver{-1};
@@ -4814,6 +4885,7 @@ int VppFullTestEntry(int argc, char **argv) {
   if (argc == 2 && (strcmp(argv[1], "--config-attributes") == 0 ||
                     strcmp(argv[1], "--color-range") == 0 ||
                     strcmp(argv[1], "--display-attributes") == 0 ||
+                    strcmp(argv[1], "--subpicture-formats") == 0 ||
                     strcmp(argv[1], "--selected-rt-formats") == 0 ||
                     strcmp(argv[1], "--pipeline-semantics") == 0)) {
     try {
@@ -4827,6 +4899,10 @@ int VppFullTestEntry(int argc, char **argv) {
         ConfigAttributesMatchAdvertisedSupport();
       else if (strcmp(argv[1], "--display-attributes") == 0)
         UnsupportedDisplayAttributesAreNotSuccessful();
+      else if (strcmp(argv[1], "--subpicture-formats") == 0) {
+        EmptySubpictureFormatsValidateCount();
+        UnsupportedSurfaceErrorsDoNotInventDetails();
+      }
       else if (strcmp(argv[1], "--selected-rt-formats") == 0)
         SelectedRtFormatSurvivesConfigAndContextLifetime();
       else
@@ -4881,6 +4957,8 @@ int VppFullTestEntry(int argc, char **argv) {
     DefaultVppCapabilitiesRemainAvailable();
     ConfigAttributesMatchAdvertisedSupport();
     UnsupportedDisplayAttributesAreNotSuccessful();
+    EmptySubpictureFormatsValidateCount();
+    UnsupportedSurfaceErrorsDoNotInventDetails();
     SelectedRtFormatSurvivesConfigAndContextLifetime();
     VppMeaningfulSemanticsAreValidatedBeforeCapture();
     VppFullRangeArgbUsesDeclaredInput();
@@ -4957,7 +5035,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 76 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 78 hardware-free regressions passed");
   return 0;
 }
 
@@ -4969,6 +5047,8 @@ int main(int argc, char **argv) {
   if (argc != 1) return 2;
   const std::pair<const char *, void (*)()> groups[] = {
       {"configuration matches advertised support", ConfigAttributesMatchAdvertisedSupport},
+      {"empty subpicture formats validate count", EmptySubpictureFormatsValidateCount},
+      {"unsupported surface errors disclose no invented details", UnsupportedSurfaceErrorsDoNotInventDetails},
       {"NV12 range preserves samples and background", VppColorRangeNv12PreservesSamples},
       {"unsupported color ranges reject before capture", VppColorRangeRejectsUnsupportedRequests},
       {"private first-field Bob pixels preserve public readiness", FirstFieldCpuViewPreservesPublicReadiness},

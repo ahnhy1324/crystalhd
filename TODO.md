@@ -261,9 +261,10 @@ Missing optional VA operations are not all release requirements.
   pixel oracles and matching advertised capabilities.
 - [x] P2 — Unsupported display attributes return an error; valid empty requests
   remain no-ops. Invalid arguments do not access or change caller attributes.
-- [ ] P2 — Evaluate `vaQuerySurfaceError` using only information
-  actually available for the exact live surface; do not invent macroblock or
-  hardware-reset details. Cover invalid IDs, lifetime and unsupported requests.
+- [x] P2 — Evaluate `vaQuerySurfaceError`: retain `UNIMPLEMENTED` and a null
+  detail pointer. The current generic failure state cannot identify macroblock
+  damage or a hardware reset. Ready/failed/destroyed/removed-ID and null-output
+  controls preserve this boundary without accessing or changing surface state.
 
 Intentional unsupported scope includes legacy `vaPutSurface` presentation,
 subpictures/palettes/display controls, temporal deinterlacing and other unexposed
