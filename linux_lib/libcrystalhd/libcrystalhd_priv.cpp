@@ -277,10 +277,6 @@ typedef struct _DTS_RX_BUFFER_LAYOUT {
 
 static const uint32_t DTS_RX_LEGACY_WIDTH = 1920;
 static const uint32_t DTS_RX_LEGACY_ROWS = 1090;
-#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
-static const uint32_t DTS_RX_FLEA_SCALED_WIDTH = 1280;
-static const uint32_t DTS_RX_FLEA_SCALED_WORD = 0x50050001;
-#endif
 
 /* Keep the legacy 1920x1090 fallback allocation until output geometry is
  * known.  Allocation and driver-registration extents are intentionally
@@ -334,17 +330,26 @@ static BC_STATUS DtsGetRxBufferLayout(const DTS_LIB_CONTEXT *Ctx,
 }
 
 #ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
-/* This is deliberately narrower than the public scaling feature.  It exists
- * only to qualify a measured BCM70015/H.264/YUY2 contract before considering
- * any default or general per-resolution allocation. */
+/* This remains an opt-in qualification path.  The successful H.264 OPEN word
+ * is the only width identity used here: pending requests do not prove what
+ * firmware actually admitted. */
 static uint32_t DtsDesiredRxBufferWidth(const DTS_LIB_CONTEXT *Ctx)
 {
-	if ((Ctx->CfgFlags & BC_ADDBUFF_MOVE) &&
-	    Ctx->DevId == BC_PCI_DEVID_FLEA &&
-	    Ctx->activeFleaScaleWord == DTS_RX_FLEA_SCALED_WORD &&
-	    Ctx->b422Mode == OUTPUT_MODE422_YUY2)
-		return DTS_RX_FLEA_SCALED_WIDTH;
-	return DTS_RX_LEGACY_WIDTH;
+	uint32_t first;
+	uint32_t second;
+	const uint32_t word = Ctx->activeFleaScaleWord;
+
+	if (!(Ctx->CfgFlags & BC_ADDBUFF_MOVE) ||
+	    Ctx->DevId != BC_PCI_DEVID_FLEA ||
+	    Ctx->b422Mode != OUTPUT_MODE422_YUY2)
+		return DTS_RX_LEGACY_WIDTH;
+
+	first = (word >> 20) & 0xfffU;
+	second = (word >> 8) & 0xfffU;
+	if ((word & 0xffU) != 1U || first != second || first < 128U ||
+	    first >= DTS_RX_LEGACY_WIDTH || (first & 1U))
+		return DTS_RX_LEGACY_WIDTH;
+	return first;
 }
 
 /* Caller holds thLock and has already retired any dirty driver mapping. */
