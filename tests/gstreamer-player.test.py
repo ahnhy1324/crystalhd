@@ -1199,6 +1199,175 @@ class GStreamerApiTests(unittest.TestCase):
                          (True, 1, 1))
         self.assertIsNotNone(result.get_static_pad("sink"))
         self.assertIsNotNone(result.get_static_pad("src"))
+        self.assertIsNone(result.get_by_name("crystalhd-early-pack"))
+
+    def packing_fixture(self):
+        for name in ("videoscale", "videoconvert", "capsfilter", "playsink"):
+            if self.Gst.ElementFactory.find(name) is None:
+                self.skipTest(f"optional packing fixture needs {name}")
+        Gst = self.Gst
+        pipeline = Gst.Pipeline.new(None)
+        playsink = Gst.ElementFactory.make("playsink")
+        chain = Gst.Bin.new(None)
+        video_filter = player.make_software_output_filter(
+            Gst, (1920, 1080), prepare_native_packing=True)
+        pipeline.add(playsink)
+        playsink.add(chain)
+        chain.add(video_filter)
+        self.addCleanup(pipeline.set_state, Gst.State.NULL)
+        # Real bin ownership/caps, with a display-free stand-in for the READY sink.
+        view = mock.Mock(wraps=video_filter)
+        helper = player.XvOutputPacking(Gst, view)
+        sink = mock.Mock()
+        sink.get_factory.return_value = Factory("xvimagesink", "Sink/Video")
+        sink.has_as_ancestor.side_effect = lambda ancestor: ancestor is chain
+        sink.get_state.return_value = (Gst.StateChangeReturn.SUCCESS, Gst.State.READY,
+                                       Gst.State.VOID_PENDING)
+        sink.get_static_pad.return_value.query_caps.return_value = Gst.Caps.from_string(
+            "video/x-raw,format=UYVY,width=1920,height=1080,pixel-aspect-ratio=1/1")
+        return SimpleNamespace(Gst=Gst, pipeline=pipeline, playsink=playsink, chain=chain,
+                               video_filter=video_filter, view=view, helper=helper, sink=sink)
+
+    def test_native_packing_selects_once_without_changing_upstream_yuy2(self):
+        fixture = self.packing_fixture()
+        Gst, helper, sink = fixture.Gst, fixture.helper, fixture.sink
+        self.assertTrue(helper.select(sink, fixture.pipeline))
+        self.assertTrue(helper.selected)
+        self.assertEqual(helper.output.get_property("caps").get_structure(0).get_string("format"), "UYVY")
+        inlet = fixture.video_filter.get_by_name("crystalhd-early-yuy2")
+        self.assertEqual(inlet.get_property("caps").get_structure(0).get_string("format"), "YUY2")
+        self.assertTrue(fixture.video_filter.get_static_pad("sink").query_caps(None).is_subset(
+            Gst.Caps.from_string("video/x-raw,format=YUY2")))
+        self.assertEqual(fixture.video_filter.get_by_name("crystalhd-early-pack").get_property("n-threads"), 1)
+        sink.get_state.reset_mock()
+        sink.get_static_pad.reset_mock()
+        self.assertFalse(helper.select(sink, fixture.pipeline))
+        sink.get_state.assert_not_called()
+        sink.get_static_pad.assert_not_called()
+
+    def test_native_packing_requires_real_exclusive_native_caps(self):
+        for text in (None, "ANY", "EMPTY", "video/x-raw,format=YUY2",
+                     "video/x-raw,format={YUY2,UYVY}", "video/x-raw,format=NV12",
+                     "video/x-raw,format=UYVY,width=640,height=360",
+                     "video/x-raw(memory:DMABuf),format=UYVY"):
+            with self.subTest(caps=text):
+                fixture = self.packing_fixture()
+                fixture.sink.get_static_pad.return_value.query_caps.return_value = (
+                    None if text is None else fixture.Gst.Caps.from_string(text))
+                self.assertFalse(fixture.helper.select(fixture.sink, fixture.pipeline))
+                self.assertFalse(fixture.helper.selected)
+                self.assertEqual(fixture.helper.output.get_property("caps").get_structure(0).get_string("format"), "YUY2")
+
+    def test_native_packing_rejects_trial_late_and_uncertain_sinks(self):
+        for condition in ("factory", "unparented", "other-pipeline", "no-chain",
+                          "sink-null", "sink-pending", "sink-failed", "filter-ready",
+                          "filter-pending", "negotiated", "no-pad", "query-failure"):
+            with self.subTest(condition=condition):
+                fixture = self.packing_fixture()
+                Gst, helper, sink = fixture.Gst, fixture.helper, fixture.sink
+                pipeline = fixture.pipeline
+                if condition == "factory":
+                    sink.get_factory.return_value = Factory("fakesink", "Sink/Video")
+                elif condition == "unparented":
+                    sink.has_as_ancestor.side_effect = lambda _ancestor: False
+                elif condition == "other-pipeline":
+                    pipeline = Gst.Pipeline.new(None)
+                elif condition == "no-chain":
+                    fixture.view.get_parent.return_value = None
+                elif condition.startswith("sink-"):
+                    sink.get_state.return_value = {
+                        "sink-null": (Gst.StateChangeReturn.SUCCESS, Gst.State.NULL, Gst.State.VOID_PENDING),
+                        "sink-pending": (Gst.StateChangeReturn.ASYNC, Gst.State.READY, Gst.State.PAUSED),
+                        "sink-failed": (Gst.StateChangeReturn.FAILURE, Gst.State.READY, Gst.State.VOID_PENDING),
+                    }[condition]
+                elif condition.startswith("filter-"):
+                    fixture.view.get_state.return_value = (
+                        Gst.StateChangeReturn.SUCCESS,
+                        Gst.State.READY if condition == "filter-ready" else Gst.State.NULL,
+                        Gst.State.VOID_PENDING if condition == "filter-ready" else Gst.State.READY)
+                elif condition == "negotiated":
+                    fixture.view.get_static_pad.return_value = mock.Mock()
+                    fixture.view.get_static_pad.return_value.get_current_caps.return_value = Gst.Caps.from_string("video/x-raw")
+                elif condition == "no-pad":
+                    sink.get_static_pad.return_value = None
+                elif condition == "query-failure":
+                    sink.get_static_pad.return_value.query_caps.side_effect = RuntimeError("unavailable")
+                self.assertFalse(helper.select(sink, pipeline))
+                self.assertFalse(helper.selected)
+                self.assertEqual(helper.output.get_property("caps").get_structure(0).get_string("format"), "YUY2")
+
+    def test_player_prepares_packing_only_for_default_hardware_upscale(self):
+        for changes, custom, expected in (({}, False, True), ({"mode": "software"}, False, False),
+                ({"weave": True}, False, False), ({"scale_width": 0}, False, False),
+                ({"software_output_size": None}, False, False),
+                ({"software_output_size": (1280, 720)}, False, False),
+                ({"software_output_size": (640, 360)}, False, False), ({}, True, False)):
+            with self.subTest(changes=changes, custom=custom):
+                args = SimpleNamespace(**(dict(mode="hardware", weave=False, scale_width=1280,
+                    software_output_size=(1920, 1080), file=Path(self.temp.name)/"unused.mkv",
+                    subtitles=None) | changes))
+                sinks = {"video-sink": self.Gst.ElementFactory.make("fakesink")} if custom else None
+                with mock.patch.object(player, "configure_decoders"):
+                    result = player.Player(args, self.Gst, self.GLib, sinks)
+                try:
+                    self.assertEqual(result.output_packing is not None, expected)
+                    if result.video_filter is not None:
+                        self.assertEqual(result.video_filter.get_by_name("crystalhd-early-pack") is not None, expected)
+                    if expected:
+                        element = mock.Mock()
+                        element.get_factory.return_value = Factory("xvimagesink", "Sink/Video")
+                        with mock.patch.object(result.output_packing, "select") as select:
+                            result.element_setup(result.pipeline, element)
+                            select.assert_called_once_with(element, result.pipeline)
+                            result.closed = True
+                            result.element_setup(result.pipeline, element)
+                            self.assertEqual(select.call_count, 1)
+                            result.closed = False
+                finally:
+                    result.close()
+
+    def test_prepared_packing_preserves_resized_pixels_and_metadata(self):
+        for name in ("videotestsrc", "videoscale", "videoconvert", "capsfilter", "appsink"):
+            if self.Gst.ElementFactory.find(name) is None:
+                self.skipTest(f"optional packing pixels need {name}")
+        Gst = self.Gst
+        results = []
+        for early in (False, True):
+            pipeline = Gst.parse_launch(
+                "videotestsrc num-buffers=3 pattern=smpte name=input ! "
+                "video/x-raw,format=YUY2,width=32,height=18,framerate=50/1,"
+                "pixel-aspect-ratio=1/1,colorimetry=bt709 ! identity name=entry")
+            upscale = player.make_software_output_filter(Gst, (48, 32), prepare_native_packing=early)
+            if early:
+                capsfilter = upscale.get_by_name("crystalhd-upscale-caps")
+                caps = capsfilter.get_property("caps").copy()
+                caps.set_value("format", "UYVY")
+                capsfilter.set_property("caps", caps)
+            tail = Gst.parse_bin_from_description(
+                "videoconvert ! video/x-raw,format=UYVY ! appsink name=output sync=false", True)
+            pipeline.add(upscale)
+            pipeline.add(tail)
+            self.assertTrue(pipeline.get_by_name("entry").link(upscale))
+            self.assertTrue(upscale.link(tail))
+            sink = tail.get_by_name("output")
+            rows = []
+            try:
+                self.assertNotEqual(pipeline.set_state(Gst.State.PLAYING), Gst.StateChangeReturn.FAILURE)
+                for _index in range(3):
+                    sample = sink.emit("try-pull-sample", 5*Gst.SECOND)
+                    self.assertIsNotNone(sample)
+                    buffer = sample.get_buffer()
+                    rows.append((sample.get_caps().to_string(), buffer.pts, buffer.dts,
+                        buffer.duration, buffer.offset, buffer.offset_end, int(buffer.get_flags()),
+                        buffer.extract_dup(0, buffer.get_size())))
+                message = pipeline.get_bus().timed_pop_filtered(5*Gst.SECOND,
+                    Gst.MessageType.EOS | Gst.MessageType.ERROR)
+                self.assertIsNotNone(message)
+                self.assertEqual(message.type, Gst.MessageType.EOS)
+            finally:
+                pipeline.set_state(Gst.State.NULL)
+            results.append(rows)
+        self.assertEqual(results[0], results[1])
 
     def test_explicit_upscale_filter_processes_raw_video(self):
         for name in ("videotestsrc", "videoscale", "capsfilter", "fakesink"):

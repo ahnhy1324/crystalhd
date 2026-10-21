@@ -251,7 +251,7 @@ def configure_decoders(Gst, mode):
         raise RuntimeError("crystalhddec is unavailable; build/install the GStreamer plugin")
 
 
-def make_software_output_filter(Gst, size):
+def make_software_output_filter(Gst, size, *, prepare_native_packing=False):
     """Build an explicit raw-video resize bin for playbin's video-filter."""
     width, height = size
     result = Gst.Bin.new("crystalhd-software-upscale")
@@ -270,11 +270,22 @@ def make_software_output_filter(Gst, size):
         "caps", Gst.Caps.from_string(
             f"video/x-raw,format=YUY2,width={width},height={height},"
             "pixel-aspect-ratio=1/1"))
-    result.add(scale)
-    result.add(capsfilter)
-    if not scale.link(capsfilter):
+    elements = [scale, capsfilter]
+    if prepare_native_packing:
+        inlet = Gst.ElementFactory.make("capsfilter", "crystalhd-early-yuy2")
+        convert = Gst.ElementFactory.make("videoconvert", "crystalhd-early-pack")
+        if inlet is None or convert is None:
+            raise RuntimeError("native output packing needs GStreamer videoconvert and capsfilter")
+        # Keep stock deinterlacing in YUY2. Packing, if selected, belongs before
+        # the resize so the sink thread need not repack a full-size picture.
+        inlet.set_property("caps", Gst.Caps.from_string("video/x-raw,format=YUY2"))
+        convert.set_property("n-threads", 1)
+        elements[:0] = [inlet, convert]
+    for element in elements:
+        result.add(element)
+    if not all(left.link(right) for left, right in zip(elements, elements[1:])):
         raise RuntimeError("could not link the software output sizing elements")
-    sink_pad = scale.get_static_pad("sink")
+    sink_pad = elements[0].get_static_pad("sink")
     source_pad = capsfilter.get_static_pad("src")
     if sink_pad is None or source_pad is None:
         raise RuntimeError("software output sizing elements have no usable raw-video pads")
@@ -282,6 +293,61 @@ def make_software_output_filter(Gst, size):
             Gst.GhostPad.new("src", source_pad)):
         raise RuntimeError("could not expose the software output sizing pads")
     return result
+
+
+class XvOutputPacking:
+    """Select low-resolution packing only before a selected Xv chain starts."""
+
+    def __init__(self, Gst, video_filter):
+        self.Gst, self.video_filter = Gst, video_filter
+        self.output = video_filter.get_by_name("crystalhd-upscale-caps")
+        self.selected = False
+
+    def select(self, element, pipeline):
+        if self.selected:
+            return False
+        Gst = self.Gst
+        try:
+            factory = element.get_factory()
+            if factory is None or factory.get_name() != "xvimagesink":
+                return False
+            chain = self.video_filter.get_parent()
+            playsink = chain.get_parent() if chain is not None else None
+            factory = playsink.get_factory() if playsink is not None else None
+            if (factory is None or factory.get_name() != "playsink" or
+                    not playsink.has_as_ancestor(pipeline) or
+                    not element.has_as_ancestor(chain)):
+                return False
+            # element-setup runs while playsink adds its already-READY sink
+            # chain, before activating our filter. Never renegotiate live data.
+            for item, expected in ((self.video_filter, Gst.State.NULL),
+                                   (element, Gst.State.READY)):
+                status, state, pending = item.get_state(0)
+                if (status != Gst.StateChangeReturn.SUCCESS or state != expected or
+                        pending != Gst.State.VOID_PENDING):
+                    return False
+            if any(self.video_filter.get_static_pad(name).get_current_caps() is not None
+                   for name in ("sink", "src")):
+                return False
+            pad = element.get_static_pad("sink")
+            available = pad.query_caps(None) if pad is not None else None
+            current = self.output.get_property("caps")
+            if (available is None or available.is_any() or available.is_empty() or
+                    current is None or current.get_size() != 1 or
+                    current.get_structure(0).get_string("format") != "YUY2"):
+                return False
+            native = current.copy()
+            native.set_value("format", "UYVY")
+            if not available.can_intersect(native) or available.can_intersect(current):
+                return False
+            # videoscale does not convert formats: this one caps change makes
+            # the prepared converter pack UYVY at the smaller input dimensions.
+            self.output.set_property("caps", native)
+            self.selected = True
+            return True
+        except Exception:
+            # Sink discovery is optional; uncertain queries keep the YUY2 path.
+            return False
 
 
 class DeinterlaceQosWorkaround:
@@ -406,9 +472,15 @@ class Player:
             decoder = "CrystalHD hardware" if args.mode == "hardware" else "software"
             print(f"Output: Weave (deinterlacing off; {decoder} decoding required)", flush=True)
         self.video_filter = None
+        self.output_packing = None
         if args.software_output_size:
+            prepare_packing = (args.mode == "hardware" and args.scale_width and
+                               args.software_output_size[0] > args.scale_width and
+                               not args.weave and "video-sink" not in (sinks or {}))
             self.video_filter = make_software_output_filter(
-                Gst, args.software_output_size)
+                Gst, args.software_output_size, prepare_native_packing=prepare_packing)
+            if prepare_packing:
+                self.output_packing = XvOutputPacking(Gst, self.video_filter)
             self.pipeline.set_property("video-filter", self.video_filter)
         for prop, sink in (sinks or {}).items():
             self.pipeline.set_property(prop, sink)
@@ -427,6 +499,8 @@ class Player:
         if factory is None:
             return
         name, klass = factory.get_name(), factory.get_metadata("klass") or ""
+        if name == "xvimagesink" and self.output_packing is not None and not self.closed:
+            self.output_packing.select(element, self.pipeline)
         if (name == "deinterlace" and self.args.mode == "hardware" and
                 self.args.scale_width and self.args.software_output_size and not self.args.weave and
                 element not in self.deinterlace_qos):

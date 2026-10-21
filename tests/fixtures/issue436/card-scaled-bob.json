@@ -817,6 +817,44 @@
           },
           "next": "Separate the remaining post-XSync/pre-sink conversion and scheduling interval before changing production behavior. Keep the original intermittent firmware stall unattributed; neither isolated complete decode nor the scoped DI fix closes it."
         },
+        "output_packing_followup": {
+          "checkout": "1299172217a947ab9a8ca9b575698422ffb8e152",
+          "runtime_source": "1ec07142eec5f442668ffce2dd33c82d4aaec80c",
+          "service_native": {
+            "artifact": "production-service-1/{result,playback,counts,boundary-clock,qos-drops,service-registration}.json and service-calls.jsonl",
+            "strict_status": "FAIL no-drop",
+            "counts_using_parent_columns": [750, 750, 1500, 1500, 1498, 1498, 0],
+            "elapsed_seconds": 34.30540838604793,
+            "observer": {"balanced_records": 8991, "queue_push": 1500, "converter_input": 1500, "converter_frame": 1498, "converter_output": 1498, "sink_input": 1498, "qos_push": 1497, "async_unmatched_overflow_errors_each": 0, "released_pads": 4, "removed_probes": 3},
+            "qualification": "Private native observer Werror build, CPU sync/async/missing-registration checks and independent review PASS; active-call unregister refusal source-reviewed only. No additional X operation or per-call I/O. All existing host/policy guards retained.",
+            "packing_wall_ms_p50_p95_p99_max": [5.161112, 8.654374, 11.117384, 28.123644],
+            "packing_thread_cpu_ms_p50_p95_p99_max": [4.163296, 4.618828, 4.769077, 8.415806],
+            "converter_drops": [{"pts_seconds": 18.04, "prior_qos_pts_seconds": 18.02, "cutoff_seconds": 18.041134}, {"pts_seconds": 18.12, "prior_qos_pts_seconds": 18.10, "cutoff_seconds": 18.121581}],
+            "preceding_packing_wall_cpu_ms": [[13.437496, 4.490385], [16.637419, 4.276519]],
+            "native_to_python_sink_gap_ms_at_those_frames": [0.255974, 0.281397],
+            "scope": "Both lost frames were already past nominal PTS at converter input; this is stock transform QoS, not the fixed DI wrong-picture-PTS defect. Unexecuted conversion might or might not finish within the sink deadline. Elapsed minus thread CPU includes waiting/descheduling, not exclusive GIL/X-server causality. This run cannot retrospectively split the preceding run's16.486ms gap. All1498 qualified FHD arrivals early; initial2 preroll samples unqualified.",
+            "boundary": "PASS750 accepted/1500 returned+released/750 finishes, one ordinary Open/Close, EOS/player0, strict controller1, active eligible DI helper removed on close, unchanged module/PM/AER/pins0/ref0/kernel boundary. No original firmware-stall attribution."
+          },
+          "cpu_order_comparison": {
+            "artifact": "cpu-early-packing-1/{prepared,result,01-late,02-early,03-early,04-late,05-late,06-early}.json",
+            "status": "PASS exact pixels and metadata",
+            "preparation": "Retained uniform-TFF native100 compact fields ->50 woven pictures ->100 stock LINEAR outputs/EOS verified ->same first50 outputs. Not the current30s dialogue capture. Original oracle omitted colorimetry; replay explicitly adds observed native2:0:0:0, not independently established fixture colorimetry.",
+            "order": ["late", "early", "early", "late", "late", "early"],
+            "per_sample": {"frames": 50, "compared_bytes": 207360000, "pixels_pts_dts_duration_flags_offsets_caps": "exact"},
+            "late_median_wall_cpu_seconds": [0.879363426, 1.463359803],
+            "early_median_wall_cpu_seconds": [0.820634324, 1.397415841],
+            "scope": "Separate stock converter/scaler only: method4/two scale threads/one conversion thread, unchanged quality. PLAYING-to-EOS includes equal input/output copies and startup; excludes DI preparation/file I/O/comparison. Six fresh CPU-only processes, not native throughput or a sustained performance claim. Distinct from old SCALERBOB early-packing FAIL and rejected pixel-unequal fused converter; neither old result is reclassified."
+          },
+          "private_native": {
+            "artifact": "early-packing-1/{result,playback,counts,qos-drops}.json",
+            "status": "PASS bounded automatic path and boundary",
+            "counts_using_parent_columns": [750, 750, 1500, 1500, 1500, 1500, 0],
+            "elapsed_seconds": 33.58047802199144,
+            "all_original_pts": "PASS750 exact40ms input/decoder/card and1500 exact20ms DI/FHD/sink; zero mismatches, empty drop-only QoS log",
+            "scope": "Private in-process replacement of our output-filter builder only; production files unchanged. Stock LINEAR YUY2 and actual DI helper retained, YUY2->UYVY720 packing before method4/two-thread UYVYFHD resize; final stock convert/scale passthrough. Original vqueue3/sync/QoS/5ms lateness/15ms deadline unchanged. No service/Xv observer, only retained lean counters and DIL observer; not a cross-instrumentation speed comparison.",
+            "boundary": "PASS750 accepted originals/1500 returned+released/750 finishes, one ordinary Open/Close, EOS/exit0, exact host identity/PM/AER/pins0/ref0/kernel boundaries; no warnings/errors. Independent raw review PASS. Not a new physical A/V test, reopen loop, production-source qualification or firmware-stall fix."
+          }
+        },
         "rejected_alternatives": {
           "scope": "Private bounded runs at3df74b2; all strictFAIL and EOS/clean boundaries. All accept750 originals, return/release1500 card fields and finish750 pictures. Instrumentation differs between profile and lean groups; not a causal speedup ranking.",
           "counts_using_parent_columns": [

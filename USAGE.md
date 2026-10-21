@@ -299,6 +299,12 @@ down; resizing up does not restore detail discarded by the card. Omitting it
 lets the normal video sink fit the smaller decoded image to its window or
 display.
 
+For this enlargement path, the development Player can pack pixels at the
+smaller size when its selected Xv output accepts UYVY but not YUY2. This avoids
+repacking a full-size picture on the display thread; no extra option is needed.
+Deinterlacing still receives YUY2. Custom video sinks, Weave and uncertain
+output negotiation retain the previous format choice.
+
 With GStreamer **1.28.2**, this hardware-scaled Player path works around a
 confirmed default LINEAR deinterlacer error for YUY2 25-picture/s input and
 50-field/s output. It bypasses that element's entire local QoS cache while
