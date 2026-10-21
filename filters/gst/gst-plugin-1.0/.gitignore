@@ -3,3 +3,4 @@ gstreamer-controls-test
 gst-lifecycle-test
 gstreamer-codec-playback-test
 gst-codecs-test
+gst-diqos-test

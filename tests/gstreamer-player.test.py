@@ -650,16 +650,85 @@ class DeinterlaceQosTests(unittest.TestCase):
                 control.args = SimpleNamespace(**(dict(mode="hardware", scale_width=1280,
                     software_output_size=(1920, 1080), weave=False) | changes))
                 control.Gst = object()
+                control.bus = object()
                 control.deinterlace_qos, control.decoders = {}, {}
                 element = mock.Mock()
                 element.get_factory.return_value = Factory("deinterlace", "Filter/Effect/Video")
                 helper = mock.Mock()
-                with mock.patch.object(player.DeinterlaceQosWorkaround, "install", return_value=helper) as make:
+                with mock.patch.object(player.NativeDeinterlaceQosWorkaround, "install", return_value=None) as native, \
+                        mock.patch.object(player.DeinterlaceQosWorkaround, "install", return_value=helper) as make:
                     control.element_setup(None, element)
                     control.element_setup(None, element)
                 self.assertEqual(make.call_count, int(install))
+                self.assertEqual(native.call_count, int(install))
                 control.element_removed(None, None, element)
                 self.assertEqual(helper.close.call_count, int(install))
+                self.assertEqual(control.deinterlace_qos, {})
+
+
+class NativeDeinterlaceQosTests(unittest.TestCase):
+    def test_missing_or_unsupported_helper_keeps_python_fallback(self):
+        Gst, element, bus = mock.Mock(), mock.Mock(), mock.Mock()
+        Gst.ElementFactory.make.return_value = None
+        self.assertIsNone(player.NativeDeinterlaceQosWorkaround.install(Gst, element, bus))
+        controller = mock.Mock()
+        controller.emit.return_value = 0
+        Gst.ElementFactory.make.return_value = controller
+        self.assertIsNone(player.NativeDeinterlaceQosWorkaround.install(Gst, element, bus))
+        self.assertEqual(controller.emit.call_args_list,
+                         [mock.call("attach", element, bus), mock.call("detach")])
+
+    def test_native_properties_and_idempotent_close(self):
+        Gst, element, bus, controller = (mock.Mock() for _ in range(4))
+        Gst.ElementFactory.make.return_value = controller
+        controller.emit.return_value = 1
+        controller.get_property.return_value = True
+        helper = player.NativeDeinterlaceQosWorkaround.install(Gst, element, bus)
+        self.assertTrue(helper.active)
+        self.assertTrue(helper.eligible())
+        self.assertEqual(helper.probe, 1)
+        helper.close()
+        helper.close()
+        self.assertTrue(helper.closed)
+        self.assertFalse(helper.active)
+        self.assertFalse(helper.eligible())
+        self.assertEqual(helper.probe, 0)
+        self.assertEqual(controller.emit.call_args_list,
+                         [mock.call("attach", element, bus), mock.call("detach")])
+
+    def test_failed_attach_is_not_silently_replaced_by_another_probe(self):
+        for status in (-1, -2):
+            with self.subTest(status=status):
+                Gst, element, bus, controller = (mock.Mock() for _ in range(4))
+                Gst.ElementFactory.make.return_value = controller
+                controller.emit.return_value = status
+                with self.assertRaisesRegex(RuntimeError, "invalid or already owned"):
+                    player.NativeDeinterlaceQosWorkaround.install(Gst, element, bus)
+                self.assertEqual(controller.emit.call_args_list[-1], mock.call("detach"))
+
+    def test_player_prefers_native_and_reports_attachment_failure(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                control = player.Player.__new__(player.Player)
+                control.args = SimpleNamespace(mode="hardware", scale_width=1280,
+                    software_output_size=(1920, 1080), weave=False)
+                control.Gst, control.bus = object(), object()
+                control.deinterlace_qos, control.decoders = {}, {}
+                control.fail = mock.Mock()
+                element, helper = mock.Mock(), mock.Mock()
+                element.get_factory.return_value = Factory("deinterlace", "Filter/Effect/Video")
+                with mock.patch.object(player.NativeDeinterlaceQosWorkaround, "install",
+                        side_effect=RuntimeError("already owned") if failed else None,
+                        return_value=helper) as native, \
+                        mock.patch.object(player.DeinterlaceQosWorkaround, "install") as fallback:
+                    control.element_setup(None, element)
+                    if not failed:
+                        control.element_setup(None, element)
+                    native.assert_called_once_with(control.Gst, element, control.bus)
+                    fallback.assert_not_called()
+                    self.assertEqual(control.fail.call_count, int(failed))
+                control.element_removed(None, None, element)
+                self.assertEqual(helper.close.call_count, int(not failed))
                 self.assertEqual(control.deinterlace_qos, {})
 
 
@@ -1433,6 +1502,31 @@ class GStreamerApiTests(unittest.TestCase):
         caps = sink.get_static_pad("sink").get_current_caps().get_structure(0)
         self.assertEqual((caps.get_value("width"), caps.get_value("height")), (640, 360))
         self.assertEqual(caps.get_fraction("pixel-aspect-ratio"), (True, 1, 1))
+
+    def test_native_deinterlace_qos_action_signal_binding_and_close(self):
+        Gst = self.Gst
+        if Gst.ElementFactory.find("crystalhddiqos") is None:
+            self.skipTest("optional native controller requires the built own plugin")
+        element = Gst.ElementFactory.make("deinterlace")
+        if element is None or not player.DeinterlaceQosWorkaround.supported(Gst, element):
+            self.skipTest("exact GStreamer 1.28.2 deinterlace admission")
+        bus = Gst.Bus.new()
+        helper = player.NativeDeinterlaceQosWorkaround.install(Gst, element, bus)
+        self.assertIsNotNone(helper)
+        self.addCleanup(helper.close)
+        self.assertTrue(helper.active)
+        self.assertTrue(helper.probe)
+        self.assertFalse(helper.eligible())  # No negotiated caps yet.
+        with self.assertRaisesRegex(RuntimeError, "already owned"):
+            player.NativeDeinterlaceQosWorkaround.install(Gst, element, bus)
+        helper.close()
+        helper.close()
+        self.assertFalse(helper.probe)
+        self.assertFalse(helper.active)
+        self.assertFalse(helper.eligible())
+        replacement = player.NativeDeinterlaceQosWorkaround.install(Gst, element, bus)
+        self.assertIsNotNone(replacement)
+        replacement.close()
 
     def test_deinterlace_qos_caps_are_narrow_and_rechecked(self):
         Gst = self.Gst

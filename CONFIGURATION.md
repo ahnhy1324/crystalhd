@@ -135,6 +135,12 @@ Chromium options rather than CrystalHD settings.
 The GObject type is an unsigned integer, but values outside the effective
 range above fail validation. BCM70012 and interlaced scaling are rejected.
 
+The player automatically uses the plugin's `crystalhddiqos` compatibility
+controller when available; older plugins retain the Python implementation.
+Its `attached`, `active`, `eligible`, `qos-count`, `forward-count` and
+`failure-count` properties are read-only internal diagnostics, not settings.
+It does not change the supported GStreamer version or QoS admission rules.
+
 ## `crystalhd-play` command line
 
 | Control | Owner | Device/backend | Default and accepted values | Dependencies | Read/apply lifecycle | Safety | Public API |

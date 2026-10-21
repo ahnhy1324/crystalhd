@@ -449,6 +449,48 @@ class DeinterlaceQosWorkaround:
             self.caps_policy = None
 
 
+class NativeDeinterlaceQosWorkaround:
+    """Own-plugin equivalent; older plugins retain the Python implementation."""
+
+    def __init__(self, controller):
+        self.controller = controller
+        self.closed = False
+
+    @classmethod
+    def install(cls, Gst, element, bus):
+        controller = Gst.ElementFactory.make("crystalhddiqos")
+        if controller is None:
+            return None
+        try:
+            result = controller.emit("attach", element, bus)
+        except Exception as error:
+            controller.emit("detach")
+            raise RuntimeError("could not attach native deinterlacer QoS helper") from error
+        if result == 1:
+            return cls(controller)
+        controller.emit("detach")
+        if result == 0:
+            return None
+        # Do not stack a Python probe on an already-owned or invalid target.
+        raise RuntimeError("native deinterlacer QoS target is invalid or already owned")
+
+    @property
+    def active(self):
+        return not self.closed and self.controller.get_property("active")
+
+    @property
+    def probe(self):
+        return int(not self.closed and self.controller.get_property("attached"))
+
+    def eligible(self):
+        return not self.closed and self.controller.get_property("eligible")
+
+    def close(self):
+        if not self.closed:
+            self.controller.emit("detach")
+            self.closed = True
+
+
 class Player:
     def __init__(self, args, Gst, GLib, sinks=None):
         self.args, self.Gst, self.GLib = args, Gst, GLib
@@ -524,9 +566,15 @@ class Player:
         if (name == "deinterlace" and self.args.mode == "hardware" and
                 self.args.scale_width and self.args.software_output_size and not self.args.weave and
                 element not in self.deinterlace_qos):
-            workaround = DeinterlaceQosWorkaround.install(
-                self.Gst, element, lambda reason: self.post_observation(
-                    "crystalhd-player-output-error", {"message": reason}))
+            try:
+                workaround = NativeDeinterlaceQosWorkaround.install(self.Gst, element, self.bus)
+            except RuntimeError as error:
+                self.fail(str(error))
+                return
+            if workaround is None:
+                workaround = DeinterlaceQosWorkaround.install(
+                    self.Gst, element, lambda reason: self.post_observation(
+                        "crystalhd-player-output-error", {"message": reason}))
             if workaround is not None:
                 self.deinterlace_qos[element] = workaround
         if not video_decoder(klass):

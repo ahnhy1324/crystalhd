@@ -42,6 +42,13 @@ GST_PROPERTY = re.compile(
     r"g_param_spec_[a-z0-9_]+\s*\(\s*\"([a-z][a-z0-9-]*)\"",
     re.DOTALL,
 )
+# Player-owned observations, not user-settable configuration. Keep this
+# boundary narrow: a new property or writable implementation must be reviewed.
+INTERNAL_GST_OBSERVATIONS = {
+    "gstcrystalhd-diqos.c": {
+        "attached", "active", "eligible", "qos-count", "forward-count", "failure-count",
+    },
+}
 
 
 def read(path: Path) -> str:
@@ -78,7 +85,18 @@ def module_parameters() -> set[str]:
 def gst_properties() -> set[str]:
     names: set[str] = set()
     for path in (ROOT / "filters/gst/gst-plugin-1.0").glob("*.c"):
-        names.update(GST_PROPERTY.findall(read(path)))
+        source = read(path)
+        properties = set(GST_PROPERTY.findall(source))
+        internal = INTERNAL_GST_OBSERVATIONS.get(path.name)
+        if internal is not None:
+            specs = re.findall(r"g_param_spec_[a-z0-9_]+\s*\(.*?\)\);", source, re.DOTALL)
+            if (properties != internal or len(specs) != len(internal) or
+                    not all(re.search(r",\s*flags\s*\)\);$", spec) for spec in specs) or
+                    "GParamFlags flags = G_PARAM_READABLE | G_PARAM_STATIC_STRINGS;" not in source or
+                    re.search(r"G_PARAM_(?:WRITABLE|READWRITE)|\bset_property\b", source)):
+                raise ValueError(f"internal read-only GStreamer boundary changed: {path.name}")
+            continue
+        names.update(properties)
     return names
 
 

@@ -19,6 +19,7 @@
 #include "gstcrystalhd-codecs.h"
 #include "gstcrystalhd-input.h"
 #include "gstcrystalhd-timing.h"
+#include "gstcrystalhd-diqos.h"
 
 G_STATIC_ASSERT(GST_CRYSTALHD_MPEG4_MAX_INPUT_SIZE ==
                 GST_CRYSTALHD_INPUT_CAPACITY);
@@ -2601,7 +2602,9 @@ plugin_init(GstPlugin *plugin)
   GST_DEBUG_CATEGORY_INIT(gst_crystalhd_debug, "crystalhd", 0,
                           "CrystalHD hardware decoder");
   return gst_element_register(plugin, "crystalhddec", GST_RANK_PRIMARY + 1,
-                              GST_TYPE_CRYSTALHD_DEC);
+                              GST_TYPE_CRYSTALHD_DEC) &&
+      gst_element_register(plugin, "crystalhddiqos", GST_RANK_NONE,
+                            GST_TYPE_CRYSTALHD_DI_QOS);
 }
 
 #ifndef PACKAGE
