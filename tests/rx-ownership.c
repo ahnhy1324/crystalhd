@@ -66,7 +66,7 @@ struct crystalhd_hw {
     bool hw_pause_issued, dma_fault, WakeUpDecodeDone;
     bool FleaEnablePWM, FleaPowerTransition, FleaPowerRecheck, dev_started;
     uint32_t rx_pkt_tag_seed, rx_list_post_index, DrvTotalFrmCaptured;
-    uint32_t FleaFLLUpdateAddr;
+    uint32_t FleaFLLUpdateAddr, PicQSts;
     uint32_t rx_list_sts[DMA_ENGINE_CNT];
     uint32_t PauseThreshold, ResumeThreshold, DefaultPauseThreshold, PDRatio;
     uint64_t TickSpentInPD, TickCntDecodePU;
@@ -172,6 +172,7 @@ static bool firmware_alive;
 static bool checking_admission;
 static bool checking_metadata_reset;
 static bool checking_start, start_post_observed;
+static bool checking_cached_picture;
 static char lifecycle_events[64];
 static unsigned lifecycle_event_count;
 static uint32_t stop_observed_state, notify_observed_state, post_observed_state;
@@ -780,6 +781,8 @@ static BC_STATUS program_dma(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pk
     status = !fail_post_call || post_calls == fail_post_call ? post_status : BC_STS_SUCCESS;
     if (hw->dma_fault) return BC_STS_IO_ERROR;
     if (status != BC_STS_SUCCESS) return status;
+    if (checking_cached_picture && !(hw->PicQSts & 1U))
+        return BC_STS_BUSY;
     for (index = 0; index < DMA_ENGINE_CNT; index++) {
         bool used = false;
         for (unsigned i = 0; i < active.count; i++)
@@ -788,7 +791,10 @@ static BC_STATUS program_dma(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pk
     }
     if (index == DMA_ENGINE_CNT) return BC_STS_BUSY;
     packet->pkt_tag = hw->rx_pkt_tag_seed + index;
-    return crystalhd_dioq_add(hw->rx_actq, packet, false, packet->pkt_tag);
+    status = crystalhd_dioq_add(hw->rx_actq, packet, false, packet->pkt_tag);
+    if (checking_cached_picture && status == BC_STS_SUCCESS)
+        hw->PicQSts &= ~1U;
+    return status;
 }
 static BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
                                                struct crystalhd_rx_dma_pkt *packet,
@@ -938,6 +944,7 @@ static void reset(uint32_t device)
     checking_admission = false;
     checking_metadata_reset = false;
     checking_start = start_post_observed = false;
+    checking_cached_picture = false;
     start_notify_observed = start_notify_notifications = 0;
     start_notify_state = start_notify_pause = start_notify_resume = 0;
     start_notify_default = start_notify_frames = 0;
@@ -3799,7 +3806,7 @@ static void flea_pause_result_cases(bool pwm)
         drain();
     }
 
-    for (unsigned power = 0; power < (pwm ? 3U : 2U); power++) {
+    for (unsigned power = 0; power < 3; power++) {
         for (unsigned nonblocking = 0; nonblocking < 2; nonblocking++) {
             for (unsigned has_packet = 0; has_packet < 2; has_packet++) {
                 for (unsigned s = 0; s < ARRAY_SIZE(statuses); s++) {
@@ -3848,6 +3855,65 @@ static void flea_pause_result_cases(bool pwm)
                 }
             }
         }
+    }
+}
+
+static void flea_disabled_pwm_repost_cases(void)
+{
+    for (unsigned nonblocking = 0; nonblocking < 2; nonblocking++) {
+        struct crystalhd_rx_completion result;
+        struct crystalhd_rx_buffer *buffer;
+        unsigned posts;
+
+        reset(BC_PCI_DEVID_FLEA);
+        check(!hardware.FleaEnablePWM && hardware.FleaPowerState == FLEA_PS_ACTIVE,
+              "disabled-PWM repost begins active without a physical power transition");
+        buffer = map_private(false);
+        check(submit(&context, buffer) == BC_STS_SUCCESS,
+              "prepare the last active DMA owner before the ready threshold");
+        hardware.PauseThreshold = 1;
+        complete(0);
+        check(hardware.hw_pause_issued && pause_calls == 1 &&
+              last_pause_direction && hardware.FleaPowerState == FLEA_PS_ACTIVE,
+              "ready threshold records an accepted no-op pause while PWM stays disabled");
+        inventory(0, 1, 0);
+
+        /* A prior picture notification remains cached after the final DMA
+         * retires. No later interrupt or explicit start may rescue posting.
+         * The DMA stub only models the existing cached-picture admission.
+         */
+        hardware.PicQSts = 1;
+        checking_cached_picture = true;
+        check((nonblocking ? crystalhd_rx_try_dequeue(&context, &result) :
+               crystalhd_rx_dequeue(&context, &result)) == BC_STS_SUCCESS &&
+              result.buffer == buffer && result.cookie == &cookies[0] &&
+              result.capture_epoch == hardware.rx_cancel_epoch &&
+              result.flags == COMP_FLAG_DATA_VALID && result.y_done_sz == 128 &&
+              result.uv_done_sz == 64 && !unmaps[0],
+              "threshold drain preserves the exact completed owner and metadata");
+        check(!hardware.hw_pause_issued && pause_calls == 2 &&
+              !last_pause_direction && !rx_pause_calls &&
+              hardware.FleaPowerState == FLEA_PS_ACTIVE,
+              "active disabled-PWM dequeue clears accepted software pause intent");
+        inventory_with_private(0, 0, 0, result.buffer);
+        crystalhd_rx_buffer_release(&adapter, result.buffer);
+        check(unmaps[0] == 1, "threshold owner releases exactly once before resubmission");
+
+        posts = post_calls;
+        buffer = map_private_at(1, false);
+        check(submit(&context, buffer) == BC_STS_SUCCESS &&
+              post_calls == posts + 1 && active.count == 1 && !available.count &&
+              !hardware.PicQSts && active.packets[0]->buffer == buffer &&
+              active.packets[0]->cookie == &cookies[1] && !unmaps[1],
+              "fresh buffer posts the cached picture without another IRQ or capture start");
+        if (active.count == 1) {
+            complete(0);
+            check(crystalhd_rx_try_dequeue(&context, &result) == BC_STS_SUCCESS &&
+                  result.buffer == buffer && result.cookie == &cookies[1],
+                  "restarted DMA returns only the newly admitted owner");
+            crystalhd_rx_buffer_release(&adapter, result.buffer);
+        }
+        drain();
     }
 }
 
@@ -3944,6 +4010,7 @@ int main(void)
     fll_capture_and_owner_cases();
     flea_pause_result_cases(false);
     flea_pause_result_cases(true);
+    flea_disabled_pwm_repost_cases();
     check(receipt_return_calls > 0,
           "the extracted Flea post wrapper exercised the receipt return hook");
     check(receipt_complete_calls > 0,

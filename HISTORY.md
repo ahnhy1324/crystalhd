@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Resume BCM70015 RX posting after draining the ready queue with PWM disabled;
+  clear accepted software pause intent without changing hardware power policy.
 - Reuse SSE2 same-field row-pair loads for VA luma/chroma conversion;
   preserve exact pixels, cropped tails and the legacy no-SSE path.
 - Serialize BCM70015 free-buffer counting with firmware notification so an

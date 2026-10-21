@@ -1822,7 +1822,10 @@ static BC_STATUS crystalhd_hw_complete_rx_locked(struct crystalhd_hw *hw,
 	{
 		/*printk("pre-PU state %x RLL %x Rtsh %x, currentPS %d,\n", */
 		/*	hw->FleaPowerState, crystalhd_dioq_count(hw->rx_rdyq) , hw->ResumeThreshold, hw->FleaPowerState); */
-		if ((READ_ONCE(hw->FleaEnablePWM) && READ_ONCE(hw->hw_pause_issued)) ||
+		/* The disabled-PWM pause is a no-op, but its software intent still
+		 * gates fresh RX posting. Clear it at the normal resume threshold.
+		 */
+		if (READ_ONCE(hw->hw_pause_issued) ||
 			(hw->FleaPowerState == FLEA_PS_LP_PENDING) ||
 			(hw->FleaPowerState == FLEA_PS_LP_COMPLETE))
 		{
