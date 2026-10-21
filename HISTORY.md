@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Reuse SSE2 same-field row-pair loads for VA luma/chroma conversion;
+  preserve exact pixels, cropped tails and the legacy no-SSE path.
 - Serialize BCM70015 free-buffer counting with firmware notification so an
   older publisher cannot overwrite a newer count; retain existing power policy.
 - Advance eligible synchronous MPEG-2 Main progressive output with private

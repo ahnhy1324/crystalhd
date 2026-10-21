@@ -3561,6 +3561,62 @@ static bool CopyH264InterlacedToSurface(
   for (unsigned int parity = 0; parity < 2; ++parity) {
     if ((field_mask & (1U << parity)) == 0)
       continue;
+#if defined(__SSE2__)
+    // Load each complete same-field row pair once for both luma and chroma.
+    // Cropped final rows retain the independent bounds in the loops below.
+    unsigned int paired_rows = 0;
+    for (; paired_rows + 1U < field_rows; paired_rows += 2U) {
+      const unsigned int first_y = compact_field
+          ? paired_rows : paired_rows * 2U + parity;
+      const unsigned int second_y = first_y + (compact_field ? 1U : 2U);
+      const unsigned int uv_row = compact_field
+          ? paired_rows / 2U : paired_rows + parity;
+      if (second_y >= height || uv_row >= chroma_rows)
+        break;
+      const uint8_t *first = fields[parity] +
+          static_cast<size_t>(paired_rows) * field_pitch;
+      const uint8_t *second = first + field_pitch;
+      uint8_t *first_luma = surface->planes[0] +
+          static_cast<size_t>(first_y) * surface->pitch[0];
+      uint8_t *second_luma = surface->planes[0] +
+          static_cast<size_t>(second_y) * surface->pitch[0];
+      uint8_t *chroma = surface->planes[1] +
+          static_cast<size_t>(uv_row) * surface->pitch[1];
+      unsigned int column = 0;
+      for (; width - column >= 16; column += 16) {
+        const __m128i first0 = _mm_loadu_si128(
+            reinterpret_cast<const __m128i *>(first + column * 2));
+        const __m128i first1 = _mm_loadu_si128(
+            reinterpret_cast<const __m128i *>(first + column * 2 + 16));
+        const __m128i second0 = _mm_loadu_si128(
+            reinterpret_cast<const __m128i *>(second + column * 2));
+        const __m128i second1 = _mm_loadu_si128(
+            reinterpret_cast<const __m128i *>(second + column * 2 + 16));
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(first_luma + column),
+            _mm_packus_epi16(_mm_and_si128(first0, luma_mask),
+                             _mm_and_si128(first1, luma_mask)));
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(second_luma + column),
+            _mm_packus_epi16(_mm_and_si128(second0, luma_mask),
+                             _mm_and_si128(second1, luma_mask)));
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(chroma + column),
+            _mm_packus_epi16(
+                _mm_srli_epi16(_mm_avg_epu8(first0, second0), 8),
+                _mm_srli_epi16(_mm_avg_epu8(first1, second1), 8)));
+      }
+      for (; column + 1U < width; column += 2U) {
+        first_luma[column] = first[column * 2U];
+        first_luma[column + 1U] = first[column * 2U + 2U];
+        second_luma[column] = second[column * 2U];
+        second_luma[column + 1U] = second[column * 2U + 2U];
+        chroma[column] = static_cast<uint8_t>(
+            (static_cast<unsigned int>(first[column * 2U + 1U]) +
+             second[column * 2U + 1U] + 1U) / 2U);
+        chroma[column + 1U] = static_cast<uint8_t>(
+            (static_cast<unsigned int>(first[column * 2U + 3U]) +
+             second[column * 2U + 3U] + 1U) / 2U);
+      }
+    }
+#endif
 #if !defined(__SSE2__)
     // Keep same-field source rows hot without keeping all five pixel
     // pointers live in one scalar loop on register-limited 32-bit CPUs.
@@ -3571,7 +3627,8 @@ static bool CopyH264InterlacedToSurface(
       for (unsigned int source_row = row_pair; source_row < row_pair + 2U;
            ++source_row) {
 #else
-    for (unsigned int source_row = 0; source_row < field_rows; ++source_row) {
+    for (unsigned int source_row = paired_rows;
+         source_row < field_rows; ++source_row) {
 #endif
       const unsigned int destination_row = compact_field
           ? source_row : source_row * 2U + parity;
@@ -3603,7 +3660,7 @@ static bool CopyH264InterlacedToSurface(
       for (unsigned int source_row = row_pair; source_row + 1 < row_pair + 2U;
            source_row += 2) {
 #else
-    for (unsigned int source_row = 0; source_row + 1 < field_rows;
+    for (unsigned int source_row = paired_rows; source_row + 1 < field_rows;
          source_row += 2) {
 #endif
       const unsigned int destination_row = compact_field

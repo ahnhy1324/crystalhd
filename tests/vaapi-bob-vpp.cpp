@@ -810,6 +810,10 @@ int main(int argc, char **argv) {
       CompactConversion(14, 32, parity, {18, 19});
       CompactConversion(14, 32, parity, {18, 13});
       CompactConversion(32, 32, parity, {16, 12});
+      // Exercise a vector block plus scalar tail when the final visible
+      // luma row still needs its cropped same-field neighbour for chroma.
+      CompactConversion(18, 4, parity, {18, 1});
+      CompactConversion(34, 8, parity, {18, 3});
       Pixels(1920, 1080, 1280, 720, false, parity, false,
               {1920, 1088}, {1280, 736}, true);
       Pixels(14, 12, 22, 8, false, parity, false, {16, 17}, {23, 9}, true);
