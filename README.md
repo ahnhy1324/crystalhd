@@ -122,6 +122,11 @@ crystalhd-play --hardware --scale-width 1280 \
   --software-output-size 1920x1080 "/path/to/video-1080p.mp4"
 ```
 
+For ordinary display playback, prefer `--scale-width` by itself: the video
+sink fits the smaller decoded image to its window. Add
+`--software-output-size` only when the caller needs an exact-size raw buffer;
+host enlargement costs CPU and cannot restore detail discarded by the card.
+
 Space pauses; Left/Right or `j`/`l` seek ten seconds; `1`, `2` and `3` select
 0.5x, 1x and 2x; `q` quits. See [everyday usage](USAGE.md) for codec examples,
 scaling choices and tradeoffs, VA/VLC commands and troubleshooting. The width

@@ -1054,6 +1054,22 @@
             "interpretation": "900p/990p mass loss is not deterministic by size: each same-size low-iowait repeat is zero-drop and the failed arm has about7% mean hostiowait despite similar PlayerCPU. This correlation neither proves storage causation nor identifies competing work. FHD alone repeats small losses under lowiowait;720 repeats zero-drop at about47 percentagepoints less CPU. Final converter is passthrough in enlargement arms, so its QoS drops are decision points rather than costly conversion evidence.",
             "disposition": "For display use, omit explicit software enlargement and allow the normal sink to fit card720 output. Keep explicitFHD returned-buffer mode and its documented limitation; no quality/QoS/deadline/priority/default change. No physical scanout/A/V,990p endurance,root-cause or production-fix claim. Preserve all FAILs and do not repeat this matrix just to seekPASS."
           },
+          "scale_only_display_qualification": {
+            "date_utc": "2026-10-21",
+            "checkout": "ffe0263aa3f84fc2b1b43b5d6f2a86e66792958b",
+            "runtime_source": "5af8297f9d5666f12125e55449fde791206a023c",
+            "qualified_library_source": "3b81b1d6ecb8caf5095879b285019a47574c9755",
+            "artifact": "scale-only-display-5min-1: result/playback/counts/qos-drops/resource-summary/native-hooks.json, raw.log, resources.jsonl, minutes.jsonl, kernel.log and maps.txt; continuous-media-5min-1/media-receipt.json",
+            "change": "Remove only the software-output-size prerequisite from the Player's existing hardware+scale-width+non-Weave DI-QoS controller admission. Exact GStreamer/plugin version, property tuple, negotiated YUY2 mixed/interleaved25-to-progressive50 caps, ownership, detach and fallback guards remain.",
+            "scope": "Actual public Player with --hardware --scale-width1280 and no software-output-size; one validated300s H.2641080i25 dialogue/PCM fixture,7500 originals/15000 expected fields, card1280x720, stockLINEAR50p, normalpriority, Xv/Pulse, unchangedquality/QoS/5ms lateness/15ms deadline/module3.10.9/DIL/candidateplugin. One bounded run, no retry or setting change.",
+            "status": "PASS automatic path and boundary",
+            "counts": {"decoder_input": 7500, "decoder_output": 7500, "card720": 7500, "post_deinterlace": 15000, "xv_input": 15000, "xv_rendered": 15000, "qos_drop_messages": 0},
+            "native_helper": {"attached_at_eos": true, "active": true, "eligible": true, "qos_count": 14999, "forward_count": 14999, "failure_count": 0, "installed_after_close": 0},
+            "negotiation": "Card/DI output YUY2 1280x720 mixed25/progressive50; Xv input UYVY1280x720p50. Playbin scale and final conversion topology retained; no crystalhd software enlargement or early packing. Xv owns window/display fitting.",
+            "resources": {"elapsed_seconds": 303.53874616289977, "player_cpu_percent_one_core": 37.016614770130786, "peak_rss_kib": 160780, "peak_host_celsius": 58, "mean_system_iowait_percent": 0.05432898722919273, "mean_system_busy_percent": 30.957256266177897, "settled_rss_growth_kib": 0, "settled_fd_growth": 0, "settled_thread_growth": 0, "settled_window_limit": "baseline begins300.983s and final sample303.036s; short overlapping windows, not leak/endurance evidence"},
+            "boundary": "NaturalEOS/player0/controller0, exact unique ordered/on-gridPTS, one balancedOpen/Close,7500 accepted/finished originals and15000 returned/released fields. No bus warning/error,kernel/AER delta,firmware timeout,pin/ref leak or module/PM identity change.",
+            "disposition": "Qualifies the public lower-host-cost card-scale-only Xv display path and the newly covered DI-QoS admission. Not physical scanout/A/V/E2E,display interpolation quality,long-run or pixel equivalence to explicit method4 FHD enlargement. Keep card scaling opt-in and exact FHD buffers explicit. Preserve output-resolution FAILs and remaining firmware stall."
+          },
           "private_native": {
             "artifact": "early-packing-1/{result,playback,counts,qos-drops}.json",
             "status": "PASS bounded automatic path and boundary",

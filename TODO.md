@@ -198,6 +198,12 @@ integrated API to obtain smaller card output; stock FFmpeg/Kodi do not do so.
   card-720+BWDIF, and card-720+BWDIF+CPU enlargement: three rounds per cell,
   all 27,000 outputs, PTS, EOS and clean close pass. Preserve CPU/RSS, latency,
   burst gaps and the slower enlargement round in the existing receipt.
+- [x] Qualify the actual Player display path with `--scale-width 1280` and no
+  explicit software output size. One five-minute Xv/Pulse run renders all
+  15,000 fields, with 14,999/14,999 native DI-QoS inspect/forward events and
+  no failure, 37.02% of one CPU core, natural EOS and a clean boundary. Xv
+  receives 1280x720 UYVY and owns display fitting; this is not physical
+  scanout, A/V or interpolation-quality acceptance.
 - [ ] Qualify physical A/V/display cadence and genuinely changing decoded
   field order separately. Mixed SEI labels are not a decoded-parity oracle:
   the existing 30-second fixture produces 750 BFF pictures in both software

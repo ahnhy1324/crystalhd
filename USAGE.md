@@ -299,13 +299,23 @@ down; resizing up does not restore detail discarded by the card. Omitting it
 lets the normal video sink fit the smaller decoded image to its window or
 display.
 
+That display-fitting path is the lower-cost choice when an exact Full-HD raw
+buffer is not required. A five-minute H.264 1080i25 run with the 1.2
+development player used `--scale-width 1280` alone: the card returned
+1280x720, Xv accepted 1280x720 UYVY at 50 fields/s, and all 15,000 fields were
+rendered without a QoS drop. The player used 37.02% of one CPU core. Matched
+explicit 1920x1080 enlargement runs used about 84.17% and lost 13 and 10
+fields. Xv's display interpolation is adaptor-dependent and is not claimed to
+be pixel-equivalent to the player's explicit method-4 software enlargement.
+
 For this enlargement path, the development Player can pack pixels at the
 smaller size when its selected Xv output accepts UYVY but not YUY2. This avoids
 repacking a full-size picture on the display thread; no extra option is needed.
 Deinterlacing still receives YUY2. Custom video sinks, Weave and uncertain
 output negotiation retain the previous format choice.
 
-With GStreamer **1.28.2**, this hardware-scaled Player path works around a
+With GStreamer **1.28.2**, the hardware-scaled Player path, with or without an
+explicit host output size, works around a
 confirmed default LINEAR deinterlacer error for YUY2 25-picture/s input and
 50-field/s output. It bypasses that element's entire local QoS cache while
 forwarding unchanged feedback upstream; decoder, resize/conversion and sink
