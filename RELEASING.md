@@ -158,9 +158,11 @@ a fix or explicit withdrawal from the candidate.
    ```
 
    Require completed CI success, including the older GStreamer build. Test
-   a source archive without `.git`, staged install/uninstall, plugin discovery,
-   and the documented direct and DKMS upgrade/rollback paths. A staged layout
-   check does not establish a live module installation or hardware pass.
+   a source archive without `.git`, staged install/uninstall and plugin
+   discovery, and review and pin the documented direct and DKMS
+   upgrade/rollback paths. Execute those live upgrade/rollback paths only in G3
+   against the immutable RC. A staged layout check does not establish a live
+   module installation or hardware pass.
 4. Complete #473 G0/G1, including the declared short native smoke. Record the
    exact commit, source diff, selected claim matrix, limits, acknowledgements,
    release text and results, then obtain explicit maintainer RC GO before

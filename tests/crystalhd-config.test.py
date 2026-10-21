@@ -847,9 +847,11 @@ class ConfigCliTest(unittest.TestCase):
         scripts_dir.mkdir(parents=True, mode=0o700)
         manifest_dir.mkdir(parents=True, mode=0o700)
         copy = scripts_dir / "crystalhd-config"
+        manifest_copy = manifest_dir / MANIFEST.name
         shutil.copyfile(str(SCRIPT), str(copy))
-        shutil.copyfile(str(MANIFEST), str(manifest_dir / MANIFEST.name))
+        shutil.copyfile(str(MANIFEST), str(manifest_copy))
         os.chmod(str(copy), 0o755)
+        os.chmod(str(manifest_copy), 0o644)
         result = self.run_cli(
             "show-effective", *self.common(), "--ignore-environment",
             script=copy,
