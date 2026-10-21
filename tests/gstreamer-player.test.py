@@ -545,6 +545,7 @@ class DeinterlaceQosTests(unittest.TestCase):
         factory.get_plugin.return_value.get_version.return_value = "1.28.2"
         properties = dict(mode=0, method=4, fields=0, locking=0, tff=0)
         element.get_property.side_effect = properties.__getitem__
+        element.get_properties.side_effect = lambda *names: tuple(properties[name] for name in names)
         pads = {name: mock.Mock() for name in ("sink", "src")}
         pads["src"].add_probe.return_value = 17
         element.get_static_pad.side_effect = pads.__getitem__
@@ -565,6 +566,36 @@ class DeinterlaceQosTests(unittest.TestCase):
         Gst.version = lambda: (1, 28, 2, 0)
         element.get_factory.return_value.get_plugin.return_value.get_version.return_value = "1.28.3"
         self.assertIsNone(player.DeinterlaceQosWorkaround.install(Gst, element, mock.Mock()))
+
+    def test_qos_reads_one_fresh_property_batch_and_latches_each_change(self):
+        names = ("mode", "method", "fields", "locking", "tff")
+        for name in names:
+            with self.subTest(property=name):
+                Gst, element, properties, pads = self.fixture()
+                helper = player.DeinterlaceQosWorkaround.install(Gst, element, mock.Mock())
+                self.addCleanup(helper.close)
+                for pad in pads.values():
+                    pad.get_current_caps.return_value.get_size.return_value = 1
+                helper.caps_supported = mock.Mock(return_value=True)
+                info = mock.Mock()
+                info.get_event.return_value.type = Gst.EventType.QOS
+                element.get_properties.reset_mock()
+                for _index in range(2):
+                    self.assertEqual(helper.event(None, info), Gst.PadProbeReturn.DROP)
+                self.assertEqual(element.get_properties.call_args_list, [mock.call(*names)] * 2)
+                element.get_property.assert_not_called()
+                self.assertEqual(pads["sink"].push_event.call_count, 2)
+
+                original = properties[name]
+                properties[name] = original + 1
+                element.get_properties.reset_mock()
+                self.assertEqual(helper.event(None, info), Gst.PadProbeReturn.OK)
+                element.get_properties.assert_called_once_with(*names)
+                self.assertFalse(helper.active)
+                properties[name] = original
+                self.assertEqual(helper.event(None, info), Gst.PadProbeReturn.OK)
+                self.assertEqual(element.get_properties.call_count, 1)
+                self.assertEqual(pads["sink"].push_event.call_count, 2)
 
     def test_forward_once_failure_and_probe_cleanup(self):
         for forwarded in (True, False):
@@ -1503,6 +1534,48 @@ class GStreamerApiTests(unittest.TestCase):
         pads["sink"].push_event.assert_not_called()
         helper.close()
         self.assertIsNone(helper.caps_policy)
+
+    def test_deinterlace_qos_reads_changes_while_notifications_are_frozen(self):
+        Gst = self.Gst
+        element = Gst.ElementFactory.make("deinterlace")
+        if element is None or not player.DeinterlaceQosWorkaround.supported(Gst, element):
+            self.skipTest("exact GStreamer 1.28.2 deinterlace property policy")
+        source = Gst.Caps.from_string(
+            "video/x-raw,format=YUY2,width=16,height=8,interlace-mode=mixed,framerate=25/1")
+        output = Gst.Caps.from_string(
+            "video/x-raw,format=YUY2,width=16,height=8,interlace-mode=progressive,framerate=50/1")
+        notifications = []
+        handler = element.connect("notify", lambda _element, spec: notifications.append(spec.name))
+        self.addCleanup(element.disconnect, handler)
+        for name in ("mode", "method", "fields", "locking", "tff"):
+            with self.subTest(property=name):
+                helper = player.DeinterlaceQosWorkaround.__new__(player.DeinterlaceQosWorkaround)
+                helper.Gst, helper.element = Gst, element
+                helper.closed, helper.active, helper.caps_policy = False, True, None
+                helper.sink, helper.src = mock.Mock(), mock.Mock()
+                helper.sink.get_current_caps.return_value = source
+                helper.src.get_current_caps.return_value = output
+                self.assertTrue(helper.eligible())
+                original = int(element.get_property(name))
+                notifications.clear()
+                element.freeze_notify()
+                try:
+                    element.set_property(name, original + 1)
+                    self.assertEqual(notifications, [])
+                    self.assertFalse(helper.eligible())
+                    info = mock.Mock()
+                    info.get_event.return_value.type = Gst.EventType.QOS
+                    self.assertEqual(helper.event(None, info), Gst.PadProbeReturn.OK)
+                    element.set_property(name, original)
+                    self.assertTrue(helper.properties_supported(element))
+                    self.assertFalse(helper.active)
+                    self.assertFalse(helper.eligible())
+                    helper.sink.push_event.assert_not_called()
+                    self.assertEqual(notifications, [])
+                finally:
+                    element.set_property(name, original)
+                    element.thaw_notify()
+                self.assertIn(name, notifications)
 
     def test_deinterlace_qos_second_field_pts_tff_and_bff(self):
         Gst = self.Gst

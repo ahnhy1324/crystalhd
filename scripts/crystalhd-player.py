@@ -363,8 +363,8 @@ class DeinterlaceQosWorkaround:
 
     @staticmethod
     def properties_supported(element):
-        return all(int(element.get_property(name)) == value for name, value in
-                   (("mode", 0), ("method", 4), ("fields", 0), ("locking", 0), ("tff", 0)))
+        return tuple(int(value) for value in element.get_properties(
+            "mode", "method", "fields", "locking", "tff")) == (0, 4, 0, 0, 0)
 
     @classmethod
     def supported(cls, Gst, element):
