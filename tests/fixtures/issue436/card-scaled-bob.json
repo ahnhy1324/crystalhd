@@ -936,6 +936,35 @@
             "instrumentation_limit": "GIL observer does not cover interpreter-internal direct calls or Python callback bodies. Calibrated extraCPU roughly11.77us/call; run1 extrapolation1.485CPU-s (~2.32%onecore), not an exact uninstrumented counterfactual. Elapsed GIL/XSync call spans are not exclusive blocking time. Keep probe effects separate from production throughput and physical scanout/A/V/E2E.",
             "disposition": "Controlled host CPU competition reproduces one deadline-loss mechanism with intact card output and recovery; does not identify the original natural competitor, explain every3h loss, prove a fixed performance ceiling or resolve the older firmware stall. No evidence-based production-policy change made. Next: capture a naturally failing window with task-level scheduling before attributing or fixing its initiator; only optimize measured own-code cost, not disable QoS or hide drops."
           },
+          "priority_trial": {
+            "date_utc": "2026-10-21",
+            "runtime_source": "740ebcde40ff7435d2e18611f481dc7738320d02",
+            "documentation_checkout": "3c39bcba589ec5227d4cfbd9abc74dda22793dc2",
+            "scope": "User-requested approximately30min priority measurement, same field-preserving dialogue H264/PCM seed and qualified DIL/Gst as clocked_endurance_3h. Owned unprivileged Player only: nice0->-10 before GI/Gst, SCHED_OTHER, inherited by its threads. Parentnice0; no RT/affinity/controlled load/GIL/Xv/scheduler tracing. Original lean long-controller count/PTS/QoS/resource/thermal guards, topology, quality and deadlines retained.",
+            "artifacts": "production-priority-30min-1 and production-priority-11min-1: result,playback,counts,qos-drops,progress,cadence,resource-summary,priority-start JSON; minutes/resources JSONL and raw/kernel logs. Private run-player-priority.py and run-player-priority-continuation.py; validated stream-copy continuous-media-30min-1 and continuous-media-11min-1 receipts retain builder identities.",
+            "planned_30min": {
+              "status": "FAIL_THERMAL_ABORT_NOT_CONTINUOUS_30MIN_COMPLETE",
+              "planned_fields": 90000,
+              "stop": "Existing host thermal_zone0 guard reached85000mC at approximately1148s; ordinary TERM/player143 and one clean Close, no EOS. This is host temperature, not card temperature. Guard unchanged; no automatic retry.",
+              "checkpoint": {"elapsed_seconds": 1140.19721772, "render_submissions": 56863, "confirmed_drops": 74, "resolved_outputs": 56937, "drop_percent": 0.1299682104782479, "loss_accounting": "3decoder originals*2 +47final-converter+21sink", "scope": "Last saved progress row equals final minutes.jsonl row. One sink input remains in flight; unplayed fixture tail and shutdown queues are not QoS loss. Denominator is rendered+confirmed drops, not90000."},
+              "terminal_observation": {"confirmed_qos_drops": 76, "card_fields_returned_and_released": 57228, "scope": "Includes two later drops after the checkpoint, but no terminal render counter; do not combine76 with the earlier checkpoint denominator."},
+              "resources": {"cpu_percent_one_core": 91.4958263136905, "observed_interval_seconds": 1147.1233632030198, "sampled_peak_rss_kib": 177172, "settled_rss_delta_kib": 372, "fd_delta": 0, "thread_delta": 0, "sampled_max_host_celsius": 84, "thermal_guard_stop_celsius": 85},
+              "priority": {"samples": 110, "observed_task_lifetimes": 15, "all_sampled_nice": -10, "policy": "SCHED_OTHER", "rt_priority": 0}
+            },
+            "continuation_11min": {
+              "status": "EOS_COMPLETE_STRICT_NO_DROP_FAIL",
+              "media_seconds": 660, "elapsed_seconds": 664.0769798459951,
+              "originals_accepted_and_finished": 16500, "card_fields_returned_and_released": 33000,
+              "render_submissions": 32957, "confirmed_drops": 43, "resolved_outputs": 33000, "drop_percent": 0.1303030303030303,
+              "loss_accounting": "29final-converter+14sink; all33000 post-DI and FHD buffers present, no upstream loss",
+              "boundary": "After natural cooling to45C, one fresh device lifetime reaches natural EOS/player0, ordinary Close, helper removed; strict child/controller1 records actual QoS loss, not a decoder crash. Saved EOS topology and boundaries reviewed; later live assertions after no-drop failure were not reached.",
+              "resources": {"cpu_percent_one_core": 91.15505405480353, "observed_interval_seconds": 663.5616711239563, "sampled_peak_rss_kib": 175832, "settled_rss_delta_kib": 476, "fd_delta": 0, "thread_delta": 0, "maximum_host_celsius": 78},
+              "priority": {"samples": 64, "observed_task_lifetimes": 15, "all_sampled_nice": -10, "policy": "SCHED_OTHER", "rt_priority": 0}
+            },
+            "aggregate": {"render_submissions": 89820, "confirmed_drops": 117, "resolved_outputs": 89937, "drop_percent": 0.13009106374462123, "weighted_cpu_percent_one_core": 91.37094351779122, "resource_interval_seconds": 1810.6850343269762, "scope": "Split19min checkpoint+complete11min results, approximately30min, NOT uninterrupted30min/EOS qualification. CPU uses both whole observed process intervals, not just the drop-count checkpoint."},
+            "common_boundary": "Both runs finish with pins0/ref0, unchanged module3.10.9/src287221A03F284BCA2A3C04B/force_l0s_offY/session_l0s_offN/AER; all returned card fields released, one Open/Close each. No bus warnings/errors or observer overflow/fatal. Ten-second task samples prove observed priorities, not every transient task. No installed/external-app/PM/display/governor changes; priority ends with the Player.",
+            "disposition": "Raising priority does not remove deadline drops. Historical3h0.2198% has different duration/background/thermal conditions and is not a matched causal control. Do not claim a speedup, firmware-stall fix, physical A/V/scanout/E2E result or continuous30min PASS; do not relax85C/deadline/QoS gates or adopt a default-priority change. All historical results preserved."
+          },
           "private_native": {
             "artifact": "early-packing-1/{result,playback,counts,qos-drops}.json",
             "status": "PASS bounded automatic path and boundary",
