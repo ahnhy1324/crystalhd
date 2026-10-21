@@ -403,9 +403,11 @@ static BC_STATUS DtsEnsureRxBufferLayout(DTS_LIB_CONTEXT *Ctx)
 			free(staged);
 			return BC_STS_INSUFF_RES;
 		}
-		memset(staged[i], 0, layout.allocationBytes);
 	}
 
+	/* All fallible allocations have succeeded, so the old pool is still a
+	 * complete rollback target.  Retire each old resident buffer before
+	 * zero-filling its replacement to avoid touching both full pools at once. */
 	for (i = 0; i < Ctx->MpoolCnt; ++i) {
 		DTS_MPOOL_TYPE *mp = &Ctx->Mpools[i];
 		uint8_t *old;
@@ -415,6 +417,7 @@ static BC_STATUS DtsEnsureRxBufferLayout(DTS_LIB_CONTEXT *Ctx)
 		mp->buff = staged[i];
 		mp->sz = layout.allocationBytes;
 		free(old);
+		memset(mp->buff, 0, layout.allocationBytes);
 	}
 	free(staged);
 	Ctx->rxBufferWidth = desired;
