@@ -284,6 +284,85 @@ def make_software_output_filter(Gst, size):
     return result
 
 
+class DeinterlaceQosWorkaround:
+    """Bypass only the qualified deinterlacer's incorrect picture-PTS QoS cache."""
+
+    def __init__(self, Gst, element, on_error):
+        self.Gst, self.element, self.on_error = Gst, element, on_error
+        self.sink, self.src = (element.get_static_pad(name) for name in ("sink", "src"))
+        self.closed = False
+        self.active = True
+        self.probe = self.src.add_probe(Gst.PadProbeType.EVENT_UPSTREAM, self.event)
+
+    @staticmethod
+    def supported(Gst, element):
+        factory = element.get_factory()
+        plugin = factory.get_plugin() if factory is not None else None
+        return (tuple(Gst.version())[:3] == (1, 28, 2) and
+                factory is not None and factory.get_name() == "deinterlace" and
+                plugin is not None and plugin.get_version() == "1.28.2" and
+                all(int(element.get_property(name)) == value for name, value in
+                    (("mode", 0), ("method", 4), ("fields", 0), ("locking", 0), ("tff", 0))))
+
+    @classmethod
+    def install(cls, Gst, element, on_error):
+        if not cls.supported(Gst, element):
+            return None
+        if any(element.get_static_pad(name) is None for name in ("sink", "src")):
+            return None
+        return cls(Gst, element, on_error)
+
+    def eligible(self):
+        if self.closed or not self.active or not self.supported(self.Gst, self.element):
+            return False
+        caps = [pad.get_current_caps() for pad in (self.sink, self.src)]
+        if any(value is None or value.get_size() != 1 for value in caps):
+            return False
+        source, output = (value.get_structure(0) for value in caps)
+        # Keep this compatibility workaround within the measured 25i -> 50p
+        # packed-YUY2 path. Other rates, layouts and methods keep stock policy.
+        return (all(value.get_name() == "video/x-raw" and
+                    value.get_string("format") == "YUY2" for value in (source, output)) and
+                source.get_string("interlace-mode") in ("mixed", "interleaved") and
+                output.get_string("interlace-mode") == "progressive" and
+                source.get_fraction("framerate") == (True, 25, 1) and
+                output.get_fraction("framerate") == (True, 50, 1) and
+                all(source.get_int(name)[0] and source.get_int(name)[1] > 0 and
+                    source.get_int(name) == output.get_int(name) for name in ("width", "height")))
+
+    def event(self, _pad, info):
+        Gst = self.Gst
+        event = info.get_event()
+        if event.type != Gst.EventType.QOS:
+            return Gst.PadProbeReturn.OK
+        if not self.eligible():
+            # Once stock has observed QoS, keep its policy for this element's
+            # lifetime; later caps changes must not leave a stale local cache.
+            self.active = False
+            return Gst.PadProbeReturn.OK
+        on_error = self.on_error
+        # 1.28.2 tests both fields against the input picture's PTS, including
+        # the later field whose output PTS still meets the QoS deadline.
+        # Skip this stage's entire QoS cache update, not downstream QoS: retain
+        # the unchanged event upstream and leave the final sink authoritative.
+        try:
+            forwarded = self.sink.push_event(event.copy())
+        except Exception:
+            forwarded = False
+        if not forwarded and on_error is not None:
+            on_error("could not forward deinterlacer QoS feedback upstream")
+        # DROP releases the original event. Never retry after a forwarding
+        # failure: it may already have reached an upstream element.
+        return Gst.PadProbeReturn.DROP
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            self.src.remove_probe(self.probe)
+            self.probe = 0
+            self.on_error = None
+
+
 class Player:
     def __init__(self, args, Gst, GLib, sinks=None):
         self.args, self.Gst, self.GLib = args, Gst, GLib
@@ -297,6 +376,7 @@ class Player:
         self.buffering = False
         self.is_live = False
         self.decoders = {}
+        self.deinterlace_qos = {}
         self.next_decoder = 0
         self.seek_target = None
         self.queued_seek = None
@@ -347,6 +427,14 @@ class Player:
         if factory is None:
             return
         name, klass = factory.get_name(), factory.get_metadata("klass") or ""
+        if (name == "deinterlace" and self.args.mode == "hardware" and
+                self.args.scale_width and self.args.software_output_size and not self.args.weave and
+                element not in self.deinterlace_qos):
+            workaround = DeinterlaceQosWorkaround.install(
+                self.Gst, element, lambda reason: self.post_observation(
+                    "crystalhd-player-output-error", {"message": reason}))
+            if workaround is not None:
+                self.deinterlace_qos[element] = workaround
         if not video_decoder(klass):
             return
         if name == "crystalhddec" and self.args.scale_width:
@@ -420,6 +508,9 @@ class Player:
         return False
 
     def element_removed(self, _pipeline, _bin, element):
+        workaround = self.deinterlace_qos.pop(element, None)
+        if workaround is not None:
+            workaround.close()
         token = self.decoders.get(element)
         if token is not None:
             self.post_observation("crystalhd-player-removed", {"token": token})
@@ -444,6 +535,8 @@ class Player:
             elif fields.get_name() == "crystalhd-player-error":
                 if fields.get_value("token") in self.decoders.values():
                     self.fail(fields.get_value("message"))
+            elif fields.get_name() == "crystalhd-player-output-error":
+                self.fail(fields.get_value("message"))
         elif message.type == Gst.MessageType.ERROR:
             error, _debug = message.parse_error()
             self.fail(input_error(self.args.file,
@@ -628,6 +721,9 @@ class Player:
         if self.pipeline.set_state(self.Gst.State.NULL) == self.Gst.StateChangeReturn.FAILURE:
             print("crystalhd-play: decoder teardown failed", file=sys.stderr)
             self.exit_code = max(self.exit_code, 1)
+        for workaround in tuple(self.deinterlace_qos.values()):
+            workaround.close()
+        self.deinterlace_qos.clear()
 
     def run(self):
         try:
