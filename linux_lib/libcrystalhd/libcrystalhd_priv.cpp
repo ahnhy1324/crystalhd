@@ -1505,6 +1505,17 @@ static bool DtsSetupProcOutInfo(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut,
 
 	if(pIo->u.DecOutData.Flags & COMP_FLAG_DATA_VALID)
 	{
+		const BC_DEC_YUV_BUFFS &buffers =
+			pIo->u.DecOutData.OutPutBuffs;
+		/* Validate the driver's registration receipt before deriving either
+		 * plane pointer.  An offset equal to the allocation is valid for the
+		 * legacy LINK layout, where the UV extent can be empty. */
+		if (!buffers.YuvBuff || !buffers.YuvBuffSz ||
+			buffers.UVbuffOffset > buffers.YuvBuffSz) {
+			pOut->Ybuff = pOut->UVbuff = NULL;
+			pIo->RetSts = BC_STS_IO_XFR_ERROR;
+			return false;
+		}
 		pOut->Ybuff = pIo->u.DecOutData.OutPutBuffs.YuvBuff;
 		pOut->YBuffDoneSz = pIo->u.DecOutData.OutPutBuffs.YBuffDoneSz;
 		pOut->YbuffSz = pIo->u.DecOutData.OutPutBuffs.UVbuffOffset;

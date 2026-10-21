@@ -570,7 +570,8 @@ extern "C" int ioctl(int fd, unsigned long code, ...) noexcept
         ++fetch_calls;
         Check(fetched_output.OutPutBuffs.YuvBuffSz <= fetch_capacity,
               "fake transfer stays inside the owned registration fixture");
-        if (fetched_output.OutPutBuffs.YuvBuffSz <= fetch_capacity)
+        if (fetched_output.OutPutBuffs.YuvBuff &&
+            fetched_output.OutPutBuffs.YuvBuffSz <= fetch_capacity)
             std::memcpy(fetched_output.OutPutBuffs.YuvBuff,
                         fetch_original->data() + fetch_original_prefix,
                         fetched_output.OutPutBuffs.YuvBuffSz);
@@ -822,6 +823,39 @@ static void FetchPackingOwnership()
                   repost_calls == 1 && bad.lease.context.ProcOutPending == 0 &&
                   bad.lease.output.Ybuff == nullptr && bad.lease.storage == bad.lease.original,
               "encrypted/corrupt fetched source retires without conversion or returned ownership");
+    }
+    for (unsigned fault = 0; fault < 3; ++fault) {
+        FetchFixture bad;
+        if (fault == 0) fetched_output.OutPutBuffs.YuvBuff = nullptr;
+        if (fault == 1) fetched_output.OutPutBuffs.YuvBuffSz = 0;
+        if (fault == 2)
+            fetched_output.OutPutBuffs.UVbuffOffset =
+                fetched_output.OutPutBuffs.YuvBuffSz + 1;
+        Check(bad.Run() == BC_STS_IO_XFR_ERROR && fetch_calls == 1 &&
+                  repost_calls == 1 && bad.lease.context.ProcOutPending == 0 &&
+                  bad.lease.output.Ybuff == nullptr &&
+                  bad.lease.output.UVbuff == nullptr &&
+                  bad.lease.storage == bad.lease.original,
+              "invalid receipt base/size/UV extent is rejected before pointer exposure and reposted once");
+    }
+    {
+        FetchFixture quarantined;
+        fetched_output.OutPutBuffs.UVbuffOffset =
+            fetched_output.OutPutBuffs.YuvBuffSz + 1;
+        repost_status = BC_STS_IO_ERROR;
+        Check(quarantined.Run() == BC_STS_IO_ERROR && fetch_calls == 1 &&
+                  repost_calls == 1 &&
+                  quarantined.lease.context.ProcOutPending == 1 &&
+                  quarantined.lease.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY &&
+                  quarantined.lease.output.Ybuff == nullptr &&
+                  quarantined.lease.output.UVbuff == nullptr &&
+                  quarantined.lease.storage == quarantined.lease.original,
+              "invalid receipt with failed repost retains one retire-only owner");
+        BC_DTS_PROC_OUT next = {};
+        Check(DtsFetchOutInterruptible(&quarantined.lease.context, &next, 0) ==
+                  BC_STS_BUSY && fetch_calls == 1 && repost_calls == 1 &&
+                  next.Ybuff == nullptr && next.UVbuff == nullptr,
+              "invalid-receipt quarantine blocks refetch and duplicate repost");
     }
     {
         FetchFixture bad;
