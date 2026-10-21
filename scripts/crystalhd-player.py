@@ -564,7 +564,7 @@ class Player:
         if name == "xvimagesink" and self.output_packing is not None and not self.closed:
             self.output_packing.select(element, self.pipeline)
         if (name == "deinterlace" and self.args.mode == "hardware" and
-                self.args.scale_width and self.args.software_output_size and not self.args.weave and
+                self.args.scale_width and not self.args.weave and
                 element not in self.deinterlace_qos):
             try:
                 workaround = NativeDeinterlaceQosWorkaround.install(self.Gst, element, self.bus)

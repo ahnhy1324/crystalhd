@@ -641,10 +641,10 @@ class DeinterlaceQosTests(unittest.TestCase):
         pads["sink"].push_event.assert_not_called()
         workaround.close()
 
-    def test_player_installs_only_on_scaled_hardware_path_and_removes_probe(self):
+    def test_player_installs_only_on_card_scaled_hardware_path_and_removes_probe(self):
         for changes, install in (({}, True), ({"mode": "software"}, False),
                                  ({"scale_width": 0}, False),
-                                 ({"software_output_size": None}, False), ({"weave": True}, False)):
+                                 ({"software_output_size": None}, True), ({"weave": True}, False)):
             with self.subTest(changes=changes):
                 control = player.Player.__new__(player.Player)
                 control.args = SimpleNamespace(**(dict(mode="hardware", scale_width=1280,
