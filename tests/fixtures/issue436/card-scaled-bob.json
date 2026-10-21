@@ -648,7 +648,18 @@
         "change": "Serialize free-count sampling and firmware publication under the existing hardware lock; READ_ONCE ordinary queue count plus protected retained-owner traversal. No new queue lock, power policy, ABI or timeout.",
         "device_free": "PASS power suite normal/ASan+UBSan with watchdog off/on; 143 integrated sequences per variant include count0-to1/1-to0, retained owners and ACTIVE wake. RX normal/sanitized1070 scenarios and311762 checks each, fetch-wait68 scenarios/210 checks, Flea ISR750 and Link ISR57 checks. Two independent source reviews approve.",
         "build": "PASS current kernel7.0.0-38 W=1/Werror, research off/on; compiler executable-name and unavailable pahole/vmlinux/BTF notices retained",
-        "native_updated_module": "NOT RUN; installed/loaded3.10.9 unchanged. Software race reproduction is not proof of the native stall's cause or resolution."
+        "native_updated_module": {
+          "checkout": "7b4b1cf3eb1a8a83eb472f2c677807ac594fe737",
+          "module_version": "3.10.10",
+          "module_srcversion": "01CC5D2D69C3070D130F2A2",
+          "scope": "One temporary normal-module trial, unchanged qualified DIL/GStreamer and Y/N policy. Candidate also includes the earlier firmware-wait change; comparison with stable3.10.9 does not isolate FLL or establish a speedup.",
+          "finite": {"status": "PASS", "same_process_fresh_opens": 2, "pictures_per_open": 50, "fields_per_open": 100, "matched_active_bytes": 184320000, "eos_per_open": 1, "elapsed_seconds": 5.114371379953809, "boundary": "PASS"},
+          "player": {"status": "FAIL strict no-drop", "counts": [750, 737, 1416, 1416, 1325, 1272, 53], "eos": true, "player_exit": 0, "strict_controller_exit": 1, "elapsed_seconds": 33.83728144702036, "boundary": "PASS"},
+          "observer": "41 records, no cap/fatal errors;750 accepted inputs,1500 output/release successes,750 finish_frame successes,one Open/Close success each. Four downstream finish_frame calls take102.157-117.158 ms; these are not card decode times.",
+          "losses": "13 decoder QoS pictures (26 fields),58 DI fields,0 resize,91 post-FHD conversion and53 sink fields:228 missing renders. All original card fields complete; this does not explain the worse presentation rate or prove absence of a module timing effect.",
+          "restoration": "PASS exact installed3.10.9/src287221A03F284BCA2A3C04B; folded pins0/ref0,unchanged AER/node/PCIe link controls/PM. Installed artifacts untouched; no force unload/reset/reboot.",
+          "disposition": "TEST_FAIL_RESTORED. Software ordering regression fixed; finite pixel/EOS/reopen checks pass. Original intermittent stall not reproduced in this bounded run, not declared fixed. Presentation and performance remain unresolved; no new physical A/V acceptance."
+        }
       }
     }
   },
