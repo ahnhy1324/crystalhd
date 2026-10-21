@@ -108,10 +108,16 @@ static struct pci_dev endpoint = { .irq = 17 };
 static struct crystalhd_adp adapter = { .pdev = &endpoint };
 static struct crystalhd_hw hardware;
 static unsigned fll_lock_countdown, fll_lock_mutation;
+static struct crystalhd_hw *count_on_lock_hw;
+static uint32_t count_on_lock_value;
 static void test_rx_lock(int *lock)
 {
     assert(!*lock);
     *lock = 1;
+    if (count_on_lock_hw && lock == &count_on_lock_hw->lock) {
+        count_on_lock_hw->rx_freeq->count = count_on_lock_value;
+        count_on_lock_hw = NULL;
+    }
     if (lock == &hardware.lock && fll_lock_countdown && !--fll_lock_countdown) {
         if (fll_lock_mutation == 0) hardware.FleaPowerState = FLEA_PS_LP_PENDING;
         else if (fll_lock_mutation == 1) hardware.FleaPowerTransition = true;
@@ -2172,6 +2178,40 @@ static void free_count_consumer_cases(uint32_t device)
     inventory(0, 0, 0);
     drain();
 }
+
+static void free_count_lock_cases(void)
+{
+    struct crystalhd_rx_dma_pkt retained[2] = {0};
+    retained[0].next = &retained[1];
+    for (unsigned has_queue = 0; has_queue < 2; has_queue++)
+        for (unsigned initial = 0; initial <= 3; initial += 3)
+            for (unsigned retained_count = 0; retained_count <= 2; retained_count++) {
+                struct crystalhd_dioq queue = {.count = initial};
+                struct crystalhd_hw hw = {
+                    .rx_freeq = has_queue ? &queue : NULL,
+                    .rx_fallback_head = retained_count ? &retained[2 - retained_count] : NULL
+                };
+                unsigned long flags = 0;
+                groups++;
+                spin_lock_irqsave(&hw.lock, flags);
+                check(crystalhd_hw_count_free_rx_pkts_locked(&hw) ==
+                          has_queue * initial + retained_count && hw.lock,
+                      "locked count preserves caller lock and counts absent/ordinary/fallback owners");
+                spin_unlock_irqrestore(&hw.lock, flags);
+                check(crystalhd_hw_count_free_rx_pkts(&hw) ==
+                          has_queue * initial + retained_count && !hw.lock,
+                      "public count wrapper preserves empty and combined owner totals");
+                if (has_queue) {
+                    count_on_lock_hw = &hw;
+                    count_on_lock_value = initial ? 0 : 3;
+                    check(crystalhd_hw_count_free_rx_pkts(&hw) ==
+                              count_on_lock_value + retained_count && !count_on_lock_hw &&
+                          !hw.lock && queue.count == count_on_lock_value,
+                          "public count samples the queue after lock acquisition, not before it");
+                }
+            }
+}
+
 static BC_STATUS fll_error(unsigned index)
 {
     /* All defined non-SUCCESS statuses, including the negative ERROR. */
@@ -2292,7 +2332,7 @@ static void fll_power_admission_cases(void)
         reset(BC_PCI_DEVID_FLEA);
         hardware.FleaEnablePWM = true;
         fll_lock_mutation = mutation;
-        fll_lock_countdown = 2; /* free-list count, final FLL admission */
+        fll_lock_countdown = 1; /* count and final FLL admission share the lock */
         check(crystalhd_flea_publish_fll(&hardware, false) ==
               (mutation < 2 ? BC_STS_BUSY : BC_STS_IO_ERROR) &&
               !fll_lock_countdown && !dram_write_calls && !hardware.lock,
@@ -2314,7 +2354,7 @@ static void fll_power_admission_cases(void)
         reset(BC_PCI_DEVID_FLEA);
         hardware.FleaEnablePWM = true;
         fll_lock_mutation = mutation;
-        fll_lock_countdown = 3; /* reserve, free-list count, final publication */
+        fll_lock_countdown = 2; /* reserve, then count/publication together */
         check(crystalhd_flea_publish_fll(&hardware, true) == BC_STS_IO_ERROR &&
               !fll_lock_countdown && firmware_alive_checks == 1 && !dram_write_calls &&
               !hardware.FleaPowerTransition && !hardware.lock,
@@ -3898,6 +3938,7 @@ int main(void)
         invalid_command_arguments(devices[i]);
         invalid_capture_start_arguments(devices[i]);
     }
+    free_count_lock_cases();
     fll_publication_cases();
     fll_power_admission_cases();
     fll_capture_and_owner_cases();

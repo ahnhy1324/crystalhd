@@ -489,18 +489,28 @@ crystalhd_hw_fetch_free_rx_pkt(struct crystalhd_hw *hw)
 	return pkt ? pkt : crystalhd_hw_fetch_retained_rx_pkt(hw);
 }
 
-uint32_t crystalhd_hw_count_free_rx_pkts(struct crystalhd_hw *hw)
+/* The caller holds hw->lock, including across any FLL publication. */
+uint32_t crystalhd_hw_count_free_rx_pkts_locked(struct crystalhd_hw *hw)
 {
 	struct crystalhd_rx_dma_pkt *pkt;
+	uint32_t count;
+
+	count = hw->rx_freeq ? READ_ONCE(hw->rx_freeq->count) : 0;
+	for (pkt = hw->rx_fallback_head; pkt; pkt = pkt->next)
+		count++;
+
+	return count;
+}
+
+uint32_t crystalhd_hw_count_free_rx_pkts(struct crystalhd_hw *hw)
+{
 	unsigned long flags = 0;
 	uint32_t count;
 
 	if (!hw)
 		return 0;
-	count = hw->rx_freeq ? crystalhd_dioq_count(hw->rx_freeq) : 0;
 	spin_lock_irqsave(&hw->lock, flags);
-	for (pkt = hw->rx_fallback_head; pkt; pkt = pkt->next)
-		count++;
+	count = crystalhd_hw_count_free_rx_pkts_locked(hw);
 	spin_unlock_irqrestore(&hw->lock, flags);
 
 	return count;

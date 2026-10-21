@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Serialize BCM70015 free-buffer counting with firmware notification so an
+  older publisher cannot overwrite a newer count; retain existing power policy.
 - Advance eligible synchronous MPEG-2 Main progressive output with private
   non-reference B pictures instead of repeatedly sealing and reopening the
   device. Preserve original pictures, references and caller timing; separately

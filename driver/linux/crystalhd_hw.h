@@ -606,6 +606,8 @@ void crystalhd_hw_retain_rx_pkt(struct crystalhd_hw *hw,
 struct crystalhd_rx_dma_pkt *
 crystalhd_hw_fetch_free_rx_pkt(struct crystalhd_hw *hw);
 uint32_t crystalhd_hw_count_free_rx_pkts(struct crystalhd_hw *hw);
+/* Caller must hold hw->lock; does not acquire a queue lock. */
+uint32_t crystalhd_hw_count_free_rx_pkts_locked(struct crystalhd_hw *hw);
 void crystalhd_tx_desc_rel_call_back(void *context, void *data);
 void crystalhd_rx_pkt_rel_call_back(void *context, void *data);
 void crystalhd_hw_delete_ioqs(struct crystalhd_hw *hw);

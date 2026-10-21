@@ -990,7 +990,6 @@ static BC_STATUS crystalhd_flea_publish_fll(struct crystalhd_hw *hw,
 		goto unlock;
 	}
 
-	freeListLen = crystalhd_hw_count_free_rx_pkts(hw);
 	spin_lock_irqsave(&hw->lock, flags);
 	if (READ_ONCE(hw->dma_fault) || hw->FleaPowerState == FLEA_PS_FAULT) {
 		sts = BC_STS_IO_ERROR;
@@ -1011,6 +1010,10 @@ static BC_STATUS crystalhd_flea_publish_fll(struct crystalhd_hw *hw,
 			goto unlock;
 		}
 	}
+	/* Sample under the publication lock: an older notifier must not
+	 * overwrite a newer FLL value with its pre-lock queue snapshot.
+	 */
+	freeListLen = crystalhd_hw_count_free_rx_pkts_locked(hw);
 	sts = hw->pfnDevDRAMWrite(hw, hw->FleaFLLUpdateAddr, 1, &freeListLen);
 unlock:
 	if (reserved) {
@@ -1059,8 +1062,6 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 	bool replay_pic = false, replay_tx = false;
 	enum FLEA_POWER_DOWN_RESULT down;
 
-	/* This helper takes hw->lock itself; keep it outside the locked MMIO. */
-	freeListLen = crystalhd_hw_count_free_rx_pkts(hw);
 	spin_lock_irqsave(&hw->lock, flags);
 	if (!READ_ONCE(hw->adp->present) || READ_ONCE(hw->dma_fault) ||
 	    !READ_ONCE(hw->dev_started)) {
@@ -1084,6 +1085,8 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 			/* Clocks are on; admission still needs FLL publication. */
 			hw->FleaPowerState = FLEA_PS_LP_PENDING;
 		}
+		/* Restore the current count, not a snapshot from before wake. */
+		freeListLen = crystalhd_hw_count_free_rx_pkts_locked(hw);
 		if (hw->pfnDevDRAMWrite(hw, hw->FleaFLLUpdateAddr, 1,
 				      &freeListLen) != BC_STS_SUCCESS) {
 			sts = BC_STS_IO_ERROR;
