@@ -36,6 +36,11 @@ static const char *case_name = "setup";
 static const uint32_t kLegacyYBytes = 1920U * 1090U;
 static const uint32_t kLegacyNv12Bytes = kLegacyYBytes + kLegacyYBytes / 2U;
 static const uint32_t kLegacyPacked422Bytes = kLegacyYBytes * 2U;
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+static const uint32_t kScaledWidth = 1280U;
+static const uint32_t kScaledPacked422Bytes = kScaledWidth * 1090U * 2U;
+static const uint32_t kScaledOpenWord = 0x50050001U;
+#endif
 
 static void Check(bool condition, const char *message)
 {
@@ -129,6 +134,14 @@ static bool release_pool_array_freed;
 static bool output_freed_too_early;
 static bool release_context_freed;
 static unsigned shared_detach_calls;
+static size_t fail_resize_size;
+static int fail_resize_at;
+static unsigned resize_allocations;
+static void *resize_live_allocations[BC_RX_LIST_CNT + 4];
+static unsigned resize_live_count;
+static bool track_resize_allocations;
+static void *tracked_old_outputs[BC_RX_LIST_CNT];
+static unsigned tracked_old_frees;
 
 static unsigned OwnedCount()
 {
@@ -140,8 +153,10 @@ static unsigned OwnedCount()
 
 static int PoolIndex(const void *buffer)
 {
-	for (size_t index = 0; index < active_pool_count; ++index) {
-		if (active_pools[index].buff == buffer)
+	DTS_MPOOL_TYPE *pools = active_context ? active_context->Mpools : active_pools;
+	const size_t count = active_context ? active_context->MpoolCnt : active_pool_count;
+	for (size_t index = 0; index < count; ++index) {
+		if (pools && pools[index].buff == buffer)
 			return static_cast<int>(index);
 	}
 	return -1;
@@ -171,6 +186,15 @@ static void ResetMock(bool clear_ownership)
 	forbidden_lock_calls = 0;
 	if (clear_ownership)
 		ClearOwnership();
+	fail_resize_size = 0;
+	fail_resize_at = -1;
+	resize_allocations = 0;
+	resize_live_count = 0;
+	track_resize_allocations = false;
+	std::memset(resize_live_allocations, 0,
+	            sizeof(resize_live_allocations));
+	tracked_old_frees = 0;
+	std::memset(tracked_old_outputs, 0, sizeof(tracked_old_outputs));
 }
 
 static void ResetLifecycleGate()
@@ -360,8 +384,36 @@ extern "C" int __wrap_close(int fd)
 }
 
 extern "C" void __real_free(void *);
+extern "C" void *__real_malloc(size_t);
+extern "C" void *__wrap_malloc(size_t size)
+{
+	void *pointer;
+	if (size == fail_resize_size) {
+		const unsigned call = resize_allocations++;
+		if (static_cast<int>(call) == fail_resize_at)
+			return nullptr;
+	}
+	pointer = __real_malloc(size);
+	if (track_resize_allocations && pointer && resize_live_count <
+	    sizeof(resize_live_allocations) /
+	        sizeof(resize_live_allocations[0]))
+		resize_live_allocations[resize_live_count++] = pointer;
+	return pointer;
+}
+
 extern "C" void __wrap_free(void *pointer)
 {
+	for (unsigned index = 0; pointer && index < resize_live_count; ++index) {
+		if (pointer != resize_live_allocations[index])
+			continue;
+		resize_live_allocations[index] =
+			resize_live_allocations[--resize_live_count];
+		resize_live_allocations[resize_live_count] = nullptr;
+		break;
+	}
+	for (size_t index = 0; pointer && index < BC_RX_LIST_CNT; ++index)
+		if (pointer == tracked_old_outputs[index])
+			++tracked_old_frees;
 	if (release_tracking && pointer) {
 		if (pointer == active_context) {
 			release_context_freed = true;
@@ -463,9 +515,12 @@ struct Fixture {
 	BC_IOCTL_DATA ioctl_pool[BC_IOCTL_DATA_POOL_SIZE];
 	DTS_MPOOL_TYPE pools[BC_RX_LIST_CNT];
 	uint8_t buffers[BC_RX_LIST_CNT][1];
+	bool heap_buffers;
 
 	explicit Fixture(uint32_t device,
-	                 uint32_t pool_count = BC_RX_LIST_CNT)
+	                 uint32_t pool_count = BC_RX_LIST_CNT,
+	                 bool replaceable = false)
+		: heap_buffers(replaceable)
 	{
 		if (pool_count > BC_RX_LIST_CNT)
 			std::abort();
@@ -487,6 +542,7 @@ struct Fixture {
 		context.CfgFlags = BC_MPOOL_INCL_YUV_BUFFS | BC_ADDBUFF_MOVE;
 		context.MpoolCnt = pool_count;
 		context.Mpools = pools;
+		context.rxBufferWidth = 1920;
 		for (size_t index = 0; index < pool_count; ++index) {
 			pools[index].type = BC_MEM_DEC_YUVBUFF |
 			                    BC_MEM_USER_MODE_ALLOC;
@@ -494,7 +550,10 @@ struct Fixture {
 			 * production allocation extent in metadata so buffer-size
 			 * admission is exercised without allocating a 64 MiB fixture. */
 			pools[index].sz = kLegacyPacked422Bytes;
-			pools[index].buff = buffers[index];
+			pools[index].buff = replaceable ?
+				static_cast<uint8_t *>(__real_malloc(1)) : buffers[index];
+			if (!pools[index].buff)
+				std::abort();
 		}
 		for (size_t index = 0; index < BC_IOCTL_DATA_POOL_SIZE; ++index) {
 			ioctl_pool[index].next = context.pIoDataFreeHd;
@@ -512,6 +571,9 @@ struct Fixture {
 	{
 		Check(PoolSize(context) == BC_IOCTL_DATA_POOL_SIZE,
 		      "fixture regains every ioctl envelope");
+		if (heap_buffers)
+			for (size_t index = 0; index < context.MpoolCnt; ++index)
+				__real_free(context.Mpools[index].buff);
 		pthread_mutex_destroy(&context.thLock);
 		active_context = nullptr;
 		active_pools = nullptr;
@@ -543,7 +605,9 @@ static unsigned CountCommand(unsigned long command)
 static bool AddsUseUniqueConfiguredBuffers(size_t first, size_t count)
 {
 	bool seen[BC_RX_LIST_CNT] = {};
-	if (count != active_pool_count || first + count > event_count)
+	const size_t pool_count = active_context ?
+		active_context->MpoolCnt : active_pool_count;
+	if (count != pool_count || first + count > event_count)
 		return false;
 	for (size_t offset = 0; offset < count; ++offset) {
 		const IoctlEvent &event = events[first + offset];
@@ -567,9 +631,10 @@ static bool PoolDepthIs(size_t first, size_t count, size_t expected)
 }
 
 static void CheckAddPayloads(size_t first, size_t count,
-			     uint32_t output_mode = OUTPUT_MODE420)
+			     uint32_t output_mode = OUTPUT_MODE420,
+			     uint32_t width = 1920U)
 {
-	const uint32_t y_size = 1920U * 1090U;
+	const uint32_t y_size = width * 1090U;
 	const bool packed = output_mode != OUTPUT_MODE420;
 	bool valid = first + count <= event_count;
 	for (size_t index = first; valid && index < first + count; ++index) {
@@ -650,6 +715,8 @@ static void TestConfiguredPoolAllocation()
 			continue;
 		Check(context.MpoolCnt == test.expected,
 		      "pool configuration selects only an accepted count");
+		Check(context.rxBufferWidth == 1920,
+		      "initial allocation commits the fixed fallback width");
 		bool complete = context.Mpools != nullptr;
 		for (uint32_t index = 0; complete && index < context.MpoolCnt;
 		     ++index) {
@@ -720,6 +787,369 @@ static void TestReducedPoolStarts()
 		}
 	}
 }
+
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+static void TrackOldOutputs(const Fixture &fixture)
+{
+	std::memset(tracked_old_outputs, 0, sizeof(tracked_old_outputs));
+	tracked_old_frees = 0;
+	for (size_t index = 0; index < fixture.context.MpoolCnt; ++index)
+		tracked_old_outputs[index] = fixture.context.Mpools[index].buff;
+}
+
+static bool PoolHasLayout(const Fixture &fixture, uint32_t bytes,
+			  const void *const *not_these = nullptr)
+{
+	for (size_t index = 0; index < fixture.context.MpoolCnt; ++index) {
+		const DTS_MPOOL_TYPE &pool = fixture.context.Mpools[index];
+		if (!pool.buff || pool.sz != bytes ||
+		    !(pool.type & BC_MEM_DEC_YUVBUFF) ||
+		    (not_these && pool.buff == not_these[index]))
+			return false;
+	}
+	return true;
+}
+
+static void TestScaledPoolStarts()
+{
+	struct ScaledCase {
+		uint32_t count;
+		bool immediate;
+		bool software_uyvy;
+	};
+	const ScaledCase cases[] = {
+		{BC_RX_LIST_CNT, false, false},
+		{8, true, true},
+	};
+	char label[96];
+
+	for (const ScaledCase &test : cases) {
+		std::snprintf(label, sizeof(label),
+		              "scaled %u-buffer %s%s START", test.count,
+		              test.immediate ? "immediate" : "ordinary",
+		              test.software_uyvy ? " UYVY request" : "");
+		case_name = label;
+		Fixture fixture(BC_PCI_DEVID_FLEA, test.count, true);
+		fixture.context.b422Mode = OUTPUT_MODE422_YUY2;
+		fixture.context.softwareUyvy = test.software_uyvy;
+		fixture.context.activeFleaScaleWord = kScaledOpenWord;
+		void *old[BC_RX_LIST_CNT] = {};
+		for (size_t index = 0; index < test.count; ++index)
+			old[index] = fixture.context.Mpools[index].buff;
+		TrackOldOutputs(fixture);
+
+		Check(StartCapture(fixture, test.immediate) == BC_STS_SUCCESS,
+		      "qualified scaled capture starts");
+		Check(fixture.context.rxBufferWidth == kScaledWidth &&
+		      PoolHasLayout(fixture, kScaledPacked422Bytes, old),
+		      "qualified start atomically replaces every fixed buffer");
+		Check(fixture.context.Mpools[0].buff[0] == 0 &&
+		      fixture.context.Mpools[0].buff[kScaledPacked422Bytes - 1] == 0,
+		      "replacement backing is zeroed across its complete extent");
+		Check(tracked_old_frees == test.count,
+		      "successful replacement frees every retired fixed buffer");
+		Check(event_count == test.count + 1 &&
+		      CountCommand(BCM_IOC_ADD_RXBUFFS) == test.count &&
+		      CountCommand(BCM_IOC_START_RX_CAP) == 1,
+		      "qualified start submits the complete scaled set then START");
+		Check(AddsUseUniqueConfiguredBuffers(0, test.count),
+		      "scaled ADDs use each replacement address exactly once");
+		CheckAddPayloads(0, test.count, OUTPUT_MODE422_YUY2,
+		                 kScaledWidth);
+		CheckStartPayload(events[test.count], BC_PCI_DEVID_FLEA,
+		                  test.immediate, test.count);
+		Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+		      "scaled mapping can be retired cleanly");
+	}
+}
+
+static void TestScaledPoolFallbacks()
+{
+	struct FallbackCase {
+		uint32_t device;
+		uint32_t scale_word;
+		BC_OUTPUT_FORMAT mode;
+		bool addbuff_move;
+		const char *name;
+	};
+	const FallbackCase cases[] = {
+		{BC_PCI_DEVID_LINK, kScaledOpenWord, OUTPUT_MODE422_YUY2, true,
+		 "LINK scaled-word fallback"},
+		{BC_PCI_DEVID_FLEA, 0, OUTPUT_MODE422_YUY2, true,
+		 "FLEA unscaled fallback"},
+		{BC_PCI_DEVID_FLEA, 0x28028001U, OUTPUT_MODE422_YUY2, true,
+		 "FLEA normalized 640 scale fallback"},
+		{BC_PCI_DEVID_FLEA, 0x3c03c001U, OUTPUT_MODE422_YUY2, true,
+		 "FLEA normalized 960 scale fallback"},
+		{BC_PCI_DEVID_FLEA, 0x5004ff01U, OUTPUT_MODE422_YUY2, true,
+		 "FLEA nonexact scale fallback"},
+		{BC_PCI_DEVID_FLEA, 0x50250201U, OUTPUT_MODE422_YUY2, true,
+		 "FLEA normalized 1282 scale fallback"},
+		{BC_PCI_DEVID_FLEA, kScaledOpenWord, OUTPUT_MODE420, true,
+		 "FLEA planar fallback"},
+		{BC_PCI_DEVID_FLEA, kScaledOpenWord, OUTPUT_MODE422_YUY2, false,
+		 "FLEA non-move fallback"},
+	};
+
+	for (const FallbackCase &test : cases) {
+		case_name = test.name;
+		Fixture fixture(test.device, 8, true);
+		fixture.context.b422Mode = test.mode;
+		fixture.context.activeFleaScaleWord = test.scale_word;
+		if (!test.addbuff_move)
+			fixture.context.CfgFlags &= ~BC_ADDBUFF_MOVE;
+		void *old[BC_RX_LIST_CNT] = {};
+		for (size_t index = 0; index < fixture.context.MpoolCnt; ++index)
+			old[index] = fixture.context.Mpools[index].buff;
+		TrackOldOutputs(fixture);
+
+		Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+		      "unqualified layout maps with the fixed fallback");
+		Check(fixture.context.rxBufferWidth == 1920 &&
+		      PoolHasLayout(fixture, kLegacyPacked422Bytes) &&
+		      tracked_old_frees == 0,
+		      "fallback preserves every fixed allocation");
+		bool same = true;
+		for (size_t index = 0; index < fixture.context.MpoolCnt; ++index)
+			same &= fixture.context.Mpools[index].buff == old[index];
+		Check(same, "fallback preserves every fixed address");
+		CheckAddPayloads(0, fixture.context.MpoolCnt, test.mode);
+		Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+		      "fallback mapping retires cleanly");
+	}
+}
+
+static void TestScaledPoolAllocationFailures()
+{
+	const int failures_at[] = {-2, 0, 7, 15};
+	for (int ordinal : failures_at) {
+		case_name = ordinal == -2 ? "scaled metadata allocation failure" :
+		            "scaled backing allocation failure";
+		Fixture fixture(BC_PCI_DEVID_FLEA, BC_RX_LIST_CNT, true);
+		fixture.context.b422Mode = OUTPUT_MODE422_YUY2;
+		fixture.context.activeFleaScaleWord = kScaledOpenWord;
+		void *old[BC_RX_LIST_CNT] = {};
+		for (size_t index = 0; index < BC_RX_LIST_CNT; ++index)
+			old[index] = fixture.context.Mpools[index].buff;
+		TrackOldOutputs(fixture);
+		fail_resize_size = ordinal == -2 ?
+			BC_RX_LIST_CNT * sizeof(uint8_t *) : kScaledPacked422Bytes;
+		fail_resize_at = ordinal == -2 ? 0 : ordinal;
+		track_resize_allocations = true;
+
+		const BC_STATUS failed = DtsMapYUVBuffs(&fixture.context);
+		track_resize_allocations = false;
+		Check(failed == BC_STS_INSUFF_RES,
+		      "staging allocation failure is propagated");
+		bool unchanged = fixture.context.rxBufferWidth == 1920;
+		for (size_t index = 0; index < BC_RX_LIST_CNT; ++index)
+			unchanged &= fixture.context.Mpools[index].buff == old[index] &&
+			             fixture.context.Mpools[index].sz ==
+			                 kLegacyPacked422Bytes;
+		Check(unchanged && tracked_old_frees == 0,
+		      "failed staging leaves all old backing and metadata intact");
+		Check(event_count == 0 && !fixture.context.bMapOutBufDone &&
+		      !fixture.context.bMapOutBufDirty,
+		      "failed staging sends no ioctl and borrows no DMA ownership");
+		Check(resize_live_count == 0,
+		      "failed staging releases every temporary allocation");
+
+		ResetMock(true);
+		TrackOldOutputs(fixture);
+		Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+		      "allocation failure is retryable");
+		Check(fixture.context.rxBufferWidth == kScaledWidth &&
+		      PoolHasLayout(fixture, kScaledPacked422Bytes, old) &&
+		      tracked_old_frees == BC_RX_LIST_CNT,
+		      "retry commits exactly one complete scaled replacement");
+		Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+		      "retried scaled mapping retires cleanly");
+	}
+}
+
+static void TestScaledPoolOwnershipAndRestart()
+{
+	case_name = "mapped layout transition barrier";
+	Fixture fixture(BC_PCI_DEVID_FLEA, 8, true);
+	fixture.context.b422Mode = OUTPUT_MODE422_YUY2;
+	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+	      "fixed pool maps before a requested transition");
+	fixture.context.activeFleaScaleWord = kScaledOpenWord;
+	ResetMock(false);
+	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_BUSY &&
+	      event_count == 0 && fixture.context.rxBufferWidth == 1920,
+	      "mapped backing cannot change layout");
+	Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+	      "mapped fixed backing retires before transition");
+
+	ResetMock(true);
+	TrackOldOutputs(fixture);
+	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS &&
+	      fixture.context.rxBufferWidth == kScaledWidth,
+	      "retired fixed backing can transition to scaled layout");
+	void *scaled[BC_RX_LIST_CNT] = {};
+	for (size_t index = 0; index < fixture.context.MpoolCnt; ++index)
+		scaled[index] = fixture.context.Mpools[index].buff;
+	ResetMock(false);
+	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS &&
+	      event_count == 0,
+	      "repeat map of the committed layout does not reallocate or re-add");
+	Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+	      "scaled mapping retires before unscaled reopen");
+
+	fixture.context.activeFleaScaleWord = 0;
+	ResetMock(true);
+	TrackOldOutputs(fixture);
+	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS &&
+	      fixture.context.rxBufferWidth == 1920 &&
+	      PoolHasLayout(fixture, kLegacyPacked422Bytes, scaled),
+	      "unscaled reopen restores the complete fixed layout");
+	Check(tracked_old_frees == fixture.context.MpoolCnt,
+	      "unscaled reopen retires each scaled allocation once");
+	CheckAddPayloads(0, fixture.context.MpoolCnt, OUTPUT_MODE422_YUY2);
+	Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+	      "restored fixed mapping retires cleanly");
+
+	const char *barriers[] = {
+		"pending output call", "cancel wait", "returned output",
+		"TX quiesce", "unresolved stop",
+	};
+	for (unsigned barrier = 0; barrier < 5; ++barrier) {
+		case_name = barriers[barrier];
+		Fixture leased(BC_PCI_DEVID_FLEA, 8, true);
+		leased.context.b422Mode = OUTPUT_MODE422_YUY2;
+		leased.context.activeFleaScaleWord = kScaledOpenWord;
+		switch (barrier) {
+		case 0: leased.context.ProcOutPending = TRUE; break;
+		case 1: leased.context.CancelWaiting = TRUE; break;
+		case 2: leased.context.outputPhase = DTS_OUTPUT_RETURNED; break;
+		case 3: leased.context.txQuiescing = true; break;
+		case 4:
+			leased.context.stopOutcome = DTS_STOP_PENDING;
+			break;
+		}
+		void *old[BC_RX_LIST_CNT] = {};
+		for (size_t index = 0; index < leased.context.MpoolCnt; ++index)
+			old[index] = leased.context.Mpools[index].buff;
+		TrackOldOutputs(leased);
+		fail_resize_size = kScaledPacked422Bytes;
+		Check(DtsMapYUVBuffs(&leased.context) == BC_STS_BUSY &&
+		      event_count == 0 && resize_allocations == 0 &&
+		      leased.context.rxBufferWidth == 1920,
+		      "active lifetime blocks replacement before allocation");
+		bool unchanged = true;
+		for (size_t index = 0; index < leased.context.MpoolCnt; ++index)
+			unchanged &= leased.context.Mpools[index].buff == old[index];
+		Check(unchanged && tracked_old_frees == 0,
+		      "lifetime barrier preserves every fixed owner");
+	}
+}
+
+static void TestScaledPoolPartialAddRetry()
+{
+	case_name = "scaled partial ADD rollback and retry";
+	Fixture fixture(BC_PCI_DEVID_FLEA, 8, true);
+	fixture.context.b422Mode = OUTPUT_MODE422_YUY2;
+	fixture.context.activeFleaScaleWord = kScaledOpenWord;
+	fail_add_at = 3;
+	add_failure = FAIL_STATUS;
+	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_BUSY,
+	      "partial scaled ADD failure is propagated");
+	Check(fixture.context.rxBufferWidth == kScaledWidth &&
+	      PoolHasLayout(fixture, kScaledPacked422Bytes) &&
+	      CountCommand(BCM_IOC_FLUSH_RX_CAP) == 1 &&
+	      !fixture.context.bMapOutBufDone && !fixture.context.bMapOutBufDirty,
+	      "rollback keeps the scaled pool but retires driver ownership");
+	void *scaled[BC_RX_LIST_CNT] = {};
+	for (size_t index = 0; index < fixture.context.MpoolCnt; ++index)
+		scaled[index] = fixture.context.Mpools[index].buff;
+
+	ResetMock(true);
+	fail_resize_size = kScaledPacked422Bytes;
+	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+	      "clean retry maps the retained scaled pool");
+	bool same = resize_allocations == 0;
+	for (size_t index = 0; index < fixture.context.MpoolCnt; ++index)
+		same &= fixture.context.Mpools[index].buff == scaled[index];
+	Check(same, "retry performs no second replacement allocation");
+	Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+	      "retried partial mapping retires cleanly");
+}
+
+static void TestScaledPoolValidationBarriers()
+{
+	case_name = "dirty unmap precedes resize";
+	Fixture dirty(BC_PCI_DEVID_FLEA, 8, true);
+	dirty.context.b422Mode = OUTPUT_MODE422_YUY2;
+	dirty.context.activeFleaScaleWord = kScaledOpenWord;
+	dirty.context.bMapOutBufDirty = true;
+	fail_flush_at = 0;
+	flush_failure = FAIL_SYSCALL;
+	fail_resize_size = kScaledPacked422Bytes;
+	track_resize_allocations = true;
+	void *dirty_old[BC_RX_LIST_CNT] = {};
+	for (size_t index = 0; index < dirty.context.MpoolCnt; ++index)
+		dirty_old[index] = dirty.context.Mpools[index].buff;
+	const BC_STATUS dirty_status = DtsMapYUVBuffs(&dirty.context);
+	track_resize_allocations = false;
+	Check(dirty_status == BC_STS_ERROR &&
+	      event_count == 1 && events[0].command == BCM_IOC_FLUSH_RX_CAP &&
+	      resize_allocations == 0 && resize_live_count == 0 &&
+	      dirty.context.bMapOutBufDirty,
+	      "ambiguous unmap failure stops before replacement allocation");
+	bool unchanged = true;
+	for (size_t index = 0; index < dirty.context.MpoolCnt; ++index)
+		unchanged &= dirty.context.Mpools[index].buff == dirty_old[index];
+	Check(unchanged, "ambiguous unmap preserves all quarantined backing");
+
+	case_name = "duplicate pool owner rejection";
+	Fixture duplicate(BC_PCI_DEVID_FLEA, 8, true);
+	duplicate.context.b422Mode = OUTPUT_MODE422_YUY2;
+	duplicate.context.activeFleaScaleWord = kScaledOpenWord;
+	uint8_t *second = duplicate.context.Mpools[1].buff;
+	duplicate.context.Mpools[1].buff = duplicate.context.Mpools[0].buff;
+	fail_resize_size = kScaledPacked422Bytes;
+	track_resize_allocations = true;
+	const BC_STATUS duplicate_status = DtsMapYUVBuffs(&duplicate.context);
+	track_resize_allocations = false;
+	Check(duplicate_status == BC_STS_INV_ARG &&
+	      event_count == 0 && resize_allocations == 0 &&
+	      resize_live_count == 0,
+	      "aliased owners are rejected before allocation or ioctl");
+	duplicate.context.Mpools[1].buff = second;
+
+	case_name = "foreign pool owner rejection";
+	Fixture foreign(BC_PCI_DEVID_FLEA, 8, true);
+	foreign.context.b422Mode = OUTPUT_MODE422_YUY2;
+	foreign.context.activeFleaScaleWord = kScaledOpenWord;
+	foreign.context.Mpools[3].type &= ~BC_MEM_USER_MODE_ALLOC;
+	fail_resize_size = kScaledPacked422Bytes;
+	track_resize_allocations = true;
+	const BC_STATUS foreign_status = DtsMapYUVBuffs(&foreign.context);
+	track_resize_allocations = false;
+	Check(foreign_status == BC_STS_INV_ARG &&
+	      event_count == 0 && resize_allocations == 0 &&
+	      resize_live_count == 0,
+	      "foreign backing is rejected before allocation or ioctl");
+	foreign.context.Mpools[3].type |= BC_MEM_USER_MODE_ALLOC;
+}
+#else
+static void TestScaledPoolBuildGate()
+{
+	case_name = "scaled RX build gate disabled";
+	Fixture fixture(BC_PCI_DEVID_FLEA, 8);
+	fixture.context.b422Mode = OUTPUT_MODE422_YUY2;
+	fixture.context.activeFleaScaleWord = 0x50050001U;
+	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+	      "ordinary build maps the fixed pool despite a scaled OPEN word");
+	Check(fixture.context.rxBufferWidth == 1920,
+	      "ordinary build keeps the fixed 1920-wide layout");
+	CheckAddPayloads(0, fixture.context.MpoolCnt,
+	                 OUTPUT_MODE422_YUY2);
+	Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+	      "ordinary build retires the fixed mapping cleanly");
+}
+#endif
 
 static void TestDirectMapSuccess()
 {
@@ -825,6 +1255,26 @@ static void TestAddBufferSizeContract()
 	      OwnedCount() == 0 &&
 	      PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
 	      "invalid mode causes no ioctl, ownership or envelope change");
+
+	case_name = "RX layout uint32 boundary";
+	Fixture boundary(BC_PCI_DEVID_FLEA);
+	boundary.context.b422Mode = OUTPUT_MODE422_YUY2;
+	boundary.context.rxBufferWidth = 1970168U;
+	ResetMock(true);
+	Check(DtsAddOutBuff(&boundary.context, boundary.pools[0].buff,
+	                    UINT32_MAX, boundary.pools[0].type) ==
+	          BC_STS_SUCCESS &&
+	      event_count == 1 && events[0].buffer_size == 4294966240U,
+	      "largest uint32-representable packed layout remains exact");
+	for (uint32_t width : {1970169U, UINT32_MAX}) {
+		boundary.context.rxBufferWidth = width;
+		ResetMock(true);
+		Check(DtsAddOutBuff(&boundary.context, boundary.pools[0].buff,
+		                    UINT32_MAX, boundary.pools[0].type) ==
+		          BC_STS_INV_ARG &&
+		      event_count == 0 && add_calls == 0,
+		      "overflowing packed layout is rejected before ioctl");
+	}
 }
 
 static void TestMapPreflightRejectsInvalidPool()
@@ -1632,6 +2082,16 @@ int main()
 {
 	TestConfiguredPoolAllocation();
 	TestReducedPoolStarts();
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+	TestScaledPoolStarts();
+	TestScaledPoolFallbacks();
+	TestScaledPoolAllocationFailures();
+	TestScaledPoolOwnershipAndRestart();
+	TestScaledPoolPartialAddRetry();
+	TestScaledPoolValidationBarriers();
+#else
+	TestScaledPoolBuildGate();
+#endif
 	TestDirectMapSuccess();
 	TestAddBufferSizeContract();
 	TestMapPreflightRejectsInvalidPool();

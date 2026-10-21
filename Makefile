@@ -27,8 +27,10 @@ library:
 library-check:
 	@set -eu; lib_test_dir=$$(mktemp -d /tmp/crystalhd-library-check.XXXXXX); \
 	trap 'rm -f "$$lib_test_dir/check"; rmdir "$$lib_test_dir"' EXIT HUP INT TERM; \
-	for lib_test in logging tx-ring flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem device-handle poll-fd capture fwload fw-version fwcmds raw-frame; do \
+	for lib_test in logging tx-ring flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem device-handle poll-fd capture capture-scaled fwload fw-version fwcmds raw-frame; do \
 		test_extra=; \
+		test_flags=; \
+		test_file=$$lib_test; \
 		test_sources="linux_lib/libcrystalhd/libcrystalhd_priv.cpp linux_lib/libcrystalhd/libcrystalhd_if.cpp"; \
 		case $$lib_test in \
 			logging) test_wrap=; test_sources= ;; \
@@ -49,7 +51,10 @@ library-check:
 				test_sources="$$test_sources linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp"; \
 				test_sources="$$test_sources linux_lib/libcrystalhd/libcrystalhd_fwdiag_if.cpp linux_lib/libcrystalhd/libcrystalhd_fwload_if.cpp linux_lib/libcrystalhd/libcrystalhd_parser.cpp" ;; \
 			poll-fd) test_wrap=-Wl,--wrap=ioctl,--wrap=fcntl ;; \
-			capture) test_wrap=-Wl,--wrap=ioctl,--wrap=close,--wrap=free,--wrap=pthread_mutex_lock; \
+			capture) test_wrap=-Wl,--wrap=ioctl,--wrap=close,--wrap=malloc,--wrap=free,--wrap=pthread_mutex_lock; \
+				test_wrap="$$test_wrap -Wl,--wrap=shmget,--wrap=shmdt,--wrap=shmctl" ;; \
+			capture-scaled) test_flags=-DCRYSTALHD_EXPERIMENTAL_SCALED_RX; test_file=capture; \
+				test_wrap=-Wl,--wrap=ioctl,--wrap=close,--wrap=malloc,--wrap=free,--wrap=pthread_mutex_lock; \
 				test_wrap="$$test_wrap -Wl,--wrap=shmget,--wrap=shmdt,--wrap=shmctl" ;; \
 			fwload) test_wrap=-Wl,--wrap=fopen,--wrap=fseek,--wrap=ftell,--wrap=fread,--wrap=__fread_chk,--wrap=fclose; \
 				test_wrap="$$test_wrap -Wl,--wrap=malloc,--wrap=free,--wrap=perror"; \
@@ -84,10 +89,10 @@ library-check:
 				test_wrap="$$test_wrap -Wl,--wrap=DtsStartDecoder,--wrap=DtsStartCapture"; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_parser.cpp ;; \
 		esac; \
-		$(CXX) -std=c++11 -O1 -g -Wall -Werror \
+		$(CXX) -std=c++11 -O1 -g -Wall -Werror $$test_flags \
 		-ffunction-sections -fdata-sections -D__LINUX_USER__ \
 		-Ilinux_lib/libcrystalhd -Iinclude -Iinclude/link \
-		tests/library-$$lib_test.cpp $$test_sources $$test_extra \
+		tests/library-$$test_file.cpp $$test_sources $$test_extra \
 		-Wl,--gc-sections $$test_wrap -pthread -lrt \
 		$(CRYSTALHD_CPU_FLAGS) -o "$$lib_test_dir/check"; "$$lib_test_dir/check"; \
 	done
