@@ -84,6 +84,13 @@ expanding the released scope to general full-rate FHD/deinterlacing support.
   — alternate hardware, the LTS item executed through #371, bounded BCM70015
   deep-S3 coverage completed through #395/#397, remaining fault/removal work,
   broader streams, and physical presentation/A/V synchronization.
+  Next: attribute remaining clocked QoS/deadline losses after native DI-QoS
+  integration (30-minute run: 174/90,000 lost outputs); keep the intermittent
+  firmware/input-space stall separate. See the [presentation results](HARDWARE-2026-09-13.md).
+- [ ] [#470: Output-aware RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470)
+  — first reconcile allocation, registration, plane offsets and padding with
+  checked sizes; only then reduce buffers with lifecycle and pixel validation.
+  The fixed-size pool alone is not evidence of a DMA overrun.
 - [ ] [#92: BCM70015 capability research](https://github.com/ahnhy1324/crystalhd/issues/92)
   — pinned firmware mapping and live OPEN/scaling evidence; standalone
   processing and backend reuse remain unvalidated.
