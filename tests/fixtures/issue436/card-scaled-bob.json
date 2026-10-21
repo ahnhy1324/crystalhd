@@ -884,6 +884,16 @@
             "boundary": "750 originals accepted,1500 card fields returned/released,750 finishes, ordinary Open/Close once; natural EOS/player0/controller0, exact host identity/module/PM/AER/pins0/ref0 boundaries and clean kernel; no warnings/errors or observer overflow. Qualified DIL3b81b1d and Gstb047ce1 unchanged.",
             "limitation": "Single30s run, not repeatability, causal proof of cache fixing earlier drops, physical scanout/A/V, calibrated latency, reopen loop or firmware-stall resolution. Earlier actual-source1301/1499 failures and all private-control scopes remain unchanged; no installed/external-app/PM/display setting changes."
           },
+          "qos_caps_cache_repeatability": {
+            "artifacts": ["production-packing-cache-2", "production-packing-cache-3"],
+            "runtime_source": "740ebcde40ff7435d2e18611f481dc7738320d02",
+            "documentation_checkout": "5782d0dad7d7f34178325a46b89b742b39380fb0",
+            "status": "PASS: both predeclared additional fresh-process30s plays; no failed attempt/retry",
+            "counts_using_parent_columns_each": [750, 750, 1500, 1500, 1500, 1500, 0],
+            "elapsed_seconds": [33.59532254899386, 33.59018119296525],
+            "checks_each": "All original40ms/20ms PTS exact, empty QoS-drop log, actual automatic selector/DI helper active/eligible then removed,750 accepted originals/1500 returned+released fields/750 finishes, Open/Close1each, EOS/player0/controller0, unchanged identity/module/PM/AER/pins0/ref0 and clean kernel. Same topology, queue, quality and deadlines as first pass.",
+            "scope": "Together with first run:2250 original pictures/4500 render submissions, zero drops in three finite fresh-process plays. Not one uninterrupted90s decoder context, endurance, new physical A/V, causal cache-only attribution or original firmware-stall resolution. Previous failures remain unchanged."
+          },
           "private_native": {
             "artifact": "early-packing-1/{result,playback,counts,qos-drops}.json",
             "status": "PASS bounded automatic path and boundary",
