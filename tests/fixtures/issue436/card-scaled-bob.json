@@ -750,6 +750,27 @@
           "boundary": "PASS exact before/after module, PM, AER and pins/ref0; no monitored kernel errors or installed changes",
           "limits": "Source proves DI-local correction; native does not establish zero-loss FHD50, general playback/cadence or original firmware-stall repair. Mismatch counts in online shifted PTS sequences are not drop counts."
         },
+        "sparse_drop_diagnostic": {
+          "artifact": "production-di-drops-1/{result,playback,counts,qos-drops}.json",
+          "checkout": "140094489322604e69ce7bc80518cb386ee6b51b",
+          "runtime_source": "1ec07142eec5f442668ffce2dd33c82d4aaec80c",
+          "strict_status": "FAIL no-drop",
+          "counts_using_parent_columns": [750, 735, 1467, 1467, 1452, 1440, 12],
+          "elapsed_seconds": 33.953718809993006,
+          "eos": true,
+          "player_exit": 0,
+          "strict_controller_exit": 1,
+          "drop_message_records": 45,
+          "overflow_or_parse_errors": false,
+          "drop_columns": ["element", "cumulative_dropped_buffers", "minimum_reported_jitter_ms", "maximum_reported_jitter_ms"],
+          "drop_summary": [["crystalhddec0", 15, 40.952, 88.114], ["filter-convert", 3, 0.573, 9.458], ["vconv/conv", 15, 0.476, 24.057], ["xvimagesink0", 12, 25.768, 44.057]],
+          "accounting": "15 whole pictures=30 fields,3 pre-resize filter-convert fields,15 post-resize conv fields,12 final-sink fields: all60 missing renders explained by45 QoS drop messages. No unexplained extra DI/resize loss.",
+          "jitter_semantics": "Decoder/transform live=false messages report their saved QoS cutoff minus buffer running time, not current wall-clock or card latency. Decoder message duration is omitted by upstream post_qos_drop, not proof the original picture lacked duration. Sink live=true jitter is relative to its clock deadline;20ms buffers retain5ms max-lateness.",
+          "feedback_example": "Sink PTS4.24s jitter32.918ms propagates to converter PTS4.26s cutoff excess12.918ms and decoder PTS4.28s excess65.836ms. Upstream decoder uses timestamp+2*positive_diff+40ms and compares picture end. Seven such triplets match the source rule; not seven independent card stalls.",
+          "scope": "One unchanged-source/policy run with bounded drop-only bus messages; no extra pad probes or helper wrapping. Concurrent read-only workspace file enumeration occurred, so not an isolated performance comparison with the1492-render run. Neither observer nor enumeration is established as the cause of the difference.",
+          "boundary": "PASS750 accepted originals/1500 returned+released fields/750 successful finishes, one successful Open/Close, exact host state; actual helper active/eligible at EOS and removed after close",
+          "conclusion": "Confirms this run's drop locations and feedback deadlines, not the scheduling/copy/card-output cause of initial lateness or a fixed hardware performance ceiling. Next discriminator is lateness at FHD queue entry versus actual sink input, not another codec/module/option matrix. Keep upstream and sink QoS; do not treat native deadline margins as the deterministic DI picture-PTS defect."
+        },
         "rejected_alternatives": {
           "scope": "Private bounded runs at3df74b2; all strictFAIL and EOS/clean boundaries. All accept750 originals, return/release1500 card fields and finish750 pictures. Instrumentation differs between profile and lean groups; not a causal speedup ranking.",
           "counts_using_parent_columns": [
