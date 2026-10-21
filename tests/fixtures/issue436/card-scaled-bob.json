@@ -728,7 +728,50 @@
         },
         "not_claimed": "No zero-drop support, new physical A/V acceptance, native-FHD detail, E2E/card latency gain or causal performance comparison between the passive stable and candidate trials. All earlier FAILs preserved."
       },
-      "disposition": "No production queue, scaler algorithm, thread-count, QoS or timeout changes. Preserve original FAILs; the separately corrected free-buffer publication race is not proven to have caused the observed firmware stall.",
+      "deinterlace_qos_followup": {
+        "date": "2026-10-21",
+        "runtime_source": "1ec07142eec5f442668ffce2dd33c82d4aaec80c",
+        "scope": "Own Player only; unchanged qualified Gst b047ce1/DIL3b81b1d and installed3.10.9, original fixture and LINEAR/resize/queue/sink policies. No installation, external-framework patch, retiming, new option or physical acceptance.",
+        "cause": "GStreamer1.28.2 LINEAR applies original input-picture PTS to both field QoS decisions. After40ms output, QoS(timestamp20ms,diff1ms) sets42ms cutoff; stock incorrectly drops the still-timely60ms sibling by comparing40ms.",
+        "workaround": "Only hardware scale plus software-output-size, exact core/plugin1.28.2, default AUTO/LINEAR/ALL/locking-none/TFF-auto, same-size YUY2 mixed/interleaved25 to progressive50. Forward unchanged QoS copy once upstream and DROP original before DI-local cache update; bypasses all local DI QoS, not only its second-field check. Decoder/transform/sink QoS remains active. Any ineligible QoS latches stock policy for the element; remove probes at teardown.",
+        "regression": {"status": "PASS", "player_tests": 71, "seconds": 3.920, "shell_syntax": "PASS", "diff_check": "PASS", "independent_review": "APPROVE", "tff_bff_each": "Three-picture control has six exact fields; injected stock case loses60ms; actual production helper matches every reference byte/PTS/duration/flag and forwards identical seqnum/running-time-offset/QoS tuple once. Version/property/caps/forward-failure/stock-latch/lifecycle guards covered."},
+        "private_proof": {"artifact": "cpu-di-qos-1/result.json and lean-di-qos-1/{result,playback,counts}.json", "cpu": "PASS TFF/BFF exact six-field oracle and once-forwarded event", "native_counts_using_parent_columns": [750, 750, 1500, 1500, 1499, 1498, 1], "native_status": "FAIL strict no-drop", "unchanged_qos_events_forwarded_once": 1498, "event_failures_or_pending": 0, "late_converter_omission_pts_seconds": 28.18, "sink_drop_time": "NOT MEASURED"},
+        "actual_source_native": {
+          "artifact": "production-di-1/{result,playback,counts}.json",
+          "strict_status": "FAIL no-drop",
+          "counts_using_parent_columns": [750, 748, 1496, 1496, 1492, 1492, 0],
+          "elapsed_seconds": 34.27328610490076,
+          "eos": true,
+          "player_exit": 0,
+          "strict_controller_exit": 1,
+          "hardware": {"accepted_originals": 750, "returned_fields": 1500, "released_fields": 1500, "successful_finishes": 750, "open_close_successes_each": 1},
+          "helper": "One actual Player-owned helper active/eligible at EOS, zero after close; no injected private helper",
+          "losses": "Two pictures lost before decoder output and four post-FHD conversion-path fields; consistent with QoS but individual decisions/margins not yet measured. No additional DI/resize or final-sink losses. First sink-input omission10.78s, first decoder omission10.80s; not exclusively startup.",
+          "boundary": "PASS exact before/after module, PM, AER and pins/ref0; no monitored kernel errors or installed changes",
+          "limits": "Source proves DI-local correction; native does not establish zero-loss FHD50, general playback/cadence or original firmware-stall repair. Mismatch counts in online shifted PTS sequences are not drop counts."
+        },
+        "rejected_alternatives": {
+          "scope": "Private bounded runs at3df74b2; all strictFAIL and EOS/clean boundaries. All accept750 originals, return/release1500 card fields and finish750 pictures. Instrumentation differs between profile and lean groups; not a causal speedup ranking.",
+          "counts_using_parent_columns": [
+            ["scale-profile-2-1", 750, 749, 1495, 1495, 1490, 1488, 2],
+            ["scale-profile-1-1", 750, 750, 1475, 1475, 1473, 1473, 0],
+            ["scale-cached-2-1", 750, 749, 1486, 1486, 1482, 1479, 3],
+            ["sink-placement-1", 750, 750, 1463, 1463, 1463, 1451, 12],
+            ["final-packing-1", 750, 741, 1458, 1458, 1458, 1455, 3],
+            ["lean-baseline-1", 750, 750, 1492, 1492, 1492, 1492, 0],
+            ["lean-final-packing-1", 750, 747, 1477, 1477, 1477, 1476, 1],
+            ["lean-di-qos-packing-1", 750, 749, 1498, 1497, 1496, 1496, 0]
+          ],
+          "placement_count_limit": "sink-placement filter-input point moves after existing queue/converter, so1463 is not an isolated DI count. Combined DI/packing1497 is after FHD packing; inner YUY2 resize retains1498.",
+          "pixel_controls": "Two CPU placement/packing controls each match50 outputs,207360000 bytes and metadata. Pixel correctness alone does not prove timing improvement; neither topology is adopted.",
+          "scale_wall_ms_p50_p95_p99_max": {"two_threads": [7.896, 16.017, 20.348, 29.139], "one_thread": [12.589, 19.550, 27.214, 44.647], "cached_guard_two_threads": [7.690, 14.484, 20.283, 29.794]},
+          "profile_limit": "Caller elapsed minus CPU includes worker join, descheduling and GIL wait, not pure idle. Profiling itself can perturb timing; no card-latency inference.",
+          "warm_cpu_pool_control": {"order": "ABBAAB,20 warmups then100 pictures,three retained outputs", "fresh_median_wall_cpu_seconds": [0.110510832, 0.110537857], "pool_median_wall_cpu_seconds": [0.110138368, 0.110107273], "minor_faults": 0, "pixels_and_pool_exhaustion_fallback": "PASS", "disposition": "Overlapping timing ranges/~0.34% wall difference do not justify a production pool; no change adopted."}
+        },
+        "guard_cpu_control": {"scope": "Six alternating private/production batches of1000 real QoS sends after20 warmups, negotiated tiny YUY2 caps; no hardware or concurrent playback", "private_median_wall_thread_cpu_ms": [124.047583, 123.888680], "production_median_wall_thread_cpu_ms": [169.458970, 169.454365], "production_event_median_quantiles_us_p50_p95_p99": [158.752, 184.315, 213.998], "production_max_event_us": 1882.959, "disposition": "About45.6us additional thread CPU/event,0.23% of one core at50 events/s; not proof this causes native drops. No speculative cache optimization adopted."},
+        "remaining": "Strict1500-render/zero-drop qualification and original intermittent firmware stall remain open; no earlier FAIL is erased."
+      },
+      "disposition": "Earlier queue/packing/thread-count experiments are rejected; no scaler algorithm or timeout change. The separately qualified exact-version Player DI workaround is recorded in deinterlace_qos_followup. Preserve original FAILs; neither this nor the free-buffer/RX repairs proves the earlier firmware stall fixed.",
       "free_buffer_publication_fix": {
         "source": "35b889e859cffdf361c0cf90965bd1d97a6d9d1a",
         "old_red": ["older FLL publisher overwrote a newer free-count publication", "ACTIVE wake restored an obsolete pre-lock free count"],

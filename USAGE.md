@@ -299,6 +299,14 @@ down; resizing up does not restore detail discarded by the card. Omitting it
 lets the normal video sink fit the smaller decoded image to its window or
 display.
 
+With GStreamer **1.28.2**, this hardware-scaled Player path works around a
+confirmed default LINEAR deinterlacer error for YUY2 25-picture/s input and
+50-field/s output. It bypasses that element's entire local QoS cache while
+forwarding unchanged feedback upstream; decoder, resize/conversion and sink
+QoS remain active. Other versions, rates and methods retain stock behavior.
+This is not a guarantee of lossless FHD50 presentation; see the
+[measured limits](HARDWARE-2026-09-13.md#card720--bob--fhd-physical-playback--2026-10-21).
+
 ## GStreamer pipelines
 
 These installed-system examples explicitly name `crystalhddec`, so GStreamer

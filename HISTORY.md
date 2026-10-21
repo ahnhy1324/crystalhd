@@ -2,6 +2,8 @@
 
 ## 1.2.0 — in development
 
+- Work around GStreamer 1.28.2 LINEAR's picture-PTS QoS error in the scaled
+  Player path; preserve upstream feedback and final-sink deadlines.
 - Resume BCM70015 RX posting after draining the ready queue with PWM disabled;
   clear accepted software pause intent without changing hardware power policy.
 - Reuse SSE2 same-field row-pair loads for VA luma/chroma conversion;
