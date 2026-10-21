@@ -771,6 +771,52 @@
           "boundary": "PASS750 accepted originals/1500 returned+released fields/750 successful finishes, one successful Open/Close, exact host state; actual helper active/eligible at EOS and removed after close",
           "conclusion": "Confirms this run's drop locations and feedback deadlines, not the scheduling/copy/card-output cause of initial lateness or a fixed hardware performance ceiling. Next discriminator is lateness at FHD queue entry versus actual sink input, not another codec/module/option matrix. Keep upstream and sink QoS; do not treat native deadline margins as the deterministic DI picture-PTS defect."
         },
+        "output_service_diagnostics": {
+          "checkout": "46add08d4bcbf88d130c026eaa273c9a77312110",
+          "runtime_source": "1ec07142eec5f442668ffce2dd33c82d4aaec80c",
+          "runtime_ci": {"conclusion": "success", "push_run": 39539564183, "pr_run": 39539570105, "scope": "Both CI runs executed runtime1ec0714, not this or the preceding documentation commits."},
+          "scope": "Two separately isolated root-only30s trials; same qualified DIL/Gst, installed3.10.9, fixture, Player DI workaround, scaler, queue, original PTS and QoS/deadlines. No concurrent analysis/build/scans during playback. Instrumented observations, not a causal cross-run speed comparison or physical A/V acceptance.",
+          "clock_model": "Selected GstPulseSinkClock with legal base_time0; stable PLAYING state, unchanged zero-start1x TIME segment and actual sink latency/ts-offset/render-delay0. Arrival margin=clock_time-base_time-segment_running_time(PTS). FHD probe precedes queue admission; positive residence alone is not lateness. Initial preroll samples are unqualified. Capture brackets and GI callback overhead remain measurement perturbations.",
+          "clock_boundary": {
+            "artifact": "production-clock-boundary-1/{result,playback,counts,boundary-clock,qos-drops}.json",
+            "strict_status": "FAIL no-drop",
+            "counts_using_parent_columns": [750, 746, 1492, 1492, 1488, 1487, 1],
+            "elapsed_seconds": 33.81954594794661,
+            "valid_clock_samples_fhd_sink": [1490, 1487],
+            "drop_pts_seconds": {"decoder_pictures": [7.24, 7.44, 7.48, 8.00], "post_fhd_converter_fields": [7.22, 7.42, 7.98, 10.56], "sink_fields": [7.40]},
+            "accounting": "Four decoder pictures account for8 fields, plus4 converter fields and1 sink field: all13 missing renders; no additional DI/resize loss.",
+            "initial_pressure": "FHD PTS7.06/7.08/7.10 is85.223/81.630/84.872ms early while corresponding sink inputs are2.477/6.082/3.081ms late. Pressure appears downstream before the later FHD callback gap; does not isolate queue blocking, conversion, sink service or descheduling.",
+            "sink_drop_margins_ms_fhd_sink_qos": [20.029, 36.913, 41.633],
+            "clock_counterexample": "Across FHD PTS6.90->7.40, Pulse advances601.418ms versus603.403ms monotonic; no forward clock jump explains this interval. Decoder/transform QoS jitter remains a saved-cutoff distance, not actual clock/card latency."
+          },
+          "xv_calls": {
+            "artifact": "production-xv-clock-1/{result,playback,counts,boundary-clock,qos-drops}.json and xv-calls.jsonl",
+            "strict_status": "FAIL no-drop",
+            "counts_using_parent_columns": [750, 750, 1500, 1500, 1498, 1497, 1],
+            "elapsed_seconds": 34.26150921697263,
+            "valid_clock_samples_fhd_sink": [1498, 1497],
+            "drop_pts_seconds": {"post_fhd_converter_fields": [3.44, 3.50], "sink_fields": [3.42]},
+            "accounting": "All1500 DI/FHD outputs complete;2 converter fields plus1 sink field account for all3 missing renders. All1498 PLAYING-qualified FHD samples are early; two initial FHD preroll samples are unqualified.",
+            "observer": "Private transparent XvPutImage/XvShmPutImage/XSync interposition; bounded immutable memory records dumped only after ordinary exit. Werror build, CPU-only exact argument/result/errno/lazy-owner/pairing check and independent review pass. No additional X operation, external patch or per-call I/O.",
+            "calls": {"entered_returned_recorded_each": 3018, "XvShmPutImage": 1498, "XSync": 1520, "same_thread_display_pairs": 1498, "unpaired_setup_teardown_sync": 22, "active_overflow_errors_each": 0, "put_return_values": [0], "sync_return_values": [1]},
+            "paired_xsync_wall_ms_p50_p95_p99_max": [3.029, 4.523, 7.807, 22.641],
+            "sink_drop_margins_ms_fhd_sink_qos": [-57.793, 32.727, 37.101],
+            "preceding_call": {"put_id": 359, "put_wall_ms": 0.006426, "paired_sync_id": 360, "sync_wall_ms": 22.640630, "sync_thread_cpu_ms": 0.121058, "sync_return_to_next_sink_input_ms": 16.485513},
+            "memory": "All1498 sink samples have one memory of public type xvimage; this does not prove matching private Xv context or zero copy.",
+            "conclusion": "XSync contains a measured blocking/scheduling component before the drop, but another16.486ms of downstream service/scheduling follows. Not the sole proven cause, physical-vblank measurement, card latency or a repaired deadline. Same-thread/time association is retained; call ordinal alone is not PTS identity."
+          },
+          "common_boundary": "PASS each:750 accepted originals,1500 returned/released hardware fields,750 successful finishes, exactly one successful Open/Close, natural EOS/player exit0, strict controller exit1. Actual helper eligible through EOS and removed after close. No clock/parser overflow/errors; unchanged before/after identity, PM, AER, pins0/ref0 and no monitored kernel error.",
+          "gl_candidate": {
+            "scope": "No card:50 CPU-generated FHDYUY2p50 frames on Mesa26.0.8-1ubuntu0.3/Intel965GM, same5ms lateness/15ms deadline/sync+QoS, original20ms PTS. Explicit draw-sample census is required because GL redisplay is asynchronous. These short compatibility probes, including first-frame pixel checks, are not GL throughput benchmarks.",
+            "packed_artifacts": "gl-compat-packed-1.json and gl-compat-packed-debug-1.json",
+            "packed_result": "FAIL before actual sink/draw. Exact1.28.2 packed YUY2/UYVY shader uses integer %, rejected in selected GLSL1.10; desktop hardware supports GLSL1.20, not required1.30. Debug captures the compiler error; clean NULL teardown.",
+            "planar_artifacts": "gl-compat-planar-1.json and gl-compat-planar-v2-1.json",
+            "planar_v1": "FAIL retained: diagnostic incorrectly assumed tight caps-derived allocation; blank first-frame assertion. Native output has padded VideoMeta strides, not corrupt pixels.",
+            "planar_v2": {"repack": "PASS all4147200 active bytes of one non-neutral-chroma SMPTE frame, YUY2->Y42B422; padding excluded, not all50-frame or RGB/panel equality", "actual_strides": [2048, 1024, 1024], "actual_offsets": [0, 2211840, 3317760], "allocation_bytes": 4423680, "active_bytes": 4147200, "packed_inputs": 50, "planar_and_actual_sink_inputs": 49, "rendered": 1, "sink_dropped": 48, "draw_callbacks": 5, "unique_draw_pts_ns": [0], "status": "FAIL exact50 PTS/draw", "eos_and_null_cleanup": "PASS", "observer_errors": 0, "renderer": "Mesa Intel(R)965GM (CL), OpenGL2.1"},
+            "disposition": "Generic planar shader runs but strict draw/cadence does not pass. No card GL trial, new production option/default, shader/framework patch, warmup allowance or relaxed acceptance. Do not infer maximum GL fps or a fix from shader compilation alone."
+          },
+          "next": "Separate the remaining post-XSync/pre-sink conversion and scheduling interval before changing production behavior. Keep the original intermittent firmware stall unattributed; neither isolated complete decode nor the scoped DI fix closes it."
+        },
         "rejected_alternatives": {
           "scope": "Private bounded runs at3df74b2; all strictFAIL and EOS/clean boundaries. All accept750 originals, return/release1500 card fields and finish750 pictures. Instrumentation differs between profile and lean groups; not a causal speedup ranking.",
           "counts_using_parent_columns": [
