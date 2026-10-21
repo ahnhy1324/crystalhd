@@ -23,7 +23,7 @@ For the separately characterized live-stream integration, see the top-level
 ## Supported decode subset
 
 The backend supports these progressive BCM70015 inputs, plus the selected
-H.264 MBAFF and development MPEG-2 frame-coded interlaced cases described below:
+H.264 MBAFF and candidate MPEG-2 frame-coded interlaced cases described below:
 
 - H.264 Constrained Baseline, Main and High, with 8-bit 4:2:0 input.
   Other chroma formats, separate colour planes and higher bit depths are
@@ -39,7 +39,7 @@ H.264 MBAFF and development MPEG-2 frame-coded interlaced cases described below:
   Progressive pictures require `frame_pred_frame_dct=1`; ordinary input has
   clear TFF/RFF flags, with the bounded Main-profile exception below. Caller picture
   parameters, inherited quantization matrices and start-coded slice bytes are
-  preserved. **1.2 development** also accepts Main frame-coded TFF/BFF
+  preserved. The bounded **1.2 candidate** also accepts Main frame-coded TFF/BFF
   interlace with either value of `frame_pred_frame_dct`, preserving macroblock
   motion/DCT syntax. Complete field pairs are assembled into NV12 Weave for
   ordinary CPU Bob/VPP. The first accepted picture fixes the
@@ -128,9 +128,11 @@ Kodi 22 report confirms bounded Weave playback, not Bob or physical A/V
 qualification; Auto still retries unsupported DI on that release. See the
 [known issues and planned v1.2 integration work](../../USAGE.md#known-issues-and-deinterlacing-roadmap).
 
-### Development: CPU VA-VPP Bob
+<a id="development-cpu-va-vpp-bob"></a>
 
-The unreleased 1.2 branch implements `VAProcFilterDeinterlacing` / Bob on the
+### v1.2 candidate: CPU VA-VPP Bob
+
+The 1.2 release candidate implements `VAProcFilterDeinterlacing` / Bob on the
 CPU, after decode. It duplicates the selected field's rows independently in
 Y and UV; it is not hardware Bob, BWDIF or motion-adaptive filtering. Existing
 zero-filter Weave, scaling and CSC remain available.
@@ -152,7 +154,7 @@ Device-free pixel, API, ownership/cancellation and i686/no-SSE checks do not
 establish real-time FHD, stock Kodi/Atom compatibility or physical A/V sync.
 Those remain tracked in [#445](https://github.com/ahnhy1324/crystalhd/issues/445)
 and [#436](https://github.com/ahnhy1324/crystalhd/issues/436). Published 1.1.0 and
-its installed module are unchanged by this development branch.
+its installed module are unchanged until the candidate is explicitly installed.
 
 From an already built 1.2 source root with a compatible module running, a
 headless FFmpeg check for the selected H.264 MBAFF path is:
@@ -181,9 +183,12 @@ reconfiguration can discard one buffered picture at each boundary. Continuous
 concat-demuxer input passes a separate bounded control; this does not qualify
 that looping mode. See [the compatibility result in #445](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6257714172).
 
-For supported interlaced input with this development VA driver selected,
-Kodi's per-video deinterlace method **Auto** selects CPU Bob; **Off** retains
-Weave. Stock Kodi 21.3 passes the selected 30-second FHD control: Auto commits
+For supported interlaced input with this candidate VA driver selected, Kodi's
+per-video deinterlace method **Auto** requests CPU Bob; **Off** retains Weave.
+The following stock Kodi 21.3 result is historical source-pinned evidence, not
+the exact installed-RC G2 PASS that remains
+[NOT RUN](../../HARDWARE-2026-09-13.md#120-rc1-qualification--2026-10-22):
+the selected 30-second FHD control has Auto commit
 1,500 Bob outputs for 750 decoded pictures; Off uses no Bob. Both reach natural
 EOF and return resources cleanly; see the source-pinned hardware report above.
 Previously exported targets awaiting decode complete synchronously within the
@@ -288,7 +293,7 @@ the failing single NAL exceeds the measured 2 MiB compressed-input ring, and
 its verified header disappears before the following AU supplies its delimiter.
 The [hardware report](../../HARDWARE-2026-09-13.md#h264-input-retention-investigation)
 separates this observation from the untraced internal reclamation path.
-The unreleased 1.2 branch adds a second admission check only for units
+The 1.2 candidate adds a second admission check only for units
 above the ordinary 2 MiB assembled baseline: at most **2,093,056 estimated
 de-escaped bytes** across the assembled Annex B unit, including start codes and
 NAL headers. The existing 3,014,656-byte assembled cap remains. Only unambiguous,
@@ -297,7 +302,7 @@ removed or rewritten. Over-budget transactions are rejected before input,
 replay or accepted-picture identity is committed, using the existing reference
 picture/next-IDR recovery rules.
 
-This is bounded development containment for the documented
+This is bounded candidate containment for the documented
 [#468 compatibility limitation](https://github.com/ahnhy1324/crystalhd/issues/468),
 not full decoding repair. The 2 MiB minus 4 KiB
 cutoff is conservative policy, not a measured firmware reserve or proven chip
@@ -311,7 +316,7 @@ ioctl change is introduced. This describes the measured signed-firmware and
 configuration behavior, not a universal BCM70015 silicon limit.
 
 For uninterrupted playback of affected input, select software decoding.
-Published v1.1.0 remains affected; unreleased 1.2 rejects selected over-budget
+Published v1.1.0 remains affected; the 1.2 candidate rejects selected over-budget
 input rather than decoding it. After a hardware error, close that decode context
 and reopen supported input. A separate deliberate-client-discard test reaches
 all 192 pictures from the next actual IDR on one context; ordinary players are
@@ -497,10 +502,10 @@ invalid, and reimport remains busy until pending writes finish.
 
 The minimal VPP path provides unfiltered NV12 scaling and NV12-to-ARGB
 conversion in a separate video-processing context. Decode-integrated processing
-is a separate, opt-in H.264 development path described below; omission or
+is a separate, opt-in H.264 candidate path described below; omission or
 `VA_DEC_PROCESSING_NONE` retains ordinary decode. Separate VPP/Bob does not
 implicitly enable the card scaler.
-On the unreleased 1.2 branch, VPP/Bob honors declared full-range NV12 for
+On the 1.2 candidate, VPP/Bob honors declared full-range NV12 for
 ARGB conversion; UNKNOWN input retains the existing limited-range interpretation.
 NV12 output preserves the input range, with range-correct black padding.
 Explicit NV12 range changes and reduced-range ARGB output are rejected.
@@ -513,7 +518,7 @@ A worker can wait for reordered hardware output while later input
 is submitted. VPP sources remain available until the decode surface is reused
 or destroyed; a target with an outstanding writer is busy. Missing pictures and
 canceled or reset epochs report errors rather than substitute other pixels.
-On the unreleased 1.2 branch, exact completed sources may remain readable after
+On the 1.2 candidate, exact completed sources may remain readable after
 successful decoder-context close; this does not revive canceled work or
 rejected, reused or destroyed bindings. Clients must check VA surface status
 and must not treat fence signaling alone as proof
@@ -525,7 +530,9 @@ unsignaled timeline so its
 fences fail with `-ENOENT`; successful writes flush pixel caches before the
 timeline advances.
 
-### Development: decode-integrated card scaling
+<a id="development-decode-integrated-card-scaling"></a>
+
+### v1.2 candidate: decode-integrated card scaling
 
 An H.264 VLD client can explicitly create its configuration with
 `VAConfigAttribDecProcessing = VA_DEC_PROCESSING`. For each decoded picture,
@@ -649,7 +656,7 @@ frames during clocked output. It does not qualify this VA path's presentation.
   reuses the admitted handle; later finite replay/reset still performs the
   existing full-device close/reopen and reports a failed reacquisition normally
 - video processing supports NV12 scaling and NV12-to-ARGB conversion, plus the
-  bounded development CPU Bob path above; rotation is unsupported. Selected H.264
+  bounded candidate CPU Bob path above; rotation is unsupported. Selected H.264
   field pairs use the decode-time Weave path described above
 - no VP8, VP9, AV1, or protected content
 - direct rendering requires writable NV12 DRM PRIME buffers

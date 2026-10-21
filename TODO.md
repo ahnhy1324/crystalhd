@@ -1,14 +1,24 @@
 # Open work
 
-Release status **2026-10-19**: [stable 1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0)
-/ package `3.10.9` is published. Previous stable releases and RCs remain unchanged.
+Release status **2026-10-22**: [stable 1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0)
+/ package `3.10.9` is published. The `1.2.0-rc.1` / package `3.10.11`
+candidate is under qualification in
+[#473](https://github.com/ahnhy1324/crystalhd/issues/473); it is not yet a
+published RC or stable release. Previous stable releases and RCs remain unchanged.
 The [qualification summary](HARDWARE-2026-09-13.md#110-final-package-qualification--2026-10-19)
 distinguishes fresh final-package checks from scoped RC5 evidence reuse.
-Selected Weave playback remains the scope, with the
-[known deinterlacing limits and planned v1.2 work](USAGE.md#known-issues-and-deinterlacing-roadmap)
-kept separate from current functionality.
-Development now turns to the existing v1.2 integration work below, without
-expanding the released scope to general full-rate FHD/deinterlacing support.
+Selected v1.2 CPU Bob, card scaling and reliability work is conditionally in
+the candidate; broader performance and research remain in
+[#472](https://github.com/ahnhy1324/crystalhd/issues/472) and do not expand the
+scope to general full-rate FHD or hardware deinterlacing.
+
+- [ ] [#473: v1.2.0 bounded release scope and gates](https://github.com/ahnhy1324/crystalhd/issues/473)
+  — freeze the exact candidate, complete G0/G1 before any RC publication, then
+  qualify the immutable RC through G2/G3 and obtain separate maintainer GO.
+  Historical source-path evidence is not an exact-candidate PASS.
+- [ ] [#472: v1.2 best-effort experiments and stop rules](https://github.com/ahnhy1324/crystalhd/issues/472)
+  — retain optional Kick, memory, FHD/Atom, Moonlight and hardware-research
+  follow-up without making it a release blocker or support claim.
 
 - [x] [#430: v1.1.0 release qualification and publication](https://github.com/ahnhy1324/crystalhd/issues/430)
   — final-source CI/build/archive, direct/DKMS installation/RC5 rollback and
@@ -93,7 +103,12 @@ expanding the released scope to general full-rate FHD/deinterlacing support.
 - [ ] [#470: Output-aware RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470)
   — first reconcile allocation, registration, plane offsets and padding with
   checked sizes; only then reduce buffers with lifecycle and pixel validation.
-  The fixed-size pool alone is not evidence of a DMA overrun.
+  The fixed-size pool alone is not evidence of a DMA overrun. This remains a
+  separate #472 experiment and is not part of the v1.2 candidate.
+- [ ] [#471: Decoded-output traffic and conversion](https://github.com/ahnhy1324/crystalhd/issues/471)
+  — measure output bytes and conversion ownership before proposing a new
+  format or transfer path. Direct 4:2:2 VA/Kodi negotiation is not part of the
+  v1.2 candidate.
 - [ ] [#92: BCM70015 capability research](https://github.com/ahnhy1324/crystalhd/issues/92)
   — pinned firmware mapping and live OPEN/scaling evidence; standalone
   processing and backend reuse remain unvalidated.
@@ -113,10 +128,12 @@ bounded RC evidence do not establish new LTS/full-duration passes.
 
 Decision, 2026-10-16: investigate maintaining every field's output cadence with
 bounded additional latency, rather than improving the displayed fps by skipping
-or repeating content. These are post-RC3 experiments, not new support claims or
-prerequisites for the already frozen playback scope. Do not interrupt the
-serial release qualification or change its checkout, installed payload, L0s
-settings, thresholds or preserved failures to run them.
+or repeating content. The selected CPU Bob and H.264 card-scaling subset is now
+a conditional v1.2 claim governed by #473; its exact-candidate checks are release
+gates. Broader READY, FHD/Atom and hardware-deinterlacing experiments remain
+nonblocking under #472. Do not interrupt serial release qualification or change
+its checkout, installed payload, L0s settings, thresholds or preserved failures
+to run optional experiments.
 
 ### Established baseline
 
@@ -304,9 +321,10 @@ Missing optional VA operations are not all release requirements.
   agree. VA VPP cannot return output PTS; retain truthful zero temporal references
   and immutable decode tokens. The existing FFmpeg VA field-rate control passes
   100 outputs at 20 ms PTS intervals without an application patch.
-- [ ] P0 — Complete remaining presentation/reporter acceptance: current-source
-  native i386/Atom, FHD displayed cadence and physical A/V, broader LIVE inputs
-  and seek recovery. The bounded 10.100-second seek avoids the earlier long-GOP
+- [ ] P0 — Complete #473's selected exact-installed-RC Kodi Auto/Off, finite
+  seek/EOF/reopen and 30-minute card720→Bob presentation acceptance. Broader
+  native i386/Atom real-time, FHD cadence and LIVE inputs remain nonblocking
+  #472/#429 follow-up. The bounded 10.100-second seek avoids the earlier long-GOP
   preroll and 5-second startup fallback, but video acknowledgement still arrives
   about 1.47 seconds after the demuxer seek log (1.466 seconds with current
   userspace/stable kernel). This is not E2E, a same-version A/B, qualification

@@ -1,6 +1,17 @@
 # History
 
-## 1.2.0 — in development
+## 1.2.0-rc.1 — candidate
+
+Candidate bundle `1.2.0-rc.1` / module-DKMS package `3.10.11` freezes the
+bounded scope in [#473](https://github.com/ahnhy1324/crystalhd/issues/473):
+selected CPU VA-VPP Bob, explicit H.264 card-output scaling and the reliability
+fixes below. It preserves `libcrystalhd.so.3`, legacy ioctl and firmware
+identities. Kodi Auto, sustained 720p50 and installed-package acceptance remain
+release gates; hardware deinterlacing, general FHD50/60, Atom real-time and the
+[#470](https://github.com/ahnhy1324/crystalhd/issues/470) /
+[#471](https://github.com/ahnhy1324/crystalhd/issues/471) experiments are not
+candidate claims. Neither the RC nor final v1.2.0 is published without the
+separate maintainer decisions required by #473.
 
 - Work around GStreamer 1.28.2 LINEAR's picture-PTS QoS error in the scaled
   Player path; preserve upstream feedback and final-sink deadlines.

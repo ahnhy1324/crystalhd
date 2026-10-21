@@ -31,32 +31,29 @@ CrystalHD hardware decode session can be open at a time.
   apply [CPU deinterlacing after Weave](#application-deinterlacing-after-weave),
   with additional CPU cost; successful decode does not guarantee smooth FHD
   presentation or calibrated A/V sync.
-- **Kodi 22 interlaced playback remains a compatibility limitation.** Auto can
-  repeatedly probe unavailable VA deinterlacing, with stutter, A/V drift and
-  increased CPU/memory use. RC4 reduces driver-side setup/allocation overhead
-  and fixes VA processing interoperability. The RC4 Atom/i386 report finds
-  that explicit Off avoids Auto's repeated probes and allows selected playback
-  through EOF/reopen; exact displayed-picture identity and physical A/V remain
-  unmeasured ([#445](https://github.com/ahnhy1324/crystalhd/issues/445),
-  [#429](https://github.com/ahnhy1324/crystalhd/issues/429)). Off/NONE selects
-  Weave, not deinterlacing or a guarantee for every timing problem. Explicit
-  LIVE/LOW_LATENCY finite playback still has a known tail-timeout limitation.
-- **Oversized H.264 rejection is not general stream recovery.** RC4 passes
-  selected synthetic next-IDR controls, but a real B-pyramid rejection case
-  returns two stale pictures despite the expected total count. The
-  [RC5 changes](https://github.com/ahnhy1324/crystalhd/pull/459) add
-  qualified transport-specific headroom and decode that padded case fully;
-  generic out-of-policy rejection recovery remains open in
-  [#429](https://github.com/ahnhy1324/crystalhd/issues/429). These changes are
-  not part of the published RC4. RC5 qualification is separate from those
-  development checks; see the [admission limits](#codec-boundaries).
+- **Kodi interlaced playback remains conditional.** Published 1.1.0 does not
+  advertise VA Bob, so Auto may repeatedly probe an unavailable filter; Off
+  selects Weave. The v1.2 candidate implements bounded CPU VA Bob, but stock
+  Kodi Auto/Off becomes a release claim only after the exact installed-RC G2
+  matrix passes. Existing source-path controls do not prove uniform displayed
+  field timing, general Kodi 21–23 behavior or Atom real-time playback
+  ([#445](https://github.com/ahnhy1324/crystalhd/issues/445),
+  [#429](https://github.com/ahnhy1324/crystalhd/issues/429)). LIVE/LOW_LATENCY
+  remains a separate experimental path.
+- **Oversized H.264 rejection is containment, not general stream recovery.**
+  Stable 1.1.0 includes the qualified transport-specific headroom from RC5.
+  The v1.2 candidate additionally rejects selected over-budget extended input
+  before submission and preserves a clean reopen; it intentionally rejects
+  some input that previously worked. Exact firmware reclamation remains a
+  measured signed-firmware/configuration limitation; use software decode for
+  rejected content. See the [admission limits](#codec-boundaries).
 - **Legacy client CPU requirements still apply.** On the reporter's Atom N280
   / i386 / Kodi 22 build, Render Bob (6) crashed with SIGILL in
   `libsse4-i486-linux.so`. Deinterlace (7) was not separately run on that host;
   its compatibility is not established. The driver's `LEGACY_CPU=1` build
   cannot remove ISA requirements from applications or their dependencies.
 
-The planned **v1.2 deinterlacing work** in
+The bounded **v1.2 candidate deinterlacing work** in
 [#436](https://github.com/ahnhy1324/crystalhd/issues/436) targets decode/readback/
 filter integration, field order, cadence and A/V validation. These are not
 capabilities added by published 1.1.0 or a promise that every interlaced input will be
@@ -64,7 +61,7 @@ fixed. The limitations above can remain until the relevant implementation and
 host-specific validation are complete; hardware deinterlacing remains separate
 research.
 
-The separate 1.2 development branch implements a bounded
+The `1.2.0-rc.1` candidate implements a bounded
 [CPU VA-VPP Bob path](filters/vaapi/README.md#development-cpu-va-vpp-bob),
 not card-side deinterlacing or a newly qualified Kodi/Atom playback path.
 
@@ -273,7 +270,7 @@ selected for each playback session and survives flush/reopen. It is not fixed
 at 1280, and it cannot be changed while a pipeline is playing.
 
 The hardware option is rejected for BCM70012. Published 1.1 supports progressive
-scaling only. With the matching **1.2 development plugin and player**, H.264
+scaling only. With the matching **1.2 candidate plugin and player**, H.264
 interlaced input can also use a multiple-of-16 width:
 
 ```sh
@@ -300,15 +297,18 @@ lets the normal video sink fit the smaller decoded image to its window or
 display.
 
 That display-fitting path is the lower-cost choice when an exact Full-HD raw
-buffer is not required. A five-minute H.264 1080i25 run with the 1.2
-development player used `--scale-width 1280` alone: the card returned
+buffer is not required. A five-minute H.264 1080i25 development baseline used
+the source-pinned development player with `--scale-width 1280` alone: the card
+returned
 1280x720, Xv accepted 1280x720 UYVY at 50 fields/s, and all 15,000 fields were
 rendered without a QoS drop. The player used 37.02% of one CPU core. Matched
 explicit 1920x1080 enlargement runs used about 84.17% and lost 13 and 10
 fields. Xv's display interpolation is adaptor-dependent and is not claimed to
 be pixel-equivalent to the player's explicit method-4 software enlargement.
+The five-minute result is a development baseline, not the candidate's required
+30-minute paced-playback PASS.
 
-For this enlargement path, the development Player can pack pixels at the
+For this enlargement path, the candidate Player can pack pixels at the
 smaller size when its selected Xv output accepts UYVY but not YUY2. This avoids
 repacking a full-size picture on the display thread; no extra option is needed.
 Deinterlacing still receives YUY2. Custom video sinks, Weave and uncertain
@@ -522,7 +522,7 @@ frames plus EOS in 33.95 seconds, at 157% process CPU and 325,296 KiB maximum
 RSS. It used `framemd5` and the older runtime; it is not the current null-output
 benchmark or a directly comparable filter-cost measurement.
 On published 1.1.0, `deinterlace_vaapi=mode=bob` is not a substitute: that release
-does not advertise a VA VPP deinterlacing filter. The bounded 1.2 development
+does not advertise a VA VPP deinterlacing filter. The bounded 1.2 candidate
 implementation is described separately in the
 [VA component contract](filters/vaapi/README.md#development-cpu-va-vpp-bob).
 For one progressive BWDIF output per input picture instead, use `mode=send_frame`;
