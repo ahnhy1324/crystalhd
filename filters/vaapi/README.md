@@ -1,7 +1,7 @@
 # CrystalHD VA-API driver
 
 This backend exposes H.264 decoding through the standard VA-API VLD interface,
-with progressive MPEG-2 Simple/Main, MPEG-4 Part 2 Simple/Advanced Simple,
+with bounded MPEG-2 Simple/Main, progressive MPEG-4 Part 2 Simple/Advanced Simple,
 standard WMV3 Simple/Main and VC-1 Advanced support on BCM70015. BCM70012
 retains its H.264 path but is not recently hardware-validated; the other
 codecs are rejected on that device.
@@ -23,20 +23,51 @@ For the separately characterized live-stream integration, see the top-level
 ## Supported decode subset
 
 The backend supports these progressive BCM70015 inputs, plus the selected
-H.264 MBAFF case described below:
+H.264 MBAFF and candidate MPEG-2 frame-coded interlaced cases described below:
 
-- H.264 Constrained Baseline, Main and High. Reconstruction preserves each
+- H.264 Constrained Baseline, Main and High, with 8-bit 4:2:0 input.
+  Other chroma formats, separate colour planes and higher bit depths are
+  rejected rather than reconstructed as 8-bit 4:2:0. Reconstruction preserves each
   picture's effective 4x4 and active 8x8 scaling lists, including JVT and
   custom matrices. Omitted IQ buffers use flat-16 defaults for that picture;
   malformed buffers and zero active coefficients are rejected. Selected MBAFF
   field pairs emitted from one submitted VA frame/access unit are materialized
-  as a complete interlaced NV12 Weave frame; separately submitted PAFF fields,
-  VA VPP deinterlacing and pulldown are not supported.
+  as a complete interlaced NV12 Weave frame; separately submitted PAFF fields
+  and pulldown are not supported. CPU Bob is separate post-processing below.
 - MPEG-2 Simple I/P pictures through 720x576, and Main I/P/B pictures through
-  1920x1088 coded size. Input must be 4:2:0 frame pictures with frame-predicted
-  DCT, whole slices and no repeat-first-field or top-field-first flags. Picture
+  1920x1088 coded size. Input uses 4:2:0 frame pictures and whole slices.
+  Progressive pictures require `frame_pred_frame_dct=1`; ordinary input has
+  clear TFF/RFF flags, with the bounded Main-profile exception below. Caller picture
   parameters, inherited quantization matrices and start-coded slice bytes are
-  preserved. Visible dimensions cannot change within a context.
+  preserved. The bounded **1.2 candidate** also accepts Main frame-coded TFF/BFF
+  interlace with either value of `frame_pred_frame_dct`, preserving macroblock
+  motion/DCT syntax. Complete field pairs are assembled into NV12 Weave for
+  ordinary CPU Bob/VPP. The first accepted picture fixes the
+  reconstructed sequence mode; VA does not supply the original sequence flag.
+  Mixed progressive/interlaced mode, separately submitted field pictures,
+  RFF with `progressive_frame=0` and Simple-profile interlace remain unsupported.
+  Interlaced height must be
+  divisible by four. Visible dimensions and sequence mode cannot change within
+  a context. Stock FFmpeg passes the bounded
+  [SD and selected FHD TFF/BFF Weave/Bob checks](../../HARDWARE-2026-09-13.md#mpeg-2-main-frame-coded-interlace--2026-10-21),
+  including clean real-capture intervals at 1920×1088i25 and 1920×1080i29.97.
+  These establish exact output, EOS and fresh-process reopen, not real-time
+  FHD playback, broad interlace conformance or physical A/V qualification.
+  **Progressive Main TFF/RFF:** the internal headers may normalize display flags
+  when progressive and interlaced macroblock-row counts agree
+  (`ceil(height/16) == 2*ceil(height/32)`). This excludes flagged 360/720-line
+  input and Simple-profile repeats. One stored picture is returned per input;
+  the client retains its original repetition, PTS and duration rather than the
+  backend guessing the omitted sequence flag. The selected
+  [720×480 soft-RFF and whole-frame-repeat checks](../../HARDWARE-2026-09-13.md#mpeg-2-progressive-repeat-flags--2026-10-21)
+  pass exact pixels, original FFmpeg metadata, EOS and reopen. No extra option
+  is needed. Eligible progressive Main synchronization now uses separately
+  owned non-reference B pictures to advance output without repeated EOS/reopen;
+  original pictures and client timing remain unchanged. The
+  [measured completion improvement](../../HARDWARE-2026-09-13.md#mpeg-2-synchronous-completion--2026-10-21)
+  includes canonical and repeat-flag inputs. Newest-anchor-only demands and
+  post-replay channels retain the existing EOS fallback. This does not qualify
+  general telecine presentation, real-time FHD or physical A/V.
 - MPEG-4 Part 2 Simple/Advanced Simple levels 3/5, rectangular 8-bit 4:2:0,
   H.263 quantization and one whole slice per picture through 1920x1088.
   Simple-profile I/P video-packet resynchronization is accepted only when the
@@ -82,19 +113,135 @@ resource and teardown results are in the
 [hardware report](../../HARDWARE-2026-09-13.md#h264).
 
 Standalone FFmpeg CPU BWDIF after `hwdownload` completed the same fixture, but
-the driver still advertises no `VAProcFilterDeinterlacing` capability. See the
+published 1.1.0 advertises no `VAProcFilterDeinterlacing` capability. See the
 [runnable command and performance boundary](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif).
 Published RC.3 passed stock Kodi 21.3 progressive hardware-video and lifecycle checks;
 quantified physical A/V remains unqualified. Earlier RC.2 payload `f4d99d5` failed
 interlaced BWDIF/Render Bob playback. The `ec77b71` finite MBAFF input/tail fix
 is included in published RC.3, with complete decoder-oracle results, but Kodi
 source picture accounting and timing/output warnings still need qualification. See
-[Kodi qualification and remaining limits](../../USAGE.md#kodi). The driver
+[Kodi qualification and remaining limits](../../USAGE.md#kodi). Published 1.1.0
 does not advertise VA VPP deinterlacing; no general Kodi interlace or
 hardware-Bob support is claimed. The RC4 candidate reduces repeated VPP setup
-and private-allocation overhead without disabling scaling/CSC; stock Kodi 22
-cadence/A/V acceptance on the reporting host remains pending. See the
+and private-allocation overhead without disabling scaling/CSC. The RC4 stock
+Kodi 22 report confirms bounded Weave playback, not Bob or physical A/V
+qualification; Auto still retries unsupported DI on that release. See the
 [known issues and planned v1.2 integration work](../../USAGE.md#known-issues-and-deinterlacing-roadmap).
+
+<a id="development-cpu-va-vpp-bob"></a>
+
+### v1.2 candidate: CPU VA-VPP Bob
+
+The 1.2 release candidate implements `VAProcFilterDeinterlacing` / Bob on the
+CPU, after decode. It duplicates the selected field's rows independently in
+Y and UV; it is not hardware Bob, BWDIF or motion-adaptive filtering. Existing
+zero-filter Weave, scaling and CSC remain available.
+
+Initially, Bob requires separate source/target backing, both interleaved NV12
+input fields, origin-zero processing regions, even region widths and region
+heights divisible by four. NV12 or ARGB output may retain neutral coded padding
+outside that region. Nonzero-origin cropping, single-field input (`ONE_FIELD`), FMD/SCD, temporal references,
+additional outputs, rotation, mirroring and blending are rejected. Each request
+produces one progressive output. `BOTTOM_FIELD` selects physical parity;
+`BOTTOM_FIELD_FIRST` describes temporal order, not that selection. Clients own
+field-rate scheduling and output timestamps, normally submitting both fields.
+Filter settings are captured at Render and retained through queued work.
+For BCM70015 H.264, a validated first temporal field can satisfy its Bob request through
+a private view before the full decoded frame is ready. Opposite-field Bob,
+Weave and ordinary surface synchronization still require the genuine pair.
+
+Device-free pixel, API, ownership/cancellation and i686/no-SSE checks do not
+establish real-time FHD, stock Kodi/Atom compatibility or physical A/V sync.
+Those remain tracked in [#445](https://github.com/ahnhy1324/crystalhd/issues/445)
+and [#436](https://github.com/ahnhy1324/crystalhd/issues/436). Published 1.1.0 and
+its installed module are unchanged until the candidate is explicitly installed.
+
+From an already built 1.2 source root with a compatible module running, a
+headless FFmpeg check for the selected H.264 MBAFF path is:
+
+```sh
+drm_node=/dev/dri/renderDXXX
+LIBVA_DRIVER_NAME=crystalhd LIBVA_DRIVERS_PATH="$PWD/filters/vaapi" \
+LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
+ffmpeg -hide_banner -hwaccel vaapi -hwaccel_device "$drm_node" \
+  -hwaccel_output_format vaapi -i "/path/to/mbaff-video.ts" \
+  -vf 'deinterlace_vaapi=mode=bob:rate=field,hwdownload,format=nv12' \
+  -fps_mode passthrough -an -sn -f null -
+```
+
+This produces no display or sound. The
+[bounded native comparison](../../HARDWARE-2026-09-13.md#12-development-cpu-va-bob--2026-10-19)
+verified 50 input pictures→100 field outputs against an independent same-run
+Weave-derived reference for both TFF and BFF, plus frame-rate Bob and Weave
+reopen. A separate startup-inclusive headless FHD batch reaches 49.759 Bob
+outputs/s: this does not demonstrate real-time 50p headroom, displayed cadence
+or physical A/V. Exact source identities, CPU/RSS and method are in that report;
+the short pixel controls are not themselves throughput or Kodi acceptance.
+
+Field-rate Bob with FFmpeg 8.0.1 `-stream_loop` is not lossless: hardware-context
+reconfiguration can discard one buffered picture at each boundary. Continuous
+concat-demuxer input passes a separate bounded control; this does not qualify
+that looping mode. See [the compatibility result in #445](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6257714172).
+
+For supported interlaced input with this candidate VA driver selected, Kodi's
+per-video deinterlace method **Auto** requests CPU Bob; **Off** retains Weave.
+The following stock Kodi 21.3 result is historical source-pinned evidence, not
+the exact installed-RC G2 PASS that remains
+[NOT RUN](../../HARDWARE-2026-09-13.md#120-rc1-qualification--2026-10-22):
+the selected 30-second FHD control has Auto commit
+1,500 Bob outputs for 750 decoded pictures; Off uses no Bob. Both reach natural
+EOF and return resources cleanly; see the source-pinned hardware report above.
+Previously exported targets awaiting decode complete synchronously within the
+existing bounded wait when safe fence setup is unavailable, rather than
+publishing an unfenced asynchronous write. No root/debugfs permission change
+or new option is needed. CPU-access/cleanup and partial-import failures still
+reject. A passive Kodi 21.3 observation of all 1,500 successful post-processing
+outputs confirms equal PTS within each field pair, with approximately 40 ms
+between source pictures, not uniformly timed 50p. Its second-field adjustment
+uses a previous temporal reference, while Bob correctly requires none; all 750
+second-field adjustments were skipped. The pinned stock Kodi 21.3 source confirms
+this client-side timestamp dependency. VA VPP has no output-PTS return field;
+advertising false temporal references would not be a valid driver fix. These are
+output metadata, not measured screen presentation times. The existing FFmpeg
+VA field-rate Bob control independently passes 100 ordered outputs at 20 ms PTS
+intervals; this does not establish Kodi presentation cadence.
+
+The earlier 10.000-second seek landed at 0.021 seconds, before the fixture's next
+keyframe at 10.021 seconds, and selected Kodi's 5-second cache startup fallback.
+A bounded `2c79f1e` control seeking to 10.100 seconds lands at 10.021 seconds and
+receives video-start acknowledgement 1.474 seconds after the demuxer seek log,
+without that fallback.
+The source versions differ, so this is not a controlled latency improvement or
+complete attribution of the old delay. Seek/Stop buffer warnings remain; a prior
+branch trace attributed its two warnings to cancellation, not deadline expiry.
+Neither the new warnings nor physical presentation are classified by that old
+trace. See
+[#445's compatibility evidence](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6257714172).
+Selected 720i25 dialogue now has qualitative maintainer A/V/motion confirmation,
+including pause/resume and both seeks; calibrated timing and actual displayed
+cadence remain unmeasured. The [native Atom report](https://github.com/ahnhy1324/crystalhd/pull/467#issuecomment-6272584392)
+passes tests and TFF/BFF pixel controls, but Kodi Bob timing and LIVE-EOS fail.
+For finite Bob playback, leave `CRYSTALHD_VAAPI_LIVE_H264` and
+`CRYSTALHD_VAAPI_LOW_LATENCY_H264` unset. The explicit LIVE+LL path also has a
+reproduced pre-EOF stall with `d1b3788`. With `9a3b08b`, the selected stock Kodi
+control admits all 750 pictures without that midstream timeout, but final-field
+drain still exceeds Kodi's EOF wait; close-time completion is not a playback PASS.
+`2c79f1e` implements a private non-reference intra picture for eligible BCM70015
+MBAFF LIVE Bob completion. Its exact-source 50-picture control completes both
+mid-input-gap and EOF Bob/source synchronization before close; subsequent full
+NV12/PTS comparisons match all 50 originals. The auxiliary is never presented,
+and an input gap is not treated as EOS. The earlier private precursor passed a
+bounded stock Kodi LIVE+LL control: all 750 originals and 1,500 Bob outputs
+completed before close-time EOS without decoder restart or application changes.
+That precursor run is not a stock-Kodi qualification of the final commit.
+The separate PTS/cadence and physical A/V limits, prior failures and unrelated
+Kodi environment errors remain recorded in [#445](https://github.com/ahnhy1324/crystalhd/issues/445).
+General FHD/Atom Bob playback is not qualified. **Off** retains Weave; the separate
+[FFmpeg BWDIF path](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif)
+remains available.
+An automatic LIVE drain/replay checkpoint prototype is not enabled: a short
+continuation/pixel control passed, but stock Kodi's 243-picture reconstruction
+took 5.66 s and exceeded its 2 s output wait. It did not qualify LIVE playback.
 
 ## Replay and end of stream
 
@@ -138,6 +285,44 @@ this qualified headroom and failed-public-read protection do not establish
 generic out-of-policy recovery or the chip's physical maximum. Previously
 accepted private pictures remain independent of a rejected public transaction.
 
+A [new RC5 reporter result](https://github.com/ahnhy1324/crystalhd/issues/468)
+finds some real B-pyramid input failing below that admitted byte limit, although
+the synthetic boundary fixture passes. The limit is not a guarantee for every
+stream. Installed-v1.1.0 observations identify an input-retention limitation:
+the failing single NAL exceeds the measured 2 MiB compressed-input ring, and
+its verified header disappears before the following AU supplies its delimiter.
+The [hardware report](../../HARDWARE-2026-09-13.md#h264-input-retention-investigation)
+separates this observation from the untraced internal reclamation path.
+The 1.2 candidate adds a second admission check only for units
+above the ordinary 2 MiB assembled baseline: at most **2,093,056 estimated
+de-escaped bytes** across the assembled Annex B unit, including start codes and
+NAL headers. The existing 3,014,656-byte assembled cap remains. Only unambiguous,
+nonterminal emulation-prevention bytes reduce that estimate; no input bytes are
+removed or rewritten. Over-budget transactions are rejected before input,
+replay or accepted-picture identity is committed, using the existing reference
+picture/next-IDR recovery rules.
+
+This is bounded candidate containment for the documented
+[#468 compatibility limitation](https://github.com/ahnhy1324/crystalhd/issues/468),
+not full decoding repair. The 2 MiB minus 4 KiB
+cutoff is conservative policy, not a measured firmware reserve or proven chip
+limit. Ordinary units at or below 2 MiB assembled bytes are unchanged, so this
+does not establish protection for every near-2-MiB de-escaped input. Selected
+native controls verify rejection before the offending AU's DMA and fresh
+reopen. The formerly working 2,958,968-byte
+IDR250 control is intentionally rejected. Exact firmware reclamation and
+broader recovery remain research; no new option, timeout, firmware or legacy
+ioctl change is introduced. This describes the measured signed-firmware and
+configuration behavior, not a universal BCM70015 silicon limit.
+
+For uninterrupted playback of affected input, select software decoding.
+Published v1.1.0 remains affected; the 1.2 candidate rejects selected over-budget
+input rather than decoding it. After a hardware error, close that decode context
+and reopen supported input. A separate deliberate-client-discard test reaches
+all 192 pictures from the next actual IDR on one context; ordinary players are
+not thereby given automatic recovery. Longer timeouts or disabling prefeed
+did not resolve the retained failure.
+
 RC5 applies this failed-`vaEndPicture()` public-read protection
 to every supported decode codec. New synchronization, image/export and VPP
 source reads report the rejected transaction instead of an earlier completed
@@ -179,12 +364,22 @@ input is rejected rather than decoded with missing references.
 For experimental long-running H.264 input,
 `CRYSTALHD_VAAPI_LIVE_H264=1` also enables the direct decode-output path and,
 after a second original picture is accepted, does not infer EOS from an
-input-delivery gap. Final pictures then require subsequent input or explicit
+input-delivery gap. Final pictures generally require subsequent input or explicit
 context drain; the absolute ten-second synchronization deadline still applies.
+For BCM70015 8-bit 4:2:0 MBAFF frame pictures with POC type 0, an opposite-field
+Bob request stalled for 100 ms may instead send a small non-reference intra
+picture and the next AUD/filler prefix. Its syntax comes from the last fully
+submitted original picture. The original complementary field must still arrive
+before Bob completes; the auxiliary output owns no public surface or PTS and is
+discarded only after validation and hardware-buffer release. This advances the
+selected retained tail without sealing live input or changing reference pictures.
+Only one auxiliary can be outstanding, and explicit context close still drains
+its firmware EOS obligation. Other syntax and non-Bob requests retain the existing
+wait/drain policy; this is not a general EOF detector or a new user option.
 For finite files with stock FFmpeg, leave this variable unset:
 `vaSyncSurface()` waits for one surface and is not an EOF or drain signal. In
-explicit live mode the last reordered pictures can therefore remain held until
-subsequent input, or until a client retains the output surfaces and calls
+explicit live mode outside that Bob path, the last reordered pictures can remain
+held until subsequent input, or until a client retains the output surfaces and calls
 `vaDestroyContext()` to perform the explicit drain before downloading them.
 Setting the variable to `0`, or to any value other than exactly `1`, selects
 strict replay.
@@ -306,14 +501,27 @@ surfaces, not imported aliases. A surviving alias of a destroyed owner is
 invalid, and reimport remains busy until pending writes finish.
 
 The minimal VPP path provides unfiltered NV12 scaling and NV12-to-ARGB
-conversion. Pipeline capability format lists are borrowed, read-only driver
+conversion in a separate video-processing context. Decode-integrated processing
+is a separate, opt-in H.264 candidate path described below; omission or
+`VA_DEC_PROCESSING_NONE` retains ordinary decode. Separate VPP/Bob does not
+implicitly enable the card scaler.
+On the 1.2 candidate, VPP/Bob honors declared full-range NV12 for
+ARGB conversion; UNKNOWN input retains the existing limited-range interpretation.
+NV12 output preserves the input range, with range-correct black padding.
+Explicit NV12 range changes and reduced-range ARGB output are rejected.
+Explicit color standards, matrix/primaries/transfer conversion and selectable
+chroma-site conversion remain unsupported; this is not general color management.
+Pipeline capability format lists are borrowed, read-only driver
 metadata, valid until the VA display terminates. Read the returned pointers
 and counts; do not free them or assume supplied scratch arrays were filled.
 A worker can wait for reordered hardware output while later input
 is submitted. VPP sources remain available until the decode surface is reused
-or destroyed; a target with an outstanding writer is busy. Missing, canceled
-or retired pictures report errors rather than substitute other pixels. Clients
-must check VA surface status and must not treat fence signaling alone as proof
+or destroyed; a target with an outstanding writer is busy. Missing pictures and
+canceled or reset epochs report errors rather than substitute other pixels.
+On the 1.2 candidate, exact completed sources may remain readable after
+successful decoder-context close; this does not revive canceled work or
+rejected, reused or destroyed bindings. Clients must check VA surface status
+and must not treat fence signaling alone as proof
 of valid pixels. Never-exported internal targets use VA synchronization and
 ordinary CPU cache synchronization, without requiring a `sw_sync` timeline.
 Previously exposed/imported targets retain write fences; ARGB is rendered
@@ -321,6 +529,112 @@ privately before the final copy. A canceled or failed fenced write closes its
 unsignaled timeline so its
 fences fail with `-ENOENT`; successful writes flush pixel caches before the
 timeline advances.
+
+<a id="development-decode-integrated-card-scaling"></a>
+
+### v1.2 candidate: decode-integrated card scaling
+
+An H.264 VLD client can explicitly create its configuration with
+`VAConfigAttribDecProcessing = VA_DEC_PROCESSING`. For each decoded picture,
+submit a `VAProcPipelineParameterBufferType` in the **decode context**, alongside
+the usual picture and slice buffers:
+
+- `surface` is the original coded-size decode target; `additional_outputs`
+  contains one different, smaller NV12 surface.
+- `surface_region` explicitly supplies the origin-zero visible rectangle,
+  using the full coded width. `output_region` is the entire smaller target.
+  For example, coded 1920×1088, visible 1920×1080 and output 1280×720.
+- Only an exact aspect-preserving downscale is accepted. Output width is even
+  and at least 128; MBAFF additionally requires width divisible by 16 and height
+  divisible by four. Visible crop and output geometry stay fixed per context.
+- The card scales before readback. Original reconstruction stays in the
+  firmware DPB: the original VA handle supports decode completion/reference
+  identity, **not** image readback, export, upload or separate VPP input.
+  Only the small additional output has host pixels and can feed CPU Bob/VPP.
+- Supply internally allocated, previously unexposed surfaces. A processed pool
+  can be reused after completion; `vaCreateImage`/`vaGetImage` takes a readback
+  snapshot without making the target externally writable.
+
+This BCM70015 path defaults to finite replay. Explicit
+`CRYSTALHD_VAAPI_LIVE_H264=1` enables the existing live-gap policy;
+`CRYSTALHD_VAAPI_LOW_LATENCY_H264=1` independently enables prefeed. Both
+preserve exact-picture identity. Once streaming has started, explicit LIVE
+retains references across input gaps; prefeed alone does not change finite
+drain policy. READY remapping, arbitrary crop/height, extra decode-time filters and
+BCM70012 are rejected. The default VLD path and published 1.1 are unchanged. Stock
+FFmpeg/Kodi do not request integrated processing, so this does not automatically
+accelerate their separate `scale_vaapi`/VPP calls.
+
+At `87e0306`, the finite FHD TFF test completed two opens with 50 pictures each:
+only 1280×720 picture geometry / 360-row fields were received, all 100 assembled NV12 pictures matched the
+independently joined card-output reference, and EOS/reopen/cleanup passed.
+Ordinary CPU VA Bob then matched both field parities of the first and last
+small pictures across two opens (eight exact outputs). This qualifies the
+explicit API connection, not stock-player selection, live cadence or physical
+A/V. See the [measurement receipt](../../tests/fixtures/issue436/card-scaled-bob.json)
+and [remaining scope](../../TODO.md#card-720-output-deinterlace-then-enlarge).
+
+#### Returning the small output as progressive video or FHD
+
+Use the **small additional output**, not the opaque original decode handle,
+as the source of a separate `VAEntrypointVideoProc` context:
+
+| Requested result | Host-side processing after card readback |
+| --- | --- |
+| 720p | CPU VA Bob into a 1280×720 target |
+| 1080p | CPU VA Bob directly into a 1920×1080 target (one VPP operation) |
+| Bob 720p, then 1080p | Bob into 1280×720, synchronize it, then zero-filter progressive VPP into 1920×1080 |
+| 1080 interleaved Weave | Zero-filter field-preserving enlargement; this does **not** deinterlace |
+
+For Bob, use a `VAProcFilterParameterBufferDeinterlacing` with
+`algorithm = VAProcDeinterlacingBob`, select each field's parity, and submit its
+buffer through the pipeline's `filters`/`num_filters`. Set `surface_region`
+to `{0, 0, 1280, 720}` and `output_region` to the full selected target; declare
+the source's TFF/BFF ordering and `output_surface_flag = VA_FRAME_PICTURE`.
+Filter `flags = VA_DEINTERLACING_BOTTOM_FIELD` selects bottom; clear that bit
+for top. Ordering flags alone do not select the requested field.
+For the second stage after Bob, use no filters and FRAME→FRAME flags. Field-rate
+output requires two Bob requests and caller-assigned field timestamps; VPP
+does not schedule playback or generate the application's PTS.
+
+For Weave enlargement, use matching `VA_TOP_FIELD_FIRST` or
+`VA_BOTTOM_FIELD_FIRST` input/output flags. The scaler keeps the two Y and UV
+field lattices separate. Source-region X/width and output width must be even;
+source-region Y/height and destination height must be multiples of four;
+NV12 destination X must be even and Y a multiple of four; ARGB destination Y
+must be even. Prefer origin-zero
+full-picture regions. Do not label woven pixels progressive to request
+deinterlacing.
+
+A completed internal NV12 VPP result can feed another VPP stage after
+synchronization. The next Render captures its exact pixels and original identity
+before reuse; this adds one private copy only for chained VPP. Rejected, pending
+or failed timestamped output is not a valid replacement. Writable DMA-BUF export
+or externally supplied writable backing cannot provide this immutable-result
+contract; use internal intermediate targets. Read-only aliases of our backing
+retain the canonical owner's rules.
+
+All enlargement and Bob above run on the **CPU**, not the card or display GPU.
+The card still transfers only the small picture, so returning FHD host pixels
+does not undo the PCIe reduction; it does add CPU/memory work and cannot restore
+detail removed by downscaling. Prefer **one-pass Bob→FHD** when no separate
+720p intermediate is needed. At `e636182`, bounded native finite and LIVE+prefeed
+tests each passed two opens, 100 exact small pictures and 16 exact FHD returns;
+LIVE also passed 24 FHD Bob outputs across four input gaps before explicit close.
+The scalar enlargement optimization at `9affe1f` reduces the isolated
+720→FHD kernel from 30.00 to 7.41 ms on the T8100, with identical pixels and
+no SSE requirement. In the follow-up finite card test, second-stage API+sync
+samples are 11.78–16.37 ms; direct Bob→FHD samples are 6.35–23.70 ms.
+These are not sustained fps or display-latency measurements: four LIVE
+bottom-field completion waits still took 153–158 ms. Full scope is in the
+[existing receipt](../../tests/fixtures/issue436/card-scaled-bob.json)
+(`va_scaled_return_extension` and `host_resize_optimization`).
+The separate
+[GStreamer BWDIF recipe](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif)
+uses a different filter. Its throughput is not a VA Bob performance claim.
+An additional [GStreamer scalerbob physical check](../../HARDWARE-2026-09-13.md#card720--bob--fhd-physical-playback--2026-10-21)
+confirmed speech/lip sync and no persistent problem, but still dropped late
+frames during clocked output. It does not qualify this VA path's presentation.
 
 ## Limitations
 
@@ -341,8 +655,8 @@ timeline advances.
   queries and VPP-only contexts do not reserve playback. The first codec start
   reuses the admitted handle; later finite replay/reset still performs the
   existing full-device close/reopen and reports a failed reacquisition normally
-- video processing is limited to unfiltered NV12 scaling and NV12-to-ARGB
-  conversion; there is no VA VPP deinterlacing or rotation. Selected H.264
+- video processing supports NV12 scaling and NV12-to-ARGB conversion, plus the
+  bounded candidate CPU Bob path above; rotation is unsupported. Selected H.264
   field pairs use the decode-time Weave path described above
 - no VP8, VP9, AV1, or protected content
 - direct rendering requires writable NV12 DRM PRIME buffers

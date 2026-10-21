@@ -58,8 +58,11 @@ caps negotiation.
 
 `scale-width` selects the decoder-coupled hardware output width. Zero is the
 native-size default; an explicit value must be even, from 128 through 1918,
-and no wider than the coded input. It is supported only for progressive
-BCM70015 sessions. The property may be set in NULL or READY and is reapplied
+and no wider than the coded input. Progressive BCM70015 sessions are supported;
+the 1.2 candidate plugin also accepts H.264 interlaced input when the width
+is a multiple of 16 and the card returns separate, complementary fields.
+Scaled whole-Weave payloads and other interlaced codecs remain rejected.
+The property may be set in NULL or READY and is reapplied
 after a flush/reopen, but it cannot change while the decoder is PAUSED or
 PLAYING. The plugin checks the geometry returned by the card and preserves the
 source display aspect ratio in output caps, including widths whose derived
@@ -75,6 +78,20 @@ gst-launch-1.0 -v filesrc location="/path/to/video.mp4" ! qtdemux ! h264parse ! 
 For this input, the verbose output should show `crystalhddec` source caps with
 `width=(int)1280`, `height=(int)720` and `pixel-aspect-ratio=(fraction)1/1`,
 followed by continuing playback and EOS. Replace the path with your file.
+
+For interlaced FHD H.264 with the matching 1.2 candidate plugin, reduce the
+card-to-host pixels first, then use GStreamer's CPU Bob at the returned size:
+
+```sh
+gst-launch-1.0 -v filesrc location="/path/to/video-1080i.mkv" ! matroskademux ! h264parse ! \
+  crystalhddec scale-width=1280 ! deinterlace method=scalerbob fields=all ! \
+  videoconvert ! autovideosink
+```
+
+The measured 1080i25 input becomes 720-line interlaced pictures before host
+processing, then 50-PTS/s progressive Bob output. This is not hardware Bob;
+[bounded headless measurements](../../../HARDWARE-2026-09-13.md#card-scaled-interlaced-h264-and-host-bob-2026-10-20)
+do not establish displayed cadence or physical A/V synchronization.
 
 To compare an explicit host-side resize back to a square-pixel Full-HD buffer:
 

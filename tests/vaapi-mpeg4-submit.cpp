@@ -97,6 +97,10 @@ extern "C" BC_STATUS DtsSetInputFormat(HANDLE device,
   active->format.pMetaData = nullptr;
   return BC_STS_SUCCESS;
 }
+extern "C" BC_STATUS DtsSetScaleParams(HANDLE, BC_SCALING_PARAMS *) {
+  Require(false, "ordinary MPEG-4 never requests card scaling");
+  return BC_STS_ERROR;
+}
 extern "C" BC_STATUS DtsOpenDecoder(HANDLE device, uint32_t stream) {
   CheckDevice(device);
   Require(stream == BC_STREAM_TYPE_ES, "elementary stream decoder request");
@@ -226,6 +230,9 @@ extern "C" int drmPrimeHandleToFD(int, uint32_t, uint32_t, int *) {
   abort();
 }
 extern "C" void sws_freeContext(SwsContext *) { abort(); }
+extern "C" const int *sws_getCoefficients(int) { abort(); }
+extern "C" int sws_setColorspaceDetails(SwsContext *, const int *, int,
+    const int *, int, int, int, int) { abort(); }
 extern "C" SwsContext *sws_getCachedContext(
     SwsContext *, int, int, AVPixelFormat, int, int, AVPixelFormat, int,
     SwsFilter *, SwsFilter *, const double *) { abort(); }
@@ -1550,7 +1557,7 @@ void RejectedConsumedEndReadback() {
       VAProcPipelineParameterBuffer pipeline = {};
       pipeline.surface = 1;
       VABufferID parameters = f.Buffer(VAProcPipelineParameterBufferType,
-                                       &pipeline, sizeof(pipeline));
+                                       &pipeline, sizeof(pipeline), 1, 100);
       Require(BeginPicture(&f.context, 100, 4) == VA_STATUS_SUCCESS &&
                   RenderPicture(&f.context, 100, &parameters, 1) == VA_STATUS_SUCCESS &&
                   old_vpp->vpp_frame == picture,
@@ -1594,8 +1601,10 @@ void RejectedConsumedEndReadback() {
       auto new_vpp = std::make_shared<DecodeContext>();
       new_vpp->video_process = true;
       f.driver.contexts[101] = new_vpp;
+      VABufferID rejected_parameters = f.Buffer(VAProcPipelineParameterBufferType,
+                                                &pipeline, sizeof(pipeline), 1, 101);
       Require(BeginPicture(&f.context, 101, 3) == VA_STATUS_SUCCESS &&
-                  RenderPicture(&f.context, 101, &parameters, 1) == VA_STATUS_ERROR_DECODING_ERROR,
+                  RenderPicture(&f.context, 101, &rejected_parameters, 1) == VA_STATUS_ERROR_DECODING_ERROR,
               "new VPP capture cannot acquire the rejected public picture");
       const auto pixels = picture->storage;
       {

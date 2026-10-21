@@ -82,6 +82,63 @@ for bits in $build_bits; do
     printf '%s-bit raw-frame public-header incremental rebuild passed\n' "$bits"
     cpu_flags=$(make -s --no-print-directory -C "$build_dir/linux_lib/libcrystalhd" \
         LEGACY_CPU="$legacy" CXX="$cxx -m$bits" print-cpu-flags)
+    # Bob plane sampling is pure scalar code: exercise both i386 and the
+    # strict non-SSE CPU through the same policy as the library regressions.
+    # Compiler and user flags intentionally expand into arguments.
+    # shellcheck disable=SC2086
+    $cxx ${CPPFLAGS:-} ${CXXFLAGS:-} -m"$bits" -std=c++17 -O2 \
+        -Wall -Wextra -Werror "$repo_dir/tests/vaapi-bob.cpp" \
+        $cpu_flags -o "$build_dir/vaapi-bob"
+    run_test "$build_dir/vaapi-bob"
+    # Exercise the real NV12 ProcessVpp kernel, not only its row mapper.
+    # Abort stubs keep this mode independent of 32-bit graphics libraries.
+    # shellcheck disable=SC2086
+    $cxx ${CPPFLAGS:-} ${CXXFLAGS:-} -m"$bits" -std=c++17 -O2 \
+        -Wall -Wextra -Werror -fno-tree-slp-vectorize \
+        -ffunction-sections -fdata-sections -D__LINUX_USER__ \
+        -DCRYSTALHD_BOB_NV12_ONLY -I"$repo_dir/include" \
+        -I"$repo_dir/linux_lib/libcrystalhd" \
+        $(pkg-config --cflags libva libva-drm libdrm gbm libswscale) \
+        "$repo_dir/tests/vaapi-bob-vpp.cpp" \
+        -Wl,--gc-sections,--wrap=ioctl -pthread $cpu_flags \
+        -o "$build_dir/vaapi-bob-vpp"
+    run_test "$build_dir/vaapi-bob-vpp"
+    # Exercise actual EndPicture/ownership/cancellation, not only syntax or
+    # pixels. The selected test entry and abort-only SDK boundaries need no
+    # target-architecture graphics, scaler or decoder shared libraries.
+    # shellcheck disable=SC2086
+    $cxx ${CPPFLAGS:-} ${CXXFLAGS:-} -m"$bits" -std=c++17 -O2 \
+        -Wall -Wextra -Werror -fno-tree-slp-vectorize \
+        -ffunction-sections -fdata-sections -D__LINUX_USER__ \
+        -DCRYSTALHD_VPP_CPU_ONLY -I"$repo_dir/include" \
+        -I"$repo_dir/linux_lib/libcrystalhd" \
+        $(pkg-config --cflags libva libva-drm libdrm gbm libswscale) \
+        "$repo_dir/tests/vaapi-vpp.cpp" \
+        -Wl,--gc-sections,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=eventfd \
+        -Wl,--wrap=fstat,--wrap=drmGetDevice2,--wrap=drmFreeDevice \
+        -Wl,--wrap=drmPrimeHandleToFD,--wrap=mmap,--wrap=munmap \
+        -pthread $cpu_flags -o "$build_dir/vaapi-vpp-cpu"
+    LC_ALL=C readelf -h "$build_dir/vaapi-vpp-cpu" > "$build_dir/vaapi-vpp-cpu.elf"
+    grep -Eq "Class:[[:space:]]+ELF$bits" "$build_dir/vaapi-vpp-cpu.elf"
+    if [ "$bits" -eq 32 ]; then
+        grep -Eq 'Machine:[[:space:]]+Intel 80386' "$build_dir/vaapi-vpp-cpu.elf"
+    fi
+    LC_ALL=C readelf -d "$build_dir/vaapi-vpp-cpu" > "$build_dir/vaapi-vpp-cpu.dynamic"
+    if awk '/NEEDED/ { sub(/^.*\[/, ""); sub(/\].*$/, ""); print }' \
+        "$build_dir/vaapi-vpp-cpu.dynamic" | \
+        grep -Ev '^(libstdc\+\+\.so\.6|libgcc_s\.so\.1|libc\.so\.6|libm\.so\.6|libpthread\.so\.0|librt\.so\.1|libdl\.so\.2|libatomic\.so\.1)$'; then
+        echo "CPU-only VPP test unexpectedly depends on a non-runtime shared library" >&2
+        exit 1
+    fi
+    if [ "$legacy" -eq 1 ]; then
+        objdump -d "$build_dir/vaapi-vpp-cpu" > "$build_dir/vaapi-vpp-cpu.disassembly"
+        if grep -Eq '%([xyz]mm[0-9]+|mm[0-7])|[[:space:]](emms|femms|clflush|[lms]fence|[ls]dmxcsr)([[:space:]]|$)' \
+            "$build_dir/vaapi-vpp-cpu.disassembly"; then
+            echo "legacy VPP state test contains SIMD/cache instructions" >&2
+            exit 1
+        fi
+    fi
+    run_test "$build_dir/vaapi-vpp-cpu"
     if [ "$legacy" -eq 1 ]; then
         # shellcheck disable=SC2086
         $cxx -std=c++11 -Wall -Wextra -Werror $cpu_flags \
@@ -106,9 +163,10 @@ for bits in $build_bits; do
         $cpu_flags -o "$build_dir/library-smoke"
     # Execute production library regressions on the target ABI and CPU.
     # These tests neither open hardware nor load a shared library.
-    for section in copy planar format input mpeg4-input input-format tx-ring flush tx-flush eos status color clock devmem device-handle capture fwload fw-version fwcmds; do
+    for section in logging copy planar format input mpeg4-input input-format tx-ring flush tx-flush eos status color clock devmem device-handle capture fwload fw-version fwcmds; do
         section_wrap=
         case "$section" in
+            logging) set -- ;;
             copy|planar) set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" ;;
             format)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" \
@@ -136,7 +194,9 @@ for bits in $build_bits; do
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_fwload_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_parser.cpp"
                 section_wrap=-Wl,--wrap=open,--wrap=close,--wrap=ioctl,--wrap=malloc,--wrap=free,--wrap=posix_memalign
-                section_wrap="$section_wrap -Wl,--wrap=pthread_create,--wrap=shmget,--wrap=shmat,--wrap=shmdt,--wrap=shmctl" ;;
+                section_wrap="$section_wrap -Wl,--wrap=pthread_create,--wrap=pthread_join,--wrap=shmget,--wrap=shmat,--wrap=shmdt,--wrap=shmctl"
+                section_wrap="$section_wrap -Wl,--wrap=pthread_mutexattr_init,--wrap=pthread_mutexattr_settype,--wrap=pthread_mutexattr_destroy,--wrap=pthread_mutex_init,--wrap=pthread_mutex_destroy,--wrap=pthread_mutex_lock,--wrap=pthread_mutex_unlock"
+                section_wrap="$section_wrap -Wl,--wrap=_Z15DtsPushFwToFleaPvPc,--wrap=_Z19DtsPushAuthFwToLinkPvPc,--wrap=_Z15DtsFWInitializePvj" ;;
             capture)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp"

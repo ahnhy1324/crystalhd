@@ -1,9 +1,10 @@
 # Releasing the maintained CrystalHD stack
 
 The current release tracker is
-[#430](https://github.com/ahnhy1324/crystalhd/issues/430). This procedure
-prepares the maintained legacy stack for users; optional firmware research has
-its own acceptance criteria in #92 and #204.
+[#473](https://github.com/ahnhy1324/crystalhd/issues/473). It defines the
+bounded v1.2.0 scope and G0–G3 GO/HOLD rules. Optional performance and research
+work belongs to [#472](https://github.com/ahnhy1324/crystalhd/issues/472),
+#91, #92 or #204 and is not silently promoted into a release requirement.
 
 The completed 1.0 campaign is historical evidence.
 The published `v1.0.0-rc.1` at
@@ -18,19 +19,21 @@ The maintainer's G0 exception and the G1/G2 dispositions recorded in
 [#371](https://github.com/ahnhy1324/crystalhd/issues/371) apply only to that
 campaign; they are not v1.1 qualification passes.
 
-For v1.1, follow **scope and diff audit → device-free gates and short native
-smoke → freeze exact candidate → maintainer RC GO → publish immutable RC →
-qualify that exact RC → final package and rollback checks → maintainer stable
-GO**. A version string in a checkout is preparation, not permission to publish
-a new RC or stable tag. Already published RC5 is immutable.
+For v1.2, follow **scope/diff audit and exact identity → same-SHA device-free
+gates and short native smoke (G0/G1) → maintainer RC GO → publish an
+immutable RC → exact-RC client, sustained and package qualification (G2/G3)
+→ maintainer stable GO**. A version string or release branch is preparation,
+not permission to publish an RC, tag or stable release. Published v1.1 and its
+RCs remain immutable; their qualification is historical evidence, not a v1.2
+PASS.
 
-The v1.1 RC interlaced scope is bounded playback with explicit hardware/software
-Weave selection. Further deinterlacing and A/V synchronization tuning are
-deferred; qualitative playback observations do not establish universal
-frame-rate or physical timing guarantees.
-Known issues and the planned v1.2 integration work are documented in
-[USAGE.md](USAGE.md#known-issues-and-deinterlacing-roadmap). A roadmap entry
-does not resolve or close an outstanding compatibility report.
+The selected v1.2 claims are bounded CPU VA-VPP Bob, explicit H.264 card-output
+scaling and reviewed reliability fixes. Kodi Auto, sustained 720p50 and package
+acceptance remain conditional gates. Hardware deinterlacing, general FHD50/60,
+Atom real-time and the #470/#471 experiments are not candidate claims. Exact
+boundaries and current status are in
+[USAGE.md](USAGE.md#known-issues-and-deinterlacing-roadmap) and the
+[hardware report](HARDWARE-2026-09-13.md#120-rc1-qualification--2026-10-22).
 
 ## Versions and compatibility
 
@@ -41,10 +44,12 @@ the source bundle; published tags and assets are listed in
 [Releases](https://github.com/ahnhy1324/crystalhd/releases). A version in a
 checkout alone does not announce a published release.
 
-| Identity | Current source | Purpose |
+| Identity | Current value | Purpose |
 | --- | --- | --- |
-| Bundle | `1.1.0` | Published stable bundle; source `85f426d` |
-| DKMS / module package | `3.10.9` | New final revision; published RC.5 retains `3.10.8`, RC.4 `3.10.7`, stable 1.0.0 `3.10.3` |
+| Candidate bundle | `1.2.0-rc.1` | v1.2 qualification candidate; not published |
+| Candidate DKMS / module package | `3.10.11` | Unique candidate payload; development `3.10.10` is not reused |
+| Published stable bundle | `1.1.0` | Immutable source `85f426d` |
+| Published stable DKMS / module package | `3.10.9` | RC.5 retains `3.10.8`, RC.4 `3.10.7`, stable 1.0.0 `3.10.3` |
 | Driver ioctl version | `3.10.0` | Historical public API value, retained |
 | Library API / pkg-config | `3.22.0` | Historical library component identity, retained |
 | Library SONAME / file | `libcrystalhd.so.3` / `libcrystalhd.so.3.6` | Existing application linkage, retained |
@@ -87,7 +92,7 @@ distinguish fresh affected checks from explicitly justified unchanged-code RC.3
 reuse; neither an old aggregate nor publication itself qualifies changed code.
 The RC4 G0 exception is explicit, not independent restore/boot PASS. That
 campaign's remaining work is historical; current candidate obligations are
-recorded in the RC5 summary above.
+recorded in #473.
 
 Published [v1.1.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.3)
 pins `51e5cdfe4c720da92dec54c72fc4f47c8382e43a`, bundle `1.1.0-rc.3` and
@@ -113,15 +118,17 @@ The public compatibility boundary covers `libcrystalhd.so.3`, legacy ioctl
 layouts, documented buffer ownership/completion, and the documented
 non-experimental player/plugin behavior. Native output remains default,
 explicit hardware playback must fail visibly if unavailable, and one decoder
-owns the device at a time. A change to a frozen or published v1.1 candidate
+owns the device at a time. A change to any frozen or published candidate
 uses the next RC and a fresh package revision, with affected requalification;
 published tags are never moved. After a stable release, compatible fixes use
 the next patch version and compatible features use the next minor version. A
 development phase or internal rewrite alone does not require a new major
 version.
 
-The following remain explicitly experimental: the VA-API frontend, its live
-H.264 and low-latency controls, `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_*`,
+The VA-API frontend remains experimental outside the selected v1.2 decode,
+Bob and scaling contract. The following remain explicitly experimental: its
+live H.264 and low-latency controls,
+`CRYSTALHD_VAAPI_EXPERIMENTAL_READY_*`,
 `CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC`,
 `CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT`, the raw-frame producer API, and the
 browser launcher. Their exact scope is in the [option index](USAGE.md#advanced-option-index)
@@ -131,14 +138,14 @@ a fix or explicit withdrawal from the candidate.
 
 ## Freeze and prepare
 
-1. Agree on the v1.1 scope in #430. Audit the complete `v1.0.0...candidate`
-   diff, link #429's compatibility results and separate supported production
-   behavior from default-off research and explicitly unsupported paths.
+1. Agree on the v1.2 scope in #473. Audit the complete
+   `v1.1.0...candidate` diff, link #429's compatibility results and separate
+   supported production behavior from default-off research and explicitly unsupported paths.
    After freezing, accept only release fixes, documentation and qualification
    work.
 2. Merge preparation changes. Check this version table, installation and
    rollback commands, notices and the curated [change summary](HISTORY.md).
-   Use the short-lived `release/1.1` branch while unrelated development
+   Use the short-lived `release/1.2.0-rc.1` branch while unrelated development
    continues, then record one fixed candidate commit.
 3. Run the existing device-free gates with the
    [developer dependencies](README.md#developer-checks) installed:
@@ -151,19 +158,23 @@ a fix or explicit withdrawal from the candidate.
    ```
 
    Require completed CI success, including the older GStreamer build. Test
-   a source archive without `.git`, staged install/uninstall, plugin discovery,
-   and the documented direct and DKMS upgrade/rollback paths. A staged layout
-   check does not establish a live module installation or hardware pass.
-4. Complete #430 Gate A, including the declared short native smoke. Record the
-   exact commit, source diff, feature list, limits, acknowledgements, release
-   text and results, then obtain explicit maintainer RC GO before publishing
-   the next RC. Never move published tags, including `v1.1.0-rc.5`, `v1.1.0-rc.4`, `v1.1.0-rc.3`,
+   a source archive without `.git`, staged install/uninstall and plugin
+   discovery, and review and pin the documented direct and DKMS
+   upgrade/rollback paths. Execute those live upgrade/rollback paths only in G3
+   against the immutable RC. A staged layout check does not establish a live
+   module installation or hardware pass.
+4. Complete #473 G0/G1, including the declared short native smoke. Record the
+   exact commit, source diff, selected claim matrix, limits, acknowledgements,
+   release text and results, then obtain explicit maintainer RC GO before
+   publishing RC1. Never move published tags, including `v1.1.0`,
+   `v1.1.0-rc.5`, `v1.1.0-rc.4`, `v1.1.0-rc.3`,
    `v1.0.0-rc.1`, `v1.0.0` and `phase1-baseline-2026-09-29`.
 
 ## Qualify the candidate
 
-Begin the full campaign only after the immutable v1.1 RC is published. The
-v1.0 results remain useful baselines, but do not count as new v1.1 PASS results.
+Run G0/G1 against one exact v1.2 candidate commit before asking to publish an
+RC. Begin G2/G3 only against that immutable RC after maintainer RC GO. Earlier
+results remain useful baselines, but do not count as new candidate PASS results.
 Use [tests/phase1-release-gate.sh](tests/phase1-release-gate.sh) with the tracked
 [maintenance codec oracle](tests/maintenance-oracle.tsv) as `--manifest`.
 Its 11 fixtures retain exact matching; only the WMV3 HD missing-duration metadata
@@ -222,7 +233,7 @@ with the same candidate/runtime identity, validate the aggregate:
 sh "$gate" evidence-check "$evidence_root" --manifest "$manifest" --maintenance-3h
 ```
 
-The current v1.1 maintenance qualification uses the explicit
+The retained maintenance regression uses the explicit
 `soak --rc --maintenance-3h` profile for 720p30 High/AAC: exactly
 `--seconds 10800 --frames 324000`, with a matching complete 3-hour fixture.
 Pass the normal fixture identity, runtime and new external results path as
@@ -242,11 +253,13 @@ the raw balance and observation method; refresh failure is unavailable
 evidence, not a raw-counter fallback. Exact before/after equality is still
 required, with no retry, grace period or wait for zero.
 
-G0–G6 must all PASS for the final qualifying candidate, with an explicit
-experimental disposition and maintainer approval. Missing, stale, failed or
-inconclusive mandatory evidence means **HOLD**. Follow #430's v1.1 acceptance
-criteria and the proven mechanics in #369/#371; these are the finite stable
-gates:
+The table below records the completed v1.1 G0–G6 campaign mechanics. Reuse its
+scripts and unchanged thresholds where #473 calls for them, but do not mistake
+its historical results, Moonlight assessment or numbering for current v1.2
+evidence. Current v1.2 GO/HOLD is governed only by #473 G0–G3; missing, stale,
+failed or inconclusive mandatory evidence means **HOLD**.
+
+### Historical v1.1 G0–G6 reference
 
 | Gate | Declared run and acceptance |
 | --- | --- |
@@ -258,13 +271,14 @@ gates:
 | G5 — Installation and rollback | Final archive without `.git`, first install, RC/previous-package update, removal and rollback on direct/DKMS routes without mixed ownership. Fail before removal if prerequisites/builds fail; use idle-only unload and verify `crystalhd-check`, known decode/EOS and reopen. Distinguish staging from live installation. |
 | G6 — Documentation and final artifact | Follow #430 and the established #369 fresh-user, update, slow-FHD, Moonlight and failed-run journeys. Check links, quoted placeholders, prerequisites, success/errors, experimental scope, component identity and notices. Stable-tag instructions become available only after publication. Final metadata/payload changes need CI/build/archive/install checks and affected runtime rechecks. |
 
-G0 requires a verified independent offline known-good image, integrity and
+The v1.1 G0 required a verified independent offline known-good image, integrity and
 rescue access, and a defined restore path before destructive candidate
 installation or testing. A live copy on the SSD being upgraded does not meet
 it. Any exception requires a new explicit maintainer decision recorded in
-#430; the v1.0 exception is not inherited.
+#473 for the v1.2 campaign; earlier exceptions are not inherited.
 
-Complete the planned experimental assessment: **60 minutes** exact 720p30
+The following Moonlight assessment was part of the historical v1.1 campaign,
+not a v1.2 RC requirement. It required **60 minutes** exact 720p30
 Moonlight and **60 minutes each** `previous,0` 720p60/1080p30, followed by
 graceful disconnect/reopen, plus the documented VLC check. Record hardware use,
 source/receive/output rates, refresh/settings, payload progression/age where
@@ -294,14 +308,14 @@ in #91/#92/#204 without becoming prerequisites for this declared scope.
 
 ## Publish and maintain
 
-After #430 records G0–G6 evidence and experimental dispositions, freeze final
-version metadata and a package revision distinct from any changed registered
-RC payload. Account for bundle VERSION data compiled into the module; verify
-the actual final CI/build/archive/install and upgrade/rollback payload, and
-rerun affected runtime gates. Present the exact final commit, results, release
-text, remaining limits and GO/HOLD row for maintainer approval. Create an
-annotated `v1.1.0` tag and a normal GitHub release only after explicit stable
-GO. Follow
+After #473 records G2/G3 evidence and dispositions for the immutable RC,
+freeze final v1.2.0 metadata and a package revision distinct from any changed
+registered RC payload. Account for bundle VERSION data compiled into the
+module; verify the actual final CI/build/archive/install and upgrade/rollback
+payload, and rerun affected runtime gates. Present the exact final commit,
+results, release text, remaining limits and GO/HOLD row for maintainer
+approval. Create an annotated `v1.2.0` tag and a normal GitHub release only
+after explicit stable GO. Follow
 [GitHub's release procedure](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository).
 
 The release body should contain highlights, install/update/rollback,
@@ -309,14 +323,15 @@ LTS validated scope, experimental options, known limits, evidence and
 acknowledgements, in that order. Use `HISTORY.md` as the starting summary. Offer source tag
 archives first; retain required notices. If optional binary assets are added,
 publish their checksums. Smoke-test the public archive and its installation
-commands, then link the result in #430. External announcements need separate
+commands, then link the result in #473. External announcements need separate
 approval. Keep #91/#92/#204 open for their own remaining objectives.
 
 Retain the pre-LTS recovery evidence and a separately verified LTS known-good
-image. Keep images and private inventories off GitHub. After v1.1 stable
-publication, compatible fixes inform 1.1.1; added compatible features inform
-1.2.0. Evidence alone need not trigger a new release. The published v1.0 tags,
-release notes and qualification record remain unchanged.
+image. Keep images and private inventories off GitHub. After v1.2 stable
+publication, compatible fixes inform 1.2.1; added compatible features inform
+the next minor version. Evidence alone need not trigger a new release. The
+published v1.0/v1.1 tags, release notes and qualification records remain
+unchanged.
 
 Use an issue for a distinct unresolved objective or reproduced defect; use a
 PR directly for a small self-contained fix. Name short-lived branches

@@ -128,7 +128,7 @@ def arguments(argv=None):
     parser.add_argument("--weave", action="store_true",
                         help="preserve interlaced frames without deinterlacing; works with either decoder mode")
     parser.add_argument("--scale-width", type=hardware_scale_width, default=0, metavar="PIXELS",
-                        help="request an even BCM70015 output width from 128 to 1918 (0: native)")
+                        help="request an even BCM70015 output width from 128 to 1918 (interlaced H.264: multiple of 16; 0: native)")
     parser.add_argument("--software-output-size", type=output_size,
                         metavar="WIDTHxHEIGHT",
                         help="explicitly resize scaled CrystalHD output with GStreamer videoscale")
@@ -251,7 +251,7 @@ def configure_decoders(Gst, mode):
         raise RuntimeError("crystalhddec is unavailable; build/install the GStreamer plugin")
 
 
-def make_software_output_filter(Gst, size):
+def make_software_output_filter(Gst, size, *, prepare_native_packing=False):
     """Build an explicit raw-video resize bin for playbin's video-filter."""
     width, height = size
     result = Gst.Bin.new("crystalhd-software-upscale")
@@ -270,11 +270,22 @@ def make_software_output_filter(Gst, size):
         "caps", Gst.Caps.from_string(
             f"video/x-raw,format=YUY2,width={width},height={height},"
             "pixel-aspect-ratio=1/1"))
-    result.add(scale)
-    result.add(capsfilter)
-    if not scale.link(capsfilter):
+    elements = [scale, capsfilter]
+    if prepare_native_packing:
+        inlet = Gst.ElementFactory.make("capsfilter", "crystalhd-early-yuy2")
+        convert = Gst.ElementFactory.make("videoconvert", "crystalhd-early-pack")
+        if inlet is None or convert is None:
+            raise RuntimeError("native output packing needs GStreamer videoconvert and capsfilter")
+        # Keep stock deinterlacing in YUY2. Packing, if selected, belongs before
+        # the resize so the sink thread need not repack a full-size picture.
+        inlet.set_property("caps", Gst.Caps.from_string("video/x-raw,format=YUY2"))
+        convert.set_property("n-threads", 1)
+        elements[:0] = [inlet, convert]
+    for element in elements:
+        result.add(element)
+    if not all(left.link(right) for left, right in zip(elements, elements[1:])):
         raise RuntimeError("could not link the software output sizing elements")
-    sink_pad = scale.get_static_pad("sink")
+    sink_pad = elements[0].get_static_pad("sink")
     source_pad = capsfilter.get_static_pad("src")
     if sink_pad is None or source_pad is None:
         raise RuntimeError("software output sizing elements have no usable raw-video pads")
@@ -282,6 +293,202 @@ def make_software_output_filter(Gst, size):
             Gst.GhostPad.new("src", source_pad)):
         raise RuntimeError("could not expose the software output sizing pads")
     return result
+
+
+class XvOutputPacking:
+    """Select low-resolution packing only before a selected Xv chain starts."""
+
+    def __init__(self, Gst, video_filter):
+        self.Gst, self.video_filter = Gst, video_filter
+        self.output = video_filter.get_by_name("crystalhd-upscale-caps")
+        self.selected = False
+
+    def select(self, element, pipeline):
+        if self.selected:
+            return False
+        Gst = self.Gst
+        try:
+            factory = element.get_factory()
+            if factory is None or factory.get_name() != "xvimagesink":
+                return False
+            chain = self.video_filter.get_parent()
+            playsink = chain.get_parent() if chain is not None else None
+            factory = playsink.get_factory() if playsink is not None else None
+            if (factory is None or factory.get_name() != "playsink" or
+                    not playsink.has_as_ancestor(pipeline) or
+                    not element.has_as_ancestor(chain)):
+                return False
+            # element-setup runs while playsink adds its already-READY sink
+            # chain, before activating our filter. Never renegotiate live data.
+            for item, expected in ((self.video_filter, Gst.State.NULL),
+                                   (element, Gst.State.READY)):
+                status, state, pending = item.get_state(0)
+                if (status != Gst.StateChangeReturn.SUCCESS or state != expected or
+                        pending != Gst.State.VOID_PENDING):
+                    return False
+            if any(self.video_filter.get_static_pad(name).get_current_caps() is not None
+                   for name in ("sink", "src")):
+                return False
+            pad = element.get_static_pad("sink")
+            available = pad.query_caps(None) if pad is not None else None
+            current = self.output.get_property("caps")
+            if (available is None or available.is_any() or available.is_empty() or
+                    current is None or current.get_size() != 1 or
+                    current.get_structure(0).get_string("format") != "YUY2"):
+                return False
+            native = current.copy()
+            native.set_value("format", "UYVY")
+            if not available.can_intersect(native) or available.can_intersect(current):
+                return False
+            # videoscale does not convert formats: this one caps change makes
+            # the prepared converter pack UYVY at the smaller input dimensions.
+            self.output.set_property("caps", native)
+            self.selected = True
+            return True
+        except Exception:
+            # Sink discovery is optional; uncertain queries keep the YUY2 path.
+            return False
+
+
+class DeinterlaceQosWorkaround:
+    """Bypass only the qualified deinterlacer's incorrect picture-PTS QoS cache."""
+
+    def __init__(self, Gst, element, on_error):
+        self.Gst, self.element, self.on_error = Gst, element, on_error
+        self.sink, self.src = (element.get_static_pad(name) for name in ("sink", "src"))
+        self.closed = False
+        self.active = True
+        self.caps_policy = None
+        self.probe = self.src.add_probe(Gst.PadProbeType.EVENT_UPSTREAM, self.event)
+
+    @staticmethod
+    def properties_supported(element):
+        return tuple(int(value) for value in element.get_properties(
+            "mode", "method", "fields", "locking", "tff")) == (0, 4, 0, 0, 0)
+
+    @classmethod
+    def supported(cls, Gst, element):
+        factory = element.get_factory()
+        plugin = factory.get_plugin() if factory is not None else None
+        return (tuple(Gst.version())[:3] == (1, 28, 2) and
+                factory is not None and factory.get_name() == "deinterlace" and
+                plugin is not None and plugin.get_version() == "1.28.2" and
+                cls.properties_supported(element))
+
+    @classmethod
+    def install(cls, Gst, element, on_error):
+        if not cls.supported(Gst, element):
+            return None
+        if any(element.get_static_pad(name) is None for name in ("sink", "src")):
+            return None
+        return cls(Gst, element, on_error)
+
+    def eligible(self):
+        # Core/plugin identity was admitted at install; mutable properties and
+        # both current caps still need checking on every QoS event.
+        if self.closed or not self.active or not self.properties_supported(self.element):
+            return False
+        caps = tuple(pad.get_current_caps() for pad in (self.sink, self.src))
+        if any(value is None or value.get_size() != 1 for value in caps):
+            return False
+        cached = self.caps_policy
+        if cached is not None and all(value.is_equal(old) for value, old in zip(caps, cached[:2])):
+            return cached[2]
+        accepted = self.caps_supported(*caps)
+        # Retained GstCaps references are read-only; renegotiation uses COW.
+        self.caps_policy = (*caps, accepted)
+        return accepted
+
+    @staticmethod
+    def caps_supported(source_caps, output_caps):
+        if any(value.get_size() != 1 for value in (source_caps, output_caps)):
+            return False
+        source, output = (value.get_structure(0) for value in (source_caps, output_caps))
+        # Keep this compatibility workaround within the measured 25i -> 50p
+        # packed-YUY2 path. Other rates, layouts and methods keep stock policy.
+        return (all(value.get_name() == "video/x-raw" and
+                    value.get_string("format") == "YUY2" for value in (source, output)) and
+                source.get_string("interlace-mode") in ("mixed", "interleaved") and
+                output.get_string("interlace-mode") == "progressive" and
+                source.get_fraction("framerate") == (True, 25, 1) and
+                output.get_fraction("framerate") == (True, 50, 1) and
+                all(source.get_int(name)[0] and source.get_int(name)[1] > 0 and
+                    source.get_int(name) == output.get_int(name) for name in ("width", "height")))
+
+    def event(self, _pad, info):
+        Gst = self.Gst
+        event = info.get_event()
+        if event.type != Gst.EventType.QOS:
+            return Gst.PadProbeReturn.OK
+        if not self.eligible():
+            # Once stock has observed QoS, keep its policy for this element's
+            # lifetime; later caps changes must not leave a stale local cache.
+            self.active = False
+            return Gst.PadProbeReturn.OK
+        on_error = self.on_error
+        # 1.28.2 tests both fields against the input picture's PTS, including
+        # the later field whose output PTS still meets the QoS deadline.
+        # Skip this stage's entire QoS cache update, not downstream QoS: retain
+        # the unchanged event upstream and leave the final sink authoritative.
+        try:
+            forwarded = self.sink.push_event(event.copy())
+        except Exception:
+            forwarded = False
+        if not forwarded and on_error is not None:
+            on_error("could not forward deinterlacer QoS feedback upstream")
+        # DROP releases the original event. Never retry after a forwarding
+        # failure: it may already have reached an upstream element.
+        return Gst.PadProbeReturn.DROP
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            self.src.remove_probe(self.probe)
+            self.probe = 0
+            self.on_error = None
+            self.caps_policy = None
+
+
+class NativeDeinterlaceQosWorkaround:
+    """Own-plugin equivalent; older plugins retain the Python implementation."""
+
+    def __init__(self, controller):
+        self.controller = controller
+        self.closed = False
+
+    @classmethod
+    def install(cls, Gst, element, bus):
+        controller = Gst.ElementFactory.make("crystalhddiqos")
+        if controller is None:
+            return None
+        try:
+            result = controller.emit("attach", element, bus)
+        except Exception as error:
+            controller.emit("detach")
+            raise RuntimeError("could not attach native deinterlacer QoS helper") from error
+        if result == 1:
+            return cls(controller)
+        controller.emit("detach")
+        if result == 0:
+            return None
+        # Do not stack a Python probe on an already-owned or invalid target.
+        raise RuntimeError("native deinterlacer QoS target is invalid or already owned")
+
+    @property
+    def active(self):
+        return not self.closed and self.controller.get_property("active")
+
+    @property
+    def probe(self):
+        return int(not self.closed and self.controller.get_property("attached"))
+
+    def eligible(self):
+        return not self.closed and self.controller.get_property("eligible")
+
+    def close(self):
+        if not self.closed:
+            self.controller.emit("detach")
+            self.closed = True
 
 
 class Player:
@@ -297,6 +504,7 @@ class Player:
         self.buffering = False
         self.is_live = False
         self.decoders = {}
+        self.deinterlace_qos = {}
         self.next_decoder = 0
         self.seek_target = None
         self.queued_seek = None
@@ -326,9 +534,15 @@ class Player:
             decoder = "CrystalHD hardware" if args.mode == "hardware" else "software"
             print(f"Output: Weave (deinterlacing off; {decoder} decoding required)", flush=True)
         self.video_filter = None
+        self.output_packing = None
         if args.software_output_size:
+            prepare_packing = (args.mode == "hardware" and args.scale_width and
+                               args.software_output_size[0] > args.scale_width and
+                               not args.weave and "video-sink" not in (sinks or {}))
             self.video_filter = make_software_output_filter(
-                Gst, args.software_output_size)
+                Gst, args.software_output_size, prepare_native_packing=prepare_packing)
+            if prepare_packing:
+                self.output_packing = XvOutputPacking(Gst, self.video_filter)
             self.pipeline.set_property("video-filter", self.video_filter)
         for prop, sink in (sinks or {}).items():
             self.pipeline.set_property(prop, sink)
@@ -347,6 +561,22 @@ class Player:
         if factory is None:
             return
         name, klass = factory.get_name(), factory.get_metadata("klass") or ""
+        if name == "xvimagesink" and self.output_packing is not None and not self.closed:
+            self.output_packing.select(element, self.pipeline)
+        if (name == "deinterlace" and self.args.mode == "hardware" and
+                self.args.scale_width and not self.args.weave and
+                element not in self.deinterlace_qos):
+            try:
+                workaround = NativeDeinterlaceQosWorkaround.install(self.Gst, element, self.bus)
+            except RuntimeError as error:
+                self.fail(str(error))
+                return
+            if workaround is None:
+                workaround = DeinterlaceQosWorkaround.install(
+                    self.Gst, element, lambda reason: self.post_observation(
+                        "crystalhd-player-output-error", {"message": reason}))
+            if workaround is not None:
+                self.deinterlace_qos[element] = workaround
         if not video_decoder(klass):
             return
         if name == "crystalhddec" and self.args.scale_width:
@@ -375,14 +605,19 @@ class Player:
         if self.args.scale_width and event.type == self.Gst.EventType.CAPS:
             caps = event.parse_caps()
             if caps is not None and caps.get_size() == 1:
-                mode = caps.get_structure(0).get_string("interlace-mode")
-                if mode is not None and mode != "progressive":
+                structure = caps.get_structure(0)
+                mode = structure.get_string("interlace-mode")
+                field_scale = (structure.get_name() == "video/x-h264" and
+                               mode in ("interleaved", "mixed") and
+                               self.args.scale_width % 16 == 0)
+                if mode is not None and mode != "progressive" and not field_scale:
                     # The plugin already rejects this combination. playbin
                     # may discard that branch's initialization error and play
                     # audio alone, so retain the reason on our existing bus.
                     self.post_observation("crystalhd-player-error", {
                         "token": token,
-                        "message": "--scale-width requires progressive input "
+                        "message": "interlaced --scale-width requires BCM70015 H.264 "
+                                   "field input and a multiple-of-16 width "
                                    f"(interlace-mode={mode}); omit --scale-width "
                                    "for native interlaced playback",
                     })
@@ -415,6 +650,9 @@ class Player:
         return False
 
     def element_removed(self, _pipeline, _bin, element):
+        workaround = self.deinterlace_qos.pop(element, None)
+        if workaround is not None:
+            workaround.close()
         token = self.decoders.get(element)
         if token is not None:
             self.post_observation("crystalhd-player-removed", {"token": token})
@@ -439,6 +677,8 @@ class Player:
             elif fields.get_name() == "crystalhd-player-error":
                 if fields.get_value("token") in self.decoders.values():
                     self.fail(fields.get_value("message"))
+            elif fields.get_name() == "crystalhd-player-output-error":
+                self.fail(fields.get_value("message"))
         elif message.type == Gst.MessageType.ERROR:
             error, _debug = message.parse_error()
             self.fail(input_error(self.args.file,
@@ -623,6 +863,9 @@ class Player:
         if self.pipeline.set_state(self.Gst.State.NULL) == self.Gst.StateChangeReturn.FAILURE:
             print("crystalhd-play: decoder teardown failed", file=sys.stderr)
             self.exit_code = max(self.exit_code, 1)
+        for workaround in tuple(self.deinterlace_qos.values()):
+            workaround.close()
+        self.deinterlace_qos.clear()
 
     def run(self):
         try:

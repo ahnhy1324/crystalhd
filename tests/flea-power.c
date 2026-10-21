@@ -126,6 +126,11 @@ struct mock_device {
     bool firmware_alive, cleanup_completion, resume_cleanup_on_unlock;
     unsigned cleanup_probes, cleanup_resumes;
     uint32_t last_fll;
+    uint32_t free_queue_count, free_retained_count;
+    struct crystalhd_hw *fll_interleave_hw;
+    uint32_t fll_interleave_count;
+    bool fll_interleave_publish;
+    unsigned fll_interleaves;
     struct mock_register { uint32_t addr, value; } registers[32], awake_registers[32];
     unsigned register_count;
     unsigned awake_register_count;
@@ -140,6 +145,8 @@ static bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 static BC_STATUS real_set_next_power_state(struct crystalhd_hw *hw,
                                           enum FLEA_STATE_CH_EVENT event);
 static BC_STATUS real_runtime_power_up(struct crystalhd_hw *hw);
+static BC_STATUS crystalhd_flea_publish_fll(struct crystalhd_hw *hw,
+                                           bool cleanup);
 static void nested_transition(enum nested_point point);
 
 static void check(bool condition, const char *what)
@@ -185,6 +192,16 @@ static void mark_unhealthy(struct crystalhd_hw *hw, unsigned failure)
 static void lock_hw(unsigned *lock)
 {
     check(!*lock && !device.lock_held, "nested hardware lock");
+    if (device.fll_interleave_hw) {
+        struct crystalhd_hw *hw = device.fll_interleave_hw;
+        device.fll_interleave_hw = NULL;
+        device.free_queue_count = device.fll_interleave_count;
+        if (device.fll_interleave_publish)
+            check(crystalhd_flea_publish_fll(hw, false) == BC_STS_SUCCESS &&
+                  device.last_fll == device.free_queue_count + device.free_retained_count,
+                  "competing FLL publisher did not commit the newer count");
+        device.fll_interleaves++;
+    }
     *lock = 1;
     device.lock_held = true;
     if (device.clear_intent_on_lock) {
@@ -339,12 +356,11 @@ static BC_STATUS write_fll(struct crystalhd_hw *hw, uint32_t addr,
     return hw->adp->fail_fll_write ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
 }
 
-static uint32_t crystalhd_hw_count_free_rx_pkts(struct crystalhd_hw *hw)
+static uint32_t crystalhd_hw_count_free_rx_pkts_locked(struct crystalhd_hw *hw)
 {
-    /* The production helper locks hw->lock for its retained-buffer count. */
-    lock_hw(&hw->lock);
-    unlock_hw(&hw->lock);
-    return 4;
+    check(hw && hw->lock && device.lock_held,
+          "locked free count requires the hardware lock");
+    return device.free_queue_count + device.free_retained_count;
 }
 
 static struct crystalhd_rx_dma_pkt *crystalhd_hw_fetch_free_rx_pkt(struct crystalhd_hw *hw)
@@ -522,6 +538,7 @@ static struct crystalhd_hw transition_setup(enum FLEA_POWER_STATES state)
     device.present = true;
     device.pdev = &flea_pci;
     device.firmware_alive = true;
+    device.free_queue_count = 4;
     write_register(&device, BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR, 7);
     write_register(&device, BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR, 11);
     write_register(&device, BCHP_DDR23_CTL_REGS_0_PARAMS2, UINT32_C(0x02400000));
@@ -1309,8 +1326,8 @@ static void unhealthy_down(void)
 
         hw = transition_setup(FLEA_PS_LP_PENDING);
         device.health_on_lock = &hw;
-        /* First lock is the free-list count, second is final admission. */
-        device.health_lock_countdown = 2;
+        /* Count and final admission now share the setter's only lock. */
+        device.health_lock_countdown = 1;
         device.health_failure = failure;
         check(!crystalhd_flea_set_power_state(&hw, FLEA_PS_LP_COMPLETE) &&
               !device.health_on_lock && device.reads == 0 && device.writes == 0 &&
@@ -1424,8 +1441,8 @@ static void direction_sequences(void)
 
     hw = transition_setup(FLEA_PS_ACTIVE);
     device.command_on_lock = &hw;
-    /* Selector, free-list count, final setter admission. */
-    device.command_lock_countdown = 3;
+    /* Selector reservation, then final setter admission. */
+    device.command_lock_countdown = 2;
     check(crystalhd_flea_hw_pause(&hw, true) == BC_STS_SUCCESS &&
           hw.fwcmd_active && hw.FleaPowerState == FLEA_PS_LP_PENDING &&
           device.dram_writes == 1 && !device.last_fll && !device.power_writes &&
@@ -1514,7 +1531,9 @@ static void direction_sequences(void)
 
 static void deferred_completion_sequences(void)
 {
-    for (unsigned window = 1; window <= 3; window++)
+    /* Reservation and setter completion are the two unlocked windows;
+     * free-list counting no longer opens a third intermediate window. */
+    for (unsigned window = 1; window <= 2; window++)
         for (unsigned variant = 0; variant < 5; variant++) {
             struct crystalhd_hw hw = transition_setup(variant == 4 ?
                 FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE);
@@ -1540,7 +1559,7 @@ static void deferred_completion_sequences(void)
     struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
     hw.FleaTxActive = 1;
     device.completion_hw = &hw;
-    device.completion_unlock_countdown = 3;
+    device.completion_unlock_countdown = 2;
     device.fail_completion_replay = true;
     check(crystalhd_flea_hw_pause(&hw, true) == BC_STS_SUCCESS &&
           hw.FleaPowerState == FLEA_PS_LP_PENDING && device.dram_writes == 2 &&
@@ -1734,6 +1753,46 @@ static void cleanup_completion_sequences(void)
                       "failed cleanup performed DRAM/PM replay or successful replay was lost");
                 sequence_cases++;
             }
+}
+
+static void fll_publication_order(void)
+{
+    for (unsigned pwm = 0; pwm < 2; pwm++)
+        for (unsigned retained = 0; retained < 2; retained++)
+            for (unsigned initial = 0; initial < 2; initial++) {
+                struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
+                hw.FleaEnablePWM = pwm;
+                device.free_queue_count = initial;
+                device.free_retained_count = retained;
+                device.fll_interleave_hw = &hw;
+                device.fll_interleave_count = !initial;
+                device.fll_interleave_publish = true;
+                check(crystalhd_flea_publish_fll(&hw, false) == BC_STS_SUCCESS &&
+                      device.fll_interleaves == 1 && device.dram_writes == 2 &&
+                      device.last_fll == (!initial) + retained && !hw.lock,
+                      "older FLL publisher overwrote a newer free-count publication");
+                /* Reverse ordering control: the next ordinary update wins. */
+                device.free_queue_count = initial;
+                check(crystalhd_flea_publish_fll(&hw, false) == BC_STS_SUCCESS &&
+                      device.dram_writes == 3 &&
+                      device.last_fll == initial + retained && !hw.lock,
+                      "sequential FLL update did not publish its current count");
+                sequence_cases++;
+            }
+    for (unsigned initial = 0; initial < 2; initial++) {
+        struct crystalhd_hw hw = transition_setup(FLEA_PS_LP_PENDING);
+        hw.FleaPowerTransition = true;
+        device.free_queue_count = initial;
+        device.free_retained_count = 1;
+        device.fll_interleave_hw = &hw;
+        device.fll_interleave_count = !initial;
+        check(private_set_power_state(&hw, FLEA_PS_ACTIVE) == BC_STS_SUCCESS &&
+              device.fll_interleaves == 1 && device.dram_writes == 1 &&
+              device.last_fll == (!initial) + 1 && hw.FleaPowerState == FLEA_PS_ACTIVE &&
+              hw.FleaPowerTransition && !hw.lock,
+              "ACTIVE wake restored an obsolete pre-lock free count");
+        sequence_cases++;
+    }
 }
 
 static void failed_intent_transition_sequences(void)
@@ -2124,6 +2183,7 @@ int main(void)
     rx_intent_sequences();
     firmware_wake_intent_sequences();
     cleanup_completion_sequences();
+    fll_publication_order();
     failed_intent_transition_sequences();
     later_refresh_failures();
     actual_wake_failures();

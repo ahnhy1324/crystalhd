@@ -19,10 +19,15 @@ Keep [RC5](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0-rc.5)
 source and cached module `3.10.8` for [rollback](BRINGUP.md#direct-install-update-and-rollback);
 published releases and their qualification records remain unchanged.
 
-**Known issues:** interlaced playback can still show combing, stutter or A/V
-timing problems, depending on the application and host. Native hardware
-deinterlacing is unavailable. [Current limits and the planned v1.2 work](USAGE.md#known-issues-and-deinterlacing-roadmap)
-separate Weave playback from application-side filtering and unqualified paths.
+The separate `1.2.0-rc.1` / module-DKMS `3.10.11` candidate is being qualified
+under [#473](https://github.com/ahnhy1324/crystalhd/issues/473); it is not the
+stable quick start below and is not yet a published RC. Its bounded scope is
+selected CPU VA-VPP Bob and explicit H.264 card-output scaling. Exact-candidate
+Kodi, sustained playback and package results are tracked in the
+[qualification matrix](HARDWARE-2026-09-13.md#120-rc1-qualification--2026-10-22).
+Native hardware deinterlacing, general FHD50/60 and Atom real-time playback are
+not claimed. [Current limits and candidate usage](USAGE.md#known-issues-and-deinterlacing-roadmap)
+separate Weave, application-side filtering and unqualified paths.
 
 ## Compatibility
 
@@ -121,6 +126,11 @@ crystalhd-play --hardware --scale-width 1280 "/path/to/video-1080p.mp4"
 crystalhd-play --hardware --scale-width 1280 \
   --software-output-size 1920x1080 "/path/to/video-1080p.mp4"
 ```
+
+For ordinary display playback, prefer `--scale-width` by itself: the video
+sink fits the smaller decoded image to its window. Add
+`--software-output-size` only when the caller needs an exact-size raw buffer;
+host enlargement costs CPU and cannot restore detail discarded by the card.
 
 Space pauses; Left/Right or `j`/`l` seek ten seconds; `1`, `2` and `3` select
 0.5x, 1x and 2x; `q` quits. See [everyday usage](USAGE.md) for codec examples,

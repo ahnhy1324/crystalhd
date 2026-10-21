@@ -45,6 +45,8 @@ typedef struct {
   guint height;
   gboolean whole_weave;
   guint weave_fault;
+  guint trim_words;
+  gboolean scaled_field_backing;
 } MockPicture;
 
 typedef enum {
@@ -138,6 +140,10 @@ static struct {
   guint8 whole_pixels[16 * 16 * 2 + 160];
   guint8 legacy_pixels[720 * 16 * 2];
 } mock;
+
+/* Only the selected scaled-field tests need HD pixels; keep this backing
+ * outside the control-state reset and never substitute a real library. */
+static guint8 scaled_field_pixels[1280 * 720 * 2 + 160];
 
 static BC_STATUS
 operation_status(MockOperation operation)
@@ -555,16 +561,21 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
   }
   pixel_size = completed_size;
   if (picture->whole_weave) {
-    g_assert_cmpuint(picture->width, ==, 16);
-    g_assert_cmpuint(picture->height, ==, 16);
-    pixels = mock.whole_pixels;
-    pixel_size = completed_size = sizeof(mock.whole_pixels);
+    pixel_size = completed_size += 160;
+    g_assert_cmpuint(pixel_size, <=, sizeof(scaled_field_pixels));
+    pixels = pixel_size <= sizeof(mock.whole_pixels)
+        ? mock.whole_pixels : scaled_field_pixels;
   } else if (pixel_size <= sizeof(mock.pixels)) {
     pixels = mock.pixels;
     pixel_size = sizeof(mock.pixels);
   } else if (pixel_size > sizeof(mock.scaled_pixels)) {
-    pixels = mock.legacy_pixels;
-    pixel_size = MIN(pixel_size, sizeof(mock.legacy_pixels));
+    if (picture->scaled_field_backing) {
+      pixels = scaled_field_pixels;
+      pixel_size = MIN(pixel_size, sizeof(scaled_field_pixels));
+    } else {
+      pixels = mock.legacy_pixels;
+      pixel_size = MIN(pixel_size, sizeof(mock.legacy_pixels));
+    }
   } else {
     pixels = mock.scaled_pixels;
     pixel_size = MIN(pixel_size, sizeof(mock.scaled_pixels));
@@ -580,16 +591,18 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
   output->PicInfo.pulldown = picture->pulldown;
   output->Ybuff = pixels;
   output->YBuffDoneSz = MIN(completed_size, pixel_size) / 4;
+  output->YBuffDoneSz -= MIN(picture->trim_words, output->YBuffDoneSz);
   if (picture->whole_weave) {
-    const gsize payload = 16 * 16 * 2;
+    const gsize stride = picture->width * 2;
+    const gsize payload = stride * picture->height;
     BC_PIC_INFO_BLOCK raw = output->PicInfo;
     guint32 ordinal = raw.picture_number;
-    guint32 trailer_width = 16;
-    guint32 trailer_line = 16;
+    guint32 trailer_width = picture->width;
+    guint32 trailer_line = picture->height;
     guint row;
     output->b422Mode = OUTPUT_MODE422_YUY2;
-    for (row = 0; row < 16; ++row)
-      memset(pixels + row * 32, picture->pixel + row, 32);
+    for (row = 0; row < picture->height; ++row)
+      memset(pixels + row * stride, picture->pixel + row, stride);
     raw.flags = VDEC_FLAG_FIELDPAIR | VDEC_FLAG_UNKNOWN_SRC |
                 (picture->flags & VDEC_FLAG_BOTTOM_FIRST);
     raw.timeStamp = picture->timestamp / 20000U;
@@ -621,6 +634,9 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
            offsetof(BC_PIC_INFO_BLOCK, other));
     memcpy(pixels + pixel_size - 8, &trailer_width, sizeof(trailer_width));
     memcpy(pixels + pixel_size - 4, &trailer_line, sizeof(trailer_line));
+    if (picture->scaled_field_backing && picture->weave_fault == 0)
+      g_assert_cmpint(crystalhd_h264_interlaced_payload(output), ==,
+                      CRYSTALHD_H264_PAYLOAD_WEAVE);
   }
   g_free(picture);
   return BC_STS_SUCCESS;
@@ -758,10 +774,12 @@ test_scale_caps_query(void)
   GstPad *peer = gst_element_get_static_pad(filter, "sink");
   GstCaps *fhd = gst_caps_from_string(
       "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
-      "width=1920,height=1080,framerate=30/1,pixel-aspect-ratio=1/1");
+      "width=1920,height=1080,framerate=30/1,pixel-aspect-ratio=1/1,"
+      "interlace-mode=progressive");
   GstCaps *hd = gst_caps_from_string(
       "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
-      "width=1280,height=720,framerate=30/1,pixel-aspect-ratio=1/1");
+      "width=1280,height=720,framerate=30/1,pixel-aspect-ratio=1/1,"
+      "interlace-mode=progressive");
   GstCaps *output = gst_caps_from_string(
       "video/x-raw,format=YUY2,width=1280,height=720,"
       "framerate=30/1,pixel-aspect-ratio=1/1");
@@ -861,6 +879,76 @@ test_scale_caps_query(void)
   gst_caps_unref(output);
   gst_caps_unref(hd);
   gst_caps_unref(fhd);
+  gst_object_unref(peer);
+  gst_object_unref(src);
+  gst_object_unref(sink);
+  gst_object_unref(filter);
+  gst_object_unref(element);
+}
+
+static void
+test_scale_interlaced_caps_query(void)
+{
+  GstElement *element = g_object_new(GST_TYPE_CRYSTALHD_DEC,
+      "scale-width", 1280U, NULL);
+  GstElement *filter = gst_element_factory_make("capsfilter", NULL);
+  GstPad *sink = gst_element_get_static_pad(element, "sink");
+  GstPad *src = gst_element_get_static_pad(element, "src");
+  GstPad *peer = gst_element_get_static_pad(filter, "sink");
+  GstCaps *alternatives = gst_caps_from_string(
+      "video/x-raw,format=YUY2,width=1280,height=720,"
+      "interlace-mode=progressive,framerate=30/1;"
+      "video/x-raw,format=YUY2,width=1280,height=720,"
+      "interlace-mode=mixed,framerate=25/1;"
+      "video/x-raw,format=YUY2,width=960,height=540,"
+      "interlace-mode=mixed,framerate=24/1;"
+      "video/x-raw,format=NV12,width=1280,height=720,"
+      "interlace-mode=mixed,framerate=20/1");
+  static const struct { const gchar *codec, *mode; guint rate; gboolean valid; } cases[] = {
+    { "video/x-h264,stream-format=byte-stream,alignment=au", "progressive", 30, TRUE },
+    { "video/x-h264,stream-format=byte-stream,alignment=au", "interleaved", 25, TRUE },
+    { "video/x-h264,stream-format=byte-stream,alignment=au", "mixed", 25, TRUE },
+    { "video/x-h264,stream-format=byte-stream,alignment=au", "progressive", 25, FALSE },
+    { "video/x-h264,stream-format=byte-stream,alignment=au", "mixed", 30, FALSE },
+    { "video/x-h264,stream-format=byte-stream,alignment=au", "mixed", 24, FALSE },
+    { "video/x-h264,stream-format=byte-stream,alignment=au", "mixed", 20, FALSE },
+    { "video/x-h264,stream-format=byte-stream,alignment=au", "alternate", 25, FALSE },
+    { "video/mpeg,mpegversion=2,systemstream=false", "progressive", 30, TRUE },
+    { "video/mpeg,mpegversion=2,systemstream=false", "progressive", 25, FALSE },
+    { "video/mpeg,mpegversion=2,systemstream=false", "interleaved", 25, FALSE },
+    { "video/mpeg,mpegversion=2,systemstream=false", "mixed", 25, FALSE }
+  };
+  guint opens = mock.open_calls;
+
+  g_object_set(filter, "caps", alternatives, NULL);
+  gst_caps_unref(alternatives);
+  g_assert_cmpint(gst_pad_link_full(src, peer, GST_PAD_LINK_CHECK_NOTHING),
+                  ==, GST_PAD_LINK_OK);
+  for (guint i = 0; i < G_N_ELEMENTS(cases); ++i) {
+    gchar *text = g_strdup_printf("%s,parsed=true,width=1920,height=1080,"
+        "interlace-mode=%s,framerate=%u/1", cases[i].codec, cases[i].mode, cases[i].rate);
+    GstCaps *request = gst_caps_from_string(text);
+    GstCaps *answer = gst_pad_query_caps(sink, request);
+    if (cases[i].valid)
+      g_assert_true(gst_caps_is_equal(answer, request));
+    else
+      g_assert_true(gst_caps_is_empty(answer));
+    gst_caps_unref(answer);
+    gst_caps_unref(request);
+    g_free(text);
+  }
+  /* Progressive odd/even widths retain their existing policy; mixed fields
+   * must not advertise a pitch that has not been qualified. */
+  g_object_set(element, "scale-width", 854U, NULL);
+  alternatives = gst_caps_from_string(
+      "video/x-raw,format=YUY2,width=854,height=480,interlace-mode=mixed");
+  g_object_set(filter, "caps", alternatives, NULL);
+  gst_caps_unref(alternatives);
+  alternatives = gst_pad_query_caps(sink, NULL);
+  g_assert_true(gst_caps_is_empty(alternatives));
+  gst_caps_unref(alternatives);
+  g_assert_cmpuint(mock.open_calls, ==, opens);
+  gst_pad_unlink(src, peer);
   gst_object_unref(peer);
   gst_object_unref(src);
   gst_object_unref(sink);
@@ -1017,7 +1105,7 @@ test_scale_invalid_requests(void)
   }
   {
     GstHarness *harness = new_decoder_with_caps_device_scale(
-        "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+        "video/mpeg,mpegversion=2,systemstream=false,parsed=true,"
         "width=1920,height=1080,framerate=25/1,interlace-mode=interleaved",
         1, 960);
     g_assert_cmpuint(mock.open_calls, ==, 0);
@@ -1216,6 +1304,7 @@ test_scale_output_contract(void)
   g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
   queue_picture_geometry(mock.accepted[0], 0x5c, 0, 128, 72,
                          VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD);
+  ((MockPicture *)g_queue_peek_tail(&mock.pictures))->height = 70;
   g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_ERROR);
   g_assert_null(gst_harness_try_pull(harness));
   g_assert_cmpuint(mock.release_calls, ==, 1);
@@ -1236,6 +1325,181 @@ test_scale_output_contract(void)
   g_assert_cmpuint(GST_VIDEO_INFO_PAR_N(&self->output_info), ==, 592);
   g_assert_cmpuint(GST_VIDEO_INFO_PAR_D(&self->output_info), ==, 585);
   gst_harness_teardown(harness);
+}
+
+static void
+test_scale_interlaced_request_contract(void)
+{
+  GstHarness *harness = new_decoder_with_caps_device_scale(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1920,height=1080,framerate=25/1", 1, 1280);
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstVideoCodecState state = { 0 };
+  static const struct { const gchar *mode; gboolean valid; } cases[] = {
+    { "progressive", TRUE }, { "interleaved", TRUE }, { "mixed", TRUE },
+    { "alternate", FALSE }, { "{progressive,mixed}", FALSE }, { "(int)1", FALSE }
+  };
+  state.info = self->input_state->info;
+  for (guint i = 0; i < G_N_ELEMENTS(cases); ++i) {
+    gchar *text = g_strdup_printf("video/x-h264,interlace-mode=%s", cases[i].mode);
+    state.caps = gst_caps_from_string(text);
+    g_assert_nonnull(state.caps);
+    g_assert_cmpint(gst_crystalhd_validate_scale_request(self, &state), ==, cases[i].valid);
+    gst_caps_unref(state.caps);
+    g_free(text);
+  }
+  state.caps = gst_caps_from_string("video/x-h264,interlace-mode=mixed");
+  self->active_scale_width = 854;
+  g_assert_false(gst_crystalhd_validate_scale_request(self, &state));
+  self->active_scale_width = 1280;
+  self->codec.subtype = BC_MSUBTYPE_MPEG2VIDEO;
+  g_assert_false(gst_crystalhd_validate_scale_request(self, &state));
+  g_assert_false(gst_crystalhd_validate_scaled_output(self, 1280, 720, TRUE));
+  self->codec.subtype = BC_MSUBTYPE_H264;
+  self->is_70012 = TRUE;
+  g_assert_false(gst_crystalhd_validate_scaled_output(self, 1280, 720, TRUE));
+  self->is_70012 = FALSE;
+  self->active_scale_width = 130;
+  g_assert_false(gst_crystalhd_validate_scaled_output(self, 130, 72, TRUE));
+  self->active_scale_width = 1280;
+  gst_caps_unref(state.caps);
+  lifecycle_teardown(harness);
+
+  harness = new_decoder_with_caps_device_scale(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1920,height=1080,framerate=25/1,interlace-mode=mixed", 0, 1280);
+  g_assert_cmpuint(mock.open_calls, >, 0);
+  g_assert_cmpuint(mock.format_calls, ==, 0);
+  g_assert_cmpuint(mock.scale_calls, ==, 0);
+  g_assert_cmpuint(mock.decoder_open_calls, ==, 0);
+  lifecycle_teardown(harness);
+}
+
+static GstHarness *
+new_scaled_field_decoder(void)
+{
+  return new_decoder_with_caps_device_scale(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1920,height=1080,framerate=25/1,pixel-aspect-ratio=1/1,"
+      "interlace-mode=interleaved", 1, 1280);
+}
+
+static MockPicture *
+queue_scaled_field(guint64 token, guint8 pixel, gboolean bottom,
+                    gboolean bottom_first)
+{
+  MockPicture *picture;
+  queue_picture_geometry(token, pixel, 71, 1280, 720,
+      VDEC_FLAG_INTERLACED_SRC |
+      (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD) |
+      (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0));
+  picture = g_queue_peek_tail(&mock.pictures);
+  picture->scaled_field_backing = TRUE;
+  return picture;
+}
+
+static void
+test_scale_interlaced_field_pair(void)
+{
+  for (guint bottom_first = 0; bottom_first != 2; ++bottom_first) {
+    GstHarness *harness = new_scaled_field_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    GstBuffer *output;
+    GstMapInfo map;
+    const GstClockTime pts = 123 * GST_MSECOND;
+    mock.auto_output = FALSE;
+    /* Format-change metadata has geometry but no pixel payload to classify. */
+    g_assert_true(gst_crystalhd_configure_output(self, 1280, 720, TRUE));
+    g_assert_cmpint(gst_harness_push(harness, new_input(pts)), ==, GST_FLOW_OK);
+    queue_scaled_field(mock.accepted[0], 0x11, bottom_first, bottom_first);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    g_assert_true(self->need_second_field);
+    g_assert_null(gst_harness_try_pull(harness));
+    g_assert_cmpuint(self->timestamps.length, ==, 1);
+    queue_scaled_field(mock.accepted[0], 0x22, !bottom_first, bottom_first);
+    g_assert_true(gst_harness_push_event(harness, gst_event_new_eos()));
+    output = gst_harness_try_pull(harness);
+    g_assert_nonnull(output);
+    g_assert_cmpuint(gst_buffer_get_size(output), ==, 1280 * 720 * 2);
+    g_assert_cmpuint(GST_BUFFER_PTS(output), ==, pts);
+    g_assert_cmpuint(GST_BUFFER_DURATION(output), ==, 40 * GST_MSECOND);
+    g_assert_true(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_INTERLACED));
+    g_assert_cmpint(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_TFF), ==, !bottom_first);
+    g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_ONEFIELD));
+    g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_RFF));
+    g_assert_true(gst_buffer_map(output, &map, GST_MAP_READ));
+    for (guint row = 0; row != 720; ++row)
+      for (guint x = 0; x != 1280 * 2; ++x)
+        g_assert_cmpuint(map.data[row * 1280 * 2 + x], ==,
+            ((row & 1U) == bottom_first) ? 0x11 : 0x22);
+    gst_buffer_unmap(output, &map);
+    g_assert_cmpuint(GST_VIDEO_INFO_WIDTH(&self->output_info), ==, 1280);
+    g_assert_cmpuint(GST_VIDEO_INFO_HEIGHT(&self->output_info), ==, 720);
+    g_assert_cmpuint(GST_VIDEO_INFO_FPS_N(&self->output_info), ==, 25);
+    g_assert_cmpuint(GST_VIDEO_INFO_FPS_D(&self->output_info), ==, 1);
+    g_assert_cmpuint(GST_VIDEO_INFO_PAR_N(&self->output_info), ==, 1);
+    g_assert_cmpuint(GST_VIDEO_INFO_PAR_D(&self->output_info), ==, 1);
+    g_assert_cmpint(GST_VIDEO_INFO_INTERLACE_MODE(&self->output_info), ==,
+                    GST_VIDEO_INTERLACE_MODE_MIXED);
+    g_assert_false(self->need_second_field);
+    g_assert_cmpuint(self->timestamps.length, ==, 0);
+    g_assert_cmpuint(mock.release_calls, ==, 2);
+    g_assert_true(lifecycle_flush(GST_VIDEO_DECODER(self)));
+    g_assert_cmpuint(mock.scale_calls, ==, 2);
+    g_assert_cmpuint(mock.last_scale.sWidth, ==, 1280);
+    g_assert_false(self->need_second_field);
+    gst_buffer_unref(output);
+    lifecycle_teardown(harness);
+  }
+}
+
+static void
+test_scale_interlaced_rejects_malformed(void)
+{
+  for (guint fault = 0; fault != 8; ++fault) {
+    GstHarness *harness = new_scaled_field_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    MockPicture *picture;
+    mock.auto_output = FALSE;
+    g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+    picture = queue_scaled_field(mock.accepted[0], 0x11, FALSE, FALSE);
+    if (fault == 0) {
+      picture->trim_words = 1;
+    } else if (fault == 6) {
+      /* A fully valid whole-payload PIB must still not enter scaled Weave. */
+      picture->whole_weave = TRUE;
+      picture->flags |= VDEC_FLAG_UNKNOWN_SRC;
+    } else if (fault == 7) {
+      picture->height = 718;
+    } else {
+      MockPicture *second = queue_scaled_field(mock.accepted[0], 0x22, TRUE, FALSE);
+      if (fault == 1) second->flags = picture->flags;
+      if (fault == 2) ++second->timestamp;
+      if (fault == 3) second->width -= 16;
+      if (fault == 4) second->height -= 4;
+      if (fault == 5) second->flags |= VDEC_FLAG_BOTTOM_FIRST;
+    }
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_ERROR);
+    g_assert_null(gst_harness_try_pull(harness));
+    g_assert_cmpuint(mock.release_calls, ==, fault == 0 || fault >= 6 ? 1 : 2);
+    g_assert_cmpuint(self->timestamps.length, ==, 1);
+    lifecycle_teardown(harness);
+  }
+  {
+    GstHarness *harness = new_scaled_field_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    mock.auto_output = FALSE;
+    g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+    queue_scaled_field(mock.accepted[0], 0x11, FALSE, FALSE);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    g_assert_true(self->need_second_field);
+    g_assert_cmpint(lifecycle_drain(GST_VIDEO_DECODER(self)), ==, GST_FLOW_ERROR);
+    g_assert_true(self->need_second_field);
+    g_assert_cmpuint(self->timestamps.length, ==, 1);
+    g_assert_null(gst_harness_try_pull(harness));
+    g_assert_cmpuint(mock.release_calls, ==, 1);
+    lifecycle_teardown(harness);
+  }
 }
 
 static void
@@ -4804,6 +5068,14 @@ main(int argc, char **argv)
   GST_DEBUG_CATEGORY_INIT(gst_crystalhd_debug, "crystalhd", 0,
                           "CrystalHD lifecycle test");
   g_test_add_func("/crystalhd/scale/caps-query", test_scale_caps_query);
+  g_test_add_func("/crystalhd/scale/interlaced-caps-query",
+                  test_scale_interlaced_caps_query);
+  g_test_add_func("/crystalhd/scale/interlaced-request",
+                  test_scale_interlaced_request_contract);
+  g_test_add_func("/crystalhd/scale/interlaced-pair",
+                  test_scale_interlaced_field_pair);
+  g_test_add_func("/crystalhd/scale/interlaced-malformed",
+                  test_scale_interlaced_rejects_malformed);
   g_test_add_func("/crystalhd/scale/default", test_scale_property_default);
   g_test_add_func("/crystalhd/scale/property-lock",
                   test_scale_property_does_not_take_state_lock);

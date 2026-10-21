@@ -9,6 +9,8 @@
 /vaapi-private-backing-test
 /vaapi-conversion-test
 /vaapi-scaling-test
+/vaapi-bob-test
+/vaapi-bob-vpp-test
 /vaapi-mpeg2-test
 /vaapi-mpeg2-replay-test
 /vaapi-mpeg2-submit-test

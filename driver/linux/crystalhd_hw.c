@@ -489,18 +489,28 @@ crystalhd_hw_fetch_free_rx_pkt(struct crystalhd_hw *hw)
 	return pkt ? pkt : crystalhd_hw_fetch_retained_rx_pkt(hw);
 }
 
-uint32_t crystalhd_hw_count_free_rx_pkts(struct crystalhd_hw *hw)
+/* The caller holds hw->lock, including across any FLL publication. */
+uint32_t crystalhd_hw_count_free_rx_pkts_locked(struct crystalhd_hw *hw)
 {
 	struct crystalhd_rx_dma_pkt *pkt;
+	uint32_t count;
+
+	count = hw->rx_freeq ? READ_ONCE(hw->rx_freeq->count) : 0;
+	for (pkt = hw->rx_fallback_head; pkt; pkt = pkt->next)
+		count++;
+
+	return count;
+}
+
+uint32_t crystalhd_hw_count_free_rx_pkts(struct crystalhd_hw *hw)
+{
 	unsigned long flags = 0;
 	uint32_t count;
 
 	if (!hw)
 		return 0;
-	count = hw->rx_freeq ? crystalhd_dioq_count(hw->rx_freeq) : 0;
 	spin_lock_irqsave(&hw->lock, flags);
-	for (pkt = hw->rx_fallback_head; pkt; pkt = pkt->next)
-		count++;
+	count = crystalhd_hw_count_free_rx_pkts_locked(hw);
 	spin_unlock_irqrestore(&hw->lock, flags);
 
 	return count;
@@ -1812,7 +1822,10 @@ static BC_STATUS crystalhd_hw_complete_rx_locked(struct crystalhd_hw *hw,
 	{
 		/*printk("pre-PU state %x RLL %x Rtsh %x, currentPS %d,\n", */
 		/*	hw->FleaPowerState, crystalhd_dioq_count(hw->rx_rdyq) , hw->ResumeThreshold, hw->FleaPowerState); */
-		if ((READ_ONCE(hw->FleaEnablePWM) && READ_ONCE(hw->hw_pause_issued)) ||
+		/* The disabled-PWM pause is a no-op, but its software intent still
+		 * gates fresh RX posting. Clear it at the normal resume threshold.
+		 */
+		if (READ_ONCE(hw->hw_pause_issued) ||
 			(hw->FleaPowerState == FLEA_PS_LP_PENDING) ||
 			(hw->FleaPowerState == FLEA_PS_LP_COMPLETE))
 		{

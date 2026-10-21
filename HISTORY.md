@@ -1,5 +1,115 @@
 # History
 
+## 1.2.0-rc.1 — candidate
+
+Candidate bundle `1.2.0-rc.1` / module-DKMS package `3.10.11` freezes the
+bounded scope in [#473](https://github.com/ahnhy1324/crystalhd/issues/473):
+selected CPU VA-VPP Bob, explicit H.264 card-output scaling and the reliability
+fixes below. It preserves `libcrystalhd.so.3`, legacy ioctl and firmware
+identities. Kodi Auto, sustained 720p50 and installed-package acceptance remain
+release gates; hardware deinterlacing, general FHD50/60, Atom real-time and the
+[#470](https://github.com/ahnhy1324/crystalhd/issues/470) /
+[#471](https://github.com/ahnhy1324/crystalhd/issues/471) experiments are not
+candidate claims. Neither the RC nor final v1.2.0 is published without the
+separate maintainer decisions required by #473.
+
+- Work around GStreamer 1.28.2 LINEAR's picture-PTS QoS error in the scaled
+  Player path; preserve upstream feedback and final-sink deadlines.
+- Resume BCM70015 RX posting after draining the ready queue with PWM disabled;
+  clear accepted software pause intent without changing hardware power policy.
+- Reuse SSE2 same-field row-pair loads for VA luma/chroma conversion;
+  preserve exact pixels, cropped tails and the legacy no-SSE path.
+- Serialize BCM70015 free-buffer counting with firmware notification so an
+  older publisher cannot overwrite a newer count; retain existing power policy.
+- Advance eligible synchronous MPEG-2 Main progressive output with private
+  non-reference B pictures instead of repeatedly sealing and reopening the
+  device. Preserve original pictures, references and caller timing; separately
+  drain auxiliary output and retain full-device EOS/replay fallback.
+- Accept bounded MPEG-2 Main progressive-frame TFF/RFF input by normalizing
+  only internal display flags, with frame prediction and equal macroblock grids.
+  Preserve original picture metadata, reference/slice/IQ data and caller-owned
+  repeat timing; field pictures and mixed sequence modes remain unsupported.
+- Remove per-pixel division from scalar NV12 VPP resizing, preserving exact
+  crop/chroma sampling, interleaved field rows and output padding without SSE.
+- Preserve field/chroma lattices in explicit interleaved VA VPP scaling, and
+  retain completed VPP pixels/identity when chaining Bob and enlargement.
+  Allow explicit LIVE/prefeed with H.264 card scaling; keep finite defaults
+  and reject READY remapping of its exact original/processed bindings.
+- Reject unsupported H.264 chroma/bit-depth parameters in ordinary VA decode
+  as well as integrated scaling; preserve reference recovery after rejection.
+- Accept bounded MPEG-2 Main frame-coded TFF/BFF through VA, reconstructing
+  a fixed sequence mode and retiring each decode token only after both fields.
+  Preserve field-local chroma, replay identity and ordinary CPU Bob integration.
+- Reject missing VA subpicture-format count outputs instead of dereferencing
+  them; retain the empty format list and unsupported subpicture functionality.
+- Honor full-range NV12 in VA VPP/Bob ARGB conversion and black padding;
+  preserve default-range output and reject unsupported range conversions.
+- Store first-field Bob's private NV12 view at half height, preserving public
+  decode surfaces, field/chroma samples and pending-picture ownership.
+- Keep vectorized ARGB conversion tails private and restore output borders
+  after conversion, including unaligned widths and offset output rectangles.
+- Add opt-in H.264 decode-integrated card scaling with explicit visible crop,
+  opaque original reference handles and a separate smaller NV12 output.
+  Preserve ordinary VLD and separate VPP/Bob; reject unsupported processing.
+- Wait directly for BCM70015 firmware-command completion instead of adding
+  a fixed 50 ms delay; retain IRQ fencing, reply ownership and timeout recovery.
+- Reject device opens when TX buffers or the worker cannot be created;
+  allocate worker scratch before startup and release it only after joining.
+- Stop context initialization on mutex setup failure without publishing an
+  unusable handle; release temporary mutex attributes on every initialized path.
+- Correct hardware-initialization status: HWINIT no longer skips firmware
+  upload/INIT, failed setup remains retryable, and in-progress setup is not
+  reported as complete. Preserve existing successful playback and teardown.
+- Advance stalled LIVE H.264 MBAFF Bob output with a private non-reference
+  intra picture, preserving original frames and references without inferring
+  EOS from an input gap. Drain the private output separately at explicit close.
+- Avoid allocating/copying duplicate H.264 replay-field pixels while retaining
+  paired-field validation, output release and completed-picture ownership.
+- Honor negotiated VA render formats in queries and output bindings, reject
+  unsupported VPP/display requests, and release obsolete Render captures.
+- Avoid full-device reopen during fully drained finite H.264 reference replay
+  when the library explicitly supports fresh-channel reuse; retain legacy fallback.
+- Retry unsent H.264 prefeed after TX backpressure without requiring another
+  input picture; cancel obsolete requests without claiming timestamp ownership.
+- Complete first-temporal-field Bob from a released, operation-private H.264
+  field without marking the decoded frame ready or changing EOS/replay policy.
+- Allow aligned BCM70015 H.264 field scaling through the existing GStreamer
+  width option, preserving paired-field identity and rejecting scaled whole Weave.
+- Send library diagnostics to stderr so binary media written to stdout is not
+  corrupted; preserve existing messages, log levels and caller-selected files.
+- Reduce resized/padded NV12 Bob CPU work without changing sampled pixels,
+  chroma pairing, CPU-access ownership or the no-SSE path.
+- Avoid a redundant DMA-BUF CPU-write acquisition when VPP fencing is
+  unavailable; retain synchronous completion and failure cleanup guarantees.
+- Count a validated, released H.264 first field as transport progress so an
+  active field pair is not prematurely treated as an idle decode batch.
+- Implement CPU VA-VPP Bob for origin-aligned woven NV12 regions, with NV12/ARGB
+  output, independent Y/UV field sampling and Render-time filter snapshots.
+  Preserve zero-filter Weave/scaling and legacy ABI; single-field input,
+  nonzero-origin cropping and hardware Bob remain unsupported. Bounded TFF/BFF
+  pixel and headless FHD throughput controls do not establish displayed cadence,
+  Atom performance, endurance or physical A/V acceptance.
+- Preserve completed decoder pictures for delayed Bob/VPP after successful
+  context close, without reviving canceled work or stale/rejected source bindings.
+- Keep VPP queue allocation failures transactional and prevent an older failed
+  request from invalidating a newer writer's output.
+- Complete exposed, decode-pending VPP synchronously when fencing is unavailable,
+  retaining cancellation and CPU ownership checks rather than exposing an
+  unfenced asynchronous write.
+- Preserve imported PRIME plane layouts on export and correct legacy batch
+  imports. Validate import spans and CSC strides before access, and initialize
+  complete chroma pairs in odd-width NV12 backgrounds.
+- Add an extended-H.264 de-escaped admission guard for
+  [#468](https://github.com/ahnhy1324/crystalhd/issues/468), rejecting over-budget
+  transactions before submission without rewriting input. Selected native
+  controls qualify bounded rejection/fresh reopen, including intentionally
+  rejecting some formerly working input. Separate installed-v1.1.0 observations
+  establish a single-NAL input-retention limitation; exact firmware reclamation
+  and general client recovery remain open.
+- Recycle unobservable, superseded progressive H.264 CPU backing after a
+  successful surface rebind. Preserve pending identities, captured pictures
+  and eager allocation-failure behavior.
+
 ## 1.1.0
 
 Published on 2026-10-19: bundle `1.1.0` / module-DKMS package `3.10.9`,

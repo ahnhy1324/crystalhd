@@ -109,18 +109,40 @@ class Bits {
   unsigned position_ = 0;
 };
 
+inline bool CanNormalizeDisplayFlags(const VAPictureParameterBufferMPEG2 &picture,
+                                     const SequenceOptions &sequence) {
+  const auto &p = picture.picture_coding_extension.bits;
+  // VA omits the original progressive_sequence, so TFF/RFF cannot identify
+  // soft-field versus whole-frame repetition. The caller retains that cadence.
+  // For frame-predicted progressive FRAME pictures, TFF does not affect motion
+  // prediction. Equal macroblock grids let us emit one progressive stored
+  // picture without changing slice interpretation or padded reference edges.
+  return sequence.profile == VAProfileMPEG2Main && sequence.progressive_sequence &&
+      p.picture_structure == 3 && p.progressive_frame && p.frame_pred_frame_dct &&
+      (picture.vertical_size + 15U) / 16U ==
+          2U * ((picture.vertical_size + 31U) / 32U);
+}
+
 inline bool ValidPicture(const VAPictureParameterBufferMPEG2 &picture,
                          const SequenceOptions &sequence,
                          const PictureOptions &options) {
   const auto &p = picture.picture_coding_extension.bits;
+  const bool normalize_display_flags = CanNormalizeDisplayFlags(picture, sequence);
+  // The supported interlaced subset is Main-profile frame pictures without
+  // repeated fields. Mixed progressive/interlaced sequences need a separate
+  // sequence-mode contract; a VA picture does not carry progressive_sequence.
+  // Field-local 4:2:0 output also requires complete pairs of chroma field rows.
   if ((sequence.profile != VAProfileMPEG2Simple &&
        sequence.profile != VAProfileMPEG2Main) ||
       (sequence.level != 10 && sequence.level != 8 &&
        sequence.level != 6 && sequence.level != 4) ||
       (sequence.profile == VAProfileMPEG2Simple && sequence.level != 8) ||
-      !sequence.progressive_sequence || p.picture_structure != 3 ||
-      !p.progressive_frame || !p.frame_pred_frame_dct ||
-      p.repeat_first_field || p.top_field_first ||
+      p.picture_structure != 3 || (p.repeat_first_field && !normalize_display_flags) ||
+      bool(p.progressive_frame) != sequence.progressive_sequence ||
+      (sequence.progressive_sequence &&
+       (!p.frame_pred_frame_dct || (p.top_field_first && !normalize_display_flags))) ||
+      (!sequence.progressive_sequence &&
+       (sequence.profile != VAProfileMPEG2Main || (picture.vertical_size & 3U))) ||
       picture.horizontal_size == 0 || picture.vertical_size == 0 ||
       picture.horizontal_size > 1920 || picture.vertical_size > 1088 ||
       ((picture.horizontal_size | picture.vertical_size) & 1U) ||
@@ -170,14 +192,20 @@ struct Slice {
 
 namespace detail {
 inline bool ValidSlice(const Slice &slice,
-                       const VAPictureParameterBufferMPEG2 &picture) {
+                       const VAPictureParameterBufferMPEG2 &picture,
+                       bool progressive_sequence) {
   const auto &p = slice.parameters;
+  // H.262 6.1.2: interlaced frame pictures pad the macroblock grid to a pair
+  // of field rows. For example, a 360-line picture has 24 rows, not 23.
+  const unsigned rows = progressive_sequence
+      ? (picture.vertical_size + 15U) / 16U
+      : 2U * ((picture.vertical_size + 31U) / 32U);
   if (slice.data == nullptr || p.slice_data_flag != VA_SLICE_DATA_FLAG_ALL ||
       p.slice_data_size < 5 || p.slice_data_size > kMaxAccessUnitBytes ||
       p.slice_data_offset > slice.size ||
       p.slice_data_size > slice.size - p.slice_data_offset ||
       p.slice_horizontal_position >= (picture.horizontal_size + 15U) / 16U ||
-      p.slice_vertical_position >= (picture.vertical_size + 15U) / 16U ||
+      p.slice_vertical_position >= rows ||
       p.quantiser_scale_code < 1 || p.quantiser_scale_code > 31 ||
       (p.intra_slice_flag != 0 && p.intra_slice_flag != 1)) return false;
   const uint8_t *data = slice.data + p.slice_data_offset;
@@ -224,7 +252,7 @@ inline bool Assemble(const VAPictureParameterBufferMPEG2 &picture,
   if (!detail::UpdateMatrices(current, update, &next)) return false;
   size_t slice_bytes = 0;
   for (const Slice &slice : slices) {
-    if (!detail::ValidSlice(slice, picture) ||
+    if (!detail::ValidSlice(slice, picture, sequence.progressive_sequence) ||
         slice.parameters.slice_data_size > kMaxAccessUnitBytes - slice_bytes)
       return false;
     slice_bytes += slice.parameters.slice_data_size;
@@ -254,6 +282,7 @@ inline bool Assemble(const VAPictureParameterBufferMPEG2 &picture,
   bits.Put(1, 0); // extra_bit_picture
   bits.Start(0xb5); bits.Put(4, 8);
   const auto &p = picture.picture_coding_extension.bits;
+  const bool normalize_display_flags = detail::CanNormalizeDisplayFlags(picture, sequence);
   for (unsigned component = 0; component < 4; ++component) {
     const bool active = component < 2
         ? picture.picture_coding_type != 1 || p.concealment_motion_vectors
@@ -261,10 +290,12 @@ inline bool Assemble(const VAPictureParameterBufferMPEG2 &picture,
     bits.Put(4, active ? ((picture.f_code >> (12 - component * 4)) & 15) : 15);
   }
   bits.Put(2, p.intra_dc_precision); bits.Put(2, p.picture_structure);
-  bits.Put(1, p.top_field_first); bits.Put(1, p.frame_pred_frame_dct);
+  bits.Put(1, normalize_display_flags ? 0 : p.top_field_first);
+  bits.Put(1, p.frame_pred_frame_dct);
   bits.Put(1, p.concealment_motion_vectors); bits.Put(1, p.q_scale_type);
   bits.Put(1, p.intra_vlc_format); bits.Put(1, p.alternate_scan);
-  bits.Put(1, p.repeat_first_field); bits.Put(1, p.progressive_frame); // chroma_420_type
+  bits.Put(1, normalize_display_flags ? 0 : p.repeat_first_field);
+  bits.Put(1, p.progressive_frame); // chroma_420_type
   bits.Put(1, p.progressive_frame); bits.Put(1, 0); // no composite display extension
   bits.Start(0xb5); bits.Put(4, 3);
   // Emit every effective list, avoiding dependence on the hardware's previous
@@ -283,6 +314,65 @@ inline bool Assemble(const VAPictureParameterBufferMPEG2 &picture,
   *output = std::move(bits.bytes);
   *next_matrices = next;
   return true;
+}
+
+// Non-reference B picture copying the newest decoded I/P anchor. The caller
+// must own a valid backward reference and decide whether auxiliary submission
+// is qualified for its stream; syntax support here is not a completion or
+// performance claim. No sequence/GOP/EOS or reference-state update is emitted.
+// Repeating the exact active IQ snapshot must not reset it to default matrices.
+inline bool AssembleBackwardCopy(unsigned width, unsigned height,
+                                 const SequenceOptions &sequence,
+                                 const QuantMatrices &current,
+                                 unsigned temporal_reference,
+                                 std::vector<uint8_t> *output) {
+  // Bound before narrowing to VA's dimension fields or allocating any rows.
+  if (output == nullptr || width == 0 || height == 0 ||
+      width > 1920 || height > 1088 || ((width | height) & 1U) ||
+      sequence.profile != VAProfileMPEG2Main || !sequence.progressive_sequence ||
+      sequence.low_delay || !detail::ValidMatrices(current)) return false;
+  VAPictureParameterBufferMPEG2 picture = {};
+  picture.horizontal_size = width;
+  picture.vertical_size = height;
+  picture.forward_reference_picture = picture.backward_reference_picture = VA_INVALID_SURFACE;
+  picture.picture_coding_type = 3;
+  picture.f_code = 0x1111;
+  picture.picture_coding_extension.bits.picture_structure = 3;
+  picture.picture_coding_extension.bits.frame_pred_frame_dct = 1;
+  picture.picture_coding_extension.bits.progressive_frame = 1;
+  const PictureOptions options{temporal_reference, false};
+  if (!detail::ValidPicture(picture, sequence, options)) return false;
+  const unsigned columns = (width + 15U) / 16U;
+  const unsigned rows = (height + 15U) / 16U;
+  std::vector<std::vector<uint8_t>> row_data;
+  row_data.reserve(rows);
+  for (unsigned row = 0; row < rows; ++row) {
+    detail::Bits bits;
+    bits.Start(static_cast<uint8_t>(row + 1));
+    bits.Put(5, 1); bits.Put(1, 0); // quantiser_scale_code, extra_bit_slice
+    for (unsigned column = 0; column < columns; ++column) {
+      // H.262 tables B.1/B.4/B.10: increment=1, backward-only/no pattern,
+      // zero x/y vector. Each slice resets the predictor to zero. Frame
+      // prediction and f_code=1 need no motion type, field select or residual.
+      bits.Put(1, 1); bits.Put(3, 2); bits.Put(1, 1); bits.Put(1, 1);
+    }
+    bits.Align();
+    row_data.push_back(std::move(bits.bytes));
+  }
+  std::vector<Slice> slices;
+  slices.reserve(rows);
+  for (unsigned row = 0; row < rows; ++row) {
+    VASliceParameterBufferMPEG2 parameters = {};
+    parameters.slice_data_size = row_data[row].size();
+    parameters.slice_data_flag = VA_SLICE_DATA_FLAG_ALL;
+    parameters.macroblock_offset = 38;
+    parameters.slice_vertical_position = row;
+    parameters.quantiser_scale_code = 1;
+    slices.push_back({parameters, row_data[row].data(), row_data[row].size()});
+  }
+  QuantMatrices unchanged;
+  return Assemble(picture, nullptr, current, slices, sequence, options,
+                  output, &unchanged);
 }
 } // namespace crystalhd_mpeg2
 #endif

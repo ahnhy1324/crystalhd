@@ -143,7 +143,9 @@ void Parse(const std::vector<uint8_t> &bytes,
   reader.Equal(1, p.top_field_first); reader.Equal(1, p.frame_pred_frame_dct);
   reader.Equal(1, p.concealment_motion_vectors); reader.Equal(1, p.q_scale_type);
   reader.Equal(1, p.intra_vlc_format); reader.Equal(1, p.alternate_scan);
-  reader.Equal(1, p.repeat_first_field); reader.Equal(1, 1); reader.Equal(1, 1);
+  reader.Equal(1, p.repeat_first_field);
+  reader.Equal(1, p.progressive_frame); // chroma_420_type
+  reader.Equal(1, p.progressive_frame);
   reader.Equal(1, 0);
   reader.Start(0xb5); reader.Equal(4, 3);
   for (const auto &list : matrices.lists) {
@@ -351,6 +353,119 @@ void Rejections() {
   }
 }
 
+void InterlacedFrames() {
+  ++groups;
+  for (unsigned type : {1U, 2U, 3U})
+    for (unsigned height : {360U, 480U, 576U, 1080U, 1088U})
+      for (unsigned top_first : {0U, 1U})
+        for (unsigned frame_pred : {0U, 1U})
+          for (bool emit_sequence : {false, true}) {
+            auto picture = Picture(type, 640, height);
+            auto &p = picture.picture_coding_extension.bits;
+            p.progressive_frame = 0;
+            p.top_field_first = top_first;
+            p.frame_pred_frame_dct = frame_pred;
+            auto sequence = Sequence(); sequence.progressive_sequence = false;
+            const mpeg::PictureOptions options{1023, emit_sequence};
+            // Use the final coded row, including the interlaced padding row.
+            const auto slice = Slice(2U * ((height + 31U) / 32U) - 1U, 3);
+            const auto current = mpeg::DefaultQuantMatrices(); auto next = current;
+            std::vector<uint8_t> bytes;
+            Require(mpeg::Assemble(picture, nullptr, current, {slice.View()},
+                                   sequence, options, &bytes, &next),
+                    "Main frame-coded TFF/BFF I/P/B syntax accepted");
+            Parse(bytes, picture, sequence, options, current, {slice.View()});
+            Require(next.lists == current.lists, "interlaced assembly preserves IQ state");
+          }
+  for (unsigned mode = 0; mode < 7; ++mode) {
+    Fixture f;
+    f.sequence.progressive_sequence = false;
+    f.picture.picture_coding_extension.bits.progressive_frame = 0;
+    switch (mode) {
+      case 0: f.sequence.profile = VAProfileMPEG2Simple;
+              f.sequence.level = 8; f.picture.picture_coding_type = 1; break;
+      case 1: f.picture.picture_coding_extension.bits.picture_structure = 1; break;
+      case 2: f.picture.picture_coding_extension.bits.picture_structure = 2; break;
+      case 3: f.picture.picture_coding_extension.bits.repeat_first_field = 1; break;
+      case 4: f.picture.picture_coding_extension.bits.progressive_frame = 1; break;
+      case 5: f.sequence.progressive_sequence = true; break;
+      case 6: f.picture.vertical_size = 362; break;
+    }
+    f.Reject();
+  }
+  for (unsigned height : {360U, 480U, 1080U, 1088U}) {
+    Fixture f;
+    f.sequence.progressive_sequence = false;
+    f.picture.picture_coding_extension.bits.progressive_frame = 0;
+    f.picture.vertical_size = height;
+    f.slice = Slice(2U * ((height + 31U) / 32U));
+    f.Reject(); // the first row beyond the interlaced coded grid
+  }
+}
+
+void ProgressiveDisplayFlags() {
+  ++groups;
+  for (unsigned type : {1U, 2U, 3U})
+    for (unsigned height : {32U, 480U, 576U, 1080U, 1088U})
+      for (unsigned flags = 0; flags < 4; ++flags)
+        for (bool emit_sequence : {false, true}) {
+          auto picture = Picture(type, 720, height);
+          auto &p = picture.picture_coding_extension.bits;
+          p.top_field_first = flags & 1;
+          p.repeat_first_field = (flags >> 1) & 1;
+          p.intra_dc_precision = flags;
+          p.concealment_motion_vectors = flags & 1;
+          p.q_scale_type = (flags >> 1) & 1;
+          p.intra_vlc_format = flags & 1;
+          p.alternate_scan = (flags >> 1) & 1;
+          picture.forward_reference_picture = 17;
+          picture.backward_reference_picture = 29;
+          const auto original = picture;
+          auto canonical = picture;
+          canonical.picture_coding_extension.bits.top_field_first = 0;
+          canonical.picture_coding_extension.bits.repeat_first_field = 0;
+          const auto sequence = Sequence();
+          const mpeg::PictureOptions options{1023, emit_sequence};
+          const auto slice = Slice((height + 15U) / 16U - 1U, 3, true, 2);
+          const auto slice_bytes = slice.bytes;
+          const auto iq = Custom(15), original_iq = iq;
+          const auto current = mpeg::DefaultQuantMatrices();
+          auto next = current, canonical_next = current;
+          std::vector<uint8_t> actual, expected;
+          Require(mpeg::Assemble(canonical, &iq, current, {slice.View()}, sequence,
+                                 options, &expected, &canonical_next),
+                  "ordinary progressive canonical input is unchanged");
+          Require(mpeg::Assemble(picture, &iq, current, {slice.View()}, sequence,
+                                 options, &actual, &next),
+                  "bounded progressive display flags do not reject stored pixels");
+          Require(actual == expected && next.lists == canonical_next.lists,
+                  "display flags change neither canonical bytes nor effective IQ");
+          Parse(actual, canonical, sequence, options, next, {slice.View()});
+          Require(!std::memcmp(&picture, &original, sizeof(picture)) &&
+                  !std::memcmp(&iq, &original_iq, sizeof(iq)) && slice.bytes == slice_bytes,
+                  "original flags, references, IQ and slice storage remain immutable");
+        }
+  for (unsigned variant = 0; variant < 10; ++variant) {
+    Fixture f;
+    f.picture = Picture(1, 720, 480);
+    auto &p = f.picture.picture_coding_extension.bits;
+    p.repeat_first_field = p.top_field_first = 1;
+    switch (variant) {
+      case 0: f.sequence.profile = VAProfileMPEG2Simple; f.sequence.level = 8; break;
+      case 1: p.picture_structure = 1; break;
+      case 2: p.picture_structure = 2; break;
+      case 3: p.frame_pred_frame_dct = 0; break;
+      case 4: p.progressive_frame = 0; f.sequence.progressive_sequence = false; break;
+      case 5: f.sequence.progressive_sequence = false; break;
+      case 6: f.picture.vertical_size = 360; break;
+      case 7: f.picture.vertical_size = 720; break;
+      case 8: f.slice = Slice(30); break;
+      case 9: f.iq.intra_quantiser_matrix[1] = 0; break;
+    }
+    f.Reject();
+  }
+}
+
 void SliceRanges() {
   ++groups;
   const auto picture = Picture(); const auto sequence = Sequence();
@@ -416,6 +531,114 @@ void Capacity() {
   Require(!mpeg::Assemble(picture, nullptr, state, {slice.View(), slice.View()}, sequence, {0, true}, &bytes, &next), "aggregate slice capacity bounded");
 }
 
+void BackwardCopy() {
+  ++groups;
+  struct Geometry { unsigned width, height, level; };
+  // Syntax coverage is not a claim of native completion/performance at each
+  // geometry. The runtime caller owns its measured admission and reference.
+  const Geometry geometries[] = {{2,2,10}, {18,34,10}, {352,288,10},
+      {640,360,8}, {720,480,8}, {720,576,8}, {1280,720,6},
+      {1440,1088,6}, {1920,1080,4}, {1920,1088,4}};
+  for (const auto &geometry : geometries)
+    for (unsigned temporal_reference : {0U,1023U})
+      for (bool custom : {false,true}) {
+        auto matrices = mpeg::DefaultQuantMatrices();
+        if (custom) {
+          for (size_t list = 0; list < matrices.lists.size(); ++list)
+            for (size_t i = 0; i < 64; ++i)
+              matrices.lists[list][i] = 1 + (i * 11 + list * 37) % 255;
+          matrices.lists[0][0] = matrices.lists[2][0] = 8;
+        }
+        const auto original_matrices = matrices;
+        auto sequence = Sequence(); sequence.level = geometry.level;
+        const auto original_sequence = sequence;
+        std::vector<uint8_t> bytes{0x12,0x34};
+        Require(mpeg::AssembleBackwardCopy(geometry.width, geometry.height,
+                    sequence, matrices, temporal_reference, &bytes),
+                "bounded backward-only auxiliary assembled");
+        Reader reader{bytes};
+        reader.Start(0); // No sequence or GOP header may precede the B picture.
+        reader.Equal(10, temporal_reference); reader.Equal(3, 3);
+        reader.Equal(16, 0xffff); reader.Equal(4, 7); reader.Equal(4, 7);
+        reader.Equal(1, 0);
+        reader.Start(0xb5); reader.Equal(4, 8);
+        reader.Equal(16, 0x1111); reader.Equal(2, 0); reader.Equal(2, 3);
+        reader.Equal(1, 0); reader.Equal(1, 1); reader.Equal(5, 0);
+        reader.Equal(1, 1); reader.Equal(1, 1); reader.Equal(1, 0);
+        reader.Start(0xb5); reader.Equal(4, 3);
+        for (const auto &list : matrices.lists) {
+          reader.Equal(1, 1);
+          for (uint8_t value : list) reader.Equal(8, value);
+        }
+        reader.Align();
+        const unsigned columns = (geometry.width + 15) / 16;
+        const unsigned rows = (geometry.height + 15) / 16;
+        for (unsigned row = 0; row < rows; ++row) {
+          reader.Start(row + 1);
+          reader.Equal(5, 1); reader.Equal(1, 0); // Quantizer and extra_bit_slice.
+          for (unsigned column = 0; column < columns; ++column) {
+            reader.Equal(1, 1); // address_increment=1, H.262 table B.1
+            reader.Equal(3, 2); // backward-only, no coded pattern, table B.4
+            reader.Equal(1, 1); reader.Equal(1, 1); // zero vector x/y, table B.10
+          }
+          reader.Align();
+        }
+        Require(reader.position == bytes.size() * 8,
+                "complete explicit grid with no coefficients or trailing EOS");
+        Require(bytes.size() == 279 + rows * (4 + (6 + columns * 6 + 7) / 8) &&
+                bytes.size() <= 6739, "bounded generated size including exact IQ snapshot");
+        Require(matrices.lists == original_matrices.lists &&
+                !std::memcmp(&sequence, &original_sequence, sizeof(sequence)),
+                "auxiliary changes neither active IQ nor sequence state");
+      }
+  for (unsigned mode = 0; mode < 22; ++mode) {
+    unsigned width = 720, height = 480, temporal_reference = 0;
+    auto sequence = Sequence();
+    auto matrices = mpeg::DefaultQuantMatrices();
+    switch (mode) {
+      case 0: width = 0; break;
+      case 1: height = 0; break;
+      case 2: width = 719; break;
+      case 3: height = 479; break;
+      case 4: width = 1922; break;
+      case 5: height = 1090; break;
+      case 6: width = std::numeric_limits<unsigned>::max(); break;
+      case 7: height = std::numeric_limits<unsigned>::max(); break;
+      case 8: sequence.profile = VAProfileMPEG2Simple; sequence.level = 8; break;
+      case 9: sequence.profile = VAProfileH264Main; break;
+      case 10: sequence.progressive_sequence = false; break;
+      case 11: sequence.low_delay = true; break;
+      case 12: sequence.level = 7; break;
+      case 13: sequence.level = 10; break;
+      case 14: sequence.level = 8; height = 720; break;
+      case 15: sequence.level = 6; width = 1920; break;
+      case 16: temporal_reference = 1024; break;
+      case 17: matrices.lists[0][0] = 16; break;
+      case 18: matrices.lists[2][0] = 16; break;
+      case 19: sequence.bit_rate = 0; break;
+      case 20: sequence.frame_rate_code = 9; break;
+      case 21: sequence.aspect_ratio_information = 0; break;
+    }
+    std::vector<uint8_t> bytes{0x12,0x34};
+    const auto original = matrices;
+    Require(!mpeg::AssembleBackwardCopy(width, height, sequence, matrices,
+                                       temporal_reference, &bytes),
+            "invalid auxiliary rejected before assembly");
+    Require(bytes == std::vector<uint8_t>({0x12,0x34}) && matrices.lists == original.lists,
+            "failed auxiliary leaves caller output and IQ unchanged");
+  }
+  for (size_t list = 0; list < 4; ++list)
+    for (size_t i = 0; i < 64; ++i) {
+      auto matrices = mpeg::DefaultQuantMatrices(); matrices.lists[list][i] = 0;
+      std::vector<uint8_t> bytes{0x12,0x34};
+      Require(!mpeg::AssembleBackwardCopy(720, 480, Sequence(), matrices, 0, &bytes) &&
+              bytes == std::vector<uint8_t>({0x12,0x34}),
+              "zero IQ entry rejected transactionally");
+    }
+  Require(!mpeg::AssembleBackwardCopy(720, 480, Sequence(),
+              mpeg::DefaultQuantMatrices(), 0, nullptr), "null auxiliary output rejected");
+}
+
 // This emits a tiny real I-picture stream for an optional external software
 // decoder check. It is not a CrystalHD firmware/replay or VA profile claim.
 void Stream() {
@@ -432,7 +655,8 @@ int main(int argc, char **argv) {
   try {
     if (argc == 2 && std::strcmp(argv[1], "--stream") == 0) { Stream(); return 0; }
     if (argc != 1) throw std::runtime_error("usage: vaapi-mpeg2-test [--stream]");
-    Defaults(); Headers(); Matrices(); Rejections(); SliceRanges(); Capacity();
+    Defaults(); Headers(); Matrices(); Rejections(); InterlacedFrames();
+    ProgressiveDisplayFlags(); SliceRanges(); Capacity(); BackwardCopy();
     std::printf("MPEG-2 assembly: %u groups, %u checks PASS\n", groups, checks);
     return 0;
   } catch (const std::exception &error) {

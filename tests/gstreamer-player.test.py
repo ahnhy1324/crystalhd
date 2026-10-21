@@ -534,6 +534,204 @@ class ScaleConfigurationTests(unittest.TestCase):
         self.assertEqual(control.decoders, {decoder: 1})
 
 
+class DeinterlaceQosTests(unittest.TestCase):
+    def fixture(self):
+        Gst = SimpleNamespace(version=lambda: (1, 28, 2, 0),
+            PadProbeType=SimpleNamespace(EVENT_UPSTREAM=1),
+            PadProbeReturn=SimpleNamespace(OK=0, DROP=1), EventType=SimpleNamespace(QOS=1))
+        element = mock.Mock()
+        factory = element.get_factory.return_value
+        factory.get_name.return_value = "deinterlace"
+        factory.get_plugin.return_value.get_version.return_value = "1.28.2"
+        properties = dict(mode=0, method=4, fields=0, locking=0, tff=0)
+        element.get_property.side_effect = properties.__getitem__
+        element.get_properties.side_effect = lambda *names: tuple(properties[name] for name in names)
+        pads = {name: mock.Mock() for name in ("sink", "src")}
+        pads["src"].add_probe.return_value = 17
+        element.get_static_pad.side_effect = pads.__getitem__
+        return Gst, element, properties, pads
+
+    def test_version_and_properties_must_match(self):
+        Gst, element, properties, _pads = self.fixture()
+        self.assertTrue(player.DeinterlaceQosWorkaround.supported(Gst, element))
+        for key in properties:
+            with self.subTest(property=key):
+                original = properties[key]
+                properties[key] = original + 1
+                self.assertIsNone(player.DeinterlaceQosWorkaround.install(Gst, element, mock.Mock()))
+                properties[key] = original
+        for version in ((1, 28, 1, 0), (1, 28, 3, 0), (1, 30, 0, 0)):
+            Gst.version = lambda: version
+            self.assertIsNone(player.DeinterlaceQosWorkaround.install(Gst, element, mock.Mock()))
+        Gst.version = lambda: (1, 28, 2, 0)
+        element.get_factory.return_value.get_plugin.return_value.get_version.return_value = "1.28.3"
+        self.assertIsNone(player.DeinterlaceQosWorkaround.install(Gst, element, mock.Mock()))
+
+    def test_qos_reads_one_fresh_property_batch_and_latches_each_change(self):
+        names = ("mode", "method", "fields", "locking", "tff")
+        for name in names:
+            with self.subTest(property=name):
+                Gst, element, properties, pads = self.fixture()
+                helper = player.DeinterlaceQosWorkaround.install(Gst, element, mock.Mock())
+                self.addCleanup(helper.close)
+                for pad in pads.values():
+                    pad.get_current_caps.return_value.get_size.return_value = 1
+                helper.caps_supported = mock.Mock(return_value=True)
+                info = mock.Mock()
+                info.get_event.return_value.type = Gst.EventType.QOS
+                element.get_properties.reset_mock()
+                for _index in range(2):
+                    self.assertEqual(helper.event(None, info), Gst.PadProbeReturn.DROP)
+                self.assertEqual(element.get_properties.call_args_list, [mock.call(*names)] * 2)
+                element.get_property.assert_not_called()
+                self.assertEqual(pads["sink"].push_event.call_count, 2)
+
+                original = properties[name]
+                properties[name] = original + 1
+                element.get_properties.reset_mock()
+                self.assertEqual(helper.event(None, info), Gst.PadProbeReturn.OK)
+                element.get_properties.assert_called_once_with(*names)
+                self.assertFalse(helper.active)
+                properties[name] = original
+                self.assertEqual(helper.event(None, info), Gst.PadProbeReturn.OK)
+                self.assertEqual(element.get_properties.call_count, 1)
+                self.assertEqual(pads["sink"].push_event.call_count, 2)
+
+    def test_forward_once_failure_and_probe_cleanup(self):
+        for forwarded in (True, False):
+            with self.subTest(forwarded=forwarded):
+                Gst, element, _properties, pads = self.fixture()
+                errors = mock.Mock()
+                workaround = player.DeinterlaceQosWorkaround.install(Gst, element, errors)
+                workaround.eligible = mock.Mock(return_value=True)
+                info = mock.Mock()
+                event = info.get_event.return_value
+                event.type = Gst.EventType.QOS
+                pads["sink"].push_event.return_value = forwarded
+                self.assertEqual(workaround.event(None, info), Gst.PadProbeReturn.DROP)
+                event.copy.assert_called_once_with()
+                pads["sink"].push_event.assert_called_once_with(event.copy.return_value)
+                self.assertEqual(errors.call_count, int(not forwarded))
+                workaround.eligible.return_value = False
+                self.assertEqual(workaround.event(None, info), Gst.PadProbeReturn.OK)
+                self.assertFalse(workaround.active)
+                event.type = 99
+                workaround.eligible.return_value = True
+                self.assertEqual(workaround.event(None, info), Gst.PadProbeReturn.OK)
+                self.assertEqual(pads["sink"].push_event.call_count, 1)
+                workaround.close()
+                workaround.close()
+                pads["src"].remove_probe.assert_called_once_with(17)
+                self.assertTrue(workaround.closed)
+                self.assertIsNone(workaround.on_error)
+                self.assertIsNone(workaround.caps_policy)
+
+    def test_ineligible_qos_latches_stock_policy(self):
+        Gst, element, _properties, pads = self.fixture()
+        workaround = player.DeinterlaceQosWorkaround.install(Gst, element, mock.Mock())
+        info = mock.Mock()
+        info.get_event.return_value.type = Gst.EventType.QOS
+        pads["sink"].get_current_caps.return_value = None
+        pads["src"].get_current_caps.return_value = None
+        self.assertEqual(workaround.event(None, info), Gst.PadProbeReturn.OK)
+        self.assertFalse(workaround.active)
+        pads["sink"].get_current_caps.reset_mock()
+        self.assertFalse(workaround.eligible())
+        pads["sink"].get_current_caps.assert_not_called()
+        pads["sink"].push_event.assert_not_called()
+        workaround.close()
+
+    def test_player_installs_only_on_card_scaled_hardware_path_and_removes_probe(self):
+        for changes, install in (({}, True), ({"mode": "software"}, False),
+                                 ({"scale_width": 0}, False),
+                                 ({"software_output_size": None}, True), ({"weave": True}, False)):
+            with self.subTest(changes=changes):
+                control = player.Player.__new__(player.Player)
+                control.args = SimpleNamespace(**(dict(mode="hardware", scale_width=1280,
+                    software_output_size=(1920, 1080), weave=False) | changes))
+                control.Gst = object()
+                control.bus = object()
+                control.deinterlace_qos, control.decoders = {}, {}
+                element = mock.Mock()
+                element.get_factory.return_value = Factory("deinterlace", "Filter/Effect/Video")
+                helper = mock.Mock()
+                with mock.patch.object(player.NativeDeinterlaceQosWorkaround, "install", return_value=None) as native, \
+                        mock.patch.object(player.DeinterlaceQosWorkaround, "install", return_value=helper) as make:
+                    control.element_setup(None, element)
+                    control.element_setup(None, element)
+                self.assertEqual(make.call_count, int(install))
+                self.assertEqual(native.call_count, int(install))
+                control.element_removed(None, None, element)
+                self.assertEqual(helper.close.call_count, int(install))
+                self.assertEqual(control.deinterlace_qos, {})
+
+
+class NativeDeinterlaceQosTests(unittest.TestCase):
+    def test_missing_or_unsupported_helper_keeps_python_fallback(self):
+        Gst, element, bus = mock.Mock(), mock.Mock(), mock.Mock()
+        Gst.ElementFactory.make.return_value = None
+        self.assertIsNone(player.NativeDeinterlaceQosWorkaround.install(Gst, element, bus))
+        controller = mock.Mock()
+        controller.emit.return_value = 0
+        Gst.ElementFactory.make.return_value = controller
+        self.assertIsNone(player.NativeDeinterlaceQosWorkaround.install(Gst, element, bus))
+        self.assertEqual(controller.emit.call_args_list,
+                         [mock.call("attach", element, bus), mock.call("detach")])
+
+    def test_native_properties_and_idempotent_close(self):
+        Gst, element, bus, controller = (mock.Mock() for _ in range(4))
+        Gst.ElementFactory.make.return_value = controller
+        controller.emit.return_value = 1
+        controller.get_property.return_value = True
+        helper = player.NativeDeinterlaceQosWorkaround.install(Gst, element, bus)
+        self.assertTrue(helper.active)
+        self.assertTrue(helper.eligible())
+        self.assertEqual(helper.probe, 1)
+        helper.close()
+        helper.close()
+        self.assertTrue(helper.closed)
+        self.assertFalse(helper.active)
+        self.assertFalse(helper.eligible())
+        self.assertEqual(helper.probe, 0)
+        self.assertEqual(controller.emit.call_args_list,
+                         [mock.call("attach", element, bus), mock.call("detach")])
+
+    def test_failed_attach_is_not_silently_replaced_by_another_probe(self):
+        for status in (-1, -2):
+            with self.subTest(status=status):
+                Gst, element, bus, controller = (mock.Mock() for _ in range(4))
+                Gst.ElementFactory.make.return_value = controller
+                controller.emit.return_value = status
+                with self.assertRaisesRegex(RuntimeError, "invalid or already owned"):
+                    player.NativeDeinterlaceQosWorkaround.install(Gst, element, bus)
+                self.assertEqual(controller.emit.call_args_list[-1], mock.call("detach"))
+
+    def test_player_prefers_native_and_reports_attachment_failure(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                control = player.Player.__new__(player.Player)
+                control.args = SimpleNamespace(mode="hardware", scale_width=1280,
+                    software_output_size=(1920, 1080), weave=False)
+                control.Gst, control.bus = object(), object()
+                control.deinterlace_qos, control.decoders = {}, {}
+                control.fail = mock.Mock()
+                element, helper = mock.Mock(), mock.Mock()
+                element.get_factory.return_value = Factory("deinterlace", "Filter/Effect/Video")
+                with mock.patch.object(player.NativeDeinterlaceQosWorkaround, "install",
+                        side_effect=RuntimeError("already owned") if failed else None,
+                        return_value=helper) as native, \
+                        mock.patch.object(player.DeinterlaceQosWorkaround, "install") as fallback:
+                    control.element_setup(None, element)
+                    if not failed:
+                        control.element_setup(None, element)
+                    native.assert_called_once_with(control.Gst, element, control.bus)
+                    fallback.assert_not_called()
+                    self.assertEqual(control.fail.call_count, int(failed))
+                control.element_removed(None, None, element)
+                self.assertEqual(helper.close.call_count, int(not failed))
+                self.assertEqual(control.deinterlace_qos, {})
+
+
 class CleanupTests(unittest.TestCase):
     def test_teardown_failure_is_nonzero_and_cleanup_remains_idempotent(self):
         for failed, previous_code in ((False, 0), (True, 0), (True, 143)):
@@ -542,12 +740,17 @@ class CleanupTests(unittest.TestCase):
                 control.closed = False
                 control.terminal_state = None
                 control.sources = []
+                helper = mock.Mock()
+                control.deinterlace_qos = {object(): helper}
                 control.exit_code = previous_code
                 control.Gst = SimpleNamespace(State=SimpleNamespace(NULL=0),
                     StateChangeReturn=SimpleNamespace(FAILURE=-1))
                 control.bus = mock.Mock()
                 control.pipeline = mock.Mock()
-                control.pipeline.set_state.return_value = -1 if failed else 1
+                teardown_order = []
+                control.pipeline.set_state.side_effect = lambda _state: (
+                    teardown_order.append("null") or (-1 if failed else 1))
+                helper.close.side_effect = lambda: teardown_order.append("probe")
                 output = io.StringIO()
                 with contextlib.redirect_stderr(output):
                     control.close()
@@ -556,6 +759,9 @@ class CleanupTests(unittest.TestCase):
                 control.pipeline.set_state.assert_called_once_with(0)
                 control.bus.remove_signal_watch.assert_called_once_with()
                 self.assertEqual("teardown failed" in output.getvalue(), failed)
+                helper.close.assert_called_once_with()
+                self.assertEqual(control.deinterlace_qos, {})
+                self.assertEqual(teardown_order, ["null", "probe"])
 
 
 class ArgumentTests(unittest.TestCase):
@@ -1000,7 +1206,7 @@ class GStreamerApiTests(unittest.TestCase):
         self.assertFalse(control.done)
         control.stop.assert_not_called()
 
-    def scale_caps_player(self, width, mode):
+    def scale_caps_player(self, width, mode, h264=False):
         result = self.make_player()
         result.args.scale_width = width
         sink = self.Gst.Pad.new("sink", self.Gst.PadDirection.SINK)
@@ -1015,8 +1221,10 @@ class GStreamerApiTests(unittest.TestCase):
         decoder.get_static_pad.side_effect = lambda name: sink if name == "sink" else None
         result.element_setup(None, decoder)
         caps = self.Gst.Caps.from_string(
-            "video/mpeg,mpegversion=2,systemstream=false,parsed=true,"
-            "width=1920,height=1088,framerate=25/1")
+            ("video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+             "width=1920,height=1080,framerate=25/1") if h264 else
+            ("video/mpeg,mpegversion=2,systemstream=false,parsed=true,"
+             "width=1920,height=1088,framerate=25/1"))
         if mode is not None:
             caps.set_value("interlace-mode", mode)
         self.assertTrue(sink.send_event(self.Gst.Event.new_caps(caps)))
@@ -1035,7 +1243,7 @@ class GStreamerApiTests(unittest.TestCase):
                     break
                 result.message(result.bus, message)
         self.assertEqual(result.exit_code, 1)
-        self.assertIn("--scale-width requires progressive input", result.health.error)
+        self.assertIn("interlaced --scale-width requires BCM70015 H.264", result.health.error)
         self.assertIn("mixed", result.health.error)
         self.assertIn("omit --scale-width", result.health.error)
         self.assertEqual(result.health.finish(), 1)
@@ -1049,6 +1257,26 @@ class GStreamerApiTests(unittest.TestCase):
                 self.assertIsNone(result.bus.timed_pop_filtered(
                     0, self.Gst.MessageType.APPLICATION))
                 self.assertIsNone(result.health.error)
+
+    def test_scale_caps_probe_allows_h264_field_scaling(self):
+        for width, mode in ((1280, "interleaved"), (1280, "mixed"),
+                            (960, "interleaved")):
+            with self.subTest(width=width, mode=mode):
+                result = self.scale_caps_player(width, mode, h264=True)
+                self.assertIsNone(result.bus.timed_pop_filtered(
+                    0, self.Gst.MessageType.APPLICATION))
+                self.assertIsNone(result.health.error)
+
+    def test_scale_caps_probe_rejects_unqualified_h264_field_layout(self):
+        for width, mode in ((1280, "alternate"), (130, "interleaved")):
+            with self.subTest(width=width, mode=mode):
+                result = self.scale_caps_player(width, mode, h264=True)
+                message = result.bus.timed_pop_filtered(
+                    0, self.Gst.MessageType.APPLICATION)
+                self.assertIsNotNone(message)
+                result.message(result.bus, message)
+                self.assertEqual(result.exit_code, 1)
+                self.assertIn("multiple-of-16 width", result.health.error)
 
     def test_explicit_upscale_filter_has_expected_caps_and_quality_settings(self):
         for name in ("videoscale", "capsfilter"):
@@ -1072,6 +1300,175 @@ class GStreamerApiTests(unittest.TestCase):
                          (True, 1, 1))
         self.assertIsNotNone(result.get_static_pad("sink"))
         self.assertIsNotNone(result.get_static_pad("src"))
+        self.assertIsNone(result.get_by_name("crystalhd-early-pack"))
+
+    def packing_fixture(self):
+        for name in ("videoscale", "videoconvert", "capsfilter", "playsink"):
+            if self.Gst.ElementFactory.find(name) is None:
+                self.skipTest(f"optional packing fixture needs {name}")
+        Gst = self.Gst
+        pipeline = Gst.Pipeline.new(None)
+        playsink = Gst.ElementFactory.make("playsink")
+        chain = Gst.Bin.new(None)
+        video_filter = player.make_software_output_filter(
+            Gst, (1920, 1080), prepare_native_packing=True)
+        pipeline.add(playsink)
+        playsink.add(chain)
+        chain.add(video_filter)
+        self.addCleanup(pipeline.set_state, Gst.State.NULL)
+        # Real bin ownership/caps, with a display-free stand-in for the READY sink.
+        view = mock.Mock(wraps=video_filter)
+        helper = player.XvOutputPacking(Gst, view)
+        sink = mock.Mock()
+        sink.get_factory.return_value = Factory("xvimagesink", "Sink/Video")
+        sink.has_as_ancestor.side_effect = lambda ancestor: ancestor is chain
+        sink.get_state.return_value = (Gst.StateChangeReturn.SUCCESS, Gst.State.READY,
+                                       Gst.State.VOID_PENDING)
+        sink.get_static_pad.return_value.query_caps.return_value = Gst.Caps.from_string(
+            "video/x-raw,format=UYVY,width=1920,height=1080,pixel-aspect-ratio=1/1")
+        return SimpleNamespace(Gst=Gst, pipeline=pipeline, playsink=playsink, chain=chain,
+                               video_filter=video_filter, view=view, helper=helper, sink=sink)
+
+    def test_native_packing_selects_once_without_changing_upstream_yuy2(self):
+        fixture = self.packing_fixture()
+        Gst, helper, sink = fixture.Gst, fixture.helper, fixture.sink
+        self.assertTrue(helper.select(sink, fixture.pipeline))
+        self.assertTrue(helper.selected)
+        self.assertEqual(helper.output.get_property("caps").get_structure(0).get_string("format"), "UYVY")
+        inlet = fixture.video_filter.get_by_name("crystalhd-early-yuy2")
+        self.assertEqual(inlet.get_property("caps").get_structure(0).get_string("format"), "YUY2")
+        self.assertTrue(fixture.video_filter.get_static_pad("sink").query_caps(None).is_subset(
+            Gst.Caps.from_string("video/x-raw,format=YUY2")))
+        self.assertEqual(fixture.video_filter.get_by_name("crystalhd-early-pack").get_property("n-threads"), 1)
+        sink.get_state.reset_mock()
+        sink.get_static_pad.reset_mock()
+        self.assertFalse(helper.select(sink, fixture.pipeline))
+        sink.get_state.assert_not_called()
+        sink.get_static_pad.assert_not_called()
+
+    def test_native_packing_requires_real_exclusive_native_caps(self):
+        for text in (None, "ANY", "EMPTY", "video/x-raw,format=YUY2",
+                     "video/x-raw,format={YUY2,UYVY}", "video/x-raw,format=NV12",
+                     "video/x-raw,format=UYVY,width=640,height=360",
+                     "video/x-raw(memory:DMABuf),format=UYVY"):
+            with self.subTest(caps=text):
+                fixture = self.packing_fixture()
+                fixture.sink.get_static_pad.return_value.query_caps.return_value = (
+                    None if text is None else fixture.Gst.Caps.from_string(text))
+                self.assertFalse(fixture.helper.select(fixture.sink, fixture.pipeline))
+                self.assertFalse(fixture.helper.selected)
+                self.assertEqual(fixture.helper.output.get_property("caps").get_structure(0).get_string("format"), "YUY2")
+
+    def test_native_packing_rejects_trial_late_and_uncertain_sinks(self):
+        for condition in ("factory", "unparented", "other-pipeline", "no-chain",
+                          "sink-null", "sink-pending", "sink-failed", "filter-ready",
+                          "filter-pending", "negotiated", "no-pad", "query-failure"):
+            with self.subTest(condition=condition):
+                fixture = self.packing_fixture()
+                Gst, helper, sink = fixture.Gst, fixture.helper, fixture.sink
+                pipeline = fixture.pipeline
+                if condition == "factory":
+                    sink.get_factory.return_value = Factory("fakesink", "Sink/Video")
+                elif condition == "unparented":
+                    sink.has_as_ancestor.side_effect = lambda _ancestor: False
+                elif condition == "other-pipeline":
+                    pipeline = Gst.Pipeline.new(None)
+                elif condition == "no-chain":
+                    fixture.view.get_parent.return_value = None
+                elif condition.startswith("sink-"):
+                    sink.get_state.return_value = {
+                        "sink-null": (Gst.StateChangeReturn.SUCCESS, Gst.State.NULL, Gst.State.VOID_PENDING),
+                        "sink-pending": (Gst.StateChangeReturn.ASYNC, Gst.State.READY, Gst.State.PAUSED),
+                        "sink-failed": (Gst.StateChangeReturn.FAILURE, Gst.State.READY, Gst.State.VOID_PENDING),
+                    }[condition]
+                elif condition.startswith("filter-"):
+                    fixture.view.get_state.return_value = (
+                        Gst.StateChangeReturn.SUCCESS,
+                        Gst.State.READY if condition == "filter-ready" else Gst.State.NULL,
+                        Gst.State.VOID_PENDING if condition == "filter-ready" else Gst.State.READY)
+                elif condition == "negotiated":
+                    fixture.view.get_static_pad.return_value = mock.Mock()
+                    fixture.view.get_static_pad.return_value.get_current_caps.return_value = Gst.Caps.from_string("video/x-raw")
+                elif condition == "no-pad":
+                    sink.get_static_pad.return_value = None
+                elif condition == "query-failure":
+                    sink.get_static_pad.return_value.query_caps.side_effect = RuntimeError("unavailable")
+                self.assertFalse(helper.select(sink, pipeline))
+                self.assertFalse(helper.selected)
+                self.assertEqual(helper.output.get_property("caps").get_structure(0).get_string("format"), "YUY2")
+
+    def test_player_prepares_packing_only_for_default_hardware_upscale(self):
+        for changes, custom, expected in (({}, False, True), ({"mode": "software"}, False, False),
+                ({"weave": True}, False, False), ({"scale_width": 0}, False, False),
+                ({"software_output_size": None}, False, False),
+                ({"software_output_size": (1280, 720)}, False, False),
+                ({"software_output_size": (640, 360)}, False, False), ({}, True, False)):
+            with self.subTest(changes=changes, custom=custom):
+                args = SimpleNamespace(**(dict(mode="hardware", weave=False, scale_width=1280,
+                    software_output_size=(1920, 1080), file=Path(self.temp.name)/"unused.mkv",
+                    subtitles=None) | changes))
+                sinks = {"video-sink": self.Gst.ElementFactory.make("fakesink")} if custom else None
+                with mock.patch.object(player, "configure_decoders"):
+                    result = player.Player(args, self.Gst, self.GLib, sinks)
+                try:
+                    self.assertEqual(result.output_packing is not None, expected)
+                    if result.video_filter is not None:
+                        self.assertEqual(result.video_filter.get_by_name("crystalhd-early-pack") is not None, expected)
+                    if expected:
+                        element = mock.Mock()
+                        element.get_factory.return_value = Factory("xvimagesink", "Sink/Video")
+                        with mock.patch.object(result.output_packing, "select") as select:
+                            result.element_setup(result.pipeline, element)
+                            select.assert_called_once_with(element, result.pipeline)
+                            result.closed = True
+                            result.element_setup(result.pipeline, element)
+                            self.assertEqual(select.call_count, 1)
+                            result.closed = False
+                finally:
+                    result.close()
+
+    def test_prepared_packing_preserves_resized_pixels_and_metadata(self):
+        for name in ("videotestsrc", "videoscale", "videoconvert", "capsfilter", "appsink"):
+            if self.Gst.ElementFactory.find(name) is None:
+                self.skipTest(f"optional packing pixels need {name}")
+        Gst = self.Gst
+        results = []
+        for early in (False, True):
+            pipeline = Gst.parse_launch(
+                "videotestsrc num-buffers=3 pattern=smpte name=input ! "
+                "video/x-raw,format=YUY2,width=32,height=18,framerate=50/1,"
+                "pixel-aspect-ratio=1/1,colorimetry=bt709 ! identity name=entry")
+            upscale = player.make_software_output_filter(Gst, (48, 32), prepare_native_packing=early)
+            if early:
+                capsfilter = upscale.get_by_name("crystalhd-upscale-caps")
+                caps = capsfilter.get_property("caps").copy()
+                caps.set_value("format", "UYVY")
+                capsfilter.set_property("caps", caps)
+            tail = Gst.parse_bin_from_description(
+                "videoconvert ! video/x-raw,format=UYVY ! appsink name=output sync=false", True)
+            pipeline.add(upscale)
+            pipeline.add(tail)
+            self.assertTrue(pipeline.get_by_name("entry").link(upscale))
+            self.assertTrue(upscale.link(tail))
+            sink = tail.get_by_name("output")
+            rows = []
+            try:
+                self.assertNotEqual(pipeline.set_state(Gst.State.PLAYING), Gst.StateChangeReturn.FAILURE)
+                for _index in range(3):
+                    sample = sink.emit("try-pull-sample", 5*Gst.SECOND)
+                    self.assertIsNotNone(sample)
+                    buffer = sample.get_buffer()
+                    rows.append((sample.get_caps().to_string(), buffer.pts, buffer.dts,
+                        buffer.duration, buffer.offset, buffer.offset_end, int(buffer.get_flags()),
+                        buffer.extract_dup(0, buffer.get_size())))
+                message = pipeline.get_bus().timed_pop_filtered(5*Gst.SECOND,
+                    Gst.MessageType.EOS | Gst.MessageType.ERROR)
+                self.assertIsNotNone(message)
+                self.assertEqual(message.type, Gst.MessageType.EOS)
+            finally:
+                pipeline.set_state(Gst.State.NULL)
+            results.append(rows)
+        self.assertEqual(results[0], results[1])
 
     def test_explicit_upscale_filter_processes_raw_video(self):
         for name in ("videotestsrc", "videoscale", "capsfilter", "fakesink"):
@@ -1105,6 +1502,262 @@ class GStreamerApiTests(unittest.TestCase):
         caps = sink.get_static_pad("sink").get_current_caps().get_structure(0)
         self.assertEqual((caps.get_value("width"), caps.get_value("height")), (640, 360))
         self.assertEqual(caps.get_fraction("pixel-aspect-ratio"), (True, 1, 1))
+
+    def test_native_deinterlace_qos_action_signal_binding_and_close(self):
+        Gst = self.Gst
+        if Gst.ElementFactory.find("crystalhddiqos") is None:
+            self.skipTest("optional native controller requires the built own plugin")
+        element = Gst.ElementFactory.make("deinterlace")
+        if element is None or not player.DeinterlaceQosWorkaround.supported(Gst, element):
+            self.skipTest("exact GStreamer 1.28.2 deinterlace admission")
+        bus = Gst.Bus.new()
+        helper = player.NativeDeinterlaceQosWorkaround.install(Gst, element, bus)
+        self.assertIsNotNone(helper)
+        self.addCleanup(helper.close)
+        self.assertTrue(helper.active)
+        self.assertTrue(helper.probe)
+        self.assertFalse(helper.eligible())  # No negotiated caps yet.
+        with self.assertRaisesRegex(RuntimeError, "already owned"):
+            player.NativeDeinterlaceQosWorkaround.install(Gst, element, bus)
+        helper.close()
+        helper.close()
+        self.assertFalse(helper.probe)
+        self.assertFalse(helper.active)
+        self.assertFalse(helper.eligible())
+        replacement = player.NativeDeinterlaceQosWorkaround.install(Gst, element, bus)
+        self.assertIsNotNone(replacement)
+        replacement.close()
+
+    def test_deinterlace_qos_caps_are_narrow_and_rechecked(self):
+        Gst = self.Gst
+        element = Gst.ElementFactory.make("deinterlace")
+        if element is None or not player.DeinterlaceQosWorkaround.supported(Gst, element):
+            self.skipTest("exact GStreamer 1.28.2 deinterlace caps policy")
+        # Exercise actual Gst.Caps parsing without starting another pipeline.
+        helper = player.DeinterlaceQosWorkaround.__new__(player.DeinterlaceQosWorkaround)
+        helper.Gst, helper.element = Gst, element
+        helper.closed, helper.active = False, True
+        helper.caps_policy = None
+        helper.sink, helper.src = mock.Mock(), mock.Mock()
+        source = "video/x-raw,format=YUY2,width=16,height=8,interlace-mode=mixed,framerate=25/1"
+        output = source.replace("mixed", "progressive").replace("25/1", "50/1")
+        for changed_source, changed_output, expected in (
+                (source, output, True), (source.replace("mixed", "interleaved"), output, True),
+                (source.replace("mixed", "progressive"), output, False),
+                (source.replace("mixed", "alternate"), output, False),
+                (source.replace("YUY2", "NV12"), output, False),
+                (source, output.replace("YUY2", "NV12"), False),
+                (source.replace("25/1", "30/1"), output, False),
+                (source, output.replace("50/1", "25/1"), False),
+                (source, output.replace("width=16", "width=32"), False),
+                (source, output.replace("height=8", "height=16"), False)):
+            with self.subTest(source=changed_source, output=changed_output):
+                helper.sink.get_current_caps.return_value = Gst.Caps.from_string(changed_source)
+                helper.src.get_current_caps.return_value = Gst.Caps.from_string(changed_output)
+                self.assertEqual(helper.eligible(), expected)
+        helper.sink.get_current_caps.return_value = None
+        self.assertFalse(helper.eligible())
+
+    def test_deinterlace_qos_cache_rechecks_caps_and_mutable_properties(self):
+        Gst = self.Gst
+        policy_gst, element, properties, pads = DeinterlaceQosTests().fixture()
+        helper = player.DeinterlaceQosWorkaround.install(policy_gst, element, mock.Mock())
+        self.addCleanup(helper.close)
+        source = Gst.Caps.from_string(
+            "video/x-raw,format=YUY2,width=16,height=8,interlace-mode=mixed,framerate=25/1")
+        output = Gst.Caps.from_string(
+            "video/x-raw,format=YUY2,width=16,height=8,interlace-mode=progressive,framerate=50/1")
+        pads["sink"].get_current_caps.return_value = source
+        pads["src"].get_current_caps.return_value = output
+        helper.caps_supported = mock.Mock(wraps=helper.caps_supported)
+        element.get_factory.reset_mock()
+        self.assertTrue(helper.eligible())
+        self.assertEqual(helper.caps_supported.call_count, 1)
+        # Equal replacement caps use the result, not object or string identity.
+        pads["sink"].get_current_caps.return_value = source.copy()
+        pads["src"].get_current_caps.return_value = output.copy()
+        self.assertTrue(helper.eligible())
+        self.assertEqual(helper.caps_supported.call_count, 1)
+        for pad in pads.values():
+            self.assertEqual(pad.get_current_caps.call_count, 2)
+        element.get_factory.assert_not_called()
+
+        changed = source.copy()
+        changed.set_value("colorimetry", "bt709")
+        pads["sink"].get_current_caps.return_value = changed
+        self.assertTrue(helper.eligible())
+        self.assertEqual(helper.caps_supported.call_count, 2)
+        self.assertIsNone(source.get_structure(0).get_string("colorimetry"))
+        wrong_output = output.copy()
+        wrong_output.set_value("format", "NV12")
+        pads["src"].get_current_caps.return_value = wrong_output
+        self.assertFalse(helper.eligible())
+        self.assertEqual(helper.caps_supported.call_count, 3)
+        pads["src"].get_current_caps.return_value = output
+        self.assertTrue(helper.eligible())
+        self.assertEqual(helper.caps_supported.call_count, 4)
+        pads["sink"].get_current_caps.return_value = None
+        self.assertFalse(helper.eligible())
+        pads["sink"].get_current_caps.return_value = changed
+        self.assertTrue(helper.eligible())
+        self.assertEqual(helper.caps_supported.call_count, 4)
+        # Set equality alone must not admit duplicate structures: the
+        # original policy requires exactly one structure on each pad.
+        duplicate = output.copy()
+        duplicate.append(output.copy())
+        self.assertTrue(duplicate.is_equal(output))
+        pads["src"].get_current_caps.return_value = duplicate
+        self.assertFalse(helper.eligible())
+        pads["src"].get_current_caps.return_value = output
+        self.assertTrue(helper.eligible())
+
+        # A cache hit never bypasses a changed runtime property or revives
+        # an element after the first QoS event handled by stock policy.
+        for name, original in tuple(properties.items()):
+            with self.subTest(property=name):
+                properties[name] = original + 1
+                self.assertFalse(helper.eligible())
+                properties[name] = original
+                self.assertTrue(helper.eligible())
+        info = mock.Mock()
+        info.get_event.return_value.type = policy_gst.EventType.QOS
+        properties["method"] = 0
+        self.assertEqual(helper.event(None, info), policy_gst.PadProbeReturn.OK)
+        properties["method"] = 4
+        self.assertFalse(helper.eligible())
+        pads["sink"].push_event.assert_not_called()
+        helper.close()
+        self.assertIsNone(helper.caps_policy)
+
+    def test_deinterlace_qos_reads_changes_while_notifications_are_frozen(self):
+        Gst = self.Gst
+        element = Gst.ElementFactory.make("deinterlace")
+        if element is None or not player.DeinterlaceQosWorkaround.supported(Gst, element):
+            self.skipTest("exact GStreamer 1.28.2 deinterlace property policy")
+        source = Gst.Caps.from_string(
+            "video/x-raw,format=YUY2,width=16,height=8,interlace-mode=mixed,framerate=25/1")
+        output = Gst.Caps.from_string(
+            "video/x-raw,format=YUY2,width=16,height=8,interlace-mode=progressive,framerate=50/1")
+        notifications = []
+        handler = element.connect("notify", lambda _element, spec: notifications.append(spec.name))
+        self.addCleanup(element.disconnect, handler)
+        for name in ("mode", "method", "fields", "locking", "tff"):
+            with self.subTest(property=name):
+                helper = player.DeinterlaceQosWorkaround.__new__(player.DeinterlaceQosWorkaround)
+                helper.Gst, helper.element = Gst, element
+                helper.closed, helper.active, helper.caps_policy = False, True, None
+                helper.sink, helper.src = mock.Mock(), mock.Mock()
+                helper.sink.get_current_caps.return_value = source
+                helper.src.get_current_caps.return_value = output
+                self.assertTrue(helper.eligible())
+                original = int(element.get_property(name))
+                notifications.clear()
+                element.freeze_notify()
+                try:
+                    element.set_property(name, original + 1)
+                    self.assertEqual(notifications, [])
+                    self.assertFalse(helper.eligible())
+                    info = mock.Mock()
+                    info.get_event.return_value.type = Gst.EventType.QOS
+                    self.assertEqual(helper.event(None, info), Gst.PadProbeReturn.OK)
+                    element.set_property(name, original)
+                    self.assertTrue(helper.properties_supported(element))
+                    self.assertFalse(helper.active)
+                    self.assertFalse(helper.eligible())
+                    helper.sink.push_event.assert_not_called()
+                    self.assertEqual(notifications, [])
+                finally:
+                    element.set_property(name, original)
+                    element.thaw_notify()
+                self.assertIn(name, notifications)
+
+    def test_deinterlace_qos_second_field_pts_tff_and_bff(self):
+        Gst = self.Gst
+        if tuple(Gst.version())[:3] != (1, 28, 2):
+            self.skipTest("exact GStreamer 1.28.2 compatibility regression")
+        for name in ("appsrc", "deinterlace", "fakesink"):
+            if Gst.ElementFactory.find(name) is None:
+                self.skipTest(f"optional deinterlace fixture needs {name}")
+        import gi
+        gi.require_version("GstVideo", "1.0")
+        from gi.repository import GstVideo
+
+        def event_identity(event):
+            return (event.get_seqnum(), event.get_running_time_offset(), tuple(event.parse_qos()))
+
+        def run_case(mode, top_first):
+            pipeline = Gst.parse_launch(
+                'appsrc name=input format=time is-live=false caps="video/x-raw,format=YUY2,'
+                'width=16,height=8,interlace-mode=mixed,framerate=25/1,colorimetry=bt709" ! '
+                'deinterlace name=di method=linear fields=all locking=none ! '
+                'fakesink sync=false async=false qos=false')
+            source, di = pipeline.get_by_name("input"), pipeline.get_by_name("di")
+            outputs, upstream, injected, errors = [], [], [], []
+            helper = None
+            if mode == "workaround":
+                helper = player.DeinterlaceQosWorkaround.install(Gst, di, errors.append)
+                self.assertIsNotNone(helper)
+
+            def observe_upstream(_pad, info):
+                event = info.get_event()
+                if event.type == Gst.EventType.QOS:
+                    upstream.append(event_identity(event))
+                return Gst.PadProbeReturn.OK
+
+            def observe_output(_pad, info):
+                buffer = info.get_buffer()
+                outputs.append((int(buffer.pts), int(buffer.duration), int(buffer.get_flags()),
+                                buffer.extract_dup(0, buffer.get_size())))
+                if mode != "control" and buffer.pts == 40000000:
+                    # The previous 20 ms field is 1 ms late: earliest=20+2+20=42 ms.
+                    # The current 40 ms field is already out; its 60 ms sibling
+                    # is still timely, but stock compares the original 40 ms PTS.
+                    event = Gst.Event.new_qos(Gst.QOSType.UNDERFLOW, 1.0, 1000000, 20000000)
+                    event.set_seqnum(0x2345)
+                    injected.append(event_identity(event))
+                    if not di.get_static_pad("src").send_event(event):
+                        errors.append("synthetic QoS was not forwarded")
+                return Gst.PadProbeReturn.OK
+
+            source.get_static_pad("src").add_probe(Gst.PadProbeType.EVENT_UPSTREAM, observe_upstream)
+            di.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, observe_output)
+            try:
+                self.assertNotEqual(pipeline.set_state(Gst.State.PLAYING), Gst.StateChangeReturn.FAILURE)
+                for index in range(3):
+                    data = bytes((index * 37 + row * 19 + column * 3) % 256
+                                 for row in range(8) for column in range(32))
+                    buffer = Gst.Buffer.new_allocate(None, len(data), None)
+                    buffer.fill(0, data)
+                    buffer.pts, buffer.duration = index * 40000000, 40000000
+                    flags = int(GstVideo.VideoBufferFlags.INTERLACED)
+                    if top_first:
+                        flags |= int(GstVideo.VideoBufferFlags.TFF)
+                    buffer.set_flags(Gst.BufferFlags(flags))
+                    self.assertEqual(source.emit("push-buffer", buffer), Gst.FlowReturn.OK)
+                self.assertEqual(source.emit("end-of-stream"), Gst.FlowReturn.OK)
+                message = pipeline.get_bus().timed_pop_filtered(
+                    5 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+                self.assertIsNotNone(message)
+                self.assertEqual(message.type, Gst.MessageType.EOS)
+                self.assertFalse(errors)
+                self.assertEqual(upstream, injected)
+                if helper:
+                    self.assertTrue(helper.eligible())
+                    di.set_property("method", 1)
+                    self.assertFalse(helper.eligible())
+                return outputs
+            finally:
+                pipeline.set_state(Gst.State.NULL)
+                if helper:
+                    helper.close()
+
+        for top_first in (True, False):
+            with self.subTest(top_first=top_first):
+                control = run_case("control", top_first)
+                self.assertEqual([row[0] for row in control], list(range(0, 120000000, 20000000)))
+                self.assertEqual(run_case("stock", top_first),
+                                 [row for row in control if row[0] != 60000000])
+                self.assertEqual(run_case("workaround", top_first), control)
 
     def test_actual_software_decoder_buffers_precede_eos(self):
         for name in ("videotestsrc", "theoraenc", "theoradec", "fakesink"):

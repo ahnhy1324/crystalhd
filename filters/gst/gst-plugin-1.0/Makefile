@@ -10,6 +10,7 @@ PLAYBACK_TEST := gstreamer-playback-test
 CONTROLS_TEST := gstreamer-controls-test
 LIFECYCLE_TEST := gst-lifecycle-test
 CODECS_TEST := gst-codecs-test
+DI_QOS_TEST := gst-diqos-test
 CODEC_PLAYBACK_PACKAGES := gstreamer-app-1.0 gstreamer-video-1.0 \
 	libavformat libavcodec libavutil
 HAVE_CODEC_PLAYBACK := $(shell $(PKG_CONFIG) --exists $(CODEC_PLAYBACK_PACKAGES) && echo yes)
@@ -26,7 +27,7 @@ CFLAGS += -Wall -Wextra -Werror -fPIC $(shell $(PKG_CONFIG) --cflags $(GST_PACKA
 LDFLAGS += -shared -L$(ROOTDIR)/linux_lib/libcrystalhd
 LDLIBS += $(shell $(PKG_CONFIG) --libs $(GST_PACKAGES)) -lcrystalhd
 
-.PHONY: all clean install uninstall check codec-playback-test check-codec-playback check-player
+.PHONY: all clean install uninstall check codec-playback-test check-codec-playback check-player check-diqos
 
 all: $(PLUGIN)
 
@@ -48,8 +49,9 @@ check-codec-playback:
 endif
 
 $(PLUGIN): gstcrystalhd.c gstcrystalhd-codecs.h gstcrystalhd-timing.h gstcrystalhd-input.h \
+		gstcrystalhd-diqos.c gstcrystalhd-diqos.h \
 		$(ROOTDIR)/filters/crystalhd-h264-output.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< gstcrystalhd-diqos.c -o $@ $(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 
 $(PLAYBACK_TEST): $(ROOTDIR)/tests/gstreamer-playback.c \
 		$(ROOTDIR)/tests/phase1-progress.h
@@ -66,20 +68,31 @@ $(CONTROLS_TEST): $(ROOTDIR)/tests/gstreamer-controls.c \
 # never link libcrystalhd or open the real decoder.
 $(LIFECYCLE_TEST): $(ROOTDIR)/tests/gst-lifecycle.c gstcrystalhd.c \
 		gstcrystalhd-codecs.h gstcrystalhd-timing.h gstcrystalhd-input.h \
+		gstcrystalhd-diqos.c gstcrystalhd-diqos.h \
 		$(ROOTDIR)/filters/crystalhd-h264-output.h
-	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror $(CPPFLAGS) $< -o $@ \
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror $(CPPFLAGS) $< gstcrystalhd-diqos.c -o $@ \
 		$(shell $(PKG_CONFIG) --cflags --libs gstreamer-check-1.0 gstreamer-video-1.0) $(CRYSTALHD_CPU_FLAGS)
 
-check-player:
+# Includes only the production helper and CPU fixtures, never libcrystalhd.
+$(DI_QOS_TEST): $(ROOTDIR)/tests/gst-diqos.c gstcrystalhd-diqos.c gstcrystalhd-diqos.h
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror $< -o $@ \
+		$(shell $(PKG_CONFIG) --cflags --libs gstreamer-check-1.0 gstreamer-video-1.0) $(CRYSTALHD_CPU_FLAGS)
+
+check-diqos: $(DI_QOS_TEST)
+	./$(DI_QOS_TEST)
+
+check-player: $(PLUGIN)
 	sh -n $(ROOTDIR)/scripts/crystalhd-play
-	$(PYTHON) -B $(ROOTDIR)/tests/gstreamer-player.test.py
+	GST_PLUGIN_PATH_1_0=$(CURDIR) GST_PLUGIN_PATH=$(CURDIR) \
+	LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd):$(LD_LIBRARY_PATH) \
+		$(PYTHON) -B $(ROOTDIR)/tests/gstreamer-player.test.py
 
 $(CODECS_TEST): $(ROOTDIR)/tests/gst-codecs.c gstcrystalhd-codecs.h gstcrystalhd-timing.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I. $< -o $@ \
 		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES)) $(CRYSTALHD_CPU_FLAGS)
 
 check: $(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TEST) \
-		check-codec-playback check-player
+		check-codec-playback check-player check-diqos
 	@registry=$$(mktemp); \
 	trap 'rm -f "$$registry"' EXIT HUP INT TERM; \
 	GST_REGISTRY="$$registry" GST_PLUGIN_PATH=$(CURDIR) \
@@ -113,8 +126,8 @@ uninstall:
 	@rmdir -- "$(DESTDIR)$(DATADIR)/crystalhd" 2>/dev/null || true
 
 clean:
-	rm -f $(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TEST) gstreamer-codec-playback-test $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
+	rm -f $(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TEST) $(DI_QOS_TEST) gstreamer-codec-playback-test $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
 
 include $(ROOTDIR)/cpu.mk
-$(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TEST) gstreamer-codec-playback-test: $(CRYSTALHD_BUILD_DEPS)
+$(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TEST) $(DI_QOS_TEST) gstreamer-codec-playback-test: $(CRYSTALHD_BUILD_DEPS)
 $(PLUGIN): $(ROOTDIR)/linux_lib/libcrystalhd/libcrystalhd.so

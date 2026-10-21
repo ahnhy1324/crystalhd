@@ -272,6 +272,8 @@ struct Fixture {
         pthread_mutex_init(&context.thLock, &attr);
         pthread_mutexattr_destroy(&attr);
         if (!context.alignBuf ||
+            posix_memalign(reinterpret_cast<void **>(&context.txScratch), 128,
+                           CIRC_TX_BUF_SIZE) != 0 ||
             txBufInit(&context.circBuf, CIRC_TX_BUF_SIZE) != BC_STS_SUCCESS)
             std::abort();
         calls = 0;
@@ -284,6 +286,7 @@ struct Fixture {
         DtsReleasePESConverter(&context);
         std::free(context.VidParams.pMetaData);
         txBufFree(&context.circBuf);
+        std::free(context.txScratch);
         pthread_mutex_destroy(&context.thLock);
         std::free(context.alignBuf);
         bc_dil_glob_ptr = nullptr;
