@@ -40,6 +40,17 @@ static const uint32_t kLegacyPacked422Bytes = kLegacyYBytes * 2U;
 static const uint32_t kScaledWidth = 1280U;
 static const uint32_t kScaledPacked422Bytes = kScaledWidth * 1090U * 2U;
 static const uint32_t kScaledOpenWord = 0x50050001U;
+
+static uint32_t ScaleWord(uint32_t width)
+{
+	return ((width & 0xfffU) << 20) |
+	       ((width & 0xfffU) << 8) | 1U;
+}
+
+static uint32_t Packed422Bytes(uint32_t width)
+{
+	return width * 1090U * 2U;
+}
 #endif
 
 static void Check(bool condition, const char *message)
@@ -813,26 +824,36 @@ static bool PoolHasLayout(const Fixture &fixture, uint32_t bytes,
 static void TestScaledPoolStarts()
 {
 	struct ScaledCase {
+		uint32_t width;
 		uint32_t count;
 		bool immediate;
 		bool software_uyvy;
 	};
 	const ScaledCase cases[] = {
-		{BC_RX_LIST_CNT, false, false},
-		{8, true, true},
+		{128, 8, false, false},
+		{130, 8, true, false},
+		{640, 8, false, false},
+		{960, 8, true, false},
+		{1280, BC_RX_LIST_CNT, false, false},
+		{1280, 8, true, true},
+		{1282, 8, false, false},
+		{1918, 8, true, false},
 	};
-	char label[96];
+	char label[112];
 
 	for (const ScaledCase &test : cases) {
 		std::snprintf(label, sizeof(label),
-		              "scaled %u-buffer %s%s START", test.count,
+		              "scaled width %u %u-buffer %s%s START", test.width,
+		              test.count,
 		              test.immediate ? "immediate" : "ordinary",
 		              test.software_uyvy ? " UYVY request" : "");
 		case_name = label;
 		Fixture fixture(BC_PCI_DEVID_FLEA, test.count, true);
 		fixture.context.b422Mode = OUTPUT_MODE422_YUY2;
 		fixture.context.softwareUyvy = test.software_uyvy;
-		fixture.context.activeFleaScaleWord = kScaledOpenWord;
+		fixture.context.activeFleaScaleWord = ScaleWord(test.width);
+		/* Pending requests are not the admitted OPEN identity. */
+		fixture.context.EnableScaling = test.width == 640 ? 960 : 640;
 		void *old[BC_RX_LIST_CNT] = {};
 		for (size_t index = 0; index < test.count; ++index)
 			old[index] = fixture.context.Mpools[index].buff;
@@ -840,11 +861,12 @@ static void TestScaledPoolStarts()
 
 		Check(StartCapture(fixture, test.immediate) == BC_STS_SUCCESS,
 		      "qualified scaled capture starts");
-		Check(fixture.context.rxBufferWidth == kScaledWidth &&
-		      PoolHasLayout(fixture, kScaledPacked422Bytes, old),
+		const uint32_t bytes = Packed422Bytes(test.width);
+		Check(fixture.context.rxBufferWidth == test.width &&
+		      PoolHasLayout(fixture, bytes, old),
 		      "qualified start atomically replaces every fixed buffer");
 		Check(fixture.context.Mpools[0].buff[0] == 0 &&
-		      fixture.context.Mpools[0].buff[kScaledPacked422Bytes - 1] == 0,
+		      fixture.context.Mpools[0].buff[bytes - 1] == 0,
 		      "replacement backing is zeroed across its complete extent");
 		Check(tracked_old_frees == test.count,
 		      "successful replacement frees every retired fixed buffer");
@@ -855,7 +877,7 @@ static void TestScaledPoolStarts()
 		Check(AddsUseUniqueConfiguredBuffers(0, test.count),
 		      "scaled ADDs use each replacement address exactly once");
 		CheckAddPayloads(0, test.count, OUTPUT_MODE422_YUY2,
-		                 kScaledWidth);
+		                 test.width);
 		CheckStartPayload(events[test.count], BC_PCI_DEVID_FLEA,
 		                  test.immediate, test.count);
 		Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
@@ -877,16 +899,38 @@ static void TestScaledPoolFallbacks()
 		 "LINK scaled-word fallback"},
 		{BC_PCI_DEVID_FLEA, 0, OUTPUT_MODE422_YUY2, true,
 		 "FLEA unscaled fallback"},
-		{BC_PCI_DEVID_FLEA, 0x28028001U, OUTPUT_MODE422_YUY2, true,
-		 "FLEA normalized 640 scale fallback"},
-		{BC_PCI_DEVID_FLEA, 0x3c03c001U, OUTPUT_MODE422_YUY2, true,
-		 "FLEA normalized 960 scale fallback"},
 		{BC_PCI_DEVID_FLEA, 0x5004ff01U, OUTPUT_MODE422_YUY2, true,
-		 "FLEA nonexact scale fallback"},
-		{BC_PCI_DEVID_FLEA, 0x50250201U, OUTPUT_MODE422_YUY2, true,
-		 "FLEA normalized 1282 scale fallback"},
+		 "FLEA mismatched scale fallback"},
+		{BC_PCI_DEVID_FLEA, ScaleWord(640) & ~1U,
+		 OUTPUT_MODE422_YUY2, true, "FLEA disabled-word fallback"},
+		{BC_PCI_DEVID_FLEA, 1U, OUTPUT_MODE422_YUY2, true,
+		 "FLEA enable-only fallback"},
+		{BC_PCI_DEVID_FLEA, (640U << 20) | 1U,
+		 OUTPUT_MODE422_YUY2, true, "FLEA missing second width fallback"},
+		{BC_PCI_DEVID_FLEA, (640U << 8) | 1U,
+		 OUTPUT_MODE422_YUY2, true, "FLEA missing first width fallback"},
+		{BC_PCI_DEVID_FLEA, ScaleWord(126), OUTPUT_MODE422_YUY2, true,
+		 "FLEA below-minimum width fallback"},
+		{BC_PCI_DEVID_FLEA, ScaleWord(129), OUTPUT_MODE422_YUY2, true,
+		 "FLEA odd low width fallback"},
+		{BC_PCI_DEVID_FLEA, ScaleWord(1917), OUTPUT_MODE422_YUY2, true,
+		 "FLEA odd high width fallback"},
+		{BC_PCI_DEVID_FLEA, ScaleWord(1920), OUTPUT_MODE422_YUY2, true,
+		 "FLEA legacy width fallback"},
+		{BC_PCI_DEVID_FLEA, ScaleWord(1922), OUTPUT_MODE422_YUY2, true,
+		 "FLEA above-legacy width fallback"},
+		{BC_PCI_DEVID_FLEA, ScaleWord(4094), OUTPUT_MODE422_YUY2, true,
+		 "FLEA maximum even field fallback"},
+		{BC_PCI_DEVID_FLEA, ScaleWord(640) | 2U,
+		 OUTPUT_MODE422_YUY2, true, "FLEA reserved-bit fallback"},
+		{BC_PCI_DEVID_FLEA, (640U << 20) | (960U << 8) | 1U,
+		 OUTPUT_MODE422_YUY2, true, "FLEA unequal width fallback"},
+		{BC_PCI_DEVID_FLEA, (960U << 20) | (640U << 8) | 1U,
+		 OUTPUT_MODE422_YUY2, true, "FLEA reverse unequal fallback"},
 		{BC_PCI_DEVID_FLEA, kScaledOpenWord, OUTPUT_MODE420, true,
 		 "FLEA planar fallback"},
+		{BC_PCI_DEVID_FLEA, kScaledOpenWord, OUTPUT_MODE422_UYVY, true,
+		 "FLEA hardware UYVY fallback"},
 		{BC_PCI_DEVID_FLEA, kScaledOpenWord, OUTPUT_MODE422_YUY2, false,
 		 "FLEA non-move fallback"},
 	};
@@ -896,6 +940,7 @@ static void TestScaledPoolFallbacks()
 		Fixture fixture(test.device, 8, true);
 		fixture.context.b422Mode = test.mode;
 		fixture.context.activeFleaScaleWord = test.scale_word;
+		fixture.context.EnableScaling = 1280;
 		if (!test.addbuff_move)
 			fixture.context.CfgFlags &= ~BC_ADDBUFF_MOVE;
 		void *old[BC_RX_LIST_CNT] = {};
@@ -965,6 +1010,48 @@ static void TestScaledPoolAllocationFailures()
 		Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
 		      "retried scaled mapping retires cleanly");
 	}
+
+	case_name = "scaled valid-width growth allocation failure";
+	Fixture growth(BC_PCI_DEVID_FLEA, 8, true);
+	growth.context.b422Mode = OUTPUT_MODE422_YUY2;
+	growth.context.activeFleaScaleWord = ScaleWord(640);
+	Check(DtsMapYUVBuffs(&growth.context) == BC_STS_SUCCESS &&
+	      growth.context.rxBufferWidth == 640,
+	      "growth fixture first commits the smaller admitted width");
+	Check(DtsUnmapYUVBuffs(&growth.context) == BC_STS_SUCCESS,
+	      "smaller admitted width retires before attempted growth");
+	void *narrow[BC_RX_LIST_CNT] = {};
+	for (size_t index = 0; index < growth.context.MpoolCnt; ++index)
+		narrow[index] = growth.context.Mpools[index].buff;
+
+	growth.context.activeFleaScaleWord = ScaleWord(1282);
+	ResetMock(true);
+	TrackOldOutputs(growth);
+	fail_resize_size = Packed422Bytes(1282);
+	fail_resize_at = 3;
+	track_resize_allocations = true;
+	const BC_STATUS failed_growth = DtsMapYUVBuffs(&growth.context);
+	track_resize_allocations = false;
+	bool narrow_unchanged = growth.context.rxBufferWidth == 640;
+	for (size_t index = 0; index < growth.context.MpoolCnt; ++index)
+		narrow_unchanged &= growth.context.Mpools[index].buff == narrow[index] &&
+		                    growth.context.Mpools[index].sz ==
+		                        Packed422Bytes(640);
+	Check(failed_growth == BC_STS_INSUFF_RES && narrow_unchanged &&
+	      tracked_old_frees == 0 && event_count == 0 &&
+	      resize_live_count == 0,
+	      "failed valid-width growth preserves the committed smaller pool");
+
+	ResetMock(true);
+	TrackOldOutputs(growth);
+	Check(DtsMapYUVBuffs(&growth.context) == BC_STS_SUCCESS &&
+	      growth.context.rxBufferWidth == 1282 &&
+	      PoolHasLayout(growth, Packed422Bytes(1282), narrow),
+	      "failed valid-width growth is retryable as one complete replacement");
+	Check(tracked_old_frees == growth.context.MpoolCnt,
+	      "growth retry retires every smaller allocation exactly once");
+	Check(DtsUnmapYUVBuffs(&growth.context) == BC_STS_SUCCESS,
+	      "retried valid-width growth retires cleanly");
 }
 
 static void TestScaledPoolOwnershipAndRestart()
@@ -995,17 +1082,47 @@ static void TestScaledPoolOwnershipAndRestart()
 	      event_count == 0,
 	      "repeat map of the committed layout does not reallocate or re-add");
 	Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
-	      "scaled mapping retires before unscaled reopen");
+	      "scaled mapping retires before a different admitted width");
 
-	fixture.context.activeFleaScaleWord = 0;
+	fixture.context.activeFleaScaleWord = ScaleWord(640);
+	ResetMock(true);
+	TrackOldOutputs(fixture);
+	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS &&
+	      fixture.context.rxBufferWidth == 640 &&
+	      PoolHasLayout(fixture, Packed422Bytes(640), scaled),
+	      "retired 1280 backing can transition to admitted width 640");
+	Check(tracked_old_frees == fixture.context.MpoolCnt,
+	      "valid-width shrink retires each old allocation once");
+	void *narrow[BC_RX_LIST_CNT] = {};
+	for (size_t index = 0; index < fixture.context.MpoolCnt; ++index)
+		narrow[index] = fixture.context.Mpools[index].buff;
+	Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+	      "narrow mapping retires before valid-width growth");
+
+	fixture.context.activeFleaScaleWord = ScaleWord(1282);
+	ResetMock(true);
+	TrackOldOutputs(fixture);
+	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS &&
+	      fixture.context.rxBufferWidth == 1282 &&
+	      PoolHasLayout(fixture, Packed422Bytes(1282), narrow),
+	      "retired narrow backing can grow to a different admitted width");
+	Check(tracked_old_frees == fixture.context.MpoolCnt,
+	      "valid-width growth retires each old allocation once");
+	void *grown[BC_RX_LIST_CNT] = {};
+	for (size_t index = 0; index < fixture.context.MpoolCnt; ++index)
+		grown[index] = fixture.context.Mpools[index].buff;
+	Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+	      "grown mapping retires before malformed-word fallback");
+
+	fixture.context.activeFleaScaleWord = ScaleWord(1282) | 2U;
 	ResetMock(true);
 	TrackOldOutputs(fixture);
 	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS &&
 	      fixture.context.rxBufferWidth == 1920 &&
-	      PoolHasLayout(fixture, kLegacyPacked422Bytes, scaled),
-	      "unscaled reopen restores the complete fixed layout");
+	      PoolHasLayout(fixture, kLegacyPacked422Bytes, grown),
+	      "malformed admitted identity restores the complete fixed layout");
 	Check(tracked_old_frees == fixture.context.MpoolCnt,
-	      "unscaled reopen retires each scaled allocation once");
+	      "fixed fallback retires each scaled allocation once");
 	CheckAddPayloads(0, fixture.context.MpoolCnt, OUTPUT_MODE422_YUY2);
 	Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
 	      "restored fixed mapping retires cleanly");
@@ -1136,18 +1253,27 @@ static void TestScaledPoolValidationBarriers()
 #else
 static void TestScaledPoolBuildGate()
 {
-	case_name = "scaled RX build gate disabled";
-	Fixture fixture(BC_PCI_DEVID_FLEA, 8);
-	fixture.context.b422Mode = OUTPUT_MODE422_YUY2;
-	fixture.context.activeFleaScaleWord = 0x50050001U;
-	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
-	      "ordinary build maps the fixed pool despite a scaled OPEN word");
-	Check(fixture.context.rxBufferWidth == 1920,
-	      "ordinary build keeps the fixed 1920-wide layout");
-	CheckAddPayloads(0, fixture.context.MpoolCnt,
-	                 OUTPUT_MODE422_YUY2);
-	Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
-	      "ordinary build retires the fixed mapping cleanly");
+	const uint32_t words[] = {
+		0x08008001U, 0x28028001U, 0x3c03c001U,
+		0x50050001U, 0x50250201U, 0x77e77e01U,
+	};
+	char label[96];
+	for (uint32_t word : words) {
+		std::snprintf(label, sizeof(label),
+		              "scaled RX build gate disabled word %08x", word);
+		case_name = label;
+		Fixture fixture(BC_PCI_DEVID_FLEA, 8);
+		fixture.context.b422Mode = OUTPUT_MODE422_YUY2;
+		fixture.context.activeFleaScaleWord = word;
+		Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+		      "ordinary build maps the fixed pool despite a scaled OPEN word");
+		Check(fixture.context.rxBufferWidth == 1920,
+		      "ordinary build keeps the fixed 1920-wide layout");
+		CheckAddPayloads(0, fixture.context.MpoolCnt,
+		                 OUTPUT_MODE422_YUY2);
+		Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+		      "ordinary build retires the fixed mapping cleanly");
+	}
 }
 #endif
 
