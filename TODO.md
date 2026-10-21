@@ -84,9 +84,12 @@ expanding the released scope to general full-rate FHD/deinterlacing support.
   — alternate hardware, the LTS item executed through #371, bounded BCM70015
   deep-S3 coverage completed through #395/#397, remaining fault/removal work,
   broader streams, and physical presentation/A/V synchronization.
-  Next: attribute remaining clocked QoS/deadline losses after native DI-QoS
-  integration (30-minute run: 174/90,000 lost outputs); keep the intermittent
-  firmware/input-space stall separate. See the [presentation results](HARDWARE-2026-09-13.md).
+  The matched output-size screen rules out deterministic 900p/990p failure:
+  low-iowait repeats are zero-drop, while both FHD repeats retain small losses at low
+  iowait. Next: attribute the remaining explicit-FHD QoS/deadline loss after
+  native DI-QoS integration (30-minute run: 174/90,000 lost outputs); keep the
+  intermittent firmware/input-space stall separate. See the
+  [presentation results](HARDWARE-2026-09-13.md).
 - [ ] [#470: Output-aware RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470)
   — first reconcile allocation, registration, plane offsets and padding with
   checked sizes; only then reduce buffers with lifecycle and pixel validation.
