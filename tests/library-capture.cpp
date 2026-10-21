@@ -153,6 +153,11 @@ static unsigned resize_live_count;
 static bool track_resize_allocations;
 static void *tracked_old_outputs[BC_RX_LIST_CNT];
 static unsigned tracked_old_frees;
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+static size_t poison_materialization_size;
+static bool verify_zero_before_first_add;
+static bool zero_before_first_add;
+#endif
 
 static unsigned OwnedCount()
 {
@@ -206,6 +211,11 @@ static void ResetMock(bool clear_ownership)
 	            sizeof(resize_live_allocations));
 	tracked_old_frees = 0;
 	std::memset(tracked_old_outputs, 0, sizeof(tracked_old_outputs));
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+	poison_materialization_size = 0;
+	verify_zero_before_first_add = false;
+	zero_before_first_add = false;
+#endif
 }
 
 static void ResetLifecycleGate()
@@ -301,6 +311,29 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 	case BCM_IOC_ADD_RXBUFFS: {
 		const unsigned call = add_calls++;
 		const int index = PoolIndex(data->u.RxBuffs.YuvBuff);
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+		if (verify_zero_before_first_add && call == 0) {
+			zero_before_first_add = true;
+			for (size_t pool_index = 0;
+			     zero_before_first_add && pool_index < active_context->MpoolCnt;
+			     ++pool_index) {
+				const DTS_MPOOL_TYPE &pool = active_context->Mpools[pool_index];
+				if (!(pool.type & BC_MEM_DEC_YUVBUFF))
+					continue;
+				if (!pool.buff || !pool.sz) {
+					zero_before_first_add = false;
+					break;
+				}
+				for (uint32_t byte = 0; byte < pool.sz; ++byte)
+					if (pool.buff[byte] != 0) {
+						zero_before_first_add = false;
+						break;
+					}
+			}
+			Check(zero_before_first_add,
+			      "every deferred output is zero before the first ADD ioctl");
+		}
+#endif
 		if (event) {
 			event->buffer = data->u.RxBuffs.YuvBuff;
 			event->buffer_size = data->u.RxBuffs.YuvBuffSz;
@@ -405,6 +438,10 @@ extern "C" void *__wrap_malloc(size_t size)
 			return nullptr;
 	}
 	pointer = __real_malloc(size);
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+	if (pointer && size == poison_materialization_size)
+		std::memset(pointer, 0xa5, size);
+#endif
 	if (track_resize_allocations && pointer && resize_live_count <
 	    sizeof(resize_live_allocations) /
 	        sizeof(resize_live_allocations[0]))
@@ -819,6 +856,236 @@ static bool PoolHasLayout(const Fixture &fixture, uint32_t bytes,
 			return false;
 	}
 	return true;
+}
+
+static bool PoolIsDeferred(const DTS_LIB_CONTEXT &context)
+{
+	if (!context.Mpools || !context.MpoolCnt || context.rxBufferWidth)
+		return false;
+	for (size_t index = 0; index < context.MpoolCnt; ++index) {
+		const DTS_MPOOL_TYPE &pool = context.Mpools[index];
+		if (!(pool.type & BC_MEM_DEC_YUVBUFF) ||
+		    !(pool.type & BC_MEM_USER_MODE_ALLOC) || pool.buff || pool.sz)
+			return false;
+	}
+	return true;
+}
+
+static void TestDeferredPoolMaterialization()
+{
+	bc_dil_glob_s globals = {};
+
+	case_name = "deferred exact pool materialization";
+	DTS_LIB_CONTEXT exact = {};
+	exact.OpMode = DTS_PLAYBACK_MODE;
+	exact.CfgFlags = BC_MPOOL_INCL_YUV_BUFFS | BC_ADDBUFF_MOVE;
+	exact.b422Mode = OUTPUT_MODE422_YUY2;
+	exact.DevId = BC_PCI_DEVID_FLEA;
+	exact.DevHandle = 99;
+	Check(DtsAllocMemPools(&exact) == BC_STS_SUCCESS &&
+	      PoolIsDeferred(exact),
+	      "experimental MOVE allocation creates descriptors without payload");
+	exact.activeFleaScaleWord = ScaleWord(640);
+	bc_dil_glob_ptr = &globals;
+	active_context = &exact;
+	active_pools = exact.Mpools;
+	active_pool_count = exact.MpoolCnt;
+	ResetMock(true);
+	poison_materialization_size = Packed422Bytes(640);
+	verify_zero_before_first_add = true;
+	Check(DtsMapYUVBuffs(&exact) == BC_STS_SUCCESS,
+	      "first map materializes the admitted exact layout");
+	bool exact_complete = exact.rxBufferWidth == 640;
+	for (size_t index = 0; exact_complete && index < exact.MpoolCnt; ++index) {
+		const DTS_MPOOL_TYPE &pool = exact.Mpools[index];
+		exact_complete = pool.buff && pool.sz == Packed422Bytes(640) &&
+			pool.buff[0] == 0 && pool.buff[pool.sz - 1] == 0;
+	}
+	Check(exact_complete && zero_before_first_add &&
+	      event_count == exact.MpoolCnt,
+	      "the complete exact pool is zeroed before the first ADD");
+	CheckAddPayloads(0, exact.MpoolCnt, OUTPUT_MODE422_YUY2, 640);
+	BC_IOCTL_DATA receipt = {};
+	receipt.u.DecOutData.OutPutBuffs.YuvBuff = exact.Mpools[0].buff;
+	Check(DtsDbgCheckPointers(&exact, &receipt),
+	      "a materialized output receipt matches its owning descriptor");
+	uint8_t unrelated = 0;
+	receipt.u.DecOutData.OutPutBuffs.YuvBuff = &unrelated;
+	Check(!DtsDbgCheckPointers(&exact, &receipt),
+	      "an unrelated non-null receipt does not match the pool");
+	Check(DtsUnmapYUVBuffs(&exact) == BC_STS_SUCCESS,
+	      "the first exact mapping retires cleanly");
+	active_context = nullptr;
+	active_pools = nullptr;
+	active_pool_count = 0;
+	bc_dil_glob_ptr = nullptr;
+	DtsReleaseMemPools(&exact);
+
+	case_name = "deferred pool release before first map";
+	DTS_LIB_CONTEXT unopened = {};
+	unopened.OpMode = DTS_PLAYBACK_MODE;
+	unopened.CfgFlags = BC_MPOOL_INCL_YUV_BUFFS | BC_ADDBUFF_MOVE;
+	unopened.b422Mode = OUTPUT_MODE422_YUY2;
+	Check(DtsAllocMemPools(&unopened) == BC_STS_SUCCESS &&
+	      PoolIsDeferred(unopened),
+	      "a deferred pool may be closed before its first materialization");
+	DtsReleaseMemPools(&unopened);
+
+	case_name = "deferred fixed fallback materialization";
+	DTS_LIB_CONTEXT fallback = {};
+	fallback.OpMode = DTS_PLAYBACK_MODE;
+	fallback.CfgFlags = BC_MPOOL_INCL_YUV_BUFFS | BC_ADDBUFF_MOVE;
+	fallback.b422Mode = OUTPUT_MODE422_YUY2;
+	fallback.DevId = BC_PCI_DEVID_FLEA;
+	fallback.DevHandle = 99;
+	Check(DtsAllocMemPools(&fallback) == BC_STS_SUCCESS &&
+	      PoolIsDeferred(fallback),
+	      "unscaled MOVE allocation also defers the payload");
+	bc_dil_glob_ptr = &globals;
+	active_context = &fallback;
+	active_pools = fallback.Mpools;
+	active_pool_count = fallback.MpoolCnt;
+	ResetMock(true);
+	Check(DtsMapYUVBuffs(&fallback) == BC_STS_SUCCESS,
+	      "missing scale identity materializes the fixed fallback");
+	bool fixed_complete = fallback.rxBufferWidth == 1920;
+	for (size_t index = 0; fixed_complete && index < fallback.MpoolCnt; ++index) {
+		const DTS_MPOOL_TYPE &pool = fallback.Mpools[index];
+		fixed_complete = pool.buff && pool.sz == kLegacyPacked422Bytes &&
+			pool.buff[0] == 0 && pool.buff[pool.sz - 1] == 0;
+	}
+	Check(fixed_complete && event_count == fallback.MpoolCnt,
+	      "the deferred fallback becomes one complete zeroed fixed pool");
+	CheckAddPayloads(0, fallback.MpoolCnt, OUTPUT_MODE422_YUY2);
+	Check(DtsUnmapYUVBuffs(&fallback) == BC_STS_SUCCESS,
+	      "the first fixed fallback mapping retires cleanly");
+	active_context = nullptr;
+	active_pools = nullptr;
+	active_pool_count = 0;
+	bc_dil_glob_ptr = nullptr;
+	DtsReleaseMemPools(&fallback);
+
+	case_name = "deferred NV12 fallback materialization";
+	DTS_LIB_CONTEXT nv12 = {};
+	nv12.OpMode = DTS_PLAYBACK_MODE;
+	nv12.CfgFlags = BC_MPOOL_INCL_YUV_BUFFS | BC_ADDBUFF_MOVE;
+	nv12.b422Mode = OUTPUT_MODE420;
+	nv12.DevId = BC_PCI_DEVID_FLEA;
+	nv12.DevHandle = 99;
+	Check(DtsAllocMemPools(&nv12) == BC_STS_SUCCESS && PoolIsDeferred(nv12),
+	      "NV12 MOVE allocation defers its output backing");
+	bc_dil_glob_ptr = &globals;
+	active_context = &nv12;
+	active_pools = nv12.Mpools;
+	active_pool_count = nv12.MpoolCnt;
+	ResetMock(true);
+	Check(DtsMapYUVBuffs(&nv12) == BC_STS_SUCCESS,
+	      "NV12 fallback materializes on first map");
+	bool nv12_complete = nv12.rxBufferWidth == 1920;
+	for (size_t index = 0; nv12_complete && index < nv12.MpoolCnt; ++index)
+		nv12_complete = nv12.Mpools[index].buff &&
+			nv12.Mpools[index].sz == kLegacyPacked422Bytes;
+	Check(nv12_complete,
+	      "NV12 keeps two-byte backing while registering its planar extent");
+	CheckAddPayloads(0, nv12.MpoolCnt, OUTPUT_MODE420);
+	Check(DtsUnmapYUVBuffs(&nv12) == BC_STS_SUCCESS,
+	      "the deferred NV12 mapping retires cleanly");
+	active_context = nullptr;
+	active_pools = nullptr;
+	active_pool_count = 0;
+	bc_dil_glob_ptr = nullptr;
+	DtsReleaseMemPools(&nv12);
+
+	case_name = "diagnostic MOVE pool remains eager";
+	DTS_LIB_CONTEXT diagnostic = {};
+	diagnostic.OpMode = DTS_DIAG_MODE;
+	diagnostic.CfgFlags = BC_MPOOL_INCL_YUV_BUFFS | BC_ADDBUFF_MOVE;
+	diagnostic.b422Mode = OUTPUT_MODE422_YUY2;
+	Check(DtsAllocMemPools(&diagnostic) == BC_STS_SUCCESS,
+	      "diagnostic pool allocation succeeds");
+	bool diagnostic_complete = diagnostic.rxBufferWidth == 1920 &&
+		diagnostic.Mpools != nullptr;
+	for (size_t index = 0;
+	     diagnostic_complete && index < diagnostic.MpoolCnt; ++index)
+		diagnostic_complete = diagnostic.Mpools[index].buff &&
+			diagnostic.Mpools[index].sz == kLegacyPacked422Bytes;
+	Check(diagnostic_complete,
+	      "diagnostic MOVE preserves the eager fixed-layout contract");
+	DtsReleaseMemPools(&diagnostic);
+
+	case_name = "deferred initial allocation failure";
+	DTS_LIB_CONTEXT failed = {};
+	failed.OpMode = DTS_PLAYBACK_MODE;
+	failed.CfgFlags = BC_MPOOL_INCL_YUV_BUFFS | BC_ADDBUFF_MOVE;
+	failed.b422Mode = OUTPUT_MODE422_YUY2;
+	failed.DevId = BC_PCI_DEVID_FLEA;
+	failed.DevHandle = 99;
+	Check(DtsAllocMemPools(&failed) == BC_STS_SUCCESS &&
+	      PoolIsDeferred(failed),
+	      "failure fixture starts with no RX payload owner");
+	failed.activeFleaScaleWord = ScaleWord(128);
+	bc_dil_glob_ptr = &globals;
+	active_context = &failed;
+	active_pools = failed.Mpools;
+	active_pool_count = failed.MpoolCnt;
+	ResetMock(true);
+	BC_IOCTL_DATA null_output = {};
+	Check(!DtsDbgCheckPointers(&failed, &null_output),
+	      "a null receipt cannot match deferred null descriptors");
+	failed.Mpools[0].sz = 1;
+	Check(DtsMapYUVBuffs(&failed) == BC_STS_INV_ARG && event_count == 0,
+	      "null backing with a nonzero extent is rejected before ioctl");
+	failed.Mpools[0].sz = 0;
+	failed.Mpools[0].buff = static_cast<uint8_t *>(__real_malloc(1));
+	Check(failed.Mpools[0].buff != nullptr &&
+	      DtsMapYUVBuffs(&failed) == BC_STS_INV_ARG && event_count == 0,
+	      "non-null backing with a zero extent is rejected before ioctl");
+	failed.Mpools[0].sz = 1;
+	Check(failed.Mpools[0].buff != nullptr &&
+	      DtsMapYUVBuffs(&failed) == BC_STS_INV_ARG && event_count == 0,
+	      "a mixed deferred/materialized pool is rejected before ioctl");
+	__real_free(failed.Mpools[0].buff);
+	failed.Mpools[0].buff = nullptr;
+	failed.Mpools[0].sz = 0;
+	failed.Mpools[0].type &= ~BC_MEM_USER_MODE_ALLOC;
+	Check(DtsMapYUVBuffs(&failed) == BC_STS_INV_ARG && event_count == 0,
+	      "a deferred foreign owner is rejected before allocation or ioctl");
+	failed.Mpools[0].type |= BC_MEM_USER_MODE_ALLOC;
+	fail_resize_size = failed.MpoolCnt * sizeof(uint8_t *);
+	fail_resize_at = 0;
+	track_resize_allocations = true;
+	const BC_STATUS metadata_failure = DtsMapYUVBuffs(&failed);
+	track_resize_allocations = false;
+	Check(metadata_failure == BC_STS_INSUFF_RES && PoolIsDeferred(failed) &&
+	      event_count == 0 && resize_live_count == 0,
+	      "failed staging allocation remains empty and retryable");
+
+	const int payload_failures[] = {
+		0, 3, static_cast<int>(failed.MpoolCnt) - 1,
+	};
+	for (int failure_index : payload_failures) {
+		ResetMock(true);
+		fail_resize_size = Packed422Bytes(128);
+		fail_resize_at = failure_index;
+		track_resize_allocations = true;
+		const BC_STATUS payload_failure = DtsMapYUVBuffs(&failed);
+		track_resize_allocations = false;
+		Check(payload_failure == BC_STS_INSUFF_RES &&
+		      PoolIsDeferred(failed) && event_count == 0 &&
+		      resize_live_count == 0,
+		      "failed payload materialization remains empty and retryable");
+	}
+	ResetMock(true);
+	Check(DtsMapYUVBuffs(&failed) == BC_STS_SUCCESS &&
+	      failed.rxBufferWidth == 128,
+	      "deferred allocation failure retries as one exact pool");
+	Check(DtsUnmapYUVBuffs(&failed) == BC_STS_SUCCESS,
+	      "retried first mapping retires cleanly");
+	active_context = nullptr;
+	active_pools = nullptr;
+	active_pool_count = 0;
+	bc_dil_glob_ptr = nullptr;
+	DtsReleaseMemPools(&failed);
 }
 
 static void TestScaledPoolStarts()
@@ -2209,6 +2476,7 @@ int main()
 	TestConfiguredPoolAllocation();
 	TestReducedPoolStarts();
 #ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+	TestDeferredPoolMaterialization();
 	TestScaledPoolStarts();
 	TestScaledPoolFallbacks();
 	TestScaledPoolAllocationFailures();

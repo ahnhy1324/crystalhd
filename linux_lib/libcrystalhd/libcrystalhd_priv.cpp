@@ -358,36 +358,51 @@ static BC_STATUS DtsEnsureRxBufferLayout(DTS_LIB_CONTEXT *Ctx)
 	DTS_RX_BUFFER_LAYOUT layout;
 	uint8_t **staged;
 	uint32_t i;
+	uint32_t outputCount = 0;
+	bool haveBacking = false;
+	bool missingBacking = false;
 	const uint32_t current = Ctx->rxBufferWidth ?
 		Ctx->rxBufferWidth : DTS_RX_LEGACY_WIDTH;
 	const uint32_t desired = DtsDesiredRxBufferWidth(Ctx);
 
-	if (current == desired)
+	if (!Ctx->Mpools || !Ctx->MpoolCnt ||
+	    Ctx->MpoolCnt > ((size_t)-1) / sizeof(*staged))
+		return BC_STS_INV_ARG;
+
+	/* A deferred pool is either wholly absent or wholly materialized.  Reject
+	 * mixed/foreign/aliased states before deciding that no resize is needed. */
+	for (i = 0; i < Ctx->MpoolCnt; ++i) {
+		DTS_MPOOL_TYPE *mp = &Ctx->Mpools[i];
+		if (!(mp->type & BC_MEM_DEC_YUVBUFF))
+			continue;
+		outputCount++;
+		if (!(mp->type & BC_MEM_USER_MODE_ALLOC))
+			return BC_STS_INV_ARG;
+		if (!mp->buff) {
+			if (mp->sz)
+				return BC_STS_INV_ARG;
+			missingBacking = true;
+			continue;
+		}
+		if (!mp->sz)
+			return BC_STS_INV_ARG;
+		haveBacking = true;
+		for (uint32_t prior = 0; prior < i; ++prior)
+			if ((Ctx->Mpools[prior].type & BC_MEM_DEC_YUVBUFF) &&
+			    Ctx->Mpools[prior].buff == mp->buff)
+				return BC_STS_INV_ARG;
+	}
+	if (!outputCount || (haveBacking && missingBacking))
+		return BC_STS_INV_ARG;
+	if (haveBacking && current == desired)
 		return BC_STS_SUCCESS;
 	if (Ctx->bMapOutBufDone || Ctx->bMapOutBufDirty ||
 	    Ctx->ProcOutPending || Ctx->CancelWaiting ||
 	    Ctx->outputPhase != DTS_OUTPUT_IDLE || Ctx->txQuiescing ||
 	    DtsStopIsUnresolved(Ctx))
 		return BC_STS_BUSY;
-	if (!Ctx->Mpools || !Ctx->MpoolCnt ||
-	    Ctx->MpoolCnt > ((size_t)-1) / sizeof(*staged))
-		return BC_STS_INV_ARG;
 	if (DtsCalculateRxBufferLayout(Ctx, desired, &layout) != BC_STS_SUCCESS)
 		return BC_STS_INV_ARG;
-
-	/* Validate every owner before allocating, including uniqueness: a
-	 * transactional swap must never free aliased or foreign backing. */
-	for (i = 0; i < Ctx->MpoolCnt; ++i) {
-		DTS_MPOOL_TYPE *mp = &Ctx->Mpools[i];
-		if (!(mp->type & BC_MEM_DEC_YUVBUFF))
-			continue;
-		if (!(mp->type & BC_MEM_USER_MODE_ALLOC) || !mp->buff)
-			return BC_STS_INV_ARG;
-		for (uint32_t prior = 0; prior < i; ++prior)
-			if ((Ctx->Mpools[prior].type & BC_MEM_DEC_YUVBUFF) &&
-			    Ctx->Mpools[prior].buff == mp->buff)
-				return BC_STS_INV_ARG;
-	}
 
 	staged = (uint8_t **)malloc(Ctx->MpoolCnt * sizeof(*staged));
 	if (!staged)
@@ -404,6 +419,10 @@ static BC_STATUS DtsEnsureRxBufferLayout(DTS_LIB_CONTEXT *Ctx)
 			return BC_STS_INSUFF_RES;
 		}
 	}
+	if (!haveBacking)
+		for (i = 0; i < Ctx->MpoolCnt; ++i)
+			if (staged[i])
+				memset(staged[i], 0, layout.allocationBytes);
 
 	/* All fallible allocations have succeeded, so the old pool is still a
 	 * complete rollback target.  Retire each old resident buffer before
@@ -417,7 +436,8 @@ static BC_STATUS DtsEnsureRxBufferLayout(DTS_LIB_CONTEXT *Ctx)
 		mp->buff = staged[i];
 		mp->sz = layout.allocationBytes;
 		free(old);
-		memset(mp->buff, 0, layout.allocationBytes);
+		if (haveBacking)
+			memset(mp->buff, 0, layout.allocationBytes);
 	}
 	free(staged);
 	Ctx->rxBufferWidth = desired;
@@ -1909,6 +1929,19 @@ static BC_STATUS DtsAllocMemPoolsInitialized(DTS_LIB_CONTEXT *Ctx)
 	for(i=0; i<Ctx->MpoolCnt; i++){
 		mp = &Ctx->Mpools[i];
 		mp->type = BC_MEM_DEC_YUVBUFF |BC_MEM_USER_MODE_ALLOC;
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+		/* MOVE playback does not hand RX backing to the driver until the
+		 * successful decoder OPEN has fixed the scale identity.  Defer only
+		 * that experimental payload so the first materialized pool can use the
+		 * admitted width instead of touching a throw-away Full-HD pool. */
+		if (Ctx->OpMode == DTS_PLAYBACK_MODE &&
+		    (Ctx->CfgFlags & BC_ADDBUFF_MOVE)) {
+			mp->sz = 0;
+			mp->buff = NULL;
+			Ctx->rxBufferWidth = 0;
+			continue;
+		}
+#endif
 		mp->sz = layout.allocationBytes;
 		mp->buff = (uint8_t *)malloc(mp->sz);
 		if(!mp->buff){
@@ -4223,7 +4256,8 @@ BOOL DtsDbgCheckPointers(DTS_LIB_CONTEXT *Ctx,BC_IOCTL_DATA *pIo)
 	for(i=0; i<Ctx->MpoolCnt; i++){
 		mp = &Ctx->Mpools[i];
 		if(mp->type & BC_MEM_DEC_YUVBUFF){
-			if(mp->buff == pIo->u.DecOutData.OutPutBuffs.YuvBuff){
+			if(mp->buff &&
+			   mp->buff == pIo->u.DecOutData.OutPutBuffs.YuvBuff){
 				bRet = TRUE;
 				break;
 			}
