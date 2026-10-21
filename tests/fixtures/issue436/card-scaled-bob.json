@@ -691,6 +691,43 @@
         "retained_observations": "Old720 sample5 wall1.260604419/CPU1.013040 seconds and9 minor faults remains in the median population; cause not established. First private production make failed on its absent DIL prerequisite before compilation; corrected private prerequisite/link selection uses the qualified DIL and passes. Original setup FAIL retained, not a runtime failure.",
         "conclusion": "Median CPU is17.54% lower at720 and16.30% lower at1080; wall time is17.55%/16.01% lower. Bounded CPU conversion improvement only; no new hardware or physical acceptance and no clocked QoS/stall fix claimed."
       },
+      "rx_pause_followup": {
+        "date": "2026-10-21",
+        "runtime_source": "dc1b2455fdbcd4bf1c066112014d91bb33a6d599",
+        "mechanism": "With PWM disabled, pause is a hardware no-op but sets software pause intent; the former PWM-gated dequeue resume left that intent set, preventing fresh-buffer RX posting. Clear it through the existing resume-threshold path even when PWM is disabled. No power-policy, ABI, timeout or external-app change.",
+        "deterministic_regression": {
+          "old_red": "old-red.log: four failures reproduce uncleared disabled-PWM pause intent and failure to post the cached picture from a fresh buffer without another IRQ/capture start; original FAIL retained",
+          "new_normal_and_sanitized_each": {"rx_scenarios": 1084, "rx_checks": 316816, "fetch_wait_scenarios": 68, "fetch_wait_checks": 210, "flea_isr_checks": 750, "link_isr_checks": 57, "failures": 0},
+          "power_regression": "power-green.log: normal and ASan/UBSan, watchdog off/on, each PASS143 integrated event sequences plus existing selector/transition/register/refusal/fault cases",
+          "kernel_build": "kernel-build.log: normal3.10.10 W=1/KCFLAGS=-Werror build PASS; unavailable pahole/vmlinux/BTF notices retained"
+        },
+        "stable_passive_trace": {
+          "artifact": "stable-1/correlation.json, fll-rx.log and player/{playback,trace}.json",
+          "module_version": "3.10.9",
+          "module_srcversion": "287221A03F284BCA2A3C04B",
+          "scope": "Unchanged installed module and qualified DIL/GStreamer; passive host argument/return probes cover ordinary DeviceOpen through DeviceClose on CLOCK_MONOTONIC. Instrumentation can perturb timing; not a performance comparison.",
+          "strict_status": "FAIL no-drop",
+          "counts_using_parent_columns": [750, 750, 1480, 1480, 1475, 1473, 2],
+          "losses": "20 DI fields,5 post-FHD converter outputs and2 sink drops; all750 pictures and1500 hardware fields complete",
+          "observation": {"paired_fll_writes": 3767, "paired_all_mem_writes": 5801, "paired_rx_calls": 1503, "fll_and_rx_failure_returns": 0, "pairing_or_overflow_errors": 0, "fll_return_cpu_count": 2, "rx_entry_cpu_count": 1, "rx_pwm0_pause1_active2_samples": 1487, "rx_pwm0_pause0_active2_samples": 16},
+          "limits": "RX tuples are non-atomic host snapshots. Successful FLL write return is not firmware consumption. Cross-CPU FLL return ordering invalidates global zero-return spans as a firmware-zero-duration claim; no causal stall or card-latency inference.",
+          "boundary": "PASS EOS, Open/Close0, original750 accepted inputs/1500 returned+released fields/750 successful finishes; observer exits0 and detaches before unlock, host pins/ref0, AER/node/link/PM unchanged"
+        },
+        "candidate_native": {
+          "artifact": "native-1/swap.json, native-1-finite/result.json and native-1-player/{result,playback,trace}.json",
+          "module_version": "3.10.10",
+          "module_srcversion": "F76E163690F147B91495DDD",
+          "userspace": "Unchanged qualified DIL3b81b1d and GStreamer b047ce1; no BPF in this trial, no installation",
+          "finite": {"status": "PASS", "fresh_opens_same_process": 2, "pictures_per_open": 50, "fields_per_open": 100, "eos_per_open": 1, "retained_exact_bytes": 184320000, "metadata_rows_per_open": 100, "client_seconds": 5.081721825, "boundary": "PASS"},
+          "finite_scope": "All field pixels matched earlier retained token/parity oracle; both metadata tables exactly match the retained100-row table. Close/ref0 between opens. Not a new software golden, throughput or A/V measurement.",
+          "player": {"strict_status": "FAIL no-drop", "counts_using_parent_columns": [750, 750, 1474, 1474, 1472, 1471, 1], "eos": true, "player_exit": 0, "strict_controller_exit": 1, "client_seconds": 33.875613974, "boundary": "PASS"},
+          "player_observation": "37 native observer records;750 accepted originals,1500 returned/released fields,750 successful finishes,Open/Close0 once each; no slow_finish/cap/fatal records. PTS remain ordered/unique on original40/20 ms grids, no trace overflow.",
+          "player_losses": "26 DI fields,0 resize,2 post-FHD converter outputs and1 sink drop:29 missing renders; not missing hardware fields",
+          "restoration": "PASS exact installed3.10.9/src287221A03F284BCA2A3C04B, before==after folded pins0/ref0,AER,node,PCIe link controls and Y/N PM policy; no force actions or installed-file changes",
+          "disposition": "TEST_FAIL_RESTORED. Deterministic disabled-PWM RX repost bug fixed and finite field/EOS/reopen qualification passes; strict clocked no-drop acceptance remains FAIL. Original intermittent firmware stall is not declared reproduced or cured by this bounded run."
+        },
+        "not_claimed": "No zero-drop support, new physical A/V acceptance, native-FHD detail, E2E/card latency gain or causal performance comparison between the passive stable and candidate trials. All earlier FAILs preserved."
+      },
       "disposition": "No production queue, scaler algorithm, thread-count, QoS or timeout changes. Preserve original FAILs; the separately corrected free-buffer publication race is not proven to have caused the observed firmware stall.",
       "free_buffer_publication_fix": {
         "source": "35b889e859cffdf361c0cf90965bd1d97a6d9d1a",
