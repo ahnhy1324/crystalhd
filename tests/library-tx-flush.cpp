@@ -91,6 +91,13 @@ static struct {
     BC_STATUS open_status;
     uint32_t open_channel_id;
     unsigned open_calls;
+    bool publish_open_scale;
+    uint32_t open_cached_scale;
+    uint32_t open_active_scale_before;
+    uint32_t open_active_scale_after;
+    uint32_t capture_cached_scale;
+    uint32_t capture_active_scale;
+    uint32_t capture_buffer_width;
     RecoveryStage current;
     std::vector<RecoveryStage> order;
     std::vector<uint8_t> power_states;
@@ -108,6 +115,8 @@ static std::thread *late_recovery_owner;
 static bool late_owner_ready, late_owner_release;
 static BC_STATUS late_owner_status;
 static const uint8_t packet[] = {0x00, 0x00, 0x01, 0xe0, 0x42, 0x19, 0xa5, 0x7c};
+static const uint32_t active_scale_word = 0x50050001U;
+static const uint32_t active_scale_width = 1280U;
 
 static void check(bool condition, const char *message)
 {
@@ -481,8 +490,18 @@ BC_STATUS DtsFWOpenChannel(HANDLE device, uint32_t, uint32_t)
     ++recovery.open_calls;
     if (status != BC_STS_SUCCESS || recovery.open_status != BC_STS_SUCCESS)
         return status != BC_STS_SUCCESS ? status : recovery.open_status;
-    static_cast<DTS_LIB_CONTEXT *>(device)->OpenRsp.channelId =
-        recovery.open_channel_id;
+    DTS_LIB_CONTEXT *context = static_cast<DTS_LIB_CONTEXT *>(device);
+    recovery.open_cached_scale = context->EnableScaling;
+    recovery.open_active_scale_before = context->activeFleaScaleWord;
+    if (recovery.publish_open_scale) {
+        check(context->DevId == BC_PCI_DEVID_FLEA &&
+              context->VidParams.VideoAlgo == BC_VID_ALGO_H264 &&
+              context->EnableScaling == active_scale_word,
+              "scaled recovery OPEN republishes only the exact cached Flea H.264 request");
+        context->activeFleaScaleWord = active_scale_word;
+    }
+    recovery.open_active_scale_after = context->activeFleaScaleWord;
+    context->OpenRsp.channelId = recovery.open_channel_id;
     return BC_STS_SUCCESS;
 }
 BC_STATUS DtsFWSetVideoInput(HANDLE) { return control_call(); }
@@ -582,7 +601,14 @@ extern "C" BC_STATUS __wrap_DtsStartCapture(HANDLE device)
         return __real_DtsStartCapture(device);
     if (!recovery.active)
         std::abort();
-    return recovery_stage(RecoveryStage::Capture);
+    const BC_STATUS status = recovery_stage(RecoveryStage::Capture);
+    if (status == BC_STS_SUCCESS) {
+        DTS_LIB_CONTEXT *context = static_cast<DTS_LIB_CONTEXT *>(device);
+        recovery.capture_cached_scale = context->EnableScaling;
+        recovery.capture_active_scale = context->activeFleaScaleWord;
+        recovery.capture_buffer_width = context->rxBufferWidth;
+    }
+    return status;
 }
 extern "C" BC_STATUS __real_DtsRecoveryFlushInputRing(DTS_LIB_CONTEXT *);
 extern "C" BC_STATUS __wrap_DtsRecoveryFlushInputRing(DTS_LIB_CONTEXT *context)
@@ -1391,6 +1417,8 @@ static void check_recovery_owner_and_admission(DTS_LIB_CONTEXT *context)
 static void run_successful_recovery(uint32_t device)
 {
     RecoveryFixture fixture(device);
+    if (device == BC_PCI_DEVID_FLEA)
+        fixture.context.activeFleaScaleWord = active_scale_word;
     recovery.block = true;
     const std::vector<RecoveryStage> expected = expected_recovery_stages(device);
     std::thread worker([&] {
@@ -1428,6 +1456,9 @@ static void run_successful_recovery(uint32_t device)
     check(fixture.context.State == BC_DEC_STATE_START &&
           fixture.context.circBuf.busySize == 0,
           "successful recovery restarts the decoder with the stale ring empty");
+    if (device == BC_PCI_DEVID_FLEA)
+        check(fixture.context.activeFleaScaleWord == 0,
+              "successful non-scaled recovery leaves no stale Flea scale identity");
     check(fixture.context.LastPicNum == UINT32_MAX &&
           fixture.context.LastSessNum == UINT32_MAX &&
           fixture.context.EOSCnt == 0 && fixture.context.DrvStatusEOSCnt == 0 &&
@@ -1441,6 +1472,40 @@ static void run_successful_recovery(uint32_t device)
     check(DtsAcquireControl(&fixture.context, DTS_CONTROL_LIFECYCLE) == BC_STS_SUCCESS,
           "normal lifecycle admission resumes after successful recovery");
     DtsReleaseControl(&fixture.context);
+}
+
+static void test_scaled_flea_recovery_republishes_layout_identity()
+{
+    RecoveryFixture fixture(BC_PCI_DEVID_FLEA);
+    /* Model the pool selected by an exact successful 1280-wide OPEN before
+     * suspend.  Setup must invalidate only the active-channel identity: the
+     * cached request is what the replacement OPEN submits again. */
+    fixture.context.EnableScaling = active_scale_word;
+    fixture.context.activeFleaScaleWord = active_scale_word;
+    fixture.context.rxBufferWidth = active_scale_width;
+    recovery.publish_open_scale = true;
+
+    std::thread worker([&] {
+        worker_thread = true;
+        txThreadProc(&fixture.context);
+        worker_thread = false;
+    });
+    worker.join();
+
+    check(recovery.order == expected_recovery_stages(BC_PCI_DEVID_FLEA) &&
+          fixture.context.recoveryStatus == BC_STS_SUCCESS,
+          "exact scaled Flea recovery completes the normal replacement transaction");
+    check(recovery.open_cached_scale == active_scale_word &&
+          recovery.open_active_scale_before == 0 &&
+          recovery.open_active_scale_after == active_scale_word,
+          "hardware reset retains the cached scale request and successful replacement OPEN republishes its identity");
+    check(recovery.capture_cached_scale == active_scale_word &&
+          recovery.capture_active_scale == active_scale_word &&
+          recovery.capture_buffer_width == active_scale_width &&
+          fixture.context.EnableScaling == active_scale_word &&
+          fixture.context.activeFleaScaleWord == active_scale_word &&
+          fixture.context.rxBufferWidth == active_scale_width,
+          "capture starts with the restored exact-scale identity and preserves its established buffer layout");
 }
 
 static void test_recovery_aborts_partial_fragment()
@@ -1512,6 +1577,7 @@ static void test_recovery_failures()
         expected_recovery_stages(BC_PCI_DEVID_FLEA);
     for (size_t failed = 0; failed < expected.size(); ++failed) {
         RecoveryFixture fixture(BC_PCI_DEVID_FLEA);
+        fixture.context.activeFleaScaleWord = active_scale_word;
         recovery.fail_stage = static_cast<int>(failed);
         recovery.failure = BC_STS_IO_XFR_ERROR;
         std::thread worker([&] {
@@ -1528,6 +1594,9 @@ static void test_recovery_failures()
               fixture.context.recoveryResumeSeen &&
               fixture.context.recoveryStatus == BC_STS_IO_XFR_ERROR,
               "failed recovery releases ownership and records the exact one-shot error");
+        check(fixture.context.activeFleaScaleWord ==
+                  (failed == 0 ? active_scale_word : 0),
+              "recovery preserves scale identity until hardware reset succeeds and clears it before later failures");
         uint8_t input[sizeof(packet) + 4] = {};
         BC_DTS_PROC_OUT output = {};
         check(DtsAcquireControl(&fixture.context, DTS_CONTROL_LIFECYCLE) ==
@@ -1981,6 +2050,7 @@ static void test_recovery_transaction()
     test_recovery_aborts_partial_fragment();
     run_successful_recovery(BC_PCI_DEVID_FLEA);
     run_successful_recovery(BC_PCI_DEVID_LINK);
+    test_scaled_flea_recovery_republishes_layout_identity();
     test_recovery_failures();
     test_recovery_stage_pm_failure_is_one_shot();
     test_link_recovery_open_is_one_shot();

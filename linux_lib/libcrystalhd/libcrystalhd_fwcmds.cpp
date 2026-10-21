@@ -108,13 +108,21 @@ DtsFWOpenChannel(
 	DTS_LIB_CONTEXT		*Ctx = NULL;
 	BC_IOCTL_DATA *pIocData = NULL;
 	uint32_t	ScaledWidth=0;
+	uint32_t	successfulOpenScaleWord=0;
 	DTS_GET_CTX(hDevice,Ctx);
 
+	DtsLock(Ctx);
 	if(Ctx->State != BC_DEC_STATE_CLOSE)
 	{
+		DtsUnLock(Ctx);
 		DebugLog_Trace(LDIL_DBG,"DtsFWOpenChannel: No Active Decoder\n");
 		return BC_STS_ERR_USAGE;
 	}
+
+	/* A requested scale value is not a successfully opened channel. Publish a
+	 * new submitted value only after this OPEN has succeeded. */
+	Ctx->activeFleaScaleWord = 0;
+	DtsUnLock(Ctx);
 
 	if(!(pIocData = DtsAllocIoctlData(Ctx)))
 		return BC_STS_INSUFF_RES;
@@ -176,6 +184,9 @@ DtsFWOpenChannel(
 		DebugLog_Trace(LDIL_DBG,"Scaling command param 0x%x,ctx_scal:0x%x\n",pOpen->reservedWord8,Ctx->EnableScaling);
 		if (Ctx->bEnable720pDropHalf)
 			pOpen->reservedWord14 = 1;
+		const uint32_t submittedScaleWord = pOpen->reservedWord8;
+		const bool submittedH264 =
+			Ctx->VidParams.VideoAlgo == BC_VID_ALGO_H264;
 
 		if( (sts=DtsDrvCmd(Ctx,BCM_IOC_FW_CMD,1,pIocData,FALSE)) != BC_STS_SUCCESS){
 			DtsRelIoctlData(Ctx,pIocData);
@@ -192,10 +203,15 @@ DtsFWOpenChannel(
 		}
 
 		Ctx->OpenRsp.channelId = pRsp->ChannelID;
+		if (submittedH264)
+			successfulOpenScaleWord = submittedScaleWord;
 	}
 
 	// For deconf backward compatibility only...
+	DtsLock(Ctx);
+	Ctx->activeFleaScaleWord = successfulOpenScaleWord;
 	Ctx->State = BC_DEC_STATE_STOP;
+	DtsUnLock(Ctx);
 	DtsRelIoctlData(Ctx,pIocData);
 	return BC_STS_SUCCESS;
 }
@@ -486,6 +502,9 @@ DtsFWCloseChannel(
 
 	if(Ctx->State == BC_DEC_STATE_CLOSE)
 	{
+		DtsLock(Ctx);
+		Ctx->activeFleaScaleWord = 0;
+		DtsUnLock(Ctx);
 		DebugLog_Trace(LDIL_DBG,"DtsCloseDecoder: Channel is not Open\n");
 		return BC_STS_SUCCESS;
 	}
@@ -517,6 +536,9 @@ DtsFWCloseChannel(
 	}
 
 	memset(&Ctx->OpenRsp,0,sizeof(Ctx->OpenRsp));
+	DtsLock(Ctx);
+	Ctx->activeFleaScaleWord = 0;
+	DtsUnLock(Ctx);
 
 	DtsRelIoctlData(Ctx,pIocData);
 

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <climits>
+#include <cstddef>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -544,16 +545,17 @@ static void PreparedModeConversions()
 // No real descriptor is opened: any unrecognised fd/command aborts the test.
 static DTS_LIB_CONTEXT *fetch_context;
 static BC_DEC_OUT_BUFF fetched_output;
-static BC_STATUS fetch_status, repost_status;
+static BC_STATUS fetch_status, repost_status, flush_status;
 static bool fetch_syscall_failure, repost_syscall_failure, cancel_fetch;
-static unsigned fetch_calls, repost_calls;
+static unsigned fetch_calls, repost_calls, flush_calls;
 static const std::vector<uint8_t> *fetch_original;
 static unsigned fetch_original_prefix, fetch_capacity;
 
 extern "C" int ioctl(int fd, unsigned long code, ...) noexcept
 {
     if (fd != 99 || !fetch_context ||
-        (code != BCM_IOC_FETCH_RXBUFF && code != BCM_IOC_ADD_RXBUFFS)) {
+        (code != BCM_IOC_FETCH_RXBUFF && code != BCM_IOC_ADD_RXBUFFS &&
+         code != BCM_IOC_FLUSH_RX_CAP)) {
         std::fputs("unexpected ioctl in device-free leased-packing test\n", stderr);
         std::abort();
     }
@@ -561,8 +563,9 @@ extern "C" int ioctl(int fd, unsigned long code, ...) noexcept
     va_start(args, code);
     BC_IOCTL_DATA *data = va_arg(args, BC_IOCTL_DATA *);
     va_end(args);
-    Check(data == fetch_context->pOutData && fetch_context->ProcOutPending == 1,
-          "fetch and retirement retain the one admitted shared output owner");
+    if (code != BCM_IOC_FLUSH_RX_CAP)
+        Check(data == fetch_context->pOutData && fetch_context->ProcOutPending == 1,
+              "fetch and retirement retain the one admitted shared output owner");
     if (code == BCM_IOC_FETCH_RXBUFF) {
         ++fetch_calls;
         Check(fetched_output.OutPutBuffs.YuvBuffSz <= fetch_capacity,
@@ -575,15 +578,24 @@ extern "C" int ioctl(int fd, unsigned long code, ...) noexcept
         data->RetSts = fetch_status;
         if (cancel_fetch) fetch_context->CancelWaiting = true;
         if (fetch_syscall_failure) { errno = EIO; return -1; }
-    } else {
+    } else if (code == BCM_IOC_ADD_RXBUFFS) {
         ++repost_calls;
         Check(data->u.RxBuffs.YuvBuff == fetched_output.OutPutBuffs.YuvBuff &&
                   data->u.RxBuffs.YuvBuffSz == fetched_output.OutPutBuffs.YuvBuffSz &&
-                  data->u.RxBuffs.b422Mode == OUTPUT_MODE422_YUY2 &&
+                  data->u.RxBuffs.b422Mode ==
+                      fetched_output.OutPutBuffs.b422Mode &&
                   data->u.RxBuffs.YBuffDoneSz == 0 && data->u.RxBuffs.UVBuffDoneSz == 0,
-              "retirement reposts the original registration as hardware YUY2, not requested UYVY");
+              "retirement reposts the original hardware registration without host-format relabelling");
         data->RetSts = repost_status;
         if (repost_syscall_failure) { errno = EIO; return -1; }
+    } else {
+        ++flush_calls;
+        Check(data != fetch_context->pOutData &&
+                  fetch_context->ProcOutPending == 1 &&
+                  fetch_context->outputPhase == DTS_OUTPUT_RETIRE_ONLY &&
+                  !data->u.FlushRxCap.bDiscardOnly,
+              "destructive flush consumes the quarantined residual owner");
+        data->RetSts = flush_status;
     }
     return 0;
 }
@@ -591,6 +603,7 @@ extern "C" int ioctl(int fd, unsigned long code, ...) noexcept
 struct FetchFixture {
     PackedLease lease;
     BC_IOCTL_DATA out_data = {};
+    BC_IOCTL_DATA cleanup_data = {};
     bc_dil_glob_s globals = {};
 
     FetchFixture()
@@ -599,6 +612,7 @@ struct FetchFixture {
         lease.context.DevHandle = 99;
         lease.context.State = BC_DEC_STATE_START;
         lease.context.pOutData = &out_data;
+        lease.context.pIoDataFreeHd = &cleanup_data;
         lease.context.RegCfg.DbgOptions = BC_BIT(6);
         lease.context.CapState = 2;
         pthread_mutexattr_t attr;
@@ -619,9 +633,9 @@ struct FetchFixture {
         fetched_output.OutPutBuffs.YuvBuffSz = lease.allocation;
         fetched_output.OutPutBuffs.b422Mode = OUTPUT_MODE422_YUY2;
         fetched_output.OutPutBuffs.YBuffDoneSz = lease.output.YBuffDoneSz;
-        fetch_status = repost_status = BC_STS_SUCCESS;
+        fetch_status = repost_status = flush_status = BC_STS_SUCCESS;
         fetch_syscall_failure = repost_syscall_failure = cancel_fetch = false;
-        fetch_calls = repost_calls = 0;
+        fetch_calls = repost_calls = flush_calls = 0;
     }
     BC_STATUS Run() { return DtsFetchOutInterruptible(&lease.context, &lease.output, 0); }
     void EmbeddedMarker(bool eos)
@@ -653,6 +667,103 @@ struct FetchFixture {
         fetched_output.OutPutBuffs.YuvBuffSz = lease.allocation;
         fetched_output.OutPutBuffs.YBuffDoneSz = lease.output.YBuffDoneSz;
         fetch_capacity = lease.allocation;
+    }
+    void EmbeddedScaledBoundary(uint32_t line, bool with_pib,
+                                uint32_t hardware_width = 1280,
+                                uint32_t height = 1088)
+    {
+        const uint32_t pool_width = 1280;
+        const uint32_t capacity = pool_width * 1090U * 2U;
+        lease.width = hardware_width;
+        lease.rows = height;
+        lease.pitch = hardware_width * 2;
+        lease.allocation = capacity;
+        lease.storage.assign(lease.prefix + capacity + 64, untouched);
+        lease.output.Ybuff = lease.storage.data() + lease.prefix;
+        lease.output.YBuffDoneSz = capacity / 4;
+        lease.context.FixFlags = DTS_LOAD_FILE_PLAY_FW;
+        lease.context.RegCfg.DbgOptions = 0;
+        lease.context.b422Mode = OUTPUT_MODE422_YUY2;
+        lease.context.softwareUyvy = false;
+        lease.context.HWOutPicWidth = hardware_width;
+        lease.context.HWOutPicHeight = with_pib ? height : line - 1;
+        lease.context.rxBufferWidth = pool_width;
+        std::memcpy(lease.output.Ybuff, &line, sizeof(line));
+        if (with_pib) {
+            BC_PIC_INFO_BLOCK picture = {};
+            picture.width = hardware_width;
+            picture.height = height;
+            picture.picture_number = 11;
+            const uint64_t offset = static_cast<uint64_t>(line) *
+                                    hardware_width * 2;
+            Check(offset + 4 + sizeof(picture) <= capacity,
+                  "scaled boundary fixture keeps the PIB inside capacity");
+            if (offset + 4 + sizeof(picture) <= capacity) {
+                std::memcpy(lease.output.Ybuff + offset,
+                            &picture.picture_number, 4);
+                std::memcpy(lease.output.Ybuff + offset + 4,
+                            &picture, sizeof(picture));
+                lease.output.YBuffDoneSz = static_cast<uint32_t>(
+                    (offset + 4 + sizeof(picture) + 3) / 4);
+            }
+        }
+        lease.original = lease.storage;
+        fetched_output.Flags = COMP_FLAG_DATA_VALID;
+        fetched_output.OutPutBuffs.YuvBuff = lease.output.Ybuff;
+        fetched_output.OutPutBuffs.YuvBuffSz = capacity;
+        fetched_output.OutPutBuffs.YBuffDoneSz = lease.output.YBuffDoneSz;
+        fetched_output.OutPutBuffs.b422Mode = OUTPUT_MODE422_YUY2;
+        fetch_capacity = capacity;
+    }
+    void EmbeddedLinkBoundary(BC_OUTPUT_FORMAT mode, bool short_registration)
+    {
+        const uint32_t width = 4;
+        const uint32_t line = 1;
+        const bool packed = mode != OUTPUT_MODE420;
+        const uint32_t offset = line * width * (packed ? 2U : 1U);
+        const uint32_t pib_bytes = packed ? 512U : 256U;
+        const uint32_t capacity = offset + pib_bytes;
+        lease.width = width;
+        lease.rows = line;
+        lease.pitch = width * (packed ? 2U : 1U);
+        lease.allocation = capacity;
+        lease.storage.assign(lease.prefix + capacity + 64, 0);
+        lease.output.Ybuff = lease.storage.data() + lease.prefix;
+        lease.output.YBuffDoneSz = capacity / 4;
+        lease.context.DevId = BC_PCI_DEVID_LINK;
+        lease.context.FixFlags = DTS_LOAD_FILE_PLAY_FW;
+        lease.context.RegCfg.DbgOptions = 0;
+        lease.context.b422Mode = mode;
+        lease.context.softwareUyvy = false;
+        lease.context.HWOutPicWidth = width;
+        lease.context.HWOutPicHeight = line;
+        lease.context.rxBufferWidth = 1920;
+        if (mode == OUTPUT_MODE422_YUY2) {
+            lease.output.Ybuff[0] = 0;
+            lease.output.Ybuff[2] = 0;
+            lease.output.Ybuff[4] = 0;
+            lease.output.Ybuff[6] = line;
+        } else if (mode == OUTPUT_MODE422_UYVY) {
+            lease.output.Ybuff[1] = 0;
+            lease.output.Ybuff[3] = 0;
+            lease.output.Ybuff[5] = 0;
+            lease.output.Ybuff[7] = line;
+        } else {
+            lease.output.Ybuff[0] = 0;
+            lease.output.Ybuff[1] = 0;
+            lease.output.Ybuff[2] = 0;
+            lease.output.Ybuff[3] = line;
+        }
+        lease.original = lease.storage;
+        fetched_output.Flags = COMP_FLAG_DATA_VALID;
+        fetched_output.OutPutBuffs.YuvBuff = lease.output.Ybuff;
+        fetched_output.OutPutBuffs.YuvBuffSz =
+            capacity - (short_registration ? 1U : 0U);
+        fetched_output.OutPutBuffs.UVbuffOffset =
+            mode == OUTPUT_MODE420 ? capacity : 0;
+        fetched_output.OutPutBuffs.YBuffDoneSz = capacity / 4;
+        fetched_output.OutPutBuffs.b422Mode = mode;
+        fetch_capacity = capacity;
     }
     ~FetchFixture()
     {
@@ -915,6 +1026,204 @@ static void PublicPackingConsumers()
         Check(DtsReleaseOutputBuffs(&repaired.lease.context, nullptr, FALSE) == BC_STS_SUCCESS &&
                   repost_calls == 1 && repaired.lease.context.ProcOutPending == 0,
               "embedded-PIB picture still retires its original registration once");
+    }
+    struct ScaledPibCase { uint32_t height, line, width; };
+    const ScaledPibCase scaled_pib_cases[] = {
+        {360, 360, 1280}, {360, 361, 1280},
+        {720, 720, 1280}, {720, 721, 1280},
+        {1088, 1088, 1280}, {1088, 1089, 1279},
+        {1088, 1089, 1280},
+    };
+    for (const ScaledPibCase &test : scaled_pib_cases) {
+        FetchFixture boundary;
+        boundary.EmbeddedScaledBoundary(test.line, true, test.width,
+                                        test.height);
+        BC_DTS_PROC_OUT output = {};
+        Check(DtsProcOutputNoCopy(&boundary.lease.context, 0, &output) ==
+                  BC_STS_SUCCESS &&
+              (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) &&
+              output.PicInfo.picture_number == 11 &&
+              boundary.lease.context.ProcOutPending == 1,
+              "scaled backing admits 360/720/FHD and width-edge PIB extents");
+        Check(DtsReleaseOutputBuffs(&boundary.lease.context, nullptr, FALSE) ==
+                  BC_STS_SUCCESS && boundary.lease.context.ProcOutPending == 0,
+              "accepted scaled PIB lease retires once");
+    }
+    {
+        FetchFixture completed_common;
+        completed_common.EmbeddedScaledBoundary(720, true, 1280, 720);
+        const uint64_t pib_offset = UINT64_C(720) * 1280 * 2;
+        const uint64_t common_end = pib_offset + 4 +
+            offsetof(BC_PIC_INFO_BLOCK, other);
+        Check(!(common_end & 3),
+              "Flea common PIB boundary is DWORD aligned");
+        fetched_output.OutPutBuffs.YBuffDoneSz =
+            static_cast<uint32_t>(common_end / 4);
+        BC_DTS_PROC_OUT output = {};
+        Check(DtsProcOutputNoCopy(&completed_common.lease.context, 0,
+                                  &output) == BC_STS_SUCCESS &&
+              (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) &&
+              output.PicInfo.picture_number == 11 &&
+              completed_common.lease.context.ProcOutPending == 1,
+              "Flea accepts a registered PIB extension tail beyond completed common fields");
+        Check(DtsReleaseOutputBuffs(&completed_common.lease.context,
+                                    nullptr, FALSE) == BC_STS_SUCCESS &&
+              completed_common.lease.context.ProcOutPending == 0,
+              "Flea common-complete PIB lease retires once");
+    }
+    {
+        FetchFixture truncated_common;
+        truncated_common.EmbeddedScaledBoundary(720, true, 1280, 720);
+        const uint64_t pib_offset = UINT64_C(720) * 1280 * 2;
+        const uint64_t common_end = pib_offset + 4 +
+            offsetof(BC_PIC_INFO_BLOCK, other);
+        fetched_output.OutPutBuffs.YBuffDoneSz =
+            static_cast<uint32_t>(common_end / 4 - 1);
+        BC_DTS_PROC_OUT output = {};
+        Check(DtsProcOutputNoCopy(&truncated_common.lease.context, 0,
+                                  &output) == BC_STS_IO_XFR_ERROR &&
+              truncated_common.lease.context.ProcOutPending == 0 &&
+              repost_calls == 1 && output.Ybuff == nullptr,
+              "Flea rejects an embedded PIB with truncated common fields");
+    }
+    for (uint32_t line : {1090U, 1092U}) {
+        FetchFixture overflow;
+        overflow.EmbeddedScaledBoundary(line, false);
+        BC_DTS_PROC_OUT output = {};
+        Check(DtsProcOutputNoCopy(&overflow.lease.context, 0, &output) ==
+                  BC_STS_IO_XFR_ERROR &&
+              overflow.lease.context.ProcOutPending == 0 &&
+              repost_calls == 1 && output.Ybuff == nullptr,
+              "out-of-capacity scaled PIB line is rejected and retired");
+    }
+    {
+        FetchFixture short_done;
+        short_done.EmbeddedMarker(false);
+        fetched_output.OutPutBuffs.YBuffDoneSz = 8;
+        BC_DTS_PROC_OUT output = {};
+        Check(DtsProcOutputNoCopy(&short_done.lease.context, 0, &output) ==
+                  BC_STS_IO_XFR_ERROR && repost_calls == 1 &&
+              short_done.lease.context.ProcOutPending == 0 &&
+              output.Ybuff == nullptr,
+              "short completed transfer cannot expose an embedded PIB");
+    }
+    {
+        FetchFixture wide_stride;
+        wide_stride.EmbeddedMarker(false);
+        wide_stride.lease.context.rxBufferWidth = 1280;
+        wide_stride.lease.context.HWOutPicWidth = 1281;
+        BC_DTS_PROC_OUT output = {};
+        Check(DtsProcOutputNoCopy(&wide_stride.lease.context, 0, &output) ==
+                  BC_STS_IO_XFR_ERROR && repost_calls == 1 &&
+              wide_stride.lease.context.ProcOutPending == 0 &&
+              output.Ybuff == nullptr,
+              "firmware stride wider than scaled backing is rejected before PIB access");
+    }
+    {
+        FetchFixture quarantined;
+        quarantined.EmbeddedScaledBoundary(1090, false);
+        quarantined.lease.context.bMapOutBufDone = true;
+        quarantined.lease.context.bMapOutBufDirty = true;
+        repost_status = BC_STS_IO_ERROR;
+        BC_DTS_PROC_OUT output = {};
+        Check(DtsProcOutputNoCopy(&quarantined.lease.context, 0, &output) ==
+                  BC_STS_IO_ERROR &&
+              quarantined.lease.context.ProcOutPending == 1 &&
+              quarantined.lease.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY &&
+              fetch_calls == 1 && repost_calls == 1 && flush_calls == 0 &&
+              output.Ybuff == nullptr,
+              "malformed embedded PIB with failed repost enters retire-only quarantine");
+        Check(DtsRelRxBuff(&quarantined.lease.context,
+                          &quarantined.out_data.u.RxBuffs, FALSE) ==
+                  BC_STS_BUSY &&
+              quarantined.lease.context.ProcOutPending == 1 &&
+              quarantined.lease.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY &&
+              repost_calls == 1,
+              "retire-only quarantine blocks a duplicate ADD attempt");
+        Check(DtsUnmapYUVBuffs(&quarantined.lease.context) == BC_STS_SUCCESS &&
+              quarantined.lease.context.ProcOutPending == 0 &&
+              quarantined.lease.context.outputPhase == DTS_OUTPUT_IDLE &&
+              !quarantined.lease.context.bMapOutBufDone &&
+              !quarantined.lease.context.bMapOutBufDirty &&
+              repost_calls == 1 && flush_calls == 1,
+              "destructive flush resolves malformed-PIB quarantine without duplicate ADD");
+    }
+    for (BC_OUTPUT_FORMAT mode : {OUTPUT_MODE420, OUTPUT_MODE422_YUY2,
+                                  OUTPUT_MODE422_UYVY}) {
+        FetchFixture exact;
+        exact.EmbeddedLinkBoundary(mode, false);
+        BC_DTS_PROC_OUT output = {};
+        Check(DtsProcOutputNoCopy(&exact.lease.context, 0, &output) ==
+                  BC_STS_SUCCESS &&
+              (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) &&
+              exact.lease.context.ProcOutPending == 1 && repost_calls == 0,
+              mode == OUTPUT_MODE420
+                  ? "LINK NV12 accepts its exact 256-byte embedded PIB extent"
+                  : mode == OUTPUT_MODE422_YUY2
+                      ? "LINK YUY2 accepts its exact 512-byte embedded PIB extent"
+                      : "LINK UYVY accepts its exact 512-byte embedded PIB extent");
+        Check(DtsReleaseOutputBuffs(&exact.lease.context, nullptr, FALSE) ==
+                  BC_STS_SUCCESS && exact.lease.context.ProcOutPending == 0 &&
+              repost_calls == 1,
+              "exact LINK embedded PIB lease retires once");
+
+        FetchFixture completed_common;
+        completed_common.EmbeddedLinkBoundary(mode, false);
+        const uint64_t stride = mode == OUTPUT_MODE420 ? 1 : 2;
+        const uint64_t pib_offset = UINT64_C(1) * 4 * stride;
+        const uint64_t common_end = pib_offset + stride *
+            (4 + offsetof(BC_PIC_INFO_BLOCK, other));
+        Check(!(common_end & 3),
+              "LINK common PIB boundary is DWORD aligned");
+        fetched_output.OutPutBuffs.YBuffDoneSz =
+            static_cast<uint32_t>(common_end / 4);
+        output = BC_DTS_PROC_OUT{};
+        Check(DtsProcOutputNoCopy(&completed_common.lease.context, 0,
+                                  &output) == BC_STS_SUCCESS &&
+              (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) &&
+              completed_common.lease.context.ProcOutPending == 1,
+              "LINK accepts a registered PIB extension tail beyond completed common fields");
+        Check(DtsReleaseOutputBuffs(&completed_common.lease.context,
+                                    nullptr, FALSE) == BC_STS_SUCCESS &&
+              completed_common.lease.context.ProcOutPending == 0,
+              "LINK common-complete PIB lease retires once");
+
+        FetchFixture truncated_common;
+        truncated_common.EmbeddedLinkBoundary(mode, false);
+        fetched_output.OutPutBuffs.YBuffDoneSz =
+            static_cast<uint32_t>(common_end / 4 - 1);
+        output = BC_DTS_PROC_OUT{};
+        Check(DtsProcOutputNoCopy(&truncated_common.lease.context, 0,
+                                  &output) == BC_STS_IO_XFR_ERROR &&
+              truncated_common.lease.context.ProcOutPending == 0 &&
+              repost_calls == 1 && output.Ybuff == nullptr,
+              "LINK rejects an embedded PIB with truncated common fields");
+
+        FetchFixture short_registration;
+        short_registration.EmbeddedLinkBoundary(mode, true);
+        output = BC_DTS_PROC_OUT{};
+        Check(DtsProcOutputNoCopy(&short_registration.lease.context, 0,
+                                  &output) == BC_STS_IO_XFR_ERROR &&
+              short_registration.lease.context.ProcOutPending == 0 &&
+              repost_calls == 1 && output.Ybuff == nullptr,
+              mode == OUTPUT_MODE420
+                  ? "LINK NV12 rejects a registration one byte short of its PIB"
+                  : mode == OUTPUT_MODE422_YUY2
+                      ? "LINK YUY2 rejects a registration one byte short of its PIB"
+                      : "LINK UYVY rejects a registration one byte short of its PIB");
+
+        if (mode == OUTPUT_MODE420) {
+            FetchFixture short_y_plane;
+            short_y_plane.EmbeddedLinkBoundary(mode, false);
+            fetched_output.OutPutBuffs.UVbuffOffset =
+                short_y_plane.lease.allocation - 1;
+            output = BC_DTS_PROC_OUT{};
+            Check(DtsProcOutputNoCopy(&short_y_plane.lease.context, 0,
+                                      &output) == BC_STS_IO_XFR_ERROR &&
+                  short_y_plane.lease.context.ProcOutPending == 0 &&
+                  repost_calls == 1 && output.Ybuff == nullptr,
+                  "LINK NV12 rejects a PIB extension crossing into the registered UV plane");
+        }
     }
     for (bool no_copy : {false, true}) {
         FetchFixture eos;

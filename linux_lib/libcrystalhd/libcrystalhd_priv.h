@@ -319,6 +319,12 @@ typedef struct _DTS_LIB_CONTEXT{
 	BC_OUTPUT_FORMAT b422Mode;				/* Hardware capture/PIB layout. */
 	/* Flea keeps its capture/PIB source YUY2; UYVY is a host-output request. */
 	bool softwareUyvy;
+	/* Scale word submitted by the last successful Flea H.264 OPEN. Zero means
+	 * that no qualified open is active; EnableScaling is only the next request. */
+	uint32_t activeFleaScaleWord;
+	/* Width used by the currently allocated RX backing.  Zero retains the
+	 * historical 1920-wide layout for old/zero-initialized private contexts. */
+	uint32_t rxBufferWidth;
 	uint32_t		HWOutPicWidth;
 	uint32_t		HWOutPicHeight;
 

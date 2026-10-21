@@ -163,8 +163,10 @@ for bits in $build_bits; do
         $cpu_flags -o "$build_dir/library-smoke"
     # Execute production library regressions on the target ABI and CPU.
     # These tests neither open hardware nor load a shared library.
-    for section in logging copy planar format input mpeg4-input input-format tx-ring flush tx-flush eos status color clock devmem device-handle capture fwload fw-version fwcmds; do
+    for section in logging copy planar format input mpeg4-input input-format tx-ring flush tx-flush eos status color clock devmem device-handle capture capture-scaled fwload fw-version fwcmds; do
         section_wrap=
+        section_flags=
+        section_file=$section
         case "$section" in
             logging) set -- ;;
             copy|planar) set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" ;;
@@ -197,10 +199,10 @@ for bits in $build_bits; do
                 section_wrap="$section_wrap -Wl,--wrap=pthread_create,--wrap=pthread_join,--wrap=shmget,--wrap=shmat,--wrap=shmdt,--wrap=shmctl"
                 section_wrap="$section_wrap -Wl,--wrap=pthread_mutexattr_init,--wrap=pthread_mutexattr_settype,--wrap=pthread_mutexattr_destroy,--wrap=pthread_mutex_init,--wrap=pthread_mutex_destroy,--wrap=pthread_mutex_lock,--wrap=pthread_mutex_unlock"
                 section_wrap="$section_wrap -Wl,--wrap=_Z15DtsPushFwToFleaPvPc,--wrap=_Z19DtsPushAuthFwToLinkPvPc,--wrap=_Z15DtsFWInitializePvj" ;;
-            capture)
+            capture|capture-scaled)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp"
-                section_wrap=-Wl,--wrap=ioctl,--wrap=close,--wrap=free,--wrap=pthread_mutex_lock
+                section_wrap=-Wl,--wrap=ioctl,--wrap=close,--wrap=malloc,--wrap=free,--wrap=pthread_mutex_lock
                 section_wrap="$section_wrap -Wl,--wrap=shmget,--wrap=shmdt,--wrap=shmctl" ;;
             fwload)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_fwload_if.cpp"
@@ -260,13 +262,18 @@ for bits in $build_bits; do
                 section_wrap="$section_wrap -Wl,--wrap=DtsSetupHardware,--wrap=DtsOpenDecoder"
                 section_wrap="$section_wrap -Wl,--wrap=DtsStartDecoder,--wrap=DtsStartCapture" ;;
         esac
-        # Compiler and user flags are intentionally expanded into arguments.
+        if [ "$section" = capture-scaled ]; then
+            section_file=capture
+            section_flags=-DCRYSTALHD_EXPERIMENTAL_SCALED_RX
+        fi
+        # Compiler, user and per-test flags are intentionally expanded into
+        # arguments.
         # shellcheck disable=SC2086
         $cxx ${CPPFLAGS:-} ${CXXFLAGS:-} -m"$bits" -std=c++11 \
-            -O1 -g -Wall -Werror -ffunction-sections -fdata-sections \
+            -O1 -g -Wall -Werror -ffunction-sections -fdata-sections $section_flags \
             -D__LINUX_USER__ -I"$build_dir/include" -I"$build_dir/include/link" \
             -I"$build_dir/linux_lib/libcrystalhd" \
-            "$repo_dir/tests/library-$section.cpp" "$@" \
+            "$repo_dir/tests/library-$section_file.cpp" "$@" \
             -Wl,--gc-sections $section_wrap -pthread -lrt $cpu_flags -o "$build_dir/library-$section"
         run_test "$build_dir/library-$section"
         if [ "$legacy" -eq 1 ]; then
