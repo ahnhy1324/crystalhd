@@ -593,6 +593,7 @@ class DeinterlaceQosTests(unittest.TestCase):
                 pads["src"].remove_probe.assert_called_once_with(17)
                 self.assertTrue(workaround.closed)
                 self.assertIsNone(workaround.on_error)
+                self.assertIsNone(workaround.caps_policy)
 
     def test_ineligible_qos_latches_stock_policy(self):
         Gst, element, _properties, pads = self.fixture()
@@ -1411,6 +1412,7 @@ class GStreamerApiTests(unittest.TestCase):
         helper = player.DeinterlaceQosWorkaround.__new__(player.DeinterlaceQosWorkaround)
         helper.Gst, helper.element = Gst, element
         helper.closed, helper.active = False, True
+        helper.caps_policy = None
         helper.sink, helper.src = mock.Mock(), mock.Mock()
         source = "video/x-raw,format=YUY2,width=16,height=8,interlace-mode=mixed,framerate=25/1"
         output = source.replace("mixed", "progressive").replace("25/1", "50/1")
@@ -1430,6 +1432,77 @@ class GStreamerApiTests(unittest.TestCase):
                 self.assertEqual(helper.eligible(), expected)
         helper.sink.get_current_caps.return_value = None
         self.assertFalse(helper.eligible())
+
+    def test_deinterlace_qos_cache_rechecks_caps_and_mutable_properties(self):
+        Gst = self.Gst
+        policy_gst, element, properties, pads = DeinterlaceQosTests().fixture()
+        helper = player.DeinterlaceQosWorkaround.install(policy_gst, element, mock.Mock())
+        self.addCleanup(helper.close)
+        source = Gst.Caps.from_string(
+            "video/x-raw,format=YUY2,width=16,height=8,interlace-mode=mixed,framerate=25/1")
+        output = Gst.Caps.from_string(
+            "video/x-raw,format=YUY2,width=16,height=8,interlace-mode=progressive,framerate=50/1")
+        pads["sink"].get_current_caps.return_value = source
+        pads["src"].get_current_caps.return_value = output
+        helper.caps_supported = mock.Mock(wraps=helper.caps_supported)
+        element.get_factory.reset_mock()
+        self.assertTrue(helper.eligible())
+        self.assertEqual(helper.caps_supported.call_count, 1)
+        # Equal replacement caps use the result, not object or string identity.
+        pads["sink"].get_current_caps.return_value = source.copy()
+        pads["src"].get_current_caps.return_value = output.copy()
+        self.assertTrue(helper.eligible())
+        self.assertEqual(helper.caps_supported.call_count, 1)
+        for pad in pads.values():
+            self.assertEqual(pad.get_current_caps.call_count, 2)
+        element.get_factory.assert_not_called()
+
+        changed = source.copy()
+        changed.set_value("colorimetry", "bt709")
+        pads["sink"].get_current_caps.return_value = changed
+        self.assertTrue(helper.eligible())
+        self.assertEqual(helper.caps_supported.call_count, 2)
+        self.assertIsNone(source.get_structure(0).get_string("colorimetry"))
+        wrong_output = output.copy()
+        wrong_output.set_value("format", "NV12")
+        pads["src"].get_current_caps.return_value = wrong_output
+        self.assertFalse(helper.eligible())
+        self.assertEqual(helper.caps_supported.call_count, 3)
+        pads["src"].get_current_caps.return_value = output
+        self.assertTrue(helper.eligible())
+        self.assertEqual(helper.caps_supported.call_count, 4)
+        pads["sink"].get_current_caps.return_value = None
+        self.assertFalse(helper.eligible())
+        pads["sink"].get_current_caps.return_value = changed
+        self.assertTrue(helper.eligible())
+        self.assertEqual(helper.caps_supported.call_count, 4)
+        # Set equality alone must not admit duplicate structures: the
+        # original policy requires exactly one structure on each pad.
+        duplicate = output.copy()
+        duplicate.append(output.copy())
+        self.assertTrue(duplicate.is_equal(output))
+        pads["src"].get_current_caps.return_value = duplicate
+        self.assertFalse(helper.eligible())
+        pads["src"].get_current_caps.return_value = output
+        self.assertTrue(helper.eligible())
+
+        # A cache hit never bypasses a changed runtime property or revives
+        # an element after the first QoS event handled by stock policy.
+        for name, original in tuple(properties.items()):
+            with self.subTest(property=name):
+                properties[name] = original + 1
+                self.assertFalse(helper.eligible())
+                properties[name] = original
+                self.assertTrue(helper.eligible())
+        info = mock.Mock()
+        info.get_event.return_value.type = policy_gst.EventType.QOS
+        properties["method"] = 0
+        self.assertEqual(helper.event(None, info), policy_gst.PadProbeReturn.OK)
+        properties["method"] = 4
+        self.assertFalse(helper.eligible())
+        pads["sink"].push_event.assert_not_called()
+        helper.close()
+        self.assertIsNone(helper.caps_policy)
 
     def test_deinterlace_qos_second_field_pts_tff_and_bff(self):
         Gst = self.Gst

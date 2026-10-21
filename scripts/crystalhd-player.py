@@ -358,17 +358,22 @@ class DeinterlaceQosWorkaround:
         self.sink, self.src = (element.get_static_pad(name) for name in ("sink", "src"))
         self.closed = False
         self.active = True
+        self.caps_policy = None
         self.probe = self.src.add_probe(Gst.PadProbeType.EVENT_UPSTREAM, self.event)
 
     @staticmethod
-    def supported(Gst, element):
+    def properties_supported(element):
+        return all(int(element.get_property(name)) == value for name, value in
+                   (("mode", 0), ("method", 4), ("fields", 0), ("locking", 0), ("tff", 0)))
+
+    @classmethod
+    def supported(cls, Gst, element):
         factory = element.get_factory()
         plugin = factory.get_plugin() if factory is not None else None
         return (tuple(Gst.version())[:3] == (1, 28, 2) and
                 factory is not None and factory.get_name() == "deinterlace" and
                 plugin is not None and plugin.get_version() == "1.28.2" and
-                all(int(element.get_property(name)) == value for name, value in
-                    (("mode", 0), ("method", 4), ("fields", 0), ("locking", 0), ("tff", 0))))
+                cls.properties_supported(element))
 
     @classmethod
     def install(cls, Gst, element, on_error):
@@ -379,12 +384,26 @@ class DeinterlaceQosWorkaround:
         return cls(Gst, element, on_error)
 
     def eligible(self):
-        if self.closed or not self.active or not self.supported(self.Gst, self.element):
+        # Core/plugin identity was admitted at install; mutable properties and
+        # both current caps still need checking on every QoS event.
+        if self.closed or not self.active or not self.properties_supported(self.element):
             return False
-        caps = [pad.get_current_caps() for pad in (self.sink, self.src)]
+        caps = tuple(pad.get_current_caps() for pad in (self.sink, self.src))
         if any(value is None or value.get_size() != 1 for value in caps):
             return False
-        source, output = (value.get_structure(0) for value in caps)
+        cached = self.caps_policy
+        if cached is not None and all(value.is_equal(old) for value, old in zip(caps, cached[:2])):
+            return cached[2]
+        accepted = self.caps_supported(*caps)
+        # Retained GstCaps references are read-only; renegotiation uses COW.
+        self.caps_policy = (*caps, accepted)
+        return accepted
+
+    @staticmethod
+    def caps_supported(source_caps, output_caps):
+        if any(value.get_size() != 1 for value in (source_caps, output_caps)):
+            return False
+        source, output = (value.get_structure(0) for value in (source_caps, output_caps))
         # Keep this compatibility workaround within the measured 25i -> 50p
         # packed-YUY2 path. Other rates, layouts and methods keep stock policy.
         return (all(value.get_name() == "video/x-raw" and
@@ -427,6 +446,7 @@ class DeinterlaceQosWorkaround:
             self.src.remove_probe(self.probe)
             self.probe = 0
             self.on_error = None
+            self.caps_policy = None
 
 
 class Player:

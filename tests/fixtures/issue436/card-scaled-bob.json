@@ -845,6 +845,34 @@
             "early_median_wall_cpu_seconds": [0.820634324, 1.397415841],
             "scope": "Separate stock converter/scaler only: method4/two scale threads/one conversion thread, unchanged quality. PLAYING-to-EOS includes equal input/output copies and startup; excludes DI preparation/file I/O/comparison. Six fresh CPU-only processes, not native throughput or a sustained performance claim. Distinct from old SCALERBOB early-packing FAIL and rejected pixel-unequal fused converter; neither old result is reclassified."
           },
+          "actual_source_admission": {
+            "runtime_source": "b775f5c5456cf9909e08c395eec717bac51b7890",
+            "device_free": "76 Player tests PASS, zero skips; independent source/tests review GO",
+            "strict_status": "FAIL/HOLD, not qualified as a no-drop fix",
+            "runs_using_parent_columns": [
+              ["production-packing-1", 750, 739, 1478, 1478, 1375, 1301, 74],
+              ["packing-counterfactual-1", 750, 750, 1500, 1500, 1500, 1500, 0],
+              ["packing-preselected-1", 750, 750, 1500, 1500, 1500, 1500, 0],
+              ["packing-production-layout-1", 750, 750, 1500, 1500, 1499, 1499, 0]
+            ],
+            "elapsed_seconds_same_order": [34.03161113895476, 34.027513484004885, 34.03127300192136, 34.097830145969056],
+            "production": "No private builder/selector injection. Actual default READY Xv selection and YUY2-DI/UYVY720-to-FHD caps PASS; final stock converter/scale passthrough, original quality/queue/QoS/deadlines. First loss accounting:11 decoder pictures*2 +103 final converter fields +74 sink fields=199; distributed across playback, not startup only. Later layout observation loses one final-converter field, zero sink drops; earlier severe loss is not relabeled fixed.",
+            "controls": "Counterfactual: current source with the original preselected private graph. Preselected: that graph with only its intermediate UYVY capsfilter removed while NULL, retaining UYVY chosen before Player initialization. Both preserve all750/1500 original PTS and zero drops; neither proves actual-selector qualification or capsfilter/selection-time causality.",
+            "eos_layout_observation": {"scope": "Last retained actual sink-input sample only, no added per-frame callback/map/copy or sink setting. Not all-buffer equality, matching private Xv context or zero-copy proof.", "equal_between": ["packing-preselected-1", "packing-production-layout-1"], "allocator_type": "xvimage", "memory_count": 1, "bytes": 4147200, "actual_video_meta": {"format": "UYVY", "width": 1920, "height": 1080, "planes": 1, "offsets": [0], "strides": [3840]}, "window_size": [1020, 702], "device": "0", "synchronous": false, "double_buffer": false, "force_aspect_ratio": true, "draw_borders": true, "pixel_aspect_ratio": "1/1"},
+            "boundary": "All four runs:750 originals accepted,1500 card fields returned/released,750 finishes, ordinary Open/Close once, natural EOS/player0, exact unchanged host/PM/AER/pins0/ref0/kernel state. Production wrappers remain exit1/FAIL; controls exit0. All actual DI helpers eligible through EOS and removed at close. No new physical A/V, installed change or firmware-stall attribution."
+          },
+          "qos_caps_cache_cpu": {
+            "artifact": "di-qos-cache-benchmark-1/result.json",
+            "baseline_runtime": "b775f5c5456cf9909e08c395eec717bac51b7890",
+            "candidate": "Working-tree caps-policy cache; immutable identity admitted once, five mutable properties and both single-structure current caps checked per event; unchanged forwarding/latch/teardown",
+            "status": "PASS:77 Player tests, zero skips; independent source review and CPU comparator",
+            "order": ["old", "candidate", "candidate", "old", "old", "candidate"],
+            "events_per_batch": 1000,
+            "old_median_wall_thread_process_cpu_ms": [186.022300, 186.038453, 186.031060],
+            "candidate_median_wall_thread_process_cpu_ms": [124.527868, 124.533482, 124.526625],
+            "correctness": "All6000 forwarded events exact type/seqnum/offset/QoS payload/order/return. Three separately instrumented events per batch each copied once. Caps/property mutation, missing/duplicate caps and irreversible stock-policy fallback covered by regression tests.",
+            "scope": "CPU-only actual negotiated Gst pads, finite tiny CPU frames then QoS dispatch after EOS. Timing includes identical minimal capture, excludes setup/event construction/metadata comparison/copy counting. About62us/event saved, not the full native upstream QoS path, native GIL attribution, E2E or clocked-drop qualification."
+          },
           "private_native": {
             "artifact": "early-packing-1/{result,playback,counts,qos-drops}.json",
             "status": "PASS bounded automatic path and boundary",
