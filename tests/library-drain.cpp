@@ -4510,6 +4510,7 @@ struct Options {
     unsigned iterations = 1;
     bool scaler_test = false;
     bool scaler_benchmark = false;
+    bool same_handle_scale_cycle = false;
     unsigned scale_width = 0;
     bool mpeg1_via_mpeg2 = false;
     bool h263_via_divx = false;
@@ -4555,6 +4556,38 @@ struct Options {
     bool firmware_drop_nonref = false;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
 };
+
+static const size_t kSameHandleScaleCycleBytes = 2461287U;
+static const char kSameHandleScaleCycleSha[] =
+    "21331dc86176a6ac429f0d915253f89ca0b69ba80b07520cfdacab3fd6f660f5";
+
+static bool SameHandleScaleCycleIdentity(size_t bytes, const char *sha)
+{
+    return sha && bytes == kSameHandleScaleCycleBytes &&
+        !std::strcmp(sha, kSameHandleScaleCycleSha);
+}
+
+static bool SameHandleScaleCycleShape(const Options &options,
+                                      const Input &input)
+{
+    return options.same_handle_scale_cycle && options.mode == Mode::Hardware &&
+        options.expected == 60U && options.seconds == 30U &&
+        options.iterations == 3U && options.scaler_test &&
+        !options.scaler_benchmark && options.scale_width == 1280U &&
+        options.output_format == OUTPUT_MODE422_YUY2 && !options.capture_path &&
+        input.codec == AV_CODEC_ID_H264 &&
+        input.subtype == BC_MSUBTYPE_H264 &&
+        input.profile == AV_PROFILE_H264_HIGH && input.level == 40 &&
+        input.progressive && input.width == 1920U && input.height == 1080U &&
+        input.metadata.empty() && input.packets.size() == 60U;
+}
+
+static bool SameHandleScaleCycleWidth(unsigned session, unsigned *width)
+{
+    if (!width || session < 1U || session > 3U) return false;
+    *width = session == 2U ? 0U : 1280U;
+    return true;
+}
 
 static bool ActiveContextMode(const Options &options)
 {
@@ -4612,6 +4645,16 @@ static uint32_t ProbeDeviceMode(const Options &options)
     return mode;
 }
 
+static uint32_t SameHandleScaleCycleDeviceMode(const Options &options)
+{
+    // Scaling is selected afresh for sessions one and three.  Do not give the
+    // retained device a single-thread preset that could scale the fixed middle
+    // session without an explicit DtsSetScaleParams call.
+    Options mixed = options;
+    mixed.scale_width = 0U;
+    return ProbeDeviceMode(mixed);
+}
+
 static bool ScalerBenchmarkConflicts(const Options &o)
 {
     return o.scaler_test || o.capture_path || o.observe_chroma ||
@@ -4652,6 +4695,36 @@ static bool RxOutputReceiptsConflicts(const Options &o)
 
 static bool ParseArguments(std::vector<const char *> arguments, Options *options)
 {
+    const unsigned same_handle_cycle_options = static_cast<unsigned>(
+        std::count_if(arguments.begin(), arguments.end(),
+            [](const char *argument) {
+                return argument &&
+                    !std::strcmp(argument, "--same-handle-scale-cycle");
+            }));
+    if (same_handle_cycle_options) {
+        // One exact lifecycle experiment.  Keep its three sessions and option
+        // order explicit so ordinary iteration remains open/close churn.
+        if (same_handle_cycle_options != 1U ||
+            options->same_handle_scale_cycle || arguments.size() != 9U ||
+            std::strcmp(arguments[1], "--hardware") ||
+            std::strcmp(arguments[3], "60") ||
+            std::strcmp(arguments[4], "30") ||
+            std::strcmp(arguments[5], "3") ||
+            std::strcmp(arguments[6], "--scaler-test") ||
+            std::strcmp(arguments[7], "1280") ||
+            std::strcmp(arguments[8], "--same-handle-scale-cycle"))
+            return false;
+        arguments.pop_back();
+        if (!ParseArguments(arguments, options) ||
+            options->mode != Mode::Hardware || options->expected != 60U ||
+            options->seconds != 30U || options->iterations != 3U ||
+            !options->scaler_test || options->scaler_benchmark ||
+            options->scale_width != 1280U || options->capture_path ||
+            options->output_format != OUTPUT_MODE422_YUY2)
+            return false;
+        options->same_handle_scale_cycle = true;
+        return true;
+    }
     size_t pace_position = arguments.size();
     unsigned pace_options = 0;
     for (size_t index = 1; index < arguments.size(); ++index) {
@@ -6234,6 +6307,19 @@ static bool ScalerGeometry(unsigned source_width, unsigned source_height,
     return *height != 0;
 }
 
+static bool OutputGeometryMatches(unsigned source_height,
+                                  unsigned expected_width,
+                                  unsigned expected_height,
+                                  unsigned actual_width,
+                                  unsigned actual_height,
+                                  bool allow_native_coded_height)
+{
+    return actual_width == expected_width &&
+        (actual_height == expected_height ||
+         (allow_native_coded_height && source_height == 1080U &&
+          expected_height == 1080U && actual_height == 1088U));
+}
+
 static const char *PackedName(BC_OUTPUT_FORMAT format)
 {
     if (format == OUTPUT_MODE422_YUY2) return "YUY2";
@@ -6806,6 +6892,12 @@ struct Resources {
     unsigned fds = 0;
     unsigned threads = 0;
 };
+
+static bool SameHandleRetainedResources(const Resources &expected,
+                                        const Resources &actual)
+{
+    return actual.fds == expected.fds && actual.threads == expected.threads;
+}
 
 static bool StatusValue(const char *line, const char *name, unsigned long *value)
 {
@@ -10772,6 +10864,7 @@ template<class Check> static void RuntimeInventorySelfTest(const Check &check)
 }
 
 template<class Check> static void PpbStopLifecycleSelfTest(const Check &check);
+template<class Check> static void SameHandleLifecycleSelfTest(const Check &check);
 
 template<class Check> static void FirmwareDropSelfTest(const Check &check)
 {
@@ -11252,6 +11345,7 @@ static bool SelfTest()
     AvdCodePrefixSelfTest(check);
     AvdPlatformCodeSelfTest(check);
     PpbStopLifecycleSelfTest(check);
+    SameHandleLifecycleSelfTest(check);
     MfdFramingSelfTest(check);
     RuntimeInventorySelfTest(check);
     Mpeg4DirectSelfTest(check);
@@ -11729,6 +11823,105 @@ static bool SelfTest()
               !faulty_summary.sustained_admission &&
               faulty_summary.submit_deadline_misses == 1,
               "a submit returning at or after the next 60Hz tick rejects sustained admission");
+    }
+
+    {
+        const std::vector<const char *> cycle_arguments = {
+            "probe", "--hardware", "fixture", "60", "30", "3",
+            "--scaler-test", "1280", "--same-handle-scale-cycle"};
+        Options cycle;
+        check(ParseArguments(cycle_arguments, &cycle) &&
+              cycle.same_handle_scale_cycle && cycle.mode == Mode::Hardware &&
+              cycle.expected == 60U && cycle.seconds == 30U &&
+              cycle.iterations == 3U && cycle.scaler_test &&
+              cycle.scale_width == 1280U && !cycle.scaler_benchmark &&
+              !cycle.capture_path && !NeedsRawIo(cycle),
+              "same-handle scale cycle admits only its explicit three-session profile");
+        check((ProbeDeviceMode(cycle) & DTS_SINGLE_THREADED_MODE) != 0U &&
+              (SameHandleScaleCycleDeviceMode(cycle) &
+               DTS_SINGLE_THREADED_MODE) == 0U,
+              "mixed scale cycle suppresses the retained-device 1280 preset");
+        for (unsigned fault = 0; fault < 10U; ++fault) {
+            auto arguments = cycle_arguments;
+            if (fault == 0U) arguments[1] = "--preflight";
+            if (fault == 1U) arguments[3] = "59";
+            if (fault == 2U) arguments[4] = "29";
+            if (fault == 3U) arguments[5] = "2";
+            if (fault == 4U) arguments[7] = "0";
+            if (fault == 5U) arguments[7] = "1278";
+            if (fault == 6U) arguments[6] = "--scaler-benchmark";
+            if (fault == 7U) arguments.pop_back();
+            if (fault == 8U) arguments.push_back("--same-handle-scale-cycle");
+            if (fault == 9U) std::swap(arguments[6], arguments[8]);
+            Options rejected;
+            if (fault == 7U)
+                check(ParseArguments(arguments, &rejected) &&
+                      !rejected.same_handle_scale_cycle,
+                      "removing the opt-in leaves the ordinary three-run scaler profile unchanged");
+            else
+                check(!ParseArguments(arguments, &rejected),
+                      "same-handle scale cycle rejects changed mode/count/time/width/order/duplicates");
+        }
+        Options capture_cycle;
+        auto captured = cycle_arguments;
+        captured.insert(captured.end() - 1,
+                        {"--capture-yuy2", "owned.raw"});
+        check(!ParseArguments(captured, &capture_cycle),
+              "same-handle scale cycle excludes capture and every widened command profile");
+
+        unsigned first = 0, middle = 1, last = 0;
+        check(SameHandleScaleCycleWidth(1U, &first) && first == 1280U &&
+              SameHandleScaleCycleWidth(2U, &middle) && middle == 0U &&
+              SameHandleScaleCycleWidth(3U, &last) && last == 1280U &&
+              !SameHandleScaleCycleWidth(0U, &first) &&
+              !SameHandleScaleCycleWidth(4U, &first) &&
+              !SameHandleScaleCycleWidth(1U, nullptr),
+              "same-handle lifecycle is exactly scaled-fixed-scaled");
+        check(SameHandleScaleCycleIdentity(kSameHandleScaleCycleBytes,
+                                           kSameHandleScaleCycleSha) &&
+              !SameHandleScaleCycleIdentity(kSameHandleScaleCycleBytes - 1U,
+                                            kSameHandleScaleCycleSha) &&
+              !SameHandleScaleCycleIdentity(kSameHandleScaleCycleBytes,
+                                            "changed") &&
+              !SameHandleScaleCycleIdentity(kSameHandleScaleCycleBytes,
+                                            nullptr),
+              "same-handle input identity requires exact size and SHA256");
+        Input pinned;
+        pinned.codec = AV_CODEC_ID_H264;
+        pinned.subtype = BC_MSUBTYPE_H264;
+        pinned.profile = AV_PROFILE_H264_HIGH;
+        pinned.level = 40;
+        pinned.progressive = true;
+        pinned.width = 1920U;
+        pinned.height = 1080U;
+        pinned.packets.resize(60U);
+        check(SameHandleScaleCycleShape(cycle, pinned),
+              "same-handle shape admits exact progressive High H264 profile");
+        for (unsigned fault = 0; fault < 10U; ++fault) {
+            Options changed = cycle;
+            Input input = pinned;
+            if (fault == 0U) input.codec = AV_CODEC_ID_MPEG2VIDEO;
+            if (fault == 1U) input.subtype = BC_MSUBTYPE_AVC1;
+            if (fault == 2U) input.profile = AV_PROFILE_H264_MAIN;
+            if (fault == 3U) input.level = 41;
+            if (fault == 4U) input.progressive = false;
+            if (fault == 5U) input.width = 1280U;
+            if (fault == 6U) input.height = 1088U;
+            if (fault == 7U) input.metadata.push_back(1U);
+            if (fault == 8U) input.packets.pop_back();
+            if (fault == 9U) changed.same_handle_scale_cycle = false;
+            check(!SameHandleScaleCycleShape(changed, input),
+                  "same-handle shape fails closed on every fixture/profile mutation");
+        }
+        Resources retained, changed_rss, changed_fds, changed_threads;
+        retained.rss_kib = 100U; retained.fds = 5U; retained.threads = 2U;
+        changed_rss = retained; changed_rss.rss_kib = 200U;
+        changed_fds = retained; changed_fds.fds = 6U;
+        changed_threads = retained; changed_threads.threads = 3U;
+        check(SameHandleRetainedResources(retained, changed_rss) &&
+              !SameHandleRetainedResources(retained, changed_fds) &&
+              !SameHandleRetainedResources(retained, changed_threads),
+              "same-handle resource gate ignores allocator RSS but requires exact fd/thread ownership");
     }
 
     for (const char *width : {"0", "128", "320", "640", "1918"}) {
@@ -12226,6 +12419,16 @@ static bool SelfTest()
           !ScalerGeometry(0, 360, 320, &width, &height) &&
           !ScalerGeometry(640, 361, 320, &width, &height),
           "ambiguous scaler geometry rejected");
+    check(OutputGeometryMatches(1080, 1920, 1080, 1920, 1080, true) &&
+          OutputGeometryMatches(1080, 1920, 1080, 1920, 1088, true) &&
+          !OutputGeometryMatches(1080, 1920, 1080, 1920, 1088, false) &&
+          !OutputGeometryMatches(720, 1280, 720, 1280, 728, true) &&
+          !OutputGeometryMatches(1080, 1920, 1080, 1918, 1088, true),
+          "native fixed output alone admits the documented 1088 coded height");
+    check(OutputGeometryMatches(1080, 1280, 720, 1280, 720, false) &&
+          !OutputGeometryMatches(1080, 1280, 720, 1280, 1088, true) &&
+          !OutputGeometryMatches(1080, 1280, 720, 1920, 1080, true),
+          "scaled output keeps exact 1280x720 geometry");
     {
         ScalerBenchmark benchmark;
         check(benchmark.Prepare(true, 62),
@@ -13611,6 +13814,17 @@ static bool DigestRegularFile(const char *path, size_t *bytes, std::string *sha)
     return ok && digest.Finish(bytes, sha);
 }
 
+static bool SameHandleScaleCycleInputAdmitted(const Options &options,
+                                              const Input &input)
+{
+    if (!SameHandleScaleCycleShape(options, input))
+        return !options.same_handle_scale_cycle;
+    size_t bytes = 0;
+    std::string sha;
+    return DigestRegularFile(options.path, &bytes, &sha) &&
+        SameHandleScaleCycleIdentity(bytes, sha.c_str());
+}
+
 static bool PrepareFirmwareDrop(const Options &options, const Input &input,
     issue399_firmware_drop::Plan *plan)
 {
@@ -13658,7 +13872,9 @@ struct Device {
         started = false;
         return stopper(handle);
     }
-    bool Close() {
+    bool CloseDecoder(
+        BC_STATUS (*stopper)(HANDLE) = DtsStopDecoder,
+        BC_STATUS (*closer)(HANDLE) = DtsCloseDecoder) {
         bool ok = true;
         const auto record = [&](const char *operation, BC_STATUS status) {
             if (status != BC_STS_SUCCESS) {
@@ -13666,11 +13882,35 @@ struct Device {
                 ok = false;
             }
         };
-        if (started) record("DtsStopDecoder", Stop());
+        if (started) record("DtsStopDecoder", Stop(stopper));
         started = false;
-        if (opened) record("DtsCloseDecoder", DtsCloseDecoder(handle));
+        if (opened) {
+            if (!handle || !closer)
+                record("DtsCloseDecoder", BC_STS_INV_ARG);
+            else
+                record("DtsCloseDecoder", closer(handle));
+        }
         opened = false;
-        if (handle) record("DtsDeviceClose", DtsDeviceClose(handle));
+        return ok;
+    }
+    bool Close(
+        BC_STATUS (*stopper)(HANDLE) = DtsStopDecoder,
+        BC_STATUS (*decoder_closer)(HANDLE) = DtsCloseDecoder,
+        BC_STATUS (*device_closer)(HANDLE) = DtsDeviceClose) {
+        bool ok = CloseDecoder(stopper, decoder_closer);
+        if (handle) {
+            if (!device_closer) {
+                std::fprintf(stderr, "DtsDeviceClose failed: %d\n",
+                             BC_STS_INV_ARG);
+                ok = false;
+            } else {
+                const BC_STATUS status = device_closer(handle);
+                if (status != BC_STS_SUCCESS) {
+                    std::fprintf(stderr, "DtsDeviceClose failed: %d\n", status);
+                    ok = false;
+                }
+            }
+        }
         handle = nullptr;
         return ok;
     }
@@ -13699,6 +13939,46 @@ template<class Check> static void PpbStopLifecycleSelfTest(const Check &check)
     check(idle.Stop(nullptr) == BC_STS_INV_ARG && idle.started && !fixture.calls,
         "PPB malformed STOP callback is refused before consuming the started state");
     idle.started = false; idle.handle = nullptr;
+}
+
+template<class Check> static void SameHandleLifecycleSelfTest(const Check &check)
+{
+    struct Fixture {
+        unsigned stops = 0, decoder_closes = 0, device_closes = 0;
+        static BC_STATUS Stop(HANDLE handle) {
+            ++static_cast<Fixture *>(handle)->stops;
+            return BC_STS_SUCCESS;
+        }
+        static BC_STATUS CloseDecoder(HANDLE handle) {
+            ++static_cast<Fixture *>(handle)->decoder_closes;
+            return BC_STS_SUCCESS;
+        }
+        static BC_STATUS CloseDevice(HANDLE handle) {
+            ++static_cast<Fixture *>(handle)->device_closes;
+            return BC_STS_SUCCESS;
+        }
+    };
+
+    Fixture fixture;
+    Device device;
+    device.handle = &fixture;
+    for (unsigned session = 1U; session <= 3U; ++session) {
+        device.opened = true;
+        device.started = true;
+        check(device.CloseDecoder(Fixture::Stop, Fixture::CloseDecoder) &&
+              device.handle == &fixture && !device.opened && !device.started &&
+              fixture.stops == session && fixture.decoder_closes == session &&
+              fixture.device_closes == 0U,
+              "same-handle session consumes one STOP/CLOSE while retaining the device");
+        check(device.CloseDecoder(Fixture::Stop, Fixture::CloseDecoder) &&
+              fixture.stops == session && fixture.decoder_closes == session,
+              "same-handle idle boundary never duplicates STOP/CLOSE");
+    }
+    check(device.Close(Fixture::Stop, Fixture::CloseDecoder,
+                       Fixture::CloseDevice) && !device.handle &&
+          fixture.stops == 3U && fixture.decoder_closes == 3U &&
+          fixture.device_closes == 1U,
+          "same-handle terminal cleanup closes the device exactly once");
 }
 
 static bool Status(const char *operation, BC_STATUS status)
@@ -13873,12 +14153,14 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     !audit->benchmark_scaled && input.height == 1080 && height == 1088;
                 const bool ordinary_coded_height = !audit->benchmark.enabled &&
                     !audit->pixels && input.height == 1080 && height == 1088;
+                const bool allow_native_coded_height =
+                    benchmark_coded_height || ordinary_coded_height;
                 valid = valid &&
                     (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) && output.Ybuff &&
                     !(output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) &&
-                    width == audit->output_width &&
-                    (height == audit->output_height || benchmark_coded_height ||
-                     ordinary_coded_height) &&
+                    OutputGeometryMatches(input.height, audit->output_width,
+                        audit->output_height, width, height,
+                        allow_native_coded_height) &&
                     (!audit->benchmark.enabled || output.b422Mode == OUTPUT_MODE422_YUY2) &&
                     static_cast<uint64_t>(output.YBuffDoneSz) * 4 >= static_cast<uint64_t>(width) * height * 2 &&
                     audit->pending.erase(output.PicInfo.timeStamp) == 1;
@@ -14740,6 +15022,237 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     return ok;
 }
 
+static bool RunSameHandleScaleCycleSession(
+    Input &input, const Options &options, unsigned session, Device *device,
+    Phase1Progress *progress, std::string *pixel_sha)
+{
+    if (!device || !device->handle || device->opened || device->started ||
+        !pixel_sha) return false;
+    unsigned requested_width = 0;
+    if (!SameHandleScaleCycleWidth(session, &requested_width)) return false;
+
+    Deadline deadline(options.seconds);
+    Audit audit;
+    audit.iteration = session;
+    audit.progress = progress;
+    audit.output_width = input.width;
+    audit.output_height = input.height;
+    audit.output_format = OUTPUT_MODE422_YUY2;
+    audit.expected = options.expected;
+    if (!ScalerGeometry(input.width, input.height, requested_width,
+                        &audit.output_width, &audit.output_height))
+        return false;
+    if (requested_width) {
+        audit.pixels = g_checksum_new(G_CHECKSUM_SHA256);
+        if (!audit.pixels) return false;
+    }
+
+    // This object is intentionally rebuilt for every fresh decoder channel.
+    // In particular, the fixed middle session carries no scaling fields from
+    // either neighbouring session and makes no DtsSetScaleParams call.
+    BC_INPUT_FORMAT format = {};
+    format.Progressive = TRUE;
+    format.OptFlags = 0x80000000U | vdecFrameRate59_94 | 0x40U;
+    format.mSubtype = input.subtype;
+    format.width = input.width;
+    format.height = input.height;
+    format.startCodeSz = InputStartCodeSize(input);
+    format.pMetaData = input.metadata.empty() ? nullptr : input.metadata.data();
+    format.metaDataSz = input.metadata.size();
+
+    bool ok = Status("DtsSetInputFormat",
+                     DtsSetInputFormat(device->handle, &format));
+    if (ok && requested_width) {
+        BC_SCALING_PARAMS scaling = {};
+        scaling.sWidth = requested_width;
+        ok = Status("DtsSetScaleParams",
+                    DtsSetScaleParams(device->handle, &scaling));
+    }
+    if (ok)
+        device->opened = ok = Status("DtsOpenDecoder",
+            DtsOpenDecoder(device->handle, BC_STREAM_TYPE_ES));
+    if (ok)
+        ok = Status("DtsSetColorSpace",
+                    DtsSetColorSpace(device->handle, OUTPUT_MODE422_YUY2));
+    if (ok)
+        device->started = ok = Status("DtsStartDecoder",
+                                      DtsStartDecoder(device->handle));
+    if (ok)
+        ok = Status("DtsStartCapture", DtsStartCapture(device->handle));
+
+    for (size_t packet_index = 0;
+         ok && packet_index < input.packets.size(); ++packet_index) {
+        Packet &packet = input.packets[packet_index];
+        ok = WaitInput(device, input, &audit, packet.reservation, deadline);
+        if (ok) {
+            const uint64_t token = Token(session - 1U, packet_index);
+            ok = Status("DtsProcInput", DtsProcInput(device->handle,
+                packet.data.data(), packet.size, token, FALSE));
+            if (ok) audit.pending.insert(token);
+        }
+    }
+    if (ok) {
+        ok = WaitInput(device, input, &audit, GST_CRYSTALHD_EOS_RESERVATION,
+                       deadline);
+        if (ok && !FreshBeforeFlush(audit.eos)) {
+            std::fprintf(stderr,
+                "Same-handle session observed stale EOS before its flush\n");
+            ok = false;
+        }
+        if (ok)
+            ok = Status("DtsFlushInput(0)",
+                        DtsFlushInput(device->handle, 0));
+    }
+    while (ok && !deadline.expired()) {
+        ok = Receive(device, input, &audit);
+        if (!ok || (audit.eos && audit.ready == 0U && audit.pending.empty()))
+            break;
+        g_usleep(1000);
+    }
+    const bool drained = ok && !deadline.expired() && audit.eos &&
+        audit.ready == 0U && audit.pending.empty() &&
+        ExactPictureCount(audit.frames, options.expected);
+    ok = drained;
+    const char *digest = audit.pixels
+        ? g_checksum_get_string(audit.pixels) : nullptr;
+    if (drained && digest) *pixel_sha = digest;
+
+    // A session boundary is a drained STOP/CLOSE boundary.  The device handle
+    // remains owned, but this does not preserve or reuse a firmware channel.
+    const bool decoder_closed = device->CloseDecoder();
+    ok = ok && decoder_closed;
+    std::printf("Same-device scale cycle: session=%u/3 mode=%s "
+        "requested-width=%u expected-output=%ux%u frames=%u/%u pending=%zu "
+        "firmware-EOS=%s ready=%u scale-api=%s format=fresh "
+        "geometry-oracle=%s "
+        "decoder-stop-close=%s device-handle=retained "
+        "decoder-channel=fresh-api-open-per-session "
+        "active-pixel-sha256=%s result=%s\n",
+        session, requested_width ? "scaled" : "fixed", requested_width,
+        audit.output_width, audit.output_height, audit.frames,
+        options.expected, audit.pending.size(), audit.eos ? "yes" : "no",
+        audit.ready, requested_width ? "called" : "skipped",
+        requested_width ? "exact-1280x720" :
+            "native-1920x1080-or-coded-1920x1088",
+        decoder_closed ? "PASS" : "FAIL",
+        requested_width
+            ? (pixel_sha->empty() ? "NOT-COMPLETE" : pixel_sha->c_str())
+            : "NOT-REQUIRED-FIXED-NATIVE",
+        ok ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    return ok;
+}
+
+static bool RunSameHandleScaleCycle(Input &input, const Options &options,
+                                    Phase1Progress *progress)
+{
+    Resources baseline;
+    if (!SampleResources(&baseline)) {
+        std::fprintf(stderr,
+                     "Unable to sample same-handle baseline resources\n");
+        return false;
+    }
+    ReportResources(0U, options.iterations, baseline);
+
+    // Capability is a userspace contract query and must precede DeviceOpen.
+    uint32_t library_capabilities = 0;
+    bool ok = Status("DtsGetLibraryCapabilities",
+        DtsGetLibraryCapabilities(&library_capabilities));
+    if (ok && !(library_capabilities &
+                DTS_LIB_CAP_FLEA_H264_DRAINED_REOPEN)) {
+        std::fprintf(stderr,
+            "Library does not advertise drained Flea H264 reopen; no device was opened\n");
+        ok = false;
+    }
+
+    Device device;
+    if (ok)
+        ok = Status("DtsDeviceOpen",
+                    DtsDeviceOpen(&device.handle,
+                                  SameHandleScaleCycleDeviceMode(options)));
+    BC_INFO_CRYSTAL version = {};
+    if (ok)
+        ok = Status("DtsCrystalHDVersion",
+                    DtsCrystalHDVersion(device.handle, &version));
+    if (ok && version.device != 1) {
+        std::fprintf(stderr,
+            "Same-handle scale cycle is restricted to BCM70015\n");
+        ok = false;
+    }
+
+    Resources retained;
+    if (ok && !SampleResources(&retained)) {
+        std::fprintf(stderr,
+                     "Unable to sample retained-device resources\n");
+        ok = false;
+    }
+    if (ok) {
+        std::printf("Same-device scale cycle: capability=FLEA_H264_DRAINED_REOPEN "
+            "sessions=scaled1280,fixed,scaled1280 device-opens=1 "
+            "decoder-open-close-cycles=3 retained-fds=%u retained-threads=%u\n",
+            retained.fds, retained.threads);
+        std::fflush(stdout);
+    }
+
+    std::string pixel_sha[3];
+    unsigned completed = 0;
+    for (unsigned session = 1U; ok && session <= 3U; ++session) {
+        phase1_progress_write(progress,
+            "probe=library-drain same-device-scale-cycle session=%u/3 "
+            "state=starting last-complete=%u\n", session, completed);
+        ok = RunSameHandleScaleCycleSession(input, options, session, &device,
+                                             progress,
+                                             &pixel_sha[session - 1U]);
+        Resources boundary;
+        if (!SampleResources(&boundary)) {
+            std::fprintf(stderr,
+                "Unable to sample resources after same-handle session %u\n",
+                session);
+            ok = false;
+        } else {
+            ReportResources(session, options.iterations, boundary);
+            if (!SameHandleRetainedResources(retained, boundary)) {
+                std::fprintf(stderr,
+                    "Retained-device resource drift after session %u: "
+                    "fds=%u/%u threads=%u/%u\n", session, boundary.fds,
+                    retained.fds, boundary.threads, retained.threads);
+                ok = false;
+            }
+        }
+        if (ok) completed = session;
+    }
+
+    const bool scaled_match = completed == 3U && !pixel_sha[0].empty() &&
+        pixel_sha[0] == pixel_sha[2];
+    if (ok && !scaled_match) {
+        std::fprintf(stderr,
+            "First and final scaled1280 active-pixel digests differ\n");
+        ok = false;
+    }
+
+    const bool device_closed = device.Close();
+    ok = ok && device_closed;
+    Resources terminal;
+    if (!SampleResources(&terminal)) {
+        std::fprintf(stderr,
+                     "Unable to sample terminal same-handle resources\n");
+        ok = false;
+    } else if (!SameHandleRetainedResources(baseline, terminal)) {
+        std::fprintf(stderr,
+            "Terminal resource drift: fds=%u/%u threads=%u/%u\n",
+            terminal.fds, baseline.fds, terminal.threads, baseline.threads);
+        ok = false;
+    }
+    std::printf("Same-device scale cycle: completed=%u/3 "
+        "scaled-digest-match=%s device-close=%s terminal-fds=%u/%u "
+        "terminal-threads=%u/%u result=%s\n", completed,
+        scaled_match ? "yes" : "no", device_closed ? "PASS" : "FAIL",
+        terminal.fds, baseline.fds, terminal.threads, baseline.threads,
+        ok ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    return ok;
+}
+
 int main(int argc, char **argv)
 {
     const std::vector<const char *> arguments(argv, argv + argc);
@@ -14749,6 +15262,7 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0 | --scaler-benchmark WIDTH_OR_0] "
+            "[--same-handle-scale-cycle] "
             "[--mpeg1-via-mpeg2 | --h263-via-divx] "
             "[--rx-output-receipts NEW_ABSOLUTE_TSV] "
             "[--pace-input 60] "
@@ -14769,7 +15283,9 @@ int main(int argc, char **argv)
             "--scaler-benchmark 1280 --rx-output-receipts NEW_ABSOLUTE_TSV "
             "--pace-input 60\n"
             "Issue399 firmware drop: --hardware PINNED_ISSUE399_H264_1920x1080_900_PACKETS 900 60_OR_120 1 "
-            "--firmware-drop-nonref --rx-output-receipts NEW_ABSOLUTE_TSV\n", argv[0]);
+            "--firmware-drop-nonref --rx-output-receipts NEW_ABSOLUTE_TSV\n"
+            "Same-device scale cycle: --hardware PINNED_H264_1920x1080P30_HIGH_60 60 30 3 "
+            "--scaler-test 1280 --same-handle-scale-cycle\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
@@ -14862,6 +15378,14 @@ int main(int argc, char **argv)
     Input input;
     if (!Load(options.path, options.expected, &deadline, &input,
               options.mpeg1_via_mpeg2, options.h263_via_divx)) {
+        phase1_progress_close(&progress);
+        return 2;
+    }
+    if (!SameHandleScaleCycleInputAdmitted(options, input)) {
+        std::fprintf(stderr,
+            "Same-handle scale cycle requires the pinned progressive High@4.0 "
+            "1920x1080/60-picture Annex-B identity (2461287 bytes and fixed "
+            "SHA256); no device was opened\n");
         phase1_progress_close(&progress);
         return 2;
     }
@@ -14970,6 +15494,13 @@ int main(int argc, char **argv)
     if (options.mode == Mode::Preflight) {
         phase1_progress_close(&progress);
         return 0;
+    }
+
+    if (options.same_handle_scale_cycle) {
+        const bool cycle_ok = RunSameHandleScaleCycle(input, options,
+                                                       &progress);
+        phase1_progress_close(&progress);
+        return cycle_ok ? 0 : 1;
     }
 
     Resources baseline;
