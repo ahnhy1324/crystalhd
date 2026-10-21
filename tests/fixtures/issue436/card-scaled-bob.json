@@ -873,6 +873,17 @@
             "correctness": "All6000 forwarded events exact type/seqnum/offset/QoS payload/order/return. Three separately instrumented events per batch each copied once. Caps/property mutation, missing/duplicate caps and irreversible stock-policy fallback covered by regression tests.",
             "scope": "CPU-only actual negotiated Gst pads, finite tiny CPU frames then QoS dispatch after EOS. Timing includes identical minimal capture, excludes setup/event construction/metadata comparison/copy counting. About62us/event saved, not the full native upstream QoS path, native GIL attribution, E2E or clocked-drop qualification."
           },
+          "qos_caps_cache_native": {
+            "artifact": "production-packing-cache-1/{result,playback,counts,qos-drops}.json",
+            "runtime_source": "740ebcde40ff7435d2e18611f481dc7738320d02",
+            "status": "PASS: one bounded automatic path and boundary trial; broader acceptance remains open",
+            "counts_using_parent_columns": [750, 750, 1500, 1500, 1500, 1500, 0],
+            "elapsed_seconds": 33.53780839103274,
+            "original_pts": "PASS:750 exact40ms original/card pictures and1500 exact20ms DI/FHD/sink fields, zero mismatches or drop-only QoS records",
+            "path": "Actual clean source Player and automatic Xv selection; no private builder/selector/helper injection. Qualified stock LINEAR YUY2, UYVY720 packing and method4/two-thread FHD resize. Original vqueue3/sync/QoS/5ms max-lateness/15ms deadline retained; production DI helper active/eligible at EOS and removed on close.",
+            "boundary": "750 originals accepted,1500 card fields returned/released,750 finishes, ordinary Open/Close once; natural EOS/player0/controller0, exact host identity/module/PM/AER/pins0/ref0 boundaries and clean kernel; no warnings/errors or observer overflow. Qualified DIL3b81b1d and Gstb047ce1 unchanged.",
+            "limitation": "Single30s run, not repeatability, causal proof of cache fixing earlier drops, physical scanout/A/V, calibrated latency, reopen loop or firmware-stall resolution. Earlier actual-source1301/1499 failures and all private-control scopes remain unchanged; no installed/external-app/PM/display setting changes."
+          },
           "private_native": {
             "artifact": "early-packing-1/{result,playback,counts,qos-drops}.json",
             "status": "PASS bounded automatic path and boundary",
