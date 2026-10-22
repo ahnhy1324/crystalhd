@@ -9176,11 +9176,51 @@ static void WaitingVppCancellationStillWins() {
   std::unique_lock<std::mutex> lock(fixture.driver.mutex);
   Require(SyncDecodeSurface(&fixture.driver, operation.source, &lock,
                             VA_TIMEOUT_INFINITE, [&] {
-                              return PendingVppCanceled(operation);
+                              return PendingVppCanceled(&fixture.driver,
+                                                       operation);
                             }) == VA_STATUS_ERROR_OPERATION_FAILED,
           "completed pixels must not revive a canceled VPP epoch");
   Require(operation.source->ready && fixture.decoder->retired,
           "VPP cancellation must win even over actual completed pixels");
+}
+
+static void WaitingVppKeepsCompletedRetiredPicture() {
+  TeardownFixture fixture(1);
+  BindTeardownPicturesForVpp(fixture);
+  PendingVpp operation;
+  operation.decoder = fixture.decoder;
+  operation.decoder_generation = fixture.decoder->generation;
+  operation.source_owner = fixture.held[0];
+  operation.source = fixture.decoder->decoded_frames.at(kTimestampStep);
+  operation.target = fixture.held[0];
+  operation.target_owner = fixture.held[0];
+  operation.sequence = operation.target_owner->latest_vpp_sequence;
+  fixture.io.on_sleep = [&] {
+    Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS,
+            "complete and successfully consume the captured VPP decoder");
+    Require(fixture.held[0]->completed_decode_picture.picture ==
+                operation.source,
+            "successful close publishes the waiting operation's exact picture");
+    Require(CapturedDecodePictureMatchesLifetime(
+                &fixture.driver, fixture.held[0], operation.source,
+                fixture.decoder, operation.decoder_generation),
+            "published close lease validates the waiting decoder epoch");
+    Require(!PendingVppCanceled(&fixture.driver, operation),
+            "exact successful-close lease keeps the waiting VPP alive");
+  };
+  std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+  Require(SyncDecodeSurface(&fixture.driver, operation.source, &lock,
+                            VA_TIMEOUT_INFINITE, [&] {
+                              return PendingVppCanceled(&fixture.driver,
+                                                       operation);
+                            }) == VA_STATUS_SUCCESS,
+          "waiting VPP accepts the exact lease published by successful close");
+  Require(operation.source->ready && !operation.source->failed &&
+              fixture.decoder->retired &&
+              !PendingVppCanceled(&fixture.driver, operation) &&
+              fixture.held[0]->completed_decode_picture.picture ==
+                  operation.source,
+          "successful close retains the same owner, pixels, identity and epoch");
 }
 
 static void ContextDrainFailureDoesNotInventTail() {
@@ -10628,6 +10668,7 @@ int main(int argc, char **argv) {
     ContextDrainRejectsMutationAndSurvivesSurfaceRelease();
     WaitingSyncKeepsCompletedRetiredPicture();
     WaitingVppCancellationStillWins();
+    WaitingVppKeepsCompletedRetiredPicture();
     ContextDrainFailureDoesNotInventTail();
     CompletedWaitNeverAcceptsDifferentOrDestroyedPicture();
     ReadyStatusProbeSkipsReadyHeadPeek();

@@ -1206,10 +1206,20 @@ struct Surface {
   bool BeginCpuAccess(uint64_t direction) const {
     for (size_t object = 0; object < object_fds.size(); ++object) {
       if (!SyncDmaBuf(object_fds[object], DMA_BUF_SYNC_START | direction)) {
+        const int saved_errno = errno;
+        const size_t failed_object = object;
         // START ownership is per object. Release only the successfully
         // acquired prefix before reporting a failed, all-or-nothing access.
-        while (object != 0)
-          SyncDmaBuf(object_fds[--object], DMA_BUF_SYNC_END | direction);
+        while (object != 0) {
+          const size_t acquired = --object;
+          if (!SyncDmaBuf(object_fds[acquired], DMA_BUF_SYNC_END | direction))
+            Debug("DMA-BUF CPU sync unwind failed fd=%d object=%zu direction=%#llx errno=%d",
+                  object_fds[acquired], acquired,
+                  static_cast<unsigned long long>(direction), errno);
+        }
+        Debug("DMA-BUF CPU sync failed stage=start fd=%d object=%zu direction=%#llx errno=%d",
+              object_fds[failed_object], failed_object,
+              static_cast<unsigned long long>(direction), saved_errno);
         return false;
       }
     }
@@ -1218,9 +1228,13 @@ struct Surface {
 
   bool EndCpuAccess(uint64_t direction) const {
     bool success = true;
-    for (int fd : object_fds) {
-      if (!SyncDmaBuf(fd, DMA_BUF_SYNC_END | direction))
+    for (size_t object = 0; object < object_fds.size(); ++object) {
+      const int fd = object_fds[object];
+      if (!SyncDmaBuf(fd, DMA_BUF_SYNC_END | direction)) {
+        Debug("DMA-BUF CPU sync failed stage=end fd=%d object=%zu direction=%#llx errno=%d",
+              fd, object, static_cast<unsigned long long>(direction), errno);
         success = false;
+      }
     }
     return success;
   }
@@ -1383,9 +1397,12 @@ static int BeginFencedWrite(Surface *surface,
   snprintf(create.name, sizeof(create.name), "crystalhd-vpp");
   if (timeline < 0 ||
       ioctl(timeline, SW_SYNC_IOC_CREATE_FENCE, &create) != 0) {
+    const int saved_errno = errno;
     const bool closed = timeline < 0 || close(timeline) == 0;
     if (synchronous_fallback != nullptr)
       *synchronous_fallback = closed;
+    Debug("VPP fence unavailable stage=create timeline=%d errno=%d fallback=%d",
+          timeline, saved_errno, closed);
     return -1;
   }
 
@@ -1394,16 +1411,19 @@ static int BeginFencedWrite(Surface *surface,
     // imported, so close only these local handles; do not issue another END.
     close(create.fence);
     close(timeline);
+    Debug("VPP fence admission failed stage=cpu-start");
     return -1;
   }
 
   bool imported = true;
+  int import_errno = 0;
   for (int fd : surface->object_fds) {
     dma_buf_import_sync_file import = {};
     import.flags = DMA_BUF_SYNC_WRITE;
     import.fd = create.fence;
     if (ioctl(fd, DMA_BUF_IOCTL_IMPORT_SYNC_FILE, &import) != 0) {
       imported = false;
+      import_errno = errno;
       break;
     }
   }
@@ -1412,6 +1432,7 @@ static int BeginFencedWrite(Surface *surface,
     // An earlier object may already carry the unsignaled fence. Abort it
     // before END can wait on itself; no conversion succeeded here.
     AbortFencedWrite(surface, timeline, operations);
+    Debug("VPP fence admission failed stage=import errno=%d", import_errno);
     return -1;
   }
   return timeline;
@@ -1681,8 +1702,10 @@ static VAStatus ProcessVpp(SwsContext **scaler,
     return VA_STATUS_ERROR_DECODING_ERROR;
   }
 
-  if (!source->BeginCpuRead())
+  if (!source->BeginCpuRead()) {
+    Debug("VPP operation failed stage=source-cpu-start");
     return VA_STATUS_ERROR_OPERATION_FAILED;
+  }
   if (destination->fourcc == VA_FOURCC_ARGB) {
     // libswscale used to write scanlines straight into Chromium's imported
     // DMA-BUF. vaEndPicture is asynchronous, so the compositor could sample
@@ -1714,6 +1737,7 @@ static VAStatus ProcessVpp(SwsContext **scaler,
         nullptr, nullptr, nullptr);
     if (*scaler == nullptr) {
       source->EndCpuRead();
+      Debug("VPP operation failed stage=sws-context");
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
     // Range is active even without VAProcColorStandardExplicit. Set it on
@@ -1724,6 +1748,7 @@ static VAStatus ProcessVpp(SwsContext **scaler,
                                 color_range.source_full ? 1 : 0,
                                 coefficients, 1, 0, 1 << 16, 1 << 16) < 0) {
       source->EndCpuRead();
+      Debug("VPP operation failed stage=sws-colorspace");
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
     // TFF/BFF describe temporal order, not the physical even/odd row layout.
@@ -1755,6 +1780,8 @@ static VAStatus ProcessVpp(SwsContext **scaler,
           destination_planes, destination_pitches);
       if (output_lines != static_cast<int>(output_height)) {
         source->EndCpuRead();
+        Debug("VPP operation failed stage=sws-scale lines=%d expected=%u",
+              output_lines, output_height);
         return VA_STATUS_ERROR_OPERATION_FAILED;
       }
     }
@@ -1786,6 +1813,7 @@ static VAStatus ProcessVpp(SwsContext **scaler,
     }
     if (!destination_write_started && !destination->BeginCpuWrite()) {
       source->EndCpuRead();
+      Debug("VPP operation failed stage=argb-target-cpu-start");
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
     for (unsigned int row = 0; row < destination->height; ++row) {
@@ -1796,12 +1824,14 @@ static VAStatus ProcessVpp(SwsContext **scaler,
     }
     if (!destination_write_started && !destination->EndCpuWrite()) {
       source->EndCpuRead();
+      Debug("VPP operation failed stage=argb-target-cpu-end");
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
   } else {
     const uint8_t black_luma = color_range.source_full ? 0 : 16;
     if (!destination_write_started && !destination->BeginCpuWrite()) {
       source->EndCpuRead();
+      Debug("VPP operation failed stage=nv12-target-cpu-start");
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
     if (deinterlace.bob) {
@@ -1964,11 +1994,14 @@ static VAStatus ProcessVpp(SwsContext **scaler,
     }
     if (!destination_write_started && !destination->EndCpuWrite()) {
       source->EndCpuRead();
+      Debug("VPP operation failed stage=nv12-target-cpu-end");
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
   }
-  if (!source->EndCpuRead())
+  if (!source->EndCpuRead()) {
+    Debug("VPP operation failed stage=source-cpu-end");
     return VA_STATUS_ERROR_OPERATION_FAILED;
+  }
   destination->ready = true;
   destination->failed = false;
   destination->expected_timestamp = source->expected_timestamp;
@@ -2498,6 +2531,7 @@ struct DecodeContext {
 
 struct PendingVpp {
   std::shared_ptr<DecodeContext> decoder;
+  std::weak_ptr<Surface> source_owner;
   std::shared_ptr<Surface> source;
   std::shared_ptr<Surface> target;
   std::shared_ptr<Surface> target_owner;
@@ -5434,6 +5468,30 @@ static bool CompletedDecodePictureMatches(
        (!require_private && picture->direct_backing == owner));
 }
 
+// A VPP capture owns immutable pixels, but a reset or failed/non-consuming
+// close must still invalidate its decoder epoch.  A successful consuming
+// vaDestroyContext publishes the exact public/private binding below; accept a
+// retired decoder only while that narrow lease still matches the capture.
+static bool CapturedDecodePictureMatchesLifetime(
+    const Driver *driver, const std::shared_ptr<Surface> &owner,
+    const std::shared_ptr<Surface> &picture,
+    const std::shared_ptr<DecodeContext> &decoder, uint64_t generation) {
+  if (!decoder)
+    return true;
+  if (decoder->generation != generation)
+    return false;
+  if (!decoder->retired)
+    return true;
+  if (!decoder->destroy_prepared ||
+      decoder->destroy_status != VA_STATUS_SUCCESS || decoder->device != nullptr ||
+      !owner)
+    return false;
+  const CompletedDecodePicture &completed = owner->completed_decode_picture;
+  return completed.picture == picture && completed.generation == generation &&
+      completed.context == TraceId(decoder->id, VA_INVALID_ID) &&
+      CompletedDecodePictureMatches(driver, owner, completed);
+}
+
 static VAStatus PrepareCompletedDecodePictures(Driver *driver,
                                                DecodeContext *decode) {
   // Build the complete candidate set before publishing any new ownership.
@@ -6804,13 +6862,14 @@ static VAStatus SyncDecodeSurface(
                               : DecodeSurfaceState(surface.get());
 }
 
-static bool PendingVppCanceled(const PendingVpp &operation) {
+static bool PendingVppCanceled(const Driver *driver,
+                               const PendingVpp &operation) {
   return operation.source->destroyed || operation.target->destroyed ||
          operation.target_owner->destroyed ||
          operation.target_owner->latest_vpp_sequence != operation.sequence ||
-         (operation.decoder &&
-          (operation.decoder->retired ||
-           operation.decoder->generation != operation.decoder_generation));
+         !CapturedDecodePictureMatchesLifetime(
+             driver, operation.source_owner.lock(), operation.source,
+             operation.decoder, operation.decoder_generation);
 }
 
 // Release bookkeeping for one queued conversion. The caller holds the driver
@@ -7071,8 +7130,8 @@ static void RunVppWorker(Driver *driver) {
         return true;
       return std::any_of(driver->pending_vpp.begin(),
                          driver->pending_vpp.end(),
-                         [](const PendingVpp &pending) {
-                           return PendingVppCanceled(pending) ||
+                         [driver](const PendingVpp &pending) {
+                           return PendingVppCanceled(driver, pending) ||
                                   !pending.worker_active;
                          });
     });
@@ -7081,13 +7140,13 @@ static void RunVppWorker(Driver *driver) {
 
     auto selected = std::find_if(
         driver->pending_vpp.begin(), driver->pending_vpp.end(),
-        [](const PendingVpp &pending) {
-          return PendingVppCanceled(pending) ||
+        [driver](const PendingVpp &pending) {
+          return PendingVppCanceled(driver, pending) ||
                  !pending.worker_active;
         });
     if (selected == driver->pending_vpp.end())
       continue;
-    if (PendingVppCanceled(*selected)) {
+    if (PendingVppCanceled(driver, *selected)) {
       const uint64_t sequence = selected->sequence;
       ReleasePendingVpp(driver, sequence, VA_STATUS_SUCCESS, false);
       continue;
@@ -7107,7 +7166,7 @@ static void RunVppWorker(Driver *driver) {
     } else {
       status = SyncDecodeSurface(driver, operation.source, &lock,
                                  VA_TIMEOUT_INFINITE, [&] {
-                                   return PendingVppCanceled(operation);
+                                   return PendingVppCanceled(driver, operation);
                                  }, [&](bool *ready) {
                                    const VAStatus prepared =
                                        PrepareFirstFieldBob(operation, &first_field_view);
@@ -7123,7 +7182,7 @@ static void RunVppWorker(Driver *driver) {
         });
     if (completed == driver->pending_vpp.end())
       continue;
-    if (PendingVppCanceled(*completed)) {
+    if (PendingVppCanceled(driver, *completed)) {
       ReleasePendingVpp(driver, operation.sequence, VA_STATUS_SUCCESS, false);
       continue;
     }
@@ -9160,10 +9219,16 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     const std::shared_ptr<DecodeContext> source_decoder =
         decode_context->vpp_decoder;
     const std::shared_ptr<Surface> decoded_source = decode_context->vpp_frame;
+    std::shared_ptr<Surface> source_owner = source->second;
+    if (source_owner->backing_owner != VA_INVALID_SURFACE) {
+      auto owner = driver->surfaces.find(source_owner->backing_owner);
+      if (owner != driver->surfaces.end())
+        source_owner = owner->second;
+    }
     if (!decoded_source || decoded_source->destroyed ||
-        (source_decoder &&
-         (source_decoder->retired ||
-          source_decoder->generation != decode_context->vpp_generation)))
+        !CapturedDecodePictureMatchesLifetime(
+            driver, source_owner, decoded_source, source_decoder,
+            decode_context->vpp_generation))
       return finish_vpp(VA_STATUS_ERROR_DECODING_ERROR);
     // A cold source may have acquired a derived-image writer since Render.
     // Do not queue a reader that would prevent that upload from committing.
@@ -9244,6 +9309,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
                                 !target_owner->layout.valid;
     PendingVpp pending;
     pending.decoder = source_decoder;
+    pending.source_owner = source_owner;
     pending.source = decoded_source;
     pending.target = target_surface;
     pending.target_owner = target_owner;
@@ -9285,19 +9351,28 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       driver->pending_vpp.back().worker_active = true;
       const PendingVpp operation = driver->pending_vpp.back();
       driver->condition.notify_all();
-      const auto canceled = [&] {
+      const auto cancellation_mask = [&] {
         const auto processor = driver->contexts.find(context_id);
-        return driver->stopping || PendingVppCanceled(operation) ||
-            decode_context->closing || decode_context->retired ||
-            processor == driver->contexts.end() ||
-            processor->second != decode_context || !same_request() ||
-            target_owner->picture_transaction != request_transaction ||
-            decoded_source->expected_timestamp != operation.source_timestamp ||
-            std::none_of(driver->pending_vpp.begin(), driver->pending_vpp.end(),
+        uint32_t reasons = 0;
+        if (driver->stopping) reasons |= 1U << 0;
+        if (PendingVppCanceled(driver, operation)) reasons |= 1U << 1;
+        if (decode_context->closing) reasons |= 1U << 2;
+        if (decode_context->retired) reasons |= 1U << 3;
+        if (processor == driver->contexts.end()) reasons |= 1U << 4;
+        else if (processor->second != decode_context) reasons |= 1U << 5;
+        if (!same_request()) reasons |= 1U << 6;
+        if (target_owner->picture_transaction != request_transaction)
+          reasons |= 1U << 7;
+        if (decoded_source->expected_timestamp != operation.source_timestamp)
+          reasons |= 1U << 8;
+        if (std::none_of(driver->pending_vpp.begin(), driver->pending_vpp.end(),
                          [&](const PendingVpp &queued) {
                            return queued.sequence == operation.sequence;
-                         });
+                         }))
+          reasons |= 1U << 9;
+        return reasons;
       };
+      const auto canceled = [&] { return cancellation_mask() != 0; };
       VAStatus status = VA_STATUS_ERROR_OPERATION_FAILED;
       std::shared_ptr<Surface> first_field_view;
       try {
@@ -9316,15 +9391,26 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       }
       // Success alone does not prove this request still owns its destination:
       // source completion and cancellation can occur in the same unlocked turn.
-      if (canceled())
+      const uint32_t canceled_by = cancellation_mask();
+      if (canceled_by != 0) {
+        Debug("VPP synchronous fallback canceled sequence=%llu reasons=%#x",
+              static_cast<unsigned long long>(operation.sequence), canceled_by);
         status = VA_STATUS_ERROR_OPERATION_FAILED;
-      if (status == VA_STATUS_SUCCESS)
+      } else if (status != VA_STATUS_SUCCESS) {
+        Debug("VPP synchronous fallback source wait failed sequence=%llu status=%d",
+              static_cast<unsigned long long>(operation.sequence), status);
+      }
+      if (status == VA_STATUS_SUCCESS) {
         status = ProcessVpp(&driver->vpp_scaler, &driver->vpp_argb_staging,
                             first_field_view ? first_field_view.get() : operation.source.get(),
                             operation.target.get(),
                             operation.source_region, operation.output_region,
                             false, operation.deinterlace, first_field_view != nullptr,
                             operation.color_range, operation.preserve_fields);
+        if (status != VA_STATUS_SUCCESS)
+          Debug("VPP synchronous fallback conversion failed sequence=%llu status=%d",
+                static_cast<unsigned long long>(operation.sequence), status);
+      }
       ReleasePendingVpp(driver, operation.sequence, status,
                         status == VA_STATUS_SUCCESS);
       return finish_vpp(status);
@@ -9460,7 +9546,8 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
       auto canceled = std::find_if(
           driver->pending_vpp.begin(), driver->pending_vpp.end(),
           [&](const PendingVpp &pending) {
-            return targets_surface(pending) && PendingVppCanceled(pending);
+            return targets_surface(pending) &&
+                PendingVppCanceled(driver, pending);
           });
       if (canceled != driver->pending_vpp.end()) {
         const uint64_t sequence = canceled->sequence;
