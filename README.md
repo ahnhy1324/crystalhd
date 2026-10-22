@@ -12,9 +12,8 @@ and explicit maintainer GO are tracked in
 [#473](https://github.com/ahnhy1324/crystalhd/issues/473). See the
 [qualified scope](HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22)
 and [change summary](HISTORY.md#120--prepared-final-package).
-The latest published stable release remains
-[v1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0); use the
-instructions shipped with that tag for an existing stable installation. The
+For published [v1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0),
+use the instructions shipped with that tag. The
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29)
 remains available and unchanged.
 
