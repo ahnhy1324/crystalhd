@@ -61,9 +61,10 @@ fixed. The limitations above can remain until the relevant implementation and
 host-specific validation are complete; hardware deinterlacing remains separate
 research.
 
-The `1.2.0-rc.1` candidate implements a bounded
+The `1.2.0-rc.2` candidate implements the same bounded
 [CPU VA-VPP Bob path](filters/vaapi/README.md#development-cpu-va-vpp-bob),
-not card-side deinterlacing or a newly qualified Kodi/Atom playback path.
+plus the focused completed-source lifetime correction. It is not card-side
+deinterlacing or a newly qualified Kodi/Atom playback path.
 
 ## Verify the installed stack
 

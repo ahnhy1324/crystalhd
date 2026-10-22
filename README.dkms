@@ -18,9 +18,10 @@ Work from the root of the source version you want to install. A source archive
 works without `.git`. Keep the previous version's source/archive and any local
 CrystalHD `/etc/modprobe.d/` option files for rollback. Retain the previous
 revision's cached DKMS build for the running kernel as well. Read the DKMS
-revision from this source. The unpublished `1.2.0-rc.1` candidate uses
-module/DKMS revision `3.10.11`; do not reuse the changing development
-`3.10.10` registration for it. Stable `1.1.0` uses `3.10.9`; published
+revision from this source. The published `1.2.0-rc.1` prerelease retains
+module/DKMS revision `3.10.11`; the corrected `1.2.0-rc.2` candidate uses
+`3.10.12`. Do not replace either registration or reuse the changing development
+`3.10.10` registration. Stable `1.1.0` uses `3.10.9`; published
 `1.1.0-rc.5` retains `3.10.8`,
 `1.1.0-rc.4` retains `3.10.7`,
 `1.1.0-rc.3` retains `3.10.6` and the
@@ -135,13 +136,13 @@ do not delete arbitrary candidates listed by the check.
 
 For a new DKMS revision, follow [prepare](#prepare-the-source) and [install](#install-a-new-revision)
 from the new source. Keep the old revision/source until the new playback test
-passes. The `1.2.0-rc.1` candidate uses module/DKMS revision `3.10.11`,
+passes. The `1.2.0-rc.2` candidate uses module/DKMS revision `3.10.12`,
 upgrading stable 1.1.0's `3.10.9` without changing the `libcrystalhd.so.3` ABI.
 Use `dkms.conf` from the chosen source; a corrected RC
 payload must use a new revision rather than replacing a registered source
 tree. In particular, keep `/usr/src/crystalhd-3.10.9` and any development
-`/usr/src/crystalhd-3.10.10` unchanged when adding
-`/usr/src/crystalhd-3.10.11`.
+`/usr/src/crystalhd-3.10.10` or RC1 `/usr/src/crystalhd-3.10.11` unchanged when
+adding `/usr/src/crystalhd-3.10.12`.
 
 If reinstalling the **same revision from unchanged source**, inspect its
 registered location first:

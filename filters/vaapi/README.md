@@ -186,8 +186,9 @@ that looping mode. See [the compatibility result in #445](https://github.com/ahn
 For supported interlaced input with this candidate VA driver selected, Kodi's
 per-video deinterlace method **Auto** requests CPU Bob; **Off** retains Weave.
 The following stock Kodi 21.3 result is historical source-pinned evidence, not
-the exact installed-RC G2 PASS that remains
-[NOT RUN](../../HARDWARE-2026-09-13.md#120-rc1-qualification--2026-10-22):
+the exact installed-RC2 G2 PASS that remains
+[NOT RUN](../../HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22).
+RC1's installed Kodi result remains HOLD:
 the selected 30-second FHD control has Auto commit
 1,500 Bob outputs for 750 decoded pictures; Off uses no Bob. Both reach natural
 EOF and return resources cleanly; see the source-pinned hardware report above.
