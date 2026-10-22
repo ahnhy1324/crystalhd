@@ -27,9 +27,15 @@ not permission to publish an RC, tag or stable release. Published v1.1 and its
 RCs remain immutable; their qualification is historical evidence, not a v1.2
 PASS.
 
+Published `v1.2.0-rc.2` completed the bounded G0–G3 qualification in #473.
+The current source prepares final bundle `1.2.0` with a distinct module/DKMS
+revision. That final identity still requires fresh build, archive, live
+installation/rollback and short application checks before the maintainer GO;
+RC2's unchanged long-running G2 evidence need not be repeated.
+
 The selected v1.2 claims are bounded CPU VA-VPP Bob, explicit H.264 card-output
-scaling and reviewed reliability fixes. Kodi Auto, sustained 720p50 and package
-acceptance remain conditional gates. Hardware deinterlacing, general FHD50/60,
+scaling and reviewed reliability fixes. Selected Kodi Auto, sustained 720p50
+and RC2 package acceptance passed within the linked matrix. Hardware deinterlacing, general FHD50/60,
 Atom real-time and the #470/#471 experiments are not candidate claims. Exact
 boundaries and current status are in
 [USAGE.md](USAGE.md#known-issues-and-deinterlacing-roadmap) and the
@@ -46,8 +52,10 @@ checkout alone does not announce a published release.
 
 | Identity | Current value | Purpose |
 | --- | --- | --- |
-| Candidate bundle | `1.2.0-rc.2` | Corrected v1.2 qualification candidate; not published |
-| Candidate DKMS / module package | `3.10.12` | Unique candidate payload; published RC1 retains `3.10.11` |
+| Prepared final bundle | `1.2.0` | Final source identity; not published before explicit GO |
+| Prepared final DKMS / module package | `3.10.13` | Distinct final identity; does not overwrite an RC registration |
+| Published RC2 bundle / package | `1.2.0-rc.2` / `3.10.12` | Immutable qualified rollback source |
+| Published RC1 bundle / package | `1.2.0-rc.1` / `3.10.11` | Immutable earlier candidate |
 | Published stable bundle | `1.1.0` | Immutable source `85f426d` |
 | Published stable DKMS / module package | `3.10.9` | RC.5 retains `3.10.8`, RC.4 `3.10.7`, stable 1.0.0 `3.10.3` |
 | Driver ioctl version | `3.10.0` | Historical public API value, retained |
@@ -55,6 +63,15 @@ checkout alone does not announce a published release.
 | Library SONAME / file | `libcrystalhd.so.3` / `libcrystalhd.so.3.6` | Existing application linkage, retained |
 | GStreamer plugin / VA vendor string | `3.10.0` / `0.1` | Historical component labels; not the bundle identity |
 | Firmware | Existing BCM70012/BCM70015 images | Retain images, identities and license notices |
+
+Published [v1.2.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.2)
+pins `b32a94d55bc8cfec781063aca6e1a2012b31f6f3`; its merge
+`7f8ce592b0792466d34b33c7538ac392e2a1c091` has the same tree. The public
+Git-free source asset has SHA-256
+`556e13202fdaa22ef56cd9c795e65716b8472a30598ea609c2e364ed2d521294`.
+Its selected Kodi, 30-minute 720p50, three-hour Bob and G3 package/rollback
+results remain attributed to RC2. They do not qualify the new final package
+identity or authorize stable publication.
 
 Published [v1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0)
 pins `85f426d5545a53cc63dd512b355ab6f6c9668d61` after explicit maintainer GO
@@ -136,7 +153,9 @@ and component guides. The optional V4L2/firmware research builds do not add a
 supported frontend. A regression in an advertised opt-in path still requires
 a fix or explicit withdrawal from the candidate.
 
-## Freeze and prepare
+<a id="freeze-and-prepare"></a>
+
+## Freeze and prepare a release candidate
 
 1. Agree on the v1.2 scope in #473. Audit the complete
    `v1.1.0...candidate` diff, link #429's compatibility results and separate
@@ -145,8 +164,10 @@ a fix or explicit withdrawal from the candidate.
    work.
 2. Merge preparation changes. Check this version table, installation and
    rollback commands, notices and the curated [change summary](HISTORY.md).
-   Use the short-lived `release/1.2.0-rc.2` branch while unrelated development
-   continues, then record one fixed candidate commit.
+   Use a short-lived `release/…` branch while unrelated development continues,
+   then record one fixed candidate commit. After immutable-RC qualification,
+   prepare the distinct final identity on `release/1.2.0-final` according to
+   [Publish and maintain](#publish-and-maintain).
 3. Run the existing device-free gates with the
    [developer dependencies](README.md#developer-checks) installed:
 
