@@ -2404,6 +2404,139 @@ void CompletedDecoderCloseKeepsNewBobCapturesExact() {
   }
 }
 
+void CapturedBobSurvivesSuccessfulDecoderClose() {
+  for (bool direct : {false, true}) {
+    Fixture fixture;
+    BindCompletedVppSource(fixture, direct);
+    VABufferID filter = CreateBobFilter(fixture);
+    SetPipelineFilters(fixture, &filter, 1);
+    Require(BeginPicture(&fixture.context, 2, 2) == VA_STATUS_SUCCESS &&
+                RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                    VA_STATUS_SUCCESS,
+            "capture the exact completed picture before decoder close");
+    const auto captured = fixture.processor->vpp_frame;
+    Require(captured && captured == fixture.source->decode_picture.lock(),
+            "VPP capture owns the exact immutable decode picture");
+    Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                fixture.decoder->retired && fixture.decoder->device == nullptr &&
+                fixture.source->completed_decode_picture.picture == captured,
+            "successful consuming close publishes the captured picture lease");
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+            "a pre-close capture remains valid after successful decoder close");
+    RequireFieldRows(*fixture.target, 0, true);
+    Require(fixture.target->trace_context == 1 &&
+                fixture.target->trace_generation == 7 &&
+                fixture.target->trace_decode_identity == 17 &&
+                fixture.target->trace_submission_ordinal == 9 &&
+                fixture.target->vpp_writers == 0 &&
+                fixture.driver.pending_vpp.empty(),
+            "pre-close capture preserves exact pixels and decode identity");
+  }
+}
+
+void CapturedBobRejectsFailedDecoderClose() {
+  Fixture fixture;
+  BindCompletedVppSource(fixture, false);
+  VABufferID filter = CreateBobFilter(fixture);
+  SetPipelineFilters(fixture, &filter, 1);
+  Require(BeginPicture(&fixture.context, 2, 2) == VA_STATUS_SUCCESS &&
+              RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                  VA_STATUS_SUCCESS,
+          "capture a completed picture before a failed decoder close");
+  fixture.decoder->retained_close_status = BC_STS_ERROR;
+  const auto untouched = fixture.target->storage;
+  Require(DestroyContext(&fixture.context, 1) ==
+              VA_STATUS_ERROR_OPERATION_FAILED &&
+              fixture.decoder->retired && fixture.decoder->device == nullptr &&
+              !fixture.source->completed_decode_picture.picture,
+          "failed consuming close publishes no completed-picture lease");
+  Require(EndPicture(&fixture.context, 2) == VA_STATUS_ERROR_DECODING_ERROR &&
+              fixture.target->failed && !fixture.target->ready &&
+              fixture.target->storage == untouched &&
+              fixture.target->vpp_writers == 0 &&
+              fixture.driver.pending_vpp.empty(),
+          "failed close cannot authorize captured pixels or a successful output");
+}
+
+void CapturedBobRejectsReboundOwnerAfterSuccessfulDecoderClose() {
+  for (bool direct : {false, true}) {
+    Fixture fixture;
+    BindCompletedVppSource(fixture, direct);
+    VABufferID filter = CreateBobFilter(fixture);
+    SetPipelineFilters(fixture, &filter, 1);
+    Require(BeginPicture(&fixture.context, 2, 2) == VA_STATUS_SUCCESS &&
+                RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                    VA_STATUS_SUCCESS,
+            "capture a completed picture before rebinding its public owner");
+    const auto captured = fixture.processor->vpp_frame;
+    Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                fixture.source->completed_decode_picture.picture == captured,
+            "successful close initially publishes the captured picture lease");
+    const auto untouched = fixture.target->storage;
+    const uint64_t old_identity = fixture.source->decode_identity;
+
+    // Model the ownership transition shared by every real public writer.  An
+    // immutable captured picture remains allocated, but it no longer belongs
+    // to the retired decoder's exact public binding and must not be committed.
+    RevokeDecodeOwner(&fixture.driver, fixture.source.get());
+    fixture.source->picture_transaction = NextDecodeIdentity(&fixture.driver);
+    Require(!fixture.source->completed_decode_picture.picture &&
+                fixture.source->decode_identity != old_identity,
+            "a new public writer revokes the successful-close lease");
+    Require(EndPicture(&fixture.context, 2) ==
+                VA_STATUS_ERROR_DECODING_ERROR &&
+                fixture.target->failed && !fixture.target->ready &&
+                fixture.target->storage == untouched &&
+                fixture.target->vpp_writers == 0 &&
+                fixture.driver.pending_vpp.empty(),
+            "retired capture cannot cross a public owner rebind");
+  }
+}
+
+void QueuedBobSurvivesSuccessfulDecoderClose() {
+  for (bool direct : {false, true}) {
+    Fixture fixture;
+    fixture.driver.StopWorkers();
+    BindCompletedVppSource(fixture, direct);
+    const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    picture->ready = false;
+    picture->frame_timestamp = 0;
+    VABufferID filter = CreateBobFilter(fixture);
+    SetPipelineFilters(fixture, &filter, 1);
+    fixture.SubmitParameters();
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                fixture.driver.pending_vpp.size() == 1 &&
+                picture->vpp_readers == 1 && fixture.target->vpp_writers == 1,
+            "cold pre-close capture queues one exact Bob operation");
+
+    // Model the decoder drain completing the captured picture while context
+    // destruction consumes the hardware session.
+    FillFieldRows(*picture);
+    picture->ready = true;
+    picture->frame_timestamp = kTimestampStep;
+    Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                fixture.source->completed_decode_picture.picture == picture &&
+                !PendingVppCanceled(&fixture.driver,
+                                    fixture.driver.pending_vpp.front()),
+            "successful close preserves the queued operation's exact lease");
+    const PendingVpp operation = fixture.driver.pending_vpp.front();
+    const VAStatus status = ProcessVpp(
+        &fixture.driver.vpp_scaler, &fixture.driver.vpp_argb_staging,
+        operation.source.get(), operation.target.get(), operation.source_region,
+        operation.output_region, false, operation.deinterlace, false,
+        operation.color_range, operation.preserve_fields);
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      ReleasePendingVpp(&fixture.driver, operation.sequence, status,
+                        status == VA_STATUS_SUCCESS);
+    }
+    Require(status == VA_STATUS_SUCCESS && fixture.driver.pending_vpp.empty() &&
+                picture->vpp_readers == 0 && fixture.target->vpp_writers == 0,
+            "queued close-race conversion commits and releases both leases");
+    RequireFieldRows(*fixture.target, 0, true);
+  }
+}
+
 void IneligibleDecoderCloseCannotGrantNewBobReads() {
   for (unsigned mode = 0; mode != 9; ++mode) {
     Fixture fixture;
@@ -3386,7 +3519,8 @@ void PendingVppTeardownStillNotifies() {
     if (destroy_target) {
       VASurfaceID target = 2;
       Require(DestroySurfaces(&fixture.context, &target, 1) == VA_STATUS_SUCCESS &&
-                  PendingVppCanceled(fixture.driver.pending_vpp.front()),
+                  PendingVppCanceled(&fixture.driver,
+                                     fixture.driver.pending_vpp.front()),
               "destroyed pending VPP target cancels queued output");
     } else {
       Require(DestroyContext(&fixture.context, 2) == VA_STATUS_SUCCESS,
@@ -3557,7 +3691,8 @@ void DirectCaptureKeepsQueuedVppPrivate() {
     const auto pending = fixture.driver.pending_vpp.front();
     if (cancel) {
       fixture.decoder->Reset();
-      Require(PendingVppCanceled(pending), "decoder retirement cancels direct capture epoch");
+      Require(PendingVppCanceled(&fixture.driver, pending),
+              "decoder retirement cancels direct capture epoch");
       // The source is still cold and its mutable expectation can change;
       // DEBUG must distinguish both from the immutable queued token/epoch.
       picture->expected_timestamp = 3 * kTimestampStep;
@@ -4097,12 +4232,13 @@ void ValidSurfaceTeardownRetiresQueuedEpoch() {
   pending.sequence = fixture.target->latest_vpp_sequence;
   pending.decoder_generation = fixture.decoder->generation;
   VASurfaceID source_id = 1;
-  Require(!PendingVppCanceled(pending), "old epoch initially remains valid");
+  Require(!PendingVppCanceled(&fixture.driver, pending),
+          "old epoch initially remains valid");
   Require(DestroySurfaces(&fixture.context, &source_id, 1) == VA_STATUS_SUCCESS,
           "destroy a valid decode surface");
   Require(fixture.source->destroyed && fixture.driver.surfaces.count(1) == 0 &&
               fixture.decoder->generation == pending.decoder_generation + 1 &&
-              PendingVppCanceled(pending),
+              PendingVppCanceled(&fixture.driver, pending),
           "valid teardown must retire private queued pictures with the pool");
   Require(ReadDecodeControlNotifications(fixture.driver) == 1,
           "decode surface reset must still wake the decoder");
@@ -5677,11 +5813,23 @@ int VppFullTestEntry(int argc, char **argv) {
           {"legacy PRIME batch uses one descriptor", LegacyPrimeBatchUsesOneDescriptorAndRollsBack}};
       const std::pair<const char *, void (*)()> completed[] = {
           {"completed decoder close keeps new Bob captures exact", CompletedDecoderCloseKeepsNewBobCapturesExact},
+          {"captured Bob survives successful decoder close", CapturedBobSurvivesSuccessfulDecoderClose},
+          {"captured Bob rejects failed decoder close", CapturedBobRejectsFailedDecoderClose},
+          {"captured Bob rejects rebound owner after close", CapturedBobRejectsReboundOwnerAfterSuccessfulDecoderClose},
+          {"queued Bob survives successful decoder close", QueuedBobSurvivesSuccessfulDecoderClose},
           {"ineligible decoder close cannot grant new Bob reads", IneligibleDecoderCloseCannotGrantNewBobReads}};
-      const auto &groups = strcmp(argv[1], "--import-contracts") == 0
-          ? imports : strcmp(argv[1], "--completed-source") == 0 ? completed : lifecycle;
+      const std::pair<const char *, void (*)()> *groups = lifecycle;
+      size_t group_count = sizeof(lifecycle) / sizeof(lifecycle[0]);
+      if (strcmp(argv[1], "--import-contracts") == 0) {
+        groups = imports;
+        group_count = sizeof(imports) / sizeof(imports[0]);
+      } else if (strcmp(argv[1], "--completed-source") == 0) {
+        groups = completed;
+        group_count = sizeof(completed) / sizeof(completed[0]);
+      }
       unsigned int failures = 0;
-      for (const auto &group : groups) {
+      for (size_t i = 0; i != group_count; ++i) {
+        const auto &group = groups[i];
         try {
           group.second();
           printf("PASS %s\n", group.first);
@@ -5690,7 +5838,8 @@ int VppFullTestEntry(int argc, char **argv) {
           fprintf(stderr, "FAIL %s: %s\n", group.first, error.what());
         }
       }
-      printf("VPP API regressions: 2 groups, %u failures\n", failures);
+      printf("VPP API regressions: %zu groups, %u failures\n",
+             group_count, failures);
       return failures == 0 ? 0 : 1;
     }
     if (argc == 2) {
@@ -5737,6 +5886,10 @@ int VppFullTestEntry(int argc, char **argv) {
     ExternalWritersCannotAuthorizeCompletedVppSources();
     FirstFieldCpuViewPreservesPublicReadiness();
     CompletedDecoderCloseKeepsNewBobCapturesExact();
+    CapturedBobSurvivesSuccessfulDecoderClose();
+    CapturedBobRejectsFailedDecoderClose();
+    CapturedBobRejectsReboundOwnerAfterSuccessfulDecoderClose();
+    QueuedBobSurvivesSuccessfulDecoderClose();
     IneligibleDecoderCloseCannotGrantNewBobReads();
     BobFilterValuesAreCapturedAtRender();
     BobQueuedSnapshotAndCancellation();
@@ -5788,7 +5941,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 87 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 91 hardware-free regressions passed");
   return 0;
 }
 
@@ -5812,6 +5965,10 @@ int main(int argc, char **argv) {
       {"configuration rejects unsupported protection transactionally", ConfigRejectsUnsupportedProtectionTransactionally},
       {"protected buffer creation is transactional", ProtectedBufferCreationIsTransactional},
       {"completed decoder close keeps new Bob captures exact", CompletedDecoderCloseKeepsNewBobCapturesExact},
+      {"captured Bob survives successful decoder close", CapturedBobSurvivesSuccessfulDecoderClose},
+      {"captured Bob rejects failed decoder close", CapturedBobRejectsFailedDecoderClose},
+      {"captured Bob rejects rebound owner after close", CapturedBobRejectsReboundOwnerAfterSuccessfulDecoderClose},
+      {"queued Bob survives successful decoder close", QueuedBobSurvivesSuccessfulDecoderClose},
       {"ineligible decoder close cannot grant new Bob reads", IneligibleDecoderCloseCannotGrantNewBobReads},
 #ifdef CRYSTALHD_LEGACY_CPU
       {"legacy exposed stopped-source rejection", LegacyExposedStoppedVppRemainsRejected},
