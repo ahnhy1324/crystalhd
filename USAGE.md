@@ -15,7 +15,7 @@ before choosing the card for a workload; Sunshine/Moonlight has a separate
 | Use an application that requires libva | CrystalHD VA-API driver | Experimental subset |
 | Keep a Broadcom-API application working | `libcrystalhd.so.3` | Compatibility API |
 | Use VLC | VA-API, selected H.264/X11 setup only | Focused tested combination |
-| Use Kodi | VA-API, progressive H.264 on the reference X11 host | Interlaced post-processing is not yet support-grade |
+| Use Kodi | VA-API on the reference X11 host | Progressive playback; selected 1.2 CPU Bob/Weave on Kodi 21.3, with cadence limits below |
 | Stream from Sunshine with Moonlight | [Moonlight guide](MOONLIGHT.md) | First-class experimental integration |
 | Accelerate Chromium or YouTube | VA-API browser experiment | Hardware path unverified; not daily use |
 
@@ -31,18 +31,19 @@ CrystalHD hardware decode session can be open at a time.
   apply [CPU deinterlacing after Weave](#application-deinterlacing-after-weave),
   with additional CPU cost; successful decode does not guarantee smooth FHD
   presentation or calibrated A/V sync.
-- **Kodi interlaced playback remains conditional.** Published 1.1.0 does not
-  advertise VA Bob, so Auto may repeatedly probe an unavailable filter; Off
-  selects Weave. The v1.2 candidate implements bounded CPU VA Bob, but stock
-  Kodi Auto/Off becomes a release claim only after the exact installed-RC G2
-  matrix passes. Existing source-path controls do not prove uniform displayed
-  field timing, general Kodi 21–23 behavior or Atom real-time playback
+- **Kodi interlaced playback is narrowly bounded in the prepared v1.2
+  package.** Published 1.1.0 does not advertise VA Bob, so Auto may repeatedly
+  probe an unavailable filter; Off selects Weave. The selected installed-RC2
+  Kodi 21.3 Auto/Off matrix completed decode, physical A/V controls, seek,
+  natural EOF and reopen. Kodi's adaptive `SKIPDEINT` requests omit some second
+  fields, so this is not an uninterrupted 50p or general Kodi 21–23 claim.
+  Atom real-time playback also remains unsupported
   ([#445](https://github.com/ahnhy1324/crystalhd/issues/445),
   [#429](https://github.com/ahnhy1324/crystalhd/issues/429)). LIVE/LOW_LATENCY
   remains a separate experimental path.
 - **Oversized H.264 rejection is containment, not general stream recovery.**
   Stable 1.1.0 includes the qualified transport-specific headroom from RC5.
-  The v1.2 candidate additionally rejects selected over-budget extended input
+  The prepared v1.2 package additionally rejects selected over-budget extended input
   before submission and preserves a clean reopen; it intentionally rejects
   some input that previously worked. Exact firmware reclamation remains a
   measured signed-firmware/configuration limitation; use software decode for
@@ -53,7 +54,7 @@ CrystalHD hardware decode session can be open at a time.
   its compatibility is not established. The driver's `LEGACY_CPU=1` build
   cannot remove ISA requirements from applications or their dependencies.
 
-The bounded **v1.2 candidate deinterlacing work** in
+The bounded **v1.2 deinterlacing work** in
 [#436](https://github.com/ahnhy1324/crystalhd/issues/436) targets decode/readback/
 filter integration, field order, cadence and A/V validation. These are not
 capabilities added by published 1.1.0 or a promise that every interlaced input will be
@@ -61,10 +62,10 @@ fixed. The limitations above can remain until the relevant implementation and
 host-specific validation are complete; hardware deinterlacing remains separate
 research.
 
-The `1.2.0-rc.2` candidate implements the same bounded
+The prepared `1.2.0` package preserves RC2's bounded
 [CPU VA-VPP Bob path](filters/vaapi/README.md#development-cpu-va-vpp-bob),
 plus the focused completed-source lifetime correction. It is not card-side
-deinterlacing or a newly qualified Kodi/Atom playback path.
+deinterlacing or a general Kodi/Atom playback path.
 
 ## Verify the installed stack
 
@@ -271,7 +272,7 @@ selected for each playback session and survives flush/reopen. It is not fixed
 at 1280, and it cannot be changed while a pipeline is playing.
 
 The hardware option is rejected for BCM70012. Published 1.1 supports progressive
-scaling only. With the matching **1.2 candidate plugin and player**, H.264
+scaling only. With the matching **1.2 plugin and player**, selected H.264 MBAFF
 interlaced input can also use a multiple-of-16 width:
 
 ```sh
@@ -306,10 +307,12 @@ rendered without a QoS drop. The player used 37.02% of one CPU core. Matched
 explicit 1920x1080 enlargement runs used about 84.17% and lost 13 and 10
 fields. Xv's display interpolation is adaptor-dependent and is not claimed to
 be pixel-equivalent to the player's explicit method-4 software enlargement.
-The five-minute result is a development baseline, not the candidate's required
-30-minute paced-playback PASS.
+The separate installed-RC2 [30-minute application run](HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22)
+completed 45,000 originals and 90,000 rendered fields with zero drop/QoS,
+natural EOS and mean CPU 37.16% of one core. Neither run measures physical
+scanout cadence.
 
-For this enlargement path, the candidate Player can pack pixels at the
+For this enlargement path, the 1.2 Player can pack pixels at the
 smaller size when its selected Xv output accepts UYVY but not YUY2. This avoids
 repacking a full-size picture on the display thread; no extra option is needed.
 Deinterlacing still receives YUY2. Custom video sinks, Weave and uncertain
@@ -555,7 +558,9 @@ LIBVA_DRIVER_NAME=crystalhd kodi
 Enable VA-API hardware acceleration in Kodi's video settings. During playback,
 verify both CrystalHD/`ff-h264-vaapi` in Kodi's debug log and an open hardware
 owner with `sudo fuser -v /dev/crystalhd`; the UI setting alone does not prove
-hardware decoding. No physical flash/click A/V PASS was recorded. Other
+hardware decoding. The installed RC2 matrix later passed qualitative dialogue
+A/V and controls for 1080p30 progressive and 720i25 Auto/Off; calibrated
+flash/click offset was not measured. Other
 Kodi releases and display backends are not generally qualified; stock Kodi 22
 has the [interlaced compatibility limits above](#known-issues-and-deinterlacing-roadmap).
 
@@ -566,12 +571,13 @@ icon → **Video settings → Deinterlace method**:
 - **Off** leaves the decoded Weave frame unfiltered.
 - **Deinterlace** explicitly selects Kodi's existing CPU BWDIF path after VA
   readback; this is not driver-side Bob or VPP deinterlacing.
-- **Auto select** is not a way to force BWDIF and may probe unsupported VAAPI
-  Bob. Prefer the explicit method for this comparison.
+- **Auto select** requests CrystalHD's CPU VA Bob on the selected 1.2 path.
+  Kodi's adaptive field omission means this does not guarantee uniform 50p.
+  On published 1.1.0, Bob is unavailable and Auto may repeat unsupported probes.
 
 Use **Off/NONE** for Weave. Kodi may still perform an initial VPP capability
-probe even when deinterlacing is off. With Auto on interlaced pictures, some
-Kodi versions repeat unsupported deinterlacing probes once per picture
+probe even when deinterlacing is off. With the 1.1 driver and Auto on interlaced
+pictures, some Kodi versions repeat unsupported probes once per picture
 ([#445](https://github.com/ahnhy1324/crystalhd/issues/445)).
 
 These explicit-filter observations are for Kodi 21.3 on the reference host,

@@ -20,12 +20,15 @@ source and cached module `3.10.8` for [rollback](BRINGUP.md#direct-install-updat
 published releases and their qualification records remain unchanged.
 
 The immutable [v1.2.0-rc.1 prerelease](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.1)
-retains module-DKMS `3.10.11`. A corrected `1.2.0-rc.2` / module-DKMS
-`3.10.12` candidate is being qualified under
-[#473](https://github.com/ahnhy1324/crystalhd/issues/473); it is not the stable
-quick start below and is not yet a published RC. Its bounded scope remains
-selected CPU VA-VPP Bob and explicit H.264 card-output scaling. Exact-candidate
-Kodi, sustained playback and package results are tracked in the
+retains module-DKMS `3.10.11`; the published
+[v1.2.0-rc.2 prerelease](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.2)
+retains `3.10.12`. RC2 completed the bounded G0–G3 qualification tracked in
+[#473](https://github.com/ahnhy1324/crystalhd/issues/473). This source prepares
+the final `1.2.0` / module-DKMS `3.10.13` package, which still requires its own
+package checks and explicit maintainer GO before publication; it is not the
+stable quick start below. Its scope remains selected CPU VA-VPP Bob and
+explicit H.264 card-output scaling. Exact-candidate Kodi, sustained playback
+and package results are tracked in the
 [qualification matrix](HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22).
 Native hardware deinterlacing, general FHD50/60 and Atom real-time playback are
 not claimed. [Current limits and candidate usage](USAGE.md#known-issues-and-deinterlacing-roadmap)

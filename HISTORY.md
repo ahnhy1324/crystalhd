@@ -1,8 +1,29 @@
 # History
 
-## 1.2.0-rc.2 — candidate
+## 1.2.0 — prepared final package
 
-Candidate bundle `1.2.0-rc.2` / module-DKMS package `3.10.12` retains RC1's
+Bundle `1.2.0` / module-DKMS package `3.10.13` freezes the bounded features and
+reliability fixes qualified in immutable RC2. The implementation is unchanged
+from RC2; the distinct final identity prevents overwriting its registered DKMS
+source or module. Final-source build, archive, installation and RC2 rollback
+checks plus explicit maintainer GO remain required before publication. This
+preparation does not create or authorize a `v1.2.0` tag or GitHub Release.
+
+- Add selected CPU VA-VPP Bob for NV12 TFF/BFF, including the qualified stock
+  FFmpeg and Kodi 21.3 paths, while retaining honest field/cadence boundaries.
+- Add explicit H.264 card-side output scaling and the selected 720p50
+  card-output/Bob presentation path; reduced output trades detail for transfer
+  and CPU headroom and is not a general FHD50/60 claim.
+- Retain the decoder, VPP, RX, initialization, close/reopen and package
+  reliability corrections listed under RC1/RC2 without changing firmware,
+  ioctl/UAPI or the `libcrystalhd.so.3` ABI.
+- Keep hardware deinterlacing, general Kodi/codec interlace, Atom real-time,
+  BCM70012 requalification and the #470/#471 experiments outside the supported
+  final scope.
+
+## 1.2.0-rc.2 — published candidate
+
+Published candidate bundle `1.2.0-rc.2` / module-DKMS package `3.10.12` retains RC1's
 bounded v1.2 scope and adds one focused VA-VPP lifecycle correction. A VPP
 source captured before decoder close may complete only when successful close
 published the exact matching immutable picture lease. Failed or busy close,
@@ -14,8 +35,9 @@ The deterministic lifetime defect is covered by direct/non-direct, queued,
 failed-close, reset, owner-rebind and replay regressions. Two diagnostic stock
 Kodi runs completed 40/40 short Stop/reopen cycles without a VA/VPP API error,
 but the single RC1 `vaEndPicture`/`vaSyncSurface` failure pair did not reproduce
-and is not conclusively attributed to this fix. Exact-RC2 G2/G3 qualification
-and a separate stable maintainer GO remain required.
+and is not conclusively attributed to this fix. Exact-RC2 G0–G3 qualification
+is complete under #473; final package qualification and a separate stable
+maintainer GO remain required.
 
 ## 1.2.0-rc.1 — published candidate
 

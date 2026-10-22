@@ -1,13 +1,15 @@
 # Open work
 
 Release status **2026-10-22**: [stable 1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0)
-with module-DKMS identity `3.10.9` and prerelease
+with module-DKMS identity `3.10.9` and prereleases
 [`v1.2.0-rc.1`](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.1)
-with module-DKMS identity `3.10.11` are published and immutable. The corrected
-`1.2.0-rc.2` / module-DKMS identity `3.10.12` candidate is under affected-path
-requalification in
-[#473](https://github.com/ahnhy1324/crystalhd/issues/473); it is not yet a
-published RC or stable release. Previous stable releases and RCs remain unchanged.
+(`3.10.11`) and
+[`v1.2.0-rc.2`](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.2)
+(`3.10.12`) are published and immutable. RC2 completed its bounded G0–G3
+qualification in [#473](https://github.com/ahnhy1324/crystalhd/issues/473).
+This source prepares final `1.2.0` / `3.10.13`; its fresh package checks and
+explicit maintainer GO remain outstanding, so stable `v1.2.0` is not published.
+Previous stable releases and RCs remain unchanged.
 The [qualification summary](HARDWARE-2026-09-13.md#110-final-package-qualification--2026-10-19)
 distinguishes fresh final-package checks from scoped RC5 evidence reuse.
 Selected v1.2 CPU Bob, card scaling and reliability work is conditionally in
@@ -16,11 +18,12 @@ the candidate; broader performance and research remain in
 scope to general full-rate FHD or hardware deinterlacing.
 
 - [ ] [#473: v1.2.0 bounded release scope and gates](https://github.com/ahnhy1324/crystalhd/issues/473)
-  — RC1 completed G0/G1 and was published, then its Kodi G2 matrix found one
-  Stop-time VA failure pair. Qualify the focused lifetime correction and unique
-  RC2 package identity before publishing RC2, then run G2/G3 on that immutable
-  candidate and obtain separate stable maintainer GO. Historical source-path
-  evidence is not an exact-candidate PASS.
+  — RC2 completed G0/G1, selected Kodi/720p50/endurance G2 and direct/DKMS
+  package/rollback G3. Its retained strict Kodi count failures are bounded to
+  client adaptive field omission, not hidden as lossless 50p support. Qualify
+  the distinct final `1.2.0` / `3.10.13` package, then obtain explicit stable
+  maintainer GO. Historical or RC2 results do not by themselves qualify the
+  changed final package identity.
 - [ ] [#472: v1.2 best-effort experiments and stop rules](https://github.com/ahnhy1324/crystalhd/issues/472)
   — retain optional Kick, memory, FHD/Atom, Moonlight and hardware-research
   follow-up without making it a release blocker or support claim.

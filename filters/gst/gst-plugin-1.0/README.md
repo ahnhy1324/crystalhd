@@ -59,7 +59,7 @@ caps negotiation.
 `scale-width` selects the decoder-coupled hardware output width. Zero is the
 native-size default; an explicit value must be even, from 128 through 1918,
 and no wider than the coded input. Progressive BCM70015 sessions are supported;
-the 1.2 candidate plugin also accepts H.264 interlaced input when the width
+the 1.2 plugin also accepts H.264 interlaced input when the width
 is a multiple of 16 and the card returns separate, complementary fields.
 Scaled whole-Weave payloads and other interlaced codecs remain rejected.
 The property may be set in NULL or READY and is reapplied
@@ -79,7 +79,7 @@ For this input, the verbose output should show `crystalhddec` source caps with
 `width=(int)1280`, `height=(int)720` and `pixel-aspect-ratio=(fraction)1/1`,
 followed by continuing playback and EOS. Replace the path with your file.
 
-For interlaced FHD H.264 with the matching 1.2 candidate plugin, reduce the
+For interlaced FHD H.264 with the matching 1.2 plugin, reduce the
 card-to-host pixels first, then use GStreamer's CPU Bob at the returned size:
 
 ```sh

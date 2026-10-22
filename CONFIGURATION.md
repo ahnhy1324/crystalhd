@@ -130,11 +130,11 @@ Chromium options rather than CrystalHD settings.
 
 | Control | Owner | Device/backend | Default and accepted values | Dependencies | Read/apply lifecycle | Safety | Public API |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `crystalhddec scale-width` <!-- config-surface:gst-property:scale-width --> | GStreamer `crystalhddec` | BCM70015 decode; progressive and qualified H.264 field-coded interlace | `0` means native; otherwise an even width `128..1918`, not wider than coded input; interlaced H.264 requires a multiple of 16 | Hardware scaling support; output height/aspect is derived from the source | Writable only in NULL or READY; snapshotted for one decoder run and reapplied after flush/reopen | **Opt-in** — less PCIe traffic and less detail | Yes — GObject element property |
+| `crystalhddec scale-width` <!-- config-surface:gst-property:scale-width --> | GStreamer `crystalhddec` | BCM70015 decode; progressive and selected H.264 MBAFF with complementary card-field output | `0` means native; otherwise an even width `128..1918`, not wider than coded input; interlaced H.264 requires a multiple of 16 | Hardware scaling support; output height/aspect is derived from the source | Writable only in NULL or READY; snapshotted for one decoder run and reapplied after flush/reopen | **Opt-in** — less PCIe traffic and less detail | Yes — GObject element property |
 
 The GObject type is an unsigned integer, but values outside the effective
 range above fail validation. BCM70012, unsupported interlaced codecs/layouts
-and non-multiple-of-16 widths for candidate H.264 interlaced scaling are
+and non-multiple-of-16 widths for H.264 interlaced scaling are
 rejected.
 
 The player automatically uses the plugin's `crystalhddiqos` compatibility
@@ -150,7 +150,7 @@ It does not change the supported GStreamer version or QoS admission rules.
 | `--hardware` <!-- config-surface:player-flag:--hardware --> | `crystalhd-player.py` | GStreamer local playback | Default mode; flag has no value | Installed/discoverable `crystalhddec`, supported media and an idle card | Decoder ranks are selected for this process before pipeline creation; no software fallback | **Standard** | Yes — CLI |
 | `--software` <!-- config-surface:player-flag:--software --> | `crystalhd-player.py` | GStreamer local playback | Off; mutually exclusive with `--hardware` | Available software decoder | Decoder ranks and playbin software-decoder flag are selected before pipeline creation | **Standard** | Yes — CLI |
 | `--weave` <!-- config-surface:player-flag:--weave --> | `crystalhd-player.py` | Hardware or software local playback | Off; flag has no value | Available selected decoder and playbin | Clears only playbin's deinterlace flag before playback; fails if it remains enabled | **Opt-in** — interlaced frame pass-through, not deinterlacing or a sync guarantee | Yes — CLI |
-| `--scale-width PIXELS` <!-- config-surface:player-flag:--scale-width --> | `crystalhd-player.py` | BCM70015 hardware playback; H.264 field-coded interlace in the bounded 1.2 candidate scope | `0`; otherwise even `128..1918`; candidate interlaced H.264 requires a multiple of 16 | Requires hardware mode; also subject to coded-width/property limits | Parsed at startup and applied to each CrystalHD decoder element | **Opt-in** — hardware downscale/quality trade-off | Yes — CLI |
+| `--scale-width PIXELS` <!-- config-surface:player-flag:--scale-width --> | `crystalhd-player.py` | BCM70015 hardware playback; selected H.264 MBAFF in the bounded 1.2 scope | `0`; otherwise even `128..1918`; interlaced H.264 requires a multiple of 16 | Requires hardware mode; also subject to coded-width/property limits | Parsed at startup and applied to each CrystalHD decoder element | **Opt-in** — hardware downscale/quality trade-off | Yes — CLI |
 | `--software-output-size WIDTHxHEIGHT` <!-- config-surface:player-flag:--software-output-size --> | `crystalhd-player.py` | Host resize after scaled CrystalHD output | Unset; positive even dimensions, each at most `4096`, total at most `4096x2160` pixels | Requires hardware mode, nonzero `--scale-width`, GStreamer `videoscale`/`capsfilter` | Pipeline construction | **Opt-in** — additional CPU use; cannot restore source detail | Yes — CLI |
 | `--subtitles FILE` <!-- config-surface:player-flag:--subtitles --> | `crystalhd-player.py` | Local playback | Unset; readable local regular file | GStreamer subtitle support for the file | Parsed before pipeline construction | **Standard** | Yes — CLI |
 
