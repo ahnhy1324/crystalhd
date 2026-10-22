@@ -153,6 +153,8 @@ and component guides. The optional V4L2/firmware research builds do not add a
 supported frontend. A regression in an advertised opt-in path still requires
 a fix or explicit withdrawal from the candidate.
 
+<a id="freeze-and-prepare"></a>
+
 ## Freeze and prepare a release candidate
 
 1. Agree on the v1.2 scope in #473. Audit the complete
