@@ -33,7 +33,7 @@ acceptance remain conditional gates. Hardware deinterlacing, general FHD50/60,
 Atom real-time and the #470/#471 experiments are not candidate claims. Exact
 boundaries and current status are in
 [USAGE.md](USAGE.md#known-issues-and-deinterlacing-roadmap) and the
-[hardware report](HARDWARE-2026-09-13.md#120-rc1-qualification--2026-10-22).
+[hardware report](HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22).
 
 ## Versions and compatibility
 
@@ -46,8 +46,8 @@ checkout alone does not announce a published release.
 
 | Identity | Current value | Purpose |
 | --- | --- | --- |
-| Candidate bundle | `1.2.0-rc.1` | v1.2 qualification candidate; not published |
-| Candidate DKMS / module package | `3.10.11` | Unique candidate payload; development `3.10.10` is not reused |
+| Candidate bundle | `1.2.0-rc.2` | Corrected v1.2 qualification candidate; not published |
+| Candidate DKMS / module package | `3.10.12` | Unique candidate payload; published RC1 retains `3.10.11` |
 | Published stable bundle | `1.1.0` | Immutable source `85f426d` |
 | Published stable DKMS / module package | `3.10.9` | RC.5 retains `3.10.8`, RC.4 `3.10.7`, stable 1.0.0 `3.10.3` |
 | Driver ioctl version | `3.10.0` | Historical public API value, retained |
@@ -145,7 +145,7 @@ a fix or explicit withdrawal from the candidate.
    work.
 2. Merge preparation changes. Check this version table, installation and
    rollback commands, notices and the curated [change summary](HISTORY.md).
-   Use the short-lived `release/1.2.0-rc.1` branch while unrelated development
+   Use the short-lived `release/1.2.0-rc.2` branch while unrelated development
    continues, then record one fixed candidate commit.
 3. Run the existing device-free gates with the
    [developer dependencies](README.md#developer-checks) installed:
@@ -166,7 +166,8 @@ a fix or explicit withdrawal from the candidate.
 4. Complete #473 G0/G1, including the declared short native smoke. Record the
    exact commit, source diff, selected claim matrix, limits, acknowledgements,
    release text and results, then obtain explicit maintainer RC GO before
-   publishing RC1. Never move published tags, including `v1.1.0`,
+   publishing the candidate RC. Never move published tags, including
+   `v1.2.0-rc.1`, `v1.1.0`,
    `v1.1.0-rc.5`, `v1.1.0-rc.4`, `v1.1.0-rc.3`,
    `v1.0.0-rc.1`, `v1.0.0` and `phase1-baseline-2026-09-29`.
 

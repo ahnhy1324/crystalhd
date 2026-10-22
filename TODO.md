@@ -1,8 +1,11 @@
 # Open work
 
 Release status **2026-10-22**: [stable 1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0)
-/ package `3.10.9` is published. The `1.2.0-rc.1` / package `3.10.11`
-candidate is under qualification in
+with module-DKMS identity `3.10.9` and prerelease
+[`v1.2.0-rc.1`](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.1)
+with module-DKMS identity `3.10.11` are published and immutable. The corrected
+`1.2.0-rc.2` / module-DKMS identity `3.10.12` candidate is under affected-path
+requalification in
 [#473](https://github.com/ahnhy1324/crystalhd/issues/473); it is not yet a
 published RC or stable release. Previous stable releases and RCs remain unchanged.
 The [qualification summary](HARDWARE-2026-09-13.md#110-final-package-qualification--2026-10-19)
@@ -13,9 +16,11 @@ the candidate; broader performance and research remain in
 scope to general full-rate FHD or hardware deinterlacing.
 
 - [ ] [#473: v1.2.0 bounded release scope and gates](https://github.com/ahnhy1324/crystalhd/issues/473)
-  — freeze the exact candidate, complete G0/G1 before any RC publication, then
-  qualify the immutable RC through G2/G3 and obtain separate maintainer GO.
-  Historical source-path evidence is not an exact-candidate PASS.
+  — RC1 completed G0/G1 and was published, then its Kodi G2 matrix found one
+  Stop-time VA failure pair. Qualify the focused lifetime correction and unique
+  RC2 package identity before publishing RC2, then run G2/G3 on that immutable
+  candidate and obtain separate stable maintainer GO. Historical source-path
+  evidence is not an exact-candidate PASS.
 - [ ] [#472: v1.2 best-effort experiments and stop rules](https://github.com/ahnhy1324/crystalhd/issues/472)
   — retain optional Kick, memory, FHD/Atom, Moonlight and hardware-research
   follow-up without making it a release blocker or support claim.

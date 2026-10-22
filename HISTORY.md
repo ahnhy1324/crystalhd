@@ -1,6 +1,23 @@
 # History
 
-## 1.2.0-rc.1 — candidate
+## 1.2.0-rc.2 — candidate
+
+Candidate bundle `1.2.0-rc.2` / module-DKMS package `3.10.12` retains RC1's
+bounded v1.2 scope and adds one focused VA-VPP lifecycle correction. A VPP
+source captured before decoder close may complete only when successful close
+published the exact matching immutable picture lease. Failed or busy close,
+reset, destruction, generation mismatch and public-owner rebinding still
+cancel the work. No public ABI, ioctl/UAPI, firmware, power policy or external
+application changes.
+
+The deterministic lifetime defect is covered by direct/non-direct, queued,
+failed-close, reset, owner-rebind and replay regressions. Two diagnostic stock
+Kodi runs completed 40/40 short Stop/reopen cycles without a VA/VPP API error,
+but the single RC1 `vaEndPicture`/`vaSyncSurface` failure pair did not reproduce
+and is not conclusively attributed to this fix. Exact-RC2 G2/G3 qualification
+and a separate stable maintainer GO remain required.
+
+## 1.2.0-rc.1 — published candidate
 
 Candidate bundle `1.2.0-rc.1` / module-DKMS package `3.10.11` freezes the
 bounded scope in [#473](https://github.com/ahnhy1324/crystalhd/issues/473):
@@ -10,8 +27,8 @@ identities. Kodi Auto, sustained 720p50 and installed-package acceptance remain
 release gates; hardware deinterlacing, general FHD50/60, Atom real-time and the
 [#470](https://github.com/ahnhy1324/crystalhd/issues/470) /
 [#471](https://github.com/ahnhy1324/crystalhd/issues/471) experiments are not
-candidate claims. Neither the RC nor final v1.2.0 is published without the
-separate maintainer decisions required by #473.
+candidate claims. RC1 was published as an immutable prerelease after its G0/G1
+GO; final v1.2.0 still requires the separate maintainer decision in #473.
 
 - Work around GStreamer 1.28.2 LINEAR's picture-PTS QoS error in the scaled
   Player path; preserve upstream feedback and final-sink deadlines.
