@@ -2112,6 +2112,7 @@ struct H264Auxiliary {
     VAPictureParameterBufferH264 picture{};
     uint64_t generation = 0;
     HANDLE device = nullptr;
+    bool prefeed = false;
   };
   std::map<uint64_t, Syntax> syntax;
   Syntax candidate{};
@@ -2407,15 +2408,62 @@ struct DecodeContext {
 
   enum class HardwareClosePurpose { Device, H264Replay };
 
-  BC_STATUS CloseHardware(uint64_t timeout_ns = kDecodeTimeoutNs) {
-    return CloseHardwareImpl(timeout_ns, HardwareClosePurpose::Device);
+  bool CanRestartAfterH264Auxiliary() const {
+    if (!auxiliary.ever)
+      return true;
+    // An auxiliary output is private debt, not proof that firmware ended.
+    // Queued continuation pictures and completed immutable pixels stay owned;
+    // only the actual drained EOS permits rebuilding their reference channel.
+    return IsH264Profile(profile) && !is_70012 && !live_h264_fast_path &&
+        auxiliary.ended && !auxiliary.pending && !auxiliary.needs_eos &&
+        !auxiliary.eos_only && auxiliary.generation == generation &&
+        auxiliary.device == device && device != nullptr &&
+        decoder_open && decoder_started && !retired &&
+        !destroy_prepared && !hardware_close_pending &&
+        retained_close_status == BC_STS_SUCCESS && replay.NeedsRestart() &&
+        !replay.failed() && replay.outstanding() == 0 &&
+        !h264_first_field.valid && partial_input_timestamp == 0 &&
+        partial_input_offset == 0 && prefed_timestamp == 0 &&
+        pending_prefeed_timestamp == 0 && pending_prefeed_generation == 0;
+  }
+
+  bool CanYieldTerminalClose(bool preparing_pictures = false) {
+    return IsH264Profile(profile) && !is_70012 && !video_process && closing &&
+        destroy_in_progress && destroy_prepared && !retired &&
+        destroy_status == VA_STATUS_SUCCESS && device != nullptr &&
+        decoder_open && decoder_started && !hardware_close_pending &&
+        retained_close_status == BC_STS_SUCCESS &&
+        // Preparation never touches DIL; an armed poll may retire meanwhile.
+        // The hardware close itself still requires every borrower to be gone.
+        (preparing_pictures || output_poll_inflight == 0) &&
+        pending.empty() && replay.outstanding() == 0 && !replay.sealed() &&
+        !replay.failed() && !h264_first_field.valid &&
+        partial_input_timestamp == 0 && partial_input_offset == 0 &&
+        // A final accepted AUD/filler prefix has no VCL or public picture.
+        // Terminal device close consumes it; replay restart remains stricter.
+        (prefed_timestamp == 0 || prefed_timestamp == next_timestamp) &&
+        pending_prefeed_timestamp == 0 &&
+        pending_prefeed_generation == 0 && !auxiliary.pending &&
+        !auxiliary.needs_eos && !auxiliary.eos_only &&
+        !decoded_frames.empty() &&
+        std::all_of(decoded_frames.begin(), decoded_frames.end(),
+                    [](const auto &entry) {
+                      return entry.second && entry.second->ready &&
+                             !entry.second->failed;
+                    }) && replay.NextInput() == nullptr && !replay.failed();
+  }
+
+  BC_STATUS CloseHardware(uint64_t timeout_ns = kDecodeTimeoutNs,
+                         std::unique_lock<std::mutex> *driver_lock = nullptr) {
+    return CloseHardwareImpl(timeout_ns, HardwareClosePurpose::Device, driver_lock);
   }
 
   BC_STATUS CloseHardwareForH264Replay(uint64_t timeout_ns = kDecodeTimeoutNs) {
     return CloseHardwareImpl(timeout_ns, HardwareClosePurpose::H264Replay);
   }
 
-  BC_STATUS CloseHardwareImpl(uint64_t timeout_ns, HardwareClosePurpose purpose) {
+  BC_STATUS CloseHardwareImpl(uint64_t timeout_ns, HardwareClosePurpose purpose,
+                             std::unique_lock<std::mutex> *driver_lock = nullptr) {
     // A successful EOS has retired every hardware output before this private
     // replay restart. Completed pictures own copied pixels, not RX leases.
     // Never infer this contract from a version number or another optional API.
@@ -2427,9 +2475,30 @@ struct DecodeContext {
         replay.outstanding() == 0 && !h264_first_field.valid &&
         partial_input_timestamp == 0 && partial_input_offset == 0 &&
         prefed_timestamp == 0 && pending_prefeed_timestamp == 0 &&
+        CanRestartAfterH264Auxiliary() &&
         SupportsDrainedH264ChannelReopen();
+    bool yield_calls = purpose == HardwareClosePurpose::Device && driver_lock &&
+        driver_lock->owns_lock() && CanYieldTerminalClose();
     CancelPendingPrefeed();
     BC_STATUS result = retained_close_status;
+    const auto hardware_call = [&](auto call) {
+      if (!yield_calls)
+        return call();
+      BC_STATUS status;
+      driver_lock->unlock();
+      {
+        struct Relock {
+          std::unique_lock<std::mutex> *lock;
+          ~Relock() { lock->lock(); }
+        } relock{driver_lock};
+        status = call();
+      }
+      // A BUSY or failed operation retains the original locked cleanup/retry
+      // behavior. No DecodeContext or surface state changes while unlocked.
+      if (status != BC_STS_SUCCESS)
+        yield_calls = false;
+      return status;
+    };
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::nanoseconds(timeout_ns);
     const auto clear_abort_state = [&] {
@@ -2459,7 +2528,7 @@ struct DecodeContext {
     if (decoder_started) {
       BC_STATUS status;
       do {
-        status = DtsStopDecoder(device);
+        status = hardware_call([handle = device] { return DtsStopDecoder(handle); });
         if (status != BC_STS_BUSY)
           break;
         if (std::chrono::steady_clock::now() >= deadline)
@@ -2476,7 +2545,7 @@ struct DecodeContext {
     if (decoder_open && !lifecycle_busy) {
       BC_STATUS status;
       do {
-        status = DtsCloseDecoder(device);
+        status = hardware_call([handle = device] { return DtsCloseDecoder(handle); });
         if (status != BC_STS_BUSY)
           break;
         if (std::chrono::steady_clock::now() >= deadline)
@@ -2508,7 +2577,7 @@ struct DecodeContext {
     if (device != nullptr) {
       BC_STATUS status = BC_STS_SUCCESS;
       do {
-        status = DtsDeviceClose(device);
+        status = hardware_call([handle = device] { return DtsDeviceClose(handle); });
         if (status != BC_STS_BUSY)
           break;
         if (std::chrono::steady_clock::now() >= deadline)
@@ -2541,8 +2610,9 @@ struct DecodeContext {
     return result;
   }
 
-  BC_STATUS Close(uint64_t timeout_ns = kDecodeTimeoutNs) {
-    const BC_STATUS status = CloseHardware(timeout_ns);
+  BC_STATUS Close(uint64_t timeout_ns = kDecodeTimeoutNs,
+                  std::unique_lock<std::mutex> *driver_lock = nullptr) {
+    const BC_STATUS status = CloseHardware(timeout_ns, driver_lock);
     pending.clear();
     for (const auto &picture : experimental_ready)
       picture->experimental_ready_queued = false;
@@ -3275,6 +3345,20 @@ static bool ShouldAutoPrefeedH264(const DecodeContext &decode) {
          (decode.picture.seq_fields.bits.frame_mbs_only_flag ||
           decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag) &&
          !decode.picture.pic_fields.bits.field_pic_flag;
+}
+
+static bool H264AuxiliaryPolicy(const DecodeContext &decode,
+                                bool accepted_prefeed) {
+  // DEFAULT ordinary input keeps finite EOS/replay semantics. Its accepted
+  // frame-AU prefeed may provide the same bounded Bob lookahead as LIVE+LOW.
+  // Explicit LIVE keeps its existing auxiliary contract independently of LOW.
+  // The additional ordinary finite path honors LIVE=0 and LOW=0, and its
+  // per-AU eligibility is never recomputed from a later picture's SPS.
+  return IsH264Profile(decode.profile) && !decode.is_70012 &&
+      !decode.experimental_ready_remap &&
+      ((decode.live_h264_fast_path && decode.live_h264_gap_tolerant) ||
+       (!decode.decode_processing && decode.live_h264 && accepted_prefeed &&
+        (decode.low_latency_h264 || decode.auto_h264_prefeed)));
 }
 
 static VAStatus OpenDevice(DecodeContext *decode) {
@@ -5143,6 +5227,11 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                                 unsigned int max_attempts = 32) {
   decode->input_backpressured = false;
   decode->input_budget_exhausted = false;
+  // Do not let speculative-prefix retry cancel unpaid auxiliary restart debt
+  // before the actual-EOS fence is checked.
+  if (decode->auxiliary.ever && decode->replay.NeedsRestart() &&
+      !decode->CanRestartAfterH264Auxiliary())
+    return FailDecode(driver, decode, "H.264 auxiliary restart before actual drained EOS");
   VAStatus advance = AdvanceMpeg4Epoch(driver, decode);
   if (advance != VA_STATUS_SUCCESS)
     return advance;
@@ -5154,8 +5243,8 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
     if (replay.failed())
       return VA_STATUS_ERROR_DECODING_ERROR;
     if (replay.NeedsRestart()) {
-      if (decode->auxiliary.ever)
-        return FailDecode(driver, decode, "H.264 auxiliary forbids decoder replay/restart");
+      if (!decode->CanRestartAfterH264Auxiliary())
+        return FailDecode(driver, decode, "H.264 auxiliary restart before actual drained EOS");
       // EOS terminates reference state. A qualified library may replace a fully
       // stopped/closed H.264 channel on its retained device; all other cases
       // retain full-device reopen. This is never the legacy channel-only FLUSH.
@@ -5279,8 +5368,9 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
         decode->auxiliary.candidate_timestamp = 0;
         auto syntax = decode->auxiliary.syntax.find(input_timestamp);
         if (syntax != decode->auxiliary.syntax.end()) {
-          if (!unit->completed && !decode->is_70012 &&
-              decode->live_h264_fast_path && decode->live_h264_gap_tolerant &&
+          if (!unit->completed &&
+              H264AuxiliaryPolicy(*decode,
+                                  prefeed_after_unit && syntax->second.prefeed) &&
               syntax->second.generation == decode->generation &&
               syntax->second.device == decode->device) {
             auxiliary_candidate = syntax->second;
@@ -5562,8 +5652,9 @@ static bool CapturedDecodePictureMatchesLifetime(
       CompletedDecodePictureMatches(driver, owner, completed);
 }
 
-static VAStatus PrepareCompletedDecodePictures(Driver *driver,
-                                               DecodeContext *decode) {
+static VAStatus PrepareCompletedDecodePictures(
+    Driver *driver, DecodeContext *decode,
+    std::unique_lock<std::mutex> *driver_lock = nullptr) {
   // Build the complete candidate set before publishing any new ownership.
   // A partial promotion is harmless, but a failure must grant no read lease.
   decode->retirement_candidates.clear();
@@ -5590,17 +5681,38 @@ static VAStatus PrepareCompletedDecodePictures(Driver *driver,
       completed.ordinal = picture->second->trace_submission_ordinal;
       if (!CompletedDecodePictureMatches(driver, owner, completed, false))
         continue;
-      // A public strong lease on a direct-backed picture would form a cycle.
-      // Promote while the exact owner and its pixels are still available.
-      if (!PromoteDecodedPicture(picture->second) ||
-          !CompletedDecodePictureMatches(driver, owner, completed))
-        return VA_STATUS_ERROR_OPERATION_FAILED;
       candidates.push_back(std::move(completed));
     }
+    std::vector<CompletedDecodePicture> prepared;
+    prepared.reserve(candidates.size());
+    for (size_t index = 0; index != candidates.size(); ++index) {
+      auto &completed = candidates[index];
+      const auto owner = completed.owner.lock();
+      // A previous turn may destroy/rebind a public owner or rehash its map.
+      // The snapshot owns the private picture, never a surviving map iterator.
+      if (!CompletedDecodePictureMatches(driver, owner, completed, false))
+        continue;
+      const bool borrowed = completed.picture->direct_backing != nullptr;
+      // A public strong lease on a direct-backed picture would form a cycle.
+      // Copy and change its planes only while the exact binding stays locked.
+      if (!PromoteDecodedPicture(completed.picture) ||
+          !CompletedDecodePictureMatches(driver, owner, completed))
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+      prepared.push_back(std::move(completed));
+      if (borrowed && index + 1 != candidates.size() && driver_lock &&
+          driver_lock->owns_lock() && decode->CanYieldTerminalClose(true)) {
+#if defined(CRYSTALHD_VAAPI_TEST_TERMINAL_PROMOTION_TURN)
+        CRYSTALHD_VAAPI_TEST_TERMINAL_PROMOTION_TURN(driver, *driver_lock);
+#endif
+        // Bound a completed batch to one locked full-canvas promotion. Ready
+        // sync/VPP may proceed while cold waits remain fenced by preparation.
+        driver->condition.wait_for(*driver_lock, std::chrono::milliseconds(1));
+      }
+    }
+    decode->retirement_candidates = std::move(prepared);
   } catch (const std::bad_alloc &) {
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
   }
-  decode->retirement_candidates = std::move(candidates);
   return VA_STATUS_SUCCESS;
 }
 
@@ -6274,8 +6386,9 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                                      ShouldAutoPrefeedH264(*decode))) {
     return FailDecode(driver, decode, decode->replay.failure());
   }
-  if (IsH264Profile(profile) && decode->live_h264_fast_path &&
-      decode->live_h264_gap_tolerant) {
+  const bool auxiliary_prefeed =
+      decode->low_latency_h264 || ShouldAutoPrefeedH264(*decode);
+  if (H264AuxiliaryPolicy(*decode, auxiliary_prefeed)) {
     // Append already applied the replay cache/picture admission bounds.
     // One syntax record per not-yet-InputSent AU shares that bound.
     if (decode->auxiliary.syntax.size() >= decode->replay.cached_pictures())
@@ -6285,6 +6398,7 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       syntax.picture = decode->picture;
       syntax.generation = decode->generation;
       syntax.device = decode->device;
+      syntax.prefeed = auxiliary_prefeed;
       if (!decode->auxiliary.syntax.emplace(timestamp, syntax).second)
         return FailDecode(driver, decode, "H.264 syntax snapshot duplicate");
     } catch (const std::bad_alloc &) {
@@ -6440,7 +6554,8 @@ static VAStatus DecodeWaitState(const DecodeContext &decode, Surface *surface,
   const VAStatus state = DecodeSurfaceState(surface);
   if (state != VA_STATUS_ERROR_HW_BUSY)
     return state;
-  if (decode.retired || decode.generation != generation)
+  if (decode.retired || (decode.closing && decode.destroy_prepared) ||
+      decode.generation != generation)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   return VA_STATUS_ERROR_HW_BUSY;
 }
@@ -6504,7 +6619,7 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
   auto &aux = decode->auxiliary;
   const auto &first = decode->h264_first_field;
   if (!demand || !demand->bob || idle < kDecodeBatchGraceNs || aux.pending ||
-      !decode->live_h264_fast_path || !decode->live_h264_gap_tolerant ||
+      !H264AuxiliaryPolicy(*decode, aux.candidate.prefeed) ||
       !aux.candidate_timestamp || !first.valid || first.replay_duplicate ||
       first.bottom == (demand->field == crystalhd_vpp_bob::FieldParity::kBottom) ||
       first.timestamp != surface->expected_timestamp ||
@@ -6704,7 +6819,8 @@ static VAStatus SyncDecodeSurface(
   std::shared_ptr<DecodeContext> decode;
   for (auto &entry : driver->contexts) {
     if (!entry.second->decoder_started ||
-        entry.second->hardware_close_pending)
+        entry.second->hardware_close_pending ||
+        (entry.second->closing && entry.second->destroy_prepared))
       continue;
     for (const auto &pending : entry.second->pending) {
       auto candidate = driver->surfaces.find(pending.second);
@@ -6796,7 +6912,11 @@ static VAStatus SyncDecodeSurface(
       return state;
     if (driver->stopping)
       return VA_STATUS_ERROR_OPERATION_FAILED;
-    VAStatus status = ReceiveAvailable(driver, decode.get());
+    // Exact mode rechecks its requested picture after every released output.
+    // Explicit remapping retains its old harvest boundary before selecting a
+    // payload: a smaller batch could select an older RX picture too early.
+    const unsigned int receive_budget = decode->experimental_ready_remap ? 64 : 1;
+    VAStatus status = ReceiveAvailable(driver, decode.get(), receive_budget);
     if (status == VA_STATUS_SUCCESS &&
         (surface->ready || presentation_ready()))
       break;
@@ -7317,7 +7437,13 @@ static VAStatus Terminate(VADriverContextP context) {
 
   VAStatus status = VA_STATUS_SUCCESS;
   {
-    std::lock_guard<std::mutex> lock(driver->mutex);
+    std::unique_lock<std::mutex> lock(driver->mutex);
+    // An admitted destroy may be outside this mutex in a terminal DIL call.
+    // Join that exact transaction before closing its handle or freeing Driver.
+    driver->condition.wait(lock, [&] {
+      return std::none_of(driver->contexts.begin(), driver->contexts.end(),
+          [](const auto &entry) { return entry.second->destroy_in_progress; });
+    });
     for (const auto &entry : driver->contexts) {
       DecodeContext *decode = entry.second.get();
       decode->closing = true;
@@ -8307,9 +8433,13 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   decode->destroy_in_progress = true;
   struct DestroyCall {
+    Driver *driver;
     DecodeContext *decode;
-    ~DestroyCall() { decode->destroy_in_progress = false; }
-  } destroy_call{decode.get()};
+    ~DestroyCall() {
+      decode->destroy_in_progress = false;
+      driver->condition.notify_all();
+    }
+  } destroy_call{driver, decode.get()};
   if (!decode->destroy_prepared) {
     // A second call while the first call has temporarily released the driver
     // lock for draining is not a close retry yet.
@@ -8317,13 +8447,14 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
       return VA_STATUS_ERROR_INVALID_CONTEXT;
     decode->closing = true;
     decode->destroy_status = VA_STATUS_SUCCESS;
-    if (!decode->video_process) {
+    if (!decode->video_process)
       decode->destroy_status = DrainClosingContext(driver, decode, &lock);
-      if (decode->destroy_status == VA_STATUS_SUCCESS)
-        decode->destroy_status = PrepareCompletedDecodePictures(driver,
-                                                                decode.get());
-    }
+    // Drain may poll real output. Only after it finishes may preparation yield
+    // with the cold/resumed hardware paths fenced off from this closing device.
     decode->destroy_prepared = true;
+    if (!decode->video_process && decode->destroy_status == VA_STATUS_SUCCESS)
+      decode->destroy_status = PrepareCompletedDecodePictures(
+          driver, decode.get(), &lock);
   }
   if (decode->output_poll_inflight != 0) {
     // The worker's duplicated device fd outlives the DIL handle until poll
@@ -8343,13 +8474,28 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   if (decode->output_poll_inflight != 0)
     return VA_STATUS_ERROR_HW_BUSY;
-  // Keep valid immutable VPP captures live during borrower quiescence. Once
-  // retired, close and completed-picture publication must stay under this
-  // lock; exposing that intermediate state would cancel queued VPP readers.
-  decode->retired = true;
+  // Fully materialized immutable pictures need no DIL work. Keep their epoch
+  // live while only the blocking terminal calls release this lock; ready sync
+  // and VPP can finish without waiting behind the library's worker joins.
+  // Incomplete/failed drains and non-consuming retries keep the old locked path.
+  const bool yield_close = decode->CanYieldTerminalClose();
+  Debug("terminal close admission yield=%d prefed=%llu next=%llu pending=%zu "
+        "outstanding=%zu frames=%zu partial=%llu pending_prefeed=%llu "
+        "aux_pending=%d aux_eos=%d",
+        yield_close, static_cast<unsigned long long>(decode->prefed_timestamp),
+        static_cast<unsigned long long>(decode->next_timestamp),
+        decode->pending.size(), decode->replay.outstanding(),
+        decode->decoded_frames.size(),
+        static_cast<unsigned long long>(decode->partial_input_timestamp),
+        static_cast<unsigned long long>(decode->pending_prefeed_timestamp),
+        decode->auxiliary.pending, decode->auxiliary.needs_eos);
+  if (!yield_close)
+    decode->retired = true;
   ClearTraceReadExportsForContext(
       driver, TraceId(decode->id, VA_INVALID_ID), decode->generation);
-  const BC_STATUS closed = decode->Close(close_timeout_ns);
+  const BC_STATUS closed =
+      decode->Close(close_timeout_ns, yield_close ? &lock : nullptr);
+  decode->retired = true;
   // The sole non-consuming result keeps the context in the map. A later
   // vaDestroyContext call resumes only this terminal close; it never drains or
   // emits the destroy trace twice.
