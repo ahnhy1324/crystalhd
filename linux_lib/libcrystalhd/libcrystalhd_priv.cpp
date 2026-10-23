@@ -2046,11 +2046,13 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 			if (!cancel && !recoveryCancel) {
 				const BC_DEC_YUV_BUFFS &buffer =
 					Ctx->pOutData->u.DecOutData.OutPutBuffs;
-				/* Reject malformed DATA_VALID receipts before deriving plane
-				 * pointers or interpreting PIB.  LINK may have an empty UV
+				/* Reject malformed data receipts before deriving plane pointers
+				 * or interpreting PIB.  A format event is already requeued by
+				 * the kernel and owns no data lease.  LINK may have an empty UV
 				 * extent, so offset == size remains valid. */
 				invalidReceipt =
 					(Ctx->pOutData->u.DecOutData.Flags & COMP_FLAG_DATA_VALID) &&
+					!(Ctx->pOutData->u.DecOutData.Flags & COMP_FLAG_FMT_CHANGE) &&
 					(!buffer.YuvBuff || !buffer.YuvBuffSz ||
 					 buffer.UVbuffOffset > buffer.YuvBuffSz);
 				if (invalidReceipt)

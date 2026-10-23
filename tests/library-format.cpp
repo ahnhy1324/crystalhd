@@ -728,6 +728,29 @@ static void FetchReceiptBounds()
                   link.lease.context.outputPhase == DTS_OUTPUT_IDLE,
               "valid empty-UV LINK output still releases the sole owner exactly once");
     }
+    for (bool software_uyvy : {false, true}) {
+        for (unsigned fault = 0; fault < 3; ++fault) {
+            FetchFixture format;
+            std::snprintf(description, sizeof(description),
+                          "format notification fault=%u software-uyvy=%u", fault, software_uyvy);
+            format.lease.context.softwareUyvy = software_uyvy;
+            fetched_output.Flags |= COMP_FLAG_FMT_CHANGE;
+            if (fault == 0) fetched_output.OutPutBuffs.YuvBuff = nullptr;
+            if (fault == 1) fetched_output.OutPutBuffs.YuvBuffSz = 0;
+            if (fault == 2)
+                fetched_output.OutPutBuffs.UVbuffOffset =
+                    fetched_output.OutPutBuffs.YuvBuffSz + 1;
+            BC_DTS_PROC_OUT output = {};
+            Check(DtsProcOutputNoCopy(&format.lease.context, 0, &output) == BC_STS_FMT_CHANGE &&
+                      fetch_calls == 1 && repost_calls == 0 &&
+                      output.Ybuff == nullptr && output.UVbuff == nullptr &&
+                      (output.PoutFlags & BC_POUT_FLAGS_FMT_CHANGE) &&
+                      format.lease.context.ProcOutPending == 0 &&
+                      format.lease.context.outputPhase == DTS_OUTPUT_IDLE &&
+                      format.lease.storage == format.lease.original,
+                  "format notification owns no data lease, even with DATA_VALID and empty/invalid extents");
+        }
+    }
 }
 
 static void FetchPackingOwnership()
