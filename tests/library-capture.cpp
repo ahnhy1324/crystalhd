@@ -33,6 +33,9 @@ extern bc_dil_glob_s *bc_dil_glob_ptr;
 static unsigned checks;
 static unsigned failures;
 static const char *case_name = "setup";
+static const uint32_t kLegacyYBytes = 1920U * 1090U;
+static const uint32_t kLegacyNv12Bytes = kLegacyYBytes + kLegacyYBytes / 2U;
+static const uint32_t kLegacyPacked422Bytes = kLegacyYBytes * 2U;
 
 static void Check(bool condition, const char *message)
 {
@@ -487,7 +490,10 @@ struct Fixture {
 		for (size_t index = 0; index < pool_count; ++index) {
 			pools[index].type = BC_MEM_DEC_YUVBUFF |
 			                    BC_MEM_USER_MODE_ALLOC;
-			pools[index].sz = sizeof(buffers[index]);
+			/* The mock never DMA-writes these one-byte sentinels.  Keep the
+			 * production allocation extent in metadata so buffer-size
+			 * admission is exercised without allocating a 64 MiB fixture. */
+			pools[index].sz = kLegacyPacked422Bytes;
 			pools[index].buff = buffers[index];
 		}
 		for (size_t index = 0; index < BC_IOCTL_DATA_POOL_SIZE; ++index) {
@@ -610,14 +616,20 @@ static void TestConfiguredPoolAllocation()
 	struct PoolCase {
 		const char *value;
 		uint32_t expected;
+		BC_OUTPUT_FORMAT output_mode;
 		const char *description;
 	};
 	const PoolCase cases[] = {
-		{nullptr, BC_RX_LIST_CNT, "unset defaults to sixteen"},
-		{"8", 8, "exact eight selects the reduced pool"},
-		{"16", BC_RX_LIST_CNT, "exact sixteen selects the default pool"},
-		{"8 ", BC_RX_LIST_CNT, "whitespace is rejected"},
-		{"7", BC_RX_LIST_CNT, "unsupported counts are rejected"},
+		{nullptr, BC_RX_LIST_CNT, OUTPUT_MODE420,
+		 "unset defaults to sixteen"},
+		{"8", 8, OUTPUT_MODE422_YUY2,
+		 "exact eight selects the reduced pool"},
+		{"16", BC_RX_LIST_CNT, OUTPUT_MODE422_UYVY,
+		 "exact sixteen selects the default pool"},
+		{"8 ", BC_RX_LIST_CNT, OUTPUT_MODE420,
+		 "whitespace is rejected"},
+		{"7", BC_RX_LIST_CNT, OUTPUT_MODE422_YUY2,
+		 "unsupported counts are rejected"},
 	};
 
 	for (const PoolCase &test : cases) {
@@ -630,7 +642,7 @@ static void TestConfiguredPoolAllocation()
 		DTS_LIB_CONTEXT context = {};
 		context.OpMode = DTS_PLAYBACK_MODE;
 		context.CfgFlags = BC_MPOOL_INCL_YUV_BUFFS;
-		context.b422Mode = OUTPUT_MODE420;
+		context.b422Mode = test.output_mode;
 		const BC_STATUS status = DtsAllocMemPools(&context);
 		Check(status == BC_STS_SUCCESS,
 		      "pool configuration allocates the library memory pools");
@@ -642,10 +654,11 @@ static void TestConfiguredPoolAllocation()
 		for (uint32_t index = 0; complete && index < context.MpoolCnt;
 		     ++index) {
 			complete = context.Mpools[index].buff != nullptr &&
-				(context.Mpools[index].type & BC_MEM_DEC_YUVBUFF) != 0;
+				(context.Mpools[index].type & BC_MEM_DEC_YUVBUFF) != 0 &&
+				context.Mpools[index].sz == kLegacyPacked422Bytes;
 		}
 		Check(complete,
-		      "every selected output-pool entry has capture backing");
+		      "every selected output-pool entry keeps the fixed fallback backing");
 		DtsReleaseMemPools(&context);
 	}
 
@@ -654,6 +667,20 @@ static void TestConfiguredPoolAllocation()
 	case_name = "pool environment restoration";
 	Check(restore_status == 0,
 	      "pool allocation test restores the inherited environment");
+
+	case_name = "invalid RX layout allocation";
+	DTS_LIB_CONTEXT invalid = {};
+	invalid.OpMode = DTS_PLAYBACK_MODE;
+	invalid.CfgFlags = BC_MPOOL_INCL_YUV_BUFFS;
+	invalid.b422Mode = OUTPUT_MODE_INVALID;
+	const BC_STATUS invalid_status = DtsAllocMemPools(&invalid);
+	Check(invalid_status == BC_STS_INV_ARG,
+	      "invalid output mode is rejected before pool allocation");
+	Check(invalid.pIoDataFreeHd == nullptr && invalid.pOutData == nullptr &&
+	      invalid.Mpools == nullptr && invalid.MdataPoolPtr == nullptr,
+	      "invalid layout leaves every allocation owner empty");
+	if (invalid_status == BC_STS_INV_ARG)
+		pthread_mutex_destroy(&invalid.thLock);
 }
 
 static void TestReducedPoolStarts()
@@ -716,6 +743,151 @@ static void TestDirectMapSuccess()
 	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS &&
 	      event_count == old_events,
 	      "completed mapping is idempotent");
+}
+
+static void TestAddBufferSizeContract()
+{
+	struct ModeCase {
+		BC_OUTPUT_FORMAT mode;
+		uint32_t required;
+		uint32_t offset;
+		const char *name;
+	};
+	const ModeCase modes[] = {
+		{OUTPUT_MODE420, kLegacyNv12Bytes, kLegacyYBytes, "NV12"},
+		{OUTPUT_MODE422_YUY2, kLegacyPacked422Bytes, 0, "YUY2"},
+		{OUTPUT_MODE422_UYVY, kLegacyPacked422Bytes, 0, "UYVY"},
+	};
+	char label[96];
+
+	for (const ModeCase &test : modes) {
+		Fixture fixture(BC_PCI_DEVID_LINK);
+		fixture.context.b422Mode = test.mode;
+		const size_t initial_pool = PoolSize(fixture.context);
+		const uint32_t accepted[] = {test.required, test.required + 1U};
+
+		for (uint32_t size : accepted) {
+			std::snprintf(label, sizeof(label), "%s ADD size %u accepted",
+			              test.name, size);
+			case_name = label;
+			ResetMock(true);
+			Check(DtsAddOutBuff(&fixture.context, fixture.pools[0].buff,
+			                    size, fixture.pools[0].type) == BC_STS_SUCCESS,
+			      "valid backing is accepted");
+			Check(event_count == 1 && add_calls == 1 && flush_calls == 0,
+			      "valid backing issues exactly one ADD");
+			Check(events[0].command == BCM_IOC_ADD_RXBUFFS &&
+			      events[0].buffer == fixture.pools[0].buff &&
+			      events[0].buffer_size == test.required &&
+			      events[0].buffer_offset == test.offset &&
+			      events[0].buffer_mode == test.mode,
+			      "ADD advertises the fixed registered extent, not caller excess");
+			Check(PoolSize(fixture.context) == initial_pool,
+			      "accepted ADD returns its ioctl envelope");
+		}
+
+		const uint32_t rejected[] = {0, test.required - 1U};
+		for (uint32_t size : rejected) {
+			std::snprintf(label, sizeof(label), "%s ADD size %u rejected",
+			              test.name, size);
+			case_name = label;
+			ResetMock(true);
+			Check(DtsAddOutBuff(&fixture.context, fixture.pools[0].buff,
+			                    size, fixture.pools[0].type) == BC_STS_INV_ARG,
+			      "undersized backing is rejected as an invalid contract");
+			Check(event_count == 0 && add_calls == 0 && flush_calls == 0 &&
+			      OwnedCount() == 0,
+			      "rejected backing causes no ioctl or ownership mutation");
+			Check(PoolSize(fixture.context) == initial_pool,
+			      "rejected ADD does not borrow an ioctl envelope");
+		}
+
+		std::snprintf(label, sizeof(label), "%s null ADD rejected", test.name);
+		case_name = label;
+		ResetMock(true);
+		Check(DtsAddOutBuff(&fixture.context,
+		                    static_cast<uint8_t *>(nullptr), test.required,
+		                    fixture.pools[0].type) == BC_STS_INV_ARG,
+		      "null backing is rejected");
+		Check(event_count == 0 && add_calls == 0 && OwnedCount() == 0 &&
+		      PoolSize(fixture.context) == initial_pool,
+		      "null backing causes no ioctl, ownership or envelope change");
+	}
+
+	case_name = "invalid output mode ADD rejected";
+	Fixture fixture(BC_PCI_DEVID_LINK);
+	fixture.context.b422Mode = OUTPUT_MODE_INVALID;
+	Check(DtsAddOutBuff(&fixture.context, fixture.pools[0].buff,
+	                    fixture.pools[0].sz,
+	                    fixture.pools[0].type) == BC_STS_INV_ARG,
+	      "invalid output mode is rejected");
+	Check(event_count == 0 && add_calls == 0 && flush_calls == 0 &&
+	      OwnedCount() == 0 &&
+	      PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+	      "invalid mode causes no ioctl, ownership or envelope change");
+}
+
+static void TestMapPreflightRejectsInvalidPool()
+{
+	struct ModeCase {
+		BC_OUTPUT_FORMAT mode;
+		uint32_t required;
+		const char *name;
+	};
+	const ModeCase modes[] = {
+		{OUTPUT_MODE420, kLegacyNv12Bytes, "NV12"},
+		{OUTPUT_MODE422_YUY2, kLegacyPacked422Bytes, "YUY2"},
+		{OUTPUT_MODE422_UYVY, kLegacyPacked422Bytes, "UYVY"},
+	};
+	const size_t invalid_indices[] = {0, 8};
+	char label[112];
+
+	for (const ModeCase &test : modes) {
+		for (size_t invalid_index : invalid_indices) {
+			std::snprintf(label, sizeof(label),
+			              "%s pool preflight undersized index %zu",
+			              test.name, invalid_index);
+			case_name = label;
+			Fixture fixture(BC_PCI_DEVID_LINK);
+			fixture.context.b422Mode = test.mode;
+			fixture.pools[invalid_index].sz = test.required - 1U;
+			Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_INV_ARG,
+			      "an undersized pool entry rejects the whole map");
+			Check(event_count == 0 && add_calls == 0 && flush_calls == 0,
+			      "pool preflight rejects before every driver ioctl");
+			Check(!fixture.context.bMapOutBufDone &&
+			      !fixture.context.bMapOutBufDirty && OwnedCount() == 0,
+			      "pool preflight leaves mapping ownership untouched");
+			Check(PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+			      "pool preflight preserves every ioctl envelope");
+		}
+
+		std::snprintf(label, sizeof(label),
+		              "%s pool preflight null middle entry", test.name);
+		case_name = label;
+		Fixture fixture(BC_PCI_DEVID_LINK);
+		fixture.context.b422Mode = test.mode;
+		fixture.pools[8].buff = nullptr;
+		Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_INV_ARG,
+		      "a null pool entry rejects the whole map");
+		Check(event_count == 0 && add_calls == 0 && flush_calls == 0 &&
+		      !fixture.context.bMapOutBufDone &&
+		      !fixture.context.bMapOutBufDirty && OwnedCount() == 0,
+		      "null preflight rejection has no driver or ownership side effect");
+		Check(PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+		      "null preflight rejection preserves every ioctl envelope");
+	}
+
+	case_name = "invalid output mode pool preflight";
+	Fixture fixture(BC_PCI_DEVID_LINK);
+	fixture.context.b422Mode = OUTPUT_MODE_INVALID;
+	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_INV_ARG,
+	      "invalid output mode rejects the whole map");
+	Check(event_count == 0 && add_calls == 0 && flush_calls == 0 &&
+	      !fixture.context.bMapOutBufDone &&
+	      !fixture.context.bMapOutBufDirty && OwnedCount() == 0 &&
+	      PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+	      "invalid mode preflight has no driver or ownership side effect");
 }
 
 static void TestAddFailureMatrix()
@@ -1461,6 +1633,8 @@ int main()
 	TestConfiguredPoolAllocation();
 	TestReducedPoolStarts();
 	TestDirectMapSuccess();
+	TestAddBufferSizeContract();
+	TestMapPreflightRejectsInvalidPool();
 	TestAddFailureMatrix();
 	TestRollbackFailureAndRetry();
 	TestRepeatedStartMappingFailures();

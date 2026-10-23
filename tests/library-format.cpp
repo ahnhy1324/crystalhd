@@ -567,7 +567,8 @@ extern "C" int ioctl(int fd, unsigned long code, ...) noexcept
         ++fetch_calls;
         Check(fetched_output.OutPutBuffs.YuvBuffSz <= fetch_capacity,
               "fake transfer stays inside the owned registration fixture");
-        if (fetched_output.OutPutBuffs.YuvBuffSz <= fetch_capacity)
+        if (fetched_output.OutPutBuffs.YuvBuff &&
+            fetched_output.OutPutBuffs.YuvBuffSz <= fetch_capacity)
             std::memcpy(fetched_output.OutPutBuffs.YuvBuff,
                         fetch_original->data() + fetch_original_prefix,
                         fetched_output.OutPutBuffs.YuvBuffSz);
@@ -662,6 +663,95 @@ struct FetchFixture {
         pthread_mutex_destroy(&lease.context.thLock);
     }
 };
+
+static void FetchReceiptBounds()
+{
+    for (bool software_uyvy : {false, true}) {
+        for (unsigned fault = 0; fault < 3; ++fault) {
+            for (unsigned retirement = 0; retirement < 3; ++retirement) {
+                FetchFixture bad;
+                std::snprintf(description, sizeof(description),
+                              "malformed receipt fault=%u software-uyvy=%u retirement=%u",
+                              fault, software_uyvy, retirement);
+                bad.lease.context.softwareUyvy = software_uyvy;
+                bad.lease.output.PoutFlags = 0;
+                if (fault == 0) fetched_output.OutPutBuffs.YuvBuff = nullptr;
+                if (fault == 1) fetched_output.OutPutBuffs.YuvBuffSz = 0;
+                if (fault == 2)
+                    fetched_output.OutPutBuffs.UVbuffOffset =
+                        fetched_output.OutPutBuffs.YuvBuffSz + 1;
+                repost_status = retirement == 1 ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
+                repost_syscall_failure = retirement == 2;
+                const bool retired = retirement == 0;
+                const BC_STATUS expected = retired ? BC_STS_IO_XFR_ERROR :
+                    retirement == 1 ? BC_STS_IO_ERROR : BC_STS_ERROR;
+
+                Check(bad.Run() == expected && fetch_calls == 1 && repost_calls == 1,
+                      "malformed receipt is rejected and its sole owner is retired exactly once");
+                Check(bad.lease.output.Ybuff == nullptr &&
+                          bad.lease.output.UVbuff == nullptr &&
+                          bad.lease.output.PoutFlags == 0 &&
+                          bad.lease.storage == bad.lease.original &&
+                          bad.globals.stats.opFrameCaptured == 0,
+                      "invalid base/extent is rejected before PIB interpretation, pixels or success accounting");
+                Check(bad.lease.context.ProcOutPending == (retired ? 0 : 1) &&
+                          bad.lease.context.outputPhase ==
+                              (retired ? DTS_OUTPUT_IDLE : DTS_OUTPUT_RETIRE_ONLY),
+                      "only confirmed retirement clears ownership; failures retain a retire-only lease");
+                if (!retired) {
+                    BC_DTS_PROC_OUT next = {};
+                    Check(DtsFetchOutInterruptible(&bad.lease.context, &next, 0) ==
+                              BC_STS_BUSY && fetch_calls == 1 && repost_calls == 1 &&
+                              next.Ybuff == nullptr && next.UVbuff == nullptr,
+                          "quarantined receipt blocks refetch without a second fetch or repost");
+                }
+            }
+        }
+    }
+    {
+        FetchFixture link;
+        std::snprintf(description, sizeof(description), "LINK empty UV extent");
+        link.lease.context.DevId = BC_PCI_DEVID_LINK;
+        link.lease.context.softwareUyvy = false;
+        fetched_output.OutPutBuffs.UVbuffOffset = fetched_output.OutPutBuffs.YuvBuffSz;
+        Check(link.Run() == BC_STS_SUCCESS && fetch_calls == 1 && repost_calls == 0 &&
+                  link.lease.output.Ybuff == link.lease.storage.data() + link.lease.prefix &&
+                  link.lease.output.YbuffSz == link.lease.allocation &&
+                  link.lease.output.UVbuff == link.lease.output.Ybuff + link.lease.allocation &&
+                  link.lease.output.UVbuffSz == 0 &&
+                  link.lease.context.ProcOutPending == 1 &&
+                  link.lease.context.outputPhase == DTS_OUTPUT_RETURNED &&
+                  link.lease.storage == link.lease.original,
+              "LINK preserves a valid UV offset equal to the registration extent");
+        Check(DtsReleaseOutputBuffs(&link.lease.context, nullptr, FALSE) == BC_STS_SUCCESS &&
+                  repost_calls == 1 && link.lease.context.ProcOutPending == 0 &&
+                  link.lease.context.outputPhase == DTS_OUTPUT_IDLE,
+              "valid empty-UV LINK output still releases the sole owner exactly once");
+    }
+    for (bool software_uyvy : {false, true}) {
+        for (unsigned fault = 0; fault < 3; ++fault) {
+            FetchFixture format;
+            std::snprintf(description, sizeof(description),
+                          "format notification fault=%u software-uyvy=%u", fault, software_uyvy);
+            format.lease.context.softwareUyvy = software_uyvy;
+            fetched_output.Flags |= COMP_FLAG_FMT_CHANGE;
+            if (fault == 0) fetched_output.OutPutBuffs.YuvBuff = nullptr;
+            if (fault == 1) fetched_output.OutPutBuffs.YuvBuffSz = 0;
+            if (fault == 2)
+                fetched_output.OutPutBuffs.UVbuffOffset =
+                    fetched_output.OutPutBuffs.YuvBuffSz + 1;
+            BC_DTS_PROC_OUT output = {};
+            Check(DtsProcOutputNoCopy(&format.lease.context, 0, &output) == BC_STS_FMT_CHANGE &&
+                      fetch_calls == 1 && repost_calls == 0 &&
+                      output.Ybuff == nullptr && output.UVbuff == nullptr &&
+                      (output.PoutFlags & BC_POUT_FLAGS_FMT_CHANGE) &&
+                      format.lease.context.ProcOutPending == 0 &&
+                      format.lease.context.outputPhase == DTS_OUTPUT_IDLE &&
+                      format.lease.storage == format.lease.original,
+                  "format notification owns no data lease, even with DATA_VALID and empty/invalid extents");
+        }
+    }
+}
 
 static void FetchPackingOwnership()
 {
@@ -962,6 +1052,7 @@ int main(int argc, char **argv)
         OutputStatistics();
         LeasedPacking();
         PreparedModeConversions();
+        FetchReceiptBounds();
         FetchPackingOwnership();
         PublicPackingConsumers();
     }

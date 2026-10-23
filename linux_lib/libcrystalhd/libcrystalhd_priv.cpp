@@ -267,19 +267,67 @@ void DtsSetDecStat(bool bDecOpen, pid_t PID)
 #define BOTTOM_FIELD_FLAG			0x02
 #define PROGRESSIVE_FRAME_FLAG	0x03
 
-static void DtsGetMaxYUVSize(DTS_LIB_CONTEXT *Ctx, uint32_t *YbSz, uint32_t *UVbSz)
+typedef struct _DTS_RX_BUFFER_LAYOUT {
+	uint32_t allocationBytes;
+	uint32_t registeredBytes;
+	uint32_t uvOffset;
+	uint32_t outputFormat;
+} DTS_RX_BUFFER_LAYOUT;
+
+/* Keep the legacy 1920x1090 fallback allocation until output geometry is
+ * known.  Allocation and driver-registration extents are intentionally
+ * separate for planar output. */
+static BC_STATUS DtsGetRxBufferLayout(const DTS_LIB_CONTEXT *Ctx,
+	DTS_RX_BUFFER_LAYOUT *layout)
 {
-	if (Ctx->b422Mode) {
-		*YbSz = (1920*1090)*2;
-		*UVbSz = 0;
-	} else {
-		*YbSz  = 1920*1090;
-		*UVbSz = 1920*1090/2;
+	const uint64_t pixels = (uint64_t)1920 * 1090;
+	const uint64_t allocation = pixels * 2;
+	uint64_t registered;
+	uint64_t uvOffset;
+
+	if (!Ctx || !layout)
+		return BC_STS_INV_ARG;
+
+	switch (Ctx->b422Mode) {
+	case OUTPUT_MODE420:
+		registered = pixels + pixels / 2;
+		uvOffset = pixels;
+		break;
+	case OUTPUT_MODE422_YUY2:
+	case OUTPUT_MODE422_UYVY:
+		registered = allocation;
+		uvOffset = 0;
+		break;
+	default:
+		return BC_STS_INV_ARG;
 	}
+
+	if (allocation > (uint64_t)(uint32_t)-1 ||
+	    allocation > (uint64_t)(size_t)-1 ||
+	    registered > allocation || uvOffset > registered ||
+	    (allocation & 3) || (registered & 3) || (uvOffset & 3))
+		return BC_STS_INV_ARG;
+
+	layout->allocationBytes = (uint32_t)allocation;
+	layout->registeredBytes = (uint32_t)registered;
+	layout->uvOffset = (uint32_t)uvOffset;
+	layout->outputFormat = Ctx->b422Mode;
+	return BC_STS_SUCCESS;
 }
-static void DtsGetMaxSize(DTS_LIB_CONTEXT *Ctx, uint32_t *Sz)
+
+static BC_STATUS DtsValidateRxBuffer(const DTS_LIB_CONTEXT *Ctx,
+	const void *buff, uint32_t buffSize, DTS_RX_BUFFER_LAYOUT *layout)
 {
-	*Sz = (1920*1090)*2;
+	BC_STATUS sts;
+
+	if (!buff)
+		return BC_STS_INV_ARG;
+	sts = DtsGetRxBufferLayout(Ctx, layout);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+	if (buffSize < layout->registeredBytes)
+		return BC_STS_INV_ARG;
+	return BC_STS_SUCCESS;
 }
 
 static uint32_t DtsConfiguredRxPoolCount()
@@ -1649,10 +1697,22 @@ static uint32_t DtsFreeIoctlDataPool(DTS_LIB_CONTEXT *Ctx)
 /* The recursive context mutex is initialized, but need not be held. */
 static BC_STATUS DtsAllocMemPoolsInitialized(DTS_LIB_CONTEXT *Ctx)
 {
-	uint32_t	i, Sz;
+	uint32_t	i;
 	DTS_MPOOL_TYPE	*mp;
 	BC_IOCTL_DATA *pIoData;
 	BC_STATUS	sts = BC_STS_SUCCESS;
+	DTS_RX_BUFFER_LAYOUT layout;
+	const bool needsRxBuffers =
+		(Ctx->OpMode == DTS_PLAYBACK_MODE || Ctx->OpMode == DTS_DIAG_MODE) &&
+		(Ctx->CfgFlags & BC_MPOOL_INCL_YUV_BUFFS);
+
+	/* Reject an invalid RX contract before acquiring any pool allocations.
+	 * Contexts which do not request RX backing retain their legacy behavior. */
+	if (needsRxBuffers) {
+		sts = DtsGetRxBufferLayout(Ctx, &layout);
+		if (sts != BC_STS_SUCCESS)
+			return sts;
+	}
 
 	for(i=0; i< BC_IOCTL_DATA_POOL_SIZE; i++){
 		pIoData = (BC_IOCTL_DATA *) malloc(sizeof(BC_IOCTL_DATA));
@@ -1691,12 +1751,10 @@ static BC_STATUS DtsAllocMemPoolsInitialized(DTS_LIB_CONTEXT *Ctx)
 
 	memset(Ctx->Mpools,0,(Ctx->MpoolCnt * sizeof(DTS_MPOOL_TYPE)));
 
-	DtsGetMaxSize(Ctx,&Sz);
-
 	for(i=0; i<Ctx->MpoolCnt; i++){
 		mp = &Ctx->Mpools[i];
 		mp->type = BC_MEM_DEC_YUVBUFF |BC_MEM_USER_MODE_ALLOC;
-		mp->sz = Sz;
+		mp->sz = layout.allocationBytes;
 		mp->buff = (uint8_t *)malloc(mp->sz);
 		if(!mp->buff){
 			DebugLog_Trace(LDIL_DBG,"DtsInitMemPools: Mpool %x failed\n",mp->type);
@@ -1826,31 +1884,23 @@ void DtsReleaseMemPools_dbg(DTS_LIB_CONTEXT *Ctx)
 //------------------------------------------------------------------------
 BC_STATUS DtsAddOutBuff(DTS_LIB_CONTEXT *Ctx, uint8_t *buff, uint32_t BuffSz, uint32_t flags)
 {
-
-	uint32_t YbSz, UVbSz;
+	DTS_RX_BUFFER_LAYOUT layout;
 	BC_IOCTL_DATA	*pIocData = NULL;
+	BC_STATUS sts;
 
-	if(!Ctx || !buff)
-		return BC_STS_INV_ARG;
+	sts = DtsValidateRxBuffer(Ctx, buff, BuffSz, &layout);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
 	if(!(pIocData = DtsAllocIoctlData(Ctx))) {
 		DebugLog_Trace(LDIL_DBG,"Cannot Allocate IOCTL data\n");
 		return BC_STS_INSUFF_RES;
 	}
 
-	DtsGetMaxYUVSize(Ctx, &YbSz, &UVbSz);
-
 	pIocData->u.RxBuffs.YuvBuff = buff;
-	pIocData->u.RxBuffs.YuvBuffSz = YbSz + UVbSz;
-
-	if(Ctx->b422Mode)
-	{
-		pIocData->u.RxBuffs.b422Mode = Ctx->b422Mode;
-		pIocData->u.RxBuffs.UVbuffOffset = 0;
-	}else{
-		pIocData->u.RxBuffs.b422Mode = FALSE;
-		pIocData->u.RxBuffs.UVbuffOffset = YbSz;
-	}
+	pIocData->u.RxBuffs.YuvBuffSz = layout.registeredBytes;
+	pIocData->u.RxBuffs.b422Mode = layout.outputFormat;
+	pIocData->u.RxBuffs.UVbuffOffset = layout.uvOffset;
 
 	return DtsDrvCmd(Ctx,BCM_IOC_ADD_RXBUFFS,0, pIocData, TRUE);
 }
@@ -1986,6 +2036,7 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 		{
 			DtsDecPend(Ctx);
 		} else {
+			bool invalidReceipt = false;
 			/* FETCH may be the first successful suffix after S3.  Bind
 			 * interpretation of its old buffer and all context-format updates
 			 * to the same generation check used by recovery cancellation. */
@@ -1993,7 +2044,21 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 			const bool cancel = Ctx->CancelWaiting;
 			const bool recoveryCancel = DtsRecoveryCanceledOutputLocked(Ctx);
 			if (!cancel && !recoveryCancel) {
-				DtsSetupProcOutInfo(Ctx,pOut,Ctx->pOutData);
+				const BC_DEC_YUV_BUFFS &buffer =
+					Ctx->pOutData->u.DecOutData.OutPutBuffs;
+				/* Reject malformed data receipts before deriving plane pointers
+				 * or interpreting PIB.  A format event is already requeued by
+				 * the kernel and owns no data lease.  LINK may have an empty UV
+				 * extent, so offset == size remains valid. */
+				invalidReceipt =
+					(Ctx->pOutData->u.DecOutData.Flags & COMP_FLAG_DATA_VALID) &&
+					!(Ctx->pOutData->u.DecOutData.Flags & COMP_FLAG_FMT_CHANGE) &&
+					(!buffer.YuvBuff || !buffer.YuvBuffSz ||
+					 buffer.UVbuffOffset > buffer.YuvBuffSz);
+				if (invalidReceipt)
+					Ctx->pOutData->RetSts = BC_STS_IO_XFR_ERROR;
+				else
+					DtsSetupProcOutInfo(Ctx,pOut,Ctx->pOutData);
 				/* Embedded PIB parsing can turn an ioctl SUCCESS into
 				 * NO_DATA/IO_XFR_ERROR (notably the Flea EOS sentinel). */
 				sts = Ctx->pOutData->RetSts;
@@ -2004,7 +2069,15 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 				pOut->Ybuff = pOut->UVbuff = NULL;
 				return recoveryCancel ? BC_STS_BUSY : BC_STS_IO_USER_ABORT;
 			}
-			if (sts != BC_STS_SUCCESS)
+			if (invalidReceipt) {
+				/* FETCH already transferred a capture owner.  A rejected
+				 * receipt must still retire it; failed repost keeps pending
+				 * ownership for the existing retire-only teardown path. */
+				const BC_STATUS released = DtsRelRxBuff(Ctx,
+					&Ctx->pOutData->u.RxBuffs, FALSE);
+				if (released != BC_STS_SUCCESS)
+					sts = released;
+			} else if (sts != BC_STS_SUCCESS)
 				DtsDecPend(Ctx);
 		}
 
@@ -2144,6 +2217,7 @@ BC_STATUS DtsMapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
 	uint32_t i;
 	BC_STATUS sts = BC_STS_SUCCESS;
 	DTS_MPOOL_TYPE *mp;
+	DTS_RX_BUFFER_LAYOUT layout;
 
 	if (!Ctx)
 		return BC_STS_INV_ARG;
@@ -2162,6 +2236,18 @@ BC_STATUS DtsMapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
 
 	if (!Ctx->Mpools || !(Ctx->CfgFlags & BC_MPOOL_INCL_YUV_BUFFS))
 		goto done;
+
+	/* Validate the complete set before the first ADD.  Once an ADD enters the
+	 * kernel, even a failed copy-out makes ownership ambiguous and requires
+	 * the destructive rollback below. */
+	for (i = 0; i < Ctx->MpoolCnt; i++) {
+		mp = &Ctx->Mpools[i];
+		if (!(mp->type & BC_MEM_DEC_YUVBUFF))
+			continue;
+		sts = DtsValidateRxBuffer(Ctx, mp->buff, mp->sz, &layout);
+		if (sts != BC_STS_SUCCESS)
+			goto done;
+	}
 
 	for (i = 0; i < Ctx->MpoolCnt; i++) {
 		mp = &Ctx->Mpools[i];
