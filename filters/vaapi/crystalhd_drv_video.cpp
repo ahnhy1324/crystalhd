@@ -2586,15 +2586,37 @@ struct DecodeContext {
         pending_prefeed_timestamp == 0 && pending_prefeed_generation == 0;
   }
 
-  BC_STATUS CloseHardware(uint64_t timeout_ns = kDecodeTimeoutNs) {
-    return CloseHardwareImpl(timeout_ns, HardwareClosePurpose::Device);
+  bool CanYieldTerminalClose() const {
+    return IsH264Profile(profile) && !is_70012 && !video_process && closing &&
+        destroy_in_progress && destroy_prepared && !retired &&
+        destroy_status == VA_STATUS_SUCCESS && device != nullptr &&
+        decoder_open && decoder_started && !hardware_close_pending &&
+        retained_close_status == BC_STS_SUCCESS && output_poll_inflight == 0 &&
+        pending.empty() && replay.outstanding() == 0 && !replay.sealed() &&
+        !replay.failed() && !h264_first_field.valid &&
+        partial_input_timestamp == 0 && partial_input_offset == 0 &&
+        prefed_timestamp == 0 && pending_prefeed_timestamp == 0 &&
+        pending_prefeed_generation == 0 && !auxiliary.pending &&
+        !auxiliary.needs_eos && !auxiliary.eos_only &&
+        !decoded_frames.empty() &&
+        std::all_of(decoded_frames.begin(), decoded_frames.end(),
+                    [](const auto &entry) {
+                      return entry.second && entry.second->ready &&
+                             !entry.second->failed;
+                    });
+  }
+
+  BC_STATUS CloseHardware(uint64_t timeout_ns = kDecodeTimeoutNs,
+                         std::unique_lock<std::mutex> *driver_lock = nullptr) {
+    return CloseHardwareImpl(timeout_ns, HardwareClosePurpose::Device, driver_lock);
   }
 
   BC_STATUS CloseHardwareForH264Replay(uint64_t timeout_ns = kDecodeTimeoutNs) {
     return CloseHardwareImpl(timeout_ns, HardwareClosePurpose::H264Replay);
   }
 
-  BC_STATUS CloseHardwareImpl(uint64_t timeout_ns, HardwareClosePurpose purpose) {
+  BC_STATUS CloseHardwareImpl(uint64_t timeout_ns, HardwareClosePurpose purpose,
+                             std::unique_lock<std::mutex> *driver_lock = nullptr) {
     // A successful EOS has retired every hardware output before this private
     // replay restart. Completed pictures own copied pixels, not RX leases.
     // Never infer this contract from a version number or another optional API.
@@ -2608,8 +2630,28 @@ struct DecodeContext {
         prefed_timestamp == 0 && pending_prefeed_timestamp == 0 &&
         CanRestartAfterH264Auxiliary() &&
         SupportsDrainedH264ChannelReopen();
+    bool yield_calls = purpose == HardwareClosePurpose::Device && driver_lock &&
+        driver_lock->owns_lock() && CanYieldTerminalClose();
     CancelPendingPrefeed();
     BC_STATUS result = retained_close_status;
+    const auto hardware_call = [&](auto call) {
+      if (!yield_calls)
+        return call();
+      BC_STATUS status;
+      driver_lock->unlock();
+      {
+        struct Relock {
+          std::unique_lock<std::mutex> *lock;
+          ~Relock() { lock->lock(); }
+        } relock{driver_lock};
+        status = call();
+      }
+      // A BUSY or failed operation retains the original locked cleanup/retry
+      // behavior. No DecodeContext or surface state changes while unlocked.
+      if (status != BC_STS_SUCCESS)
+        yield_calls = false;
+      return status;
+    };
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::nanoseconds(timeout_ns);
     const auto clear_abort_state = [&] {
@@ -2639,7 +2681,7 @@ struct DecodeContext {
     if (decoder_started) {
       BC_STATUS status;
       do {
-        status = DtsStopDecoder(device);
+        status = hardware_call([handle = device] { return DtsStopDecoder(handle); });
         if (status != BC_STS_BUSY)
           break;
         if (std::chrono::steady_clock::now() >= deadline)
@@ -2656,7 +2698,7 @@ struct DecodeContext {
     if (decoder_open && !lifecycle_busy) {
       BC_STATUS status;
       do {
-        status = DtsCloseDecoder(device);
+        status = hardware_call([handle = device] { return DtsCloseDecoder(handle); });
         if (status != BC_STS_BUSY)
           break;
         if (std::chrono::steady_clock::now() >= deadline)
@@ -2688,7 +2730,7 @@ struct DecodeContext {
     if (device != nullptr) {
       BC_STATUS status = BC_STS_SUCCESS;
       do {
-        status = DtsDeviceClose(device);
+        status = hardware_call([handle = device] { return DtsDeviceClose(handle); });
         if (status != BC_STS_BUSY)
           break;
         if (std::chrono::steady_clock::now() >= deadline)
@@ -2721,8 +2763,9 @@ struct DecodeContext {
     return result;
   }
 
-  BC_STATUS Close(uint64_t timeout_ns = kDecodeTimeoutNs) {
-    const BC_STATUS status = CloseHardware(timeout_ns);
+  BC_STATUS Close(uint64_t timeout_ns = kDecodeTimeoutNs,
+                  std::unique_lock<std::mutex> *driver_lock = nullptr) {
+    const BC_STATUS status = CloseHardware(timeout_ns, driver_lock);
     pending.clear();
     for (const auto &picture : experimental_ready)
       picture->experimental_ready_queued = false;
@@ -6719,7 +6762,8 @@ static VAStatus DecodeWaitState(const DecodeContext &decode, Surface *surface,
   const VAStatus state = DecodeSurfaceState(surface);
   if (state != VA_STATUS_ERROR_HW_BUSY)
     return state;
-  if (decode.retired || decode.generation != generation)
+  if (decode.retired || (decode.closing && decode.destroy_prepared) ||
+      decode.generation != generation)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   return VA_STATUS_ERROR_HW_BUSY;
 }
@@ -7000,7 +7044,8 @@ static VAStatus SyncDecodeSurface(
   std::shared_ptr<DecodeContext> decode;
   for (auto &entry : driver->contexts) {
     if (!entry.second->decoder_started ||
-        entry.second->hardware_close_pending)
+        entry.second->hardware_close_pending ||
+        (entry.second->closing && entry.second->destroy_prepared))
       continue;
     for (const auto &pending : entry.second->pending) {
       auto candidate = driver->surfaces.find(pending.second);
@@ -7613,7 +7658,13 @@ static VAStatus Terminate(VADriverContextP context) {
 
   VAStatus status = VA_STATUS_SUCCESS;
   {
-    std::lock_guard<std::mutex> lock(driver->mutex);
+    std::unique_lock<std::mutex> lock(driver->mutex);
+    // An admitted destroy may be outside this mutex in a terminal DIL call.
+    // Join that exact transaction before closing its handle or freeing Driver.
+    driver->condition.wait(lock, [&] {
+      return std::none_of(driver->contexts.begin(), driver->contexts.end(),
+          [](const auto &entry) { return entry.second->destroy_in_progress; });
+    });
     for (const auto &entry : driver->contexts) {
       DecodeContext *decode = entry.second.get();
       decode->closing = true;
@@ -8674,9 +8725,13 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   decode->destroy_in_progress = true;
   struct DestroyCall {
+    Driver *driver;
     DecodeContext *decode;
-    ~DestroyCall() { decode->destroy_in_progress = false; }
-  } destroy_call{decode.get()};
+    ~DestroyCall() {
+      decode->destroy_in_progress = false;
+      driver->condition.notify_all();
+    }
+  } destroy_call{driver, decode.get()};
   if (!decode->destroy_prepared) {
     // A second call while the first call has temporarily released the driver
     // lock for draining is not a close retry yet.
@@ -8710,13 +8765,18 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   if (decode->output_poll_inflight != 0)
     return VA_STATUS_ERROR_HW_BUSY;
-  // Keep valid immutable VPP captures live during borrower quiescence. Once
-  // retired, close and completed-picture publication must stay under this
-  // lock; exposing that intermediate state would cancel queued VPP readers.
-  decode->retired = true;
+  // Fully materialized immutable pictures need no DIL work. Keep their epoch
+  // live while only the blocking terminal calls release this lock; ready sync
+  // and VPP can finish without waiting behind the library's worker joins.
+  // Incomplete/failed drains and non-consuming retries keep the old locked path.
+  const bool yield_close = decode->CanYieldTerminalClose();
+  if (!yield_close)
+    decode->retired = true;
   ClearTraceReadExportsForContext(
       driver, TraceId(decode->id, VA_INVALID_ID), decode->generation);
-  const BC_STATUS closed = decode->Close(close_timeout_ns);
+  const BC_STATUS closed =
+      decode->Close(close_timeout_ns, yield_close ? &lock : nullptr);
+  decode->retired = true;
   // The sole non-consuming result keeps the context in the map. A later
   // vaDestroyContext call resumes only this terminal close; it never drains or
   // emits the destroy trace twice.

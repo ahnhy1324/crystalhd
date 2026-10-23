@@ -100,6 +100,35 @@ struct WorkerPollBarrier {
 };
 static WorkerPollBarrier *worker_poll_barrier = nullptr;
 
+struct TerminalCloseBarrier {
+  std::mutex mutex;
+  std::condition_variable condition;
+  std::string stage;
+  bool entered = false, released = false, expired = false;
+  explicit TerminalCloseBarrier(const char *name) : stage(name) {}
+  void Block(const char *name) {
+    if (stage != name) return;
+    std::unique_lock<std::mutex> lock(mutex);
+    if (entered) return;
+    entered = true;
+    condition.notify_all();
+    expired = !condition.wait_for(lock, std::chrono::seconds(5),
+                                  [&] { return released; });
+  }
+  bool Wait() {
+    std::unique_lock<std::mutex> lock(mutex);
+    return condition.wait_for(lock, std::chrono::seconds(2),
+                               [&] { return entered; });
+  }
+  void Release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      released = true;
+    }
+    condition.notify_all();
+  }
+};
+
 extern "C" ssize_t __real_read(int fd, void *buffer, size_t count);
 extern "C" ssize_t __wrap_read(int fd, void *buffer, size_t count) {
   if (fd == control_read_probe_fd)
@@ -323,6 +352,7 @@ struct DecodeIoMock {
   unsigned int scale_calls = 0;
   BC_STATUS scale_status = BC_STS_SUCCESS;
   std::function<void()> on_sleep;
+  std::function<void(const char *)> on_close;
   bool early_eos = false;
   bool zero_timestamp_picture = false;
   bool fail_poll = false;
@@ -513,6 +543,7 @@ extern "C" BC_STATUS __wrap_DtsStartCapture(HANDLE device) {
     decode_io_mock->invalid |= device != decode_io_mock->handle(); \
     decode_io_mock->prefed_timestamp = 0; \
     decode_io_mock->events.push_back(event); \
+    if (decode_io_mock->on_close) decode_io_mock->on_close(event); \
     return decode_io_mock->result; \
   }
 MOCK_CLOSE_OPERATION(DtsStopDecoder, "stop", stop_status)
@@ -527,6 +558,7 @@ extern "C" BC_STATUS __wrap_DtsDeviceClose(HANDLE device) {
   decode_io_mock->prefed_timestamp = 0;
   decode_io_mock->events.push_back("close-device");
   ++decode_io_mock->device_close_calls;
+  if (decode_io_mock->on_close) decode_io_mock->on_close("close-device");
   if (decode_io_mock->device_close_busy != 0) {
     --decode_io_mock->device_close_busy;
     return BC_STS_BUSY;
@@ -10072,6 +10104,186 @@ static void DecodeControlDrainConsumesOneEventfdRead() {
   Require(close(descriptor) == 0, "close control-drain fixture");
 }
 
+static void TerminalCloseDoesNotBlockReadySync() {
+  for (const auto &test : {std::pair<const char *, unsigned>{"stop", 0},
+                           {"close-decoder", 0}, {"close-device", 0},
+                           {"close-device", 1}, {"close-device", 2}}) {
+    TeardownFixture fixture(1);
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    fixture.decoder->profile = VAProfileH264Main;
+    fixture.driver.configs[1] = {VAProfileH264Main, VAEntrypointVLD};
+    BindTeardownPicturesForVpp(fixture);
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS,
+            "submit the exact terminal-close picture");
+    fixture.io.outputs.push_back(kTimestampStep);
+    Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
+                fixture.decoder->pending.empty() && fixture.held[0]->ready,
+            "all real pixels complete before the blocking terminal close");
+    const auto owner = fixture.held[0];
+    const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    const auto pixels = owner->storage;
+    const uint64_t generation = fixture.decoder->generation;
+    if (test.second == 1) fixture.io.device_close_busy = 1;
+    if (test.second == 2) fixture.io.device_close_status = BC_STS_IO_ERROR;
+    TerminalCloseBarrier barrier(test.first);
+    fixture.io.on_close = [&](const char *stage) { barrier.Block(stage); };
+    struct Join {
+      TerminalCloseBarrier *barrier;
+      DecodeIoMock *io;
+      std::thread thread;
+      ~Join() {
+        barrier->Release();
+        if (thread.joinable()) thread.join();
+        io->on_close = {};
+      }
+    } cleanup{&barrier, &fixture.io, {}};
+    VAStatus status = VA_STATUS_ERROR_OPERATION_FAILED;
+    cleanup.thread = std::thread([&] {
+      status = DestroyContextWithTimeout(&fixture.context, 1, 0);
+    });
+    Require(barrier.Wait(), "terminal DIL call reaches its controlled barrier");
+    const unsigned polls = fixture.io.output_polls;
+    const size_t inputs = fixture.io.input_calls.size();
+    Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                SyncSurface2(&fixture.context, 1, 0) == VA_STATUS_SUCCESS,
+            "ready blocking and zero-timeout sync both finish while terminal DIL close is blocked");
+    {
+      std::lock_guard<std::mutex> lock(barrier.mutex);
+      Require(!barrier.released && !barrier.expired,
+              "ready sync finishes before the DIL close barrier is released");
+    }
+    {
+      std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+      Require(fixture.decoder->closing && fixture.decoder->destroy_prepared &&
+                  fixture.decoder->destroy_in_progress && !fixture.decoder->retired &&
+                  CapturedDecodePictureMatchesLifetime(&fixture.driver, owner, picture,
+                                                       fixture.decoder, generation),
+              "immutable captures stay live without publishing a post-close lease early");
+      // Fault-model a retained/resumed cold waiter after close admission. It
+      // must not poll the handle that the other thread is currently closing.
+      picture->ready = false;
+      const auto resumed = DecodeWaitState(*fixture.decoder, picture.get(), generation,
+                                           kTimestampStep, {});
+      const auto cold = SyncDecodeSurface(&fixture.driver, picture, &lock,
+                                          VA_TIMEOUT_INFINITE);
+      picture->ready = true;
+      Require(resumed == VA_STATUS_ERROR_INVALID_CONTEXT &&
+                  cold == VA_STATUS_ERROR_INVALID_CONTEXT,
+              "prepared terminal close excludes new and resumed nonready hardware polling");
+    }
+    Require(DestroyContextWithTimeout(&fixture.context, 1, 0) == VA_STATUS_ERROR_INVALID_CONTEXT &&
+                BeginPicture(&fixture.context, 1, 1) == VA_STATUS_ERROR_INVALID_CONTEXT,
+            "a second destroy and new decode work cannot enter the closing context");
+    VAContextID another = VA_INVALID_ID;
+    Require(CreateContext(&fixture.context, 1, 16, 16, 0, nullptr, 0, &another) ==
+                  VA_STATUS_ERROR_HW_BUSY && another == VA_INVALID_ID &&
+                fixture.io.open_attempts == 0 && fixture.io.output_polls == polls &&
+                fixture.io.input_calls.size() == inputs,
+            "the old handle remains reserved and ready/cold sync performs no DIL work");
+    barrier.Release();
+    cleanup.thread.join();
+    const VAStatus expected = test.second == 1 ? VA_STATUS_ERROR_HW_BUSY :
+        test.second == 2 ? VA_STATUS_ERROR_OPERATION_FAILED : VA_STATUS_SUCCESS;
+    Require(status == expected && fixture.decoder->retired &&
+                owner->storage == pixels && !barrier.expired && !fixture.io.invalid,
+            "terminal outcome retains the exact original pixels and old BUSY/error status");
+    Require(CapturedDecodePictureMatchesLifetime(&fixture.driver, owner, picture,
+                fixture.decoder, generation) == (test.second == 0),
+            "only consuming success publishes the exact completed-picture lease");
+    if (test.second == 1) {
+      Require(fixture.decoder->device == fixture.io.handle() &&
+                  fixture.driver.contexts.count(1) == 1 &&
+                  !fixture.decoder->CanYieldTerminalClose() &&
+                  DestroyContextWithTimeout(&fixture.context, 1, 0) == VA_STATUS_SUCCESS &&
+                  fixture.io.device_close_calls == 2 &&
+                  CapturedDecodePictureMatchesLifetime(&fixture.driver, owner, picture,
+                                                       fixture.decoder, generation),
+              "retired non-consuming BUSY keeps the original retry and later exact lease");
+    }
+  }
+}
+
+static void TerminateJoinsAnUnlockedTerminalDestroy() {
+  DecodeIoMock io;
+  MockDecodeScope scope(io);
+  VADriverContext context = {};
+  context.pDriverData = new Driver(-1);
+  Driver *driver = GetDriver(&context);
+  driver->StopWorkers();
+  driver->stopping = false;
+  auto decode = std::make_shared<DecodeContext>();
+  decode->id = 1;
+  decode->profile = VAProfileH264Main;
+  decode->width = decode->height = 16;
+  decode->device = io.handle();
+  decode->decoder_open = decode->decoder_started = true;
+  auto picture = std::make_shared<Surface>();
+  auto owner = std::make_shared<Surface>();
+  for (const auto &frame : {picture, owner}) {
+    Require(frame->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
+            "allocate terminate/destroy concurrency pixels");
+    frame->expected_timestamp = kTimestampStep;
+    frame->decode_identity = frame->trace_decode_identity = 1;
+    frame->trace_context = frame->trace_generation = frame->trace_submission_ordinal = 1;
+  }
+  owner->id = 1;
+  owner->decode_picture = picture;
+  driver->surfaces[1] = owner;
+  driver->contexts[1] = decode;
+  decode->pending[kTimestampStep] = 1;
+  decode->decoded_frames[kTimestampStep] = picture;
+  decode->surface_timestamps[owner.get()] = kTimestampStep;
+  Require(decode->replay.Append(kTimestampStep, true, {1}) &&
+              PumpDecodeInput(driver, decode.get()) == VA_STATUS_SUCCESS,
+          "admit the exact picture before concurrent terminate");
+  io.outputs.push_back(kTimestampStep);
+  Require(ReceiveAvailable(driver, decode.get()) == VA_STATUS_SUCCESS && owner->ready,
+          "complete all pixels before the held terminal close");
+  const auto pixels = owner->storage;
+  TerminalCloseBarrier barrier("close-device");
+  io.on_close = [&](const char *stage) { barrier.Block(stage); };
+  struct Join {
+    VADriverContext *context;
+    TerminalCloseBarrier *barrier;
+    std::thread destroyer, terminator;
+    ~Join() {
+      barrier->Release();
+      if (destroyer.joinable()) destroyer.join();
+      if (terminator.joinable()) terminator.join();
+      if (context->pDriverData) Terminate(context);
+    }
+  } cleanup{&context, &barrier, {}, {}};
+  VAStatus destroyed = VA_STATUS_ERROR_OPERATION_FAILED;
+  VAStatus terminated = VA_STATUS_ERROR_OPERATION_FAILED;
+  cleanup.destroyer = std::thread([&] { destroyed = DestroyContext(&context, 1); });
+  Require(barrier.Wait(), "active destroy releases the driver mutex only inside DeviceClose");
+  std::atomic<bool> terminate_done{false};
+  cleanup.terminator = std::thread([&] {
+    terminated = Terminate(&context);
+    terminate_done = true;
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  bool terminate_inside = false;
+  while (!terminate_inside && std::chrono::steady_clock::now() < deadline) {
+    {
+      std::lock_guard<std::mutex> lock(driver->mutex);
+      terminate_inside = driver->stopping;
+    }
+    std::this_thread::yield();
+  }
+  Require(terminate_inside,
+          "concurrent Terminate enters StopWorkers while DeviceClose is still blocked");
+  const bool returned_early = terminate_done;
+  barrier.Release();
+  cleanup.destroyer.join();
+  cleanup.terminator.join();
+  Require(!returned_early && destroyed == VA_STATUS_SUCCESS && terminated == VA_STATUS_SUCCESS &&
+              context.pDriverData == nullptr && io.device_close_calls == 1 &&
+              owner->storage == pixels && !barrier.expired && !io.invalid,
+          "Terminate joins the active destroy before one consuming close and driver destruction");
+}
+
 static void ContextDestroyWaitsForBorrowedOutputPoll() {
   for (bool zero_timeout : {false, true}) {
     TeardownFixture fixture(1);
@@ -11075,6 +11287,12 @@ static void NeutralAuxiliaryContracts() {
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::strcmp(argv[1], "--terminal-close-ready") == 0) {
+      TerminalCloseDoesNotBlockReadySync();
+      TerminateJoinsAnUnlockedTerminalDestroy();
+      std::puts("VA-API terminal close: ready sync, cold exclusion, hardware reservation, BUSY/failure and concurrent Terminate PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--mpeg2-fields") == 0) {
       Mpeg2FieldPairsPreserveIdentityPixelsAndReplay();
       Mpeg2FieldPairsRejectMalformedAndPreserveRetainedPictures();
@@ -11116,7 +11334,7 @@ int main(int argc, char **argv) {
       std::puts("VA-API private first-field Bob, progress/grace and LIVE tail: TFF/BFF pixels, ownership, cancellation and explicit drain PASS");
       return 0;
     }
-    Require(argc == 1, "usage: vaapi-replay-test [--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
+    Require(argc == 1, "usage: vaapi-replay-test [--terminal-close-ready|--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
     NeutralAuxiliaryContracts();
     DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobUsesCompactStorage();
@@ -11221,6 +11439,8 @@ int main(int argc, char **argv) {
     DecodeControlWakeUsesExactArmedOutputLease();
     DecodeControlDrainConsumesOneEventfdRead();
     ContextDestroyWaitsForBorrowedOutputPoll();
+    TerminalCloseDoesNotBlockReadySync();
+    TerminateJoinsAnUnlockedTerminalDestroy();
     BudgetedWorkerReleasesDriverMutex();
     Mpeg4StateOnlyEosStillWakesEventWorker();
     OutputPollHangupFailsWithoutSpinning();
