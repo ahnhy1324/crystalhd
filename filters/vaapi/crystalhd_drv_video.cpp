@@ -6927,6 +6927,15 @@ static VAStatus SyncDecodeSurface(
       return state;
     if (driver->stopping)
       return VA_STATUS_ERROR_OPERATION_FAILED;
+    // A released first field may have woken this waiter while its complement
+    // is already queued. Recheck the exact private Bob view before harvesting
+    // more output; the original public picture still needs both fields.
+    if (private_vpp_ready) {
+      bool ready = false;
+      const VAStatus status = private_vpp_ready(&ready);
+      if (status != VA_STATUS_SUCCESS || ready)
+        return status;
+    }
     // Exact mode rechecks its requested picture after every released output.
     // Explicit remapping retains its old harvest boundary before selecting a
     // payload: a smaller batch could select an older RX picture too early.

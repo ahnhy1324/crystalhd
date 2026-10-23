@@ -8863,6 +8863,121 @@ static void FirstTemporalBobWakesParkedConsumer() {
   }
 }
 
+static void ResumedFirstTemporalBobPrecedesQueuedComplement() {
+  for (bool bottom_first : {false, true})
+   for (bool cancel_on_resume : {false, true}) {
+    TeardownFixture fixture(1);
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    auto &decode = *fixture.decoder;
+    decode.profile = VAProfileH264Main;
+    decode.height = fixture.io.output_height = 32;
+    const auto picture = decode.decoded_frames.at(kTimestampStep);
+    for (const auto &surface : {picture, fixture.held[0]}) {
+      Require(surface->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+              "allocate exact resumed-wait field-pair owners");
+      memset(surface->storage.data(), 99, surface->storage.size());
+      surface->expected_timestamp = kTimestampStep;
+      surface->h264_crop_unit_y = 4;
+    }
+    BindTeardownPicturesForVpp(fixture);
+    Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                fixture.io.outputs.empty() && !picture->ready,
+            "resumed Bob starts with submitted input but no ready field");
+    const auto public_pixels = fixture.held[0]->storage;
+    const auto private_pixels = picture->storage;
+    PendingVpp operation;
+    operation.source = picture;
+    operation.decoder = fixture.decoder;
+    operation.source_timestamp = kTimestampStep;
+    operation.decoder_generation = decode.generation;
+    operation.deinterlace.bob = true;
+    operation.deinterlace.field = bottom_first
+        ? crystalhd_vpp_bob::FieldParity::kBottom
+        : crystalhd_vpp_bob::FieldParity::kTop;
+    const auto queue_field = [&](bool bottom) {
+      fixture.io.outputs.push_back(kTimestampStep);
+      fixture.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC |
+          (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0) |
+          (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD));
+    };
+    unsigned waits = 0, cold_checks = 0;
+    bool published = false, canceled = false, activity = false;
+    VAStatus published_status = VA_STATUS_ERROR_OPERATION_FAILED;
+    fixture.io.on_sleep = [&] {
+      ++waits;
+      // This is the real Sync wait's unlock/usleep path. Publish under the
+      // released driver mutex, then leave the complement queued before resume.
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      queue_field(bottom_first);
+      published_status = ReceiveOne(&fixture.driver, &decode, 0, &activity);
+      published = true;
+      queue_field(!bottom_first);
+      canceled = cancel_on_resume;
+    };
+    std::shared_ptr<Surface> view;
+    VAStatus synced;
+    {
+      std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+      synced = SyncDecodeSurface(&fixture.driver, picture, &lock,
+          UINT64_C(2000000000), [&] { return canceled; }, [&](bool *ready) {
+            if (!published) ++cold_checks;
+            const VAStatus status = PrepareFirstFieldBob(operation, &view);
+            *ready = view != nullptr;
+            return status;
+          }, &operation.deinterlace);
+    }
+    fixture.io.on_sleep = {};
+    Require(waits == 1 && cold_checks != 0 && published &&
+                published_status == VA_STATUS_SUCCESS && activity &&
+                synced == (cancel_on_resume ? VA_STATUS_ERROR_OPERATION_FAILED
+                                            : VA_STATUS_SUCCESS) &&
+                static_cast<bool>(view) == !cancel_on_resume &&
+                fixture.io.outputs == std::deque<uint64_t>{kTimestampStep} &&
+                fixture.io.picture_flags.size() == 1 &&
+                decode.h264_first_field.valid &&
+                decode.h264_first_field.bottom == bottom_first &&
+                !picture->ready && !fixture.held[0]->ready &&
+                picture->storage == private_pixels &&
+                fixture.held[0]->storage == public_pixels &&
+                decode.replay.outstanding() == 1 && !decode.ReplaySealed() &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "release") == 1 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 0 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 0,
+            "resumed private Bob or cancellation returns before harvesting a queued complement");
+    const auto bob_pixels = view ? view->storage : std::vector<uint8_t>{};
+    if (view) {
+      Require(view->ready && view->height == 16 &&
+                  view->frame_timestamp == kTimestampStep,
+              "resumed first-field result is the exact compact private picture");
+      for (unsigned plane = 0; plane != 2; ++plane)
+        for (unsigned row = 0; row != (plane ? 8U : 16U); ++row)
+          for (unsigned column = 0; column != 16; ++column)
+            Require(view->planes[plane][row * view->pitch[plane] + column] ==
+                        (plane ? 128 : DecodeIoMock::Luma(kTimestampStep)),
+                    "resumed compact Bob preserves every first-field Y/U/V byte");
+    }
+    Require(SyncSurface2(&fixture.context, 1, UINT64_C(2000000000)) == VA_STATUS_SUCCESS &&
+                fixture.io.outputs.empty() && fixture.io.picture_flags.empty() &&
+                picture->ready && fixture.held[0]->ready &&
+                !decode.h264_first_field.valid && decode.replay.outstanding() == 0 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "release") == 2 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 0 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 0 &&
+                (!view || view->storage == bob_pixels) && !fixture.io.invalid &&
+                fixture.io.open_attempts == 0,
+            "later ordinary sync consumes the complement without changing retained Bob or inventing EOS");
+    fixture.CheckPicture(0);
+    for (const auto &surface : {picture, fixture.held[0]})
+      for (unsigned plane = 0; plane != 2; ++plane)
+        for (unsigned row = 0; row != (plane ? 16U : 32U); ++row)
+          for (unsigned column = 0; column != 16; ++column)
+            Require(surface->planes[plane][row * surface->pitch[plane] + column] ==
+                        (plane ? 128 : DecodeIoMock::Luma(kTimestampStep)),
+                    "ordinary complement completes exact public/private Y/U/V pixels");
+   }
+}
+
 static void FirstTemporalBobDoesNotCompleteDecodePicture() {
   for (bool bottom_first : {false, true}) {
     for (unsigned visible_height : {32U, 28U}) {
@@ -11898,6 +12013,7 @@ int main(int argc, char **argv) {
       FirstTemporalBobUsesCompactStorage();
       FirstFieldScratchReusePreservesOwnedPictures();
       FirstTemporalBobWakesParkedConsumer();
+      ResumedFirstTemporalBobPrecedesQueuedComplement();
       FirstTemporalBobDoesNotCompleteDecodePicture();
       FirstTemporalBobRejectsMismatchedLatch();
       FirstH264FieldRefreshesTransportGrace();
@@ -11911,6 +12027,7 @@ int main(int argc, char **argv) {
     FirstTemporalBobUsesCompactStorage();
     FirstFieldScratchReusePreservesOwnedPictures();
     FirstTemporalBobWakesParkedConsumer();
+    ResumedFirstTemporalBobPrecedesQueuedComplement();
     FirstTemporalBobDoesNotCompleteDecodePicture();
     FirstTemporalBobRejectsMismatchedLatch();
     SealedBatchQueuesAndReplays();
