@@ -582,6 +582,10 @@ CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12=1280x720@1920x1080:limited \
   LIBVA_DRIVER_NAME=crystalhd kodi /absolute/path/to/1080i25.mkv
 ```
 
+For display enlargement, Kodi's Video settings → Zoom can apply `1.5` to this
+720-in-1080 picture on the GPU. Source-encoded black bars remain; return Zoom
+to `1.0` for the native centered size. Selected playback results are in [#477](https://github.com/ahnhy1324/crystalhd/issues/477).
+
 The value specifies `capture-width×height@visible-width×height:limited|full`
 using ASCII `x`. Crop and black range must be supplied explicitly; coded1088
 does not imply visible1080. The current experiment requires the full coded

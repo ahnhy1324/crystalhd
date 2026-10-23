@@ -1,12 +1,21 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Production replay state and output processing with private CPU memory only.
 // No device, decoder, capture, firmware, or DRM operation is started.
+#include <mutex>
+static void TestTerminalPromotionTurn(std::unique_lock<std::mutex> &lock);
+#define CRYSTALHD_VAAPI_TEST_TERMINAL_PROMOTION_TURN(driver, lock) \
+  TestTerminalPromotionTurn(lock)
 #define CRYSTALHD_VAAPI_TEST_LIBRARY_CAPABILITIES 1
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
 #include <cstdlib>
 #include <new>
 #include <stdexcept>
 #include <string>
+
+static std::function<void(std::unique_lock<std::mutex> &)> terminal_promotion_turn;
+static void TestTerminalPromotionTurn(std::unique_lock<std::mutex> &lock) {
+  if (terminal_promotion_turn) terminal_promotion_turn(lock);
+}
 
 namespace allocation_fault {
 thread_local bool fail_next = false;
@@ -10104,6 +10113,199 @@ static void DecodeControlDrainConsumesOneEventfdRead() {
   Require(close(descriptor) == 0, "close control-drain fixture");
 }
 
+static void CompleteBorrowedTerminalPictures(TeardownFixture &fixture) {
+  fixture.driver.StopWorkers();
+  fixture.driver.stopping = false;
+  fixture.decoder->profile = VAProfileH264Main;
+  BindTeardownPicturesForVpp(fixture);
+  for (unsigned int index = 0; index != fixture.held.size(); ++index) {
+    const auto picture = fixture.decoder->decoded_frames.at((index + 1) * kTimestampStep);
+    picture->direct_picture = true;
+    picture->decode_target = picture->direct_backing = fixture.held[index];
+    picture->storage.clear();
+    picture->planes[0] = picture->planes[1] = nullptr;
+  }
+  Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS,
+          "submit originals whose real output owns public direct backing");
+  for (unsigned int index = 0; index != fixture.held.size(); ++index)
+    fixture.io.outputs.push_back((index + 1) * kTimestampStep);
+  Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
+              fixture.decoder->pending.empty() && fixture.decoder->replay.outstanding() == 0,
+          "materialize every original before terminal promotion begins");
+  for (unsigned int index = 0; index != fixture.held.size(); ++index) {
+    const auto picture = fixture.decoder->decoded_frames.at((index + 1) * kTimestampStep);
+    Require(picture->ready && picture->direct_backing == fixture.held[index] &&
+                picture->storage.empty() && fixture.held[index]->ready,
+            "actual receive retains the exact completed borrowed picture");
+  }
+}
+
+static void ReplaceTerminalOwnerWithVpp(TeardownFixture &fixture, unsigned int index) {
+  auto replacement = std::make_shared<Surface>();
+  Require(replacement->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
+          "allocate an independent promotion-turn VPP source");
+  replacement->ready = true;
+  for (unsigned int plane = 0; plane != 2; ++plane)
+    for (unsigned int row = 0; row != (plane == 0 ? 16U : 8U); ++row)
+      memset(replacement->planes[plane] + row * replacement->pitch[plane],
+             plane == 0 ? 80 : 128, 16);
+  {
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    replacement->id = fixture.driver.next_surface++;
+    fixture.driver.surfaces[replacement->id] = replacement;
+  }
+  VAConfigID config = VA_INVALID_ID;
+  VAContextID writer = VA_INVALID_ID;
+  VABufferID parameters = VA_INVALID_ID;
+  VAProcPipelineParameterBuffer pipeline = {};
+  pipeline.surface = replacement->id;
+  Require(CreateConfig(&fixture.context, VAProfileNone, VAEntrypointVideoProc,
+                       nullptr, 0, &config) == VA_STATUS_SUCCESS &&
+              CreateContext(&fixture.context, config, 16, 16, 0, nullptr, 0,
+                            &writer) == VA_STATUS_SUCCESS &&
+              CreateBuffer(&fixture.context, writer, VAProcPipelineParameterBufferType,
+                           sizeof(pipeline), 1, &pipeline, &parameters) == VA_STATUS_SUCCESS &&
+              BeginPicture(&fixture.context, writer, index + 1) == VA_STATUS_SUCCESS &&
+              RenderPicture(&fixture.context, writer, &parameters, 1) == VA_STATUS_SUCCESS &&
+              EndPicture(&fixture.context, writer) == VA_STATUS_SUCCESS &&
+              fixture.held[index]->ready && fixture.held[index]->trace_decode_identity == 0 &&
+              fixture.held[index]->decode_picture.expired() &&
+              fixture.held[index]->planes[0][0] == 80,
+          "a real VPP writer supersedes the exact public binding during a promotion turn");
+  Require(DestroyBuffer(&fixture.context, parameters) == VA_STATUS_SUCCESS &&
+              DestroyContext(&fixture.context, writer) == VA_STATUS_SUCCESS &&
+              DestroyConfig(&fixture.context, config) == VA_STATUS_SUCCESS,
+          "release the independent promotion-turn writer");
+  VASurfaceID id = replacement->id;
+  Require(DestroySurfaces(&fixture.context, &id, 1) == VA_STATUS_SUCCESS,
+          "release the independent VPP source");
+}
+
+static void TerminalPromotionTurnsPreserveExactBindings() {
+  TeardownFixture fixture(4);
+  CompleteBorrowedTerminalPictures(fixture);
+  std::vector<std::shared_ptr<Surface>> pictures;
+  for (unsigned int index = 0; index != fixture.held.size(); ++index)
+    pictures.push_back(fixture.decoder->decoded_frames.at((index + 1) * kTimestampStep));
+  // Model the read-only borrower independently of promotion; hardware close
+  // must remain ineligible until its controlled retirement below.
+  fixture.decoder->output_poll_inflight = 1;
+  TerminalCloseBarrier barrier("promotion");
+  unsigned int turns = 0;
+  terminal_promotion_turn = [&](std::unique_lock<std::mutex> &lock) {
+    Require(lock.owns_lock(), "one whole promotion finishes while locked");
+    if (turns++ != 0) return;
+    lock.unlock();
+    struct Relock {
+      std::unique_lock<std::mutex> &lock;
+      ~Relock() { lock.lock(); }
+    } relock{lock};
+    barrier.Block("promotion");
+  };
+  struct Join {
+    TerminalCloseBarrier &barrier;
+    std::thread thread;
+    ~Join() {
+      barrier.Release();
+      if (thread.joinable()) thread.join();
+      terminal_promotion_turn = {};
+    }
+  } cleanup{barrier, {}};
+  VAStatus status = VA_STATUS_ERROR_OPERATION_FAILED;
+  cleanup.thread = std::thread([&] {
+    status = DestroyContextWithTimeout(&fixture.context, 1, 0);
+  });
+  Require(barrier.Wait(), "eligible promotion batch reaches a controlled unlocked turn");
+  unsigned int promoted = 4;
+  std::vector<unsigned int> borrowed;
+  {
+    std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+    Require(fixture.decoder->closing && fixture.decoder->destroy_prepared &&
+                !fixture.decoder->retired && fixture.decoder->retirement_candidates.empty() &&
+                !fixture.decoder->CanYieldTerminalClose() &&
+                fixture.decoder->CanYieldTerminalClose(true),
+            "prepared cold fence allows CPU preparation but not hardware close with an armed borrower");
+    for (unsigned int index = 0; index != pictures.size(); ++index) {
+      if (pictures[index]->direct_backing) borrowed.push_back(index);
+      else promoted = index;
+    }
+    Require(promoted != 4 && borrowed.size() == 3,
+            "exactly one original is promoted before the first bounded turn");
+    pictures[borrowed.back()]->ready = false;
+    Require(DecodeWaitState(*fixture.decoder, pictures[borrowed.back()].get(),
+                fixture.decoder->generation, (borrowed.back() + 1) * kTimestampStep, {}) ==
+                VA_STATUS_ERROR_INVALID_CONTEXT &&
+                SyncDecodeSurface(&fixture.driver, pictures[borrowed.back()], &lock,
+                                  VA_TIMEOUT_INFINITE) == VA_STATUS_ERROR_INVALID_CONTEXT,
+            "new and resumed cold waiters cannot reach DIL during preparation");
+    pictures[borrowed.back()]->ready = true;
+    fixture.decoder->output_poll_inflight = 0;
+  }
+  const unsigned int keep = borrowed.back();
+  Require(SyncSurface(&fixture.context, keep + 1) == VA_STATUS_SUCCESS &&
+              SyncSurface2(&fixture.context, promoted + 1, 0) == VA_STATUS_SUCCESS,
+          "ready sync finishes during the controlled turn before the batch resumes");
+  {
+    std::lock_guard<std::mutex> lock(barrier.mutex);
+    Require(!barrier.released && !barrier.expired,
+            "ready sync completes before the controlled turn is released");
+  }
+  VASurfaceID destroyed = borrowed[0] + 1;
+  Require(DestroySurfaces(&fixture.context, &destroyed, 1) == VA_STATUS_SUCCESS,
+          "destroy a not-yet-promoted snapshot candidate during the unlocked turn");
+  ReplaceTerminalOwnerWithVpp(fixture, borrowed[1]);
+  ReplaceTerminalOwnerWithVpp(fixture, promoted);
+  {
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    fixture.driver.surfaces.rehash(fixture.driver.surfaces.bucket_count() * 4 + 37);
+    fixture.driver.contexts.rehash(fixture.driver.contexts.bucket_count() * 4 + 37);
+  }
+  barrier.Release();
+  cleanup.thread.join();
+  Require(status == VA_STATUS_SUCCESS && !barrier.expired && turns >= 1 &&
+              fixture.decoder->retired && fixture.decoder->device == nullptr &&
+              fixture.driver.contexts.count(1) == 0 && !fixture.io.invalid &&
+              fixture.held[keep]->completed_decode_picture.picture == pictures[keep] &&
+              !pictures[keep]->direct_backing,
+          "snapshot traversal survives both map rehashes and publishes only the surviving exact lease");
+  for (unsigned int index : {promoted, borrowed[0], borrowed[1]})
+    Require(!fixture.held[index]->completed_decode_picture.picture,
+            "neither previously prepared nor not-yet-promoted stale bindings gain a close lease");
+  for (unsigned int index : {promoted, borrowed[1], keep})
+    Require(pictures[index]->ready && !pictures[index]->failed &&
+                pictures[index]->frame_timestamp == (index + 1) * kTimestampStep &&
+                pictures[index]->planes[0][0] == DecodeIoMock::Luma((index + 1) * kTimestampStep),
+            "promotion and public VPP replacement preserve each captured original's own pixels");
+  CheckNewBobAfterTeardown(fixture, keep, true);
+}
+
+static void TerminalPromotionFailureGrantsNoLeases() {
+  TeardownFixture fixture(2);
+  CompleteBorrowedTerminalPictures(fixture);
+  const auto first_picture = fixture.driver.surfaces.begin()->second->decode_picture.lock();
+  std::shared_ptr<Surface> fault_owner;
+  for (const auto &entry : fixture.driver.surfaces) fault_owner = entry.second;
+  Require(first_picture != fault_owner->decode_picture.lock(),
+          "fault the last exact snapshot candidate after a different original is promoted");
+  mock_sync_fd = memfd_create("crystalhd-terminal-promotion-failure", MFD_CLOEXEC);
+  Require(mock_sync_fd >= 0, "allocate a terminal promotion CPU-read fault fd");
+  fault_owner->object_fds.push_back(mock_sync_fd);
+  mock_failed_sync_flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
+  const VAStatus status = DestroyContextWithTimeout(&fixture.context, 1, 0);
+  mock_sync_fd = -1;
+  mock_failed_sync_flags = UINT64_MAX;
+  Require(status == VA_STATUS_ERROR_OPERATION_FAILED && fixture.decoder->retired &&
+              fixture.decoder->retirement_candidates.empty() &&
+              fixture.decoder->device == nullptr && !fixture.io.invalid,
+          "a failed promotion consumes terminal close without inventing read leases");
+  Require(first_picture->ready && !first_picture->failed && !first_picture->direct_backing &&
+              !first_picture->storage.empty(),
+          "a different original really completed private promotion before the later fault");
+  for (const auto &owner : fixture.held)
+    Require(!owner->completed_decode_picture.picture,
+            "partial successful promotion cannot publish any lease after a later failure");
+}
+
 static void TerminalCloseDoesNotBlockReadySync() {
   for (const auto &test : {std::pair<const char *, unsigned>{"stop", 0},
                            {"close-decoder", 0}, {"close-device", 0},
@@ -11301,9 +11503,11 @@ static void NeutralAuxiliaryContracts() {
 int main(int argc, char **argv) {
   try {
     if (argc == 2 && std::strcmp(argv[1], "--terminal-close-ready") == 0) {
+      TerminalPromotionTurnsPreserveExactBindings();
+      TerminalPromotionFailureGrantsNoLeases();
       TerminalCloseDoesNotBlockReadySync();
       TerminateJoinsAnUnlockedTerminalDestroy();
-      std::puts("VA-API terminal close: ready sync, cold exclusion, hardware reservation, BUSY/failure and concurrent Terminate PASS");
+      std::puts("VA-API terminal close: bounded promotion turns, exact mutation/failure leases, ready sync, cold exclusion, hardware reservation, BUSY/failure and concurrent Terminate PASS");
       return 0;
     }
     if (argc == 2 && std::strcmp(argv[1], "--mpeg2-fields") == 0) {
@@ -11452,6 +11656,8 @@ int main(int argc, char **argv) {
     DecodeControlWakeUsesExactArmedOutputLease();
     DecodeControlDrainConsumesOneEventfdRead();
     ContextDestroyWaitsForBorrowedOutputPoll();
+    TerminalPromotionTurnsPreserveExactBindings();
+    TerminalPromotionFailureGrantsNoLeases();
     TerminalCloseDoesNotBlockReadySync();
     TerminateJoinsAnUnlockedTerminalDestroy();
     BudgetedWorkerReleasesDriverMutex();

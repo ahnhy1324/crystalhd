@@ -2586,12 +2586,15 @@ struct DecodeContext {
         pending_prefeed_timestamp == 0 && pending_prefeed_generation == 0;
   }
 
-  bool CanYieldTerminalClose() {
+  bool CanYieldTerminalClose(bool preparing_pictures = false) {
     return IsH264Profile(profile) && !is_70012 && !video_process && closing &&
         destroy_in_progress && destroy_prepared && !retired &&
         destroy_status == VA_STATUS_SUCCESS && device != nullptr &&
         decoder_open && decoder_started && !hardware_close_pending &&
-        retained_close_status == BC_STS_SUCCESS && output_poll_inflight == 0 &&
+        retained_close_status == BC_STS_SUCCESS &&
+        // Preparation never touches DIL; an armed poll may retire meanwhile.
+        // The hardware close itself still requires every borrower to be gone.
+        (preparing_pictures || output_poll_inflight == 0) &&
         pending.empty() && replay.outstanding() == 0 && !replay.sealed() &&
         !replay.failed() && !h264_first_field.valid &&
         partial_input_timestamp == 0 && partial_input_offset == 0 &&
@@ -5839,8 +5842,9 @@ static bool CapturedDecodePictureMatchesLifetime(
       CompletedDecodePictureMatches(driver, owner, completed);
 }
 
-static VAStatus PrepareCompletedDecodePictures(Driver *driver,
-                                               DecodeContext *decode) {
+static VAStatus PrepareCompletedDecodePictures(
+    Driver *driver, DecodeContext *decode,
+    std::unique_lock<std::mutex> *driver_lock = nullptr) {
   // Build the complete candidate set before publishing any new ownership.
   // A partial promotion is harmless, but a failure must grant no read lease.
   decode->retirement_candidates.clear();
@@ -5867,17 +5871,38 @@ static VAStatus PrepareCompletedDecodePictures(Driver *driver,
       completed.ordinal = picture->second->trace_submission_ordinal;
       if (!CompletedDecodePictureMatches(driver, owner, completed, false))
         continue;
-      // A public strong lease on a direct-backed picture would form a cycle.
-      // Promote while the exact owner and its pixels are still available.
-      if (!PromoteDecodedPicture(picture->second) ||
-          !CompletedDecodePictureMatches(driver, owner, completed))
-        return VA_STATUS_ERROR_OPERATION_FAILED;
       candidates.push_back(std::move(completed));
     }
+    std::vector<CompletedDecodePicture> prepared;
+    prepared.reserve(candidates.size());
+    for (size_t index = 0; index != candidates.size(); ++index) {
+      auto &completed = candidates[index];
+      const auto owner = completed.owner.lock();
+      // A previous turn may destroy/rebind a public owner or rehash its map.
+      // The snapshot owns the private picture, never a surviving map iterator.
+      if (!CompletedDecodePictureMatches(driver, owner, completed, false))
+        continue;
+      const bool borrowed = completed.picture->direct_backing != nullptr;
+      // A public strong lease on a direct-backed picture would form a cycle.
+      // Copy and change its planes only while the exact binding stays locked.
+      if (!PromoteDecodedPicture(completed.picture) ||
+          !CompletedDecodePictureMatches(driver, owner, completed))
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+      prepared.push_back(std::move(completed));
+      if (borrowed && index + 1 != candidates.size() && driver_lock &&
+          driver_lock->owns_lock() && decode->CanYieldTerminalClose(true)) {
+#if defined(CRYSTALHD_VAAPI_TEST_TERMINAL_PROMOTION_TURN)
+        CRYSTALHD_VAAPI_TEST_TERMINAL_PROMOTION_TURN(driver, *driver_lock);
+#endif
+        // Bound a completed batch to one locked full-canvas promotion. Ready
+        // sync/VPP may proceed while cold waits remain fenced by preparation.
+        driver->condition.wait_for(*driver_lock, std::chrono::milliseconds(1));
+      }
+    }
+    decode->retirement_candidates = std::move(prepared);
   } catch (const std::bad_alloc &) {
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
   }
-  decode->retirement_candidates = std::move(candidates);
   return VA_STATUS_SUCCESS;
 }
 
@@ -8742,13 +8767,14 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
       return VA_STATUS_ERROR_INVALID_CONTEXT;
     decode->closing = true;
     decode->destroy_status = VA_STATUS_SUCCESS;
-    if (!decode->video_process) {
+    if (!decode->video_process)
       decode->destroy_status = DrainClosingContext(driver, decode, &lock);
-      if (decode->destroy_status == VA_STATUS_SUCCESS)
-        decode->destroy_status = PrepareCompletedDecodePictures(driver,
-                                                                decode.get());
-    }
+    // Drain may poll real output. Only after it finishes may preparation yield
+    // with the cold/resumed hardware paths fenced off from this closing device.
     decode->destroy_prepared = true;
+    if (!decode->video_process && decode->destroy_status == VA_STATUS_SUCCESS)
+      decode->destroy_status = PrepareCompletedDecodePictures(
+          driver, decode.get(), &lock);
   }
   if (decode->output_poll_inflight != 0) {
     // The worker's duplicated device fd outlives the DIL handle until poll
