@@ -472,10 +472,15 @@ immutable, timestamped NV12 storage for the requested picture.
 
 `CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC=1` is an optional reference-host
 optimization for CPU writes into VA-allocated i915 dumb surfaces. It uses the
-i915 WC/GTT ownership transitions only for the synchronous YUY2-to-NV12 copy;
-imported surfaces, VPP and other DRM drivers retain the normal DMA-BUF sync
-path. The default is off. It improved CPU time only when pixels were read back
-in the measured test and is not a general display-latency setting.
+i915 WC/GTT ownership transitions for synchronous decoded-pixel writes,
+including finite decode's private-to-public NV12 copy. Eligibility requires
+MMAP_GTT interface version 4 or newer and an explicit WC offset matching the
+existing mapping; an unconfirmed mapping keeps normal DMA-BUF synchronization.
+Imported surfaces, generic copies, VPP and other DRM drivers retain that normal
+path. The default is off. Bounded stock-Kodi tests reduced the NV12 copy-stage
+elapsed time, but this is not a claim of lower physical display latency or
+general playback performance. Earlier readback measurements likewise do not
+establish a display-latency improvement.
 
 NV12 image buffers support `vaAcquireBufferHandle` and
 `vaReleaseBufferHandle` with DRM PRIME DMA-BUF, also when no memory-type hint

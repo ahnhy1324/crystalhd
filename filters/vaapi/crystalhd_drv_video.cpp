@@ -650,6 +650,40 @@ static bool IsI915DrmFd(int fd) {
   return is_i915;
 }
 
+static bool ConfirmedI915WcMapping(int fd, uint32_t handle,
+                                  uint64_t mapped_offset) {
+#if defined(DRM_IOCTL_I915_GEM_MMAP_OFFSET) && \
+    defined(I915_PARAM_MMAP_GTT_VERSION) && defined(I915_MMAP_OFFSET_WC)
+  if (fd < 0 || handle == 0)
+    return false;
+  int version = 0;
+  drm_i915_getparam_t query = {};
+  query.param = I915_PARAM_MMAP_GTT_VERSION;
+  query.value = &version;
+  int result;
+  do {
+    result = ioctl(fd, DRM_IOCTL_I915_GETPARAM, &query);
+  } while (result != 0 && errno == EINTR);
+  // Older MMAP_GTT implementations ignore extended flags. Version 4 or newer
+  // is required to distinguish WC from the PAT-disabled GTT alias.
+  if (result != 0 || version < 4)
+    return false;
+  drm_i915_gem_mmap_offset mapping = {};
+  mapping.handle = handle;
+  mapping.flags = I915_MMAP_OFFSET_WC;
+  do {
+    result = ioctl(fd, DRM_IOCTL_I915_GEM_MMAP_OFFSET, &mapping);
+  } while (result != 0 && errno == EINTR);
+  // Query only: keep the already established MODE_MAP_DUMB mapping unchanged.
+  return result == 0 && mapping.offset == mapped_offset;
+#else
+  (void)fd;
+  (void)handle;
+  (void)mapped_offset;
+  return false;
+#endif
+}
+
 // CLFLUSH is independent of SSE2. Both it and MFENCE must be available before
 // an asynchronous writer installs a fence that DMA_BUF_SYNC END could wait on.
 // A legacy CPU build contains neither instruction; synchronous CPU access still
@@ -1043,10 +1077,11 @@ struct Surface {
                         static_cast<size_t>(pitch[0]) * height;
             if (allow_experimental_i915_wc) {
               owned_i915_dumb = IsI915DrmFd(dumb_drm_fd);
-              experimental_i915_wc = owned_i915_dumb;
-              Debug(owned_i915_dumb
+              experimental_i915_wc = owned_i915_dumb &&
+                  ConfirmedI915WcMapping(dumb_drm_fd, dumb_handle, map.offset);
+              Debug(experimental_i915_wc
                         ? "experimental i915 WC/GTT domains enabled"
-                        : "experimental i915 WC/GTT domains unavailable on non-i915 DRM");
+                        : "experimental i915 WC mapping unconfirmed; using DMA-BUF sync");
             }
             return true;
           }
@@ -1258,8 +1293,8 @@ struct Surface {
     return result == 0;
   }
 
-  // The experiment is deliberately limited to the synchronous CrystalHD
-  // YUY2-to-NV12 copy. Generic CPU access remains on DMA_BUF_IOCTL_SYNC, so
+  // The experiment is deliberately limited to synchronous decoded-pixel
+  // writes. Generic CPU access remains on DMA_BUF_IOCTL_SYNC, so
   // imported surfaces and VPP never inherit this i915-specific policy.
   bool BeginDecodedCpuWrite(bool *used_i915_wc) {
     if (used_i915_wc == nullptr)
@@ -3772,7 +3807,10 @@ static bool CopyH264WeaveToSurface(Surface *surface,
                                      output.PicInfo.timeStamp);
 }
 
-static bool CopyNv12Pixels(const Surface &source, Surface *destination) {
+enum class CopyPurpose { Generic, DecodedPublic };
+
+static bool CopyNv12Pixels(const Surface &source, Surface *destination,
+                           CopyPurpose purpose = CopyPurpose::Generic) {
   if (destination == nullptr || source.fourcc != VA_FOURCC_NV12 ||
       destination->fourcc != VA_FOURCC_NV12)
     return false;
@@ -3780,7 +3818,11 @@ static bool CopyNv12Pixels(const Surface &source, Surface *destination) {
   const unsigned int height = std::min(source.height, destination->height);
   if (!source.BeginCpuRead())
     return false;
-  if (!destination->BeginCpuWrite()) {
+  bool used_i915_wc = false;
+  const bool acquired = purpose == CopyPurpose::DecodedPublic
+      ? destination->BeginDecodedCpuWrite(&used_i915_wc)
+      : destination->BeginCpuWrite();
+  if (!acquired) {
     source.EndCpuRead();
     return false;
   }
@@ -3813,15 +3855,18 @@ static bool CopyNv12Pixels(const Surface &source, Surface *destination) {
            source.planes[1] + static_cast<size_t>(row) * source.pitch[1],
            width);
   }
-  const bool committed = destination->EndCpuWrite();
+  const bool committed = purpose == CopyPurpose::DecodedPublic
+      ? destination->EndDecodedCpuWrite(used_i915_wc)
+      : destination->EndCpuWrite();
   const bool released = source.EndCpuRead();
   if (!committed || !released)
     return false;
   return true;
 }
 
-static bool CopyNv12Surface(const Surface &source, Surface *destination) {
-  if (!CopyNv12Pixels(source, destination))
+static bool CopyNv12Surface(const Surface &source, Surface *destination,
+                            CopyPurpose purpose = CopyPurpose::Generic) {
+  if (!CopyNv12Pixels(source, destination, purpose))
     return false;
   destination->ready = true;
   destination->failed = false;
@@ -4641,7 +4686,8 @@ static VAStatus ProcessDecodedOutputImpl(
           // next submission's lease or mutate the public backing.
         } else {
           complete = decoded != decode->decoded_frames.end()
-              ? CopyNv12Surface(*decoded->second, surface->second.get())
+              ? CopyNv12Surface(*decoded->second, surface->second.get(),
+                                CopyPurpose::DecodedPublic)
               : copy_output(surface->second.get());
           wrote_pixels = complete;
           public_materialized = complete;

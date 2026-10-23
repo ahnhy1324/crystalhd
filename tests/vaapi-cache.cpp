@@ -35,6 +35,7 @@ struct Protocol {
   std::vector<std::string> events;
   std::vector<uintptr_t> flushed;
   unsigned int owned = 0;
+  unsigned int read_owned = 0;
   unsigned int imports = 0;
   bool timeline_open = false;
   bool fence_open = false;
@@ -44,6 +45,10 @@ struct Protocol {
   bool fail_wc_domain = false;
   bool fail_gtt_domain = false;
   bool require_barrier = true;
+  int fail_read_start_fd = -1;
+  int fail_write_start_fd = -1;
+  const uint8_t *watched_pixels = nullptr;
+  std::vector<uint8_t> pixels_before_write;
 };
 
 Protocol *protocol = nullptr;
@@ -192,6 +197,180 @@ void DecodedWriteDomains() {
     Require(fixture.mock.events ==
                 std::vector<std::string>{"start", "start", "end", "end"},
             "a failed experimental surface does not retry every frame");
+  }
+}
+
+struct DecodedCopyFixture {
+  Fixture destination;
+  Surface source;
+
+  DecodedCopyFixture() {
+    Require(source.AllocateCpuNv12(16, 16), "allocate the private decoded picture");
+    for (size_t index = 0; index < source.storage.size(); ++index)
+      source.storage[index] = static_cast<uint8_t>(11 + index * 13);
+    source.frame_timestamp = 12345;
+    source.object_fds = {201, 202};
+    Surface &target = destination.surface;
+    target.width = target.height = 16;
+    target.fourcc = VA_FOURCC_NV12;
+    target.pitch[0] = target.pitch[1] = 16;
+    target.planes[0] = destination.pixels;
+    target.planes[1] = destination.pixels + 256;
+    memset(destination.pixels, 0xa5, sizeof(destination.pixels));
+    WatchDestination();
+  }
+
+  void WatchDestination() {
+    destination.mock.watched_pixels = destination.pixels;
+    destination.mock.pixels_before_write.assign(
+        destination.pixels, destination.pixels + sizeof(destination.pixels));
+  }
+
+  void CheckCopiedPixels() const {
+    const Surface &target = destination.surface;
+    for (unsigned int plane = 0; plane < 2; ++plane)
+      for (unsigned int row = 0; row < (plane == 0 ? 16U : 8U); ++row)
+        Require(memcmp(target.planes[plane] + row * target.pitch[plane],
+                       source.planes[plane] + row * source.pitch[plane], 16) == 0,
+                "decoded public copy retains exact luma and chroma rows");
+    Require(std::all_of(destination.pixels + 384, destination.pixels + 512,
+                        [](uint8_t value) { return value == 0xa5; }),
+            "decoded copy preserves the destination outer guard");
+  }
+
+  ~DecodedCopyFixture() {
+    // The source descriptors are protocol sentinels, not owned OS handles.
+    source.object_fds.clear();
+  }
+};
+
+void DecodedPublicCopyDomains() {
+  const std::vector<std::string> generic_events = {
+      "read-start", "read-start", "start", "start",
+      "end", "end", "read-end", "read-end"};
+  for (bool explicit_generic : {false, true}) {
+    DecodedCopyFixture fixture;
+    fixture.destination.EnableExperimentalI915Wc();
+    const auto original_source = fixture.source.storage;
+    const bool copied = explicit_generic
+        ? CopyNv12Surface(fixture.source, &fixture.destination.surface,
+                          CopyPurpose::Generic)
+        : CopyNv12Surface(fixture.source, &fixture.destination.surface);
+    Require(copied && fixture.destination.mock.events == generic_events &&
+                fixture.destination.mock.owned == 0 &&
+                fixture.destination.mock.read_owned == 0,
+            "default and explicit generic copies retain DMA-BUF synchronization with opt-in set");
+    Require(fixture.source.storage == original_source,
+            "generic copy does not alter its retained private picture");
+    fixture.CheckCopiedPixels();
+  }
+  for (bool imported : {false, true}) {
+    DecodedCopyFixture fixture;
+    if (!imported) {
+      fixture.destination.surface.dumb_drm_fd = Protocol::dumb_drm;
+      fixture.destination.surface.dumb_handle = Protocol::dumb_handle;
+      fixture.destination.surface.owned_i915_dumb = true;
+    }
+    Require(!fixture.destination.surface.experimental_i915_wc &&
+                CopyNv12Surface(fixture.source, &fixture.destination.surface,
+                                CopyPurpose::DecodedPublic) &&
+                fixture.destination.mock.events == generic_events &&
+                fixture.destination.mock.owned == 0 &&
+                fixture.destination.mock.read_owned == 0,
+            "opt-in-off owned and imported decoded targets retain DMA-BUF synchronization");
+    fixture.CheckCopiedPixels();
+  }
+  {
+    DecodedCopyFixture fixture;
+    fixture.destination.EnableExperimentalI915Wc();
+    const auto original_source = fixture.source.storage;
+    Require(CopyNv12Surface(fixture.source, &fixture.destination.surface,
+                           CopyPurpose::DecodedPublic) &&
+                fixture.destination.surface.ready &&
+                !fixture.destination.surface.failed &&
+                fixture.destination.surface.frame_timestamp == fixture.source.frame_timestamp &&
+                fixture.destination.mock.events == std::vector<std::string>{
+                    "read-start", "read-start", "domain-wc", "domain-gtt",
+                    "read-end", "read-end"} &&
+                fixture.destination.mock.owned == 0 &&
+                fixture.destination.mock.read_owned == 0 &&
+                fixture.source.storage == original_source,
+            "eligible decoded-public copy commits exact identity between WC and GTT ownership");
+    fixture.CheckCopiedPixels();
+  }
+  {
+    DecodedCopyFixture fixture;
+    fixture.destination.EnableExperimentalI915Wc();
+    fixture.destination.mock.fail_wc_domain = true;
+    Require(CopyNv12Surface(fixture.source, &fixture.destination.surface,
+                           CopyPurpose::DecodedPublic) &&
+                !fixture.destination.surface.experimental_i915_wc &&
+                fixture.destination.mock.events == std::vector<std::string>{
+                    "read-start", "read-start", "domain-wc", "start", "start",
+                    "end", "end", "read-end", "read-end"} &&
+                fixture.destination.mock.owned == 0 &&
+                fixture.destination.mock.read_owned == 0,
+            "WC rejection selects DMA-BUF ownership before copying the decoded picture");
+    fixture.CheckCopiedPixels();
+  }
+  {
+    DecodedCopyFixture fixture;
+    fixture.destination.EnableExperimentalI915Wc();
+    fixture.destination.mock.fail_gtt_domain = true;
+    Require(!CopyNv12Surface(fixture.source, &fixture.destination.surface,
+                            CopyPurpose::DecodedPublic) &&
+                !fixture.destination.surface.ready &&
+                fixture.destination.surface.frame_timestamp == 0 &&
+                !fixture.destination.surface.experimental_i915_wc &&
+                fixture.destination.mock.events == std::vector<std::string>{
+                    "read-start", "read-start", "domain-wc", "domain-gtt",
+                    "read-end", "read-end"} &&
+                fixture.destination.mock.owned == 0 &&
+                fixture.destination.mock.read_owned == 0,
+            "failed GTT completion releases source READ ownership without publishing completion");
+    fixture.destination.mock.events.clear();
+    fixture.WatchDestination();
+    Require(CopyNv12Surface(fixture.source, &fixture.destination.surface,
+                           CopyPurpose::DecodedPublic) &&
+                fixture.destination.mock.events == generic_events &&
+                fixture.destination.mock.owned == 0 &&
+                fixture.destination.mock.read_owned == 0,
+            "a decoded-public copy after GTT failure remains on the generic fallback");
+  }
+  {
+    DecodedCopyFixture fixture;
+    fixture.destination.EnableExperimentalI915Wc();
+    fixture.destination.mock.fail_read_start_fd = 202;
+    Require(!CopyNv12Surface(fixture.source, &fixture.destination.surface,
+                            CopyPurpose::DecodedPublic) &&
+                !fixture.destination.surface.ready &&
+                fixture.destination.mock.events == std::vector<std::string>{
+                    "read-start", "read-start", "read-end"} &&
+                fixture.destination.mock.owned == 0 &&
+                fixture.destination.mock.read_owned == 0 &&
+                memcmp(fixture.destination.pixels,
+                       fixture.destination.mock.pixels_before_write.data(),
+                       sizeof(fixture.destination.pixels)) == 0,
+            "failed source READ acquisition unwinds its prefix before destination ownership or writes");
+  }
+  {
+    DecodedCopyFixture fixture;
+    fixture.destination.EnableExperimentalI915Wc();
+    fixture.destination.mock.fail_wc_domain = true;
+    fixture.destination.mock.fail_write_start_fd = 102;
+    Require(!CopyNv12Surface(fixture.source, &fixture.destination.surface,
+                            CopyPurpose::DecodedPublic) &&
+                !fixture.destination.surface.ready &&
+                !fixture.destination.surface.experimental_i915_wc &&
+                fixture.destination.mock.events == std::vector<std::string>{
+                    "read-start", "read-start", "domain-wc", "start", "start",
+                    "end", "read-end", "read-end"} &&
+                fixture.destination.mock.owned == 0 &&
+                fixture.destination.mock.read_owned == 0 &&
+                memcmp(fixture.destination.pixels,
+                       fixture.destination.mock.pixels_before_write.data(),
+                       sizeof(fixture.destination.pixels)) == 0,
+            "failed fallback WRITE acquisition unwinds both owners without exposing new pixels");
   }
 }
 
@@ -392,6 +571,11 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
             "domain transitions use only the owned dumb handle");
     if (domain->read_domains == I915_GEM_DOMAIN_WC &&
         domain->write_domain == I915_GEM_DOMAIN_WC) {
+      if (protocol->watched_pixels != nullptr)
+        Require(memcmp(protocol->watched_pixels,
+                       protocol->pixels_before_write.data(),
+                       protocol->pixels_before_write.size()) == 0,
+                "WC ownership is acquired before modifying destination pixels");
       protocol->events.emplace_back("domain-wc");
       if (protocol->fail_wc_domain) {
         errno = EOPNOTSUPP;
@@ -408,13 +592,38 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
       }
     }
   } else if (request == DMA_BUF_IOCTL_SYNC) {
-    Require(fd == 101 || fd == 102, "sync only the known fake DMA objects");
+    Require(fd == 101 || fd == 102 || fd == 201 || fd == 202,
+            "sync only the known fake DMA objects");
     const auto flags = static_cast<dma_buf_sync *>(argument)->flags;
-    if (flags == (DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE)) {
+    if (flags == (DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ)) {
+      Require(fd == 201 || fd == 202, "READ applies only to the private source");
+      protocol->events.emplace_back("read-start");
+      if (fd == protocol->fail_read_start_fd) {
+        errno = EIO;
+        return -1;
+      }
+      ++protocol->read_owned;
+    } else if (flags == (DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ)) {
+      Require((fd == 201 || fd == 202) && protocol->read_owned != 0,
+              "READ END releases an acquired private-source object");
+      protocol->events.emplace_back("read-end");
+      --protocol->read_owned;
+    } else if (flags == (DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE)) {
+      Require(fd == 101 || fd == 102, "WRITE applies only to the destination");
+      if (protocol->watched_pixels != nullptr)
+        Require(memcmp(protocol->watched_pixels,
+                       protocol->pixels_before_write.data(),
+                       protocol->pixels_before_write.size()) == 0,
+                "DMA-BUF ownership is acquired before modifying destination pixels");
       protocol->events.emplace_back("start");
+      if (fd == protocol->fail_write_start_fd) {
+        errno = EIO;
+        return -1;
+      }
       ++protocol->owned;
     } else {
-      Require(flags == (DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE) &&
+      Require((fd == 101 || fd == 102) &&
+                  flags == (DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE) &&
                   protocol->owned != 0 &&
                   (protocol->imports == 0 || protocol->status != 0),
               "CPU END cannot wait on its own unsignaled fence");
@@ -464,6 +673,7 @@ int main() {
     Capabilities();
     ExperimentalI915WcEligibility();
     DecodedWriteDomains();
+    DecodedPublicCopyDomains();
     LineCoverage();
     RejectedBeforeOwnership();
     CompletionOrder();
@@ -474,7 +684,7 @@ int main() {
     fprintf(stderr, "VA-API cache protocol failed: %s\n", error.what());
     return 1;
   }
-  printf("VA-API cache protocol: 9 groups, %u checks PASS (default async cache: %s)\n",
+  printf("VA-API cache protocol: 10 groups, %u checks PASS (default async cache: %s)\n",
          checks, CpuCacheFlush().Available() ? "enabled" : "unavailable");
   return 0;
 }
