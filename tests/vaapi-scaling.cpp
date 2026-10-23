@@ -368,6 +368,9 @@ struct Fixture {
   VAPictureParameterBufferH264 picture = {};
   VASliceParameterBufferH264 slice = {};
   Fixture() {
+    // These fixtures drive submit/output/VPP state synchronously, not workers.
+    driver.StopWorkers();
+    driver.stopping = false;
     context.pDriverData = &driver;
     driver.configs[1] = {VAProfileH264High, VAEntrypointVLD};
     driver.contexts[1] = decode;
