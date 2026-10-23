@@ -6004,6 +6004,18 @@ struct TeardownFixture {
   }
 };
 
+static void DrainExactReadyEos(TeardownFixture &fixture) {
+  std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+  Require(fixture.decoder->ReplaySealed() &&
+              fixture.decoder->replay.outstanding() == 0 &&
+              fixture.io.outputs == std::deque<uint64_t>{0},
+          "exact-ready sync leaves only the actual EOS marker owned by the sealed batch");
+  Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
+              !fixture.decoder->ReplaySealed() && fixture.io.outputs.empty() &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1,
+          "explicit receive drains the actual EOS marker before a later lifecycle transition");
+}
+
 static void ProtectedH264BufferCannotCommitEarlierParameters() {
   const VABufferType types[] = {
       VAProtectedSliceDataBufferType,
@@ -6757,12 +6769,18 @@ static void CompletedLiveTailPrecedesUnreconstructibleContinuation() {
     std::unique_lock<std::mutex> lock(fixture.driver.mutex);
     Require(SyncDecodeSurface(&fixture.driver, fixture.held[2], &lock,
                               VA_TIMEOUT_INFINITE) == VA_STATUS_SUCCESS,
-            "exact old tail plus EOS succeeds before any future pump failure");
+            "exact old tail succeeds before any future pump failure");
   }
+  Require(fixture.io.open_attempts == 0 &&
+              fixture.decoder->ReplaySealed() &&
+              !fixture.decoder->replay.NeedsRestart() &&
+              !fixture.decoder->replay.failed(),
+          "tail sync completes before consuming EOS or attempting an unrelated restart");
+  DrainExactReadyEos(fixture);
   Require(fixture.io.open_attempts == 0 &&
               fixture.decoder->replay.NeedsRestart() &&
               !fixture.decoder->replay.failed(),
-          "tail sync does not attempt an unrelated continuation restart");
+          "actual EOS observation alone makes the future continuation require restart");
   fixture.CheckPicture(2);
   const auto pixels = fixture.held[2]->storage;
   Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
@@ -7226,6 +7244,11 @@ static void LiveH264InterlacedPrefeedKeepsExactFieldOwnership(
         const VAStatus status = tail == Tail::ContextDrain
             ? DestroyContext(&fixture.context, 1)
             : SyncSurface(&fixture.context, 4);
+        if (tail != Tail::ContextDrain) {
+          Require(status == VA_STATUS_SUCCESS,
+                  "finite sync completes the exact complementary field before EOS drain");
+          DrainExactReadyEos(fixture);
+        }
         Require(status == VA_STATUS_SUCCESS && fourth_owner->ready &&
                     !decode.h264_first_field.valid && decode.pending.empty() &&
                     decode.replay.outstanding() == 0 &&
@@ -7782,8 +7805,10 @@ static void DefaultBoundedH264StillDrainsFiniteTail() {
               !fixture.decoder->live_h264_gap_tolerant &&
               !fixture.decoder->live_h264_fast_path,
           "default bounded H.264 submits without live gap or fast policy");
-  Require(SyncSurface(&fixture.context, 3) == VA_STATUS_SUCCESS &&
-              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+  Require(SyncSurface(&fixture.context, 3) == VA_STATUS_SUCCESS,
+          "default bounded sync completes its exact final tail picture");
+  DrainExactReadyEos(fixture);
+  Require(std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "seal") == 1 &&
               std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "eos") == 1 &&
@@ -7839,6 +7864,7 @@ static void LargeH264CompletionDoesNotInferEos() {
     };
     Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS,
             "delayed exact picture completes through the normal sync path");
+    if (!longer_grace) DrainExactReadyEos(fixture);
     Require(callbacks == (longer_grace ? 2U : 1U) &&
                 std::count(fixture.io.events.begin(), fixture.io.events.end(),
                            "seal") == (longer_grace ? 0 : 1) &&
@@ -7876,9 +7902,10 @@ static void LargeH264InactivitySurvivesFiniteSyncCalls() {
               std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "seal") == 0,
           "finite large-AU sync preserves only actual wait time and old pixels");
-  Require(SyncSurface2(&fixture.context, 1, 500ULL * 1000 * 1000) ==
-                  VA_STATUS_SUCCESS &&
-              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+  Require(SyncSurface2(&fixture.context, 1, 500ULL * 1000 * 1000) == VA_STATUS_SUCCESS,
+          "finite large-AU wait completes its exact picture within the existing deadline");
+  DrainExactReadyEos(fixture);
+  Require(std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "seal") == 1 &&
               std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "eos") == 1 &&
@@ -8091,9 +8118,10 @@ static void DefaultBoundedH264InactivitySurvivesFiniteSyncCalls() {
               std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "seal") == 0,
           "sequential finite sync calls retain only their actual wait time");
-  Require(SyncSurface2(&fixture.context, 3, 500ULL * 1000 * 1000) ==
-                  VA_STATUS_SUCCESS &&
-              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+  Require(SyncSurface2(&fixture.context, 3, 500ULL * 1000 * 1000) == VA_STATUS_SUCCESS,
+          "finite bounded wait completes its exact picture within the existing deadline");
+  DrainExactReadyEos(fixture);
+  Require(std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "seal") == 1 &&
               std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "eos") == 1 &&
@@ -8329,7 +8357,9 @@ static void InactiveSyncStillSealsItsExactFinalPicture(bool live = false) {
   const auto start = std::chrono::steady_clock::now();
   Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS,
           "finite input tail still completes through a real sealed batch");
-  Require(std::chrono::steady_clock::now() - start >=
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  DrainExactReadyEos(fixture);
+  Require(elapsed >=
               std::chrono::nanoseconds(kDecodeBatchGraceNs) &&
               std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "seal") == 1 &&
@@ -9464,6 +9494,46 @@ static void ZeroTimeoutNeverPumpsBusyDecodeSurface() {
           "a later ordinary sync completes the untouched exact picture");
 }
 
+static void ExactSyncLeavesLaterReadyOutputsQueued() {
+  TeardownFixture fixture(3);
+  fixture.driver.StopWorkers();
+  fixture.driver.stopping = false;
+  fixture.decoder->profile = VAProfileH264Main;
+  BindTeardownPicturesForVpp(fixture);
+  Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
+              SealDecodeBatch(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
+              fixture.io.outputs == std::deque<uint64_t>{kTimestampStep, 2 * kTimestampStep,
+                                                        3 * kTimestampStep, 0},
+          "queue three real ready outputs followed by the actual mock firmware EOS marker");
+  Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+              fixture.io.output_polls == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "release") == 1 &&
+              fixture.io.outputs == std::deque<uint64_t>{2 * kTimestampStep,
+                                                        3 * kTimestampStep, 0} &&
+              fixture.held[0]->ready && !fixture.held[0]->failed &&
+              fixture.held[0]->frame_timestamp == kTimestampStep &&
+              fixture.held[0]->decode_picture.lock()->decode_identity == 1 &&
+              !fixture.held[1]->ready && !fixture.held[2]->ready &&
+              fixture.decoder->pending.size() == 2 &&
+              !fixture.decoder->replay.IsOutstanding(kTimestampStep) &&
+              fixture.decoder->replay.IsOutstanding(2 * kTimestampStep) &&
+              fixture.decoder->replay.IsOutstanding(3 * kTimestampStep),
+          "exact sync returns after its own one output without consuming later identities or EOS");
+  fixture.CheckPicture(0);
+  Require(fixture.io.output_polls == 1 &&
+              DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+              fixture.io.outputs.empty() && fixture.decoder->device == nullptr &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "release") == 4 &&
+              std::find(fixture.io.events.begin(), fixture.io.events.end(), "eos") <
+                  std::find(fixture.io.events.begin(), fixture.io.events.end(), "stop") &&
+              !fixture.io.invalid,
+          "explicit drain still completes both remaining pictures and actual EOS before close");
+  fixture.CheckPicture(1);
+  fixture.CheckPicture(2);
+}
+
 static void ExactReadySurfaceDoesNotWaitForBatchEos() {
   TeardownFixture fixture(2);
   Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
@@ -9484,10 +9554,17 @@ static void ExactReadySurfaceDoesNotWaitForBatchEos() {
   fixture.io.outputs.push_back(2 * kTimestampStep);
   fixture.io.outputs.push_back(0);
   Require(SyncSurface(&fixture.context, 2) == VA_STATUS_SUCCESS &&
-              fixture.held[1]->ready && !fixture.decoder->ReplaySealed() &&
+              fixture.held[1]->ready && fixture.decoder->ReplaySealed() &&
               fixture.decoder->replay.outstanding() == 0 &&
-              fixture.io.outputs.empty() && !fixture.io.invalid,
-          "later synchronization still drains the remaining picture and EOS");
+              fixture.io.outputs == std::deque<uint64_t>{0},
+          "the final exact picture completes without greedily consuming its following EOS marker");
+  Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+              fixture.io.outputs.empty() && fixture.decoder->device == nullptr &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1 &&
+              std::find(fixture.io.events.begin(), fixture.io.events.end(), "eos") <
+                  std::find(fixture.io.events.begin(), fixture.io.events.end(), "stop") &&
+              !fixture.io.invalid,
+          "explicit drain consumes the actual remaining EOS fence before hardware close");
 }
 
 // Hardware-free Phase-B replay of facts represented by the current backend:
@@ -11502,6 +11579,12 @@ static void NeutralAuxiliaryContracts() {
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::strcmp(argv[1], "--exact-sync-ready") == 0) {
+      ExactSyncLeavesLaterReadyOutputsQueued();
+      ExactReadySurfaceDoesNotWaitForBatchEos();
+      std::puts("VA-API exact sync: one output, queued later identities and explicit EOS drain PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--terminal-close-ready") == 0) {
       TerminalPromotionTurnsPreserveExactBindings();
       TerminalPromotionFailureGrantsNoLeases();
@@ -11551,7 +11634,7 @@ int main(int argc, char **argv) {
       std::puts("VA-API private first-field Bob, progress/grace and LIVE tail: TFF/BFF pixels, ownership, cancellation and explicit drain PASS");
       return 0;
     }
-    Require(argc == 1, "usage: vaapi-replay-test [--terminal-close-ready|--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
+    Require(argc == 1, "usage: vaapi-replay-test [--exact-sync-ready|--terminal-close-ready|--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
     NeutralAuxiliaryContracts();
     DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobUsesCompactStorage();
@@ -11649,6 +11732,7 @@ int main(int argc, char **argv) {
     CompletedWaitNeverAcceptsDifferentOrDestroyedPicture();
     ReadyStatusProbeSkipsReadyHeadPeek();
     ZeroTimeoutNeverPumpsBusyDecodeSurface();
+    ExactSyncLeavesLaterReadyOutputsQueued();
     ExactReadySurfaceDoesNotWaitForBatchEos();
     ReadyInventoryConditionalOpportunityReplay();
     QueryOnlyObservesAutonomousDecodeProgress();

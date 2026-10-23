@@ -7165,7 +7165,10 @@ static VAStatus SyncDecodeSurface(
       return state;
     if (driver->stopping)
       return VA_STATUS_ERROR_OPERATION_FAILED;
-    VAStatus status = ReceiveAvailable(driver, decode.get());
+    // Recheck this exact requested picture after every released output. A
+    // READY backlog belongs to other callers once this picture is complete;
+    // harvesting it here would keep ready renderer admission behind copies.
+    VAStatus status = ReceiveAvailable(driver, decode.get(), 1);
     if (status == VA_STATUS_SUCCESS &&
         (surface->ready || presentation_ready()))
       break;
