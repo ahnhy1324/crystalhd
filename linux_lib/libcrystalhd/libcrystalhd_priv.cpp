@@ -27,6 +27,7 @@
  *******************************************************************/
 
 #include <link.h>
+#include <stddef.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -274,18 +275,21 @@ typedef struct _DTS_RX_BUFFER_LAYOUT {
 	uint32_t outputFormat;
 } DTS_RX_BUFFER_LAYOUT;
 
+static const uint32_t DTS_RX_LEGACY_WIDTH = 1920;
+static const uint32_t DTS_RX_LEGACY_ROWS = 1090;
+
 /* Keep the legacy 1920x1090 fallback allocation until output geometry is
  * known.  Allocation and driver-registration extents are intentionally
  * separate for planar output. */
-static BC_STATUS DtsGetRxBufferLayout(const DTS_LIB_CONTEXT *Ctx,
-	DTS_RX_BUFFER_LAYOUT *layout)
+static BC_STATUS DtsCalculateRxBufferLayout(const DTS_LIB_CONTEXT *Ctx,
+	uint32_t width, DTS_RX_BUFFER_LAYOUT *layout)
 {
-	const uint64_t pixels = (uint64_t)1920 * 1090;
+	const uint64_t pixels = (uint64_t)width * DTS_RX_LEGACY_ROWS;
 	const uint64_t allocation = pixels * 2;
 	uint64_t registered;
 	uint64_t uvOffset;
 
-	if (!Ctx || !layout)
+	if (!Ctx || !layout || !width)
 		return BC_STS_INV_ARG;
 
 	switch (Ctx->b422Mode) {
@@ -314,6 +318,133 @@ static BC_STATUS DtsGetRxBufferLayout(const DTS_LIB_CONTEXT *Ctx,
 	layout->outputFormat = Ctx->b422Mode;
 	return BC_STS_SUCCESS;
 }
+
+static BC_STATUS DtsGetRxBufferLayout(const DTS_LIB_CONTEXT *Ctx,
+	DTS_RX_BUFFER_LAYOUT *layout)
+{
+	if (!Ctx)
+		return BC_STS_INV_ARG;
+	return DtsCalculateRxBufferLayout(Ctx,
+		Ctx->rxBufferWidth ? Ctx->rxBufferWidth : DTS_RX_LEGACY_WIDTH,
+		layout);
+}
+
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+/* This remains an opt-in qualification path.  The successful H.264 OPEN word
+ * is the only width identity used here: pending requests do not prove what
+ * firmware actually admitted. */
+static uint32_t DtsDesiredRxBufferWidth(const DTS_LIB_CONTEXT *Ctx)
+{
+	uint32_t first;
+	uint32_t second;
+	const uint32_t word = Ctx->activeFleaScaleWord;
+
+	if (Ctx->OpMode != DTS_PLAYBACK_MODE ||
+	    !(Ctx->CfgFlags & BC_ADDBUFF_MOVE) ||
+	    Ctx->DevId != BC_PCI_DEVID_FLEA ||
+	    Ctx->b422Mode != OUTPUT_MODE422_YUY2)
+		return DTS_RX_LEGACY_WIDTH;
+
+	first = (word >> 20) & 0xfffU;
+	second = (word >> 8) & 0xfffU;
+	if ((word & 0xffU) != 1U || first != second || first < 128U ||
+	    first >= DTS_RX_LEGACY_WIDTH || (first & 1U))
+		return DTS_RX_LEGACY_WIDTH;
+	return first;
+}
+
+/* Caller holds thLock and has already retired any dirty driver mapping. */
+static BC_STATUS DtsEnsureRxBufferLayout(DTS_LIB_CONTEXT *Ctx)
+{
+	DTS_RX_BUFFER_LAYOUT layout;
+	uint8_t **staged;
+	uint32_t i;
+	uint32_t outputCount = 0;
+	bool haveBacking = false;
+	bool missingBacking = false;
+	const uint32_t current = Ctx->rxBufferWidth ?
+		Ctx->rxBufferWidth : DTS_RX_LEGACY_WIDTH;
+	const uint32_t desired = DtsDesiredRxBufferWidth(Ctx);
+
+	if (!Ctx->Mpools || !Ctx->MpoolCnt ||
+	    Ctx->MpoolCnt > ((size_t)-1) / sizeof(*staged))
+		return BC_STS_INV_ARG;
+
+	/* A deferred pool is either wholly absent or wholly materialized.  Reject
+	 * mixed/foreign/aliased states before deciding that no resize is needed. */
+	for (i = 0; i < Ctx->MpoolCnt; ++i) {
+		DTS_MPOOL_TYPE *mp = &Ctx->Mpools[i];
+		if (!(mp->type & BC_MEM_DEC_YUVBUFF))
+			continue;
+		outputCount++;
+		if (!(mp->type & BC_MEM_USER_MODE_ALLOC))
+			return BC_STS_INV_ARG;
+		if (!mp->buff) {
+			if (mp->sz)
+				return BC_STS_INV_ARG;
+			missingBacking = true;
+			continue;
+		}
+		if (!mp->sz)
+			return BC_STS_INV_ARG;
+		haveBacking = true;
+		for (uint32_t prior = 0; prior < i; ++prior)
+			if ((Ctx->Mpools[prior].type & BC_MEM_DEC_YUVBUFF) &&
+			    Ctx->Mpools[prior].buff == mp->buff)
+				return BC_STS_INV_ARG;
+	}
+	if (!outputCount || (haveBacking && missingBacking))
+		return BC_STS_INV_ARG;
+	if (haveBacking && current == desired)
+		return BC_STS_SUCCESS;
+	if (Ctx->bMapOutBufDone || Ctx->bMapOutBufDirty ||
+	    Ctx->ProcOutPending || Ctx->CancelWaiting ||
+	    Ctx->outputPhase != DTS_OUTPUT_IDLE || Ctx->txQuiescing ||
+	    DtsStopIsUnresolved(Ctx))
+		return BC_STS_BUSY;
+	if (DtsCalculateRxBufferLayout(Ctx, desired, &layout) != BC_STS_SUCCESS)
+		return BC_STS_INV_ARG;
+
+	staged = (uint8_t **)malloc(Ctx->MpoolCnt * sizeof(*staged));
+	if (!staged)
+		return BC_STS_INSUFF_RES;
+	memset(staged, 0, Ctx->MpoolCnt * sizeof(*staged));
+	for (i = 0; i < Ctx->MpoolCnt; ++i) {
+		if (!(Ctx->Mpools[i].type & BC_MEM_DEC_YUVBUFF))
+			continue;
+		staged[i] = (uint8_t *)malloc(layout.allocationBytes);
+		if (!staged[i]) {
+			for (uint32_t undo = 0; undo < i; ++undo)
+				free(staged[undo]);
+			free(staged);
+			return BC_STS_INSUFF_RES;
+		}
+	}
+	if (!haveBacking)
+		for (i = 0; i < Ctx->MpoolCnt; ++i)
+			if (staged[i])
+				memset(staged[i], 0, layout.allocationBytes);
+
+	/* All fallible allocations have succeeded, so the old pool is still a
+	 * complete rollback target.  Retire each old resident buffer before
+	 * zero-filling its replacement to avoid touching both full pools at once. */
+	for (i = 0; i < Ctx->MpoolCnt; ++i) {
+		DTS_MPOOL_TYPE *mp = &Ctx->Mpools[i];
+		uint8_t *old;
+		if (!(mp->type & BC_MEM_DEC_YUVBUFF))
+			continue;
+		old = mp->buff;
+		mp->buff = staged[i];
+		mp->sz = layout.allocationBytes;
+		free(old);
+		if (haveBacking)
+			memset(mp->buff, 0, layout.allocationBytes);
+	}
+	free(staged);
+	Ctx->rxBufferWidth = desired;
+	return BC_STS_SUCCESS;
+}
+#endif
 
 static BC_STATUS DtsValidateRxBuffer(const DTS_LIB_CONTEXT *Ctx,
 	const void *buff, uint32_t buffSize, DTS_RX_BUFFER_LAYOUT *layout)
@@ -956,7 +1087,15 @@ static void DtsGetPibFrom422(uint8_t *pibBuff, uint8_t mode422)
 	}
 }
 
-static BC_STATUS DtsGetPictureInfo(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut)
+static BC_STATUS DtsRejectPictureInfo(DTS_LIB_CONTEXT *Ctx)
+{
+	if (Ctx && Ctx->pOutData)
+		Ctx->pOutData->RetSts = BC_STS_IO_XFR_ERROR;
+	return BC_STS_IO_XFR_ERROR;
+}
+
+static BC_STATUS DtsGetPictureInfo(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut,
+	bool *controlOutput)
 {
 
 	uint16_t			sNum = 0;
@@ -965,10 +1104,26 @@ static BC_STATUS DtsGetPictureInfo(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut)
 	uint32_t			PicInfoLineNum;
 	bool				bInterlaced = false;
 	bool				bEos = false;
+	uint64_t			doneBytes;
+	const BC_DEC_YUV_BUFFS *source;
+
+	if (controlOutput)
+		*controlOutput = false;
+	if (!Ctx || !pOut || !pOut->Ybuff || !Ctx->pOutData)
+		return DtsRejectPictureInfo(Ctx);
+	source = &Ctx->pOutData->u.DecOutData.OutPutBuffs;
+	doneBytes = (uint64_t)pOut->YBuffDoneSz * 4;
+	/* Reading the line marker itself must be bounded. Packed LINK markers
+	 * occupy alternating bytes through byte seven; Flea/NV12 need four. */
+	const uint64_t markerBytes =
+		Ctx->DevId != BC_PCI_DEVID_FLEA && Ctx->b422Mode ? 8 : 4;
+	if (source->YuvBuff != pOut->Ybuff ||
+	    doneBytes < markerBytes || source->YuvBuffSz < markerBytes)
+		return DtsRejectPictureInfo(Ctx);
 
 	if (Ctx->DevId == BC_PCI_DEVID_FLEA)
 	{
-		PicInfoLineNum = *(uint32_t *)(pOut->Ybuff);
+		memcpy(&PicInfoLineNum, pOut->Ybuff, sizeof(PicInfoLineNum));
 	}
 	else if (Ctx->b422Mode == OUTPUT_MODE422_YUY2)
 	{
@@ -994,19 +1149,16 @@ static BC_STATUS DtsGetPictureInfo(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut)
 
 	if (PicInfoLineNum == BC_EOS_DETECTED)  // EOS
 	{
-		const uint64_t markerBytes = sizeof(PicInfoLineNum) +
+		if (controlOutput)
+			*controlOutput = true;
+		const uint64_t eosBytes = sizeof(PicInfoLineNum) +
 			sizeof(BC_PIC_INFO_BLOCK);
-		const BC_DEC_YUV_BUFFS &source =
-			Ctx->pOutData->u.DecOutData.OutPutBuffs;
 		/* The sentinel is a control transfer, not a picture. Bound the PIB
 		 * copy by both the completed DMA extent and the registered buffer.
 		 */
-		if (!pOut->Ybuff || source.YuvBuff != pOut->Ybuff ||
-			(uint64_t)pOut->YBuffDoneSz * 4 < markerBytes ||
-			source.YuvBuffSz < markerBytes)
+		if (doneBytes < eosBytes || source->YuvBuffSz < eosBytes)
 		{
-			Ctx->pOutData->RetSts = BC_STS_IO_XFR_ERROR;
-			return BC_STS_IO_XFR_ERROR;
+			return DtsRejectPictureInfo(Ctx);
 		}
 		memcpy((uint32_t*)&pOut->PicInfo,(uint32_t*)(pOut->Ybuff + 4), sizeof(BC_PIC_INFO_BLOCK));
 		/* Some BCM70015 scaler widths return an EOS control transfer with an
@@ -1041,14 +1193,34 @@ static BC_STATUS DtsGetPictureInfo(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut)
 	if( ( (PicInfoLineNum != Ctx->HWOutPicHeight) && (PicInfoLineNum != (Ctx->HWOutPicHeight+1))) &&
 		( (PicInfoLineNum != Ctx->HWOutPicHeight/2) && (PicInfoLineNum != (Ctx->HWOutPicHeight+1)/2)) )
 	{
-		return BC_STS_IO_XFR_ERROR;
+		return DtsRejectPictureInfo(Ctx);
 	}
 
-	if (Ctx->b422Mode) {
-		pPicInfoLine = pOut->Ybuff + PicInfoLineNum * Ctx->HWOutPicWidth * 2;
-	} else {
-		pPicInfoLine = pOut->Ybuff + PicInfoLineNum * Ctx->HWOutPicWidth;
-	}
+	/* A scaled registration is valid only while the firmware-reported stride
+	 * stays within its committed backing width.  Firmware may complete the
+	 * common PIB fields before its protocol-specific extension tail; require
+	 * the common prefix in completed DMA data and the complete access in the
+	 * registered Y plane, matching the kernel parser contract. */
+	const uint32_t poolWidth = Ctx->rxBufferWidth ?
+		Ctx->rxBufferWidth : DTS_RX_LEGACY_WIDTH;
+	const uint64_t bytesPerPixel = Ctx->b422Mode ? 2 : 1;
+	const uint64_t pibOffset = (uint64_t)PicInfoLineNum *
+		Ctx->HWOutPicWidth * bytesPerPixel;
+	const uint64_t pibBytes = Ctx->DevId == BC_PCI_DEVID_FLEA ?
+		4 + sizeof(BC_PIC_INFO_BLOCK) : (Ctx->b422Mode ? 512 : 256);
+	const uint64_t completedPibBytes = Ctx->DevId == BC_PCI_DEVID_FLEA ?
+		4 + offsetof(BC_PIC_INFO_BLOCK, other) :
+		bytesPerPixel * (4 + offsetof(BC_PIC_INFO_BLOCK, other));
+	const uint64_t yPlaneBytes = source->UVbuffOffset ?
+		source->UVbuffOffset : source->YuvBuffSz;
+	if (!Ctx->HWOutPicWidth || Ctx->HWOutPicWidth > poolWidth ||
+	    yPlaneBytes > source->YuvBuffSz ||
+	    pibOffset > (uint64_t)(size_t)-1 ||
+	    completedPibBytes > doneBytes ||
+	    pibOffset > doneBytes - completedPibBytes ||
+	    pibBytes > yPlaneBytes || pibOffset > yPlaneBytes - pibBytes)
+		return DtsRejectPictureInfo(Ctx);
+	pPicInfoLine = pOut->Ybuff + (size_t)pibOffset;
 
 	if (Ctx->DevId != BC_PCI_DEVID_FLEA)
 	{
@@ -1308,10 +1480,12 @@ BOOL DtsCheckRptPic(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut)
 	return bRepeat;
 }
 
-static void DtsSetupProcOutInfo(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, BC_IOCTL_DATA *pIo)
+static bool DtsSetupProcOutInfo(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut,
+	BC_IOCTL_DATA *pIo)
 {
+	bool controlOutput = false;
 	if(!pOut || !pIo)
-		return; // This is an internal function should never happen..
+		return false; // This is an internal function should never happen..
 
 	if(Ctx->RegCfg.DbgOptions & BC_BIT(6))
 	{
@@ -1342,7 +1516,7 @@ static void DtsSetupProcOutInfo(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, BC_
 			DtsCopyAppPIB(Ctx, &pIo->u.DecOutData, pOut);
 		}else{
 			DebugLog_Trace(LDIL_DBG,"Error: Can't handle F/C w/o PIB_VALID \n");
-			return;
+			return false;
 		}
 		Ctx->HWOutPicHeight = pOut->PicInfo.height;
 		// FW returns output picture's stride in PPB.resolution when Format changes.
@@ -1354,7 +1528,7 @@ static void DtsSetupProcOutInfo(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, BC_
 		pOut->PoutFlags |= BC_POUT_FLAGS_FMT_CHANGE;
 		if(pIo->u.DecOutData.Flags & COMP_FLAG_DATA_VALID){
 			DebugLog_Trace(LDIL_DBG,"Error: Data not expected with F/C \n");
-			return;
+			return false;
 		}
 	}
 
@@ -1373,9 +1547,10 @@ static void DtsSetupProcOutInfo(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, BC_
 		pOut->discCnt = pIo->u.DecOutData.BadFrCnt;
 		if(Ctx->FixFlags & DTS_LOAD_FILE_PLAY_FW){
 			/* Decoder PIC_INFO_OFF mode, PIB is embedded in frame */
-			DtsGetPictureInfo(Ctx, pOut);
+			DtsGetPictureInfo(Ctx, pOut, &controlOutput);
 		}
 	}
+	return controlOutput;
 }
 
 // Input Meta Data related funtions..
@@ -1709,6 +1884,7 @@ static BC_STATUS DtsAllocMemPoolsInitialized(DTS_LIB_CONTEXT *Ctx)
 	/* Reject an invalid RX contract before acquiring any pool allocations.
 	 * Contexts which do not request RX backing retain their legacy behavior. */
 	if (needsRxBuffers) {
+		Ctx->rxBufferWidth = DTS_RX_LEGACY_WIDTH;
 		sts = DtsGetRxBufferLayout(Ctx, &layout);
 		if (sts != BC_STS_SUCCESS)
 			return sts;
@@ -1754,6 +1930,19 @@ static BC_STATUS DtsAllocMemPoolsInitialized(DTS_LIB_CONTEXT *Ctx)
 	for(i=0; i<Ctx->MpoolCnt; i++){
 		mp = &Ctx->Mpools[i];
 		mp->type = BC_MEM_DEC_YUVBUFF |BC_MEM_USER_MODE_ALLOC;
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+		/* MOVE playback does not hand RX backing to the driver until the
+		 * successful decoder OPEN has fixed the scale identity.  Defer only
+		 * that experimental payload so the first materialized pool can use the
+		 * admitted width instead of touching a throw-away Full-HD pool. */
+		if (Ctx->OpMode == DTS_PLAYBACK_MODE &&
+		    (Ctx->CfgFlags & BC_ADDBUFF_MOVE)) {
+			mp->sz = 0;
+			mp->buff = NULL;
+			Ctx->rxBufferWidth = 0;
+			continue;
+		}
+#endif
 		mp->sz = layout.allocationBytes;
 		mp->buff = (uint8_t *)malloc(mp->sz);
 		if(!mp->buff){
@@ -2036,7 +2225,7 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 		{
 			DtsDecPend(Ctx);
 		} else {
-			bool invalidReceipt = false;
+			bool controlOutput = false;
 			/* FETCH may be the first successful suffix after S3.  Bind
 			 * interpretation of its old buffer and all context-format updates
 			 * to the same generation check used by recovery cancellation. */
@@ -2050,7 +2239,7 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 				 * or interpreting PIB.  A format event is already requeued by
 				 * the kernel and owns no data lease.  LINK may have an empty UV
 				 * extent, so offset == size remains valid. */
-				invalidReceipt =
+				const bool invalidReceipt =
 					(Ctx->pOutData->u.DecOutData.Flags & COMP_FLAG_DATA_VALID) &&
 					!(Ctx->pOutData->u.DecOutData.Flags & COMP_FLAG_FMT_CHANGE) &&
 					(!buffer.YuvBuff || !buffer.YuvBuffSz ||
@@ -2058,7 +2247,7 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 				if (invalidReceipt)
 					Ctx->pOutData->RetSts = BC_STS_IO_XFR_ERROR;
 				else
-					DtsSetupProcOutInfo(Ctx,pOut,Ctx->pOutData);
+					controlOutput = DtsSetupProcOutInfo(Ctx,pOut,Ctx->pOutData);
 				/* Embedded PIB parsing can turn an ioctl SUCCESS into
 				 * NO_DATA/IO_XFR_ERROR (notably the Flea EOS sentinel). */
 				sts = Ctx->pOutData->RetSts;
@@ -2069,16 +2258,24 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 				pOut->Ybuff = pOut->UVbuff = NULL;
 				return recoveryCancel ? BC_STS_BUSY : BC_STS_IO_USER_ABORT;
 			}
-			if (invalidReceipt) {
-				/* FETCH already transferred a capture owner.  A rejected
-				 * receipt must still retire it; failed repost keeps pending
-				 * ownership for the existing retire-only teardown path. */
-				const BC_STATUS released = DtsRelRxBuff(Ctx,
-					&Ctx->pOutData->u.RxBuffs, FALSE);
-				if (released != BC_STS_SUCCESS)
-					sts = released;
-			} else if (sts != BC_STS_SUCCESS)
-				DtsDecPend(Ctx);
+			if (sts != BC_STS_SUCCESS) {
+				/* A successful FETCH transferred one registered capture buffer
+				 * to userspace even when embedded PIB validation rejected the
+				 * picture.  Return malformed picture buffers to the driver so a
+				 * bad receipt cannot silently shrink the capture pool.  The EOS
+				 * sentinel, including a rejected one, remains a control output with
+				 * its established no-repost
+				 * semantics.  If retirement itself fails, retain pending ownership
+				 * and report that failure just like the public output paths do. */
+				if (sts == BC_STS_IO_XFR_ERROR && !controlOutput) {
+					const BC_STATUS released = DtsRelRxBuff(Ctx,
+						&Ctx->pOutData->u.RxBuffs, FALSE);
+					if (released != BC_STS_SUCCESS)
+						sts = released;
+				} else {
+					DtsDecPend(Ctx);
+				}
+			}
 		}
 
 	}else{
@@ -2223,8 +2420,15 @@ BC_STATUS DtsMapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
 		return BC_STS_INV_ARG;
 
 	DtsLock(Ctx);
-	if (Ctx->bMapOutBufDone)
+	if (Ctx->bMapOutBufDone) {
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+		const uint32_t current = Ctx->rxBufferWidth ?
+			Ctx->rxBufferWidth : DTS_RX_LEGACY_WIDTH;
+		if (current != DtsDesiredRxBufferWidth(Ctx))
+			sts = BC_STS_BUSY;
+#endif
 		goto done;
+	}
 
 	/* A failed rollback leaves ownership ambiguous. Prove that the old set
 	 * is detached before attempting any new ADD_RXBUFFS command. */
@@ -2236,6 +2440,12 @@ BC_STATUS DtsMapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
 
 	if (!Ctx->Mpools || !(Ctx->CfgFlags & BC_MPOOL_INCL_YUV_BUFFS))
 		goto done;
+
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+	sts = DtsEnsureRxBufferLayout(Ctx);
+	if (sts != BC_STS_SUCCESS)
+		goto done;
+#endif
 
 	/* Validate the complete set before the first ADD.  Once an ADD enters the
 	 * kernel, even a failed copy-out makes ownership ambiguous and requires
@@ -3618,6 +3828,11 @@ static BC_STATUS DtsRestoreAfterResume(DTS_LIB_CONTEXT *Ctx)
 	sts = DtsSetupHardware(hDevice, true);
 	if (sts != BC_STS_SUCCESS)
 		return sts;
+	/* Successful setup reset the firmware and invalidated the pre-suspend
+	 * channel before any replacement OPEN can be attempted. */
+	DtsLock(Ctx);
+	Ctx->activeFleaScaleWord = 0;
+	DtsUnLock(Ctx);
 
 	/* Suspend retains capture registrations, while a failed repost can leave
 	 * a retirement-only userspace lease. INIT is the first driver state where
@@ -3633,6 +3848,7 @@ static BC_STATUS DtsRestoreAfterResume(DTS_LIB_CONTEXT *Ctx)
 	 */
 	DtsLock(Ctx);
 	Ctx->State = BC_DEC_STATE_CLOSE;
+	Ctx->activeFleaScaleWord = 0;
 	DtsUnLock(Ctx);
 	sts = DtsOpenDecoder(hDevice, 0);
 	if (sts != BC_STS_SUCCESS)
@@ -4041,7 +4257,8 @@ BOOL DtsDbgCheckPointers(DTS_LIB_CONTEXT *Ctx,BC_IOCTL_DATA *pIo)
 	for(i=0; i<Ctx->MpoolCnt; i++){
 		mp = &Ctx->Mpools[i];
 		if(mp->type & BC_MEM_DEC_YUVBUFF){
-			if(mp->buff == pIo->u.DecOutData.OutPutBuffs.YuvBuff){
+			if(mp->buff &&
+			   mp->buff == pIo->u.DecOutData.OutPutBuffs.YuvBuff){
 				bRet = TRUE;
 				break;
 			}

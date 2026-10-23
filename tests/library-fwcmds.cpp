@@ -100,6 +100,12 @@ extern "C" int __wrap_ioctl(int fd, unsigned long code, ...)
 	C011RspSelfTest *response =
 		reinterpret_cast<C011RspSelfTest *>(data->u.fwCmd.rsp);
 	response->status = response_status;
+	if (data->u.fwCmd.cmd[0] == eCMD_C011_DEC_CHAN_OPEN) {
+		DecRspChannelChannelOpen *open =
+			reinterpret_cast<DecRspChannelChannelOpen *>(
+				data->u.fwCmd.rsp);
+		open->ChannelID = 7;
+	}
 	bool fail_syscall = syscall_failure;
 	if (stop_lifecycle_script) {
 		const uint32_t opcode = data->u.fwCmd.cmd[0];
@@ -430,12 +436,15 @@ static void DecoderStartPayload()
 	expected[0] = 0x7376311bU;
 	expected[1] = 43U;
 	expected[3] = 1U;
+	fixture.context.activeFleaScaleWord = 0x50050001U;
 	Check(DtsFWStopVideo(&fixture.context, 0, false) == BC_STS_SUCCESS,
 	      "started decoder channel stops successfully");
 	CheckFirmwarePayload(expected,
 		"decoder stop preserves the reviewed 64-word wire payload");
 	Check(fixture.context.State == BC_DEC_STATE_STOP,
 	      "successful low-level stop publishes the library stop state");
+	Check(fixture.context.activeFleaScaleWord == 0x50050001U,
+	      "STOP preserves the successful OPEN scale identity");
 	fixture.PoolReturned();
 
 	fixture.Prepare();
@@ -450,6 +459,122 @@ static void DecoderStartPayload()
 		"decoder close preserves the reviewed 64-word wire payload");
 	Check(fixture.context.OpenRsp.channelStatus == 0,
 	      "successful low-level close clears the cached open response");
+	Check(fixture.context.activeFleaScaleWord == 0,
+	      "successful low-level close clears the OPEN scale identity");
+}
+
+static void FleaOpenScaleContract()
+{
+	struct OpenCase {
+		uint32_t device;
+		uint32_t algorithm;
+		uint32_t requested;
+		uint32_t wire;
+		uint32_t active;
+	};
+	const OpenCase cases[] = {
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_H264,
+		 0x07f07f01U, 0x3c050001U, 0x3c050001U},
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_H264,
+		 0x08008001U, 0x08008001U, 0x08008001U},
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_H264,
+		 0x50050001U, 0x50050001U, 0x50050001U},
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_H264,
+		 0x08108101U, 0x08208201U, 0x08208201U},
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_H264,
+		 0x28028001U, 0x28028001U, 0x28028001U},
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_H264,
+		 0x3c03c001U, 0x3c03c001U, 0x3c03c001U},
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_H264,
+		 0x4ff4ff01U, 0x50050001U, 0x50050001U},
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_H264,
+		 0x50150101U, 0x50250201U, 0x50250201U},
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_H264,
+		 0x77e77e01U, 0x77e77e01U, 0x77e77e01U},
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_H264,
+		 0x77f77f01U, 0x78078001U, 0x78078001U},
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_H264,
+		 0x78078001U, 0x3c050001U, 0x3c050001U},
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_H264,
+		 0x07f08001U, 0x3c008001U, 0x3c008001U},
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_H264,
+		 0x08007f01U, 0x08050001U, 0x08050001U},
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_H264, 0, 0, 0},
+		{BC_PCI_DEVID_FLEA, BC_VID_ALGO_MPEG2,
+		 0x50050001U, 0x50050001U, 0},
+		{BC_PCI_DEVID_LINK, BC_VID_ALGO_H264,
+		 0x50050001U, 0, 0},
+	};
+	for (const OpenCase &test : cases) {
+		Fixture fixture(test.device);
+		fixture.context.State = BC_DEC_STATE_CLOSE;
+		fixture.context.VidParams.VideoAlgo = test.algorithm;
+		fixture.context.EnableScaling = test.requested;
+		fixture.context.activeFleaScaleWord = 0xdeadbeefU;
+		Check(DtsFWOpenChannel(&fixture.context, eC011_STREAM_TYPE_ES, 0) ==
+		          BC_STS_SUCCESS,
+		      "firmware channel OPEN succeeds");
+		if (test.device == BC_PCI_DEVID_FLEA) {
+			const DecCmdChannelChannelOpen *open =
+				reinterpret_cast<const DecCmdChannelChannelOpen *>(
+					captured_fw.cmd);
+			Check(open->reservedWord8 == test.wire &&
+			      open->videoAlg == (eC011_VIDEO_ALG)test.algorithm,
+			      "FLEA OPEN carries the normalized scale word and codec");
+		}
+		Check(fixture.context.activeFleaScaleWord == test.active &&
+		      fixture.context.State == BC_DEC_STATE_STOP,
+		      "only successful FLEA H.264 OPEN publishes its submitted scale word");
+		fixture.PoolReturned();
+	}
+
+	for (unsigned failure = 0; failure < 4; ++failure) {
+		Fixture fixture(BC_PCI_DEVID_FLEA);
+		fixture.context.State = BC_DEC_STATE_CLOSE;
+		fixture.context.VidParams.VideoAlgo = BC_VID_ALGO_H264;
+		fixture.context.EnableScaling = 0x50050001U;
+		fixture.context.activeFleaScaleWord = 0xdeadbeefU;
+		if (failure == 0)
+			fixture.context.pIoDataFreeHd = nullptr;
+		else if (failure == 1)
+			ioctl_status = BC_STS_IO_ERROR;
+		else if (failure == 2)
+			response_status = 1;
+		else
+			syscall_failure = true;
+		const BC_STATUS expected[] = {
+			BC_STS_INSUFF_RES, BC_STS_IO_ERROR,
+			BC_STS_FW_CMD_ERR, BC_STS_ERROR,
+		};
+		Check(DtsFWOpenChannel(&fixture.context, eC011_STREAM_TYPE_ES, 0) ==
+		          expected[failure],
+		      "failed OPEN preserves its exact error");
+		Check(fixture.context.activeFleaScaleWord == 0 &&
+		      fixture.context.State == BC_DEC_STATE_CLOSE,
+		      "failed OPEN cannot retain or publish a scale identity");
+		if (failure == 0)
+			fixture.context.pIoDataFreeHd = &fixture.pooled;
+		else
+			fixture.PoolReturned();
+	}
+
+	Fixture wrong_state(BC_PCI_DEVID_FLEA);
+	wrong_state.context.State = BC_DEC_STATE_STOP;
+	wrong_state.context.activeFleaScaleWord = 0x50050001U;
+	const unsigned old_calls = calls;
+	Check(DtsFWOpenChannel(&wrong_state.context, eC011_STREAM_TYPE_ES, 0) ==
+	          BC_STS_ERR_USAGE && calls == old_calls &&
+	      wrong_state.context.activeFleaScaleWord == 0x50050001U,
+	      "wrong-state OPEN leaves the existing channel identity untouched");
+
+	Fixture already_closed(BC_PCI_DEVID_FLEA);
+	already_closed.context.State = BC_DEC_STATE_CLOSE;
+	already_closed.context.activeFleaScaleWord = 0x50050001U;
+	const unsigned close_calls_before = calls;
+	Check(DtsFWCloseChannel(&already_closed.context, 0) == BC_STS_SUCCESS &&
+	      calls == close_calls_before &&
+	      already_closed.context.activeFleaScaleWord == 0,
+	      "idempotent CLOSE converges stale scale identity to zero");
 }
 
 enum CloseFailure {
@@ -483,6 +608,7 @@ static void DecoderCloseOwnership(uint32_t device, CloseFailure failure)
 	fixture.context.LastSessNum = 9;
 	fixture.context.EOSCnt = 5;
 	fixture.context.DrvStatusEOSCnt = 6;
+	fixture.context.activeFleaScaleWord = 0x50050001U;
 	DtsSetDecStat(true, fixture.context.ProcessID);
 	const auto open_response = fixture.context.OpenRsp;
 
@@ -513,6 +639,8 @@ static void DecoderCloseOwnership(uint32_t device, CloseFailure failure)
 	          fixture.context.EOSCnt == 5 &&
 	          fixture.context.DrvStatusEOSCnt == 6,
 	      "failed decoder close preserves session metadata");
+	Check(fixture.context.activeFleaScaleWord == 0x50050001U,
+	      "failed decoder close preserves the active scale identity");
 	if (failure != CLOSE_POOL_EMPTY)
 		fixture.PoolReturned();
 
@@ -1186,6 +1314,7 @@ int main()
 	ValidTestIds(BC_PCI_DEVID_LINK);
 	FailurePropagation();
 	DecoderStartPayload();
+	FleaOpenScaleContract();
 	for (uint32_t device : {BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA}) {
 		for (StopFailure failure : {STOP_HEALTHY, STOP_POOL_EMPTY, STOP_DRIVER_STATUS,
 		                           STOP_FIRMWARE_RESPONSE, STOP_TIMEOUT, STOP_SYSCALL,

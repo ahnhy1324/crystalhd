@@ -37,6 +37,26 @@ by 11.7% in the paced BCM70015 720p60 screening without a repeatable task-time
 or context-switch change, so it remains an explicit opt-in. See the
 [hardware report](../../HARDWARE-2026-09-13.md) for the bounded comparison.
 
+For isolated source-build qualification, `CRYSTALHD_EXPERIMENTAL_SCALED_RX`
+is a **compile-time** experiment, separate from the pool-count setting:
+
+```sh
+make library CXXFLAGS='-O2 -DCRYSTALHD_EXPERIMENTAL_SCALED_RX'
+```
+
+It sizes BCM70015 playback/MOVE YUY2 backing from a successfully admitted
+H.264 scaling command with matching progressive/interlaced width fields
+(even widths 128–1918), retaining the conservative 1090-row bound.
+Other layouts use the full-size fallback. With this build,
+all playback/MOVE payload allocation, including fallback, moves from device
+open to first map/start; allocation failure can therefore occur there.
+DIAG/non-MOVE allocation remains eager. Replacement requires retired DMA
+ownership; uncertain unmap/stop retains backing and fails closed.
+Use only a private build, not a system-library replacement. This is not a
+new playback option or default: BCM70012 hardware, suspend/resume and
+mid-stream resizing are not qualified. Scope and measured results remain in
+[#470](https://github.com/ahnhy1324/crystalhd/issues/470).
+
 ## Direct-library drain validation
 
 This optional probe bypasses GStreamer and VA-API. It checks complete picture
