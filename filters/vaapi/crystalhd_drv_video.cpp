@@ -9615,10 +9615,19 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     // An internal, never-exported target has no external GPU readers. Its VA
     // consumers synchronize before reading; do not require privileged sw_sync
     // access for that path. Export must not expose it while this write is
-    // pending. Imported or previously exported targets still need a fence:
-    // Chromium can queue them without synchronizing the processed VA surface.
+    // pending. Driver-owned NV12 Bob targets exported only read-only can also
+    // remain pending: external reads require vaSyncSurface. Import aliases and
+    // writable exports permanently clear direct eligibility. Other targets
+    // retain their existing fence or synchronous-completion path.
     const bool private_target = target_surface == target_owner &&
                                 !target_owner->layout.valid;
+    const bool cpu_pending_target = private_target ||
+        (decode_context->vpp_deinterlace.bob &&
+         target_surface->fourcc == VA_FOURCC_NV12 &&
+         target_surface == target_owner &&
+         target_owner->backing_owner == VA_INVALID_SURFACE &&
+         target_owner->direct_decode_eligible &&
+         !target_owner->vpp_external_write_exposed);
     PendingVpp pending;
     pending.decoder = source_decoder;
     pending.source_owner = source_owner;
@@ -9644,10 +9653,10 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       return finish_vpp(VA_STATUS_ERROR_ALLOCATION_FAILED);
     }
     bool synchronous_fallback = false;
-    const int write_timeline = private_target
+    const int write_timeline = cpu_pending_target
         ? -1 : BeginFencedWrite(target_surface.get(), CpuCacheFlush(),
                                 &synchronous_fallback);
-    if (!private_target && write_timeline < 0 && !synchronous_fallback) {
+    if (!cpu_pending_target && write_timeline < 0 && !synchronous_fallback) {
       driver->pending_vpp.pop_back();
       Debug("could not fence asynchronous VPP target=%p",
             static_cast<void *>(target_surface.get()));
@@ -9656,7 +9665,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     driver->pending_vpp.back().write_timeline = write_timeline;
     ++decoded_source->vpp_readers;
     ++target_owner->vpp_writers;
-    if (!private_target && write_timeline < 0) {
+    if (!cpu_pending_target && write_timeline < 0) {
       // The target has external consumers, but no fence could be published.
       // Retain normal ownership while waiting and finish all CPU writes before
       // returning EndPicture; never expose an unfenced asynchronous writer.
