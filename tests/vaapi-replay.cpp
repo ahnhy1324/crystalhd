@@ -8770,8 +8770,11 @@ static VAPictureParameterBufferH264 NeutralPicture(unsigned width, unsigned heig
 
 static void LiveBobTailWithUnfenceableExposedTarget() {
   enum class Tail { Complete, Cancel, Drain, Auxiliary };
+  for (bool explicit_live : {false, true})
   for (bool bottom_first : {false, true}) {
     for (Tail tail : {Tail::Complete, Tail::Cancel, Tail::Drain, Tail::Auxiliary}) {
+      if (!explicit_live && tail != Tail::Auxiliary)
+        continue;
       TeardownFixture fixture(2);
       // This group exercises the inline unfenceable EndPicture fallback.
       fixture.driver.StopWorkers();
@@ -8779,8 +8782,10 @@ static void LiveBobTailWithUnfenceableExposedTarget() {
       auto &decode = *fixture.decoder;
       decode.profile = VAProfileH264Main;
       decode.height = fixture.io.output_height = 32;
-      decode.live_h264 = decode.live_h264_gap_tolerant = true;
-      decode.live_h264_fast_path = decode.low_latency_h264 = true;
+      decode.live_h264 = true;
+      decode.live_h264_gap_tolerant = decode.live_h264_fast_path = explicit_live;
+      decode.low_latency_h264 = explicit_live;
+      decode.auto_h264_prefeed = !explicit_live;
       decode.replay = CrystalHDDecodeReplay(true);
       for (unsigned int index = 0; index != 2; ++index) {
         const uint64_t token = (index + 1) * kTimestampStep;
@@ -8807,13 +8812,15 @@ static void LiveBobTailWithUnfenceableExposedTarget() {
       for (unsigned int picture = 1; picture <= 2; ++picture) {
         const uint64_t token = picture * kTimestampStep;
         Require(decode.replay.Append(token, picture == 1,
-                                      TestH264AccessUnit(picture == 1, picture)),
+                                      TestH264AccessUnit(picture == 1, picture),
+                                      !explicit_live),
                 "accept each real AU before its independent successor prefix");
         if (tail == Tail::Auxiliary) {
           H264Auxiliary::Syntax syntax;
           syntax.picture = NeutralPicture(16, 32);
           syntax.generation = decode.generation;
           syntax.device = decode.device;
+          syntax.prefeed = true;
           decode.auxiliary.syntax.emplace(token, syntax);
         }
         decode.next_timestamp = (picture + 1) * kTimestampStep;
@@ -10697,6 +10704,9 @@ static void NeutralAuxInputSnapshotSurvivesPendingOutput() {
 }
 
 static void NeutralAuxiliaryTriggerOwnsOnlyTransport() {
+  // DEFAULT automatic prefeed, explicit LIVE+LOW, and both historical LIVE
+  // modes without ordinary prefeed all retain their own transport contract.
+  for (unsigned policy : {0U, 1U, 2U, 3U})
   for (bool prefix_busy : {false, true}) {
     DecodeIoMock io;
     MockDecodeScope scope(io);
@@ -10704,12 +10714,16 @@ static void NeutralAuxiliaryTriggerOwnsOnlyTransport() {
     auto &d = fixture.decoder;
     d.device = io.handle();
     d.decoder_open = d.decoder_started = true;
-    d.live_h264_fast_path = d.live_h264_gap_tolerant = true;
+    d.live_h264 = true;
+    d.live_h264_fast_path = d.live_h264_gap_tolerant = policy != 0;
+    d.auto_h264_prefeed = policy == 0;
+    d.low_latency_h264 = policy == 1;
     d.next_timestamp = 2 * kTimestampStep;
     d.prefed_timestamp = io.prefed_timestamp = d.next_timestamp;
     d.auxiliary.candidate.picture = NeutralPicture(16, 32);
     d.auxiliary.candidate.generation = d.generation;
     d.auxiliary.candidate.device = d.device;
+    d.auxiliary.candidate.prefeed = policy < 2;
     d.auxiliary.candidate_timestamp = kTimestampStep;
     auto first = fixture.Output(false, false, &fixture.top);
     Require(ProcessDecodedOutput(&fixture.driver, &d, first) == VA_STATUS_SUCCESS &&
@@ -10769,8 +10783,288 @@ static void NeutralAuxiliaryTriggerOwnsOnlyTransport() {
   }
 }
 
+static void NeutralAuxAdmissionSnapshotsPolicyAndSyntax() {
+  SavedEnvironment live("CRYSTALHD_VAAPI_LIVE_H264");
+  SavedEnvironment low("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
+  const auto set_policy = [](const char *name, int value) {
+    if (value < 0) unsetenv(name);
+    else setenv(name, value ? "1" : "0", 1);
+  };
+  for (int live_value : {-1, 0, 1}) {
+    for (int low_value : {-1, 0, 1}) {
+      set_policy("CRYSTALHD_VAAPI_LIVE_H264", live_value);
+      set_policy("CRYSTALHD_VAAPI_LOW_LATENCY_H264", low_value);
+      DecodeIoMock io;
+      io.allow_device_open = true;
+      MockDecodeScope scope(io);
+      Driver driver{-1};
+      driver.StopWorkers();
+      driver.stopping = false;
+      driver.configs[1] = {VAProfileH264Main, VAEntrypointVLD};
+      VADriverContext context = {};
+      context.pDriverData = &driver;
+      VAContextID id = VA_INVALID_ID;
+      Require(CreateContext(&context, 1, 16, 32, 0, nullptr, 0, &id) == VA_STATUS_SUCCESS,
+              "public ordinary context snapshots the LIVE/LOW policy matrix");
+      auto decode = driver.contexts.at(id);
+      auto target = std::make_shared<Surface>();
+      Require(target->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+              "allocate policy-matrix public target");
+      target->id = 1;
+      driver.surfaces[1] = target;
+      Require(BeginPicture(&context, id, 1) == VA_STATUS_SUCCESS,
+              "begin actual policy-matrix picture");
+      decode->picture = NeutralPicture(16, 32);
+      decode->have_picture = true;
+      VASliceParameterBufferH264 slice = {};
+      slice.slice_type = 2;
+      decode->slices.push_back(slice);
+      decode->slice_data.push_back({0x65, 0x88, 0x84});
+      io.input_busy = true;
+      const bool eligible = live_value == 1 || (live_value < 0 && low_value != 0);
+      Require(EndPicture(&context, id) == VA_STATUS_SUCCESS &&
+                  decode->auxiliary.syntax.size() == (eligible ? 1U : 0U),
+              "actual accepted AU captures syntax only for DEFAULT eligible or historical LIVE policy");
+      const auto accepted = decode->replay.NextInput()->bytes;
+      decode->picture = {}; // New mutable metadata must never replace that MBAFF AU.
+      io.input_busy = false;
+      Require(PumpDecodeInput(&driver, decode.get()) == VA_STATUS_SUCCESS &&
+                  io.input_calls[1].bytes == accepted &&
+                  decode->auxiliary.syntax.empty() &&
+                  decode->auxiliary.candidate_timestamp == (eligible ? kTimestampStep : 0),
+              "InputSent uses the accepted immutable AU, including strict/default opt-outs");
+      if (eligible)
+        Require(decode->auxiliary.candidate.picture.frame_num == 7 &&
+                    decode->auxiliary.candidate.picture.CurrPic.TopFieldOrderCnt == 18 &&
+                    decode->auxiliary.candidate.generation == decode->generation &&
+                    decode->auxiliary.candidate.device == decode->device &&
+                    decode->auxiliary.candidate.prefeed ==
+                        (low_value == 1 || (live_value != 1 && low_value < 0)),
+                "candidate keeps exact frame/POC/device/generation and accepted prefeed decision");
+      Require(!io.invalid, "public policy admission uses only mocked transport");
+    }
+  }
+}
+
+static void NeutralAuxFiniteActualEosPermitsContinuation() {
+  for (bool retained : {false, true}) {
+    for (bool closing : {false, true}) {
+      DecodeIoMock io;
+      io.allow_device_open = true;
+      io.library_capabilities = retained ? DTS_LIB_CAP_FLEA_H264_DRAINED_REOPEN : 0;
+      MockDecodeScope scope(io);
+      H264WeaveFixture fixture;
+      auto &d = fixture.decoder;
+      d.device = io.handle();
+      d.decoder_open = d.decoder_started = true;
+      d.live_h264 = d.auto_h264_prefeed = true;
+      d.next_timestamp = 2 * kTimestampStep;
+      d.prefed_timestamp = io.prefed_timestamp = d.next_timestamp;
+      d.auxiliary.candidate.picture = NeutralPicture(16, 32);
+      d.auxiliary.candidate.generation = d.generation;
+      d.auxiliary.candidate.device = d.device;
+      d.auxiliary.candidate.prefeed = true;
+      d.auxiliary.candidate_timestamp = kTimestampStep;
+      auto first = fixture.Output(false, false, &fixture.top);
+      auto complement = fixture.Output(true, false, &fixture.bottom);
+      Require(ProcessDecodedOutput(&fixture.driver, &d, first) == VA_STATUS_SUCCESS,
+              "finite original owns a real first field");
+      VppDeinterlace demand{};
+      demand.bob = true;
+      demand.field = crystalhd_vpp_bob::FieldParity::kBottom;
+      Require(TryH264Auxiliary(&fixture.driver, &d, fixture.public_frame, &demand,
+                              kDecodeBatchGraceNs) == VA_STATUS_SUCCESS && d.auxiliary.pending,
+              "DEFAULT accepts actual private lookahead before finite sealing");
+      const auto syntax = d.auxiliary.candidate;
+      io.early_eos = true;
+      Require(SealDecodeBatch(&fixture.driver, &d) == VA_STATUS_SUCCESS && d.replay.sealed(),
+              "finite batch is sealed while the genuine complement remains outstanding");
+      constexpr uint64_t next = 3 * kTimestampStep;
+      auto continuation = std::make_shared<Surface>();
+      Require(continuation->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+              "allocate accepted continuation before the old EOS");
+      continuation->expected_timestamp = next;
+      InheritTraceIdentity(continuation.get(), *fixture.private_frame);
+      continuation->decode_identity = continuation->trace_decode_identity = 42;
+      continuation->trace_submission_ordinal = 2;
+      continuation->h264_crop_unit_y = 4;
+      auto next_public = std::make_shared<Surface>();
+      Require(next_public->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+              "allocate the continuation's exact public binding");
+      next_public->id = 2;
+      next_public->expected_timestamp = next;
+      next_public->decode_identity = 42;
+      next_public->h264_crop_unit_y = 4;
+      InheritTraceIdentity(next_public.get(), *continuation);
+      next_public->decode_picture = continuation;
+      fixture.driver.surfaces[2] = next_public;
+      d.surface_timestamps[next_public.get()] = next;
+      d.decoded_frames[next] = continuation;
+      d.pending[next] = 2;
+      d.auxiliary.syntax.emplace(next, syntax);
+      Require(d.replay.Append(next, false, {0,0,1,0x41,0x80}, true),
+              "sealed replay retains the exact accepted continuation");
+      d.next_timestamp = 4 * kTimestampStep;
+      Require(!d.CanRestartAfterH264Auxiliary() &&
+                  ProcessDecodedOutput(&fixture.driver, &d, complement) == VA_STATUS_SUCCESS,
+              "pending auxiliary and missing actual EOS cannot permit restart");
+      const auto pixels = fixture.public_frame->storage;
+      const auto identity = fixture.public_frame->decode_identity;
+      const auto ordinal = d.next_submission_ordinal;
+      // Describe firmware output without repairing the accepted ledger: its
+      // identity must still come from the actual auxiliary Try call above.
+      fixture.output.PicInfo.timeStamp = kNeutralAuxToken;
+      fixture.output.PicInfo.flags &= ~VDEC_FLAG_UNKNOWN_SRC;
+      fixture.raw.timeStamp = kNeutralAuxToken / 20000U;
+      fixture.raw.flags = VDEC_FLAG_FIELDPAIR;
+      fixture.WritePib();
+      io.override_output = true;
+      Require(NeutralAuxReceive(&fixture, &io) == VA_STATUS_SUCCESS && !d.auxiliary.pending &&
+                  d.auxiliary.needs_eos && !d.auxiliary.ended &&
+                  !d.CanRestartAfterH264Auxiliary(),
+              "validated/released auxiliary pays only its private output debt, not EOS");
+      io.override_output = false;
+      bool activity = false;
+      Require(ReceiveOne(&fixture.driver, &d, 0, &activity) == VA_STATUS_SUCCESS && activity &&
+                  d.replay.NeedsRestart() && d.auxiliary.ended && !d.auxiliary.needs_eos &&
+                  !d.auxiliary.eos_only && d.prefed_timestamp == 0 &&
+                  d.pending_prefeed_timestamp == 0 && d.CanRestartAfterH264Auxiliary(),
+              "only the consumed actual firmware EOS pays every finite restart fence");
+      d.closing = closing;
+      const size_t calls = io.input_calls.size();
+      Require(PumpDecodeInput(&fixture.driver, &d, 1) == VA_STATUS_SUCCESS &&
+                  io.device_close_calls == (retained && !closing ? 0U : 1U) &&
+                  io.decoder_open_calls == 1 &&
+                  io.input_calls.size() == calls + 1 &&
+                  io.input_calls.back().timestamp == kTimestampStep &&
+                  !d.auxiliary.ever && d.auxiliary.syntax.empty() &&
+                  !d.auxiliary.candidate_timestamp && d.pending.at(next) == 2 &&
+                  d.decoded_frames.at(next) == continuation &&
+                  d.next_submission_ordinal == ordinal &&
+                  fixture.public_frame->storage == pixels &&
+                  fixture.public_frame->decode_identity == identity,
+              "drained auxiliary restarts retained/full hardware, including full closing drain, without stale syntax or public mutation");
+      Require(ProcessDecodedOutput(&fixture.driver, &d, first) == VA_STATUS_SUCCESS &&
+                  ProcessDecodedOutput(&fixture.driver, &d, complement) == VA_STATUS_SUCCESS &&
+                  fixture.public_frame->storage == pixels,
+              "reference-prefix replay cannot republish or rewrite a completed original");
+      Require(PumpDecodeInput(&fixture.driver, &d, 1) == VA_STATUS_SUCCESS &&
+                  d.replay.IsOutstanding(next) && d.auxiliary.candidate_timestamp == 0 &&
+                  d.next_submission_ordinal == ordinal && !io.invalid,
+              "queued continuation submits after replay and missing fresh syntax uses finite fallback");
+      first.PicInfo.timeStamp = complement.PicInfo.timeStamp = next;
+      ++first.PicInfo.picture_number;
+      ++complement.PicInfo.picture_number;
+      Require(ProcessDecodedOutput(&fixture.driver, &d, first) == VA_STATUS_SUCCESS &&
+                  ProcessDecodedOutput(&fixture.driver, &d, complement) == VA_STATUS_SUCCESS &&
+                  next_public->ready && next_public->frame_timestamp == next &&
+                  next_public->decode_identity == 42 && d.pending.count(next) == 0 &&
+                  d.replay.outstanding() == 0 && fixture.public_frame->storage == pixels,
+              "continuation completes its own real fields and exact public identity after replay");
+    }
+  }
+}
+
+static void NeutralAuxRestartRejectsUnpaidDebt() {
+  for (unsigned fault = 0; fault < 16; ++fault) {
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    Driver driver{-1};
+    DecodeContext d;
+    d.profile = VAProfileH264Main;
+    d.width = 16; d.height = 32;
+    d.device = io.handle();
+    d.decoder_open = d.decoder_started = true;
+    d.next_timestamp = 4 * kTimestampStep;
+    Require(d.replay.Append(kTimestampStep, true, {1}) && d.replay.InputSent() &&
+                d.replay.Seal() &&
+                d.replay.Observe(kTimestampStep) == CrystalHDDecodeReplay::Output::New &&
+                d.replay.EndOfSequence() && d.replay.Append(3 * kTimestampStep, false, {3}),
+            "prepare an ended replay with an accepted continuation");
+    d.auxiliary.ever = d.auxiliary.ended = true;
+    d.auxiliary.generation = d.generation;
+    d.auxiliary.device = d.device;
+    switch (fault) {
+      case 0: d.auxiliary.pending = true; break;
+      case 1: d.auxiliary.needs_eos = true; break;
+      case 2: d.auxiliary.eos_only = true; break;
+      case 3: d.auxiliary.ended = false; break;
+      case 4: d.auxiliary.device = nullptr; break;
+      case 5: ++d.auxiliary.generation; break;
+      case 6: d.h264_first_field.valid = true; break;
+      case 7: d.partial_input_timestamp = 3 * kTimestampStep; break;
+      case 8: d.partial_input_offset = 1; break;
+      case 9: d.prefed_timestamp = 4 * kTimestampStep; break;
+      case 10: d.pending_prefeed_timestamp = 4 * kTimestampStep;
+               d.pending_prefeed_generation = d.generation; break;
+      case 11: d.pending_prefeed_generation = d.generation; break;
+      case 12: d.live_h264_fast_path = true; break;
+      case 13: d.retired = true; break;
+      case 14: d.destroy_prepared = true; break;
+      case 15: d.hardware_close_pending = true; break;
+    }
+    Require(!d.CanRestartAfterH264Auxiliary() &&
+                PumpDecodeInput(&driver, &d, 1) == VA_STATUS_ERROR_DECODING_ERROR &&
+                d.replay.failed() && io.input_calls.empty() && io.events.empty() &&
+                io.open_attempts == 0 && !io.invalid,
+            "unpaid auxiliary/EOS/field/prefix/generation/lifecycle debt fails before hardware restart or speculative retry");
+  }
+  for (unsigned debt = 0; debt < 3; ++debt) {
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    H264FieldFixture fixture(false, false, VA_FOURCC_NV12, 16, kTimestampStep);
+    auto &d = fixture.decoder;
+    d.device = io.handle();
+    d.decoder_open = d.decoder_started = true;
+    d.auxiliary.ever = d.auxiliary.needs_eos = true;
+    d.auxiliary.generation = d.generation;
+    d.auxiliary.device = d.device;
+    d.auxiliary.pending = debt == 0;
+    if (debt == 2) d.h264_first_field.valid = true;
+    Require(d.replay.Seal(), "seal before injecting a genuinely premature firmware EOS");
+    io.outputs.push_back(0);
+    bool activity = false;
+    Require(ReceiveOne(&fixture.driver, &d, 0, &activity) == VA_STATUS_ERROR_DECODING_ERROR &&
+                activity && d.replay.failed() && !d.auxiliary.ended &&
+                !d.CanRestartAfterH264Auxiliary() && io.input_calls.empty() &&
+                std::count(io.events.begin(), io.events.end(), "release") == 1 && !io.invalid,
+            "actual premature EOS with private output, real output or held-field debt cannot authorize restart");
+  }
+  {
+    DecodeIoMock io;
+    io.early_eos = true;
+    MockDecodeScope scope(io);
+    H264FieldFixture fixture(false, false, VA_FOURCC_NV12, 16, kTimestampStep);
+    auto &d = fixture.decoder;
+    d.device = io.handle();
+    d.decoder_open = d.decoder_started = true;
+    Require(ProcessDecodedOutput(&fixture.driver, &d,
+                                 fixture.Output(false, false, &fixture.top)) == VA_STATUS_SUCCESS &&
+                ProcessDecodedOutput(&fixture.driver, &d,
+                                     fixture.Output(true, false, &fixture.bottom)) == VA_STATUS_SUCCESS,
+            "finish all original fields before an auxiliary-only closing flush");
+    d.auxiliary.ever = d.auxiliary.needs_eos = true;
+    d.auxiliary.generation = d.generation;
+    d.auxiliary.device = d.device;
+    d.closing = true;
+    Require(SealDecodeBatch(&fixture.driver, &d) == VA_STATUS_SUCCESS && d.auxiliary.eos_only,
+            "only explicit close flushes private debt after all real pictures completed");
+    bool activity = false;
+    Require(ReceiveOne(&fixture.driver, &d, 0, &activity) == VA_STATUS_SUCCESS &&
+                d.auxiliary.ended && !d.replay.NeedsRestart() &&
+                d.replay.Append(3 * kTimestampStep, false, {3}) &&
+                !d.CanRestartAfterH264Auxiliary() &&
+                PumpDecodeInput(&fixture.driver, &d, 1) == VA_STATUS_ERROR_DECODING_ERROR &&
+                d.replay.failed() && io.input_calls.empty(),
+            "auxiliary-only EOS cannot manufacture a real replay EOS or admit input to ended hardware");
+  }
+}
+
 static void NeutralAuxiliaryContracts() {
+  NeutralAuxAdmissionSnapshotsPolicyAndSyntax();
   NeutralAuxiliaryTriggerOwnsOnlyTransport();
+  NeutralAuxFiniteActualEosPermitsContinuation();
+  NeutralAuxRestartRejectsUnpaidDebt();
   NeutralAuxSyntaxIsSelfContained();
   NeutralAuxWeavePreservesHeldOriginal();
   NeutralAuxWeaveFaultsFailClosed();

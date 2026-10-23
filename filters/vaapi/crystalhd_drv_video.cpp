@@ -2264,6 +2264,7 @@ struct H264Auxiliary {
     VAPictureParameterBufferH264 picture{};
     uint64_t generation = 0;
     HANDLE device = nullptr;
+    bool prefeed = false;
   };
   std::map<uint64_t, Syntax> syntax;
   Syntax candidate{};
@@ -2566,6 +2567,25 @@ struct DecodeContext {
 
   enum class HardwareClosePurpose { Device, H264Replay };
 
+  bool CanRestartAfterH264Auxiliary() const {
+    if (!auxiliary.ever)
+      return true;
+    // An auxiliary output is private debt, not proof that firmware ended.
+    // Queued continuation pictures and completed immutable pixels stay owned;
+    // only the actual drained EOS permits rebuilding their reference channel.
+    return IsH264Profile(profile) && !is_70012 && !live_h264_fast_path &&
+        auxiliary.ended && !auxiliary.pending && !auxiliary.needs_eos &&
+        !auxiliary.eos_only && auxiliary.generation == generation &&
+        auxiliary.device == device && device != nullptr &&
+        decoder_open && decoder_started && !retired &&
+        !destroy_prepared && !hardware_close_pending &&
+        retained_close_status == BC_STS_SUCCESS && replay.NeedsRestart() &&
+        !replay.failed() && replay.outstanding() == 0 &&
+        !h264_first_field.valid && partial_input_timestamp == 0 &&
+        partial_input_offset == 0 && prefed_timestamp == 0 &&
+        pending_prefeed_timestamp == 0 && pending_prefeed_generation == 0;
+  }
+
   BC_STATUS CloseHardware(uint64_t timeout_ns = kDecodeTimeoutNs) {
     return CloseHardwareImpl(timeout_ns, HardwareClosePurpose::Device);
   }
@@ -2586,6 +2606,7 @@ struct DecodeContext {
         replay.outstanding() == 0 && !h264_first_field.valid &&
         partial_input_timestamp == 0 && partial_input_offset == 0 &&
         prefed_timestamp == 0 && pending_prefeed_timestamp == 0 &&
+        CanRestartAfterH264Auxiliary() &&
         SupportsDrainedH264ChannelReopen();
     CancelPendingPrefeed();
     BC_STATUS result = retained_close_status;
@@ -3434,6 +3455,20 @@ static bool ShouldAutoPrefeedH264(const DecodeContext &decode) {
          (decode.picture.seq_fields.bits.frame_mbs_only_flag ||
           decode.picture.seq_fields.bits.mb_adaptive_frame_field_flag) &&
          !decode.picture.pic_fields.bits.field_pic_flag;
+}
+
+static bool H264AuxiliaryPolicy(const DecodeContext &decode,
+                                bool accepted_prefeed) {
+  // DEFAULT ordinary input keeps finite EOS/replay semantics. Its accepted
+  // frame-AU prefeed may provide the same bounded Bob lookahead as LIVE+LOW.
+  // Explicit LIVE keeps its existing auxiliary contract independently of LOW.
+  // The additional ordinary finite path honors LIVE=0 and LOW=0, and its
+  // per-AU eligibility is never recomputed from a later picture's SPS.
+  return IsH264Profile(decode.profile) && !decode.is_70012 &&
+      !decode.experimental_ready_remap &&
+      ((decode.live_h264_fast_path && decode.live_h264_gap_tolerant) ||
+       (!decode.decode_processing && decode.live_h264 && accepted_prefeed &&
+        (decode.low_latency_h264 || decode.auto_h264_prefeed)));
 }
 
 static VAStatus OpenDevice(DecodeContext *decode) {
@@ -5333,6 +5368,11 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                                 unsigned int max_attempts = 32) {
   decode->input_backpressured = false;
   decode->input_budget_exhausted = false;
+  // Do not let speculative-prefix retry cancel unpaid auxiliary restart debt
+  // before the actual-EOS fence is checked.
+  if (decode->auxiliary.ever && decode->replay.NeedsRestart() &&
+      !decode->CanRestartAfterH264Auxiliary())
+    return FailDecode(driver, decode, "H.264 auxiliary restart before actual drained EOS");
   VAStatus advance = AdvanceMpeg4Epoch(driver, decode);
   if (advance != VA_STATUS_SUCCESS)
     return advance;
@@ -5344,8 +5384,8 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
     if (replay.failed())
       return VA_STATUS_ERROR_DECODING_ERROR;
     if (replay.NeedsRestart()) {
-      if (decode->auxiliary.ever)
-        return FailDecode(driver, decode, "H.264 auxiliary forbids decoder replay/restart");
+      if (!decode->CanRestartAfterH264Auxiliary())
+        return FailDecode(driver, decode, "H.264 auxiliary restart before actual drained EOS");
       // EOS terminates reference state. A qualified library may replace a fully
       // stopped/closed H.264 channel on its retained device; all other cases
       // retain full-device reopen. This is never the legacy channel-only FLUSH.
@@ -5469,8 +5509,9 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
         decode->auxiliary.candidate_timestamp = 0;
         auto syntax = decode->auxiliary.syntax.find(input_timestamp);
         if (syntax != decode->auxiliary.syntax.end()) {
-          if (!unit->completed && !decode->is_70012 &&
-              decode->live_h264_fast_path && decode->live_h264_gap_tolerant &&
+          if (!unit->completed &&
+              H264AuxiliaryPolicy(*decode,
+                                  prefeed_after_unit && syntax->second.prefeed) &&
               syntax->second.generation == decode->generation &&
               syntax->second.device == decode->device) {
             auxiliary_candidate = syntax->second;
@@ -6503,8 +6544,9 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                                      ShouldAutoPrefeedH264(*decode))) {
     return FailDecode(driver, decode, decode->replay.failure());
   }
-  if (IsH264Profile(profile) && decode->live_h264_fast_path &&
-      decode->live_h264_gap_tolerant) {
+  const bool auxiliary_prefeed =
+      decode->low_latency_h264 || ShouldAutoPrefeedH264(*decode);
+  if (H264AuxiliaryPolicy(*decode, auxiliary_prefeed)) {
     // Append already applied the replay cache/picture admission bounds.
     // One syntax record per not-yet-InputSent AU shares that bound.
     if (decode->auxiliary.syntax.size() >= decode->replay.cached_pictures())
@@ -6514,6 +6556,7 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       syntax.picture = decode->picture;
       syntax.generation = decode->generation;
       syntax.device = decode->device;
+      syntax.prefeed = auxiliary_prefeed;
       if (!decode->auxiliary.syntax.emplace(timestamp, syntax).second)
         return FailDecode(driver, decode, "H.264 syntax snapshot duplicate");
     } catch (const std::bad_alloc &) {
@@ -6757,7 +6800,7 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
   auto &aux = decode->auxiliary;
   const auto &first = decode->h264_first_field;
   if (!demand || !demand->bob || idle < kDecodeBatchGraceNs || aux.pending ||
-      !decode->live_h264_fast_path || !decode->live_h264_gap_tolerant ||
+      !H264AuxiliaryPolicy(*decode, aux.candidate.prefeed) ||
       !aux.candidate_timestamp || !first.valid || first.replay_duplicate ||
       first.bottom == (demand->field == crystalhd_vpp_bob::FieldParity::kBottom) ||
       first.timestamp != surface->expected_timestamp ||
