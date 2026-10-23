@@ -4247,14 +4247,15 @@ struct ReadOnlyBobFixture : Fixture {
   VADRMPRIMESurfaceDescriptor prime = {};
   VABufferID filter = VA_INVALID_ID;
 
-  ReadOnlyBobFixture(FenceIoMock &mock, unsigned parity = 0) {
+  ReadOnlyBobFixture(FenceIoMock &mock, unsigned parity = 0,
+                     unsigned width = 16, unsigned height = 16) {
     driver.StopWorkers();
     driver.stopping = false;
     VASurfaceID id = 2;
     Require(DestroySurfaces(&context, &id, 1) == VA_STATUS_SUCCESS,
             "replace the fixture target with an actual driver allocation");
     driver.next_surface = id;
-    Require(CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 16, 16,
+    Require(CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, width, height,
                             &id, 1, nullptr, 0) == VA_STATUS_SUCCESS && id == 2,
             "allocate an ordinary internally owned NV12 target");
     target = driver.surfaces.at(id);
@@ -5247,6 +5248,148 @@ VAImage MakeImage(Fixture *fixture, int width = 16, int height = 16) {
               VA_STATUS_SUCCESS,
           "create private NV12 image");
   return image;
+}
+
+void CenteredReadOnlyBobPending() {
+  for (unsigned parity : {0U, 1U}) {
+    for (unsigned mode = 0; mode != 4; ++mode) {
+      FenceIoMock mock;
+      MockFenceScope scope(mock);
+      ReadOnlyBobFixture fixture(mock, parity, 256, 32);
+      crystalhd_centered_output::Config config;
+      crystalhd_centered_output::Geometry geometry;
+      Require(crystalhd_centered_output::ParseConfig("128x16@256x32:limited", &config) &&
+                  crystalhd_centered_output::BuildGeometry(config, 256, 32, 4, &geometry) &&
+                  geometry.x == 64 && geometry.y == 8,
+              "validate a small centered canvas with horizontal and vertical borders");
+      const auto picture = std::make_shared<Surface>();
+      const auto small = std::make_shared<Surface>();
+      fixture.source = std::make_shared<Surface>();
+      Require(fixture.source->AllocateCpuNv12(256, 32) &&
+                  picture->AllocateCpuNv12(256, 32) && small->AllocateCpuNv12(128, 16),
+              "allocate independent public canvas, captured canvas and immutable sidecar");
+      fixture.decoder->id = 1;
+      fixture.decoder->centered_geometry = geometry;
+      fixture.source->id = 1;
+      fixture.source->expected_timestamp = kTimestampStep;
+      fixture.source->decode_identity = 41;
+      picture->expected_timestamp = small->expected_timestamp = kTimestampStep;
+      picture->decode_identity = small->decode_identity = 41;
+      picture->trace_context = small->trace_context = 1;
+      picture->trace_generation = small->trace_generation = fixture.decoder->generation;
+      picture->centered_geometry = geometry;
+      picture->centered_pixels = small;
+      // A full-canvas fallback would read this poison instead of sidecar pixels.
+      std::fill(picture->storage.begin(), picture->storage.end(), uint8_t{231});
+      for (unsigned plane = 0; plane != 2; ++plane)
+        for (unsigned row = 0; row != (plane == 0 ? 16U : 8U); ++row)
+          for (unsigned column = 0; column != 128; ++column)
+            small->planes[plane][row * small->pitch[plane] + column] =
+                static_cast<uint8_t>((plane == 0 ? 20 : 80) + row * 5 + column % 37);
+      const auto sidecar_bytes = small->storage;
+      const auto canvas_bytes = picture->storage;
+      fixture.driver.surfaces[1] = fixture.source;
+      fixture.decoder->surface_timestamps.clear();
+      fixture.decoder->surface_timestamps[fixture.source.get()] = kTimestampStep;
+      fixture.decoder->decoded_frames[kTimestampStep] = picture;
+      fixture.Queue();
+      Require(fixture.driver.pending_vpp.front().source == picture &&
+                  fixture.driver.pending_vpp.front().source->centered_pixels == small,
+              "cold read-only Bob retains the exact centered source and sidecar");
+      const VAImage image = MakeImage(&fixture, 256, 32);
+      VASurfaceStatus state = VASurfaceReady;
+      Require(QuerySurfaceStatus(&fixture.context, 2, &state) == VA_STATUS_SUCCESS &&
+                  state == VASurfaceRendering &&
+                  SyncSurface2(&fixture.context, 2, 0) == VA_STATUS_ERROR_TIMEDOUT &&
+                  SyncSurface2(&fixture.context, 2, 1000000ULL) == VA_STATUS_ERROR_TIMEDOUT &&
+                  GetImage(&fixture.context, 2, 0, 0, 256, 32, image.image_id) ==
+                      VA_STATUS_ERROR_SURFACE_BUSY && mock.events.empty(),
+              "pending centered output is neither ready nor readable and opens no timeline");
+      const auto target = fixture.target;
+      std::vector<uint8_t> before(target->object_sizes[0]);
+      memcpy(before.data(), target->object_maps[0], before.size());
+      std::shared_ptr<Surface> replacement;
+      if (mode == 1) {
+        fixture.decoder->Reset();
+      } else if (mode >= 2) {
+        VASurfaceID retired = mode == 2 ? 2 : 1;
+        Require(DestroySurfaces(&fixture.context, &retired, 1) == VA_STATUS_SUCCESS,
+                "destroy the centered pending target or its original source owner");
+        if (mode == 2) {
+          replacement = std::make_shared<Surface>();
+          Require(replacement->AllocateCpuNv12(256, 32), "allocate a replacement VA target");
+          std::fill(replacement->storage.begin(), replacement->storage.end(), uint8_t{77});
+          replacement->id = 2;
+          fixture.driver.surfaces[2] = replacement;
+        }
+      }
+      picture->ready = small->ready = true;
+      picture->frame_timestamp = small->frame_timestamp = kTimestampStep;
+      fixture.StartWorker(mock);
+      if (mode == 0) {
+        Require(SyncSurface2(&fixture.context, 2, 1000000000ULL) == VA_STATUS_SUCCESS,
+                "Sync waits for the actual worker to complete centered read-only Bob");
+      } else {
+        std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+        Require(fixture.driver.condition.wait_for(lock, std::chrono::seconds(1), [&] {
+                  return fixture.driver.pending_vpp.empty();
+                }), "the actual worker retires canceled centered Bob");
+      }
+      fixture.driver.StopWorkers();
+      Require(fixture.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
+                  target->vpp_writers == 0 && small->storage == sidecar_bytes &&
+                  picture->storage == canvas_bytes && mock.handles.empty() &&
+                  mock.started.empty() && !mock.invalid && !mock.self_wait,
+              "centered ownership retires without modifying immutable source storage");
+      if (mode != 0) {
+        Require(!target->ready && target->failed &&
+                    memcmp(before.data(), target->object_maps[0], before.size()) == 0 &&
+                    (!replacement || std::all_of(replacement->storage.begin(),
+                         replacement->storage.end(), [](uint8_t value) { return value == 77; })) &&
+                    mock.events.empty(),
+                "reset and destruction permit no late writes to old or reused centered targets");
+        continue;
+      }
+      Require(target->ready && !target->failed &&
+                  target->expected_timestamp == kTimestampStep &&
+                  target->frame_timestamp == kTimestampStep &&
+                  fixture.driver.vpp_scaler == nullptr &&
+                  mock.events == std::vector<std::string>{
+                      "start:" + std::to_string(target->object_fds[0]),
+                      "end:" + std::to_string(target->object_fds[0])} &&
+                  GetImage(&fixture.context, 2, 0, 0, 256, 32, image.image_id) ==
+                      VA_STATUS_SUCCESS,
+              "completed centered Bob has exact identity and becomes readable without swscale or fences");
+      for (unsigned plane = 0; plane != 2; ++plane) {
+        const unsigned first = plane == 0 ? 8U : 4U;
+        const unsigned rows = plane == 0 ? 32U : 16U;
+        const unsigned active = plane == 0 ? 16U : 8U;
+        for (unsigned row = 0; row != rows; ++row)
+          for (unsigned column = 0; column != 256; ++column) {
+            const bool inside = row >= first && row < first + active &&
+                                column >= 64 && column < 192;
+            const unsigned selected_row = inside ? ((row - first) / 2U) * 2U + parity : 0;
+            const uint8_t expected = inside
+                ? static_cast<uint8_t>((plane == 0 ? 20 : 80) + selected_row * 5 +
+                                       (column - 64) % 37)
+                : static_cast<uint8_t>(plane == 0 ? 16 : 128);
+            Require(target->planes[plane][row * target->pitch[plane] + column] == expected,
+                    "all centered Bob YUV pixels and limited-range borders match an independent oracle");
+          }
+      }
+    }
+  }
+}
+
+int CenteredReadOnlyPendingTestEntry() {
+  try {
+    CenteredReadOnlyBobPending();
+    puts("VA-API centered read-only pending Bob pixels/readiness/cancellation PASS");
+    return 0;
+  } catch (const std::exception &error) {
+    fprintf(stderr, "VA-API centered read-only pending Bob failed: %s\n", error.what());
+    return 1;
+  }
 }
 
 struct DerivedFixture : Fixture {
@@ -6493,6 +6636,8 @@ static void FirstFieldCpuViewPreservesPublicReadiness() {
 // Keep the complete entry globally compiled for syntax coverage. CPU-only
 // section-GC builds retain only their selected state-machine groups below.
 int VppFullTestEntry(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--centered-readonly-pending") == 0)
+    return CenteredReadOnlyPendingTestEntry();
   if (argc == 2 && strcmp(argv[1], "--readonly-cpu-pending") == 0)
     return ReadOnlyCpuPendingTests();
   if (argc == 2 && strcmp(argv[1], "--interleaved-scaling") == 0) {
@@ -6680,6 +6825,7 @@ int VppFullTestEntry(int argc, char **argv) {
     ReadOnlyExportedBobPendingPixels();
     ReadOnlyExportedBobWritableExposureKeepsOldAdmission();
     ReadOnlyExportedBobCancellationReleasesOwners();
+    CenteredReadOnlyBobPending();
     SyncTimeoutAdmissionDoesNotBlockZeroQueries();
     VppBacklogTurnPreservesCancellationAndOwnership();
     ExposedQueuedVppStillRequiresFence();
@@ -6723,11 +6869,13 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 99 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 100 hardware-free regressions passed");
   return 0;
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--centered-readonly-pending") == 0)
+    return CenteredReadOnlyPendingTestEntry();
   if (argc == 2 && strcmp(argv[1], "--readonly-cpu-pending") == 0)
     return ReadOnlyCpuPendingTests();
 #ifndef CRYSTALHD_VPP_CPU_ONLY

@@ -205,6 +205,13 @@ LAUNCH_ENVIRONMENT = {
     "player.python": "CRYSTALHD_PLAYER_PYTHON",
 }
 
+CENTERED_NV12_ENVIRONMENT = "CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12"
+CENTERED_NV12_MODEL_CAVEAT = (
+    "experimental centered NV12 environment is present; its value acceptance, "
+    "output geometry and VA context rejection rules are not modeled; "
+    "effective settings cover canonical native adapters only"
+)
+
 PATH_KEYS = frozenset((
     "chromium.executable",
     "chromium.drm_device",
@@ -307,7 +314,7 @@ class NativeRejection(object):
 
 class Resolution(object):
     def __init__(self, requested, origins, effective, activity, raw_receipts,
-                 rejections, preset, profile):
+                 rejections, preset, profile, centered_nv12_environment_present=False):
         self.requested = requested
         self.origins = origins
         self.effective = effective
@@ -316,6 +323,8 @@ class Resolution(object):
         self.rejections = rejections
         self.preset = preset
         self.profile = profile
+        # This native-only boundary retains presence, never its raw value.
+        self.centered_nv12_environment_present = centered_nv12_environment_present
 
 
 class PresetEntry(object):
@@ -883,11 +892,13 @@ def resolve(system, user, presets, explicit_preset=None, explicit_profile=None,
 
     requested = dict(managed)
     origins = dict(managed_origins)
-    receipts = adapt_raw_environment(requested, origins, raw_environment or {})
+    environment = raw_environment or {}
+    receipts = adapt_raw_environment(requested, origins, environment)
     apply_layer(requested, origins, application or {}, "application")
     effective, activity, rejections = native_effect(requested)
     return Resolution(requested, origins, effective, activity, receipts,
-                      rejections, preset, profile)
+                      rejections, preset, profile,
+                      CENTERED_NV12_ENVIRONMENT in environment)
 
 
 def validate_managed(values):
@@ -1622,12 +1633,25 @@ def make_report(resolution, environment_observed, bug_report=False):
             "configuration/native-adapter model only; no application, device, "
             "backend, kernel module, or link topology was inspected"
         ),
+        "effective_configuration_scope": "canonical-native-adapters-only",
+        "native_only_environment": [],
         "native_rejections": [
             {"component": item.component, "reason": item.reason}
             for item in resolution.rejections
         ],
         "settings": settings,
     }
+    if resolution.centered_nv12_environment_present:
+        report["effective_configuration_scope"] = (
+            "partial:experimental-centered-nv12-native-only"
+        )
+        report["state_scope"] += "; " + CENTERED_NV12_MODEL_CAVEAT
+        report["native_only_environment"] = [{
+            "variable": CENTERED_NV12_ENVIRONMENT,
+            "raw": "<redacted>",
+            "state": "not-modeled:experimental-centered-nv12",
+            "native_value_validation": "not-performed",
+        }]
     if bug_report:
         report["report_kind"] = "crystalhd-configuration-bug-report-v1"
         report["redaction"] = (
@@ -1656,6 +1680,13 @@ def print_text(report, key=None):
     print("environment: {0}".format(report["environment"]))
     print("observation: {0}".format(report["observation_limit"]))
     print("state scope: {0}".format(report["state_scope"]))
+    print("effective configuration scope: {0}".format(
+        report["effective_configuration_scope"]
+    ))
+    for boundary in report["native_only_environment"]:
+        print("native-only environment {0}: raw=<redacted>; state={1}".format(
+            boundary["variable"], boundary["state"]
+        ))
     selected = report["settings"]
     if key is not None:
         selected = [item for item in selected if item["key"] == key]
@@ -1893,7 +1924,8 @@ def resolve_arguments(arguments, environment):
     if not arguments.ignore_environment:
         raw_environment = dict(
             (name, environment[name])
-            for name in ENVIRONMENT_TARGETS if name in environment
+            for name in ENVIRONMENT_TARGETS | {CENTERED_NV12_ENVIRONMENT}
+            if name in environment
         )
     return resolve(
         system,
@@ -2023,6 +2055,11 @@ def main(argv=None, environment=None):
             resolution.profile or "none",
             "observed" if observed else "ignored",
         ))
+        if resolution.centered_nv12_environment_present:
+            print("native-only environment {0}: raw=<redacted>; {1}; "
+                  "canonical validation does not validate this experiment".format(
+                      CENTERED_NV12_ENVIRONMENT, CENTERED_NV12_MODEL_CAVEAT
+                  ))
         return 0
 
     report = make_report(

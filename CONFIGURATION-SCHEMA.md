@@ -255,12 +255,24 @@ These current surfaces deliberately do not become ordinary merged keys:
 | `force_l0s_off` <!-- schema-boundary:module:force_l0s_off=staged-module --> | Inspect or stage separately; never claim an immediate per-application change |
 | `session_l0s_off` <!-- schema-boundary:module:session_l0s_off=staged-module --> | Same separate module-load lifetime and topology checks |
 | `CRYSTALHD_CHROMIUM_CONFIG` <!-- schema-boundary:environment:CRYSTALHD_CHROMIUM_CONFIG=legacy-bootstrap --> | Selects the existing trusted shell file; it cannot recursively select the strict schema |
+| `CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12` <!-- schema-boundary:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12=experimental-centered-nv12 --> | Native-only centered NV12 experiment; no canonical key, profile value, preset or manager translation. The VA driver alone validates its exact syntax and context/media eligibility |
 | `crystalhd-play --subtitles` <!-- schema-boundary:player-flag:--subtitles=invocation-only --> | Per-media invocation input, never a saved preset/profile value |
 | `crystalhd-play --weave` <!-- schema-boundary:player-flag:--weave=invocation-only --> | Per-invocation interlaced passthrough selection, never a saved preset/profile value |
 
 External loader selectors such as `LIBVA_DRIVER_NAME`, `VAAPI_FORCE_INDIRECT`,
 `GST_PLUGIN_PATH` and `LD_LIBRARY_PATH` remain owned by their respective
 runtimes and are not schema keys.
+
+The inspector observes the exact centered-NV12 variable above only as a
+native-only boundary. If it is present, including an empty string or `0`, the
+report marks its effective-configuration scope as partial and records its
+presence with the raw value redacted. It does not parse, validate, normalize,
+persist or claim acceptance of that value. Reported canonical effective
+settings exclude the experiment's output geometry and VA context rejection
+rules; they do not establish an ordinary native output configuration. Strict
+canonical validation still runs, and `validate` explicitly states that its
+success does not validate this native-only experiment. `--ignore-environment`
+omits this observation together with other process-environment observations.
 
 ## Reviewed preset manifest
 

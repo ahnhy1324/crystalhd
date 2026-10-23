@@ -56,11 +56,17 @@ extern "C" int __wrap_sws_scale(SwsContext *context, const uint8_t *const source
 #endif
 
 #ifdef CRYSTALHD_BOB_NV12_ONLY
+extern "C" gbm_bo *gbm_bo_create(gbm_device *, uint32_t, uint32_t, uint32_t,
+                                 uint32_t) { abort(); }
+extern "C" int gbm_bo_get_plane_count(gbm_bo *) { abort(); }
 extern "C" gbm_bo *gbm_bo_import(gbm_device *, uint32_t, void *, uint32_t) { abort(); }
 extern "C" void *gbm_bo_map(gbm_bo *, uint32_t, uint32_t, uint32_t, uint32_t,
                             uint32_t, uint32_t *, void **) { abort(); }
 extern "C" uint32_t gbm_bo_get_stride_for_plane(gbm_bo *, int) { abort(); }
 extern "C" uint32_t gbm_bo_get_offset(gbm_bo *, int) { abort(); }
+extern "C" int drmGetDevice2(int, uint32_t, drmDevicePtr *) { abort(); }
+extern "C" void drmFreeDevice(drmDevicePtr *) { abort(); }
+extern "C" int drmPrimeHandleToFD(int, uint32_t, uint32_t, int *) { abort(); }
 extern "C" SwsContext *sws_getCachedContext(SwsContext *, int, int, AVPixelFormat,
     int, int, AVPixelFormat, int, SwsFilter *, SwsFilter *, const double *) {
   abort();
