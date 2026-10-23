@@ -996,6 +996,10 @@ void RejectedConsumedEndReadback() {
   for (VAProfile profile : {VAProfileMPEG2Simple, VAProfileMPEG2Main}) {
     for (bool ready : {true, false}) {
       Fixture f(profile);
+      // All progress below is explicit. An unused VPP worker must not turn
+      // these exact readback-state checks into mutex-admission race tests.
+      f.driver.StopWorkers();
+      f.driver.stopping = false;
       f.Submit(1);
       const auto target = f.driver.surfaces.at(1);
       const auto picture = f.decode->decoded_frames.at(kTimestampStep);

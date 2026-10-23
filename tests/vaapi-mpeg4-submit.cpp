@@ -1258,6 +1258,9 @@ void BackpressuredDiscontinuityDrain() {
 
 void QueuedDiscontinuityTargetTeardown() {
   Fixture fixture;
+  // Progress is driven directly here; worker admission is tested separately.
+  fixture.driver.StopWorkers();
+  fixture.driver.stopping = false;
   fixture.mock.capacity = false;
   fixture.mock.echo_inputs = true;
   fixture.mock.eos_on_flush = true;
@@ -1292,6 +1295,9 @@ void QueuedDiscontinuityTargetTeardown() {
 
 void CompletedSurfaceSurvivesTargetTeardown() {
   Fixture fixture(VAProfileMPEG4Simple);
+  // Progress is driven directly here; worker admission is tested separately.
+  fixture.driver.StopWorkers();
+  fixture.driver.stopping = false;
   fixture.I(1);
   fixture.mock.Queue(kTimestampStep, 16, 16, 5);
   fixture.Receive();
@@ -1536,6 +1542,10 @@ void RejectedConsumedEndReadback() {
   for (VAProfile profile : {VAProfileMPEG4Simple, VAProfileMPEG4AdvancedSimple}) {
     for (bool ready : {true, false}) {
       Fixture f(profile);
+      // All progress below is explicit. An unused VPP worker must not turn
+      // these exact readback-state checks into mutex-admission race tests.
+      f.driver.StopWorkers();
+      f.driver.stopping = false;
       f.I(1);
       const auto target = f.driver.surfaces.at(1);
       const auto picture = f.decode->decoded_frames.at(kTimestampStep);

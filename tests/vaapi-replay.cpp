@@ -2779,6 +2779,9 @@ struct CardProcessingFixture {
   explicit CardProcessingFixture(bool bff = false, bool fields = true,
                                  bool keep_policy = false)
       : bottom_first(bff), interlaced(fields) {
+    // Processing output and first-field views are driven explicitly here.
+    driver.StopWorkers();
+    driver.stopping = false;
     io.allow_device_open = true;
     context.pDriverData = &driver;
     VAConfigAttrib processing = {VAConfigAttribDecProcessing, VA_DEC_PROCESSING};
@@ -3375,6 +3378,9 @@ static void TraceIdentityUsesImmutableTokenAndLiveAliasOwner() {
   Require(trace_fd >= 0, "allocate production trace fixture");
   {
     Driver driver{-1, trace_fd};
+    // This trace fixture processes output and observes ready aliases directly.
+    driver.StopWorkers();
+    driver.stopping = false;
     DecodeContext decoder;
     decoder.id = 7;
     decoder.generation = 3;
@@ -3930,6 +3936,9 @@ static void ExperimentalReadyRemapStateMachine() {
   Require(trace_fd >= 0, "allocate experimental remap trace sink");
   {
     Driver driver{-1, trace_fd};
+    // Remap publication/readback is explicitly sequenced, not worker progress.
+    driver.StopWorkers();
+    driver.stopping = false;
     auto decode = std::make_shared<DecodeContext>();
     decode->id = 7;
     decode->generation = 3;
@@ -8764,6 +8773,9 @@ static void LiveBobTailWithUnfenceableExposedTarget() {
   for (bool bottom_first : {false, true}) {
     for (Tail tail : {Tail::Complete, Tail::Cancel, Tail::Drain, Tail::Auxiliary}) {
       TeardownFixture fixture(2);
+      // This group exercises the inline unfenceable EndPicture fallback.
+      fixture.driver.StopWorkers();
+      fixture.driver.stopping = false;
       auto &decode = *fixture.decoder;
       decode.profile = VAProfileH264Main;
       decode.height = fixture.io.output_height = 32;

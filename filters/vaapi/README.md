@@ -464,6 +464,13 @@ but individual firmware calls and cleanup can extend wall time. An infinite
 picture. Completed decode surfaces survive context removal; destroyed or reused
 surfaces and canceled VPP epochs report errors.
 
+In the unreleased 1.3 backend, `vaSyncSurface2(..., 0)` is a passive query:
+mutex contention returns `VA_STATUS_ERROR_TIMEDOUT` without inspecting or
+changing surface state. Even an invalid surface ID can therefore time out
+until admitted. Decoder-context destruction also waits for the worker's
+borrowed output-poll descriptors to retire. `VA_STATUS_ERROR_HW_BUSY` retains
+ownership and permits a subsequent, non-overlapping destruction retry.
+
 ## Surface and export contracts
 
 Decode targets may be VA-allocated NV12 surfaces or imported linear or

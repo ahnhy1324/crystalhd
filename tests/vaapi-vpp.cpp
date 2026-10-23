@@ -2206,6 +2206,10 @@ void SelectedRtFormatSurvivesConfigAndContextLifetime() {
                          static_cast<uint32_t>(VA_RT_FORMAT_RGB32),
                          static_cast<uint32_t>(VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32)}) {
     Fixture fixture;
+    // This group completes VPP synchronously; keep exact zero-timeout status
+    // checks independent of admission by an otherwise idle worker.
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
     fixture.driver.next_context = 3;
     auto argb = PrivateArgbOutput();
     fixture.target->rt_format = VA_RT_FORMAT_YUV420;
@@ -2970,6 +2974,9 @@ void BobAlignedOutputRegionsPreservePixelsAndBorders() {
   for (unsigned canvas_height : {1080U, 1088U})
     for (bool full_range : {false, true}) {
       Fixture fixture;
+      // Queued ROI/real-worker behavior is covered separately below.
+      fixture.driver.StopWorkers();
+      fixture.driver.stopping = false;
       fixture.target = PaddedBobOutput(1920, canvas_height);
       fixture.driver.surfaces[2] = fixture.target;
       // Reuse the same target from the larger ROI to the smaller one: stale
@@ -3092,6 +3099,9 @@ void BobAlignedOutputRegionQueuedSnapshotAndCancellation() {
 
 void Bob720ReturnsFhdThroughDirectAndTwoStageVpp() {
   Fixture fixture;
+  // These completed private inputs take the synchronous VPP path.
+  fixture.driver.StopWorkers();
+  fixture.driver.stopping = false;
   auto picture = std::make_shared<Surface>();
   fixture.source = std::make_shared<Surface>();
   fixture.target = std::make_shared<Surface>();
@@ -5097,6 +5107,9 @@ void DerivedWritesCommitActualSurfacePixels() {
 
 void DerivedWriteLeaseBlocksReuseAndSurvivesDestruction() {
   DerivedFixture fixture; VAImage image = {}, another = MakeImage(&fixture); void *data = nullptr, *nested = nullptr;
+  // Only direct image calls participate in this ownership-state group.
+  fixture.driver.StopWorkers();
+  fixture.driver.stopping = false;
   Require(DeriveImage(&fixture.context, 2, &image) == VA_STATUS_SUCCESS &&
               MapImageIntent(&fixture, image.buf, &data, 2) == VA_STATUS_SUCCESS &&
               MapImageIntent(&fixture, image.buf, &nested, 2) == VA_STATUS_SUCCESS && nested == data,
