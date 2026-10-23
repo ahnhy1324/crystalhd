@@ -221,6 +221,11 @@ struct NativeNodeMock {
   drmDevice device = {};
   bool device_owned = false, no_primary = false, null_device = false;
   bool fail_destroy = false;
+  int mmap_interface_version = 4;
+  bool fail_mmap_version = false, fail_wc_offset = false;
+  bool different_wc_offset = false;
+  unsigned interrupt_mmap_version = 0, interrupt_wc_offset = 0;
+  unsigned mmap_version_queries = 0, wc_offset_queries = 0;
   unsigned fail_queries = 0, fail_opens = 0;
   unsigned fail_render_stats = 0, fail_primary_stats = 0;
   unsigned queries = 0, frees = 0, opens = 0, closes = 0;
@@ -305,6 +310,42 @@ struct NativeNodeMock {
     if (file == files.end() || !file->second.primary) {
       ++invalid;
       return Error();
+    }
+    if (request == DRM_IOCTL_I915_GETPARAM) {
+      auto *query = static_cast<drm_i915_getparam_t *>(argument);
+      ++mmap_version_queries;
+      if (query->param != I915_PARAM_MMAP_GTT_VERSION || query->value == nullptr) {
+        ++invalid;
+        return Error();
+      }
+      if (interrupt_mmap_version != 0) {
+        --interrupt_mmap_version;
+        errno = EINTR;
+        return -1;
+      }
+      if (fail_mmap_version)
+        return Error();
+      *query->value = mmap_interface_version;
+      return 0;
+    }
+    if (request == DRM_IOCTL_I915_GEM_MMAP_OFFSET) {
+      auto *map = static_cast<drm_i915_gem_mmap_offset *>(argument);
+      ++wc_offset_queries;
+      const auto dumb = dumbs.find(map->handle);
+      if (dumb == dumbs.end() || dumb->second.fd != fd || map->pad != 0 ||
+          map->flags != I915_MMAP_OFFSET_WC || map->extensions != 0) {
+        ++invalid;
+        return Error();
+      }
+      if (interrupt_wc_offset != 0) {
+        --interrupt_wc_offset;
+        errno = EINTR;
+        return -1;
+      }
+      if (fail_wc_offset)
+        return Error();
+      map->offset = dumb->second.offset + (different_wc_offset ? 4096U : 0U);
+      return 0;
     }
     if (request == DRM_IOCTL_MODE_CREATE_DUMB) {
       auto *create = static_cast<drm_mode_create_dumb *>(argument);
@@ -1372,6 +1413,62 @@ void NativeSurfaceFilesRetainOriginalLifetime() {
               mock.maps == 17 && mock.unmaps == 17 && mock.invalid == 0 &&
               driver.surfaces.empty() && driver.contexts.empty(),
           "even failed DESTROY_DUMB retains the original last-file-close cleanup");
+}
+
+void I915WcMappingRequiresExactOffsetIdentity() {
+  struct Mode {
+    int version;
+    bool fail_version, fail_offset, different_offset, interrupted, expected;
+  };
+  const Mode modes[] = {
+      {0, false, false, false, false, false},
+      {3, false, false, false, false, false},
+      {4, false, false, false, false, true},
+      {5, false, false, false, false, true},
+      {4, true, false, false, false, false},
+      {4, false, true, false, false, false},
+      {4, false, false, true, false, false},
+      {4, false, false, false, true, true},
+  };
+  for (const Mode &mode : modes) {
+    NativeNodeMock mock;
+    MockNativeNodeScope scope(mock);
+    {
+      Surface surface;
+      Require(surface.AllocateInternal(nullptr, mock.render_fd, 64, 32,
+                                        VA_FOURCC_NV12),
+              "mapping eligibility uses an existing owned DUMB mapping");
+      Require(!surface.experimental_i915_wc && !surface.owned_i915_dumb &&
+                  mock.mmap_version_queries == 0 && mock.wc_offset_queries == 0,
+              "opt-in off never queries or enables experimental WC policy");
+      const uint64_t offset = mock.dumbs.at(surface.dumb_handle).offset;
+      mock.mmap_interface_version = mode.version;
+      mock.fail_mmap_version = mode.fail_version;
+      mock.fail_wc_offset = mode.fail_offset;
+      mock.different_wc_offset = mode.different_offset;
+      mock.interrupt_mmap_version = mode.interrupted ? 1U : 0U;
+      mock.interrupt_wc_offset = mode.interrupted ? 1U : 0U;
+      Require(ConfirmedI915WcMapping(surface.dumb_drm_fd, surface.dumb_handle,
+                                     offset) == mode.expected,
+              "WC requires version 4 and the same handle's actual mapped offset");
+      const unsigned attempts = mode.interrupted ? 2U : 1U;
+      Require(mock.mmap_version_queries == attempts &&
+                  mock.wc_offset_queries ==
+                      (mode.fail_version || mode.version < 4 ? 0U : attempts),
+              "old aliases and failed version queries never authorize WC offsets");
+      const unsigned queries = mock.mmap_version_queries + mock.wc_offset_queries;
+      Require(!ConfirmedI915WcMapping(-1, surface.dumb_handle, offset) &&
+                  !ConfirmedI915WcMapping(surface.dumb_drm_fd, 0, offset) &&
+                  mock.mmap_version_queries + mock.wc_offset_queries == queries,
+              "missing owned descriptor or handle cannot establish WC identity");
+      Require(mock.maps == 1 && mock.mappings.size() == 1 &&
+                  surface.planes[0] == mock.mappings.begin()->first,
+              "eligibility queries never replace or remap the original mapping");
+    }
+    Require(mock.files.empty() && mock.dumbs.empty() && mock.mappings.empty() &&
+                mock.maps == 1 && mock.unmaps == 1 && mock.invalid == 0,
+            "mapping query failures preserve ordinary allocation cleanup");
+  }
 }
 
 std::shared_ptr<Surface> Picture(uint64_t timestamp, uint8_t luma) {
@@ -5873,6 +5970,7 @@ int VppFullTestEntry(int argc, char **argv) {
     NativeNodeCacheInvalidatesChangedIdentities();
     NativeNodeCacheFailuresRetryWithoutLeases();
     NativeSurfaceFilesRetainOriginalLifetime();
+    I915WcMappingRequiresExactOffsetIdentity();
     AbortPathsPublishErrorFences();
     DecodeTeardownStillNotifies();
     PendingVppTeardownStillNotifies();
@@ -5941,7 +6039,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 91 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 92 hardware-free regressions passed");
   return 0;
 }
 

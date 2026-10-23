@@ -64,6 +64,9 @@ CRYSTALHD_TEST_NOINLINE void operator delete[](
 static int mock_sync_fd = -1;
 static uint64_t mock_failed_sync_flags = 0;
 static std::vector<uint64_t> mock_sync_calls;
+static int mock_decoded_domain_fd = -1;
+static uint32_t mock_decoded_domain_handle = 0;
+static std::vector<std::pair<uint32_t, uint32_t>> mock_decoded_domain_calls;
 struct ProbePollResult {
   int result = 0;
   short revents = 0;
@@ -98,6 +101,14 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
   va_start(arguments, request);
   void *argument = va_arg(arguments, void *);
   va_end(arguments);
+  if (mock_decoded_domain_fd >= 0 && fd == mock_decoded_domain_fd &&
+      request == DRM_IOCTL_I915_GEM_SET_DOMAIN) {
+    const auto *domain = static_cast<drm_i915_gem_set_domain *>(argument);
+    if (domain->handle != mock_decoded_domain_handle)
+      throw std::runtime_error("decoded materialization used a foreign GEM handle");
+    mock_decoded_domain_calls.emplace_back(domain->read_domains, domain->write_domain);
+    return 0;
+  }
   if (fd == mock_sync_fd && request == DMA_BUF_IOCTL_SYNC) {
     const auto *sync = static_cast<dma_buf_sync *>(argument);
     mock_sync_calls.push_back(sync->flags);
@@ -5499,6 +5510,64 @@ static void FailedCpuOwnershipNeverCompletesDecode() {
   }
 }
 
+static void FiniteOutputUsesDecodedPublicWritePurpose() {
+  for (unsigned int mode : {0U, 1U, 2U}) {
+    OutputFixture fixture;
+    Require(!fixture.decoder.live_h264_fast_path &&
+                !fixture.private_frame->direct_backing,
+            "the materialization control starts on the finite private-picture path");
+    mock_sync_fd = memfd_create("crystalhd-finite-copy-sync", MFD_CLOEXEC);
+    Require(mock_sync_fd >= 0, "allocate the isolated public sync descriptor");
+    fixture.public_frame->object_fds.push_back(mock_sync_fd);
+    mock_failed_sync_flags = UINT64_MAX;
+    mock_sync_calls.clear();
+    mock_decoded_domain_calls.clear();
+    // Mode 1 models allocation-time confirmation of an owned WC mapping.
+    // Default-off and imported mappings must retain generic synchronization.
+    fixture.public_frame->experimental_i915_wc = mode == 1;
+    fixture.public_frame->owned_i915_dumb = mode != 2;
+    fixture.public_frame->dumb_drm_fd = mode != 2 ? 700001 : -1;
+    fixture.public_frame->dumb_handle = mode != 2 ? 61 : 0;
+    mock_decoded_domain_fd = fixture.public_frame->dumb_drm_fd;
+    mock_decoded_domain_handle = fixture.public_frame->dumb_handle;
+    struct ResetDomainFixture {
+      Surface *target;
+      ~ResetDomainFixture() {
+        // These domain descriptors are protocol sentinels, not OS handles.
+        target->dumb_drm_fd = -1;
+        target->dumb_handle = 0;
+        mock_decoded_domain_fd = -1;
+        mock_decoded_domain_handle = 0;
+        mock_sync_fd = -1;
+      }
+    } reset{fixture.public_frame.get()};
+    Require(fixture.Process() == VA_STATUS_SUCCESS &&
+                fixture.private_frame->ready && fixture.public_frame->ready &&
+                !fixture.public_frame->failed &&
+                fixture.private_frame->frame_timestamp == 1 &&
+                fixture.public_frame->frame_timestamp == 1 &&
+                fixture.private_frame->planes[0][0] == 40 &&
+                fixture.private_frame->storage == fixture.public_frame->storage &&
+                fixture.private_frame->storage.data() != fixture.public_frame->storage.data() &&
+                fixture.decoder.pending.empty() &&
+                fixture.decoder.replay.outstanding() == 0,
+            "finite materialization preserves separate immutable pixels, identity and completion");
+    if (mode == 1) {
+      Require(mock_decoded_domain_calls ==
+                  std::vector<std::pair<uint32_t, uint32_t>>{
+                      {I915_GEM_DOMAIN_WC, I915_GEM_DOMAIN_WC},
+                      {I915_GEM_DOMAIN_GTT, 0}} && mock_sync_calls.empty(),
+              "the finite public materialization call selects decoded WC/GTT ownership");
+    } else {
+      Require(mock_decoded_domain_calls.empty() &&
+                  mock_sync_calls == std::vector<uint64_t>{
+                      DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE,
+                      DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE},
+              "finite default-off and imported public targets keep DMA-BUF ownership");
+    }
+  }
+}
+
 static void StaleUnretainedOutputSkipsOnlyPixelMaterialization() {
   {
     OutputFixture fixture;
@@ -10629,6 +10698,7 @@ int main(int argc, char **argv) {
     DirectOutputOwnershipAndExport();
     RejectIncompleteGeometryAndInitializeAllocationPadding();
     FailedCpuOwnershipNeverCompletesDecode();
+    FiniteOutputUsesDecodedPublicWritePurpose();
     StaleUnretainedOutputSkipsOnlyPixelMaterialization();
     StaleUnretainedOutputPreservesTransportAndEos();
     PaddingOnlyCopyByteEquivalence();
