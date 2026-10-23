@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="640" viewBox="0 0 1120 640" role="img" aria-labelledby="title description">
+  <title id="title">Effective decoder-mediated path: same impulse, different background</title>
+  <desc id="description">Actual support-score.json signed luma response vectors, output x58 through70. Both inputs add32 at source x128. Profile2 minus ramp baseline0: 0,0,0,-1,1,3,13,-1,0,0,0,0,0. Profile11 minus flat baseline10: 0,0,0,0,0,4,12,0,0,0,0,0,0. The frozen four-local-support hypothesis allows changes only at x63 and64. Ramp responses at x61=-1, x62=+1 and x65=-1 are outside that support. This rejects the stated stateless locality hypothesis, not a particular physical filter block.</desc>
+  <metadata>Source: native-scl-exact-source.json cases.support.model_result, retained from support-score.json; responses profile2/baseline0 and profile11/baseline10; signed_luma_delta128[58:71]. Geometry256x96 to128x48. Values copied from actual recorded vectors, not inferred measurements.</metadata>
+  <rect width="1120" height="640" fill="#ffffff"/>
+  <g font-family="DejaVu Sans, sans-serif" fill="#192333">
+    <text x="40" y="39" font-size="23" font-weight="700">Effective decoder-mediated path: same impulse, different background</text>
+    <text x="40" y="68" font-size="16">256×96 → 128×48 · source x128 +=32 · signed output luma difference from each baseline</text>
+    <path d="M42 96 H76" stroke="#bc3c25" stroke-width="3"/>
+    <text x="86" y="101" font-size="15">Profile2 −0: ramp +32 versus ramp</text>
+    <path d="M570 96 H604" stroke="#1e66ad" stroke-width="3" stroke-dasharray="7 4"/>
+    <text x="614" y="101" font-size="15">Profile11 −10: flat128 +32 versus flat128</text>
+    <rect x="455" y="130" width="140" height="340" fill="#e7f2df"/>
+    <text x="525" y="123" text-anchor="middle" font-size="13" fill="#42652d">Frozen allowed support: x63,64</text>
+    <g stroke="#e1e5eb" stroke-width="1">
+      <path d="M105 140 H1015 M105 180 H1015 M105 220 H1015 M105 260 H1015 M105 300 H1015 M105 340 H1015 M105 380 H1015 M105 460 H1015"/>
+    </g>
+    <path d="M105 130 V470 H1015 M105 420 H1015" fill="none" stroke="#5b6573" stroke-width="1.3"/>
+    <g font-size="13" text-anchor="end" fill="#4b5667">
+      <text x="92" y="145">+14</text><text x="92" y="185">+12</text>
+      <text x="92" y="225">+10</text><text x="92" y="265">+8</text>
+      <text x="92" y="305">+6</text><text x="92" y="345">+4</text>
+      <text x="92" y="385">+2</text><text x="92" y="425">0</text>
+      <text x="92" y="465">−2</text>
+    </g>
+    <text x="28" y="310" text-anchor="middle" transform="rotate(-90 28 310)" font-size="15">Signed ΔY (8-bit luma code values)</text>
+    <polyline points="140,420 210,420 280,420 350,440 420,400 490,360 560,160 630,440 700,420 770,420 840,420 910,420 980,420" fill="none" stroke="#bc3c25" stroke-width="3"/>
+    <polyline points="140,420 210,420 280,420 350,420 420,420 490,340 560,180 630,420 700,420 770,420 840,420 910,420 980,420" fill="none" stroke="#1e66ad" stroke-width="3" stroke-dasharray="7 4"/>
+    <g fill="#ffffff" stroke="#bc3c25" stroke-width="2.5">
+      <circle cx="350" cy="440" r="5"/><circle cx="420" cy="400" r="5"/>
+      <circle cx="490" cy="360" r="5"/><circle cx="560" cy="160" r="5"/>
+      <circle cx="630" cy="440" r="5"/>
+    </g>
+    <g fill="#1e66ad">
+      <circle cx="490" cy="340" r="4"/><circle cx="560" cy="180" r="4"/>
+    </g>
+    <g font-size="14" font-weight="700">
+      <text x="350" y="462" text-anchor="middle" fill="#bc3c25">−1</text>
+      <text x="420" y="389" text-anchor="middle" fill="#bc3c25">+1</text>
+      <text x="474" y="379" fill="#bc3c25">+3</text>
+      <text x="573" y="155" fill="#bc3c25">+13</text>
+      <text x="630" y="462" text-anchor="middle" fill="#bc3c25">−1</text>
+      <text x="474" y="327" fill="#1e66ad">+4</text>
+      <text x="573" y="194" fill="#1e66ad">+12</text>
+    </g>
+    <g font-size="13" text-anchor="middle" fill="#4b5667">
+      <text x="140" y="493">58</text><text x="210" y="493">59</text>
+      <text x="280" y="493">60</text><text x="350" y="493">61</text>
+      <text x="420" y="493">62</text><text x="490" y="493" font-weight="700">63</text>
+      <text x="560" y="493" font-weight="700">64</text><text x="630" y="493">65</text>
+      <text x="700" y="493">66</text><text x="770" y="493">67</text>
+      <text x="840" y="493">68</text><text x="910" y="493">69</text>
+      <text x="980" y="493">70</text>
+    </g>
+    <text x="560" y="518" text-anchor="middle" font-size="15">Output x</text>
+    <text x="40" y="553" font-size="16" font-weight="700">Ramp: x61=−1, x62=+1, x65=−1 outside the frozen allowed support.</text>
+    <text x="40" y="578" font-size="14">Flat control changes only x63,64. Both duplicate copies and all48 output rows passed invariance admission.</text>
+    <text x="40" y="603" font-size="14">Rejects this fixed stateless locality model; does not identify a physical block or prove another filter algorithm.</text>
+    <text x="40" y="625" font-size="12" fill="#657084">Recorded source: support-score.json · profiles2/0 and11/10 · windowx58–70 · no new hardware run</text>
+  </g>
+</svg>

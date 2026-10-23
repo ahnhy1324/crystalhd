@@ -126,6 +126,18 @@ jobs:
           sh tests/generate-scaler-samples.sh "$RUNNER_TEMP/scaler-samples" spatial
           sh tests/generate-scaler-samples.sh "$RUNNER_TEMP/scaler-samples" nonlinear
           python3 -B tests/native-scaler-model.test.py
+          python3 -B tests/native-scaler-exact-model.py self-test
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror -D__LINUX_USER__ \
+            -Iinclude -Ilinux_lib/libcrystalhd tests/native-scaler-exact-input.cpp \
+            linux_lib/libcrystalhd/libcrystalhd_raw_frame.cpp \
+            -o "$RUNNER_TEMP/scaler-exact-input"
+          for scaler_corpus in initial holdout support; do
+            "$RUNNER_TEMP/scaler-exact-input" --case "$scaler_corpus" \
+              --emit "$RUNNER_TEMP/scaler-exact-$scaler_corpus"
+            LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" tests/library-drain-test \
+              --preflight "$RUNNER_TEMP/scaler-exact-$scaler_corpus/fixture.h264" 24 \
+              --scaler-test 128
+          done
           for scaler_width in 0 640 320; do
             LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" tests/library-drain-test \
               --preflight "$RUNNER_TEMP/scaler-samples/arithmetic.m2v" 32 \
