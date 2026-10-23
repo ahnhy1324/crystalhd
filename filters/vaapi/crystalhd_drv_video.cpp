@@ -4575,9 +4575,11 @@ static VAStatus ProcessDecodedOutputImpl(
       std::vector<uint8_t> pixels;
       // Reference replay retires a duplicate only after its validated pair;
       // neither field's pixels may replace an already completed picture.
-      if (!replay_duplicate)
+      if (!replay_duplicate) {
+        pixels.swap(decode->h264_first_field.pixels);
         pixels.assign(output.Ybuff,
                       output.Ybuff + static_cast<size_t>(field_bytes));
+      }
       H264FirstField &first = decode->h264_first_field;
       first.replay_duplicate = replay_duplicate;
       first.bottom = bottom;
@@ -4832,6 +4834,12 @@ static VAStatus ProcessDecodedOutputImpl(
     if (remaining != decode->decoded_frames.end() &&
         !remaining->second->experimental_ready_queued)
       decode->decoded_frames.erase(remaining);
+  }
+  if (complete && h264_field_pair) {
+    // All pair consumers have finished reading these bytes. Keep one empty
+    // staging allocation, without retaining a field identity or pixel view.
+    paired_first_field.pixels.clear();
+    decode->h264_first_field.pixels.swap(paired_first_field.pixels);
   }
   driver->condition.notify_all();
   return complete ? VA_STATUS_SUCCESS

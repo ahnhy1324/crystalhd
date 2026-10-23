@@ -8651,6 +8651,123 @@ static void FirstTemporalBobUsesCompactStorage() {
   }
 }
 
+static void FirstFieldScratchReusePreservesOwnedPictures() {
+  for (bool bottom_first : {false, true})
+   for (bool fail_final_release : {false, true}) {
+    TeardownFixture fixture(2);
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    auto &decode = *fixture.decoder;
+    decode.profile = VAProfileH264Main;
+    decode.height = fixture.io.output_height = 32;
+    constexpr size_t field_bytes = 16U * 2U * 16U;
+    for (unsigned index = 0; index != 2; ++index) {
+      const uint64_t token = (index + 1) * kTimestampStep;
+      for (const auto &picture : {fixture.held[index], decode.decoded_frames.at(token)}) {
+        Require(picture->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+                "allocate independently owned scratch-reuse pictures");
+        memset(picture->storage.data(), 99, picture->storage.size());
+        picture->expected_timestamp = token;
+        picture->h264_crop_unit_y = 4;
+      }
+    }
+    BindTeardownPicturesForVpp(fixture);
+    Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS,
+            "submit two real originals before either field pair completes");
+    const auto original = decode.decoded_frames.at(kTimestampStep);
+    const auto successor = decode.decoded_frames.at(2 * kTimestampStep);
+    fixture.io.pixels.resize(field_bytes);
+    fixture.io.events.reserve(32);
+    const auto queue_field = [&](uint64_t token, bool bottom) {
+      fixture.io.outputs.push_back(token);
+      fixture.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC |
+          (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0) | (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD));
+    };
+    bool activity = false;
+    const auto receive = [&] {
+      return ReceiveOne(&fixture.driver, &decode, 0, &activity);
+    };
+    queue_field(kTimestampStep, bottom_first);
+    Require(receive() == VA_STATUS_SUCCESS && activity &&
+                decode.h264_first_field.valid && !original->ready &&
+                !fixture.held[0]->ready && decode.replay.outstanding() == 2,
+            "released first field stays private while both originals remain outstanding");
+    PendingVpp operation;
+    operation.source = original;
+    operation.decoder = fixture.decoder;
+    operation.source_timestamp = kTimestampStep;
+    operation.decoder_generation = decode.generation;
+    operation.deinterlace.bob = true;
+    operation.deinterlace.field = bottom_first ? crystalhd_vpp_bob::FieldParity::kBottom
+                                             : crystalhd_vpp_bob::FieldParity::kTop;
+    std::shared_ptr<Surface> view;
+    Require(PrepareFirstFieldBob(operation, &view) == VA_STATUS_SUCCESS && view,
+            "retain a real independently owned compact first-field Bob view");
+    for (unsigned plane = 0; plane != 2; ++plane)
+      for (unsigned row = 0; row != (plane ? view->height / 2U : view->height); ++row)
+        for (unsigned column = 0; column != view->width; ++column)
+          Require(view->planes[plane][row * view->pitch[plane] + column] ==
+                      (plane ? 128 : DecodeIoMock::Luma(kTimestampStep)),
+                  "retained compact Bob owns every expected first-field Y/U/V byte");
+    const auto bob_pixels = view->storage;
+    queue_field(kTimestampStep, !bottom_first);
+    Require(receive() == VA_STATUS_SUCCESS && activity && original->ready &&
+                fixture.held[0]->ready && !decode.h264_first_field.valid &&
+                decode.h264_first_field.pixels.empty() &&
+                !decode.h264_first_field.picture &&
+                decode.h264_first_field.timestamp == 0 &&
+                decode.h264_first_field.decode_identity == 0 &&
+                decode.replay.outstanding() == 1,
+            "normal complement retires the latch without retaining a logical field");
+    fixture.CheckPicture(0);
+    const auto original_pixels = fixture.held[0]->storage;
+    const auto private_pixels = original->storage;
+    queue_field(2 * kTimestampStep, bottom_first); // Warm all mock owners before arming.
+    allocation_fault::fail_size = field_bytes;
+    const VAStatus second_first = receive();
+    const bool no_field_allocation = allocation_fault::fail_size == field_bytes;
+    allocation_fault::fail_size = 0; // Never leave a fault armed across assertions/cleanup.
+    Require(second_first == VA_STATUS_SUCCESS && activity && no_field_allocation &&
+                decode.h264_first_field.valid &&
+                decode.h264_first_field.timestamp == 2 * kTimestampStep &&
+                decode.h264_first_field.picture == successor &&
+                decode.h264_first_field.pixels == fixture.io.pixels &&
+                !successor->ready && !fixture.held[1]->ready &&
+                decode.replay.outstanding() == 1 &&
+                fixture.held[0]->storage == original_pixels &&
+                original->storage == private_pixels && view->storage == bob_pixels &&
+                view->ready && view->frame_timestamp == kTimestampStep,
+            "next first field avoids allocation while preserving old pixels and exact ownership");
+    queue_field(2 * kTimestampStep, !bottom_first);
+    if (fail_final_release) fixture.io.output_release_status = BC_STS_IO_ERROR;
+    const VAStatus completed = receive();
+    Require(activity && view->storage == bob_pixels &&
+                fixture.held[0]->storage == original_pixels &&
+                original->storage == private_pixels &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "release") == 4 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 0 &&
+                fixture.io.open_attempts == 0 && !fixture.io.invalid,
+            "scratch reuse neither rewrites retained reads nor invents EOS/restart activity");
+    if (fail_final_release) {
+      Require(completed == VA_STATUS_ERROR_DECODING_ERROR && decode.replay.failed() &&
+                  !decode.h264_first_field.valid && decode.h264_first_field.pixels.empty() &&
+                  decode.h264_first_field.pixels.capacity() == 0,
+              "failed output release frees scratch recycled by the completed pair");
+    } else {
+      Require(completed == VA_STATUS_SUCCESS && successor->ready &&
+                  fixture.held[1]->ready && decode.replay.outstanding() == 0 &&
+                  !decode.h264_first_field.valid && decode.h264_first_field.pixels.empty() &&
+                  decode.h264_first_field.pixels.capacity() >= field_bytes,
+              "both exact originals complete while idle scratch remains bounded and logically empty");
+      fixture.CheckPicture(1);
+      Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                  decode.h264_first_field.pixels.capacity() == 0 &&
+                  view->storage == bob_pixels && view->ready && !fixture.io.invalid,
+              "consuming context close frees scratch without mutating the retained Bob view");
+    }
+  }
+}
+
 static void FirstTemporalBobWakesParkedConsumer() {
   for (bool bottom : {false, true}) {
     H264FieldFixture fixture;
@@ -11779,6 +11896,7 @@ int main(int argc, char **argv) {
       NeutralAuxiliaryContracts();
       DeferredH264PrefeedRetriesWithoutNewInput();
       FirstTemporalBobUsesCompactStorage();
+      FirstFieldScratchReusePreservesOwnedPictures();
       FirstTemporalBobWakesParkedConsumer();
       FirstTemporalBobDoesNotCompleteDecodePicture();
       FirstTemporalBobRejectsMismatchedLatch();
@@ -11791,6 +11909,7 @@ int main(int argc, char **argv) {
     NeutralAuxiliaryContracts();
     DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobUsesCompactStorage();
+    FirstFieldScratchReusePreservesOwnedPictures();
     FirstTemporalBobWakesParkedConsumer();
     FirstTemporalBobDoesNotCompleteDecodePicture();
     FirstTemporalBobRejectsMismatchedLatch();
