@@ -8651,6 +8651,101 @@ static void FirstTemporalBobUsesCompactStorage() {
   }
 }
 
+static void FirstTemporalBobWakesParkedConsumer() {
+  for (bool bottom : {false, true}) {
+    H264FieldFixture fixture;
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    fixture.decoder.device = io.handle();
+    PendingVpp operation;
+    operation.source = fixture.private_frame;
+    operation.decoder = std::shared_ptr<DecodeContext>(&fixture.decoder,
+                                                       [](DecodeContext *) {});
+    operation.source_timestamp = 1;
+    operation.decoder_generation = 3;
+    operation.deinterlace.bob = true;
+    operation.deinterlace.field = bottom ? crystalhd_vpp_bob::FieldParity::kBottom
+                                         : crystalhd_vpp_bob::FieldParity::kTop;
+    std::mutex completion_mutex;
+    std::condition_variable completion;
+    bool checked = false, done = false, cancel = false;
+    VAStatus prepared = VA_STATUS_SUCCESS;
+    std::shared_ptr<Surface> view;
+    std::thread consumer([&] {
+      std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+      fixture.driver.condition.wait(lock, [&] {
+        if (cancel) return true;
+        prepared = PrepareFirstFieldBob(operation, &view);
+        {
+          std::lock_guard<std::mutex> completed(completion_mutex);
+          checked = true;
+        }
+        completion.notify_all();
+        return prepared != VA_STATUS_SUCCESS || view != nullptr;
+      });
+      lock.unlock();
+      {
+        std::lock_guard<std::mutex> completed(completion_mutex);
+        done = true;
+      }
+      completion.notify_all();
+    });
+    bool parked;
+    {
+      std::unique_lock<std::mutex> lock(completion_mutex);
+      parked = completion.wait_for(lock, std::chrono::seconds(2), [&] { return checked; });
+    }
+    bool activity = false;
+    VAStatus received = VA_STATUS_ERROR_OPERATION_FAILED;
+    {
+      // Acquiring the producer mutex after the first false predicate proves
+      // the consumer has atomically released it in condition.wait(). No worker
+      // or test-injected notification can supply the successful wakeup.
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      io.override_output = true;
+      io.overridden_output = fixture.Output(bottom, bottom,
+                                            bottom ? &fixture.bottom : &fixture.top);
+      if (parked)
+        received = ReceiveOne(&fixture.driver, &fixture.decoder, 0, &activity);
+    }
+    bool completed_before_cleanup;
+    {
+      std::unique_lock<std::mutex> lock(completion_mutex);
+      completed_before_cleanup = completion.wait_for(
+          lock, std::chrono::seconds(2), [&] { return done; });
+    }
+    // A watchdog only bounds a missing wakeup; it is not a sub-10ms performance
+    // assertion. Snapshot the result before notifying solely to join safely.
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      cancel = true;
+      fixture.driver.condition.notify_all();
+    }
+    consumer.join();
+    fixture.decoder.device = nullptr;
+    Require(parked && completed_before_cleanup && received == VA_STATUS_SUCCESS &&
+                activity && prepared == VA_STATUS_SUCCESS && view &&
+                fixture.decoder.h264_first_field.valid &&
+                !fixture.private_frame->ready && !fixture.public_frame->ready &&
+                fixture.decoder.replay.outstanding() == 1 &&
+                !fixture.decoder.replay.sealed() && !io.invalid &&
+                std::count(io.events.begin(), io.events.end(), "release") == 1,
+            "released first field wakes its private Bob consumer without public completion or EOS");
+    for (unsigned row = 0; row != 16; ++row)
+      for (unsigned column = 0; column != 16; ++column)
+        Require(view->planes[0][row * view->pitch[0] + column] ==
+                    (bottom ? 100U : 20U) + row,
+                "notified compact Bob preserves every first-field luma byte");
+    for (unsigned row = 0; row != 8; ++row)
+      for (unsigned column = 0; column != 16; column += 2) {
+        const size_t at = row * view->pitch[1] + column;
+        Require(view->planes[1][at] == (bottom ? 140U : 40U) + row * 2U + 1U &&
+                    view->planes[1][at + 1] == (bottom ? 160U : 60U) + row * 2U + 1U,
+                "notified compact Bob preserves every first-field chroma byte");
+      }
+  }
+}
+
 static void FirstTemporalBobDoesNotCompleteDecodePicture() {
   for (bool bottom_first : {false, true}) {
     for (unsigned visible_height : {32U, 28U}) {
@@ -11684,6 +11779,7 @@ int main(int argc, char **argv) {
       NeutralAuxiliaryContracts();
       DeferredH264PrefeedRetriesWithoutNewInput();
       FirstTemporalBobUsesCompactStorage();
+      FirstTemporalBobWakesParkedConsumer();
       FirstTemporalBobDoesNotCompleteDecodePicture();
       FirstTemporalBobRejectsMismatchedLatch();
       FirstH264FieldRefreshesTransportGrace();
@@ -11695,6 +11791,7 @@ int main(int argc, char **argv) {
     NeutralAuxiliaryContracts();
     DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobUsesCompactStorage();
+    FirstTemporalBobWakesParkedConsumer();
     FirstTemporalBobDoesNotCompleteDecodePicture();
     FirstTemporalBobRejectsMismatchedLatch();
     SealedBatchQueuesAndReplays();
