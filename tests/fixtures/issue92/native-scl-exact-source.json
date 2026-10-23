@@ -1,0 +1,1585 @@
+{
+  "cases": {
+    "holdout": {
+      "frozen_hypothesis": {
+        "created_utc": "2026-10-23T04:58:09.596775+00:00",
+        "file": "holdout-predictions/frozen.json",
+        "origin": "four-tap rule POSTHOC initial-data hypothesis; biases0..7 frozen before independent holdout capture"
+      },
+      "full_scaled_all48_rows_invariant": true,
+      "full_scaled_chroma128": true,
+      "full_scaled_duplicate_pairs": 12,
+      "independent_SW": {
+        "bytes": 884736,
+        "file": "holdout-software.yuv420p",
+        "file_mtime_utc": "2026-10-23T05:00:02.526852+00:00"
+      },
+      "independent_SW_full_known_bytes": true,
+      "input_fixture": {
+        "bytes": 926407,
+        "file": "holdout-fixture/fixture.h264",
+        "file_mtime_utc": "2026-10-23T04:58:09.199435+00:00"
+      },
+      "input_profiles": {
+        "fps": 30,
+        "frames": 24,
+        "hardware_access": false,
+        "height": 96,
+        "luma_encoding": "Each256-byte row uses literal hex, value/count runs, or an earlier profile copy plus x/value patches; repeat96rows and duplicate eachframe. No model prediction is used.",
+        "neutral_chroma": 128,
+        "offline_mock_only": true,
+        "profiles": [
+          {
+            "id": 0,
+            "luma_runs_value_count": [
+              [0,256]
+            ],
+            "name": "dc0"
+          },
+          {
+            "id": 1,
+            "luma_runs_value_count": [
+              [255,256]
+            ],
+            "name": "dc255"
+          },
+          {
+            "id": 2,
+            "luma256_hex": "e942393045d94fa7ca7c8b5b14e587bd79b2ef34b5c5563ddf5eedfb94de551a3e04e0a4f2a218ade248cd3a7ac22892c4db4b5a4107f61174ac4058c0cb66fc9b2a6bb9767138f5eba1da05824cdd2243f7618dc312f163ccb17e2e84b82119e76d50b79cc17b10706eff1d91d58ed4862f35b427be32f016378c9d171b515fabbbf38f010bd67308cf544424130096f8698abf60e4e3dc6a2636feeaee06c929b69768957d675d09b072cea54e81e677c647d352881fba9a0383afc74dd83f0f2599e8d198853c0275fa6457230e3359a980e14620d7622d907f53d2f965ecaa15bcaea03b6c1ca60d0a0cd0b39e315c4a6f782c89a39f2b93f41efdc8a849",
+            "name": "xorshift32-shuffle-seed43524844-full0to255"
+          },
+          {
+            "id": 3,
+            "luma_runs_value_count": [
+              [128,128],
+              [132,1],
+              [128,127]
+            ],
+            "name": "even-plus4"
+          },
+          {
+            "id": 4,
+            "luma_runs_value_count": [
+              [128,128],
+              [124,1],
+              [128,127]
+            ],
+            "name": "even-minus4"
+          },
+          {
+            "id": 5,
+            "luma_runs_value_count": [
+              [128,129],
+              [140,1],
+              [128,126]
+            ],
+            "name": "odd-plus12"
+          },
+          {
+            "id": 6,
+            "luma_runs_value_count": [
+              [128,129],
+              [116,1],
+              [128,126]
+            ],
+            "name": "odd-minus12"
+          },
+          {
+            "id": 7,
+            "luma_runs_value_count": [
+              [128,128],
+              [131,1],
+              [128,127]
+            ],
+            "name": "even-plus3"
+          },
+          {
+            "id": 8,
+            "luma_runs_value_count": [
+              [128,128],
+              [125,1],
+              [128,127]
+            ],
+            "name": "even-minus3"
+          },
+          {
+            "id": 9,
+            "luma_runs_value_count": [
+              [128,129],
+              [135,1],
+              [128,126]
+            ],
+            "name": "odd-plus7"
+          },
+          {
+            "id": 10,
+            "luma_runs_value_count": [
+              [128,129],
+              [121,1],
+              [128,126]
+            ],
+            "name": "odd-minus7"
+          },
+          {
+            "id": 11,
+            "luma_runs_value_count": [
+              [0,127],
+              [255,10],
+              [17,119]
+            ],
+            "name": "asymmetric-step0-255-17"
+          }
+        ],
+        "schema": 1,
+        "width": 256
+      },
+      "input_profiles_file": {
+        "bytes": 11940,
+        "file": "holdout-fixture/profiles.json",
+        "file_mtime_utc": "2026-10-23T04:58:09.199435+00:00"
+      },
+      "model_result": {
+        "exact_full_biases": [],
+        "exact_interior_secondary_biases": [],
+        "model_result": "FULL_FRAME_MODEL_REJECTED",
+        "native_before_after_equal": true,
+        "native_known_raster_full_bytes": true,
+        "schema": 1,
+        "scope": "effective decoder-mediated 256x96->128x48 horizontal rule only; no active bank, physical lease, arbitrary ratio, standalone or vertical filter claim",
+        "scores": [
+          {
+            "bias": 0,
+            "full": {
+              "bytes": 294912,
+              "different_bytes": 13632,
+              "max_abs": 57,
+              "sum_abs": 229728
+            },
+            "interior_secondary": {
+              "bytes": 184320,
+              "different_bytes": 9024,
+              "max_abs": 57,
+              "sum_abs": 141312
+            }
+          },
+          {
+            "bias": 1,
+            "full": {
+              "bytes": 294912,
+              "different_bytes": 13440,
+              "max_abs": 57,
+              "sum_abs": 229632
+            },
+            "interior_secondary": {
+              "bytes": 184320,
+              "different_bytes": 8832,
+              "max_abs": 57,
+              "sum_abs": 141120
+            }
+          },
+          {
+            "bias": 2,
+            "full": {
+              "bytes": 294912,
+              "different_bytes": 13440,
+              "max_abs": 57,
+              "sum_abs": 229632
+            },
+            "interior_secondary": {
+              "bytes": 184320,
+              "different_bytes": 8832,
+              "max_abs": 57,
+              "sum_abs": 141120
+            }
+          },
+          {
+            "bias": 3,
+            "full": {
+              "bytes": 294912,
+              "different_bytes": 13248,
+              "max_abs": 58,
+              "sum_abs": 229632
+            },
+            "interior_secondary": {
+              "bytes": 184320,
+              "different_bytes": 8736,
+              "max_abs": 58,
+              "sum_abs": 140832
+            }
+          },
+          {
+            "bias": 4,
+            "full": {
+              "bytes": 294912,
+              "different_bytes": 12288,
+              "max_abs": 58,
+              "sum_abs": 229536
+            },
+            "interior_secondary": {
+              "bytes": 184320,
+              "different_bytes": 7872,
+              "max_abs": 58,
+              "sum_abs": 140736
+            }
+          },
+          {
+            "bias": 5,
+            "full": {
+              "bytes": 294912,
+              "different_bytes": 12000,
+              "max_abs": 58,
+              "sum_abs": 229248
+            },
+            "interior_secondary": {
+              "bytes": 184320,
+              "different_bytes": 7680,
+              "max_abs": 58,
+              "sum_abs": 140640
+            }
+          },
+          {
+            "bias": 6,
+            "full": {
+              "bytes": 294912,
+              "different_bytes": 12000,
+              "max_abs": 58,
+              "sum_abs": 229152
+            },
+            "interior_secondary": {
+              "bytes": 184320,
+              "different_bytes": 7680,
+              "max_abs": 58,
+              "sum_abs": 140544
+            }
+          },
+          {
+            "bias": 7,
+            "full": {
+              "bytes": 294912,
+              "different_bytes": 12096,
+              "max_abs": 58,
+              "sum_abs": 228384
+            },
+            "interior_secondary": {
+              "bytes": 184320,
+              "different_bytes": 7776,
+              "max_abs": 58,
+              "sum_abs": 139968
+            }
+          }
+        ],
+        "transport_lifecycle_validation": "EXTERNAL_DRAIN_LOGS_REQUIRED_NOT_VALIDATED_HERE"
+      },
+      "native_before_after_equal": true,
+      "native_full_known_bytes": true,
+      "observed_y_rows128_hex": ["0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","951e9081ae6473aea68bc445a0e8b94424bec362a973984fe1592e7f893cccb46293689eda75636c978779a2bd42b310b56fbe497a84a7b5556e64a520aa0d61aed200aa60541e4eb49b9bf33b94ec5f7f8b875657b175af968e6f7c4fa5849201ceb36337be32167bc32da65761e8ae63be6c436100d3604c744fae678ee47d","8080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808182808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080807f808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","8080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808085828080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080807c7f8080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","8080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808181808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080807f808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","8080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808083818080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080807e7f8080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080ffffffff881111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"],
+      "qualified_runs": [
+        {
+          "DIL_reported_version": "3.22.0",
+          "boundaries": {
+            "operator_report": "module ref0, pin balance, AER and PM boundaries checked manually by root agent",
+            "per_run_auditable_receipt": false,
+            "status": "OPERATOR_OBSERVED_UNARCHIVED"
+          },
+          "capture": {
+            "bytes": 1179648,
+            "file": "holdout-A-before.yuy2",
+            "file_mtime_utc": "2026-10-23T05:00:57.390543+00:00"
+          },
+          "capture_metadata": {
+            "common": {
+              "aspect-ratio": "1",
+              "chroma-format": "1",
+              "colour-primaries": "33686016",
+              "flags": "0",
+              "geometry": "256x96",
+              "output-flags": "20000",
+              "pulldown": "9",
+              "requested-format": "YUY2"
+            },
+            "count": 24,
+            "frame_index": {
+              "first": 0,
+              "last": 23,
+              "step": 1
+            },
+            "picture_number": {
+              "first": 3,
+              "last": 26,
+              "step": 1
+            },
+            "token": {
+              "first": 100000,
+              "last": 2400000,
+              "step": 100000
+            }
+          },
+          "churn": "completed=1/1 rss-kib=37556/37288 peak=37556 delta=+268 fds=4/4 threads=1/1 result=PASS",
+          "drain": "iteration=1/1 frames=24/24 pending=0 firmware-EOS=yes output-marker=no ready=0 cleanup=PASS result=PASS",
+          "exit_status": 0,
+          "firmware_EOS": true,
+          "firmware_output_marker": false,
+          "log": {
+            "bytes": 6253,
+            "file": "holdout-A-before.log",
+            "file_mtime_utc": "2026-10-23T05:00:57.644547+00:00"
+          },
+          "performance_claim": false,
+          "time_file": {
+            "bytes": 1158,
+            "file": "holdout-A-before.time",
+            "file_mtime_utc": "2026-10-23T05:00:57.656547+00:00"
+          }
+        },
+        {
+          "DIL_reported_version": "3.22.0",
+          "boundaries": {
+            "operator_report": "module ref0, pin balance, AER and PM boundaries checked manually by root agent",
+            "per_run_auditable_receipt": false,
+            "status": "OPERATOR_OBSERVED_UNARCHIVED"
+          },
+          "capture": {
+            "bytes": 294912,
+            "file": "holdout-B-scaled.yuy2",
+            "file_mtime_utc": "2026-10-23T05:03:42.958646+00:00"
+          },
+          "capture_metadata": {
+            "common": {
+              "aspect-ratio": "1",
+              "chroma-format": "1",
+              "colour-primaries": "33686016",
+              "flags": "0",
+              "geometry": "128x48",
+              "output-flags": "20000",
+              "pulldown": "9",
+              "requested-format": "YUY2"
+            },
+            "count": 24,
+            "frame_index": {
+              "first": 0,
+              "last": 23,
+              "step": 1
+            },
+            "picture_number": {
+              "first": 3,
+              "last": 26,
+              "step": 1
+            },
+            "token": {
+              "first": 100000,
+              "last": 2400000,
+              "step": 100000
+            }
+          },
+          "churn": "completed=1/1 rss-kib=37444/37196 peak=37444 delta=+248 fds=4/4 threads=1/1 result=PASS",
+          "drain": "iteration=1/1 frames=24/24 pending=0 firmware-EOS=yes output-marker=no ready=0 cleanup=PASS result=PASS",
+          "exit_status": 0,
+          "firmware_EOS": true,
+          "firmware_output_marker": false,
+          "log": {
+            "bytes": 6255,
+            "file": "holdout-B-scaled.log",
+            "file_mtime_utc": "2026-10-23T05:03:43.202650+00:00"
+          },
+          "performance_claim": false,
+          "time_file": {
+            "bytes": 1159,
+            "file": "holdout-B-scaled.time",
+            "file_mtime_utc": "2026-10-23T05:03:43.209650+00:00"
+          }
+        },
+        {
+          "DIL_reported_version": "3.22.0",
+          "boundaries": {
+            "operator_report": "module ref0, pin balance, AER and PM boundaries checked manually by root agent",
+            "per_run_auditable_receipt": false,
+            "status": "OPERATOR_OBSERVED_UNARCHIVED"
+          },
+          "capture": {
+            "bytes": 1179648,
+            "file": "holdout-A-after.yuy2",
+            "file_mtime_utc": "2026-10-23T05:04:57.560601+00:00"
+          },
+          "capture_metadata": {
+            "common": {
+              "aspect-ratio": "1",
+              "chroma-format": "1",
+              "colour-primaries": "33686016",
+              "flags": "0",
+              "geometry": "256x96",
+              "output-flags": "20000",
+              "pulldown": "9",
+              "requested-format": "YUY2"
+            },
+            "count": 24,
+            "frame_index": {
+              "first": 0,
+              "last": 23,
+              "step": 1
+            },
+            "picture_number": {
+              "first": 3,
+              "last": 26,
+              "step": 1
+            },
+            "token": {
+              "first": 100000,
+              "last": 2400000,
+              "step": 100000
+            }
+          },
+          "churn": "completed=1/1 rss-kib=37472/37060 peak=37472 delta=+412 fds=4/4 threads=1/1 result=PASS",
+          "drain": "iteration=1/1 frames=24/24 pending=0 firmware-EOS=yes output-marker=no ready=0 cleanup=PASS result=PASS",
+          "exit_status": 0,
+          "firmware_EOS": true,
+          "firmware_output_marker": false,
+          "log": {
+            "bytes": 6253,
+            "file": "holdout-A-after.log",
+            "file_mtime_utc": "2026-10-23T05:04:57.801604+00:00"
+          },
+          "performance_claim": false,
+          "time_file": {
+            "bytes": 1157,
+            "file": "holdout-A-after.time",
+            "file_mtime_utc": "2026-10-23T05:04:57.809604+00:00"
+          }
+        }
+      ]
+    },
+    "initial": {
+      "frozen_hypothesis": {
+        "created_utc": "2026-10-23T04:44:47.621077+00:00",
+        "family": "8phases x2orientations x25offsets x3biases for eachH0/H1; observed coefficient table not proved active",
+        "file": "frozen-predictions.json"
+      },
+      "full_scaled_all48_rows_invariant": true,
+      "full_scaled_chroma128": true,
+      "full_scaled_duplicate_pairs": 12,
+      "independent_SW": {
+        "bytes": 884736,
+        "file": "software.yuv420p",
+        "file_mtime_utc": "2026-10-23T04:46:29.979295+00:00"
+      },
+      "independent_SW_full_known_bytes": true,
+      "input_fixture": {
+        "bytes": 889738,
+        "file": "fixture/fixture.h264",
+        "file_mtime_utc": "2026-10-23T04:44:36.420152+00:00"
+      },
+      "input_profiles": {
+        "fps": 30,
+        "frames": 24,
+        "hardware_access": false,
+        "height": 96,
+        "luma_encoding": "Each256-byte row uses literal hex, value/count runs, or an earlier profile copy plus x/value patches; repeat96rows and duplicate eachframe. No model prediction is used.",
+        "neutral_chroma": 128,
+        "offline_mock_only": true,
+        "profiles": [
+          {
+            "id": 0,
+            "luma_runs_value_count": [
+              [96,256]
+            ],
+            "name": "dc96"
+          },
+          {
+            "id": 1,
+            "luma_runs_value_count": [
+              [160,256]
+            ],
+            "name": "dc160"
+          },
+          {
+            "id": 2,
+            "luma256_hex": "40404141424243434444454546464747484849494a4a4b4b4c4c4d4d4e4e4f4f50505151525253535454555556565757585859595a5a5b5b5c5c5d5d5e5e5f5f60606161626263636464656566666767686869696a6a6b6b6c6c6d6d6e6e6f6f70707171727273737474757576767777787879797a7a7b7b7c7c7d7d7e7e7f7f80808181828283838484858586868787888889898a8a8b8b8c8c8d8d8e8e8f8f90909191929293939494959596969797989899999a9a9b9b9c9c9d9d9e9e9f9fa0a0a1a1a2a2a3a3a4a4a5a5a6a6a7a7a8a8a9a9aaaaababacacadadaeaeafafb0b0b1b1b2b2b3b3b4b4b5b5b6b6b7b7b8b8b9b9bababbbbbcbcbdbdbebebfc0",
+            "name": "ramp64to192"
+          },
+          {
+            "id": 3,
+            "luma_runs_value_count": [
+              [128,128],
+              [144,1],
+              [128,127]
+            ],
+            "name": "even-plus16"
+          },
+          {
+            "id": 4,
+            "luma_runs_value_count": [
+              [128,128],
+              [112,1],
+              [128,127]
+            ],
+            "name": "even-minus16"
+          },
+          {
+            "id": 5,
+            "luma_runs_value_count": [
+              [128,129],
+              [144,1],
+              [128,126]
+            ],
+            "name": "odd-plus16"
+          },
+          {
+            "id": 6,
+            "luma_runs_value_count": [
+              [128,129],
+              [112,1],
+              [128,126]
+            ],
+            "name": "odd-minus16"
+          },
+          {
+            "id": 7,
+            "luma_runs_value_count": [
+              [128,128],
+              [160,1],
+              [128,127]
+            ],
+            "name": "even-plus32"
+          },
+          {
+            "id": 8,
+            "luma_runs_value_count": [
+              [128,128],
+              [96,1],
+              [128,127]
+            ],
+            "name": "even-minus32"
+          },
+          {
+            "id": 9,
+            "luma_runs_value_count": [
+              [128,129],
+              [160,1],
+              [128,126]
+            ],
+            "name": "odd-plus32"
+          },
+          {
+            "id": 10,
+            "luma_runs_value_count": [
+              [128,129],
+              [96,1],
+              [128,126]
+            ],
+            "name": "odd-minus32"
+          },
+          {
+            "id": 11,
+            "luma_runs_value_count": [
+              [96,128],
+              [160,8],
+              [128,120]
+            ],
+            "name": "asymmetric-step96-160-128"
+          }
+        ],
+        "schema": 1,
+        "width": 256
+      },
+      "input_profiles_file": {
+        "bytes": 12455,
+        "file": "fixture/profiles.json",
+        "file_mtime_utc": "2026-10-23T04:44:36.420152+00:00"
+      },
+      "model_result": {
+        "candidates": 1200,
+        "exact_candidates": {
+          "H0": [],
+          "H1": []
+        },
+        "model_result": "BOTH_MODEL_FAMILIES_REJECTED",
+        "observed_dc": [96,160],
+        "primary_extent": "12unique profiles x80interior luma samples; NOT full-frame model acceptance",
+        "scored_samples": 960
+      },
+      "native_before_after_equal": true,
+      "native_full_known_bytes": true,
+      "observed_y_rows128_hex": ["6060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060","a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0","404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbec0","8080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808286808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","8080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080807e7a808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","8080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808086828080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080807a7e8080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080848c808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","8080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080807c74808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808c848080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","80808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080747c8080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","6060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606898a0a09c848080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080"],
+      "qualified_runs": [
+        {
+          "DIL_reported_version": "3.22.0",
+          "boundaries": {
+            "operator_report": "module ref0, pin balance, AER and PM boundaries checked manually by root agent",
+            "per_run_auditable_receipt": false,
+            "status": "OPERATOR_OBSERVED_UNARCHIVED"
+          },
+          "capture": {
+            "bytes": 1179648,
+            "file": "A-before.yuy2",
+            "file_mtime_utc": "2026-10-23T04:47:44.724087+00:00"
+          },
+          "capture_metadata": {
+            "common": {
+              "aspect-ratio": "1",
+              "chroma-format": "1",
+              "colour-primaries": "33686016",
+              "flags": "0",
+              "geometry": "256x96",
+              "output-flags": "20000",
+              "pulldown": "9",
+              "requested-format": "YUY2"
+            },
+            "count": 24,
+            "frame_index": {
+              "first": 0,
+              "last": 23,
+              "step": 1
+            },
+            "picture_number": {
+              "first": 3,
+              "last": 26,
+              "step": 1
+            },
+            "token": {
+              "first": 100000,
+              "last": 2400000,
+              "step": 100000
+            }
+          },
+          "churn": "completed=1/1 rss-kib=37192/36864 peak=37192 delta=+328 fds=4/4 threads=1/1 result=PASS",
+          "drain": "iteration=1/1 frames=24/24 pending=0 firmware-EOS=yes output-marker=no ready=0 cleanup=PASS result=PASS",
+          "exit_status": 0,
+          "firmware_EOS": true,
+          "firmware_output_marker": false,
+          "log": {
+            "bytes": 6253,
+            "file": "A-before.log",
+            "file_mtime_utc": "2026-10-23T04:47:44.967089+00:00"
+          },
+          "performance_claim": false,
+          "time_file": {
+            "bytes": 1145,
+            "file": "A-before.time",
+            "file_mtime_utc": "2026-10-23T04:47:44.974089+00:00"
+          }
+        },
+        {
+          "DIL_reported_version": "3.22.0",
+          "boundaries": {
+            "operator_report": "module ref0, pin balance, AER and PM boundaries checked manually by root agent",
+            "per_run_auditable_receipt": false,
+            "status": "OPERATOR_OBSERVED_UNARCHIVED"
+          },
+          "capture": {
+            "bytes": 294912,
+            "file": "B-qualified.yuy2",
+            "file_mtime_utc": "2026-10-23T04:50:20.230812+00:00"
+          },
+          "capture_metadata": {
+            "common": {
+              "aspect-ratio": "1",
+              "chroma-format": "1",
+              "colour-primaries": "33686016",
+              "flags": "0",
+              "geometry": "128x48",
+              "output-flags": "20000",
+              "pulldown": "9",
+              "requested-format": "YUY2"
+            },
+            "count": 24,
+            "frame_index": {
+              "first": 0,
+              "last": 23,
+              "step": 1
+            },
+            "picture_number": {
+              "first": 3,
+              "last": 26,
+              "step": 1
+            },
+            "token": {
+              "first": 100000,
+              "last": 2400000,
+              "step": 100000
+            }
+          },
+          "churn": "completed=1/1 rss-kib=37524/37128 peak=37524 delta=+396 fds=4/4 threads=1/1 result=PASS",
+          "drain": "iteration=1/1 frames=24/24 pending=0 firmware-EOS=yes output-marker=no ready=0 cleanup=PASS result=PASS",
+          "exit_status": 0,
+          "firmware_EOS": true,
+          "firmware_output_marker": false,
+          "log": {
+            "bytes": 6255,
+            "file": "B-qualified.log",
+            "file_mtime_utc": "2026-10-23T04:50:20.478815+00:00"
+          },
+          "performance_claim": false,
+          "time_file": {
+            "bytes": 1146,
+            "file": "B-qualified.time",
+            "file_mtime_utc": "2026-10-23T04:50:20.488815+00:00"
+          }
+        },
+        {
+          "DIL_reported_version": "3.22.0",
+          "boundaries": {
+            "operator_report": "module ref0, pin balance, AER and PM boundaries checked manually by root agent",
+            "per_run_auditable_receipt": false,
+            "status": "OPERATOR_OBSERVED_UNARCHIVED"
+          },
+          "capture": {
+            "bytes": 1179648,
+            "file": "A-after.yuy2",
+            "file_mtime_utc": "2026-10-23T04:51:34.844671+00:00"
+          },
+          "capture_metadata": {
+            "common": {
+              "aspect-ratio": "1",
+              "chroma-format": "1",
+              "colour-primaries": "33686016",
+              "flags": "0",
+              "geometry": "256x96",
+              "output-flags": "20000",
+              "pulldown": "9",
+              "requested-format": "YUY2"
+            },
+            "count": 24,
+            "frame_index": {
+              "first": 0,
+              "last": 23,
+              "step": 1
+            },
+            "picture_number": {
+              "first": 3,
+              "last": 26,
+              "step": 1
+            },
+            "token": {
+              "first": 100000,
+              "last": 2400000,
+              "step": 100000
+            }
+          },
+          "churn": "completed=1/1 rss-kib=37152/36860 peak=37152 delta=+292 fds=4/4 threads=1/1 result=PASS",
+          "drain": "iteration=1/1 frames=24/24 pending=0 firmware-EOS=yes output-marker=no ready=0 cleanup=PASS result=PASS",
+          "exit_status": 0,
+          "firmware_EOS": true,
+          "firmware_output_marker": false,
+          "log": {
+            "bytes": 6253,
+            "file": "A-after.log",
+            "file_mtime_utc": "2026-10-23T04:51:35.080673+00:00"
+          },
+          "performance_claim": false,
+          "time_file": {
+            "bytes": 1141,
+            "file": "A-after.time",
+            "file_mtime_utc": "2026-10-23T04:51:35.088673+00:00"
+          }
+        }
+      ]
+    },
+    "support": {
+      "frozen_hypothesis": {
+        "allowed_differential_support": [
+          {
+            "output_x": [63,64],
+            "profile_pairs": [
+              [2,0],
+              [3,0],
+              [6,0],
+              [7,0],
+              [11,10]
+            ],
+            "source_x": 128
+          },
+          {
+            "output_x": [64,65],
+            "profile_pairs": [
+              [4,0],
+              [5,0],
+              [8,0],
+              [9,0]
+            ],
+            "source_x": 129
+          }
+        ],
+        "experiment": "one independent stateless-four-local-support causality test",
+        "frozen_before_support_scaled_capture": true,
+        "geometry": {
+          "fps": 30,
+          "frames": 24,
+          "neutral_chroma": 128,
+          "output_height": 48,
+          "output_width": 128,
+          "source_height": 96,
+          "source_width": 256
+        },
+        "hypothesis": "At fixed output x and fixed nominal scaler configuration, output is a deterministic stateless function ONLY of the four source samples [2*x-1,2*x,2*x+1,2*x+2]. The function may be nonlinear and its weights/rounding are unspecified.",
+        "hypothesis_origin": "earlier effective four-tap weights fit initial data post hoc, but all eight frozen rounding-bias models were rejected by the independent full-range holdout, including its interior; no coefficient refitting here",
+        "inputs": {
+          "annex_b": "support-fixture/fixture.h264",
+          "copies_per_profile": 2,
+          "known": "support-fixture/known.yuv420p",
+          "profiles": "support-fixture/profiles.json",
+          "slots": "0,1 alternating throughout; native and independent software decoded bytes must equal the complete known raster"
+        },
+        "interpretation": "No outside-support response retains but does not prove this locality hypothesis. A response outside support rejects this fixed stateless support, not a physical block, coefficient bank, linearity or a specific alternative algorithm. Reverse-ramp and flat diagnostics do not rescue a rejected model.",
+        "mandatory_admission": ["Independent software decode matches ALL24 full known planar rasters, including UV128.","Native unscaled A-before and A-after each contain all24 full known YUY2 rasters; A-before equals A-after.","Normal API A/B/A drain logs separately pass output count, timestamps, EOS, reopen and clean recovery; mock fixture success is not hardware evidence.","Scaled B has exactly24 complete128x48 YUY2 frames; each duplicate pair is full-byte identical; all48 rows per frame are identical; every packed chroma byte is128.","Every perturbed source profile differs from its stated baseline at EXACTLY the one declared x, with no input clipping."],
+        "native_execution_by_generator": false,
+        "primary_rejection_rule": "After admission, ANY nonzero output luma delta outside the declared allowed x set rejects the stateless four-local-support hypothesis, even if the path is nonlinear. Evaluate every output row and both duplicate copies, not just a center row.",
+        "production_change": false,
+        "profile_contract": [
+          {
+            "id": 0,
+            "role": "ramp baseline",
+            "row": "x for x=0..255"
+          },
+          {
+            "id": 1,
+            "role": "reverse-ramp diagnostic, not the perturbation baseline",
+            "row": "255-x for x=0..255"
+          },
+          {
+            "base": 0,
+            "delta": 32,
+            "id": 2,
+            "source_x": 128
+          },
+          {
+            "base": 0,
+            "delta": -32,
+            "id": 3,
+            "source_x": 128
+          },
+          {
+            "base": 0,
+            "delta": 32,
+            "id": 4,
+            "source_x": 129
+          },
+          {
+            "base": 0,
+            "delta": -32,
+            "id": 5,
+            "source_x": 129
+          },
+          {
+            "base": 0,
+            "delta": 64,
+            "id": 6,
+            "source_x": 128
+          },
+          {
+            "base": 0,
+            "delta": -64,
+            "id": 7,
+            "source_x": 128
+          },
+          {
+            "base": 0,
+            "delta": 64,
+            "id": 8,
+            "source_x": 129
+          },
+          {
+            "base": 0,
+            "delta": -64,
+            "id": 9,
+            "source_x": 129
+          },
+          {
+            "id": 10,
+            "role": "flat baseline",
+            "row": "constant128"
+          },
+          {
+            "base": 10,
+            "delta": 32,
+            "id": 11,
+            "source_x": 128
+          }
+        ],
+        "required_evidence": "For every declared profile/baseline pair, record the full128-element signed luma response vector; all nonzero x; exact outside-support x/deltas and total outside bytes across all rows/copies. Preserve captures, failures and admitted negative outcomes unchanged.",
+        "schema": 1,
+        "stop_condition": "One24-frame support corpus only in this turn; no coefficient fitting, wider search, further hardware corpus or production changes."
+      },
+      "full_scaled_all48_rows_invariant": true,
+      "full_scaled_chroma128": true,
+      "full_scaled_duplicate_pairs": 12,
+      "independent_SW": {
+        "bytes": 884736,
+        "file": "support-software.yuv420p",
+        "file_mtime_utc": "2026-10-23T05:14:06.005697+00:00"
+      },
+      "independent_SW_full_known_bytes": true,
+      "input_fixture": {
+        "bytes": 889829,
+        "file": "support-fixture/fixture.h264",
+        "file_mtime_utc": "2026-10-23T05:11:43.062838+00:00"
+      },
+      "input_profiles": {
+        "fps": 30,
+        "frames": 24,
+        "hardware_access": false,
+        "height": 96,
+        "luma_encoding": "Each256-byte row uses literal hex, value/count runs, or an earlier profile copy plus x/value patches; repeat96rows and duplicate eachframe. No model prediction is used.",
+        "neutral_chroma": 128,
+        "offline_mock_only": true,
+        "profiles": [
+          {
+            "id": 0,
+            "luma256_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+            "name": "ramp-x"
+          },
+          {
+            "id": 1,
+            "luma256_hex": "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0dfdedddcdbdad9d8d7d6d5d4d3d2d1d0cfcecdcccbcac9c8c7c6c5c4c3c2c1c0bfbebdbcbbbab9b8b7b6b5b4b3b2b1b0afaeadacabaaa9a8a7a6a5a4a3a2a1a09f9e9d9c9b9a999897969594939291908f8e8d8c8b8a898887868584838281807f7e7d7c7b7a797877767574737271706f6e6d6c6b6a696867666564636261605f5e5d5c5b5a595857565554535251504f4e4d4c4b4a494847464544434241403f3e3d3c3b3a393837363534333231302f2e2d2c2b2a292827262524232221201f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100",
+            "name": "reverse255-x"
+          },
+          {
+            "id": 2,
+            "luma_copy_profile": 0,
+            "luma_patches_x_value": [
+              [128,160]
+            ],
+            "name": "ramp-even-plus32"
+          },
+          {
+            "id": 3,
+            "luma_copy_profile": 0,
+            "luma_patches_x_value": [
+              [128,96]
+            ],
+            "name": "ramp-even-minus32"
+          },
+          {
+            "id": 4,
+            "luma_copy_profile": 0,
+            "luma_patches_x_value": [
+              [129,161]
+            ],
+            "name": "ramp-odd-plus32"
+          },
+          {
+            "id": 5,
+            "luma_copy_profile": 0,
+            "luma_patches_x_value": [
+              [129,97]
+            ],
+            "name": "ramp-odd-minus32"
+          },
+          {
+            "id": 6,
+            "luma_copy_profile": 0,
+            "luma_patches_x_value": [
+              [128,192]
+            ],
+            "name": "ramp-even-plus64"
+          },
+          {
+            "id": 7,
+            "luma_copy_profile": 0,
+            "luma_patches_x_value": [
+              [128,64]
+            ],
+            "name": "ramp-even-minus64"
+          },
+          {
+            "id": 8,
+            "luma_copy_profile": 0,
+            "luma_patches_x_value": [
+              [129,193]
+            ],
+            "name": "ramp-odd-plus64"
+          },
+          {
+            "id": 9,
+            "luma_copy_profile": 0,
+            "luma_patches_x_value": [
+              [129,65]
+            ],
+            "name": "ramp-odd-minus64"
+          },
+          {
+            "id": 10,
+            "luma_runs_value_count": [
+              [128,256]
+            ],
+            "name": "flat128"
+          },
+          {
+            "id": 11,
+            "luma_runs_value_count": [
+              [128,128],
+              [160,1],
+              [128,127]
+            ],
+            "name": "flat128-even-plus32"
+          }
+        ],
+        "schema": 1,
+        "width": 256
+      },
+      "input_profiles_file": {
+        "bytes": 11848,
+        "file": "support-fixture/profiles.json",
+        "file_mtime_utc": "2026-10-23T05:11:43.062838+00:00"
+      },
+      "model_result": {
+        "interpretation": "No outside-support response retains but does not prove this locality hypothesis. A response outside support rejects this fixed stateless support, not a physical block, coefficient bank, linearity or a specific alternative algorithm. Reverse-ramp and flat diagnostics do not rescue a rejected model.",
+        "native_before_after_equal": true,
+        "native_full_known_bytes": true,
+        "outside_count_scope": "sum over9 profile/baseline comparisons, not unique capture-byte union",
+        "outside_luma_bytes_total": 2304,
+        "physical_block_or_linear_coefficient_claim": false,
+        "responses": [
+          {
+            "allowed_output_x": [63,64],
+            "baseline": 0,
+            "input_delta": 32,
+            "nonzero_x": [61,62,63,64,65],
+            "outside_luma_bytes_all_rows_copies": 288,
+            "outside_support": [
+              {
+                "delta": -1,
+                "x": 61
+              },
+              {
+                "delta": 1,
+                "x": 62
+              },
+              {
+                "delta": -1,
+                "x": 65
+              }
+            ],
+            "profile": 2,
+            "signed_luma_delta128": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,1,3,13,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            "source_x": 128
+          },
+          {
+            "allowed_output_x": [63,64],
+            "baseline": 0,
+            "input_delta": -32,
+            "nonzero_x": [62,63,64,65,67],
+            "outside_luma_bytes_all_rows_copies": 288,
+            "outside_support": [
+              {
+                "delta": -1,
+                "x": 62
+              },
+              {
+                "delta": 1,
+                "x": 65
+              },
+              {
+                "delta": -1,
+                "x": 67
+              }
+            ],
+            "profile": 3,
+            "signed_luma_delta128": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-3,-13,1,0,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            "source_x": 128
+          },
+          {
+            "allowed_output_x": [64,65],
+            "baseline": 0,
+            "input_delta": 32,
+            "nonzero_x": [63,64,65,66,67],
+            "outside_luma_bytes_all_rows_copies": 288,
+            "outside_support": [
+              {
+                "delta": -1,
+                "x": 63
+              },
+              {
+                "delta": 1,
+                "x": 66
+              },
+              {
+                "delta": -1,
+                "x": 67
+              }
+            ],
+            "profile": 4,
+            "signed_luma_delta128": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,13,3,1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            "source_x": 129
+          },
+          {
+            "allowed_output_x": [64,65],
+            "baseline": 0,
+            "input_delta": -32,
+            "nonzero_x": [61,63,64,65,66],
+            "outside_luma_bytes_all_rows_copies": 288,
+            "outside_support": [
+              {
+                "delta": -1,
+                "x": 61
+              },
+              {
+                "delta": 1,
+                "x": 63
+              },
+              {
+                "delta": -1,
+                "x": 66
+              }
+            ],
+            "profile": 5,
+            "signed_luma_delta128": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,0,1,-13,-3,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            "source_x": 129
+          },
+          {
+            "allowed_output_x": [63,64],
+            "baseline": 0,
+            "input_delta": 64,
+            "nonzero_x": [61,62,63,64,65],
+            "outside_luma_bytes_all_rows_copies": 288,
+            "outside_support": [
+              {
+                "delta": -1,
+                "x": 61
+              },
+              {
+                "delta": 1,
+                "x": 62
+              },
+              {
+                "delta": -1,
+                "x": 65
+              }
+            ],
+            "profile": 6,
+            "signed_luma_delta128": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,1,7,25,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            "source_x": 128
+          },
+          {
+            "allowed_output_x": [63,64],
+            "baseline": 0,
+            "input_delta": -64,
+            "nonzero_x": [62,63,64,65,67],
+            "outside_luma_bytes_all_rows_copies": 288,
+            "outside_support": [
+              {
+                "delta": -1,
+                "x": 62
+              },
+              {
+                "delta": 1,
+                "x": 65
+              },
+              {
+                "delta": -1,
+                "x": 67
+              }
+            ],
+            "profile": 7,
+            "signed_luma_delta128": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-7,-25,1,0,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            "source_x": 128
+          },
+          {
+            "allowed_output_x": [64,65],
+            "baseline": 0,
+            "input_delta": 64,
+            "nonzero_x": [63,64,65,66,67],
+            "outside_luma_bytes_all_rows_copies": 288,
+            "outside_support": [
+              {
+                "delta": -1,
+                "x": 63
+              },
+              {
+                "delta": 1,
+                "x": 66
+              },
+              {
+                "delta": -1,
+                "x": 67
+              }
+            ],
+            "profile": 8,
+            "signed_luma_delta128": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,25,7,1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            "source_x": 129
+          },
+          {
+            "allowed_output_x": [64,65],
+            "baseline": 0,
+            "input_delta": -64,
+            "nonzero_x": [61,63,64,65,66],
+            "outside_luma_bytes_all_rows_copies": 288,
+            "outside_support": [
+              {
+                "delta": -1,
+                "x": 61
+              },
+              {
+                "delta": 1,
+                "x": 63
+              },
+              {
+                "delta": -1,
+                "x": 66
+              }
+            ],
+            "profile": 9,
+            "signed_luma_delta128": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,0,1,-25,-7,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            "source_x": 129
+          },
+          {
+            "allowed_output_x": [63,64],
+            "baseline": 10,
+            "input_delta": 32,
+            "nonzero_x": [63,64],
+            "outside_luma_bytes_all_rows_copies": 0,
+            "outside_support": [],
+            "profile": 11,
+            "signed_luma_delta128": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,12,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            "source_x": 128
+          }
+        ],
+        "result": "STATELESS_FOUR_LOCAL_SUPPORT_REJECTED",
+        "scaled_all_rows_invariant": true,
+        "scaled_chroma128": true,
+        "scaled_duplicate_pairs": 12,
+        "scaled_frames": 24,
+        "schema": 1,
+        "transport_lifecycle_validation": "EXTERNAL_NATIVE_DRAIN_LOGS_REQUIRED_NOT_VALIDATED_HERE"
+      },
+      "native_before_after_equal": true,
+      "native_full_known_bytes": true,
+      "observed_y_rows128_hex": ["01030507090b0d0f11131517191b1d1f21232527292b2d2f31333537393b3d3f41434547494b4d4f51535557595b5d5f61636567696b6d6f71737577797b7d7f81838587898b8d8f91939597999b9d9fa1a3a5a7a9abadafb1b3b5b7b9bbbdbfc1c3c5c7c9cbcdcfd1d3d5d7d9dbdddfe1e3e5e7e9ebedeff1f3f5f7f9fbfdff","fffdfbf9f7f5f3f1efedebe9e7e5e3e1dfdddbd9d7d5d3d1cfcdcbc9c7c5c3c1bfbdbbb9b7b5b3b1afadaba9a7a5a3a19f9d9b99979593918f8d8b89878583817f7d7b79777573716f6d6b69676563615f5d5b59575553514f4d4b49474543413f3d3b39373533312f2d2b29272523211f1d1b19171513110f0d0b0907050301","01030507090b0d0f11131517191b1d1f21232527292b2d2f31333537393b3d3f41434547494b4d4f51535557595b5d5f61636567696b6d6f71737577797a7e828e828587898b8d8f91939597999b9d9fa1a3a5a7a9abadafb1b3b5b7b9bbbdbfc1c3c5c7c9cbcdcfd1d3d5d7d9dbdddfe1e3e5e7e9ebedeff1f3f5f7f9fbfdff","01030507090b0d0f11131517191b1d1f21232527292b2d2f31333537393b3d3f41434547494b4d4f51535557595b5d5f61636567696b6d6f71737577797b7c7c74848586898b8d8f91939597999b9d9fa1a3a5a7a9abadafb1b3b5b7b9bbbdbfc1c3c5c7c9cbcdcfd1d3d5d7d9dbdddfe1e3e5e7e9ebedeff1f3f5f7f9fbfdff","01030507090b0d0f11131517191b1d1f21232527292b2d2f31333537393b3d3f41434547494b4d4f51535557595b5d5f61636567696b6d6f71737577797b7d7e8e868686898b8d8f91939597999b9d9fa1a3a5a7a9abadafb1b3b5b7b9bbbdbfc1c3c5c7c9cbcdcfd1d3d5d7d9dbdddfe1e3e5e7e9ebedeff1f3f5f7f9fbfdff","01030507090b0d0f11131517191b1d1f21232527292b2d2f31333537393b3d3f41434547494b4d4f51535557595b5d5f61636567696b6d6f71737577797a7d8074808487898b8d8f91939597999b9d9fa1a3a5a7a9abadafb1b3b5b7b9bbbdbfc1c3c5c7c9cbcdcfd1d3d5d7d9dbdddfe1e3e5e7e9ebedeff1f3f5f7f9fbfdff","01030507090b0d0f11131517191b1d1f21232527292b2d2f31333537393b3d3f41434547494b4d4f51535557595b5d5f61636567696b6d6f71737577797a7e869a828587898b8d8f91939597999b9d9fa1a3a5a7a9abadafb1b3b5b7b9bbbdbfc1c3c5c7c9cbcdcfd1d3d5d7d9dbdddfe1e3e5e7e9ebedeff1f3f5f7f9fbfdff","01030507090b0d0f11131517191b1d1f21232527292b2d2f31333537393b3d3f41434547494b4d4f51535557595b5d5f61636567696b6d6f71737577797b7c7868848586898b8d8f91939597999b9d9fa1a3a5a7a9abadafb1b3b5b7b9bbbdbfc1c3c5c7c9cbcdcfd1d3d5d7d9dbdddfe1e3e5e7e9ebedeff1f3f5f7f9fbfdff","01030507090b0d0f11131517191b1d1f21232527292b2d2f31333537393b3d3f41434547494b4d4f51535557595b5d5f61636567696b6d6f71737577797b7d7e9a8a8686898b8d8f91939597999b9d9fa1a3a5a7a9abadafb1b3b5b7b9bbbdbfc1c3c5c7c9cbcdcfd1d3d5d7d9dbdddfe1e3e5e7e9ebedeff1f3f5f7f9fbfdff","01030507090b0d0f11131517191b1d1f21232527292b2d2f31333537393b3d3f41434547494b4d4f51535557595b5d5f61636567696b6d6f71737577797a7d80687c8487898b8d8f91939597999b9d9fa1a3a5a7a9abadafb1b3b5b7b9bbbdbfc1c3c5c7c9cbcdcfd1d3d5d7d9dbdddfe1e3e5e7e9ebedeff1f3f5f7f9fbfdff","8080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080","808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080848c808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080"],
+      "qualified_runs": [
+        {
+          "DIL_reported_version": "3.22.0",
+          "boundaries": {
+            "aer_correctable": 0,
+            "aer_fatal": 0,
+            "aer_nonfatal": 0,
+            "after": {
+              "bytes": 218,
+              "file": "support-A-before.after",
+              "file_mtime_utc": "2026-10-23T05:14:27.425977+00:00"
+            },
+            "before": {
+              "bytes": 218,
+              "file": "support-A-before.before",
+              "file_mtime_utc": "2026-10-23T05:14:26.027958+00:00"
+            },
+            "contents_equal": true,
+            "pin_net": 0,
+            "script": "run-support-capture.sh",
+            "script_assertions": {
+              "force_l0s_off": "Y",
+              "loaded_module": "compared byte-equal to retained final1.2 baseline build-id note",
+              "module_refcount": 0,
+              "pci_runtime_power_control": "on",
+              "session_l0s_off": "N"
+            },
+            "status": "PASS_ARCHIVED"
+          },
+          "capture": {
+            "bytes": 1179648,
+            "file": "support-A-before.yuy2",
+            "file_mtime_utc": "2026-10-23T05:14:27.068972+00:00"
+          },
+          "capture_metadata": {
+            "common": {
+              "aspect-ratio": "1",
+              "chroma-format": "1",
+              "colour-primaries": "33686016",
+              "flags": "0",
+              "geometry": "256x96",
+              "output-flags": "20000",
+              "pulldown": "9",
+              "requested-format": "YUY2"
+            },
+            "count": 24,
+            "frame_index": {
+              "first": 0,
+              "last": 23,
+              "step": 1
+            },
+            "picture_number": {
+              "first": 3,
+              "last": 26,
+              "step": 1
+            },
+            "token": {
+              "first": 100000,
+              "last": 2400000,
+              "step": 100000
+            }
+          },
+          "churn": "completed=1/1 rss-kib=37332/36952 peak=37332 delta=+380 fds=4/4 threads=1/1 result=PASS",
+          "drain": "iteration=1/1 frames=24/24 pending=0 firmware-EOS=yes output-marker=no ready=0 cleanup=PASS result=PASS",
+          "exit_status": 0,
+          "firmware_EOS": true,
+          "firmware_output_marker": false,
+          "log": {
+            "bytes": 6253,
+            "file": "support-A-before.log",
+            "file_mtime_utc": "2026-10-23T05:14:27.325975+00:00"
+          },
+          "performance_claim": false,
+          "time_file": {
+            "bytes": 1036,
+            "file": "support-A-before.time",
+            "file_mtime_utc": "2026-10-23T05:14:27.337975+00:00"
+          }
+        },
+        {
+          "DIL_reported_version": "3.22.0",
+          "boundaries": {
+            "aer_correctable": 0,
+            "aer_fatal": 0,
+            "aer_nonfatal": 0,
+            "after": {
+              "bytes": 218,
+              "file": "support-B-scaled.after",
+              "file_mtime_utc": "2026-10-23T05:15:59.864881+00:00"
+            },
+            "before": {
+              "bytes": 218,
+              "file": "support-B-scaled.before",
+              "file_mtime_utc": "2026-10-23T05:15:58.469886+00:00"
+            },
+            "contents_equal": true,
+            "pin_net": 0,
+            "script": "run-support-capture.sh",
+            "script_assertions": {
+              "force_l0s_off": "Y",
+              "loaded_module": "compared byte-equal to retained final1.2 baseline build-id note",
+              "module_refcount": 0,
+              "pci_runtime_power_control": "on",
+              "session_l0s_off": "N"
+            },
+            "status": "PASS_ARCHIVED"
+          },
+          "capture": {
+            "bytes": 294912,
+            "file": "support-B-scaled.yuy2",
+            "file_mtime_utc": "2026-10-23T05:15:59.512882+00:00"
+          },
+          "capture_metadata": {
+            "common": {
+              "aspect-ratio": "1",
+              "chroma-format": "1",
+              "colour-primaries": "33686016",
+              "flags": "0",
+              "geometry": "128x48",
+              "output-flags": "20000",
+              "pulldown": "9",
+              "requested-format": "YUY2"
+            },
+            "count": 24,
+            "frame_index": {
+              "first": 0,
+              "last": 23,
+              "step": 1
+            },
+            "picture_number": {
+              "first": 3,
+              "last": 26,
+              "step": 1
+            },
+            "token": {
+              "first": 100000,
+              "last": 2400000,
+              "step": 100000
+            }
+          },
+          "churn": "completed=1/1 rss-kib=37288/36928 peak=37288 delta=+360 fds=4/4 threads=1/1 result=PASS",
+          "drain": "iteration=1/1 frames=24/24 pending=0 firmware-EOS=yes output-marker=no ready=0 cleanup=PASS result=PASS",
+          "exit_status": 0,
+          "firmware_EOS": true,
+          "firmware_output_marker": false,
+          "log": {
+            "bytes": 6255,
+            "file": "support-B-scaled.log",
+            "file_mtime_utc": "2026-10-23T05:15:59.765881+00:00"
+          },
+          "performance_claim": false,
+          "time_file": {
+            "bytes": 1037,
+            "file": "support-B-scaled.time",
+            "file_mtime_utc": "2026-10-23T05:15:59.777881+00:00"
+          }
+        },
+        {
+          "DIL_reported_version": "3.22.0",
+          "boundaries": {
+            "aer_correctable": 0,
+            "aer_fatal": 0,
+            "aer_nonfatal": 0,
+            "after": {
+              "bytes": 218,
+              "file": "support-A-after.after",
+              "file_mtime_utc": "2026-10-23T05:16:01.362876+00:00"
+            },
+            "before": {
+              "bytes": 218,
+              "file": "support-A-after.before",
+              "file_mtime_utc": "2026-10-23T05:15:59.955881+00:00"
+            },
+            "contents_equal": true,
+            "pin_net": 0,
+            "script": "run-support-capture.sh",
+            "script_assertions": {
+              "force_l0s_off": "Y",
+              "loaded_module": "compared byte-equal to retained final1.2 baseline build-id note",
+              "module_refcount": 0,
+              "pci_runtime_power_control": "on",
+              "session_l0s_off": "N"
+            },
+            "status": "PASS_ARCHIVED"
+          },
+          "capture": {
+            "bytes": 1179648,
+            "file": "support-A-after.yuy2",
+            "file_mtime_utc": "2026-10-23T05:16:01.001877+00:00"
+          },
+          "capture_metadata": {
+            "common": {
+              "aspect-ratio": "1",
+              "chroma-format": "1",
+              "colour-primaries": "33686016",
+              "flags": "0",
+              "geometry": "256x96",
+              "output-flags": "20000",
+              "pulldown": "9",
+              "requested-format": "YUY2"
+            },
+            "count": 24,
+            "frame_index": {
+              "first": 0,
+              "last": 23,
+              "step": 1
+            },
+            "picture_number": {
+              "first": 3,
+              "last": 26,
+              "step": 1
+            },
+            "token": {
+              "first": 100000,
+              "last": 2400000,
+              "step": 100000
+            }
+          },
+          "churn": "completed=1/1 rss-kib=37308/37016 peak=37308 delta=+292 fds=4/4 threads=1/1 result=PASS",
+          "drain": "iteration=1/1 frames=24/24 pending=0 firmware-EOS=yes output-marker=no ready=0 cleanup=PASS result=PASS",
+          "exit_status": 0,
+          "firmware_EOS": true,
+          "firmware_output_marker": false,
+          "log": {
+            "bytes": 6253,
+            "file": "support-A-after.log",
+            "file_mtime_utc": "2026-10-23T05:16:01.254876+00:00"
+          },
+          "performance_claim": false,
+          "time_file": {
+            "bytes": 1034,
+            "file": "support-A-after.time",
+            "file_mtime_utc": "2026-10-23T05:16:01.268876+00:00"
+          }
+        }
+      ]
+    }
+  },
+  "created_utc": "2026-10-23T05:22:07.724019+00:00",
+  "kernel_check": {
+    "earlier_saved_check": {
+      "file": {
+        "bytes": 65,
+        "file": "kernel.log",
+        "file_mtime_utc": "2026-10-23T04:52:34.392368+00:00"
+      },
+      "scope": "mtime predates holdout/support; NOT the final whole-window receipt"
+    },
+    "executor_reported_scope": "since2026-10-23T04:47Z through support A-after; fresh check archived after finalsupport",
+    "file": {
+      "bytes": 65,
+      "file": "kernel-final-support.log",
+      "file_mtime_utc": "2026-10-23T05:19:54.248695+00:00"
+    },
+    "result": "kernel-log validation passed: no matching errors during the test"
+  },
+  "no_hardware_access_by_assembler": true,
+  "no_hashes": true,
+  "no_release_or_support_grade_change": true,
+  "packing_state_shared_by_all10_runs": ["stage=selected-before-start register=0x00502100 raw=0x00000006 yuy2-bit=1","stage=started register=0x00502100 raw=0x00000006 yuy2-bit=1","stage=capture-before-input register=0x00502100 raw=0x00000006 yuy2-bit=1","stage=first-input-accepted register=0x00502100 raw=0x00000006 yuy2-bit=1","stage=all-input-accepted register=0x00502100 raw=0x00000006 yuy2-bit=1","stage=flush-input-returned register=0x00502100 raw=0x00000006 yuy2-bit=1","stage=first-format-change register=0x00502100 raw=0x00000016 yuy2-bit=1","stage=first-output register=0x00502100 raw=0x00000016 yuy2-bit=1"],
+  "preserved_procedural_failure": {
+    "DIL_reported_version": "3.22.0",
+    "boundaries": {
+      "operator_report": "module ref0, pin balance, AER and PM boundaries checked manually by root agent",
+      "per_run_auditable_receipt": false,
+      "status": "OPERATOR_OBSERVED_UNARCHIVED"
+    },
+    "capture": {
+      "bytes": 294912,
+      "file": "B-scaled.yuy2",
+      "file_mtime_utc": "2026-10-23T04:48:57.139878+00:00"
+    },
+    "capture_byte_identity": "direct byte comparison equal to qualified initialB; reconstruct using its12rows",
+    "capture_metadata": {
+      "common": {
+        "aspect-ratio": "1",
+        "chroma-format": "1",
+        "colour-primaries": "33686016",
+        "flags": "0",
+        "geometry": "128x48",
+        "output-flags": "20000",
+        "pulldown": "9",
+        "requested-format": "YUY2"
+      },
+      "count": 24,
+      "frame_index": {
+        "first": 0,
+        "last": 23,
+        "step": 1
+      },
+      "picture_number": {
+        "first": 3,
+        "last": 26,
+        "step": 1
+      },
+      "token": {
+        "first": 100000,
+        "last": 2400000,
+        "step": 100000
+      }
+    },
+    "churn": "completed=1/1 rss-kib=37200/36916 peak=37200 delta=+284 fds=4/4 threads=1/1 result=PASS",
+    "drain": "iteration=1/1 frames=24/24 pending=0 firmware-EOS=yes output-marker=no ready=0 cleanup=PASS result=PASS",
+    "exit_status": 0,
+    "firmware_EOS": true,
+    "firmware_output_marker": false,
+    "log": {
+      "bytes": 6255,
+      "file": "B-scaled.log",
+      "file_mtime_utc": "2026-10-23T04:48:57.377881+00:00"
+    },
+    "performance_claim": false,
+    "qualification": "FAIL_PROCEDURAL_NOT_SCIENTIFIC_INPUT",
+    "reason": "Root passed PosixPath objects to native_admit which requires bytes, raising TypeError before native admission; enclosing shell lackedset-e and still launched firstB. Root reports no pixels inspected before corrected full-A admission. Fresh B-qualified is the sole scored initialB.",
+    "time_file": {
+      "bytes": 1143,
+      "file": "B-scaled.time",
+      "file_mtime_utc": "2026-10-23T04:48:57.383881+00:00"
+    },
+    "used_in_any_scoring": false
+  },
+  "qualified_case_count": 3,
+  "qualified_native_runs": 9,
+  "qualified_outputs": 216,
+  "reconstruction": "Decode each hex string to bytes. For each observed profile, pack every Y as Y,128; repeat128-pixel row48times and duplicate frame twice. NeutralUV/full-row/full-duplicate admission makes these36rows sufficient to reconstruct all three294912-byte qualified B captures exactly. Native captures reconstruct from input profiles with256pixel rows96times, neutralUV and duplicate frames.",
+  "schema": 1,
+  "scope": "Measured normal decoder-mediated256x96->128x48 horizontal SCL only; no physical lease, active coefficient bank, standalone operation, arbitrary ratio, vertical filter, throughput or latency proof",
+  "source_context": {
+    "DIL_source_tree_reported_by_executor": "9cc3c44ef605d81f9a1ed13a1f19f218bebed7cc",
+    "binary_build_identity": "NOT_RECONSTRUCTED; tree identities are not a newly established binary build identity",
+    "firmware_identity": "Not independently re-established by this receipt assembler",
+    "loaded_module": "Preexisting stable module unchanged; support script verifies retained final1.2 build-id note equality",
+    "probe_source_comparison": "Executor verified relevant probe source diff empty between those source trees",
+    "probe_source_tree": "5a26cdd3ffb8e689376a39d4265cac676d6d9b04",
+    "stable_release_citation": "https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0; executor verified v1.2.0^{}; this is NOT a module-binary identity claim",
+    "stable_release_commit": "8132043499eaa841a6f1013b42ac4d5e152bc01d",
+    "stable_release_tag": "v1.2.0"
+  },
+  "timestamps": "All file timestamps are actual filesystem modification times, not independently measured capture start/end times"
+}
