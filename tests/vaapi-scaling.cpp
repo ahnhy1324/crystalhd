@@ -5,6 +5,14 @@
 // These fixtures model the legacy full-device restart contract. Explicit
 // same-device channel negotiation is exercised by vaapi-replay.cpp instead.
 #define CRYSTALHD_VAAPI_TEST_LIBRARY_CAPABILITIES 1
+namespace centered_probe {
+unsigned calls = 0, width = 0, height = 0;
+bool compact = false;
+}
+#define CRYSTALHD_VAAPI_TEST_CENTERED_BOB(w, h, field) do { \
+  ++centered_probe::calls; centered_probe::width = (w); \
+  centered_probe::height = (h); centered_probe::compact = (field); \
+} while (0)
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
 #include <cstdlib>
 #include <new>
@@ -94,6 +102,8 @@ struct DecoderMock {
   unsigned int close_count = 0;
   unsigned int legacy_input_calls = 0;
   unsigned int fragment_input_calls = 0;
+  bool allow_centered_scale = false;
+  unsigned scale_calls = 0, scale_width = 0;
   bool fragment_active = false;
   std::vector<InputRecord> inputs;
 };
@@ -147,9 +157,13 @@ extern "C" BC_STATUS DtsSetInputFormat(HANDLE device, BC_INPUT_FORMAT *format) {
           "reopen restores the H.264 input format");
   return BC_STS_SUCCESS;
 }
-extern "C" BC_STATUS DtsSetScaleParams(HANDLE, BC_SCALING_PARAMS *) {
-  Require(false, "ordinary H.264 never requests card scaling");
-  return BC_STS_ERROR;
+extern "C" BC_STATUS DtsSetScaleParams(HANDLE device, BC_SCALING_PARAMS *parameters) {
+  CheckDevice(device);
+  Require(active->allow_centered_scale && parameters && parameters->sWidth >= 128,
+          "only explicitly selected centered H.264 requests card scaling");
+  ++active->scale_calls;
+  active->scale_width = parameters->sWidth;
+  return BC_STS_SUCCESS;
 }
 extern "C" BC_STATUS DtsOpenDecoder(HANDLE device, uint32_t stream_type) {
   CheckDevice(device);
@@ -2830,7 +2844,352 @@ void DirectBackingReassignedBetweenVppBeginAndEnd() {
 }
 }
 
+namespace {
+struct CenteredEnvironment {
+  const char *name;
+  std::string previous;
+  bool present;
+  CenteredEnvironment(const char *key, const char *value) : name(key), present(getenv(key) != nullptr) {
+    if (present) previous = getenv(key);
+    Require((value ? setenv(key, value, 1) : unsetenv(key)) == 0,
+            "set a process-local test policy");
+  }
+  ~CenteredEnvironment() {
+    if (present) setenv(name, previous.c_str(), 1); else unsetenv(name);
+  }
+};
+
+struct CenteredFixture : Fixture {
+  CenteredEnvironment live{"CRYSTALHD_VAAPI_LIVE_H264", "0"};
+  CenteredEnvironment low{"CRYSTALHD_VAAPI_LOW_LATENCY_H264", "0"};
+  CenteredEnvironment ready{"CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP", nullptr};
+  CenteredEnvironment policy;
+  unsigned coded_width, coded_height, visible_height, capture_width, capture_height, canvas_height;
+  bool full;
+  CenteredFixture(unsigned width = 256, unsigned coded = 32, unsigned visible = 32,
+                  unsigned capture = 128, unsigned small_height = 16,
+                  unsigned canvas = 32, bool range = false)
+      : policy("CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12",
+               (std::to_string(capture) + "x" + std::to_string(small_height) + "@" +
+                std::to_string(width) + "x" + std::to_string(visible) +
+                (range ? ":full" : ":limited")).c_str()),
+        coded_width(width), coded_height(coded), visible_height(visible),
+        capture_width(capture), capture_height(small_height), canvas_height(canvas), full(range) {
+    decode->device = nullptr;
+    decode->decoder_open = decode->decoder_started = false;
+    driver.contexts.clear();
+    auto original = std::make_shared<Surface>();
+    Require(original->AllocateInternal(nullptr, -1, width, canvas, VA_FOURCC_NV12),
+            "allocate the unchanged logical public canvas");
+    original->id = 1;
+    original->ready = true;
+    driver.surfaces[1] = original;
+    VAImage probe{};
+    Require(DeriveImage(&context, 1, &probe) == VA_STATUS_SUCCESS &&
+                probe.width == width && probe.height == canvas &&
+                DestroyImage(&context, probe.image_id) == VA_STATUS_SUCCESS,
+            "stock-shaped cold DeriveImage probe remains valid before decoder creation");
+    mock.allow_reopen = mock.allow_centered_scale = true;
+    VAContextID id = VA_INVALID_ID;
+    VASurfaceID target = 1;
+    Require(CreateContext(&context, 1, width, coded, VA_PROGRESSIVE, &target, 1, &id) ==
+                VA_STATUS_SUCCESS && id == 1,
+            "ordinary VLD context accepts explicit centered policy without additional output");
+    decode = driver.contexts.at(id);
+    picture.picture_width_in_mbs_minus1 = width / 16 - 1;
+    picture.picture_height_in_mbs_minus1 = coded / 16 - 1;
+    picture.seq_fields.bits.frame_mbs_only_flag = 0;
+    picture.seq_fields.bits.mb_adaptive_frame_field_flag = 1;
+    // Context policy is immutable even if the launching environment changes.
+    Require(setenv("CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12", "0", 1) == 0,
+            "change only the later test environment, not the accepted context");
+  }
+  void Submit() {
+    Begin(); Parameters(); End();
+    Require(mock.scale_calls == 1 && mock.scale_width == capture_width &&
+                driver.surfaces.at(1)->width == coded_width &&
+                driver.surfaces.at(1)->height == canvas_height &&
+                !driver.surfaces.at(1)->opaque_reference,
+            "centered VLD really selects card scaling but retains a readable original ID/size");
+    std::vector<uint8_t> sps;
+    Require(BuildSps(picture, VAProfileH264High, &sps, coded_width, visible_height) &&
+                !mock.inputs.empty() &&
+                std::search(mock.inputs[0].bytes.begin(), mock.inputs[0].bytes.end(),
+                            sps.begin(), sps.end()) != mock.inputs[0].bytes.end(),
+            "actual submitted SPS contains the explicit visible crop, not an inferred coded-height ratio");
+  }
+  std::vector<uint8_t> Packed(unsigned seed) const {
+    std::vector<uint8_t> pixels(size_t{capture_width} * capture_height * 2);
+    for (unsigned y = 0; y < capture_height; ++y)
+      for (unsigned x = 0; x < capture_width; x += 2) {
+        auto *p = pixels.data() + (size_t{y} * capture_width + x) * 2;
+        p[0] = 24 + (y * 7 + x * 3 + seed) % 208;
+        p[1] = 64 + (y * 3 + x / 2 + seed) % 96;
+        p[2] = 24 + (y * 7 + (x + 1) * 3 + seed) % 208;
+        p[3] = 128 + (y * 5 + x / 2 + seed) % 96;
+      }
+    return pixels;
+  }
+  std::vector<uint8_t> Canvas(const std::vector<uint8_t> &packed) const {
+    const unsigned left = (coded_width - capture_width) / 2;
+    const unsigned top = ((visible_height - capture_height) / 2) / 4 * 4;
+    std::vector<uint8_t> result(size_t{coded_width} * canvas_height * 3 / 2, 128);
+    std::fill_n(result.data(), size_t{coded_width} * canvas_height, full ? 0 : 16);
+    for (unsigned row = 0; row < capture_height; ++row)
+      for (unsigned x = 0; x < capture_width; ++x)
+        result[size_t{top + row} * coded_width + left + x] =
+            packed[(size_t{row} * capture_width + x) * 2];
+    for (unsigned row = 0; row < capture_height / 2; ++row) {
+      const unsigned first = (row / 2) * 4 + row % 2;
+      for (unsigned x = 0; x < capture_width; x += 2)
+        for (unsigned component = 0; component != 2; ++component) {
+          const size_t a = (size_t{first} * capture_width + x) * 2 + 1 + component * 2;
+          const size_t b = a + size_t{capture_width} * 4;
+          result[size_t{coded_width} * canvas_height + size_t{top / 2 + row} * coded_width + left + x + component] =
+              (unsigned(packed[a]) + packed[b] + 1) / 2;
+        }
+    }
+    return result;
+  }
+  void Complete(const std::vector<uint8_t> &pixels, bool bottom_first = false,
+                uint64_t token = kTimestampStep) {
+    // A complete woven Flea record carries a matching embedded PIB/trailer;
+    // pixel extent alone must never classify synthetic data as a Weave.
+    auto framed = pixels;
+    framed.resize(pixels.size() + 160U, 0);
+    BC_DTS_PROC_OUT output{};
+    output.Ybuff = framed.data();
+    output.YBuffDoneSz = framed.size() / 4;
+    output.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+    output.b422Mode = OUTPUT_MODE422_YUY2;
+    output.PicInfo.timeStamp = token;
+    output.PicInfo.width = capture_width;
+    output.PicInfo.height = capture_height;
+    output.PicInfo.picture_number = token / kTimestampStep;
+    output.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC |
+        (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0);
+    BC_PIC_INFO_BLOCK raw = output.PicInfo;
+    raw.timeStamp = token / 20000U;
+    raw.flags = VDEC_FLAG_FIELDPAIR | (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0);
+    memcpy(framed.data() + pixels.size(), &output.PicInfo.picture_number, sizeof(uint32_t));
+    memcpy(framed.data() + pixels.size() + sizeof(uint32_t), &raw,
+           offsetof(BC_PIC_INFO_BLOCK, other));
+    memcpy(framed.data() + framed.size() - 8U, &capture_width, sizeof(uint32_t));
+    memcpy(framed.data() + framed.size() - 4U, &capture_height, sizeof(uint32_t));
+    Require(ProcessDecodedOutput(&driver, decode.get(), output) == VA_STATUS_SUCCESS,
+            "complete actual centered output processing with a full woven card record");
+  }
+  void Field(const std::vector<uint8_t> &pixels, bool bottom, bool bottom_first) {
+    std::vector<uint8_t> selected(pixels.size() / 2);
+    for (unsigned row = 0; row < capture_height / 2; ++row)
+      memcpy(selected.data() + size_t{row} * capture_width * 2,
+             pixels.data() + size_t{row * 2 + unsigned(bottom)} * capture_width * 2,
+             size_t{capture_width} * 2);
+    BC_DTS_PROC_OUT output{};
+    output.Ybuff = selected.data(); output.YBuffDoneSz = selected.size() / 4;
+    output.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+    output.b422Mode = OUTPUT_MODE422_YUY2;
+    output.PicInfo.timeStamp = kTimestampStep;
+    output.PicInfo.width = capture_width; output.PicInfo.height = capture_height;
+    output.PicInfo.picture_number = 1;
+    output.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC |
+        (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD) |
+        (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0);
+    Require(ProcessDecodedOutput(&driver, decode.get(), output) == VA_STATUS_SUCCESS,
+            "retain one released physical field without public full-picture completion");
+  }
+  std::vector<uint8_t> Read(VASurfaceID id, bool derive = false) {
+    VAImage image{};
+    VAImageFormat format{}; format.fourcc = VA_FOURCC_NV12;
+    if (derive) {
+      Require(DeriveImage(&context, id, &image) == VA_STATUS_SUCCESS,
+              "derive the real full canvas");
+    } else {
+      Require(CreateImage(&context, &format, coded_width, canvas_height, &image) == VA_STATUS_SUCCESS &&
+                  GetImage(&context, id, 0, 0, coded_width, canvas_height, image.image_id) == VA_STATUS_SUCCESS,
+              "GetImage reads the same real full canvas");
+    }
+    void *mapped = nullptr;
+    Require(MapBufferWithFlags(&context, image.buf, &mapped, kImageMapRead) == VA_STATUS_SUCCESS,
+            "map the complete readable canvas snapshot");
+    std::vector<uint8_t> result;
+    for (unsigned plane = 0; plane != 2; ++plane)
+      for (unsigned row = 0; row < (plane ? canvas_height / 2 : canvas_height); ++row) {
+        const auto *p = static_cast<uint8_t *>(mapped) + image.offsets[plane] + size_t{row} * image.pitches[plane];
+        result.insert(result.end(), p, p + coded_width);
+      }
+    Require(UnmapBuffer(&context, image.buf) == VA_STATUS_SUCCESS &&
+                DestroyImage(&context, image.image_id) == VA_STATUS_SUCCESS,
+            "release the canvas readback snapshot");
+    return result;
+  }
+  std::vector<uint8_t> BobOracle(const std::vector<uint8_t> &canvas, unsigned parity) const {
+    std::vector<uint8_t> expected(canvas.size());
+    for (unsigned plane = 0; plane != 2; ++plane) {
+      const size_t base = plane ? size_t{coded_width} * canvas_height : 0;
+      for (unsigned row = 0; row < (plane ? canvas_height / 2 : canvas_height); ++row)
+        memcpy(expected.data() + base + size_t{row} * coded_width,
+               canvas.data() + base + size_t{(row / 2) * 2 + parity} * coded_width, coded_width);
+    }
+    return expected;
+  }
+  void QueueBob(unsigned parity, bool bottom_first, bool declared_full) {
+    if (!driver.contexts.count(2)) {
+      auto processor = std::make_shared<DecodeContext>(); processor->video_process = true;
+      driver.contexts[2] = processor;
+      auto target = std::make_shared<Surface>();
+      Require(target->AllocateInternal(nullptr, -1, coded_width, canvas_height, VA_FOURCC_NV12),
+              "allocate stock-shaped full-canvas VPP target");
+      target->id = 2; driver.surfaces[2] = target;
+    }
+    VAProcFilterParameterBufferDeinterlacing filter{};
+    filter.type = VAProcFilterDeinterlacing; filter.algorithm = VAProcDeinterlacingBob;
+    filter.flags = (parity ? VA_DEINTERLACING_BOTTOM_FIELD : 0) |
+        (bottom_first ? VA_DEINTERLACING_BOTTOM_FIELD_FIRST : 0);
+    VABufferID filter_id = Buffer(VAProcFilterParameterBufferType, &filter, sizeof(filter), 2);
+    VARectangle whole{0, 0, static_cast<uint16_t>(coded_width), static_cast<uint16_t>(canvas_height)};
+    VAProcPipelineParameterBuffer pipeline{};
+    pipeline.surface = 1; pipeline.surface_region = pipeline.output_region = &whole;
+    pipeline.filters = &filter_id; pipeline.num_filters = 1;
+    pipeline.input_surface_flag = bottom_first ? VA_BOTTOM_FIELD_FIRST : VA_TOP_FIELD_FIRST;
+    pipeline.input_color_properties.color_range = declared_full ? VA_SOURCE_RANGE_FULL : VA_SOURCE_RANGE_REDUCED;
+    pipeline.output_color_properties.color_range = pipeline.input_color_properties.color_range;
+    const VABufferID parameters = Buffer(VAProcPipelineParameterBufferType, &pipeline, sizeof(pipeline), 2);
+    Require(BeginPicture(&context, 2, 2) == VA_STATUS_SUCCESS &&
+                RenderPicture(&context, 2, const_cast<VABufferID *>(&parameters), 1) == VA_STATUS_SUCCESS,
+            "capture the ordinary full-canvas VPP request without rewriting caller rectangles");
+    Require(DestroyBuffer(&context, parameters) == VA_STATUS_SUCCESS &&
+                DestroyBuffer(&context, filter_id) == VA_STATUS_SUCCESS,
+            "VPP captures independent values, not application buffer pointers");
+  }
+};
+
+void CenteredContextAdmission() {
+  CenteredEnvironment live("CRYSTALHD_VAAPI_LIVE_H264", "0");
+  CenteredEnvironment ready("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP", nullptr);
+  for (const char *value : {"1280x720@1920x1088:limited", "1280x720", "-1"}) {
+    Fixture f; f.decode->device = nullptr;
+    f.decode->decoder_open = f.decode->decoder_started = false;
+    f.driver.contexts.clear(); f.mock.allow_reopen = true;
+    CenteredEnvironment policy("CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12", value);
+    VAContextID id = VA_INVALID_ID;
+    Require(CreateContext(&f.context, 1, 1920, 1088, VA_PROGRESSIVE, nullptr, 0, &id) ==
+                VA_STATUS_ERROR_INVALID_PARAMETER && id == VA_INVALID_ID &&
+                f.driver.contexts.empty() && f.mock.reopen_count == 0,
+            "invalid or aspect-inexact policy fails before acquiring the card; no 1080 inference");
+  }
+  for (unsigned incompatible = 0; incompatible != 3; ++incompatible) {
+    Fixture f; f.decode->device = nullptr;
+    f.decode->decoder_open = f.decode->decoder_started = false;
+    f.driver.contexts.clear(); f.mock.allow_reopen = true;
+    CenteredEnvironment policy("CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12", "1280x720@1920x1080:limited");
+    if (incompatible == 0) f.driver.configs.at(1).decode_processing = true;
+    if (incompatible == 1) f.driver.configs.at(1).profile = VAProfileMPEG2Main;
+    CenteredEnvironment remap("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP", incompatible == 2 ? "1" : nullptr);
+    VAContextID id = VA_INVALID_ID;
+    Require(CreateContext(&f.context, 1, 1920, 1088, VA_PROGRESSIVE, nullptr, 0, &id) ==
+                VA_STATUS_ERROR_ATTR_NOT_SUPPORTED && f.mock.reopen_count == 0,
+            "explicit processing, other codecs and READY remap cannot silently mix with centered VLD");
+  }
+}
+
+void CenteredReadableCanvasAndBob() {
+  for (bool full : {false, true})
+    for (bool bottom_first : {false, true}) {
+      CenteredFixture f(256, 32, 32, 128, 16, 32, full);
+      f.Submit();
+      const auto packed = f.Packed(7);
+      const auto canvas = f.Canvas(packed);
+      f.Complete(packed, bottom_first);
+      Require(f.Read(1) == canvas && f.Read(1, true) == canvas,
+              "GetImage and Derive expose identical full NV12, including every range-correct border");
+      for (unsigned parity = 0; parity != 2; ++parity) {
+        const unsigned before = centered_probe::calls;
+        f.QueueBob(parity, bottom_first, full);
+        Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
+                    SyncSurface2(&f.context, 2, 0) == VA_STATUS_SUCCESS &&
+                    centered_probe::calls == before + 1 && centered_probe::width == 128 &&
+                    centered_probe::height == 16 && !centered_probe::compact,
+                "immediate ordinary full-canvas Bob really processes only the small immutable sidecar");
+        Require(f.Read(2) == f.BobOracle(canvas, parity) && f.Read(1) == canvas,
+                "both Bob parities equal independent full-canvas sampling and leave source unchanged");
+      }
+      const unsigned before = centered_probe::calls;
+      f.QueueBob(1, bottom_first, !full);
+      Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS && centered_probe::calls == before &&
+                  f.Read(2) == f.BobOracle(canvas, 1),
+              "range mismatch uses real-canvas Bob rather than changing numerical border black");
+    }
+}
+
+void CenteredFirstFieldAndQueuedBob() {
+  for (bool bottom_first : {false, true}) {
+    CenteredFixture f;
+    f.Submit();
+    const auto packed = f.Packed(31);
+    const auto canvas = f.Canvas(packed);
+    f.Field(packed, bottom_first, bottom_first);
+    Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT,
+            "one physical field never completes the public full decoded canvas");
+    const unsigned before = centered_probe::calls;
+    f.QueueBob(bottom_first, bottom_first, false);
+    Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS && f.driver.pending_vpp.size() == 1,
+            "pending ordinary Bob retains exact source and target ownership");
+    f.driver.vpp_worker = std::thread([&] { RunVppWorker(&f.driver); });
+    const VAStatus synced = SyncSurface2(&f.context, 2, 1000000000ULL);
+    f.driver.StopWorkers(); f.driver.stopping = false;
+    Require(synced == VA_STATUS_SUCCESS && centered_probe::calls == before + 1 &&
+                centered_probe::width == 128 && centered_probe::height == 8 && centered_probe::compact &&
+                f.Read(2) == f.BobOracle(canvas, bottom_first) &&
+                SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT,
+            "actual worker returns compact first-field Bob without publishing unfinished public pixels");
+    f.Field(packed, !bottom_first, bottom_first);
+    Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS && f.Read(1) == canvas,
+            "matching second field completes the real public canvas exactly once");
+    f.QueueBob(!bottom_first, bottom_first, false);
+    Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
+                f.Read(2) == f.BobOracle(canvas, !bottom_first),
+            "the second Bob parity uses complete original pixels without a dummy public frame");
+  }
+}
+
+void CenteredFhdCodedAndVisibleCanvases() {
+  for (unsigned canvas_height : {1080U, 1088U})
+    for (bool full : {false, true})
+      for (bool bottom_first : {false, true}) {
+        CenteredFixture f(1920, 1088, 1080, 1280, 720, canvas_height, full);
+        f.Submit();
+        const auto packed = f.Packed(43);
+        const auto canvas = f.Canvas(packed);
+        f.Complete(packed, bottom_first);
+        Require(f.Read(1) == canvas && f.Read(1, true) == canvas,
+                "coded1088 and visible1080 originals expose the same declared active ROI and real black backing");
+        for (unsigned parity = 0; parity != 2; ++parity) {
+          const unsigned before = centered_probe::calls;
+          f.QueueBob(parity, bottom_first, full);
+          Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
+                      centered_probe::calls == before + 1 && centered_probe::width == 1280 &&
+                      centered_probe::height == 720 && f.Read(2) == f.BobOracle(canvas, parity),
+                  "FHD requested canvas uses actual small Bob while every luma/chroma byte matches the full-canvas reference");
+        }
+      }
+}
+}
+
 int main(int argc, char **argv) {
+  if (argc == 2 && (std::strcmp(argv[1], "--centered") == 0 ||
+                    std::strcmp(argv[1], "--centered-pixels") == 0)) {
+    try {
+      if (std::strcmp(argv[1], "--centered") == 0) CenteredContextAdmission();
+      CenteredReadableCanvasAndBob(); CenteredFirstFieldAndQueuedBob();
+      CenteredFhdCodedAndVisibleCanvases();
+      std::printf("PASS ordinary centered NV12 integration: %u checks\n", checks);
+      return 0;
+    } catch (const std::exception &error) {
+      std::fprintf(stderr, "FAIL ordinary centered NV12 integration: %s\n", error.what());
+      return 1;
+    }
+  }
   if (argc == 2 && std::strcmp(argv[1], "--pixel-format") == 0) {
     try {
       H264UnsupportedPixelFormatsAreTransactional();
@@ -2844,6 +3203,10 @@ int main(int argc, char **argv) {
   if (argc != 1) return 2;
   unsigned failures = 0;
   const std::pair<const char *, void (*)()> groups[] = {
+    {"centered context admission", CenteredContextAdmission},
+    {"centered readable canvas and Bob", CenteredReadableCanvasAndBob},
+    {"centered compact first-field and worker", CenteredFirstFieldAndQueuedBob},
+    {"centered coded1088 and visible1080 canvases", CenteredFhdCodedAndVisibleCanvases},
     {"ordinary H.264 pixel-format admission", H264UnsupportedPixelFormatsAreTransactional},
     {"obsolete surface retirement preserves independent decode", ObsoleteSurfaceRetirementPreservesIndependentDecode},
     {"rejected H.264 target readback", RejectedH264TargetReadback},

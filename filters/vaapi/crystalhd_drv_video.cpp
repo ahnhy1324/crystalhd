@@ -67,6 +67,7 @@ extern "C" {
 #include <libcrystalhd_if.h>
 #include "../crystalhd-h264-output.h"
 #include "crystalhd-access-unit-limits.h"
+#include "crystalhd-centered-output.h"
 #include "crystalhd-decode-replay.h"
 #include "crystalhd-mpeg4.h"
 #include "crystalhd-mpeg2.h"
@@ -908,6 +909,10 @@ struct Surface {
   SurfaceLayout layout;
   bool direct_decode_eligible = false;
   unsigned int h264_crop_unit_y = 0;
+  // The ordinary public picture remains a real, readable NV12 canvas. Only
+  // this exact immutable decoded picture owns its small card-returned pixels.
+  crystalhd_centered_output::Geometry centered_geometry;
+  std::shared_ptr<Surface> centered_pixels;
 
   // Live H.264 pictures may initially use the public target's pixels while
   // keeping independent readiness/identity. Capture or backing reuse promotes
@@ -1641,6 +1646,79 @@ static bool BobVppRegionsValid(const VARectangle &source,
        (output_fourcc == VA_FOURCC_ARGB && output.x == 0 && output.y == 0));
 }
 
+static bool CenteredStorageMatches(const Surface &canvas, bool compact = false) {
+  const auto &g = canvas.centered_geometry;
+  const auto &small = canvas.centered_pixels;
+  const unsigned factor = compact ? 2U : 1U;
+  return g.enabled && small && small.get() != &canvas &&
+      !small->centered_geometry.enabled &&
+      canvas.fourcc == VA_FOURCC_NV12 && small->fourcc == VA_FOURCC_NV12 &&
+      g.canvas_width != 0 && g.canvas_width <= kMaxWidth &&
+      g.canvas_height != 0 && g.canvas_height <= kMaxHeight &&
+      (g.canvas_height & 3U) == 0 &&
+      canvas.width == g.canvas_width && canvas.height == g.canvas_height / factor &&
+      small->width == g.capture_width && small->height == g.capture_height / factor &&
+      g.capture_width >= 128 && (g.capture_width & 15U) == 0 &&
+      g.capture_height != 0 && (g.capture_height & 3U) == 0 &&
+      (g.x & 1U) == 0 && (g.y & 3U) == 0 &&
+      g.x <= g.canvas_width && g.capture_width <= g.canvas_width - g.x &&
+      g.y <= g.canvas_height && g.capture_height <= g.canvas_height - g.y;
+}
+
+// Compose real interlaced NV12, not a deinterlacer or a small opaque reference.
+// Compact storage is private to the already-existing first-field Bob route.
+static bool ComposeCenteredCanvas(Surface *canvas, bool compact = false) {
+  if (canvas == nullptr || !CenteredStorageMatches(*canvas, compact))
+    return false;
+  const auto &g = canvas->centered_geometry;
+  const auto &small = canvas->centered_pixels;
+  if (!small->ready || small->failed || small->destroyed ||
+      small->expected_timestamp == 0 ||
+      small->frame_timestamp != small->expected_timestamp ||
+      small->expected_timestamp != canvas->expected_timestamp ||
+      small->decode_identity != canvas->decode_identity)
+    return false;
+  for (unsigned plane = 0; plane != 2; ++plane) {
+    if (!canvas->planes[plane] || !small->planes[plane] ||
+        canvas->pitch[plane] < canvas->width || small->pitch[plane] < small->width)
+      return false;
+  }
+  if (!small->BeginCpuRead())
+    return false;
+  if (!canvas->BeginCpuWrite()) {
+    small->EndCpuRead();
+    return false;
+  }
+  const unsigned top = g.y / (compact ? 2U : 1U);
+  for (unsigned plane = 0; plane != 2; ++plane) {
+    const unsigned rows = plane == 0 ? canvas->height : canvas->height / 2U;
+    const unsigned first = plane == 0 ? top : top / 2U;
+    const unsigned active_rows = plane == 0 ? small->height : small->height / 2U;
+    const uint8_t black = plane == 0 ? (g.full_range ? 0 : 16) : 128;
+    for (unsigned row = 0; row < rows; ++row) {
+      uint8_t *line = canvas->planes[plane] + size_t{row} * canvas->pitch[plane];
+      if (row < first || row - first >= active_rows) {
+        memset(line, black, canvas->width);
+      } else {
+        memset(line, black, g.x);
+        memcpy(line + g.x,
+               small->planes[plane] + size_t{row - first} * small->pitch[plane],
+               small->width);
+        memset(line + g.x + small->width, black,
+               canvas->width - g.x - small->width);
+      }
+    }
+  }
+  const bool committed = canvas->EndCpuWrite();
+  const bool released = small->EndCpuRead();
+  if (!committed || !released)
+    return false;
+  canvas->ready = true;
+  canvas->failed = false;
+  canvas->frame_timestamp = small->frame_timestamp;
+  return true;
+}
+
 static VAStatus ProcessVpp(SwsContext **scaler,
                            std::vector<uint8_t> *argb_staging,
                            Surface *source, Surface *destination,
@@ -1651,6 +1729,43 @@ static VAStatus ProcessVpp(SwsContext **scaler,
                            bool source_is_field = false,
                            const VppColorRange &color_range = {},
                            bool preserve_fields = false) {
+  // All immediate, queued and unfenceable completions pass this dispatcher.
+  // Substitute only an operation exactly equal to Bob of the real canvas;
+  // resampling, different range declarations and other formats keep that
+  // ordinary full-canvas path and its normal validation below.
+  if (source && destination && source != destination && deinterlace.bob &&
+      !preserve_fields && destination->fourcc == VA_FOURCC_NV12 &&
+      CenteredStorageMatches(*source, source_is_field)) {
+    const auto &g = source->centered_geometry;
+    const auto &small = source->centered_pixels;
+    if (source->ready && !source->failed && !source->destroyed &&
+        small->ready && !small->failed && !small->destroyed &&
+        source->decode_identity != 0 && small->decode_identity == source->decode_identity &&
+        source->expected_timestamp != 0 &&
+        source->frame_timestamp == source->expected_timestamp &&
+        small->expected_timestamp == source->expected_timestamp &&
+        small->frame_timestamp == source->frame_timestamp &&
+        small->trace_context == source->trace_context &&
+        small->trace_generation == source->trace_generation &&
+        source_region.x == 0 && source_region.y == 0 &&
+        source_region.width == g.canvas_width && source_region.height == g.canvas_height &&
+        output_region.x == 0 && output_region.y == 0 &&
+        output_region.width == g.canvas_width && output_region.height == g.canvas_height &&
+        destination->width == g.canvas_width && destination->height == g.canvas_height &&
+        color_range.source_full == g.full_range) {
+      const VARectangle input{0, 0, static_cast<uint16_t>(g.capture_width),
+                                  static_cast<uint16_t>(g.capture_height)};
+      const VARectangle output{static_cast<int16_t>(g.x), static_cast<int16_t>(g.y),
+                               static_cast<uint16_t>(g.capture_width),
+                               static_cast<uint16_t>(g.capture_height)};
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_BOB)
+      CRYSTALHD_VAAPI_TEST_CENTERED_BOB(small->width, small->height, source_is_field);
+#endif
+      return ProcessVpp(scaler, argb_staging, small.get(), destination, input, output,
+                         destination_write_started, deinterlace, source_is_field,
+                         color_range, false);
+    }
+  }
   // Only the operation-private first-field view has compact storage. Keep
   // the original full-frame rectangle for field sampling, but validate its
   // physical rows against the real half-height allocation.
@@ -2183,6 +2298,9 @@ struct DecodeContext {
   unsigned int stream_height = 0;
   bool video_process = false;
   bool decode_processing = false;
+  // Explicit per-context policy; unlike runtime processing state, it survives
+  // a logical reset and never infers visible cropping from coded dimensions.
+  crystalhd_centered_output::Geometry centered_geometry;
   H264ProcessingGeometry processing_geometry;
   H264ProcessingGeometry processing_request;
   VASurfaceID processing_target = VA_INVALID_SURFACE;
@@ -2347,10 +2465,14 @@ struct DecodeContext {
     return IsMpeg2() || IsMpeg4() || IsVc1() ? stream_height : height;
   }
   unsigned int CaptureWidth() const {
+    if (centered_geometry.enabled)
+      return centered_geometry.capture_width;
     return processing_geometry.enabled ? processing_geometry.capture_width
                                        : StreamWidth();
   }
   unsigned int CaptureHeight() const {
+    if (centered_geometry.enabled)
+      return centered_geometry.capture_height;
     return processing_geometry.enabled ? processing_geometry.capture_height
                                        : StreamHeight();
   }
@@ -3344,7 +3466,8 @@ static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
   if ((decode->IsMpeg2() || decode->IsMpeg4() || decode->IsVc1()) &&
       decode->is_70012)
     goto fail;
-  if (decode->processing_geometry.enabled && decode->is_70012)
+  if ((decode->processing_geometry.enabled || decode->centered_geometry.enabled) &&
+      decode->is_70012)
     goto fail;
 
   input.FGTEnable = FALSE;
@@ -3374,11 +3497,11 @@ static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
   status = DtsSetInputFormat(decode->device, &input);
   if (status != BC_STS_SUCCESS)
     goto fail;
-  if (decode->processing_geometry.enabled) {
+  if (decode->processing_geometry.enabled || decode->centered_geometry.enabled) {
     BC_SCALING_PARAMS scaling = {};
     // Only width is implemented by DtsSetScaleParams. The explicit SPS crop
     // and validated exact aspect ratio determine the capture height.
-    scaling.sWidth = decode->processing_geometry.capture_width;
+    scaling.sWidth = decode->CaptureWidth();
     status = DtsSetScaleParams(decode->device, &scaling);
     if (status != BC_STS_SUCCESS)
       goto fail;
@@ -4476,6 +4599,8 @@ static VAStatus ProcessDecodedOutputImpl(
           decoded->second->trace_generation == decode->generation &&
           (mpeg2_interlaced
               ? decoded->second->width >= width && decoded->second->height >= height
+              : decode->centered_geometry.enabled
+                  ? CenteredStorageMatches(*decoded->second)
               : FitsH264CodedGeometry(*decoded->second, width, height, crop_unit_y)))) &&
         field_bytes <= std::numeric_limits<size_t>::max() &&
         static_cast<uint64_t>(output.YBuffDoneSz) * 4U >= field_bytes &&
@@ -4638,6 +4763,10 @@ static VAStatus ProcessDecodedOutputImpl(
       processing->surface = surface->second;
   }
   const auto fits = [&](const Surface &target) {
+    if (decode->centered_geometry.enabled)
+      return target.fourcc == VA_FOURCC_NV12 && target.width == decode->width &&
+          target.height >= decode->centered_geometry.visible_height &&
+          target.height <= decode->height && (target.height & 3U) == 0;
     if (decode->decode_processing)
       return target.width == output_width && target.height == output_height &&
              target.fourcc == VA_FOURCC_NV12;
@@ -4655,6 +4784,9 @@ static VAStatus ProcessDecodedOutputImpl(
       output_width == decode->CaptureWidth() &&
       output_height == decode->CaptureHeight() &&
       ((output_width | output_height) & 1U) == 0 &&
+      (!decode->centered_geometry.enabled ||
+       (decoded != decode->decoded_frames.end() &&
+        CenteredStorageMatches(*decoded->second))) &&
       (decoded == decode->decoded_frames.end() || fits(*decoded->second)) &&
       (!current_picture || fits(*surface->second)) &&
       static_cast<uint64_t>(output.YBuffDoneSz) * 4 >= required_bytes &&
@@ -4671,12 +4803,27 @@ static VAStatus ProcessDecodedOutputImpl(
   const bool direct = current_picture &&
       decoded != decode->decoded_frames.end() &&
       decoded->second->direct_backing == surface->second;
-  const auto copy_output = [&](Surface *target) {
+  const auto copy_raw_output = [&](Surface *target) {
     if (h264_field_pair)
       return CopyH264FieldPairToSurface(target, paired_first_field, output);
     if (h264_weave)
       return CopyH264WeaveToSurface(target, output);
     return CopyYuy2ToSurface(target, output, decode->is_70012);
+  };
+  const auto copy_output = [&](Surface *target) {
+    if (!decode->centered_geometry.enabled)
+      return copy_raw_output(target);
+    if (!CenteredStorageMatches(*target))
+      return false;
+    const auto &small = target->centered_pixels;
+    small->expected_timestamp = target->expected_timestamp;
+    small->decode_identity = target->decode_identity;
+    InheritTraceIdentity(small.get(), *target);
+    if (!copy_raw_output(small.get())) {
+      small->failed = true;
+      return false;
+    }
+    return ComposeCenteredCanvas(target);
   };
   if (decoded != decode->decoded_frames.end()) {
     if (complete && !discard_pixels) {
@@ -5803,6 +5950,20 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   } else if (original_surface->opaque_reference) {
     return VA_STATUS_ERROR_INVALID_SURFACE;
   }
+  if (decode->centered_geometry.enabled) {
+    const auto &g = decode->centered_geometry;
+    if (!IsH264Profile(profile) || decode->decode_processing ||
+        decode->picture.pic_fields.bits.field_pic_flag ||
+        (!decode->picture.seq_fields.bits.frame_mbs_only_flag &&
+         !decode->picture.seq_fields.bits.mb_adaptive_frame_field_flag))
+      return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
+    if (target_surface->fourcc != VA_FOURCC_NV12 ||
+        target_surface->width != decode->width ||
+        target_surface->height < g.visible_height ||
+        target_surface->height > decode->height ||
+        (target_surface->height & 3U) != 0)
+      return VA_STATUS_ERROR_INVALID_SURFACE;
+  }
   if (target_surface->vpp_writers != 0 || target_surface->vpp_readers != 0 ||
       target_surface->export_waiters != 0)
     return VA_STATUS_ERROR_HW_BUSY;
@@ -6016,12 +6177,18 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
             decode->width, decode->height, h264_crop_unit_y);
       return VA_STATUS_ERROR_INVALID_SURFACE;
     }
-    if (decode->decode_processing &&
-        (((decode->height - decode->processing_request.visible_height) %
+    const auto visible_height = decode->centered_geometry.enabled
+        ? decode->centered_geometry.visible_height : decode->processing_request.visible_height;
+    const auto capture_height = decode->centered_geometry.enabled
+        ? decode->centered_geometry.capture_height : decode->processing_request.capture_height;
+    const auto capture_width = decode->centered_geometry.enabled
+        ? decode->centered_geometry.capture_width : decode->processing_request.capture_width;
+    if ((decode->decode_processing || decode->centered_geometry.enabled) &&
+        (((decode->height - visible_height) %
               h264_crop_unit_y) != 0 ||
-         (decode->processing_request.capture_height % h264_crop_unit_y) != 0 ||
+         (capture_height % h264_crop_unit_y) != 0 ||
          (!decode->picture.seq_fields.bits.frame_mbs_only_flag &&
-          decode->processing_request.capture_width % 16U != 0)))
+          capture_width % 16U != 0)))
       return VA_STATUS_ERROR_INVALID_PARAMETER;
 
     const auto build_h264 = [&]() -> VAStatus {
@@ -6033,10 +6200,14 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
         // discarding pending output here loses real frames during playback.
         if (!decode->sent_parameter_sets || idr) {
           if (!BuildSps(decode->picture, profile, &assembled,
-                        decode->decode_processing
-                            ? decode->processing_request.visible_width : 0,
-                        decode->decode_processing
-                            ? decode->processing_request.visible_height : 0))
+                        decode->centered_geometry.enabled
+                            ? decode->centered_geometry.visible_width
+                            : decode->decode_processing
+                                ? decode->processing_request.visible_width : 0,
+                        decode->centered_geometry.enabled
+                            ? decode->centered_geometry.visible_height
+                            : decode->decode_processing
+                                ? decode->processing_request.visible_height : 0))
             return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
         }
         // VA exposes active reference counts on each slice instead of the
@@ -6152,7 +6323,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   }
 
   std::shared_ptr<Surface> decoded_frame;
-  const bool direct_picture = !decode->decode_processing && decode->live_h264_fast_path &&
+  const bool direct_picture = !decode->decode_processing &&
+                              !decode->centered_geometry.enabled && decode->live_h264_fast_path &&
                               IsH264Profile(profile) &&
                               !decode->experimental_ready_remap &&
                               target_surface->direct_decode_eligible;
@@ -6172,6 +6344,15 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                                          target_surface->height,
                                          decode->private_backing_pool))
         return VA_STATUS_ERROR_ALLOCATION_FAILED;
+      if (decode->centered_geometry.enabled) {
+        decoded_frame->centered_geometry = decode->centered_geometry;
+        decoded_frame->centered_geometry.canvas_width = target_surface->width;
+        decoded_frame->centered_geometry.canvas_height = target_surface->height;
+        decoded_frame->centered_pixels = std::make_shared<Surface>();
+        if (!decoded_frame->centered_pixels->AllocateCpuNv12(
+                decode->CaptureWidth(), decode->CaptureHeight(), decode->private_backing_pool))
+          return VA_STATUS_ERROR_ALLOCATION_FAILED;
+      }
     }
   } catch (const std::bad_alloc &) {
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
@@ -6373,6 +6554,13 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     unused.swap(retirement_candidate->storage);
     retirement_candidate->planes[0] = retirement_candidate->planes[1] = nullptr;
     decode->private_backing_pool->Recycle(std::move(unused));
+    if (retirement_candidate->centered_pixels) {
+      const auto &small = retirement_candidate->centered_pixels;
+      std::vector<uint8_t> small_unused;
+      small_unused.swap(small->storage);
+      small->planes[0] = small->planes[1] = nullptr;
+      decode->private_backing_pool->Recycle(std::move(small_unused));
+    }
   }
   // A surviving local reference would defeat the output path's map-only
   // check. Release it before ReceiveAvailable can process any old output.
@@ -6486,10 +6674,27 @@ static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
     prepared->expected_timestamp = operation.source_timestamp;
     const uint8_t *fields[2] = {};
     fields[bottom ? 1 : 0] = first.pixels.data();
-    if (!CopyH264InterlacedToSurface(prepared.get(), fields, first.width,
+    Surface *field_target = prepared.get();
+    if (source->centered_geometry.enabled) {
+      if (!CenteredStorageMatches(*source))
+        return VA_STATUS_ERROR_DECODING_ERROR;
+      prepared->decode_identity = source->decode_identity;
+      InheritTraceIdentity(prepared.get(), *source);
+      prepared->centered_geometry = source->centered_geometry;
+      prepared->centered_pixels = std::make_shared<Surface>();
+      field_target = prepared->centered_pixels.get();
+      if (!field_target->AllocateCpuNv12(first.width, first.height / 2U))
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
+      field_target->expected_timestamp = operation.source_timestamp;
+      field_target->decode_identity = source->decode_identity;
+      InheritTraceIdentity(field_target, *source);
+    }
+    if (!CopyH264InterlacedToSurface(field_target, fields, first.width,
                                     first.height, first.source_pitch,
                                     operation.source_timestamp,
                                     bottom ? 2U : 1U, true))
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    if (source->centered_geometry.enabled && !ComposeCenteredCanvas(prepared.get(), true))
       return VA_STATUS_ERROR_OPERATION_FAILED;
     *view = std::move(prepared);
   } catch (const std::bad_alloc &) {
@@ -8267,6 +8472,22 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   if (decode->experimental_ready_remap) {
     decode->experimental_ready_delay_ns = experimental_ready_delay_ns;
     decode->experimental_ready_latest = experimental_policy_latest;
+  }
+  if (!video_process) {
+    crystalhd_centered_output::Config centered;
+    if (!crystalhd_centered_output::ParseConfig(
+            getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12"), &centered))
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    if (centered.enabled &&
+        (!h264 || decode->decode_processing ||
+         (experimental_ready_remap && strcmp(experimental_ready_remap, "1") == 0)))
+      return VA_STATUS_ERROR_ATTR_NOT_SUPPORTED;
+    // Sequence-dependent four-line crop admission is repeated at Submit.
+    // This selection is explicit and fixed for the context, never guessed
+    // from its coded height or enabled by a later VPP request.
+    if (!crystalhd_centered_output::BuildGeometry(
+            centered, decode->width, decode->height, 2, &decode->centered_geometry))
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
   }
   if (decode->live_h264)
     decode->replay = CrystalHDDecodeReplay(true);
