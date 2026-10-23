@@ -2036,6 +2036,7 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 		{
 			DtsDecPend(Ctx);
 		} else {
+			bool invalidReceipt = false;
 			/* FETCH may be the first successful suffix after S3.  Bind
 			 * interpretation of its old buffer and all context-format updates
 			 * to the same generation check used by recovery cancellation. */
@@ -2043,7 +2044,19 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 			const bool cancel = Ctx->CancelWaiting;
 			const bool recoveryCancel = DtsRecoveryCanceledOutputLocked(Ctx);
 			if (!cancel && !recoveryCancel) {
-				DtsSetupProcOutInfo(Ctx,pOut,Ctx->pOutData);
+				const BC_DEC_YUV_BUFFS &buffer =
+					Ctx->pOutData->u.DecOutData.OutPutBuffs;
+				/* Reject malformed DATA_VALID receipts before deriving plane
+				 * pointers or interpreting PIB.  LINK may have an empty UV
+				 * extent, so offset == size remains valid. */
+				invalidReceipt =
+					(Ctx->pOutData->u.DecOutData.Flags & COMP_FLAG_DATA_VALID) &&
+					(!buffer.YuvBuff || !buffer.YuvBuffSz ||
+					 buffer.UVbuffOffset > buffer.YuvBuffSz);
+				if (invalidReceipt)
+					Ctx->pOutData->RetSts = BC_STS_IO_XFR_ERROR;
+				else
+					DtsSetupProcOutInfo(Ctx,pOut,Ctx->pOutData);
 				/* Embedded PIB parsing can turn an ioctl SUCCESS into
 				 * NO_DATA/IO_XFR_ERROR (notably the Flea EOS sentinel). */
 				sts = Ctx->pOutData->RetSts;
@@ -2054,7 +2067,15 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 				pOut->Ybuff = pOut->UVbuff = NULL;
 				return recoveryCancel ? BC_STS_BUSY : BC_STS_IO_USER_ABORT;
 			}
-			if (sts != BC_STS_SUCCESS)
+			if (invalidReceipt) {
+				/* FETCH already transferred a capture owner.  A rejected
+				 * receipt must still retire it; failed repost keeps pending
+				 * ownership for the existing retire-only teardown path. */
+				const BC_STATUS released = DtsRelRxBuff(Ctx,
+					&Ctx->pOutData->u.RxBuffs, FALSE);
+				if (released != BC_STS_SUCCESS)
+					sts = released;
+			} else if (sts != BC_STS_SUCCESS)
 				DtsDecPend(Ctx);
 		}
 
