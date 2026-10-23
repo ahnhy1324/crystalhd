@@ -17,6 +17,7 @@ PRIVATE_BACKING_TEST := vaapi-private-backing-test
 CONVERSION_TEST := vaapi-conversion-test
 SCALING_TEST := vaapi-scaling-test
 BOB_TEST := vaapi-bob-test
+CENTERED_TEST := vaapi-centered-output-test
 BOB_VPP_TEST := vaapi-bob-vpp-test
 MPEG2_TEST := vaapi-mpeg2-test
 MPEG2_REPLAY_TEST := vaapi-mpeg2-replay-test
@@ -51,6 +52,7 @@ all: $(DRIVER)
 
 BACKEND_HEADERS := ../crystalhd-h264-output.h \
 	crystalhd-access-unit-limits.h crystalhd-decode-replay.h \
+	crystalhd-centered-output.h \
 	crystalhd-private-backing.h \
 	crystalhd-vpp-bob.h \
 	crystalhd-mpeg2.h crystalhd-mpeg2-replay.h \
@@ -144,6 +146,9 @@ $(SCALING_TEST): $(ROOTDIR)/tests/vaapi-scaling.cpp crystalhd_drv_video.cpp $(BA
 $(BOB_TEST): $(ROOTDIR)/tests/vaapi-bob.cpp crystalhd-vpp-bob.h
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ $(CRYSTALHD_CPU_FLAGS)
 
+$(CENTERED_TEST): $(ROOTDIR)/tests/vaapi-centered-output.cpp crystalhd-centered-output.h
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ $(CRYSTALHD_CPU_FLAGS)
+
 $(BOB_VPP_TEST): $(ROOTDIR)/tests/vaapi-bob-vpp.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
 		-ffunction-sections -fdata-sections $< -o $@ \
@@ -200,6 +205,7 @@ check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER
 	./$(CONVERSION_TEST)
 	./$(SCALING_TEST)
 	./$(BOB_TEST)
+	./$(CENTERED_TEST)
 	./$(BOB_VPP_TEST)
 	LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd):$(LD_LIBRARY_PATH) ./$(VPP_TEST)
 	LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd):$(LD_LIBRARY_PATH) ./$(REPLAY_TEST)
@@ -225,11 +231,12 @@ uninstall:
 	rm -f -- "$(DESTDIR)$(DRIVERDIR)/$(DRIVER)"
 
 clean:
-	rm -f $(BOB_VPP_TEST)
+	rm -f $(BOB_VPP_TEST) $(CENTERED_TEST)
 	rm -f $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(PRIVATE_BACKING_TEST) $(CONVERSION_TEST) $(SCALING_TEST) $(BOB_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST) $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
 
 include $(ROOTDIR)/cpu.mk
-check: $(BOB_VPP_TEST)
+check: $(BOB_VPP_TEST) $(CENTERED_TEST)
+$(CENTERED_TEST): $(CRYSTALHD_BUILD_DEPS)
 $(BOB_VPP_TEST): $(CRYSTALHD_BUILD_DEPS)
 $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(PRIVATE_BACKING_TEST) $(CONVERSION_TEST) $(SCALING_TEST) $(BOB_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST): $(CRYSTALHD_BUILD_DEPS)
 $(DRIVER) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST): $(ROOTDIR)/linux_lib/libcrystalhd/libcrystalhd.so

@@ -90,6 +90,12 @@ for bits in $build_bits; do
         -Wall -Wextra -Werror "$repo_dir/tests/vaapi-bob.cpp" \
         $cpu_flags -o "$build_dir/vaapi-bob"
     run_test "$build_dir/vaapi-bob"
+    # Centered canvas policy and geometry stay independent of graphics SDKs.
+    # shellcheck disable=SC2086
+    $cxx ${CPPFLAGS:-} ${CXXFLAGS:-} -m"$bits" -std=c++17 -O2 \
+        -Wall -Wextra -Werror "$repo_dir/tests/vaapi-centered-output.cpp" \
+        $cpu_flags -o "$build_dir/vaapi-centered-output"
+    run_test "$build_dir/vaapi-centered-output"
     # Exercise the real NV12 ProcessVpp kernel, not only its row mapper.
     # Abort stubs keep this mode independent of 32-bit graphics libraries.
     # shellcheck disable=SC2086

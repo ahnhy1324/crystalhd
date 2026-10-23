@@ -136,6 +136,65 @@ class ConfigCliTest(unittest.TestCase):
                          "inactive:hardware-mode-disabled")
         self.assertEqual(settings["chromium.executable"]["effective"], None)
 
+    def test_centered_native_only_environment_reports_partial_scope_and_redacts(self):
+        variable = "CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12"
+        for raw in ("1280x720@1920x1080:limited", "0", "",
+                    "private-unvalidated-centered-value"):
+            for command in ("show-effective", "bug-report"):
+                with self.subTest(raw=raw, command=command):
+                    result = self.run_cli(command, *self.common(),
+                                          *(() if command == "bug-report" else
+                                            ("--format", "json")),
+                                          environment={variable: raw})
+                    self.assertEqual((result.returncode, result.stderr), (0, ""))
+                    report = json.loads(result.stdout)
+                    self.assertEqual(report["effective_configuration_scope"],
+                                     "partial:experimental-centered-nv12-native-only")
+                    self.assertIn("VA context rejection rules are not modeled",
+                                  report["state_scope"])
+                    self.assertEqual(report["native_only_environment"], [{
+                        "variable": variable,
+                        "raw": "<redacted>",
+                        "state": "not-modeled:experimental-centered-nv12",
+                        "native_value_validation": "not-performed",
+                    }])
+                    self.assertEqual({item["key"] for item in report["settings"]},
+                                     set(CONFIG.RULES))
+                    self.assertEqual(report["custom_overrides"], [])
+                    if len(raw) > 1:
+                        self.assertNotIn(raw, result.stdout + result.stderr)
+        private = "private-native-centered-report-value"
+        for command in ("show-effective", "validate", "explain"):
+            arguments = (("vaapi.h264.mode",) if command == "explain" else ())
+            with self.subTest(command=command):
+                result = self.run_cli(command, *arguments, *self.common(),
+                                      environment={variable: private})
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+                self.assertIn("native-only environment " + variable, result.stdout)
+                self.assertIn("raw=<redacted>", result.stdout)
+                self.assertIn("not modeled", result.stdout)
+                self.assertNotIn(private, result.stdout + result.stderr)
+        ignored = self.run_cli("show-effective", *self.common(),
+                               "--ignore-environment", "--format", "json",
+                               environment={variable: private})
+        self.assertEqual((ignored.returncode, ignored.stderr), (0, ""))
+        report = json.loads(ignored.stdout)
+        self.assertEqual(report["native_only_environment"], [])
+        self.assertEqual(report["effective_configuration_scope"],
+                         "canonical-native-adapters-only")
+        self.assertNotIn(variable, ignored.stdout)
+        unknown = self.run_cli("show-effective", *self.common(), "--format", "json",
+                               environment={variable + "_UNKNOWN": private})
+        self.assertEqual((unknown.returncode, unknown.stderr), (0, ""))
+        self.assertEqual(json.loads(unknown.stdout)["native_only_environment"], [])
+        self.write_user("[crystalhd]\nschema = 1\n[settings]\n"
+                        "vaapi.h264.ready_remap = true\n")
+        invalid = self.run_cli("validate", "--no-system-config", "--user-config",
+                               str(self.user_file), environment={variable: private})
+        self.assertEqual(invalid.returncode, 3)
+        self.assertIn("READY remap requires", invalid.stderr)
+        self.assertNotIn(private, invalid.stdout + invalid.stderr)
+
     def test_system_user_profile_precedence_and_explicit_selector(self):
         self.write_user(
             "[crystalhd]\n"
@@ -1515,19 +1574,24 @@ class ConfigCliTest(unittest.TestCase):
             "CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE": "1",
         }
         command = self.environment_child()
-        direct = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, env=environment, check=False)
-        managed = subprocess.run(
-            [sys.executable, "-B", str(SCRIPT), "run", *self.common(), "--", *command],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            env=environment, check=False,
-        )
-        self.assertEqual((direct.returncode, managed.returncode), (0, 0))
-        self.assertEqual(managed.stdout, direct.stdout)
-        plan = self.launch_plan(environment=environment)
-        self.assertEqual(plan.environment, environment)
-        self.assertIsNot(plan.environment, environment)
-        self.assertEqual(plan.requested_keys, ())
+        for centered in (None, "0", "invalid-native-request"):
+            with self.subTest(centered=centered):
+                inherited = dict(environment)
+                if centered is not None:
+                    inherited[CONFIG.CENTERED_NV12_ENVIRONMENT] = centered
+                direct = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        text=True, env=inherited, check=False)
+                managed = subprocess.run(
+                    [sys.executable, "-B", str(SCRIPT), "run", *self.common(), "--", *command],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    env=inherited, check=False,
+                )
+                self.assertEqual((direct.returncode, managed.returncode), (0, 0))
+                self.assertEqual(managed.stdout, direct.stdout)
+                plan = self.launch_plan(environment=inherited)
+                self.assertEqual(plan.environment, inherited)
+                self.assertIsNot(plan.environment, inherited)
+                self.assertEqual(plan.requested_keys, ())
         self.assertFalse((self.root / "unused-home").exists())
 
     def test_run_only_emits_winning_managed_keys_and_preserves_raw_native_values(self):
@@ -1674,12 +1738,15 @@ class ConfigCliTest(unittest.TestCase):
         original = self.user_file.read_bytes()
         result = self.run_cli("run", *self.writer_options(), "--override", "vaapi.debug=false",
                               "--", *self.environment_child(),
-                              environment={"CRYSTALHD_VAAPI_DEBUG": "0", "CRYSTALHD_VAAPI_TRACE": "0"})
+                              environment={"CRYSTALHD_VAAPI_DEBUG": "0", "CRYSTALHD_VAAPI_TRACE": "0",
+                                           CONFIG.CENTERED_NV12_ENVIRONMENT: "invalid-native-request"})
         self.assertEqual(result.returncode, 0, result.stderr)
         child = dict((key.encode("latin1"), value.encode("latin1"))
                      for key, value in json.loads(result.stdout))
         self.assertNotIn(b"CRYSTALHD_VAAPI_DEBUG", child)
         self.assertEqual(child[b"CRYSTALHD_VAAPI_TRACE"], b"0")
+        self.assertEqual(child[CONFIG.CENTERED_NV12_ENVIRONMENT.encode("ascii")],
+                         b"invalid-native-request")
         self.assertIn("REQUESTED", result.stderr)
         self.assertNotIn("ACTIVE", result.stderr)
         self.assertEqual(self.user_file.read_bytes(), original)

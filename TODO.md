@@ -117,6 +117,11 @@ scope to general full-rate FHD or hardware deinterlacing.
   — measure output bytes and conversion ownership before proposing a new
   format or transfer path. Direct 4:2:2 VA/Kodi negotiation is not part of the
   v1.2 candidate.
+- [ ] [#477: Centered card output for ordinary VA clients](https://github.com/ahnhy1324/crystalhd/issues/477)
+  — default-off readable-canvas prototype; retain small Bob, full original
+  readback and exact lifetime semantics. Matched stock-client performance and
+  field/presentation acceptance determine whether to retain it; see the
+  [development usage](filters/vaapi/README.md#development-experiment-centered-card-output).
 - [ ] [#92: BCM70015 capability research](https://github.com/ahnhy1324/crystalhd/issues/92)
   — pinned firmware mapping and live OPEN/scaling evidence; standalone
   processing and backend reuse remain unvalidated.
