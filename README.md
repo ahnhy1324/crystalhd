@@ -6,12 +6,12 @@ hardware video decoding for local files on BCM70015. CrystalHD handles video;
 the normal Linux media stack handles audio, subtitles, synchronization and
 display.
 
-This source prepares **CrystalHD 1.2.0 / module-DKMS 3.10.13**. The tag-based
-quick start below becomes available after publication; final-package checks
-and explicit maintainer GO are tracked in
-[#473](https://github.com/ahnhy1324/crystalhd/issues/473). See the
-[qualified scope](HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22)
-and [change summary](HISTORY.md#120--prepared-final-package).
+**[CrystalHD 1.2.0 is available](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0)**
+with module-DKMS `3.10.13`. The quick start installs that stable release. See the
+[final-package qualification](HARDWARE-2026-09-13.md#120-final-package-qualification--2026-10-23)
+and [change summary](HISTORY.md#120).
+Current master is development `1.3.0-dev.1` / `3.10.14`, not a new qualified
+release; its follow-up experiments do not extend stable compatibility claims.
 For published [v1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0),
 use the instructions shipped with that tag. The
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29)
@@ -58,7 +58,7 @@ a kernel update. [DKMS](README.dkms) handles those later module rebuilds
 automatically. Choose one route; if DKMS already manages CrystalHD, follow its
 guide instead of this direct-install procedure.
 
-For a fresh 1.2.0 checkout on Ubuntu after publication:
+For a fresh stable 1.2.0 checkout on Ubuntu:
 
 ```sh
 sudo apt install git

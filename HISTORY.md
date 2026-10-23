@@ -1,13 +1,22 @@
 # History
 
-## 1.2.0 — prepared final package
+## 1.3.0-dev.1 — unreleased
 
-Bundle `1.2.0` / module-DKMS package `3.10.13` freezes the bounded features and
-reliability fixes qualified in immutable RC2. The implementation is unchanged
-from RC2; the distinct final identity prevents overwriting its registered DKMS
-source or module. Final-source build, archive, installation and RC2 rollback
-checks plus explicit maintainer GO remain required before publication. This
-preparation does not create or authorize a `v1.2.0` tag or GitHub Release.
+Development package `3.10.14` is separate from published `1.2.0` / `3.10.13`.
+RX bounds, optional output-aware backing and finite decoded-write performance
+follow-up remain tracked in #470/#471. They require their own qualification;
+this development identity is not a release or a new support claim.
+
+<a id="120--prepared-final-package"></a>
+
+## 1.2.0
+
+Published on 2026-10-23 from `8132043`, bundle `1.2.0` / module-DKMS
+`3.10.13`. Final-source CI/build, Git-free archive/staging, live DKMS upgrade,
+RC2 rollback/reinstall and installed application checks passed under
+[#473](https://github.com/ahnhy1324/crystalhd/issues/473). RC2 long-running and
+physical evidence retains its original source; final direct live installation
+was not repeated. The downloaded public archive matches the qualified asset.
 
 - Add selected CPU VA-VPP Bob for NV12 TFF/BFF, including the qualified stock
   FFmpeg and Kodi 21.3 paths, while retaining honest field/cadence boundaries.

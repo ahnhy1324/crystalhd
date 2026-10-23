@@ -28,10 +28,13 @@ RCs remain immutable; their qualification is historical evidence, not a v1.2
 PASS.
 
 Published `v1.2.0-rc.2` completed the bounded G0–G3 qualification in #473.
-The current source prepares final bundle `1.2.0` with a distinct module/DKMS
-revision. That final identity still requires fresh build, archive, live
-installation/rollback and short application checks before the maintainer GO;
-RC2's unchanged long-running G2 evidence need not be repeated.
+Stable [v1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0)
+was published on 2026-10-23 at `8132043`, whose tree equals tested `f45dbdc`.
+[Final package qualification and publication](https://github.com/ahnhy1324/crystalhd/issues/473#issuecomment-6355980181)
+are complete. Fresh final CI/build, archive/staging, live DKMS upgrade/RC2
+rollback/reinstall and installed application checks retain their actual source
+attribution; RC2 direct-live, physical and endurance evidence was reused only
+for unchanged implementation. These results do not qualify later development.
 
 The selected v1.2 claims are bounded CPU VA-VPP Bob, explicit H.264 card-output
 scaling and reviewed reliability fixes. Selected Kodi Auto, sustained 720p50
@@ -52,12 +55,12 @@ checkout alone does not announce a published release.
 
 | Identity | Current value | Purpose |
 | --- | --- | --- |
-| Prepared final bundle | `1.2.0` | Final source identity; not published before explicit GO |
-| Prepared final DKMS / module package | `3.10.13` | Distinct final identity; does not overwrite an RC registration |
+| Development bundle / module package | `1.3.0-dev.1` / `3.10.14` | Unreleased follow-up; never replace registered stable payload |
+| Published stable bundle / module package | `1.2.0` / `3.10.13` | Immutable source `8132043`; qualified public source asset |
 | Published RC2 bundle / package | `1.2.0-rc.2` / `3.10.12` | Immutable qualified rollback source |
 | Published RC1 bundle / package | `1.2.0-rc.1` / `3.10.11` | Immutable earlier candidate |
-| Published stable bundle | `1.1.0` | Immutable source `85f426d` |
-| Published stable DKMS / module package | `3.10.9` | RC.5 retains `3.10.8`, RC.4 `3.10.7`, stable 1.0.0 `3.10.3` |
+| Previous stable bundle | `1.1.0` | Immutable source `85f426d` |
+| Previous stable DKMS / module package | `3.10.9` | RC.5 retains `3.10.8`, RC.4 `3.10.7`, stable 1.0.0 `3.10.3` |
 | Driver ioctl version | `3.10.0` | Historical public API value, retained |
 | Library API / pkg-config | `3.22.0` | Historical library component identity, retained |
 | Library SONAME / file | `libcrystalhd.so.3` / `libcrystalhd.so.3.6` | Existing application linkage, retained |
