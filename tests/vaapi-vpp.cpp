@@ -11,7 +11,19 @@ void VppTestWorkerTurn(Driver *, std::unique_lock<std::mutex> &);
 #define DtsGetDriverStatus VppTestGetDriverStatus
 #define DtsStopDecoder VppTestStopDecoder
 #define DtsDeviceOpen VppTestDeviceOpen
+#ifdef CRYSTALHD_VPP_CPU_ONLY
+// Same-translation-unit abort stubs cannot be intercepted by linker wraps.
+// Route the mocked allocation boundaries explicitly; their fallbacks still abort.
+#define drmGetDevice2 __wrap_drmGetDevice2
+#define drmFreeDevice __wrap_drmFreeDevice
+#define drmPrimeHandleToFD __wrap_drmPrimeHandleToFD
+#endif
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
+#ifdef CRYSTALHD_VPP_CPU_ONLY
+#undef drmGetDevice2
+#undef drmFreeDevice
+#undef drmPrimeHandleToFD
+#endif
 #undef DtsGetDriverStatus
 #undef DtsStopDecoder
 #undef DtsDeviceOpen
@@ -231,7 +243,7 @@ struct MockFenceScope {
 struct NativeNodeMock {
   static constexpr int render_fd = 8100;
   struct File { bool primary; struct stat identity; };
-  struct Dumb { int fd; size_t size; uint32_t pitch; uint64_t offset; };
+  struct Dumb { int fd; uint64_t size; uint32_t pitch; uint64_t offset; };
   struct stat render = {}, primary = {};
   char primary_path[64] = "/dev/dri/crystalhd-test-primary";
   char *nodes[DRM_NODE_MAX] = {};
@@ -248,6 +260,10 @@ struct NativeNodeMock {
   unsigned queries = 0, frees = 0, opens = 0, closes = 0;
   unsigned render_stats = 0, primary_stats = 0;
   unsigned creates = 0, destroys = 0, maps = 0, unmaps = 0;
+  unsigned map_attempts = 0;
+  uint64_t dumb_offset_base = 0, last_mapped_offset = 0;
+  bool override_create_size = false;
+  uint64_t create_size_override = 0;
   unsigned invalid = 0;
   int next_fd = 8200;
   uint32_t next_handle = 1;
@@ -370,9 +386,10 @@ struct NativeNodeMock {
       ++creates;
       create->handle = next_handle++;
       create->pitch = Align(create->width, 64);
-      create->size = static_cast<size_t>(create->pitch) * create->height;
-      dumbs.emplace(create->handle, Dumb{fd, static_cast<size_t>(create->size),
-                                        create->pitch, create->handle * 4096U});
+      create->size = static_cast<uint64_t>(create->pitch) * create->height;
+      if (override_create_size) create->size = create_size_override;
+      dumbs.emplace(create->handle, Dumb{fd, create->size, create->pitch,
+          dumb_offset_base + static_cast<uint64_t>(create->handle) * 4096U});
       return 0;
     }
     if (request == DRM_IOCTL_MODE_MAP_DUMB) {
@@ -412,7 +429,9 @@ struct NativeNodeMock {
     files.emplace(*result, File{false, primary});
     return 0;
   }
-  void *Map(size_t size, int prot, int flags, int fd, off_t offset) {
+  void *Map(size_t size, int prot, int flags, int fd, off64_t offset) {
+    ++map_attempts;
+    last_mapped_offset = static_cast<uint64_t>(offset);
     const auto dumb = std::find_if(dumbs.begin(), dumbs.end(),
         [&](const auto &entry) {
           return entry.second.fd == fd && entry.second.offset ==
@@ -483,6 +502,7 @@ extern "C" void __real_drmFreeDevice(drmDevicePtr *device);
 extern "C" int __real_drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags,
                                          int *prime_fd);
 extern "C" void *__real_mmap(void *, size_t, int, int, int, off_t);
+extern "C" void *__real_mmap64(void *, size_t, int, int, int, off64_t);
 extern "C" int __real_munmap(void *, size_t);
 
 extern "C" int __wrap_open(const char *path, int flags, ...) {
@@ -544,6 +564,12 @@ extern "C" void *__wrap_mmap(void *address, size_t size, int prot, int flags,
   return native_node_mock != nullptr
       ? native_node_mock->Map(size, prot, flags, fd, offset)
       : __real_mmap(address, size, prot, flags, fd, offset);
+}
+extern "C" void *__wrap_mmap64(void *address, size_t size, int prot, int flags,
+                                int fd, off64_t offset) {
+  return native_node_mock != nullptr
+      ? native_node_mock->Map(size, prot, flags, fd, offset)
+      : __real_mmap64(address, size, prot, flags, fd, offset);
 }
 extern "C" int __wrap_munmap(void *address, size_t size) {
   return native_node_mock != nullptr ? native_node_mock->Unmap(address, size)
@@ -1430,6 +1456,90 @@ void NativeSurfaceFilesRetainOriginalLifetime() {
               mock.maps == 17 && mock.unmaps == 17 && mock.invalid == 0 &&
               driver.surfaces.empty() && driver.contexts.empty(),
           "even failed DESTROY_DUMB retains the original last-file-close cleanup");
+}
+
+void NativeDumbMappingPreserves64BitOffsets() {
+  constexpr uint64_t offset = UINT64_C(0x100971000);
+  {
+    NativeNodeMock mock;
+    mock.dumb_offset_base = offset - 4096;
+    MockNativeNodeScope scope(mock);
+    bool native_backing = false;
+    {
+      Surface surface;
+      Require(surface.AllocateInternal(nullptr, mock.render_fd, 64, 32,
+                                        VA_FOURCC_NV12),
+              "high-offset NV12 allocation succeeds");
+      native_backing = surface.dumb_handle != 0 && surface.dumb_drm_fd >= 0 &&
+          surface.object_maps.size() == 1 && surface.object_fds.size() == 1 &&
+          surface.storage.empty();
+      if (native_backing) {
+        Require(mock.map_attempts == 1 && mock.maps == 1 &&
+                    mock.last_mapped_offset == offset && mock.invalid == 0 &&
+                    surface.object_sizes[0] == 64U * 48U &&
+                    surface.pitch[0] == 64 && surface.pitch[1] == 64,
+                "DUMB mmap receives the complete offset above four GiB");
+        const auto &pixels = *mock.mappings.at(surface.object_maps[0]);
+        for (unsigned plane = 0; plane != 2; ++plane) {
+          const unsigned rows = plane == 0 ? 32 : 16;
+          const size_t start = plane == 0 ? 0 : 64U * 32U;
+          for (unsigned y = 0; y != rows; ++y)
+            for (unsigned x = 0; x != 64; ++x) {
+              const uint8_t expected = static_cast<uint8_t>(
+                  17U + plane * 83U + y * 7U + x * 3U);
+              surface.planes[plane][y * surface.pitch[plane] + x] = expected;
+              Require(pixels[start + y * 64U + x] == expected,
+                      "high-offset DUMB Y and UV planes address exact backing bytes");
+            }
+        }
+      }
+    }
+    Require(mock.files.empty() && mock.dumbs.empty() && mock.mappings.empty() &&
+                mock.creates == 1 && mock.destroys == 1 && mock.closes == 2 &&
+                mock.maps == mock.unmaps && !mock.device_owned,
+            "high-offset allocation releases its PRIME fd, DUMB handle and node");
+    Require(native_backing,
+            "64-bit DRM offset must retain DUMB backing; CPU fallback is not PRIME-capable");
+  }
+  struct Rejected { uint64_t offset, size; bool override_size, size_overflow; };
+  const Rejected rejected[] = {
+      {UINT64_C(0x8000000000001000), 0, false, false},
+      {offset, 0, true, false},
+      {offset, UINT64_C(0x100000000), true, true}};
+  for (const Rejected &input : rejected) {
+    if (input.size_overflow && input.size <= std::numeric_limits<size_t>::max())
+      continue;
+    NativeNodeMock mock;
+    mock.dumb_offset_base = input.offset - 4096;
+    mock.override_create_size = input.override_size;
+    mock.create_size_override = input.size;
+    MockNativeNodeScope scope(mock);
+    {
+      Surface surface;
+      Require(surface.AllocateInternal(nullptr, mock.render_fd, 64, 32,
+                                        VA_FOURCC_NV12) &&
+                  surface.dumb_handle == 0 && surface.dumb_drm_fd == -1 &&
+                  surface.object_maps.empty() && surface.object_fds.empty() &&
+                  !surface.storage.empty() && mock.map_attempts == 0,
+              "unrepresentable DRM offset or extent rejects before mmap and uses CPU backing");
+    }
+    Require(mock.files.empty() && mock.dumbs.empty() && mock.mappings.empty() &&
+                mock.creates == 1 && mock.destroys == 1 && mock.closes == 2 &&
+                mock.maps == 0 && mock.unmaps == 0 && mock.invalid == 0 &&
+                !mock.device_owned,
+            "rejected DUMB metadata releases PRIME fd, handle and node");
+  }
+}
+
+int NativeDumbOffsetTestEntry() {
+  try {
+    NativeDumbMappingPreserves64BitOffsets();
+    puts("VA-API native DUMB 64-bit offsets/pixels/rejection/cleanup PASS");
+    return 0;
+  } catch (const std::exception &error) {
+    fprintf(stderr, "VA-API native DUMB offset regression failed: %s\n", error.what());
+    return 1;
+  }
 }
 
 void I915WcMappingRequiresExactOffsetIdentity() {
@@ -6636,6 +6746,8 @@ static void FirstFieldCpuViewPreservesPublicReadiness() {
 // Keep the complete entry globally compiled for syntax coverage. CPU-only
 // section-GC builds retain only their selected state-machine groups below.
 int VppFullTestEntry(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--native-dumb-offset") == 0)
+    return NativeDumbOffsetTestEntry();
   if (argc == 2 && strcmp(argv[1], "--centered-readonly-pending") == 0)
     return CenteredReadOnlyPendingTestEntry();
   if (argc == 2 && strcmp(argv[1], "--readonly-cpu-pending") == 0)
@@ -6792,6 +6904,7 @@ int VppFullTestEntry(int argc, char **argv) {
     NativeNodeCacheInvalidatesChangedIdentities();
     NativeNodeCacheFailuresRetryWithoutLeases();
     NativeSurfaceFilesRetainOriginalLifetime();
+    NativeDumbMappingPreserves64BitOffsets();
     I915WcMappingRequiresExactOffsetIdentity();
     AbortPathsPublishErrorFences();
     DecodeTeardownStillNotifies();
@@ -6869,11 +6982,13 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 100 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 101 hardware-free regressions passed");
   return 0;
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--native-dumb-offset") == 0)
+    return NativeDumbOffsetTestEntry();
   if (argc == 2 && strcmp(argv[1], "--centered-readonly-pending") == 0)
     return CenteredReadOnlyPendingTestEntry();
   if (argc == 2 && strcmp(argv[1], "--readonly-cpu-pending") == 0)
@@ -6884,6 +6999,7 @@ int main(int argc, char **argv) {
   const bool processing_only = argc == 2 && strcmp(argv[1], "--decode-processing") == 0;
   if (argc != 1 && !processing_only) return 2;
   const std::pair<const char *, void (*)()> groups[] = {
+      {"native DUMB 64-bit offsets preserve pixels and cleanup", NativeDumbMappingPreserves64BitOffsets},
       {"configuration matches advertised support", ConfigAttributesMatchAdvertisedSupport},
       {"card scaling captures explicit additional output", DecodeProcessingAdmissionIsExplicitAndCaptured},
       {"opaque decode originals reject pixel access", OpaqueDecodeOriginalRejectsPixelAccess},

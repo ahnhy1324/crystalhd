@@ -90,7 +90,7 @@ $(VPP_TEST): $(ROOTDIR)/tests/vaapi-vpp.cpp crystalhd_drv_video.cpp $(BACKEND_HE
 		-L$(ROOTDIR)/linux_lib/libcrystalhd $(LDLIBS) \
 		-Wl,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=eventfd \
 		-Wl,--wrap=fstat,--wrap=drmGetDevice2,--wrap=drmFreeDevice \
-		-Wl,--wrap=drmPrimeHandleToFD,--wrap=mmap,--wrap=munmap $(CRYSTALHD_CPU_FLAGS)
+		-Wl,--wrap=drmPrimeHandleToFD,--wrap=mmap,--wrap=mmap64,--wrap=munmap $(CRYSTALHD_CPU_FLAGS)
 
 $(REPLAY_TEST): $(ROOTDIR)/tests/vaapi-replay.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ \
