@@ -577,9 +577,12 @@ CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12=1280x720@1920x1080:limited \
 
 The value specifies `capture-width×height@visible-width×height:limited|full`
 using ASCII `x`. Crop and black range must be supplied explicitly; coded1088
-does not imply visible1080. Only an exact aspect-preserving reduction is
-accepted, with capture width divisible by16 and height by4. Placement uses
-even X and four-line-aligned Y. Remove the variable or set it to `0` to
+does not imply visible1080. The current experiment requires the full coded
+width and fewer than16 cropped bottom rows, aligned to the sequence's crop
+unit. Capture width must be at least128, smaller than the source and divisible
+by16; capture height must be divisible by4, with an exact aspect-preserving
+reduction. Placement uses even X and rounds Y toward the top to a multiple
+of four. Remove the variable or set it to `0` to
 disable it. Keep ordinary LIVE/prefeed defaults when comparing playback;
 explicit `CRYSTALHD_VAAPI_LOW_LATENCY_H264=0` disables automatic prefeed and
 is not equivalent to leaving it unset. Explicit decode-processing/additional-output
