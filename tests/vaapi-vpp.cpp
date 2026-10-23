@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Exercise the actual driver state machine with private memory only: no DRM
 // device, firmware, browser, or CrystalHD device is opened by these tests.
+#include <functional>
+#include <mutex>
+namespace {
+struct Driver;
+void VppTestWorkerTurn(Driver *, std::unique_lock<std::mutex> &);
+}
+#define CRYSTALHD_VAAPI_TEST_VPP_WORKER_TURN VppTestWorkerTurn
 #define DtsGetDriverStatus VppTestGetDriverStatus
 #define DtsStopDecoder VppTestStopDecoder
 #define DtsDeviceOpen VppTestDeviceOpen
@@ -8,6 +15,7 @@
 #undef DtsGetDriverStatus
 #undef DtsStopDecoder
 #undef DtsDeviceOpen
+#undef CRYSTALHD_VAAPI_TEST_VPP_WORKER_TURN
 
 #include <atomic>
 #include <cerrno>
@@ -203,6 +211,15 @@ struct FenceIoMock {
 thread_local FenceIoMock *fence_io_mock = nullptr;
 thread_local unsigned int *synchronous_status_polls = nullptr;
 thread_local unsigned int *synchronous_decoder_stops = nullptr;
+thread_local std::function<void(Driver *, std::unique_lock<std::mutex> &)>
+    vpp_worker_turn;
+
+void VppTestWorkerTurn(Driver *driver, std::unique_lock<std::mutex> &lock) {
+  // One fixture-only turn; ordinary VPP tests use the real condition wait.
+  // This controls cancellation ordering, not the scheduler's 1 ms latency.
+  auto turn = std::move(vpp_worker_turn);
+  if (turn) turn(driver, lock);
+}
 
 struct MockFenceScope {
   explicit MockFenceScope(FenceIoMock &mock) { fence_io_mock = &mock; }
@@ -4215,6 +4232,99 @@ void InternalQueuedVppCompletesWithoutSwSync() {
   }
 }
 
+void VppBacklogTurnPreservesCancellationAndOwnership() {
+  // Control an intervening frontend at the new retired-operation boundary.
+  // Assert queue/pixel/lifetime ordering, never scheduler latency or <1 ms.
+  for (unsigned mode = 0; mode != 3; ++mode) {
+    Fixture fixture;
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    FillFieldRows(*picture);
+    const auto source_bytes = picture->storage;
+    picture->ready = false;
+    VABufferID filter = CreateBobFilter(fixture);
+    SetPipelineFilters(fixture, &filter, 1);
+    fixture.SubmitParameters();
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+            "queue the first private Bob output");
+    const auto next = Picture(0, 99);
+    const auto untouched = next->storage;
+    fixture.driver.surfaces[3] = next;
+    Require(BeginPicture(&fixture.context, 2, 3) == VA_STATUS_SUCCESS &&
+                RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                    VA_STATUS_SUCCESS &&
+                EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                fixture.driver.pending_vpp.size() == 2 &&
+                picture->vpp_readers == 2,
+            "two queued outputs retain separate target ownership");
+    picture->ready = true;
+    bool entered = false, admitted = false, action_ok = false;
+    fixture.driver.vpp_worker = std::thread([&] {
+      vpp_worker_turn = [&](Driver *driver, std::unique_lock<std::mutex> &lock) {
+        entered = driver == &fixture.driver && lock.owns_lock();
+        lock.unlock();
+        std::thread frontend([&] {
+          VASurfaceStatus first_state = VASurfaceRendering;
+          VASurfaceStatus next_state = VASurfaceReady;
+          const bool states =
+              QuerySurfaceStatus(&fixture.context, 2, &first_state) == VA_STATUS_SUCCESS &&
+              QuerySurfaceStatus(&fixture.context, 3, &next_state) == VA_STATUS_SUCCESS &&
+              first_state == VASurfaceReady && next_state == VASurfaceRendering;
+          {
+            std::lock_guard<std::mutex> frontend_lock(driver->mutex);
+            admitted = states && driver->pending_vpp.size() == 1 &&
+                !driver->pending_vpp.front().worker_active &&
+                fixture.target->vpp_writers == 0 && next->vpp_writers == 1 &&
+                picture->vpp_readers == 1 && next->storage == untouched;
+          }
+          if (mode == 0) {
+            // Retire a completed VA ID while the worker's copied operation
+            // still owns that object; the remaining output must stay valid.
+            VASurfaceID completed = 2;
+            action_ok = DestroySurfaces(&fixture.context, &completed, 1) == VA_STATUS_SUCCESS;
+          } else if (mode == 1) {
+            VASurfaceID canceled = 3;
+            action_ok = DestroySurfaces(&fixture.context, &canceled, 1) == VA_STATUS_SUCCESS;
+          } else {
+            // Source retirement cancels the queued capture. A frontend sync
+            // removes it before the worker resumes; stop must not reuse an
+            // erased queue iterator or paint a replacement picture.
+            VASurfaceID source = 1;
+            action_ok = DestroySurfaces(&fixture.context, &source, 1) == VA_STATUS_SUCCESS &&
+                SyncSurface2(&fixture.context, 3, 0) == VA_STATUS_ERROR_DECODING_ERROR;
+            std::lock_guard<std::mutex> frontend_lock(driver->mutex);
+            driver->stopping = true;
+          }
+        });
+        frontend.join();
+        lock.lock();
+      };
+      RunVppWorker(&fixture.driver);
+      vpp_worker_turn = {};
+    });
+    const VAStatus status = SyncSurface2(&fixture.context, 3, 1000000000ULL);
+    fixture.driver.StopWorkers();
+    Require(entered && admitted && action_ok,
+            "a frontend observes the completed first output and untouched queued successor");
+    Require(fixture.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
+                fixture.target->vpp_writers == 0 && next->vpp_writers == 0 &&
+                picture->storage == source_bytes,
+            "intervening retirement releases all owners without modifying source pixels");
+    RequireFieldRows(*fixture.target, 0, true);
+    if (mode == 0) {
+      Require(status == VA_STATUS_SUCCESS && next->ready && !next->failed &&
+                  next->frame_timestamp == kTimestampStep,
+              "the successor completes with its exact captured identity");
+      RequireFieldRows(*next, 0, true);
+    } else {
+      Require(status != VA_STATUS_SUCCESS && next->failed && !next->ready &&
+                  next->storage == untouched,
+              "cancellation or stop cannot acknowledge or overwrite the successor");
+    }
+  }
+}
+
 void ExposedQueuedVppStillRequiresFence() {
   FenceIoMock mock;
   MockFenceScope scope(mock);
@@ -6116,7 +6226,8 @@ int VppFullTestEntry(int argc, char **argv) {
                       strcmp(argv[1], "--completed-source") == 0)) {
       const std::pair<const char *, void (*)()> lifecycle[] = {
           {"VPP queue allocation failure is transactional", VppQueueAllocationFailureIsTransactional},
-          {"stale VPP failure preserves newer writer", StaleVppFailurePreservesNewerWriter}};
+          {"stale VPP failure preserves newer writer", StaleVppFailurePreservesNewerWriter},
+          {"VPP backlog turn preserves cancellation and ownership", VppBacklogTurnPreservesCancellationAndOwnership}};
       const std::pair<const char *, void (*)()> imports[] = {
           {"PRIME export preserves imported plane layout", ImportedPrimeExportsPreservePlaneLayouts},
           {"legacy PRIME batch uses one descriptor", LegacyPrimeBatchUsesOneDescriptorAndRollsBack}};
@@ -6212,6 +6323,7 @@ int VppFullTestEntry(int argc, char **argv) {
     RepeatedVppRetainsPicture();
     DirectCaptureKeepsQueuedVppPrivate();
     InternalQueuedVppCompletesWithoutSwSync();
+    VppBacklogTurnPreservesCancellationAndOwnership();
     ExposedQueuedVppStillRequiresFence();
     ExposedColdVppFallbackCompletesBeforeReturning();
     UnsafeFenceFailuresCannotUseSynchronousFallback();
@@ -6253,7 +6365,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 94 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 95 hardware-free regressions passed");
   return 0;
 }
 

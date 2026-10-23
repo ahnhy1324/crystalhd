@@ -7263,6 +7263,20 @@ static void RunVppWorker(Driver *driver) {
                           operation.color_range, operation.preserve_fields);
     }
     ReleasePendingVpp(driver, operation.sequence, status, true);
+    // Retire the completed operation before releasing the global mutex for
+    // one bounded turn. A ready backlog otherwise keeps the wait predicate
+    // true and can starve frontend submission, synchronization and teardown.
+    if (std::any_of(driver->pending_vpp.begin(), driver->pending_vpp.end(),
+                    [driver](const PendingVpp &pending) {
+                      return PendingVppCanceled(driver, pending) ||
+                             !pending.worker_active;
+                    })) {
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_WORKER_TURN)
+      CRYSTALHD_VAAPI_TEST_VPP_WORKER_TURN(driver, lock);
+#endif
+      driver->condition.wait_for(lock, std::chrono::milliseconds(1),
+                                [&] { return driver->stopping; });
+    }
   }
 }
 
