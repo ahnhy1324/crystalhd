@@ -38,6 +38,7 @@ struct Protocol {
   unsigned int read_owned = 0;
   unsigned int imports = 0;
   bool timeline_open = false;
+  bool timeline_read_only = false;
   bool fence_open = false;
   int status = 0;
   int fail_import = -1;
@@ -455,6 +456,25 @@ void CompletionOrder() {
           "flush barrier precedes signaling, which precedes CPU END");
 }
 
+void ReadOnlyTimeline() {
+  for (bool cancel : {false, true}) {
+    Fixture fixture;
+    fixture.mock.timeline_read_only = true;
+    bool fallback = true;
+    const int timeline = BeginFencedWrite(&fixture.surface, MockOps(), &fallback);
+    Require(timeline == Protocol::timeline && !fallback &&
+                fixture.mock.owned == 2 && fixture.mock.imports == 2,
+            "read-only timeline access must admit a fenced write");
+    Require(cancel ? AbortFencedWrite(&fixture.surface, timeline, MockOps())
+                   : EndFencedWrite(&fixture.surface, timeline, MockOps()),
+            "read-only timeline supports completion and cancellation ioctls");
+    Require(fixture.mock.status == (cancel ? -ENOENT : 1) &&
+                fixture.mock.owned == 0 && !fixture.mock.timeline_open &&
+                !fixture.mock.fence_open,
+            "read-only access preserves success/error signaling and ownership");
+  }
+}
+
 void FailedFlushAborts() {
   for (bool unsupported : {false, true}) {
     Fixture fixture;
@@ -534,8 +554,13 @@ void DefaultCapability() {
 
 extern "C" int __wrap_open(const char *path, int flags, ...) {
   Require(protocol && strcmp(path, kSwSyncPath) == 0 &&
-              flags == (O_RDWR | O_CLOEXEC) && !protocol->timeline_open,
+              (flags == (O_RDWR | O_CLOEXEC) ||
+               flags == (O_RDONLY | O_CLOEXEC)) && !protocol->timeline_open,
           "only the mocked sw_sync timeline may be opened");
+  if (protocol->timeline_read_only && (flags & O_ACCMODE) != O_RDONLY) {
+    errno = EACCES;
+    return -1;
+  }
   protocol->events.emplace_back("open");
   protocol->timeline_open = true;
   return Protocol::timeline;
@@ -677,6 +702,7 @@ int main() {
     LineCoverage();
     RejectedBeforeOwnership();
     CompletionOrder();
+    ReadOnlyTimeline();
     FailedFlushAborts();
     AbortAndImportFailure();
     DefaultCapability();
@@ -684,7 +710,7 @@ int main() {
     fprintf(stderr, "VA-API cache protocol failed: %s\n", error.what());
     return 1;
   }
-  printf("VA-API cache protocol: 10 groups, %u checks PASS (default async cache: %s)\n",
+  printf("VA-API cache protocol: 11 groups, %u checks PASS (default async cache: %s)\n",
          checks, CpuCacheFlush().Available() ? "enabled" : "unavailable");
   return 0;
 }
