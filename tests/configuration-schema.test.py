@@ -69,17 +69,27 @@ class SchemaOracleTest(unittest.TestCase):
         mapped = {(kind, name) for kind, name, _key in map_matches}
         bounded = {(kind, name) for kind, name, _reason in boundary_matches}
 
-        self.assertEqual(len(inventory_matches), 28)
-        self.assertEqual(len(surfaces), 28)
+        self.assertEqual(len(inventory_matches), 29)
+        self.assertEqual(len(surfaces), 29)
         self.assertEqual(len(map_matches), 23)
         self.assertEqual(len(mapped), 23)
-        self.assertEqual(len(boundary_matches), 5)
-        self.assertEqual(len(bounded), 5)
+        self.assertEqual(len(boundary_matches), 6)
+        self.assertEqual(len(bounded), 6)
         self.assertFalse(mapped & bounded)
         self.assertEqual(mapped | bounded, surfaces)
         self.assertEqual(
             {reason for _kind, _name, reason in boundary_matches},
-            {"staged-module", "legacy-bootstrap", "invocation-only"},
+            {"staged-module", "legacy-bootstrap", "invocation-only",
+             "experimental-centered-nv12"},
+        )
+        self.assertEqual(
+            {(kind, name) for kind, name, reason in boundary_matches
+             if reason == "experimental-centered-nv12"},
+            {("environment", "CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12")},
+        )
+        self.assertEqual(
+            _CONFIG.CENTERED_NV12_ENVIRONMENT,
+            "CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12",
         )
 
         marked_keys = SCHEMA_KEY_MARKER.findall(specification)
@@ -92,6 +102,26 @@ class SchemaOracleTest(unittest.TestCase):
             _CONFIG.ENVIRONMENT_TARGETS,
             {name for kind, name, _key in map_matches if kind == "environment"},
         )
+
+    def test_centered_native_boundary_does_not_extend_strict_schema(self):
+        variable = "CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12"
+        result = resolve(self.empty(), self.empty(), {"default": {}},
+                         raw_environment={variable: "private-native-value"})
+        self.assertTrue(result.centered_nv12_environment_present)
+        self.assertEqual(set(result.requested), set(RULES))
+        self.assertEqual(result.raw_receipts, ())
+        for key in (variable, "vaapi.h264.centered_nv12"):
+            with self.subTest(key=key), self.assertRaises(SchemaError):
+                self.parse('[crystalhd]\nschema = 1\n[settings]\n' +
+                           key + ' = "1280x720@1920x1080:limited"\n')
+        with self.assertRaises(SchemaError):
+            resolve(self.empty(), self.empty(),
+                    {"default": {"vaapi.h264.ready_remap": True}},
+                    raw_environment={variable: "0"})
+        for invalid in (None, 1, "bad\0value"):
+            with self.subTest(invalid=invalid), self.assertRaises(SchemaError):
+                resolve(self.empty(), self.empty(), {"default": {}},
+                        raw_environment={variable: invalid})
 
     def test_strict_document_and_profile_grammar(self):
         document = self.parse(
@@ -584,7 +614,7 @@ def main() -> int:
     if result.wasSuccessful():
         print(
             "configuration schema oracle: PASS "
-            "(21 canonical keys; 28 production surfaces classified; production core)"
+            "(21 canonical keys; 29 production surfaces classified; production core)"
         )
         return 0
     return 1

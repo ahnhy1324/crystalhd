@@ -105,6 +105,65 @@ class ConfigCliTest(unittest.TestCase):
                          "inactive:hardware-mode-disabled")
         self.assertEqual(settings["chromium.executable"]["effective"], None)
 
+    def test_centered_native_only_environment_reports_partial_scope_and_redacts(self):
+        variable = "CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12"
+        for raw in ("1280x720@1920x1080:limited", "0", "",
+                    "private-unvalidated-centered-value"):
+            for command in ("show-effective", "bug-report"):
+                with self.subTest(raw=raw, command=command):
+                    result = self.run_cli(command, *self.common(),
+                                          *(() if command == "bug-report" else
+                                            ("--format", "json")),
+                                          environment={variable: raw})
+                    self.assertEqual((result.returncode, result.stderr), (0, ""))
+                    report = json.loads(result.stdout)
+                    self.assertEqual(report["effective_configuration_scope"],
+                                     "partial:experimental-centered-nv12-native-only")
+                    self.assertIn("VA context rejection rules are not modeled",
+                                  report["state_scope"])
+                    self.assertEqual(report["native_only_environment"], [{
+                        "variable": variable,
+                        "raw": "<redacted>",
+                        "state": "not-modeled:experimental-centered-nv12",
+                        "native_value_validation": "not-performed",
+                    }])
+                    self.assertEqual({item["key"] for item in report["settings"]},
+                                     set(CONFIG.RULES))
+                    self.assertEqual(report["custom_overrides"], [])
+                    if len(raw) > 1:
+                        self.assertNotIn(raw, result.stdout + result.stderr)
+        private = "private-native-centered-report-value"
+        for command in ("show-effective", "validate", "explain"):
+            arguments = (("vaapi.h264.mode",) if command == "explain" else ())
+            with self.subTest(command=command):
+                result = self.run_cli(command, *arguments, *self.common(),
+                                      environment={variable: private})
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+                self.assertIn("native-only environment " + variable, result.stdout)
+                self.assertIn("raw=<redacted>", result.stdout)
+                self.assertIn("not modeled", result.stdout)
+                self.assertNotIn(private, result.stdout + result.stderr)
+        ignored = self.run_cli("show-effective", *self.common(),
+                               "--ignore-environment", "--format", "json",
+                               environment={variable: private})
+        self.assertEqual((ignored.returncode, ignored.stderr), (0, ""))
+        report = json.loads(ignored.stdout)
+        self.assertEqual(report["native_only_environment"], [])
+        self.assertEqual(report["effective_configuration_scope"],
+                         "canonical-native-adapters-only")
+        self.assertNotIn(variable, ignored.stdout)
+        unknown = self.run_cli("show-effective", *self.common(), "--format", "json",
+                               environment={variable + "_UNKNOWN": private})
+        self.assertEqual((unknown.returncode, unknown.stderr), (0, ""))
+        self.assertEqual(json.loads(unknown.stdout)["native_only_environment"], [])
+        self.write_user("[crystalhd]\nschema = 1\n[settings]\n"
+                        "vaapi.h264.ready_remap = true\n")
+        invalid = self.run_cli("validate", "--no-system-config", "--user-config",
+                               str(self.user_file), environment={variable: private})
+        self.assertEqual(invalid.returncode, 3)
+        self.assertIn("READY remap requires", invalid.stderr)
+        self.assertNotIn(private, invalid.stdout + invalid.stderr)
+
     def test_system_user_profile_precedence_and_explicit_selector(self):
         self.write_user(
             "[crystalhd]\n"
