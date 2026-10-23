@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import errno
+import fcntl
 import importlib.util
 import json
 import os
@@ -65,6 +66,19 @@ class ConfigCliTest(unittest.TestCase):
 
     def common(self):
         return ("--no-system-config", "--no-user-config")
+
+    def writer_options(self):
+        return ("--no-system-config", "--user-config", str(self.user_file))
+
+    def user_snapshot(self, reset=False):
+        return CONFIG.load_user_document_for_edit(str(self.user_file), reset=reset)
+
+    def save_document(self, document, snapshot=None):
+        if snapshot is None:
+            snapshot = self.user_snapshot()
+        return CONFIG.save_user_document(
+            str(self.user_file), document, snapshot, system_path=None,
+        )
 
     def test_no_file_defaults_are_complete_and_deterministic(self):
         arguments = ("show-effective",) + self.common() + (
@@ -825,6 +839,655 @@ class ConfigCliTest(unittest.TestCase):
                          "configuration valid: preset=default profile=none; "
                          "environment=ignored\n")
 
+    def test_user_save_reads_back_in_fresh_process_without_environment_flattening(self):
+        result = self.run_cli(
+            "save", "vaapi.trace=false", "vaapi.h264.ready_delay_us=0",
+            'chromium.password_store=""', "chromium.profile_dir=unset",
+            *self.writer_options(),
+            environment={
+                "CRYSTALHD_VAAPI_TRACE": "1",
+                "CRYSTALHD_VAAPI_DEBUG": "private-debug-value",
+                "CRYSTALHD_CHROMIUM_PROFILE_DIR": "/private/environment-profile",
+            },
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertIn("SAVED ONLY", result.stdout)
+        self.assertEqual(stat.S_IMODE(self.user_file.stat().st_mode), 0o600)
+        self.assertEqual(self.user_file.stat().st_uid, os.getuid())
+        saved = CONFIG.parse_document(self.user_file.read_bytes())
+        self.assertEqual(set(saved.settings), {
+            "vaapi.trace", "vaapi.h264.ready_delay_us",
+            "chromium.password_store", "chromium.profile_dir",
+        })
+        self.assertIs(saved.settings["vaapi.trace"], False)
+        self.assertEqual(type(saved.settings["vaapi.h264.ready_delay_us"]), int)
+        self.assertEqual(saved.settings["vaapi.h264.ready_delay_us"], 0)
+        self.assertEqual(saved.settings["chromium.password_store"], "")
+        self.assertIs(saved.settings["chromium.profile_dir"], CONFIG.UNSET)
+        self.assertNotIn(b"private-debug-value", self.user_file.read_bytes())
+        self.assertNotIn(b"environment-profile", self.user_file.read_bytes())
+
+        fresh = self.run_cli(
+            "show-effective", *self.writer_options(), "--ignore-environment", "--format", "json",
+        )
+        self.assertEqual((fresh.returncode, fresh.stderr), (0, ""))
+        settings = {item["key"]: item for item in json.loads(fresh.stdout)["settings"]}
+        self.assertEqual((settings["vaapi.trace"]["effective"], settings["vaapi.trace"]["origin"]),
+                         (False, "user"))
+        self.assertEqual(settings["vaapi.h264.ready_delay_us"]["origin"], "user")
+        self.assertEqual(settings["chromium.password_store"]["effective"], "")
+        self.assertEqual(settings["chromium.profile_dir"]["origin"], "user:unset")
+        self.assertEqual(settings["vaapi.debug"]["origin"], "compiled")
+
+    def test_user_save_creates_private_default_home_directories_only_in_the_fixture(self):
+        home = self.root / "fresh-home"
+        home.mkdir(mode=0o700)
+        result = self.run_cli("save", "vaapi.trace=true", "--no-system-config",
+                              environment={"HOME": str(home)})
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        config_home = home / ".config"
+        directory = config_home / "crystalhd"
+        user_file = directory / "config.ini"
+        self.assertEqual(stat.S_IMODE(config_home.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(user_file.stat().st_mode), 0o600)
+        self.assertIs(CONFIG.parse_document(user_file.read_bytes()).settings["vaapi.trace"], True)
+        self.assertEqual(set(home.iterdir()), {config_home})
+
+    def test_user_save_patches_base_and_removes_selectors_without_flattening_profiles(self):
+        self.write_user(
+            '[crystalhd]\nschema = 1\npreset = "quality"\nprofile = "desk"\n'
+            '[settings]\nvaapi.trace = true\nvaapi.debug = false\n'
+            '[profile.desk]\nvaapi.h264.low_latency = true\n'
+        )
+        result = self.run_cli(
+            "save", "vaapi.debug=true", "--remove", "vaapi.trace",
+            "--remove", "preset", "--remove", "profile", *self.writer_options(),
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        saved = CONFIG.parse_document(self.user_file.read_bytes())
+        self.assertEqual(saved.metadata, {"schema": 1})
+        self.assertEqual(saved.settings, {"vaapi.debug": True})
+        self.assertEqual(saved.profiles, {"desk": {"vaapi.h264.low_latency": True}})
+        selected = self.run_cli("save", "--preset", "quality", "--profile", "desk",
+                                *self.writer_options())
+        self.assertEqual((selected.returncode, selected.stderr), (0, ""))
+        self.assertEqual(CONFIG.parse_document(self.user_file.read_bytes()).metadata,
+                         {"schema": 1, "preset": "quality", "profile": "desk"})
+
+    def test_user_save_does_not_persist_transient_risk_acknowledgements(self):
+        saved = self.run_cli(
+            "save", "--preset", "low-memory", "--acknowledge-risk", "low-memory-8-buffer",
+            *self.writer_options(),
+            environment={"CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT": "16"},
+        )
+        self.assertEqual((saved.returncode, saved.stderr), (0, ""))
+        document = CONFIG.parse_document(self.user_file.read_bytes())
+        self.assertEqual(document.metadata, {"schema": 1, "preset": "low-memory"})
+        self.assertEqual(document.settings, {})
+        self.assertNotIn(b"low-memory-8-buffer", self.user_file.read_bytes())
+        fresh = self.run_cli("validate", *self.writer_options(), "--ignore-environment")
+        self.assertEqual(fresh.returncode, 3)
+        self.assertIn("low-memory-8-buffer", fresh.stderr)
+
+    def test_invalid_user_save_preserves_bytes_and_rejects_ambiguous_changes(self):
+        original = b"[crystalhd]\nschema = 1\n[settings]\nvaapi.trace = false\n"
+        cases = (
+            ("vaapi.trace=true", "vaapi.trace=false"),
+            ("vaapi.trace=true", "--remove", "vaapi.trace"),
+            ("unknown.setting=true",),
+            ("vaapi.trace=0",),
+            ("vaapi.h264.ready_remap=true",),
+            ("--preset", "private-invalid-selector"),
+        )
+        for changes in cases:
+            with self.subTest(changes=changes):
+                self.write_user(original.decode("utf-8"))
+                result = self.run_cli("save", *changes, *self.writer_options())
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.user_file.read_bytes(), original)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_user_write_commands_reject_read_only_flags_and_repeated_changes(self):
+        self.write_user('[crystalhd]\nschema = 1\n[profile.desk]\nvaapi.debug = false\n')
+        original = self.user_file.read_bytes()
+        for command in ("save", "reset"):
+            for flag in ("--no-user-config", "--ignore-environment"):
+                with self.subTest(command=command, flag=flag):
+                    arguments = ("vaapi.trace=true",) if command == "save" else ()
+                    result = self.run_cli(command, *arguments, flag, *self.writer_options())
+                    self.assertEqual(result.returncode, 2)
+                    self.assertEqual(self.user_file.read_bytes(), original)
+        cases = (
+            ("--preset", "quality", "--preset", "quality"),
+            ("--profile", "desk", "--profile", "desk"),
+            ("--remove", "vaapi.trace", "--remove", "vaapi.trace"),
+            ("--remove", "profile", "--remove", "profile"),
+        )
+        for changes in cases:
+            with self.subTest(changes=changes):
+                result = self.run_cli("save", *changes, *self.writer_options())
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(self.user_file.read_bytes(), original)
+
+    def test_user_reset_is_an_empty_valid_overlay_even_after_bounded_malformed_input(self):
+        for content in (b"[crystalhd]\nschema = 1\n[settings]\nvaapi.trace = true\n",
+                        b"not valid INI\n", b"\xff"):
+            with self.subTest(content=content):
+                self.user_file.write_bytes(content)
+                os.chmod(str(self.user_file), 0o600)
+                reset = self.run_cli("reset", *self.writer_options())
+                self.assertEqual((reset.returncode, reset.stderr), (0, ""))
+                self.assertIn("SAVED ONLY", reset.stdout)
+                document = CONFIG.parse_document(self.user_file.read_bytes())
+                self.assertEqual((document.metadata, document.settings, document.profiles),
+                                 ({"schema": 1}, {}, {}))
+                self.assertEqual(stat.S_IMODE(self.user_file.stat().st_mode), 0o600)
+        fresh = self.run_cli("show-effective", *self.writer_options(),
+                             "--ignore-environment", "--format", "json")
+        self.assertEqual(fresh.returncode, 0)
+        self.assertEqual(json.loads(fresh.stdout)["custom_overrides"], [])
+
+    def test_user_serializer_roundtrip_preserves_values_and_rejects_invalid_objects(self):
+        document = CONFIG.empty_document()
+        document.settings = {
+            "vaapi.trace": False, "vaapi.h264.ready_delay_us": 0,
+            "chromium.password_store": "", "chromium.profile_dir": CONFIG.UNSET,
+        }
+        document.profiles = {"empty": {}, "desk": {"vaapi.debug": True}}
+        encoded = CONFIG.serialize_document(document)
+        self.assertIsInstance(encoded, bytes)
+        parsed = CONFIG.parse_document(encoded)
+        self.assertEqual(parsed.metadata, document.metadata)
+        self.assertEqual(parsed.settings, document.settings)
+        self.assertEqual(parsed.profiles, document.profiles)
+        self.assertNotIn("vaapi.debug", parsed.settings)
+        for field, value in (("unknown.setting", True), ("vaapi.trace", 0)):
+            invalid = CONFIG.empty_document()
+            invalid.settings[field] = value
+            with self.subTest(field=field), self.assertRaises(CONFIG.SchemaError):
+                CONFIG.serialize_document(invalid)
+        invalid = CONFIG.empty_document()
+        invalid.metadata["unknown_metadata"] = "must-not-be-dropped"
+        with self.assertRaises(CONFIG.SchemaError):
+            CONFIG.serialize_document(invalid)
+
+    def test_user_serializer_escapes_unicode_line_and_vertical_separators(self):
+        value = "line\u2028paragraph\u2029vertical\u000bform\u000cnext\u0085end"
+        document = CONFIG.empty_document()
+        document.settings["chromium.password_store"] = value
+        encoded = CONFIG.serialize_document(document)
+        encoded.decode("ascii")
+        self.assertIn(b"\\u2028", encoded)
+        self.assertIn(b"\\u2029", encoded)
+        self.assertEqual(CONFIG.parse_document(encoded).settings["chromium.password_store"], value)
+        saved = self.save_document(document)
+        self.assertTrue(saved.committed and saved.durable)
+        self.assertEqual(CONFIG.parse_document(self.user_file.read_bytes()).settings["chromium.password_store"], value)
+
+    def test_user_serializer_rejects_huge_integer_as_schema_error(self):
+        document = CONFIG.empty_document()
+        document.settings["vaapi.h264.ready_delay_us"] = 10 ** 5000
+        with self.assertRaises(CONFIG.SchemaError):
+            CONFIG.serialize_document(document)
+
+    def test_user_snapshot_identity_and_original_bytes_survive_document_mutation(self):
+        original = b"[crystalhd]\nschema = 1\n[settings]\nvaapi.trace = false\n"
+        self.write_user(original.decode("utf-8"))
+        snapshot = self.user_snapshot()
+        self.assertEqual(snapshot.original_bytes, original)
+        self.assertIsInstance(snapshot.original_bytes, bytes)
+        self.assertIsInstance(snapshot.directory_identity, tuple)
+        self.assertIsInstance(snapshot.file_identity, tuple)
+        identities = snapshot.directory_identity, snapshot.file_identity
+        snapshot.document.settings["vaapi.trace"] = True
+        self.assertEqual(snapshot.original_bytes, original)
+        self.assertEqual((snapshot.directory_identity, snapshot.file_identity), identities)
+        for field, replacement in (("original_bytes", b"forged"),
+                                   ("directory_identity", ()), ("file_identity", ())):
+            with self.subTest(field=field), self.assertRaises(AttributeError):
+                setattr(snapshot, field, replacement)
+        self.write_user(original.decode("utf-8") + "# another writer changed the file\n")
+        current = self.user_file.read_bytes()
+        with self.assertRaises(CONFIG.SchemaError):
+            self.save_document(snapshot.document, snapshot)
+        self.assertEqual(self.user_file.read_bytes(), current)
+
+    def test_absent_user_parent_snapshot_rejects_a_later_writer_file(self):
+        target = self.root / "not-yet-created" / "crystalhd" / "config.ini"
+        snapshot = CONFIG.load_user_document_for_edit(str(target))
+        self.assertIsNone(snapshot.directory_identity)
+        self.assertIsNone(snapshot.file_identity)
+        self.assertIsNone(snapshot.original_bytes)
+        target.parent.mkdir(parents=True, mode=0o700)
+        original = b"[crystalhd]\nschema = 1\n[settings]\nvaapi.trace = false\n"
+        target.write_bytes(original)
+        os.chmod(str(target), 0o600)
+        snapshot.document.settings["vaapi.trace"] = True
+        with self.assertRaises(CONFIG.SchemaError):
+            CONFIG.save_user_document(str(target), snapshot.document, snapshot, system_path=None)
+        self.assertEqual(target.read_bytes(), original)
+
+    def test_user_save_rejects_stale_existing_absent_deleted_and_parent_snapshots(self):
+        first = self.user_snapshot()
+        stale_absent = self.user_snapshot()
+        first.document.settings["vaapi.trace"] = True
+        result = self.save_document(first.document, first)
+        self.assertTrue(result.committed and result.durable)
+        committed = self.user_file.read_bytes()
+        with self.assertRaises(CONFIG.SchemaError):
+            self.save_document(stale_absent.document, stale_absent)
+        self.assertEqual(self.user_file.read_bytes(), committed)
+
+        stale_existing = self.user_snapshot()
+        current = self.user_snapshot()
+        current.document.settings["vaapi.debug"] = True
+        self.save_document(current.document, current)
+        committed = self.user_file.read_bytes()
+        with self.assertRaises(CONFIG.SchemaError):
+            self.save_document(stale_existing.document, stale_existing)
+        self.assertEqual(self.user_file.read_bytes(), committed)
+
+        deleted = self.user_snapshot()
+        self.user_file.unlink()
+        with self.assertRaises(CONFIG.SchemaError):
+            self.save_document(deleted.document, deleted)
+        self.assertFalse(self.user_file.exists())
+
+        parent_snapshot = self.user_snapshot()
+        self.user_dir.rename(self.root / "previous-user-directory")
+        self.user_dir.mkdir(mode=0o700)
+        with self.assertRaises(CONFIG.SchemaError):
+            self.save_document(parent_snapshot.document, parent_snapshot)
+        self.assertFalse(self.user_file.exists())
+
+    def test_user_save_rejects_in_place_edits_and_nonblocking_directory_contention(self):
+        self.write_user("[crystalhd]\nschema = 1\n")
+        snapshot = self.user_snapshot()
+        self.write_user("[crystalhd]\nschema = 1\n# externally changed\n")
+        original = self.user_file.read_bytes()
+        with self.assertRaises(CONFIG.SchemaError):
+            self.save_document(snapshot.document, snapshot)
+        self.assertEqual(self.user_file.read_bytes(), original)
+
+        fd = os.open(str(self.user_dir), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            busy = subprocess.run(
+                [sys.executable, "-B", str(SCRIPT), "save", "vaapi.trace=true"] +
+                list(self.writer_options()), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, check=False, timeout=5,
+                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.root)},
+            )
+            self.assertEqual(busy.returncode, 3)
+            self.assertEqual(self.user_file.read_bytes(), original)
+        finally:
+            os.close(fd)
+
+    def test_existing_user_snapshot_does_not_recreate_a_deleted_parent(self):
+        self.write_user("[crystalhd]\nschema = 1\n")
+        snapshot = self.user_snapshot()
+        snapshot.document.settings["vaapi.trace"] = True
+        self.user_file.unlink()
+        self.user_dir.rmdir()
+        self.assertFalse(self.user_dir.exists())
+        with self.assertRaises(CONFIG.SchemaError):
+            self.save_document(snapshot.document, snapshot)
+        self.assertFalse(self.user_dir.exists(), "a stale session must not recreate its removed parent")
+
+    @unittest.skipIf(os.getuid() == 0, "writable caller-owned intermediates require an unprivileged user")
+    def test_user_save_accepts_caller_owned_775_intermediate_with_private_existing_final(self):
+        prefix = self.root / "writable-caller-prefix"
+        prefix.mkdir(mode=0o775)
+        os.chmod(str(prefix), 0o775)
+        directory = prefix / "crystalhd"
+        directory.mkdir(mode=0o700)
+        target = directory / "config.ini"
+        target.write_bytes(b"[crystalhd]\nschema = 1\n[settings]\nvaapi.trace = false\n")
+        os.chmod(str(target), 0o600)
+        snapshot = CONFIG.load_user_document_for_edit(str(target))
+        snapshot.document.settings["vaapi.trace"] = True
+        saved = CONFIG.save_user_document(str(target), snapshot.document, snapshot, system_path=None)
+        self.assertTrue(saved.committed and saved.durable)
+        self.assertIs(CONFIG.parse_document(target.read_bytes()).settings["vaapi.trace"], True)
+        self.assertEqual(stat.S_IMODE(prefix.stat().st_mode), 0o775)
+        self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
+    @unittest.skipIf(os.getuid() == 0, "writable caller-owned intermediates require an unprivileged user")
+    def test_user_save_creates_private_final_beneath_caller_owned_775_intermediate(self):
+        prefix = self.root / "writable-caller-prefix"
+        prefix.mkdir(mode=0o775)
+        os.chmod(str(prefix), 0o775)
+        directory = prefix / "crystalhd"
+        target = directory / "config.ini"
+        snapshot = CONFIG.load_user_document_for_edit(str(target))
+        self.assertIsNone(snapshot.directory_identity)
+        snapshot.document.settings["vaapi.trace"] = True
+        saved = CONFIG.save_user_document(str(target), snapshot.document, snapshot, system_path=None)
+        self.assertTrue(saved.committed and saved.durable)
+        self.assertIs(CONFIG.parse_document(target.read_bytes()).settings["vaapi.trace"], True)
+        self.assertEqual(stat.S_IMODE(prefix.stat().st_mode), 0o775)
+        self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+        self.assertEqual((directory.stat().st_uid, target.stat().st_uid), (os.getuid(), os.getuid()))
+
+    def test_user_save_still_rejects_a_775_final_directory(self):
+        self.write_user("[crystalhd]\nschema = 1\n[settings]\nvaapi.trace = false\n")
+        original = self.user_file.read_bytes()
+        snapshot = self.user_snapshot()
+        snapshot.document.settings["vaapi.trace"] = True
+        os.chmod(str(self.user_dir), 0o775)
+        try:
+            with self.assertRaises(CONFIG.SchemaError):
+                self.user_snapshot()
+            with self.assertRaises(CONFIG.SchemaError):
+                self.save_document(snapshot.document, snapshot)
+            self.assertEqual(self.user_file.read_bytes(), original)
+            self.assertEqual(stat.S_IMODE(self.user_dir.stat().st_mode), 0o775)
+        finally:
+            os.chmod(str(self.user_dir), 0o700)
+
+    def test_user_editor_rejects_unsafe_paths_even_for_reset(self):
+        self.write_user("[crystalhd]\nschema = 1\n")
+        parent_link = self.root / "linked-user-directory"
+        parent_link.symlink_to(self.user_dir, target_is_directory=True)
+        final_link = self.user_dir / "link.ini"
+        final_link.symlink_to(self.user_file)
+        fifo = self.user_dir / "fifo.ini"
+        os.mkfifo(str(fifo), 0o600)
+        directory = self.user_dir / "directory.ini"
+        directory.mkdir(mode=0o700)
+        real_open = os.open
+        def guard_fifo_open(path, flags, *arguments, **keywords):
+            if path in (str(fifo), fifo.name) and not flags & getattr(os, "O_PATH", 0):
+                self.fail("FIFO must be rejected before invoking an ordinary open")
+            return real_open(path, flags, *arguments, **keywords)
+        with mock.patch.object(CONFIG.os, "open", side_effect=guard_fifo_open):
+            for path in (parent_link / "config.ini", final_link, fifo, directory):
+                for reset in (False, True):
+                    with self.subTest(path=path.name, reset=reset), self.assertRaises(CONFIG.SchemaError):
+                        CONFIG.load_user_document_for_edit(str(path), reset=reset)
+        hardlink = self.user_dir / "hardlink.ini"
+        os.link(str(self.user_file), str(hardlink))
+        try:
+            for reset in (False, True):
+                with self.assertRaises(CONFIG.SchemaError):
+                    self.user_snapshot(reset=reset)
+        finally:
+            hardlink.unlink()
+        for path, mode in ((self.user_file, 0o622), (self.user_dir, 0o722)):
+            original_mode = stat.S_IMODE(path.stat().st_mode)
+            os.chmod(str(path), mode)
+            try:
+                for reset in (False, True):
+                    with self.assertRaises(CONFIG.SchemaError):
+                        self.user_snapshot(reset=reset)
+            finally:
+                os.chmod(str(path), original_mode)
+
+    def test_user_editor_rejects_unsafe_owner_and_changed_process_ids(self):
+        self.write_user("[crystalhd]\nschema = 1\n")
+        real_fstat = os.fstat
+        def foreign_owner(fd):
+            facts = real_fstat(fd)
+            if stat.S_ISREG(facts.st_mode):
+                fields = list(facts)
+                fields[4] = os.getuid() + 1
+                return os.stat_result(fields)
+            return facts
+        with mock.patch.object(CONFIG.os, "fstat", side_effect=foreign_owner):
+            with self.assertRaises(CONFIG.SchemaError):
+                self.user_snapshot()
+        with mock.patch.object(CONFIG.os, "geteuid", return_value=os.getuid() + 1):
+            with self.assertRaises(CONFIG.SchemaError):
+                self.user_snapshot(reset=True)
+
+    def test_user_writer_bounds_payload_and_does_not_target_the_system_layer(self):
+        self.write_user("[crystalhd]\nschema = 1\n")
+        original = self.user_file.read_bytes()
+        snapshot = self.user_snapshot()
+        oversized = CONFIG.empty_document()
+        oversized.settings["chromium.password_store"] = "x" * CONFIG.MAXIMUM_BYTES
+        with self.assertRaises(CONFIG.SchemaError):
+            self.save_document(oversized, snapshot)
+        self.assertEqual(self.user_file.read_bytes(), original)
+        with self.assertRaises(CONFIG.SchemaError):
+            CONFIG.save_user_document(str(self.user_file), snapshot.document, snapshot,
+                                      system_path=str(self.user_file))
+        self.assertEqual(self.user_file.read_bytes(), original)
+        self.user_file.write_bytes(b"#" * (CONFIG.MAXIMUM_BYTES + 1))
+        for reset in (False, True):
+            with self.assertRaises(CONFIG.SchemaError):
+                self.user_snapshot(reset=reset)
+
+    def test_user_writer_rejects_normalized_compiled_and_selected_system_targets_before_open(self):
+        protected = CONFIG.SYSTEM_CONFIG
+        alias = os.path.join(os.path.dirname(protected), ".", os.path.basename(protected))
+        for path in (protected, alias):
+            with self.subTest(path="compiled"), mock.patch.object(
+                    CONFIG.os, "open", side_effect=AssertionError("protected target must be rejected before open")):
+                with self.assertRaises(CONFIG.SchemaError):
+                    CONFIG.load_user_document_for_edit(path)
+        selected_directory = self.root / "selected-system"
+        selected_directory.mkdir(mode=0o700)
+        selected = selected_directory / "config.ini"
+        selected.write_bytes(b"[crystalhd]\nschema = 1\n")
+        os.chmod(str(selected), 0o600)
+        snapshot = CONFIG.load_user_document_for_edit(str(selected))
+        original = selected.read_bytes()
+        normalized_alias = str(selected_directory / "subdir" / ".." / "config.ini")
+        with mock.patch.object(CONFIG.os, "open", side_effect=AssertionError(
+                "selected system target must be rejected before open")):
+            with self.assertRaises(CONFIG.SchemaError):
+                CONFIG.save_user_document(normalized_alias, snapshot.document, snapshot,
+                                          system_path=str(selected))
+        self.assertEqual(selected.read_bytes(), original)
+
+    def test_user_writer_rejects_protected_directory_and_leaf_identity_aliases(self):
+        self.write_user("[crystalhd]\nschema = 1\n")
+        original = self.user_file.read_bytes()
+        snapshot = self.user_snapshot()
+        snapshot.document.settings["vaapi.trace"] = True
+        protected_directory = self.root / "protected-directory-alias"
+        protected_directory.mkdir(mode=0o700)
+        directory_fd = os.open(str(self.user_dir), os.O_RDONLY | os.O_DIRECTORY)
+        real_open, real_stat, real_load = os.open, os.stat, CONFIG.load_document
+        target_info = self.user_file.stat()
+        try:
+            for leaf in ("config.ini", "other-system.ini"):
+                redirected = []
+                def directory_alias(path, flags, *arguments, **keywords):
+                    if path == str(protected_directory) and "dir_fd" not in keywords:
+                        fd = os.dup(directory_fd)
+                        redirected.append(fd)
+                        return fd
+                    return real_open(path, flags, *arguments, **keywords)
+                def leaf_alias(path, *arguments, **keywords):
+                    if path == "other-system.ini" and keywords.get("dir_fd") in redirected:
+                        return target_info
+                    return real_stat(path, *arguments, **keywords)
+                def empty_system(path, role, system=False):
+                    return CONFIG.empty_document() if system else real_load(path, role, system=False)
+                with self.subTest(alias=leaf), mock.patch.object(
+                        CONFIG, "SYSTEM_CONFIG", str(self.root / "missing-compiled" / "config.ini")):
+                    with mock.patch.object(CONFIG, "load_document", side_effect=empty_system):
+                        with mock.patch.object(CONFIG.os, "open", side_effect=directory_alias):
+                            with mock.patch.object(CONFIG.os, "stat", side_effect=leaf_alias):
+                                with self.assertRaises(CONFIG.SchemaError):
+                                    CONFIG.save_user_document(
+                                        str(self.user_file), snapshot.document, snapshot,
+                                        system_path=str(protected_directory / leaf),
+                                    )
+                self.assertTrue(redirected, "the pinned protected-directory guard must be reached")
+                self.assertEqual(self.user_file.read_bytes(), original)
+        finally:
+            os.close(directory_fd)
+
+    def test_protected_leaf_access_denial_allows_unprivileged_save_but_root_guard_fails_closed(self):
+        if os.getuid() == 0:
+            self.skipTest("ordinary-user protected-leaf path requires a non-root test caller")
+        self.write_user("[crystalhd]\nschema = 1\n")
+        protected_directory = self.root / "private-protected-directory"
+        protected_directory.mkdir(mode=0o700)
+        protected_fd = os.open(str(protected_directory), os.O_RDONLY | os.O_DIRECTORY)
+        user_directory_fd = os.open(str(self.user_dir), os.O_RDONLY | os.O_DIRECTORY)
+        protected_parent, protected_leaf = os.path.split(CONFIG.SYSTEM_CONFIG)
+        real_open, real_stat = os.open, os.stat
+        opened = []
+        def protected_open(path, flags, *arguments, **keywords):
+            if path == protected_parent and "dir_fd" not in keywords:
+                if not flags & os.O_PATH:
+                    raise OSError(errno.EACCES, "protected directory is not readable")
+                fd = os.dup(protected_fd)
+                opened.append(fd)
+                return fd
+            return real_open(path, flags, *arguments, **keywords)
+        def protected_stat(path, *arguments, **keywords):
+            if path == protected_leaf and keywords.get("dir_fd") in opened:
+                raise OSError(errno.EACCES, "protected leaf cannot be searched")
+            return real_stat(path, *arguments, **keywords)
+        try:
+            with mock.patch.object(CONFIG.os, "open", side_effect=protected_open):
+                with mock.patch.object(CONFIG.os, "stat", side_effect=protected_stat):
+                    with mock.patch("sys.stdout"), mock.patch("sys.stderr"):
+                        result = CONFIG.main(
+                            ["save", "vaapi.trace=true"] + list(self.writer_options()),
+                            environment={"HOME": str(self.root)},
+                        )
+                    self.assertEqual(result, 0)
+                    self.assertTrue(opened, "protected metadata must be inspected through O_PATH")
+                    with mock.patch.object(CONFIG.os, "getuid", return_value=0):
+                        with self.assertRaises(OSError) as rejected:
+                            CONFIG._reject_system_target(user_directory_fd, "absent-root-check.ini", None)
+                    self.assertEqual(rejected.exception.errno, errno.EACCES)
+            self.assertIs(CONFIG.parse_document(self.user_file.read_bytes()).settings["vaapi.trace"], True)
+            self.assertFalse((self.user_dir / "absent-root-check.ini").exists())
+        finally:
+            os.close(user_directory_fd)
+            os.close(protected_fd)
+
+    def test_user_writer_precommit_failures_preserve_bytes_and_remove_candidates(self):
+        original = "[crystalhd]\nschema = 1\n[settings]\nvaapi.trace = false\n"
+        real_write, real_fsync = os.write, os.fsync
+        for failure in ("write", "file-fsync", "replace"):
+            with self.subTest(failure=failure):
+                self.write_user(original)
+                snapshot = self.user_snapshot()
+                snapshot.document.settings["vaapi.trace"] = True
+                entries = set(self.user_dir.iterdir())
+                calls = [0]
+                def partial_write_then_fail(fd, data):
+                    calls[0] += 1
+                    if calls[0] == 1:
+                        return real_write(fd, data[:3])
+                    raise OSError(errno.EIO, "injected write failure")
+                def fail_file_fsync(fd):
+                    if stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise OSError(errno.EIO, "injected file fsync failure")
+                    return real_fsync(fd)
+                target = {"write": "write", "file-fsync": "fsync", "replace": "replace"}[failure]
+                effect = {"write": partial_write_then_fail, "file-fsync": fail_file_fsync,
+                          "replace": OSError(errno.EIO, "injected replace failure")}[failure]
+                with mock.patch.object(CONFIG.os, target, side_effect=effect):
+                    with self.assertRaises(CONFIG.SchemaError):
+                        self.save_document(snapshot.document, snapshot)
+                self.assertEqual(self.user_file.read_bytes(), original.encode("utf-8"))
+                self.assertEqual(set(self.user_dir.iterdir()), entries)
+
+    def test_user_writer_lock_errors_fail_before_creating_a_candidate(self):
+        self.write_user("[crystalhd]\nschema = 1\n")
+        snapshot = self.user_snapshot()
+        snapshot.document.settings["vaapi.trace"] = True
+        original = self.user_file.read_bytes()
+        entries = set(self.user_dir.iterdir())
+        for error in (errno.ENOLCK, errno.EOPNOTSUPP):
+            with self.subTest(errno=error), mock.patch.object(
+                    CONFIG.fcntl, "flock", side_effect=OSError(error, "injected lock failure")):
+                with self.assertRaises(CONFIG.SchemaError):
+                    self.save_document(snapshot.document, snapshot)
+            self.assertEqual(self.user_file.read_bytes(), original)
+            self.assertEqual(set(self.user_dir.iterdir()), entries)
+
+    def test_user_writer_recognizes_replace_that_committed_before_raising(self):
+        self.write_user("[crystalhd]\nschema = 1\n[settings]\nvaapi.trace = false\n")
+        snapshot = self.user_snapshot()
+        snapshot.document.settings["vaapi.trace"] = True
+        real_replace = os.replace
+        calls = []
+        def commit_then_raise(*arguments, **keywords):
+            real_replace(*arguments, **keywords)
+            calls.append(True)
+            raise OSError(errno.EIO, "injected exception after successful replacement")
+        with mock.patch.object(CONFIG.os, "replace", side_effect=commit_then_raise):
+            result = self.save_document(snapshot.document, snapshot)
+        self.assertEqual(calls, [True])
+        self.assertIs(result.committed, True)
+        self.assertFalse(result.durable)
+        self.assertIs(CONFIG.parse_document(self.user_file.read_bytes()).settings["vaapi.trace"], True)
+        self.assertEqual(set(path.name for path in self.user_dir.iterdir()), {"config.ini"})
+
+    def test_user_writer_preserves_foreign_replacement_of_its_candidate_name(self):
+        self.write_user("[crystalhd]\nschema = 1\n[settings]\nvaapi.trace = false\n")
+        original = self.user_file.read_bytes()
+        snapshot = self.user_snapshot()
+        snapshot.document.settings["vaapi.trace"] = True
+        real_stat, real_open = os.stat, os.open
+        foreign_bytes = b"foreign candidate entry must survive cleanup\n"
+        foreign_names, retained_fds = [], []
+        def replace_candidate_before_stat(path, *arguments, **keywords):
+            if (isinstance(path, str) and path.startswith(".crystalhd-config-") and
+                    "dir_fd" in keywords and not foreign_names):
+                directory_fd = keywords["dir_fd"]
+                # Keep the old inode alive so this fixture cannot reuse its
+                # number for the distinct foreign entry created immediately.
+                retained_fds.append(real_open(path, os.O_RDONLY | os.O_CLOEXEC,
+                                               dir_fd=directory_fd))
+                os.unlink(path, dir_fd=directory_fd)
+                foreign_fd = real_open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                                       0o600, dir_fd=directory_fd)
+                with os.fdopen(foreign_fd, "wb") as stream:
+                    stream.write(foreign_bytes)
+                foreign_names.append(path)
+            return real_stat(path, *arguments, **keywords)
+        try:
+            with mock.patch.object(CONFIG.os, "stat", side_effect=replace_candidate_before_stat):
+                with self.assertRaises(CONFIG.SchemaError):
+                    self.save_document(snapshot.document, snapshot)
+            self.assertEqual(len(foreign_names), 1)
+            self.assertEqual(self.user_file.read_bytes(), original)
+            self.assertEqual((self.user_dir / foreign_names[0]).read_bytes(), foreign_bytes)
+            self.assertEqual(set(path.name for path in self.user_dir.iterdir()),
+                             {"config.ini", foreign_names[0]})
+        finally:
+            for fd in retained_fds:
+                os.close(fd)
+
+    def test_user_writer_postreplace_fsync_failure_reports_committed_without_rollback(self):
+        self.write_user("[crystalhd]\nschema = 1\n[settings]\nvaapi.trace = false\n")
+        snapshot = self.user_snapshot()
+        snapshot.document.settings["vaapi.trace"] = True
+        real_fsync = os.fsync
+        def fail_directory_fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(errno.EIO, "injected directory fsync failure")
+            return real_fsync(fd)
+        with mock.patch.object(CONFIG.os, "fsync", side_effect=fail_directory_fsync):
+            result = self.save_document(snapshot.document, snapshot)
+        self.assertTrue(result.committed)
+        self.assertFalse(result.durable)
+        self.assertIs(CONFIG.parse_document(self.user_file.read_bytes()).settings["vaapi.trace"], True)
+        self.assertEqual(set(path.name for path in self.user_dir.iterdir()), {"config.ini"})
+        self.assertEqual(stat.S_IMODE(self.user_file.stat().st_mode), 0o600)
+        with mock.patch.object(CONFIG.os, "fsync", side_effect=fail_directory_fsync):
+            with mock.patch("sys.stdout"), mock.patch("sys.stderr"):
+                status = CONFIG.main(
+                    ["save", "vaapi.trace=false"] + list(self.writer_options()),
+                    environment={"HOME": str(self.root)},
+                )
+        self.assertEqual(status, 4)
+        self.assertIs(CONFIG.parse_document(self.user_file.read_bytes()).settings["vaapi.trace"], False)
+
     def test_archive_copy_is_self_contained_and_python36_syntax_compatible(self):
         source = SCRIPT.read_text(encoding="utf-8")
         try:
@@ -838,7 +1501,7 @@ class ConfigCliTest(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom):
                 imports.add((node.module or "").split(".")[0])
         self.assertEqual(imports, {
-            "argparse", "errno", "json", "os", "re", "stat", "sys",
+            "argparse", "errno", "fcntl", "json", "os", "re", "secrets", "stat", "sys",
         })
 
         archive_dir = self.root / "archive-without-git"

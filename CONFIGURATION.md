@@ -4,7 +4,7 @@ This is the complete inventory of configuration surfaces read by the current
 production driver, library, VA-API backend, launchers, GStreamer element and
 `crystalhd-play`. Unset controls retain the existing behavior.
 
-The additive, read-only `crystalhd-config` utility validates and explains the
+The `crystalhd-config` utility validates and explains the
 strict schema defined in [CONFIGURATION-SCHEMA.md](CONFIGURATION-SCHEMA.md).
 Production components do not read those files, so installing or invoking the
 utility does not change their behavior. For example:
@@ -22,8 +22,10 @@ acknowledged Experimental entries as well as unavailable/virtual names which
 cannot be selected. Use `list-presets` before selecting one; exact values,
 requirements and acknowledgement syntax are in
 [CONFIGURATION-SCHEMA.md](CONFIGURATION-SCHEMA.md#reviewed-preset-manifest).
-The utility does not write configuration, launch an application, reload a
-module, source the legacy `chromium.conf`, or access CrystalHD hardware.
+Explicit [`save` and `reset` commands](CONFIGURATION-SCHEMA.md#save-and-reset-user-defaults)
+can store managed user defaults. Saved settings are not applied to production
+applications yet. The utility does not launch an application, reload a module,
+source the legacy `chromium.conf`, or access CrystalHD hardware.
 The JSON-only `bug-report` form removes user-selected profile identifiers,
 non-compiled paths, raw environment values and arbitrary password-store
 values. It describes configuration only; use separately reviewed
