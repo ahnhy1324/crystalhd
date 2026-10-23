@@ -9534,6 +9534,62 @@ static void ExactSyncLeavesLaterReadyOutputsQueued() {
   fixture.CheckPicture(2);
 }
 
+static void ExperimentalReadyRetainsRxBacklogSelection() {
+  for (bool exact_in_rx : {false, true}) {
+    TeardownFixture fixture(3);
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    auto &decode = *fixture.decoder;
+    decode.profile = VAProfileH264Main;
+    decode.live_h264 = decode.live_h264_gap_tolerant = true;
+    decode.live_h264_fast_path = decode.low_latency_h264 = true;
+    decode.experimental_ready_remap = decode.experimental_ready_latest = true;
+    decode.next_timestamp = 4 * kTimestampStep;
+    BindTeardownPicturesForVpp(fixture);
+    const auto requested = fixture.held[2];
+    const auto exact_picture = decode.decoded_frames.at(3 * kTimestampStep);
+    requested->experimental_write_lease = true;
+    requested->experimental_write_context = decode.id;
+    requested->experimental_write_generation = decode.generation;
+    requested->experimental_write_submission_ordinal = 3;
+    requested->experimental_submitted_at_ns = MonotonicNowNs();
+    Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                decode.experimental_ready.empty() &&
+                !decode.decoded_frames.at(kTimestampStep)->ready &&
+                !decode.decoded_frames.at(2 * kTimestampStep)->ready &&
+                !exact_picture->ready,
+            "READY backlog starts only in RX, with no CPU-materialized candidate to preselect");
+    fixture.io.outputs = {kTimestampStep, 2 * kTimestampStep};
+    if (exact_in_rx) fixture.io.outputs.push_back(3 * kTimestampStep);
+    Require(SyncSurface(&fixture.context, 3) == VA_STATUS_SUCCESS,
+            "explicit READY sync completes from the queued RX backlog");
+    Require(fixture.io.outputs.empty() &&
+                fixture.io.output_polls == (exact_in_rx ? 4U : 3U) &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "release") ==
+                    (exact_in_rx ? 3 : 2) && !fixture.io.invalid,
+            "explicit READY remapping preserves its original harvest boundary before selection");
+    if (exact_in_rx) {
+      Require(requested->ready && exact_picture->ready &&
+                  !requested->experimental_presentation &&
+                  requested->frame_timestamp == 3 * kTimestampStep &&
+                  requested->planes[0][0] == DecodeIoMock::Luma(3 * kTimestampStep) &&
+                  decode.replay.outstanding() == 0 &&
+                  decode.experimental_last_delivered_ordinal == 3,
+              "an exact requested picture in the same RX batch wins before any older remap");
+    } else {
+      Require(!requested->ready && !exact_picture->ready &&
+                  ExperimentalPresentationReadable(&fixture.driver, requested.get()) &&
+                  requested->presentation_payload_token == 2 * kTimestampStep &&
+                  requested->presentation_payload_decode_identity == 2 &&
+                  requested->presentation_payload_submission_ordinal == 2 &&
+                  requested->planes[0][0] == DecodeIoMock::Luma(2 * kTimestampStep) &&
+                  decode.replay.IsOutstanding(3 * kTimestampStep) &&
+                  decode.experimental_last_delivered_ordinal == 2,
+              "latest keeps the newer eligible RX payload instead of committing the first older output");
+    }
+  }
+}
+
 static void ExactReadySurfaceDoesNotWaitForBatchEos() {
   TeardownFixture fixture(2);
   Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
@@ -11581,8 +11637,9 @@ int main(int argc, char **argv) {
   try {
     if (argc == 2 && std::strcmp(argv[1], "--exact-sync-ready") == 0) {
       ExactSyncLeavesLaterReadyOutputsQueued();
+      ExperimentalReadyRetainsRxBacklogSelection();
       ExactReadySurfaceDoesNotWaitForBatchEos();
-      std::puts("VA-API exact sync: one output, queued later identities and explicit EOS drain PASS");
+      std::puts("VA-API sync: exact one-output completion, retained READY backlog selection and explicit EOS drain PASS");
       return 0;
     }
     if (argc == 2 && std::strcmp(argv[1], "--terminal-close-ready") == 0) {
@@ -11733,6 +11790,7 @@ int main(int argc, char **argv) {
     ReadyStatusProbeSkipsReadyHeadPeek();
     ZeroTimeoutNeverPumpsBusyDecodeSurface();
     ExactSyncLeavesLaterReadyOutputsQueued();
+    ExperimentalReadyRetainsRxBacklogSelection();
     ExactReadySurfaceDoesNotWaitForBatchEos();
     ReadyInventoryConditionalOpportunityReplay();
     QueryOnlyObservesAutonomousDecodeProgress();

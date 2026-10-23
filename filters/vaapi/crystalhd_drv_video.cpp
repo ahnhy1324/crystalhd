@@ -7165,10 +7165,11 @@ static VAStatus SyncDecodeSurface(
       return state;
     if (driver->stopping)
       return VA_STATUS_ERROR_OPERATION_FAILED;
-    // Recheck this exact requested picture after every released output. A
-    // READY backlog belongs to other callers once this picture is complete;
-    // harvesting it here would keep ready renderer admission behind copies.
-    VAStatus status = ReceiveAvailable(driver, decode.get(), 1);
+    // Exact mode rechecks its requested picture after every released output.
+    // Explicit remapping retains its old harvest boundary before selecting a
+    // payload: a smaller batch could select an older RX picture too early.
+    const unsigned int receive_budget = decode->experimental_ready_remap ? 64 : 1;
+    VAStatus status = ReceiveAvailable(driver, decode.get(), receive_budget);
     if (status == VA_STATUS_SUCCESS &&
         (surface->ready || presentation_ready()))
       break;
