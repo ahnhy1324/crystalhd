@@ -4985,10 +4985,17 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
   // picture must remain outstanding until the complementary field arrives.
   // Count it only after successful output release, never for unknown repeats
   // or a failed acquisition/pair. Do not publish picture readiness early.
+  const bool first_field_ready = !had_first_field && decode->h264_first_field.valid;
   if (result == VA_STATUS_SUCCESS &&
-      ((!had_first_field && decode->h264_first_field.valid) ||
-       decode->WithReplay([](auto &replay) { return replay.outstanding(); }) < outstanding))
+      (first_field_ready ||
+       decode->WithReplay([](auto &replay) { return replay.outstanding(); }) < outstanding)) {
     decode->RecordTransportProgress();
+    // EndPicture or another Sync may have harvested this field, without the
+    // receive worker's poll-return wakeup. Wake private Bob consumers too;
+    // the original public picture still requires its complementary field.
+    if (first_field_ready)
+      driver->condition.notify_all();
+  }
   return result;
 }
 
