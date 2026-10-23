@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""CrystalHD v1 configuration inspection and explicit user-overlay storage.
+"""CrystalHD v1 configuration inspection, storage and opt-in child launch.
 
-Saved configuration is not consumed by applications. This program has no
-launch, module-reload, or hardware operation. It uses only the Python standard
-library and remains compatible with Python 3.6.
+Only the explicit run command passes supported requests to a new child's
+environment. It does not confirm application state, access hardware or reload
+modules. It uses only the Python standard library, compatible with Python 3.6.
 """
 
 import argparse
@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import stat
 import sys
 
@@ -193,6 +194,17 @@ ENVIRONMENT_TARGETS = frozenset((
     "CRYSTALHD_PLAYER_PYTHON",
 ))
 
+LAUNCH_ENVIRONMENT = {
+    "libcrystalhd.rx_pool_count": "CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT",
+    "vaapi.h264.mode": "CRYSTALHD_VAAPI_LIVE_H264",
+    "vaapi.h264.low_latency": "CRYSTALHD_VAAPI_LOW_LATENCY_H264",
+    "vaapi.h264.ready_remap": "CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP",
+    "vaapi.i915_wc": "CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC",
+    "vaapi.debug": "CRYSTALHD_VAAPI_DEBUG",
+    "vaapi.trace": "CRYSTALHD_VAAPI_TRACE",
+    "player.python": "CRYSTALHD_PLAYER_PYTHON",
+}
+
 PATH_KEYS = frozenset((
     "chromium.executable",
     "chromium.drm_device",
@@ -209,7 +221,7 @@ class Document(object):
 
 
 class UserDocumentSnapshot(object):
-    """An explicit edit session; stat identities are not content hashes."""
+    """An edit session with a document and its original file snapshot."""
 
     __slots__ = ("document", "_path", "_directory_identity", "_file_identity",
                  "_original_bytes")
@@ -232,6 +244,12 @@ class SaveResult(object):
     def __init__(self, durable, committed=True):
         self.committed = committed
         self.durable = durable
+
+
+class LaunchPlan(object):
+    def __init__(self, environment, requested_keys):
+        self.environment = environment
+        self.requested_keys = tuple(sorted(requested_keys))
 
 
 class InvalidNativeValue(object):
@@ -892,13 +910,118 @@ def validate_managed(values):
 def encode_existing_target(key, value):
     if key == "vaapi.h264.mode":
         return {"bounded": ABSENT, "strict": "0", "live": "1"}[value]
-    if key == "vaapi.debug":
+    if key in ("vaapi.h264.low_latency", "vaapi.h264.ready_remap", "vaapi.i915_wc",
+               "vaapi.debug", "vaapi.trace"):
         return "1" if value else ABSENT
+    if key == "libcrystalhd.rx_pool_count":
+        return str(value)
+    if key == "player.python":
+        return value
     if key == "chromium.password_store":
         return value
     if key == "gstreamer.crystalhddec.scale_width":
         return value
     raise KeyError(key)
+
+
+def _native_ready_eligible(environment):
+    values = dict(NATIVE)
+    origins = dict((key, "compiled") for key in RULES)
+    adapt_raw_environment(values, origins, dict(
+        (name, environment[name]) for name in ENVIRONMENT_TARGETS if name in environment
+    ))
+    return native_effect(values)[0]["vaapi.h264.ready_remap"] is True
+
+
+def prepare_launch(system, user, catalog, environment, explicit_preset=None,
+                   explicit_profile=None, overrides=None, acknowledgements=()):
+    """Build requests for a new child; never infer active application state."""
+    if os.getuid() != os.geteuid() or os.getgid() != os.getegid():
+        raise SchemaError("managed launch is disabled when process IDs differ")
+    if overrides is None:
+        overrides = {}
+    if type(overrides) is not dict:
+        raise SchemaError("invalid canonical launch overrides")
+    preset = _selected_preset(catalog, system, user, explicit_preset)
+    resolution = resolve(
+        system, user, catalog.selectable, explicit_preset=preset,
+        explicit_profile=explicit_profile, raw_environment=dict(
+            (name, environment[name]) for name in ENVIRONMENT_TARGETS if name in environment
+        ), application=overrides,
+    )
+    child_environment = dict(environment)
+    requested_keys, required = [], set()
+    for key, origin in resolution.origins.items():
+        if origin == "compiled" or origin.startswith("environment:"):
+            continue
+        if key not in LAUNCH_ENVIRONMENT:
+            raise SchemaError("run has no supported environment adapter for {0}".format(key))
+        value = resolution.requested[key]
+        if key in ("vaapi.h264.ready_remap", "vaapi.i915_wc") and value is True:
+            raise SchemaError("run does not support activation of {0}".format(key))
+        requested_keys.append(key)
+        encoded = (ABSENT if origin.endswith(":unset")
+                   else encode_existing_target(key, value))
+        variable = LAUNCH_ENVIRONMENT[key]
+        if encoded is ABSENT:
+            child_environment.pop(variable, None)
+        else:
+            child_environment[variable] = encoded
+        if key == "libcrystalhd.rx_pool_count" and encoded == "8":
+            required.add("low-memory-8-buffer")
+        if key in ("vaapi.h264.mode", "vaapi.h264.low_latency") and encoded == "1":
+            required.add("bcm70015-live-h264-drain")
+    if (not _native_ready_eligible(environment) and
+            _native_ready_eligible(child_environment)):
+        raise SchemaError("managed launch would enable unsupported READY remapping")
+    _validated_preset(catalog, system, user, preset, acknowledgements,
+                      additional_required=required)
+    return LaunchPlan(child_environment, requested_keys)
+
+
+def _launch_diagnostic(message):
+    """Best-effort stderr only; real descriptors bypass Python buffering."""
+    stream = sys.stderr
+    if stream is None:
+        return
+    text = "crystalhd-config: " + message + "\n"
+    try:
+        try:
+            descriptor = stream.fileno()
+        except (AttributeError, OSError, ValueError):
+            stream.write(text)
+            stream.flush()
+        else:
+            os.write(descriptor, text.encode("utf-8"))
+    except Exception:
+        pass
+
+
+def execute_launch(plan, child_argv):
+    """Exec a literal argv; on failure restore Python's ignored signals."""
+    changed = {}
+    failure = None
+    try:
+        _launch_diagnostic("REQUESTED FOR THIS CHILD: {0}; "
+                           "active state unconfirmed; existing processes unchanged".format(
+                  ", ".join(plan.requested_keys) or "inherited environment unchanged"
+                           ))
+        for name in ("SIGPIPE", "SIGXFZ", "SIGXFSZ"):
+            number = getattr(signal, name, None)
+            if number is not None and signal.getsignal(number) == signal.SIG_IGN:
+                changed[number] = signal.SIG_IGN
+                signal.signal(number, signal.SIG_DFL)
+        os.execvpe(child_argv[0], child_argv, plan.environment)
+    except (OSError, ValueError) as error:
+        missing = isinstance(error, OSError) and error.errno == errno.ENOENT
+        failure = 127 if missing else 126
+    finally:
+        for number, disposition in changed.items():
+            signal.signal(number, disposition)
+    if failure is not None:
+        _launch_diagnostic("command not found" if failure == 127
+                           else "command could not be executed")
+    return failure
 
 
 class FileFacts(object):
@@ -1593,7 +1716,7 @@ def print_preset_catalog(catalog, output_format):
             ))
 
 
-def add_common_options(parser):
+def add_common_options(parser, observe_environment=True):
     system = parser.add_mutually_exclusive_group()
     system.add_argument(
         "--system-config", metavar="FILE",
@@ -1618,10 +1741,11 @@ def add_common_options(parser):
     parser.add_argument(
         "--profile", metavar="NAME", help="select a profile explicitly",
     )
-    parser.add_argument(
-        "--ignore-environment", action="store_true",
-        help="ignore setting-specific process environment variables",
-    )
+    if observe_environment:
+        parser.add_argument(
+            "--ignore-environment", action="store_true",
+            help="ignore setting-specific process environment variables",
+        )
     parser.add_argument(
         "--acknowledge-risk", action="append", default=[], metavar="TOKEN",
         help="acknowledge one selected experimental-preset risk",
@@ -1643,7 +1767,7 @@ def add_write_options(parser):
 def make_argument_parser():
     parser = RedactedArgumentParser(
         prog="crystalhd-config",
-        description="inspect CrystalHD v1 configuration or explicitly save user defaults",
+        description="inspect/save CrystalHD defaults or explicitly launch with supported requests",
     )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.required = True
@@ -1652,6 +1776,14 @@ def make_argument_parser():
         "list-presets", help="list reviewed preset manifest entries"
     )
     listing.add_argument("--format", choices=("text", "json"), default="text")
+
+    run = subparsers.add_parser(
+        "run", help="request supported settings for a new child; does not persist",
+        usage="%(prog)s [options] -- COMMAND [ARG ...]",
+    )
+    add_common_options(run, observe_environment=False)
+    run.add_argument("--override", action="append", default=[], metavar="KEY=VALUE",
+                     help="override only this key for the child using strict value syntax")
 
     save = subparsers.add_parser("save", help="save explicit user defaults; does not apply them")
     add_write_options(save)
@@ -1694,12 +1826,13 @@ def _check_acknowledgements(catalog, acknowledgements):
         raise CommandLineSelectionError("unknown risk acknowledgement")
 
 
-def _validated_preset(catalog, system, user, selected_preset, acknowledgements):
-    _check_acknowledgements(catalog, acknowledgements)
+def _selected_preset(catalog, system, user, selected_preset):
     if selected_preset is None:
         selected_preset = user.metadata.get(
             "preset", system.metadata.get("preset", "default")
         )
+    if type(selected_preset) is not str or PROFILE_NAME.fullmatch(selected_preset) is None:
+        raise SchemaError("invalid selected preset")
     entry = catalog.by_name.get(selected_preset)
     if entry is None:
         raise SchemaError("unknown selected preset")
@@ -1709,22 +1842,27 @@ def _validated_preset(catalog, system, user, selected_preset, acknowledgements):
         ))
     if entry.status == "VIRTUAL":
         raise SchemaError("virtual custom preset cannot be selected")
-    required = set(entry.required_acknowledgements)
+    return selected_preset
+
+
+def _validated_preset(catalog, system, user, selected_preset, acknowledgements,
+                      additional_required=()):
+    _check_acknowledgements(catalog, acknowledgements)
+    selected_preset = _selected_preset(catalog, system, user, selected_preset)
+    required = (set(catalog.by_name[selected_preset].required_acknowledgements) |
+                set(additional_required))
     supplied = set(acknowledgements)
     if required - supplied:
-        raise SchemaError("selected preset requires --acknowledge-risk {0}".format(
-            sorted(required - supplied)[0]
+        raise SchemaError("{0} requires --acknowledge-risk {1}".format(
+            "managed launch" if additional_required else "selected preset",
+            sorted(required - supplied)[0],
         ))
     if supplied - required:
         raise SchemaError("risk acknowledgement does not apply to selected preset")
     return selected_preset
 
 
-def resolve_arguments(arguments, environment):
-    catalog = load_preset_catalog()
-    acknowledgements = arguments.acknowledge_risk
-    _check_acknowledgements(catalog, acknowledgements)
-
+def _argument_documents(arguments, environment):
     if arguments.no_system_config:
         system_path = None
     else:
@@ -1740,6 +1878,14 @@ def resolve_arguments(arguments, environment):
 
     system = load_document(system_path, "system configuration", system=True)
     user = load_document(user_path, "user configuration", system=False)
+    return system, user
+
+
+def resolve_arguments(arguments, environment):
+    catalog = load_preset_catalog()
+    acknowledgements = arguments.acknowledge_risk
+    _check_acknowledgements(catalog, acknowledgements)
+    system, user = _argument_documents(arguments, environment)
     selected_preset = _validated_preset(
         catalog, system, user, arguments.preset, acknowledgements
     )
@@ -1759,13 +1905,10 @@ def resolve_arguments(arguments, environment):
     )
 
 
-def _patch_user_document(document, arguments):
-    if not (arguments.assignments or arguments.remove or
-            arguments.preset is not None or arguments.profile is not None):
-        raise CommandLineSelectionError("save requires an explicit change")
+def _parse_setting_assignments(assignments):
     keys = set()
     lines = ["[crystalhd]", "schema = 1", "[settings]"]
-    for assignment in arguments.assignments:
+    for assignment in assignments:
         if "=" not in assignment or len(assignment.splitlines()) != 1:
             raise CommandLineSelectionError("invalid assignment")
         key, value = assignment.split("=", 1)
@@ -1774,6 +1917,15 @@ def _patch_user_document(document, arguments):
             raise CommandLineSelectionError("unknown or duplicated assignment")
         keys.add(key)
         lines.append("{0} = {1}".format(key, value.strip()))
+    return parse_document(("\n".join(lines) + "\n").encode("utf-8")).settings
+
+
+def _patch_user_document(document, arguments):
+    if not (arguments.assignments or arguments.remove or
+            arguments.preset is not None or arguments.profile is not None):
+        raise CommandLineSelectionError("save requires an explicit change")
+    patch = _parse_setting_assignments(arguments.assignments)
+    keys = set(patch)
     removals = arguments.remove
     if (len(removals) != len(set(removals)) or set(removals) & keys or
             any(key not in RULES and key not in ("preset", "profile") for key in removals)):
@@ -1781,9 +1933,8 @@ def _patch_user_document(document, arguments):
     for selector in ("preset", "profile"):
         if getattr(arguments, selector) is not None and selector in removals:
             raise CommandLineSelectionError("selector is both supplied and removed")
-    patch = parse_document(("\n".join(lines) + "\n").encode("utf-8"))
     candidate = parse_document(serialize_document(document))
-    candidate.settings.update(patch.settings)
+    candidate.settings.update(patch)
     for key in removals:
         if key in ("preset", "profile"):
             candidate.metadata.pop(key, None)
@@ -1812,7 +1963,15 @@ def write_arguments(arguments, environment):
 
 def main(argv=None, environment=None):
     parser = make_argument_parser()
-    arguments = parser.parse_args(argv)
+    raw_arguments = list(sys.argv[1:] if argv is None else argv)
+    child_argv = None
+    if raw_arguments and raw_arguments[0] == "run" and "--" in raw_arguments:
+        separator = raw_arguments.index("--")
+        child_argv = raw_arguments[separator + 1:]
+        raw_arguments = raw_arguments[:separator]
+    arguments = parser.parse_args(raw_arguments)
+    if arguments.command == "run" and (not child_argv or not child_argv[0]):
+        parser.error("run requires -- COMMAND")
     if arguments.command == "explain" and arguments.key not in RULES:
         parser.error("unknown canonical key")
 
@@ -1826,7 +1985,15 @@ def main(argv=None, environment=None):
         print_preset_catalog(catalog, arguments.format)
         return 0
     try:
-        if arguments.command in ("save", "reset"):
+        if arguments.command == "run":
+            system, user = _argument_documents(arguments, process_environment)
+            launch = prepare_launch(
+                system, user, load_preset_catalog(), process_environment,
+                explicit_preset=arguments.preset, explicit_profile=arguments.profile,
+                overrides=_parse_setting_assignments(arguments.override),
+                acknowledgements=arguments.acknowledge_risk,
+            )
+        elif arguments.command in ("save", "reset"):
             saved = write_arguments(arguments, process_environment)
         else:
             resolution = resolve_arguments(arguments, process_environment)
@@ -1835,6 +2002,9 @@ def main(argv=None, environment=None):
     except SchemaError as error:
         print("crystalhd-config: {0}".format(error), file=sys.stderr)
         return 3
+
+    if arguments.command == "run":
+        return execute_launch(launch, child_argv)
 
     if arguments.command in ("save", "reset"):
         if not saved.durable:

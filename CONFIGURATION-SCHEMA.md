@@ -1,9 +1,10 @@
 # CrystalHD configuration schema v1
 
 This document specifies the configuration contract implemented by the
-`crystalhd-config` inspector and explicit user-config storage commands. The
-driver, libraries, plugins and launchers do not read these files; saving or
-inspecting settings does not apply them to applications. The current production
+`crystalhd-config` inspector, user-config storage and explicit command launcher.
+The production backends do not read these files directly; saving or inspecting
+settings does not apply them to applications. `run` translates supported requests
+to existing environment controls for a new command. The current production
 controls and their exact behavior remain documented in [CONFIGURATION.md](CONFIGURATION.md).
 
 The v1 goals are deliberately narrow:
@@ -53,9 +54,9 @@ acknowledgement, or cross-setting transaction. Write commands additionally use
 cannot be determined; this is not a claim that the previous bytes survived.
 
 Inspection commands are diagnostic only: selecting a preset changes the reported
-target transaction, not a running application. The utility cannot apply settings,
-launch another program, reload a module, source `chromium.conf`, or access
-hardware. Inspection's last observable layer is the current process environment. A
+target transaction, not a running application. Inspection does not launch a
+program or access hardware. The utility never reloads a module or sources
+`chromium.conf`. Inspection's last observable layer is the current process environment. A
 future application's CLI options and GObject properties can be higher-priority
 inputs, but this read-only process cannot observe them and reports that limit.
 Reported states describe only configuration and established native-adapter
@@ -76,8 +77,8 @@ identity matters. Inspect any report before publishing it.
 
 These commands write only the managed user file. **Saved does not mean active:**
 stock Kodi and the other production components still use their existing controls.
-Runtime integration is a separate stage of
-[#400](https://github.com/ahnhy1324/crystalhd/issues/400#issuecomment-6357124035).
+Use the explicit `run` adapter below to request supported settings for a new
+command; ordinary unwrapped launches do not consume the managed file.
 
 ```sh
 crystalhd-config save vaapi.debug=false
@@ -117,6 +118,46 @@ replacement occurred without confirmed durability, or an I/O failure prevented
 determining its outcome; inspect the saved state before retrying.
 Canonical serialization preserves managed
 values and sections, while replacing comments and formatting.
+
+## Run an explicit command
+
+```sh
+crystalhd-config run -- kodi
+crystalhd-config run --override vaapi.debug=false -- kodi
+```
+
+The literal `--` separates manager options from the command and its arguments.
+`run` prepares a child environment and executes the command without a shell.
+It reports **REQUESTED FOR THIS CHILD**, not active or confirmed. An application
+which forwards to an already-running instance cannot transfer these settings to
+that instance. Nothing is saved, and no background manager is required.
+The command's exit status and signals are preserved. Failure to find the command
+returns `127`; other execution failures return `126`. The status notice uses
+stderr when available and leaves command stdout untouched.
+
+Explicit process environment values retain their native encoding and precedence;
+only `--override KEY=VALUE` supersedes the corresponding key for this invocation.
+This includes empty and invalid native values: the adapter does not replace them
+with the inspector's effective fallback. With no managed requests or overrides,
+the child inherits the environment unchanged. Application CLI/GObject inputs
+retain their own higher priority.
+
+The first adapter supports RX pool count, H.264 mode and explicit prefeed,
+VA debug/trace, and `player.python`. READY remap and i915 WC may be requested
+off or unset, but not activated. A new managed RX8 request requires the transient
+`low-memory-8-buffer` acknowledgement; a new managed LIVE/prefeed request requires
+`bcm70015-live-h264-drain`. Supply the exact union of these and any selected
+preset's required `--acknowledge-risk TOKEN` values. Tokens are never inferred
+from the saved file or inherited environment. Canonical prefeed `false` removes
+its variable; inherited raw `0` remains an explicit native auto-prefeed opt-out.
+
+Managed READY policy/delay changes, Chromium settings, and the three player/GStreamer
+CLI/GObject-only keys have no adapter in this command and are rejected before
+execution, even for `unset` or a native-valued request. A schema-selectable preset
+such as Quality can therefore be unavailable to this adapter. It also rejects
+changes which would indirectly activate inherited READY remapping. Use
+`show-effective` to inspect the configured layers; an unsupported request is not
+silently treated as applied.
 
 ## Files and strict INI subset
 

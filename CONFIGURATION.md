@@ -6,8 +6,8 @@ production driver, library, VA-API backend, launchers, GStreamer element and
 
 The `crystalhd-config` utility validates and explains the
 strict schema defined in [CONFIGURATION-SCHEMA.md](CONFIGURATION-SCHEMA.md).
-Production components do not read those files, so installing or invoking the
-utility does not change their behavior. For example:
+Production backends do not read those files directly. Inspection and saving do
+not change a running application. For example:
 
 ```sh
 crystalhd-config validate
@@ -24,8 +24,11 @@ requirements and acknowledgement syntax are in
 [CONFIGURATION-SCHEMA.md](CONFIGURATION-SCHEMA.md#reviewed-preset-manifest).
 Explicit [`save` and `reset` commands](CONFIGURATION-SCHEMA.md#save-and-reset-user-defaults)
 can store managed user defaults. Saved settings are not applied to production
-applications yet. The utility does not launch an application, reload a module,
-source the legacy `chromium.conf`, or access CrystalHD hardware.
+applications automatically. An explicit
+[`run` command](CONFIGURATION-SCHEMA.md#run-an-explicit-command) prepares supported
+environment settings for a new child command. It does not configure an already
+running application. The manager never reloads a module, sources the legacy
+`chromium.conf`, or probes CrystalHD hardware.
 The JSON-only `bug-report` form removes user-selected profile identifiers,
 non-compiled paths, raw environment values and arbitrary password-store
 values. It describes configuration only; use separately reviewed

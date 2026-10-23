@@ -8,10 +8,12 @@ import ast
 import errno
 import fcntl
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -79,6 +81,21 @@ class ConfigCliTest(unittest.TestCase):
         return CONFIG.save_user_document(
             str(self.user_file), document, snapshot, system_path=None,
         )
+
+    def launch_plan(self, user=None, environment=None, overrides=None,
+                    preset=None, profile=None, acknowledgements=(), system=None):
+        return CONFIG.prepare_launch(
+            CONFIG.empty_document() if system is None else system,
+            CONFIG.empty_document() if user is None else user,
+            CONFIG.load_preset_catalog(), {} if environment is None else environment,
+            explicit_preset=preset, explicit_profile=profile, overrides=overrides,
+            acknowledgements=acknowledgements,
+        )
+
+    def environment_child(self):
+        return [sys.executable, "-c",
+                "import json,os; print(json.dumps(sorted((k.decode('latin1'),"
+                "v.decode('latin1')) for k,v in os.environb.items())))"]
 
     def test_no_file_defaults_are_complete_and_deterministic(self):
         arguments = ("show-effective",) + self.common() + (
@@ -1488,6 +1505,336 @@ class ConfigCliTest(unittest.TestCase):
         self.assertEqual(status, 4)
         self.assertIs(CONFIG.parse_document(self.user_file.read_bytes()).settings["vaapi.trace"], False)
 
+    def test_run_no_config_preserves_complete_native_environment_in_a_real_child(self):
+        environment = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": str(self.root / "unused-home"), "LC_ALL": "C",
+            "UNKNOWN_PRIVATE_VALUE": "non-UTF8-\udc80-and-empty-next",
+            "UNKNOWN_EMPTY": "", "CRYSTALHD_VAAPI_DEBUG": "0",
+            "CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT": "not-a-number",
+            "CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE": "1",
+        }
+        command = self.environment_child()
+        direct = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, env=environment, check=False)
+        managed = subprocess.run(
+            [sys.executable, "-B", str(SCRIPT), "run", *self.common(), "--", *command],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=environment, check=False,
+        )
+        self.assertEqual((direct.returncode, managed.returncode), (0, 0))
+        self.assertEqual(managed.stdout, direct.stdout)
+        plan = self.launch_plan(environment=environment)
+        self.assertEqual(plan.environment, environment)
+        self.assertIsNot(plan.environment, environment)
+        self.assertEqual(plan.requested_keys, ())
+        self.assertFalse((self.root / "unused-home").exists())
+
+    def test_run_only_emits_winning_managed_keys_and_preserves_raw_native_values(self):
+        system = CONFIG.empty_document()
+        system.settings = {"vaapi.debug": True, "vaapi.h264.mode": "live"}
+        user = CONFIG.empty_document()
+        user.settings = {"vaapi.debug": False, "libcrystalhd.rx_pool_count": 8}
+        user.profiles = {"desk": {"vaapi.trace": True, "vaapi.h264.low_latency": False}}
+        inherited = {
+            "CRYSTALHD_VAAPI_LIVE_H264": "native-strict-value",
+            "CRYSTALHD_VAAPI_TRACE": "0",
+            "CRYSTALHD_VAAPI_LOW_LATENCY_H264": "0",
+            "CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT": "invalid-native-fallback",
+            "CRYSTALHD_PLAYER_PYTHON": "", "UNRELATED": "unchanged",
+        }
+        plan = self.launch_plan(user, inherited, {"vaapi.debug": True}, profile="desk", system=system)
+        expected = dict(inherited, CRYSTALHD_VAAPI_DEBUG="1")
+        self.assertEqual(plan.environment, expected)
+        self.assertEqual(inherited.get("CRYSTALHD_VAAPI_DEBUG"), None)
+        self.assertEqual(plan.requested_keys, ("vaapi.debug",))
+
+    def test_run_canonical_false_and_unset_remove_only_the_explicit_override_variable(self):
+        inherited = {"CRYSTALHD_VAAPI_LOW_LATENCY_H264": "0",
+                     "CRYSTALHD_VAAPI_DEBUG": "0", "UNRELATED": "keep"}
+        user = CONFIG.empty_document()
+        user.settings = {"vaapi.h264.low_latency": False, "vaapi.debug": False}
+        self.assertEqual(self.launch_plan(user, inherited).environment, inherited)
+        for value in (False, CONFIG.UNSET):
+            with self.subTest(value=value):
+                plan = self.launch_plan(user, inherited, {"vaapi.h264.low_latency": value})
+                self.assertNotIn("CRYSTALHD_VAAPI_LOW_LATENCY_H264", plan.environment)
+                self.assertEqual(plan.environment["CRYSTALHD_VAAPI_DEBUG"], "0")
+                self.assertEqual(plan.environment["UNRELATED"], "keep")
+        off = self.launch_plan(user, inherited, {"vaapi.debug": False})
+        self.assertNotIn("CRYSTALHD_VAAPI_DEBUG", off.environment)
+        self.assertEqual(off.environment["CRYSTALHD_VAAPI_LOW_LATENCY_H264"], "0")
+
+    def test_run_supported_modes_native_resets_and_safe_disabling_requests(self):
+        inherited = {"CRYSTALHD_VAAPI_LIVE_H264": "1", "CRYSTALHD_VAAPI_LOW_LATENCY_H264": "1",
+                     "CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP": "1",
+                     "CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC": "1",
+                     "CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT": "8",
+                     "CRYSTALHD_PLAYER_PYTHON": "/private/old-python"}
+        plan = self.launch_plan(environment=inherited, overrides={
+            "vaapi.h264.mode": "bounded", "vaapi.h264.ready_remap": False,
+            "vaapi.i915_wc": CONFIG.UNSET, "libcrystalhd.rx_pool_count": CONFIG.UNSET,
+            "player.python": "/private/new-python",
+        })
+        self.assertEqual(plan.environment, {
+            "CRYSTALHD_VAAPI_LOW_LATENCY_H264": "1", "CRYSTALHD_PLAYER_PYTHON": "/private/new-python",
+        })
+        strict = self.launch_plan(overrides={"vaapi.h264.mode": "strict", "libcrystalhd.rx_pool_count": 16,
+                                             "vaapi.trace": True})
+        self.assertEqual(strict.environment, {"CRYSTALHD_VAAPI_LIVE_H264": "0",
+                                               "CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT": "16",
+                                               "CRYSTALHD_VAAPI_TRACE": "1"})
+
+    def test_run_requires_exact_union_of_existing_preset_and_emitted_risk_tokens(self):
+        with self.assertRaises(CONFIG.SchemaError):
+            self.launch_plan(preset=[])
+        user = CONFIG.empty_document()
+        user.settings = {"libcrystalhd.rx_pool_count": 8, "vaapi.h264.mode": "live",
+                         "vaapi.h264.low_latency": True}
+        low, streaming = "low-memory-8-buffer", "bcm70015-live-h264-drain"
+        for acknowledgements in ((), (low,), (streaming,)):
+            with self.subTest(acknowledgements=acknowledgements), self.assertRaises(CONFIG.SchemaError):
+                self.launch_plan(user, acknowledgements=acknowledgements)
+        plan = self.launch_plan(user, acknowledgements=(low, streaming))
+        self.assertEqual(plan.environment, {"CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT": "8",
+                                            "CRYSTALHD_VAAPI_LIVE_H264": "1",
+                                            "CRYSTALHD_VAAPI_LOW_LATENCY_H264": "1"})
+        for tokens in ((low, low, streaming), (low, streaming, "invented-risk")):
+            with self.subTest(tokens=tokens), self.assertRaises(CONFIG.CommandLineSelectionError):
+                self.launch_plan(user, acknowledgements=tokens)
+        with self.assertRaises(CONFIG.SchemaError):
+            self.launch_plan(preset="streaming", environment={
+                "CRYSTALHD_VAAPI_LIVE_H264": "0", "CRYSTALHD_VAAPI_LOW_LATENCY_H264": "0"})
+        # The existing inspection/save policy does not accept a run-only union
+        # for a Default selection which has no preset acknowledgement.
+        inspection = self.run_cli("validate", *self.common(), "--acknowledge-risk", low)
+        self.assertEqual(inspection.returncode, 3)
+        self.assertIn("does not apply", inspection.stderr)
+        storage = self.run_cli("save", "vaapi.debug=true", *self.writer_options(),
+                               "--acknowledge-risk", low)
+        self.assertEqual(storage.returncode, 3)
+        self.assertFalse(self.user_file.exists())
+
+    def test_run_blocks_indirect_ready_activation_but_preserves_unchanged_inherited_state(self):
+        inherited = {"CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP": "1",
+                     "CRYSTALHD_VAAPI_LIVE_H264": "0", "CRYSTALHD_VAAPI_LOW_LATENCY_H264": "0"}
+        token = ("bcm70015-live-h264-drain",)
+        with self.assertRaises(CONFIG.SchemaError):
+            self.launch_plan(environment=inherited, overrides={"vaapi.h264.mode": "live",
+                             "vaapi.h264.low_latency": True}, acknowledgements=token)
+        with self.assertRaises(CONFIG.SchemaError):
+            self.launch_plan(environment={"CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP": "1"},
+                             preset="streaming", acknowledgements=token)
+        self.assertEqual(self.launch_plan(environment=inherited).environment, inherited)
+        active = dict(inherited, CRYSTALHD_VAAPI_LIVE_H264="1", CRYSTALHD_VAAPI_LOW_LATENCY_H264="1")
+        plan = self.launch_plan(environment=active, overrides={"vaapi.debug": True})
+        self.assertEqual(plan.environment, dict(active, CRYSTALHD_VAAPI_DEBUG="1"))
+        invalid = dict(active, CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY="invalid-native-policy")
+        self.assertEqual(self.launch_plan(environment=invalid).environment, invalid)
+        with self.assertRaises(CONFIG.SchemaError):
+            self.launch_plan(environment=invalid, overrides={"vaapi.h264.ready_policy": CONFIG.UNSET})
+
+    def test_run_rejects_unsupported_selected_requests_but_not_inactive_profiles(self):
+        blocked = (
+            {"vaapi.h264.ready_remap": True, "vaapi.h264.mode": "live", "vaapi.h264.low_latency": True},
+            {"vaapi.i915_wc": True}, {"vaapi.h264.ready_policy": "previous"},
+            {"vaapi.h264.ready_policy": CONFIG.UNSET}, {"vaapi.h264.ready_delay_us": 0},
+            {"vaapi.h264.ready_delay_us": CONFIG.UNSET}, {"chromium.executable": "/private/browser"},
+            {"chromium.drm_device": "/dev/private-drm"}, {"chromium.password_store": ""},
+            {"chromium.profile_dir": "/private/profile"}, {"chromium.native_gl": True},
+            {"chromium.experimental_hw_decode": True, "chromium.disable_gpu_sandbox": True},
+            {"chromium.disable_gpu_sandbox": True}, {"chromium.h264_policy_ack": True},
+            {"gstreamer.crystalhddec.scale_width": 0}, {"player.decoder": "software"},
+            {"gstreamer.crystalhddec.scale_width": 1280, "player.software_output_size": "640x360"},
+        )
+        for settings in blocked:
+            user = CONFIG.empty_document()
+            user.settings.update(settings)
+            with self.subTest(keys=tuple(settings)), self.assertRaisesRegex(
+                    CONFIG.SchemaError, "does not support|no supported environment adapter"):
+                self.launch_plan(user)
+        with self.assertRaisesRegex(CONFIG.SchemaError, "does not support|no supported environment adapter"):
+            self.launch_plan(preset="quality")
+        user = CONFIG.empty_document()
+        user.settings["vaapi.debug"] = True
+        user.profiles["inactive"] = {"chromium.disable_gpu_sandbox": True,
+                                     "vaapi.h264.ready_policy": CONFIG.UNSET}
+        self.assertEqual(self.launch_plan(user).environment, {"CRYSTALHD_VAAPI_DEBUG": "1"})
+
+    def test_run_rejects_process_id_mismatch_before_preparing_environment(self):
+        with mock.patch.object(CONFIG.os, "geteuid", return_value=os.getuid() + 1):
+            with self.assertRaises(CONFIG.SchemaError):
+                self.launch_plan()
+        with mock.patch.object(CONFIG.os, "getegid", return_value=os.getgid() + 1):
+            with self.assertRaises(CONFIG.SchemaError):
+                self.launch_plan()
+
+    def test_run_cli_applies_only_explicit_override_and_never_persists_it(self):
+        self.write_user("[crystalhd]\nschema = 1\n[settings]\nvaapi.debug = true\nvaapi.trace = true\n")
+        original = self.user_file.read_bytes()
+        result = self.run_cli("run", *self.writer_options(), "--override", "vaapi.debug=false",
+                              "--", *self.environment_child(),
+                              environment={"CRYSTALHD_VAAPI_DEBUG": "0", "CRYSTALHD_VAAPI_TRACE": "0"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        child = dict((key.encode("latin1"), value.encode("latin1"))
+                     for key, value in json.loads(result.stdout))
+        self.assertNotIn(b"CRYSTALHD_VAAPI_DEBUG", child)
+        self.assertEqual(child[b"CRYSTALHD_VAAPI_TRACE"], b"0")
+        self.assertIn("REQUESTED", result.stderr)
+        self.assertNotIn("ACTIVE", result.stderr)
+        self.assertEqual(self.user_file.read_bytes(), original)
+        self.assertEqual(set(path.name for path in self.user_dir.iterdir()), {"config.ini"})
+
+    def test_run_cli_rejects_invalid_and_unsupported_requests_before_exec(self):
+        marker = self.root / "child-was-executed"
+        command = ["/bin/sh", "-c", 'printf executed > "$1"', "unused", str(marker)]
+        cases = (
+            ("--override", "vaapi.debug=true", "--override", "vaapi.debug=false"),
+            ("--override", "unknown.key=true"), ("--override", "vaapi.debug=0"),
+            ("--override", "vaapi.i915_wc=true"), ("--override", "vaapi.h264.ready_delay_us=0"),
+            ("--preset", "quality"), ("--ignore-environment",),
+            ("--override", "libcrystalhd.rx_pool_count=8"),
+        )
+        for options in cases:
+            with self.subTest(options=options):
+                result = self.run_cli("run", *self.common(), *options, "--", *command)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(marker.exists())
+                self.assertNotIn("Traceback", result.stderr)
+        for arguments in (("run", *self.common()), ("run", *self.common(), "--"),
+                          ("run", *self.common(), *command)):
+            with self.subTest(arguments=arguments):
+                result = self.run_cli(*arguments)
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse(marker.exists())
+
+    def test_run_cli_uses_the_existing_strict_safe_reader_before_exec(self):
+        marker = self.root / "unsafe-config-child"
+        command = ["/bin/sh", "-c", 'printf executed > "$1"', "unused", str(marker)]
+        self.write_user("not valid INI\n")
+        original = self.user_file.read_bytes()
+        malformed = self.run_cli("run", *self.writer_options(), "--", *command)
+        self.assertEqual(malformed.returncode, 3)
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.user_file.read_bytes(), original)
+        self.write_user("[crystalhd]\nschema = 1\n[settings]\nvaapi.debug = true\n")
+        alias = self.user_dir / "unsafe-link.ini"
+        alias.symlink_to(self.user_file)
+        unsafe = self.run_cli("run", "--no-system-config", "--user-config", str(alias),
+                              "--", *command)
+        self.assertEqual(unsafe.returncode, 3)
+        self.assertFalse(marker.exists())
+        self.assertNotIn("Traceback", unsafe.stderr)
+
+    def test_run_exec_preserves_native_child_pid_cwd_literal_arguments_and_exit_status(self):
+        literal = "$(touch this-must-not-be-executed); * --override"
+        command = [sys.executable, "-B", str(SCRIPT), "run", *self.common(), "--", "/bin/sh", "-c",
+                   'printf "%s\\n" "$$" "$PWD" "$1" "$2"; exit 17', "unused", literal, "--preset"]
+        process = subprocess.Popen(command, cwd=str(self.root), stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True,
+                                   env={"PATH": "/usr/bin:/bin", "HOME": str(self.root), "LC_ALL": "C"})
+        output, error = process.communicate(timeout=5)
+        self.assertEqual(process.returncode, 17, error)
+        self.assertEqual(output.splitlines(), [str(process.pid), str(self.root), literal, "--preset"])
+        self.assertFalse((self.root / "this-must-not-be-executed").exists())
+
+    def test_run_restores_ignored_sigpipe_for_a_non_python_child(self):
+        yes = shutil.which("yes")
+        self.assertIsNotNone(yes, "native yes executable is required for the signal regression")
+        original = signal.getsignal(signal.SIGPIPE)
+        try:
+            signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+            # Prove this actual native executable distinguishes inherited
+            # ignore from default, rather than resetting SIGPIPE itself.
+            ignored = subprocess.Popen([yes], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       restore_signals=False)
+            ignored.stdout.close()
+            ignored.stdout = None
+            ignored.communicate(timeout=5)
+            self.assertNotEqual(ignored.returncode, -signal.SIGPIPE)
+            process = subprocess.Popen(
+                [sys.executable, "-B", str(SCRIPT), "run", *self.common(), "--", yes],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, restore_signals=False,
+                env={"PATH": "/usr/bin:/bin", "HOME": str(self.root), "LC_ALL": "C"},
+            )
+            process.stdout.close()
+            process.stdout = None
+            _, error = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, -signal.SIGPIPE, error.decode(errors="replace"))
+        finally:
+            signal.signal(signal.SIGPIPE, original)
+
+    def test_run_diagnostic_failures_preserve_native_exec_and_missing_exec_status(self):
+        environment = {"PATH": "/usr/bin:/bin", "HOME": str(self.root), "LC_ALL": "C"}
+        commands = ((["/bin/echo", "child-ok"], 0, "child-ok\n"),
+                    ([str(self.root / "missing-child")], 127, ""))
+        for sink in ("closed", "full", "broken-pipe"):
+            for child, expected_status, expected_output in commands:
+                command = [sys.executable, "-B", str(SCRIPT), "run", *self.common(),
+                           "--override", "vaapi.debug=true", "--", *child]
+                with self.subTest(stderr=sink, child=child[0]):
+                    if sink == "closed":
+                        result = subprocess.run(
+                            ["/bin/sh", "-c", 'exec 2>&-; exec "$@"', "unused", *command],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            env=environment, timeout=5, check=False,
+                        )
+                        self.assertEqual(result.stderr, "")
+                    elif sink == "full":
+                        with open("/dev/full", "wb") as error_stream:
+                            result = subprocess.run(
+                                command, stdout=subprocess.PIPE, stderr=error_stream,
+                                text=True, env=environment, timeout=5, check=False,
+                            )
+                    else:
+                        read_fd, write_fd = os.pipe()
+                        os.close(read_fd)
+                        try:
+                            result = subprocess.run(
+                                command, stdout=subprocess.PIPE, stderr=write_fd,
+                                text=True, env=environment, timeout=5, check=False,
+                            )
+                        finally:
+                            os.close(write_fd)
+                    self.assertEqual(result.returncode, expected_status)
+                    self.assertEqual(result.stdout, expected_output)
+
+    def test_run_exec_failure_is_redacted_and_restores_signal_dispositions(self):
+        self.write_user("[crystalhd]\nschema = 1\n[settings]\nvaapi.debug = true\n")
+        signals = [getattr(signal, name) for name in ("SIGPIPE", "SIGXFZ", "SIGXFSZ")
+                   if hasattr(signal, name)]
+        original = dict((number, signal.getsignal(number)) for number in signals)
+        class Notice(io.StringIO):
+            flushed = False
+            def flush(self):
+                self.flushed = True
+                super().flush()
+        try:
+            for error_number, expected_status in ((errno.ENOENT, 127), (errno.EACCES, 126)):
+                for number in signals:
+                    signal.signal(number, signal.SIG_IGN)
+                output, notice = io.StringIO(), Notice()
+                observations = []
+                def fail_exec(executable, argv, environment):
+                    observations.append((executable, argv, dict(environment)))
+                    self.assertTrue(notice.flushed)
+                    self.assertIn("REQUESTED", notice.getvalue())
+                    self.assertTrue(all(signal.getsignal(number) == signal.SIG_DFL for number in signals))
+                    raise OSError(error_number, "/private/failure-detail")
+                with mock.patch.object(CONFIG.os, "execvpe", side_effect=fail_exec):
+                    with mock.patch("sys.stdout", output), mock.patch("sys.stderr", notice):
+                        status = CONFIG.main(["run", *self.writer_options(), "--", "/private/child-executable"],
+                                             environment={"PATH": "/usr/bin:/bin", "HOME": str(self.root)})
+                self.assertEqual(status, expected_status)
+                self.assertEqual(len(observations), 1)
+                self.assertEqual(output.getvalue(), "")
+                self.assertNotIn("/private/", notice.getvalue())
+                self.assertNotIn("Traceback", notice.getvalue())
+                self.assertTrue(all(signal.getsignal(number) == signal.SIG_IGN for number in signals))
+        finally:
+            for number, handler in original.items():
+                signal.signal(number, handler)
+
     def test_archive_copy_is_self_contained_and_python36_syntax_compatible(self):
         source = SCRIPT.read_text(encoding="utf-8")
         try:
@@ -1501,7 +1848,7 @@ class ConfigCliTest(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom):
                 imports.add((node.module or "").split(".")[0])
         self.assertEqual(imports, {
-            "argparse", "errno", "fcntl", "json", "os", "re", "secrets", "stat", "sys",
+            "argparse", "errno", "fcntl", "json", "os", "re", "secrets", "signal", "stat", "sys",
         })
 
         archive_dir = self.root / "archive-without-git"
