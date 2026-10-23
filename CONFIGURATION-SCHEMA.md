@@ -1,10 +1,10 @@
 # CrystalHD configuration schema v1
 
 This document specifies the configuration contract implemented by the
-read-only `crystalhd-config` parser and inspector.  The driver, libraries,
-plugins and launchers do not read these files; using the tool does not apply
-settings or change their behavior.  The current production controls and their
-exact behavior remain documented in [CONFIGURATION.md](CONFIGURATION.md).
+`crystalhd-config` inspector and explicit user-config storage commands. The
+driver, libraries, plugins and launchers do not read these files; saving or
+inspecting settings does not apply them to applications. The current production
+controls and their exact behavior remain documented in [CONFIGURATION.md](CONFIGURATION.md).
 
 The v1 goals are deliberately narrow:
 
@@ -21,9 +21,9 @@ The installed implementation is `scripts/crystalhd-config.py`.  The schema
 and CLI tests import or execute that production implementation; test code is
 never installed as the parser.
 
-## Read-only CLI
+## Inspect configuration
 
-The five commands are:
+The five inspection commands are:
 
 ```sh
 crystalhd-config validate
@@ -48,12 +48,14 @@ JSON formats are available for `show-effective`, `explain` and `list-presets`.
 Exit status `0` means success, `2` is command-line syntax, an unknown canonical
 key or an unknown/duplicated acknowledgement token, and `3` is an unsafe,
 unreadable or invalid configuration, selector, missing/inapplicable required
-acknowledgement, or cross-setting transaction.
+acknowledgement, or cross-setting transaction. Write commands additionally use
+`4` when replacement committed without confirmed durability, or its outcome
+cannot be determined; this is not a claim that the previous bytes survived.
 
-The tool is diagnostic only: selecting a preset changes the reported target
-transaction, not a running application. It cannot write or apply settings,
+Inspection commands are diagnostic only: selecting a preset changes the reported
+target transaction, not a running application. The utility cannot apply settings,
 launch another program, reload a module, source `chromium.conf`, or access
-hardware. Its last observable layer is the current process environment. A
+hardware. Inspection's last observable layer is the current process environment. A
 future application's CLI options and GObject properties can be higher-priority
 inputs, but this read-only process cannot observe them and reports that limit.
 Reported states describe only configuration and established native-adapter
@@ -69,6 +71,52 @@ preset and environment-variable names remain visible. The report does not
 inspect or certify the installed library, module, plugin, device or hardware;
 pair it with separately reviewed `crystalhd-check` output when installation
 identity matters. Inspect any report before publishing it.
+
+## Save and reset user defaults
+
+These commands write only the managed user file. **Saved does not mean active:**
+stock Kodi and the other production components still use their existing controls.
+Runtime integration is a separate stage of
+[#400](https://github.com/ahnhy1324/crystalhd/issues/400#issuecomment-6357124035).
+
+```sh
+crystalhd-config save vaapi.debug=false
+crystalhd-config save 'chromium.password_store=""'
+crystalhd-config save --remove vaapi.debug
+crystalhd-config reset
+```
+
+`save KEY=VALUE` patches the base `[settings]` overlay using the strict value
+grammar below. Unspecified settings and profile sections remain intact.
+`--remove KEY` removes a base override so lower layers can supply it;
+`KEY=unset` explicitly blocks a lower configured value. Neither is equivalent to
+`false`, `0`, or `""`. `--preset NAME` and `--profile NAME` save metadata selectors;
+they do not edit a named profile's settings. `--remove preset` or
+`--remove profile` clears that selector. Experimental presets require their
+explicit risk acknowledgements on each write; acknowledgement tokens and current
+setting-specific environment values are never copied into the file.
+
+The default destination is the user path below; `--user-config FILE` selects an
+absolute user destination. `--system-config FILE` or `--no-system-config` only
+controls the read-only system layer used for validation. Neither the compiled
+system path nor a selected system file is a writable destination. `reset`
+replaces the user overlay with a valid schema-only document, restoring inheritance
+from lower layers. It can recover a malformed INI file after the same size,
+ownership and file-type checks.
+
+Writes use an atomic `0600` replacement and reject unsafe ownership, symlinks,
+special files and hard-linked targets. The containing configuration directory
+must be user-owned and not group/other writable; newly created directories use
+`0700`. For unprivileged users, existing caller-owned intermediate directories
+may retain their usual permissions, including `0775`. Root-owned ancestors
+retain the stricter checks. The shared core rejects stale snapshots
+and serializes cooperating local CLI/tray writers with a directory lock; it does
+not promise cross-host NFS locking or compare-and-swap against unrelated editors.
+A failure before replacement leaves the existing bytes unchanged. Exit `4` means
+replacement occurred without confirmed durability, or an I/O failure prevented
+determining its outcome; inspect the saved state before retrying.
+Canonical serialization preserves managed
+values and sections, while replacing comments and formatting.
 
 ## Files and strict INI subset
 

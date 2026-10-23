@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Read-only CrystalHD v1 configuration inspector.
+"""CrystalHD v1 configuration inspection and explicit user-overlay storage.
 
-This program deliberately has no write, launch, module-reload, or hardware
-operation.  It uses only the Python standard library and remains compatible
-with Python 3.6.
+Saved configuration is not consumed by applications. This program has no
+launch, module-reload, or hardware operation. It uses only the Python standard
+library and remains compatible with Python 3.6.
 """
 
 import argparse
 import errno
+import fcntl
 import json
 import os
 import re
+import secrets
 import stat
 import sys
 
@@ -51,6 +53,14 @@ class RedactedArgumentParser(argparse.ArgumentParser):
         del message
         self.print_usage(sys.stderr)
         self.exit(2, "{0}: error: invalid command line\n".format(self.prog))
+
+
+class SingleWriteOption(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        del option_string
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error("duplicate write option")
+        setattr(namespace, self.dest, values)
 
 
 class _Unset(object):
@@ -196,6 +206,32 @@ class Document(object):
         self.metadata = {}
         self.settings = {}
         self.profiles = {}
+
+
+class UserDocumentSnapshot(object):
+    """An explicit edit session; stat identities are not content hashes."""
+
+    __slots__ = ("document", "_path", "_directory_identity", "_file_identity",
+                 "_original_bytes")
+
+    def __init__(self, path, document, directory_identity, file_identity,
+                 original_bytes=None):
+        self._path = path
+        self.document = document
+        self._directory_identity = directory_identity
+        self._file_identity = file_identity
+        self._original_bytes = original_bytes
+
+    path = property(lambda self: self._path)
+    directory_identity = property(lambda self: self._directory_identity)
+    file_identity = property(lambda self: self._file_identity)
+    original_bytes = property(lambda self: self._original_bytes)
+
+
+class SaveResult(object):
+    def __init__(self, durable, committed=True):
+        self.committed = committed
+        self.durable = durable
 
 
 class InvalidNativeValue(object):
@@ -554,6 +590,47 @@ def empty_document():
     return parse_document(b"[crystalhd]\nschema = 1\n")
 
 
+def serialize_document(document):
+    """Serialize only explicit overlay entries, using the existing parser."""
+    if (type(document) is not Document or
+            set(vars(document)) != {"metadata", "settings", "profiles"} or
+            any(type(layer) is not dict for layer in
+                (document.metadata, document.settings, document.profiles))):
+        raise SchemaError("invalid user document")
+    lines = []
+
+    def section(name, values):
+        if type(values) is not dict or any(type(key) is not str for key in values):
+            raise SchemaError("invalid user document section")
+        lines.append("[{0}]".format(name))
+        for key in sorted(values):
+            if KEY_NAME.fullmatch(key) is None:
+                raise SchemaError("invalid user document key")
+            value = values[key]
+            if value is not UNSET and type(value) not in (bool, int, str):
+                raise SchemaError("invalid user document value")
+            if type(value) is int and not 0 <= value < 10 ** MAXIMUM_INTEGER_DIGITS:
+                raise SchemaError("user document integer exceeds the strict grammar")
+            if type(value) is str and len(value) > MAXIMUM_BYTES:
+                raise SchemaError("configuration exceeds 64 KiB")
+            lines.append("{0} = {1}".format(
+                key, "unset" if value is UNSET else _format_value(value)
+            ))
+        lines.append("")
+
+    section("crystalhd", document.metadata)
+    if document.settings:
+        section("settings", document.settings)
+    if any(type(name) is not str or PROFILE_NAME.fullmatch(name) is None
+           for name in document.profiles):
+        raise SchemaError("invalid user profile name")
+    for name in sorted(document.profiles):
+        section("profile." + name, document.profiles[name])
+    data = ("\n".join(lines)).encode("utf-8")
+    parse_document(data)
+    return data
+
+
 def apply_layer(values, origins, layer, origin):
     for key, value in layer.items():
         if key not in RULES:
@@ -870,6 +947,26 @@ def _open_flags(directory=False):
     return flags
 
 
+def _check_directory(info, role, expected_uid, allow_writable=False):
+    if not stat.S_ISDIR(info.st_mode):
+        raise SchemaError("{0} parent is not a directory".format(role))
+    if info.st_uid != expected_uid:
+        raise SchemaError("{0} directory has an unsafe owner".format(role))
+    if info.st_mode & 0o022 and not allow_writable:
+        raise SchemaError("{0} directory is group/other writable".format(role))
+
+
+def _check_config_file(info, role, expected_uid):
+    if stat.S_ISLNK(info.st_mode):
+        raise SchemaError("{0} must not be a symlink".format(role))
+    if not stat.S_ISREG(info.st_mode):
+        raise SchemaError("{0} is not a regular file".format(role))
+    if info.st_uid != expected_uid:
+        raise SchemaError("{0} has an unsafe owner".format(role))
+    if info.st_mode & 0o022:
+        raise SchemaError("{0} is group/other writable".format(role))
+
+
 def _read_trusted_file(path, role, expected_uid):
     """Return bytes or None after a descriptor-relative, bounded safe read."""
     if not os.path.isabs(path):
@@ -891,12 +988,7 @@ def _read_trusted_file(path, role, expected_uid):
             directory_stat = os.fstat(directory_fd)
         except OSError:
             raise SchemaError("{0} directory cannot be inspected safely".format(role))
-        if not stat.S_ISDIR(directory_stat.st_mode):
-            raise SchemaError("{0} parent is not a directory".format(role))
-        if directory_stat.st_uid != expected_uid:
-            raise SchemaError("{0} directory has an unsafe owner".format(role))
-        if directory_stat.st_mode & 0o022:
-            raise SchemaError("{0} directory is group/other writable".format(role))
+        _check_directory(directory_stat, role, expected_uid)
 
         # Reject device nodes, FIFOs and final symlinks by metadata before an
         # ordinary open can invoke their file operations.  The descriptor
@@ -926,12 +1018,7 @@ def _read_trusted_file(path, role, expected_uid):
             file_stat = os.fstat(file_fd)
         except OSError:
             raise SchemaError("{0} cannot be inspected safely".format(role))
-        if not stat.S_ISREG(file_stat.st_mode):
-            raise SchemaError("{0} is not a regular file".format(role))
-        if file_stat.st_uid != expected_uid:
-            raise SchemaError("{0} has an unsafe owner".format(role))
-        if file_stat.st_mode & 0o022:
-            raise SchemaError("{0} is group/other writable".format(role))
+        _check_config_file(file_stat, role, expected_uid)
 
         chunks = []
         remaining = MAXIMUM_BYTES + 1
@@ -1013,6 +1100,334 @@ def load_document(path, role, system=False):
         return parse_document(data)
     except SchemaError as error:
         raise SchemaError("{0}: {1}".format(role, error))
+
+
+def _user_target_path(path, system_path=None):
+    if os.getuid() != os.geteuid() or os.getgid() != os.getegid():
+        raise SchemaError("user configuration is disabled when process IDs differ")
+    if type(path) is not str or "\0" in path or not os.path.isabs(path):
+        raise SchemaError("user configuration path must be absolute")
+    path = os.path.normpath(path)
+    if not os.path.basename(path):
+        raise SchemaError("user configuration path does not name a file")
+    protected = [SYSTEM_CONFIG]
+    if system_path is not None:
+        protected.append(system_path)
+    if any(path == os.path.normpath(item) for item in protected):
+        raise SchemaError("user save must not target a system configuration")
+    return path
+
+
+def _directory_identity(info):
+    return (info.st_dev, info.st_ino, info.st_uid, info.st_gid,
+            stat.S_IMODE(info.st_mode))
+
+
+def _file_identity(info):
+    return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode,
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _reject_system_target(directory_fd, name, system_path):
+    """Also reject alternate paths to a protected directory/leaf or inode."""
+    if not hasattr(os, "O_PATH"):
+        raise SchemaError("platform lacks required secure-open flags")
+    protected = [SYSTEM_CONFIG] + ([] if system_path is None else [system_path])
+    target_directory = os.fstat(directory_fd)
+    try:
+        target = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as error:
+        if error.errno != errno.ENOENT:
+            raise
+        target = None
+    if target is not None:
+        _check_config_file(target, "user configuration", os.getuid())
+        if target.st_nlink != 1:
+            raise SchemaError("user configuration must not have multiple hard links")
+    for path in protected:
+        parent, leaf = os.path.split(os.path.normpath(path))
+        try:
+            protected_fd = os.open(parent, os.O_PATH | os.O_DIRECTORY |
+                                   os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+        except OSError as error:
+            if error.errno == errno.ENOENT:
+                continue
+            raise SchemaError("system configuration directory cannot be inspected safely")
+        try:
+            info = os.fstat(protected_fd)
+            if (name == leaf and (info.st_dev, info.st_ino) ==
+                    (target_directory.st_dev, target_directory.st_ino)):
+                raise SchemaError("user save must not target a system configuration")
+            try:
+                entry = os.stat(leaf, dir_fd=protected_fd, follow_symlinks=False)
+            except OSError as error:
+                if error.errno == errno.ENOENT:
+                    continue
+                # A caller-owned, single-link target cannot write through a
+                # root-only protected leaf: replacement changes its own dirent.
+                # Root still requires the complete protected-inode comparison.
+                if error.errno == errno.EACCES and os.getuid() != 0:
+                    continue
+                raise
+            if target is not None and (entry.st_dev, entry.st_ino) == (target.st_dev, target.st_ino):
+                raise SchemaError("user save must not target a system configuration")
+        finally:
+            os.close(protected_fd)
+
+
+def _open_user_directory(parent, create=False):
+    """Walk without symlinks; create only beneath an already trusted user dir."""
+    descriptor = os.open("/", _open_flags(directory=True))
+    try:
+        for part in parent.split("/"):
+            if not part:
+                continue
+            try:
+                child = os.open(part, _open_flags(directory=True), dir_fd=descriptor)
+            except OSError as error:
+                if error.errno != errno.ENOENT:
+                    raise
+                if not create:
+                    previous, descriptor = descriptor, None
+                    os.close(previous)
+                    return None
+                _check_directory(os.fstat(descriptor), "user configuration", os.getuid(),
+                                 allow_writable=os.getuid() != 0)
+                try:
+                    os.mkdir(part, 0o700, dir_fd=descriptor)
+                    os.fsync(descriptor)
+                except OSError as creation_error:
+                    if creation_error.errno != errno.EEXIST:
+                        raise
+                child = os.open(part, _open_flags(directory=True), dir_fd=descriptor)
+            previous, descriptor = descriptor, child
+            os.close(previous)
+            info = os.fstat(descriptor)
+            root_sticky = info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+            if (not stat.S_ISDIR(info.st_mode) or
+                    info.st_uid not in (0, os.getuid()) or
+                    (info.st_uid == 0 and info.st_mode & 0o022 and not root_sticky)):
+                raise SchemaError("user configuration has an unsafe ancestor directory")
+        _check_directory(os.fstat(descriptor), "user configuration", os.getuid())
+        return descriptor
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+
+
+def _user_file_snapshot(directory_fd, name):
+    try:
+        entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as error:
+        if error.errno == errno.ENOENT:
+            return None, None
+        raise
+    _check_config_file(entry, "user configuration", os.getuid())
+    if entry.st_nlink != 1:
+        raise SchemaError("user configuration must not have multiple hard links")
+    if entry.st_size > MAXIMUM_BYTES:
+        raise SchemaError("user configuration exceeds 64 KiB")
+    descriptor = os.open(name, _open_flags(), dir_fd=directory_fd)
+    try:
+        before = os.fstat(descriptor)
+        _check_config_file(before, "user configuration", os.getuid())
+        if _file_identity(before) != _file_identity(entry):
+            raise SchemaError("user configuration changed during read; reload")
+        chunks, remaining = [], MAXIMUM_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 8192))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > MAXIMUM_BYTES:
+            raise SchemaError("user configuration exceeds 64 KiB")
+        after = os.fstat(descriptor)
+        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        identity = _file_identity(before)
+        if identity != _file_identity(after) or identity != _file_identity(current):
+            raise SchemaError("user configuration changed during read; reload")
+        return data, identity
+    finally:
+        os.close(descriptor)
+
+
+def _lock_user_directory(descriptor, exclusive):
+    # This coordinates cooperating local CLI/tray processes, not other hosts
+    # or arbitrary editors which do not use this directory lock.
+    try:
+        fcntl.flock(descriptor, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) |
+                    fcntl.LOCK_NB)
+    except OSError as error:
+        if error.errno in (errno.EACCES, errno.EAGAIN):
+            raise SchemaError("user configuration is busy; retry")
+        raise SchemaError("user configuration cannot be locked safely")
+
+
+def load_user_document_for_edit(path, reset=False):
+    path = _user_target_path(path)
+    directory_fd = None
+    try:
+        directory_fd = _open_user_directory(os.path.dirname(path))
+        if directory_fd is None:
+            return UserDocumentSnapshot(path, empty_document(), None, None)
+        _lock_user_directory(directory_fd, False)
+        identity = _directory_identity(os.fstat(directory_fd))
+        data, file_identity = _user_file_snapshot(directory_fd, os.path.basename(path))
+        document = empty_document() if reset or data is None else parse_document(data)
+        return UserDocumentSnapshot(path, document, identity, file_identity, data)
+    except OSError:
+        raise SchemaError("user configuration cannot be read safely for editing")
+    finally:
+        if directory_fd is not None:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                raise SchemaError("user configuration edit directory cannot be closed safely")
+
+
+def save_user_document(path, document, expected_snapshot, system_path=None,
+                       acknowledgements=()):
+    """Save an explicit overlay, rejecting stale cooperating local sessions.
+
+    Before replacement, errors raise SchemaError and preserve existing bytes.
+    Once replacement commits, return durable=False if completion is uncertain;
+    never attempt to roll back over another writer's subsequent transaction.
+    """
+    path = _user_target_path(path, system_path)
+    if (type(expected_snapshot) is not UserDocumentSnapshot or
+            expected_snapshot.path != path):
+        raise SchemaError("a matching user edit snapshot is required")
+    data = serialize_document(document)
+    candidate = parse_document(data)
+    system = load_document(system_path, "system configuration", system=True)
+    catalog = load_preset_catalog()
+    preset = _validated_preset(catalog, system, candidate, None, acknowledgements)
+    resolve(system, candidate, catalog.selectable, explicit_preset=preset,
+            raw_environment={})
+    parent, name = os.path.split(path)
+    directory_fd, temporary_fd, temporary_name, temporary_inode = None, None, None, None
+    committed, durable, failure = False, False, None
+    replace_attempted, outcome_uncertain = False, False
+
+    def check_current():
+        current_directory = _directory_identity(os.fstat(directory_fd))
+        if (expected_snapshot.directory_identity is not None and
+                current_directory != expected_snapshot.directory_identity):
+            raise SchemaError("stale user configuration directory; reload")
+        current_fd = _open_user_directory(parent)
+        try:
+            if current_fd is None or _directory_identity(os.fstat(current_fd)) != current_directory:
+                raise SchemaError("user configuration path changed; reload")
+        finally:
+            if current_fd is not None:
+                os.close(current_fd)
+        _reject_system_target(directory_fd, name, system_path)
+        current_bytes, current_file = _user_file_snapshot(directory_fd, name)
+        if (current_file != expected_snapshot.file_identity or
+                current_bytes != expected_snapshot.original_bytes):
+            raise SchemaError("stale user configuration session; reload")
+
+    try:
+        directory_fd = _open_user_directory(
+            parent, create=expected_snapshot.directory_identity is None
+        )
+        if directory_fd is None:
+            raise SchemaError("stale user configuration directory; reload")
+        _lock_user_directory(directory_fd, True)
+        check_current()
+        for _attempt in range(8):
+            temporary_name = ".crystalhd-config-" + secrets.token_hex(12)
+            try:
+                temporary_fd = os.open(
+                    temporary_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                    os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0), 0o600,
+                    dir_fd=directory_fd,
+                )
+                break
+            except OSError as error:
+                temporary_name = None
+                if error.errno != errno.EEXIST:
+                    raise
+        if temporary_fd is None:
+            raise SchemaError("user configuration temporary file cannot be created")
+        temporary_stat = os.fstat(temporary_fd)
+        temporary_inode = (temporary_stat.st_dev, temporary_stat.st_ino)
+        os.fchmod(temporary_fd, 0o600)  # Only this newly created, exclusive file.
+        offset = 0
+        while offset < len(data):
+            written = os.write(temporary_fd, data[offset:])
+            if written <= 0:
+                raise SchemaError("user configuration write made no progress")
+            offset += written
+        os.fsync(temporary_fd)
+        temporary_info = os.fstat(temporary_fd)
+        _check_config_file(temporary_info, "user configuration temporary file", os.getuid())
+        if (stat.S_IMODE(temporary_info.st_mode) != 0o600 or
+                temporary_info.st_nlink != 1 or temporary_info.st_size != len(data)):
+            raise SchemaError("user configuration temporary file is unsafe")
+        temporary_identity = _file_identity(temporary_info)
+        descriptor, temporary_fd = temporary_fd, None
+        os.close(descriptor)
+        check_current()
+        temporary_entry = os.stat(temporary_name, dir_fd=directory_fd, follow_symlinks=False)
+        if _file_identity(temporary_entry) != temporary_identity:
+            raise SchemaError("user configuration temporary file changed; retry")
+        replace_attempted = True
+        os.replace(temporary_name, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        committed, temporary_name = True, None
+        os.fsync(directory_fd)
+        durable = True
+    except BaseException as error:
+        if replace_attempted and not committed:
+            # A signal/exception may be delivered after rename took effect but
+            # before Python records success. Inspect the pinned names first.
+            try:
+                installed = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                committed = (installed.st_dev, installed.st_ino) == temporary_inode
+            except OSError:
+                committed = False
+            if committed:
+                temporary_name = None
+            else:
+                try:
+                    pending = os.stat(temporary_name, dir_fd=directory_fd, follow_symlinks=False)
+                    outcome_uncertain = (pending.st_dev, pending.st_ino) != temporary_inode
+                except OSError:
+                    outcome_uncertain = True
+                if outcome_uncertain:
+                    temporary_name = None  # Never remove an unrecognized entry.
+        failure = (SchemaError("user configuration could not be saved safely")
+                   if isinstance(error, OSError) else error)
+    finally:
+        for descriptor in (temporary_fd,):
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    failure = failure or SchemaError("user configuration cleanup failed")
+        if temporary_name is not None and directory_fd is not None:
+            try:
+                entry = os.stat(temporary_name, dir_fd=directory_fd, follow_symlinks=False)
+                if temporary_inode is None or (entry.st_dev, entry.st_ino) != temporary_inode:
+                    raise SchemaError("user configuration temporary file changed during cleanup")
+                os.unlink(temporary_name, dir_fd=directory_fd)
+            except (OSError, SchemaError):
+                failure = failure or SchemaError("user configuration cleanup failed")
+        if directory_fd is not None:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                failure = failure or SchemaError("user configuration cleanup failed")
+    if committed:
+        return SaveResult(durable and failure is None)
+    if outcome_uncertain:
+        return SaveResult(False, committed=None)
+    if failure is not None:
+        raise failure
+    raise SchemaError("user configuration was not saved")
 
 
 def _json_value(key, value, origin, bug_report=False):
@@ -1213,10 +1628,22 @@ def add_common_options(parser):
     )
 
 
+def add_write_options(parser):
+    system = parser.add_mutually_exclusive_group()
+    system.add_argument("--system-config", metavar="FILE", action=SingleWriteOption,
+                        help="read this absolute system layer for validation only")
+    system.add_argument("--no-system-config", action="store_true",
+                        help="validate without a system layer")
+    parser.add_argument("--user-config", metavar="FILE", action=SingleWriteOption,
+                        help="write only this absolute user overlay path")
+    parser.add_argument("--acknowledge-risk", action="append", default=[], metavar="TOKEN",
+                        help="acknowledge a selected experimental preset for this save only")
+
+
 def make_argument_parser():
     parser = RedactedArgumentParser(
         prog="crystalhd-config",
-        description="validate and inspect CrystalHD v1 configuration",
+        description="inspect CrystalHD v1 configuration or explicitly save user defaults",
     )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.required = True
@@ -1225,6 +1652,19 @@ def make_argument_parser():
         "list-presets", help="list reviewed preset manifest entries"
     )
     listing.add_argument("--format", choices=("text", "json"), default="text")
+
+    save = subparsers.add_parser("save", help="save explicit user defaults; does not apply them")
+    add_write_options(save)
+    save.add_argument("assignments", nargs="*", metavar="KEY=VALUE",
+                      help="patch base settings using strict INI value syntax")
+    save.add_argument("--remove", action="append", default=[], metavar="KEY",
+                      help="omit a base key or preset/profile selector; differs from unset")
+    save.add_argument("--preset", action=SingleWriteOption, metavar="NAME",
+                      help="persist this preset selector without expanding its settings")
+    save.add_argument("--profile", action=SingleWriteOption, metavar="NAME",
+                      help="persist this profile selector; does not edit its section")
+    reset = subparsers.add_parser("reset", help="save an empty user overlay; does not apply it")
+    add_write_options(reset)
 
     validate = subparsers.add_parser("validate", help="validate selected configuration")
     add_common_options(validate)
@@ -1245,30 +1685,17 @@ def make_argument_parser():
     return parser
 
 
-def resolve_arguments(arguments, environment):
-    catalog = load_preset_catalog()
-    acknowledgements = arguments.acknowledge_risk
+def _check_acknowledgements(catalog, acknowledgements):
+    if any(type(token) is not str for token in acknowledgements):
+        raise CommandLineSelectionError("invalid risk acknowledgement")
     if len(acknowledgements) != len(set(acknowledgements)):
         raise CommandLineSelectionError("duplicate risk acknowledgement")
     if set(acknowledgements) - catalog.acknowledgement_tokens:
         raise CommandLineSelectionError("unknown risk acknowledgement")
 
-    if arguments.no_system_config:
-        system_path = None
-    else:
-        system_path = (arguments.system_config
-                       if arguments.system_config is not None
-                       else SYSTEM_CONFIG)
-    if arguments.no_user_config:
-        user_path = None
-    else:
-        user_path = (arguments.user_config
-                     if arguments.user_config is not None
-                     else default_user_config(environment))
 
-    system = load_document(system_path, "system configuration", system=True)
-    user = load_document(user_path, "user configuration", system=False)
-    selected_preset = arguments.preset
+def _validated_preset(catalog, system, user, selected_preset, acknowledgements):
+    _check_acknowledgements(catalog, acknowledgements)
     if selected_preset is None:
         selected_preset = user.metadata.get(
             "preset", system.metadata.get("preset", "default")
@@ -1290,6 +1717,32 @@ def resolve_arguments(arguments, environment):
         ))
     if supplied - required:
         raise SchemaError("risk acknowledgement does not apply to selected preset")
+    return selected_preset
+
+
+def resolve_arguments(arguments, environment):
+    catalog = load_preset_catalog()
+    acknowledgements = arguments.acknowledge_risk
+    _check_acknowledgements(catalog, acknowledgements)
+
+    if arguments.no_system_config:
+        system_path = None
+    else:
+        system_path = (arguments.system_config
+                       if arguments.system_config is not None
+                       else SYSTEM_CONFIG)
+    if arguments.no_user_config:
+        user_path = None
+    else:
+        user_path = (arguments.user_config
+                     if arguments.user_config is not None
+                     else default_user_config(environment))
+
+    system = load_document(system_path, "system configuration", system=True)
+    user = load_document(user_path, "user configuration", system=False)
+    selected_preset = _validated_preset(
+        catalog, system, user, arguments.preset, acknowledgements
+    )
     raw_environment = {}
     if not arguments.ignore_environment:
         raw_environment = dict(
@@ -1304,6 +1757,57 @@ def resolve_arguments(arguments, environment):
         explicit_profile=arguments.profile,
         raw_environment=raw_environment,
     )
+
+
+def _patch_user_document(document, arguments):
+    if not (arguments.assignments or arguments.remove or
+            arguments.preset is not None or arguments.profile is not None):
+        raise CommandLineSelectionError("save requires an explicit change")
+    keys = set()
+    lines = ["[crystalhd]", "schema = 1", "[settings]"]
+    for assignment in arguments.assignments:
+        if "=" not in assignment or len(assignment.splitlines()) != 1:
+            raise CommandLineSelectionError("invalid assignment")
+        key, value = assignment.split("=", 1)
+        key = key.strip()
+        if key not in RULES or key in keys:
+            raise CommandLineSelectionError("unknown or duplicated assignment")
+        keys.add(key)
+        lines.append("{0} = {1}".format(key, value.strip()))
+    removals = arguments.remove
+    if (len(removals) != len(set(removals)) or set(removals) & keys or
+            any(key not in RULES and key not in ("preset", "profile") for key in removals)):
+        raise CommandLineSelectionError("invalid or conflicting removal")
+    for selector in ("preset", "profile"):
+        if getattr(arguments, selector) is not None and selector in removals:
+            raise CommandLineSelectionError("selector is both supplied and removed")
+    patch = parse_document(("\n".join(lines) + "\n").encode("utf-8"))
+    candidate = parse_document(serialize_document(document))
+    candidate.settings.update(patch.settings)
+    for key in removals:
+        if key in ("preset", "profile"):
+            candidate.metadata.pop(key, None)
+        else:
+            candidate.settings.pop(key, None)
+    for selector in ("preset", "profile"):
+        value = getattr(arguments, selector)
+        if value is not None:
+            candidate.metadata[selector] = value
+    return candidate
+
+
+def write_arguments(arguments, environment):
+    system_path = None if arguments.no_system_config else (
+        arguments.system_config if arguments.system_config is not None else SYSTEM_CONFIG
+    )
+    user_path = (arguments.user_config if arguments.user_config is not None
+                 else default_user_config(environment))
+    path = _user_target_path(user_path, system_path)
+    snapshot = load_user_document_for_edit(path, reset=arguments.command == "reset")
+    candidate = (empty_document() if arguments.command == "reset"
+                 else _patch_user_document(snapshot.document, arguments))
+    return save_user_document(path, candidate, snapshot, system_path=system_path,
+                              acknowledgements=arguments.acknowledge_risk)
 
 
 def main(argv=None, environment=None):
@@ -1322,12 +1826,25 @@ def main(argv=None, environment=None):
         print_preset_catalog(catalog, arguments.format)
         return 0
     try:
-        resolution = resolve_arguments(arguments, process_environment)
+        if arguments.command in ("save", "reset"):
+            saved = write_arguments(arguments, process_environment)
+        else:
+            resolution = resolve_arguments(arguments, process_environment)
     except CommandLineSelectionError:
         parser.error("invalid manifest-backed command-line selection")
     except SchemaError as error:
         print("crystalhd-config: {0}".format(error), file=sys.stderr)
         return 3
+
+    if arguments.command in ("save", "reset"):
+        if not saved.durable:
+            outcome = ("replacement committed; durability uncertain"
+                       if saved.committed else "replacement outcome uncertain; inspect saved state")
+            print("crystalhd-config: user configuration {0}; "
+                  "SAVED ONLY, applications unchanged".format(outcome), file=sys.stderr)
+            return 4
+        print("user configuration SAVED ONLY (0600); applications unchanged")
+        return 0
 
     observed = not arguments.ignore_environment
     if arguments.command == "validate":
