@@ -382,6 +382,13 @@ selected retained tail without sealing live input or changing reference pictures
 Only one auxiliary can be outstanding, and explicit context close still drains
 its firmware EOS obligation. Other syntax and non-Bob requests retain the existing
 wait/drain policy; this is not a general EOF detector or a new user option.
+In unreleased development builds, eligible ordinary H.264 Bob requests also use
+this lookahead with LIVE unset and automatic or explicit prefeed enabled.
+This avoids repeatedly sealing and replaying the stream to complete a field.
+Explicit `CRYSTALHD_VAAPI_LIVE_H264=0`, or disabled prefeed with LIVE unset,
+retains the ordinary finite fallback. Explicit LIVE keeps its existing behavior.
+Finite replay after auxiliary use requires the actual EOS marker and retired
+output/prefix debt, including during close.
 For finite files with stock FFmpeg, leave this variable unset:
 `vaSyncSurface()` waits for one surface and is not an EOF or drain signal. In
 explicit live mode outside that Bob path, the last reordered pictures can remain
@@ -556,6 +563,47 @@ privately before the final copy. A canceled or failed fenced write closes its
 unsignaled timeline so its
 fences fail with `-ENOENT`; successful writes flush pixel caches before the
 timeline advances.
+
+### Development experiment: centered card output
+
+The default-off `CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12` mode lets an
+ordinary BCM70015 H.264 VLD client retain a readable coded-size NV12 canvas
+while the card returns a smaller picture. Compatible full-canvas NV12 Bob
+requests process that small picture and place it at 1:1 size inside black
+borders. This reduces visible picture size, **not** the negotiated surface
+size; it does not enlarge 720 back to FHD or provide hardware deinterlacing.
+It is a development experiment, absent from stable v1.2.0.
+
+With the development driver selected, an example for a known 1920×1080
+visible source, including a coded 1920×1088 source, is:
+
+```sh
+CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12=1280x720@1920x1080:limited \
+  LIBVA_DRIVER_NAME=crystalhd kodi /absolute/path/to/1080i25.mkv
+```
+
+For display enlargement, Kodi's Video settings → Zoom can apply `1.5` to this
+720-in-1080 picture on the GPU. Source-encoded black bars remain; return Zoom
+to `1.0` for the native centered size. Selected playback results are in [#477](https://github.com/ahnhy1324/crystalhd/issues/477).
+
+The value specifies `capture-width×height@visible-width×height:limited|full`
+using ASCII `x`. Crop and black range must be supplied explicitly; coded1088
+does not imply visible1080. The current experiment requires the full coded
+width and fewer than16 cropped bottom rows, aligned to the sequence's crop
+unit. Capture width must be at least128, smaller than the source and divisible
+by16; capture height must be divisible by4, with an exact aspect-preserving
+reduction. Placement uses even X and rounds Y toward the top to a multiple
+of four. Remove the variable or set it to `0` to
+disable it. Keep ordinary LIVE/prefeed defaults when comparing playback;
+explicit `CRYSTALHD_VAAPI_LOW_LATENCY_H264=0` disables automatic prefeed and
+is not equivalent to leaving it unset. Explicit decode-processing/additional-output
+selection, READY remapping and BCM70012 cannot be combined with this mode.
+
+Original GetImage, DeriveImage and export still expose actual full-canvas
+pixels. Requests incompatible with the small Bob path use that real canvas.
+Full-size allocation, composition and presentation costs remain, so smaller
+card transfers do not establish a playback speedup. Stock-client performance,
+field delivery and presentation acceptance remain tracked in [#477](https://github.com/ahnhy1324/crystalhd/issues/477).
 
 <a id="development-decode-integrated-card-scaling"></a>
 

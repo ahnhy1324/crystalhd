@@ -117,6 +117,11 @@ scope to general full-rate FHD or hardware deinterlacing.
   — measure output bytes and conversion ownership before proposing a new
   format or transfer path. Direct 4:2:2 VA/Kodi negotiation is not part of the
   v1.2 candidate.
+- [ ] [#477: Centered card output for ordinary VA clients](https://github.com/ahnhy1324/crystalhd/issues/477)
+  — default-off readable-canvas prototype; retain small Bob, full original
+  readback and exact lifetime semantics. Matched stock-client performance and
+  field/presentation acceptance determine whether to retain it; see the
+  [development usage](filters/vaapi/README.md#development-experiment-centered-card-output).
 - [ ] [#92: BCM70015 capability research](https://github.com/ahnhy1324/crystalhd/issues/92)
   — pinned firmware mapping and live OPEN/scaling evidence; standalone
   processing and backend reuse remain unvalidated.
@@ -127,7 +132,8 @@ scope to general full-rate FHD or hardware deinterlacing.
 Acceptance checklists live in those issues. Current usage and support are in
 [README.md](README.md); the frozen hardware reference is in
 [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md). The stable release is bundle
-`1.1.0`, module/DKMS `3.10.9`; stable 1.0.0, RC.1 (`1.0.0-rc.1` / `3.10.2`) and the
+`1.2.0`, module/DKMS `3.10.13`; earlier stable 1.1.0 (`3.10.9`),
+stable 1.0.0, RC.1 (`1.0.0-rc.1` / `3.10.2`) and the
 Phase 1 baseline remain unchanged. Mandatory missing tests remain
 NOT RUN/HOLD; only optional work may be deferred. Historical Phase 1 and
 bounded RC evidence do not establish new LTS/full-duration passes.

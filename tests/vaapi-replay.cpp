@@ -1,12 +1,21 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Production replay state and output processing with private CPU memory only.
 // No device, decoder, capture, firmware, or DRM operation is started.
+#include <mutex>
+static void TestTerminalPromotionTurn(std::unique_lock<std::mutex> &lock);
+#define CRYSTALHD_VAAPI_TEST_TERMINAL_PROMOTION_TURN(driver, lock) \
+  TestTerminalPromotionTurn(lock)
 #define CRYSTALHD_VAAPI_TEST_LIBRARY_CAPABILITIES 1
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
 #include <cstdlib>
 #include <new>
 #include <stdexcept>
 #include <string>
+
+static std::function<void(std::unique_lock<std::mutex> &)> terminal_promotion_turn;
+static void TestTerminalPromotionTurn(std::unique_lock<std::mutex> &lock) {
+  if (terminal_promotion_turn) terminal_promotion_turn(lock);
+}
 
 namespace allocation_fault {
 thread_local bool fail_next = false;
@@ -99,6 +108,35 @@ struct WorkerPollBarrier {
   }
 };
 static WorkerPollBarrier *worker_poll_barrier = nullptr;
+
+struct TerminalCloseBarrier {
+  std::mutex mutex;
+  std::condition_variable condition;
+  std::string stage;
+  bool entered = false, released = false, expired = false;
+  explicit TerminalCloseBarrier(const char *name) : stage(name) {}
+  void Block(const char *name) {
+    if (stage != name) return;
+    std::unique_lock<std::mutex> lock(mutex);
+    if (entered) return;
+    entered = true;
+    condition.notify_all();
+    expired = !condition.wait_for(lock, std::chrono::seconds(5),
+                                  [&] { return released; });
+  }
+  bool Wait() {
+    std::unique_lock<std::mutex> lock(mutex);
+    return condition.wait_for(lock, std::chrono::seconds(2),
+                               [&] { return entered; });
+  }
+  void Release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      released = true;
+    }
+    condition.notify_all();
+  }
+};
 
 extern "C" ssize_t __real_read(int fd, void *buffer, size_t count);
 extern "C" ssize_t __wrap_read(int fd, void *buffer, size_t count) {
@@ -323,6 +361,7 @@ struct DecodeIoMock {
   unsigned int scale_calls = 0;
   BC_STATUS scale_status = BC_STS_SUCCESS;
   std::function<void()> on_sleep;
+  std::function<void(const char *)> on_close;
   bool early_eos = false;
   bool zero_timestamp_picture = false;
   bool fail_poll = false;
@@ -513,6 +552,7 @@ extern "C" BC_STATUS __wrap_DtsStartCapture(HANDLE device) {
     decode_io_mock->invalid |= device != decode_io_mock->handle(); \
     decode_io_mock->prefed_timestamp = 0; \
     decode_io_mock->events.push_back(event); \
+    if (decode_io_mock->on_close) decode_io_mock->on_close(event); \
     return decode_io_mock->result; \
   }
 MOCK_CLOSE_OPERATION(DtsStopDecoder, "stop", stop_status)
@@ -527,6 +567,7 @@ extern "C" BC_STATUS __wrap_DtsDeviceClose(HANDLE device) {
   decode_io_mock->prefed_timestamp = 0;
   decode_io_mock->events.push_back("close-device");
   ++decode_io_mock->device_close_calls;
+  if (decode_io_mock->on_close) decode_io_mock->on_close("close-device");
   if (decode_io_mock->device_close_busy != 0) {
     --decode_io_mock->device_close_busy;
     return BC_STS_BUSY;
@@ -5963,6 +6004,18 @@ struct TeardownFixture {
   }
 };
 
+static void DrainExactReadyEos(TeardownFixture &fixture) {
+  std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+  Require(fixture.decoder->ReplaySealed() &&
+              fixture.decoder->replay.outstanding() == 0 &&
+              fixture.io.outputs == std::deque<uint64_t>{0},
+          "exact-ready sync leaves only the actual EOS marker owned by the sealed batch");
+  Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
+              !fixture.decoder->ReplaySealed() && fixture.io.outputs.empty() &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1,
+          "explicit receive drains the actual EOS marker before a later lifecycle transition");
+}
+
 static void ProtectedH264BufferCannotCommitEarlierParameters() {
   const VABufferType types[] = {
       VAProtectedSliceDataBufferType,
@@ -6716,12 +6769,18 @@ static void CompletedLiveTailPrecedesUnreconstructibleContinuation() {
     std::unique_lock<std::mutex> lock(fixture.driver.mutex);
     Require(SyncDecodeSurface(&fixture.driver, fixture.held[2], &lock,
                               VA_TIMEOUT_INFINITE) == VA_STATUS_SUCCESS,
-            "exact old tail plus EOS succeeds before any future pump failure");
+            "exact old tail succeeds before any future pump failure");
   }
+  Require(fixture.io.open_attempts == 0 &&
+              fixture.decoder->ReplaySealed() &&
+              !fixture.decoder->replay.NeedsRestart() &&
+              !fixture.decoder->replay.failed(),
+          "tail sync completes before consuming EOS or attempting an unrelated restart");
+  DrainExactReadyEos(fixture);
   Require(fixture.io.open_attempts == 0 &&
               fixture.decoder->replay.NeedsRestart() &&
               !fixture.decoder->replay.failed(),
-          "tail sync does not attempt an unrelated continuation restart");
+          "actual EOS observation alone makes the future continuation require restart");
   fixture.CheckPicture(2);
   const auto pixels = fixture.held[2]->storage;
   Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
@@ -7185,6 +7244,11 @@ static void LiveH264InterlacedPrefeedKeepsExactFieldOwnership(
         const VAStatus status = tail == Tail::ContextDrain
             ? DestroyContext(&fixture.context, 1)
             : SyncSurface(&fixture.context, 4);
+        if (tail != Tail::ContextDrain) {
+          Require(status == VA_STATUS_SUCCESS,
+                  "finite sync completes the exact complementary field before EOS drain");
+          DrainExactReadyEos(fixture);
+        }
         Require(status == VA_STATUS_SUCCESS && fourth_owner->ready &&
                     !decode.h264_first_field.valid && decode.pending.empty() &&
                     decode.replay.outstanding() == 0 &&
@@ -7741,8 +7805,10 @@ static void DefaultBoundedH264StillDrainsFiniteTail() {
               !fixture.decoder->live_h264_gap_tolerant &&
               !fixture.decoder->live_h264_fast_path,
           "default bounded H.264 submits without live gap or fast policy");
-  Require(SyncSurface(&fixture.context, 3) == VA_STATUS_SUCCESS &&
-              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+  Require(SyncSurface(&fixture.context, 3) == VA_STATUS_SUCCESS,
+          "default bounded sync completes its exact final tail picture");
+  DrainExactReadyEos(fixture);
+  Require(std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "seal") == 1 &&
               std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "eos") == 1 &&
@@ -7798,6 +7864,7 @@ static void LargeH264CompletionDoesNotInferEos() {
     };
     Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS,
             "delayed exact picture completes through the normal sync path");
+    if (!longer_grace) DrainExactReadyEos(fixture);
     Require(callbacks == (longer_grace ? 2U : 1U) &&
                 std::count(fixture.io.events.begin(), fixture.io.events.end(),
                            "seal") == (longer_grace ? 0 : 1) &&
@@ -7835,9 +7902,10 @@ static void LargeH264InactivitySurvivesFiniteSyncCalls() {
               std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "seal") == 0,
           "finite large-AU sync preserves only actual wait time and old pixels");
-  Require(SyncSurface2(&fixture.context, 1, 500ULL * 1000 * 1000) ==
-                  VA_STATUS_SUCCESS &&
-              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+  Require(SyncSurface2(&fixture.context, 1, 500ULL * 1000 * 1000) == VA_STATUS_SUCCESS,
+          "finite large-AU wait completes its exact picture within the existing deadline");
+  DrainExactReadyEos(fixture);
+  Require(std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "seal") == 1 &&
               std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "eos") == 1 &&
@@ -8050,9 +8118,10 @@ static void DefaultBoundedH264InactivitySurvivesFiniteSyncCalls() {
               std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "seal") == 0,
           "sequential finite sync calls retain only their actual wait time");
-  Require(SyncSurface2(&fixture.context, 3, 500ULL * 1000 * 1000) ==
-                  VA_STATUS_SUCCESS &&
-              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+  Require(SyncSurface2(&fixture.context, 3, 500ULL * 1000 * 1000) == VA_STATUS_SUCCESS,
+          "finite bounded wait completes its exact picture within the existing deadline");
+  DrainExactReadyEos(fixture);
+  Require(std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "seal") == 1 &&
               std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "eos") == 1 &&
@@ -8288,7 +8357,9 @@ static void InactiveSyncStillSealsItsExactFinalPicture(bool live = false) {
   const auto start = std::chrono::steady_clock::now();
   Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS,
           "finite input tail still completes through a real sealed batch");
-  Require(std::chrono::steady_clock::now() - start >=
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  DrainExactReadyEos(fixture);
+  Require(elapsed >=
               std::chrono::nanoseconds(kDecodeBatchGraceNs) &&
               std::count(fixture.io.events.begin(), fixture.io.events.end(),
                          "seal") == 1 &&
@@ -8770,8 +8841,11 @@ static VAPictureParameterBufferH264 NeutralPicture(unsigned width, unsigned heig
 
 static void LiveBobTailWithUnfenceableExposedTarget() {
   enum class Tail { Complete, Cancel, Drain, Auxiliary };
+  for (bool explicit_live : {false, true})
   for (bool bottom_first : {false, true}) {
     for (Tail tail : {Tail::Complete, Tail::Cancel, Tail::Drain, Tail::Auxiliary}) {
+      if (!explicit_live && tail != Tail::Auxiliary)
+        continue;
       TeardownFixture fixture(2);
       // This group exercises the inline unfenceable EndPicture fallback.
       fixture.driver.StopWorkers();
@@ -8779,8 +8853,10 @@ static void LiveBobTailWithUnfenceableExposedTarget() {
       auto &decode = *fixture.decoder;
       decode.profile = VAProfileH264Main;
       decode.height = fixture.io.output_height = 32;
-      decode.live_h264 = decode.live_h264_gap_tolerant = true;
-      decode.live_h264_fast_path = decode.low_latency_h264 = true;
+      decode.live_h264 = true;
+      decode.live_h264_gap_tolerant = decode.live_h264_fast_path = explicit_live;
+      decode.low_latency_h264 = explicit_live;
+      decode.auto_h264_prefeed = !explicit_live;
       decode.replay = CrystalHDDecodeReplay(true);
       for (unsigned int index = 0; index != 2; ++index) {
         const uint64_t token = (index + 1) * kTimestampStep;
@@ -8807,13 +8883,15 @@ static void LiveBobTailWithUnfenceableExposedTarget() {
       for (unsigned int picture = 1; picture <= 2; ++picture) {
         const uint64_t token = picture * kTimestampStep;
         Require(decode.replay.Append(token, picture == 1,
-                                      TestH264AccessUnit(picture == 1, picture)),
+                                      TestH264AccessUnit(picture == 1, picture),
+                                      !explicit_live),
                 "accept each real AU before its independent successor prefix");
         if (tail == Tail::Auxiliary) {
           H264Auxiliary::Syntax syntax;
           syntax.picture = NeutralPicture(16, 32);
           syntax.generation = decode.generation;
           syntax.device = decode.device;
+          syntax.prefeed = true;
           decode.auxiliary.syntax.emplace(token, syntax);
         }
         decode.next_timestamp = (picture + 1) * kTimestampStep;
@@ -9416,6 +9494,102 @@ static void ZeroTimeoutNeverPumpsBusyDecodeSurface() {
           "a later ordinary sync completes the untouched exact picture");
 }
 
+static void ExactSyncLeavesLaterReadyOutputsQueued() {
+  TeardownFixture fixture(3);
+  fixture.driver.StopWorkers();
+  fixture.driver.stopping = false;
+  fixture.decoder->profile = VAProfileH264Main;
+  BindTeardownPicturesForVpp(fixture);
+  Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
+              SealDecodeBatch(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
+              fixture.io.outputs == std::deque<uint64_t>{kTimestampStep, 2 * kTimestampStep,
+                                                        3 * kTimestampStep, 0},
+          "queue three real ready outputs followed by the actual mock firmware EOS marker");
+  Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+              fixture.io.output_polls == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "release") == 1 &&
+              fixture.io.outputs == std::deque<uint64_t>{2 * kTimestampStep,
+                                                        3 * kTimestampStep, 0} &&
+              fixture.held[0]->ready && !fixture.held[0]->failed &&
+              fixture.held[0]->frame_timestamp == kTimestampStep &&
+              fixture.held[0]->decode_picture.lock()->decode_identity == 1 &&
+              !fixture.held[1]->ready && !fixture.held[2]->ready &&
+              fixture.decoder->pending.size() == 2 &&
+              !fixture.decoder->replay.IsOutstanding(kTimestampStep) &&
+              fixture.decoder->replay.IsOutstanding(2 * kTimestampStep) &&
+              fixture.decoder->replay.IsOutstanding(3 * kTimestampStep),
+          "exact sync returns after its own one output without consuming later identities or EOS");
+  fixture.CheckPicture(0);
+  Require(fixture.io.output_polls == 1 &&
+              DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+              fixture.io.outputs.empty() && fixture.decoder->device == nullptr &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "release") == 4 &&
+              std::find(fixture.io.events.begin(), fixture.io.events.end(), "eos") <
+                  std::find(fixture.io.events.begin(), fixture.io.events.end(), "stop") &&
+              !fixture.io.invalid,
+          "explicit drain still completes both remaining pictures and actual EOS before close");
+  fixture.CheckPicture(1);
+  fixture.CheckPicture(2);
+}
+
+static void ExperimentalReadyRetainsRxBacklogSelection() {
+  for (bool exact_in_rx : {false, true}) {
+    TeardownFixture fixture(3);
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    auto &decode = *fixture.decoder;
+    decode.profile = VAProfileH264Main;
+    decode.live_h264 = decode.live_h264_gap_tolerant = true;
+    decode.live_h264_fast_path = decode.low_latency_h264 = true;
+    decode.experimental_ready_remap = decode.experimental_ready_latest = true;
+    decode.next_timestamp = 4 * kTimestampStep;
+    BindTeardownPicturesForVpp(fixture);
+    const auto requested = fixture.held[2];
+    const auto exact_picture = decode.decoded_frames.at(3 * kTimestampStep);
+    requested->experimental_write_lease = true;
+    requested->experimental_write_context = decode.id;
+    requested->experimental_write_generation = decode.generation;
+    requested->experimental_write_submission_ordinal = 3;
+    requested->experimental_submitted_at_ns = MonotonicNowNs();
+    Require(PumpDecodeInput(&fixture.driver, &decode) == VA_STATUS_SUCCESS &&
+                decode.experimental_ready.empty() &&
+                !decode.decoded_frames.at(kTimestampStep)->ready &&
+                !decode.decoded_frames.at(2 * kTimestampStep)->ready &&
+                !exact_picture->ready,
+            "READY backlog starts only in RX, with no CPU-materialized candidate to preselect");
+    fixture.io.outputs = {kTimestampStep, 2 * kTimestampStep};
+    if (exact_in_rx) fixture.io.outputs.push_back(3 * kTimestampStep);
+    Require(SyncSurface(&fixture.context, 3) == VA_STATUS_SUCCESS,
+            "explicit READY sync completes from the queued RX backlog");
+    Require(fixture.io.outputs.empty() &&
+                fixture.io.output_polls == (exact_in_rx ? 4U : 3U) &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "release") ==
+                    (exact_in_rx ? 3 : 2) && !fixture.io.invalid,
+            "explicit READY remapping preserves its original harvest boundary before selection");
+    if (exact_in_rx) {
+      Require(requested->ready && exact_picture->ready &&
+                  !requested->experimental_presentation &&
+                  requested->frame_timestamp == 3 * kTimestampStep &&
+                  requested->planes[0][0] == DecodeIoMock::Luma(3 * kTimestampStep) &&
+                  decode.replay.outstanding() == 0 &&
+                  decode.experimental_last_delivered_ordinal == 3,
+              "an exact requested picture in the same RX batch wins before any older remap");
+    } else {
+      Require(!requested->ready && !exact_picture->ready &&
+                  ExperimentalPresentationReadable(&fixture.driver, requested.get()) &&
+                  requested->presentation_payload_token == 2 * kTimestampStep &&
+                  requested->presentation_payload_decode_identity == 2 &&
+                  requested->presentation_payload_submission_ordinal == 2 &&
+                  requested->planes[0][0] == DecodeIoMock::Luma(2 * kTimestampStep) &&
+                  decode.replay.IsOutstanding(3 * kTimestampStep) &&
+                  decode.experimental_last_delivered_ordinal == 2,
+              "latest keeps the newer eligible RX payload instead of committing the first older output");
+    }
+  }
+}
+
 static void ExactReadySurfaceDoesNotWaitForBatchEos() {
   TeardownFixture fixture(2);
   Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
@@ -9436,10 +9610,17 @@ static void ExactReadySurfaceDoesNotWaitForBatchEos() {
   fixture.io.outputs.push_back(2 * kTimestampStep);
   fixture.io.outputs.push_back(0);
   Require(SyncSurface(&fixture.context, 2) == VA_STATUS_SUCCESS &&
-              fixture.held[1]->ready && !fixture.decoder->ReplaySealed() &&
+              fixture.held[1]->ready && fixture.decoder->ReplaySealed() &&
               fixture.decoder->replay.outstanding() == 0 &&
-              fixture.io.outputs.empty() && !fixture.io.invalid,
-          "later synchronization still drains the remaining picture and EOS");
+              fixture.io.outputs == std::deque<uint64_t>{0},
+          "the final exact picture completes without greedily consuming its following EOS marker");
+  Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+              fixture.io.outputs.empty() && fixture.decoder->device == nullptr &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1 &&
+              std::find(fixture.io.events.begin(), fixture.io.events.end(), "eos") <
+                  std::find(fixture.io.events.begin(), fixture.io.events.end(), "stop") &&
+              !fixture.io.invalid,
+          "explicit drain consumes the actual remaining EOS fence before hardware close");
 }
 
 // Hardware-free Phase-B replay of facts represented by the current backend:
@@ -10063,6 +10244,392 @@ static void DecodeControlDrainConsumesOneEventfdRead() {
   Require(read(descriptor, &value, sizeof(value)) < 0 && errno == EAGAIN,
           "the single successful read leaves no latched control event");
   Require(close(descriptor) == 0, "close control-drain fixture");
+}
+
+static void CompleteBorrowedTerminalPictures(TeardownFixture &fixture) {
+  fixture.driver.StopWorkers();
+  fixture.driver.stopping = false;
+  fixture.decoder->profile = VAProfileH264Main;
+  BindTeardownPicturesForVpp(fixture);
+  for (unsigned int index = 0; index != fixture.held.size(); ++index) {
+    const auto picture = fixture.decoder->decoded_frames.at((index + 1) * kTimestampStep);
+    picture->direct_picture = true;
+    picture->decode_target = picture->direct_backing = fixture.held[index];
+    picture->storage.clear();
+    picture->planes[0] = picture->planes[1] = nullptr;
+  }
+  Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS,
+          "submit originals whose real output owns public direct backing");
+  for (unsigned int index = 0; index != fixture.held.size(); ++index)
+    fixture.io.outputs.push_back((index + 1) * kTimestampStep);
+  Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
+              fixture.decoder->pending.empty() && fixture.decoder->replay.outstanding() == 0,
+          "materialize every original before terminal promotion begins");
+  for (unsigned int index = 0; index != fixture.held.size(); ++index) {
+    const auto picture = fixture.decoder->decoded_frames.at((index + 1) * kTimestampStep);
+    Require(picture->ready && picture->direct_backing == fixture.held[index] &&
+                picture->storage.empty() && fixture.held[index]->ready,
+            "actual receive retains the exact completed borrowed picture");
+  }
+}
+
+static void ReplaceTerminalOwnerWithVpp(TeardownFixture &fixture, unsigned int index) {
+  auto replacement = std::make_shared<Surface>();
+  Require(replacement->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
+          "allocate an independent promotion-turn VPP source");
+  replacement->ready = true;
+  for (unsigned int plane = 0; plane != 2; ++plane)
+    for (unsigned int row = 0; row != (plane == 0 ? 16U : 8U); ++row)
+      memset(replacement->planes[plane] + row * replacement->pitch[plane],
+             plane == 0 ? 80 : 128, 16);
+  {
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    replacement->id = fixture.driver.next_surface++;
+    fixture.driver.surfaces[replacement->id] = replacement;
+  }
+  VAConfigID config = VA_INVALID_ID;
+  VAContextID writer = VA_INVALID_ID;
+  VABufferID parameters = VA_INVALID_ID;
+  VAProcPipelineParameterBuffer pipeline = {};
+  pipeline.surface = replacement->id;
+  Require(CreateConfig(&fixture.context, VAProfileNone, VAEntrypointVideoProc,
+                       nullptr, 0, &config) == VA_STATUS_SUCCESS &&
+              CreateContext(&fixture.context, config, 16, 16, 0, nullptr, 0,
+                            &writer) == VA_STATUS_SUCCESS &&
+              CreateBuffer(&fixture.context, writer, VAProcPipelineParameterBufferType,
+                           sizeof(pipeline), 1, &pipeline, &parameters) == VA_STATUS_SUCCESS &&
+              BeginPicture(&fixture.context, writer, index + 1) == VA_STATUS_SUCCESS &&
+              RenderPicture(&fixture.context, writer, &parameters, 1) == VA_STATUS_SUCCESS &&
+              EndPicture(&fixture.context, writer) == VA_STATUS_SUCCESS &&
+              fixture.held[index]->ready && fixture.held[index]->trace_decode_identity == 0 &&
+              fixture.held[index]->decode_picture.expired() &&
+              fixture.held[index]->planes[0][0] == 80,
+          "a real VPP writer supersedes the exact public binding during a promotion turn");
+  Require(DestroyBuffer(&fixture.context, parameters) == VA_STATUS_SUCCESS &&
+              DestroyContext(&fixture.context, writer) == VA_STATUS_SUCCESS &&
+              DestroyConfig(&fixture.context, config) == VA_STATUS_SUCCESS,
+          "release the independent promotion-turn writer");
+  VASurfaceID id = replacement->id;
+  Require(DestroySurfaces(&fixture.context, &id, 1) == VA_STATUS_SUCCESS,
+          "release the independent VPP source");
+}
+
+static void TerminalPromotionTurnsPreserveExactBindings() {
+  TeardownFixture fixture(4);
+  CompleteBorrowedTerminalPictures(fixture);
+  std::vector<std::shared_ptr<Surface>> pictures;
+  for (unsigned int index = 0; index != fixture.held.size(); ++index)
+    pictures.push_back(fixture.decoder->decoded_frames.at((index + 1) * kTimestampStep));
+  // Model the read-only borrower independently of promotion; hardware close
+  // must remain ineligible until its controlled retirement below.
+  fixture.decoder->output_poll_inflight = 1;
+  TerminalCloseBarrier barrier("promotion");
+  unsigned int turns = 0;
+  terminal_promotion_turn = [&](std::unique_lock<std::mutex> &lock) {
+    Require(lock.owns_lock(), "one whole promotion finishes while locked");
+    if (turns++ != 0) return;
+    lock.unlock();
+    struct Relock {
+      std::unique_lock<std::mutex> &lock;
+      ~Relock() { lock.lock(); }
+    } relock{lock};
+    barrier.Block("promotion");
+  };
+  struct Join {
+    TerminalCloseBarrier &barrier;
+    std::thread thread;
+    ~Join() {
+      barrier.Release();
+      if (thread.joinable()) thread.join();
+      terminal_promotion_turn = {};
+    }
+  } cleanup{barrier, {}};
+  VAStatus status = VA_STATUS_ERROR_OPERATION_FAILED;
+  cleanup.thread = std::thread([&] {
+    status = DestroyContextWithTimeout(&fixture.context, 1, 0);
+  });
+  Require(barrier.Wait(), "eligible promotion batch reaches a controlled unlocked turn");
+  unsigned int promoted = 4;
+  std::vector<unsigned int> borrowed;
+  {
+    std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+    Require(fixture.decoder->closing && fixture.decoder->destroy_prepared &&
+                !fixture.decoder->retired && fixture.decoder->retirement_candidates.empty() &&
+                !fixture.decoder->CanYieldTerminalClose() &&
+                fixture.decoder->CanYieldTerminalClose(true),
+            "prepared cold fence allows CPU preparation but not hardware close with an armed borrower");
+    for (unsigned int index = 0; index != pictures.size(); ++index) {
+      if (pictures[index]->direct_backing) borrowed.push_back(index);
+      else promoted = index;
+    }
+    Require(promoted != 4 && borrowed.size() == 3,
+            "exactly one original is promoted before the first bounded turn");
+    pictures[borrowed.back()]->ready = false;
+    Require(DecodeWaitState(*fixture.decoder, pictures[borrowed.back()].get(),
+                fixture.decoder->generation, (borrowed.back() + 1) * kTimestampStep, {}) ==
+                VA_STATUS_ERROR_INVALID_CONTEXT &&
+                SyncDecodeSurface(&fixture.driver, pictures[borrowed.back()], &lock,
+                                  VA_TIMEOUT_INFINITE) == VA_STATUS_ERROR_INVALID_CONTEXT,
+            "new and resumed cold waiters cannot reach DIL during preparation");
+    pictures[borrowed.back()]->ready = true;
+    fixture.decoder->output_poll_inflight = 0;
+  }
+  const unsigned int keep = borrowed.back();
+  Require(SyncSurface(&fixture.context, keep + 1) == VA_STATUS_SUCCESS &&
+              SyncSurface2(&fixture.context, promoted + 1, 0) == VA_STATUS_SUCCESS,
+          "ready sync finishes during the controlled turn before the batch resumes");
+  {
+    std::lock_guard<std::mutex> lock(barrier.mutex);
+    Require(!barrier.released && !barrier.expired,
+            "ready sync completes before the controlled turn is released");
+  }
+  VASurfaceID destroyed = borrowed[0] + 1;
+  Require(DestroySurfaces(&fixture.context, &destroyed, 1) == VA_STATUS_SUCCESS,
+          "destroy a not-yet-promoted snapshot candidate during the unlocked turn");
+  ReplaceTerminalOwnerWithVpp(fixture, borrowed[1]);
+  ReplaceTerminalOwnerWithVpp(fixture, promoted);
+  {
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    fixture.driver.surfaces.rehash(fixture.driver.surfaces.bucket_count() * 4 + 37);
+    fixture.driver.contexts.rehash(fixture.driver.contexts.bucket_count() * 4 + 37);
+  }
+  barrier.Release();
+  cleanup.thread.join();
+  Require(status == VA_STATUS_SUCCESS && !barrier.expired && turns >= 1 &&
+              fixture.decoder->retired && fixture.decoder->device == nullptr &&
+              fixture.driver.contexts.count(1) == 0 && !fixture.io.invalid &&
+              fixture.held[keep]->completed_decode_picture.picture == pictures[keep] &&
+              !pictures[keep]->direct_backing,
+          "snapshot traversal survives both map rehashes and publishes only the surviving exact lease");
+  for (unsigned int index : {promoted, borrowed[0], borrowed[1]})
+    Require(!fixture.held[index]->completed_decode_picture.picture,
+            "neither previously prepared nor not-yet-promoted stale bindings gain a close lease");
+  for (unsigned int index : {promoted, borrowed[1], keep})
+    Require(pictures[index]->ready && !pictures[index]->failed &&
+                pictures[index]->frame_timestamp == (index + 1) * kTimestampStep &&
+                pictures[index]->planes[0][0] == DecodeIoMock::Luma((index + 1) * kTimestampStep),
+            "promotion and public VPP replacement preserve each captured original's own pixels");
+  CheckNewBobAfterTeardown(fixture, keep, true);
+}
+
+static void TerminalPromotionFailureGrantsNoLeases() {
+  TeardownFixture fixture(2);
+  CompleteBorrowedTerminalPictures(fixture);
+  const auto first_picture = fixture.driver.surfaces.begin()->second->decode_picture.lock();
+  std::shared_ptr<Surface> fault_owner;
+  for (const auto &entry : fixture.driver.surfaces) fault_owner = entry.second;
+  Require(first_picture != fault_owner->decode_picture.lock(),
+          "fault the last exact snapshot candidate after a different original is promoted");
+  mock_sync_fd = memfd_create("crystalhd-terminal-promotion-failure", MFD_CLOEXEC);
+  Require(mock_sync_fd >= 0, "allocate a terminal promotion CPU-read fault fd");
+  fault_owner->object_fds.push_back(mock_sync_fd);
+  mock_failed_sync_flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
+  const VAStatus status = DestroyContextWithTimeout(&fixture.context, 1, 0);
+  mock_sync_fd = -1;
+  mock_failed_sync_flags = UINT64_MAX;
+  Require(status == VA_STATUS_ERROR_OPERATION_FAILED && fixture.decoder->retired &&
+              fixture.decoder->retirement_candidates.empty() &&
+              fixture.decoder->device == nullptr && !fixture.io.invalid,
+          "a failed promotion consumes terminal close without inventing read leases");
+  Require(first_picture->ready && !first_picture->failed && !first_picture->direct_backing &&
+              !first_picture->storage.empty(),
+          "a different original really completed private promotion before the later fault");
+  for (const auto &owner : fixture.held)
+    Require(!owner->completed_decode_picture.picture,
+            "partial successful promotion cannot publish any lease after a later failure");
+}
+
+static void TerminalCloseDoesNotBlockReadySync() {
+  for (const auto &test : {std::pair<const char *, unsigned>{"stop", 0},
+                           {"close-decoder", 0}, {"close-device", 0},
+                           {"close-device", 1}, {"close-device", 2}}) {
+    TeardownFixture fixture(1);
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    fixture.decoder->profile = VAProfileH264Main;
+    fixture.decoder->live_h264 = fixture.decoder->auto_h264_prefeed = true;
+    fixture.decoder->next_timestamp = 2 * kTimestampStep;
+    fixture.decoder->replay = CrystalHDDecodeReplay(true);
+    Require(fixture.decoder->replay.Append(kTimestampStep, true,
+                {0, 0, 1, 0x65}, true),
+            "retain the final ordinary AU with immutable automatic-prefeed eligibility");
+    fixture.driver.configs[1] = {VAProfileH264Main, VAEntrypointVLD};
+    BindTeardownPicturesForVpp(fixture);
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS,
+            "submit the exact terminal-close picture");
+    fixture.io.outputs.push_back(kTimestampStep);
+    Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
+                fixture.decoder->pending.empty() && fixture.held[0]->ready &&
+                fixture.decoder->prefed_timestamp == 2 * kTimestampStep &&
+                fixture.decoder->pending_prefeed_timestamp == 0 &&
+                fixture.decoder->replay.outstanding() == 0 &&
+                fixture.decoder->replay.NextInput() == nullptr &&
+                fixture.decoder->decoded_frames.size() == 1 &&
+                !fixture.decoder->auxiliary.ever &&
+                fixture.io.input_calls.size() == 2,
+            "all real pixels complete while the actual pump's final unbound AUD prefix remains");
+    const auto owner = fixture.held[0];
+    const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    const auto pixels = owner->storage;
+    const uint64_t generation = fixture.decoder->generation;
+    if (test.second == 1) fixture.io.device_close_busy = 1;
+    if (test.second == 2) fixture.io.device_close_status = BC_STS_IO_ERROR;
+    TerminalCloseBarrier barrier(test.first);
+    fixture.io.on_close = [&](const char *stage) { barrier.Block(stage); };
+    struct Join {
+      TerminalCloseBarrier *barrier;
+      DecodeIoMock *io;
+      std::thread thread;
+      ~Join() {
+        barrier->Release();
+        if (thread.joinable()) thread.join();
+        io->on_close = {};
+      }
+    } cleanup{&barrier, &fixture.io, {}};
+    VAStatus status = VA_STATUS_ERROR_OPERATION_FAILED;
+    cleanup.thread = std::thread([&] {
+      status = DestroyContextWithTimeout(&fixture.context, 1, 0);
+    });
+    Require(barrier.Wait(), "terminal DIL call reaches its controlled barrier");
+    const unsigned polls = fixture.io.output_polls;
+    const size_t inputs = fixture.io.input_calls.size();
+    Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                SyncSurface2(&fixture.context, 1, 0) == VA_STATUS_SUCCESS,
+            "ready blocking and zero-timeout sync both finish while terminal DIL close is blocked");
+    {
+      std::lock_guard<std::mutex> lock(barrier.mutex);
+      Require(!barrier.released && !barrier.expired,
+              "ready sync finishes before the DIL close barrier is released");
+    }
+    {
+      std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+      Require(fixture.decoder->closing && fixture.decoder->destroy_prepared &&
+                  fixture.decoder->destroy_in_progress && !fixture.decoder->retired &&
+                  CapturedDecodePictureMatchesLifetime(&fixture.driver, owner, picture,
+                                                       fixture.decoder, generation),
+              "immutable captures stay live without publishing a post-close lease early");
+      // Fault-model a retained/resumed cold waiter after close admission. It
+      // must not poll the handle that the other thread is currently closing.
+      picture->ready = false;
+      const auto resumed = DecodeWaitState(*fixture.decoder, picture.get(), generation,
+                                           kTimestampStep, {});
+      const auto cold = SyncDecodeSurface(&fixture.driver, picture, &lock,
+                                          VA_TIMEOUT_INFINITE);
+      picture->ready = true;
+      Require(resumed == VA_STATUS_ERROR_INVALID_CONTEXT &&
+                  cold == VA_STATUS_ERROR_INVALID_CONTEXT,
+              "prepared terminal close excludes new and resumed nonready hardware polling");
+    }
+    Require(DestroyContextWithTimeout(&fixture.context, 1, 0) == VA_STATUS_ERROR_INVALID_CONTEXT &&
+                BeginPicture(&fixture.context, 1, 1) == VA_STATUS_ERROR_INVALID_CONTEXT,
+            "a second destroy and new decode work cannot enter the closing context");
+    VAContextID another = VA_INVALID_ID;
+    Require(CreateContext(&fixture.context, 1, 16, 16, 0, nullptr, 0, &another) ==
+                  VA_STATUS_ERROR_HW_BUSY && another == VA_INVALID_ID &&
+                fixture.io.open_attempts == 0 && fixture.io.output_polls == polls &&
+                fixture.io.input_calls.size() == inputs,
+            "the old handle remains reserved and ready/cold sync performs no DIL work");
+    barrier.Release();
+    cleanup.thread.join();
+    const VAStatus expected = test.second == 1 ? VA_STATUS_ERROR_HW_BUSY :
+        test.second == 2 ? VA_STATUS_ERROR_OPERATION_FAILED : VA_STATUS_SUCCESS;
+    Require(status == expected && fixture.decoder->retired &&
+                owner->storage == pixels && !barrier.expired && !fixture.io.invalid,
+            "terminal outcome retains the exact original pixels and old BUSY/error status");
+    Require(CapturedDecodePictureMatchesLifetime(&fixture.driver, owner, picture,
+                fixture.decoder, generation) == (test.second == 0),
+            "only consuming success publishes the exact completed-picture lease");
+    if (test.second == 1) {
+      Require(fixture.decoder->device == fixture.io.handle() &&
+                  fixture.driver.contexts.count(1) == 1 &&
+                  !fixture.decoder->CanYieldTerminalClose() &&
+                  DestroyContextWithTimeout(&fixture.context, 1, 0) == VA_STATUS_SUCCESS &&
+                  fixture.io.device_close_calls == 2 &&
+                  CapturedDecodePictureMatchesLifetime(&fixture.driver, owner, picture,
+                                                       fixture.decoder, generation),
+              "retired non-consuming BUSY keeps the original retry and later exact lease");
+    }
+  }
+}
+
+static void TerminateJoinsAnUnlockedTerminalDestroy() {
+  DecodeIoMock io;
+  MockDecodeScope scope(io);
+  VADriverContext context = {};
+  context.pDriverData = new Driver(-1);
+  Driver *driver = GetDriver(&context);
+  driver->StopWorkers();
+  driver->stopping = false;
+  auto decode = std::make_shared<DecodeContext>();
+  decode->id = 1;
+  decode->profile = VAProfileH264Main;
+  decode->width = decode->height = 16;
+  decode->device = io.handle();
+  decode->decoder_open = decode->decoder_started = true;
+  auto picture = std::make_shared<Surface>();
+  auto owner = std::make_shared<Surface>();
+  for (const auto &frame : {picture, owner}) {
+    Require(frame->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
+            "allocate terminate/destroy concurrency pixels");
+    frame->expected_timestamp = kTimestampStep;
+    frame->decode_identity = frame->trace_decode_identity = 1;
+    frame->trace_context = frame->trace_generation = frame->trace_submission_ordinal = 1;
+  }
+  owner->id = 1;
+  owner->decode_picture = picture;
+  driver->surfaces[1] = owner;
+  driver->contexts[1] = decode;
+  decode->pending[kTimestampStep] = 1;
+  decode->decoded_frames[kTimestampStep] = picture;
+  decode->surface_timestamps[owner.get()] = kTimestampStep;
+  Require(decode->replay.Append(kTimestampStep, true, {1}) &&
+              PumpDecodeInput(driver, decode.get()) == VA_STATUS_SUCCESS,
+          "admit the exact picture before concurrent terminate");
+  io.outputs.push_back(kTimestampStep);
+  Require(ReceiveAvailable(driver, decode.get()) == VA_STATUS_SUCCESS && owner->ready,
+          "complete all pixels before the held terminal close");
+  const auto pixels = owner->storage;
+  TerminalCloseBarrier barrier("close-device");
+  io.on_close = [&](const char *stage) { barrier.Block(stage); };
+  struct Join {
+    VADriverContext *context;
+    TerminalCloseBarrier *barrier;
+    std::thread destroyer, terminator;
+    ~Join() {
+      barrier->Release();
+      if (destroyer.joinable()) destroyer.join();
+      if (terminator.joinable()) terminator.join();
+      if (context->pDriverData) Terminate(context);
+    }
+  } cleanup{&context, &barrier, {}, {}};
+  VAStatus destroyed = VA_STATUS_ERROR_OPERATION_FAILED;
+  VAStatus terminated = VA_STATUS_ERROR_OPERATION_FAILED;
+  cleanup.destroyer = std::thread([&] { destroyed = DestroyContext(&context, 1); });
+  Require(barrier.Wait(), "active destroy releases the driver mutex only inside DeviceClose");
+  std::atomic<bool> terminate_done{false};
+  cleanup.terminator = std::thread([&] {
+    terminated = Terminate(&context);
+    terminate_done = true;
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  bool terminate_inside = false;
+  while (!terminate_inside && std::chrono::steady_clock::now() < deadline) {
+    {
+      std::lock_guard<std::mutex> lock(driver->mutex);
+      terminate_inside = driver->stopping;
+    }
+    std::this_thread::yield();
+  }
+  Require(terminate_inside,
+          "concurrent Terminate enters StopWorkers while DeviceClose is still blocked");
+  const bool returned_early = terminate_done;
+  barrier.Release();
+  cleanup.destroyer.join();
+  cleanup.terminator.join();
+  Require(!returned_early && destroyed == VA_STATUS_SUCCESS && terminated == VA_STATUS_SUCCESS &&
+              context.pDriverData == nullptr && io.device_close_calls == 1 &&
+              owner->storage == pixels && !barrier.expired && !io.invalid,
+          "Terminate joins the active destroy before one consuming close and driver destruction");
 }
 
 static void ContextDestroyWaitsForBorrowedOutputPoll() {
@@ -10697,6 +11264,9 @@ static void NeutralAuxInputSnapshotSurvivesPendingOutput() {
 }
 
 static void NeutralAuxiliaryTriggerOwnsOnlyTransport() {
+  // DEFAULT automatic prefeed, explicit LIVE+LOW, and both historical LIVE
+  // modes without ordinary prefeed all retain their own transport contract.
+  for (unsigned policy : {0U, 1U, 2U, 3U})
   for (bool prefix_busy : {false, true}) {
     DecodeIoMock io;
     MockDecodeScope scope(io);
@@ -10704,12 +11274,16 @@ static void NeutralAuxiliaryTriggerOwnsOnlyTransport() {
     auto &d = fixture.decoder;
     d.device = io.handle();
     d.decoder_open = d.decoder_started = true;
-    d.live_h264_fast_path = d.live_h264_gap_tolerant = true;
+    d.live_h264 = true;
+    d.live_h264_fast_path = d.live_h264_gap_tolerant = policy != 0;
+    d.auto_h264_prefeed = policy == 0;
+    d.low_latency_h264 = policy == 1;
     d.next_timestamp = 2 * kTimestampStep;
     d.prefed_timestamp = io.prefed_timestamp = d.next_timestamp;
     d.auxiliary.candidate.picture = NeutralPicture(16, 32);
     d.auxiliary.candidate.generation = d.generation;
     d.auxiliary.candidate.device = d.device;
+    d.auxiliary.candidate.prefeed = policy < 2;
     d.auxiliary.candidate_timestamp = kTimestampStep;
     auto first = fixture.Output(false, false, &fixture.top);
     Require(ProcessDecodedOutput(&fixture.driver, &d, first) == VA_STATUS_SUCCESS &&
@@ -10769,8 +11343,288 @@ static void NeutralAuxiliaryTriggerOwnsOnlyTransport() {
   }
 }
 
+static void NeutralAuxAdmissionSnapshotsPolicyAndSyntax() {
+  SavedEnvironment live("CRYSTALHD_VAAPI_LIVE_H264");
+  SavedEnvironment low("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
+  const auto set_policy = [](const char *name, int value) {
+    if (value < 0) unsetenv(name);
+    else setenv(name, value ? "1" : "0", 1);
+  };
+  for (int live_value : {-1, 0, 1}) {
+    for (int low_value : {-1, 0, 1}) {
+      set_policy("CRYSTALHD_VAAPI_LIVE_H264", live_value);
+      set_policy("CRYSTALHD_VAAPI_LOW_LATENCY_H264", low_value);
+      DecodeIoMock io;
+      io.allow_device_open = true;
+      MockDecodeScope scope(io);
+      Driver driver{-1};
+      driver.StopWorkers();
+      driver.stopping = false;
+      driver.configs[1] = {VAProfileH264Main, VAEntrypointVLD};
+      VADriverContext context = {};
+      context.pDriverData = &driver;
+      VAContextID id = VA_INVALID_ID;
+      Require(CreateContext(&context, 1, 16, 32, 0, nullptr, 0, &id) == VA_STATUS_SUCCESS,
+              "public ordinary context snapshots the LIVE/LOW policy matrix");
+      auto decode = driver.contexts.at(id);
+      auto target = std::make_shared<Surface>();
+      Require(target->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+              "allocate policy-matrix public target");
+      target->id = 1;
+      driver.surfaces[1] = target;
+      Require(BeginPicture(&context, id, 1) == VA_STATUS_SUCCESS,
+              "begin actual policy-matrix picture");
+      decode->picture = NeutralPicture(16, 32);
+      decode->have_picture = true;
+      VASliceParameterBufferH264 slice = {};
+      slice.slice_type = 2;
+      decode->slices.push_back(slice);
+      decode->slice_data.push_back({0x65, 0x88, 0x84});
+      io.input_busy = true;
+      const bool eligible = live_value == 1 || (live_value < 0 && low_value != 0);
+      Require(EndPicture(&context, id) == VA_STATUS_SUCCESS &&
+                  decode->auxiliary.syntax.size() == (eligible ? 1U : 0U),
+              "actual accepted AU captures syntax only for DEFAULT eligible or historical LIVE policy");
+      const auto accepted = decode->replay.NextInput()->bytes;
+      decode->picture = {}; // New mutable metadata must never replace that MBAFF AU.
+      io.input_busy = false;
+      Require(PumpDecodeInput(&driver, decode.get()) == VA_STATUS_SUCCESS &&
+                  io.input_calls[1].bytes == accepted &&
+                  decode->auxiliary.syntax.empty() &&
+                  decode->auxiliary.candidate_timestamp == (eligible ? kTimestampStep : 0),
+              "InputSent uses the accepted immutable AU, including strict/default opt-outs");
+      if (eligible)
+        Require(decode->auxiliary.candidate.picture.frame_num == 7 &&
+                    decode->auxiliary.candidate.picture.CurrPic.TopFieldOrderCnt == 18 &&
+                    decode->auxiliary.candidate.generation == decode->generation &&
+                    decode->auxiliary.candidate.device == decode->device &&
+                    decode->auxiliary.candidate.prefeed ==
+                        (low_value == 1 || (live_value != 1 && low_value < 0)),
+                "candidate keeps exact frame/POC/device/generation and accepted prefeed decision");
+      Require(!io.invalid, "public policy admission uses only mocked transport");
+    }
+  }
+}
+
+static void NeutralAuxFiniteActualEosPermitsContinuation() {
+  for (bool retained : {false, true}) {
+    for (bool closing : {false, true}) {
+      DecodeIoMock io;
+      io.allow_device_open = true;
+      io.library_capabilities = retained ? DTS_LIB_CAP_FLEA_H264_DRAINED_REOPEN : 0;
+      MockDecodeScope scope(io);
+      H264WeaveFixture fixture;
+      auto &d = fixture.decoder;
+      d.device = io.handle();
+      d.decoder_open = d.decoder_started = true;
+      d.live_h264 = d.auto_h264_prefeed = true;
+      d.next_timestamp = 2 * kTimestampStep;
+      d.prefed_timestamp = io.prefed_timestamp = d.next_timestamp;
+      d.auxiliary.candidate.picture = NeutralPicture(16, 32);
+      d.auxiliary.candidate.generation = d.generation;
+      d.auxiliary.candidate.device = d.device;
+      d.auxiliary.candidate.prefeed = true;
+      d.auxiliary.candidate_timestamp = kTimestampStep;
+      auto first = fixture.Output(false, false, &fixture.top);
+      auto complement = fixture.Output(true, false, &fixture.bottom);
+      Require(ProcessDecodedOutput(&fixture.driver, &d, first) == VA_STATUS_SUCCESS,
+              "finite original owns a real first field");
+      VppDeinterlace demand{};
+      demand.bob = true;
+      demand.field = crystalhd_vpp_bob::FieldParity::kBottom;
+      Require(TryH264Auxiliary(&fixture.driver, &d, fixture.public_frame, &demand,
+                              kDecodeBatchGraceNs) == VA_STATUS_SUCCESS && d.auxiliary.pending,
+              "DEFAULT accepts actual private lookahead before finite sealing");
+      const auto syntax = d.auxiliary.candidate;
+      io.early_eos = true;
+      Require(SealDecodeBatch(&fixture.driver, &d) == VA_STATUS_SUCCESS && d.replay.sealed(),
+              "finite batch is sealed while the genuine complement remains outstanding");
+      constexpr uint64_t next = 3 * kTimestampStep;
+      auto continuation = std::make_shared<Surface>();
+      Require(continuation->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+              "allocate accepted continuation before the old EOS");
+      continuation->expected_timestamp = next;
+      InheritTraceIdentity(continuation.get(), *fixture.private_frame);
+      continuation->decode_identity = continuation->trace_decode_identity = 42;
+      continuation->trace_submission_ordinal = 2;
+      continuation->h264_crop_unit_y = 4;
+      auto next_public = std::make_shared<Surface>();
+      Require(next_public->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+              "allocate the continuation's exact public binding");
+      next_public->id = 2;
+      next_public->expected_timestamp = next;
+      next_public->decode_identity = 42;
+      next_public->h264_crop_unit_y = 4;
+      InheritTraceIdentity(next_public.get(), *continuation);
+      next_public->decode_picture = continuation;
+      fixture.driver.surfaces[2] = next_public;
+      d.surface_timestamps[next_public.get()] = next;
+      d.decoded_frames[next] = continuation;
+      d.pending[next] = 2;
+      d.auxiliary.syntax.emplace(next, syntax);
+      Require(d.replay.Append(next, false, {0,0,1,0x41,0x80}, true),
+              "sealed replay retains the exact accepted continuation");
+      d.next_timestamp = 4 * kTimestampStep;
+      Require(!d.CanRestartAfterH264Auxiliary() &&
+                  ProcessDecodedOutput(&fixture.driver, &d, complement) == VA_STATUS_SUCCESS,
+              "pending auxiliary and missing actual EOS cannot permit restart");
+      const auto pixels = fixture.public_frame->storage;
+      const auto identity = fixture.public_frame->decode_identity;
+      const auto ordinal = d.next_submission_ordinal;
+      // Describe firmware output without repairing the accepted ledger: its
+      // identity must still come from the actual auxiliary Try call above.
+      fixture.output.PicInfo.timeStamp = kNeutralAuxToken;
+      fixture.output.PicInfo.flags &= ~VDEC_FLAG_UNKNOWN_SRC;
+      fixture.raw.timeStamp = kNeutralAuxToken / 20000U;
+      fixture.raw.flags = VDEC_FLAG_FIELDPAIR;
+      fixture.WritePib();
+      io.override_output = true;
+      Require(NeutralAuxReceive(&fixture, &io) == VA_STATUS_SUCCESS && !d.auxiliary.pending &&
+                  d.auxiliary.needs_eos && !d.auxiliary.ended &&
+                  !d.CanRestartAfterH264Auxiliary(),
+              "validated/released auxiliary pays only its private output debt, not EOS");
+      io.override_output = false;
+      bool activity = false;
+      Require(ReceiveOne(&fixture.driver, &d, 0, &activity) == VA_STATUS_SUCCESS && activity &&
+                  d.replay.NeedsRestart() && d.auxiliary.ended && !d.auxiliary.needs_eos &&
+                  !d.auxiliary.eos_only && d.prefed_timestamp == 0 &&
+                  d.pending_prefeed_timestamp == 0 && d.CanRestartAfterH264Auxiliary(),
+              "only the consumed actual firmware EOS pays every finite restart fence");
+      d.closing = closing;
+      const size_t calls = io.input_calls.size();
+      Require(PumpDecodeInput(&fixture.driver, &d, 1) == VA_STATUS_SUCCESS &&
+                  io.device_close_calls == (retained && !closing ? 0U : 1U) &&
+                  io.decoder_open_calls == 1 &&
+                  io.input_calls.size() == calls + 1 &&
+                  io.input_calls.back().timestamp == kTimestampStep &&
+                  !d.auxiliary.ever && d.auxiliary.syntax.empty() &&
+                  !d.auxiliary.candidate_timestamp && d.pending.at(next) == 2 &&
+                  d.decoded_frames.at(next) == continuation &&
+                  d.next_submission_ordinal == ordinal &&
+                  fixture.public_frame->storage == pixels &&
+                  fixture.public_frame->decode_identity == identity,
+              "drained auxiliary restarts retained/full hardware, including full closing drain, without stale syntax or public mutation");
+      Require(ProcessDecodedOutput(&fixture.driver, &d, first) == VA_STATUS_SUCCESS &&
+                  ProcessDecodedOutput(&fixture.driver, &d, complement) == VA_STATUS_SUCCESS &&
+                  fixture.public_frame->storage == pixels,
+              "reference-prefix replay cannot republish or rewrite a completed original");
+      Require(PumpDecodeInput(&fixture.driver, &d, 1) == VA_STATUS_SUCCESS &&
+                  d.replay.IsOutstanding(next) && d.auxiliary.candidate_timestamp == 0 &&
+                  d.next_submission_ordinal == ordinal && !io.invalid,
+              "queued continuation submits after replay and missing fresh syntax uses finite fallback");
+      first.PicInfo.timeStamp = complement.PicInfo.timeStamp = next;
+      ++first.PicInfo.picture_number;
+      ++complement.PicInfo.picture_number;
+      Require(ProcessDecodedOutput(&fixture.driver, &d, first) == VA_STATUS_SUCCESS &&
+                  ProcessDecodedOutput(&fixture.driver, &d, complement) == VA_STATUS_SUCCESS &&
+                  next_public->ready && next_public->frame_timestamp == next &&
+                  next_public->decode_identity == 42 && d.pending.count(next) == 0 &&
+                  d.replay.outstanding() == 0 && fixture.public_frame->storage == pixels,
+              "continuation completes its own real fields and exact public identity after replay");
+    }
+  }
+}
+
+static void NeutralAuxRestartRejectsUnpaidDebt() {
+  for (unsigned fault = 0; fault < 16; ++fault) {
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    Driver driver{-1};
+    DecodeContext d;
+    d.profile = VAProfileH264Main;
+    d.width = 16; d.height = 32;
+    d.device = io.handle();
+    d.decoder_open = d.decoder_started = true;
+    d.next_timestamp = 4 * kTimestampStep;
+    Require(d.replay.Append(kTimestampStep, true, {1}) && d.replay.InputSent() &&
+                d.replay.Seal() &&
+                d.replay.Observe(kTimestampStep) == CrystalHDDecodeReplay::Output::New &&
+                d.replay.EndOfSequence() && d.replay.Append(3 * kTimestampStep, false, {3}),
+            "prepare an ended replay with an accepted continuation");
+    d.auxiliary.ever = d.auxiliary.ended = true;
+    d.auxiliary.generation = d.generation;
+    d.auxiliary.device = d.device;
+    switch (fault) {
+      case 0: d.auxiliary.pending = true; break;
+      case 1: d.auxiliary.needs_eos = true; break;
+      case 2: d.auxiliary.eos_only = true; break;
+      case 3: d.auxiliary.ended = false; break;
+      case 4: d.auxiliary.device = nullptr; break;
+      case 5: ++d.auxiliary.generation; break;
+      case 6: d.h264_first_field.valid = true; break;
+      case 7: d.partial_input_timestamp = 3 * kTimestampStep; break;
+      case 8: d.partial_input_offset = 1; break;
+      case 9: d.prefed_timestamp = 4 * kTimestampStep; break;
+      case 10: d.pending_prefeed_timestamp = 4 * kTimestampStep;
+               d.pending_prefeed_generation = d.generation; break;
+      case 11: d.pending_prefeed_generation = d.generation; break;
+      case 12: d.live_h264_fast_path = true; break;
+      case 13: d.retired = true; break;
+      case 14: d.destroy_prepared = true; break;
+      case 15: d.hardware_close_pending = true; break;
+    }
+    Require(!d.CanRestartAfterH264Auxiliary() &&
+                PumpDecodeInput(&driver, &d, 1) == VA_STATUS_ERROR_DECODING_ERROR &&
+                d.replay.failed() && io.input_calls.empty() && io.events.empty() &&
+                io.open_attempts == 0 && !io.invalid,
+            "unpaid auxiliary/EOS/field/prefix/generation/lifecycle debt fails before hardware restart or speculative retry");
+  }
+  for (unsigned debt = 0; debt < 3; ++debt) {
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    H264FieldFixture fixture(false, false, VA_FOURCC_NV12, 16, kTimestampStep);
+    auto &d = fixture.decoder;
+    d.device = io.handle();
+    d.decoder_open = d.decoder_started = true;
+    d.auxiliary.ever = d.auxiliary.needs_eos = true;
+    d.auxiliary.generation = d.generation;
+    d.auxiliary.device = d.device;
+    d.auxiliary.pending = debt == 0;
+    if (debt == 2) d.h264_first_field.valid = true;
+    Require(d.replay.Seal(), "seal before injecting a genuinely premature firmware EOS");
+    io.outputs.push_back(0);
+    bool activity = false;
+    Require(ReceiveOne(&fixture.driver, &d, 0, &activity) == VA_STATUS_ERROR_DECODING_ERROR &&
+                activity && d.replay.failed() && !d.auxiliary.ended &&
+                !d.CanRestartAfterH264Auxiliary() && io.input_calls.empty() &&
+                std::count(io.events.begin(), io.events.end(), "release") == 1 && !io.invalid,
+            "actual premature EOS with private output, real output or held-field debt cannot authorize restart");
+  }
+  {
+    DecodeIoMock io;
+    io.early_eos = true;
+    MockDecodeScope scope(io);
+    H264FieldFixture fixture(false, false, VA_FOURCC_NV12, 16, kTimestampStep);
+    auto &d = fixture.decoder;
+    d.device = io.handle();
+    d.decoder_open = d.decoder_started = true;
+    Require(ProcessDecodedOutput(&fixture.driver, &d,
+                                 fixture.Output(false, false, &fixture.top)) == VA_STATUS_SUCCESS &&
+                ProcessDecodedOutput(&fixture.driver, &d,
+                                     fixture.Output(true, false, &fixture.bottom)) == VA_STATUS_SUCCESS,
+            "finish all original fields before an auxiliary-only closing flush");
+    d.auxiliary.ever = d.auxiliary.needs_eos = true;
+    d.auxiliary.generation = d.generation;
+    d.auxiliary.device = d.device;
+    d.closing = true;
+    Require(SealDecodeBatch(&fixture.driver, &d) == VA_STATUS_SUCCESS && d.auxiliary.eos_only,
+            "only explicit close flushes private debt after all real pictures completed");
+    bool activity = false;
+    Require(ReceiveOne(&fixture.driver, &d, 0, &activity) == VA_STATUS_SUCCESS &&
+                d.auxiliary.ended && !d.replay.NeedsRestart() &&
+                d.replay.Append(3 * kTimestampStep, false, {3}) &&
+                !d.CanRestartAfterH264Auxiliary() &&
+                PumpDecodeInput(&fixture.driver, &d, 1) == VA_STATUS_ERROR_DECODING_ERROR &&
+                d.replay.failed() && io.input_calls.empty(),
+            "auxiliary-only EOS cannot manufacture a real replay EOS or admit input to ended hardware");
+  }
+}
+
 static void NeutralAuxiliaryContracts() {
+  NeutralAuxAdmissionSnapshotsPolicyAndSyntax();
   NeutralAuxiliaryTriggerOwnsOnlyTransport();
+  NeutralAuxFiniteActualEosPermitsContinuation();
+  NeutralAuxRestartRejectsUnpaidDebt();
   NeutralAuxSyntaxIsSelfContained();
   NeutralAuxWeavePreservesHeldOriginal();
   NeutralAuxWeaveFaultsFailClosed();
@@ -10781,6 +11635,21 @@ static void NeutralAuxiliaryContracts() {
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::strcmp(argv[1], "--exact-sync-ready") == 0) {
+      ExactSyncLeavesLaterReadyOutputsQueued();
+      ExperimentalReadyRetainsRxBacklogSelection();
+      ExactReadySurfaceDoesNotWaitForBatchEos();
+      std::puts("VA-API sync: exact one-output completion, retained READY backlog selection and explicit EOS drain PASS");
+      return 0;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--terminal-close-ready") == 0) {
+      TerminalPromotionTurnsPreserveExactBindings();
+      TerminalPromotionFailureGrantsNoLeases();
+      TerminalCloseDoesNotBlockReadySync();
+      TerminateJoinsAnUnlockedTerminalDestroy();
+      std::puts("VA-API terminal close: bounded promotion turns, exact mutation/failure leases, ready sync, cold exclusion, hardware reservation, BUSY/failure and concurrent Terminate PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--mpeg2-fields") == 0) {
       Mpeg2FieldPairsPreserveIdentityPixelsAndReplay();
       Mpeg2FieldPairsRejectMalformedAndPreserveRetainedPictures();
@@ -10822,7 +11691,7 @@ int main(int argc, char **argv) {
       std::puts("VA-API private first-field Bob, progress/grace and LIVE tail: TFF/BFF pixels, ownership, cancellation and explicit drain PASS");
       return 0;
     }
-    Require(argc == 1, "usage: vaapi-replay-test [--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
+    Require(argc == 1, "usage: vaapi-replay-test [--exact-sync-ready|--terminal-close-ready|--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
     NeutralAuxiliaryContracts();
     DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobUsesCompactStorage();
@@ -10920,6 +11789,8 @@ int main(int argc, char **argv) {
     CompletedWaitNeverAcceptsDifferentOrDestroyedPicture();
     ReadyStatusProbeSkipsReadyHeadPeek();
     ZeroTimeoutNeverPumpsBusyDecodeSurface();
+    ExactSyncLeavesLaterReadyOutputsQueued();
+    ExperimentalReadyRetainsRxBacklogSelection();
     ExactReadySurfaceDoesNotWaitForBatchEos();
     ReadyInventoryConditionalOpportunityReplay();
     QueryOnlyObservesAutonomousDecodeProgress();
@@ -10927,6 +11798,10 @@ int main(int argc, char **argv) {
     DecodeControlWakeUsesExactArmedOutputLease();
     DecodeControlDrainConsumesOneEventfdRead();
     ContextDestroyWaitsForBorrowedOutputPoll();
+    TerminalPromotionTurnsPreserveExactBindings();
+    TerminalPromotionFailureGrantsNoLeases();
+    TerminalCloseDoesNotBlockReadySync();
+    TerminateJoinsAnUnlockedTerminalDestroy();
     BudgetedWorkerReleasesDriverMutex();
     Mpeg4StateOnlyEosStillWakesEventWorker();
     OutputPollHangupFailsWithoutSpinning();

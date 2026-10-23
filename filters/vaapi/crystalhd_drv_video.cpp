@@ -67,6 +67,7 @@ extern "C" {
 #include <libcrystalhd_if.h>
 #include "../crystalhd-h264-output.h"
 #include "crystalhd-access-unit-limits.h"
+#include "crystalhd-centered-output.h"
 #include "crystalhd-decode-replay.h"
 #include "crystalhd-mpeg4.h"
 #include "crystalhd-mpeg2.h"
@@ -908,8 +909,12 @@ struct Surface {
   SurfaceLayout layout;
   bool direct_decode_eligible = false;
   unsigned int h264_crop_unit_y = 0;
+  // The ordinary public picture remains a real, readable NV12 canvas. Only
+  // this exact immutable decoded picture owns its small card-returned pixels.
+  crystalhd_centered_output::Geometry centered_geometry;
+  std::shared_ptr<Surface> centered_pixels;
 
-  // Live H.264 pictures may initially use the public target's pixels while
+  // Selected H.264 pictures may initially use the public target's pixels while
   // keeping independent readiness/identity. Capture or backing reuse promotes
   // them to private storage; their own planes remain unset until promotion.
   // The reverse link is weak to avoid a lifetime cycle.
@@ -1641,6 +1646,116 @@ static bool BobVppRegionsValid(const VARectangle &source,
        (output_fourcc == VA_FOURCC_ARGB && output.x == 0 && output.y == 0));
 }
 
+static bool CenteredStorageMatches(const Surface &canvas, bool compact = false) {
+  const auto &g = canvas.centered_geometry;
+  const auto &small = canvas.centered_pixels;
+  const unsigned factor = compact ? 2U : 1U;
+  return g.enabled && small && small.get() != &canvas &&
+      !small->centered_geometry.enabled &&
+      canvas.fourcc == VA_FOURCC_NV12 && small->fourcc == VA_FOURCC_NV12 &&
+      g.canvas_width != 0 && g.canvas_width <= kMaxWidth &&
+      g.canvas_height != 0 && g.canvas_height <= kMaxHeight &&
+      (g.canvas_height & 3U) == 0 &&
+      canvas.width == g.canvas_width && canvas.height == g.canvas_height / factor &&
+      small->width == g.capture_width && small->height == g.capture_height / factor &&
+      g.capture_width >= 128 && (g.capture_width & 15U) == 0 &&
+      g.capture_height != 0 && (g.capture_height & 3U) == 0 &&
+      (g.x & 1U) == 0 && (g.y & 3U) == 0 &&
+      g.x <= g.canvas_width && g.capture_width <= g.canvas_width - g.x &&
+      g.y <= g.canvas_height && g.capture_height <= g.canvas_height - g.y;
+}
+
+// Compose real interlaced NV12, not a deinterlacer or a small opaque reference.
+// Compact storage is private to the already-existing first-field Bob route.
+static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
+                                  bool compact = false,
+                                  bool decoded_public = false) {
+  if (canvas == nullptr || !CenteredStorageMatches(picture, compact) ||
+      canvas->fourcc != VA_FOURCC_NV12 || canvas->width != picture.width ||
+      canvas->height != picture.height ||
+      canvas->expected_timestamp != picture.expected_timestamp ||
+      canvas->decode_identity != picture.decode_identity)
+    return false;
+  const auto &g = picture.centered_geometry;
+  const auto &small = picture.centered_pixels;
+  if (!small->ready || small->failed || small->destroyed ||
+      small->expected_timestamp == 0 ||
+      small->frame_timestamp != small->expected_timestamp ||
+      small->expected_timestamp != canvas->expected_timestamp ||
+      small->decode_identity != canvas->decode_identity)
+    return false;
+  for (unsigned plane = 0; plane != 2; ++plane) {
+    if (!canvas->planes[plane] || !small->planes[plane] ||
+        canvas->pitch[plane] < canvas->width || small->pitch[plane] < small->width)
+      return false;
+  }
+  if (!small->BeginCpuRead())
+    return false;
+  bool used_i915_wc = false;
+  const bool acquired = decoded_public
+      ? canvas->BeginDecodedCpuWrite(&used_i915_wc) : canvas->BeginCpuWrite();
+  if (!acquired) {
+    small->EndCpuRead();
+    return false;
+  }
+  const unsigned top = g.y / (compact ? 2U : 1U);
+  for (unsigned plane = 0; plane != 2; ++plane) {
+    const unsigned rows = plane == 0 ? canvas->height : canvas->height / 2U;
+    const unsigned first = plane == 0 ? top : top / 2U;
+    const unsigned active_rows = plane == 0 ? small->height : small->height / 2U;
+    const uint8_t black = plane == 0 ? (g.full_range ? 0 : 16) : 128;
+    for (unsigned row = 0; row < rows; ++row) {
+      uint8_t *line = canvas->planes[plane] + size_t{row} * canvas->pitch[plane];
+      if (row < first || row - first >= active_rows) {
+        memset(line, black, canvas->width);
+      } else {
+        memset(line, black, g.x);
+        memcpy(line + g.x,
+               small->planes[plane] + size_t{row - first} * small->pitch[plane],
+               small->width);
+        memset(line + g.x + small->width, black,
+               canvas->width - g.x - small->width);
+      }
+    }
+  }
+  const bool committed = decoded_public
+      ? canvas->EndDecodedCpuWrite(used_i915_wc) : canvas->EndCpuWrite();
+  const bool released = small->EndCpuRead();
+  if (!committed || !released)
+    return false;
+  canvas->ready = true;
+  canvas->failed = false;
+  canvas->frame_timestamp = small->frame_timestamp;
+  return true;
+}
+
+static bool ComposeCenteredCanvas(Surface *canvas, bool compact = false) {
+  return canvas != nullptr && ComposeCenteredCanvas(*canvas, canvas, compact);
+}
+
+// Capture and execution must agree before borrowing a full public canvas.
+// These operations read only the immutable sidecar, including a pending Bob
+// request whose first temporal field may become available before the picture.
+static bool CenteredBobUsesSidecar(
+    const Surface &source, const Surface &destination,
+    const VARectangle &source_region, const VARectangle &output_region,
+    const VppDeinterlace &deinterlace, const VppColorRange &color_range,
+    bool preserve_fields, bool source_is_field = false) {
+  if (&source == &destination || !deinterlace.bob || preserve_fields ||
+      destination.fourcc != VA_FOURCC_NV12 ||
+      !CenteredStorageMatches(source, source_is_field))
+    return false;
+  const auto &g = source.centered_geometry;
+  return source_region.x == 0 && source_region.y == 0 &&
+      source_region.width == g.canvas_width && source_region.height == g.canvas_height &&
+      output_region.x == 0 && output_region.y == 0 &&
+      output_region.width == g.canvas_width && output_region.height == g.canvas_height &&
+      destination.width == g.canvas_width && destination.height == g.canvas_height &&
+      color_range.source_full == g.full_range;
+}
+
+static bool PromoteDecodedPicture(Surface *picture);
+
 static VAStatus ProcessVpp(SwsContext **scaler,
                            std::vector<uint8_t> *argb_staging,
                            Surface *source, Surface *destination,
@@ -1651,6 +1766,43 @@ static VAStatus ProcessVpp(SwsContext **scaler,
                            bool source_is_field = false,
                            const VppColorRange &color_range = {},
                            bool preserve_fields = false) {
+  // All immediate, queued and unfenceable completions pass this dispatcher.
+  // Substitute only an operation exactly equal to Bob of the real canvas;
+  // resampling, different range declarations and other formats keep that
+  // ordinary full-canvas path and its normal validation below.
+  if (source && destination &&
+      CenteredBobUsesSidecar(*source, *destination, source_region, output_region,
+                            deinterlace, color_range, preserve_fields, source_is_field)) {
+    const auto &g = source->centered_geometry;
+    const auto &small = source->centered_pixels;
+    if (source->ready && !source->failed && !source->destroyed &&
+        small->ready && !small->failed && !small->destroyed &&
+        source->decode_identity != 0 && small->decode_identity == source->decode_identity &&
+        source->expected_timestamp != 0 &&
+        source->frame_timestamp == source->expected_timestamp &&
+        small->expected_timestamp == source->expected_timestamp &&
+        small->frame_timestamp == source->frame_timestamp &&
+        small->trace_context == source->trace_context &&
+        small->trace_generation == source->trace_generation) {
+      const VARectangle input{0, 0, static_cast<uint16_t>(g.capture_width),
+                                  static_cast<uint16_t>(g.capture_height)};
+      const VARectangle output{static_cast<int16_t>(g.x), static_cast<int16_t>(g.y),
+                               static_cast<uint16_t>(g.capture_width),
+                               static_cast<uint16_t>(g.capture_height)};
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_BOB)
+      CRYSTALHD_VAAPI_TEST_CENTERED_BOB(small->width, small->height, source_is_field);
+#endif
+      return ProcessVpp(scaler, argb_staging, small.get(), destination, input, output,
+                         destination_write_started, deinterlace, source_is_field,
+                         color_range, false);
+    }
+  }
+  // The sidecar shortcut above is the only capture allowed to retain borrowed
+  // full pixels. Any fallback must acquire its own real canvas before reading
+  // planes; never treat a direct picture's unset planes as private storage.
+  if (source && source->centered_geometry.enabled && source->direct_backing &&
+      !PromoteDecodedPicture(source))
+    return VA_STATUS_ERROR_OPERATION_FAILED;
   // Only the operation-private first-field view has compact storage. Keep
   // the original full-frame rectangle for field sampling, but validate its
   // physical rows against the real half-height allocation.
@@ -2112,6 +2264,7 @@ struct H264Auxiliary {
     VAPictureParameterBufferH264 picture{};
     uint64_t generation = 0;
     HANDLE device = nullptr;
+    bool prefeed = false;
   };
   std::map<uint64_t, Syntax> syntax;
   Syntax candidate{};
@@ -2183,6 +2336,9 @@ struct DecodeContext {
   unsigned int stream_height = 0;
   bool video_process = false;
   bool decode_processing = false;
+  // Explicit per-context policy; unlike runtime processing state, it survives
+  // a logical reset and never infers visible cropping from coded dimensions.
+  crystalhd_centered_output::Geometry centered_geometry;
   H264ProcessingGeometry processing_geometry;
   H264ProcessingGeometry processing_request;
   VASurfaceID processing_target = VA_INVALID_SURFACE;
@@ -2347,10 +2503,14 @@ struct DecodeContext {
     return IsMpeg2() || IsMpeg4() || IsVc1() ? stream_height : height;
   }
   unsigned int CaptureWidth() const {
+    if (centered_geometry.enabled)
+      return centered_geometry.capture_width;
     return processing_geometry.enabled ? processing_geometry.capture_width
                                        : StreamWidth();
   }
   unsigned int CaptureHeight() const {
+    if (centered_geometry.enabled)
+      return centered_geometry.capture_height;
     return processing_geometry.enabled ? processing_geometry.capture_height
                                        : StreamHeight();
   }
@@ -2407,15 +2567,62 @@ struct DecodeContext {
 
   enum class HardwareClosePurpose { Device, H264Replay };
 
-  BC_STATUS CloseHardware(uint64_t timeout_ns = kDecodeTimeoutNs) {
-    return CloseHardwareImpl(timeout_ns, HardwareClosePurpose::Device);
+  bool CanRestartAfterH264Auxiliary() const {
+    if (!auxiliary.ever)
+      return true;
+    // An auxiliary output is private debt, not proof that firmware ended.
+    // Queued continuation pictures and completed immutable pixels stay owned;
+    // only the actual drained EOS permits rebuilding their reference channel.
+    return IsH264Profile(profile) && !is_70012 && !live_h264_fast_path &&
+        auxiliary.ended && !auxiliary.pending && !auxiliary.needs_eos &&
+        !auxiliary.eos_only && auxiliary.generation == generation &&
+        auxiliary.device == device && device != nullptr &&
+        decoder_open && decoder_started && !retired &&
+        !destroy_prepared && !hardware_close_pending &&
+        retained_close_status == BC_STS_SUCCESS && replay.NeedsRestart() &&
+        !replay.failed() && replay.outstanding() == 0 &&
+        !h264_first_field.valid && partial_input_timestamp == 0 &&
+        partial_input_offset == 0 && prefed_timestamp == 0 &&
+        pending_prefeed_timestamp == 0 && pending_prefeed_generation == 0;
+  }
+
+  bool CanYieldTerminalClose(bool preparing_pictures = false) {
+    return IsH264Profile(profile) && !is_70012 && !video_process && closing &&
+        destroy_in_progress && destroy_prepared && !retired &&
+        destroy_status == VA_STATUS_SUCCESS && device != nullptr &&
+        decoder_open && decoder_started && !hardware_close_pending &&
+        retained_close_status == BC_STS_SUCCESS &&
+        // Preparation never touches DIL; an armed poll may retire meanwhile.
+        // The hardware close itself still requires every borrower to be gone.
+        (preparing_pictures || output_poll_inflight == 0) &&
+        pending.empty() && replay.outstanding() == 0 && !replay.sealed() &&
+        !replay.failed() && !h264_first_field.valid &&
+        partial_input_timestamp == 0 && partial_input_offset == 0 &&
+        // A final accepted AUD/filler prefix has no VCL or public picture.
+        // Terminal device close consumes it; replay restart remains stricter.
+        (prefed_timestamp == 0 || prefed_timestamp == next_timestamp) &&
+        pending_prefeed_timestamp == 0 &&
+        pending_prefeed_generation == 0 && !auxiliary.pending &&
+        !auxiliary.needs_eos && !auxiliary.eos_only &&
+        !decoded_frames.empty() &&
+        std::all_of(decoded_frames.begin(), decoded_frames.end(),
+                    [](const auto &entry) {
+                      return entry.second && entry.second->ready &&
+                             !entry.second->failed;
+                    }) && replay.NextInput() == nullptr && !replay.failed();
+  }
+
+  BC_STATUS CloseHardware(uint64_t timeout_ns = kDecodeTimeoutNs,
+                         std::unique_lock<std::mutex> *driver_lock = nullptr) {
+    return CloseHardwareImpl(timeout_ns, HardwareClosePurpose::Device, driver_lock);
   }
 
   BC_STATUS CloseHardwareForH264Replay(uint64_t timeout_ns = kDecodeTimeoutNs) {
     return CloseHardwareImpl(timeout_ns, HardwareClosePurpose::H264Replay);
   }
 
-  BC_STATUS CloseHardwareImpl(uint64_t timeout_ns, HardwareClosePurpose purpose) {
+  BC_STATUS CloseHardwareImpl(uint64_t timeout_ns, HardwareClosePurpose purpose,
+                             std::unique_lock<std::mutex> *driver_lock = nullptr) {
     // A successful EOS has retired every hardware output before this private
     // replay restart. Completed pictures own copied pixels, not RX leases.
     // Never infer this contract from a version number or another optional API.
@@ -2427,9 +2634,30 @@ struct DecodeContext {
         replay.outstanding() == 0 && !h264_first_field.valid &&
         partial_input_timestamp == 0 && partial_input_offset == 0 &&
         prefed_timestamp == 0 && pending_prefeed_timestamp == 0 &&
+        CanRestartAfterH264Auxiliary() &&
         SupportsDrainedH264ChannelReopen();
+    bool yield_calls = purpose == HardwareClosePurpose::Device && driver_lock &&
+        driver_lock->owns_lock() && CanYieldTerminalClose();
     CancelPendingPrefeed();
     BC_STATUS result = retained_close_status;
+    const auto hardware_call = [&](auto call) {
+      if (!yield_calls)
+        return call();
+      BC_STATUS status;
+      driver_lock->unlock();
+      {
+        struct Relock {
+          std::unique_lock<std::mutex> *lock;
+          ~Relock() { lock->lock(); }
+        } relock{driver_lock};
+        status = call();
+      }
+      // A BUSY or failed operation retains the original locked cleanup/retry
+      // behavior. No DecodeContext or surface state changes while unlocked.
+      if (status != BC_STS_SUCCESS)
+        yield_calls = false;
+      return status;
+    };
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::nanoseconds(timeout_ns);
     const auto clear_abort_state = [&] {
@@ -2459,7 +2687,7 @@ struct DecodeContext {
     if (decoder_started) {
       BC_STATUS status;
       do {
-        status = DtsStopDecoder(device);
+        status = hardware_call([handle = device] { return DtsStopDecoder(handle); });
         if (status != BC_STS_BUSY)
           break;
         if (std::chrono::steady_clock::now() >= deadline)
@@ -2476,7 +2704,7 @@ struct DecodeContext {
     if (decoder_open && !lifecycle_busy) {
       BC_STATUS status;
       do {
-        status = DtsCloseDecoder(device);
+        status = hardware_call([handle = device] { return DtsCloseDecoder(handle); });
         if (status != BC_STS_BUSY)
           break;
         if (std::chrono::steady_clock::now() >= deadline)
@@ -2508,7 +2736,7 @@ struct DecodeContext {
     if (device != nullptr) {
       BC_STATUS status = BC_STS_SUCCESS;
       do {
-        status = DtsDeviceClose(device);
+        status = hardware_call([handle = device] { return DtsDeviceClose(handle); });
         if (status != BC_STS_BUSY)
           break;
         if (std::chrono::steady_clock::now() >= deadline)
@@ -2541,8 +2769,9 @@ struct DecodeContext {
     return result;
   }
 
-  BC_STATUS Close(uint64_t timeout_ns = kDecodeTimeoutNs) {
-    const BC_STATUS status = CloseHardware(timeout_ns);
+  BC_STATUS Close(uint64_t timeout_ns = kDecodeTimeoutNs,
+                  std::unique_lock<std::mutex> *driver_lock = nullptr) {
+    const BC_STATUS status = CloseHardware(timeout_ns, driver_lock);
     pending.clear();
     for (const auto &picture : experimental_ready)
       picture->experimental_ready_queued = false;
@@ -3277,6 +3506,20 @@ static bool ShouldAutoPrefeedH264(const DecodeContext &decode) {
          !decode.picture.pic_fields.bits.field_pic_flag;
 }
 
+static bool H264AuxiliaryPolicy(const DecodeContext &decode,
+                                bool accepted_prefeed) {
+  // DEFAULT ordinary input keeps finite EOS/replay semantics. Its accepted
+  // frame-AU prefeed may provide the same bounded Bob lookahead as LIVE+LOW.
+  // Explicit LIVE keeps its existing auxiliary contract independently of LOW.
+  // The additional ordinary finite path honors LIVE=0 and LOW=0, and its
+  // per-AU eligibility is never recomputed from a later picture's SPS.
+  return IsH264Profile(decode.profile) && !decode.is_70012 &&
+      !decode.experimental_ready_remap &&
+      ((decode.live_h264_fast_path && decode.live_h264_gap_tolerant) ||
+       (!decode.decode_processing && decode.live_h264 && accepted_prefeed &&
+        (decode.low_latency_h264 || decode.auto_h264_prefeed)));
+}
+
 static VAStatus OpenDevice(DecodeContext *decode) {
   const uint32_t mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW |
                   DTS_SKIP_TX_CHK_CPB | DTS_PLAYBACK_DROP_RPT_MODE |
@@ -3344,7 +3587,8 @@ static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
   if ((decode->IsMpeg2() || decode->IsMpeg4() || decode->IsVc1()) &&
       decode->is_70012)
     goto fail;
-  if (decode->processing_geometry.enabled && decode->is_70012)
+  if ((decode->processing_geometry.enabled || decode->centered_geometry.enabled) &&
+      decode->is_70012)
     goto fail;
 
   input.FGTEnable = FALSE;
@@ -3374,11 +3618,11 @@ static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
   status = DtsSetInputFormat(decode->device, &input);
   if (status != BC_STS_SUCCESS)
     goto fail;
-  if (decode->processing_geometry.enabled) {
+  if (decode->processing_geometry.enabled || decode->centered_geometry.enabled) {
     BC_SCALING_PARAMS scaling = {};
     // Only width is implemented by DtsSetScaleParams. The explicit SPS crop
     // and validated exact aspect ratio determine the capture height.
-    scaling.sWidth = decode->processing_geometry.capture_width;
+    scaling.sWidth = decode->CaptureWidth();
     status = DtsSetScaleParams(decode->device, &scaling);
     if (status != BC_STS_SUCCESS)
       goto fail;
@@ -3948,7 +4192,7 @@ static VAStatus SnapshotCompletedVppPicture(
   return VA_STATUS_SUCCESS;
 }
 
-static bool PromoteDecodedPicture(const std::shared_ptr<Surface> &picture) {
+static bool PromoteDecodedPicture(Surface *picture) {
   if (!picture || !picture->direct_backing)
     return true;
   const auto backing = picture->direct_backing;
@@ -3956,9 +4200,9 @@ static bool PromoteDecodedPicture(const std::shared_ptr<Surface> &picture) {
                                   VA_FOURCC_NV12))
     return false;
   if (picture->ready && !picture->failed &&
-      (backing->destroyed || backing->decode_picture.lock() != picture ||
+      (backing->destroyed || backing->decode_picture.lock().get() != picture ||
        backing->frame_timestamp != picture->frame_timestamp ||
-       !CopyNv12Surface(*backing, picture.get()))) {
+       !CopyNv12Surface(*backing, picture))) {
     picture->ready = false;
     picture->failed = true;
     picture->direct_backing.reset();
@@ -3966,6 +4210,10 @@ static bool PromoteDecodedPicture(const std::shared_ptr<Surface> &picture) {
   }
   picture->direct_backing.reset();
   return true;
+}
+
+static bool PromoteDecodedPicture(const std::shared_ptr<Surface> &picture) {
+  return PromoteDecodedPicture(picture.get());
 }
 
 static uint64_t MonotonicNowNs() {
@@ -4476,6 +4724,8 @@ static VAStatus ProcessDecodedOutputImpl(
           decoded->second->trace_generation == decode->generation &&
           (mpeg2_interlaced
               ? decoded->second->width >= width && decoded->second->height >= height
+              : decode->centered_geometry.enabled
+                  ? CenteredStorageMatches(*decoded->second)
               : FitsH264CodedGeometry(*decoded->second, width, height, crop_unit_y)))) &&
         field_bytes <= std::numeric_limits<size_t>::max() &&
         static_cast<uint64_t>(output.YBuffDoneSz) * 4U >= field_bytes &&
@@ -4638,6 +4888,10 @@ static VAStatus ProcessDecodedOutputImpl(
       processing->surface = surface->second;
   }
   const auto fits = [&](const Surface &target) {
+    if (decode->centered_geometry.enabled)
+      return target.fourcc == VA_FOURCC_NV12 && target.width == decode->width &&
+          target.height >= decode->centered_geometry.visible_height &&
+          target.height <= decode->height && (target.height & 3U) == 0;
     if (decode->decode_processing)
       return target.width == output_width && target.height == output_height &&
              target.fourcc == VA_FOURCC_NV12;
@@ -4655,6 +4909,9 @@ static VAStatus ProcessDecodedOutputImpl(
       output_width == decode->CaptureWidth() &&
       output_height == decode->CaptureHeight() &&
       ((output_width | output_height) & 1U) == 0 &&
+      (!decode->centered_geometry.enabled ||
+       (decoded != decode->decoded_frames.end() &&
+        CenteredStorageMatches(*decoded->second))) &&
       (decoded == decode->decoded_frames.end() || fits(*decoded->second)) &&
       (!current_picture || fits(*surface->second)) &&
       static_cast<uint64_t>(output.YBuffDoneSz) * 4 >= required_bytes &&
@@ -4671,17 +4928,34 @@ static VAStatus ProcessDecodedOutputImpl(
   const bool direct = current_picture &&
       decoded != decode->decoded_frames.end() &&
       decoded->second->direct_backing == surface->second;
-  const auto copy_output = [&](Surface *target) {
+  const auto copy_raw_output = [&](Surface *target) {
     if (h264_field_pair)
       return CopyH264FieldPairToSurface(target, paired_first_field, output);
     if (h264_weave)
       return CopyH264WeaveToSurface(target, output);
     return CopyYuy2ToSurface(target, output, decode->is_70012);
   };
+  const auto copy_output = [&](Surface *target, Surface *centered_picture = nullptr,
+                               bool decoded_public = false) {
+    if (!decode->centered_geometry.enabled)
+      return copy_raw_output(target);
+    Surface *picture = centered_picture != nullptr ? centered_picture : target;
+    if (!CenteredStorageMatches(*picture))
+      return false;
+    const auto &small = picture->centered_pixels;
+    small->expected_timestamp = picture->expected_timestamp;
+    small->decode_identity = picture->decode_identity;
+    InheritTraceIdentity(small.get(), *picture);
+    if (!copy_raw_output(small.get())) {
+      small->failed = true;
+      return false;
+    }
+    return ComposeCenteredCanvas(*picture, target, false, decoded_public);
+  };
   if (decoded != decode->decoded_frames.end()) {
     if (complete && !discard_pixels) {
       if (direct) {
-        complete = copy_output(surface->second.get());
+        complete = copy_output(surface->second.get(), decoded->second.get(), true);
         wrote_pixels = complete;
         decoded->second->ready = complete;
         decoded->second->frame_timestamp = complete ? output.PicInfo.timeStamp : 0;
@@ -5143,6 +5417,11 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                                 unsigned int max_attempts = 32) {
   decode->input_backpressured = false;
   decode->input_budget_exhausted = false;
+  // Do not let speculative-prefix retry cancel unpaid auxiliary restart debt
+  // before the actual-EOS fence is checked.
+  if (decode->auxiliary.ever && decode->replay.NeedsRestart() &&
+      !decode->CanRestartAfterH264Auxiliary())
+    return FailDecode(driver, decode, "H.264 auxiliary restart before actual drained EOS");
   VAStatus advance = AdvanceMpeg4Epoch(driver, decode);
   if (advance != VA_STATUS_SUCCESS)
     return advance;
@@ -5154,8 +5433,8 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
     if (replay.failed())
       return VA_STATUS_ERROR_DECODING_ERROR;
     if (replay.NeedsRestart()) {
-      if (decode->auxiliary.ever)
-        return FailDecode(driver, decode, "H.264 auxiliary forbids decoder replay/restart");
+      if (!decode->CanRestartAfterH264Auxiliary())
+        return FailDecode(driver, decode, "H.264 auxiliary restart before actual drained EOS");
       // EOS terminates reference state. A qualified library may replace a fully
       // stopped/closed H.264 channel on its retained device; all other cases
       // retain full-device reopen. This is never the legacy channel-only FLUSH.
@@ -5279,8 +5558,9 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
         decode->auxiliary.candidate_timestamp = 0;
         auto syntax = decode->auxiliary.syntax.find(input_timestamp);
         if (syntax != decode->auxiliary.syntax.end()) {
-          if (!unit->completed && !decode->is_70012 &&
-              decode->live_h264_fast_path && decode->live_h264_gap_tolerant &&
+          if (!unit->completed &&
+              H264AuxiliaryPolicy(*decode,
+                                  prefeed_after_unit && syntax->second.prefeed) &&
               syntax->second.generation == decode->generation &&
               syntax->second.device == decode->device) {
             auxiliary_candidate = syntax->second;
@@ -5562,8 +5842,9 @@ static bool CapturedDecodePictureMatchesLifetime(
       CompletedDecodePictureMatches(driver, owner, completed);
 }
 
-static VAStatus PrepareCompletedDecodePictures(Driver *driver,
-                                               DecodeContext *decode) {
+static VAStatus PrepareCompletedDecodePictures(
+    Driver *driver, DecodeContext *decode,
+    std::unique_lock<std::mutex> *driver_lock = nullptr) {
   // Build the complete candidate set before publishing any new ownership.
   // A partial promotion is harmless, but a failure must grant no read lease.
   decode->retirement_candidates.clear();
@@ -5590,17 +5871,38 @@ static VAStatus PrepareCompletedDecodePictures(Driver *driver,
       completed.ordinal = picture->second->trace_submission_ordinal;
       if (!CompletedDecodePictureMatches(driver, owner, completed, false))
         continue;
-      // A public strong lease on a direct-backed picture would form a cycle.
-      // Promote while the exact owner and its pixels are still available.
-      if (!PromoteDecodedPicture(picture->second) ||
-          !CompletedDecodePictureMatches(driver, owner, completed))
-        return VA_STATUS_ERROR_OPERATION_FAILED;
       candidates.push_back(std::move(completed));
     }
+    std::vector<CompletedDecodePicture> prepared;
+    prepared.reserve(candidates.size());
+    for (size_t index = 0; index != candidates.size(); ++index) {
+      auto &completed = candidates[index];
+      const auto owner = completed.owner.lock();
+      // A previous turn may destroy/rebind a public owner or rehash its map.
+      // The snapshot owns the private picture, never a surviving map iterator.
+      if (!CompletedDecodePictureMatches(driver, owner, completed, false))
+        continue;
+      const bool borrowed = completed.picture->direct_backing != nullptr;
+      // A public strong lease on a direct-backed picture would form a cycle.
+      // Copy and change its planes only while the exact binding stays locked.
+      if (!PromoteDecodedPicture(completed.picture) ||
+          !CompletedDecodePictureMatches(driver, owner, completed))
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+      prepared.push_back(std::move(completed));
+      if (borrowed && index + 1 != candidates.size() && driver_lock &&
+          driver_lock->owns_lock() && decode->CanYieldTerminalClose(true)) {
+#if defined(CRYSTALHD_VAAPI_TEST_TERMINAL_PROMOTION_TURN)
+        CRYSTALHD_VAAPI_TEST_TERMINAL_PROMOTION_TURN(driver, *driver_lock);
+#endif
+        // Bound a completed batch to one locked full-canvas promotion. Ready
+        // sync/VPP may proceed while cold waits remain fenced by preparation.
+        driver->condition.wait_for(*driver_lock, std::chrono::milliseconds(1));
+      }
+    }
+    decode->retirement_candidates = std::move(prepared);
   } catch (const std::bad_alloc &) {
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
   }
-  decode->retirement_candidates = std::move(candidates);
   return VA_STATUS_SUCCESS;
 }
 
@@ -5802,6 +6104,20 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       return VA_STATUS_ERROR_INVALID_PARAMETER;
   } else if (original_surface->opaque_reference) {
     return VA_STATUS_ERROR_INVALID_SURFACE;
+  }
+  if (decode->centered_geometry.enabled) {
+    const auto &g = decode->centered_geometry;
+    if (!IsH264Profile(profile) || decode->decode_processing ||
+        decode->picture.pic_fields.bits.field_pic_flag ||
+        (!decode->picture.seq_fields.bits.frame_mbs_only_flag &&
+         !decode->picture.seq_fields.bits.mb_adaptive_frame_field_flag))
+      return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
+    if (target_surface->fourcc != VA_FOURCC_NV12 ||
+        target_surface->width != decode->width ||
+        target_surface->height < g.visible_height ||
+        target_surface->height > decode->height ||
+        (target_surface->height & 3U) != 0)
+      return VA_STATUS_ERROR_INVALID_SURFACE;
   }
   if (target_surface->vpp_writers != 0 || target_surface->vpp_readers != 0 ||
       target_surface->export_waiters != 0)
@@ -6016,12 +6332,18 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
             decode->width, decode->height, h264_crop_unit_y);
       return VA_STATUS_ERROR_INVALID_SURFACE;
     }
-    if (decode->decode_processing &&
-        (((decode->height - decode->processing_request.visible_height) %
+    const auto visible_height = decode->centered_geometry.enabled
+        ? decode->centered_geometry.visible_height : decode->processing_request.visible_height;
+    const auto capture_height = decode->centered_geometry.enabled
+        ? decode->centered_geometry.capture_height : decode->processing_request.capture_height;
+    const auto capture_width = decode->centered_geometry.enabled
+        ? decode->centered_geometry.capture_width : decode->processing_request.capture_width;
+    if ((decode->decode_processing || decode->centered_geometry.enabled) &&
+        (((decode->height - visible_height) %
               h264_crop_unit_y) != 0 ||
-         (decode->processing_request.capture_height % h264_crop_unit_y) != 0 ||
+         (capture_height % h264_crop_unit_y) != 0 ||
          (!decode->picture.seq_fields.bits.frame_mbs_only_flag &&
-          decode->processing_request.capture_width % 16U != 0)))
+          capture_width % 16U != 0)))
       return VA_STATUS_ERROR_INVALID_PARAMETER;
 
     const auto build_h264 = [&]() -> VAStatus {
@@ -6033,10 +6355,14 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
         // discarding pending output here loses real frames during playback.
         if (!decode->sent_parameter_sets || idr) {
           if (!BuildSps(decode->picture, profile, &assembled,
-                        decode->decode_processing
-                            ? decode->processing_request.visible_width : 0,
-                        decode->decode_processing
-                            ? decode->processing_request.visible_height : 0))
+                        decode->centered_geometry.enabled
+                            ? decode->centered_geometry.visible_width
+                            : decode->decode_processing
+                                ? decode->processing_request.visible_width : 0,
+                        decode->centered_geometry.enabled
+                            ? decode->centered_geometry.visible_height
+                            : decode->decode_processing
+                                ? decode->processing_request.visible_height : 0))
             return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
         }
         // VA exposes active reference counts on each slice instead of the
@@ -6152,7 +6478,10 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   }
 
   std::shared_ptr<Surface> decoded_frame;
-  const bool direct_picture = !decode->decode_processing && decode->live_h264_fast_path &&
+  // Centered admission above validates the actual full logical canvas. Its
+  // smaller CaptureWidth/Height describe hardware output, not this backing.
+  const bool direct_picture = !decode->decode_processing &&
+                              (decode->live_h264_fast_path || decode->centered_geometry.enabled) &&
                               IsH264Profile(profile) &&
                               !decode->experimental_ready_remap &&
                               target_surface->direct_decode_eligible;
@@ -6171,6 +6500,18 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       if (!decoded_frame->AllocateCpuNv12(target_surface->width,
                                          target_surface->height,
                                          decode->private_backing_pool))
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    }
+    if (decode->centered_geometry.enabled) {
+      if (!decode->private_backing_pool)
+        decode->private_backing_pool =
+            std::make_shared<CrystalHDPrivateBackingPool>();
+      decoded_frame->centered_geometry = decode->centered_geometry;
+      decoded_frame->centered_geometry.canvas_width = target_surface->width;
+      decoded_frame->centered_geometry.canvas_height = target_surface->height;
+      decoded_frame->centered_pixels = std::make_shared<Surface>();
+      if (!decoded_frame->centered_pixels->AllocateCpuNv12(
+              decode->CaptureWidth(), decode->CaptureHeight(), decode->private_backing_pool))
         return VA_STATUS_ERROR_ALLOCATION_FAILED;
     }
   } catch (const std::bad_alloc &) {
@@ -6274,8 +6615,9 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                                      ShouldAutoPrefeedH264(*decode))) {
     return FailDecode(driver, decode, decode->replay.failure());
   }
-  if (IsH264Profile(profile) && decode->live_h264_fast_path &&
-      decode->live_h264_gap_tolerant) {
+  const bool auxiliary_prefeed =
+      decode->low_latency_h264 || ShouldAutoPrefeedH264(*decode);
+  if (H264AuxiliaryPolicy(*decode, auxiliary_prefeed)) {
     // Append already applied the replay cache/picture admission bounds.
     // One syntax record per not-yet-InputSent AU shares that bound.
     if (decode->auxiliary.syntax.size() >= decode->replay.cached_pictures())
@@ -6285,6 +6627,7 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       syntax.picture = decode->picture;
       syntax.generation = decode->generation;
       syntax.device = decode->device;
+      syntax.prefeed = auxiliary_prefeed;
       if (!decode->auxiliary.syntax.emplace(timestamp, syntax).second)
         return FailDecode(driver, decode, "H.264 syntax snapshot duplicate");
     } catch (const std::bad_alloc &) {
@@ -6373,6 +6716,13 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     unused.swap(retirement_candidate->storage);
     retirement_candidate->planes[0] = retirement_candidate->planes[1] = nullptr;
     decode->private_backing_pool->Recycle(std::move(unused));
+    if (retirement_candidate->centered_pixels) {
+      const auto &small = retirement_candidate->centered_pixels;
+      std::vector<uint8_t> small_unused;
+      small_unused.swap(small->storage);
+      small->planes[0] = small->planes[1] = nullptr;
+      decode->private_backing_pool->Recycle(std::move(small_unused));
+    }
   }
   // A surviving local reference would defeat the output path's map-only
   // check. Release it before ReceiveAvailable can process any old output.
@@ -6440,7 +6790,8 @@ static VAStatus DecodeWaitState(const DecodeContext &decode, Surface *surface,
   const VAStatus state = DecodeSurfaceState(surface);
   if (state != VA_STATUS_ERROR_HW_BUSY)
     return state;
-  if (decode.retired || decode.generation != generation)
+  if (decode.retired || (decode.closing && decode.destroy_prepared) ||
+      decode.generation != generation)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   return VA_STATUS_ERROR_HW_BUSY;
 }
@@ -6486,10 +6837,27 @@ static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
     prepared->expected_timestamp = operation.source_timestamp;
     const uint8_t *fields[2] = {};
     fields[bottom ? 1 : 0] = first.pixels.data();
-    if (!CopyH264InterlacedToSurface(prepared.get(), fields, first.width,
+    Surface *field_target = prepared.get();
+    if (source->centered_geometry.enabled) {
+      if (!CenteredStorageMatches(*source))
+        return VA_STATUS_ERROR_DECODING_ERROR;
+      prepared->decode_identity = source->decode_identity;
+      InheritTraceIdentity(prepared.get(), *source);
+      prepared->centered_geometry = source->centered_geometry;
+      prepared->centered_pixels = std::make_shared<Surface>();
+      field_target = prepared->centered_pixels.get();
+      if (!field_target->AllocateCpuNv12(first.width, first.height / 2U))
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
+      field_target->expected_timestamp = operation.source_timestamp;
+      field_target->decode_identity = source->decode_identity;
+      InheritTraceIdentity(field_target, *source);
+    }
+    if (!CopyH264InterlacedToSurface(field_target, fields, first.width,
                                     first.height, first.source_pitch,
                                     operation.source_timestamp,
                                     bottom ? 2U : 1U, true))
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    if (source->centered_geometry.enabled && !ComposeCenteredCanvas(prepared.get(), true))
       return VA_STATUS_ERROR_OPERATION_FAILED;
     *view = std::move(prepared);
   } catch (const std::bad_alloc &) {
@@ -6504,7 +6872,7 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
   auto &aux = decode->auxiliary;
   const auto &first = decode->h264_first_field;
   if (!demand || !demand->bob || idle < kDecodeBatchGraceNs || aux.pending ||
-      !decode->live_h264_fast_path || !decode->live_h264_gap_tolerant ||
+      !H264AuxiliaryPolicy(*decode, aux.candidate.prefeed) ||
       !aux.candidate_timestamp || !first.valid || first.replay_duplicate ||
       first.bottom == (demand->field == crystalhd_vpp_bob::FieldParity::kBottom) ||
       first.timestamp != surface->expected_timestamp ||
@@ -6704,7 +7072,8 @@ static VAStatus SyncDecodeSurface(
   std::shared_ptr<DecodeContext> decode;
   for (auto &entry : driver->contexts) {
     if (!entry.second->decoder_started ||
-        entry.second->hardware_close_pending)
+        entry.second->hardware_close_pending ||
+        (entry.second->closing && entry.second->destroy_prepared))
       continue;
     for (const auto &pending : entry.second->pending) {
       auto candidate = driver->surfaces.find(pending.second);
@@ -6796,7 +7165,11 @@ static VAStatus SyncDecodeSurface(
       return state;
     if (driver->stopping)
       return VA_STATUS_ERROR_OPERATION_FAILED;
-    VAStatus status = ReceiveAvailable(driver, decode.get());
+    // Exact mode rechecks its requested picture after every released output.
+    // Explicit remapping retains its old harvest boundary before selecting a
+    // payload: a smaller batch could select an older RX picture too early.
+    const unsigned int receive_budget = decode->experimental_ready_remap ? 64 : 1;
+    VAStatus status = ReceiveAvailable(driver, decode.get(), receive_budget);
     if (status == VA_STATUS_SUCCESS &&
         (surface->ready || presentation_ready()))
       break;
@@ -7317,7 +7690,13 @@ static VAStatus Terminate(VADriverContextP context) {
 
   VAStatus status = VA_STATUS_SUCCESS;
   {
-    std::lock_guard<std::mutex> lock(driver->mutex);
+    std::unique_lock<std::mutex> lock(driver->mutex);
+    // An admitted destroy may be outside this mutex in a terminal DIL call.
+    // Join that exact transaction before closing its handle or freeing Driver.
+    driver->condition.wait(lock, [&] {
+      return std::none_of(driver->contexts.begin(), driver->contexts.end(),
+          [](const auto &entry) { return entry.second->destroy_in_progress; });
+    });
     for (const auto &entry : driver->contexts) {
       DecodeContext *decode = entry.second.get();
       decode->closing = true;
@@ -7742,7 +8121,8 @@ static VAStatus CreateSurfaces(VADriverContextP context, int width, int height,
 
 static bool ObsoleteCompletedH264Surface(const DecodeContext &decode,
                                          const Surface &surface,
-                                         uint64_t timestamp) {
+                                         uint64_t timestamp,
+                                         bool allow_centered_direct = false) {
   if (!IsH264Profile(decode.profile) || decode.live_h264_fast_path ||
       !surface.ready || surface.failed || PublicReadRejected(&surface) ||
       surface.expected_timestamp != timestamp || surface.frame_timestamp != timestamp ||
@@ -7755,7 +8135,11 @@ static bool ObsoleteCompletedH264Surface(const DecodeContext &decode,
       surface.decode_identity == picture->second->decode_identity &&
       picture->second->ready && !picture->second->failed &&
       picture->second->frame_timestamp == timestamp &&
-      !picture->second->direct_backing;
+      (!picture->second->direct_backing ||
+       (allow_centered_direct && picture->second->centered_geometry.enabled &&
+        CenteredStorageMatches(*picture->second) &&
+        picture->second->direct_backing.get() == &surface &&
+        picture->second->decode_target.lock().get() == &surface));
 }
 
 static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
@@ -7775,6 +8159,56 @@ static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
     if (driver->surfaces.find(surface_ids[i]) == driver->surfaces.end() ||
         !requested.insert(surface_ids[i]).second)
       return VA_STATUS_ERROR_INVALID_SURFACE;
+  }
+  // Finite centered pictures may borrow their real public canvas. Preserve
+  // every otherwise-obsolete binding before any surface in this request is
+  // erased, so a failed allocation/read cannot leave a partially destroyed
+  // pool or invalidate an already captured source. Keep the actual pruned-IDR
+  // proof above; a retained reference still requires the ordinary epoch reset.
+  struct CenteredPromotion {
+    std::shared_ptr<Surface> picture;
+    std::shared_ptr<Surface> pixels;
+  };
+  std::vector<CenteredPromotion> promotions;
+  try {
+    for (int i = 0; i < count; ++i) {
+      const auto &surface = driver->surfaces.at(surface_ids[i]);
+      for (const auto &entry : driver->contexts) {
+        const auto &decode = entry.second;
+        if (decode->video_process || decode->closing)
+          continue;
+        const auto timestamp = decode->surface_timestamps.find(surface.get());
+        if (timestamp == decode->surface_timestamps.end() ||
+            !ObsoleteCompletedH264Surface(*decode, *surface, timestamp->second, true))
+          continue;
+        const auto &picture = decode->decoded_frames.at(timestamp->second);
+        if (!picture->direct_backing ||
+            std::any_of(promotions.begin(), promotions.end(),
+                        [&](const CenteredPromotion &promotion) {
+                          return promotion.picture == picture;
+                        }))
+          continue;
+        auto pixels = std::make_shared<Surface>();
+        if (!pixels->AllocateInternal(nullptr, -1, picture->width, picture->height,
+                                      VA_FOURCC_NV12))
+          return VA_STATUS_ERROR_ALLOCATION_FAILED;
+        if (!CopyNv12Surface(*surface, pixels.get()))
+          return VA_STATUS_ERROR_OPERATION_FAILED;
+        promotions.push_back({picture, std::move(pixels)});
+      }
+    }
+  } catch (const std::bad_alloc &) {
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
+  // All fallible work completed. The sidecar, geometry and decode identity
+  // remain on the original picture; only its borrowed full planes change.
+  for (const auto &promotion : promotions) {
+    promotion.picture->storage = std::move(promotion.pixels->storage);
+    for (unsigned plane = 0; plane != 2; ++plane) {
+      promotion.picture->pitch[plane] = promotion.pixels->pitch[plane];
+      promotion.picture->planes[plane] = promotion.pixels->planes[plane];
+    }
+    promotion.picture->direct_backing.reset();
   }
   std::unordered_set<DecodeContext *> reset_decoders;
   // Fresh VPP probe surfaces have no decoder or queued conversion to wake.
@@ -8268,6 +8702,22 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
     decode->experimental_ready_delay_ns = experimental_ready_delay_ns;
     decode->experimental_ready_latest = experimental_policy_latest;
   }
+  if (!video_process) {
+    crystalhd_centered_output::Config centered;
+    if (!crystalhd_centered_output::ParseConfig(
+            getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12"), &centered))
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    if (centered.enabled &&
+        (!h264 || decode->decode_processing ||
+         (experimental_ready_remap && strcmp(experimental_ready_remap, "1") == 0)))
+      return VA_STATUS_ERROR_ATTR_NOT_SUPPORTED;
+    // Sequence-dependent four-line crop admission is repeated at Submit.
+    // This selection is explicit and fixed for the context, never guessed
+    // from its coded height or enabled by a later VPP request.
+    if (!crystalhd_centered_output::BuildGeometry(
+            centered, decode->width, decode->height, 2, &decode->centered_geometry))
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+  }
   if (decode->live_h264)
     decode->replay = CrystalHDDecodeReplay(true);
   const VAContextID created = driver->next_context;
@@ -8307,9 +8757,13 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   decode->destroy_in_progress = true;
   struct DestroyCall {
+    Driver *driver;
     DecodeContext *decode;
-    ~DestroyCall() { decode->destroy_in_progress = false; }
-  } destroy_call{decode.get()};
+    ~DestroyCall() {
+      decode->destroy_in_progress = false;
+      driver->condition.notify_all();
+    }
+  } destroy_call{driver, decode.get()};
   if (!decode->destroy_prepared) {
     // A second call while the first call has temporarily released the driver
     // lock for draining is not a close retry yet.
@@ -8317,13 +8771,14 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
       return VA_STATUS_ERROR_INVALID_CONTEXT;
     decode->closing = true;
     decode->destroy_status = VA_STATUS_SUCCESS;
-    if (!decode->video_process) {
+    if (!decode->video_process)
       decode->destroy_status = DrainClosingContext(driver, decode, &lock);
-      if (decode->destroy_status == VA_STATUS_SUCCESS)
-        decode->destroy_status = PrepareCompletedDecodePictures(driver,
-                                                                decode.get());
-    }
+    // Drain may poll real output. Only after it finishes may preparation yield
+    // with the cold/resumed hardware paths fenced off from this closing device.
     decode->destroy_prepared = true;
+    if (!decode->video_process && decode->destroy_status == VA_STATUS_SUCCESS)
+      decode->destroy_status = PrepareCompletedDecodePictures(
+          driver, decode.get(), &lock);
   }
   if (decode->output_poll_inflight != 0) {
     // The worker's duplicated device fd outlives the DIL handle until poll
@@ -8343,13 +8798,28 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   if (decode->output_poll_inflight != 0)
     return VA_STATUS_ERROR_HW_BUSY;
-  // Keep valid immutable VPP captures live during borrower quiescence. Once
-  // retired, close and completed-picture publication must stay under this
-  // lock; exposing that intermediate state would cancel queued VPP readers.
-  decode->retired = true;
+  // Fully materialized immutable pictures need no DIL work. Keep their epoch
+  // live while only the blocking terminal calls release this lock; ready sync
+  // and VPP can finish without waiting behind the library's worker joins.
+  // Incomplete/failed drains and non-consuming retries keep the old locked path.
+  const bool yield_close = decode->CanYieldTerminalClose();
+  Debug("terminal close admission yield=%d prefed=%llu next=%llu pending=%zu "
+        "outstanding=%zu frames=%zu partial=%llu pending_prefeed=%llu "
+        "aux_pending=%d aux_eos=%d",
+        yield_close, static_cast<unsigned long long>(decode->prefed_timestamp),
+        static_cast<unsigned long long>(decode->next_timestamp),
+        decode->pending.size(), decode->replay.outstanding(),
+        decode->decoded_frames.size(),
+        static_cast<unsigned long long>(decode->partial_input_timestamp),
+        static_cast<unsigned long long>(decode->pending_prefeed_timestamp),
+        decode->auxiliary.pending, decode->auxiliary.needs_eos);
+  if (!yield_close)
+    decode->retired = true;
   ClearTraceReadExportsForContext(
       driver, TraceId(decode->id, VA_INVALID_ID), decode->generation);
-  const BC_STATUS closed = decode->Close(close_timeout_ns);
+  const BC_STATUS closed =
+      decode->Close(close_timeout_ns, yield_close ? &lock : nullptr);
+  decode->retired = true;
   // The sole non-consuming result keeps the context in the map. A later
   // vaDestroyContext call resumes only this terminal close; it never drains or
   // emits the destroy trace twice.
@@ -9177,7 +9647,9 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
         return VA_STATUS_ERROR_INVALID_SURFACE;
       frame = source_owner;
     }
-    if (!PromoteDecodedPicture(frame))
+    if (!CenteredBobUsesSidecar(*frame, *target->second, source_region, output_region,
+                               deinterlace, color_range, preserve_fields) &&
+        !PromoteDecodedPicture(frame))
       return VA_STATUS_ERROR_OPERATION_FAILED;
     decode->second->vpp_source = parameters->surface;
     decode->second->vpp_frame = std::move(frame);
