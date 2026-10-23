@@ -1627,6 +1627,20 @@ static bool InterleavedVppRegionsValid(const VARectangle &source,
          (output.y & (output_fourcc == VA_FOURCC_NV12 ? 3U : 1U)) == 0;
 }
 
+static bool BobVppRegionsValid(const VARectangle &source,
+                               const VARectangle &output,
+                               uint32_t output_fourcc) {
+  // Destination placement is independent of source field selection. Four
+  // luma-line alignment keeps NV12's UV field phase on the same canvas rows.
+  // Source crops and nonzero ARGB placement remain outside the Bob contract.
+  return source.x == 0 && source.y == 0 &&
+      ((source.width | output.width) & 1U) == 0 &&
+      crystalhd_vpp_bob::Nv12FrameHeightsValid(source.height, output.height) &&
+      ((output_fourcc == VA_FOURCC_NV12 &&
+        (output.x & 1U) == 0 && (output.y & 3U) == 0) ||
+       (output_fourcc == VA_FOURCC_ARGB && output.x == 0 && output.y == 0));
+}
+
 static VAStatus ProcessVpp(SwsContext **scaler,
                            std::vector<uint8_t> *argb_staging,
                            Surface *source, Surface *destination,
@@ -1687,13 +1701,8 @@ static VAStatus ProcessVpp(SwsContext **scaler,
     argb_staging_pitch = static_cast<size_t>(padded_row_bytes);
   }
   if (deinterlace.bob) {
-    // An origin-zero visible extent may exclude coded padding, without
-    // changing field/chroma phase. Nonzero crop origins remain unsupported.
-    if (source == destination || source_region.x != 0 || source_region.y != 0 ||
-        output_region.x != 0 || output_region.y != 0 ||
-        ((source_region.width | output_region.width) & 1U) != 0 ||
-        !crystalhd_vpp_bob::Nv12FrameHeightsValid(source_region.height,
-                                                output_region.height))
+    if (source == destination ||
+        !BobVppRegionsValid(source_region, output_region, destination->fourcc))
       return VA_STATUS_ERROR_INVALID_PARAMETER;
     const auto plane_fits = [](const uint8_t *plane, unsigned int pitch,
                                uint64_t rows, uint64_t row_bytes) {
@@ -1870,28 +1879,36 @@ static VAStatus ProcessVpp(SwsContext **scaler,
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
     if (deinterlace.bob) {
-      if (output_region.width != destination->width ||
+      if (output_region.x != 0 || output_region.y != 0 ||
+          output_region.width != destination->width ||
           output_region.height != destination->height) {
-        // Bob permits only origin-zero extents. The visible rectangle is
-        // overwritten below, so initialize only its right and bottom borders.
+        // Initialize only the four borders; the ROI is overwritten below.
+        // Include coded/odd backing extents, but leave pitch tails untouched.
         for (unsigned int plane = 0; plane != 2; ++plane) {
           const unsigned int rows = plane == 0
               ? destination->height : (destination->height + 1U) / 2;
           const unsigned int visible_rows = plane == 0
               ? output_region.height : output_region.height / 2;
+          const unsigned int top = plane == 0
+              ? output_region.y : output_region.y / 2;
+          const unsigned int bottom = top + visible_rows;
+          const unsigned int left = output_region.x;
+          const unsigned int right = left + output_region.width;
           const unsigned int row_bytes = plane == 0
               ? destination->width : Align(destination->width, 2);
-          if (row_bytes > output_region.width)
-            for (unsigned int row = 0; row < visible_rows; ++row)
-              memset(destination->planes[plane] +
-                         static_cast<size_t>(row) * destination->pitch[plane] +
-                         output_region.width,
-                     plane == 0 ? black_luma : 128,
-                     row_bytes - output_region.width);
-          for (unsigned int row = visible_rows; row < rows; ++row)
-            memset(destination->planes[plane] +
-                       static_cast<size_t>(row) * destination->pitch[plane],
-                   plane == 0 ? black_luma : 128, row_bytes);
+          for (unsigned int row = 0; row < rows; ++row) {
+            uint8_t *line = destination->planes[plane] +
+                            static_cast<size_t>(row) * destination->pitch[plane];
+            if (row < top || row >= bottom) {
+              memset(line, plane == 0 ? black_luma : 128, row_bytes);
+            } else {
+              if (left != 0)
+                memset(line, plane == 0 ? black_luma : 128, left);
+              if (right < row_bytes)
+                memset(line + right, plane == 0 ? black_luma : 128,
+                       row_bytes - right);
+            }
+          }
         }
       }
       // Each plane has its own physical-field row lattice. In particular,
@@ -1927,8 +1944,11 @@ static VAStatus ProcessVpp(SwsContext **scaler,
             source_row /= 2;
           const uint8_t *input = source->planes[plane] +
               static_cast<size_t>(source_row) * source->pitch[plane];
+          const unsigned int output_y = plane == 0
+              ? output_region.y : output_region.y / 2;
           uint8_t *output = destination->planes[plane] +
-              static_cast<size_t>(row) * destination->pitch[plane];
+              static_cast<size_t>(output_y + row) * destination->pitch[plane] +
+              output_region.x;
           if (same_width) {
             memcpy(output, input, output_region.width);
           } else if (plane == 0) {
@@ -9016,6 +9036,11 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
          !RectFits(output_region, *target->second) ||
          !InterleavedVppRegionsValid(source_region, output_region,
                                      target->second->fourcc)))
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    if (deinterlace.bob &&
+        (!RectFits(source_region, *source->second) ||
+         !RectFits(output_region, *target->second) ||
+         !BobVppRegionsValid(source_region, output_region, target->second->fourcc)))
       return VA_STATUS_ERROR_INVALID_PARAMETER;
 
     // Capture the exact picture when its parameters are submitted, not later

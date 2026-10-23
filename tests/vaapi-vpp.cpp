@@ -2887,6 +2887,192 @@ void BobImmediatePixelsAndWeaveReset() {
   RequireFieldRows(*fixture.target, 0, false);
 }
 
+std::shared_ptr<Surface> PaddedBobOutput(unsigned width, unsigned height) {
+  auto target = std::make_shared<Surface>();
+  Require(target->AllocateCpuNv12(width, height), "allocate a Bob ROI target");
+  target->pitch[0] = target->pitch[1] = width + 32;
+  target->storage.assign(size_t{target->pitch[0]} *
+                             (height + (height + 1) / 2) + 64, 0xa5);
+  target->planes[0] = target->storage.data();
+  target->planes[1] = target->planes[0] + size_t{target->pitch[0]} * height;
+  return target;
+}
+
+void RequireBobOutputRegion(const Surface &source, const Surface &target,
+                           const VARectangle &visible, const VARectangle &output,
+                           unsigned parity, bool full_range) {
+  for (unsigned plane = 0; plane != 2; ++plane) {
+    const unsigned rows = plane == 0 ? target.height : (target.height + 1) / 2;
+    const unsigned row_bytes = plane == 0 ? target.width : Align(target.width, 2);
+    const unsigned top = plane == 0 ? output.y : output.y / 2;
+    const unsigned active_rows = plane == 0 ? output.height : output.height / 2;
+    const unsigned source_rows = plane == 0 ? visible.height : visible.height / 2;
+    const unsigned left = output.x, right = left + output.width;
+    const unsigned unit = plane == 0 ? 1 : 2;
+    const uint8_t black = plane == 0 ? (full_range ? 0 : 16) : 128;
+    const auto neutral = [black](uint8_t value) { return value == black; };
+    for (unsigned row = 0; row < rows; ++row) {
+      const uint8_t *line = target.planes[plane] + size_t{row} * target.pitch[plane];
+      if (row < top || row >= top + active_rows) {
+        Require(std::all_of(line, line + row_bytes, neutral),
+                "Bob initializes complete top/bottom and coded-padding borders");
+      } else {
+        Require(std::all_of(line, line + left, neutral) &&
+                    std::all_of(line + right, line + row_bytes, neutral),
+                "Bob initializes both horizontal borders on every reused output");
+        const unsigned source_row =
+            uint64_t{row - top} * (source_rows / 2) / active_rows * 2 + parity;
+        const uint8_t *input = source.planes[plane] +
+                               size_t{source_row} * source.pitch[plane];
+        if (visible.width == output.width) {
+          Require(memcmp(line + left, input, output.width) == 0,
+                  "placed Bob keeps exact independent Y/UV field rows");
+        } else {
+          for (unsigned column = 0; column < output.width; ++column) {
+            const unsigned source_column =
+                uint64_t{column / unit} * (visible.width / unit) /
+                    (output.width / unit) * unit + column % unit;
+            if (line[left + column] != input[source_column])
+              Require(false, "placed Bob scales only the requested visible field extent");
+          }
+        }
+      }
+      Require(std::all_of(line + row_bytes, line + target.pitch[plane],
+                          [](uint8_t value) { return value == 0xa5; }),
+              "Bob preserves every pitch-padding byte");
+    }
+  }
+  const size_t used = size_t{target.pitch[0]} * target.height +
+                      size_t{target.pitch[1]} * ((target.height + 1) / 2);
+  Require(std::all_of(target.storage.begin() + used, target.storage.end(),
+                      [](uint8_t value) { return value == 0xa5; }),
+          "Bob preserves the outer output guard");
+}
+
+void BobAlignedOutputRegionsPreservePixelsAndBorders() {
+  for (unsigned canvas_height : {1080U, 1088U})
+    for (bool full_range : {false, true}) {
+      Fixture fixture;
+      fixture.target = PaddedBobOutput(1920, canvas_height);
+      fixture.driver.surfaces[2] = fixture.target;
+      // Reuse the same target from the larger ROI to the smaller one: stale
+      // previous ROI pixels must become range-correct black on all four sides.
+      for (unsigned geometry = 0; geometry != 3; ++geometry) {
+        const unsigned width = geometry == 0 ? 1536 : 1280;
+        const unsigned height = geometry == 0 ? 864 : 720;
+        const unsigned source_width = geometry == 2 ? 1920 : width;
+        const unsigned source_height = geometry == 2 ? 1088 : height;
+        auto picture = std::make_shared<Surface>();
+        fixture.source = std::make_shared<Surface>();
+        Require(picture->AllocateCpuNv12(source_width, source_height) &&
+                    fixture.source->AllocateCpuNv12(source_width, source_height),
+                "allocate a small or coded-1088 Bob source");
+        picture->ready = fixture.source->ready = true;
+        picture->expected_timestamp = picture->frame_timestamp = kTimestampStep;
+        fixture.source->expected_timestamp = fixture.source->frame_timestamp = kTimestampStep;
+        FillFieldRows(*picture);
+        const auto original = picture->storage;
+        fixture.driver.surfaces[1] = fixture.source;
+        fixture.decoder->surface_timestamps.clear();
+        fixture.decoder->surface_timestamps[fixture.source.get()] = kTimestampStep;
+        fixture.decoder->decoded_frames[kTimestampStep] = picture;
+        VARectangle visible = {0, 0, static_cast<uint16_t>(source_width),
+                                static_cast<uint16_t>(geometry == 2 ? 1080 : height)};
+        VARectangle output = {
+            static_cast<int16_t>(geometry == 2 ? 2 : (1920 - width) / 2),
+            static_cast<int16_t>(geometry == 2 ? 4 : (canvas_height - height) / 2),
+            static_cast<uint16_t>(width), static_cast<uint16_t>(height)};
+        for (uint32_t flags : std::array<uint32_t, 4>{{
+                 0U, VA_DEINTERLACING_BOTTOM_FIELD,
+                 VA_DEINTERLACING_BOTTOM_FIELD_FIRST,
+                 VA_DEINTERLACING_BOTTOM_FIELD_FIRST | VA_DEINTERLACING_BOTTOM_FIELD}}) {
+          VABufferID filter = CreateBobFilter(fixture, flags);
+          VAProcPipelineParameterBuffer pipeline = {};
+          pipeline.surface = 1;
+          pipeline.surface_region = &visible;
+          pipeline.output_region = &output;
+          pipeline.input_surface_flag = flags & VA_DEINTERLACING_BOTTOM_FIELD_FIRST
+              ? VA_BOTTOM_FIELD_FIRST : VA_TOP_FIELD_FIRST;
+          pipeline.filters = &filter;
+          pipeline.num_filters = 1;
+          pipeline.input_color_properties.color_range = full_range
+              ? VA_SOURCE_RANGE_FULL : VA_SOURCE_RANGE_REDUCED;
+          memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+                 &pipeline, sizeof(pipeline));
+          fixture.SubmitParameters();
+          Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                      SyncSurface2(&fixture.context, 2, 0) == VA_STATUS_SUCCESS &&
+                      fixture.target->ready && !fixture.target->failed &&
+                      fixture.target->expected_timestamp == kTimestampStep &&
+                      fixture.target->frame_timestamp == kTimestampStep &&
+                      fixture.target->vpp_writers == 0 && picture->vpp_readers == 0,
+                  "public Bob completes an aligned destination ROI with exact ownership and PTS");
+          RequireBobOutputRegion(*picture, *fixture.target, visible, output,
+              flags & VA_DEINTERLACING_BOTTOM_FIELD ? 1 : 0, full_range);
+          Require(picture->storage == original,
+                  "destination placement never mutates the immutable source");
+          Require(DestroyBuffer(&fixture.context, filter) == VA_STATUS_SUCCESS,
+                  "release the completed ROI filter");
+        }
+      }
+    }
+}
+
+void BobAlignedOutputRegionQueuedSnapshotAndCancellation() {
+  for (bool bottom : {false, true})
+    for (bool cancel : {false, true}) {
+      Fixture fixture;
+      fixture.driver.StopWorkers();
+      fixture.driver.stopping = false;
+      fixture.target = PaddedBobOutput(32, 32);
+      fixture.driver.surfaces[2] = fixture.target;
+      const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+      FillFieldRows(*picture);
+      picture->ready = false;
+      const auto original_source = picture->storage;
+      const auto original_target = fixture.target->storage;
+      VABufferID filter = CreateBobFilter(fixture, bottom
+          ? VA_DEINTERLACING_BOTTOM_FIELD_FIRST | VA_DEINTERLACING_BOTTOM_FIELD : 0);
+      VARectangle visible = {0, 0, 16, 16}, output = {8, 4, 16, 16};
+      const VARectangle captured_output = output;
+      VAProcPipelineParameterBuffer pipeline = {};
+      pipeline.surface = 1;
+      pipeline.surface_region = &visible;
+      pipeline.output_region = &output;
+      pipeline.input_surface_flag = bottom ? VA_BOTTOM_FIELD_FIRST : VA_TOP_FIELD_FIRST;
+      pipeline.filters = &filter;
+      pipeline.num_filters = 1;
+      pipeline.input_color_properties.color_range = VA_SOURCE_RANGE_FULL;
+      memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+             &pipeline, sizeof(pipeline));
+      fixture.SubmitParameters();
+      output = {0, 0, 8, 8};
+      Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                  fixture.driver.pending_vpp.size() == 1 &&
+                  picture->vpp_readers == 1 && fixture.target->vpp_writers == 1,
+              "queued Bob owns its captured nonzero destination rectangle");
+      Require(DestroyBuffer(&fixture.context, filter) == VA_STATUS_SUCCESS,
+              "queued ROI processing does not borrow client filter storage");
+      if (cancel)
+        fixture.decoder->Reset();
+      else
+        picture->ready = true;
+      fixture.driver.vpp_worker = std::thread([&] { RunVppWorker(&fixture.driver); });
+      Require(SyncSurface2(&fixture.context, 2, 1000000000ULL) ==
+                  (cancel ? VA_STATUS_ERROR_DECODING_ERROR : VA_STATUS_SUCCESS) &&
+                  fixture.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
+                  fixture.target->vpp_writers == 0 && picture->storage == original_source,
+              "queued ROI completion or reset releases both exact picture owners");
+      if (cancel)
+        Require(fixture.target->storage == original_target && !fixture.target->ready &&
+                    fixture.target->failed,
+                "canceled ROI work never touches output pixels or padding");
+      else
+        RequireBobOutputRegion(*picture, *fixture.target, visible, captured_output,
+                               bottom ? 1 : 0, true);
+    }
+}
+
 void Bob720ReturnsFhdThroughDirectAndTwoStageVpp() {
   Fixture fixture;
   auto picture = std::make_shared<Surface>();
@@ -3506,8 +3692,14 @@ void BobRejectsCanonicalSourceTargetAlias() {
 
 void BobRejectsCroppedRegions() {
   for (bool crop_source : {false, true}) {
-    for (VARectangle region : std::array<VARectangle, 3>{{
-             {0, 4, 16, 12}, {2, 0, 14, 16}, {0, 0, 16, 10}}}) {
+    const std::array<VARectangle, 5> rejected = crop_source
+        ? std::array<VARectangle, 5>{{{0, 4, 16, 12}, {2, 0, 14, 16},
+                                      {0, 0, 16, 10}, {-2, 0, 16, 16},
+                                      {0, 0, 18, 16}}}
+        : std::array<VARectangle, 5>{{{0, 2, 16, 12}, {1, 0, 14, 16},
+                                      {0, 0, 16, 10}, {2, 4, 16, 12},
+                                      {0, 8, 16, 12}}};
+    for (VARectangle region : rejected) {
       Fixture fixture;
       VABufferID filter = CreateBobFilter(fixture);
       SetPipelineFilters(fixture, &filter, 1);
@@ -3522,14 +3714,34 @@ void BobRejectsCroppedRegions() {
       const auto original = fixture.target->storage;
       Require(BeginPicture(&fixture.context, 2, 2) == VA_STATUS_SUCCESS,
               "begin a cropped Bob negative control");
-      const VAStatus rendered =
-          RenderPicture(&fixture.context, 2, &fixture.parameters, 1);
-      Require(rendered != VA_STATUS_SUCCESS ||
-                  EndPicture(&fixture.context, 2) != VA_STATUS_SUCCESS,
-              "nonzero origins or unaligned heights cannot mix Bob field phase");
-      Require(fixture.target->storage == original,
-              "a rejected Bob crop leaves destination pixels untouched");
+      Require(RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                  VA_STATUS_ERROR_INVALID_PARAMETER &&
+                  !fixture.processor->have_vpp_parameters &&
+                  fixture.driver.pending_vpp.empty() &&
+                  fixture.decoder->decoded_frames.at(kTimestampStep)->vpp_readers == 0 &&
+                  fixture.target->vpp_writers == 0 && fixture.target->storage == original,
+              "source crops, invalid phase and out-of-bounds Bob fail before capture or writes");
     }
+  }
+  for (VARectangle output : std::array<VARectangle, 2>{{
+           {2, 0, 14, 16}, {0, 4, 16, 12}}}) {
+    Fixture fixture;
+    fixture.target = PrivateArgbOutput();
+    fixture.driver.surfaces[2] = fixture.target;
+    VABufferID filter = CreateBobFilter(fixture);
+    SetPipelineFilters(fixture, &filter, 1);
+    VAProcPipelineParameterBuffer pipeline;
+    auto &buffer = fixture.driver.buffers.at(fixture.parameters);
+    memcpy(&pipeline, buffer.data.data(), sizeof(pipeline));
+    pipeline.output_region = &output;
+    memcpy(buffer.data.data(), &pipeline, sizeof(pipeline));
+    const auto original = fixture.target->storage;
+    Require(BeginPicture(&fixture.context, 2, 2) == VA_STATUS_SUCCESS &&
+                RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                    VA_STATUS_ERROR_INVALID_PARAMETER &&
+                !fixture.processor->have_vpp_parameters &&
+                fixture.target->storage == original,
+            "nonzero ARGB Bob output remains unsupported and untouched");
   }
   // Real clients can expose an origin-zero visible extent within coded
   // padding. The mapper must use that extent, not the allocated height.
@@ -5979,6 +6191,8 @@ int VppFullTestEntry(int argc, char **argv) {
     BobCapabilityEnumerationAndCapacity();
     BobPipelineFilterValidation();
     BobImmediatePixelsAndWeaveReset();
+    BobAlignedOutputRegionsPreservePixelsAndBorders();
+    BobAlignedOutputRegionQueuedSnapshotAndCancellation();
     Bob720ReturnsFhdThroughDirectAndTwoStageVpp();
     CompletedVppOutputsRetainChainedSnapshots();
     ExternalWritersCannotAuthorizeCompletedVppSources();
@@ -6039,7 +6253,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 92 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 94 hardware-free regressions passed");
   return 0;
 }
 
@@ -6058,6 +6272,8 @@ int main(int argc, char **argv) {
       {"NV12 range preserves samples and background", VppColorRangeNv12PreservesSamples},
       {"interleaved NV12 scaling preserves field lattices", VppInterleavedScalingPreservesFieldRows},
       {"720 Bob returns FHD through direct and staged VPP", Bob720ReturnsFhdThroughDirectAndTwoStageVpp},
+      {"aligned NV12 Bob destination pixels and borders", BobAlignedOutputRegionsPreservePixelsAndBorders},
+      {"queued aligned Bob destination snapshot and cancellation", BobAlignedOutputRegionQueuedSnapshotAndCancellation},
       {"unsupported color ranges reject before capture", VppColorRangeRejectsUnsupportedRequests},
       {"private first-field Bob pixels preserve public readiness", FirstFieldCpuViewPreservesPublicReadiness},
       {"configuration rejects unsupported protection transactionally", ConfigRejectsUnsupportedProtectionTransactionally},

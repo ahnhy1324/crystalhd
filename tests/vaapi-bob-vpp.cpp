@@ -138,11 +138,13 @@ std::vector<unsigned int> Rows(unsigned int samples, unsigned int count) {
 }
 
 void ReferenceNv12(const Surface &source, Surface *target, unsigned int parity,
-                    const VARectangle &src, const VARectangle &dst) {
-  if (dst.width != target->width || dst.height != target->height) {
+                    const VARectangle &src, const VARectangle &dst,
+                    bool full_range = false) {
+  if (dst.x != 0 || dst.y != 0 ||
+      dst.width != target->width || dst.height != target->height) {
     for (unsigned int row = 0; row < target->height; ++row)
       std::fill_n(target->planes[0] + static_cast<size_t>(row) * target->pitch[0],
-                  target->width, 16);
+                  target->width, full_range ? 0 : 16);
     for (unsigned int row = 0; row < (target->height + 1) / 2; ++row)
       std::fill_n(target->planes[1] + static_cast<size_t>(row) * target->pitch[1],
                   (target->width + 1) & ~1U, 128);
@@ -156,10 +158,62 @@ void ReferenceNv12(const Surface &source, Surface *target, unsigned int parity,
     for (unsigned int y = 0; y < target_rows; ++y)
       for (unsigned int x = 0; x < dst.width / bytes; ++x)
         for (unsigned int byte = 0; byte < bytes; ++byte)
-          target->planes[plane][static_cast<size_t>(y) * target->pitch[plane] + x * bytes + byte] =
+          target->planes[plane][static_cast<size_t>(y + (plane == 0 ? dst.y : dst.y / 2)) *
+                                   target->pitch[plane] + dst.x + x * bytes + byte] =
               source.planes[plane][static_cast<size_t>(rows[y] * 2 + parity) * source.pitch[plane] +
                                    columns[x] * bytes + byte];
   }
+}
+
+void AlignedOutputRegions(unsigned parity, bool compact, bool full_range) {
+  Surface source, field, target, expected;
+  Initialize(&source, 32, 1088);
+  Initialize(&target, 35, 743);
+  Initialize(&expected, 35, 743);
+  Fill(&source);
+  if (compact) {
+    Initialize(&field, source.width, source.height / 2);
+    for (unsigned plane = 0; plane != 2; ++plane)
+      for (unsigned row = 0; row < field.height / (plane == 0 ? 1 : 2); ++row)
+        memcpy(field.planes[plane] + size_t{row} * field.pitch[plane],
+               source.planes[plane] + size_t{row * 2 + parity} * source.pitch[plane],
+               source.width);
+    field.ready = true;
+    field.failed = false;
+    field.expected_timestamp = field.frame_timestamp = source.frame_timestamp;
+  }
+  const auto source_bytes = source.storage, field_bytes = field.storage;
+  // Retain visible1080 independently of coded1088; odd backing dimensions
+  // exercise the last complete UV pair/row and independent plane pitch tails.
+  const VARectangle visible = {0, 0, 32, 1080};
+  const VARectangle regions[] = {{2, 4, 32, 736}, {6, 12, 16, 720}};
+  Scaler scaler;
+  std::vector<uint8_t> staging;
+  VppDeinterlace request;
+  request.bob = true;
+  request.field = static_cast<crystalhd_vpp_bob::FieldParity>(parity);
+  source.object_fds.push_back(777);
+  field.object_fds.push_back(777);
+  target.object_fds.push_back(888);
+  for (const VARectangle &output : regions) {
+    ReferenceNv12(source, &expected, parity, visible, output, full_range);
+    const unsigned before_io = io_calls, starts = read_starts, ends = read_ends;
+    Require(ProcessVpp(&scaler.value, &staging, compact ? &field : &source, &target,
+                       visible, output, false, request, compact,
+                       VppColorRange{full_range}) == VA_STATUS_SUCCESS,
+            "aligned Bob destination accepts woven/compact and full/limited input");
+    Require(target.storage == expected.storage,
+            "aligned ROI pixels, four reused borders, odd backing and all guards match independent oracle");
+    Require(io_calls == before_io + 4 && read_starts == starts + 1 &&
+                read_ends == ends + 1 && target.ready && !target.failed &&
+                target.expected_timestamp == 12345 && target.frame_timestamp == 12345 &&
+                source.storage == source_bytes && field.storage == field_bytes &&
+                scaler.value == nullptr && staging.empty(),
+            "ROI placement preserves source/target CPU ownership, source bytes and PTS");
+  }
+  source.object_fds.clear();
+  field.object_fds.clear();
+  target.object_fds.clear();
 }
 
 #ifndef CRYSTALHD_BOB_NV12_ONLY
@@ -702,10 +756,11 @@ void ImportLayoutBounds() {
 }
 
 void Invalid() {
-  for (unsigned int variant = 0; variant != 18; ++variant) {
+  for (unsigned int variant = 0; variant != 21; ++variant) {
     Surface source, target;
     Initialize(&source, 16, variant == 4 ? 6 : 8);
-    Initialize(&target, variant == 7 ? 15 : 16, variant == 5 ? 6 : 8, variant >= 16);
+    Initialize(&target, variant == 7 ? 15 : 16, variant == 5 ? 6 : 8,
+                variant == 16 || variant == 17 || variant == 20);
     Fill(&source);
     auto src = Full(source), dst = Full(target);
     VppDeinterlace request;
@@ -713,7 +768,7 @@ void Invalid() {
     switch (variant) {
       case 0: src.y = 2; src.height -= 4; break;
       case 1: src.width -= 1; break;
-      case 2: dst.x = 2; dst.width -= 2; break;
+      case 2: dst.x = 1; dst.width -= 2; break;
       case 3: dst.height -= 2; break;
       case 6: source.width = src.width = 15; break;
       case 8: request.field = static_cast<crystalhd_vpp_bob::FieldParity>(2); break;
@@ -725,6 +780,9 @@ void Invalid() {
       case 14: source.planes[1] = nullptr; break;
       case 16: source.pitch[0] = static_cast<unsigned int>(INT_MAX / 2) + 1; break;
       case 17: target.pitch[0] = 63; break;
+      case 18: dst.y = 2; dst.height = 4; break;
+      case 19: dst.x = 4; break;
+      case 20: dst.x = 2; dst.width -= 2; break;
       default: break;
     }
     source.object_fds.push_back(777);
@@ -800,6 +858,8 @@ int main(int argc, char **argv) {
     Require(argc == 1, "usage: test [--import-layout|--argb-strides (native)]");
     for (unsigned int parity = 0; parity != 2; ++parity) {
       for (bool compact : {false, true}) {
+        AlignedOutputRegions(parity, compact, false);
+        AlignedOutputRegions(parity, compact, true);
         FullRangeBobPixels(parity, compact, false);
 #ifndef CRYSTALHD_BOB_NV12_ONLY
         FullRangeBobPixels(parity, compact, true);

@@ -137,7 +137,7 @@ CPU, after decode. It duplicates the selected field's rows independently in
 Y and UV; it is not hardware Bob, BWDIF or motion-adaptive filtering. Existing
 zero-filter Weave, scaling and CSC remain available.
 
-Initially, Bob requires separate source/target backing, both interleaved NV12
+In published 1.2, Bob requires separate source/target backing, both interleaved NV12
 input fields, origin-zero processing regions, even region widths and region
 heights divisible by four. NV12 or ARGB output may retain neutral coded padding
 outside that region. Nonzero-origin cropping, single-field input (`ONE_FIELD`), FMD/SCD, temporal references,
@@ -153,8 +153,8 @@ Weave and ordinary surface synchronization still require the genuine pair.
 Device-free pixel, API, ownership/cancellation and i686/no-SSE checks do not
 establish real-time FHD, stock Kodi/Atom compatibility or physical A/V sync.
 Those remain tracked in [#445](https://github.com/ahnhy1324/crystalhd/issues/445)
-and [#436](https://github.com/ahnhy1324/crystalhd/issues/436). Published 1.1.0 and
-its installed module are unchanged until the selected 1.2 package is explicitly installed.
+and [#436](https://github.com/ahnhy1324/crystalhd/issues/436). Source-only
+development builds do not modify published packages or installed drivers.
 
 From an already built 1.2 source root with a compatible module running, a
 headless FFmpeg check for the selected H.264 MBAFF path is:
@@ -522,6 +522,15 @@ NV12 output preserves the input range, with range-correct black padding.
 Explicit NV12 range changes and reduced-range ARGB output are rejected.
 Explicit color standards, matrix/primaries/transfer conversion and selectable
 chroma-site conversion remain unsupported; this is not general color management.
+
+Unreleased 1.3 Bob also accepts an NV12 destination rectangle at even X and
+Y divisible by four, keeping the source origin at zero. For example, a
+1280×720 source can fill `{320, 180, 1280, 720}` on a 1920×1080 target without
+enlargement; the remaining visible canvas is range-correct black. This does
+not implicitly enable card scaling or alter stock Kodi's full-frame requests.
+Nonzero source crops and nonzero ARGB Bob destinations remain unsupported;
+the full centered-playback experiment remains [#477](https://github.com/ahnhy1324/crystalhd/issues/477).
+
 Pipeline capability format lists are borrowed, read-only driver
 metadata, valid until the VA display terminates. Read the returned pointers
 and counts; do not free them or assume supplied scratch arrays were filled.
