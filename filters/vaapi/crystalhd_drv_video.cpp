@@ -1068,8 +1068,16 @@ struct Surface {
         if (ioctl(dumb_drm_fd, DRM_IOCTL_MODE_MAP_DUMB, &map) == 0 &&
             drmPrimeHandleToFD(dumb_drm_fd, create.handle,
                                DRM_CLOEXEC | DRM_RDWR, &prime_fd) == 0) {
-          void *mapping = mmap(nullptr, create.size, PROT_READ | PROT_WRITE,
-                               MAP_SHARED, dumb_drm_fd, map.offset);
+          void *mapping = MAP_FAILED;
+          // DRM offsets remain 64-bit when ordinary off_t is only 32-bit.
+          if (create.size != 0 &&
+              create.size <= std::numeric_limits<size_t>::max() &&
+              map.offset <= static_cast<uint64_t>(
+                  std::numeric_limits<off64_t>::max())) {
+            mapping = mmap64(nullptr, static_cast<size_t>(create.size),
+                             PROT_READ | PROT_WRITE, MAP_SHARED, dumb_drm_fd,
+                             static_cast<off64_t>(map.offset));
+          }
           if (mapping != MAP_FAILED) {
             dumb_handle = create.handle;
             object_maps.push_back(mapping);
