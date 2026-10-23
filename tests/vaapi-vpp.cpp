@@ -4242,6 +4242,249 @@ void InternalQueuedVppCompletesWithoutSwSync() {
   }
 }
 
+struct ReadOnlyBobFixture : Fixture {
+  Surface exported_files;
+  VADRMPRIMESurfaceDescriptor prime = {};
+  VABufferID filter = VA_INVALID_ID;
+
+  ReadOnlyBobFixture(FenceIoMock &mock, unsigned parity = 0) {
+    driver.StopWorkers();
+    driver.stopping = false;
+    VASurfaceID id = 2;
+    Require(DestroySurfaces(&context, &id, 1) == VA_STATUS_SUCCESS,
+            "replace the fixture target with an actual driver allocation");
+    driver.next_surface = id;
+    Require(CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 16, 16,
+                            &id, 1, nullptr, 0) == VA_STATUS_SUCCESS && id == 2,
+            "allocate an ordinary internally owned NV12 target");
+    target = driver.surfaces.at(id);
+    const size_t size = target->storage.size();
+    const int fd = memfd_create("crystalhd-readonly-bob", MFD_CLOEXEC);
+    Require(fd >= 0, "allocate private exportable Bob backing");
+    target->object_fds = {fd};
+    mock.real_files.insert(fd);
+    Require(ftruncate(fd, size) == 0, "size private Bob backing");
+    void *mapping = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    Require(mapping != MAP_FAILED, "map private Bob backing");
+    target->object_maps = {mapping};
+    target->object_sizes = {size};
+    memset(mapping, 99, size);
+    target->planes[0] = static_cast<uint8_t *>(mapping);
+    target->planes[1] = target->planes[0] + target->pitch[0] * target->height;
+    Require(ExportSurfaceHandle(&context, id,
+                VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_COMPOSED_LAYERS,
+                &prime) == VA_STATUS_SUCCESS && prime.num_objects == 1 &&
+                target->layout.valid && target->direct_decode_eligible &&
+                !target->vpp_external_write_exposed &&
+                target->backing_owner == VA_INVALID_SURFACE,
+            "a real read-only export preserves internal allocation provenance");
+    exported_files.object_fds = {prime.objects[0].fd};
+    mock.real_files.insert(prime.objects[0].fd);
+    auto picture = decoder->decoded_frames.at(kTimestampStep);
+    FillFieldRows(*picture);
+    picture->ready = false;
+    filter = CreateBobFilter(*this,
+        parity ? VA_DEINTERLACING_BOTTOM_FIELD : 0);
+    SetPipelineFilters(*this, &filter, 1);
+  }
+
+  VAStatus ImportAlias(VASurfaceID *alias) {
+    VASurfaceAttrib attributes[2] = {};
+    attributes[0].type = VASurfaceAttribMemoryType;
+    attributes[0].value.type = VAGenericValueTypeInteger;
+    attributes[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
+    attributes[1].type = VASurfaceAttribExternalBufferDescriptor;
+    attributes[1].value.type = VAGenericValueTypePointer;
+    attributes[1].value.value.p = &prime;
+    return CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 16, 16,
+                            alias, 1, attributes, 2);
+  }
+
+  void Queue() {
+    SubmitParameters();
+    Require(EndPicture(&context, 2) == VA_STATUS_SUCCESS &&
+                driver.pending_vpp.size() == 1 &&
+                driver.pending_vpp.front().write_timeline == -1 &&
+                !driver.pending_vpp.front().worker_active &&
+                decoder->decoded_frames.at(kTimestampStep)->vpp_readers == 1 &&
+                target->vpp_writers == 1 && !target->ready && !target->failed,
+            "read-only exported cold Bob queues without a software timeline");
+  }
+
+  void StartWorker(FenceIoMock &mock) {
+    driver.vpp_worker = std::thread([this, &mock] {
+      MockFenceScope worker_scope(mock);
+      RunVppWorker(&driver);
+    });
+  }
+};
+
+void ReadOnlyExportedBobPendingPixels() {
+  for (unsigned parity : {0U, 1U}) {
+    FenceIoMock mock;  // The software timeline mock is available but unused.
+    MockFenceScope scope(mock);
+    ReadOnlyBobFixture fixture(mock, parity);
+    const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    fixture.Queue();
+    VASurfaceStatus state = VASurfaceReady;
+    VADRMPRIMESurfaceDescriptor writable = {};
+    VASurfaceID alias = VA_INVALID_SURFACE;
+    const size_t count = fixture.driver.surfaces.size();
+    Require(QuerySurfaceStatus(&fixture.context, 2, &state) == VA_STATUS_SUCCESS &&
+                state == VASurfaceRendering &&
+                SyncSurface2(&fixture.context, 2, 0) == VA_STATUS_ERROR_TIMEDOUT &&
+                SyncSurface2(&fixture.context, 2, 1000000ULL) == VA_STATUS_ERROR_TIMEDOUT &&
+                ExportSurfaceHandle(&fixture.context, 2,
+                    VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                    VA_EXPORT_SURFACE_WRITE_ONLY, &writable) == VA_STATUS_ERROR_SURFACE_BUSY &&
+                writable.num_objects == 0 &&
+                fixture.ImportAlias(&alias) == VA_STATUS_ERROR_SURFACE_BUSY &&
+                alias == VA_INVALID_SURFACE && fixture.driver.surfaces.size() == count &&
+                fixture.target->direct_decode_eligible &&
+                !fixture.target->vpp_external_write_exposed && mock.events.empty(),
+            "pending read-only Bob waits and rejects writable exposure or alias import");
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      picture->ready = true;
+    }
+    fixture.StartWorker(mock);
+    Require(SyncSurface2(&fixture.context, 2, 1000000000ULL) == VA_STATUS_SUCCESS &&
+                fixture.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
+                fixture.target->vpp_writers == 0 &&
+                mock.events == std::vector<std::string>{
+                    "start:" + std::to_string(fixture.target->object_fds[0]),
+                    "end:" + std::to_string(fixture.target->object_fds[0])} &&
+                mock.handles.empty() && mock.started.empty() && !mock.invalid && !mock.self_wait,
+            "the real worker commits with balanced CPU ownership and no fence calls");
+    RequireFieldRows(*fixture.target, parity, true);
+    uint8_t exported_luma = 0;
+    Require(pread(fixture.prime.objects[0].fd, &exported_luma, 1, 0) == 1 &&
+                exported_luma == static_cast<uint8_t>(20 + parity * 7),
+            "the previously exported descriptor sees the exact completed field");
+  }
+}
+
+void ReadOnlyExportedBobWritableExposureKeepsOldAdmission() {
+  for (unsigned exposure = 0; exposure != 3; ++exposure) {
+    FenceIoMock mock;
+    MockFenceScope scope(mock);
+    ReadOnlyBobFixture fixture(mock);
+    const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    fixture.Queue();
+    picture->ready = true;
+    fixture.StartWorker(mock);
+    Require(SyncSurface2(&fixture.context, 2, 1000000000ULL) == VA_STATUS_SUCCESS,
+            "complete read-only Bob before introducing another possible writer");
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    if (exposure < 2) {
+      VADRMPRIMESurfaceDescriptor writable = {};
+      Require(ExportSurfaceHandle(&fixture.context, 2,
+                  VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                  exposure == 0 ? VA_EXPORT_SURFACE_WRITE_ONLY : 0,
+                  &writable) == VA_STATUS_SUCCESS && writable.num_objects == 1 &&
+                  fixture.target->vpp_external_write_exposed,
+              "successful write-only or unspecified export records writable exposure");
+      mock.real_files.insert(writable.objects[0].fd);
+      close(writable.objects[0].fd);
+    } else {
+      VASurfaceID alias = VA_INVALID_SURFACE;
+      Require(fixture.ImportAlias(&alias) == VA_STATUS_SUCCESS &&
+                  fixture.driver.surfaces.at(alias)->backing_owner == 2,
+              "completed read-only backing may acquire a real imported alias");
+      for (int fd : fixture.driver.surfaces.at(alias)->object_fds)
+        mock.real_files.insert(fd);
+      Require(DestroySurfaces(&fixture.context, &alias, 1) == VA_STATUS_SUCCESS,
+              "retire the imported alias before testing sticky provenance");
+    }
+    Require(!fixture.target->direct_decode_eligible,
+            "writable export or import permanently clears direct allocation eligibility");
+    mock.events.clear();
+    picture->ready = false;
+    const bool can_fence = CpuCacheFlush().Available();
+    fixture.driver.stopping = !can_fence;
+    fixture.SubmitParameters();
+    const VAStatus status = EndPicture(&fixture.context, 2);
+    if (can_fence) {
+      Require(status == VA_STATUS_SUCCESS && fixture.driver.pending_vpp.size() == 1 &&
+                  fixture.driver.pending_vpp.front().write_timeline >= 0 &&
+                  mock.events.front() == "open",
+              "poisoned backing retains the established fenced route when available");
+      ReleasePendingVpp(&fixture.driver, fixture.driver.pending_vpp.front().sequence,
+                        VA_STATUS_ERROR_OPERATION_FAILED, false);
+    } else {
+      Require(status != VA_STATUS_SUCCESS && fixture.driver.pending_vpp.empty() &&
+                  mock.events.empty(),
+              "scalar poisoned backing retains synchronous cancellation without a timeline");
+    }
+    fixture.driver.stopping = false;
+    Require(picture->vpp_readers == 0 && fixture.target->vpp_writers == 0 &&
+                mock.handles.empty() && mock.started.empty() && !mock.invalid && !mock.self_wait,
+            "excluded cold work releases ownership without a late conversion");
+    Require(fixture.target->planes[0][0] == 20,
+            "canceling the old admission route preserves the preceding committed pixels");
+  }
+}
+
+void ReadOnlyExportedBobCancellationReleasesOwners() {
+  for (unsigned mode = 0; mode != 3; ++mode) {
+    FenceIoMock mock;
+    MockFenceScope scope(mock);
+    ReadOnlyBobFixture fixture(mock);
+    const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    fixture.Queue();
+    const auto target = fixture.target;
+    std::vector<uint8_t> before(target->object_sizes[0]);
+    memcpy(before.data(), target->object_maps[0], before.size());
+    std::shared_ptr<Surface> replacement;
+    if (mode == 0) {
+      fixture.decoder->Reset();
+    } else {
+      VASurfaceID retired = mode == 1 ? 2 : 1;
+      Require(DestroySurfaces(&fixture.context, &retired, 1) == VA_STATUS_SUCCESS,
+              "retire the pending read-only target or its decode source");
+      if (mode == 1) {
+        replacement = Picture(0, 77);
+        fixture.driver.surfaces[2] = replacement;
+      }
+    }
+    picture->ready = true;  // A late source completion cannot revive canceled work.
+    fixture.StartWorker(mock);
+    {
+      std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+      Require(fixture.driver.condition.wait_for(lock, std::chrono::seconds(1), [&] {
+                return fixture.driver.pending_vpp.empty();
+              }) && picture->vpp_readers == 0 && target->vpp_writers == 0,
+              "the real worker retires canceled unfenced ownership");
+    }
+    fixture.driver.StopWorkers();
+    Require(memcmp(before.data(), target->object_maps[0], before.size()) == 0 &&
+                (!replacement || replacement->planes[0][0] == 77) &&
+                mock.events.empty() && mock.handles.empty() && !mock.invalid,
+            "reset or destruction permits no late write to old or reused backing");
+  }
+}
+
+int ReadOnlyCpuPendingTests() {
+  const std::pair<const char *, void (*)()> groups[] = {
+      {"read-only exported Bob pending pixels", ReadOnlyExportedBobPendingPixels},
+      {"writable exposure retains old admission", ReadOnlyExportedBobWritableExposureKeepsOldAdmission},
+      {"read-only Bob cancellation releases owners", ReadOnlyExportedBobCancellationReleasesOwners}};
+  unsigned failures = 0;
+  for (const auto &group : groups) {
+    try {
+      group.second();
+      printf("PASS %s\n", group.first);
+    } catch (const std::exception &error) {
+      ++failures;
+      fprintf(stderr, "FAIL %s: %s\n", group.first, error.what());
+    }
+  }
+  printf("VA-API read-only CPU pending: 3 groups, %u failures\n", failures);
+  return failures == 0 ? 0 : 1;
+}
+
 void SyncTimeoutAdmissionDoesNotBlockZeroQueries() {
   for (const uint64_t timeout : {uint64_t{0}, uint64_t{1000000000},
                                  uint64_t{VA_TIMEOUT_INFINITE}}) {
@@ -6250,6 +6493,8 @@ static void FirstFieldCpuViewPreservesPublicReadiness() {
 // Keep the complete entry globally compiled for syntax coverage. CPU-only
 // section-GC builds retain only their selected state-machine groups below.
 int VppFullTestEntry(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--readonly-cpu-pending") == 0)
+    return ReadOnlyCpuPendingTests();
   if (argc == 2 && strcmp(argv[1], "--interleaved-scaling") == 0) {
     try {
       VppInterleavedScalingPreservesFieldRows();
@@ -6432,6 +6677,9 @@ int VppFullTestEntry(int argc, char **argv) {
     RepeatedVppRetainsPicture();
     DirectCaptureKeepsQueuedVppPrivate();
     InternalQueuedVppCompletesWithoutSwSync();
+    ReadOnlyExportedBobPendingPixels();
+    ReadOnlyExportedBobWritableExposureKeepsOldAdmission();
+    ReadOnlyExportedBobCancellationReleasesOwners();
     SyncTimeoutAdmissionDoesNotBlockZeroQueries();
     VppBacklogTurnPreservesCancellationAndOwnership();
     ExposedQueuedVppStillRequiresFence();
@@ -6475,11 +6723,13 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 96 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 99 hardware-free regressions passed");
   return 0;
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--readonly-cpu-pending") == 0)
+    return ReadOnlyCpuPendingTests();
 #ifndef CRYSTALHD_VPP_CPU_ONLY
   return VppFullTestEntry(argc, argv);
 #else

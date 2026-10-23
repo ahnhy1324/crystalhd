@@ -24,10 +24,13 @@ uint32_t DtsTxFreeSize(HANDLE) { VppCpuUnexpectedCall(__func__); }
 BC_STATUS DtsFlushInput(HANDLE, uint32_t) { VppCpuUnexpectedCall(__func__); }
 BC_STATUS DtsIsEndOfStream(HANDLE, uint8_t *) { VppCpuUnexpectedCall(__func__); }
 BC_STATUS DtsProcInput(HANDLE, uint8_t *, uint32_t, uint64_t, BOOL) { VppCpuUnexpectedCall(__func__); }
+BC_STATUS DtsProcOutputNoCopy(HANDLE, uint32_t, BC_DTS_PROC_OUT *) { VppCpuUnexpectedCall(__func__); }
+BC_STATUS DtsReleaseOutputBuffs(HANDLE, PVOID, BOOL) { VppCpuUnexpectedCall(__func__); }
 
 gbm_device *gbm_create_device(int) { VppCpuUnexpectedCall(__func__); }
 void gbm_device_destroy(gbm_device *) { VppCpuUnexpectedCall(__func__); }
 gbm_bo *gbm_bo_create(gbm_device *, uint32_t, uint32_t, uint32_t, uint32_t) { VppCpuUnexpectedCall(__func__); }
+gbm_bo *gbm_bo_import(gbm_device *, uint32_t, void *, uint32_t) { VppCpuUnexpectedCall(__func__); }
 int gbm_bo_get_plane_count(gbm_bo *) { VppCpuUnexpectedCall(__func__); }
 int gbm_bo_get_fd_for_plane(gbm_bo *, int) { VppCpuUnexpectedCall(__func__); }
 void *gbm_bo_map(gbm_bo *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *, void **) { VppCpuUnexpectedCall(__func__); }

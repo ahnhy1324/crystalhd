@@ -197,9 +197,13 @@ RC1's separate installed Kodi result remains HOLD. The selected 30-second FHD
 development control has Auto commit
 1,500 Bob outputs for 750 decoded pictures; Off uses no Bob. Both reach natural
 EOF and return resources cleanly; see the source-pinned hardware report above.
-Previously exported targets awaiting decode complete synchronously within the
-existing bounded wait when safe fence setup is unavailable, rather than
-publishing an unfenced asynchronous write. No root/debugfs permission change
+In those source-pinned builds, previously exported targets awaiting decode
+complete synchronously within the existing bounded wait when safe fence setup
+is unavailable, rather than publishing an unfenced asynchronous write.
+In unreleased builds, strictly driver-owned NV12 Bob targets exported only
+read-only can remain VA-pending; external readers must call `vaSyncSurface`
+before reading. Imported aliases and writable exports retain the existing
+fence or synchronous-completion path. No root/debugfs permission change
 or new option is needed. CPU-access/cleanup and partial-import failures still
 reject. A passive Kodi 21.3 observation of all 1,500 successful post-processing
 outputs confirms equal PTS within each field pair, with approximately 40 ms
@@ -558,8 +562,11 @@ rejected, reused or destroyed bindings. Clients must check VA surface status
 and must not treat fence signaling alone as proof
 of valid pixels. Never-exported internal targets use VA synchronization and
 ordinary CPU cache synchronization, without requiring a `sw_sync` timeline.
-Previously exposed/imported targets retain write fences; ARGB is rendered
-privately before the final copy. A canceled or failed fenced write closes its
+Unreleased builds also allow strictly driver-owned, read-only-exported NV12
+Bob targets to remain VA-pending until `vaSyncSurface` completes. Imported or
+aliased targets and writable exports retain their existing fence or synchronous
+path; ARGB is rendered privately before the final copy. A canceled or failed
+fenced write closes its
 unsignaled timeline so its
 fences fail with `-ENOENT`; successful writes flush pixel caches before the
 timeline advances.
