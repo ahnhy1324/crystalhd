@@ -132,7 +132,8 @@ scope to general full-rate FHD or hardware deinterlacing.
 Acceptance checklists live in those issues. Current usage and support are in
 [README.md](README.md); the frozen hardware reference is in
 [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md). The stable release is bundle
-`1.1.0`, module/DKMS `3.10.9`; stable 1.0.0, RC.1 (`1.0.0-rc.1` / `3.10.2`) and the
+`1.2.0`, module/DKMS `3.10.13`; earlier stable 1.1.0 (`3.10.9`),
+stable 1.0.0, RC.1 (`1.0.0-rc.1` / `3.10.2`) and the
 Phase 1 baseline remain unchanged. Mandatory missing tests remain
 NOT RUN/HOLD; only optional work may be deferred. Historical Phase 1 and
 bounded RC evidence do not establish new LTS/full-duration passes.

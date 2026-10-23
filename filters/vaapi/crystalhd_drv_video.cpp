@@ -2586,7 +2586,7 @@ struct DecodeContext {
         pending_prefeed_timestamp == 0 && pending_prefeed_generation == 0;
   }
 
-  bool CanYieldTerminalClose() const {
+  bool CanYieldTerminalClose() {
     return IsH264Profile(profile) && !is_70012 && !video_process && closing &&
         destroy_in_progress && destroy_prepared && !retired &&
         destroy_status == VA_STATUS_SUCCESS && device != nullptr &&
@@ -2595,7 +2595,10 @@ struct DecodeContext {
         pending.empty() && replay.outstanding() == 0 && !replay.sealed() &&
         !replay.failed() && !h264_first_field.valid &&
         partial_input_timestamp == 0 && partial_input_offset == 0 &&
-        prefed_timestamp == 0 && pending_prefeed_timestamp == 0 &&
+        // A final accepted AUD/filler prefix has no VCL or public picture.
+        // Terminal device close consumes it; replay restart remains stricter.
+        (prefed_timestamp == 0 || prefed_timestamp == next_timestamp) &&
+        pending_prefeed_timestamp == 0 &&
         pending_prefeed_generation == 0 && !auxiliary.pending &&
         !auxiliary.needs_eos && !auxiliary.eos_only &&
         !decoded_frames.empty() &&
@@ -2603,7 +2606,7 @@ struct DecodeContext {
                     [](const auto &entry) {
                       return entry.second && entry.second->ready &&
                              !entry.second->failed;
-                    });
+                    }) && replay.NextInput() == nullptr && !replay.failed();
   }
 
   BC_STATUS CloseHardware(uint64_t timeout_ns = kDecodeTimeoutNs,
@@ -8770,6 +8773,16 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
   // and VPP can finish without waiting behind the library's worker joins.
   // Incomplete/failed drains and non-consuming retries keep the old locked path.
   const bool yield_close = decode->CanYieldTerminalClose();
+  Debug("terminal close admission yield=%d prefed=%llu next=%llu pending=%zu "
+        "outstanding=%zu frames=%zu partial=%llu pending_prefeed=%llu "
+        "aux_pending=%d aux_eos=%d",
+        yield_close, static_cast<unsigned long long>(decode->prefed_timestamp),
+        static_cast<unsigned long long>(decode->next_timestamp),
+        decode->pending.size(), decode->replay.outstanding(),
+        decode->decoded_frames.size(),
+        static_cast<unsigned long long>(decode->partial_input_timestamp),
+        static_cast<unsigned long long>(decode->pending_prefeed_timestamp),
+        decode->auxiliary.pending, decode->auxiliary.needs_eos);
   if (!yield_close)
     decode->retired = true;
   ClearTraceReadExportsForContext(

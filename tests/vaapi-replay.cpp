@@ -10112,14 +10112,27 @@ static void TerminalCloseDoesNotBlockReadySync() {
     fixture.driver.StopWorkers();
     fixture.driver.stopping = false;
     fixture.decoder->profile = VAProfileH264Main;
+    fixture.decoder->live_h264 = fixture.decoder->auto_h264_prefeed = true;
+    fixture.decoder->next_timestamp = 2 * kTimestampStep;
+    fixture.decoder->replay = CrystalHDDecodeReplay(true);
+    Require(fixture.decoder->replay.Append(kTimestampStep, true,
+                {0, 0, 1, 0x65}, true),
+            "retain the final ordinary AU with immutable automatic-prefeed eligibility");
     fixture.driver.configs[1] = {VAProfileH264Main, VAEntrypointVLD};
     BindTeardownPicturesForVpp(fixture);
     Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS,
             "submit the exact terminal-close picture");
     fixture.io.outputs.push_back(kTimestampStep);
     Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
-                fixture.decoder->pending.empty() && fixture.held[0]->ready,
-            "all real pixels complete before the blocking terminal close");
+                fixture.decoder->pending.empty() && fixture.held[0]->ready &&
+                fixture.decoder->prefed_timestamp == 2 * kTimestampStep &&
+                fixture.decoder->pending_prefeed_timestamp == 0 &&
+                fixture.decoder->replay.outstanding() == 0 &&
+                fixture.decoder->replay.NextInput() == nullptr &&
+                fixture.decoder->decoded_frames.size() == 1 &&
+                !fixture.decoder->auxiliary.ever &&
+                fixture.io.input_calls.size() == 2,
+            "all real pixels complete while the actual pump's final unbound AUD prefix remains");
     const auto owner = fixture.held[0];
     const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
     const auto pixels = owner->storage;
