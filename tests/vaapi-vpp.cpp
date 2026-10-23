@@ -4232,6 +4232,101 @@ void InternalQueuedVppCompletesWithoutSwSync() {
   }
 }
 
+void SyncTimeoutAdmissionDoesNotBlockZeroQueries() {
+  for (const uint64_t timeout : {uint64_t{0}, uint64_t{1000000000},
+                                 uint64_t{VA_TIMEOUT_INFINITE}}) {
+    Fixture fixture;
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    const auto pixels = fixture.target->storage;
+    const uint64_t generation = fixture.decoder->generation;
+    const unsigned opens = device_open_attempts;
+    struct Coordination {
+      std::mutex mutex;
+      std::condition_variable condition;
+      bool holding = false, release = false, entering = false, done = false;
+      bool returned_while_held = false;
+      VAStatus status = VA_STATUS_ERROR_OPERATION_FAILED;
+      std::thread holder, query;
+      void Release() {
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          release = true;
+        }
+        condition.notify_all();
+      }
+      ~Coordination() {
+        Release();
+        if (holder.joinable()) holder.join();
+        if (query.joinable()) query.join();
+      }
+    } control;
+    control.holder = std::thread([&] {
+      std::unique_lock<std::mutex> driver_lock(fixture.driver.mutex);
+      std::unique_lock<std::mutex> lock(control.mutex);
+      control.holding = true;
+      control.condition.notify_all();
+      // A generous coordination bound, not an assertion about OS latency.
+      control.condition.wait_for(lock, std::chrono::seconds(5),
+                                 [&] { return control.release; });
+      control.holding = false;
+    });
+    {
+      std::unique_lock<std::mutex> lock(control.mutex);
+      Require(control.condition.wait_for(lock, std::chrono::seconds(2),
+                                         [&] { return control.holding; }),
+              "another thread holds the actual driver mutex before sync");
+    }
+    control.query = std::thread([&] {
+      {
+        std::lock_guard<std::mutex> lock(control.mutex);
+        control.entering = true;
+      }
+      control.condition.notify_all();
+      const VAStatus status = SyncSurface2(&fixture.context, 2, timeout);
+      {
+        std::lock_guard<std::mutex> lock(control.mutex);
+        control.status = status;
+        control.returned_while_held = control.holding;
+        control.done = true;
+      }
+      control.condition.notify_all();
+    });
+    bool completed_while_held;
+    {
+      std::unique_lock<std::mutex> lock(control.mutex);
+      Require(control.condition.wait_for(lock, std::chrono::seconds(2),
+                                         [&] { return control.entering; }),
+              "the synchronization query starts under controlled contention");
+      completed_while_held = control.condition.wait_for(
+          lock, timeout == 0 ? std::chrono::milliseconds(2000)
+                             : std::chrono::milliseconds(20),
+          [&] { return control.done; });
+    }
+    control.Release();
+    control.holder.join();
+    control.query.join();
+    if (timeout == 0) {
+      Require(completed_while_held && control.returned_while_held &&
+                  control.status == VA_STATUS_ERROR_TIMEDOUT,
+              "zero-timeout sync returns TIMEDOUT while another thread still holds the mutex");
+    } else {
+      Require(!completed_while_held && !control.returned_while_held &&
+                  control.status == VA_STATUS_SUCCESS,
+              "finite and infinite sync retain blocking admission until mutex release");
+    }
+    Require(SyncSurface2(&fixture.context, 2, 0) == VA_STATUS_SUCCESS &&
+                SyncSurface2(&fixture.context, VA_INVALID_SURFACE, 0) ==
+                    VA_STATUS_ERROR_INVALID_SURFACE &&
+                fixture.target->ready && !fixture.target->failed &&
+                fixture.target->storage == pixels &&
+                fixture.target->vpp_readers == 0 && fixture.target->vpp_writers == 0 &&
+                fixture.driver.pending_vpp.empty() &&
+                fixture.decoder->generation == generation && device_open_attempts == opens,
+            "released-mutex queries preserve ready/invalid results, pixels and lifecycle without hardware");
+  }
+}
+
 void VppBacklogTurnPreservesCancellationAndOwnership() {
   // Control an intervening frontend at the new retired-operation boundary.
   // Assert queue/pixel/lifetime ordering, never scheduler latency or <1 ms.
@@ -6227,6 +6322,7 @@ int VppFullTestEntry(int argc, char **argv) {
       const std::pair<const char *, void (*)()> lifecycle[] = {
           {"VPP queue allocation failure is transactional", VppQueueAllocationFailureIsTransactional},
           {"stale VPP failure preserves newer writer", StaleVppFailurePreservesNewerWriter},
+          {"zero-timeout sync does not block on driver admission", SyncTimeoutAdmissionDoesNotBlockZeroQueries},
           {"VPP backlog turn preserves cancellation and ownership", VppBacklogTurnPreservesCancellationAndOwnership}};
       const std::pair<const char *, void (*)()> imports[] = {
           {"PRIME export preserves imported plane layout", ImportedPrimeExportsPreservePlaneLayouts},
@@ -6323,6 +6419,7 @@ int VppFullTestEntry(int argc, char **argv) {
     RepeatedVppRetainsPicture();
     DirectCaptureKeepsQueuedVppPrivate();
     InternalQueuedVppCompletesWithoutSwSync();
+    SyncTimeoutAdmissionDoesNotBlockZeroQueries();
     VppBacklogTurnPreservesCancellationAndOwnership();
     ExposedQueuedVppStillRequiresFence();
     ExposedColdVppFallbackCompletesBeforeReturning();
@@ -6365,7 +6462,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 95 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 96 hardware-free regressions passed");
   return 0;
 }
 

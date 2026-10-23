@@ -9539,7 +9539,16 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
 static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
                              uint64_t timeout_ns) {
   Driver *driver = GetDriver(context);
-  std::unique_lock<std::mutex> lock(driver->mutex);
+  std::unique_lock<std::mutex> lock(driver->mutex, std::defer_lock);
+  if (timeout_ns == 0) {
+    // A passive readiness query must not wait behind conversion or another
+    // API call. Surface validity/state cannot be inspected without the lock;
+    // report retryable admission contention, not hardware completion/failure.
+    if (!lock.try_lock())
+      return VA_STATUS_ERROR_TIMEDOUT;
+  } else {
+    lock.lock();
+  }
   auto surface = driver->surfaces.find(surface_id);
   if (surface == driver->surfaces.end() ||
       !HasLiveBackingOwner(driver, surface->second.get()))
