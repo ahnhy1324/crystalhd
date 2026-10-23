@@ -339,7 +339,8 @@ static uint32_t DtsDesiredRxBufferWidth(const DTS_LIB_CONTEXT *Ctx)
 	uint32_t second;
 	const uint32_t word = Ctx->activeFleaScaleWord;
 
-	if (!(Ctx->CfgFlags & BC_ADDBUFF_MOVE) ||
+	if (Ctx->OpMode != DTS_PLAYBACK_MODE ||
+	    !(Ctx->CfgFlags & BC_ADDBUFF_MOVE) ||
 	    Ctx->DevId != BC_PCI_DEVID_FLEA ||
 	    Ctx->b422Mode != OUTPUT_MODE422_YUY2)
 		return DTS_RX_LEGACY_WIDTH;

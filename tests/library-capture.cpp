@@ -1001,6 +1001,8 @@ static void TestDeferredPoolMaterialization()
 	diagnostic.OpMode = DTS_DIAG_MODE;
 	diagnostic.CfgFlags = BC_MPOOL_INCL_YUV_BUFFS | BC_ADDBUFF_MOVE;
 	diagnostic.b422Mode = OUTPUT_MODE422_YUY2;
+	diagnostic.DevId = BC_PCI_DEVID_FLEA;
+	diagnostic.DevHandle = 99;
 	Check(DtsAllocMemPools(&diagnostic) == BC_STS_SUCCESS,
 	      "diagnostic pool allocation succeeds");
 	bool diagnostic_complete = diagnostic.rxBufferWidth == 1920 &&
@@ -1011,7 +1013,69 @@ static void TestDeferredPoolMaterialization()
 			diagnostic.Mpools[index].sz == kLegacyPacked422Bytes;
 	Check(diagnostic_complete,
 	      "diagnostic MOVE preserves the eager fixed-layout contract");
+	/* Model an admitted OPEN, not a pending EnableScaling request.  The
+	 * playback-only optimization must not resize DIAG at its later map. */
+	diagnostic.VidParams.VideoAlgo = BC_VID_ALGO_H264;
+	diagnostic.activeFleaScaleWord = kScaledOpenWord;
+	uint8_t *diagnostic_original[BC_RX_LIST_CNT] = {};
+	for (uint32_t index = 0; index < diagnostic.MpoolCnt; ++index)
+		diagnostic_original[index] = diagnostic.Mpools[index].buff;
+	bc_dil_glob_ptr = &globals;
+	active_context = &diagnostic;
+	active_pools = diagnostic.Mpools;
+	active_pool_count = diagnostic.MpoolCnt;
+	ResetMock(true);
+	for (uint32_t index = 0; index < diagnostic.MpoolCnt; ++index)
+		tracked_old_outputs[index] = diagnostic_original[index];
+	fail_resize_size = kScaledPacked422Bytes;
+	track_resize_allocations = true;
+	const BC_STATUS diagnostic_map = DtsMapYUVBuffs(&diagnostic);
+	track_resize_allocations = false;
+	Check(diagnostic_map == BC_STS_SUCCESS &&
+	      event_count == diagnostic.MpoolCnt &&
+	      OwnedCount() == diagnostic.MpoolCnt,
+	      "diagnostic mapping registers its complete pool after a scaled OPEN");
+	bool diagnostic_unchanged = diagnostic.rxBufferWidth == 1920;
+	for (uint32_t index = 0;
+	     diagnostic_unchanged && index < diagnostic.MpoolCnt; ++index)
+		diagnostic_unchanged =
+			diagnostic.Mpools[index].buff == diagnostic_original[index] &&
+			diagnostic.Mpools[index].sz == kLegacyPacked422Bytes;
+	Check(diagnostic_unchanged && resize_allocations == 0 &&
+	      resize_live_count == 0 && tracked_old_frees == 0,
+	      "scaled OPEN does not allocate, replace or shrink diagnostic backing");
+	CheckAddPayloads(0, diagnostic.MpoolCnt, OUTPUT_MODE422_YUY2);
+	Check(DtsUnmapYUVBuffs(&diagnostic) == BC_STS_SUCCESS && OwnedCount() == 0,
+	      "fixed diagnostic mapping retires every registered owner");
+	active_context = nullptr;
+	active_pools = nullptr;
+	active_pool_count = 0;
+	bc_dil_glob_ptr = nullptr;
 	DtsReleaseMemPools(&diagnostic);
+
+	for (uint32_t operation : {DTS_MONITOR_MODE, DTS_HWINIT_MODE}) {
+		case_name = "non-playback control mode has no RX pool";
+		DTS_LIB_CONTEXT control = {};
+		control.OpMode = operation;
+		control.CfgFlags = BC_MPOOL_INCL_YUV_BUFFS | BC_ADDBUFF_MOVE;
+		control.DevId = BC_PCI_DEVID_FLEA;
+		control.b422Mode = OUTPUT_MODE422_YUY2;
+		Check(DtsAllocMemPools(&control) == BC_STS_SUCCESS &&
+		      control.Mpools == nullptr && control.MpoolCnt == 0,
+		      "monitor/hardware-init allocation creates no capture backing");
+		control.VidParams.VideoAlgo = BC_VID_ALGO_H264;
+		control.activeFleaScaleWord = kScaledOpenWord;
+		ResetMock(true);
+		fail_resize_size = kScaledPacked422Bytes;
+		track_resize_allocations = true;
+		const BC_STATUS mapped = DtsMapYUVBuffs(&control);
+		track_resize_allocations = false;
+		Check(mapped == BC_STS_SUCCESS && event_count == 0 &&
+		      resize_allocations == 0 && resize_live_count == 0 &&
+		      control.Mpools == nullptr && control.MpoolCnt == 0,
+		      "a scale identity cannot materialize capture in non-playback control modes");
+		DtsReleaseMemPools(&control);
+	}
 
 	case_name = "deferred initial allocation failure";
 	DTS_LIB_CONTEXT failed = {};
