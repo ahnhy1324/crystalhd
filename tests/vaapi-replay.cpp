@@ -80,6 +80,26 @@ static std::vector<int> probe_gbm_temporary_fds;
 static int control_read_probe_fd = -1;
 static unsigned int control_read_probe_calls = 0;
 
+// Hold one real worker poll after it borrowed the descriptor, without holding
+// Driver::mutex. The scoped test below joins the worker before removing this
+// pointer; no descriptor or device operation is replaced by a fake success.
+struct WorkerPollBarrier {
+  std::mutex mutex;
+  std::condition_variable condition;
+  int descriptor = -1;
+  bool entered = false, release = false, expired = false;
+  bool destroy_done = false, descriptor_closed = false;
+  VAStatus destroy_status = VA_STATUS_ERROR_OPERATION_FAILED;
+  void Release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      release = true;
+    }
+    condition.notify_all();
+  }
+};
+static WorkerPollBarrier *worker_poll_barrier = nullptr;
+
 extern "C" ssize_t __real_read(int fd, void *buffer, size_t count);
 extern "C" ssize_t __wrap_read(int fd, void *buffer, size_t count) {
   if (fd == control_read_probe_fd)
@@ -128,6 +148,21 @@ static void Require(bool value, const char *message) {
 
 extern "C" int __real_poll(struct pollfd *, nfds_t, int);
 extern "C" int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout) {
+  if (worker_poll_barrier != nullptr && count > 1 && fds != nullptr &&
+      std::any_of(fds + 1, fds + count, [](const pollfd &fd) {
+        return fd.fd == worker_poll_barrier->descriptor && fd.events == POLLIN;
+      })) {
+    std::unique_lock<std::mutex> lock(worker_poll_barrier->mutex);
+    if (!worker_poll_barrier->entered) {
+      worker_poll_barrier->entered = true;
+      worker_poll_barrier->condition.notify_all();
+      worker_poll_barrier->expired = !worker_poll_barrier->condition.wait_for(
+          lock, std::chrono::seconds(5),
+          [] { return worker_poll_barrier->release; });
+    }
+    lock.unlock();
+    return __real_poll(fds, count, timeout);
+  }
   if (probe_poll_results.empty())
     return __real_poll(fds, count, timeout);
   Require(count == 1 && timeout == 0 && fds != nullptr &&
@@ -10018,6 +10053,135 @@ static void DecodeControlDrainConsumesOneEventfdRead() {
   Require(close(descriptor) == 0, "close control-drain fixture");
 }
 
+static void ContextDestroyWaitsForBorrowedOutputPoll() {
+  for (bool zero_timeout : {false, true}) {
+    TeardownFixture fixture(1);
+    const auto captured_owner = fixture.held[0];
+    const auto captured_picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    const uint64_t captured_generation = fixture.decoder->generation;
+    const int descriptor = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    Require(descriptor >= 0, "allocate borrowed output-poll fixture");
+    fixture.decoder->output_poll = std::make_shared<OutputPollLease>(descriptor);
+    WorkerPollBarrier barrier;
+    barrier.descriptor = descriptor;
+    struct PollJoin {
+      Driver *driver;
+      WorkerPollBarrier *barrier;
+      std::thread destroyer;
+      ~PollJoin() {
+        barrier->Release();
+        driver->NotifyDecodeWorker();
+        if (destroyer.joinable()) destroyer.join();
+        driver->StopWorkers();
+        worker_poll_barrier = nullptr;
+      }
+    } cleanup{&fixture.driver, &barrier, {}};
+    worker_poll_barrier = &barrier;
+    fixture.driver.StartDecodeWorker();
+    {
+      std::unique_lock<std::mutex> lock(barrier.mutex);
+      Require(barrier.condition.wait_for(lock, std::chrono::seconds(2),
+                                         [&] { return barrier.entered; }),
+              "the actual decode worker borrows its fd before close begins");
+    }
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      Require(fixture.decoder->output_poll_inflight == 1 &&
+                  fixture.io.inputs.size() == 1 && fixture.io.outputs.empty(),
+              "one actual poll borrow and accepted input are controlled");
+      // Complete the actual accepted picture while the worker is outside the
+      // mutex. Teardown therefore has no unresolved tail or EOS to invent.
+      fixture.io.outputs.push_back(kTimestampStep);
+      Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) ==
+                      VA_STATUS_SUCCESS && fixture.held[0]->ready &&
+                  fixture.decoder->pending.empty(),
+              "exact mock output completes before terminal close admission");
+    }
+    if (zero_timeout) {
+      const VAStatus first = DestroyContextWithTimeout(&fixture.context, 1, 0);
+      bool retained;
+      {
+        std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+        retained = fixture.driver.contexts.count(1) == 1 &&
+            fixture.decoder->output_poll_inflight == 1 &&
+            fixture.decoder->device == fixture.io.handle() &&
+            fixture.decoder->output_poll != nullptr &&
+            fixture.io.device_close_calls == 0 &&
+            !fixture.decoder->retired && captured_picture->ready &&
+            CapturedDecodePictureMatchesLifetime(&fixture.driver, captured_owner,
+                captured_picture, fixture.decoder, captured_generation) &&
+            fcntl(descriptor, F_GETFD) >= 0;
+      }
+      barrier.Release();
+      {
+        std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+        Require(fixture.driver.condition.wait_for(lock, std::chrono::seconds(2),
+                    [&] { return fixture.decoder->output_poll_inflight == 0; }),
+                "the released worker acknowledges its exact poll borrow");
+      }
+      const VAStatus retried = first == VA_STATUS_ERROR_HW_BUSY
+          ? DestroyContext(&fixture.context, 1) : VA_STATUS_ERROR_INVALID_CONTEXT;
+      errno = 0;
+      const bool closed_at_return = fcntl(descriptor, F_GETFD) == -1 && errno == EBADF;
+      Require(first == VA_STATUS_ERROR_HW_BUSY && retained &&
+                  retried == VA_STATUS_SUCCESS && closed_at_return,
+              "a zero-deadline destroy retains poll ownership for a consuming retry");
+    } else {
+      cleanup.destroyer = std::thread([&] {
+        const VAStatus status = DestroyContext(&fixture.context, 1);
+        errno = 0;
+        const bool closed = fcntl(descriptor, F_GETFD) == -1 && errno == EBADF;
+        {
+          std::lock_guard<std::mutex> lock(barrier.mutex);
+          barrier.destroy_status = status;
+          barrier.descriptor_closed = closed;
+          barrier.destroy_done = true;
+        }
+        barrier.condition.notify_all();
+      });
+      {
+        std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+        Require(fixture.driver.condition.wait_for(lock, std::chrono::seconds(2),
+                    [&] { return fixture.decoder->closing; }),
+                "actual context close begins before testing borrower ordering");
+        Require(!fixture.decoder->retired && captured_picture->ready &&
+                    CapturedDecodePictureMatchesLifetime(&fixture.driver,
+                        captured_owner, captured_picture, fixture.decoder,
+                        captured_generation),
+                "borrower quiescence preserves the actual captured picture lifetime");
+      }
+      Require(DestroyContextWithTimeout(&fixture.context, 1, 0) ==
+                  VA_STATUS_ERROR_INVALID_CONTEXT,
+              "a concurrent destroy cannot consume another caller's active close");
+      bool premature;
+      {
+        std::unique_lock<std::mutex> lock(barrier.mutex);
+        premature = barrier.condition.wait_for(lock, std::chrono::milliseconds(20),
+                                               [&] { return barrier.destroy_done; });
+      }
+      barrier.Release();
+      {
+        std::unique_lock<std::mutex> lock(barrier.mutex);
+        Require(barrier.condition.wait_for(lock, std::chrono::seconds(2),
+                                           [&] { return barrier.destroy_done; }),
+                "terminal destroy finishes after the poll borrower releases");
+      }
+      cleanup.destroyer.join();
+      Require(!premature && barrier.destroy_status == VA_STATUS_SUCCESS &&
+                  barrier.descriptor_closed,
+              "successful public destroy cannot precede the last borrowed fd close");
+    }
+    fixture.driver.StopWorkers();
+    errno = 0;
+    Require(!barrier.expired && fcntl(descriptor, F_GETFD) == -1 && errno == EBADF &&
+                fixture.decoder->output_poll_inflight == 0 &&
+                fixture.decoder->device == nullptr && !fixture.decoder->output_poll &&
+                fixture.driver.contexts.count(1) == 0 &&
+                fixture.io.device_close_calls == 1 && !fixture.io.invalid,
+            "terminal close retires the borrowed descriptor exactly once without hardware");
+  }
+}
+
 static void BudgetedWorkerReleasesDriverMutex() {
   constexpr unsigned int kPictures = 24;
   TeardownFixture fixture(kPictures);
@@ -10631,6 +10795,7 @@ int main(int argc, char **argv) {
       for (unsigned capability : {1U, 0U, 2U, 3U})
         LiveH264InterlacedPrefeedKeepsExactFieldOwnership(true, capability);
       H264ReplayReopenEligibilityAndFailureOwnership();
+      ContextDestroyWaitsForBorrowedOutputPoll();
       std::puts("VA-API H264 finite replay: qualified reuse, legacy/error full reopen, TFF/BFF ownership and pixels PASS");
       return 0;
     }
@@ -10749,6 +10914,7 @@ int main(int argc, char **argv) {
     OutputEventReplacesPeriodicWorkerPolling();
     DecodeControlWakeUsesExactArmedOutputLease();
     DecodeControlDrainConsumesOneEventfdRead();
+    ContextDestroyWaitsForBorrowedOutputPoll();
     BudgetedWorkerReleasesDriverMutex();
     Mpeg4StateOnlyEosStillWakesEventWorker();
     OutputPollHangupFailsWithoutSpinning();

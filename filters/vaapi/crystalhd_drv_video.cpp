@@ -2262,6 +2262,9 @@ struct DecodeContext {
   bool device_preopened = false;
   std::shared_ptr<OutputPollLease> output_poll;
   std::weak_ptr<OutputPollLease> armed_output_poll;
+  // Protected by Driver::mutex. Unlike the current/armed lease identity,
+  // this also tracks a borrower retained across a hardware close/reopen.
+  unsigned int output_poll_inflight = 0;
   bool decoder_open = false;
   bool decoder_started = false;
   bool hardware_close_pending = false;
@@ -2296,6 +2299,7 @@ struct DecodeContext {
   uint64_t pending_prefeed_timestamp = 0;
   uint64_t pending_prefeed_generation = 0;
   bool closing = false;
+  bool destroy_in_progress = false;
   bool retired = false;
   bool destroy_prepared = false;
   VAStatus destroy_status = VA_STATUS_SUCCESS;
@@ -7076,8 +7080,6 @@ static void RunDecodeWorker(Driver *driver) {
     bool input_backpressured = false;
     bool input_budget_exhausted = false;
     bool needs_mpeg4_eos_probe = false;
-    std::vector<std::shared_ptr<DecodeContext>> output_poll_contexts;
-    std::vector<std::shared_ptr<OutputPollLease>> output_poll_leases;
     bool needs_timer_fallback = driver->decode_control_fd < 0;
     for (const auto &entry : driver->contexts) {
       const std::shared_ptr<DecodeContext> &decode = entry.second;
@@ -7102,10 +7104,7 @@ static void RunDecodeWorker(Driver *driver) {
           input_budget_exhausted || decode->input_budget_exhausted;
       needs_mpeg4_eos_probe =
           needs_mpeg4_eos_probe || NeedsMpeg4EosProbe(*decode);
-      if (decode->output_poll) {
-        output_poll_contexts.push_back(decode);
-        output_poll_leases.push_back(decode->output_poll);
-      } else {
+      if (!decode->output_poll) {
         needs_timer_fallback = true;
       }
     }
@@ -7133,6 +7132,28 @@ static void RunDecodeWorker(Driver *driver) {
       continue;
     }
 
+    // The handoff above can close/reopen a context. Capture current leases
+    // only afterwards, so no unaccounted descriptor survives an earlier wait.
+    std::vector<std::shared_ptr<DecodeContext>> output_poll_contexts;
+    std::vector<std::shared_ptr<OutputPollLease>> output_poll_leases;
+    for (const auto &entry : driver->contexts) {
+      const auto &decode = entry.second;
+      if (!HasAutonomousDecodeWork(decode))
+        continue;
+      if (!decode->output_poll) {
+        needs_timer_fallback = true;
+        break;
+      }
+      output_poll_contexts.push_back(decode);
+      output_poll_leases.push_back(decode->output_poll);
+    }
+    if (needs_timer_fallback) {
+      output_poll_leases.clear();
+      output_poll_contexts.clear();
+      driver->condition.wait_for(lock, std::chrono::milliseconds(1));
+      continue;
+    }
+
     std::vector<pollfd> descriptors;
     descriptors.reserve(output_poll_leases.size() + 1);
     descriptors.push_back({driver->decode_control_fd, POLLIN, 0});
@@ -7148,8 +7169,10 @@ static void RunDecodeWorker(Driver *driver) {
     const int timeout_ms = input_budget_exhausted ? 0 :
                            input_backpressured ? 2 :
                            needs_mpeg4_eos_probe ? 5 : -1;
-    for (size_t i = 0; i < output_poll_contexts.size(); ++i)
+    for (size_t i = 0; i < output_poll_contexts.size(); ++i) {
       output_poll_contexts[i]->armed_output_poll = output_poll_leases[i];
+      ++output_poll_contexts[i]->output_poll_inflight;
+    }
     lock.unlock();
     int result;
     do {
@@ -7168,17 +7191,23 @@ static void RunDecodeWorker(Driver *driver) {
         if (HasAutonomousDecodeWork(decode))
           FailDecode(driver, decode.get(), "decoder output poll failed");
       }
-      continue;
+    } else {
+      for (size_t i = 0; i < output_poll_contexts.size(); ++i) {
+        const short terminal = POLLERR | POLLHUP | POLLNVAL;
+        if ((descriptors[i + 1].revents & terminal) == 0)
+          continue;
+        const std::shared_ptr<DecodeContext> &decode = output_poll_contexts[i];
+        if (decode->output_poll == output_poll_leases[i] &&
+            HasAutonomousDecodeWork(decode))
+          FailDecode(driver, decode.get(), "decoder output poll terminated");
+      }
     }
-    for (size_t i = 0; i < output_poll_contexts.size(); ++i) {
-      const short terminal = POLLERR | POLLHUP | POLLNVAL;
-      if ((descriptors[i + 1].revents & terminal) == 0)
-        continue;
-      const std::shared_ptr<DecodeContext> &decode = output_poll_contexts[i];
-      if (decode->output_poll == output_poll_leases[i] &&
-          HasAutonomousDecodeWork(decode))
-        FailDecode(driver, decode.get(), "decoder output poll terminated");
-    }
+    // Retire descriptor borrowers after all identity/error checks and before
+    // publishing quiescence. Resetting the weak armed marker is not enough.
+    output_poll_leases.clear();
+    for (const auto &decode : output_poll_contexts)
+      --decode->output_poll_inflight;
+    driver->condition.notify_all();
   }
 }
 
@@ -8274,6 +8303,13 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
   if (found == driver->contexts.end())
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   const std::shared_ptr<DecodeContext> decode = found->second;
+  if (decode->destroy_in_progress)
+    return VA_STATUS_ERROR_INVALID_CONTEXT;
+  decode->destroy_in_progress = true;
+  struct DestroyCall {
+    DecodeContext *decode;
+    ~DestroyCall() { decode->destroy_in_progress = false; }
+  } destroy_call{decode.get()};
   if (!decode->destroy_prepared) {
     // A second call while the first call has temporarily released the driver
     // lock for draining is not a close retry yet.
@@ -8287,11 +8323,32 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
         decode->destroy_status = PrepareCompletedDecodePictures(driver,
                                                                 decode.get());
     }
-    decode->retired = true;
-    ClearTraceReadExportsForContext(
-        driver, TraceId(decode->id, VA_INVALID_ID), decode->generation);
     decode->destroy_prepared = true;
   }
+  if (decode->output_poll_inflight != 0) {
+    // The worker's duplicated device fd outlives the DIL handle until poll
+    // returns. Wake it and release this mutex so it can drop the borrower;
+    // never report terminal close while that reference still owns the card.
+    driver->NotifyDecodeWorker();
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::nanoseconds(close_timeout_ns);
+    driver->condition.wait_until(lock, deadline, [&] {
+      return decode->output_poll_inflight == 0;
+    });
+  }
+  // Draining and borrower retirement can unlock/re-hash the context map.
+  // Only this exact context may consume the retained close transaction.
+  const auto current = driver->contexts.find(context_id);
+  if (current == driver->contexts.end() || current->second != decode)
+    return VA_STATUS_ERROR_INVALID_CONTEXT;
+  if (decode->output_poll_inflight != 0)
+    return VA_STATUS_ERROR_HW_BUSY;
+  // Keep valid immutable VPP captures live during borrower quiescence. Once
+  // retired, close and completed-picture publication must stay under this
+  // lock; exposing that intermediate state would cancel queued VPP readers.
+  decode->retired = true;
+  ClearTraceReadExportsForContext(
+      driver, TraceId(decode->id, VA_INVALID_ID), decode->generation);
   const BC_STATUS closed = decode->Close(close_timeout_ns);
   // The sole non-consuming result keeps the context in the map. A later
   // vaDestroyContext call resumes only this terminal close; it never drains or
