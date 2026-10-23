@@ -914,7 +914,7 @@ struct Surface {
   crystalhd_centered_output::Geometry centered_geometry;
   std::shared_ptr<Surface> centered_pixels;
 
-  // Live H.264 pictures may initially use the public target's pixels while
+  // Selected H.264 pictures may initially use the public target's pixels while
   // keeping independent readiness/identity. Capture or backing reuse promotes
   // them to private storage; their own planes remain unset until promotion.
   // The reverse link is weak to avoid a lifetime cycle.
@@ -1667,11 +1667,17 @@ static bool CenteredStorageMatches(const Surface &canvas, bool compact = false) 
 
 // Compose real interlaced NV12, not a deinterlacer or a small opaque reference.
 // Compact storage is private to the already-existing first-field Bob route.
-static bool ComposeCenteredCanvas(Surface *canvas, bool compact = false) {
-  if (canvas == nullptr || !CenteredStorageMatches(*canvas, compact))
+static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
+                                  bool compact = false,
+                                  bool decoded_public = false) {
+  if (canvas == nullptr || !CenteredStorageMatches(picture, compact) ||
+      canvas->fourcc != VA_FOURCC_NV12 || canvas->width != picture.width ||
+      canvas->height != picture.height ||
+      canvas->expected_timestamp != picture.expected_timestamp ||
+      canvas->decode_identity != picture.decode_identity)
     return false;
-  const auto &g = canvas->centered_geometry;
-  const auto &small = canvas->centered_pixels;
+  const auto &g = picture.centered_geometry;
+  const auto &small = picture.centered_pixels;
   if (!small->ready || small->failed || small->destroyed ||
       small->expected_timestamp == 0 ||
       small->frame_timestamp != small->expected_timestamp ||
@@ -1685,7 +1691,10 @@ static bool ComposeCenteredCanvas(Surface *canvas, bool compact = false) {
   }
   if (!small->BeginCpuRead())
     return false;
-  if (!canvas->BeginCpuWrite()) {
+  bool used_i915_wc = false;
+  const bool acquired = decoded_public
+      ? canvas->BeginDecodedCpuWrite(&used_i915_wc) : canvas->BeginCpuWrite();
+  if (!acquired) {
     small->EndCpuRead();
     return false;
   }
@@ -1709,7 +1718,8 @@ static bool ComposeCenteredCanvas(Surface *canvas, bool compact = false) {
       }
     }
   }
-  const bool committed = canvas->EndCpuWrite();
+  const bool committed = decoded_public
+      ? canvas->EndDecodedCpuWrite(used_i915_wc) : canvas->EndCpuWrite();
   const bool released = small->EndCpuRead();
   if (!committed || !released)
     return false;
@@ -1718,6 +1728,33 @@ static bool ComposeCenteredCanvas(Surface *canvas, bool compact = false) {
   canvas->frame_timestamp = small->frame_timestamp;
   return true;
 }
+
+static bool ComposeCenteredCanvas(Surface *canvas, bool compact = false) {
+  return canvas != nullptr && ComposeCenteredCanvas(*canvas, canvas, compact);
+}
+
+// Capture and execution must agree before borrowing a full public canvas.
+// These operations read only the immutable sidecar, including a pending Bob
+// request whose first temporal field may become available before the picture.
+static bool CenteredBobUsesSidecar(
+    const Surface &source, const Surface &destination,
+    const VARectangle &source_region, const VARectangle &output_region,
+    const VppDeinterlace &deinterlace, const VppColorRange &color_range,
+    bool preserve_fields, bool source_is_field = false) {
+  if (&source == &destination || !deinterlace.bob || preserve_fields ||
+      destination.fourcc != VA_FOURCC_NV12 ||
+      !CenteredStorageMatches(source, source_is_field))
+    return false;
+  const auto &g = source.centered_geometry;
+  return source_region.x == 0 && source_region.y == 0 &&
+      source_region.width == g.canvas_width && source_region.height == g.canvas_height &&
+      output_region.x == 0 && output_region.y == 0 &&
+      output_region.width == g.canvas_width && output_region.height == g.canvas_height &&
+      destination.width == g.canvas_width && destination.height == g.canvas_height &&
+      color_range.source_full == g.full_range;
+}
+
+static bool PromoteDecodedPicture(Surface *picture);
 
 static VAStatus ProcessVpp(SwsContext **scaler,
                            std::vector<uint8_t> *argb_staging,
@@ -1733,9 +1770,9 @@ static VAStatus ProcessVpp(SwsContext **scaler,
   // Substitute only an operation exactly equal to Bob of the real canvas;
   // resampling, different range declarations and other formats keep that
   // ordinary full-canvas path and its normal validation below.
-  if (source && destination && source != destination && deinterlace.bob &&
-      !preserve_fields && destination->fourcc == VA_FOURCC_NV12 &&
-      CenteredStorageMatches(*source, source_is_field)) {
+  if (source && destination &&
+      CenteredBobUsesSidecar(*source, *destination, source_region, output_region,
+                            deinterlace, color_range, preserve_fields, source_is_field)) {
     const auto &g = source->centered_geometry;
     const auto &small = source->centered_pixels;
     if (source->ready && !source->failed && !source->destroyed &&
@@ -1746,13 +1783,7 @@ static VAStatus ProcessVpp(SwsContext **scaler,
         small->expected_timestamp == source->expected_timestamp &&
         small->frame_timestamp == source->frame_timestamp &&
         small->trace_context == source->trace_context &&
-        small->trace_generation == source->trace_generation &&
-        source_region.x == 0 && source_region.y == 0 &&
-        source_region.width == g.canvas_width && source_region.height == g.canvas_height &&
-        output_region.x == 0 && output_region.y == 0 &&
-        output_region.width == g.canvas_width && output_region.height == g.canvas_height &&
-        destination->width == g.canvas_width && destination->height == g.canvas_height &&
-        color_range.source_full == g.full_range) {
+        small->trace_generation == source->trace_generation) {
       const VARectangle input{0, 0, static_cast<uint16_t>(g.capture_width),
                                   static_cast<uint16_t>(g.capture_height)};
       const VARectangle output{static_cast<int16_t>(g.x), static_cast<int16_t>(g.y),
@@ -1766,6 +1797,12 @@ static VAStatus ProcessVpp(SwsContext **scaler,
                          color_range, false);
     }
   }
+  // The sidecar shortcut above is the only capture allowed to retain borrowed
+  // full pixels. Any fallback must acquire its own real canvas before reading
+  // planes; never treat a direct picture's unset planes as private storage.
+  if (source && source->centered_geometry.enabled && source->direct_backing &&
+      !PromoteDecodedPicture(source))
+    return VA_STATUS_ERROR_OPERATION_FAILED;
   // Only the operation-private first-field view has compact storage. Keep
   // the original full-frame rectangle for field sampling, but validate its
   // physical rows against the real half-height allocation.
@@ -4071,7 +4108,7 @@ static VAStatus SnapshotCompletedVppPicture(
   return VA_STATUS_SUCCESS;
 }
 
-static bool PromoteDecodedPicture(const std::shared_ptr<Surface> &picture) {
+static bool PromoteDecodedPicture(Surface *picture) {
   if (!picture || !picture->direct_backing)
     return true;
   const auto backing = picture->direct_backing;
@@ -4079,9 +4116,9 @@ static bool PromoteDecodedPicture(const std::shared_ptr<Surface> &picture) {
                                   VA_FOURCC_NV12))
     return false;
   if (picture->ready && !picture->failed &&
-      (backing->destroyed || backing->decode_picture.lock() != picture ||
+      (backing->destroyed || backing->decode_picture.lock().get() != picture ||
        backing->frame_timestamp != picture->frame_timestamp ||
-       !CopyNv12Surface(*backing, picture.get()))) {
+       !CopyNv12Surface(*backing, picture))) {
     picture->ready = false;
     picture->failed = true;
     picture->direct_backing.reset();
@@ -4089,6 +4126,10 @@ static bool PromoteDecodedPicture(const std::shared_ptr<Surface> &picture) {
   }
   picture->direct_backing.reset();
   return true;
+}
+
+static bool PromoteDecodedPicture(const std::shared_ptr<Surface> &picture) {
+  return PromoteDecodedPicture(picture.get());
 }
 
 static uint64_t MonotonicNowNs() {
@@ -4810,25 +4851,27 @@ static VAStatus ProcessDecodedOutputImpl(
       return CopyH264WeaveToSurface(target, output);
     return CopyYuy2ToSurface(target, output, decode->is_70012);
   };
-  const auto copy_output = [&](Surface *target) {
+  const auto copy_output = [&](Surface *target, Surface *centered_picture = nullptr,
+                               bool decoded_public = false) {
     if (!decode->centered_geometry.enabled)
       return copy_raw_output(target);
-    if (!CenteredStorageMatches(*target))
+    Surface *picture = centered_picture != nullptr ? centered_picture : target;
+    if (!CenteredStorageMatches(*picture))
       return false;
-    const auto &small = target->centered_pixels;
-    small->expected_timestamp = target->expected_timestamp;
-    small->decode_identity = target->decode_identity;
-    InheritTraceIdentity(small.get(), *target);
+    const auto &small = picture->centered_pixels;
+    small->expected_timestamp = picture->expected_timestamp;
+    small->decode_identity = picture->decode_identity;
+    InheritTraceIdentity(small.get(), *picture);
     if (!copy_raw_output(small.get())) {
       small->failed = true;
       return false;
     }
-    return ComposeCenteredCanvas(target);
+    return ComposeCenteredCanvas(*picture, target, false, decoded_public);
   };
   if (decoded != decode->decoded_frames.end()) {
     if (complete && !discard_pixels) {
       if (direct) {
-        complete = copy_output(surface->second.get());
+        complete = copy_output(surface->second.get(), decoded->second.get(), true);
         wrote_pixels = complete;
         decoded->second->ready = complete;
         decoded->second->frame_timestamp = complete ? output.PicInfo.timeStamp : 0;
@@ -6323,8 +6366,10 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   }
 
   std::shared_ptr<Surface> decoded_frame;
+  // Centered admission above validates the actual full logical canvas. Its
+  // smaller CaptureWidth/Height describe hardware output, not this backing.
   const bool direct_picture = !decode->decode_processing &&
-                              !decode->centered_geometry.enabled && decode->live_h264_fast_path &&
+                              (decode->live_h264_fast_path || decode->centered_geometry.enabled) &&
                               IsH264Profile(profile) &&
                               !decode->experimental_ready_remap &&
                               target_surface->direct_decode_eligible;
@@ -6344,15 +6389,18 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                                          target_surface->height,
                                          decode->private_backing_pool))
         return VA_STATUS_ERROR_ALLOCATION_FAILED;
-      if (decode->centered_geometry.enabled) {
-        decoded_frame->centered_geometry = decode->centered_geometry;
-        decoded_frame->centered_geometry.canvas_width = target_surface->width;
-        decoded_frame->centered_geometry.canvas_height = target_surface->height;
-        decoded_frame->centered_pixels = std::make_shared<Surface>();
-        if (!decoded_frame->centered_pixels->AllocateCpuNv12(
-                decode->CaptureWidth(), decode->CaptureHeight(), decode->private_backing_pool))
-          return VA_STATUS_ERROR_ALLOCATION_FAILED;
-      }
+    }
+    if (decode->centered_geometry.enabled) {
+      if (!decode->private_backing_pool)
+        decode->private_backing_pool =
+            std::make_shared<CrystalHDPrivateBackingPool>();
+      decoded_frame->centered_geometry = decode->centered_geometry;
+      decoded_frame->centered_geometry.canvas_width = target_surface->width;
+      decoded_frame->centered_geometry.canvas_height = target_surface->height;
+      decoded_frame->centered_pixels = std::make_shared<Surface>();
+      if (!decoded_frame->centered_pixels->AllocateCpuNv12(
+              decode->CaptureWidth(), decode->CaptureHeight(), decode->private_backing_pool))
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
     }
   } catch (const std::bad_alloc &) {
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
@@ -7947,7 +7995,8 @@ static VAStatus CreateSurfaces(VADriverContextP context, int width, int height,
 
 static bool ObsoleteCompletedH264Surface(const DecodeContext &decode,
                                          const Surface &surface,
-                                         uint64_t timestamp) {
+                                         uint64_t timestamp,
+                                         bool allow_centered_direct = false) {
   if (!IsH264Profile(decode.profile) || decode.live_h264_fast_path ||
       !surface.ready || surface.failed || PublicReadRejected(&surface) ||
       surface.expected_timestamp != timestamp || surface.frame_timestamp != timestamp ||
@@ -7960,7 +8009,11 @@ static bool ObsoleteCompletedH264Surface(const DecodeContext &decode,
       surface.decode_identity == picture->second->decode_identity &&
       picture->second->ready && !picture->second->failed &&
       picture->second->frame_timestamp == timestamp &&
-      !picture->second->direct_backing;
+      (!picture->second->direct_backing ||
+       (allow_centered_direct && picture->second->centered_geometry.enabled &&
+        CenteredStorageMatches(*picture->second) &&
+        picture->second->direct_backing.get() == &surface &&
+        picture->second->decode_target.lock().get() == &surface));
 }
 
 static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
@@ -7980,6 +8033,56 @@ static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
     if (driver->surfaces.find(surface_ids[i]) == driver->surfaces.end() ||
         !requested.insert(surface_ids[i]).second)
       return VA_STATUS_ERROR_INVALID_SURFACE;
+  }
+  // Finite centered pictures may borrow their real public canvas. Preserve
+  // every otherwise-obsolete binding before any surface in this request is
+  // erased, so a failed allocation/read cannot leave a partially destroyed
+  // pool or invalidate an already captured source. Keep the actual pruned-IDR
+  // proof above; a retained reference still requires the ordinary epoch reset.
+  struct CenteredPromotion {
+    std::shared_ptr<Surface> picture;
+    std::shared_ptr<Surface> pixels;
+  };
+  std::vector<CenteredPromotion> promotions;
+  try {
+    for (int i = 0; i < count; ++i) {
+      const auto &surface = driver->surfaces.at(surface_ids[i]);
+      for (const auto &entry : driver->contexts) {
+        const auto &decode = entry.second;
+        if (decode->video_process || decode->closing)
+          continue;
+        const auto timestamp = decode->surface_timestamps.find(surface.get());
+        if (timestamp == decode->surface_timestamps.end() ||
+            !ObsoleteCompletedH264Surface(*decode, *surface, timestamp->second, true))
+          continue;
+        const auto &picture = decode->decoded_frames.at(timestamp->second);
+        if (!picture->direct_backing ||
+            std::any_of(promotions.begin(), promotions.end(),
+                        [&](const CenteredPromotion &promotion) {
+                          return promotion.picture == picture;
+                        }))
+          continue;
+        auto pixels = std::make_shared<Surface>();
+        if (!pixels->AllocateInternal(nullptr, -1, picture->width, picture->height,
+                                      VA_FOURCC_NV12))
+          return VA_STATUS_ERROR_ALLOCATION_FAILED;
+        if (!CopyNv12Surface(*surface, pixels.get()))
+          return VA_STATUS_ERROR_OPERATION_FAILED;
+        promotions.push_back({picture, std::move(pixels)});
+      }
+    }
+  } catch (const std::bad_alloc &) {
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
+  // All fallible work completed. The sidecar, geometry and decode identity
+  // remain on the original picture; only its borrowed full planes change.
+  for (const auto &promotion : promotions) {
+    promotion.picture->storage = std::move(promotion.pixels->storage);
+    for (unsigned plane = 0; plane != 2; ++plane) {
+      promotion.picture->pitch[plane] = promotion.pixels->pitch[plane];
+      promotion.picture->planes[plane] = promotion.pixels->planes[plane];
+    }
+    promotion.picture->direct_backing.reset();
   }
   std::unordered_set<DecodeContext *> reset_decoders;
   // Fresh VPP probe surfaces have no decoder or queued conversion to wake.
@@ -9398,7 +9501,9 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
         return VA_STATUS_ERROR_INVALID_SURFACE;
       frame = source_owner;
     }
-    if (!PromoteDecodedPicture(frame))
+    if (!CenteredBobUsesSidecar(*frame, *target->second, source_region, output_region,
+                               deinterlace, color_range, preserve_fields) &&
+        !PromoteDecodedPicture(frame))
       return VA_STATUS_ERROR_OPERATION_FAILED;
     decode->second->vpp_source = parameters->surface;
     decode->second->vpp_frame = std::move(frame);

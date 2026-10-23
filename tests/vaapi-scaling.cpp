@@ -2868,7 +2868,7 @@ struct CenteredFixture : Fixture {
   bool full;
   CenteredFixture(unsigned width = 256, unsigned coded = 32, unsigned visible = 32,
                   unsigned capture = 128, unsigned small_height = 16,
-                  unsigned canvas = 32, bool range = false)
+                  unsigned canvas = 32, bool range = false, bool direct = false)
       : policy("CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12",
                (std::to_string(capture) + "x" + std::to_string(small_height) + "@" +
                 std::to_string(width) + "x" + std::to_string(visible) +
@@ -2882,6 +2882,7 @@ struct CenteredFixture : Fixture {
     Require(original->AllocateInternal(nullptr, -1, width, canvas, VA_FOURCC_NV12),
             "allocate the unchanged logical public canvas");
     original->id = 1;
+    original->direct_decode_eligible = direct;
     original->ready = true;
     driver.surfaces[1] = original;
     VAImage probe{};
@@ -2904,12 +2905,14 @@ struct CenteredFixture : Fixture {
     Require(setenv("CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12", "0", 1) == 0,
             "change only the later test environment, not the accepted context");
   }
-  void Submit() {
-    Begin(); Parameters(); End();
+  void Submit(VASurfaceID target = 1, bool idr = true) {
+    Require(BeginPicture(&context, 1, target) == VA_STATUS_SUCCESS,
+            "begin the selected centered original");
+    Parameters(idr); End();
     Require(mock.scale_calls == 1 && mock.scale_width == capture_width &&
-                driver.surfaces.at(1)->width == coded_width &&
-                driver.surfaces.at(1)->height == canvas_height &&
-                !driver.surfaces.at(1)->opaque_reference,
+                driver.surfaces.at(target)->width == coded_width &&
+                driver.surfaces.at(target)->height == canvas_height &&
+                !driver.surfaces.at(target)->opaque_reference,
             "centered VLD really selects card scaling but retains a readable original ID/size");
     std::vector<uint8_t> sps;
     Require(BuildSps(picture, VAProfileH264High, &sps, coded_width, visible_height) &&
@@ -3033,7 +3036,24 @@ struct CenteredFixture : Fixture {
     }
     return expected;
   }
-  void QueueBob(unsigned parity, bool bottom_first, bool declared_full) {
+  std::vector<uint8_t> PrivatePixels(const Surface &source) const {
+    std::vector<uint8_t> result;
+    for (unsigned plane = 0; plane != 2; ++plane)
+      for (unsigned row = 0; row < (plane ? canvas_height / 2 : canvas_height); ++row) {
+        const auto *p = source.planes[plane] + size_t{row} * source.pitch[plane];
+        result.insert(result.end(), p, p + coded_width);
+      }
+    return result;
+  }
+  void AddOriginal(VASurfaceID id, bool direct) {
+    auto target = std::make_shared<Surface>();
+    Require(target->AllocateInternal(nullptr, -1, coded_width, canvas_height, VA_FOURCC_NV12),
+            "allocate another ordinary centered decode target");
+    target->id = id; target->direct_decode_eligible = direct;
+    driver.surfaces[id] = target;
+  }
+  void QueueBob(unsigned parity, bool bottom_first, bool declared_full,
+                unsigned region_width = 0) {
     if (!driver.contexts.count(2)) {
       auto processor = std::make_shared<DecodeContext>(); processor->video_process = true;
       driver.contexts[2] = processor;
@@ -3047,7 +3067,8 @@ struct CenteredFixture : Fixture {
     filter.flags = (parity ? VA_DEINTERLACING_BOTTOM_FIELD : 0) |
         (bottom_first ? VA_DEINTERLACING_BOTTOM_FIELD_FIRST : 0);
     VABufferID filter_id = Buffer(VAProcFilterParameterBufferType, &filter, sizeof(filter), 2);
-    VARectangle whole{0, 0, static_cast<uint16_t>(coded_width), static_cast<uint16_t>(canvas_height)};
+    VARectangle whole{0, 0, static_cast<uint16_t>(region_width ? region_width : coded_width),
+                     static_cast<uint16_t>(canvas_height)};
     VAProcPipelineParameterBuffer pipeline{};
     pipeline.surface = 1; pipeline.surface_region = pipeline.output_region = &whole;
     pipeline.filters = &filter_id; pipeline.num_filters = 1;
@@ -3094,85 +3115,209 @@ void CenteredContextAdmission() {
 }
 
 void CenteredReadableCanvasAndBob() {
-  for (bool full : {false, true})
-    for (bool bottom_first : {false, true}) {
-      CenteredFixture f(256, 32, 32, 128, 16, 32, full);
-      f.Submit();
-      const auto packed = f.Packed(7);
-      const auto canvas = f.Canvas(packed);
-      f.Complete(packed, bottom_first);
-      Require(f.Read(1) == canvas && f.Read(1, true) == canvas,
-              "GetImage and Derive expose identical full NV12, including every range-correct border");
-      for (unsigned parity = 0; parity != 2; ++parity) {
-        const unsigned before = centered_probe::calls;
-        f.QueueBob(parity, bottom_first, full);
-        Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
-                    SyncSurface2(&f.context, 2, 0) == VA_STATUS_SUCCESS &&
-                    centered_probe::calls == before + 1 && centered_probe::width == 128 &&
-                    centered_probe::height == 16 && !centered_probe::compact,
-                "immediate ordinary full-canvas Bob really processes only the small immutable sidecar");
-        Require(f.Read(2) == f.BobOracle(canvas, parity) && f.Read(1) == canvas,
-                "both Bob parities equal independent full-canvas sampling and leave source unchanged");
-      }
-      const unsigned before = centered_probe::calls;
-      f.QueueBob(1, bottom_first, !full);
-      Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS && centered_probe::calls == before &&
-                  f.Read(2) == f.BobOracle(canvas, 1),
-              "range mismatch uses real-canvas Bob rather than changing numerical border black");
-    }
-}
-
-void CenteredFirstFieldAndQueuedBob() {
-  for (bool bottom_first : {false, true}) {
-    CenteredFixture f;
-    f.Submit();
-    const auto packed = f.Packed(31);
-    const auto canvas = f.Canvas(packed);
-    f.Field(packed, bottom_first, bottom_first);
-    Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT,
-            "one physical field never completes the public full decoded canvas");
-    const unsigned before = centered_probe::calls;
-    f.QueueBob(bottom_first, bottom_first, false);
-    Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS && f.driver.pending_vpp.size() == 1,
-            "pending ordinary Bob retains exact source and target ownership");
-    f.driver.vpp_worker = std::thread([&] { RunVppWorker(&f.driver); });
-    const VAStatus synced = SyncSurface2(&f.context, 2, 1000000000ULL);
-    f.driver.StopWorkers(); f.driver.stopping = false;
-    Require(synced == VA_STATUS_SUCCESS && centered_probe::calls == before + 1 &&
-                centered_probe::width == 128 && centered_probe::height == 8 && centered_probe::compact &&
-                f.Read(2) == f.BobOracle(canvas, bottom_first) &&
-                SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT,
-            "actual worker returns compact first-field Bob without publishing unfinished public pixels");
-    f.Field(packed, !bottom_first, bottom_first);
-    Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS && f.Read(1) == canvas,
-            "matching second field completes the real public canvas exactly once");
-    f.QueueBob(!bottom_first, bottom_first, false);
-    Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
-                f.Read(2) == f.BobOracle(canvas, !bottom_first),
-            "the second Bob parity uses complete original pixels without a dummy public frame");
-  }
-}
-
-void CenteredFhdCodedAndVisibleCanvases() {
-  for (unsigned canvas_height : {1080U, 1088U})
+  for (bool direct : {false, true})
     for (bool full : {false, true})
       for (bool bottom_first : {false, true}) {
-        CenteredFixture f(1920, 1088, 1080, 1280, 720, canvas_height, full);
+        CenteredFixture f(256, 32, 32, 128, 16, 32, full, direct);
         f.Submit();
-        const auto packed = f.Packed(43);
+        const auto packed = f.Packed(7);
         const auto canvas = f.Canvas(packed);
         f.Complete(packed, bottom_first);
         Require(f.Read(1) == canvas && f.Read(1, true) == canvas,
-                "coded1088 and visible1080 originals expose the same declared active ROI and real black backing");
+                "GetImage and Derive expose identical full NV12, including every range-correct border");
         for (unsigned parity = 0; parity != 2; ++parity) {
           const unsigned before = centered_probe::calls;
           f.QueueBob(parity, bottom_first, full);
           Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
-                      centered_probe::calls == before + 1 && centered_probe::width == 1280 &&
-                      centered_probe::height == 720 && f.Read(2) == f.BobOracle(canvas, parity),
-                  "FHD requested canvas uses actual small Bob while every luma/chroma byte matches the full-canvas reference");
+                      SyncSurface2(&f.context, 2, 0) == VA_STATUS_SUCCESS &&
+                      centered_probe::calls == before + 1 && centered_probe::width == 128 &&
+                      centered_probe::height == 16 && !centered_probe::compact,
+                  "immediate ordinary full-canvas Bob really processes only the small immutable sidecar");
+          Require(f.Read(2) == f.BobOracle(canvas, parity) && f.Read(1) == canvas,
+                  "both Bob parities equal independent full-canvas sampling and leave source unchanged");
         }
+        const unsigned before = centered_probe::calls;
+        f.QueueBob(1, bottom_first, !full);
+        Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS && centered_probe::calls == before &&
+                    f.Read(2) == f.BobOracle(canvas, 1),
+                "range mismatch uses real-canvas Bob rather than changing numerical border black");
       }
+}
+
+void CenteredFirstFieldAndQueuedBob() {
+  for (bool direct : {false, true})
+    for (bool bottom_first : {false, true}) {
+      CenteredFixture f(256, 32, 32, 128, 16, 32, false, direct);
+      f.Submit();
+      const auto packed = f.Packed(31);
+      const auto canvas = f.Canvas(packed);
+      f.Field(packed, bottom_first, bottom_first);
+      Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT,
+              "one physical field never completes the public full decoded canvas");
+      const unsigned before = centered_probe::calls;
+      f.QueueBob(bottom_first, bottom_first, false);
+      Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS && f.driver.pending_vpp.size() == 1,
+              "pending ordinary Bob retains exact source and target ownership");
+      f.driver.vpp_worker = std::thread([&] { RunVppWorker(&f.driver); });
+      const VAStatus synced = SyncSurface2(&f.context, 2, 1000000000ULL);
+      f.driver.StopWorkers(); f.driver.stopping = false;
+      Require(synced == VA_STATUS_SUCCESS && centered_probe::calls == before + 1 &&
+                  centered_probe::width == 128 && centered_probe::height == 8 && centered_probe::compact &&
+                  f.Read(2) == f.BobOracle(canvas, bottom_first) &&
+                  SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT,
+              "actual worker returns compact first-field Bob without publishing unfinished public pixels");
+      f.Field(packed, !bottom_first, bottom_first);
+      Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS && f.Read(1) == canvas,
+              "matching second field completes the real public canvas exactly once");
+      f.QueueBob(!bottom_first, bottom_first, false);
+      Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
+                  f.Read(2) == f.BobOracle(canvas, !bottom_first),
+              "the second Bob parity uses complete original pixels without a dummy public frame");
+    }
+}
+
+void CenteredCaptureAndPendingReuse() {
+  for (bool direct : {false, true})
+    for (bool complete_before_capture : {false, true}) {
+      CenteredFixture f(256, 32, 32, 128, 16, 32, false, direct);
+      f.Submit();
+      const auto old_packed = f.Packed(17), new_packed = f.Packed(59);
+      const auto old_canvas = f.Canvas(old_packed), new_canvas = f.Canvas(new_packed);
+      if (complete_before_capture) f.Complete(old_packed);
+      f.QueueBob(1, false, false);
+      const auto captured = f.driver.contexts.at(2)->vpp_frame;
+      const auto small = captured->centered_pixels;
+      Require(captured->storage.empty() == direct &&
+                  bool(captured->direct_backing) == direct && small,
+              "compatible ready or pending Bob capture avoids an eager full private snapshot only for direct originals");
+      f.Submit(1, false);
+      Require(!captured->storage.empty() && !captured->direct_backing &&
+                  captured->centered_pixels == small &&
+                  f.decode->decoded_frames.at(2 * kTimestampStep)->centered_pixels != small,
+              "reuse preserves the old capture and gives the new picture its own immutable small pixels");
+      if (!complete_before_capture) {
+        f.Complete(old_packed);
+        Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT,
+                "late old centered output cannot complete the reused public target");
+      }
+      f.Complete(new_packed, false, 2 * kTimestampStep);
+      const unsigned before = centered_probe::calls;
+      Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
+                  centered_probe::calls == before + 1 &&
+                  f.Read(2) == f.BobOracle(old_canvas, 1) &&
+                  f.Read(1) == new_canvas && f.Read(1, true) == new_canvas,
+              "VPP End uses the exact old small picture while GetImage and Derive expose the new original");
+    }
+}
+
+void CenteredFallbackCapturePromotes() {
+  for (bool direct : {false, true})
+    for (bool rectangle_mismatch : {false, true}) {
+      CenteredFixture f(256, 32, 32, 128, 16, 32, false, direct);
+      f.Submit();
+      const auto packed = f.Packed(23), canvas = f.Canvas(packed);
+      f.Complete(packed);
+      const unsigned before = centered_probe::calls;
+      f.QueueBob(1, false, !rectangle_mismatch, rectangle_mismatch ? 128 : 0);
+      const auto captured = f.driver.contexts.at(2)->vpp_frame;
+      Require(!captured->storage.empty() && !captured->direct_backing,
+              "range or rectangle mismatch retains the full private fallback snapshot");
+      auto expected = f.BobOracle(canvas, 1);
+      if (rectangle_mismatch)
+        for (unsigned plane = 0; plane != 2; ++plane) {
+          const size_t base = plane ? size_t{f.coded_width} * f.canvas_height : 0;
+          for (unsigned row = 0; row < (plane ? f.canvas_height / 2 : f.canvas_height); ++row)
+            std::fill_n(expected.data() + base + size_t{row} * f.coded_width + 128,
+                        128, plane ? 128 : 16);
+        }
+      Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
+                  centered_probe::calls == before && f.Read(2) == expected &&
+                  f.Read(1) == canvas && f.Read(1, true) == canvas,
+              "fallback uses actual full canvas pixels and caller rectangles without changing the original");
+    }
+}
+
+void CenteredRetirementAndConsumingClose() {
+  for (bool direct : {false, true}) {
+    CenteredFixture f(256, 32, 32, 128, 16, 32, false, direct);
+    f.Submit();
+    const auto old_packed = f.Packed(37), new_packed = f.Packed(71);
+    const auto old_canvas = f.Canvas(old_packed), new_canvas = f.Canvas(new_packed);
+    f.Complete(old_packed);
+    const auto captured = f.decode->decoded_frames.at(kTimestampStep);
+    const auto small = captured->centered_pixels;
+    ++captured->vpp_readers;
+    f.AddOriginal(3, direct); f.AddOriginal(4, direct);
+    f.Submit(3); f.Complete(new_packed, false, 2 * kTimestampStep);
+    f.Submit(4, false);
+    const auto pending = f.decode->decoded_frames.at(3 * kTimestampStep);
+    const uint64_t generation = f.decode->generation;
+    const size_t inputs = f.mock.inputs.size();
+    const unsigned reopens = f.mock.reopen_count;
+    VASurfaceID old = 1;
+    Require(DestroySurfaces(&f.context, &old, 1) == VA_STATUS_SUCCESS &&
+                !f.driver.surfaces.count(old) && f.mock.close_count == 0 &&
+                f.decode->generation == generation && !pending->failed &&
+                f.decode->pending.count(3 * kTimestampStep) == 1,
+            "destroying a centered target pruned by a newer IDR leaves independent pending decode intact");
+    {
+      std::unique_lock<std::mutex> lock(f.driver.mutex);
+      Require(SyncDecodeSurface(&f.driver, captured, &lock, 0) == VA_STATUS_SUCCESS &&
+                  !captured->direct_backing && !captured->storage.empty() &&
+                  captured->centered_pixels == small && f.PrivatePixels(*captured) == old_canvas,
+              "retirement preserves all old canvas bytes and its exact immutable small sidecar");
+    }
+    --captured->vpp_readers;
+    f.Complete(new_packed, false, 3 * kTimestampStep);
+    Require(f.Read(4) == new_canvas && f.Read(4, true) == new_canvas,
+            "unrelated pending original completes normally after obsolete target destruction");
+    f.Submit(4, false); f.Complete(new_packed, false, 4 * kTimestampStep);
+    Require(f.mock.inputs.size() == inputs + 1 && f.mock.reopen_count == reopens,
+            "P continuation preserves the initial centered hardware session");
+  }
+  for (bool direct : {false, true}) {
+    CenteredFixture f(256, 32, 32, 128, 16, 32, false, direct);
+    f.Submit();
+    const auto packed = f.Packed(47), canvas = f.Canvas(packed);
+    f.Complete(packed);
+    f.QueueBob(0, false, false);
+    const auto captured = f.driver.contexts.at(2)->vpp_frame;
+    const auto small = captured->centered_pixels;
+    Require(DestroyContextWithTimeout(&f.context, 1, 0) == VA_STATUS_SUCCESS &&
+                !f.driver.contexts.count(1) && f.mock.close_count == 1 &&
+                !captured->direct_backing && !captured->storage.empty() &&
+                captured->centered_pixels == small &&
+                f.Read(1) == canvas && f.Read(1, true) == canvas,
+            "consuming context close preserves the completed real original and captured small pixels");
+    const unsigned before = centered_probe::calls;
+    Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
+                centered_probe::calls == before + 1 &&
+                f.Read(2) == f.BobOracle(canvas, 0),
+            "a Bob captured before consuming close still reads the exact retired picture");
+  }
+}
+
+void CenteredFhdCodedAndVisibleCanvases() {
+  for (bool direct : {false, true})
+    for (unsigned canvas_height : {1080U, 1088U})
+      for (bool full : {false, true})
+        for (bool bottom_first : {false, true}) {
+          CenteredFixture f(1920, 1088, 1080, 1280, 720, canvas_height, full, direct);
+          f.Submit();
+          const auto packed = f.Packed(43);
+          const auto canvas = f.Canvas(packed);
+          f.Complete(packed, bottom_first);
+          Require(f.Read(1) == canvas && f.Read(1, true) == canvas,
+                  "coded1088 and visible1080 originals expose the same declared active ROI and real black backing");
+          for (unsigned parity = 0; parity != 2; ++parity) {
+            const unsigned before = centered_probe::calls;
+            f.QueueBob(parity, bottom_first, full);
+            Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
+                        centered_probe::calls == before + 1 && centered_probe::width == 1280 &&
+                        centered_probe::height == 720 && f.Read(2) == f.BobOracle(canvas, parity),
+                    "FHD requested canvas uses actual small Bob while every luma/chroma byte matches the full-canvas reference");
+          }
+        }
 }
 }
 
@@ -3182,6 +3327,8 @@ int main(int argc, char **argv) {
     try {
       if (std::strcmp(argv[1], "--centered") == 0) CenteredContextAdmission();
       CenteredReadableCanvasAndBob(); CenteredFirstFieldAndQueuedBob();
+      CenteredCaptureAndPendingReuse(); CenteredFallbackCapturePromotes();
+      CenteredRetirementAndConsumingClose();
       CenteredFhdCodedAndVisibleCanvases();
       std::printf("PASS ordinary centered NV12 integration: %u checks\n", checks);
       return 0;
@@ -3206,6 +3353,9 @@ int main(int argc, char **argv) {
     {"centered context admission", CenteredContextAdmission},
     {"centered readable canvas and Bob", CenteredReadableCanvasAndBob},
     {"centered compact first-field and worker", CenteredFirstFieldAndQueuedBob},
+    {"centered exact capture and pending reuse", CenteredCaptureAndPendingReuse},
+    {"centered fallback capture promotes", CenteredFallbackCapturePromotes},
+    {"centered obsolete retirement and consuming close", CenteredRetirementAndConsumingClose},
     {"centered coded1088 and visible1080 canvases", CenteredFhdCodedAndVisibleCanvases},
     {"ordinary H.264 pixel-format admission", H264UnsupportedPixelFormatsAreTransactional},
     {"obsolete surface retirement preserves independent decode", ObsoleteSurfaceRetirementPreservesIndependentDecode},
