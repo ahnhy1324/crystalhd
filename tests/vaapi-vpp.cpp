@@ -30,6 +30,7 @@ void VppTestWorkerTurn(Driver *, std::unique_lock<std::mutex> &);
 #undef CRYSTALHD_VAAPI_TEST_VPP_WORKER_TURN
 
 #include <atomic>
+#include <cmath>
 #include <cerrno>
 #include <dirent.h>
 #include <linux/sync_file.h>
@@ -2259,6 +2260,194 @@ void VppColorRangeRejectsUnsupportedRequests() {
       }
 }
 
+void VppColorStandardsNv12AndRejections() {
+  for (auto standard : {VAProcColorStandardBT601, VAProcColorStandardBT709})
+    for (bool bob : {false, true})
+      for (bool inherit : {false, true}) {
+        Fixture fixture;
+        VAProcPipelineCaps caps;
+        memset(&caps, 0xff, sizeof(caps));
+        Require(QueryVideoProcPipelineCaps(&fixture.context, 2, nullptr, 0, &caps) ==
+                    VA_STATUS_SUCCESS && caps.num_input_color_standards == 2 &&
+                    caps.num_output_color_standards == 2 &&
+                    caps.input_color_standards[0] == VAProcColorStandardBT601 &&
+                    caps.input_color_standards[1] == VAProcColorStandardBT709 &&
+                    caps.output_color_standards[0] == VAProcColorStandardBT601 &&
+                    caps.output_color_standards[1] == VAProcColorStandardBT709,
+                "VPP publishes only supported, driver-owned color standards");
+        auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+        const auto original = picture->storage;
+        VABufferID filter = bob ? CreateBobFilter(fixture) : VA_INVALID_ID;
+        VAProcPipelineParameterBuffer pipeline = {};
+        pipeline.surface = 1;
+        pipeline.surface_color_standard = standard;
+        pipeline.output_color_standard = inherit ? VAProcColorStandardNone : standard;
+        pipeline.filters = bob ? &filter : nullptr;
+        pipeline.num_filters = bob ? 1 : 0;
+        memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(), &pipeline, sizeof(pipeline));
+        fixture.SubmitParameters();
+        fixture.Complete(kTimestampStep, 40);
+        Require(picture->storage == original && picture->vpp_readers == 0 &&
+                    fixture.target->vpp_writers == 0,
+                "same-standard NV12 preserves pixels and retires ownership");
+      }
+  for (auto input : {VAProcColorStandardNone, VAProcColorStandardBT601,
+                     VAProcColorStandardBT709, VAProcColorStandardBT2020,
+                     VAProcColorStandardExplicit})
+    for (auto output : {VAProcColorStandardNone, VAProcColorStandardBT601,
+                        VAProcColorStandardBT709, VAProcColorStandardSRGB}) {
+      const bool supported =
+          (input == VAProcColorStandardNone || input == VAProcColorStandardBT601 ||
+           input == VAProcColorStandardBT709) &&
+          (output == VAProcColorStandardNone || output == input);
+      if (supported) continue;
+      Fixture fixture;
+      fixture.SubmitParameters();
+      const auto untouched = fixture.target->storage;
+      VAProcPipelineParameterBuffer pipeline = {};
+      pipeline.surface = 1;
+      pipeline.surface_color_standard = input;
+      pipeline.output_color_standard = output;
+      memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(), &pipeline, sizeof(pipeline));
+      Require(RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                  VA_STATUS_ERROR_INVALID_PARAMETER &&
+                  fixture.processor->vpp_source == VA_INVALID_SURFACE &&
+                  fixture.target->storage == untouched &&
+                  fixture.target->vpp_writers == 0 && fixture.driver.pending_vpp.empty(),
+              "unimplemented gamut/transfer/explicit color requests reject before capture");
+    }
+}
+
+// Independent Y'CbCr equations, not swscale or the driver's coefficient table.
+// Fixed-point conversion may differ by at most two 8-bit levels from rounding
+// the real-valued standard; colored samples distinguish 601 from 709 by much more.
+static std::array<int, 3> ReferenceRgb(unsigned y, unsigned u, unsigned v,
+                                       bool full, bool bt709) {
+  const double kr = bt709 ? 0.2126 : 0.299, kb = bt709 ? 0.0722 : 0.114;
+  const double yy = full ? y : (static_cast<double>(y) - 16) * 255 / 219;
+  const double cb = (static_cast<double>(u) - 128) * (full ? 1 : 255.0 / 224);
+  const double cr = (static_cast<double>(v) - 128) * (full ? 1 : 255.0 / 224);
+  const double red = yy + 2 * (1 - kr) * cr;
+  const double blue = yy + 2 * (1 - kb) * cb;
+  const double green = (yy - kr * red - kb * blue) / (1 - kr - kb);
+  const auto level = [](double x) { return std::clamp<int>(std::lround(x), 0, 255); };
+  return {level(blue), level(green), level(red)};
+}
+
+void VppColorStandardsArgbPixelsAndReuse() {
+  Fixture fixture;
+  fixture.target = PrivateArgbOutput();
+  fixture.driver.surfaces[2] = fixture.target;
+  auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+  const unsigned samples[][3] = {{16,128,128}, {235,128,128}, {81,90,240},
+      {63,102,240}, {128,96,160}, {80,180,210}};
+  const std::pair<VAProcColorStandardType, VAProcColorStandardType> standards[] = {
+      {VAProcColorStandardBT709, VAProcColorStandardBT709},
+      {VAProcColorStandardBT601, VAProcColorStandardBT601},
+      {VAProcColorStandardNone, VAProcColorStandardNone},
+      {VAProcColorStandardBT709, VAProcColorStandardNone}};
+  for (const auto &selection : standards)
+    for (bool full : {false, true})
+      for (const auto &sample : samples)
+        for (unsigned mode = 0; mode != 3; ++mode) {
+          const auto standard = selection.first;
+          for (unsigned row = 0; row < picture->height; ++row)
+            memset(picture->planes[0] + row * picture->pitch[0],
+                   sample[0] + 12 * (row % 2), picture->width);
+          for (unsigned row = 0; row < picture->height / 2; ++row)
+            for (unsigned x = 0; x < picture->width; x += 2) {
+              const int sign = standard == VAProcColorStandardBT709 ?
+                  ((x / 2) % 2 ? -1 : 1) : 0;
+              picture->planes[1][row * picture->pitch[1] + x] = sample[1] + 7 * sign;
+              picture->planes[1][row * picture->pitch[1] + x + 1] = sample[2] + 9 * sign;
+            }
+          const auto original = picture->storage;
+          VABufferID filter = mode == 0 ? VA_INVALID_ID :
+              CreateBobFilter(fixture, mode == 2 ? VA_DEINTERLACING_BOTTOM_FIELD : 0);
+          VAProcPipelineParameterBuffer pipeline = {};
+          pipeline.surface = 1;
+          pipeline.surface_color_standard = standard;
+          pipeline.output_color_standard = selection.second;
+          pipeline.input_color_properties.color_range = full ? VA_SOURCE_RANGE_FULL : VA_SOURCE_RANGE_REDUCED;
+          pipeline.filters = mode == 0 ? nullptr : &filter;
+          pipeline.num_filters = mode == 0 ? 0 : 1;
+          memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(), &pipeline, sizeof(pipeline));
+          fixture.SubmitParameters();
+          Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+                  "declared matrix completes ordinary/Bob ARGB conversion");
+          for (unsigned row = 0; row < picture->height; ++row) {
+            for (unsigned x = 0; x < picture->width; ++x) {
+              const int sign = standard == VAProcColorStandardBT709 ?
+                  ((x / 2) % 2 ? -1 : 1) : 0;
+              const auto rgb = ReferenceRgb(sample[0] + 12 * (mode == 0 ? row % 2 : mode - 1),
+                  sample[1] + 7 * sign, sample[2] + 9 * sign, full,
+                  standard == VAProcColorStandardBT709);
+              const auto *pixel = fixture.target->planes[0] + row * fixture.target->pitch[0] + 4 * x;
+              for (unsigned c = 0; c != 3; ++c) {
+                if (std::abs(static_cast<int>(pixel[c]) - rgb[c]) > 2)
+                  fprintf(stderr, "CSC mismatch standard=%u full=%u mode=%u sample=%u,%u,%u row=%u x=%u channel=%u actual=%u expected=%d\n",
+                      static_cast<unsigned>(standard), full, mode, sample[0], sample[1], sample[2], row, x, c, pixel[c], rgb[c]);
+                Require(std::abs(static_cast<int>(pixel[c]) - rgb[c]) <= 2,
+                        "601/709 RGB agrees with independent color equations");
+              }
+              Require(pixel[3] == 255, "CSC retains opaque alpha");
+            }
+          }
+          Require(picture->storage == original && picture->vpp_readers == 0 &&
+                      fixture.target->vpp_writers == 0,
+                  "matrix changes preserve source and release owners");
+          if (mode != 0)
+            Require(DestroyBuffer(&fixture.context, filter) == VA_STATUS_SUCCESS,
+                    "retire completed Bob filter");
+        }
+}
+
+void VppColorStandardQueuedSnapshotAndCancellation() {
+  for (bool cancel : {false, true}) {
+    Fixture fixture;
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    fixture.target = PrivateArgbOutput();
+    fixture.driver.surfaces[2] = fixture.target;
+    auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+    for (unsigned row = 0; row < picture->height / 2; ++row)
+      for (unsigned x = 0; x < picture->width; x += 2) {
+        picture->planes[1][row * picture->pitch[1] + x] = 102;
+        picture->planes[1][row * picture->pitch[1] + x + 1] = 240;
+      }
+    const auto original = picture->storage, untouched = fixture.target->storage;
+    picture->ready = false;
+    VAProcPipelineParameterBuffer pipeline = {};
+    pipeline.surface = 1;
+    pipeline.surface_color_standard = pipeline.output_color_standard = VAProcColorStandardBT709;
+    memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(), &pipeline, sizeof(pipeline));
+    fixture.SubmitParameters();
+    pipeline.surface_color_standard = pipeline.output_color_standard = VAProcColorStandardBT601;
+    memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(), &pipeline, sizeof(pipeline));
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS && fixture.driver.pending_vpp.size() == 1 &&
+                DestroyBuffer(&fixture.context, fixture.parameters) == VA_STATUS_SUCCESS,
+            "pending color matrix owns its value, not client buffer lifetime");
+    if (cancel) fixture.decoder->Reset(); else picture->ready = true;
+    fixture.driver.vpp_worker = std::thread([&] { RunVppWorker(&fixture.driver); });
+    Require(SyncSurface2(&fixture.context, 2, 1000000000ULL) ==
+                (cancel ? VA_STATUS_ERROR_DECODING_ERROR : VA_STATUS_SUCCESS) &&
+                fixture.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
+                fixture.target->vpp_writers == 0 && picture->storage == original,
+            "queued color conversion retires source/target owners on success and reset");
+    if (cancel) Require(fixture.target->storage == untouched, "canceled matrix writes no pixels");
+    else {
+      const auto rgb = ReferenceRgb(40, 102, 240, false, true);
+      for (unsigned row = 0; row < picture->height; ++row)
+        for (unsigned x = 0; x < picture->width; ++x) {
+          const auto *pixel = fixture.target->planes[0] + row * fixture.target->pitch[0] + 4 * x;
+          for (unsigned c = 0; c != 3; ++c)
+            Require(std::abs(static_cast<int>(pixel[c]) - rgb[c]) <= 2,
+                    "worker uses captured BT709 after context/client reset");
+        }
+    }
+  }
+}
+
 void VppColorRangeQueuedSnapshotAndCancellation() {
   for (bool cancel : {false, true})
     for (unsigned mode = 0; mode < 3; ++mode) {
@@ -3623,7 +3812,7 @@ void BobRejectsUnsupportedPipelineParameters() {
       case 11: parameters.num_additional_outputs = 1; break;
       case 12: parameters.va_reserved[0] = 1; break;
       case 13: parameters.pipeline_flags = ~uint32_t{VA_PROC_PIPELINE_FAST}; break;
-      case 14: parameters.surface_color_standard = VAProcColorStandardBT709; break;
+      case 14: parameters.surface_color_standard = VAProcColorStandardBT2020; break;
       case 15: parameters.output_color_standard = VAProcColorStandardBT709; break;
       case 16:
         buffer.context = 1;
@@ -3680,7 +3869,7 @@ void VppMeaningfulSemanticsAreValidatedBeforeCapture() {
         case 3: parameters.num_backward_references = 1; break;
         case 4: parameters.num_additional_outputs = 1; break;
         case 5: parameters.pipeline_flags = ~uint32_t{VA_PROC_PIPELINE_FAST}; break;
-        case 6: parameters.surface_color_standard = VAProcColorStandardBT709; break;
+        case 6: parameters.surface_color_standard = VAProcColorStandardBT2020; break;
         case 7: parameters.output_color_standard = VAProcColorStandardBT709; break;
         case 8: parameters.processing_mode = VAProcPowerSavingMode; break;
         case 9: parameters.output_hdr_metadata = &hdr; break;
@@ -6746,6 +6935,18 @@ static void FirstFieldCpuViewPreservesPublicReadiness() {
 // Keep the complete entry globally compiled for syntax coverage. CPU-only
 // section-GC builds retain only their selected state-machine groups below.
 int VppFullTestEntry(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--color-standards") == 0) {
+    try {
+      VppColorStandardsNv12AndRejections();
+      VppColorStandardsArgbPixelsAndReuse();
+      VppColorStandardQueuedSnapshotAndCancellation();
+      puts("VA-API color standards pixels/capture/cancellation PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API color standards failed: %s\n", error.what());
+      return 1;
+    }
+  }
   if (argc == 2 && strcmp(argv[1], "--native-dumb-offset") == 0)
     return NativeDumbOffsetTestEntry();
   if (argc == 2 && strcmp(argv[1], "--centered-readonly-pending") == 0)
@@ -6891,6 +7092,9 @@ int VppFullTestEntry(int argc, char **argv) {
     VppInterleavedArgbScalingAndQueuedSnapshot();
     VppInterleavedInvalidGeometryRejectsBeforeCapture();
     VppInterleavedArgbChromaMatchesCompactedFields();
+    VppColorStandardsNv12AndRejections();
+    VppColorStandardsArgbPixelsAndReuse();
+    VppColorStandardQueuedSnapshotAndCancellation();
     VppFullRangeArgbUsesDeclaredInput();
     VppColorRangeArgbReuseAndBob();
     VppColorRangeNv12PreservesSamples();
@@ -6982,7 +7186,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 101 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 104 hardware-free regressions passed");
   return 0;
 }
 
@@ -7005,6 +7209,7 @@ int main(int argc, char **argv) {
       {"opaque decode originals reject pixel access", OpaqueDecodeOriginalRejectsPixelAccess},
       {"empty subpicture formats validate count", EmptySubpictureFormatsValidateCount},
       {"unsupported surface errors disclose no invented details", UnsupportedSurfaceErrorsDoNotInventDetails},
+      {"NV12 color standards preserve pixels and reject conversions", VppColorStandardsNv12AndRejections},
       {"NV12 range preserves samples and background", VppColorRangeNv12PreservesSamples},
       {"interleaved NV12 scaling preserves field lattices", VppInterleavedScalingPreservesFieldRows},
       {"720 Bob returns FHD through direct and staged VPP", Bob720ReturnsFhdThroughDirectAndTwoStageVpp},

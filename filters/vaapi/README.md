@@ -538,8 +538,15 @@ On the 1.2 implementation, VPP/Bob honors declared full-range NV12 for
 ARGB conversion; UNKNOWN input retains the existing limited-range interpretation.
 NV12 output preserves the input range, with range-correct black padding.
 Explicit NV12 range changes and reduced-range ARGB output are rejected.
-Explicit color standards, matrix/primaries/transfer conversion and selectable
-chroma-site conversion remain unsupported; this is not general color management.
+Unreleased 1.3 ordinary VPP additionally accepts BT.601 or BT.709 input with
+the same output standard, or `None` output to inherit it. NV12→ARGB uses the
+declared matrix; NV12→NV12 preserves samples. `None` input retains the existing
+BT.601 interpretation. Changing standards, explicit color properties,
+primaries/transfer conversion and selectable chroma-site conversion remain
+unsupported; this is not general color management. Decode-integrated scaling
+retains its existing `None`-only color-standard contract.
+RGB output requires a VPP config selecting `VA_RT_FORMAT_RGB32`; the default
+YUV420-only config and its client-negotiation limits remain unchanged.
 
 Unreleased 1.3 Bob also accepts an NV12 destination rectangle at even X and
 Y divisible by four, keeping the source origin at zero. For example, a

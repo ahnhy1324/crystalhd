@@ -1606,6 +1606,8 @@ struct VppDeinterlace {
 struct VppColorRange {
   // UNKNOWN retains the historical limited-range YUV interpretation.
   bool source_full = false;
+  // None retains the historical BT.601 coefficients, not a geometry guess.
+  int source_matrix = SWS_CS_DEFAULT;
 };
 
 static uint8_t ClampRgb(int value) {
@@ -1935,19 +1937,22 @@ static VAStatus ProcessVpp(SwsContext **scaler,
         preserve_fields || (deinterlace.bob && !source_is_field) ? 2 : 1;
     const unsigned int output_height =
         preserve_fields ? output_region.height / 2 : output_region.height;
+    // Full-chroma precision avoids the approximate 709 RGB fast path while
+    // retaining POINT sampling. None/601 keep their historical conversion.
     *scaler = sws_getCachedContext(
         *scaler, source_region.width, source_height, AV_PIX_FMT_NV12,
-        output_region.width, output_height, AV_PIX_FMT_BGRA, SWS_POINT,
+        output_region.width, output_height, AV_PIX_FMT_BGRA,
+        SWS_POINT | (color_range.source_matrix == SWS_CS_ITU709
+                         ? SWS_FULL_CHR_H_INT : 0),
         nullptr, nullptr, nullptr);
     if (*scaler == nullptr) {
       source->EndCpuRead();
       Debug("VPP operation failed stage=sws-context");
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
-    // Range is active even without VAProcColorStandardExplicit. Set it on
-    // every operation: getCachedContext may retain a prior full-range input.
-    // Keep the existing default matrix; this is not a gamut/transfer change.
-    const int *coefficients = sws_getCoefficients(SWS_CS_DEFAULT);
+    // Reset range and matrix on every operation: a cached context can retain
+    // the preceding picture's selection. This is not a gamut/transfer change.
+    const int *coefficients = sws_getCoefficients(color_range.source_matrix);
     if (sws_setColorspaceDetails(*scaler, coefficients,
                                 color_range.source_full ? 1 : 0,
                                 coefficients, 1, 0, 1 << 16, 1 << 16) < 0) {
@@ -2879,6 +2884,8 @@ struct Driver {
   // Borrowed capability metadata, stable until this VA display terminates.
   std::array<uint32_t, 1> vpp_input_formats = {{VA_FOURCC_NV12}};
   std::array<uint32_t, 2> vpp_output_formats = {{VA_FOURCC_NV12, VA_FOURCC_ARGB}};
+  std::array<VAProcColorStandardType, 2> vpp_color_standards = {{
+      VAProcColorStandardBT601, VAProcColorStandardBT709}};
   bool experimental_i915_wc = false;
 
   explicit Driver(int requested_drm_fd,
@@ -8465,10 +8472,17 @@ static bool VppPipelineSemanticsSupported(
       p.num_additional_outputs != 0 ||
       (p.pipeline_flags & ~VA_PROC_PIPELINE_FAST) != 0 ||
       p.mirror_state != VA_MIRROR_NONE || p.blend_state != nullptr ||
-      p.surface_color_standard != VAProcColorStandardNone ||
-      p.output_color_standard != VAProcColorStandardNone ||
       p.processing_mode != VAProcDefaultMode || p.output_hdr_metadata != nullptr)
     return false;
+  const auto standard = p.surface_color_standard;
+  if ((standard != VAProcColorStandardNone &&
+       standard != VAProcColorStandardBT601 && standard != VAProcColorStandardBT709) ||
+      (p.output_color_standard != VAProcColorStandardNone &&
+       p.output_color_standard != standard))
+    return false;
+  // Matching declarations retain primaries and transfer, including for RGB
+  // (whose matrix is identity). None output inherits that interpretation.
+  // Reject actual standard/gamut/transfer changes rather than just relabeling.
   if (p.input_surface_flag != VA_FRAME_PICTURE &&
       p.input_surface_flag != VA_TOP_FIELD_FIRST &&
       p.input_surface_flag != VA_BOTTOM_FIELD_FIRST)
@@ -8510,8 +8524,10 @@ static bool VppPipelineSemanticsSupported(
     return false;
   }
   color_range->source_full = source_full;
-  // Primaries/transfer/matrix apply only with the explicit color standard
-  // rejected above; inactive values and reserved padding remain ignored.
+  color_range->source_matrix = standard == VAProcColorStandardBT709
+      ? SWS_CS_ITU709 : SWS_CS_DEFAULT;
+  // The properties' primaries/transfer/matrix apply only with Explicit,
+  // still rejected above; inactive values and padding remain ignored.
   return true;
 }
 
@@ -8609,6 +8625,10 @@ static VAStatus QueryVideoProcPipelineCaps(VADriverContextP context,
   // extension fields. Never dereference incoming pointers: publish borrowed
   // driver-owned format metadata, as with ordinary VPP color-standard lists.
   memset(caps, 0, sizeof(*caps));
+  caps->input_color_standards = caps->output_color_standards =
+      driver->vpp_color_standards.data();
+  caps->num_input_color_standards = caps->num_output_color_standards =
+      driver->vpp_color_standards.size();
   caps->input_pixel_format = driver->vpp_input_formats.data();
   caps->num_input_pixel_formats = driver->vpp_input_formats.size();
   const auto &decode = *driver->contexts.at(context_id);
@@ -9497,7 +9517,9 @@ static VAStatus CaptureDecodeProcessing(Driver *driver, DecodeContext *decode,
   VAProcPipelineParameterBuffer semantics = pipeline;
   semantics.num_additional_outputs = 0;
   VppColorRange color_range;
-  if (!VppPipelineSemanticsSupported(semantics, *output->second, false, &color_range) ||
+  if (pipeline.surface_color_standard != VAProcColorStandardNone ||
+      pipeline.output_color_standard != VAProcColorStandardNone ||
+      !VppPipelineSemanticsSupported(semantics, *output->second, false, &color_range) ||
       pipeline.input_surface_flag != pipeline.output_surface_flag)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   const VARectangle source = *pipeline.surface_region;
