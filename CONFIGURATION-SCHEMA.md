@@ -185,6 +185,31 @@ are editable, other settings/sections are preserved, and the preview remains a
 model rather than a report of an active application. Reuse atomic save, stale
 snapshot checks, risk acknowledgements and uncertain-write handling unchanged.
 
+### Player controls, wording and tray startup
+
+The window adds a Player page for the three already consumed player keys. Use
+the shared validator/writer and current editing scope. Width and output size
+accept custom values, without limiting writable dimensions to a few presets.
+Separate inherited values, built-in defaults and explicit input. Keep incomplete
+or invalid text while switching pages/profiles; indicate the error and block
+Save until it is corrected or explicitly discarded. Reload/Quit must also notice
+such unfinished input. A valid multi-key draft may temporarily have conflicting
+dependencies; resolve them before Save. No automatic clearing of other keys.
+
+Buttons describe their effects: Save changes, Reload file, Clear all user
+settings, Hide to tray and Quit. Clearing user data remains confirmed and never
+means clearing system defaults. Tooltips explain inheritance, built-in defaults,
+profile selection versus editing, and supported application/restart scope. A
+standard Player-only preset must be labeled with its actual owner.
+
+`--tray` starts hidden only after a functioning indicator/host is connected.
+Without tray support, show a usable window; host loss reveals it without losing
+draft text, and host recovery never hides it again unexpectedly. Ordinary launches
+reuse the same desktop instance and reopen its window. Explicit file overrides
+and window-only runs remain isolated. The desktop launcher uses tray startup;
+no login autostart or system service is added. Validate real panel registration,
+hide/reopen, single-instance activation, host-loss fallback and no startup write.
+
 ## Inspect configuration
 
 The five inspection commands are:
