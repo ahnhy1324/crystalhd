@@ -126,8 +126,11 @@ scope to general full-rate FHD or hardware deinterlacing.
 - [ ] [#477: Centered card output for ordinary VA clients](https://github.com/ahnhy1324/crystalhd/issues/477)
   — centered output and async completion are integrated through #494;
   retain small Bob, full original readback and exact lifetime semantics.
-  The proposed L0s/native/centered matched matrix remains NOT RUN; earlier
-  bounded screen acceptance does not replace it. See the
+  New matched L0s/native/centered measurements qualify the selected progressive 30p
+  five-minute centered path in both link states; native-ON falls short. New
+  interlace/60p misses and physical-versus-software observations remain explicit
+  in the [results](HARDWARE-2026-09-13.md#stock-kodi-centered-output-with-l0s-2026-10-24).
+  Broader codec/host and zero-loss presentation acceptance remain open. See the
   [development usage](filters/vaapi/README.md#development-experiment-centered-card-output).
 - [ ] [#92: BCM70015 capability research](https://github.com/ahnhy1324/crystalhd/issues/92)
   — pinned firmware mapping and live OPEN/scaling evidence; standalone

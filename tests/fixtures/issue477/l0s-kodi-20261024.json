@@ -1,0 +1,3114 @@
+{
+  "schema": "crystalhd-kodi-l0s-observation-v1",
+  "source": "8c75183a076b6d2a4f1fb682a43ba73038496e34",
+  "native_payload": "b913a59",
+  "module": "3.10.13",
+  "runtime_receipt": "1.3.0-dev.1",
+  "issue": 477,
+  "host": {
+    "os": "Ubuntu26.04.1LTS",
+    "kernel": "7.0.0-38-generic",
+    "cpu": "Core2DuoT8100 2.10GHz",
+    "card": "BCM70015",
+    "root": "ICH8",
+    "kodi": "21.3 stockUbuntu",
+    "mesa": "26.0.8",
+    "display": "1024x768 at60Hz; FHD names refer to source/VA canvas",
+    "link": "2.5GT/s x1; MPS128; endpointMRRS512/rootMRRS128; L1 unchanged"
+  },
+  "rx_size_unit": "YBuffDoneSz DWORDs times4; reported completion span includes160-byte picture metadata, not PCIe on-wire bytes",
+  "scope": [
+    "Software frame/slot-generation selection, not physical scanout",
+    "Full AU sent\u2192API dequeue includes queueing, not isolated hardware time",
+    "Counts and elapsed selection rate are separate; complete late drain is not realtime",
+    "Untraced short CPU repeats are separate from traced/renderer-only census CPU",
+    "Geometry/black/byte equality covers three public NV12 canvases, not every long-run pixel",
+    "Stable1.2.0/default L0s policy and published baselines unchanged"
+  ],
+  "cpu_short_crossed_medians": [
+    {
+      "l0s": "off",
+      "mode": "native",
+      "cases": [
+        "cross-off1-native",
+        "cross-off2-native"
+      ],
+      "kodi_cpu_percent_median": 36.69169955167371,
+      "xorg_cpu_percent_median": 20.798560324540986
+    },
+    {
+      "l0s": "off",
+      "mode": "centered",
+      "cases": [
+        "cross-off1-centered",
+        "cross-off2-centered"
+      ],
+      "kodi_cpu_percent_median": 29.339718724087927,
+      "xorg_cpu_percent_median": 20.610219723314362
+    },
+    {
+      "l0s": "on",
+      "mode": "native",
+      "cases": [
+        "on-native-30",
+        "cross-on2-native"
+      ],
+      "kodi_cpu_percent_median": 35.43804097398965,
+      "xorg_cpu_percent_median": 20.86147462169687
+    },
+    {
+      "l0s": "on",
+      "mode": "centered",
+      "cases": [
+        "on-centered-30",
+        "cross-on2-centered"
+      ],
+      "kodi_cpu_percent_median": 29.18472575791612,
+      "xorg_cpu_percent_median": 20.606080245382095
+    }
+  ],
+  "pixels": {
+    "status": "PASS",
+    "frames": 3,
+    "format": "NV12",
+    "visible": [
+      1920,
+      1080
+    ],
+    "roi": [
+      320,
+      180,
+      1280,
+      720
+    ],
+    "black": [
+      16,
+      128,
+      128
+    ],
+    "on_off_bytes_equal": true,
+    "scope": "First3 public canvases only; not all long-run pixels or physical presentation"
+  },
+  "operator_av": {
+    "l0s": "on",
+    "mode": "centered720+CPUVA-Bob+GPUzoom1.5",
+    "observation": "speed and AV sync normal; no persistent issue after pause/resume and forward/back seeks",
+    "qualitative": true
+  },
+  "observations": [
+    {
+      "case": "cross-off1-centered",
+      "l0s": "off",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": null,
+      "accepted": null,
+      "render_true": null,
+      "missing_after_accept": null,
+      "extra_after_accept": null,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": false,
+      "cpu_comparison_eligible": true,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.458120558876544,
+        "kodi_core_cpu_percent": 29.521615500365193,
+        "kodi_peak_sampled_rss_kib": 296120,
+        "xorg_core_cpu_percent": 20.7052054414326,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1137274,
+          "median": 2094931,
+          "max": 2167254
+        },
+        "cpu0": {
+          "min": 1401767,
+          "median": 2094940,
+          "max": 2271011
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "cross-off1-native",
+      "l0s": "off",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": null,
+      "accepted": null,
+      "render_true": null,
+      "missing_after_accept": null,
+      "extra_after_accept": null,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": false,
+      "cpu_comparison_eligible": true,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.94109214004129,
+        "kodi_core_cpu_percent": 36.78987882738528,
+        "kodi_peak_sampled_rss_kib": 316036,
+        "xorg_core_cpu_percent": 20.661614412536284,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1596129,
+          "median": 2095127,
+          "max": 2235995
+        },
+        "cpu0": {
+          "min": 1596138,
+          "median": 2095071,
+          "max": 2234089
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "cross-off2-centered",
+      "l0s": "off",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": null,
+      "accepted": null,
+      "render_true": null,
+      "missing_after_accept": null,
+      "extra_after_accept": null,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": false,
+      "cpu_comparison_eligible": true,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.909804483875632,
+        "kodi_core_cpu_percent": 29.15782194781066,
+        "kodi_peak_sampled_rss_kib": 294564,
+        "xorg_core_cpu_percent": 20.515234005196124,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": 16373,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1197104,
+          "median": 2094940.0,
+          "max": 2246350
+        },
+        "cpu0": {
+          "min": 1197103,
+          "median": 2094953.5,
+          "max": 2265800
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "cross-off2-native",
+      "l0s": "off",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": null,
+      "accepted": null,
+      "render_true": null,
+      "missing_after_accept": null,
+      "extra_after_accept": null,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": false,
+      "cpu_comparison_eligible": true,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.927556399954483,
+        "kodi_core_cpu_percent": 36.59352027596214,
+        "kodi_peak_sampled_rss_kib": 315836,
+        "xorg_core_cpu_percent": 20.935506236545685,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1303385,
+          "median": 2095015,
+          "max": 2234447
+        },
+        "cpu0": {
+          "min": 1596137,
+          "median": 2094968,
+          "max": 2266001
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "cross-on2-centered",
+      "l0s": "on",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": null,
+      "accepted": null,
+      "render_true": null,
+      "missing_after_accept": null,
+      "extra_after_accept": null,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": false,
+      "cpu_comparison_eligible": true,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.92223799112253,
+        "kodi_core_cpu_percent": 29.272883400821037,
+        "kodi_peak_sampled_rss_kib": 295052,
+        "xorg_core_cpu_percent": 20.7222348962593,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": 16392,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1724380,
+          "median": 2094931.5,
+          "max": 2265561
+        },
+        "cpu0": {
+          "min": 1721514,
+          "median": 2094940.0,
+          "max": 2265938
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "cross-on2-native",
+      "l0s": "on",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": null,
+      "accepted": null,
+      "render_true": null,
+      "missing_after_accept": null,
+      "extra_after_accept": null,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": false,
+      "cpu_comparison_eligible": true,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.92673915415071,
+        "kodi_core_cpu_percent": 35.41716048411506,
+        "kodi_peak_sampled_rss_kib": 319088,
+        "xorg_core_cpu_percent": 20.849018117496303,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": 16382,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094920,
+          "median": 2095019.0,
+          "max": 2262712
+        },
+        "cpu0": {
+          "min": 2094930,
+          "median": 2094985.0,
+          "max": 2256245
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "i25-off-bff-centered",
+      "l0s": "off",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "25/1",
+      "field_order": "bb",
+      "input_pictures": 750,
+      "expected_outputs": 1500,
+      "accepted": 1500,
+      "render_true": 1500,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.4040127878543,
+        "kodi_core_cpu_percent": 49.366156432457785,
+        "kodi_peak_sampled_rss_kib": 326388,
+        "xorg_core_cpu_percent": 21.24619390764006,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.021674351,
+      "selection_rate_hz": 49.9305928934663,
+      "steady_selection_rate_hz": 50.005960204626874,
+      "steady_selection_gap_ms": {
+        "0.5": 16.947137,
+        "0.95": 34.295523,
+        "0.99": 37.22928,
+        "1.0": 40.864333
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094920,
+          "median": 2094931.5,
+          "max": 2236671
+        },
+        "cpu0": {
+          "min": 2094917,
+          "median": 2094931.0,
+          "max": 2228234
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "i25-off-bff-native",
+      "l0s": "off",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "25/1",
+      "field_order": "bb",
+      "input_pictures": 750,
+      "expected_outputs": 1500,
+      "accepted": 1500,
+      "render_true": 1500,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.48093447298743,
+        "kodi_core_cpu_percent": 60.89604511969726,
+        "kodi_peak_sampled_rss_kib": 347616,
+        "xorg_core_cpu_percent": 22.2410683417448,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 29.978859309,
+      "selection_rate_hz": 50.001902492333414,
+      "steady_selection_rate_hz": 50.02865487876329,
+      "steady_selection_gap_ms": {
+        "0.5": 17.038492,
+        "0.95": 34.7604,
+        "0.99": 38.887286,
+        "1.0": 48.96494
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094920,
+          "median": 2094931,
+          "max": 2111181
+        },
+        "cpu0": {
+          "min": 2094919,
+          "median": 2094931,
+          "max": 2266030
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "i25-off-tff-centered",
+      "l0s": "off",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "25/1",
+      "field_order": "tt",
+      "input_pictures": 750,
+      "expected_outputs": 1500,
+      "accepted": 1500,
+      "render_true": 1500,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.40414969297126,
+        "kodi_core_cpu_percent": 49.27658559371045,
+        "kodi_peak_sampled_rss_kib": 327256,
+        "xorg_core_cpu_percent": 21.29069866684772,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.029345706,
+      "selection_rate_hz": 49.917837527192376,
+      "steady_selection_rate_hz": 50.012938950844735,
+      "steady_selection_gap_ms": {
+        "0.5": 16.925835,
+        "0.95": 34.533128,
+        "0.99": 37.662445,
+        "1.0": 43.551053
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094919,
+          "median": 2094931.5,
+          "max": 2265323
+        },
+        "cpu0": {
+          "min": 2094920,
+          "median": 2094936.0,
+          "max": 2265955
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "i25-off-tff-native",
+      "l0s": "off",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "25/1",
+      "field_order": "tt",
+      "input_pictures": 750,
+      "expected_outputs": 1500,
+      "accepted": 1500,
+      "render_true": 1500,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.471558808116242,
+        "kodi_core_cpu_percent": 60.60994751766286,
+        "kodi_peak_sampled_rss_kib": 348460,
+        "xorg_core_cpu_percent": 22.294848536232813,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16393,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.003689808,
+      "selection_rate_hz": 49.96052184222741,
+      "steady_selection_rate_hz": 49.965961869350274,
+      "steady_selection_gap_ms": {
+        "0.5": 17.126983,
+        "0.95": 34.793504,
+        "0.99": 38.911519,
+        "1.0": 58.018972
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094919,
+          "median": 2094931.0,
+          "max": 2267400
+        },
+        "cpu0": {
+          "min": 2094919,
+          "median": 2094931.0,
+          "max": 2183185
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "i25-on-bff-centered",
+      "l0s": "on",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "25/1",
+      "field_order": "bb",
+      "input_pictures": 750,
+      "expected_outputs": 1500,
+      "accepted": 1500,
+      "render_true": 1500,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.485717431874946,
+        "kodi_core_cpu_percent": 49.542559777115834,
+        "kodi_peak_sampled_rss_kib": 327444,
+        "xorg_core_cpu_percent": 21.213465900973297,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.028135713,
+      "selection_rate_hz": 49.91984898186809,
+      "steady_selection_rate_hz": 50.00340655900015,
+      "steady_selection_gap_ms": {
+        "0.5": 16.939596,
+        "0.95": 34.308658,
+        "0.99": 38.468999,
+        "1.0": 46.746868
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094919,
+          "median": 2094932,
+          "max": 2207463
+        },
+        "cpu0": {
+          "min": 2094920,
+          "median": 2094931,
+          "max": 2230108
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "i25-on-bff-native",
+      "l0s": "on",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "25/1",
+      "field_order": "bb",
+      "input_pictures": 750,
+      "expected_outputs": 1500,
+      "accepted": 1500,
+      "render_true": 1500,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.463944274000823,
+        "kodi_core_cpu_percent": 61.7433867838284,
+        "kodi_peak_sampled_rss_kib": 349480,
+        "xorg_core_cpu_percent": 22.56950043215645,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16379,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [
+        "VAAPI::Decode - timed out waiting for output message - decoded: 0, proc: 0, has free surface: yes"
+      ],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.004276643,
+      "selection_rate_hz": 49.959544695429834,
+      "steady_selection_rate_hz": 50.004015066620084,
+      "steady_selection_gap_ms": {
+        "0.5": 17.042823,
+        "0.95": 34.455327,
+        "0.99": 38.804874,
+        "1.0": 44.188865
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 798076,
+          "median": 2094931,
+          "max": 2240550
+        },
+        "cpu0": {
+          "min": 798068,
+          "median": 2094931,
+          "max": 2234092
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "i25-on-tff-centered",
+      "l0s": "on",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "25/1",
+      "field_order": "tt",
+      "input_pictures": 750,
+      "expected_outputs": 1500,
+      "accepted": 1500,
+      "render_true": 1500,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.403224851936102,
+        "kodi_core_cpu_percent": 48.966164793243884,
+        "kodi_peak_sampled_rss_kib": 327768,
+        "xorg_core_cpu_percent": 21.023758995093775,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16399,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.00952882,
+      "selection_rate_hz": 49.950800926970366,
+      "steady_selection_rate_hz": 50.01798503228619,
+      "steady_selection_gap_ms": {
+        "0.5": 16.932402,
+        "0.95": 34.397846,
+        "0.99": 38.006357,
+        "1.0": 64.288928
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094919,
+          "median": 2094931.0,
+          "max": 2247949
+        },
+        "cpu0": {
+          "min": 2094910,
+          "median": 2094931.0,
+          "max": 2265983
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "i25-on-tff-native",
+      "l0s": "on",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "25/1",
+      "field_order": "tt",
+      "input_pictures": 750,
+      "expected_outputs": 1500,
+      "accepted": 1500,
+      "render_true": 1498,
+      "missing_after_accept": 2,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.486368675949052,
+        "kodi_core_cpu_percent": 61.32604245144079,
+        "kodi_peak_sampled_rss_kib": 348912,
+        "xorg_core_cpu_percent": 22.280164806506043,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16393,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": {
+        "late_skip": 2
+      },
+      "initial_observer_correction": null,
+      "selection_span_s": 30.015918117,
+      "selection_rate_hz": 49.87353690681046,
+      "steady_selection_rate_hz": 50.00366088917641,
+      "steady_selection_gap_ms": {
+        "0.5": 17.087592,
+        "0.95": 34.534318,
+        "0.99": 39.033957,
+        "1.0": 48.238853
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094919,
+          "median": 2094931.0,
+          "max": 2257284
+        },
+        "cpu0": {
+          "min": 2094910,
+          "median": 2094931.0,
+          "max": 2216828
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "long-i25-on-bff",
+      "l0s": "on",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "25/1",
+      "field_order": "bb",
+      "input_pictures": 7500,
+      "expected_outputs": 15000,
+      "accepted": 15000,
+      "render_true": 15000,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 562,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 292.9038656591438,
+        "kodi_core_cpu_percent": 48.15573180728922,
+        "kodi_peak_sampled_rss_kib": 326512,
+        "xorg_core_cpu_percent": 21.433653618302852,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 300.032819542,
+      "selection_rate_hz": 49.991197705957525,
+      "steady_selection_rate_hz": 50.00114693559916,
+      "steady_selection_gap_ms": {
+        "0.5": 16.906864,
+        "0.95": 34.516839,
+        "0.99": 37.618783,
+        "1.0": 53.737184
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1197101,
+          "median": 2094931,
+          "max": 2294448
+        },
+        "cpu0": {
+          "min": 1197115,
+          "median": 2094932,
+          "max": 2294448
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "long-i25-on-tff",
+      "l0s": "on",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "25/1",
+      "field_order": "tt",
+      "input_pictures": 7500,
+      "expected_outputs": 15000,
+      "accepted": 15000,
+      "render_true": 14997,
+      "missing_after_accept": 3,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 561,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 292.68587375595234,
+        "kodi_core_cpu_percent": 48.49567837987035,
+        "kodi_peak_sampled_rss_kib": 327644,
+        "xorg_core_cpu_percent": 21.7263645778213,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": {
+        "late_skip": 3
+      },
+      "initial_observer_correction": null,
+      "selection_span_s": 300.040626491,
+      "selection_rate_hz": 49.979898307037494,
+      "steady_selection_rate_hz": 49.98805700968681,
+      "steady_selection_gap_ms": {
+        "0.5": 16.919857,
+        "0.95": 34.49925,
+        "0.99": 37.947618,
+        "1.0": 67.239913
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1883208,
+          "median": 2094932.0,
+          "max": 2265826
+        },
+        "cpu0": {
+          "min": 2094909,
+          "median": 2094940.0,
+          "max": 2262606
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "long-off-centered",
+      "l0s": "off",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 9001,
+      "expected_outputs": 9001,
+      "accepted": 9001,
+      "render_true": 9001,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 563,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 293.00626783119515,
+        "kodi_core_cpu_percent": 30.879885495189047,
+        "kodi_peak_sampled_rss_kib": 300096,
+        "xorg_core_cpu_percent": 20.514919508353376,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 300.292271577,
+      "selection_rate_hz": 29.970801288811217,
+      "steady_selection_rate_hz": 29.973443838720755,
+      "steady_selection_gap_ms": {
+        "0.5": 33.412208,
+        "0.95": 36.529437,
+        "0.99": 38.923942,
+        "1.0": 68.44638
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1197097,
+          "median": 2094941.0,
+          "max": 2271589
+        },
+        "cpu0": {
+          "min": 916410,
+          "median": 2094942.0,
+          "max": 2266036
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "long-off-native",
+      "l0s": "off",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 9001,
+      "expected_outputs": 9001,
+      "accepted": 9001,
+      "render_true": 9001,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 561,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 292.25204230402596,
+        "kodi_core_cpu_percent": 38.37098934054402,
+        "kodi_peak_sampled_rss_kib": 320200,
+        "xorg_core_cpu_percent": 21.012684638869345,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 300.173557165,
+      "selection_rate_hz": 29.982654318391084,
+      "steady_selection_rate_hz": 29.985211694644406,
+      "steady_selection_gap_ms": {
+        "0.5": 33.421898,
+        "0.95": 37.532363,
+        "0.99": 41.485754,
+        "1.0": 67.712857
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1197097,
+          "median": 2094960,
+          "max": 2271055
+        },
+        "cpu0": {
+          "min": 1197097,
+          "median": 2094970,
+          "max": 2275779
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "long-on-centered",
+      "l0s": "on",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 9001,
+      "expected_outputs": 9001,
+      "accepted": 9001,
+      "render_true": 9001,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 563,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 293.08567581302486,
+        "kodi_core_cpu_percent": 30.60538518341799,
+        "kodi_peak_sampled_rss_kib": 297528,
+        "xorg_core_cpu_percent": 20.60830841781992,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16395,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 300.256822003,
+      "selection_rate_hz": 29.974339766741675,
+      "steady_selection_rate_hz": 29.973500886195403,
+      "steady_selection_gap_ms": {
+        "0.5": 33.415106,
+        "0.95": 36.812585,
+        "0.99": 40.063829,
+        "1.0": 73.412609
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 798068,
+          "median": 2094940.0,
+          "max": 2266969
+        },
+        "cpu0": {
+          "min": 798068,
+          "median": 2094933.5,
+          "max": 2277819
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "long-on-native",
+      "l0s": "on",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 9001,
+      "expected_outputs": 9001,
+      "accepted": 8506,
+      "render_true": 8506,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 562,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 292.7549726180732,
+        "kodi_core_cpu_percent": 36.890919062507706,
+        "kodi_peak_sampled_rss_kib": 317996,
+        "xorg_core_cpu_percent": 21.13713029248127,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16393,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 300.236632164,
+      "selection_rate_hz": 28.327655884956318,
+      "steady_selection_rate_hz": 28.3223918772921,
+      "steady_selection_gap_ms": {
+        "0.5": 33.659807,
+        "0.95": 69.15815,
+        "0.99": 83.243043,
+        "1.0": 107.251662
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1596125,
+          "median": 2094942,
+          "max": 2273083
+        },
+        "cpu0": {
+          "min": 1596137,
+          "median": 2094947,
+          "max": 2294437
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "long-p60-off-no-b",
+      "l0s": "off",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "60/1",
+      "field_order": "progressive",
+      "input_pictures": 18000,
+      "expected_outputs": 18000,
+      "accepted": 18000,
+      "render_true": 17997,
+      "missing_after_accept": 3,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 561,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 292.84495604620315,
+        "kodi_core_cpu_percent": 51.50848491179116,
+        "kodi_peak_sampled_rss_kib": 316652,
+        "xorg_core_cpu_percent": 23.893189401206758,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16401,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": {
+        "late_skip": 3
+      },
+      "initial_observer_correction": null,
+      "selection_span_s": 300.3070044,
+      "selection_rate_hz": 59.925342187589685,
+      "steady_selection_rate_hz": 59.95975488553293,
+      "steady_selection_gap_ms": {
+        "0.5": 16.684677,
+        "0.95": 21.376195,
+        "0.99": 26.54097,
+        "1.0": 83.910959
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094907,
+          "median": 2094931.0,
+          "max": 2266112
+        },
+        "cpu0": {
+          "min": 2094910,
+          "median": 2094932.0,
+          "max": 2275564
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "off-centered-30",
+      "l0s": "off",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": null,
+      "accepted": null,
+      "render_true": null,
+      "missing_after_accept": null,
+      "extra_after_accept": null,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": false,
+      "cpu_comparison_eligible": true,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.95698575512506,
+        "kodi_core_cpu_percent": 29.315695325975245,
+        "kodi_peak_sampled_rss_kib": 295472,
+        "xorg_core_cpu_percent": 20.51663075562309,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": null,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": {
+        "status": "FAIL_OR_REVIEW",
+        "runtime_hw_proof": false,
+        "reason": "Initial analyzer wrongly required the RPC decoder label in an info-level log. Existing checkpoint already validates installed DIL/VA mappings plus card FD, and RPC samples establish actual VA decoder."
+      },
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1266001,
+          "median": 2094940.0,
+          "max": 2207693
+        },
+        "cpu0": {
+          "min": 1596137,
+          "median": 2094941.0,
+          "max": 2214034
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "off-centered-render30",
+      "l0s": "off",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": 902,
+      "accepted": 902,
+      "render_true": 902,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": true,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.388111736858264,
+        "kodi_core_cpu_percent": 31.891925875308143,
+        "kodi_peak_sampled_rss_kib": 295788,
+        "xorg_core_cpu_percent": 20.948617976918094,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": null,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.19309563,
+      "selection_rate_hz": 29.84125944027953,
+      "steady_selection_rate_hz": 29.968838802017526,
+      "steady_selection_gap_ms": {
+        "0.5": 33.435202,
+        "0.95": 37.091152,
+        "0.99": 42.724084,
+        "1.0": 64.794661
+      },
+      "rx_reported_geometry": null,
+      "driver_event_counts": {
+        "export_enter": 904,
+        "export_exit": 904,
+        "surface_destroy": 20,
+        "session_destroy": 3,
+        "sync_enter": 1811,
+        "sync_exit": 1811,
+        "context_destroy": 2,
+        "submit_bind": 902,
+        "input_sent": 902,
+        "prefeed_sent": 902,
+        "output_dequeued": 902,
+        "materialized": 902,
+        "read_export_reuse_implicit_fence_probe": 891,
+        "binding_end": 902
+      },
+      "full_au_sent_to_first_api_dequeue_ms": {
+        "0.5": 31.437888,
+        "0.95": 37.022913,
+        "0.99": 48.195682,
+        "1.0": 81.607286
+      },
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1596127,
+          "median": 2094936.5,
+          "max": 2245755
+        },
+        "cpu0": {
+          "min": 1596137,
+          "median": 2094961.0,
+          "max": 2265941
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "off-native-30",
+      "l0s": "off",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": null,
+      "accepted": null,
+      "render_true": null,
+      "missing_after_accept": null,
+      "extra_after_accept": null,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": false,
+      "cpu_comparison_eligible": true,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.889936811989173,
+        "kodi_core_cpu_percent": 36.47891240847148,
+        "kodi_peak_sampled_rss_kib": 316300,
+        "xorg_core_cpu_percent": 20.751477118591563,
+        "xorg_peak_sampled_rss_kib": 39516
+      },
+      "peak_global_pin_net": null,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": {
+        "status": "FAIL_OR_REVIEW",
+        "runtime_hw_proof": false,
+        "reason": "Initial analyzer wrongly required the RPC decoder label in an info-level log. Existing checkpoint already validates installed DIL/VA mappings plus card FD, and RPC samples establish actual VA decoder."
+      },
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094920,
+          "median": 2094941.5,
+          "max": 2220567
+        },
+        "cpu0": {
+          "min": 2094920,
+          "median": 2094941.5,
+          "max": 2171351
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "off-native-render30",
+      "l0s": "off",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": 902,
+      "accepted": 902,
+      "render_true": 902,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": true,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.454724214971066,
+        "kodi_core_cpu_percent": 39.90251634453906,
+        "kodi_peak_sampled_rss_kib": 316524,
+        "xorg_core_cpu_percent": 21.24274586645662,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": null,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.17844745,
+      "selection_rate_hz": 29.855743954117823,
+      "steady_selection_rate_hz": 29.91062860190954,
+      "steady_selection_gap_ms": {
+        "0.5": 33.43664,
+        "0.95": 37.259163,
+        "0.99": 43.350057,
+        "1.0": 70.721088
+      },
+      "rx_reported_geometry": null,
+      "driver_event_counts": {
+        "export_enter": 904,
+        "export_exit": 904,
+        "surface_destroy": 20,
+        "session_destroy": 3,
+        "sync_enter": 1811,
+        "sync_exit": 1811,
+        "context_destroy": 2,
+        "submit_bind": 902,
+        "input_sent": 902,
+        "prefeed_sent": 902,
+        "output_dequeued": 902,
+        "materialized": 902,
+        "read_export_reuse_implicit_fence_probe": 891,
+        "binding_end": 902
+      },
+      "full_au_sent_to_first_api_dequeue_ms": {
+        "0.5": 41.085879,
+        "0.95": 51.531711,
+        "0.99": 73.190264,
+        "1.0": 129.263261
+      },
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1596145,
+          "median": 2094931,
+          "max": 2204970
+        },
+        "cpu0": {
+          "min": 1596129,
+          "median": 2094989,
+          "max": 2244110
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "on-centered-30",
+      "l0s": "on",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": null,
+      "accepted": null,
+      "render_true": null,
+      "missing_after_accept": null,
+      "extra_after_accept": null,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": false,
+      "cpu_comparison_eligible": true,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.88929736893624,
+        "kodi_core_cpu_percent": 29.096568115011202,
+        "kodi_peak_sampled_rss_kib": 295400,
+        "xorg_core_cpu_percent": 20.489925594504886,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": null,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 798068,
+          "median": 2094932.0,
+          "max": 2159675
+        },
+        "cpu0": {
+          "min": 798068,
+          "median": 2094931.0,
+          "max": 2206947
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "on-centered-render-only30",
+      "l0s": "on",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": 902,
+      "accepted": 902,
+      "render_true": 902,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.920278180856258,
+        "kodi_core_cpu_percent": 30.4533825677121,
+        "kodi_peak_sampled_rss_kib": 295544,
+        "xorg_core_cpu_percent": 20.549488810017763,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": 16392,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.179042139,
+      "selection_rate_hz": 29.855155635826126,
+      "steady_selection_rate_hz": 29.96605642163023,
+      "steady_selection_gap_ms": {
+        "0.5": 33.430292,
+        "0.95": 37.054175,
+        "0.99": 40.980199,
+        "1.0": 66.865613
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1596137,
+          "median": 2094936.5,
+          "max": 2237406
+        },
+        "cpu0": {
+          "min": 1596138,
+          "median": 2094970.0,
+          "max": 2265999
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "on-centered-render30",
+      "l0s": "on",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": 902,
+      "accepted": 902,
+      "render_true": 902,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": true,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.38829917111434,
+        "kodi_core_cpu_percent": 31.757660310227628,
+        "kodi_peak_sampled_rss_kib": 294900,
+        "xorg_core_cpu_percent": 20.367782139892824,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": 16373,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.14893134,
+      "selection_rate_hz": 29.884973030689185,
+      "steady_selection_rate_hz": 29.965667705345773,
+      "steady_selection_gap_ms": {
+        "0.5": 33.420832,
+        "0.95": 37.028864,
+        "0.99": 39.846968,
+        "1.0": 66.916748
+      },
+      "rx_reported_geometry": null,
+      "driver_event_counts": {
+        "export_enter": 904,
+        "export_exit": 904,
+        "surface_destroy": 20,
+        "session_destroy": 3,
+        "sync_enter": 1811,
+        "sync_exit": 1811,
+        "context_destroy": 2,
+        "submit_bind": 902,
+        "input_sent": 902,
+        "prefeed_sent": 902,
+        "output_dequeued": 902,
+        "materialized": 902,
+        "read_export_reuse_implicit_fence_probe": 891,
+        "binding_end": 902
+      },
+      "full_au_sent_to_first_api_dequeue_ms": {
+        "0.5": 35.321127,
+        "0.95": 41.168193,
+        "0.99": 54.701373,
+        "1.0": 116.687747
+      },
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1197103,
+          "median": 2095008.5,
+          "max": 2227735
+        },
+        "cpu0": {
+          "min": 1197103,
+          "median": 2095057.5,
+          "max": 2265975
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "on-native-30",
+      "l0s": "on",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": null,
+      "accepted": null,
+      "render_true": null,
+      "missing_after_accept": null,
+      "extra_after_accept": null,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": false,
+      "cpu_comparison_eligible": true,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.420309676090255,
+        "kodi_core_cpu_percent": 35.45892146386424,
+        "kodi_peak_sampled_rss_kib": 316044,
+        "xorg_core_cpu_percent": 20.873931125897442,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": null,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1378505,
+          "median": 2094931.5,
+          "max": 2238205
+        },
+        "cpu0": {
+          "min": 1662962,
+          "median": 2094941.0,
+          "max": 2267614
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "on-native-render-only30",
+      "l0s": "on",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": 902,
+      "accepted": 854,
+      "render_true": 854,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.9228948620148,
+        "kodi_core_cpu_percent": 36.7754598655392,
+        "kodi_peak_sampled_rss_kib": 316740,
+        "xorg_core_cpu_percent": 20.939763624506305,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": 16378,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.138142648,
+      "selection_rate_hz": 28.303004931745722,
+      "steady_selection_rate_hz": 28.298851142242533,
+      "steady_selection_gap_ms": {
+        "0.5": 33.445589,
+        "0.95": 71.546155,
+        "0.99": 83.325975,
+        "1.0": 87.010203
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094920,
+          "median": 2094964.5,
+          "max": 2242833
+        },
+        "cpu0": {
+          "min": 2094920,
+          "median": 2095355.5,
+          "max": 2257000
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "on-native-render30",
+      "l0s": "on",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": 902,
+      "accepted": 855,
+      "render_true": 855,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": true,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.886246704030782,
+        "kodi_core_cpu_percent": 37.66454199098459,
+        "kodi_peak_sampled_rss_kib": 315936,
+        "xorg_core_cpu_percent": 20.8422117513917,
+        "xorg_peak_sampled_rss_kib": 39644
+      },
+      "peak_global_pin_net": 16393,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [
+        "VAAPI::Decode - timed out waiting for output message - decoded: 0, proc: 0, has free surface: yes"
+      ],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.134922668,
+      "selection_rate_hz": 28.33921325794059,
+      "steady_selection_rate_hz": 28.369335971232847,
+      "steady_selection_gap_ms": {
+        "0.5": 33.400432,
+        "0.95": 67.739349,
+        "0.99": 83.341489,
+        "1.0": 84.648743
+      },
+      "rx_reported_geometry": null,
+      "driver_event_counts": {
+        "export_enter": 857,
+        "export_exit": 857,
+        "surface_destroy": 20,
+        "session_destroy": 3,
+        "sync_enter": 1717,
+        "sync_exit": 1717,
+        "context_destroy": 2,
+        "submit_bind": 855,
+        "input_sent": 855,
+        "prefeed_sent": 855,
+        "output_dequeued": 855,
+        "materialized": 855,
+        "read_export_reuse_implicit_fence_probe": 844,
+        "binding_end": 855
+      },
+      "full_au_sent_to_first_api_dequeue_ms": {
+        "0.5": 165.307199,
+        "0.95": 201.174433,
+        "0.99": 202.095595,
+        "1.0": 202.897465
+      },
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1197097,
+          "median": 2094931.5,
+          "max": 2266731
+        },
+        "cpu0": {
+          "min": 1197103,
+          "median": 2094932.0,
+          "max": 2255341
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "p60-off-b-reference-centered",
+      "l0s": "off",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "60/1",
+      "field_order": "progressive",
+      "input_pictures": 1800,
+      "expected_outputs": 1800,
+      "accepted": 1796,
+      "render_true": 1796,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.422514653066173,
+        "kodi_core_cpu_percent": 50.88635318804324,
+        "kodi_peak_sampled_rss_kib": 312452,
+        "xorg_core_cpu_percent": 21.362456772193436,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 29.974539185,
+      "selection_rate_hz": 59.88415664779468,
+      "steady_selection_rate_hz": 60.006367533709486,
+      "steady_selection_gap_ms": {
+        "0.5": 16.700224,
+        "0.95": 20.647292,
+        "0.99": 24.865141,
+        "1.0": 37.352689
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094919,
+          "median": 2094931.5,
+          "max": 2224095
+        },
+        "cpu0": {
+          "min": 2094920,
+          "median": 2094936.0,
+          "max": 2247405
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "p60-off-b-reference-native",
+      "l0s": "off",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "60/1",
+      "field_order": "progressive",
+      "input_pictures": 1800,
+      "expected_outputs": 1800,
+      "accepted": 1364,
+      "render_true": 1350,
+      "missing_after_accept": 14,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.505308750085533,
+        "kodi_core_cpu_percent": 55.54245062268916,
+        "kodi_peak_sampled_rss_kib": 333272,
+        "xorg_core_cpu_percent": 22.439150051566422,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16386,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": {
+        "late_skip": 14
+      },
+      "initial_observer_correction": null,
+      "selection_span_s": 30.073613508,
+      "selection_rate_hz": 44.85659828145185,
+      "steady_selection_rate_hz": 44.913678314888024,
+      "steady_selection_gap_ms": {
+        "0.5": 16.624294,
+        "0.95": 65.898683,
+        "0.99": 70.860931,
+        "1.0": 83.340639
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094867,
+          "median": 2094932,
+          "max": 2245175
+        },
+        "cpu0": {
+          "min": 2094920,
+          "median": 2094931,
+          "max": 2248610
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "p60-off-no-b-centered",
+      "l0s": "off",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "60/1",
+      "field_order": "progressive",
+      "input_pictures": 1800,
+      "expected_outputs": 1800,
+      "accepted": 1800,
+      "render_true": 1800,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.370992465876043,
+        "kodi_core_cpu_percent": 50.914147047226095,
+        "kodi_peak_sampled_rss_kib": 312448,
+        "xorg_core_cpu_percent": 12.24800376728705,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16386,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.056752814,
+      "selection_rate_hz": 59.85343829829987,
+      "steady_selection_rate_hz": 59.96839928650356,
+      "steady_selection_gap_ms": {
+        "0.5": 16.708284,
+        "0.95": 19.584235,
+        "0.99": 23.888214,
+        "1.0": 38.747515
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1596137,
+          "median": 2094931,
+          "max": 2233759
+        },
+        "cpu0": {
+          "min": 1596137,
+          "median": 2094931,
+          "max": 2237483
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "p60-off-no-b-native",
+      "l0s": "off",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "60/1",
+      "field_order": "progressive",
+      "input_pictures": 1800,
+      "expected_outputs": 1800,
+      "accepted": 1800,
+      "render_true": 1799,
+      "missing_after_accept": 1,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.50549222296104,
+        "kodi_core_cpu_percent": 55.319829829351576,
+        "kodi_peak_sampled_rss_kib": 333232,
+        "xorg_core_cpu_percent": 22.438967119536184,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16388,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [
+        "ActiveAE - large audio sync error: -9852.391109"
+      ],
+      "renderer_errors": {
+        "late_skip": 1
+      },
+      "initial_observer_correction": null,
+      "selection_span_s": 39.873466192,
+      "selection_rate_hz": 45.09264359768003,
+      "steady_selection_rate_hz": 45.15471984902991,
+      "steady_selection_gap_ms": {
+        "0.5": 17.482761,
+        "0.95": 36.137076,
+        "0.99": 42.699805,
+        "1.0": 59.723424
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1596145,
+          "median": 2094965.5,
+          "max": 2237095
+        },
+        "cpu0": {
+          "min": 1596137,
+          "median": 2095013.5,
+          "max": 2270706
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "p60-on-b-reference-centered",
+      "l0s": "on",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "60/1",
+      "field_order": "progressive",
+      "input_pictures": 1800,
+      "expected_outputs": 1800,
+      "accepted": 1795,
+      "render_true": 1794,
+      "missing_after_accept": 1,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.519303200999275,
+        "kodi_core_cpu_percent": 50.57882963045934,
+        "kodi_peak_sampled_rss_kib": 312656,
+        "xorg_core_cpu_percent": 21.625891158940913,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16368,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": {
+        "late_skip": 1
+      },
+      "initial_observer_correction": null,
+      "selection_span_s": 29.973772503,
+      "selection_rate_hz": 59.81896338942798,
+      "steady_selection_rate_hz": 59.92953132523102,
+      "steady_selection_gap_ms": {
+        "0.5": 16.70479,
+        "0.95": 20.564893,
+        "0.99": 24.975016,
+        "1.0": 58.818387
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094919,
+          "median": 2094931.0,
+          "max": 2224750
+        },
+        "cpu0": {
+          "min": 2094920,
+          "median": 2094931.0,
+          "max": 2265977
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "p60-on-b-reference-native",
+      "l0s": "on",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "60/1",
+      "field_order": "progressive",
+      "input_pictures": 1800,
+      "expected_outputs": 1800,
+      "accepted": 1020,
+      "render_true": 1020,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.420935968868434,
+        "kodi_core_cpu_percent": 38.84761997489254,
+        "kodi_peak_sampled_rss_kib": 333536,
+        "xorg_core_cpu_percent": 21.051752730366566,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [
+        "ActiveAE - large audio sync error: -5740.933828"
+      ],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 35.856359748,
+      "selection_rate_hz": 28.41894735443237,
+      "steady_selection_rate_hz": 28.386412124638657,
+      "steady_selection_gap_ms": {
+        "0.5": 28.496597,
+        "0.95": 81.578353,
+        "0.99": 100.680468,
+        "1.0": 115.233882
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094919,
+          "median": 2094941.0,
+          "max": 2231001
+        },
+        "cpu0": {
+          "min": 2094915,
+          "median": 2094942.0,
+          "max": 2241875
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "p60-on-no-b-centered",
+      "l0s": "on",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "60/1",
+      "field_order": "progressive",
+      "input_pictures": 1800,
+      "expected_outputs": 1800,
+      "accepted": 1800,
+      "render_true": 1799,
+      "missing_after_accept": 1,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.439678077818826,
+        "kodi_core_cpu_percent": 50.22353690153947,
+        "kodi_peak_sampled_rss_kib": 312332,
+        "xorg_core_cpu_percent": 21.7026286344718,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16381,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": {
+        "late_skip": 1
+      },
+      "initial_observer_correction": null,
+      "selection_span_s": 30.043201169,
+      "selection_rate_hz": 59.84715110370002,
+      "steady_selection_rate_hz": 59.9672827379464,
+      "steady_selection_gap_ms": {
+        "0.5": 16.704384,
+        "0.95": 22.00585,
+        "0.99": 33.253298,
+        "1.0": 50.087317
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094920,
+          "median": 2094941,
+          "max": 2234779
+        },
+        "cpu0": {
+          "min": 2094908,
+          "median": 2094970,
+          "max": 2264267
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "p60-on-no-b-native",
+      "l0s": "on",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "60/1",
+      "field_order": "progressive",
+      "input_pictures": 1800,
+      "expected_outputs": 1800,
+      "accepted": 839,
+      "render_true": 838,
+      "missing_after_accept": 1,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 46,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 23.443072058958933,
+        "kodi_core_cpu_percent": 38.73212511211821,
+        "kodi_peak_sampled_rss_kib": 338572,
+        "xorg_core_cpu_percent": 20.90169747239859,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16387,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.712585592,
+      "selection_rate_hz": 27.252671302868794,
+      "steady_selection_rate_hz": 27.109608334989094,
+      "steady_selection_gap_ms": {
+        "0.5": 33.522841,
+        "0.95": 50.1694,
+        "0.99": 53.09696,
+        "1.0": 1293.070409
+      },
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1596137,
+          "median": 2094941,
+          "max": 2229275
+        },
+        "cpu0": {
+          "min": 1596137,
+          "median": 2095035,
+          "max": 2233922
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "rx-off-native",
+      "l0s": "off",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": null,
+      "accepted": null,
+      "render_true": null,
+      "missing_after_accept": null,
+      "extra_after_accept": null,
+      "controller": "FAIL",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": false,
+      "cpu_comparison_eligible": false,
+      "resources": null,
+      "peak_global_pin_net": null,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "rx_reported_geometry": null,
+      "cpu_frequency_khz": {},
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": true
+    },
+    {
+      "case": "rx-v2-off-centered",
+      "l0s": "off",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": 902,
+      "accepted": 902,
+      "render_true": 902,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.919743458973244,
+        "kodi_core_cpu_percent": 31.10855063784998,
+        "kodi_peak_sampled_rss_kib": 295864,
+        "xorg_core_cpu_percent": 20.506337727614994,
+        "xorg_peak_sampled_rss_kib": 39940
+      },
+      "peak_global_pin_net": 16387,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.124464042,
+      "selection_rate_hz": 29.909245812433763,
+      "steady_selection_rate_hz": 30.002048430663987,
+      "steady_selection_gap_ms": {
+        "0.5": 33.420108,
+        "0.95": 37.169453,
+        "0.99": 39.188774,
+        "1.0": 51.272845
+      },
+      "rx_reported_geometry": {
+        "1280,720,460840,1,131072": 902
+      },
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1244512,
+          "median": 2094968.0,
+          "max": 2241804
+        },
+        "cpu0": {
+          "min": 1596137,
+          "median": 2095314.0,
+          "max": 2248105
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "rx-v2-off-native",
+      "l0s": "off",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": 902,
+      "accepted": 902,
+      "render_true": 902,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.90118605294265,
+        "kodi_core_cpu_percent": 38.60062085677051,
+        "kodi_peak_sampled_rss_kib": 315724,
+        "xorg_core_cpu_percent": 21.00327899559572,
+        "xorg_peak_sampled_rss_kib": 39940
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x42",
+        "0000:00:1c.0": "0x42"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.154887017,
+      "selection_rate_hz": 29.87907066247855,
+      "steady_selection_rate_hz": 29.96336774633951,
+      "steady_selection_gap_ms": {
+        "0.5": 33.408599,
+        "0.95": 38.606993,
+        "0.99": 42.774911,
+        "1.0": 66.6926
+      },
+      "rx_reported_geometry": {
+        "1920,1088,1044520,1,131072": 902
+      },
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2028325,
+          "median": 2095031,
+          "max": 2268447
+        },
+        "cpu0": {
+          "min": 2009383,
+          "median": 2095118,
+          "max": 2240415
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "rx-v2-on-centered",
+      "l0s": "on",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": 902,
+      "accepted": 902,
+      "render_true": 902,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.940763659076765,
+        "kodi_core_cpu_percent": 30.818503276819545,
+        "kodi_peak_sampled_rss_kib": 295844,
+        "xorg_core_cpu_percent": 20.705500787113554,
+        "xorg_peak_sampled_rss_kib": 39940
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.116105479,
+      "selection_rate_hz": 29.91754696264656,
+      "steady_selection_rate_hz": 30.002548685473712,
+      "steady_selection_gap_ms": {
+        "0.5": 33.418337,
+        "0.95": 37.352767,
+        "0.99": 41.353615,
+        "1.0": 51.024437
+      },
+      "rx_reported_geometry": {
+        "1280,720,460840,1,131072": 902
+      },
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1373647,
+          "median": 2094941.0,
+          "max": 2224462
+        },
+        "cpu0": {
+          "min": 1374961,
+          "median": 2095013.0,
+          "max": 2273451
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "rx-v2-on-native",
+      "l0s": "on",
+      "mode": "native",
+      "zoom": 1.0,
+      "source_rate": "30/1",
+      "field_order": "progressive",
+      "input_pictures": 902,
+      "expected_outputs": 902,
+      "accepted": 856,
+      "render_true": 856,
+      "missing_after_accept": 0,
+      "extra_after_accept": 0,
+      "controller": "COMPLETE",
+      "result": "FAIL_OR_REVIEW",
+      "driver_trace": false,
+      "renderer_probe": true,
+      "cpu_comparison_eligible": false,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.50456942501478,
+        "kodi_core_cpu_percent": 37.41462385252665,
+        "kodi_peak_sampled_rss_kib": 315784,
+        "xorg_core_cpu_percent": 21.41787256166015,
+        "xorg_peak_sampled_rss_kib": 39940
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "selection_span_s": 30.162315331,
+      "selection_rate_hz": 28.346630244305366,
+      "steady_selection_rate_hz": 28.373024769795595,
+      "steady_selection_gap_ms": {
+        "0.5": 33.526955,
+        "0.95": 68.850005,
+        "0.99": 82.360981,
+        "1.0": 87.166005
+      },
+      "rx_reported_geometry": {
+        "1920,1088,1044520,1,131072": 856
+      },
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2068175,
+          "median": 2094931.0,
+          "max": 2245754
+        },
+        "cpu0": {
+          "min": 2094920,
+          "median": 2094941.0,
+          "max": 2265802
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "zoom-cost-10",
+      "l0s": "on",
+      "mode": "centered",
+      "zoom": 1.0,
+      "source_rate": "25/1",
+      "field_order": "tb",
+      "input_pictures": 750,
+      "expected_outputs": null,
+      "accepted": null,
+      "render_true": null,
+      "missing_after_accept": null,
+      "extra_after_accept": null,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": false,
+      "cpu_comparison_eligible": true,
+      "resources": {
+        "samples": 45,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.938751304056495,
+        "kodi_core_cpu_percent": 52.226033759219725,
+        "kodi_peak_sampled_rss_kib": 323072,
+        "xorg_core_cpu_percent": 20.27137370453854,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 1596139,
+          "median": 2094936.0,
+          "max": 2236806
+        },
+        "cpu0": {
+          "min": 1596129,
+          "median": 2094931.0,
+          "max": 2265967
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    },
+    {
+      "case": "zoom-cost-15",
+      "l0s": "on",
+      "mode": "centered",
+      "zoom": 1.5,
+      "source_rate": "25/1",
+      "field_order": "tb",
+      "input_pictures": 750,
+      "expected_outputs": null,
+      "accepted": null,
+      "render_true": null,
+      "missing_after_accept": null,
+      "extra_after_accept": null,
+      "controller": "COMPLETE",
+      "result": "PASS_BOUNDED",
+      "driver_trace": false,
+      "renderer_probe": false,
+      "cpu_comparison_eligible": true,
+      "resources": {
+        "samples": 44,
+        "scope": "zoom-confirmed natural playback, media5 through duration-2; one full logical CPU=100 percent",
+        "elapsed_seconds": 22.481914199190214,
+        "kodi_core_cpu_percent": 52.70903489359829,
+        "kodi_peak_sampled_rss_kib": 325368,
+        "xorg_core_cpu_percent": 21.483935741441332,
+        "xorg_peak_sampled_rss_kib": 39900
+      },
+      "peak_global_pin_net": 16394,
+      "boundary_equal": true,
+      "final_ref": 0,
+      "final_global_pin_net": 0,
+      "linkctl": {
+        "0000:02:00.0": "0x43",
+        "0000:00:1c.0": "0x43"
+      },
+      "video_warnings": [],
+      "audio_sync_errors": [],
+      "renderer_errors": null,
+      "initial_observer_correction": null,
+      "cpu_frequency_khz": {
+        "cpu1": {
+          "min": 2094919,
+          "median": 2094931.0,
+          "max": 2218586
+        },
+        "cpu0": {
+          "min": 2094919,
+          "median": 2094932.0,
+          "max": 2220297
+        }
+      },
+      "governors": [
+        "schedutil"
+      ],
+      "preparation_aborted_for_temperature": false
+    }
+  ]
+}
