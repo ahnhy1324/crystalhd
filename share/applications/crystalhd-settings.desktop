@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=CrystalHD Settings
+Comment=Edit saved CrystalHD defaults
+Exec=crystalhd-settings
+TryExec=crystalhd-settings
+Icon=crystalhd-settings
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=CrystalHD;Video;Decoder;Preferences;
+StartupNotify=true

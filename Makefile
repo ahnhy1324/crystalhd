@@ -12,7 +12,7 @@ CONFIG_PRESET_MANIFEST := share/crystalhd/config-presets-v1.json
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check raw-frame-check library-drain-test gstreamer vaapi vaapi-cpu-check examples browser configuration-check uapi-check dma-check l0s-check command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check h264-stream-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check install-config uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check uninstall-config clean
+.PHONY: settings-ui-check install-settings uninstall-settings all driver library library-check raw-frame-check library-drain-test gstreamer vaapi vaapi-cpu-check examples browser configuration-check uapi-check dma-check l0s-check command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check h264-stream-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check install-config uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check uninstall-config clean
 
 all: driver library gstreamer vaapi examples
 
@@ -126,11 +126,16 @@ browser:
 	$(MAKE) -C browser
 
 configuration-check:
+	$(PYTHON3) -B tests/crystalhd-settings.test.py
 	$(PYTHON3) -B scripts/generate-native-config.py --check
 	$(PYTHON3) -B tests/native-config.test.py
 	$(PYTHON3) -B tests/configuration-inventory.test.py
 	$(PYTHON3) -B tests/configuration-schema.test.py
 	$(PYTHON3) -B tests/crystalhd-config.test.py
+
+settings-ui-check:
+	$(PYTHON3) -B tests/crystalhd-settings-gtk.test.py
+	dbus-run-session -- $(PYTHON3) -B tests/crystalhd-settings-tray.test.py
 
 uapi-check:
 	sh ./tests/uapi-abi.sh
@@ -297,6 +302,42 @@ install-config:
 			'import json,sys; path=sys.argv[1]; data=open(path, encoding="utf-8").read(); needle="\"@PRESET_MANIFEST_RELATIVE@\""; data.count(needle) == 1 or sys.exit("unexpected preset manifest token count"); open(path, "w", encoding="utf-8", newline="\n").write(data.replace(needle, json.dumps(sys.argv[2], ensure_ascii=False)))' \
 			"$(DESTDIR)$(BINDIR)/crystalhd-config" "$$preset_relative"
 
+# Optional desktop frontend; native runtime/CLI installation stays headless.
+install-settings: install-config
+	@set -eu; umask 022; \
+		install -D -m 0755 scripts/crystalhd-settings.py \
+			"$(DESTDIR)$(BINDIR)/crystalhd-settings"; \
+		data_relative=$$($(PYTHON3) -c \
+			'import os,sys; print(os.path.relpath(sys.argv[1],sys.argv[2]))' \
+			"$(DATADIR)" "$(BINDIR)"); \
+		$(PYTHON3) -c \
+			'import json,sys; p=sys.argv[1]; s=open(p,encoding="utf-8").read(); token="\"@SETTINGS_DATA_RELATIVE@\""; s.count(token)==1 or sys.exit("unexpected settings data token count"); open(p,"w",encoding="utf-8",newline="\n").write(s.replace(token,json.dumps(sys.argv[2],ensure_ascii=False)))' \
+			"$(DESTDIR)$(BINDIR)/crystalhd-settings" "$$data_relative"; \
+		install -D -m 0644 share/applications/crystalhd-settings.desktop \
+			"$(DESTDIR)$(DATADIR)/applications/crystalhd-settings.desktop"; \
+		for size in scalable symbolic 16x16 22x22 24x24 32x32 64x64 128x128; do \
+			for icon in share/icons/hicolor/$$size/apps/crystalhd-settings*; do \
+				install -D -m 0644 "$$icon" \
+					"$(DESTDIR)$(DATADIR)/icons/hicolor/$$size/apps/$${icon##*/}"; \
+			done; \
+		done
+
+uninstall-settings:
+	@set -eu; for file in \
+		"$(DESTDIR)$(BINDIR)/crystalhd-settings" \
+		"$(DESTDIR)$(DATADIR)/applications/crystalhd-settings.desktop"; do \
+		if [ -e "$$file" ] || [ -L "$$file" ]; then rm -- "$$file"; fi; \
+	done; \
+	for size in scalable symbolic 16x16 22x22 24x24 32x32 64x64 128x128; do \
+		case $$size in \
+			scalable) icon=crystalhd-settings.svg ;; \
+			symbolic) icon=crystalhd-settings-symbolic.svg ;; \
+			*) icon=crystalhd-settings.png ;; \
+		esac; \
+		file="$(DESTDIR)$(DATADIR)/icons/hicolor/$$size/apps/$$icon"; \
+		if [ -e "$$file" ] || [ -L "$$file" ]; then rm -- "$$file"; fi; \
+	done
+
 uninstall:
 	$(MAKE) uninstall-runtime
 	$(MAKE) uninstall-module
@@ -305,6 +346,7 @@ uninstall-module:
 	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) uninstall-module
 
 uninstall-runtime:
+	$(MAKE) uninstall-settings
 	rm -f -- "$(DESTDIR)$(DATADIR)/crystalhd/VERSION"
 	$(MAKE) uninstall-check
 	$(MAKE) -C filters/vaapi $(USER_ARGS) uninstall

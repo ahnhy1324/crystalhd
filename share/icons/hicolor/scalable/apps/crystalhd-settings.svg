@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <title>CrystalHD Settings</title>
+  <rect x="2" y="2" width="60" height="60" rx="13" fill="#0f2d3a"/>
+  <path d="M30 9 47 25 44 42 30 55 13 39 13 25Z" fill="#0ea5a8"/>
+  <path d="M30 9 13 25 22 26 30 19Z" fill="#c2faf1"/>
+  <path d="M30 9 47 25 40 29 30 19Z" fill="#2dd4bf"/>
+  <path d="M13 25 22 26 22 40 13 39Z" fill="#2dd4bf"/>
+  <path d="M22 26 30 19 40 29 35 40 22 40Z" fill="#18b9b5"/>
+  <path d="M40 29 47 25 44 42 35 40Z" fill="#087683"/>
+  <path d="M22 40 35 40 30 55Z" fill="#0b8996"/>
+  <rect x="31" y="34" width="29" height="25" rx="5" fill="#0f2d3a"/>
+  <g stroke="#b7f8ef" stroke-width="3" stroke-linecap="round">
+    <path d="M35 40H56M35 47H56M35 54H56"/>
+  </g>
+  <g fill="#75e9df"><circle cx="49" cy="40" r="3"/><circle cx="41" cy="47" r="3"/><circle cx="50" cy="54" r="3"/></g>
+</svg>

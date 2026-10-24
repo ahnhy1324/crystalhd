@@ -82,6 +82,50 @@ tests, and strict native builds including scalar i686. Exercise the actual VA
 entry path with isolated settings and a stock client before claiming plain
 `kodi` integration. Do not install into the stable system for these checks.
 
+## Optional settings window and tray
+
+`crystalhd-settings` is an optional GTK3 editor over the existing Python core.
+Usage and optional installation are in
+[CONFIGURATION.md](CONFIGURATION.md#optional-desktop-settings).
+It edits persistent user defaults; ordinary Kodi startup uses the native reader
+above. There is no application-launch button or mandatory `config run` workflow.
+
+- Open a settings window and, when a StatusNotifier host and Ayatana indicator
+  are available, a tray menu for reopening the window or exiting. Without a host
+  or indicator dependency, keep the window usable and exit when it is closed.
+  Losing the tray connection must reveal the window, never strand a hidden
+  process. No autostart service is installed or required. `--no-tray` selects a
+  window-only session.
+- Offer reviewed standard presets, explicit selection of existing profiles and
+  safe native-owned setting values. Show unavailable, virtual, experimental and
+  frontend-only settings with their actual limitations; do not expose an inert
+  activation toggle or turn launch-only experiments into automatic defaults.
+  Preserve all other settings and profile sections when saving.
+- Distinguish inheritance (remove this override), `unset` (block lower file
+  layers), and explicit false/zero. Display configured/model values and origins,
+  including environment overrides, without claiming a running app was inspected.
+  Existing selected profiles may override a base edit; show that provenance.
+- Use the existing edit snapshot and atomic writer for Save and Reset. Reload
+  explicitly; never silently discard edits or overwrite a newer writer. Reset
+  requires confirmation and clears only the user overlay. An invalid but safely
+  readable file can be reset; unsafe files cannot bypass the core checks.
+- Report committed-but-unconfirmed or uncertain writes distinctly. Do not
+  automatically retry or claim that old bytes survived. Require Reload before
+  another write when the outcome/readback is uncertain.
+- Label successful writes as saved defaults requiring application restart, with
+  installed native-reader availability and active playback state unconfirmed.
+  Saving does not change the settings process's environment, restart another app,
+  reload a module, or modify system configuration/firmware/PCIe policy.
+- Keep GUI imports/dependencies out of the CLI and model. Preserve Python 3.6
+  compatibility, keyboard access, textual labels/status, translatable messages
+  and an optional desktop launcher. Follow the selected Concept C crystal/slider
+  identity; inspect real small-size assets before installing them.
+
+Qualification covers headless model/storage parity, stale and uncertain saves,
+real GTK editing and keyboard/close behavior with isolated files, tray-host
+fallback/disconnection, and staged launcher/icon install/uninstall. The already
+qualified native reader and Kodi proof are reused unless runtime code changes.
+
 ## Inspect configuration
 
 The five inspection commands are:
@@ -377,10 +421,14 @@ wins over the system file.  With no preset selection, `default` means an empty
 compatibility preset.  With no profile selection, no named profile is active.
 An unknown selected preset or profile is an error.
 
-Only `SELECTABLE` manifest entries participate in merging. Experimental
-selection requires the entry's exact command-only acknowledgement on every
+Only `SELECTABLE` manifest entries participate in merging. Experimental CLI
+selection requires the entry's exact command-line acknowledgement on every
 invocation; it never becomes implicit through a file, environment variable or
-another preset.
+another preset. The optional editor cannot select experimental activations as
+automatic native defaults. For an already selected experimental preset, fresh
+interactive confirmation acknowledges only that Save operation; it is never
+stored and does not authorize a later application launch. Managed experimental
+launches still require fresh `run --acknowledge-risk` tokens.
 
 The requested target state uses this exact low-to-high precedence:
 
