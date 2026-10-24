@@ -695,7 +695,7 @@ void DefaultVppCapabilitiesRemainAvailable() {
   Require(QueryVideoProcPipelineCaps(&context, processor, nullptr, 0, &caps) ==
                   VA_STATUS_SUCCESS &&
               caps.num_input_pixel_formats == 1 && caps.input_pixel_format != nullptr &&
-              caps.num_output_pixel_formats == 2 && caps.output_pixel_format != nullptr &&
+              caps.num_output_pixel_formats == 3 && caps.output_pixel_format != nullptr &&
               caps.input_pixel_format[0] == VA_FOURCC_NV12 &&
               caps.output_pixel_format[0] == VA_FOURCC_NV12 &&
               caps.output_pixel_format[1] == VA_FOURCC_ARGB &&
@@ -1182,7 +1182,7 @@ struct PipelineCapsFixture {
     Require(QueryVideoProcPipelineCaps(&context, processor, nullptr, 0, caps) ==
                 VA_STATUS_SUCCESS, "query borrowed VPP pipeline capabilities");
     Require(caps->num_input_pixel_formats == 1 && caps->input_pixel_format != nullptr &&
-                caps->num_output_pixel_formats == 2 && caps->output_pixel_format != nullptr &&
+                caps->num_output_pixel_formats == 3 && caps->output_pixel_format != nullptr &&
                 caps->input_pixel_format[0] == VA_FOURCC_NV12 &&
                 caps->output_pixel_format[0] == VA_FOURCC_NV12 &&
                 caps->output_pixel_format[1] == VA_FOURCC_ARGB &&
@@ -2542,8 +2542,9 @@ void SelectedRtFormatSurvivesConfigAndContextLifetime() {
         pixels.insert(surfaces[index].value.value.i);
     Require(pixels.count(VA_FOURCC_NV12) == ((format & VA_RT_FORMAT_YUV420) != 0) &&
                 pixels.count(VA_FOURCC_ARGB) == ((format & VA_RT_FORMAT_RGB32) != 0) &&
+                pixels.count(VA_FOURCC_BGRA) == ((format & VA_RT_FORMAT_RGB32) != 0) &&
                 pixels.size() == static_cast<size_t>((format & VA_RT_FORMAT_YUV420 ? 1 : 0) +
-                                                     (format & VA_RT_FORMAT_RGB32 ? 1 : 0)),
+                                                     (format & VA_RT_FORMAT_RGB32 ? 2 : 0)),
             "surface attributes expose only selected output pixel formats");
     VASurfaceID valid = (format & VA_RT_FORMAT_YUV420) ? 2 : 3;
     const VASurfaceID wrong = valid == 2 ? 3 : 2;
@@ -5705,6 +5706,90 @@ VAStatus MapImageIntent(Fixture *fixture, VABufferID buffer, void **data,
 #endif
 }
 
+void BgraImagesPreserveBytesAndDerivedOwnership() {
+  DerivedFixture fixture;
+  fixture.target = PrivateArgbOutput();
+  fixture.target->id = 2;
+  fixture.target->fourcc = VA_FOURCC_BGRA;
+  fixture.driver.surfaces[2] = fixture.target;
+  VAImageFormat formats[2] = {};
+  int count = 0;
+  Require(QueryImageFormats(&fixture.context, formats, &count) == VA_STATUS_SUCCESS &&
+              count == 2 && formats[0].fourcc == VA_FOURCC_NV12 &&
+              formats[1].fourcc == VA_FOURCC_BGRA && formats[1].bits_per_pixel == 32 &&
+              formats[1].red_mask == 0x00ff0000 && formats[1].alpha_mask == 0xff000000,
+          "BGRA byte order is advertised independently of the legacy ARGB alias");
+  for (unsigned y = 0; y < 16; ++y)
+    for (unsigned x = 0; x < 16; ++x) {
+      auto *pixel = fixture.target->planes[0] + y * fixture.target->pitch[0] + 4 * x;
+      pixel[0] = x + 3; pixel[1] = y + 41; pixel[2] = x + y + 151; pixel[3] = 255;
+    }
+  const auto original = fixture.target->storage;
+  VAImage image{};
+  Require(CreateImage(&fixture.context, &formats[1], 5, 3, &image) == VA_STATUS_SUCCESS &&
+              image.num_planes == 1 && image.pitches[0] == 20 && image.data_size == 60 &&
+              image.pitches[1] == 0 && image.offsets[1] == 0 &&
+              GetImage(&fixture.context, 2, 0, 0, 5, 3, image.image_id) == VA_STATUS_SUCCESS,
+          "odd BGRA images use one checked packed plane and four bytes per pixel");
+  void *mapped = nullptr;
+  Require(MapImageIntent(&fixture, image.buf, &mapped, 1) == VA_STATUS_SUCCESS,
+          "map packed BGRA readback");
+  for (unsigned row = 0; row < 3; ++row)
+    Require(memcmp(static_cast<uint8_t *>(mapped) + row * 20,
+                   original.data() + row * fixture.target->pitch[0], 20) == 0,
+            "readback preserves B/G/R/A independently, without channel swaps");
+  Require(UnmapBuffer(&fixture.context, image.buf) == VA_STATUS_SUCCESS,
+          "unmap packed readback");
+  fixture.target->ready = false;
+  Require(GetImage(&fixture.context, 2, 0, 0, 5, 3, image.image_id) ==
+              VA_STATUS_ERROR_SURFACE_BUSY,
+          "pending BGRA cannot expose a previous image");
+  fixture.target->ready = true;
+  fixture.target->failed = true;
+  Require(GetImage(&fixture.context, 2, 0, 0, 5, 3, image.image_id) ==
+              VA_STATUS_ERROR_DECODING_ERROR,
+          "failed BGRA is not successful readback");
+  fixture.target->failed = false;
+  auto &bytes = fixture.driver.buffers.at(image.buf).data;
+  bytes.resize(59);
+  Require(GetImage(&fixture.context, 2, 0, 0, 5, 3, image.image_id) ==
+              VA_STATUS_ERROR_INVALID_BUFFER && fixture.target->storage == original,
+          "truncated packed backing rejects before ownership or pixels change");
+  bytes.resize(60);
+  VAImage nv12{};
+  Require(CreateImage(&fixture.context, &formats[0], 16, 16, &nv12) == VA_STATUS_SUCCESS &&
+              GetImage(&fixture.context, 2, 0, 0, 5, 3, nv12.image_id) ==
+                  VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT &&
+              PutImage(&fixture.context, 2, nv12.image_id, 0, 0, 5, 3, 0, 0, 5, 3) ==
+                  VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT && fixture.target->storage == original,
+          "image transfer does not silently invent NV12/BGRA conversion");
+  VAImage derived{};
+  Require(DeriveImage(&fixture.context, 2, &derived) == VA_STATUS_SUCCESS &&
+              derived.format.fourcc == VA_FOURCC_BGRA && derived.num_planes == 1 &&
+              derived.data_size == 16 * 16 * 4 &&
+              MapImageIntent(&fixture, derived.buf, &mapped, 2) == VA_STATUS_SUCCESS &&
+              fixture.target->vpp_writers == 1 && fixture.target->image_write_locked,
+          "derived BGRA acquires the existing exclusive write lease");
+  const uint8_t replacement[] = {7, 23, 211, 129};
+  memcpy(mapped, replacement, sizeof(replacement));
+  Require(DestroyImage(&fixture.context, derived.image_id) == VA_STATUS_ERROR_SURFACE_BUSY &&
+              UnmapBuffer(&fixture.context, derived.buf) == VA_STATUS_SUCCESS &&
+              memcmp(fixture.target->planes[0], replacement, 4) == 0 &&
+              fixture.target->vpp_writers == 0 && !fixture.target->image_write_locked &&
+              fixture.target->ready && !fixture.target->failed,
+          "derived write commits all four channels and retires ownership");
+  Require(DestroyImage(&fixture.context, derived.image_id) == VA_STATUS_SUCCESS &&
+              DestroyImage(&fixture.context, nv12.image_id) == VA_STATUS_SUCCESS &&
+              DestroyImage(&fixture.context, image.image_id) == VA_STATUS_SUCCESS,
+          "all packed image buffers retire normally");
+  auto legacy = PrivateArgbOutput();
+  legacy->id = 3;
+  fixture.driver.surfaces[3] = legacy;
+  VAImage untouched{};
+  Require(DeriveImage(&fixture.context, 3, &untouched) == VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT,
+          "legacy ARGB image admission is not silently broadened");
+}
+
 void FillMappedNv12(const VAImage &image, void *data, uint8_t luma) {
   auto *bytes = static_cast<uint8_t *>(data);
   for (unsigned row = 0; row < image.height; ++row)
@@ -6935,6 +7020,16 @@ static void FirstFieldCpuViewPreservesPublicReadiness() {
 // Keep the complete entry globally compiled for syntax coverage. CPU-only
 // section-GC builds retain only their selected state-machine groups below.
 int VppFullTestEntry(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--bgra-images") == 0) {
+    try {
+      BgraImagesPreserveBytesAndDerivedOwnership();
+      puts("VA-API BGRA image bytes/ownership PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API BGRA image failed: %s\n", error.what());
+      return 1;
+    }
+  }
   if (argc == 2 && strcmp(argv[1], "--color-standards") == 0) {
     try {
       VppColorStandardsNv12AndRejections();
@@ -7169,6 +7264,7 @@ int VppFullTestEntry(int argc, char **argv) {
     DerivedWritesCommitActualSurfacePixels();
     DerivedWriteLeaseBlocksReuseAndSurvivesDestruction();
     DerivedDefaultRefreshAndDecodedSnapshotsStayIndependent();
+    BgraImagesPreserveBytesAndDerivedOwnership();
     ImageGeometryAndOddNv12Roundtrip();
     ImageCopiesRejectInvalidAndBusyRectangles();
     PutImageCannotOverwriteRetainedDecodeIdentity();
@@ -7186,7 +7282,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 104 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 105 hardware-free regressions passed");
   return 0;
 }
 
