@@ -96,7 +96,7 @@ above. There is no application-launch button or mandatory `config run` workflow.
   Losing the tray connection must reveal the window, never strand a hidden
   process. No autostart service is installed or required. `--no-tray` selects a
   window-only session.
-- Offer reviewed standard presets, explicit selection of existing profiles and
+- Offer reviewed standard presets, explicit selection/editing of profiles and
   safe native-owned setting values. Show unavailable, virtual, experimental and
   frontend-only settings with their actual limitations; do not expose an inert
   activation toggle or turn launch-only experiments into automatic defaults.
@@ -125,6 +125,31 @@ Qualification covers headless model/storage parity, stale and uncertain saves,
 real GTK editing and keyboard/close behavior with isolated files, tray-host
 fallback/disconnection, and staged launcher/icon install/uninstall. The already
 qualified native reader and Kodi proof are reused unless runtime code changes.
+
+### Named-profile editing contract
+
+The editor supports explicit creation, editing and removal of user
+profile sections through the same core as the CLI. `save --profile-section NAME`
+patches that section (creating an empty section when needed); `--profile NAME`
+continues to select the default and never means an editing target. Base settings
+remain the target when `--profile-section` is omitted. `--remove KEY` removes
+only the targeted setting; selector removals retain their existing meaning.
+Validate the edited profile independently of the current default before writing.
+
+`delete-profile NAME` removes only an existing user section. If it was the user
+default and has no system definition, also remove that user selector, reverting
+to inherited selection. Retain the selector when the system still defines that
+profile. Reject a resulting dangling inherited selection through normal writer
+validation; never edit system configuration to make deletion succeed.
+
+The window distinguishes **Editing layer** from **Default profile**. Changing
+the editing layer previews that profile but does not select it for applications
+or discard other draft changes. System profiles can acquire user overrides; their
+system definitions remain read-only. New/remove operations affect the draft
+until Save; removal requires confirmation. Only the existing safe native controls
+are editable, other settings/sections are preserved, and the preview remains a
+model rather than a report of an active application. Reuse atomic save, stale
+snapshot checks, risk acknowledgements and uncertain-write handling unchanged.
 
 ## Inspect configuration
 
@@ -196,13 +221,18 @@ crystalhd-config reset
 
 `save KEY=VALUE` patches the base `[settings]` overlay using the strict value
 grammar below. Unspecified settings and profile sections remain intact.
-`--remove KEY` removes a base override so lower layers can supply it;
+With `--profile-section NAME`, patch that user profile instead, creating it if
+needed; an empty invocation creates an empty profile without selecting it.
+`--remove KEY` removes an override in the targeted layer so lower layers can supply it;
 `KEY=unset` explicitly blocks a lower configured value. Neither is equivalent to
 `false`, `0`, or `""`. `--preset NAME` and `--profile NAME` save metadata selectors;
 they do not edit a named profile's settings. `--remove preset` or
 `--remove profile` clears that selector. Experimental presets require their
 explicit risk acknowledgements on each write; acknowledgement tokens and current
 setting-specific environment values are never copied into the file.
+`delete-profile NAME` removes a user section, retaining any system definition;
+the [profile contract](#named-profile-editing-contract) specifies default-selector
+handling. It uses the same validation and atomic writer as Save/Reset.
 
 The default destination is the user path below; `--user-config FILE` selects an
 absolute user destination. `--system-config FILE` or `--no-system-config` only
