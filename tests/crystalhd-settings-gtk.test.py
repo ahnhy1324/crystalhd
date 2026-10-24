@@ -35,7 +35,7 @@ class GtkSettingsTests(unittest.TestCase):
         app.prompt_profile_name = lambda: 'desk'
         app.new_profile_button.clicked();drain()
         self.assertEqual(app.editing_profile, 'desk')
-        self.assertIn('Editing / previewing profile: desk', app.status.get_text())
+        self.assertIn('Editing profile: desk', app.status.get_text())
         self.assertEqual(app.token(app.profile), '')
         select(app.controls['vaapi.debug'], 'true')
         self.assertTrue(app.editor.preview(False, 'desk').effective['vaapi.debug'])
@@ -171,15 +171,17 @@ class GtkSettingsTests(unittest.TestCase):
     def test_unsupported_presets_cannot_activate_and_origin_model_is_explicit(self):
         app=self.app({'CRYSTALHD_VAAPI_DEBUG':'0',CORE.CENTERED_NV12_ENVIRONMENT:'private-unvalidated-geometry'})
         for row in app.preset.get_model():
-            if row[0] in ('quality','streaming','low-memory','performance','experimental','custom'):
+            if row[0] in ('streaming','low-memory','performance','experimental','custom'):
                 self.assertFalse(row[2])
+            if row[0]=='quality':
+                self.assertTrue(row[2]);self.assertIn('Player only',row[1])
         for key in ('vaapi.h264.low_latency','vaapi.h264.ready_remap','vaapi.i915_wc'):
             self.assertNotIn('true',[r[0] for r in app.controls[key].get_model()])
         row=next(r for r in app.values if r[0]=='vaapi.debug')
         self.assertEqual(row[1],'true');self.assertIn('environment:',row[2])
         self.assertIn('unconfirmed',row[3])
         self.assertIn('true',app.badges['vaapi.debug'].get_text())
-        self.assertIn('environment',app.badges['vaapi.debug'].get_text())
+        self.assertIn('Environment',app.badges['vaapi.debug'].get_text())
         self.assertEqual(len(app.values),len(CORE.RULES))
         self.assertIn('Model is partial',app.status.get_text())
         self.assertNotIn('private-unvalidated-geometry',app.status.get_text())
@@ -191,6 +193,84 @@ class GtkSettingsTests(unittest.TestCase):
         frontend = next(r for r in app.values if r[0]=='player.decoder')
         self.assertIn('Experimental preset', frontend[3])
 
+    def test_player_controls_save_and_are_consumed_by_the_actual_player_parser(self):
+        self.path=Path(self.temp.name)/'.config/crystalhd/config.ini'
+        app=self.app()
+        select(app.player_controls['player.decoder'],'"hardware"')
+        for key,value in [('gstreamer.crystalhddec.scale_width','1280'),('player.software_output_size','1920x1080')]:
+            select(app.player_controls[key],'custom')
+            app.player_entries[key].set_text(value);drain()
+        self.assertTrue(app.save_button.get_sensitive())
+        app.save_button.clicked();drain()
+        doc=CORE.parse_document(self.path.read_bytes())
+        self.assertEqual(doc.settings,{'player.decoder':'hardware','gstreamer.crystalhddec.scale_width':1280,
+                                       'player.software_output_size':'1920x1080'})
+        spec=importlib.util.spec_from_file_location('player_from_settings',str(ROOT/'scripts/crystalhd-player.py'))
+        player=importlib.util.module_from_spec(spec);spec.loader.exec_module(player)
+        media=Path(self.temp.name)/'video.mp4';media.touch()
+        with mock.patch.object(CORE,'SYSTEM_CONFIG',None),mock.patch.object(player,'load_config_core',return_value=CORE):
+            args=player.arguments([str(media)],environment={'HOME':self.temp.name})
+        self.assertEqual((args.mode,args.scale_width,args.software_output_size),('hardware',1280,(1920,1080)))
+
+    def test_player_conflicts_are_visible_and_never_silently_clear_other_keys(self):
+        app=self.app()
+        for key,value in [('gstreamer.crystalhddec.scale_width','1280'),('player.software_output_size','1920x1080')]:
+            select(app.player_controls[key],'custom');app.player_entries[key].set_text(value);drain()
+        select(app.player_controls['player.decoder'],'"software"')
+        self.assertFalse(app.save_button.get_sensitive())
+        self.assertIn('scale width requires hardware',app.status.get_text())
+        self.assertEqual(app.editor.draft.settings['gstreamer.crystalhddec.scale_width'],1280)
+        select(app.player_controls['gstreamer.crystalhddec.scale_width'],'unset')
+        self.assertFalse(app.save_button.get_sensitive())
+        self.assertEqual(app.editor.draft.settings['player.software_output_size'],'1920x1080')
+        select(app.player_controls['player.software_output_size'],'unset')
+        self.assertTrue(app.save_button.get_sensitive())
+        app.save_button.clicked();drain()
+        saved=CORE.parse_document(self.path.read_bytes()).settings
+        self.assertEqual(saved['player.decoder'],'software')
+        self.assertIs(saved['gstreamer.crystalhddec.scale_width'],CORE.UNSET)
+        self.assertIs(saved['player.software_output_size'],CORE.UNSET)
+
+    def test_invalid_player_text_survives_scope_switch_and_rejected_discard(self):
+        app=self.app();app.prompt_profile_name=lambda:'desk';app.new_profile_button.clicked();drain()
+        key='gstreamer.crystalhddec.scale_width'
+        select(app.player_controls[key],'custom');app.player_entries[key].set_text('127');drain()
+        self.assertFalse(app.save_button.get_sensitive())
+        self.assertTrue(app.player_errors[key].get_text())
+        select(app.layer,'')
+        self.assertFalse(app.save_button.get_sensitive())
+        select(app.layer,'desk')
+        self.assertEqual(app.player_entries[key].get_text(),'127')
+        app.confirm=lambda *_:False
+        app.reload_button.clicked();app.quit_button.clicked();drain()
+        self.assertTrue(app.window.get_visible())
+        self.assertEqual(app.player_entries[key].get_text(),'127')
+        self.assertFalse(self.path.exists())
+        select(app.player_controls[key],'unset')
+        self.assertFalse(app.pending_player)
+        self.assertTrue(app.save_button.get_sensitive())
+
+    def test_tray_startup_hides_only_after_connection_and_buttons_explain_actions(self):
+        app=self.app()
+        app.startup_hide_pending=True;app.start();drain()
+        self.assertTrue(app.window.get_visible())
+        self.assertEqual(app.close_button.get_label(),'_Close')
+        self.assertFalse(app.close_button.get_visible())
+        with mock.patch.object(UI,'tray_host_present',return_value=True):
+            app.tray_connection_changed(None,True);drain()
+        self.assertFalse(app.window.get_visible())
+        self.assertEqual(app.close_button.get_label(),'Hide to tray')
+        self.assertIn('Save changes',app.save_button.get_label().replace('_',''))
+        self.assertIn('Clear all user',app.reset_button.get_label().replace('_',''))
+        app.show_settings();drain();self.assertTrue(app.window.get_visible())
+        app.close_button.clicked();drain();self.assertFalse(app.window.get_visible())
+        with mock.patch.object(UI,'tray_host_present',return_value=False):
+            app.tray_connection_changed(None,False);drain()
+        self.assertTrue(app.window.get_visible())
+        with mock.patch.object(UI,'tray_host_present',return_value=True):
+            app.tray_connection_changed(None,True);drain()
+        self.assertTrue(app.window.get_visible())
+
     def test_icon_native_sizes_and_optional_private_preview(self):
         from gi.repository import GdkPixbuf
         for size in (16,22,24,32,64,128):
@@ -200,7 +280,9 @@ class GtkSettingsTests(unittest.TestCase):
             self.assertTrue(pix.get_has_alpha())
         capture=os.environ.get('CRYSTALHD_SETTINGS_TEST_SCREENSHOT')
         if capture:
-            app=self.app();select(app.controls['vaapi.debug'],'true')
+            app=self.app()
+            for key,value in [('gstreamer.crystalhddec.scale_width','1280'),('player.software_output_size','1920x1080')]:
+                select(app.player_controls[key],'custom');app.player_entries[key].set_text(value)
             app.window.resize(720,560);drain()
             # Only this synthetic settings window; never capture the desktop.
             pix=Gdk.pixbuf_get_from_window(app.window.get_window(),0,0,

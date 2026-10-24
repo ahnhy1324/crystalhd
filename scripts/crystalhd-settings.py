@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 
@@ -31,6 +32,7 @@ CONTROLS = (
     ("vaapi.debug", _("VA _debug logging"), ("false", "true")),
     ("vaapi.trace", _("VA timing _trace"), ("false", "true")),
 )
+PLAYER_KEYS = ("player.decoder", "gstreamer.crystalhddec.scale_width", "player.software_output_size")
 
 
 class _CoreLoader(importlib.machinery.SourceFileLoader):
@@ -155,8 +157,8 @@ class Editor(object):
 
     def native_warning(self, profile=None):
         if self.native_requires_launch(profile):
-            return _("Saved experiments need an explicit acknowledged launch. Ordinary Kodi may ignore this managed transaction.")
-        return _("Updated VA/DIL reads supported defaults on next start. Installed readers and active applications are not inspected.")
+            return _("Saved experiments need an explicitly acknowledged launch. Ordinary applications may ignore these saved requests.")
+        return _("Updated CrystalHD components read supported defaults when an app starts. Installed versions and running apps are not inspected.")
 
     def _commit(self, candidate, acknowledgements=(), validate_profiles=()):
         if self.snapshot is None or self.write_blocked:
@@ -227,7 +229,7 @@ def load_indicator():
 
 
 class SettingsWindow(object):
-    def __init__(self, editor, gtk_modules, no_tray=False):
+    def __init__(self, editor, gtk_modules, no_tray=False, start_in_tray=False, quit_callback=None):
         self.editor = editor
         self.Gtk, self.Gdk, self.Gio, self.GLib = gtk_modules
         Gtk = self.Gtk
@@ -238,6 +240,11 @@ class SettingsWindow(object):
         self.tray_bus = None
         self.tray_subscriptions = []
         self.quitting = False
+        self.quit_callback = quit_callback
+        self.started = False
+        self.window_only = no_tray
+        self.startup_hide_pending = start_in_tray
+        self.pending_player = {}
         self.notice = ""
         self.editing_profile = None
         self.window = Gtk.Window(title=_("CrystalHD Settings"))
@@ -256,32 +263,40 @@ class SettingsWindow(object):
                 pass
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.window.add(outer)
-        title = Gtk.Label(label=_("Saved defaults"), xalign=0)
+        title = Gtk.Label(label=_("Defaults for next playback"), xalign=0)
         title.get_style_context().add_class("title")
         outer.pack_start(title, False, False, 0)
         self.status = Gtk.Label(xalign=0)
         self.status.set_line_wrap(True)
         self.status.set_selectable(True)
         outer.pack_start(self.status, False, False, 0)
+        self.profiles_section = Gtk.Expander(label=_("Profiles and presets"))
+        scope_grid = Gtk.Grid(column_spacing=16, row_spacing=10, margin=12)
+        self.profiles_section.add(scope_grid)
+        outer.pack_start(self.profiles_section, False, False, 0)
         self.notebook = Gtk.Notebook()
         outer.pack_start(self.notebook, True, True, 0)
         grid = Gtk.Grid(column_spacing=16, row_spacing=10, margin=12)
+        player_grid = Gtk.Grid(column_spacing=16, row_spacing=10, margin=12)
         advanced = Gtk.Grid(column_spacing=16, row_spacing=10, margin=12)
         # Profiles add controls; keep Save/Close reachable on short displays.
-        for page, label in ((grid, _("Native defaults")), (advanced, _("Advanced native"))):
+        for page, label in ((player_grid, _("Player")), (grid, _("Decoder defaults")), (advanced, _("Advanced"))):
             scroll = Gtk.ScrolledWindow()
             scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             scroll.add(page)
             self.notebook.append_page(scroll, Gtk.Label(label=label))
-        self.preset = self.choice(grid, 0, _("_Preset"))
-        self.profile = self.choice(grid, 1, _("Default pro_file"))
-        self.layer = self.choice(grid, 2, _("_Editing layer"))
+        self.preset = self.choice(scope_grid, 0, _("_Preset"))
+        self.preset.set_tooltip_text(_("Presets provide defaults, not overrides. Player-only presets affect crystalhd-play, not Kodi."))
+        self.profile = self.choice(scope_grid, 1, _("Profile used by de_fault"))
+        self.profile.set_tooltip_text(_("Select the profile for future application starts. Selecting what to edit below does not change this choice."))
+        self.layer = self.choice(scope_grid, 2, _("Settings to _edit"))
+        self.layer.set_tooltip_text(_("Edit user defaults or a named profile. Changing this view keeps all unsaved edits and does not select the default profile."))
         profile_buttons = Gtk.Box(spacing=8)
         self.new_profile_button = self.button(profile_buttons, _("_New profile…"), self.new_profile)
         self.delete_profile_button = self.button(profile_buttons, _("Remove _user profile…"), self.delete_profile)
-        grid.attach(profile_buttons, 1, 3, 2, 1)
+        scope_grid.attach(profile_buttons, 1, 3, 2, 1)
         self.controls, self.badges = {}, {}
-        basic_row, advanced_row = 4, 0
+        basic_row, advanced_row = 0, 0
         for key, label, _values in CONTROLS:
             is_advanced = key in ("vaapi.h264.low_latency", "vaapi.h264.ready_remap", "vaapi.i915_wc")
             target, row = (advanced, advanced_row) if is_advanced else (grid, basic_row)
@@ -299,6 +314,34 @@ class SettingsWindow(object):
         self.guidance.set_line_wrap(True)
         self.guidance.set_max_width_chars(70)
         grid.attach(self.guidance, 0, basic_row, 3, 1)
+        self.player_controls, self.player_entries, self.player_errors = {}, {}, {}
+        self.player_controls["player.decoder"] = self.choice(player_grid, 0, _("_Video decoder"))
+        for key, row, label, placeholder in (
+                ("gstreamer.crystalhddec.scale_width", 1, _("Card output _width"), _("0 or an even width from 128 to 1918")),
+                ("player.software_output_size", 4, _("Software _output size"), _("WIDTHxHEIGHT, for example 1920x1080"))):
+            combo = self.choice(player_grid, row, label)
+            self.player_controls[key] = combo
+            entry = Gtk.Entry()
+            entry.set_placeholder_text(placeholder)
+            entry.get_accessible().set_name(label.replace("_", "") + _(" value"))
+            player_grid.attach(entry, 1, row+1, 2, 1)
+            self.player_entries[key] = entry
+            error = Gtk.Label(xalign=0)
+            error.set_line_wrap(True);error.set_max_width_chars(70)
+            player_grid.attach(error, 0, row+2, 3, 1)
+            self.player_errors[key] = error
+            combo.connect("changed", self.player_choice_changed, key)
+            entry.connect("changed", self.player_text_changed, key)
+        self.player_controls["player.decoder"].connect("changed", self.player_choice_changed, "player.decoder")
+        for key, row in (("player.decoder",0),("gstreamer.crystalhddec.scale_width",1),("player.software_output_size",4)):
+            badge = Gtk.Label(xalign=0)
+            badge.set_line_wrap(True);badge.set_max_width_chars(25)
+            badge.get_accessible().set_name(_("Preview and source: ") + key)
+            player_grid.attach(badge, 2, row, 1, 1)
+            self.badges[key] = badge
+        player_note = Gtk.Label(label=_("Only updated crystalhd-play reads these defaults; installed version is not inspected. Other players keep their own controls. Scaling needs hardware decoding; software resizing also needs a nonzero card width. Interlaced H.264 widths must be multiples of 16. Saving takes effect on the next playback."), xalign=0)
+        player_note.set_line_wrap(True);player_note.set_max_width_chars(70)
+        player_grid.attach(player_note, 0, 7, 3, 1)
         advanced_note = Gtk.Label(label=_("These controls can clear saved experiments. Activation requires an explicit acknowledged launch; it is not enabled by this editor. Off for explicit prefeed still allows eligible automatic prefeed."), xalign=0)
         advanced_note.set_line_wrap(True)
         advanced_note.set_max_width_chars(70)
@@ -312,7 +355,7 @@ class SettingsWindow(object):
             self.tree.append_column(column)
         scroll = Gtk.ScrolledWindow()
         scroll.add(self.tree)
-        self.notebook.append_page(scroll, Gtk.Label(label=_("All settings / origins")))
+        self.notebook.append_page(scroll, Gtk.Label(label=_("Details")))
         location = Gtk.Label(label=_("User file: ") + str(editor.path), xalign=0)
         location.set_ellipsize(2)
         location.set_tooltip_text(str(editor.path))
@@ -320,10 +363,16 @@ class SettingsWindow(object):
         buttons = Gtk.ButtonBox(orientation=Gtk.Orientation.HORIZONTAL)
         buttons.set_layout(Gtk.ButtonBoxStyle.END)
         outer.pack_start(buttons, False, False, 0)
-        self.reload_button = self.button(buttons, _("R_eload"), self.reload)
-        self.reset_button = self.button(buttons, _("_Reset user defaults"), self.reset)
-        self.save_button = self.button(buttons, _("_Save defaults"), self.save)
-        self.button(buttons, _("_Close"), self.close_window)
+        self.reload_button = self.button(buttons, _("_Reload file"), self.reload)
+        self.reload_button.set_tooltip_text(_("Reread saved files. Ask before discarding any unsaved changes."))
+        self.reset_button = self.button(buttons, _("_Clear all user settings…"), self.reset)
+        self.reset_button.set_tooltip_text(_("Delete all saved user overrides and profiles after confirmation. System settings remain."))
+        self.save_button = self.button(buttons, _("_Save changes"), self.save)
+        self.save_button.set_tooltip_text(_("Save every edited profile and user default. Running applications are unchanged."))
+        self.close_button = self.button(buttons, _("_Close"), self.close_window)
+        self.close_button.set_no_show_all(True)
+        self.quit_button = self.button(buttons, _("_Quit"), self.quit)
+        self.quit_button.set_tooltip_text(_("Exit the settings app and remove its tray icon. Ask before discarding unsaved changes."))
         self.preset.connect("changed", self.selector_changed, "preset")
         self.profile.connect("changed", self.selector_changed, "profile")
         self.layer.connect("changed", self.layer_changed)
@@ -371,6 +420,61 @@ class SettingsWindow(object):
         position = combo.get_active_iter()
         return combo.get_model()[position][0] if position is not None else ""
 
+    def has_unsaved_changes(self):
+        return self.editor.dirty or bool(self.pending_player)
+
+    def edited_values(self):
+        doc = self.editor.draft
+        if doc is None:
+            return {}
+        return doc.settings if self.editing_profile is None else doc.profiles.get(self.editing_profile, {})
+
+    def player_error_text(self, key):
+        if key == "gstreamer.crystalhddec.scale_width":
+            return _("Enter 0 for native width, or an even number from 128 to 1918.")
+        return _("Enter WIDTHxHEIGHT: positive even dimensions, each at most 4096, total at most 4096×2160.")
+
+    def store_player_text(self, key):
+        raw = self.player_entries[key].get_text()
+        pending_key = (self.editing_profile, key)
+        try:
+            value = raw.strip()
+            if key == "gstreamer.crystalhddec.scale_width":
+                if re.fullmatch(r"[0-9]{1,4}", value) is None:
+                    raise self.editor.core.SchemaError("invalid width")
+                source = str(int(value, 10))
+            else:
+                source = json.dumps(value.lower())
+            self.editor.set_literal(key, source, self.editing_profile)
+            self.pending_player.pop(pending_key, None)
+        except self.editor.core.SchemaError:
+            self.pending_player[pending_key] = raw
+
+    def player_choice_changed(self, combo, key):
+        if self.updating:
+            return
+        token = self.token(combo)
+        try:
+            if token == "custom":
+                self.player_entries[key].set_sensitive(not self.editor.write_blocked)
+                self.store_player_text(key)
+                self.player_entries[key].grab_focus()
+            else:
+                self.pending_player.pop((self.editing_profile, key), None)
+                if token or key in self.edited_values():
+                    self.editor.set_literal(key, token or None, self.editing_profile)
+            self.notice = ""
+        except self.editor.core.SchemaError as error:
+            self.notice = str(error)
+        self.sync_form()
+
+    def player_text_changed(self, entry, key):
+        if self.updating or self.token(self.player_controls[key]) != "custom":
+            return
+        self.store_player_text(key)
+        self.notice = ""
+        self.update_preview()
+
     def sync_form(self):
         self.updating = True
         try:
@@ -379,30 +483,57 @@ class SettingsWindow(object):
             if self.editor.catalog:
                 for entry in self.editor.catalog.entries:
                     native_owned = entry.settings is not None and all(key in self.controls for key in entry.settings)
-                    enabled = entry.status == "SELECTABLE" and not entry.required_acknowledgements and native_owned
-                    status = _("standard") if enabled else (_("acknowledged CLI launch only") if entry.required_acknowledgements else (_("frontend-only; not applied here") if entry.status == "SELECTABLE" else entry.status.lower()))
+                    editable_owned = entry.settings is not None and all(key in self.controls or key in PLAYER_KEYS for key in entry.settings)
+                    enabled = entry.status == "SELECTABLE" and not entry.required_acknowledgements and editable_owned
+                    status = (_("standard") if native_owned else _("Player only")) if enabled else (_("acknowledged CLI launch only") if entry.required_acknowledgements else (_("unavailable here") if entry.status == "SELECTABLE" else entry.status.lower()))
                     presets.append((entry.name, entry.record["display_name"] + " — " + status, enabled))
             self.set_choices(self.preset, presets, doc.metadata.get("preset", "") if doc else "")
             names = set(self.editor.system.profiles if self.editor.system else ())
             names.update(doc.profiles if doc else ())
-            profiles = [("", _("Inherit profile"), True)] + [(name, name, True) for name in sorted(names)]
+            profiles = [("", _("Use system profile selection"), True)] + [(name, name, True) for name in sorted(names)]
             self.set_choices(self.profile, profiles, doc.metadata.get("profile", "") if doc else "")
             if self.editing_profile not in names:
                 self.editing_profile = None
-            layers = [("", _("User base settings"), True)]
+            layers = [("", _("User defaults (before profile overrides)"), True)]
             layers += [(name, name + (_(" (user overrides)") if doc and name in doc.profiles else _(" (system; edit adds user overrides)")), True)
                        for name in sorted(names)]
             self.set_choices(self.layer, layers, self.editing_profile or "")
-            labels = {"false": _("Off / not explicitly requested"), "true": _("On (diagnostic)"),
+            labels = {"false": _("Off"), "true": _("On"),
                       '"bounded"': _("Automatic / bounded"), '"strict"': _("Strict finite"), "16": _("16 buffers (standard)")}
+            inherited_label = _("Follow preset/system defaults") if self.editing_profile is None else _("Follow defaults/system profile")
             for key, _label, allowed in CONTROLS:
-                choices = [("", _("Inherit lower file layers"), True), ("unset", _("Native default (unset)"), True)]
+                choices = [("", inherited_label, True), ("unset", _("Use built-in default"), True)]
                 choices += [(v, labels[v], True) for v in allowed]
                 target = (doc.settings if self.editing_profile is None else doc.profiles.get(self.editing_profile, {})) if doc else {}
                 value = target.get(key)
                 token = "" if value is None else ("unset" if value is self.editor.core.UNSET else self.editor.core._format_value(value))
                 self.set_choices(self.controls[key], choices, token)
             editable = doc is not None and not self.editor.write_blocked
+            target = self.edited_values()
+            for key in PLAYER_KEYS:
+                value = target.get(key)
+                choices = [("", inherited_label, True), ("unset", _("Use built-in default"), True)]
+                if key == "player.decoder":
+                    choices += [('"hardware"', _("CrystalHD hardware (required)"), True),
+                                ('"software"', _("Software decoding (CPU)"), True)]
+                    token = "" if value is None else ("unset" if value is self.editor.core.UNSET else self.editor.core._format_value(value))
+                else:
+                    choices += [("custom", _("Set a value"), True)]
+                    pending = (self.editing_profile, key)
+                    token = ("custom" if pending in self.pending_player else
+                             ("" if value is None else ("unset" if value is self.editor.core.UNSET else "custom")))
+                    raw = self.pending_player[pending] if pending in self.pending_player else (str(value) if token == "custom" else "")
+                    self.player_entries[key].set_text(raw)
+                    self.player_entries[key].set_sensitive(editable and token == "custom")
+                    self.player_errors[key].set_text(self.player_error_text(key) if pending in self.pending_player else "")
+                self.set_choices(self.player_controls[key], choices, token)
+                self.player_controls[key].set_sensitive(editable)
+                help_text = {
+                    "player.decoder": _("Hardware requires actual CrystalHD output and never silently falls back. Software uses the CPU. Built-in default: hardware."),
+                    "gstreamer.crystalhddec.scale_width": _("Card width controls pixels transferred over PCIe, not display size. Smaller output loses detail. Built-in default: 0, native width."),
+                    "player.software_output_size": _("Optional CPU resize after card scaling; it cannot recover lost detail. Built-in default: no software resize."),
+                }
+                self.player_controls[key].set_tooltip_text(help_text[key] + " " + _("Follow defaults removes this override and uses other saved settings. Built-in default ignores those settings. Explicit CLI overrides still win."))
             for combo in [self.preset, self.profile, self.layer] + list(self.controls.values()):
                 combo.set_sensitive(editable)
             self.new_profile_button.set_sensitive(editable)
@@ -415,6 +546,7 @@ class SettingsWindow(object):
         self.values.clear()
         valid = False
         partial_model = native_rejected = False
+        preview_error = None
         try:
             report = self.editor.report(self.editing_profile)
             partial_model = bool(report["native_only_environment"])
@@ -442,18 +574,32 @@ class SettingsWindow(object):
                 self.values.append((key, value, item["origin"], use, item["state"]))
                 if key in self.badges:
                     origin = item["origin"].split(":", 1)[0]
-                    self.badges[key].set_text(_("Model: ") + value + "\n" + _("Origin: ") + origin)
+                    origin_label = {"compiled":_("Built-in default"),"user":_("User defaults"),
+                                    "system":_("System settings"),"user-profile":_("User profile"),
+                                    "system-profile":_("System profile"),"preset":_("Preset"),
+                                    "environment":_("Environment override")}.get(origin,origin)
+                    self.badges[key].set_text(_("Preview: ") + value + "\n" + _("From: ") + origin_label)
                     self.badges[key].set_tooltip_text(item["origin"] + "\n" + use)
             valid = True
         except self.editor.core.SchemaError as error:
+            preview_error = str(error)
             self.guidance.set_text(str(error))
             for badge in self.badges.values():
                 badge.set_text(_("Model unavailable"))
-        status = self.notice or (_("Unsaved changes") if self.editor.dirty else _("Defaults loaded; active application state unconfirmed"))
+        for key, label in self.player_errors.items():
+            label.set_text(self.player_error_text(key) if (self.editing_profile, key) in self.pending_player else "")
+        status = self.notice or (_("Unsaved changes") if self.has_unsaved_changes() else _("Settings loaded; running applications have not been inspected"))
         if self.editing_profile:
-            status += "\n" + _("Editing / previewing profile: ") + self.editing_profile
+            status += "\n" + _("Editing profile: ") + self.editing_profile
         else:
-            status += "\n" + _("Editing user base; model includes the default profile, if selected.")
+            status += "\n" + _("Editing user defaults")
+        if self.editor.draft is not None:
+            default_profile = self.editor.draft.metadata.get("profile", self.editor.system.metadata.get("profile"))
+            status += " — " + _("Default profile: ") + (default_profile or _("None"))
+        if self.pending_player:
+            status += "\n" + _("Finish invalid Player values before saving, including values in other profiles.")
+        if preview_error:
+            status += "\n" + _("Settings conflict: ") + preview_error
         if self.editor.load_error:
             status = _("Configuration could not be loaded: ") + self.editor.load_error
         if partial_model:
@@ -461,10 +607,14 @@ class SettingsWindow(object):
         if native_rejected:
             status += "\n" + _("Some requests are rejected by the native model; see the model state column.")
         if not self.tray_connected:
-            status += "\n" + _("Tray unavailable; closing this window exits.")
+            status += "\n" + (_("Window-only mode; closing exits.") if self.window_only else _("Tray unavailable; closing this window exits."))
         self.status.set_text(status)
-        self.save_button.set_sensitive(valid and self.editor.dirty and not self.editor.write_blocked)
+        self.close_button.set_label(_("Hide to tray") if self.tray_connected else _("_Close"))
+        self.close_button.set_visible(self.tray_connected)
+        self.close_button.set_tooltip_text(_("Keep settings running; reopen from the tray icon.") if self.tray_connected else _("No tray is available; closing exits the settings app."))
+        self.save_button.set_sensitive(valid and self.editor.dirty and not self.editor.write_blocked and not self.pending_player)
         self.reset_button.set_sensitive(self.editor.snapshot is not None and not self.editor.write_blocked)
+        self.delete_profile_button.set_sensitive(bool(self.editor.draft is not None and not self.editor.write_blocked and self.editing_profile in self.editor.draft.profiles))
 
     def setting_changed(self, combo, key):
         if self.updating:
@@ -522,6 +672,8 @@ class SettingsWindow(object):
             return
         try:
             self.editor.delete_profile(self.editing_profile)
+            self.pending_player = {key:value for key,value in self.pending_player.items()
+                                   if key[0] != self.editing_profile}
             self.notice = _("User profile removed from draft; Save to persist.")
         except self.editor.core.SchemaError as error:
             self.notice = str(error)
@@ -550,6 +702,10 @@ class SettingsWindow(object):
         return response == self.Gtk.ResponseType.OK
 
     def save(self, *_args):
+        if self.pending_player:
+            self.notice = _("Correct the highlighted Player values before saving.")
+            self.update_preview()
+            return
         try:
             required = self.editor.required_acknowledgements()
             if required and not self.confirm(_("Save launch-only experimental defaults?"),
@@ -561,17 +717,20 @@ class SettingsWindow(object):
         self.sync_form()
 
     def reload(self, *_args):
-        if self.editor.dirty and not self.confirm(_("Discard the editor draft?"), _("Reload reads the current user and system files.")):
+        if self.has_unsaved_changes() and not self.confirm(_("Discard unsaved changes and reload?"), _("Reload reads the current user and system files.")):
             return
+        self.pending_player.clear()
         self.editor.reload()
         self.notice = ""
         self.sync_form()
 
     def reset(self, *_args):
-        if not self.confirm(_("Reset all user defaults?"), _("This clears user settings and profile sections. System defaults and process overrides remain.")):
+        if not self.confirm(_("Clear all saved user settings?"), _("This deletes every user override and profile, including unfinished edits. System settings and process overrides remain.")):
             return
         try:
             self.notice = self.editor.reset()
+            if not self.editor.write_blocked:
+                self.pending_player.clear()
         except self.editor.core.SchemaError as error:
             self.notice = str(error)
         self.sync_form()
@@ -583,7 +742,7 @@ class SettingsWindow(object):
         return self.quit()
 
     def quit(self, *_args):
-        if self.editor.dirty and not self.confirm(_("Discard the editor draft and exit?"), _("Saved defaults remain after this utility exits.")):
+        if self.has_unsaved_changes() and not self.confirm(_("Discard unsaved changes and quit?"), _("Saved defaults remain after this utility exits.")):
             return True
         self.quitting = True
         if self.tray_bus is not None:
@@ -593,9 +752,25 @@ class SettingsWindow(object):
         if self.indicator:
             self.indicator.set_status(self.indicator_module.IndicatorStatus.PASSIVE)
         self.window.destroy()
-        if self.Gtk.main_level():
+        if self.quit_callback is not None:
+            self.quit_callback()
+        elif self.Gtk.main_level():
             self.Gtk.main_quit()
         return True
+
+    def start(self):
+        self.started = True
+        self.window.show_all()
+        self.hide_on_startup_if_connected()
+
+    def hide_on_startup_if_connected(self):
+        if self.started and self.startup_hide_pending and self.tray_connected:
+            self.startup_hide_pending = False
+            self.window.hide()
+
+    def show_settings(self, *_args):
+        self.startup_hide_pending = False
+        self.window.present()
 
     def key_press(self, _widget, event):
         control = event.state & self.Gdk.ModifierType.CONTROL_MASK
@@ -629,7 +804,7 @@ class SettingsWindow(object):
             self.indicator.set_icon_theme_path(str(icon.parent))
         self.indicator.set_title(_("CrystalHD Settings"))
         menu = self.Gtk.Menu()
-        for title, callback in ((_("Open settings"), lambda *_: self.window.present()), (_("Exit"), self.quit)):
+        for title, callback in ((_("Open settings…"), self.show_settings), (_("Quit"), self.quit)):
             item = self.Gtk.MenuItem.new_with_label(title)
             item.connect("activate", callback)
             menu.append(item)
@@ -656,12 +831,16 @@ class SettingsWindow(object):
         self.tray_connected = self.indicator_connected and tray_host_present(self.Gio, self.GLib)
         if not self.tray_connected:
             self.window.present()
+        else:
+            self.hide_on_startup_if_connected()
         self.update_preview()
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=_("Edit saved CrystalHD defaults; active applications are not reconfigured."))
-    parser.add_argument("--no-tray", action="store_true", help=_("use a window only"))
+    tray = parser.add_mutually_exclusive_group()
+    tray.add_argument("--no-tray", action="store_true", help=_("use a separate window only"))
+    tray.add_argument("--tray", action="store_true", help=_("start in the tray when available; otherwise show the window"))
     system = parser.add_mutually_exclusive_group()
     system.add_argument("--system-config", metavar="FILE")
     system.add_argument("--no-system-config", action="store_true")
@@ -672,13 +851,36 @@ def main(argv=None):
         Gtk, Gdk, Gio, GLib = load_gtk()
         if not Gtk.init_check([])[0]:
             raise RuntimeError("no graphical display; use crystalhd-config")
-        path = args.user_config or core.default_user_config(os.environ)
-        if path is None:
-            raise RuntimeError("no absolute user configuration path; use --user-config")
-        editor = Editor(core, path, None if args.no_system_config else (args.system_config or core.SYSTEM_CONFIG), os.environ)
-        application = SettingsWindow(editor, (Gtk, Gdk, Gio, GLib), args.no_tray)
-        application.window.show_all()
-        Gtk.main()
+        isolated = args.no_tray or args.user_config is not None or args.system_config is not None or args.no_system_config
+        def make_application(non_unique):
+            flags = Gio.ApplicationFlags.NON_UNIQUE if non_unique else Gio.ApplicationFlags.FLAGS_NONE
+            return Gtk.Application(application_id="io.github.ahnhy1324.CrystalHD.Settings", flags=flags)
+        application = make_application(isolated)
+        try:
+            application.register(None)
+        except GLib.Error:
+            application = make_application(True)
+            application.register(None)
+        windows, outcome = [], [0]
+        def activate(app):
+            if windows:
+                windows[0].show_settings()
+                return
+            try:
+                path = args.user_config or core.default_user_config(os.environ)
+                if path is None:
+                    raise RuntimeError("no absolute user configuration path; use --user-config")
+                editor = Editor(core, path, None if args.no_system_config else (args.system_config or core.SYSTEM_CONFIG), os.environ)
+                window = SettingsWindow(editor, (Gtk,Gdk,Gio,GLib), args.no_tray, args.tray, app.quit)
+                window.window.set_application(app)
+                windows.append(window)
+                window.start()
+            except (ImportError, ValueError, RuntimeError, OSError) as error:
+                print("crystalhd-settings: " + str(error), file=sys.stderr)
+                outcome[0] = 3
+                app.quit()
+        application.connect("activate", activate)
+        return max(application.run(["crystalhd-settings"]), outcome[0])
     except (ImportError, ValueError, RuntimeError, OSError) as error:
         print("crystalhd-settings: " + str(error), file=sys.stderr)
         return 3

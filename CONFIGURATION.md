@@ -118,38 +118,52 @@ Install the desktop frontend separately from the runtime:
 ```sh
 sudo make install-settings
 crystalhd-settings
+# Start in the tray; show the window if no working tray is available:
+crystalhd-settings --tray
 # Window-only mode, including desktops without a tray:
 crystalhd-settings --no-tray
 ```
 
 For a source checkout, use `python3 scripts/crystalhd-settings.py` without installing.
-A settings window opens immediately. With a connected tray, Close hides the window;
-Open settings reopens it and Exit terminates it. Without a tray, Close exits.
-Losing the tray connection reveals the window. No autostart service is installed,
-and saved defaults remain after the utility exits.
+A normal command opens settings; the desktop launcher starts in the tray.
+**Hide to tray** keeps the app running, **Open settings…** in the tray reopens
+the window, and **Quit** removes the icon and exits. Without a working tray,
+the window remains visible and only Quit is offered at the bottom. Losing the
+tray connection reveals the window. Starting again opens the existing desktop
+instance. Explicit file paths and `--no-tray` use a separate editor instead.
+No login autostart or system service is installed; saved defaults remain after exit.
 
-The native page edits safe supported values and shows each value's **model origin**;
-Advanced native can clear saved experiments. Inherit removes a user override;
-Native default (`unset`) blocks lower file layers. **Editing layer** chooses user
-base settings or a named profile. **New profile** adds an empty draft; edit its
-values, then select it as **Default profile** if ordinary launches should use it.
-Switching editing layers retains all draft changes and previews that profile
+The first **Player** page edits the decoder, card output width and software output
+size consumed by updated `crystalhd-play`. Set a custom width/size or follow other
+saved defaults. **Use built-in default** (`unset`) requests native card width/no
+software resize; explicit CLI overrides still win. Smaller card output reduces
+transferred pixels and detail; software resizing adds CPU work and cannot recover
+that detail. Input and dependency errors are shown before Save. Unfinished text
+survives switching profiles and blocks saving until corrected or discarded.
+
+**Decoder defaults** edits safe library/VA values, and **Advanced** can clear
+saved experiments. Each preview shows its source without claiming active playback.
+Under **Profiles and presets**, **Settings to edit** chooses user defaults or a
+named profile. **New profile** adds an empty draft; edit its values, then select it
+as **Profile used by default** if ordinary launches should use it.
+Switching views retains all draft changes and previews that profile
 without changing the default selection. **Remove user profile** requires
 confirmation and takes effect only after Save; system definitions remain intact.
 Editing a system profile adds user overrides, and removing those overrides
 reveals its system values. Removing a user-only default profile also clears its
 user selector, returning to inherited selection. Other owners'
-settings are inspectable in All settings / origins. Unavailable presets,
-frontend-only Quality and launch-only experimental activations cannot be selected
-as automatic native settings. Existing saved entries remain intact. Saving an already selected experimental
+settings are inspectable in **Details**. Quality is selectable and labeled
+**Player only**; it does not change Kodi output. Unavailable presets and
+launch-only experimental activations remain disabled. Existing saved entries
+remain intact. Saving an already selected experimental
 preset requires fresh confirmation for that write only; launch acknowledgement
 is still separate. Native-only experiments also mark the model as partial.
 Use the CLI
 and the [native contract](CONFIGURATION-SCHEMA.md#native-defaults-in-ordinary-applications)
 for their supported invocation paths.
 
-Save defaults writes the user file through the same atomic writer as the CLI.
-Reload asks before discarding a draft. Reset asks before clearing all user settings
+**Save changes** writes the user file through the same atomic writer as the CLI.
+**Reload file** asks before discarding a draft. **Clear all user settings…** asks before clearing all user settings
 and profiles; system defaults remain. Conflicting edits and uncertain write
 outcomes require review/reload, never a blind overwrite. Ctrl+S saves, Ctrl+R reloads,
 Ctrl+Q exits, and Escape closes/hides the window. Labels and keyboard mnemonics are

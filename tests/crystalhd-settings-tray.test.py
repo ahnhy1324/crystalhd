@@ -98,6 +98,7 @@ def run():
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                universal_newlines=True)
     app = None
+    desktop_process = None
     try:
         assert select.select([process.stdout], [], [], 5)[0], 'private watcher startup timed out'
         assert process.stdout.readline().strip() == 'READY'
@@ -132,10 +133,45 @@ def run():
             app.quit()
             app = None
             print('Private-bus panel loss/recovery with persistent watcher PASS')
+        with tempfile.TemporaryDirectory(prefix='crystalhd-desktop-instance-') as home:
+            environment=dict(os.environ,HOME=home,XDG_CONFIG_HOME=str(Path(home)/'xdg'))
+            command=[sys.executable,'-B',str(ROOT/'scripts/crystalhd-settings.py'),'--tray']
+            desktop_process=subprocess.Popen(command,env=environment,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            app_id='io.github.ahnhy1324.CrystalHD.Settings'
+            def owner():
+                return bus.call_sync('org.freedesktop.DBus','/org/freedesktop/DBus','org.freedesktop.DBus',
+                                     'NameHasOwner',GLib.Variant('(s)',(app_id,)),None,
+                                     Gio.DBusCallFlags.NO_AUTO_START,1000,None).unpack()[0]
+            settle(owner)
+            pid=bus.call_sync('org.freedesktop.DBus','/org/freedesktop/DBus','org.freedesktop.DBus',
+                              'GetConnectionUnixProcessID',GLib.Variant('(s)',(app_id,)),None,
+                              Gio.DBusCallFlags.NO_AUTO_START,1000,None).unpack()[0]
+            assert pid==desktop_process.pid
+            second=subprocess.run(command,env=environment,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=8)
+            assert second.returncode==0,second.stderr.decode('utf-8',errors='replace')
+            assert desktop_process.poll() is None,'primary exited after activation'
+            assert owner(),'desktop instance lost its bus name'
+            assert not (Path(home)/'xdg/crystalhd/config.ini').exists(),'desktop startup wrote defaults'
+            isolated=subprocess.Popen(command+['--user-config',str(Path(home)/'other.ini')],
+                                      env=environment,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            try:
+                try:
+                    isolated.wait(timeout=1)
+                    raise AssertionError('explicit-path editor was redirected to the desktop instance')
+                except subprocess.TimeoutExpired:
+                    pass
+                assert owner(),'isolated editor replaced the desktop owner'
+                assert not (Path(home)/'other.ini').exists()
+            finally:
+                isolated.terminate();isolated.communicate(timeout=5)
+            print('Desktop single-instance activation without startup write PASS')
     finally:
         if app is not None:
             app.quitting = True
             app.window.destroy()
+        if desktop_process is not None:
+            desktop_process.terminate()
+            desktop_process.communicate(timeout=5)
         process.terminate()
         process.communicate(timeout=5)
 
