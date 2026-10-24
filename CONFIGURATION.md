@@ -6,8 +6,9 @@ production driver, library, VA-API backend, launchers, GStreamer element and
 
 The `crystalhd-config` utility validates and explains the
 strict schema defined in [CONFIGURATION-SCHEMA.md](CONFIGURATION-SCHEMA.md).
-Production backends do not read those files directly. Inspection and saving do
-not change a running application. For example:
+Updated VA/DIL components read their supported defaults directly when an
+application starts. Inspection and saving do not change a running application.
+For example:
 
 ```sh
 crystalhd-config validate
@@ -23,11 +24,29 @@ cannot be selected. Use `list-presets` before selecting one; exact values,
 requirements and acknowledgement syntax are in
 [CONFIGURATION-SCHEMA.md](CONFIGURATION-SCHEMA.md#reviewed-preset-manifest).
 Explicit [`save` and `reset` commands](CONFIGURATION-SCHEMA.md#save-and-reset-user-defaults)
-can store managed user defaults. Saved settings are not applied to production
-applications automatically. An explicit
-[`run` command](CONFIGURATION-SCHEMA.md#run-an-explicit-command) prepares supported
-environment settings for a new child command. It does not configure an already
-running application. The manager never reloads a module, sources the legacy
+can store managed user defaults. A plain `kodi` launch then consumes the
+native-owned subset **if it loads our updated VA driver/library**; selecting that
+backend and enabling hardware decode in Kodi remain application setup steps.
+See [native defaults](CONFIGURATION-SCHEMA.md#native-defaults-in-ordinary-applications)
+for the supported subset, file validation and restart boundary. Frontend-only
+settings are not automatically applied by VA/DIL. Experimental managed settings
+still require fresh acknowledgements through the optional
+[`run` command](CONFIGURATION-SCHEMA.md#run-an-explicit-command), which also
+provides per-invocation CLI overrides without changing saved defaults. For example:
+
+```sh
+# Save a diagnostic default for future application starts.
+crystalhd-config save vaapi.debug=true
+kodi
+# Run once without that diagnostic; the saved default remains true.
+crystalhd-config run --override vaapi.debug=false -- kodi
+# Or disable the saved diagnostic for subsequent starts.
+crystalhd-config save vaapi.debug=false
+```
+
+Raw process environment wins per key, including its original encoding; a
+supported `run --override` wins over that environment only for its own key.
+The manager never reloads a module, sources the legacy
 `chromium.conf`, or probes CrystalHD hardware.
 The JSON-only `bug-report` form removes user-selected profile identifiers,
 non-compiled paths, raw environment values and arbitrary password-store
@@ -50,6 +69,12 @@ Safety labels mean:
 “Public” below identifies an existing user-visible interface. Environment
 variables do not add to the `libcrystalhd.so.3` ABI, and none of these controls
 changes the legacy ioctl ABI.
+
+## Native configuration bootstrap
+
+| Control | Owner | Device/backend | Default and accepted values | Dependencies | Read/apply lifecycle | Safety | Public API |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `CRYSTALHD_CONFIG_DISABLE` <!-- config-surface:environment:CRYSTALHD_CONFIG_DISABLE --> | Native VA/DIL reader | All native paths | Unset/other values read managed defaults; exactly `1` bypasses both files | Original environment controls remain authoritative | Snapshot on first configuration use per component; restart after saving | **Standard** — native defaults/environment fallback; no risk acknowledgement | Yes — documented process environment |
 
 ## Kernel module parameters
 

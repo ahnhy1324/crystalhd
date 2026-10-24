@@ -24,6 +24,7 @@ library:
 
 # Test production library sections without hardware. Firmware calls are
 # stubbed and unexpected ioctls abort the flush/EOS regressions.
+library-check: export CRYSTALHD_CONFIG_DISABLE = 1
 library-check:
 	@set -eu; lib_test_dir=$$(mktemp -d /tmp/crystalhd-library-check.XXXXXX); \
 	trap 'rm -f "$$lib_test_dir/check"; rmdir "$$lib_test_dir"' EXIT HUP INT TERM; \
@@ -125,6 +126,8 @@ browser:
 	$(MAKE) -C browser
 
 configuration-check:
+	$(PYTHON3) -B scripts/generate-native-config.py --check
+	$(PYTHON3) -B tests/native-config.test.py
 	$(PYTHON3) -B tests/configuration-inventory.test.py
 	$(PYTHON3) -B tests/configuration-schema.test.py
 	$(PYTHON3) -B tests/crystalhd-config.test.py

@@ -69,18 +69,18 @@ class SchemaOracleTest(unittest.TestCase):
         mapped = {(kind, name) for kind, name, _key in map_matches}
         bounded = {(kind, name) for kind, name, _reason in boundary_matches}
 
-        self.assertEqual(len(inventory_matches), 29)
-        self.assertEqual(len(surfaces), 29)
+        self.assertEqual(len(inventory_matches), 30)
+        self.assertEqual(len(surfaces), 30)
         self.assertEqual(len(map_matches), 23)
         self.assertEqual(len(mapped), 23)
-        self.assertEqual(len(boundary_matches), 6)
-        self.assertEqual(len(bounded), 6)
+        self.assertEqual(len(boundary_matches), 7)
+        self.assertEqual(len(bounded), 7)
         self.assertFalse(mapped & bounded)
         self.assertEqual(mapped | bounded, surfaces)
         self.assertEqual(
             {reason for _kind, _name, reason in boundary_matches},
             {"staged-module", "legacy-bootstrap", "invocation-only",
-             "experimental-centered-nv12"},
+             "experimental-centered-nv12", "native-config-bootstrap"},
         )
         self.assertEqual(
             {(kind, name) for kind, name, reason in boundary_matches

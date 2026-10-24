@@ -35,7 +35,7 @@ MODULE_PARAMETER = re.compile(
     r"\bmodule_param(?:_named)?\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)"
 )
 GETENV = re.compile(
-    r"\b(?:std::)?getenv\s*\(\s*\"(CRYSTALHD_[A-Z0-9_]+)\"\s*\)"
+    r"\b(?:(?:std::)?getenv|crystalhd_config::Environment)\s*\(\s*\"(CRYSTALHD_[A-Z0-9_]+)\"\s*\)"
 )
 CRYSTALHD_TOKEN = re.compile(r"\bCRYSTALHD_[A-Z][A-Z0-9_]*\b")
 GST_PROPERTY = re.compile(
@@ -58,7 +58,7 @@ def read(path: Path) -> str:
 def production_environments() -> set[str]:
     names: set[str] = set()
 
-    for directory in (ROOT / "linux_lib/libcrystalhd", ROOT / "filters/vaapi"):
+    for directory in (ROOT / "linux_lib/libcrystalhd", ROOT / "filters/vaapi", ROOT / "include"):
         for path in directory.iterdir():
             if path.suffix in {".c", ".cc", ".cpp", ".h", ".hpp"}:
                 names.update(GETENV.findall(read(path)))

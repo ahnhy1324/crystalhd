@@ -2,6 +2,7 @@
 #ifndef CRYSTALHD_VAAPI_TRACE_H_
 #define CRYSTALHD_VAAPI_TRACE_H_
 
+#include "../../include/crystalhd-config.h"
 #include <atomic>
 #include <chrono>
 #include <cerrno>
@@ -159,7 +160,7 @@ class Trace {
 
  private:
   static bool EnvironmentEnabled() {
-    const char *value = std::getenv("CRYSTALHD_VAAPI_TRACE");
+    const char *value = crystalhd_config::Environment("CRYSTALHD_VAAPI_TRACE");
     return value != nullptr && std::strcmp(value, "1") == 0;
   }
 
