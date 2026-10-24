@@ -17,6 +17,7 @@ struct MockOutput {
   unsigned width, height;
   bool eos;
   std::vector<uint8_t> pixels;
+  uint32_t flags = 0, number = 0, session = 0, metadata = 0;
 };
 struct DecoderMock {
   bool capacity = true, opened = false, leased = false;
@@ -32,6 +33,18 @@ struct DecoderMock {
                       std::vector<uint8_t>(static_cast<size_t>(width)*height*2, 128)});
   }
   void Eos() { outputs.push_back({0, 0, 0, true, {}}); }
+  void Field(uint64_t timestamp, bool bottom, bool bottom_first,
+             unsigned number = 90) {
+    Queue(timestamp, 16, 32);
+    auto &out = outputs.back();
+    out.pixels.resize(16 * 32);
+    out.flags = VDEC_FLAG_INTERLACED_SRC |
+        (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD) |
+        (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0);
+    out.number = number;
+    out.session = 7;
+    out.metadata = 123;
+  }
 };
 DecoderMock *active = nullptr;
 void CheckDevice(HANDLE device) {
@@ -108,7 +121,10 @@ extern "C" BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t, BC_DTS_PROC_OU
   *output = {}; output->PoutFlags = BC_POUT_FLAGS_PIB_VALID;
   output->PicInfo.timeStamp = next.timestamp;
   output->PicInfo.width = next.width; output->PicInfo.height = next.height;
-  output->PicInfo.flags = next.eos ? VDEC_FLAG_EOS : 0;
+  output->PicInfo.flags = next.eos ? VDEC_FLAG_EOS : next.flags;
+  output->PicInfo.picture_number = next.number;
+  output->PicInfo.sess_num = next.session;
+  output->PicInfo.picture_meta_payload = next.metadata;
   output->b422Mode = OUTPUT_MODE422_YUY2;
   output->Ybuff = next.pixels.data(); output->YBuffDoneSz = next.pixels.size()/4;
   active->leased = true; return BC_STS_SUCCESS;
@@ -676,8 +692,8 @@ void MixedFrameSequenceLifetime() {
               !SequenceProgressive(f.decode->mpeg2_replay.Find(4 * first)->bytes),
           "later progressive I picture keeps the original interlaced sequence header");
   for (const auto &entry : f.decode->mpeg2_auxiliary.syntax)
-    Require(!entry.second.sequence.progressive_sequence && !entry.second.eligible,
-            "mixed sequence never opts into progressive-only auxiliary completion");
+    Require(!entry.second.sequence.progressive_sequence && entry.second.eligible,
+            "mixed sequence snapshot retains its mode for owned field completion");
   Require(f.decode->CloseHardware() == BC_STS_SUCCESS,
           "transport-only close retains the logical mixed sequence");
   f.Surface(5);
@@ -900,6 +916,157 @@ void PrivateMpeg2BCompletion() {
   f.mock.Queue(4*kTimestampStep,16,32);
   Require(ReceiveAvailable(&f.driver, f.decode.get()) == VA_STATUS_ERROR_DECODING_ERROR &&
               !f.mock.leased, "duplicate auxiliary output is not an ignored unknown timestamp");
+}
+
+void SubmitInterlaced(Fixture &f, unsigned target, unsigned kind,
+                      bool bottom_first, bool progressive = false) {
+  auto p = Picture(16, 32, kind, kind == 1 ? VA_INVALID_SURFACE : 1,
+                   kind == 3 ? 2 : VA_INVALID_SURFACE);
+  p.picture_coding_extension.bits.progressive_frame = progressive;
+  p.picture_coding_extension.bits.top_field_first = !bottom_first;
+  f.Begin(target); f.Parameters(p); f.End();
+}
+
+void PrivateMpeg2FieldCompletion() {
+  for (bool bottom_first : {false, true}) {
+    Fixture f;
+    SubmitInterlaced(f, 1, 1, bottom_first);
+    SubmitInterlaced(f, 2, 2, bottom_first);
+    const auto originals = f.mock.inputs;
+    Require(TryMpeg2Auxiliary(&f.driver, f.decode.get(), f.driver.surfaces.at(1)) ==
+                VA_STATUS_SUCCESS && f.mock.inputs.size() == 4,
+            "interlaced anchors receive bounded private lookahead without EOS");
+    Require(f.mock.inputs[0].bytes == originals[0].bytes &&
+                f.mock.inputs[1].bytes == originals[1].bytes &&
+                f.decode->mpeg2_replay.cached_pictures() == 2 &&
+                f.decode->next_submission_ordinal == 3,
+            "private field completion never changes public originals or ordinals");
+    for (unsigned token : {1U, 2U}) {
+      f.mock.Field(token*kTimestampStep, bottom_first, bottom_first, token);
+      f.mock.Field(token*kTimestampStep, !bottom_first, bottom_first, token);
+    }
+    f.Receive();
+    Require(f.decode->pending.empty() && f.decode->mpeg2_auxiliary.PendingCount() == 2,
+            "complete public field pairs do not retire private output debt");
+    // Generated copies use explicit TFF, independently of their source order.
+    f.mock.Field(3*kTimestampStep, false, false, 30); f.Receive();
+    Require(f.decode->mpeg2_auxiliary.PendingCount() == 2,
+            "first private field release cannot retire the whole picture");
+    f.mock.Field(4*kTimestampStep, false, false, 40); f.Receive();
+    f.mock.Field(4*kTimestampStep, true, false, 40); f.Receive();
+    Require(f.decode->mpeg2_auxiliary.PendingCount() == 1,
+            "interleaved auxiliary identities retire independently after both fields");
+    f.mock.Field(3*kTimestampStep, true, false, 30); f.Receive();
+    Require(f.decode->mpeg2_auxiliary.PendingCount() == 0 &&
+                f.mock.releases == 8 && f.decode->decoded_frames.size() == 2 &&
+                !f.decode->h264_first_field.valid,
+            "auxiliary fields make no public picture or shared first-field latch");
+    f.decode->closing = true;
+    Require(SealDecodeBatch(&f.driver, f.decode.get()) == VA_STATUS_SUCCESS &&
+                f.mock.flushes == 1, "only terminal close flushes private field work");
+    f.mock.Eos(); f.Receive();
+    Require(!f.decode->mpeg2_auxiliary.needs_eos,
+            "actual EOS completes fully released private field debt");
+  }
+  for (bool progressive_b : {false, true}) {
+    Fixture f;
+    SubmitInterlaced(f, 1, 1, true);
+    SubmitInterlaced(f, 2, 2, true);
+    SubmitInterlaced(f, 3, 3, true, progressive_b);
+    const auto original = f.mock.inputs.back();
+    Require(TryMpeg2Auxiliary(&f.driver, f.decode.get(), f.driver.surfaces.at(3)) ==
+                VA_STATUS_SUCCESS && f.mock.inputs.size() == 4 &&
+                f.mock.inputs.back().bytes == original.bytes,
+            "mixed/interlaced B lookahead clones the exact accepted AU");
+    if (progressive_b) {
+      f.mock.Queue(4*kTimestampStep, 16, 32); f.Receive();
+    } else {
+      f.mock.Field(4*kTimestampStep, true, true); f.Receive();
+      Require(f.decode->mpeg2_auxiliary.PendingCount() == 1,
+              "BFF cloned first field retains its own debt");
+      f.mock.Field(4*kTimestampStep, false, true); f.Receive();
+    }
+    Require(f.decode->mpeg2_auxiliary.PendingCount() == 0,
+            "a clone follows its picture flag, not the interlaced sequence flag");
+  }
+}
+
+void PrepareInterlacedBCompletion(Fixture &f) {
+  SubmitInterlaced(f, 1, 1, false);
+  SubmitInterlaced(f, 2, 2, false);
+  SubmitInterlaced(f, 3, 3, false);
+  Require(TryMpeg2Auxiliary(&f.driver, f.decode.get(), f.driver.surfaces.at(3)) ==
+              VA_STATUS_SUCCESS && f.decode->mpeg2_auxiliary.PendingCount() == 1,
+          "prepare one owned interlaced auxiliary for failure checks");
+}
+
+void PrivateMpeg2FieldFailures() {
+  for (unsigned mode = 0; mode < 18; ++mode) {
+    Fixture f; PrepareInterlacedBCompletion(f);
+    const bool first_released = mode >= 9 && mode != 16;
+    if (first_released) {
+      f.mock.Field(4*kTimestampStep, false, false); f.Receive();
+      Require(f.decode->mpeg2_auxiliary.PendingCount() == 1,
+              "failure fixture retains a released first field");
+    }
+    if (mode == 15) f.mock.Eos();
+    else {
+      f.mock.Field(4*kTimestampStep, first_released, false);
+      auto &out = f.mock.outputs.back();
+      switch (mode) {
+        case 0: out.flags = 0; out.pixels.resize(16*32*2); break;
+        case 1: out.flags &= ~VDEC_FLAG_BOTTOMFIELD; break;
+        case 2: out.pixels.resize(16*32*2); break;
+        case 3: out.pixels.resize(16*32-4); break;
+        case 4: ++out.width; break;
+        case 5: out.height -= 4; break;
+        case 6: out.flags |= VDEC_FLAG_BOTTOM_FIRST; break;
+        case 7: ++f.decode->generation; break;
+        case 8: FindMpeg2Auxiliary(f.decode.get(),4*kTimestampStep)->device = &f.driver; break;
+        case 9: out.flags = VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD; break;
+        case 10: ++out.number; break;
+        case 11: ++out.session; break;
+        case 12: ++out.metadata; break;
+        case 13: out.flags |= VDEC_FLAG_BOTTOM_FIRST; break;
+        case 14: ++out.width; break;
+        case 16: case 17: f.mock.release_error = true; break;
+      }
+    }
+    Require(ReceiveAvailable(&f.driver,f.decode.get()) == VA_STATUS_ERROR_DECODING_ERROR &&
+                f.decode->mpeg2_auxiliary.PendingCount() == 1 &&
+                f.decode->mpeg2_auxiliary.aborted && f.decode->mpeg2_replay.failed(),
+            "invalid/partial/release-failed private fields never retire accepted debt");
+    Require(FindMpeg2Auxiliary(f.decode.get(),4*kTimestampStep)->fields ==
+                (first_released ? 1U : 0U),
+            "failed validation or lease release leaves the prior field mask intact");
+    Require(f.mock.leased == (mode == 16 || mode == 17),
+            "only an actual release failure retains the synthetic output lease");
+    // As in the existing release-failure tests, only the mock lease needs
+    // manual containment; production ownership remains for consuming close.
+    f.mock.release_error = false; f.mock.leased = false; f.mock.outputs.clear();
+  }
+  {
+    Fixture f; PrepareInterlacedBCompletion(f);
+    f.mock.Field(4*kTimestampStep,false,false); f.Receive();
+    f.mock.close_busy = true;
+    Require(f.decode->CloseHardware(0) == BC_STS_BUSY &&
+                f.decode->mpeg2_auxiliary.PendingCount() == 1 &&
+                FindMpeg2Auxiliary(f.decode.get(),4*kTimestampStep)->fields == 1,
+            "non-consuming close preserves partial private-field ownership");
+    f.mock.close_busy = false;
+    Require(f.decode->CloseHardware(0) == BC_STS_SUCCESS &&
+                f.decode->mpeg2_auxiliary.PendingCount() == 0,
+            "only consuming close clears partial private-field debt");
+  }
+  {
+    Fixture f; PrepareInterlacedBCompletion(f);
+    f.mock.Field(4*kTimestampStep,false,false);
+    f.mock.Field(4*kTimestampStep,true,false); f.Receive();
+    f.mock.Field(4*kTimestampStep,true,false);
+    Require(ReceiveAvailable(&f.driver,f.decode.get()) == VA_STATUS_ERROR_DECODING_ERROR &&
+                !f.mock.leased && f.decode->mpeg2_auxiliary.PendingCount() == 0,
+            "a third field after complete retirement is an unknown-token failure");
+  }
 }
 
 void PrivateMpeg2CompletionRejection() {
@@ -1164,6 +1331,8 @@ int main() {
     {"backpressure and Simple profile restriction", BackpressureAndSimpleBRejection},
     {"private MPEG2 anchor completion and explicit tail EOS", PrivateMpeg2Completion},
     {"private MPEG2 exact B clone and output debt", PrivateMpeg2BCompletion},
+    {"private MPEG2 complete field-pair ownership", PrivateMpeg2FieldCompletion},
+    {"private MPEG2 partial/malformed field retirement", PrivateMpeg2FieldFailures},
     {"private MPEG2 completion rejection boundaries", PrivateMpeg2CompletionRejection},
     {"private MPEG2 public sync and terminal failure ownership", PrivateMpeg2SyncAndFailures},
     {"private MPEG2 normalized display flags and new anchor", PrivateMpeg2NormalizedAndNewAnchor},

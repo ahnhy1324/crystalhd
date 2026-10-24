@@ -553,15 +553,17 @@ void Capacity() {
 
 void BackwardCopy() {
   ++groups;
-  struct Geometry { unsigned width, height, level; };
+  struct Geometry { unsigned width, height, level, progressive_rows, interlaced_rows; };
   // Syntax coverage is not a claim of native completion/performance at each
   // geometry. The runtime caller owns its measured admission and reference.
-  const Geometry geometries[] = {{2,2,10}, {18,34,10}, {352,288,10},
-      {640,360,8}, {720,480,8}, {720,576,8}, {1280,720,6},
-      {1440,1088,6}, {1920,1080,4}, {1920,1088,4}};
+  const Geometry geometries[] = {{2,2,10,1,2}, {18,34,10,3,4}, {352,288,10,18,18},
+      {640,360,8,23,24}, {720,480,8,30,30}, {720,576,8,36,36}, {1280,720,6,45,46},
+      {1440,1088,6,68,68}, {1920,1080,4,68,68}, {1920,1088,4,68,68}};
   for (const auto &geometry : geometries)
+    for (bool progressive : {false, true})
     for (unsigned temporal_reference : {0U,1023U})
       for (bool custom : {false,true}) {
+        if (!progressive && (geometry.height & 3U)) continue;
         auto matrices = mpeg::DefaultQuantMatrices();
         if (custom) {
           for (size_t list = 0; list < matrices.lists.size(); ++list)
@@ -571,6 +573,7 @@ void BackwardCopy() {
         }
         const auto original_matrices = matrices;
         auto sequence = Sequence(); sequence.level = geometry.level;
+        sequence.progressive_sequence = progressive;
         const auto original_sequence = sequence;
         std::vector<uint8_t> bytes{0x12,0x34};
         Require(mpeg::AssembleBackwardCopy(geometry.width, geometry.height,
@@ -583,8 +586,8 @@ void BackwardCopy() {
         reader.Equal(1, 0);
         reader.Start(0xb5); reader.Equal(4, 8);
         reader.Equal(16, 0x1111); reader.Equal(2, 0); reader.Equal(2, 3);
-        reader.Equal(1, 0); reader.Equal(1, 1); reader.Equal(5, 0);
-        reader.Equal(1, 1); reader.Equal(1, 1); reader.Equal(1, 0);
+        reader.Equal(1, !progressive); reader.Equal(1, 1); reader.Equal(5, 0);
+        reader.Equal(1, progressive); reader.Equal(1, progressive); reader.Equal(1, 0);
         reader.Start(0xb5); reader.Equal(4, 3);
         for (const auto &list : matrices.lists) {
           reader.Equal(1, 1);
@@ -592,7 +595,7 @@ void BackwardCopy() {
         }
         reader.Align();
         const unsigned columns = (geometry.width + 15) / 16;
-        const unsigned rows = (geometry.height + 15) / 16;
+        const unsigned rows = progressive ? geometry.progressive_rows : geometry.interlaced_rows;
         for (unsigned row = 0; row < rows; ++row) {
           reader.Start(row + 1);
           reader.Equal(5, 1); reader.Equal(1, 0); // Quantizer and extra_bit_slice.
@@ -626,7 +629,7 @@ void BackwardCopy() {
       case 7: height = std::numeric_limits<unsigned>::max(); break;
       case 8: sequence.profile = VAProfileMPEG2Simple; sequence.level = 8; break;
       case 9: sequence.profile = VAProfileH264Main; break;
-      case 10: sequence.progressive_sequence = false; break;
+      case 10: sequence.progressive_sequence = false; height = 478; break;
       case 11: sequence.low_delay = true; break;
       case 12: sequence.level = 7; break;
       case 13: sequence.level = 10; break;

@@ -2305,11 +2305,15 @@ struct Mpeg2Auxiliary {
     uint64_t generation = 0;
     HANDLE device = nullptr;
     bool eligible = false;
+    bool progressive_frame = true, top_field_first = false;
   } candidate;
   struct Output {
     uint64_t timestamp = 0, generation = 0;
     HANDLE device = nullptr;
     unsigned int width = 0, height = 0;
+    bool interlaced = false, bottom_first = false;
+    unsigned int fields = 0;
+    uint32_t picture_number = 0, sess_num = 0, picture_meta_payload = 0;
   };
   std::map<uint64_t, Syntax> syntax;
   std::array<Output, 8> outputs{};
@@ -4578,18 +4582,45 @@ static Mpeg2Auxiliary::Output *FindMpeg2Auxiliary(DecodeContext *decode,
 
 static VAStatus ValidateMpeg2AuxiliaryOutput(
     Driver *driver, DecodeContext *decode, const BC_DTS_PROC_OUT &out,
-    const Mpeg2Auxiliary::Output &owned) {
+    const Mpeg2Auxiliary::Output &owned, Mpeg2Auxiliary::Output *next) {
   const uint64_t extent = static_cast<uint64_t>(owned.width) * owned.height * 2U;
   if (decode->profile != VAProfileMPEG2Main || decode->is_70012 ||
       decode->mpeg2_auxiliary.aborted || owned.device != decode->device ||
       owned.generation != decode->generation || owned.timestamp != out.PicInfo.timeStamp ||
       !out.Ybuff || !(out.PoutFlags & BC_POUT_FLAGS_PIB_VALID) ||
       (out.PoutFlags & BC_POUT_FLAGS_ENCRYPTED) ||
-      (out.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) ||
       out.b422Mode != OUTPUT_MODE422_YUY2 ||
-      out.PicInfo.width != owned.width || out.PicInfo.height != owned.height ||
-      extent > static_cast<uint64_t>(out.YBuffDoneSz) * 4U)
+      out.PicInfo.width != owned.width || out.PicInfo.height != owned.height)
     return FailDecode(driver, decode, "MPEG-2 auxiliary ownership/layout/extent");
+  const uint64_t transferred = static_cast<uint64_t>(out.YBuffDoneSz) * 4U;
+  const bool interlaced = (out.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0;
+  if (!owned.interlaced) {
+    if (interlaced || transferred < extent)
+      return FailDecode(driver, decode, "MPEG-2 auxiliary progressive extent");
+    *next = Mpeg2Auxiliary::Output();
+    return VA_STATUS_SUCCESS;
+  }
+  const uint32_t field = out.PicInfo.flags & VDEC_FLAG_BOTTOMFIELD;
+  const bool bottom = field == VDEC_FLAG_BOTTOMFIELD;
+  const bool bottom_first = (out.PicInfo.flags & VDEC_FLAG_BOTTOM_FIRST) != 0;
+  const unsigned int bit = bottom ? 2U : 1U;
+  if (!interlaced || (owned.height & 3U) ||
+      (field != VDEC_FLAG_TOPFIELD && field != VDEC_FLAG_BOTTOMFIELD) ||
+      bottom_first != owned.bottom_first || (owned.fields & bit) ||
+      transferred < extent / 2U || transferred >= extent ||
+      (owned.fields && (owned.picture_number != out.PicInfo.picture_number ||
+                       owned.sess_num != out.PicInfo.sess_num ||
+                       owned.picture_meta_payload != out.PicInfo.picture_meta_payload)))
+    return FailDecode(driver, decode, "MPEG-2 auxiliary field identity/parity/extent");
+  // Prepare, but do not publish, the next debt state. The NoCopy lease must
+  // release successfully before even the first field can be recorded.
+  *next = owned;
+  next->fields |= bit;
+  next->picture_number = out.PicInfo.picture_number;
+  next->sess_num = out.PicInfo.sess_num;
+  next->picture_meta_payload = out.PicInfo.picture_meta_payload;
+  if (next->fields == 3U)
+    *next = Mpeg2Auxiliary::Output();
   return VA_STATUS_SUCCESS;
 }
 
@@ -5170,10 +5201,12 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
   const bool auxiliary = decode->auxiliary.ever &&
       output.PicInfo.timeStamp == decode->auxiliary.timestamp;
   auto *mpeg2_auxiliary = FindMpeg2Auxiliary(decode, output.PicInfo.timeStamp);
+  Mpeg2Auxiliary::Output next_mpeg2_auxiliary;
   const bool unknown_mpeg2 = decode->IsMpeg2() && decode->mpeg2_auxiliary.ever &&
       !mpeg2_auxiliary && !decode->mpeg2_replay.Find(output.PicInfo.timeStamp);
   const VAStatus result = mpeg2_auxiliary
-      ? ValidateMpeg2AuxiliaryOutput(driver, decode, output, *mpeg2_auxiliary)
+      ? ValidateMpeg2AuxiliaryOutput(driver, decode, output, *mpeg2_auxiliary,
+                                    &next_mpeg2_auxiliary)
       : unknown_mpeg2
       ? FailDecode(driver, decode, "unexpected MPEG-2 auxiliary/unknown timestamp")
       : auxiliary
@@ -5183,7 +5216,7 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
   if (status != BC_STS_SUCCESS)
     return FailDecode(driver, decode, "hardware output release failed");
   if (mpeg2_auxiliary && result == VA_STATUS_SUCCESS) {
-    *mpeg2_auxiliary = Mpeg2Auxiliary::Output();
+    *mpeg2_auxiliary = next_mpeg2_auxiliary;
     decode->RecordTransportProgress();
     Debug("MPEG-2 auxiliary output_released token=%llu pending=%zu public_picture=0",
           static_cast<unsigned long long>(output.PicInfo.timeStamp),
@@ -6592,11 +6625,13 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       syntax.height = stream_height;
       syntax.generation = decode->generation;
       syntax.device = decode->device;
+      syntax.progressive_frame = flags.progressive_frame;
+      syntax.top_field_first = flags.top_field_first;
       // Existing bounded display-flag normalization produces the same stored
       // progressive picture; original RFF/TFF metadata remains the caller's.
-      syntax.eligible = profile == VAProfileMPEG2Main && progressive_sequence &&
-          flags.progressive_frame && flags.frame_pred_frame_dct &&
-          flags.picture_structure == 3;
+      syntax.eligible = profile == VAProfileMPEG2Main && flags.picture_structure == 3 &&
+          (progressive_sequence ? flags.progressive_frame && flags.frame_pred_frame_dct
+                                : !flags.repeat_first_field && !(stream_height & 3U));
       if (decode->mpeg2_auxiliary.syntax.size() >=
               decode->mpeg2_replay.cached_pictures() ||
           !decode->mpeg2_auxiliary.syntax.emplace(timestamp, syntax).second)
@@ -7075,7 +7110,10 @@ static VAStatus TryMpeg2Auxiliary(Driver *driver, DecodeContext *decode,
                      static_cast<uint32_t>(payload.size()), token, FALSE) != BC_STS_SUCCESS)
       return FailDecode(driver, decode, "MPEG-2 auxiliary input failed (no retry)");
     *slots[i] = {token, decode->generation, decode->device,
-                 aux.candidate.width, aux.candidate.height};
+                 aux.candidate.width, aux.candidate.height,
+                 clone ? !aux.candidate.progressive_frame
+                       : !aux.candidate.sequence.progressive_sequence,
+                 clone ? !aux.candidate.top_field_first : false};
     aux.ever = aux.needs_eos = true;
     decode->next_timestamp += kTimestampStep;
     decode->RecordTransportProgress();
