@@ -216,9 +216,15 @@ class SettingsWindow(object):
         self.window.set_border_width(14)
         self.window.connect("delete-event", self.close_window)
         self.window.connect("key-press-event", self.key_press)
-        icon = data_directory() / "icons/hicolor/scalable/apps/crystalhd-settings.svg"
-        if icon.is_file():
-            self.window.set_icon_from_file(str(icon))
+        # PNG works even on minimal GTK/Qt hosts without an SVG loader.
+        icon = data_directory() / "icons/hicolor/32x32/apps/crystalhd-settings.png"
+        window_icon = data_directory() / "icons/hicolor/64x64/apps/crystalhd-settings.png"
+        self.window.set_icon_name("preferences-system")
+        if window_icon.is_file():
+            try:
+                self.window.set_icon_from_file(str(window_icon))
+            except self.GLib.Error:
+                pass
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.window.add(outer)
         title = Gtk.Label(label=_("Saved defaults"), xalign=0)
@@ -496,8 +502,10 @@ class SettingsWindow(object):
         if module is None:
             return
         self.indicator_module = module
+        icon_name = "crystalhd-settings" if icon.is_file() else "preferences-system"
         self.indicator = module.Indicator.new("crystalhd-settings-" + str(os.getpid()),
-                                            "crystalhd-settings", module.IndicatorCategory.APPLICATION_STATUS)
+                                            icon_name, module.IndicatorCategory.APPLICATION_STATUS)
+        self.indicator.set_icon_full(icon_name, _("CrystalHD Settings"))
         if icon.is_file():
             self.indicator.set_icon_theme_path(str(icon.parent))
         self.indicator.set_title(_("CrystalHD Settings"))
