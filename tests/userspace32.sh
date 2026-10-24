@@ -213,7 +213,7 @@ for bits in $build_bits; do
             capture|capture-scaled)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp"
-                section_wrap=-Wl,--wrap=ioctl,--wrap=close,--wrap=malloc,--wrap=free,--wrap=pthread_mutex_lock
+                section_wrap=-Wl,--wrap=ioctl,--wrap=close,--wrap=malloc,--wrap=free,--wrap=madvise,--wrap=pthread_mutex_lock
                 section_wrap="$section_wrap -Wl,--wrap=shmget,--wrap=shmdt,--wrap=shmctl" ;;
             fwload)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_fwload_if.cpp"

@@ -38,6 +38,9 @@
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/ioctl.h>
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+#include <sys/mman.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 #if defined(__SSE2__)
@@ -335,6 +338,33 @@ static BC_STATUS DtsGetRxBufferLayout(const DTS_LIB_CONTEXT *Ctx,
 }
 
 #ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+/* Discard only complete pages inside an already-retired malloc payload.
+ * Allocator metadata and adjacent objects stay untouched. This is local to
+ * the opt-in RX pool; do not trim or tune the application's allocator. */
+static void DtsFreeRetiredRxBacking(uint8_t *buffer, uint32_t bytes)
+{
+	const int saved_errno = errno;
+	const long page_result = sysconf(_SC_PAGESIZE);
+	if (buffer && bytes && page_result > 0) {
+		const uintptr_t begin = reinterpret_cast<uintptr_t>(buffer);
+		const uintptr_t page = static_cast<uintptr_t>(page_result);
+		if (begin <= UINTPTR_MAX - bytes) {
+			const uintptr_t end = begin + bytes;
+			const uintptr_t skip = (page - begin % page) % page;
+			if (skip < bytes) {
+				const uintptr_t first = begin + skip;
+				const uintptr_t last = end - end % page;
+				if (first < last)
+					(void)madvise(reinterpret_cast<void *>(first),
+					              last - first, MADV_DONTNEED);
+			}
+		}
+	}
+	/* Advice is best-effort; it cannot turn a consuming free into a retry. */
+	errno = saved_errno;
+	free(buffer);
+}
+
 /* This remains an opt-in qualification path.  The successful H.264 OPEN word
  * is the only width identity used here: pending requests do not prove what
  * firmware actually admitted. */
@@ -439,9 +469,10 @@ static BC_STATUS DtsEnsureRxBufferLayout(DTS_LIB_CONTEXT *Ctx)
 		if (!(mp->type & BC_MEM_DEC_YUVBUFF))
 			continue;
 		old = mp->buff;
+		const uint32_t old_bytes = mp->sz;
 		mp->buff = staged[i];
 		mp->sz = layout.allocationBytes;
-		free(old);
+		DtsFreeRetiredRxBacking(old, old_bytes);
 		if (haveBacking)
 			memset(mp->buff, 0, layout.allocationBytes);
 	}
@@ -2024,8 +2055,16 @@ void DtsReleaseMemPools(DTS_LIB_CONTEXT *Ctx)
 				 * intentionally retained by the kernel. Do not make that
 				 * backing available for allocator reuse. */
 				if (!quarantine_output ||
-				    !(mp->type & BC_MEM_DEC_YUVBUFF))
-					free(mp->buff);
+				    !(mp->type & BC_MEM_DEC_YUVBUFF)) {
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+					if ((mp->type & (BC_MEM_DEC_YUVBUFF |
+					                 BC_MEM_USER_MODE_ALLOC)) ==
+					    (BC_MEM_DEC_YUVBUFF | BC_MEM_USER_MODE_ALLOC))
+						DtsFreeRetiredRxBacking(mp->buff, mp->sz);
+					else
+#endif
+						free(mp->buff);
+				}
 			}
 		}
 		if (quarantine_output)
