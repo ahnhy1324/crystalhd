@@ -70,6 +70,56 @@ Safety labels mean:
 variables do not add to the `libcrystalhd.so.3` ABI, and none of these controls
 changes the legacy ioctl ABI.
 
+## Optional desktop settings
+
+With the updated native reader, saved supported defaults are read on ordinary
+application startup. The optional `crystalhd-settings` window edits those defaults;
+`config run` is only needed for explicit invocation overrides/acknowledged launches.
+
+On Ubuntu, the window needs `python3-gi` and `gir1.2-gtk-3.0`; the optional
+tray additionally uses `gir1.2-ayatanaappindicator3-0.1` and a desktop StatusNotifier
+host. The command-line utility and native decoders have no GTK/tray dependency.
+Install the desktop frontend separately from the runtime:
+
+```sh
+sudo make install-settings
+crystalhd-settings
+# Window-only mode, including desktops without a tray:
+crystalhd-settings --no-tray
+```
+
+For a source checkout, use `python3 scripts/crystalhd-settings.py` without installing.
+A settings window opens immediately. With a connected tray, Close hides the window;
+Open settings reopens it and Exit terminates it. Without a tray, Close exits.
+Losing the tray connection reveals the window. No autostart service is installed,
+and saved defaults remain after the utility exits.
+
+The native page edits safe supported values and shows each value's **model origin**;
+Advanced native can clear saved experiments. Inherit removes a user override;
+Native default (`unset`) blocks lower file layers. Existing profiles are selectable
+and preserved; this first editor does not create/edit their sections. Other owners'
+settings are inspectable in All settings / origins. Unavailable presets,
+frontend-only Quality and launch-only experimental activations cannot be selected
+as automatic native settings. Existing saved entries remain intact. Use the CLI
+and the [native contract](CONFIGURATION-SCHEMA.md#native-defaults-in-ordinary-applications)
+for their supported invocation paths.
+
+Save defaults writes the user file through the same atomic writer as the CLI.
+Reload asks before discarding a draft. Reset asks before clearing all user settings
+and profiles; system defaults remain. Conflicting edits and uncertain write
+outcomes require review/reload, never a blind overwrite. Ctrl+S saves, Ctrl+R reloads,
+Ctrl+Q exits, and Escape closes/hides the window. Labels and keyboard mnemonics are
+provided; UI messages are prepared for gettext translation (English is supplied).
+
+The displayed model belongs to the settings process, including its environment;
+it does not certify a running player's settings or installed reader version.
+Restart applications after saving. The utility does not select Kodi's decoder,
+change another app's configuration, load a module, or modify PCIe/power policy.
+`make uninstall-settings` removes only the window/desktop/icon files, retaining
+shared `crystalhd-config` and user defaults; full runtime removal also removes the
+optional frontend. `PREFIX`/`BINDIR`/`DATADIR`/`DESTDIR` are supported; custom desktop
+locations must be on the desktop's normal PATH/XDG search paths.
+
 ## Native configuration bootstrap
 
 | Control | Owner | Device/backend | Default and accepted values | Dependencies | Read/apply lifecycle | Safety | Public API |

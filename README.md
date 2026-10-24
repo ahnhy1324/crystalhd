@@ -178,7 +178,7 @@ does not establish Moonlight support at that rate.
 | GStreamer options and framing | [GStreamer component guide](filters/gst/gst-plugin-1.0/README.md) |
 | VA-API subset and experimental controls | [VA-API component guide](filters/vaapi/README.md) |
 | Legacy API and library options | [libcrystalhd guide](linux_lib/libcrystalhd/README.md) |
-| Configuration options and schema | [CONFIGURATION.md](CONFIGURATION.md) |
+| Configuration options, optional settings window/tray and schema | [CONFIGURATION.md](CONFIGURATION.md) |
 | Contributing and bug reports | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Maintainer release policy and qualification | [RELEASING.md](RELEASING.md) |
 

@@ -82,9 +82,11 @@ tests, and strict native builds including scalar i686. Exercise the actual VA
 entry path with isolated settings and a stock client before claiming plain
 `kodi` integration. Do not install into the stable system for these checks.
 
-## Optional settings window and tray contract
+## Optional settings window and tray
 
 `crystalhd-settings` is an optional GTK3 editor over the existing Python core.
+Usage and optional installation are in
+[CONFIGURATION.md](CONFIGURATION.md#optional-desktop-settings).
 It edits persistent user defaults; ordinary Kodi startup uses the native reader
 above. There is no application-launch button or mandatory `config run` workflow.
 
