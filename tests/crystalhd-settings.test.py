@@ -92,6 +92,23 @@ class SettingsModelTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), original)
         self.assertTrue(e.dirty)
 
+    def test_removing_override_validates_revealed_system_profile_but_reset_does_not(self):
+        self.write(HEADER+'[profile.desk]\nvaapi.h264.ready_remap=false\n')
+        e = self.editor()
+        system = CORE.parse_document((HEADER+'[profile.desk]\nvaapi.h264.ready_remap=true\n').encode('utf-8'))
+        e.system = system
+        self.assertFalse(e.preview(False, 'desk').effective['vaapi.h264.ready_remap'])
+        e.delete_profile('desk')
+        original = self.path.read_bytes()
+        with mock.patch.object(CORE, 'load_document', return_value=system):
+            with self.assertRaises(CORE.SchemaError): e.save()
+        self.assertEqual(self.path.read_bytes(), original)
+        # Reset clears the entire user draft. It does not select/validate an
+        # inactive profile merely because it was edited before Reset.
+        with mock.patch.object(CORE, 'load_document', return_value=system):
+            e.reset()
+        self.assertEqual(CORE.parse_document(self.path.read_bytes()).profiles, {})
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="crystalhd-settings-test-")
         self.path = Path(self.temp.name) / 'private/config.ini'

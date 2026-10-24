@@ -113,7 +113,10 @@ class Editor(object):
         if self.draft is None or self.write_blocked:
             raise self.core.SchemaError("reload before editing profiles")
         self.draft = self.core.delete_user_profile(self.draft, name, self.system)
-        self.edited_profiles.discard(name)
+        if name in self.system.profiles:
+            self.edited_profiles.add(name)
+        else:
+            self.edited_profiles.discard(name)
 
     def set_selector(self, key, value):
         if key not in ("preset", "profile") or self.draft is None or self.write_blocked:
@@ -155,14 +158,14 @@ class Editor(object):
             return _("Saved experiments need an explicit acknowledged launch. Ordinary Kodi may ignore this managed transaction.")
         return _("Updated VA/DIL reads supported defaults on next start. Installed readers and active applications are not inspected.")
 
-    def _commit(self, candidate, acknowledgements=()):
+    def _commit(self, candidate, acknowledgements=(), validate_profiles=()):
         if self.snapshot is None or self.write_blocked:
             raise self.core.SchemaError("reload before another write")
         serialized = self.core.serialize_document(candidate)
         result = self.core.save_user_document(self.path, candidate, self.snapshot,
                                              system_path=self.system_path,
                                              acknowledgements=acknowledgements,
-                                             validate_profiles=sorted(self.edited_profiles & set(candidate.profiles)))
+                                             validate_profiles=sorted(validate_profiles))
         if result.committed is not True:
             self.write_blocked = True
             return _("Save outcome is uncertain. Inspect the file and Reload before another write.")
@@ -187,7 +190,7 @@ class Editor(object):
         self.preview(False)
         if profile is not None:
             self.preview(False, profile)
-        return self._commit(self.draft, acknowledgements)
+        return self._commit(self.draft, acknowledgements, self.edited_profiles)
 
     def reset(self):
         return self._commit(self.core.empty_document())

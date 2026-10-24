@@ -2059,6 +2059,8 @@ def write_arguments(arguments, environment):
     elif arguments.command == "delete-profile":
         system = load_document(system_path, "system configuration", system=True)
         candidate = delete_user_profile(snapshot.document, arguments.name, system)
+        if arguments.name in system.profiles:
+            profiles = (arguments.name,)
     else:
         candidate = _patch_user_document(snapshot.document, arguments)
         if arguments.profile_section is not None:
