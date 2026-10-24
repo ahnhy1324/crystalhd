@@ -1449,7 +1449,9 @@ static int BeginFencedWrite(Surface *surface,
   // is unavailable, the synchronous fallback has not touched this target and
   // need not wait on its external readers until the source is actually ready.
   // The fence remains unpublished until CPU START succeeds below.
-  int timeline = open(kSwSyncPath, O_RDWR | O_CLOEXEC);
+  // Timeline ioctls do not need write access to the inode. Read-only access
+  // also permits a narrowly exposed read-only bind mount of sw_sync.
+  int timeline = open(kSwSyncPath, O_RDONLY | O_CLOEXEC);
   SwSyncCreateFenceData create = {};
   create.value = 1;
   create.fence = -1;

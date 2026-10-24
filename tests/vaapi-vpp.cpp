@@ -118,7 +118,7 @@ struct FenceIoMock {
   int Open(const char *path, int flags) {
     events.push_back("open");
     invalid |= strcmp(path, kSwSyncPath) != 0 ||
-               flags != (O_RDWR | O_CLOEXEC);
+               flags != (O_RDONLY | O_CLOEXEC);
     if (fail_open)
       return Error();
     handles.insert(timeline);
@@ -6906,7 +6906,7 @@ void GenuineSwSyncCompletionStatuses() {
   };
   for (bool completed : {false, true}) {
     Handles handles;
-    handles.timeline = open(kSwSyncPath, O_RDWR | O_CLOEXEC);
+    handles.timeline = open(kSwSyncPath, O_RDONLY | O_CLOEXEC);
     if (handles.timeline < 0)
       throw std::runtime_error(std::string("open existing sw_sync: ") + strerror(errno));
     SwSyncCreateFenceData create = {};
