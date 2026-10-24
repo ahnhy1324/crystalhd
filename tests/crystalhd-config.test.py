@@ -62,6 +62,20 @@ class ConfigCliTest(unittest.TestCase):
         self.assertIn('running applications are not inspected', CONFIG.installation_text(report))
         wrapper.write_text('#!/bin/sh\nexit 99\n')
         self.assertIsNone(CONFIG._player_reader_path(str(wrapper)))
+        # A symlinked BINDIR must retain kernel path traversal through '..';
+        # lexical normalization would inspect a different controller.
+        realbin = root / 'real' / 'bin'
+        realbin.mkdir(parents=True)
+        (root / 'real' / 'share').mkdir()
+        controller = root / 'real' / 'share' / 'controller@home.py'
+        controller.write_text('# CrystalHD managed defaults v1:player\n')
+        linkedbin = root / 'linked-bin'
+        linkedbin.symlink_to(realbin, target_is_directory=True)
+        wrapper = realbin / 'crystalhd-play'
+        wrapper.write_text('#!/bin/sh\n# CrystalHD Player controller-location protocol v1\n'
+                           "player_controller_relative='../share/controller@home.py'\nexit 99\n")
+        path = CONFIG._player_reader_path(str(linkedbin / wrapper.name))
+        self.assertEqual(CONFIG.inspect_reader(path, 'player')['state'], 'declared-v1')
 
     def test_installation_regular_bounded_files_symlinks_and_wrong_abi(self):
         target = self.root / 'reader'

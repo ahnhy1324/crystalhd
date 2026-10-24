@@ -144,9 +144,14 @@ def _player_reader_path(wrapper):
         if len(lines) != 1:
             return None
         words = shlex.split(lines[0].split("=", 1)[1])
-        if len(words) != 1 or not words[0] or "@" in words[0]:
+        if len(words) != 1 or not words[0]:
             return None
-        return os.path.normpath(os.path.join(directory, words[0]))
+        relative = words[0]
+        if relative.startswith("@") and relative.endswith("@"):
+            relative = "../share/crystalhd/player.py"
+        # Preserve '..' for the kernel to resolve after symlinked directories,
+        # exactly as the wrapper opens its literal controller path.
+        return os.path.join(directory, relative)
     except (OSError, ValueError, UnicodeError):
         return None
 
