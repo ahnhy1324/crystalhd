@@ -545,8 +545,9 @@ BT.601 interpretation. Changing standards, explicit color properties,
 primaries/transfer conversion and selectable chroma-site conversion remain
 unsupported; this is not general color management. Decode-integrated scaling
 retains its existing `None`-only color-standard contract.
-RGB output requires a VPP config selecting `VA_RT_FORMAT_RGB32`; the default
-YUV420-only config and its client-negotiation limits remain unchanged.
+RGB output requires a VPP config permitting `VA_RT_FORMAT_RGB32` and a compatible
+pixel format. The default config permits RGB; stock FFmpeg's BGRA negotiation
+remains outside the selected NV12 integration result.
 
 Unreleased 1.3 Bob also accepts an NV12 destination rectangle at even X and
 Y divisible by four, keeping the source origin at zero. For example, a
