@@ -7068,7 +7068,9 @@ static VAStatus TryMpeg2Auxiliary(Driver *driver, DecodeContext *decode,
   if (surface != original->second &&
       (owner == driver->surfaces.end() || surface != owner->second))
     return VA_STATUS_SUCCESS;
-  const unsigned count = clone ? 1U : 2U;
+  // One clone advances a progressive B picture. Interlaced B needs another
+  // complete picture to expose its held complementary field, without EOS.
+  const unsigned count = clone && aux.candidate.progressive_frame ? 1U : 2U;
   std::array<Mpeg2Auxiliary::Output *, 2> slots{};
   unsigned free = 0;
   for (auto &entry : aux.outputs)

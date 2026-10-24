@@ -975,16 +975,20 @@ void PrivateMpeg2FieldCompletion() {
     SubmitInterlaced(f, 3, 3, true, progressive_b);
     const auto original = f.mock.inputs.back();
     Require(TryMpeg2Auxiliary(&f.driver, f.decode.get(), f.driver.surfaces.at(3)) ==
-                VA_STATUS_SUCCESS && f.mock.inputs.size() == 4 &&
+                VA_STATUS_SUCCESS && f.mock.inputs.size() == (progressive_b ? 4U : 5U) &&
                 f.mock.inputs.back().bytes == original.bytes,
             "mixed/interlaced B lookahead clones the exact accepted AU");
     if (progressive_b) {
       f.mock.Queue(4*kTimestampStep, 16, 32); f.Receive();
     } else {
       f.mock.Field(4*kTimestampStep, true, true); f.Receive();
-      Require(f.decode->mpeg2_auxiliary.PendingCount() == 1,
+      Require(f.decode->mpeg2_auxiliary.PendingCount() == 2,
               "BFF cloned first field retains its own debt");
       f.mock.Field(4*kTimestampStep, false, true); f.Receive();
+      Require(f.decode->mpeg2_auxiliary.PendingCount() == 1,
+              "first clone retirement preserves the independently accepted second clone");
+      f.mock.Field(5*kTimestampStep, true, true);
+      f.mock.Field(5*kTimestampStep, false, true); f.Receive();
     }
     Require(f.decode->mpeg2_auxiliary.PendingCount() == 0,
             "a clone follows its picture flag, not the interlaced sequence flag");
@@ -996,8 +1000,12 @@ void PrepareInterlacedBCompletion(Fixture &f) {
   SubmitInterlaced(f, 2, 2, false);
   SubmitInterlaced(f, 3, 3, false);
   Require(TryMpeg2Auxiliary(&f.driver, f.decode.get(), f.driver.surfaces.at(3)) ==
-              VA_STATUS_SUCCESS && f.decode->mpeg2_auxiliary.PendingCount() == 1,
-          "prepare one owned interlaced auxiliary for failure checks");
+              VA_STATUS_SUCCESS && f.decode->mpeg2_auxiliary.PendingCount() == 2,
+          "prepare two independently owned interlaced auxiliary clones");
+  f.mock.Field(5*kTimestampStep,false,false);
+  f.mock.Field(5*kTimestampStep,true,false); f.Receive();
+  Require(f.decode->mpeg2_auxiliary.PendingCount() == 1,
+          "retire the other identity before isolated first-clone failure checks");
 }
 
 void PrivateMpeg2FieldFailures() {
