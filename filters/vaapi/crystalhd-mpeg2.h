@@ -128,9 +128,15 @@ inline bool ValidPicture(const VAPictureParameterBufferMPEG2 &picture,
                          const PictureOptions &options) {
   const auto &p = picture.picture_coding_extension.bits;
   const bool normalize_display_flags = CanNormalizeDisplayFlags(picture, sequence);
+  // H.262 6.3.10 permits progressive FRAME pictures in an interlaced sequence.
+  // VA omits the original sequence flag: accept that subset only when either
+  // flag gives the same macroblock grid and frame prediction needs no rewrite.
+  const bool mixed_progressive_frame = !sequence.progressive_sequence &&
+      p.progressive_frame && p.frame_pred_frame_dct &&
+      (picture.vertical_size + 15U) / 16U ==
+          2U * ((picture.vertical_size + 31U) / 32U);
   // The supported interlaced subset is Main-profile frame pictures without
-  // repeated fields. Mixed progressive/interlaced sequences need a separate
-  // sequence-mode contract; a VA picture does not carry progressive_sequence.
+  // repeated fields. The caller freezes the sequence mode, not each frame flag.
   // Field-local 4:2:0 output also requires complete pairs of chroma field rows.
   if ((sequence.profile != VAProfileMPEG2Simple &&
        sequence.profile != VAProfileMPEG2Main) ||
@@ -138,7 +144,8 @@ inline bool ValidPicture(const VAPictureParameterBufferMPEG2 &picture,
        sequence.level != 6 && sequence.level != 4) ||
       (sequence.profile == VAProfileMPEG2Simple && sequence.level != 8) ||
       p.picture_structure != 3 || (p.repeat_first_field && !normalize_display_flags) ||
-      bool(p.progressive_frame) != sequence.progressive_sequence ||
+      (bool(p.progressive_frame) != sequence.progressive_sequence &&
+       !mixed_progressive_frame) ||
       (sequence.progressive_sequence &&
        (!p.frame_pred_frame_dct || (p.top_field_first && !normalize_display_flags))) ||
       (!sequence.progressive_sequence &&

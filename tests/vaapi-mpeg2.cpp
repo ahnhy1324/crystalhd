@@ -164,6 +164,26 @@ void Parse(const std::vector<uint8_t> &bytes,
   Require(offset == bytes.size(), "no invented trailing AUD/GOP/EOS");
 }
 
+void MixedFramePictures() {
+  ++groups;
+  for (unsigned height : {480U, 576U, 1080U, 1088U})
+    for (unsigned type : {1U, 2U, 3U}) {
+      auto picture = Picture(type, 640, height);
+      auto sequence = Sequence();
+      sequence.progressive_sequence = false;
+      const auto current = mpeg::DefaultQuantMatrices();
+      auto next = current;
+      const auto slice = Slice();
+      std::vector<uint8_t> bytes;
+      const mpeg::PictureOptions options{0, true};
+      Require(mpeg::Assemble(picture, nullptr, current, {slice.View()},
+                             sequence, options, &bytes, &next),
+              "progressive frame in fixed interlaced sequence with equal row grids");
+      Parse(bytes, picture, sequence, options, current, {slice.View()});
+      Require(next.lists == current.lists, "mixed frame preserves matrix state");
+    }
+}
+
 void Defaults() {
   ++groups;
   static constexpr unsigned raster[64] = {
@@ -656,7 +676,7 @@ int main(int argc, char **argv) {
     if (argc == 2 && std::strcmp(argv[1], "--stream") == 0) { Stream(); return 0; }
     if (argc != 1) throw std::runtime_error("usage: vaapi-mpeg2-test [--stream]");
     Defaults(); Headers(); Matrices(); Rejections(); InterlacedFrames();
-    ProgressiveDisplayFlags(); SliceRanges(); Capacity(); BackwardCopy();
+    MixedFramePictures(); ProgressiveDisplayFlags(); SliceRanges(); Capacity(); BackwardCopy();
     std::printf("MPEG-2 assembly: %u groups, %u checks PASS\n", groups, checks);
     return 0;
   } catch (const std::exception &error) {

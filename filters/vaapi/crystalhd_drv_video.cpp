@@ -2402,8 +2402,8 @@ struct DecodeContext {
   crystalhd_mpeg2::QuantMatrices mpeg2_matrices =
       crystalhd_mpeg2::DefaultQuantMatrices();
   // VA omits progressive_sequence. Reconstruct a fixed sequence mode from
-  // the first accepted frame picture; mixed progressive/interlaced sequences
-  // require a new context rather than guessing original sequence headers.
+  // the first accepted frame picture. A fixed interlaced sequence may contain
+  // bounded progressive frames; later picture flags must not rewrite its mode.
   bool have_mpeg2_sequence = false;
   bool mpeg2_progressive_sequence = true;
   struct Mpeg4Picture {
@@ -6205,11 +6205,9 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     if (target_surface->width < stream_width ||
         target_surface->height < stream_height)
       return VA_STATUS_ERROR_INVALID_SURFACE;
-    const bool progressive_sequence =
-        picture.picture_coding_extension.bits.progressive_frame != 0;
-    if (decode->have_mpeg2_sequence &&
-        progressive_sequence != decode->mpeg2_progressive_sequence)
-      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    const bool progressive_sequence = decode->have_mpeg2_sequence
+        ? decode->mpeg2_progressive_sequence
+        : picture.picture_coding_extension.bits.progressive_frame != 0;
     if ((picture.picture_coding_type == 2 &&
          pending.forward != decode->mpeg2_replay.newest_anchor()) ||
         (picture.picture_coding_type == 3 &&
@@ -6584,8 +6582,10 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     try {
       const auto &flags = pending.picture.picture_coding_extension.bits;
       Mpeg2Auxiliary::Syntax syntax;
+      const bool progressive_sequence = decode->have_mpeg2_sequence
+          ? decode->mpeg2_progressive_sequence : bool(flags.progressive_frame);
       syntax.sequence = {profile, profile == VAProfileMPEG2Simple ? 8U : 4U,
-                         bool(flags.progressive_frame), false,
+                         progressive_sequence, false,
                          1, 5, 0, 0, 0x3ffff, 112};
       syntax.matrices = next_matrices;
       syntax.width = stream_width;
@@ -6594,7 +6594,7 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       syntax.device = decode->device;
       // Existing bounded display-flag normalization produces the same stored
       // progressive picture; original RFF/TFF metadata remains the caller's.
-      syntax.eligible = profile == VAProfileMPEG2Main &&
+      syntax.eligible = profile == VAProfileMPEG2Main && progressive_sequence &&
           flags.progressive_frame && flags.frame_pred_frame_dct &&
           flags.picture_structure == 3;
       if (decode->mpeg2_auxiliary.syntax.size() >=
@@ -6605,9 +6605,11 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       return FailDecode(driver, decode, "MPEG-2 syntax snapshot allocation");
     }
     decode->mpeg2_matrices = next_matrices;
-    decode->have_mpeg2_sequence = true;
-    decode->mpeg2_progressive_sequence =
-        pending.picture.picture_coding_extension.bits.progressive_frame != 0;
+    if (!decode->have_mpeg2_sequence) {
+      decode->mpeg2_progressive_sequence =
+          pending.picture.picture_coding_extension.bits.progressive_frame != 0;
+      decode->have_mpeg2_sequence = true;
+    }
     decode->stream_width = stream_width;
     decode->stream_height = stream_height;
   } else if (decode->IsMpeg4()) {
