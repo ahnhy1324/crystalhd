@@ -852,6 +852,12 @@ struct CompletedVppPicture {
   uint64_t timestamp = 0;
 };
 
+// ARGB is the historical storage alias. BGRA names its actual byte order
+// for new VA clients; retain the legacy path while making new metadata honest.
+static bool IsBgraStorageFormat(uint32_t fourcc) {
+  return fourcc == VA_FOURCC_ARGB || fourcc == VA_FOURCC_BGRA;
+}
+
 struct Surface {
   VASurfaceID id = VA_INVALID_SURFACE;
   unsigned int width = 0;
@@ -1000,7 +1006,7 @@ struct Surface {
     width = requested_width;
     height = requested_height;
     fourcc = requested_fourcc;
-    if (fourcc == VA_FOURCC_ARGB) {
+    if (IsBgraStorageFormat(fourcc)) {
       if (gbm == nullptr)
         return false;
       bo = gbm_bo_create(gbm, width, height, GBM_FORMAT_ARGB8888,
@@ -1118,7 +1124,7 @@ struct Surface {
         desc.height != height || desc.num_objects == 0 ||
         desc.num_objects > 4 || desc.num_layers == 0 || desc.num_layers > 4)
       return false;
-    fourcc = is_argb ? VA_FOURCC_ARGB : VA_FOURCC_NV12;
+    fourcc = is_argb ? desc.fourcc : VA_FOURCC_NV12;
 
     struct PlaneDesc {
       uint32_t object;
@@ -1242,7 +1248,7 @@ struct Surface {
     if (object_maps[0] == MAP_FAILED)
       return false;
 
-    fourcc = is_argb ? VA_FOURCC_ARGB : VA_FOURCC_NV12;
+    fourcc = is_argb ? desc.pixel_format : VA_FOURCC_NV12;
     for (unsigned int plane = 0; plane < expected_planes; ++plane) {
       pitch[plane] = desc.pitches[plane];
       planes[plane] = static_cast<uint8_t *>(object_maps[0]) +
@@ -1528,7 +1534,7 @@ static bool GetPrimeLayout(const VADRMPRIMESurfaceDescriptor &desc,
                            SurfaceLayout *layout) {
   *layout = {};
   layout->fourcc = desc.fourcc == VA_FOURCC_BGRA ? VA_FOURCC_ARGB : desc.fourcc;
-  if ((layout->fourcc != VA_FOURCC_NV12 && layout->fourcc != VA_FOURCC_ARGB) ||
+  if ((layout->fourcc != VA_FOURCC_NV12 && !IsBgraStorageFormat(layout->fourcc)) ||
       desc.num_objects == 0 || desc.num_objects > 4 ||
       desc.num_layers == 0 || desc.num_layers > 4)
     return false;
@@ -1573,7 +1579,7 @@ static bool GetLegacyLayout(const VASurfaceAttribExternalBuffers &desc,
   *layout = {};
   layout->fourcc = desc.pixel_format == VA_FOURCC_BGRA ? VA_FOURCC_ARGB
                                                      : desc.pixel_format;
-  if ((layout->fourcc != VA_FOURCC_NV12 && layout->fourcc != VA_FOURCC_ARGB) ||
+  if ((layout->fourcc != VA_FOURCC_NV12 && !IsBgraStorageFormat(layout->fourcc)) ||
       desc.num_buffers != 1 || desc.buffers == nullptr ||
       desc.buffers[0] > static_cast<uintptr_t>(INT_MAX))
     return false;
@@ -1653,7 +1659,7 @@ static bool BobVppRegionsValid(const VARectangle &source,
       crystalhd_vpp_bob::Nv12FrameHeightsValid(source.height, output.height) &&
       ((output_fourcc == VA_FOURCC_NV12 &&
         (output.x & 1U) == 0 && (output.y & 3U) == 0) ||
-       (output_fourcc == VA_FOURCC_ARGB && output.x == 0 && output.y == 0));
+       (IsBgraStorageFormat(output_fourcc) && output.x == 0 && output.y == 0));
 }
 
 static bool CenteredStorageMatches(const Surface &canvas, bool compact = false) {
@@ -1826,8 +1832,8 @@ static VAStatus ProcessVpp(SwsContext **scaler,
   if (scaler == nullptr || source == nullptr || destination == nullptr ||
       source->fourcc != VA_FOURCC_NV12 ||
       (destination->fourcc != VA_FOURCC_NV12 &&
-       destination->fourcc != VA_FOURCC_ARGB) ||
-      (destination->fourcc == VA_FOURCC_ARGB && argb_staging == nullptr) ||
+       !IsBgraStorageFormat(destination->fourcc)) ||
+      (IsBgraStorageFormat(destination->fourcc) && argb_staging == nullptr) ||
       !RectFits(source_storage_region, *source) ||
       !RectFits(output_region, *destination))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
@@ -1845,7 +1851,7 @@ static VAStatus ProcessVpp(SwsContext **scaler,
                                    destination->fourcc)))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   size_t argb_staging_pitch = 0;
-  if (destination->fourcc == VA_FOURCC_ARGB) {
+  if (IsBgraStorageFormat(destination->fourcc)) {
     // Both ordinary CSC and Bob pass signed-int strides to swscale. Reject
     // unrepresentable strides and staging sizes before acquiring CPU access.
     const unsigned int stride_factor =
@@ -1912,7 +1918,7 @@ static VAStatus ProcessVpp(SwsContext **scaler,
     Debug("VPP operation failed stage=source-cpu-start");
     return VA_STATUS_ERROR_OPERATION_FAILED;
   }
-  if (destination->fourcc == VA_FOURCC_ARGB) {
+  if (IsBgraStorageFormat(destination->fourcc)) {
     // libswscale used to write scanlines straight into Chromium's imported
     // DMA-BUF. vaEndPicture is asynchronous, so the compositor could sample
     // that buffer halfway through the conversion and display a diagonal or
@@ -2883,7 +2889,7 @@ struct Driver {
   PrimaryDrmNodeCache primary_node_cache;
   // Borrowed capability metadata, stable until this VA display terminates.
   std::array<uint32_t, 1> vpp_input_formats = {{VA_FOURCC_NV12}};
-  std::array<uint32_t, 2> vpp_output_formats = {{VA_FOURCC_NV12, VA_FOURCC_ARGB}};
+  std::array<uint32_t, 3> vpp_output_formats = {{VA_FOURCC_NV12, VA_FOURCC_ARGB, VA_FOURCC_BGRA}};
   std::array<VAProcColorStandardType, 2> vpp_color_standards = {{
       VAProcColorStandardBT601, VAProcColorStandardBT709}};
   bool experimental_i915_wc = false;
@@ -3313,7 +3319,7 @@ static ReadExportReuseProbe ProbeTraceReadExportReuse(
 
   if (owner->bo != nullptr) {
     const int exported_plane_count =
-        owner->fourcc == VA_FOURCC_ARGB ? 1 :
+        IsBgraStorageFormat(owner->fourcc) ? 1 :
         owner->fourcc == VA_FOURCC_NV12 ? 2 : 0;
     errno = 0;
     const int available_plane_count = gbm_bo_get_plane_count(owner->bo);
@@ -3700,7 +3706,7 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
   bool used_i915_wc = false;
   if (!surface->BeginDecodedCpuWrite(&used_i915_wc))
     return false;
-  if (surface->fourcc == VA_FOURCC_ARGB) {
+  if (IsBgraStorageFormat(surface->fourcc)) {
     // The decoded rectangle is coded geometry. Larger client allocations are
     // allowed, but their unused logical region must not retain older pixels.
     for (unsigned int y = 0; y < surface->height; ++y) {
@@ -3845,7 +3851,7 @@ static bool CopyH264InterlacedToSurface(
   bool used_i915_wc = false;
   if (!surface->BeginDecodedCpuWrite(&used_i915_wc))
     return false;
-  if (surface->fourcc == VA_FOURCC_ARGB) {
+  if (IsBgraStorageFormat(surface->fourcc)) {
     for (unsigned int row = 0; row < surface->height; ++row) {
       uint8_t *line = surface->planes[0] +
                       static_cast<size_t>(row) * surface->pitch[0];
@@ -7806,7 +7812,7 @@ static uint32_t ConfigRtFormats(const Config &config) {
 static uint32_t SurfaceRtFormat(const Surface &surface) {
   if (surface.fourcc == VA_FOURCC_NV12)
     return VA_RT_FORMAT_YUV420;
-  if (surface.fourcc == VA_FOURCC_ARGB)
+  if (IsBgraStorageFormat(surface.fourcc))
     return VA_RT_FORMAT_RGB32;
   return 0;
 }
@@ -7988,7 +7994,7 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
     }
   }
   if ((format == VA_RT_FORMAT_YUV420 && pixel_format != VA_FOURCC_NV12) ||
-      (format == VA_RT_FORMAT_RGB32 && pixel_format != VA_FOURCC_ARGB))
+      (format == VA_RT_FORMAT_RGB32 && !IsBgraStorageFormat(pixel_format)))
     return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   // PRIME2 supplies one descriptor per surface. Legacy PRIME instead
   // supplies a single geometry descriptor with one buffers[] handle per
@@ -8339,7 +8345,7 @@ static VAStatus QuerySurfaceAttributes(VADriverContextP context,
   const uint32_t rt_format = ConfigRtFormats(config->second);
   const unsigned int required = 5 +
       ((rt_format & VA_RT_FORMAT_YUV420) != 0) +
-      ((rt_format & VA_RT_FORMAT_RGB32) != 0);
+      2 * ((rt_format & VA_RT_FORMAT_RGB32) != 0);
   if (attributes == nullptr) {
     *count = required;
     return VA_STATUS_SUCCESS;
@@ -8368,6 +8374,10 @@ static VAStatus QuerySurfaceAttributes(VADriverContextP context,
         VASurfaceAttribPixelFormat,
         VA_SURFACE_ATTRIB_GETTABLE | VA_SURFACE_ATTRIB_SETTABLE,
         VA_FOURCC_ARGB);
+    attributes[index++] = integer_attribute(
+        VASurfaceAttribPixelFormat,
+        VA_SURFACE_ATTRIB_GETTABLE | VA_SURFACE_ATTRIB_SETTABLE,
+        VA_FOURCC_BGRA);
   }
   attributes[index++] = integer_attribute(VASurfaceAttribMinWidth,
                                           VA_SURFACE_ATTRIB_GETTABLE, 16);
@@ -8513,7 +8523,7 @@ static bool VppPipelineSemanticsSupported(
   if (input_range > VA_SOURCE_RANGE_FULL || output_range > VA_SOURCE_RANGE_FULL)
     return false;
   const bool source_full = input_range == VA_SOURCE_RANGE_FULL;
-  if (target.fourcc == VA_FOURCC_ARGB) {
+  if (IsBgraStorageFormat(target.fourcc)) {
     // RGB output is full-range. Reduced-range RGB is not implemented.
     if (output_range == VA_SOURCE_RANGE_REDUCED)
       return false;
@@ -8639,7 +8649,7 @@ static VAStatus QueryVideoProcPipelineCaps(VADriverContextP context,
       ((rt_format & VA_RT_FORMAT_YUV420) != 0 ? 0 : 1);
   caps->num_output_pixel_formats =
       ((rt_format & VA_RT_FORMAT_YUV420) != 0) +
-      ((rt_format & VA_RT_FORMAT_RGB32) != 0);
+      2 * ((rt_format & VA_RT_FORMAT_RGB32) != 0);
   caps->rotation_flags = 1U << VA_ROTATION_NONE;
   caps->filter_flags = VA_FILTER_SCALING_DEFAULT |
                        VA_FILTER_INTERPOLATION_NEAREST_NEIGHBOR;
@@ -10380,21 +10390,35 @@ static VAStatus QuerySurfaceStatus(VADriverContextP context,
   return VA_STATUS_SUCCESS;
 }
 
+static VAImageFormat ImageFormatFor(uint32_t fourcc) {
+  VAImageFormat format = {};
+  format.fourcc = fourcc;
+  format.byte_order = VA_LSB_FIRST;
+  format.bits_per_pixel = fourcc == VA_FOURCC_BGRA ? 32 : 12;
+  if (fourcc == VA_FOURCC_BGRA) {
+    format.depth = 32;
+    format.red_mask = 0x00ff0000;
+    format.green_mask = 0x0000ff00;
+    format.blue_mask = 0x000000ff;
+    format.alpha_mask = 0xff000000;
+  }
+  return format;
+}
+
 static VAStatus QueryImageFormats(VADriverContextP, VAImageFormat *formats,
                                   int *count) {
   if (formats == nullptr || count == nullptr)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
-  formats[0] = {};
-  formats[0].fourcc = VA_FOURCC_NV12;
-  formats[0].byte_order = VA_LSB_FIRST;
-  formats[0].bits_per_pixel = 12;
-  *count = 1;
+  formats[0] = ImageFormatFor(VA_FOURCC_NV12);
+  formats[1] = ImageFormatFor(VA_FOURCC_BGRA);
+  *count = 2;
   return VA_STATUS_SUCCESS;
 }
 
 static VAStatus CreateImageLocked(Driver *driver, const VAImageFormat &format,
                                   int width, int height, VAImage *va_image) {
-  if (format.fourcc != VA_FOURCC_NV12 || width <= 0 || height <= 0 ||
+  if ((format.fourcc != VA_FOURCC_NV12 && format.fourcc != VA_FOURCC_BGRA) ||
+      width <= 0 || height <= 0 ||
       static_cast<unsigned int>(width) > kMaxWidth ||
       static_cast<unsigned int>(height) > kMaxHeight ||
       va_image == nullptr)
@@ -10402,8 +10426,10 @@ static VAStatus CreateImageLocked(Driver *driver, const VAImageFormat &format,
 
   // NV12 stores a complete interleaved UV pair for every two luma columns,
   // and a chroma row for an odd final luma row as well.
-  const unsigned int uv_pitch = Align(width, 2);
-  const unsigned int uv_offset = static_cast<unsigned int>(width) * height;
+  const bool bgra = format.fourcc == VA_FOURCC_BGRA;
+  const unsigned int y_pitch = static_cast<unsigned int>(width) * (bgra ? 4U : 1U);
+  const unsigned int uv_pitch = bgra ? 0 : Align(width, 2);
+  const unsigned int uv_offset = y_pitch * height;
   const unsigned int data_size = uv_offset + uv_pitch * ((height + 1) / 2);
   Buffer buffer;
   buffer.context = VA_INVALID_ID;
@@ -10416,16 +10442,16 @@ static VAStatus CreateImageLocked(Driver *driver, const VAImageFormat &format,
 
   Image image;
   image.va.image_id = driver->next_image++;
-  image.va.format = format;
+  image.va.format = bgra ? ImageFormatFor(VA_FOURCC_BGRA) : format;
   image.va.buf = buffer_id;
   image.va.width = width;
   image.va.height = height;
   image.va.data_size = data_size;
-  image.va.num_planes = 2;
-  image.va.pitches[0] = width;
+  image.va.num_planes = bgra ? 1 : 2;
+  image.va.pitches[0] = y_pitch;
   image.va.pitches[1] = uv_pitch;
   image.va.offsets[0] = 0;
-  image.va.offsets[1] = uv_offset;
+  image.va.offsets[1] = bgra ? 0 : uv_offset;
   *va_image = image.va;
   driver->images[image.va.image_id] = image;
   return VA_STATUS_SUCCESS;
@@ -10456,13 +10482,15 @@ static VAStatus DestroyImage(VADriverContextP context, VAImageID image_id) {
 }
 
 static bool ImageBufferFits(const Image &image, const Buffer &buffer) {
-  if (buffer.data_failed || image.va.format.fourcc != VA_FOURCC_NV12 ||
-      image.va.num_planes != 2 ||
+  const bool bgra = image.va.format.fourcc == VA_FOURCC_BGRA;
+  if (buffer.data_failed || (!bgra && image.va.format.fourcc != VA_FOURCC_NV12) ||
+      image.va.num_planes != (bgra ? 1U : 2U) ||
       image.va.width == 0 || image.va.height == 0)
     return false;
-  for (unsigned int plane = 0; plane < 2; ++plane) {
+  for (unsigned int plane = 0; plane < image.va.num_planes; ++plane) {
     const size_t rows = plane == 0 ? image.va.height : (image.va.height + 1) / 2;
-    const size_t row_bytes = plane == 0 ? image.va.width : Align(image.va.width, 2);
+    const size_t row_bytes = bgra ? static_cast<size_t>(image.va.width) * 4 :
+        plane == 0 ? image.va.width : Align(image.va.width, 2);
     const size_t offset = image.va.offsets[plane];
     const size_t pitch = image.va.pitches[plane];
     // Buffers are separately public objects and may have been resized after
@@ -10489,7 +10517,7 @@ static VAStatus CopySurfaceToImage(Driver *driver, Surface *surface,
     return VA_STATUS_ERROR_INVALID_SURFACE;
   if (BackingOwner(driver, surface)->opaque_reference)
     return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
-  if (surface->fourcc != VA_FOURCC_NV12)
+  if (surface->fourcc != VA_FOURCC_NV12 && surface->fourcc != VA_FOURCC_BGRA)
     return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   auto buffer = driver->buffers.find(image->va.buf);
   if (buffer == driver->buffers.end())
@@ -10500,6 +10528,8 @@ static VAStatus CopySurfaceToImage(Driver *driver, Surface *surface,
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   if (!ImageBufferFits(*image, buffer->second))
     return VA_STATUS_ERROR_INVALID_BUFFER;
+  if (image->va.format.fourcc != surface->fourcc)
+    return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   Surface *owner = BackingOwner(driver, surface);
   if (owner->failed)
     return VA_STATUS_ERROR_DECODING_ERROR;
@@ -10513,9 +10543,9 @@ static VAStatus CopySurfaceToImage(Driver *driver, Surface *surface,
   for (unsigned int y = 0; y < height; ++y) {
     memcpy(destination_y + static_cast<size_t>(y) * image->va.pitches[0],
            surface->planes[0] + static_cast<size_t>(y) * surface->pitch[0],
-           width);
+           static_cast<size_t>(width) * (surface->fourcc == VA_FOURCC_BGRA ? 4 : 1));
   }
-  for (unsigned int y = 0; y < (height + 1) / 2; ++y) {
+  for (unsigned int y = 0; surface->fourcc == VA_FOURCC_NV12 && y < (height + 1) / 2; ++y) {
     memcpy(destination_uv + static_cast<size_t>(y) * image->va.pitches[1],
            surface->planes[1] + static_cast<size_t>(y) * surface->pitch[1],
            Align(width, 2));
@@ -10552,10 +10582,7 @@ static VAStatus DeriveImage(VADriverContextP context, VASurfaceID surface_id,
     return VA_STATUS_ERROR_INVALID_SURFACE;
   if (BackingOwner(driver, surface->second.get())->opaque_reference)
     return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
-  VAImageFormat format = {};
-  format.fourcc = VA_FOURCC_NV12;
-  format.byte_order = VA_LSB_FIRST;
-  format.bits_per_pixel = 12;
+  const VAImageFormat format = ImageFormatFor(surface->second->fourcc);
   VAImage snapshot = {};
   VAStatus status = CreateImageLocked(driver, format, surface->second->width,
                                       surface->second->height, &snapshot);
@@ -10656,7 +10683,8 @@ static VAStatus PutImageLocked(Driver *driver, VASurfaceID surface_id,
       owner->experimental_read_export_armed ||
       owner->experimental_presentation)
     return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
-  if (surface->second->fourcc != VA_FOURCC_NV12)
+  if (surface->second->fourcc != VA_FOURCC_NV12 &&
+      surface->second->fourcc != VA_FOURCC_BGRA)
     return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   auto buffer = driver->buffers.find(image->second.va.buf);
   if (buffer == driver->buffers.end())
@@ -10668,6 +10696,8 @@ static VAStatus PutImageLocked(Driver *driver, VASurfaceID surface_id,
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   if (!ImageBufferFits(image->second, buffer->second))
     return VA_STATUS_ERROR_INVALID_BUFFER;
+  if (image->second.va.format.fourcc != surface->second->fourcc)
+    return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   const VAStatus writable = ImageWriteStatus(driver, surface->second.get());
   if (writable != VA_STATUS_SUCCESS)
     return writable;
@@ -10689,9 +10719,11 @@ static VAStatus PutImageLocked(Driver *driver, VASurfaceID surface_id,
                static_cast<size_t>(row) * surface->second->pitch[0],
            source_y_plane +
                static_cast<size_t>(row) * image->second.va.pitches[0],
-           source_width);
+           static_cast<size_t>(source_width) *
+               (surface->second->fourcc == VA_FOURCC_BGRA ? 4 : 1));
   }
-  for (unsigned int row = 0; row < (source_height + 1) / 2; ++row) {
+  for (unsigned int row = 0; surface->second->fourcc == VA_FOURCC_NV12 &&
+       row < (source_height + 1) / 2; ++row) {
     memcpy(surface->second->planes[1] +
                static_cast<size_t>(row) * surface->second->pitch[1],
            source_uv_plane +
@@ -11100,7 +11132,7 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
     // allocation's assumed Y-at-zero/contiguous-UV layout.
     const SurfaceLayout &imported_layout = surface->second->layout;
     const unsigned expected_planes = prime->fourcc == VA_FOURCC_NV12 ? 2 : 1;
-    if ((prime->fourcc != VA_FOURCC_NV12 && prime->fourcc != VA_FOURCC_ARGB) ||
+    if ((prime->fourcc != VA_FOURCC_NV12 && !IsBgraStorageFormat(prime->fourcc)) ||
         imported_layout.num_planes != expected_planes ||
         imported_layout.objects.empty() || imported_layout.objects.size() > 4 ||
         surface->second->object_fds.size() != surface->second->object_sizes.size())
@@ -11138,11 +11170,11 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
       if (!found)
         return failed_export();
     }
-    const bool composed = prime->fourcc == VA_FOURCC_ARGB ||
+    const bool composed = IsBgraStorageFormat(prime->fourcc) ||
         (flags & VA_EXPORT_SURFACE_COMPOSED_LAYERS) != 0;
     prime->num_layers = composed ? 1 : expected_planes;
     if (composed) {
-      prime->layers[0].drm_format = prime->fourcc == VA_FOURCC_ARGB
+      prime->layers[0].drm_format = IsBgraStorageFormat(prime->fourcc)
           ? DRM_FORMAT_ARGB8888 : DRM_FORMAT_NV12;
       prime->layers[0].num_planes = expected_planes;
     }
@@ -11170,7 +11202,7 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
       ArmTraceReadExport(driver, surface->second.get(), owner, trace_fields.operation);
     return finish(VA_STATUS_SUCCESS);
   }
-  if (surface->second->fourcc == VA_FOURCC_ARGB) {
+  if (IsBgraStorageFormat(surface->second->fourcc)) {
     const int fd = surface->second->bo != nullptr
                        ? gbm_bo_get_fd_for_plane(surface->second->bo, 0)
                        : dup(surface->second->object_fds[0]);
@@ -11380,7 +11412,7 @@ static VAStatus InitializeDriver(VADriverContextP context,
   context->max_profiles = 11;
   context->max_entrypoints = 1;
   context->max_attributes = 16;
-  context->max_image_formats = 1;
+  context->max_image_formats = 2;
   context->max_subpic_formats = 1;
   context->max_display_attributes = 1;
   context->pDriverData = driver.release();

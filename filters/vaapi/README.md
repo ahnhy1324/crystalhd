@@ -7,8 +7,11 @@ retains its H.264 path but is not recently hardware-validated; the other
 codecs are rejected on that device.
 The backend accepts VA-allocated NV12 surfaces and imported
 linear or GBM-mappable DRM PRIME NV12 surfaces for FFmpeg-style clients. It
-also allocates and exports ARGB DRM PRIME surfaces for Chromium-class clients
-whose compositor cannot render NV12 directly.
+also allocates packed BGRA output and exports DRM ARGB8888 surfaces for clients
+whose compositor cannot render NV12 directly. New VA clients should select
+`VA_FOURCC_BGRA`, which describes the actual B/G/R/A byte order. The historical
+`VA_FOURCC_ARGB` storage alias and default selection remain for compatibility;
+that alias is not a claim of standard A/R/G/B byte order.
 
 This is an experimental, client-oriented VA-API subset rather than a complete
 VA-API implementation. See the [hardware report](../../HARDWARE-2026-09-13.md)
@@ -546,8 +549,13 @@ primaries/transfer conversion and selectable chroma-site conversion remain
 unsupported; this is not general color management. Decode-integrated scaling
 retains its existing `None`-only color-standard contract.
 RGB output requires a VPP config permitting `VA_RT_FORMAT_RGB32` and a compatible
-pixel format. The default config permits RGB; stock FFmpeg's BGRA negotiation
-remains outside the selected NV12 integration result.
+pixel format. The default config permits RGB. Unreleased 1.3 also exposes
+`VA_FOURCC_BGRA` output plus packed BGRA images for `vaGetImage`, `vaPutImage`
+and `vaDeriveImage`, retaining the usual synchronization and write leases.
+Image transfers copy matching NV12 or BGRA formats; use VPP for conversion.
+Reduced-range RGB remains unsupported: for example, stock FFmpeg VPP needs
+`scale_vaapi=format=bgra:mode=default:out_range=full` before
+`hwdownload,format=bgra`. The legacy ARGB alias's image restrictions remain.
 
 Unreleased 1.3 Bob also accepts an NV12 destination rectangle at even X and
 Y divisible by four, keeping the source origin at zero. For example, a

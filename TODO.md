@@ -348,6 +348,8 @@ Missing optional VA operations are not all release requirements.
   VPP input. Zero-filter VPP and Bob reject unsupported meaningful requests while
   retaining valid defaults/no-ops. Device-free regressions verify ID/pixel/lease
   safety and release obsolete unsubmitted captures after rejected replacements.
+  The proper BGRA output/image path now supports stock-client RGB download;
+  the historical ARGB storage alias remains a separate compatibility limitation.
 - [ ] P2 — Complete color conversion beyond range handling. `18b626f` fixes
   declared full-range NV12→ARGB and NV12 black padding; default/limited pixels
   are preserved, and unsupported range conversions reject before capture.
