@@ -18,6 +18,7 @@
 #include <pthread.h>
 #include <string>
 #include <sys/ipc.h>
+#include <sys/mman.h>
 #include <sys/shm.h>
 #include <thread>
 #include <unistd.h>
@@ -153,6 +154,11 @@ static unsigned resize_live_count;
 static bool track_resize_allocations;
 static void *tracked_old_outputs[BC_RX_LIST_CNT];
 static unsigned tracked_old_frees;
+static unsigned discard_calls;
+static bool discard_while_owned;
+static bool discard_failed;
+static int discard_entry_errno;
+static bool discard_errno_pending;
 #ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
 static size_t poison_materialization_size;
 static bool verify_zero_before_first_add;
@@ -210,6 +216,10 @@ static void ResetMock(bool clear_ownership)
 	std::memset(resize_live_allocations, 0,
 	            sizeof(resize_live_allocations));
 	tracked_old_frees = 0;
+	discard_calls = 0;
+	discard_while_owned = false;
+	discard_failed = false;
+	discard_errno_pending = false;
 	std::memset(tracked_old_outputs, 0, sizeof(tracked_old_outputs));
 #ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
 	poison_materialization_size = 0;
@@ -449,8 +459,44 @@ extern "C" void *__wrap_malloc(size_t size)
 	return pointer;
 }
 
+/* Fixtures may declare DMA-sized extents over tiny mock allocations. Never
+ * issue a real page discard against those addresses. */
+extern "C" int __wrap_madvise(void *address, size_t bytes, int advice)
+{
+	++discard_calls;
+	const size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+	Check(address && bytes && reinterpret_cast<uintptr_t>(address) % page == 0 &&
+	      bytes % page == 0 && advice == MADV_DONTNEED,
+	      "discard contains complete aligned payload pages");
+	discard_while_owned |= OwnedCount() != 0;
+	if (release_tracking) {
+		bool contained = false;
+		const uintptr_t first = reinterpret_cast<uintptr_t>(address);
+		for (size_t i = 0; i < active_pool_count; ++i) {
+			const uintptr_t begin = reinterpret_cast<uintptr_t>(active_pools[i].buff);
+			const size_t extent = active_pools[i].sz;
+			contained |= first >= begin && first - begin <= extent &&
+			             bytes <= extent - (first - begin);
+		}
+		Check(contained && release_seen && close_seen,
+		      "terminal discard stays inside retired backing after descriptor close");
+	}
+	if (discard_failed) {
+		discard_entry_errno = errno;
+		discard_errno_pending = true;
+		errno = EAGAIN;
+		return -1;
+	}
+	return 0;
+}
+
 extern "C" void __wrap_free(void *pointer)
 {
+	if (discard_errno_pending) {
+		Check(errno == discard_entry_errno,
+		      "best-effort discard preserves errno before freeing backing");
+		discard_errno_pending = false;
+	}
 	for (unsigned index = 0; pointer && index < resize_live_count; ++index) {
 		if (pointer != resize_live_allocations[index])
 			continue;
@@ -1397,6 +1443,7 @@ static void TestScaledPoolOwnershipAndRestart()
 	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_BUSY &&
 	      event_count == 0 && fixture.context.rxBufferWidth == 1920,
 	      "mapped backing cannot change layout");
+	Check(discard_calls == 0, "mapped backing cannot lose resident pages");
 	Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
 	      "mapped fixed backing retires before transition");
 
@@ -1405,6 +1452,8 @@ static void TestScaledPoolOwnershipAndRestart()
 	Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS &&
 	      fixture.context.rxBufferWidth == kScaledWidth,
 	      "retired fixed backing can transition to scaled layout");
+	Check(discard_calls == fixture.context.MpoolCnt && !discard_while_owned,
+	      "resize discards old pages only after positive DMA retirement");
 	void *scaled[BC_RX_LIST_CNT] = {};
 	for (size_t index = 0; index < fixture.context.MpoolCnt; ++index)
 		scaled[index] = fixture.context.Mpools[index].buff;
@@ -1485,6 +1534,8 @@ static void TestScaledPoolOwnershipAndRestart()
 		      event_count == 0 && resize_allocations == 0 &&
 		      leased.context.rxBufferWidth == 1920,
 		      "active lifetime blocks replacement before allocation");
+		Check(discard_calls == 0,
+		      "active output and stop barriers also forbid page discard");
 		bool unchanged = true;
 		for (size_t index = 0; index < leased.context.MpoolCnt; ++index)
 			unchanged &= leased.context.Mpools[index].buff == old[index];
@@ -1549,6 +1600,7 @@ static void TestScaledPoolValidationBarriers()
 	for (size_t index = 0; index < dirty.context.MpoolCnt; ++index)
 		unchanged &= dirty.context.Mpools[index].buff == dirty_old[index];
 	Check(unchanged, "ambiguous unmap preserves all quarantined backing");
+	Check(discard_calls == 0, "ambiguous DMA ownership forbids page discard");
 
 	case_name = "duplicate pool owner rejection";
 	Fixture duplicate(BC_PCI_DEVID_FLEA, 8, true);
@@ -2425,9 +2477,10 @@ static void TestReleaseOrdering(bool device_close, BC_STATUS decoder_status)
 		for (size_t index = 0; index < BC_RX_LIST_CNT; ++index) {
 			context->Mpools[index].type = BC_MEM_DEC_YUVBUFF |
 			                               BC_MEM_USER_MODE_ALLOC;
-			context->Mpools[index].sz = 1;
+			context->Mpools[index].sz =
+				static_cast<uint32_t>(3 * sysconf(_SC_PAGESIZE) + 13);
 			context->Mpools[index].buff =
-				static_cast<uint8_t *>(std::malloc(1));
+				static_cast<uint8_t *>(std::malloc(context->Mpools[index].sz));
 			Check(context->Mpools[index].buff != nullptr,
 			      "release fixture allocates output backing");
 			release_outputs[index] = context->Mpools[index].buff;
@@ -2469,6 +2522,8 @@ static void TestReleaseOrdering(bool device_close, BC_STATUS decoder_status)
 		release_context_freed = false;
 		output_freed_too_early = false;
 		release_tracking = true;
+		/* Advice is optional: an OS rejection must not change teardown. */
+		discard_failed = scenario.cleanup_failure == FAIL_NONE;
 
 		Check(PoolSize(*context) == BC_IOCTL_DATA_POOL_SIZE,
 		      "release starts with the complete ioctl envelope pool");
@@ -2510,6 +2565,13 @@ static void TestReleaseOrdering(bool device_close, BC_STATUS decoder_status)
 		      "confirmed unmap frees every capture backing");
 		Check(!output_freed_too_early,
 		      "RELEASE and close precede every output-pool free");
+#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+		Check(discard_calls == (quarantine ? 0U : BC_RX_LIST_CNT) &&
+		      !discard_while_owned,
+		      "only positively retired output backing loses resident pages");
+#else
+		Check(discard_calls == 0, "ordinary fixed build never discards pages");
+#endif
 		if (!quarantine) {
 			Check(release_output_frees == BC_RX_LIST_CNT,
 			      "later teardown failures cannot retain backing after confirmed unmap");

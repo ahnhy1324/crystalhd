@@ -52,10 +52,10 @@ library-check:
 				test_sources="$$test_sources linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp"; \
 				test_sources="$$test_sources linux_lib/libcrystalhd/libcrystalhd_fwdiag_if.cpp linux_lib/libcrystalhd/libcrystalhd_fwload_if.cpp linux_lib/libcrystalhd/libcrystalhd_parser.cpp" ;; \
 			poll-fd) test_wrap=-Wl,--wrap=ioctl,--wrap=fcntl ;; \
-			capture) test_wrap=-Wl,--wrap=ioctl,--wrap=close,--wrap=malloc,--wrap=free,--wrap=pthread_mutex_lock; \
+			capture) test_wrap=-Wl,--wrap=ioctl,--wrap=close,--wrap=malloc,--wrap=free,--wrap=madvise,--wrap=pthread_mutex_lock; \
 				test_wrap="$$test_wrap -Wl,--wrap=shmget,--wrap=shmdt,--wrap=shmctl" ;; \
 			capture-scaled) test_flags=-DCRYSTALHD_EXPERIMENTAL_SCALED_RX; test_file=capture; \
-				test_wrap=-Wl,--wrap=ioctl,--wrap=close,--wrap=malloc,--wrap=free,--wrap=pthread_mutex_lock; \
+				test_wrap=-Wl,--wrap=ioctl,--wrap=close,--wrap=malloc,--wrap=free,--wrap=madvise,--wrap=pthread_mutex_lock; \
 				test_wrap="$$test_wrap -Wl,--wrap=shmget,--wrap=shmdt,--wrap=shmctl" ;; \
 			fwload) test_wrap=-Wl,--wrap=fopen,--wrap=fseek,--wrap=ftell,--wrap=fread,--wrap=__fread_chk,--wrap=fclose; \
 				test_wrap="$$test_wrap -Wl,--wrap=malloc,--wrap=free,--wrap=perror"; \
