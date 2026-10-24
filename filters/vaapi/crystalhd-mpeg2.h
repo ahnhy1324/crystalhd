@@ -336,7 +336,7 @@ inline bool AssembleBackwardCopy(unsigned width, unsigned height,
   // Bound before narrowing to VA's dimension fields or allocating any rows.
   if (output == nullptr || width == 0 || height == 0 ||
       width > 1920 || height > 1088 || ((width | height) & 1U) ||
-      sequence.profile != VAProfileMPEG2Main || !sequence.progressive_sequence ||
+      sequence.profile != VAProfileMPEG2Main ||
       sequence.low_delay || !detail::ValidMatrices(current)) return false;
   VAPictureParameterBufferMPEG2 picture = {};
   picture.horizontal_size = width;
@@ -346,11 +346,13 @@ inline bool AssembleBackwardCopy(unsigned width, unsigned height,
   picture.f_code = 0x1111;
   picture.picture_coding_extension.bits.picture_structure = 3;
   picture.picture_coding_extension.bits.frame_pred_frame_dct = 1;
-  picture.picture_coding_extension.bits.progressive_frame = 1;
+  picture.picture_coding_extension.bits.progressive_frame = sequence.progressive_sequence;
+  picture.picture_coding_extension.bits.top_field_first = !sequence.progressive_sequence;
   const PictureOptions options{temporal_reference, false};
   if (!detail::ValidPicture(picture, sequence, options)) return false;
   const unsigned columns = (width + 15U) / 16U;
-  const unsigned rows = (height + 15U) / 16U;
+  const unsigned rows = sequence.progressive_sequence ? (height + 15U) / 16U
+      : 2U * ((height + 31U) / 32U);
   std::vector<std::vector<uint8_t>> row_data;
   row_data.reserve(rows);
   for (unsigned row = 0; row < rows; ++row) {

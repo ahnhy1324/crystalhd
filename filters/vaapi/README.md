@@ -50,8 +50,7 @@ H.264 MBAFF and selected MPEG-2 frame-coded interlaced cases described below:
   A sequence starting with an interlaced frame may later contain progressive
   frame-predicted pictures without RFF when the two macroblock-row grids agree
   (`ceil(height/16) == 2*ceil(height/32)`), preserving that fixed interlaced
-  sequence. Selected 720x480 mixed TFF/BFF downloads pass; this conservative
-  synchronous path is not real-time playback qualification. A sequence starting
+  sequence. Selected 720x480 mixed TFF/BFF downloads pass. A sequence starting
   progressive cannot later switch to interlaced; ambiguous row grids (including
   360/720-line mixed input), separately submitted field pictures, mixed RFF and
   Simple-profile interlace remain unsupported.
@@ -71,9 +70,14 @@ H.264 MBAFF and selected MPEG-2 frame-coded interlaced cases described below:
   backend guessing the omitted sequence flag. The selected
   [720×480 soft-RFF and whole-frame-repeat checks](../../HARDWARE-2026-09-13.md#mpeg-2-progressive-repeat-flags--2026-10-21)
   pass exact pixels, original FFmpeg metadata, EOS and reopen. No extra option
-  is needed. Eligible progressive Main synchronization now uses separately
-  owned non-reference B pictures to advance output without repeated EOS/reopen;
-  original pictures and client timing remain unchanged. The
+  is needed. Eligible Main frame-picture synchronization uses separately owned
+  non-reference B pictures to advance output without repeated EOS/reopen;
+  original pictures and client timing remain unchanged. Interlaced sequences
+  need two lookahead pictures even when their current B picture is progressive.
+  Complete output and compact field pairs have separate ownership records;
+  neither a first field nor failed lease release retires a pair. See the
+  [interlaced/mixed completion results](../../HARDWARE-2026-09-13.md#mpeg-2-interlaced-synchronous-completion--2026-10-24).
+  The earlier
   [measured completion improvement](../../HARDWARE-2026-09-13.md#mpeg-2-synchronous-completion--2026-10-21)
   includes canonical and repeat-flag inputs. Newest-anchor-only demands and
   post-replay channels retain the existing EOS fallback. This does not qualify

@@ -314,6 +314,13 @@ Missing optional VA operations are not all release requirements.
   Initial interlaced input, equal macroblock-row grids, progressive frame prediction
   and no RFF are required. Selected TFF/BFF full-pixel downloads and fresh-process
   reopen pass; [scope and synchronous-path cost](HARDWARE-2026-09-13.md#mpeg-2-bounded-mixed-frame-pictures--2026-10-24).
+- [x] Extend owned MPEG-2 completion to supported interlaced/mixed Main frames.
+  `782a534` retires compact auxiliary output only after both complementary
+  fields release; lookahead depth follows sequence mode, output layout follows
+  each picture. Selected SD/FHD, mixed and progressive downloads preserve
+  pixels/timing with one EOS and no internal reopen. A matched 24-picture pair
+  reduces wall time 20.65→2.34 s and CPU time 3.06→0.65 s; these are process/download metrics,
+  not displayed throughput. [Evidence and limits](HARDWARE-2026-09-13.md#mpeg-2-interlaced-synchronous-completion--2026-10-24).
 - [ ] Complete broader MPEG-2 RFF/telecine presentation acceptance and contracts for
   field-coded input, progressive-first transitions and ambiguous mixed row grids
   before advertising them. The bounded mixed synchronous path is not real-time qualified.
