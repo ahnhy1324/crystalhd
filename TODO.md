@@ -353,9 +353,14 @@ Missing optional VA operations are not all release requirements.
   are preserved, and unsupported range conversions reject before capture.
   Independent neutral-pixel, cache-transition, queued ownership and both-parity
   Bob controls pass. Direct packed-output `StoreArgb` still uses fixed limited
-  BT.601; selectable matrices/chroma sites/primaries/transfer remain unimplemented.
-  Explicit color standards stay rejected. Add these only with independent
-  pixel oracles and matching advertised capabilities.
+  BT.601; its range/matrix selection remains separate. Selectable chroma sites,
+  primaries and transfer remain unimplemented.
+  Ordinary VPP now accepts matching BT.601/BT.709 declarations and applies the
+  input matrix for ARGB; same-standard NV12 preserves samples. Independent
+  colored-pixel, cached-context and queued/canceled-operation checks cover this
+  subset. Standard changes, explicit properties and primaries/transfer/chroma-site
+  conversion remain rejected; add them only with independent pixel oracles and
+  matching advertised capabilities.
 - [x] P2 — Unsupported display attributes return an error; valid empty requests
   remain no-ops. Invalid arguments do not access or change caller attributes.
 - [x] P2 — Evaluate `vaQuerySurfaceError`: retain `UNIMPLEMENTED` and a null
