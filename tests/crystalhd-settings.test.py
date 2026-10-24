@@ -282,6 +282,13 @@ class SettingsPackagingTests(unittest.TestCase):
             run=subprocess.run([sys.executable,'-B','-c',program,str(gui)],stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE,universal_newlines=True)
             self.assertEqual(run.returncode,0,run.stderr)
+            current=helper.read_text()
+            helper.write_text(current.replace('def inspect_installation(', 'def legacy_inspection('))
+            mismatch=subprocess.run([sys.executable,'-B','-c',program,str(gui)],
+                                    stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True)
+            self.assertNotEqual(mismatch.returncode,0)
+            self.assertIn('a matching crystalhd-config core is required',mismatch.stderr)
+            helper.write_text(current)
             iconroot=stage/data.lstrip('/')/'icons/hicolor'
             sentinel=iconroot/'32x32/apps/other-app.png';sentinel.write_bytes(b'untouched')
             desktop=stage/data.lstrip('/')/'applications/crystalhd-settings.desktop'

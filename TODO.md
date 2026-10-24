@@ -111,8 +111,9 @@ scope to general full-rate FHD or hardware deinterlacing.
 - [ ] [#400: Managed settings and desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400)
   — shared storage, native readers, named profiles, Player defaults and the
   optional settings/tray editor are integrated through #498/#499/#502–#504.
-  Follow up installed-reader visibility and ordinary installed-client use;
-  neither a saved value nor a file declaration proves a running app applied it.
+  Installed-reader declarations complement bounded ordinary installed-client
+  activation checks; neither a saved value nor a file declaration alone proves
+  a running app applied it. Broader desktop/application acceptance stays open.
 - [ ] [#470: Output-aware RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470)
   — checked allocation/registration and reduced-output sizing are integrated
   through #479/#480. Remaining sized-RX lifetime/endurance acceptance stays

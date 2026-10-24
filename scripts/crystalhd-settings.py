@@ -55,7 +55,8 @@ def load_core():
     core = importlib.util.module_from_spec(spec)
     loader.exec_module(core)
     required = ("load_user_document_for_edit", "save_user_document", "patch_user_settings",
-                "delete_user_profile", "NATIVE_CONFIG_DISABLE_ENVIRONMENT")
+                "delete_user_profile", "NATIVE_CONFIG_DISABLE_ENVIRONMENT",
+                "inspect_installation", "installation_text")
     if not all(hasattr(core, name) for name in required):
         raise RuntimeError("a matching crystalhd-config core is required")
     return core
