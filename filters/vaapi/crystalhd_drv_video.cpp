@@ -7068,9 +7068,10 @@ static VAStatus TryMpeg2Auxiliary(Driver *driver, DecodeContext *decode,
   if (surface != original->second &&
       (owner == driver->surfaces.end() || surface != owner->second))
     return VA_STATUS_SUCCESS;
-  // One clone advances a progressive B picture. Interlaced B needs another
-  // complete picture to expose its held complementary field, without EOS.
-  const unsigned count = clone && aux.candidate.progressive_frame ? 1U : 2U;
+  // Interlaced sequences need two complete lookahead pictures, including when
+  // their current B picture is progressive. Its output layout is still chosen
+  // separately from the per-picture flag below.
+  const unsigned count = clone && aux.candidate.sequence.progressive_sequence ? 1U : 2U;
   std::array<Mpeg2Auxiliary::Output *, 2> slots{};
   unsigned free = 0;
   for (auto &entry : aux.outputs)

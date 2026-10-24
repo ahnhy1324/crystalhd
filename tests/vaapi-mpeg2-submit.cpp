@@ -975,11 +975,14 @@ void PrivateMpeg2FieldCompletion() {
     SubmitInterlaced(f, 3, 3, true, progressive_b);
     const auto original = f.mock.inputs.back();
     Require(TryMpeg2Auxiliary(&f.driver, f.decode.get(), f.driver.surfaces.at(3)) ==
-                VA_STATUS_SUCCESS && f.mock.inputs.size() == (progressive_b ? 4U : 5U) &&
+                VA_STATUS_SUCCESS && f.mock.inputs.size() == 5 &&
                 f.mock.inputs.back().bytes == original.bytes,
             "mixed/interlaced B lookahead clones the exact accepted AU");
     if (progressive_b) {
       f.mock.Queue(4*kTimestampStep, 16, 32); f.Receive();
+      Require(f.decode->mpeg2_auxiliary.PendingCount() == 1,
+              "progressive B in an interlaced sequence still owns a second clone");
+      f.mock.Queue(5*kTimestampStep, 16, 32); f.Receive();
     } else {
       f.mock.Field(4*kTimestampStep, true, true); f.Receive();
       Require(f.decode->mpeg2_auxiliary.PendingCount() == 2,
