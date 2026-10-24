@@ -135,6 +135,7 @@ configuration-check:
 
 settings-ui-check:
 	$(PYTHON3) -B tests/crystalhd-settings-gtk.test.py
+	dbus-run-session -- $(PYTHON3) -B tests/crystalhd-settings-tray.test.py
 
 uapi-check:
 	sh ./tests/uapi-abi.sh

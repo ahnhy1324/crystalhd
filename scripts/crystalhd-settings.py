@@ -209,6 +209,9 @@ class SettingsWindow(object):
         self.updating = False
         self.indicator = None
         self.tray_connected = False
+        self.indicator_connected = False
+        self.tray_bus = None
+        self.tray_subscriptions = []
         self.quitting = False
         self.notice = ""
         self.window = Gtk.Window(title=_("CrystalHD Settings"))
@@ -482,6 +485,10 @@ class SettingsWindow(object):
         if self.editor.dirty and not self.confirm(_("Discard the editor draft and exit?"), _("Saved defaults remain after this utility exits.")):
             return True
         self.quitting = True
+        if self.tray_bus is not None:
+            for subscription in self.tray_subscriptions:
+                self.tray_bus.signal_unsubscribe(subscription)
+            self.tray_subscriptions = []
         if self.indicator:
             self.indicator.set_status(self.indicator_module.IndicatorStatus.PASSIVE)
         self.window.destroy()
@@ -508,6 +515,10 @@ class SettingsWindow(object):
         module = load_indicator()
         if module is None:
             return
+        try:
+            self.tray_bus = self.Gio.bus_get_sync(self.Gio.BusType.SESSION, None)
+        except self.GLib.Error:
+            return
         self.indicator_module = module
         icon_name = "crystalhd-settings" if icon.is_file() else "preferences-system"
         self.indicator = module.Indicator.new("crystalhd-settings-" + str(os.getpid()),
@@ -524,12 +535,24 @@ class SettingsWindow(object):
         menu.show_all()
         self.indicator.set_menu(menu)
         self.indicator.connect("connection-changed", self.tray_connection_changed)
+        # A watcher may outlive its panel. Watch host presence as well as the
+        # indicator connection so a hidden editor cannot become stranded.
+        for member in ("StatusNotifierHostRegistered", "StatusNotifierHostUnregistered"):
+            subscription = self.tray_bus.signal_subscribe(
+                "org.kde.StatusNotifierWatcher", "org.kde.StatusNotifierWatcher",
+                member, "/StatusNotifierWatcher", None, self.Gio.DBusSignalFlags.NONE,
+                self.tray_host_changed)
+            self.tray_subscriptions.append(subscription)
         self.indicator.set_status(module.IndicatorStatus.ACTIVE)
+
+    def tray_host_changed(self, *_args):
+        self.tray_connection_changed(self.indicator, self.indicator_connected)
 
     def tray_connection_changed(self, _indicator, connected):
         if self.quitting:
             return
-        self.tray_connected = bool(connected) and tray_host_present(self.Gio, self.GLib)
+        self.indicator_connected = bool(connected)
+        self.tray_connected = self.indicator_connected and tray_host_present(self.Gio, self.GLib)
         if not self.tray_connected:
             self.window.present()
         self.update_preview()
