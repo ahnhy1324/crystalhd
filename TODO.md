@@ -310,8 +310,13 @@ Missing optional VA operations are not all release requirements.
   selected 24-picture cases use one EOS/no restart. The existing 180-picture
   fixture passes synchronous and pipelined clients with measured CPU/throughput.
   [Results and fallback limits](HARDWARE-2026-09-13.md#mpeg-2-synchronous-completion--2026-10-21).
+- [x] Admit bounded mixed MPEG-2 Main frame flags in a fixed interlaced sequence.
+  Initial interlaced input, equal macroblock-row grids, progressive frame prediction
+  and no RFF are required. Selected TFF/BFF full-pixel downloads and fresh-process
+  reopen pass; [scope and synchronous-path cost](HARDWARE-2026-09-13.md#mpeg-2-bounded-mixed-frame-pictures--2026-10-24).
 - [ ] Complete broader MPEG-2 RFF/telecine presentation acceptance and contracts for
-  field-coded input and mixed sequence mode before advertising them.
+  field-coded input, progressive-first transitions and ambiguous mixed row grids
+  before advertising them. The bounded mixed synchronous path is not real-time qualified.
   VC-1 interlace and additional MPEG-4 syntax remain separate unsupported
   subsets, not capabilities unlocked by the H.264 scaling change.
 - [x] P0 — Implement nonterminal completion for eligible BCM70015 MBAFF LIVE Bob.

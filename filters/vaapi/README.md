@@ -47,11 +47,18 @@ H.264 MBAFF and selected MPEG-2 frame-coded interlaced cases described below:
   motion/DCT syntax. Complete field pairs are assembled into NV12 Weave for
   ordinary CPU Bob/VPP. The first accepted picture fixes the
   reconstructed sequence mode; VA does not supply the original sequence flag.
-  Mixed progressive/interlaced mode, separately submitted field pictures,
-  RFF with `progressive_frame=0` and Simple-profile interlace remain unsupported.
+  A sequence starting with an interlaced frame may later contain progressive
+  frame-predicted pictures without RFF when the two macroblock-row grids agree
+  (`ceil(height/16) == 2*ceil(height/32)`), preserving that fixed interlaced
+  sequence. Selected 720x480 mixed TFF/BFF downloads pass; this conservative
+  synchronous path is not real-time playback qualification. A sequence starting
+  progressive cannot later switch to interlaced; ambiguous row grids (including
+  360/720-line mixed input), separately submitted field pictures, mixed RFF and
+  Simple-profile interlace remain unsupported.
   Interlaced height must be
   divisible by four. Visible dimensions and sequence mode cannot change within
-  a context. Stock FFmpeg passes the bounded
+  a context. [Mixed-frame evidence](../../HARDWARE-2026-09-13.md#mpeg-2-bounded-mixed-frame-pictures--2026-10-24)
+  is separate from the earlier uniform cases. Stock FFmpeg passes the bounded
   [SD and selected FHD TFF/BFF Weave/Bob checks](../../HARDWARE-2026-09-13.md#mpeg-2-main-frame-coded-interlace--2026-10-21),
   including clean real-capture intervals at 1920×1088i25 and 1920×1080i29.97.
   These establish exact output, EOS and fresh-process reopen, not real-time

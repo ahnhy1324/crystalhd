@@ -609,9 +609,11 @@ void InterlacedSequenceAdmission() {
 void SequenceModeLifetime() {
   for (bool display_flags : {false, true})
   for (bool progressive : {false, true}) {
-    Fixture f;
+    // Different row grids still make a later progressive frame ambiguous.
+    const unsigned height = !progressive && !display_flags ? 360 : 32;
+    Fixture f(VAProfileMPEG2Main, 16, (height + 15U) & ~15U);
     f.mock.capacity = false;
-    auto picture = Picture();
+    auto picture = Picture(16, height);
     picture.picture_coding_extension.bits.progressive_frame = progressive;
     picture.picture_coding_extension.bits.top_field_first = progressive && display_flags;
     picture.picture_coding_extension.bits.repeat_first_field = progressive && display_flags;
@@ -649,6 +651,41 @@ void SequenceModeLifetime() {
             f.decode->mpeg2_replay.cached_pictures() == 1,
             "a fresh logical epoch may accept the other sequence mode");
   }
+}
+void MixedFrameSequenceLifetime() {
+  Fixture f;
+  f.mock.capacity = false;
+  auto picture = Picture();
+  picture.picture_coding_extension.bits.progressive_frame = 0;
+  f.Begin(1); f.Parameters(picture); f.End();
+  const uint64_t first = kTimestampStep;
+  picture = Picture(16, 32, 2, 1);
+  const auto original = picture;
+  f.Begin(2); f.Parameters(picture); f.End();
+  Require(!std::memcmp(&picture, &original, sizeof(picture)),
+          "mixed frame leaves caller picture flags unchanged");
+  picture = Picture(16, 32, 3, 1, 2);
+  picture.picture_coding_extension.bits.progressive_frame = 0;
+  f.Begin(3); f.Parameters(picture); f.End();
+  picture = Picture();
+  f.Begin(4); f.Parameters(picture); f.End();
+  Require(f.decode->have_mpeg2_sequence && !f.decode->mpeg2_progressive_sequence &&
+              f.decode->mpeg2_replay.cached_pictures() == 4 && f.mock.inputs.empty(),
+          "interlaced/progressive frame flags never change the frozen sequence");
+  Require(!SequenceProgressive(f.decode->mpeg2_replay.Find(first)->bytes) &&
+              !SequenceProgressive(f.decode->mpeg2_replay.Find(4 * first)->bytes),
+          "later progressive I picture keeps the original interlaced sequence header");
+  for (const auto &entry : f.decode->mpeg2_auxiliary.syntax)
+    Require(!entry.second.sequence.progressive_sequence && !entry.second.eligible,
+            "mixed sequence never opts into progressive-only auxiliary completion");
+  Require(f.decode->CloseHardware() == BC_STS_SUCCESS,
+          "transport-only close retains the logical mixed sequence");
+  f.Surface(5);
+  picture.picture_coding_extension.bits.progressive_frame = 0;
+  f.Begin(5); f.Parameters(picture); f.End();
+  Require(!f.decode->mpeg2_progressive_sequence &&
+              f.decode->mpeg2_replay.cached_pictures() == 5,
+          "hardware reopen cannot replace the frozen sequence with last-picture flags");
 }
 void ReferenceValidation() {
   for (unsigned variant = 0; variant < 8; ++variant) {
@@ -1119,6 +1156,7 @@ int main() {
     {"progressive display flags preserve pixels request and caller ownership", ProgressiveDisplayFlags},
     {"Main interlaced public submission and bounded syntax", InterlacedSequenceAdmission},
     {"frozen MPEG-2 sequence mode and logical reset", SequenceModeLifetime},
+    {"mixed frame flags preserve sequence, replay and auxiliary policy", MixedFrameSequenceLifetime},
     {"reference identity and unready anchors", ReferenceValidation},
     {"late poison and immutable reference snapshot", LatePoisonAndReferenceSnapshot},
     {"visible versus allocated geometry", VisibleAndAllocatedGeometry},
