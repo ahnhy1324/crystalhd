@@ -70,6 +70,40 @@ Safety labels mean:
 variables do not add to the `libcrystalhd.so.3` ABI, and none of these controls
 changes the legacy ioctl ABI.
 
+## Player defaults
+
+Updated `crystalhd-play` reads the saved decoder mode, card scale width and optional
+software output size at startup, using the same system/user/profile rules as
+`crystalhd-config`. For example, save a scaled hardware profile once, then play
+without repeating its options:
+
+```sh
+crystalhd-config save --profile-section local --profile local \
+  'player.decoder="hardware"' gstreamer.crystalhddec.scale_width=1280 \
+  'player.software_output_size="1920x1080"'
+crystalhd-play "/path/to/video.mp4"
+# One-shot native-width hardware output; the saved profile is unchanged:
+crystalhd-play --scale-width 0 --software-output-size native "/path/to/video.mp4"
+# One-shot software decode with those hardware-only defaults explicitly cleared:
+crystalhd-play --software --scale-width 0 --software-output-size native "/path/to/video.mp4"
+```
+
+Explicit flags win only for their own setting. Conflicting combinations stop
+before playback and explain the reset flags. `unset` in a profile restores the
+native value instead of inheriting a lower file value. With no configuration,
+the original hardware/native-size defaults remain. The startup report describes
+requests and redacted origins; actual CrystalHD success still requires decoded
+frames. Width/media/device restrictions in [USAGE.md](USAGE.md#optional-bcm70015-output-scaling)
+still apply; neither saving nor selecting a profile invents support.
+
+Unsafe/invalid files or an experimental preset without acknowledgement discard
+the managed player overlay with a diagnostic; original CLI/native defaults
+remain. `CRYSTALHD_CONFIG_DISABLE=1` bypasses managed files. `config run` retains
+its existing unsupported-player-key rejection and bypass behavior; invoke the
+player directly for these defaults. Saved `player.python` is not executed:
+the wrapper's existing explicit environment override still selects Python.
+Other applications' settings and arbitrary GStreamer pipelines are unaffected.
+
 ## Optional desktop settings
 
 With the updated native reader, saved supported defaults are read on ordinary
@@ -257,7 +291,7 @@ It does not change the supported GStreamer version or QoS admission rules.
 | `--software` <!-- config-surface:player-flag:--software --> | `crystalhd-player.py` | GStreamer local playback | Off; mutually exclusive with `--hardware` | Available software decoder | Decoder ranks and playbin software-decoder flag are selected before pipeline creation | **Standard** | Yes — CLI |
 | `--weave` <!-- config-surface:player-flag:--weave --> | `crystalhd-player.py` | Hardware or software local playback | Off; flag has no value | Available selected decoder and playbin | Clears only playbin's deinterlace flag before playback; fails if it remains enabled | **Opt-in** — interlaced frame pass-through, not deinterlacing or a sync guarantee | Yes — CLI |
 | `--scale-width PIXELS` <!-- config-surface:player-flag:--scale-width --> | `crystalhd-player.py` | BCM70015 hardware playback; selected H.264 MBAFF in the bounded 1.2 scope | `0`; otherwise even `128..1918`; interlaced H.264 requires a multiple of 16 | Requires hardware mode; also subject to coded-width/property limits | Parsed at startup and applied to each CrystalHD decoder element | **Opt-in** — hardware downscale/quality trade-off | Yes — CLI |
-| `--software-output-size WIDTHxHEIGHT` <!-- config-surface:player-flag:--software-output-size --> | `crystalhd-player.py` | Host resize after scaled CrystalHD output | Unset; positive even dimensions, each at most `4096`, total at most `4096x2160` pixels | Requires hardware mode, nonzero `--scale-width`, GStreamer `videoscale`/`capsfilter` | Pipeline construction | **Opt-in** — additional CPU use; cannot restore source detail | Yes — CLI |
+| `--software-output-size WIDTHxHEIGHT\|native` <!-- config-surface:player-flag:--software-output-size --> | `crystalhd-player.py` | Host resize after scaled CrystalHD output | Unset; positive even dimensions, each at most `4096`, total at most `4096x2160` pixels; `native` clears a saved resize for this invocation | Resize requires hardware mode, nonzero `--scale-width`, GStreamer `videoscale`/`capsfilter` | Pipeline construction | **Opt-in** — additional CPU use; cannot restore source detail | Yes — CLI |
 | `--subtitles FILE` <!-- config-surface:player-flag:--subtitles --> | `crystalhd-player.py` | Local playback | Unset; readable local regular file | GStreamer subtitle support for the file | Parsed before pipeline construction | **Standard** | Yes — CLI |
 
 The required positional media `FILE`, automatically supplied `-h/--help`, and

@@ -234,7 +234,7 @@ Use this option when Full-HD output is bandwidth-limited and a smaller image
 is acceptable. On BCM70015, the card can decode a progressive Full-HD input
 and return fewer pixels over PCIe. Detail is lost during that reduction;
 enlarging the image afterward does not recover it. Native-size output remains
-the default.
+the default when no saved player override exists.
 
 These examples keep the input at 1920x1080, reduce the card output to
 1280x720, and optionally resize it in software to a 1920x1080 display buffer:
@@ -247,6 +247,11 @@ crystalhd-play --hardware --scale-width 1280 "/path/to/video-1080p.mp4"
 crystalhd-play --hardware --scale-width 1280 \
   --software-output-size 1920x1080 "/path/to/video-1080p.mp4"
 ```
+
+Updated players also accept [saved player defaults](CONFIGURATION.md#player-defaults).
+Explicit flags override only their corresponding saved setting. Use
+`--scale-width 0 --software-output-size native` to clear saved scale/resize values
+for one invocation; add `--software` for software decoding. The saved file stays intact.
 
 Expect `Decoder: crystalhddec (hardware; video output confirmed)`, a nonzero
 decoded-video-frame count and playback through the end of the file. Compare

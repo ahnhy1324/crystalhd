@@ -4,7 +4,9 @@ set -eu
 
 player_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 player_python=${CRYSTALHD_PLAYER_PYTHON:-/usr/bin/python3}
-player_controller="$player_script_dir/../share/crystalhd/player.py"
+player_controller_relative='@PLAYER_CONTROLLER_RELATIVE@'
+case "$player_controller_relative" in @*@) player_controller_relative=../share/crystalhd/player.py;; esac
+player_controller="$player_script_dir/$player_controller_relative"
 if [ -r "$player_script_dir/crystalhd-player.py" ]; then
     player_controller="$player_script_dir/crystalhd-player.py"
     player_repo_dir=$(CDPATH= cd -- "$player_script_dir/.." && pwd)

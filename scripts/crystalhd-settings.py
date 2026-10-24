@@ -429,9 +429,13 @@ class SettingsWindow(object):
             for item in report["settings"]:
                 key = item["key"]
                 use = (_("Next start in updated VA/DIL; not confirmed active") if key in self.controls else
-                       _("Saved only; automatic consumer unavailable"))
+                       (_("Next start in updated crystalhd-play; not confirmed active") if key in
+                        ("player.decoder", "gstreamer.crystalhddec.scale_width", "player.software_output_size") else
+                        _("Saved only; automatic consumer unavailable")))
                 if key in self.controls and launch_only:
                     use = _("Launch-only; native transaction may be ignored")
+                if key in ("player.decoder", "gstreamer.crystalhddec.scale_width", "player.software_output_size") and self.editor.required_acknowledgements():
+                    use = _("Experimental preset; ordinary crystalhd-play ignores this managed overlay")
                 if item["origin"].startswith("environment:"):
                     use = _("Environment override in this settings process; application state unconfirmed")
                 value = self.editor.core._format_value(item["effective"])

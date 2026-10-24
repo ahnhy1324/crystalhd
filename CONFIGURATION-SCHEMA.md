@@ -2,7 +2,7 @@
 
 This document specifies the configuration contract implemented by the
 `crystalhd-config` inspector, user-config storage, optional command launcher and
-native VA/DIL readers. Updated native components consume supported defaults on
+native VA/DIL readers and the player adapter. Updated native components consume supported defaults on
 application startup; saving does not reconfigure an already-running process.
 `run` additionally resolves explicit invocation overrides and experimental risk
 acknowledgements. Exact native controls are in [CONFIGURATION.md](CONFIGURATION.md).
