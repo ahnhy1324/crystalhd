@@ -2087,6 +2087,10 @@ static VAStatus ProcessVpp(SwsContext **scaler,
           }
         }
       }
+      // The same field row can feed several enlarged output rows. Resample
+      // into private CPU memory once, then copy it: never read back a previous
+      // destination row, which may live in uncached or write-combined storage.
+      std::array<uint8_t, kMaxWidth> resampled_row;
       // Each plane has its own physical-field row lattice. In particular,
       // selected Y row / 2 is not the selected interlaced NV12 chroma row.
       for (unsigned int plane = 0; plane != 2; ++plane) {
@@ -2095,6 +2099,10 @@ static VAStatus ProcessVpp(SwsContext **scaler,
         const unsigned int target_rows = plane == 0
             ? output_region.height : output_region.height / 2;
         const bool same_width = source_region.width == output_region.width;
+        const bool reuse_row = !same_width &&
+            output_region.width <= resampled_row.size() &&
+            target_rows > source_rows / 2;
+        const uint8_t *previous_input = nullptr;
         const unsigned int source_samples = plane == 0
             ? source_region.width : source_region.width / 2;
         const unsigned int target_samples = plane == 0
@@ -2127,10 +2135,20 @@ static VAStatus ProcessVpp(SwsContext **scaler,
               output_region.x;
           if (same_width) {
             memcpy(output, input, output_region.width);
-          } else if (plane == 0) {
+            continue;
+          }
+          if (reuse_row && input == previous_input) {
+            memcpy(output, resampled_row.data(), output_region.width);
+            continue;
+          }
+          uint8_t *resampled = reuse_row ? resampled_row.data() : output;
+#if defined(CRYSTALHD_VAAPI_TEST_BOB_RESAMPLE_ROW)
+          CRYSTALHD_VAAPI_TEST_BOB_RESAMPLE_ROW(plane);
+#endif
+          if (plane == 0) {
             unsigned int source_x = 0, phase = 0;
             for (unsigned int column = 0; column < target_samples; ++column) {
-              output[column] = input[source_x];
+              resampled[column] = input[source_x];
               source_x += whole;
               phase += remainder;
               if (phase >= target_samples) {
@@ -2141,8 +2159,8 @@ static VAStatus ProcessVpp(SwsContext **scaler,
           } else {
             unsigned int source_x = 0, phase = 0;
             for (unsigned int column = 0; column < target_samples; ++column) {
-              output[column * 2] = input[source_x * 2];
-              output[column * 2 + 1] = input[source_x * 2 + 1];
+              resampled[column * 2] = input[source_x * 2];
+              resampled[column * 2 + 1] = input[source_x * 2 + 1];
               source_x += whole;
               phase += remainder;
               if (phase >= target_samples) {
@@ -2150,6 +2168,10 @@ static VAStatus ProcessVpp(SwsContext **scaler,
                 ++source_x;
               }
             }
+          }
+          if (reuse_row) {
+            memcpy(output, resampled_row.data(), output_region.width);
+            previous_input = input;
           }
         }
       }
@@ -8699,7 +8721,8 @@ static VAStatus QueryVideoProcPipelineCaps(VADriverContextP context,
       ((rt_format & VA_RT_FORMAT_YUV420) != 0) +
       2 * ((rt_format & VA_RT_FORMAT_RGB32) != 0);
   caps->rotation_flags = 1U << VA_ROTATION_NONE;
-  caps->filter_flags = VA_FILTER_SCALING_DEFAULT |
+  // DEFAULT and FAST select the same existing origin-aligned nearest kernel.
+  caps->filter_flags = VA_FILTER_SCALING_FAST |
                        VA_FILTER_INTERPOLATION_NEAREST_NEIGHBOR;
   caps->min_input_width = 16;
   caps->min_input_height = 16;
@@ -9654,7 +9677,7 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
         BackingOwner(driver, target->second.get())->opaque_reference)
       return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
     constexpr uint32_t supported_filter_flags =
-        VA_FILTER_SCALING_DEFAULT | VA_FILTER_INTERPOLATION_NEAREST_NEIGHBOR;
+        VA_FILTER_SCALING_FAST | VA_FILTER_INTERPOLATION_NEAREST_NEIGHBOR;
     VppDeinterlace deinterlace;
     const VAStatus filter_status = ReadVppDeinterlace(
         driver, context_id, parameters->filters, parameters->num_filters,
