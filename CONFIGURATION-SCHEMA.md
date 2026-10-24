@@ -1,11 +1,11 @@
 # CrystalHD configuration schema v1
 
 This document specifies the configuration contract implemented by the
-`crystalhd-config` inspector, user-config storage and explicit command launcher.
-The production backends do not read these files directly; saving or inspecting
-settings does not apply them to applications. `run` translates supported requests
-to existing environment controls for a new command. The current production
-controls and their exact behavior remain documented in [CONFIGURATION.md](CONFIGURATION.md).
+`crystalhd-config` inspector, user-config storage, optional command launcher and
+native VA/DIL readers. Updated native components consume supported defaults on
+application startup; saving does not reconfigure an already-running process.
+`run` additionally resolves explicit invocation overrides and experimental risk
+acknowledgements. Exact native controls are in [CONFIGURATION.md](CONFIGURATION.md).
 
 The v1 goals are deliberately narrow:
 
@@ -18,9 +18,69 @@ The v1 goals are deliberately narrow:
 - keep privileged module configuration outside an ordinary userspace
   playback profile.
 
-The installed implementation is `scripts/crystalhd-config.py`.  The schema
-and CLI tests import or execute that production implementation; test code is
-never installed as the parser.
+The CLI/storage implementation is `scripts/crystalhd-config.py`; the shared
+native reader is `include/crystalhd-config.h`. Its compiled schema/preset table
+is generated from that CLI and the reviewed preset catalog by
+`scripts/generate-native-config.py`. Native builds require no Python interpreter;
+`configuration-check` checks generated-data freshness and differential parser/
+resolver behavior. Test code is never installed as a parser.
+
+## Native defaults in ordinary applications
+
+The native backend integration makes a plain `kodi` invocation consume saved
+defaults when it loads **our updated** VA driver/library. It does not replace
+Kodi, select its decoder, change an existing process, or require a widget.
+The widget will edit the same file through the existing storage/validation core;
+it will not introduce a second preset system or a `config run` requirement.
+
+The native reader has this contract:
+
+- Read `/etc/crystalhd/config.ini`, then the existing absolute XDG/HOME user
+  path. Missing files contribute nothing. Use schema v1's grammar, selectors,
+  complete-file validation, merge order, `unset`, and cross-setting checks,
+  including validation of inactive profiles. Do not guess an application profile
+  from a process name. The reviewed preset/schema data must agree with the CLI.
+- Snapshot managed defaults once per loaded component on first configuration
+  use; restart the application after saving. No file reads per frame, Python
+  subprocess, file writes, process-wide environment mutation, or public ABI/ioctl
+  change. The VA driver and DIL can load at different times; this is not a
+  cross-component atomic reload protocol.
+- Preserve the existing trusted-file checks (absolute path, safe immediate
+  parent and file owner/mode, no final symlink or special file, bounded 64 KiB
+  read). Ignore managed defaults when real/effective IDs differ. Discard an
+  invalid managed transaction as a whole, emit one redacted diagnostic per
+  component snapshot, and retain original environment/native behavior. Do not
+  turn a configuration error into an application crash or a partial overlay.
+- Apply only native-owned adapters: RX pool count, H.264 mode/prefeed, READY
+  remap off, i915 WC off, VA debug and trace. Other valid keys remain saved for
+  their owning frontend; this does not make Chromium/player/GStreamer properties
+  automatically active. READY policy/delay and centered output remain native
+  environment controls, outside this initial managed adapter.
+- Existing raw environment presence wins **per key**, even for empty/invalid
+  values. Keep its original interpretation: DEBUG presence including `0` is on;
+  prefeed `0` suppresses automatic prefeed whereas canonical false removes only
+  the explicit request. `unset` blocks lower file layers, not raw environment.
+  Supported explicit application CLI/property overrides remain highest priority.
+- Do not automatically activate experimental managed settings. Experimental
+  presets still need fresh CLI risk acknowledgements through `config run`;
+  managed RX=8, LIVE/prefeed on, READY on or WC on without an overriding raw
+  environment discard the native managed transaction. Explicit legacy environment
+  opt-ins retain their existing semantics. A safe managed change must also not
+  newly activate an inherited READY experiment.
+- `config run` remains the optional adapter for explicit paths, per-invocation
+  selectors, acknowledgements and CLI overrides. Its child must bypass native
+  file consumption using `CRYSTALHD_CONFIG_DISABLE=1`, so an explicit false,
+  `unset`, suppressed layer or alternate path cannot be undone by rereading
+  defaults. A default invocation with no managed request and no custom selection
+  keeps the inherited environment unchanged. The bypass is read only at the
+  native snapshot boundary; exactly `1` bypasses both managed file layers.
+  It is also a diagnostic escape hatch, not a risk acknowledgement.
+
+Completion requires differential native/CLI parsing and resolution tests,
+trusted-file failure tests, per-key raw override and false/unset regression
+tests, and strict native builds including scalar i686. Exercise the actual VA
+entry path with isolated settings and a stock client before claiming plain
+`kodi` integration. Do not install into the stable system for these checks.
 
 ## Inspect configuration
 
@@ -40,9 +100,10 @@ suppress the corresponding layer. `--preset NAME`, `--profile NAME`, and
 `--ignore-environment` control selection and setting-specific process
 environment inspection. Experimental presets additionally require their
 repeatable, command-line-only `--acknowledge-risk TOKEN`; neither a config
-file nor an environment variable can supply it. The path-locating
-`XDG_CONFIG_HOME` or `HOME` must
-still be absolute unless the user layer is explicitly suppressed. Text and
+file nor an environment variable can supply it. Ordinary native file reading
+does not acknowledge experimental presets; use the optional `run` command.
+The path-locating `XDG_CONFIG_HOME` or `HOME` must still be absolute unless the
+user layer is explicitly suppressed. Text and
 JSON formats are available for `show-effective`, `explain` and `list-presets`.
 `bug-report` is JSON-only.
 
@@ -76,9 +137,11 @@ identity matters. Inspect any report before publishing it.
 ## Save and reset user defaults
 
 These commands write only the managed user file. **Saved does not mean active:**
-stock Kodi and the other production components still use their existing controls.
-Use the explicit `run` adapter below to request supported settings for a new
-command; ordinary unwrapped launches do not consume the managed file.
+already-running applications do not change. Updated native VA/DIL components
+consume their supported defaults on the next application start, including an
+ordinary `kodi` launch. Other owners' settings remain saved-only until adapted.
+The optional `run` adapter supplies per-invocation overrides and acknowledged
+experiments without editing the file.
 
 ```sh
 crystalhd-config save vaapi.debug=false
@@ -128,6 +191,9 @@ crystalhd-config run --override vaapi.debug=false -- kodi
 
 The literal `--` separates manager options from the command and its arguments.
 `run` prepares a child environment and executes the command without a shell.
+When it resolves managed requests or explicit layer/selector options, it sets
+`CRYSTALHD_CONFIG_DISABLE=1` in that child to prevent native rereading from
+undoing false/unset or a selected alternate path.
 It reports **REQUESTED FOR THIS CHILD**, not active or confirmed. An application
 which forwards to an already-running instance cannot transfer these settings to
 that instance. Nothing is saved, and no background manager is required.
@@ -254,6 +320,7 @@ These current surfaces deliberately do not become ordinary merged keys:
 | --- | --- |
 | `force_l0s_off` <!-- schema-boundary:module:force_l0s_off=staged-module --> | Inspect or stage separately; never claim an immediate per-application change |
 | `session_l0s_off` <!-- schema-boundary:module:session_l0s_off=staged-module --> | Same separate module-load lifetime and topology checks |
+| `CRYSTALHD_CONFIG_DISABLE` <!-- schema-boundary:environment:CRYSTALHD_CONFIG_DISABLE=native-config-bootstrap --> | Exactly `1` bypasses native managed-file consumption; not a saved setting or risk acknowledgement. `config run` sets it for its already-resolved child when needed |
 | `CRYSTALHD_CHROMIUM_CONFIG` <!-- schema-boundary:environment:CRYSTALHD_CHROMIUM_CONFIG=legacy-bootstrap --> | Selects the existing trusted shell file; it cannot recursively select the strict schema |
 | `CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12` <!-- schema-boundary:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12=experimental-centered-nv12 --> | Native-only centered NV12 experiment; no canonical key, profile value, preset or manager translation. The VA driver alone validates its exact syntax and context/media eligibility |
 | `crystalhd-play --subtitles` <!-- schema-boundary:player-flag:--subtitles=invocation-only --> | Per-media invocation input, never a saved preset/profile value |

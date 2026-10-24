@@ -48,6 +48,7 @@
 #include "libcrystalhd_int_if.h"
 #include "libcrystalhd_priv.h"
 #include "libcrystalhd_parser.h"
+#include "crystalhd-config.h"
 
 /*============== Global shared area usage ======================*/
 /* Global mode settings */
@@ -463,7 +464,7 @@ static BC_STATUS DtsValidateRxBuffer(const DTS_LIB_CONTEXT *Ctx,
 
 static uint32_t DtsConfiguredRxPoolCount()
 {
-	const char *value = getenv("CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT");
+	const char *value = crystalhd_config::Environment("CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT");
 
 	if (!value || !strcmp(value, "16"))
 		return BC_MAX_SW_VOUT_BUFFS;

@@ -73,6 +73,7 @@ extern "C" {
 #include "crystalhd-mpeg2.h"
 #include "crystalhd-mpeg2-replay.h"
 #include "crystalhd-private-backing.h"
+#include "crystalhd-config.h"
 #include "crystalhd-trace.h"
 #include "crystalhd-vc1.h"
 #include "crystalhd-vc1-replay.h"
@@ -201,7 +202,7 @@ struct SwSyncCreateFenceData {
 #define SW_SYNC_IOC_INC _IOW(SW_SYNC_IOC_MAGIC, 1, uint32_t)
 
 static void Debug(const char *format, ...) {
-  if (getenv("CRYSTALHD_VAAPI_DEBUG") == nullptr)
+  if (crystalhd_config::Environment("CRYSTALHD_VAAPI_DEBUG") == nullptr)
     return;
   va_list arguments;
   va_start(arguments, format);
@@ -212,7 +213,7 @@ static void Debug(const char *format, ...) {
 }
 
 static void DebugBytes(const char *label, const std::vector<uint8_t> &bytes) {
-  if (getenv("CRYSTALHD_VAAPI_DEBUG") == nullptr)
+  if (crystalhd_config::Environment("CRYSTALHD_VAAPI_DEBUG") == nullptr)
     return;
   fprintf(stderr, "crystalhd-vaapi: %s", label);
   for (size_t i = 0; i < std::min<size_t>(bytes.size(), 64); ++i)
@@ -2898,7 +2899,7 @@ struct Driver {
                   int trace_output_fd = STDERR_FILENO)
       : trace(trace_output_fd), drm_fd(requested_drm_fd),
         experimental_i915_wc(ExperimentalI915WcRequested(
-            getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC"))) {
+            crystalhd_config::Environment("CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC"))) {
     decode_control_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (requested_drm_fd >= 0)
       gbm = gbm_create_device(requested_drm_fd);
@@ -8715,7 +8716,7 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   decode->height = std::max(height, 0);
   decode->video_process = video_process;
   decode->decode_processing = config->second.decode_processing;
-  const char *live_h264 = getenv("CRYSTALHD_VAAPI_LIVE_H264");
+  const char *live_h264 = crystalhd_config::Environment("CRYSTALHD_VAAPI_LIVE_H264");
   const bool h264 = !video_process && IsH264Profile(decode->profile);
   const bool live_h264_fast_path =
       live_h264 != nullptr && strcmp(live_h264, "1") == 0;
@@ -8724,7 +8725,7 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   decode->live_h264_gap_tolerant = h264 && live_h264_fast_path;
   decode->live_h264_fast_path = h264 && live_h264_fast_path;
   const char *low_latency_h264 =
-      getenv("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
+      crystalhd_config::Environment("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
   decode->low_latency_h264 = h264 &&
       low_latency_h264 != nullptr && strcmp(low_latency_h264, "1") == 0;
   // Complete progressive/MBAFF frame AUs may prefeed without live fast paths.
@@ -8733,7 +8734,7 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   decode->auto_h264_prefeed = h264 && !decode->live_h264_fast_path &&
                                low_latency_h264 == nullptr;
   const char *experimental_ready_remap =
-      getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP");
+      crystalhd_config::Environment("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP");
   // Processing keeps its finite default, but explicit LIVE and prefeed use
   // the same compressed-input policy with separate small output ownership.
   // READY remapping would violate the opaque original's exact-picture promise.

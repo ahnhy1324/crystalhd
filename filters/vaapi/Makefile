@@ -50,7 +50,9 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs libva libva-drm libdrm gbm \
 
 all: $(DRIVER)
 
-BACKEND_HEADERS := ../crystalhd-h264-output.h \
+BACKEND_HEADERS := $(ROOTDIR)/include/crystalhd-config.h \
+	$(ROOTDIR)/include/crystalhd-config-schema.h \
+	 ../crystalhd-h264-output.h \
 	crystalhd-access-unit-limits.h crystalhd-decode-replay.h \
 	crystalhd-centered-output.h \
 	crystalhd-private-backing.h \
@@ -174,7 +176,7 @@ $(VC1_SUBMIT_TEST): $(ROOTDIR)/tests/vaapi-vc1-submit.cpp crystalhd_drv_video.cp
 		-ffunction-sections -fdata-sections $< -o $@ \
 		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm libdrm) -pthread $(CRYSTALHD_CPU_FLAGS)
 
-$(TRACE_TEST): $(ROOTDIR)/tests/vaapi-trace.cpp crystalhd-trace.h
+$(TRACE_TEST): $(ROOTDIR)/tests/vaapi-trace.cpp crystalhd-trace.h $(ROOTDIR)/include/crystalhd-config.h $(ROOTDIR)/include/crystalhd-config-schema.h
 	$(CXX) -std=c++17 -Wall -Wextra -Werror $< -o $@ -pthread
 
 # Optional hardware lifecycle probe; keep FFmpeg development dependencies out
@@ -186,6 +188,8 @@ $(SEEK_TEST): $(ROOTDIR)/tests/vaapi-seek.cpp $(ROOTDIR)/tests/ffmpeg-profile-co
 		$(shell $(PKG_CONFIG) --cflags libavcodec libavformat libavutil libva) $< -o $@ \
 		$(shell $(PKG_CONFIG) --libs libavcodec libavformat libavutil libva) $(CRYSTALHD_CPU_FLAGS)
 
+# Unit fixtures exercise explicit native controls, independent of host INI files.
+check: export CRYSTALHD_CONFIG_DISABLE = 1
 check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(PRIVATE_BACKING_TEST) $(CONVERSION_TEST) $(SCALING_TEST) $(BOB_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST)
 	readelf -Ws $(DRIVER) | grep -q '__vaDriverInit_'
 	readelf -Ws $(DRIVER) | grep -q '__vaDriverInit_1_20'

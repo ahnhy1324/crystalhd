@@ -1564,7 +1564,7 @@ class ConfigCliTest(unittest.TestCase):
         self.assertEqual(status, 4)
         self.assertIs(CONFIG.parse_document(self.user_file.read_bytes()).settings["vaapi.trace"], False)
 
-    def test_run_no_config_preserves_complete_native_environment_in_a_real_child(self):
+    def test_run_no_config_and_suppression_preserve_complete_native_values(self):
         environment = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": str(self.root / "unused-home"), "LC_ALL": "C",
@@ -1587,7 +1587,9 @@ class ConfigCliTest(unittest.TestCase):
                     env=inherited, check=False,
                 )
                 self.assertEqual((direct.returncode, managed.returncode), (0, 0))
-                self.assertEqual(managed.stdout, direct.stdout)
+                expected = dict(json.loads(direct.stdout))
+                expected[CONFIG.NATIVE_CONFIG_DISABLE_ENVIRONMENT] = "1"
+                self.assertEqual(dict(json.loads(managed.stdout)), expected)
                 plan = self.launch_plan(environment=inherited)
                 self.assertEqual(plan.environment, inherited)
                 self.assertIsNot(plan.environment, inherited)
@@ -1608,7 +1610,7 @@ class ConfigCliTest(unittest.TestCase):
             "CRYSTALHD_PLAYER_PYTHON": "", "UNRELATED": "unchanged",
         }
         plan = self.launch_plan(user, inherited, {"vaapi.debug": True}, profile="desk", system=system)
-        expected = dict(inherited, CRYSTALHD_VAAPI_DEBUG="1")
+        expected = dict(inherited, CRYSTALHD_VAAPI_DEBUG="1", CRYSTALHD_CONFIG_DISABLE="1")
         self.assertEqual(plan.environment, expected)
         self.assertEqual(inherited.get("CRYSTALHD_VAAPI_DEBUG"), None)
         self.assertEqual(plan.requested_keys, ("vaapi.debug",))
@@ -1618,7 +1620,8 @@ class ConfigCliTest(unittest.TestCase):
                      "CRYSTALHD_VAAPI_DEBUG": "0", "UNRELATED": "keep"}
         user = CONFIG.empty_document()
         user.settings = {"vaapi.h264.low_latency": False, "vaapi.debug": False}
-        self.assertEqual(self.launch_plan(user, inherited).environment, inherited)
+        self.assertEqual(self.launch_plan(user, inherited).environment,
+                         dict(inherited, CRYSTALHD_CONFIG_DISABLE="1"))
         for value in (False, CONFIG.UNSET):
             with self.subTest(value=value):
                 plan = self.launch_plan(user, inherited, {"vaapi.h264.low_latency": value})
@@ -1641,11 +1644,13 @@ class ConfigCliTest(unittest.TestCase):
             "player.python": "/private/new-python",
         })
         self.assertEqual(plan.environment, {
+            "CRYSTALHD_CONFIG_DISABLE": "1",
             "CRYSTALHD_VAAPI_LOW_LATENCY_H264": "1", "CRYSTALHD_PLAYER_PYTHON": "/private/new-python",
         })
         strict = self.launch_plan(overrides={"vaapi.h264.mode": "strict", "libcrystalhd.rx_pool_count": 16,
                                              "vaapi.trace": True})
-        self.assertEqual(strict.environment, {"CRYSTALHD_VAAPI_LIVE_H264": "0",
+        self.assertEqual(strict.environment, {"CRYSTALHD_CONFIG_DISABLE": "1",
+                                               "CRYSTALHD_VAAPI_LIVE_H264": "0",
                                                "CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT": "16",
                                                "CRYSTALHD_VAAPI_TRACE": "1"})
 
@@ -1660,7 +1665,8 @@ class ConfigCliTest(unittest.TestCase):
             with self.subTest(acknowledgements=acknowledgements), self.assertRaises(CONFIG.SchemaError):
                 self.launch_plan(user, acknowledgements=acknowledgements)
         plan = self.launch_plan(user, acknowledgements=(low, streaming))
-        self.assertEqual(plan.environment, {"CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT": "8",
+        self.assertEqual(plan.environment, {"CRYSTALHD_CONFIG_DISABLE": "1",
+                                            "CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT": "8",
                                             "CRYSTALHD_VAAPI_LIVE_H264": "1",
                                             "CRYSTALHD_VAAPI_LOW_LATENCY_H264": "1"})
         for tokens in ((low, low, streaming), (low, streaming, "invented-risk")):
@@ -1692,7 +1698,8 @@ class ConfigCliTest(unittest.TestCase):
         self.assertEqual(self.launch_plan(environment=inherited).environment, inherited)
         active = dict(inherited, CRYSTALHD_VAAPI_LIVE_H264="1", CRYSTALHD_VAAPI_LOW_LATENCY_H264="1")
         plan = self.launch_plan(environment=active, overrides={"vaapi.debug": True})
-        self.assertEqual(plan.environment, dict(active, CRYSTALHD_VAAPI_DEBUG="1"))
+        self.assertEqual(plan.environment, dict(active, CRYSTALHD_VAAPI_DEBUG="1",
+                                                     CRYSTALHD_CONFIG_DISABLE="1"))
         invalid = dict(active, CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY="invalid-native-policy")
         self.assertEqual(self.launch_plan(environment=invalid).environment, invalid)
         with self.assertRaises(CONFIG.SchemaError):
@@ -1723,7 +1730,8 @@ class ConfigCliTest(unittest.TestCase):
         user.settings["vaapi.debug"] = True
         user.profiles["inactive"] = {"chromium.disable_gpu_sandbox": True,
                                      "vaapi.h264.ready_policy": CONFIG.UNSET}
-        self.assertEqual(self.launch_plan(user).environment, {"CRYSTALHD_VAAPI_DEBUG": "1"})
+        self.assertEqual(self.launch_plan(user).environment, {"CRYSTALHD_VAAPI_DEBUG": "1",
+                                                           "CRYSTALHD_CONFIG_DISABLE": "1"})
 
     def test_run_rejects_process_id_mismatch_before_preparing_environment(self):
         with mock.patch.object(CONFIG.os, "geteuid", return_value=os.getuid() + 1):

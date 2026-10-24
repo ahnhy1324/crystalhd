@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """CrystalHD v1 configuration inspection, storage and opt-in child launch.
 
-Only the explicit run command passes supported requests to a new child's
-environment. It does not confirm application state, access hardware or reload
-modules. It uses only the Python standard library, compatible with Python 3.6.
+The run command passes supported requests to a new child's environment; native
+VA/DIL readers separately consume saved defaults. This CLI does not confirm
+application state, access hardware or reload modules. It uses only the Python standard library, compatible with Python 3.6.
 """
 
 import argparse
@@ -84,12 +84,20 @@ def boolean(value):
 
 def integer_enum(*accepted):
     allowed = frozenset(accepted)
-    return lambda value: type(value) is int and value in allowed
+    def validate(value):
+        return type(value) is int and value in allowed
+    validate.native_kind = "IntegerEnum"
+    validate.native_choices = tuple(sorted(allowed))
+    return validate
 
 
 def string_enum(*accepted):
     allowed = frozenset(accepted)
-    return lambda value: type(value) is str and value in allowed
+    def validate(value):
+        return type(value) is str and value in allowed
+    validate.native_kind = "StringEnum"
+    validate.native_choices = tuple(sorted(allowed))
+    return validate
 
 
 def nonempty_string(value):
@@ -205,6 +213,8 @@ LAUNCH_ENVIRONMENT = {
     "player.python": "CRYSTALHD_PLAYER_PYTHON",
 }
 
+NATIVE_CONFIG_DISABLE_ENVIRONMENT = "CRYSTALHD_CONFIG_DISABLE"
+
 CENTERED_NV12_ENVIRONMENT = "CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12"
 CENTERED_NV12_MODEL_CAVEAT = (
     "experimental centered NV12 environment is present; its value acceptance, "
@@ -314,7 +324,8 @@ class NativeRejection(object):
 
 class Resolution(object):
     def __init__(self, requested, origins, effective, activity, raw_receipts,
-                 rejections, preset, profile, centered_nv12_environment_present=False):
+                 rejections, preset, profile, centered_nv12_environment_present=False,
+                 native_config_disabled=False):
         self.requested = requested
         self.origins = origins
         self.effective = effective
@@ -325,6 +336,7 @@ class Resolution(object):
         self.profile = profile
         # This native-only boundary retains presence, never its raw value.
         self.centered_nv12_environment_present = centered_nv12_environment_present
+        self.native_config_disabled = native_config_disabled
 
 
 class PresetEntry(object):
@@ -898,7 +910,8 @@ def resolve(system, user, presets, explicit_preset=None, explicit_profile=None,
     effective, activity, rejections = native_effect(requested)
     return Resolution(requested, origins, effective, activity, receipts,
                       rejections, preset, profile,
-                      CENTERED_NV12_ENVIRONMENT in environment)
+                      CENTERED_NV12_ENVIRONMENT in environment,
+                      environment.get(NATIVE_CONFIG_DISABLE_ENVIRONMENT) == "1")
 
 
 def validate_managed(values):
@@ -945,7 +958,8 @@ def _native_ready_eligible(environment):
 
 
 def prepare_launch(system, user, catalog, environment, explicit_preset=None,
-                   explicit_profile=None, overrides=None, acknowledgements=()):
+                   explicit_profile=None, overrides=None, acknowledgements=(),
+                   native_bypass=False):
     """Build requests for a new child; never infer active application state."""
     if os.getuid() != os.geteuid() or os.getgid() != os.getegid():
         raise SchemaError("managed launch is disabled when process IDs differ")
@@ -987,6 +1001,12 @@ def prepare_launch(system, user, catalog, environment, explicit_preset=None,
         raise SchemaError("managed launch would enable unsupported READY remapping")
     _validated_preset(catalog, system, user, preset, acknowledgements,
                       additional_required=required)
+    if (native_bypass or requested_keys or overrides or explicit_preset is not None
+            or explicit_profile is not None or system.settings or user.settings
+            or system.profiles or user.profiles
+            or set(system.metadata) - {"schema"} or set(user.metadata) - {"schema"}):
+        # The resolved child is authoritative, including absence for false/unset.
+        child_environment[NATIVE_CONFIG_DISABLE_ENVIRONMENT] = "1"
     return LaunchPlan(child_environment, requested_keys)
 
 
@@ -1013,9 +1033,13 @@ def execute_launch(plan, child_argv):
     changed = {}
     failure = None
     try:
+        summary = ", ".join(plan.requested_keys) or "inherited environment unchanged"
+        if plan.environment.get(NATIVE_CONFIG_DISABLE_ENVIRONMENT) == "1":
+            summary = (", ".join(plan.requested_keys) or "no setting overrides")
+            summary += "; native file reading bypassed"
         _launch_diagnostic("REQUESTED FOR THIS CHILD: {0}; "
                            "active state unconfirmed; existing processes unchanged".format(
-                  ", ".join(plan.requested_keys) or "inherited environment unchanged"
+                  summary
                            ))
         for name in ("SIGPIPE", "SIGXFZ", "SIGXFSZ"):
             number = getattr(signal, name, None)
@@ -1634,6 +1658,9 @@ def make_report(resolution, environment_observed, bug_report=False):
             "backend, kernel module, or link topology was inspected"
         ),
         "effective_configuration_scope": "canonical-native-adapters-only",
+        "native_file_reading": ("bypassed-by-environment"
+                                if resolution.native_config_disabled else
+                                "component-dependent:not-inspected"),
         "native_only_environment": [],
         "native_rejections": [
             {"component": item.component, "reason": item.reason}
@@ -1641,6 +1668,10 @@ def make_report(resolution, environment_observed, bug_report=False):
         ],
         "settings": settings,
     }
+    if resolution.native_config_disabled:
+        report["state_scope"] += ("; native file reading bypassed by "
+                                  "CRYSTALHD_CONFIG_DISABLE=1; configured values "
+                                  "remain an inspection model")
     if resolution.centered_nv12_environment_present:
         report["effective_configuration_scope"] = (
             "partial:experimental-centered-nv12-native-only"
@@ -1680,6 +1711,7 @@ def print_text(report, key=None):
     print("environment: {0}".format(report["environment"]))
     print("observation: {0}".format(report["observation_limit"]))
     print("state scope: {0}".format(report["state_scope"]))
+    print("native file reading: {0}".format(report["native_file_reading"]))
     print("effective configuration scope: {0}".format(
         report["effective_configuration_scope"]
     ))
@@ -1924,7 +1956,8 @@ def resolve_arguments(arguments, environment):
     if not arguments.ignore_environment:
         raw_environment = dict(
             (name, environment[name])
-            for name in ENVIRONMENT_TARGETS | {CENTERED_NV12_ENVIRONMENT}
+            for name in ENVIRONMENT_TARGETS | {CENTERED_NV12_ENVIRONMENT,
+                                              NATIVE_CONFIG_DISABLE_ENVIRONMENT}
             if name in environment
         )
     return resolve(
@@ -2024,6 +2057,9 @@ def main(argv=None, environment=None):
                 explicit_preset=arguments.preset, explicit_profile=arguments.profile,
                 overrides=_parse_setting_assignments(arguments.override),
                 acknowledgements=arguments.acknowledge_risk,
+                native_bypass=(arguments.no_system_config or arguments.no_user_config
+                               or arguments.system_config is not None
+                               or arguments.user_config is not None),
             )
         elif arguments.command in ("save", "reset"):
             saved = write_arguments(arguments, process_environment)
@@ -2045,7 +2081,8 @@ def main(argv=None, environment=None):
             print("crystalhd-config: user configuration {0}; "
                   "SAVED ONLY, applications unchanged".format(outcome), file=sys.stderr)
             return 4
-        print("user configuration SAVED ONLY (0600); applications unchanged")
+        print("user configuration SAVED ONLY (0600); running applications unchanged; "
+              "updated native defaults read at next start")
         return 0
 
     observed = not arguments.ignore_environment
