@@ -108,19 +108,25 @@ scope to general full-rate FHD or hardware deinterlacing.
   native DI-QoS integration (30-minute run: 174/90,000 lost outputs); keep the
   intermittent firmware/input-space stall separate. See the
   [presentation results](HARDWARE-2026-09-13.md).
+- [ ] [#400: Managed settings and desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400)
+  — shared storage, native readers, named profiles, Player defaults and the
+  optional settings/tray editor are integrated through #498/#499/#502–#504.
+  Follow up installed-reader visibility and ordinary installed-client use;
+  neither a saved value nor a file declaration proves a running app applied it.
 - [ ] [#470: Output-aware RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470)
-  — first reconcile allocation, registration, plane offsets and padding with
-  checked sizes; only then reduce buffers with lifecycle and pixel validation.
-  The fixed-size pool alone is not evidence of a DMA overrun. This remains a
-  separate #472 experiment and is not part of the v1.2 candidate.
+  — checked allocation/registration and reduced-output sizing are integrated
+  through #479/#480. Remaining sized-RX lifetime/endurance acceptance stays
+  separate from completed sizing/pixel tests and from the #472 experiments.
+  The former fixed-size pool alone was not evidence of a DMA overrun.
 - [ ] [#471: Decoded-output traffic and conversion](https://github.com/ahnhy1324/crystalhd/issues/471)
   — measure output bytes and conversion ownership before proposing a new
   format or transfer path. Direct 4:2:2 VA/Kodi negotiation is not part of the
   v1.2 candidate.
 - [ ] [#477: Centered card output for ordinary VA clients](https://github.com/ahnhy1324/crystalhd/issues/477)
-  — default-off readable-canvas prototype; retain small Bob, full original
-  readback and exact lifetime semantics. Matched stock-client performance and
-  field/presentation acceptance determine whether to retain it; see the
+  — centered output and async completion are integrated through #494;
+  retain small Bob, full original readback and exact lifetime semantics.
+  The proposed L0s/native/centered matched matrix remains NOT RUN; earlier
+  bounded screen acceptance does not replace it. See the
   [development usage](filters/vaapi/README.md#development-experiment-centered-card-output).
 - [ ] [#92: BCM70015 capability research](https://github.com/ahnhy1324/crystalhd/issues/92)
   — pinned firmware mapping and live OPEN/scaling evidence; standalone
@@ -132,7 +138,7 @@ scope to general full-rate FHD or hardware deinterlacing.
 Acceptance checklists live in those issues. Current usage and support are in
 [README.md](README.md); the frozen hardware reference is in
 [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md). The stable release is bundle
-`1.1.0`, module/DKMS `3.10.9`; stable 1.0.0, RC.1 (`1.0.0-rc.1` / `3.10.2`) and the
+`1.2.0`, module/DKMS `3.10.13`; stable 1.0.0, RC.1 (`1.0.0-rc.1` / `3.10.2`) and the
 Phase 1 baseline remain unchanged. Mandatory missing tests remain
 NOT RUN/HOLD; only optional work may be deferred. Historical Phase 1 and
 bounded RC evidence do not establish new LTS/full-duration passes.
@@ -346,8 +352,9 @@ Missing optional VA operations are not all release requirements.
   agree. VA VPP cannot return output PTS; retain truthful zero temporal references
   and immutable decode tokens. The existing FFmpeg VA field-rate control passes
   100 outputs at 20 ms PTS intervals without an application patch.
-- [ ] P0 — Complete #473's selected exact-installed-RC Kodi Auto/Off, finite
-  seek/EOF/reopen and 30-minute card720→Bob presentation acceptance. Broader
+- [x] P0 — Complete #473's selected exact-installed-RC Kodi Auto/Off, finite
+  seek/EOF/reopen and 30-minute card720→Bob presentation acceptance, as recorded
+  in the closed release qualification. Broader
   native i386/Atom real-time, FHD cadence and LIVE inputs remain nonblocking
   #472/#429 follow-up. The bounded 10.100-second seek avoids the earlier long-GOP
   preroll and 5-second startup fallback, but video acknowledgement still arrives

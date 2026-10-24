@@ -30,6 +30,18 @@ def select(combo,token):
 
 
 class GtkSettingsTests(unittest.TestCase):
+    def test_installation_refresh_does_not_save_or_discard_drafts(self):
+        with mock.patch.object(CORE, 'inspect_installation', return_value={'scope': 'test', 'readers': [{'state': 'unknown'}]}), \
+                mock.patch.object(CORE, 'installation_text', return_value='File declaration only'):
+            app = self.app()
+            select(app.controls['vaapi.debug'], 'true')
+            draft = app.editor.draft
+            app.installation_refresh.clicked();drain()
+            self.assertIs(app.editor.draft, draft)
+            self.assertTrue(app.editor.dirty)
+            self.assertEqual(app.installation_status.get_text(), 'File declaration only')
+            self.assertFalse(self.path.exists())
+
     def test_profile_buttons_target_preview_default_and_confirmed_removal(self):
         app = self.app()
         app.prompt_profile_name = lambda: 'desk'

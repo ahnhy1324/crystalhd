@@ -15,8 +15,19 @@ crystalhd-config validate
 crystalhd-config show-effective
 crystalhd-config explain vaapi.h264.mode --format json
 crystalhd-config list-presets
+crystalhd-config installation
 crystalhd-config bug-report > crystalhd-config-report.json
 ```
+
+`installation` (also `--format json`) and the settings window's **Installation**
+page inspect reader declarations in the PATH-selected Player and the inspector
+ABI's default linker-cache DIL/VA candidates. They do not execute these files,
+load a decoder or read saved configuration. `declared-v1` identifies the supported
+keys; absent declarations mean a legacy or unknown build. Refresh after updating
+components. Loader overrides and another application's ABI can select different
+files: this is file capability, not proof of settings applied in a running app.
+The report includes local file paths; review it before sharing. `bug-report`
+retains its separate redacted configuration-only format.
 
 The reviewed preset catalog includes selectable Standard and explicitly
 acknowledged Experimental entries as well as unavailable/virtual names which
