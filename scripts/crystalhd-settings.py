@@ -55,7 +55,8 @@ def load_core():
     core = importlib.util.module_from_spec(spec)
     loader.exec_module(core)
     required = ("load_user_document_for_edit", "save_user_document", "patch_user_settings",
-                "delete_user_profile", "NATIVE_CONFIG_DISABLE_ENVIRONMENT")
+                "delete_user_profile", "NATIVE_CONFIG_DISABLE_ENVIRONMENT",
+                "inspect_installation", "installation_text")
     if not all(hasattr(core, name) for name in required):
         raise RuntimeError("a matching crystalhd-config core is required")
     return core
@@ -158,7 +159,7 @@ class Editor(object):
     def native_warning(self, profile=None):
         if self.native_requires_launch(profile):
             return _("Saved experiments need an explicitly acknowledged launch. Ordinary applications may ignore these saved requests.")
-        return _("Updated CrystalHD components read supported defaults when an app starts. Installed versions and running apps are not inspected.")
+        return _("Updated CrystalHD components read supported defaults when an app starts. See Installation for file declarations; running apps are not inspected.")
 
     def _commit(self, candidate, acknowledgements=(), validate_profiles=()):
         if self.snapshot is None or self.write_blocked:
@@ -339,7 +340,7 @@ class SettingsWindow(object):
             badge.get_accessible().set_name(_("Preview and source: ") + key)
             player_grid.attach(badge, 2, row, 1, 1)
             self.badges[key] = badge
-        player_note = Gtk.Label(label=_("Only updated crystalhd-play reads these defaults; installed version is not inspected. Other players keep their own controls. Scaling needs hardware decoding; software resizing also needs a nonzero card width. Interlaced H.264 widths must be multiples of 16. Saving takes effect on the next playback."), xalign=0)
+        player_note = Gtk.Label(label=_("Only updated crystalhd-play reads these defaults; see Installation for its reader declaration. Other players keep their own controls. Scaling needs hardware decoding; software resizing also needs a nonzero card width. Interlaced H.264 widths must be multiples of 16. Saving takes effect on the next playback."), xalign=0)
         player_note.set_line_wrap(True);player_note.set_max_width_chars(70)
         player_grid.attach(player_note, 0, 7, 3, 1)
         advanced_note = Gtk.Label(label=_("These controls can clear saved experiments. Activation requires an explicit acknowledged launch; it is not enabled by this editor. Off for explicit prefeed still allows eligible automatic prefeed."), xalign=0)
@@ -356,6 +357,19 @@ class SettingsWindow(object):
         scroll = Gtk.ScrolledWindow()
         scroll.add(self.tree)
         self.notebook.append_page(scroll, Gtk.Label(label=_("Details")))
+        installation = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=12)
+        self.installation_status = Gtk.Label(xalign=0)
+        self.installation_status.set_line_wrap(True)
+        self.installation_status.set_max_width_chars(70)
+        self.installation_status.set_selectable(True)
+        installation.pack_start(self.installation_status, False, False, 0)
+        self.installation_refresh = self.button(installation, _("Refresh installation status"), self.refresh_installation)
+        self.installation_refresh.set_tooltip_text(_("Read component file declarations. Does not save settings, load a decoder or restart applications."))
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.add(installation)
+        self.notebook.append_page(scroll, Gtk.Label(label=_("Installation")))
+        self.refresh_installation()
         location = Gtk.Label(label=_("User file: ") + str(editor.path), xalign=0)
         location.set_ellipsize(2)
         location.set_tooltip_text(str(editor.path))
@@ -381,6 +395,13 @@ class SettingsWindow(object):
         if not no_tray:
             self.setup_tray(icon)
         self.sync_form()
+
+    def refresh_installation(self, *_args):
+        report = self.editor.core.inspect_installation()
+        self.installation_status.set_text(self.editor.core.installation_text(report))
+        self.readers_unknown = any(item["state"] != "declared-v1" for item in report["readers"])
+        if hasattr(self, "save_button"):
+            self.update_preview()
 
     def choice(self, grid, row, text):
         label = self.Gtk.Label.new_with_mnemonic(text)
@@ -589,6 +610,8 @@ class SettingsWindow(object):
         for key, label in self.player_errors.items():
             label.set_text(self.player_error_text(key) if (self.editing_profile, key) in self.pending_player else "")
         status = self.notice or (_("Unsaved changes") if self.has_unsaved_changes() else _("Settings loaded; running applications have not been inspected"))
+        if self.readers_unknown:
+            status += "\n" + _("Some inspected components do not advertise settings support; see Installation.")
         if self.editing_profile:
             status += "\n" + _("Editing profile: ") + self.editing_profile
         else:

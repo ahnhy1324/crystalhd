@@ -34,6 +34,85 @@ SPEC.loader.exec_module(CONFIG)
 
 
 class ConfigCliTest(unittest.TestCase):
+    def test_installation_declarations_do_not_execute_components_or_load_config(self):
+        root = self.root / 'reader-files'
+        root.mkdir()
+        elf = b'\x7fELF' + bytes((CONFIG.struct.calcsize('P') // 4,))
+        dil = root / 'libcrystalhd.so.3'
+        libva = root / 'libva.so.2'
+        va = root / 'dri' / 'crystalhd_drv_video.so'
+        va.parent.mkdir()
+        dil.write_bytes(elf + b'\nCrystalHD managed defaults v1:dil\n')
+        libva.write_bytes(elf)
+        va.write_bytes(elf + b'\nCrystalHD managed defaults v2:vaapi\n')
+        player = root / 'controller with spaces.py'
+        player.write_text('# CrystalHD managed defaults v1:player\nraise RuntimeError("must not execute")\n')
+        wrapper = root / 'crystalhd-play'
+        wrapper.write_text('#!/bin/sh\n# CrystalHD Player controller-location protocol v1\n'
+                           "player_controller_relative='controller with spaces.py'\nexit 99\n")
+        wrapper.chmod(0o755)
+        cache = '\n'.join('{0} (libc6) => {1}'.format(p.name, p) for p in (dil, libva))
+        environment = {'PATH': str(root), 'LD_PRELOAD': 'secret', 'LIBVA_DRIVER_NAME': 'other'}
+        with mock.patch.object(CONFIG, 'load_document', side_effect=AssertionError('must not read INI')):
+            report = CONFIG.inspect_installation(environment, cache_text=cache)
+        self.assertEqual([r['state'] for r in report['readers']], ['declared-v1', 'unknown', 'declared-v1'])
+        self.assertEqual(report['readers'][2]['keys'], list(CONFIG.READER_KEYS['player']))
+        self.assertEqual(report['overrides_present'], ['LD_PRELOAD', 'LIBVA_DRIVER_NAME'])
+        self.assertNotIn('secret', json.dumps(report))
+        self.assertIn('running applications are not inspected', CONFIG.installation_text(report))
+        wrapper.write_text('#!/bin/sh\nexit 99\n')
+        self.assertIsNone(CONFIG._player_reader_path(str(wrapper)))
+        # A symlinked BINDIR must retain kernel path traversal through '..';
+        # lexical normalization would inspect a different controller.
+        realbin = root / 'real' / 'bin'
+        realbin.mkdir(parents=True)
+        (root / 'real' / 'share').mkdir()
+        controller = root / 'real' / 'share' / 'controller@home.py'
+        controller.write_text('# CrystalHD managed defaults v1:player\n')
+        linkedbin = root / 'linked-bin'
+        linkedbin.symlink_to(realbin, target_is_directory=True)
+        wrapper = realbin / 'crystalhd-play'
+        wrapper.write_text('#!/bin/sh\n# CrystalHD Player controller-location protocol v1\n'
+                           "player_controller_relative='../share/controller@home.py'\nexit 99\n")
+        path = CONFIG._player_reader_path(str(linkedbin / wrapper.name))
+        self.assertEqual(CONFIG.inspect_reader(path, 'player')['state'], 'declared-v1')
+
+    def test_installation_regular_bounded_files_symlinks_and_wrong_abi(self):
+        target = self.root / 'reader'
+        target.write_bytes(b'\x7fELF\x01\nCrystalHD managed defaults v1:dil\n')
+        link = self.root / 'reader-link'
+        link.symlink_to(target)
+        self.assertEqual(CONFIG.inspect_reader(str(link), 'dil', 1)['state'], 'declared-v1')
+        self.assertEqual(CONFIG.inspect_reader(str(link), 'dil', 2)['state'], 'unknown')
+        self.assertEqual(CONFIG.inspect_reader(str(self.root), 'dil')['state'], 'unreadable')
+        fifo = self.root / 'fifo'
+        os.mkfifo(str(fifo))
+        self.assertEqual(CONFIG.inspect_reader(str(fifo), 'dil')['state'], 'unreadable')
+        with self.assertRaises(ValueError):
+            CONFIG._inspection_bytes(str(target), maximum=4)
+        target.unlink()
+        self.assertEqual(CONFIG.inspect_reader(str(link), 'dil')['state'], 'unreadable')
+
+    def test_installation_fixed_readonly_cache_invocation_and_failure(self):
+        with mock.patch.object(CONFIG.os.path, 'isfile', return_value=True), \
+                mock.patch.object(CONFIG.subprocess, 'run') as run:
+            run.return_value = subprocess.CompletedProcess([], 0, b'cache', b'')
+            self.assertEqual(CONFIG._linker_cache(), ('cache', 'read'))
+            args, kwargs = run.call_args
+            self.assertEqual(args[0], ['/sbin/ldconfig', '-p'])
+            self.assertEqual(kwargs['env'], {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'})
+            self.assertEqual(kwargs['timeout'], 2)
+            run.side_effect = subprocess.TimeoutExpired('ldconfig', 2)
+            self.assertIn('timed out', CONFIG._linker_cache()[1])
+
+    def test_installation_cli_is_readonly_even_with_invalid_user_config(self):
+        self.write_user('not an ini file')
+        with mock.patch.object(CONFIG, 'inspect_installation', return_value={'scope': 'test'}), \
+                mock.patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.assertEqual(CONFIG.main(['installation', '--format', 'json'], environment={}), 0)
+        self.assertEqual(json.loads(output.getvalue()), {'scope': 'test'})
+        self.assertEqual(self.user_file.read_text(), 'not an ini file')
+
     def test_named_profile_cli_edits_only_target_and_checks_inactive_profile(self):
         self.write_user('[crystalhd]\nschema=1\n[settings]\nvaapi.debug=true\n'
                         '[profile.keep]\nvaapi.trace=true\n')
@@ -1975,6 +2054,7 @@ class ConfigCliTest(unittest.TestCase):
                 imports.add((node.module or "").split(".")[0])
         self.assertEqual(imports, {
             "argparse", "errno", "fcntl", "json", "os", "re", "secrets", "signal", "stat", "sys",
+            "shlex", "shutil", "struct", "subprocess",
         })
 
         archive_dir = self.root / "archive-without-git"

@@ -74,6 +74,10 @@ extern "C" {
 #include "crystalhd-mpeg2-replay.h"
 #include "crystalhd-private-backing.h"
 #include "crystalhd-config.h"
+
+/* File-inspection metadata, not an exported ABI or a runtime-state claim. */
+static const char managed_defaults_reader[] __attribute__((used)) =
+    "\nCrystalHD managed defaults v1:vaapi\n";
 #include "crystalhd-trace.h"
 #include "crystalhd-vc1.h"
 #include "crystalhd-vc1-replay.h"

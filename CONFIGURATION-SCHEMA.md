@@ -210,6 +210,31 @@ and window-only runs remain isolated. The desktop launcher uses tray startup;
 no login autostart or system service is added. Validate real panel registration,
 hide/reopen, single-instance activation, host-loss fallback and no startup write.
 
+### Installed-reader declarations
+
+`crystalhd-config installation` and the window's Installation page inspect
+component files without loading their code or opening a decoder. A fixed v1
+declaration identifies the managed-defaults reader in DIL, VA and Player; it is
+build metadata, not a new exported ABI or a statement about a running process.
+An absent declaration means legacy/unknown, not proof that every custom build
+lacks a reader. Reader declarations and their owner-specific keys are fixed by
+the protocol; unsupported versions remain unknown.
+
+Inspect the PATH-selected Player wrapper's literal controller location and
+ELF-class-compatible DIL/libva cache candidates. Invoke only the fixed system
+linker-cache listing tool with `-p`, a bounded timeout and a clean environment;
+never execute the inspected Player/library/driver. Follow ordinary library
+symlinks, read only regular bounded files and retain missing/read-error states.
+Report loader/environment overrides and the settings process's ABI explicitly.
+File availability does not prove which libraries another application maps.
+
+Refresh is read-only and does not save defaults or restart applications. After
+installation, qualify GUI-written temporary defaults through ordinary installed
+Player/native clients, actual hardware output, per-key invocation overrides,
+EOS and reopen. Reuse existing codec/pixel qualification when code is unchanged.
+Keep module/firmware/PCIe policy unchanged unless a separately demonstrated
+compatibility dependency requires work there.
+
 ## Inspect configuration
 
 The five inspection commands are:

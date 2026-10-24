@@ -16,6 +16,10 @@ import re
 import secrets
 import signal
 import stat
+import shlex
+import shutil
+import struct
+import subprocess
 import sys
 
 
@@ -37,6 +41,158 @@ TOKEN_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
 EVIDENCE_REF = re.compile(
     r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.md#[a-z0-9-]+\Z"
 )
+
+
+READER_KEYS = {
+    "dil": ("libcrystalhd.rx_pool_count",),
+    "vaapi": ("vaapi.h264.mode", "vaapi.h264.low_latency", "vaapi.h264.ready_remap",
+              "vaapi.i915_wc", "vaapi.debug", "vaapi.trace"),
+    "player": ("player.decoder", "gstreamer.crystalhddec.scale_width",
+               "player.software_output_size"),
+}
+
+
+def _inspection_bytes(path, maximum=64 * 1024 * 1024):
+    # Nonblocking open prevents a replaced FIFO from hanging a settings refresh.
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > maximum:
+            raise ValueError("not a bounded regular file")
+        data = stream.read(maximum + 1)
+        if len(data) > maximum:
+            raise ValueError("file grew beyond inspection bound")
+        return data
+
+
+def inspect_reader(path, component, elf_class=None):
+    result = {"component": component, "path": path, "state": "unknown",
+              "detail": "no candidate found", "keys": []}
+    if not path:
+        return result
+    try:
+        data = _inspection_bytes(path)
+        if elf_class is not None and (data[:4] != b"\x7fELF" or
+                                      data[4:5] != bytes((elf_class,))):
+            result["detail"] = "not a matching ELF ABI"
+            return result
+        marker = ("CrystalHD managed defaults v1:" + component + "\n").encode("ascii")
+        if marker in data:
+            result.update(state="declared-v1", detail="file declares managed-defaults reader v1",
+                          keys=list(READER_KEYS[component]))
+        else:
+            result["detail"] = "reader not advertised (legacy or unknown build)"
+    except (OSError, ValueError) as error:
+        result.update(state="unreadable", detail="file unavailable or not safely readable: " +
+                      (str(error.errno) if isinstance(error, OSError) else str(error)))
+    return result
+
+
+def _linker_cache():
+    for command in ("/sbin/ldconfig", "/usr/sbin/ldconfig"):
+        if os.path.isfile(command):
+            try:
+                result = subprocess.run([command, "-p"], stdin=subprocess.DEVNULL,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"}, timeout=2)
+                if result.returncode == 0:
+                    return result.stdout.decode("utf-8", "replace"), "read"
+                return "", "listing failed"
+            except (OSError, subprocess.TimeoutExpired):
+                return "", "listing unavailable or timed out"
+    return "", "listing tool unavailable"
+
+
+def _cache_candidate(cache, name, elf_class):
+    fallback = None
+    for line in cache.splitlines():
+        fields = line.strip().split(None, 1)
+        if not fields or fields[0] != name or " => " not in line:
+            continue
+        path = line.split(" => ", 1)[1].strip()
+        if not os.path.isabs(path):
+            continue
+        if fallback is None:
+            fallback = path
+        try:
+            # Do not read candidate bodies just to select the matching ABI.
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+            with os.fdopen(descriptor, "rb") as stream:
+                if stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    header = stream.read(5)
+                    if header == b"\x7fELF" + bytes((elf_class,)):
+                        return path
+        except OSError:
+            continue
+    return fallback
+
+
+def _player_reader_path(wrapper):
+    if not wrapper:
+        return None
+    # Match the wrapper's actual dirname semantics; do not resolve its symlink.
+    directory = os.path.dirname(os.path.abspath(wrapper))
+    try:
+        text = _inspection_bytes(wrapper, 1024 * 1024).decode("utf-8")
+        if "# CrystalHD Player controller-location protocol v1\n" not in text:
+            return None
+        adjacent = os.path.join(directory, "crystalhd-player.py")
+        if os.path.isfile(adjacent):
+            return adjacent
+        lines = [line for line in text.splitlines()
+                 if line.startswith("player_controller_relative=")]
+        if len(lines) != 1:
+            return None
+        words = shlex.split(lines[0].split("=", 1)[1])
+        if len(words) != 1 or not words[0]:
+            return None
+        relative = words[0]
+        if relative.startswith("@") and relative.endswith("@"):
+            relative = "../share/crystalhd/player.py"
+        # Preserve '..' for the kernel to resolve after symlinked directories,
+        # exactly as the wrapper opens its literal controller path.
+        return os.path.join(directory, relative)
+    except (OSError, ValueError, UnicodeError):
+        return None
+
+
+def inspect_installation(environment=None, cache_text=None):
+    """Inspect declarations only; never execute an inspected component or load INI."""
+    environment = os.environ if environment is None else environment
+    elf_class = struct.calcsize("P") // 4
+    if cache_text is None:
+        cache_text, cache_state = _linker_cache()
+    else:
+        cache_state = "provided"
+    dil = _cache_candidate(cache_text, "libcrystalhd.so.3", elf_class)
+    libva = _cache_candidate(cache_text, "libva.so.2", elf_class)
+    va = (os.path.join(os.path.dirname(os.path.realpath(libva)), "dri", "crystalhd_drv_video.so")
+          if libva else None)
+    wrapper = shutil.which("crystalhd-play", path=environment.get("PATH", os.defpath))
+    return {"scope": "file declarations only; running applications are not inspected",
+            "abi_bits": elf_class * 32, "linker_cache": cache_state,
+            "player_wrapper": wrapper,
+            "overrides_present": [name for name in (
+                "LD_LIBRARY_PATH", "LD_PRELOAD", "LIBVA_DRIVERS_PATH", "LIBVA_DRIVER_NAME",
+                "CRYSTALHD_PLAYER_PYTHON") if name in environment],
+            "caveat": "Default cache candidates can be overridden. Other client ABIs and mapped files may differ.",
+            "readers": [inspect_reader(dil, "dil", elf_class),
+                        inspect_reader(va, "vaapi", elf_class),
+                        inspect_reader(_player_reader_path(wrapper), "player")]}
+
+
+def installation_text(report):
+    lines = ["Installation: " + report["scope"],
+             "Inspector ABI: {0}-bit; linker cache: {1}".format(report["abi_bits"], report["linker_cache"]),
+             "Player wrapper: " + (report["player_wrapper"] or "not found")]
+    for item in report["readers"]:
+        lines.append("{0}: {1}\n  {2}\n  {3}".format(item["component"], item["state"],
+                     item["path"] or "no file", item["detail"]))
+        if item["keys"]:
+            lines.append("  Keys: " + ", ".join(item["keys"]))
+    lines.append("Overrides present (values omitted): " + (", ".join(report["overrides_present"]) or "none"))
+    lines.append(report["caveat"])
+    return "\n".join(lines)
 
 
 class SchemaError(ValueError):
@@ -1843,6 +1999,9 @@ def make_argument_parser():
     )
     listing.add_argument("--format", choices=("text", "json"), default="text")
 
+    installation = subparsers.add_parser("installation", help="inspect installed reader declarations without loading components")
+    installation.add_argument("--format", choices=("text", "json"), default="text")
+
     run = subparsers.add_parser(
         "run", help="request supported settings for a new child; does not persist",
         usage="%(prog)s [options] -- COMMAND [ARG ...]",
@@ -2085,6 +2244,13 @@ def main(argv=None, environment=None):
         parser.error("unknown canonical key")
 
     process_environment = os.environ if environment is None else environment
+    if arguments.command == "installation":
+        report = inspect_installation(process_environment)
+        if arguments.format == "json":
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(installation_text(report))
+        return 0
     if arguments.command == "list-presets":
         try:
             catalog = load_preset_catalog()

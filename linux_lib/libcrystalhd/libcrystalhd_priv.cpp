@@ -50,6 +50,10 @@
 #include "libcrystalhd_parser.h"
 #include "crystalhd-config.h"
 
+/* File-inspection metadata, not an exported ABI or a runtime-state claim. */
+static const char managed_defaults_reader[] __attribute__((used)) =
+    "\nCrystalHD managed defaults v1:dil\n";
+
 /*============== Global shared area usage ======================*/
 /* Global mode settings */
 /*
