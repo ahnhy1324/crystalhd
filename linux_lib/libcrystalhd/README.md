@@ -52,6 +52,12 @@ all playback/MOVE payload allocation, including fallback, moves from device
 open to first map/start; allocation failure can therefore occur there.
 DIAG/non-MOVE allocation remains eager. Replacement requires retired DMA
 ownership; uncertain unmap/stop retains backing and fails closed.
+After confirmed retirement, this experimental build also returns complete
+pages inside the RX payload to the kernel before freeing it. This reduces
+resident pages retained by the allocator without trimming the application's
+other allocations. Quarantined or active backing is never discarded; the
+ordinary fixed build is unchanged. See the
+[reopen and memory observations](../../HARDWARE-2026-09-13.md#rx-pool-retirement-and-reopen-2026-10-24).
 Use only a private build, not a system-library replacement. This is not a
 new playback option or default: BCM70012 hardware, suspend/resume and
 mid-stream resizing are not qualified. Scope and measured results remain in

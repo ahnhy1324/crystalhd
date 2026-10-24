@@ -761,6 +761,13 @@ frames during clocked output. It does not qualify this VA path's presentation.
 
 - VA-API supplies no explicit end-of-stream callback; bounded batch replay
   covers the tested BCM70015 files, not arbitrary streams or BCM70012
+- selected Kodi 21.3 finite sessions can log an output-message timeout at EOF
+  after the application's queue counters reach zero. A guarded trace identifies
+  one empty-drain wait lasting two seconds; it is a finite-playback compatibility
+  limit, separate from CrystalHD DMA retirement. Other timeouts are not thereby
+  classified as harmless. Retain picture counts, EOS and resource checks; see
+  the [observations](../../HARDWARE-2026-09-13.md#rx-pool-retirement-and-reopen-2026-10-24)
+  and [#445](https://github.com/ahnhy1324/crystalhd/issues/445).
 - only the decode, image, DRM PRIME, and minimal video-processing operations
   needed by the documented clients are implemented; `vaPutSurface`,
   subpictures, palettes, and detailed surface-error reporting are unavailable

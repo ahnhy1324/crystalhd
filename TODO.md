@@ -116,13 +116,16 @@ scope to general full-rate FHD or hardware deinterlacing.
   a running app applied it. Broader desktop/application acceptance stays open.
 - [ ] [#470: Output-aware RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470)
   — checked allocation/registration and reduced-output sizing are integrated
-  through #479/#480. Remaining sized-RX lifetime/endurance acceptance stays
-  separate from completed sizing/pixel tests and from the #472 experiments.
+  through #479/#480; #507 adds retired-page reclamation and selected native
+  EOS/reopen qualification. Physical paced A/B, BCM70012 and broader PM/format
+  acceptance remain open; the fixed default and DMA quarantine stay intact.
+  See the [retirement results](HARDWARE-2026-09-13.md#rx-pool-retirement-and-reopen-2026-10-24).
   The former fixed-size pool alone was not evidence of a DMA overrun.
 - [ ] [#471: Decoded-output traffic and conversion](https://github.com/ahnhy1324/crystalhd/issues/471)
-  — measure output bytes and conversion ownership before proposing a new
-  format or transfer path. Direct 4:2:2 VA/Kodi negotiation is not part of the
-  v1.2 candidate.
+  — #477 records native/centered YUY2 completion spans, distinct from wire
+  accounting and RX allocation. Next locate packed-4:2:2 decode-format,
+  export/import and renderer negotiation boundaries in unmodified clients.
+  Direct 4:2:2 VA/Kodi negotiation is not part of the v1.2 candidate.
 - [ ] [#477: Centered card output for ordinary VA clients](https://github.com/ahnhy1324/crystalhd/issues/477)
   — centered output and async completion are integrated through #494;
   retain small Bob, full original readback and exact lifetime semantics.
