@@ -2,6 +2,11 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 set -eu
 
+# These fixed-input device/VA mocks must not also intercept managed-file I/O.
+# Native INI consumption is covered separately by native-config.test.py and
+# isolated stock-client acceptance; all explicit native controls still apply.
+export CRYSTALHD_CONFIG_DISABLE=1
+
 hardware=0
 legacy=0
 build_bits=32
