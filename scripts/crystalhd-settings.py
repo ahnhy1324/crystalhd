@@ -52,7 +52,8 @@ def load_core():
     spec = importlib.util.spec_from_loader(loader.name, loader)
     core = importlib.util.module_from_spec(spec)
     loader.exec_module(core)
-    required = ("load_user_document_for_edit", "save_user_document", "NATIVE_CONFIG_DISABLE_ENVIRONMENT")
+    required = ("load_user_document_for_edit", "save_user_document", "patch_user_settings",
+                "delete_user_profile", "NATIVE_CONFIG_DISABLE_ENVIRONMENT")
     if not all(hasattr(core, name) for name in required):
         raise RuntimeError("a matching crystalhd-config core is required")
     return core
@@ -72,6 +73,7 @@ class Editor(object):
         self.load_error = None
         self.write_blocked = False
         self.saved_canonical = None
+        self.edited_profiles = set()
         try:
             self.catalog = self.core.load_preset_catalog()
             self.system = self.core.load_document(self.system_path, "system configuration", system=True)
@@ -88,15 +90,30 @@ class Editor(object):
     def dirty(self):
         return self.draft is not None and self.core.serialize_document(self.draft) != self.saved_canonical
 
-    def set_literal(self, key, source):
+    def set_literal(self, key, source, profile=None):
         if key not in self.core.RULES:
             raise self.core.SchemaError("unknown canonical setting")
         if self.draft is None or self.write_blocked:
             raise self.core.SchemaError("reload a valid configuration before editing")
-        if source is None:
-            self.draft.settings.pop(key, None)
-        else:
-            self.draft.settings.update(self.core._parse_setting_assignments([key + "=" + source]))
+        self.draft = self.core.patch_user_settings(
+            self.draft, [] if source is None else [key + "=" + source],
+            [key] if source is None else [], profile)
+        if profile is not None:
+            self.edited_profiles.add(profile)
+
+    def create_profile(self, name):
+        if self.draft is None or self.write_blocked:
+            raise self.core.SchemaError("reload before editing profiles")
+        if name in self.draft.profiles or name in self.system.profiles:
+            raise self.core.SchemaError("profile already exists; select its editing layer")
+        self.draft = self.core.patch_user_settings(self.draft, profile=name)
+        self.edited_profiles.add(name)
+
+    def delete_profile(self, name):
+        if self.draft is None or self.write_blocked:
+            raise self.core.SchemaError("reload before editing profiles")
+        self.draft = self.core.delete_user_profile(self.draft, name, self.system)
+        self.edited_profiles.discard(name)
 
     def set_selector(self, key, value):
         if key not in ("preset", "profile") or self.draft is None or self.write_blocked:
@@ -109,22 +126,23 @@ class Editor(object):
             candidate.metadata[key] = value
             self.draft = self.core.parse_document(self.core.serialize_document(candidate))
 
-    def preview(self, observe_environment=True):
+    def preview(self, observe_environment=True, profile=None):
         if self.draft is None:
             raise self.core.SchemaError(self.load_error or "configuration is not loaded")
         candidate = self.core.parse_document(self.core.serialize_document(self.draft))
         return self.core.resolve(self.system, candidate, self.catalog.selectable,
+                                 explicit_profile=profile,
                                  raw_environment=self.environment if observe_environment else {})
 
     def required_acknowledgements(self):
         selected = self.preview(False).preset
         return self.catalog.by_name[selected].required_acknowledgements
 
-    def report(self):
-        return self.core.make_report(self.preview(), True, bug_report=True)
+    def report(self, profile=None):
+        return self.core.make_report(self.preview(profile=profile), True, bug_report=True)
 
-    def native_requires_launch(self):
-        managed = self.preview(False)
+    def native_requires_launch(self, profile=None):
+        managed = self.preview(False, profile)
         values = managed.requested
         risky = (self.catalog.by_name[managed.preset].required_acknowledgements or
                  values["libcrystalhd.rx_pool_count"] == 8 or
@@ -132,8 +150,8 @@ class Editor(object):
                  any(values[k] for k in ("vaapi.h264.low_latency", "vaapi.h264.ready_remap", "vaapi.i915_wc")))
         return bool(risky)
 
-    def native_warning(self):
-        if self.native_requires_launch():
+    def native_warning(self, profile=None):
+        if self.native_requires_launch(profile):
             return _("Saved experiments need an explicit acknowledged launch. Ordinary Kodi may ignore this managed transaction.")
         return _("Updated VA/DIL reads supported defaults on next start. Installed readers and active applications are not inspected.")
 
@@ -143,7 +161,8 @@ class Editor(object):
         serialized = self.core.serialize_document(candidate)
         result = self.core.save_user_document(self.path, candidate, self.snapshot,
                                              system_path=self.system_path,
-                                             acknowledgements=acknowledgements)
+                                             acknowledgements=acknowledgements,
+                                             validate_profiles=sorted(self.edited_profiles & set(candidate.profiles)))
         if result.committed is not True:
             self.write_blocked = True
             return _("Save outcome is uncertain. Inspect the file and Reload before another write.")
@@ -154,6 +173,7 @@ class Editor(object):
             self.system = self.core.load_document(self.system_path, "system configuration", system=True)
             self.snapshot, self.draft = fresh, fresh.document
             self.saved_canonical = serialized
+            self.edited_profiles.clear()
             self.load_error = None
         except self.core.SchemaError:
             self.write_blocked = True
@@ -163,8 +183,10 @@ class Editor(object):
             return _("Saved, but durability is unconfirmed. Inspect the file and Reload before another write.")
         return _("Defaults saved. Restart applications to read them; active state is unconfirmed.")
 
-    def save(self, acknowledgements=()):
+    def save(self, acknowledgements=(), profile=None):
         self.preview(False)
+        if profile is not None:
+            self.preview(False, profile)
         return self._commit(self.draft, acknowledgements)
 
     def reset(self):
@@ -214,6 +236,7 @@ class SettingsWindow(object):
         self.tray_subscriptions = []
         self.quitting = False
         self.notice = ""
+        self.editing_profile = None
         self.window = Gtk.Window(title=_("CrystalHD Settings"))
         self.window.set_default_size(720, 560)
         self.window.set_border_width(14)
@@ -240,13 +263,22 @@ class SettingsWindow(object):
         self.notebook = Gtk.Notebook()
         outer.pack_start(self.notebook, True, True, 0)
         grid = Gtk.Grid(column_spacing=16, row_spacing=10, margin=12)
-        self.notebook.append_page(grid, Gtk.Label(label=_("Native defaults")))
+        advanced = Gtk.Grid(column_spacing=16, row_spacing=10, margin=12)
+        # Profiles add controls; keep Save/Close reachable on short displays.
+        for page, label in ((grid, _("Native defaults")), (advanced, _("Advanced native"))):
+            scroll = Gtk.ScrolledWindow()
+            scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroll.add(page)
+            self.notebook.append_page(scroll, Gtk.Label(label=label))
         self.preset = self.choice(grid, 0, _("_Preset"))
         self.profile = self.choice(grid, 1, _("Default pro_file"))
+        self.layer = self.choice(grid, 2, _("_Editing layer"))
+        profile_buttons = Gtk.Box(spacing=8)
+        self.new_profile_button = self.button(profile_buttons, _("_New profile…"), self.new_profile)
+        self.delete_profile_button = self.button(profile_buttons, _("Remove _user profile…"), self.delete_profile)
+        grid.attach(profile_buttons, 1, 3, 2, 1)
         self.controls, self.badges = {}, {}
-        advanced = Gtk.Grid(column_spacing=16, row_spacing=10, margin=12)
-        self.notebook.append_page(advanced, Gtk.Label(label=_("Advanced native")))
-        basic_row, advanced_row = 2, 0
+        basic_row, advanced_row = 4, 0
         for key, label, _values in CONTROLS:
             is_advanced = key in ("vaapi.h264.low_latency", "vaapi.h264.ready_remap", "vaapi.i915_wc")
             target, row = (advanced, advanced_row) if is_advanced else (grid, basic_row)
@@ -291,6 +323,7 @@ class SettingsWindow(object):
         self.button(buttons, _("_Close"), self.close_window)
         self.preset.connect("changed", self.selector_changed, "preset")
         self.profile.connect("changed", self.selector_changed, "profile")
+        self.layer.connect("changed", self.layer_changed)
         for key, combo in self.controls.items():
             combo.connect("changed", self.setting_changed, key)
         if not no_tray:
@@ -351,17 +384,26 @@ class SettingsWindow(object):
             names.update(doc.profiles if doc else ())
             profiles = [("", _("Inherit profile"), True)] + [(name, name, True) for name in sorted(names)]
             self.set_choices(self.profile, profiles, doc.metadata.get("profile", "") if doc else "")
+            if self.editing_profile not in names:
+                self.editing_profile = None
+            layers = [("", _("User base settings"), True)]
+            layers += [(name, name + (_(" (user overrides)") if doc and name in doc.profiles else _(" (system; edit adds user overrides)")), True)
+                       for name in sorted(names)]
+            self.set_choices(self.layer, layers, self.editing_profile or "")
             labels = {"false": _("Off / not explicitly requested"), "true": _("On (diagnostic)"),
                       '"bounded"': _("Automatic / bounded"), '"strict"': _("Strict finite"), "16": _("16 buffers (standard)")}
             for key, _label, allowed in CONTROLS:
                 choices = [("", _("Inherit lower file layers"), True), ("unset", _("Native default (unset)"), True)]
                 choices += [(v, labels[v], True) for v in allowed]
-                value = doc.settings.get(key) if doc and key in doc.settings else None
+                target = (doc.settings if self.editing_profile is None else doc.profiles.get(self.editing_profile, {})) if doc else {}
+                value = target.get(key)
                 token = "" if value is None else ("unset" if value is self.editor.core.UNSET else self.editor.core._format_value(value))
                 self.set_choices(self.controls[key], choices, token)
             editable = doc is not None and not self.editor.write_blocked
-            for combo in [self.preset, self.profile] + list(self.controls.values()):
+            for combo in [self.preset, self.profile, self.layer] + list(self.controls.values()):
                 combo.set_sensitive(editable)
+            self.new_profile_button.set_sensitive(editable)
+            self.delete_profile_button.set_sensitive(bool(editable and self.editing_profile in doc.profiles))
         finally:
             self.updating = False
         self.update_preview()
@@ -371,14 +413,16 @@ class SettingsWindow(object):
         valid = False
         partial_model = native_rejected = False
         try:
-            report = self.editor.report()
+            report = self.editor.report(self.editing_profile)
             partial_model = bool(report["native_only_environment"])
             native_rejected = bool(report["native_rejections"])
-            guidance = self.editor.native_warning()
+            guidance = self.editor.native_warning(self.editing_profile)
+            if self.editing_profile:
+                guidance = _("Previewing editing profile, not the application's default selection. ") + guidance
             if report["native_file_reading"] == "bypassed-by-environment":
                 guidance += " " + _("Native file reading is bypassed in this settings process's environment.")
             self.guidance.set_text(guidance + " " + _("Explicit prefeed Off still permits eligible automatic prefeed."))
-            launch_only = self.editor.native_requires_launch()
+            launch_only = self.editor.native_requires_launch(self.editing_profile)
             for item in report["settings"]:
                 key = item["key"]
                 use = (_("Next start in updated VA/DIL; not confirmed active") if key in self.controls else
@@ -399,6 +443,10 @@ class SettingsWindow(object):
             for badge in self.badges.values():
                 badge.set_text(_("Model unavailable"))
         status = self.notice or (_("Unsaved changes") if self.editor.dirty else _("Defaults loaded; active application state unconfirmed"))
+        if self.editing_profile:
+            status += "\n" + _("Editing / previewing profile: ") + self.editing_profile
+        else:
+            status += "\n" + _("Editing user base; model includes the default profile, if selected.")
         if self.editor.load_error:
             status = _("Configuration could not be loaded: ") + self.editor.load_error
         if partial_model:
@@ -420,11 +468,57 @@ class SettingsWindow(object):
             row = combo.get_active_iter()
             if row is not None and not combo.get_model()[row][2]:
                 return
-            self.editor.set_literal(key, token or None)
+            self.editor.set_literal(key, token or None, self.editing_profile)
             self.notice = ""
         except self.editor.core.SchemaError as error:
             self.notice = str(error)
-        self.update_preview()
+        self.sync_form()
+
+    def layer_changed(self, combo):
+        if self.updating:
+            return
+        self.editing_profile = self.token(combo) or None
+        self.notice = ""
+        self.sync_form()
+
+    def prompt_profile_name(self):
+        dialog = self.Gtk.Dialog(title=_("New profile"), transient_for=self.window, modal=True)
+        dialog.add_buttons(_("Cancel"), self.Gtk.ResponseType.CANCEL, _("Create"), self.Gtk.ResponseType.OK)
+        entry = self.Gtk.Entry()
+        entry.set_placeholder_text(_("1–64 ASCII letters/digits/._-; start with letter/digit"))
+        entry.get_accessible().set_name(_("Profile name"))
+        entry.set_activates_default(True)
+        dialog.set_default_response(self.Gtk.ResponseType.OK)
+        dialog.get_content_area().add(entry)
+        dialog.show_all()
+        entry.grab_focus()
+        response = dialog.run()
+        name = entry.get_text()
+        dialog.destroy()
+        return name if response == self.Gtk.ResponseType.OK else None
+
+    def new_profile(self, *_args):
+        name = self.prompt_profile_name()
+        if name is None:
+            return
+        try:
+            self.editor.create_profile(name)
+            self.editing_profile = name
+            self.notice = _("Profile added to draft. Select it as Default profile if desired, then Save.")
+        except self.editor.core.SchemaError as error:
+            self.notice = str(error)
+        self.sync_form()
+
+    def delete_profile(self, *_args):
+        if not self.confirm(_("Remove this user profile from the draft?"),
+                _("System definitions remain. A user default selecting a removed user-only profile becomes inherited. Save is required.")):
+            return
+        try:
+            self.editor.delete_profile(self.editing_profile)
+            self.notice = _("User profile removed from draft; Save to persist.")
+        except self.editor.core.SchemaError as error:
+            self.notice = str(error)
+        self.sync_form()
 
     def selector_changed(self, combo, key):
         if self.updating:
@@ -454,7 +548,7 @@ class SettingsWindow(object):
             if required and not self.confirm(_("Save launch-only experimental defaults?"),
                     _("This does not enable experiments in ordinary Kodi. An acknowledged launch remains required. Risks: ") + ", ".join(required)):
                 return
-            self.notice = self.editor.save(required)
+            self.notice = self.editor.save(required, profile=self.editing_profile)
         except self.editor.core.SchemaError as error:
             self.notice = str(error) + " " + _("Keep your edits; Reload to review changes before retrying.")
         self.sync_form()

@@ -34,6 +34,57 @@ SPEC.loader.exec_module(CONFIG)
 
 
 class ConfigCliTest(unittest.TestCase):
+    def test_named_profile_cli_edits_only_target_and_checks_inactive_profile(self):
+        self.write_user('[crystalhd]\nschema=1\n[settings]\nvaapi.debug=true\n'
+                        '[profile.keep]\nvaapi.trace=true\n')
+        for value in ('false', 'unset'):
+            result = self.run_cli('save', '--profile-section', 'desk', 'vaapi.debug='+value,
+                                  *self.writer_options())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            doc = CONFIG.parse_document(self.user_file.read_bytes())
+            self.assertTrue(doc.settings['vaapi.debug'])
+            self.assertEqual(doc.profiles['keep'], {'vaapi.trace': True})
+            self.assertNotIn('profile', doc.metadata)
+        result = self.run_cli('save', '--profile-section', 'desk', '--remove', 'vaapi.debug',
+                              '--profile', 'desk', *self.writer_options())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        doc = CONFIG.parse_document(self.user_file.read_bytes())
+        self.assertEqual(doc.profiles['desk'], {})
+        self.assertEqual(doc.metadata['profile'], 'desk')
+        original = self.user_file.read_bytes()
+        for args in [('--profile-section', 'bad name'),
+                     ('--profile-section', 'inactive', 'vaapi.h264.ready_remap=true'),
+                     ('--profile-section', 'desk', '--remove', 'vaapi.debug', 'vaapi.debug=false')]:
+            result = self.run_cli('save', *args, *self.writer_options())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(self.user_file.read_bytes(), original)
+
+    def test_delete_profile_keeps_system_definition_and_clears_user_only_selector(self):
+        header = '[crystalhd]\nschema=1\n'
+        self.write_user(header+'profile="desk"\n[profile.desk]\nvaapi.debug=false\n'
+                        '[profile.keep]\nvaapi.trace=true\n')
+        system = self.root/'system.ini'
+        system.write_text(header+'[profile.desk]\nvaapi.debug=true\n', encoding='utf-8')
+        system.chmod(0o600)
+        # A system layer must be root-owned; use the exact shared operation for
+        # merge semantics without weakening production ownership checks.
+        doc = CONFIG.parse_document(self.user_file.read_bytes())
+        system_doc = CONFIG.parse_document(system.read_bytes())
+        candidate = CONFIG.delete_user_profile(doc, 'desk', system_doc)
+        self.assertEqual(candidate.metadata['profile'], 'desk')
+        resolved = CONFIG.resolve(system_doc, candidate, CONFIG.load_preset_catalog().selectable)
+        self.assertTrue(resolved.effective['vaapi.debug'])
+        self.assertIn('desk', doc.profiles)  # mutation is transactional
+        result = self.run_cli('delete-profile', 'desk', *self.writer_options())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        saved = CONFIG.parse_document(self.user_file.read_bytes())
+        self.assertNotIn('profile', saved.metadata)
+        self.assertEqual(saved.profiles, {'keep': {'vaapi.trace': True}})
+        original = self.user_file.read_bytes()
+        result = self.run_cli('delete-profile', 'desk', *self.writer_options())
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(self.user_file.read_bytes(), original)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="crystalhd-config-test-")
         self.root = Path(self.temp.name)

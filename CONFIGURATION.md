@@ -96,8 +96,15 @@ and saved defaults remain after the utility exits.
 
 The native page edits safe supported values and shows each value's **model origin**;
 Advanced native can clear saved experiments. Inherit removes a user override;
-Native default (`unset`) blocks lower file layers. Existing profiles are selectable
-and preserved; this first editor does not create/edit their sections. Other owners'
+Native default (`unset`) blocks lower file layers. **Editing layer** chooses user
+base settings or a named profile. **New profile** adds an empty draft; edit its
+values, then select it as **Default profile** if ordinary launches should use it.
+Switching editing layers retains all draft changes and previews that profile
+without changing the default selection. **Remove user profile** requires
+confirmation and takes effect only after Save; system definitions remain intact.
+Editing a system profile adds user overrides, and removing those overrides
+reveals its system values. Removing a user-only default profile also clears its
+user selector, returning to inherited selection. Other owners'
 settings are inspectable in All settings / origins. Unavailable presets,
 frontend-only Quality and launch-only experimental activations cannot be selected
 as automatic native settings. Existing saved entries remain intact. Saving an already selected experimental
@@ -122,6 +129,21 @@ change another app's configuration, load a module, or modify PCIe/power policy.
 shared `crystalhd-config` and user defaults; full runtime removal also removes the
 optional frontend. `PREFIX`/`BINDIR`/`DATADIR`/`DESTDIR` are supported; custom desktop
 locations must be on the desktop's normal PATH/XDG search paths.
+
+For the same profile operations without GTK:
+
+```sh
+# Create/edit the profile without changing the default:
+crystalhd-config save --profile-section local 'vaapi.h264.mode="bounded"'
+crystalhd-config save --profile local
+# Remove one override (inherit), or explicitly request its native default:
+crystalhd-config save --profile-section local --remove vaapi.debug
+crystalhd-config save --profile-section local vaapi.debug=unset
+crystalhd-config delete-profile local
+```
+
+These commands save defaults only. Existing process environment and application
+CLI/property overrides still win; restart applications to read a changed file.
 
 ## Native configuration bootstrap
 

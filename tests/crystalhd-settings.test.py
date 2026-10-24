@@ -21,6 +21,77 @@ HEADER = '[crystalhd]\nschema = 1\n'
 
 
 class SettingsModelTests(unittest.TestCase):
+    def test_profile_cli_parity_on_the_model_interpreter(self):
+        # Also runs under actual i386 Python 3.6; the larger CLI harness itself
+        # uses newer Python syntax, while the shipped core does not.
+        cli = [sys.executable, '-B', str(ROOT/'scripts/crystalhd-config.py')]
+        options = ['--no-system-config', '--user-config', str(self.path)]
+        operations = [(['save', '--profile-section', 'desk', 'vaapi.debug=false'], 0),
+                      (['save', '--profile-section', 'desk', 'vaapi.debug=unset'], 0),
+                      (['save', '--profile', 'desk'], 0),
+                      (['save', '--profile-section', 'bad name'], 3)]
+        for operation, expected in operations:
+            result = subprocess.run(cli+operation+options, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, universal_newlines=True)
+            self.assertEqual(result.returncode, expected, result.stderr)
+        e = self.editor()
+        self.assertEqual(e.draft.metadata['profile'], 'desk')
+        self.assertIs(e.draft.profiles['desk']['vaapi.debug'], CORE.UNSET)
+        result = subprocess.run(cli+['delete-profile', 'desk']+options,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        e.reload()
+        self.assertNotIn('profile', e.draft.metadata)
+        self.assertEqual(e.draft.profiles, {})
+
+    def test_profile_drafts_share_core_and_preview_does_not_select_default(self):
+        e = self.editor()
+        with mock.patch.object(CORE, 'patch_user_settings', wraps=CORE.patch_user_settings) as patch:
+            e.create_profile('desk')
+            e.set_literal('vaapi.debug', 'true', 'desk')
+        self.assertEqual(patch.call_count, 2)
+        self.assertFalse(self.path.exists())
+        self.assertFalse(e.preview(False).effective['vaapi.debug'])
+        self.assertTrue(e.preview(False, 'desk').effective['vaapi.debug'])
+        self.assertNotIn('profile', e.draft.metadata)
+        e.save(profile='desk')
+        with self.assertRaises(CORE.SchemaError): e.create_profile('desk')
+        e.set_selector('profile', 'desk')
+        e.save()
+        e.delete_profile('desk')
+        self.assertNotIn('profile', e.draft.metadata)
+        self.assertIn('desk', CORE.parse_document(self.path.read_bytes()).profiles)
+        e.save()
+        self.assertEqual(CORE.parse_document(self.path.read_bytes()).profiles, {})
+
+    def test_profile_system_override_inheritance_and_stale_write(self):
+        e = self.editor()
+        e.system = CORE.parse_document((HEADER+'[profile.desk]\nvaapi.debug=true\n').encode('utf-8'))
+        for literal, expected in [('false', False), ('unset', False), (None, True)]:
+            e.set_literal('vaapi.debug', literal, 'desk')
+            self.assertEqual(e.preview(False, 'desk').effective['vaapi.debug'], expected)
+        e.delete_profile('desk')
+        self.assertIn('desk', e.system.profiles)
+        with self.assertRaises(CORE.SchemaError): e.delete_profile('desk')
+        e.reload()
+        e.create_profile('desk');e.set_literal('vaapi.debug', 'true', 'desk')
+        other = self.editor();other.set_literal('vaapi.trace', 'true');other.save()
+        original = self.path.read_bytes()
+        with self.assertRaises(CORE.SchemaError): e.save(profile='desk')
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertTrue(e.dirty)
+
+    def test_inactive_edited_profile_cannot_escape_validation_by_switching_scope(self):
+        self.write(HEADER+'[profile.desk]\nvaapi.h264.mode="live"\n'
+                   'vaapi.h264.low_latency=true\nvaapi.h264.ready_remap=true\n')
+        e = self.editor()
+        e.set_literal('vaapi.h264.low_latency', 'false', 'desk')
+        e.set_literal('vaapi.debug', 'true')
+        original = self.path.read_bytes()
+        with self.assertRaises(CORE.SchemaError): e.save()
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertTrue(e.dirty)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="crystalhd-settings-test-")
         self.path = Path(self.temp.name) / 'private/config.ini'

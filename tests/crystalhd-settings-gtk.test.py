@@ -30,6 +30,66 @@ def select(combo,token):
 
 
 class GtkSettingsTests(unittest.TestCase):
+    def test_profile_buttons_target_preview_default_and_confirmed_removal(self):
+        app = self.app()
+        app.prompt_profile_name = lambda: 'desk'
+        app.new_profile_button.clicked();drain()
+        self.assertEqual(app.editing_profile, 'desk')
+        self.assertIn('Editing / previewing profile: desk', app.status.get_text())
+        self.assertEqual(app.token(app.profile), '')
+        select(app.controls['vaapi.debug'], 'true')
+        self.assertTrue(app.editor.preview(False, 'desk').effective['vaapi.debug'])
+        self.assertFalse(app.editor.preview(False).effective['vaapi.debug'])
+        self.assertIn('Previewing editing profile', app.guidance.get_text())
+        select(app.layer, '')
+        self.assertEqual(app.token(app.controls['vaapi.debug']), '')
+        select(app.controls['vaapi.trace'], 'true')
+        select(app.layer, 'desk')
+        self.assertEqual(app.token(app.controls['vaapi.debug']), 'true')
+        select(app.profile, 'desk')
+        app.save_button.clicked();drain()
+        doc = CORE.parse_document(self.path.read_bytes())
+        self.assertEqual(doc.profiles['desk'], {'vaapi.debug': True})
+        self.assertEqual(doc.settings, {'vaapi.trace': True})
+        self.assertEqual(doc.metadata['profile'], 'desk')
+        app.confirm = lambda *_: False
+        app.delete_profile_button.clicked();drain()
+        self.assertFalse(app.editor.dirty)
+        app.confirm = lambda *_: True
+        app.delete_profile_button.clicked();drain()
+        self.assertTrue(app.editor.dirty)
+        self.assertIsNone(app.editing_profile)
+        self.assertIn('desk', CORE.parse_document(self.path.read_bytes()).profiles)
+        app.save_button.clicked();drain()
+        self.assertEqual(CORE.parse_document(self.path.read_bytes()).profiles, {})
+
+    def test_system_profile_is_only_overlaid_and_draft_dialog_does_not_write(self):
+        app = self.app()
+        app.editor.system = CORE.parse_document((HEADER+'[profile.system]\nvaapi.debug=true\n').encode('utf-8'))
+        app.sync_form()
+        select(app.layer, 'system')
+        self.assertFalse(app.delete_profile_button.get_sensitive())
+        select(app.controls['vaapi.debug'], 'false')
+        self.assertTrue(app.delete_profile_button.get_sensitive())
+        self.assertTrue(app.editor.system.profiles['system']['vaapi.debug'])
+        self.assertFalse(app.editor.preview(False, 'system').effective['vaapi.debug'])
+        app.confirm = lambda *_: True
+        app.delete_profile_button.clicked();drain()
+        self.assertEqual(app.editing_profile, 'system')
+        self.assertTrue(app.editor.preview(False, 'system').effective['vaapi.debug'])
+        self.assertFalse(self.path.exists())
+        def type_name():
+            dialog = next(w for w in Gtk.Window.list_toplevels() if isinstance(w, Gtk.Dialog))
+            entry = next(w for w in dialog.get_content_area().get_children() if isinstance(w, Gtk.Entry))
+            entry.set_text('bad name')
+            dialog.response(Gtk.ResponseType.OK)
+            return False
+        GLib.idle_add(type_name)
+        app.new_profile_button.clicked();drain()
+        self.assertIn('invalid profile', app.status.get_text())
+        self.assertNotIn('bad name', app.editor.draft.profiles)
+        self.assertFalse(self.path.exists())
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='crystalhd-settings-gtk-')
         self.path=Path(self.temp.name)/'config.ini'

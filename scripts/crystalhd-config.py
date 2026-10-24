@@ -1447,7 +1447,7 @@ def load_user_document_for_edit(path, reset=False):
 
 
 def save_user_document(path, document, expected_snapshot, system_path=None,
-                       acknowledgements=()):
+                       acknowledgements=(), validate_profiles=()):
     """Save an explicit overlay, rejecting stale cooperating local sessions.
 
     Before replacement, errors raise SchemaError and preserve existing bytes.
@@ -1465,6 +1465,9 @@ def save_user_document(path, document, expected_snapshot, system_path=None,
     preset = _validated_preset(catalog, system, candidate, None, acknowledgements)
     resolve(system, candidate, catalog.selectable, explicit_preset=preset,
             raw_environment={})
+    for profile in validate_profiles:
+        resolve(system, candidate, catalog.selectable, explicit_preset=preset,
+                explicit_profile=profile, raw_environment={})
     parent, name = os.path.split(path)
     directory_fd, temporary_fd, temporary_name, temporary_inode = None, None, None, None
     committed, durable, failure = False, False, None
@@ -1851,15 +1854,20 @@ def make_argument_parser():
     save = subparsers.add_parser("save", help="save explicit user defaults; does not apply them")
     add_write_options(save)
     save.add_argument("assignments", nargs="*", metavar="KEY=VALUE",
-                      help="patch base settings using strict INI value syntax")
+                      help="patch settings using strict INI value syntax")
+    save.add_argument("--profile-section", action=SingleWriteOption, metavar="NAME",
+                      help="edit/create this user profile section instead of base settings")
     save.add_argument("--remove", action="append", default=[], metavar="KEY",
-                      help="omit a base key or preset/profile selector; differs from unset")
+                      help="omit a targeted setting or preset/profile selector; differs from unset")
     save.add_argument("--preset", action=SingleWriteOption, metavar="NAME",
                       help="persist this preset selector without expanding its settings")
     save.add_argument("--profile", action=SingleWriteOption, metavar="NAME",
                       help="persist this profile selector; does not edit its section")
     reset = subparsers.add_parser("reset", help="save an empty user overlay; does not apply it")
     add_write_options(reset)
+    delete = subparsers.add_parser("delete-profile", help="remove only a user profile section")
+    add_write_options(delete)
+    delete.add_argument("name", metavar="NAME")
 
     validate = subparsers.add_parser("validate", help="validate selected configuration")
     add_common_options(validate)
@@ -1985,26 +1993,51 @@ def _parse_setting_assignments(assignments):
     return parse_document(("\n".join(lines) + "\n").encode("utf-8")).settings
 
 
+def patch_user_settings(document, assignments=(), removals=(), profile=None):
+    """Return a new draft; selecting an editing target never selects a default."""
+    if profile is not None and (type(profile) is not str or PROFILE_NAME.fullmatch(profile) is None):
+        raise SchemaError("invalid profile name: use 1-64 ASCII letters/digits/._-, starting with a letter/digit")
+    patch = _parse_setting_assignments(assignments)
+    if (len(removals) != len(set(removals)) or set(removals) & set(patch)
+            or any(key not in RULES for key in removals)):
+        raise CommandLineSelectionError("invalid or conflicting setting removal")
+    candidate = parse_document(serialize_document(document))
+    target = candidate.settings if profile is None else candidate.profiles.setdefault(profile, {})
+    target.update(patch)
+    for key in removals:
+        target.pop(key, None)
+    return parse_document(serialize_document(candidate))
+
+
+def delete_user_profile(document, name, system):
+    """Remove a user section only; inherited system profiles remain intact."""
+    candidate = parse_document(serialize_document(document))
+    if type(name) is not str or name not in candidate.profiles:
+        raise SchemaError("user profile does not exist")
+    del candidate.profiles[name]
+    if candidate.metadata.get("profile") == name and name not in system.profiles:
+        candidate.metadata.pop("profile")
+    return candidate
+
+
 def _patch_user_document(document, arguments):
     if not (arguments.assignments or arguments.remove or
-            arguments.preset is not None or arguments.profile is not None):
+            arguments.preset is not None or arguments.profile is not None or
+            arguments.profile_section is not None):
         raise CommandLineSelectionError("save requires an explicit change")
-    patch = _parse_setting_assignments(arguments.assignments)
-    keys = set(patch)
     removals = arguments.remove
-    if (len(removals) != len(set(removals)) or set(removals) & keys or
+    if (len(removals) != len(set(removals)) or
             any(key not in RULES and key not in ("preset", "profile") for key in removals)):
         raise CommandLineSelectionError("invalid or conflicting removal")
     for selector in ("preset", "profile"):
         if getattr(arguments, selector) is not None and selector in removals:
             raise CommandLineSelectionError("selector is both supplied and removed")
-    candidate = parse_document(serialize_document(document))
-    candidate.settings.update(patch)
+    candidate = patch_user_settings(document, arguments.assignments,
+                                    [key for key in removals if key in RULES],
+                                    arguments.profile_section)
     for key in removals:
         if key in ("preset", "profile"):
             candidate.metadata.pop(key, None)
-        else:
-            candidate.settings.pop(key, None)
     for selector in ("preset", "profile"):
         value = getattr(arguments, selector)
         if value is not None:
@@ -2020,10 +2053,19 @@ def write_arguments(arguments, environment):
                  else default_user_config(environment))
     path = _user_target_path(user_path, system_path)
     snapshot = load_user_document_for_edit(path, reset=arguments.command == "reset")
-    candidate = (empty_document() if arguments.command == "reset"
-                 else _patch_user_document(snapshot.document, arguments))
+    profiles = ()
+    if arguments.command == "reset":
+        candidate = empty_document()
+    elif arguments.command == "delete-profile":
+        system = load_document(system_path, "system configuration", system=True)
+        candidate = delete_user_profile(snapshot.document, arguments.name, system)
+    else:
+        candidate = _patch_user_document(snapshot.document, arguments)
+        if arguments.profile_section is not None:
+            profiles = (arguments.profile_section,)
     return save_user_document(path, candidate, snapshot, system_path=system_path,
-                              acknowledgements=arguments.acknowledge_risk)
+                              acknowledgements=arguments.acknowledge_risk,
+                              validate_profiles=profiles)
 
 
 def main(argv=None, environment=None):
@@ -2061,7 +2103,7 @@ def main(argv=None, environment=None):
                                or arguments.system_config is not None
                                or arguments.user_config is not None),
             )
-        elif arguments.command in ("save", "reset"):
+        elif arguments.command in ("save", "reset", "delete-profile"):
             saved = write_arguments(arguments, process_environment)
         else:
             resolution = resolve_arguments(arguments, process_environment)
@@ -2074,7 +2116,7 @@ def main(argv=None, environment=None):
     if arguments.command == "run":
         return execute_launch(launch, child_argv)
 
-    if arguments.command in ("save", "reset"):
+    if arguments.command in ("save", "reset", "delete-profile"):
         if not saved.durable:
             outcome = ("replacement committed; durability uncertain"
                        if saved.committed else "replacement outcome uncertain; inspect saved state")

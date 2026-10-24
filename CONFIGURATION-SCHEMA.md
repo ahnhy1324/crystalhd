@@ -96,7 +96,7 @@ above. There is no application-launch button or mandatory `config run` workflow.
   Losing the tray connection must reveal the window, never strand a hidden
   process. No autostart service is installed or required. `--no-tray` selects a
   window-only session.
-- Offer reviewed standard presets, explicit selection of existing profiles and
+- Offer reviewed standard presets, explicit selection/editing of profiles and
   safe native-owned setting values. Show unavailable, virtual, experimental and
   frontend-only settings with their actual limitations; do not expose an inert
   activation toggle or turn launch-only experiments into automatic defaults.
@@ -128,7 +128,7 @@ qualified native reader and Kodi proof are reused unless runtime code changes.
 
 ### Named-profile editing contract
 
-The next editor increment adds explicit creation, editing and removal of user
+The editor supports explicit creation, editing and removal of user
 profile sections through the same core as the CLI. `save --profile-section NAME`
 patches that section (creating an empty section when needed); `--profile NAME`
 continues to select the default and never means an editing target. Base settings
@@ -221,13 +221,18 @@ crystalhd-config reset
 
 `save KEY=VALUE` patches the base `[settings]` overlay using the strict value
 grammar below. Unspecified settings and profile sections remain intact.
-`--remove KEY` removes a base override so lower layers can supply it;
+With `--profile-section NAME`, patch that user profile instead, creating it if
+needed; an empty invocation creates an empty profile without selecting it.
+`--remove KEY` removes an override in the targeted layer so lower layers can supply it;
 `KEY=unset` explicitly blocks a lower configured value. Neither is equivalent to
 `false`, `0`, or `""`. `--preset NAME` and `--profile NAME` save metadata selectors;
 they do not edit a named profile's settings. `--remove preset` or
 `--remove profile` clears that selector. Experimental presets require their
 explicit risk acknowledgements on each write; acknowledgement tokens and current
 setting-specific environment values are never copied into the file.
+`delete-profile NAME` removes a user section, retaining any system definition;
+the [profile contract](#named-profile-editing-contract) specifies default-selector
+handling. It uses the same validation and atomic writer as Save/Reset.
 
 The default destination is the user path below; `--user-config FILE` selects an
 absolute user destination. `--system-config FILE` or `--no-system-config` only
