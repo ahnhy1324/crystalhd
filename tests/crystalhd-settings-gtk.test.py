@@ -109,7 +109,7 @@ class GtkSettingsTests(unittest.TestCase):
             self.assertTrue(fallback.window.get_visible())
 
     def test_unsupported_presets_cannot_activate_and_origin_model_is_explicit(self):
-        app=self.app({'CRYSTALHD_VAAPI_DEBUG':'0'})
+        app=self.app({'CRYSTALHD_VAAPI_DEBUG':'0',CORE.CENTERED_NV12_ENVIRONMENT:'private-unvalidated-geometry'})
         for row in app.preset.get_model():
             if row[0] in ('quality','streaming','low-memory','performance','experimental','custom'):
                 self.assertFalse(row[2])
@@ -121,6 +121,9 @@ class GtkSettingsTests(unittest.TestCase):
         self.assertIn('true',app.badges['vaapi.debug'].get_text())
         self.assertIn('environment',app.badges['vaapi.debug'].get_text())
         self.assertEqual(len(app.values),len(CORE.RULES))
+        self.assertIn('Model is partial',app.status.get_text())
+        self.assertNotIn('private-unvalidated-geometry',app.status.get_text())
+        self.assertTrue(row[4])
 
     def test_icon_native_sizes_and_optional_private_preview(self):
         from gi.repository import GdkPixbuf

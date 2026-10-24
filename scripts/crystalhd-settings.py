@@ -265,10 +265,10 @@ class SettingsWindow(object):
         advanced_note.set_line_wrap(True)
         advanced_note.set_max_width_chars(70)
         advanced.attach(advanced_note, 0, advanced_row, 3, 1)
-        self.values = Gtk.ListStore(str, str, str, str)
+        self.values = Gtk.ListStore(str, str, str, str, str)
         self.tree = Gtk.TreeView(model=self.values)
         self.tree.get_accessible().set_name(_("Configuration model and origins"))
-        for index, label in enumerate((_("Setting"), _("Value (model)"), _("Origin"), _("Use / timing"))):
+        for index, label in enumerate((_("Setting"), _("Value (model)"), _("Origin"), _("Use / timing"), _("Native model state"))):
             column = Gtk.TreeViewColumn(label, Gtk.CellRendererText(), text=index)
             column.set_resizable(True)
             self.tree.append_column(column)
@@ -366,8 +366,11 @@ class SettingsWindow(object):
     def update_preview(self):
         self.values.clear()
         valid = False
+        partial_model = native_rejected = False
         try:
             report = self.editor.report()
+            partial_model = bool(report["native_only_environment"])
+            native_rejected = bool(report["native_rejections"])
             guidance = self.editor.native_warning()
             if report["native_file_reading"] == "bypassed-by-environment":
                 guidance += " " + _("Native file reading is bypassed in this settings process's environment.")
@@ -382,7 +385,7 @@ class SettingsWindow(object):
                 if item["origin"].startswith("environment:"):
                     use = _("Environment override in this settings process; application state unconfirmed")
                 value = self.editor.core._format_value(item["effective"])
-                self.values.append((key, value, item["origin"], use))
+                self.values.append((key, value, item["origin"], use, item["state"]))
                 if key in self.badges:
                     origin = item["origin"].split(":", 1)[0]
                     self.badges[key].set_text(_("Model: ") + value + "\n" + _("Origin: ") + origin)
@@ -395,6 +398,10 @@ class SettingsWindow(object):
         status = self.notice or (_("Unsaved changes") if self.editor.dirty else _("Defaults loaded; active application state unconfirmed"))
         if self.editor.load_error:
             status = _("Configuration could not be loaded: ") + self.editor.load_error
+        if partial_model:
+            status += "\n" + _("Model is partial: native-only environment settings are not validated here.")
+        if native_rejected:
+            status += "\n" + _("Some requests are rejected by the native model; see the model state column.")
         if not self.tray_connected:
             status += "\n" + _("Tray unavailable; closing this window exits.")
         self.status.set_text(status)

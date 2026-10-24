@@ -421,10 +421,14 @@ wins over the system file.  With no preset selection, `default` means an empty
 compatibility preset.  With no profile selection, no named profile is active.
 An unknown selected preset or profile is an error.
 
-Only `SELECTABLE` manifest entries participate in merging. Experimental
-selection requires the entry's exact command-only acknowledgement on every
+Only `SELECTABLE` manifest entries participate in merging. Experimental CLI
+selection requires the entry's exact command-line acknowledgement on every
 invocation; it never becomes implicit through a file, environment variable or
-another preset.
+another preset. The optional editor cannot select experimental activations as
+automatic native defaults. For an already selected experimental preset, fresh
+interactive confirmation acknowledges only that Save operation; it is never
+stored and does not authorize a later application launch. Managed experimental
+launches still require fresh `run --acknowledge-risk` tokens.
 
 The requested target state uses this exact low-to-high precedence:
 

@@ -100,7 +100,10 @@ Native default (`unset`) blocks lower file layers. Existing profiles are selecta
 and preserved; this first editor does not create/edit their sections. Other owners'
 settings are inspectable in All settings / origins. Unavailable presets,
 frontend-only Quality and launch-only experimental activations cannot be selected
-as automatic native settings. Existing saved entries remain intact. Use the CLI
+as automatic native settings. Existing saved entries remain intact. Saving an already selected experimental
+preset requires fresh confirmation for that write only; launch acknowledgement
+is still separate. Native-only experiments also mark the model as partial.
+Use the CLI
 and the [native contract](CONFIGURATION-SCHEMA.md#native-defaults-in-ordinary-applications)
 for their supported invocation paths.
 
