@@ -22,6 +22,63 @@ The installed implementation is `scripts/crystalhd-config.py`.  The schema
 and CLI tests import or execute that production implementation; test code is
 never installed as the parser.
 
+## Native defaults contract (implementation target)
+
+The next backend integration makes a plain `kodi` invocation consume saved
+defaults when it loads **our updated** VA driver/library. It does not replace
+Kodi, select its decoder, change an existing process, or require a widget.
+The widget will edit the same file through the existing storage/validation core;
+it will not introduce a second preset system or a `config run` requirement.
+
+The native reader has this contract:
+
+- Read `/etc/crystalhd/config.ini`, then the existing absolute XDG/HOME user
+  path. Missing files contribute nothing. Use schema v1's grammar, selectors,
+  complete-file validation, merge order, `unset`, and cross-setting checks,
+  including validation of inactive profiles. Do not guess an application profile
+  from a process name. The reviewed preset/schema data must agree with the CLI.
+- Snapshot managed defaults once per loaded component on first configuration
+  use; restart the application after saving. No file reads per frame, Python
+  subprocess, file writes, process-wide environment mutation, or public ABI/ioctl
+  change. The VA driver and DIL can load at different times; this is not a
+  cross-component atomic reload protocol.
+- Preserve the existing trusted-file checks (absolute path, safe immediate
+  parent and file owner/mode, no final symlink or special file, bounded 64 KiB
+  read). Ignore managed defaults when real/effective IDs differ. Discard an
+  invalid managed transaction as a whole, emit one redacted diagnostic per
+  component snapshot, and retain original environment/native behavior. Do not
+  turn a configuration error into an application crash or a partial overlay.
+- Apply only native-owned adapters: RX pool count, H.264 mode/prefeed, READY
+  remap off, i915 WC off, VA debug and trace. Other valid keys remain saved for
+  their owning frontend; this does not make Chromium/player/GStreamer properties
+  automatically active. READY policy/delay and centered output remain native
+  environment controls, outside this initial managed adapter.
+- Existing raw environment presence wins **per key**, even for empty/invalid
+  values. Keep its original interpretation: DEBUG presence including `0` is on;
+  prefeed `0` suppresses automatic prefeed whereas canonical false removes only
+  the explicit request. `unset` blocks lower file layers, not raw environment.
+  Supported explicit application CLI/property overrides remain highest priority.
+- Do not automatically activate experimental managed settings. Experimental
+  presets still need fresh CLI risk acknowledgements through `config run`;
+  managed RX=8, LIVE/prefeed on, READY on or WC on without an overriding raw
+  environment discard the native managed transaction. Explicit legacy environment
+  opt-ins retain their existing semantics. A safe managed change must also not
+  newly activate an inherited READY experiment.
+- `config run` remains the optional adapter for explicit paths, per-invocation
+  selectors, acknowledgements and CLI overrides. Its child must bypass native
+  file consumption using `CRYSTALHD_CONFIG_DISABLE=1`, so an explicit false,
+  `unset`, suppressed layer or alternate path cannot be undone by rereading
+  defaults. A default invocation with no managed request and no custom selection
+  keeps the inherited environment unchanged. The bypass is read only at the
+  native snapshot boundary; exactly `1` bypasses both managed file layers.
+  It is also a diagnostic escape hatch, not a risk acknowledgement.
+
+Completion requires differential native/CLI parsing and resolution tests,
+trusted-file failure tests, per-key raw override and false/unset regression
+tests, and strict native builds including scalar i686. Exercise the actual VA
+entry path with isolated settings and a stock client before claiming plain
+`kodi` integration. Do not install into the stable system for these checks.
+
 ## Inspect configuration
 
 The five inspection commands are:
