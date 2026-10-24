@@ -126,6 +126,31 @@ real GTK editing and keyboard/close behavior with isolated files, tray-host
 fallback/disconnection, and staged launcher/icon install/uninstall. The already
 qualified native reader and Kodi proof are reused unless runtime code changes.
 
+### Named-profile editing contract
+
+The next editor increment adds explicit creation, editing and removal of user
+profile sections through the same core as the CLI. `save --profile-section NAME`
+patches that section (creating an empty section when needed); `--profile NAME`
+continues to select the default and never means an editing target. Base settings
+remain the target when `--profile-section` is omitted. `--remove KEY` removes
+only the targeted setting; selector removals retain their existing meaning.
+Validate the edited profile independently of the current default before writing.
+
+`delete-profile NAME` removes only an existing user section. If it was the user
+default and has no system definition, also remove that user selector, reverting
+to inherited selection. Retain the selector when the system still defines that
+profile. Reject a resulting dangling inherited selection through normal writer
+validation; never edit system configuration to make deletion succeed.
+
+The window distinguishes **Editing layer** from **Default profile**. Changing
+the editing layer previews that profile but does not select it for applications
+or discard other draft changes. System profiles can acquire user overrides; their
+system definitions remain read-only. New/remove operations affect the draft
+until Save; removal requires confirmation. Only the existing safe native controls
+are editable, other settings/sections are preserved, and the preview remains a
+model rather than a report of an active application. Reuse atomic save, stale
+snapshot checks, risk acknowledgements and uncertain-write handling unchanged.
+
 ## Inspect configuration
 
 The five inspection commands are:
