@@ -2,7 +2,7 @@
 
 This document specifies the configuration contract implemented by the
 `crystalhd-config` inspector, user-config storage, optional command launcher and
-native VA/DIL readers. Updated native components consume supported defaults on
+native VA/DIL readers and the player adapter. Updated native components consume supported defaults on
 application startup; saving does not reconfigure an already-running process.
 `run` additionally resolves explicit invocation overrides and experimental risk
 acknowledgements. Exact native controls are in [CONFIGURATION.md](CONFIGURATION.md).
@@ -81,6 +81,40 @@ trusted-file failure tests, per-key raw override and false/unset regression
 tests, and strict native builds including scalar i686. Exercise the actual VA
 entry path with isolated settings and a stock client before claiming plain
 `kodi` integration. Do not install into the stable system for these checks.
+
+## Defaults in crystalhd-play
+
+The player adapter reads `player.decoder`, `gstreamer.crystalhddec.scale_width`
+and `player.software_output_size` once before constructing a pipeline. It uses
+the existing secure file reader, preset selection, profile precedence and
+resolver. Each explicitly supplied player flag overrides only its own key;
+an absent flag inherits the saved value. With no files, retain hardware decode,
+native output width and no software resize. `--weave` and subtitles remain
+invocation-only. Other applications and GStreamer pipelines are unaffected.
+
+`--scale-width 0` explicitly requests native card width;
+`--software-output-size native` explicitly removes a saved software resize.
+Do not silently erase dependent saved keys when another key is overridden.
+An incoherent final request fails before starting a pipeline and explains the
+reset flags. For example, a saved scaled/upscaled hardware profile needs
+`--software --scale-width 0 --software-output-size native` for a one-shot
+software decode. This never rewrites the saved file.
+
+Unsafe/malformed files, unavailable core/catalog, ID mismatch or an experimental
+preset without transient acknowledgement discard the managed player overlay,
+with a redacted diagnostic, leaving original CLI/native defaults. A conflict
+introduced by explicit flags is an error, not a reason to silently drop valid
+saved settings. Exactly `CRYSTALHD_CONFIG_DISABLE=1` bypasses managed files, also
+honoring `config run`'s existing bypass. Do not execute a saved `player.python`,
+rewrite environment, or add a new risk acknowledgement path in the player.
+
+The trusted configuration core has a fixed source/installed location, independent
+of PATH. Staged installation must bind the controller and core paths correctly
+for separate BINDIR/DATADIR and spaces. The startup report labels requested values
+and redacted origin categories; actual hardware success still requires decoded
+output. Qualify precedence/reset/conflict/security, actual software pipeline/EOS,
+staged paths and bounded native output with existing fixtures; no physical A/V
+retake is needed when decode/output algorithms are unchanged.
 
 ## Optional settings window and tray
 

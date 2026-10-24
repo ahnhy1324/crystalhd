@@ -3,10 +3,13 @@
 """Small file/HTTP(S) controller; GStreamer owns decoding, audio and the window."""
 
 import argparse
+import importlib.machinery
+import importlib.util
 import os
 from pathlib import Path
 import re
 import signal
+import stat
 import sys
 import termios
 import time
@@ -15,6 +18,9 @@ from urllib.parse import urlsplit
 
 MAX_SOFTWARE_OUTPUT_DIMENSION = 4096
 MAX_SOFTWARE_OUTPUT_PIXELS = 4096 * 2160
+CONFIG_CORE_RELATIVE = "@PLAYER_CONFIG_CORE_RELATIVE@"
+PLAYER_SETTINGS = ("player.decoder", "gstreamer.crystalhddec.scale_width",
+                   "player.software_output_size")
 HANDLED_BUS_MESSAGE_DETAILS = (
     "application",
     "error",
@@ -117,24 +123,115 @@ def output_size(value):
     return width, height
 
 
-def arguments(argv=None):
+class _CoreLoader(importlib.machinery.SourceFileLoader):
+    def set_data(self, path, data, **kwargs):
+        pass  # Reading defaults must not create cache files beside the core.
+
+
+def load_config_core():
+    script = Path(__file__).resolve()
+    relative = CONFIG_CORE_RELATIVE
+    if relative.startswith("@") and relative.endswith("@"):
+        relative = "crystalhd-config.py"
+    path = script.parent / relative
+    own, source = script.stat(), path.lstat()
+    if (not stat.S_ISREG(source.st_mode) or source.st_mode & 0o022
+            or source.st_uid != own.st_uid):
+        raise RuntimeError("unsafe configuration core")
+    loader = _CoreLoader("crystalhd_player_config", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    core = importlib.util.module_from_spec(spec)
+    loader.exec_module(core)
+    required = ("SYSTEM_CONFIG", "load_document", "default_user_config", "load_preset_catalog", "_validated_preset",
+                "resolve", "SchemaError", "UNSET", "ABSENT", "_format_value", "_report_origin")
+    if not all(hasattr(core, name) for name in required):
+        raise RuntimeError("a matching configuration core is required")
+    return core
+
+
+def requested_output_size(value):
+    return None if value == "native" else output_size(value)
+
+
+def apply_player_defaults(args, parser, environment):
+    explicit = {name: getattr(args, name) for name in
+                ("mode", "scale_width", "software_output_size") if hasattr(args, name)}
+    # Keep the original CLI-only behavior if managed configuration is bypassed
+    # or unavailable. Never mutate the environment seen by native components.
+    args.mode = explicit.get("mode", "hardware")
+    args.scale_width = explicit.get("scale_width", 0)
+    args.software_output_size = explicit.get("software_output_size")
+    args.settings_report = None
+    if environment.get("CRYSTALHD_CONFIG_DISABLE") == "1":
+        return
+    try:
+        if os.getuid() != os.geteuid() or os.getgid() != os.getegid():
+            raise RuntimeError("managed configuration disabled for differing IDs")
+        core = load_config_core()
+    except (OSError, RuntimeError, ImportError, SyntaxError):
+        print("crystalhd-play: managed defaults unavailable; using CLI/native defaults. "
+              "Check the matching crystalhd-config installation.", file=sys.stderr)
+        return
+    try:
+        system = core.load_document(core.SYSTEM_CONFIG, "system configuration", system=True)
+        user = core.load_document(core.default_user_config(environment), "user configuration")
+        catalog = core.load_preset_catalog()
+        preset = core._validated_preset(catalog, system, user, None, ())
+        base = core.resolve(system, user, catalog.selectable, explicit_preset=preset)
+    except core.SchemaError:
+        print("crystalhd-play: managed defaults rejected; using CLI/native defaults. "
+              "Run crystalhd-config validate for details.", file=sys.stderr)
+        return
+    managed = any(base.origins[key] != "compiled" for key in PLAYER_SETTINGS)
+    application = {}
+    if "mode" in explicit:
+        application["player.decoder"] = explicit["mode"]
+    if "scale_width" in explicit:
+        application["gstreamer.crystalhddec.scale_width"] = explicit["scale_width"]
+    if "software_output_size" in explicit:
+        size = explicit["software_output_size"]
+        application["player.software_output_size"] = (
+            core.UNSET if size is None else "{0}x{1}".format(*size))
+    try:
+        result = core.resolve(system, user, catalog.selectable, explicit_preset=preset,
+                              application=application)
+    except core.SchemaError:
+        if not managed:
+            return  # Original CLI-only coherence checks follow in arguments().
+        parser.error("player flags conflict with saved defaults; to disable saved scaling use "
+                     "--scale-width 0 --software-output-size native (also with --software)")
+    args.mode = result.effective["player.decoder"]
+    args.scale_width = result.effective["gstreamer.crystalhddec.scale_width"]
+    size = result.effective["player.software_output_size"]
+    args.software_output_size = None if size is core.ABSENT else output_size(size)
+    if managed:
+        args.settings_report = "Requested player settings: " + "; ".join(
+            "{0}={1} [{2}]".format(key, "native" if result.effective[key] is core.ABSENT else
+                                   core._format_value(result.effective[key]),
+                                   core._report_origin(result.origins[key], True))
+            for key in PLAYER_SETTINGS)
+
+
+def arguments(argv=None, environment=None):
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--hardware", dest="mode", action="store_const", const="hardware",
+                       default=argparse.SUPPRESS,
                        help="require CrystalHD video output (default)")
     modes.add_argument("--software", dest="mode", action="store_const", const="software",
+                       default=argparse.SUPPRESS,
                        help="disable hardware video decoders; no automatic fallback")
-    parser.set_defaults(mode="hardware")
     parser.add_argument("--weave", action="store_true",
                         help="preserve interlaced frames without deinterlacing; works with either decoder mode")
-    parser.add_argument("--scale-width", type=hardware_scale_width, default=0, metavar="PIXELS",
+    parser.add_argument("--scale-width", type=hardware_scale_width, default=argparse.SUPPRESS, metavar="PIXELS",
                         help="request an even BCM70015 output width from 128 to 1918 (interlaced H.264: multiple of 16; 0: native)")
-    parser.add_argument("--software-output-size", type=output_size,
-                        metavar="WIDTHxHEIGHT",
-                        help="explicitly resize scaled CrystalHD output with GStreamer videoscale")
+    parser.add_argument("--software-output-size", type=requested_output_size,
+                        default=argparse.SUPPRESS, metavar="WIDTHxHEIGHT|native",
+                        help="resize scaled CrystalHD output; native clears a saved resize")
     parser.add_argument("--subtitles", type=local_file, metavar="FILE")
     parser.add_argument("file", type=playback_input, metavar="FILE_OR_HTTP_URL")
     args = parser.parse_args(argv)
+    apply_player_defaults(args, parser, os.environ if environment is None else environment)
     if args.mode != "hardware" and (args.scale_width or args.software_output_size):
         parser.error("--scale-width and --software-output-size require --hardware")
     if args.software_output_size and not args.scale_width:
@@ -903,6 +1000,8 @@ class Player:
 
 def main(argv=None):
     args = arguments(argv)
+    if args.settings_report:
+        print(args.settings_report, flush=True)
     try:
         import gi
         gi.require_version("Gst", "1.0")

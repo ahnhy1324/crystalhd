@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 from types import SimpleNamespace
@@ -894,7 +895,171 @@ class ArgumentTests(unittest.TestCase):
             self.assertIn("/share/crystalhd/player.py --software file with spaces", result.stdout)
 
 
+class ManagedDefaultsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='crystalhd-player-defaults-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.path = self.root/'xdg/crystalhd/config.ini'
+        self.media = self.root/'video.ogg'
+        self.media.touch()
+        self.environment = {'HOME': str(self.root), 'XDG_CONFIG_HOME': str(self.root/'xdg')}
+        self.core = player.load_config_core()
+        self.real_loader = player.load_config_core
+        self.core.SYSTEM_CONFIG = None
+        patch = mock.patch.object(player, 'load_config_core', return_value=self.core)
+        patch.start();self.addCleanup(patch.stop)
+
+    def write(self, text, mode=0o600):
+        self.path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        self.path.write_text('[crystalhd]\nschema=1\n'+text, encoding='utf-8')
+        self.path.chmod(mode)
+
+    def args(self, *flags):
+        return player.arguments(list(flags)+[str(self.media)], environment=self.environment)
+
+    def test_no_config_is_original_cli_behavior_without_writes_or_report(self):
+        args = self.args()
+        self.assertEqual((args.mode, args.scale_width, args.software_output_size), ('hardware', 0, None))
+        self.assertIsNone(args.settings_report)
+        self.assertFalse(self.path.parent.exists())
+
+    def test_selected_profile_cli_precedence_native_resets_and_redacted_origins(self):
+        self.write('profile="private-profile"\n[settings]\n'
+                   'gstreamer.crystalhddec.scale_width=640\n[profile.private-profile]\n'
+                   'gstreamer.crystalhddec.scale_width=1280\nplayer.software_output_size="1920x1080"\n')
+        original = self.path.read_bytes()
+        args = self.args()
+        self.assertEqual((args.mode, args.scale_width, args.software_output_size), ('hardware', 1280, (1920,1080)))
+        self.assertIn('user-profile:<redacted>', args.settings_report)
+        self.assertNotIn('private-profile', args.settings_report)
+        args = self.args('--scale-width', '960')
+        self.assertEqual((args.scale_width, args.software_output_size), (960, (1920,1080)))
+        args = self.args('--software-output-size', 'native')
+        self.assertEqual((args.scale_width, args.software_output_size), (1280, None))
+        args = self.args('--software', '--scale-width', '0', '--software-output-size', 'native')
+        self.assertEqual((args.mode, args.scale_width, args.software_output_size), ('software', 0, None))
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_incoherent_explicit_override_errors_instead_of_dropping_saved_values(self):
+        self.write('[settings]\ngstreamer.crystalhddec.scale_width=1280\n'
+                   'player.software_output_size="1920x1080"\n')
+        original = self.path.read_bytes()
+        for flags in (('--software',), ('--scale-width','0')):
+            error = io.StringIO()
+            with contextlib.redirect_stderr(error), self.assertRaises(SystemExit) as failure:
+                self.args(*flags)
+            self.assertEqual(failure.exception.code, 2)
+            self.assertIn('--scale-width 0 --software-output-size native', error.getvalue())
+            self.assertNotIn(str(self.path), error.getvalue())
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_unset_in_profile_blocks_lower_values(self):
+        self.write('profile="desk"\n[settings]\nplayer.decoder="software"\n'
+                   '[profile.desk]\nplayer.decoder=unset\n')
+        self.assertEqual(self.args().mode, 'hardware')
+        self.assertEqual(self.args('--software').mode, 'software')
+
+    def test_bad_unsafe_and_experimental_configuration_falls_back_as_one_overlay(self):
+        for text, mode in [('[settings]\nplayer.decoder="software"\nbad=true\n',0o600),
+                           ('[settings]\nplayer.decoder="software"\n',0o666),
+                           ('preset="streaming"\n[settings]\nplayer.decoder="software"\n',0o600)]:
+            self.write(text, mode)
+            original = self.path.read_bytes()
+            error = io.StringIO()
+            with contextlib.redirect_stderr(error):
+                args = self.args()
+                explicit = self.args('--software')
+            self.assertEqual(args.mode, 'hardware')
+            self.assertEqual(explicit.mode, 'software')
+            self.assertIn('managed defaults rejected', error.getvalue())
+            self.assertNotIn(str(self.path), error.getvalue())
+            self.assertEqual(self.path.read_bytes(), original)
+
+    def test_bypass_differing_ids_and_missing_core_do_not_read_files(self):
+        self.write('[settings]\nplayer.decoder="software"\n')
+        with mock.patch.object(player, 'load_config_core') as loader:
+            self.environment['CRYSTALHD_CONFIG_DISABLE']='1'
+            self.assertEqual(self.args().mode, 'hardware')
+            loader.assert_not_called()
+            self.environment['CRYSTALHD_CONFIG_DISABLE']='0'
+            with mock.patch.object(os, 'geteuid', return_value=os.getuid()+1), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(self.args().mode, 'hardware')
+            loader.assert_not_called()
+            loader.side_effect = OSError('private-path')
+            error = io.StringIO()
+            with contextlib.redirect_stderr(error):
+                self.assertEqual(self.args('--software').mode, 'software')
+            self.assertNotIn('private-path', error.getvalue())
+
+    def test_core_loader_rejects_writable_and_symlink_sources_before_execution(self):
+        script = self.root/'player.py';script.touch()
+        core = self.root/'crystalhd-config.py'
+        core.write_text("raise AssertionError('must not execute')\n",encoding='utf-8')
+        core.chmod(0o666)
+        with mock.patch.object(player,'__file__',str(script)):
+            with self.assertRaises(RuntimeError): self.real_loader()
+            core.unlink();core.symlink_to(ROOT/'scripts/crystalhd-config.py')
+            with self.assertRaises(RuntimeError): self.real_loader()
+
+    def test_staged_separate_unicode_paths_bind_wrapper_controller_and_core(self):
+        stage = self.root/'stage'
+        bindir = "/opt/CrystalHD bin's Ω😀"
+        datadir = '/opt/CrystalHD data 🧩/share'
+        flags = ['DESTDIR='+str(stage), 'BINDIR='+bindir, 'DATADIR='+datadir]
+        subprocess.run(['make','install-config']+flags, cwd=str(ROOT), check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(['sh','-c','umask 077; exec "$@"','stage-player',
+                        'make','-C','filters/gst/gst-plugin-1.0','install-player']+flags,
+                       cwd=str(ROOT), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        wrapper = stage/bindir.lstrip('/')/'crystalhd-play'
+        controller = stage/datadir.lstrip('/')/'crystalhd/player.py'
+        self.assertEqual(wrapper.stat().st_mode & 0o777,0o755)
+        self.assertEqual(controller.stat().st_mode & 0o777,0o644)
+        sentinel=self.root/'sentinel';sentinel.write_text('untouched',encoding='utf-8')
+        wrapper.unlink();wrapper.symlink_to(sentinel)
+        subprocess.run(['make','-C','filters/gst/gst-plugin-1.0','install-player']+flags,
+                       cwd=str(ROOT),check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        self.assertFalse(wrapper.is_symlink())
+        self.assertEqual(sentinel.read_text(encoding='utf-8'),'untouched')
+        self.write('[settings]\nplayer.decoder="software"\n')
+        program = ("import importlib.util,sys; s=importlib.util.spec_from_file_location('installed_player',sys.argv[1]); "
+                   "p=importlib.util.module_from_spec(s); s.loader.exec_module(p); c=p.load_config_core(); "
+                   "c.SYSTEM_CONFIG=None; p.load_config_core=lambda:c; "
+                   "a=p.arguments([sys.argv[2]]); assert a.mode=='software'; assert a.settings_report")
+        result = subprocess.run([sys.executable,'-B','-c',program,str(controller),str(self.media)],
+                                env=dict(os.environ,**self.environment), stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        result = subprocess.run(['sh',str(wrapper),'--help'],
+                                env=dict(os.environ,CRYSTALHD_PLAYER_PYTHON='/bin/echo'),
+                                stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn(str(controller),str(Path(result.stdout.strip().rsplit(' --help',1)[0]).resolve()))
+        self.assertFalse(list(stage.rglob('__pycache__')))
+
+
 class GStreamerApiTests(unittest.TestCase):
+    def test_saved_software_decoder_reaches_real_frames_and_eos(self):
+        self.http_fixture()
+        core = player.load_config_core();core.SYSTEM_CONFIG=None
+        home = Path(self.temp.name)/'managed'
+        config = home/'.config/crystalhd/config.ini'
+        config.parent.mkdir(parents=True,mode=0o700)
+        config.write_text('[crystalhd]\nschema=1\n[settings]\nplayer.decoder="software"\n',encoding='utf-8')
+        config.chmod(0o600)
+        with mock.patch.object(player,'load_config_core',return_value=core):
+            args = player.arguments([str(Path(self.temp.name)/'http-video.ogg')], environment={'HOME':str(home)})
+        result = player.Player(args,self.Gst,self.GLib,{
+            'video-sink':self.Gst.ElementFactory.make('fakesink'),
+            'audio-sink':self.Gst.ElementFactory.make('fakesink')})
+        self.addCleanup(result.close)
+        code, _output, error = self.run_player(result)
+        self.assertEqual(code,0,error)
+        self.assertEqual(result.health.frames,12)
+        self.assertEqual(args.mode,'software')
+
     @classmethod
     def setUpClass(cls):
         try:

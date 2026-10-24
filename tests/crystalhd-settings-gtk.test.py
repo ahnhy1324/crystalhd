@@ -184,6 +184,12 @@ class GtkSettingsTests(unittest.TestCase):
         self.assertIn('Model is partial',app.status.get_text())
         self.assertNotIn('private-unvalidated-geometry',app.status.get_text())
         self.assertTrue(row[4])
+        frontend = next(r for r in app.values if r[0]=='player.decoder')
+        self.assertIn('updated crystalhd-play', frontend[3])
+        self.write(HEADER+'preset="low-memory"\n')
+        app.editor.reload();app.sync_form()
+        frontend = next(r for r in app.values if r[0]=='player.decoder')
+        self.assertIn('Experimental preset', frontend[3])
 
     def test_icon_native_sizes_and_optional_private_preview(self):
         from gi.repository import GdkPixbuf
