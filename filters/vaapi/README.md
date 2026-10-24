@@ -620,6 +620,18 @@ For display enlargement, Kodi's Video settings → Zoom can apply `1.5` to this
 720-in-1080 picture on the GPU. Source-encoded black bars remain; return Zoom
 to `1.0` for the native centered size. Selected playback results are in [#477](https://github.com/ahnhy1324/crystalhd/issues/477).
 
+On the reference T8100/BCM70015 host, a new L0s-ON progressive 30p comparison
+selects all 9,001 pictures over five minutes with centered 720, while native FHD
+selects 8,506. Centered Bob at 50 outputs/s also completes the selected five-minute BFF case;
+the TFF case skips 3/15,000 outputs. The selected no-B 60p OFF case skips
+3/18,000 over five minutes; B-reference and ON controls retain further misses.
+These are source/VA-canvas results on a 60-Hz 1024×768 panel,
+not native FHD detail or a power measurement. See the
+[matched measurements and remaining cadence limits](../../HARDWARE-2026-09-13.md#stock-kodi-centered-output-with-l0s-2026-10-24).
+Keep L0s policy changes separate from normal playback; the existing default
+workaround remains unchanged. The selected centered Bob/zoom 1.5 dialogue also
+has qualitative maintainer A/V and control confirmation in this new ON condition.
+
 The value specifies `capture-width×height@visible-width×height:limited|full`
 using ASCII `x`. Crop and black range must be supplied explicitly; coded1088
 does not imply visible1080. The current experiment requires the full coded
