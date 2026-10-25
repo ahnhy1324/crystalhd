@@ -185,7 +185,7 @@ for bits in $build_bits; do
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp"
                 section_wrap=-Wl,--wrap=shmget,--wrap=shmat,--wrap=shmctl,--wrap=fprintf
                 if [ "$section" = shmem-logging-disabled ]; then
-                    section_flags="-include $build_dir/tests/library-logging-disabled.h"
+                    section_flags="-include $repo_dir/tests/library-logging-disabled.h"
                 fi ;;
             copy|planar) set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" ;;
             format)
