@@ -9,6 +9,7 @@ PLUGIN := libgstcrystalhd.so
 PLAYBACK_TEST := gstreamer-playback-test
 CONTROLS_TEST := gstreamer-controls-test
 LIFECYCLE_TEST := gst-lifecycle-test
+LIFECYCLE_LEGACY_TEST := gst-lifecycle-legacy-test
 CODECS_TEST := gst-codecs-test
 DI_QOS_TEST := gst-diqos-test
 CODEC_PLAYBACK_PACKAGES := gstreamer-app-1.0 gstreamer-video-1.0 \
@@ -66,7 +67,8 @@ $(CONTROLS_TEST): $(ROOTDIR)/tests/gstreamer-controls.c \
 
 # Includes production source but supplies its own Dts mocks. This target must
 # never link libcrystalhd or open the real decoder.
-$(LIFECYCLE_TEST): $(ROOTDIR)/tests/gst-lifecycle.c gstcrystalhd.c \
+$(LIFECYCLE_LEGACY_TEST): CPPFLAGS += -DGST_CRYSTALHD_TEST_NO_POLL_API
+$(LIFECYCLE_TEST) $(LIFECYCLE_LEGACY_TEST): $(ROOTDIR)/tests/gst-lifecycle.c gstcrystalhd.c \
 		gstcrystalhd-codecs.h gstcrystalhd-timing.h gstcrystalhd-input.h \
 		gstcrystalhd-diqos.c gstcrystalhd-diqos.h \
 		$(ROOTDIR)/filters/crystalhd-h264-output.h
@@ -91,7 +93,7 @@ $(CODECS_TEST): $(ROOTDIR)/tests/gst-codecs.c gstcrystalhd-codecs.h gstcrystalhd
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I. $< -o $@ \
 		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES)) $(CRYSTALHD_CPU_FLAGS)
 
-check: $(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TEST) \
+check: $(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(LIFECYCLE_LEGACY_TEST) $(CODECS_TEST) \
 		check-codec-playback check-player check-diqos
 	@registry=$$(mktemp); \
 	trap 'rm -f "$$registry"' EXIT HUP INT TERM; \
@@ -101,6 +103,7 @@ check: $(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TE
 	./$(PLAYBACK_TEST) --self-test
 	./$(CONTROLS_TEST) --self-test
 	./$(LIFECYCLE_TEST)
+	./$(LIFECYCLE_LEGACY_TEST)
 	@registry=$$(mktemp); \
 	trap 'rm -f "$$registry"' EXIT HUP INT TERM; \
 	GST_REGISTRY="$$registry" GST_PLUGIN_PATH=$(CURDIR) \
@@ -128,8 +131,8 @@ uninstall:
 	@rmdir -- "$(DESTDIR)$(DATADIR)/crystalhd" 2>/dev/null || true
 
 clean:
-	rm -f $(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TEST) $(DI_QOS_TEST) gstreamer-codec-playback-test $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
+	rm -f $(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(LIFECYCLE_LEGACY_TEST) $(CODECS_TEST) $(DI_QOS_TEST) gstreamer-codec-playback-test $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
 
 include $(ROOTDIR)/cpu.mk
-$(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TEST) $(DI_QOS_TEST) gstreamer-codec-playback-test: $(CRYSTALHD_BUILD_DEPS)
+$(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(LIFECYCLE_LEGACY_TEST) $(CODECS_TEST) $(DI_QOS_TEST) gstreamer-codec-playback-test: $(CRYSTALHD_BUILD_DEPS)
 $(PLUGIN): $(ROOTDIR)/linux_lib/libcrystalhd/libcrystalhd.so
