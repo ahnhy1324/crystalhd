@@ -2,6 +2,9 @@
 // Production replay state and output processing with private CPU memory only.
 // No device, decoder, capture, firmware, or DRM operation is started.
 #include <mutex>
+namespace { struct Driver; }
+static void TestDecodeWorkerTurn(Driver *, std::unique_lock<std::mutex> &);
+#define CRYSTALHD_VAAPI_TEST_DECODE_WORKER_TURN TestDecodeWorkerTurn
 static void TestTraceCallEntry();
 #define CRYSTALHD_VAAPI_TEST_CALL_ENTRY TestTraceCallEntry
 static void TestTerminalPromotionTurn(std::unique_lock<std::mutex> &lock);
@@ -13,6 +16,11 @@ static void TestTerminalPromotionTurn(std::unique_lock<std::mutex> &lock);
 #include <new>
 #include <stdexcept>
 #include <string>
+
+static std::function<void(Driver *, std::unique_lock<std::mutex> &)> decode_worker_turn;
+static void TestDecodeWorkerTurn(Driver *driver, std::unique_lock<std::mutex> &lock) {
+  if (decode_worker_turn) decode_worker_turn(driver, lock);
+}
 
 static thread_local std::function<void()> trace_call_entry;
 static void TestTraceCallEntry() {
@@ -410,6 +418,7 @@ struct DecodeIoMock {
   std::vector<uint32_t> status_requests;
   std::thread::id output_thread;
   std::atomic<unsigned int> accepted_inputs{0};
+  std::atomic<unsigned int> released_outputs{0};
   std::chrono::microseconds input_delay{0};
   HANDLE handle() { return static_cast<HANDLE>(this); }
   static uint8_t Luma(uint64_t timestamp) {
@@ -738,6 +747,7 @@ extern "C" BC_STATUS __wrap_DtsReleaseOutputBuffs(HANDLE device, PVOID reserved,
   decode_io_mock->invalid |= device != decode_io_mock->handle() ||
                              reserved != nullptr || change;
   decode_io_mock->events.push_back("release");
+  ++decode_io_mock->released_outputs;
   return decode_io_mock->output_release_status;
 }
 
@@ -11199,6 +11209,54 @@ static void BudgetedWorkerReleasesDriverMutex() {
           "bounded input backlog yields the VA mutex before draining every picture");
 }
 
+static void OutputBacklogWorkerReleasesDriverMutex() {
+  constexpr unsigned kPictures = 24;
+  TeardownFixture f(kPictures);
+  f.driver.StopWorkers();
+  f.driver.stopping = false;
+  Require(PumpDecodeInput(&f.driver, f.decoder.get(), kPictures + 1) == VA_STATUS_SUCCESS &&
+              !f.decoder->input_budget_exhausted && f.decoder->replay.NextInput() == nullptr,
+          "all input precedes the output-only backlog; input budget cannot supply fairness");
+  for (unsigned i = 0; i != kPictures; ++i)
+    f.io.outputs.push_back((i + 1) * kTimestampStep);
+  const int fd = eventfd(kPictures, EFD_CLOEXEC | EFD_NONBLOCK | EFD_SEMAPHORE);
+  Require(fd >= 0, "allocate continuously ready output-backlog event");
+  f.io.readiness_event = fd;
+  f.decoder->output_poll = std::make_shared<OutputPollLease>(fd);
+  std::atomic<unsigned> handoffs{0};
+  bool valid_handoff = true;
+  decode_worker_turn = [&](Driver *driver, std::unique_lock<std::mutex> &lock) {
+    if (driver != &f.driver) return;
+    valid_handoff &= lock.owns_lock() && !f.decoder->input_budget_exhausted &&
+                     f.io.released_outputs.load() > 0;
+    ++handoffs;
+  };
+  unsigned outputs_seen = kPictures;
+  bool observed = false;
+  std::thread frontend([&] {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (f.io.released_outputs.load(std::memory_order_acquire) == 0 &&
+           std::chrono::steady_clock::now() < until)
+      std::this_thread::yield();
+    std::lock_guard<std::mutex> lock(f.driver.mutex);
+    outputs_seen = f.io.released_outputs.load();
+    observed = outputs_seen > 0;
+  });
+  f.driver.StartDecodeWorker();
+  frontend.join();
+  f.driver.StopWorkers();
+  decode_worker_turn = {};
+  Require(observed && valid_handoff && handoffs.load() > 0 &&
+              outputs_seen < kPictures,
+          "output-only readiness yields a bounded mutex turn before draining every picture");
+  f.driver.stopping = false;
+  Require(ReceiveAvailable(&f.driver, f.decoder.get()) == VA_STATUS_SUCCESS &&
+              f.io.outputs.empty() && !f.io.invalid,
+          "fair handoff preserves every original output and descriptor ownership");
+  printf("Output-only backlog: frontend admitted after %u/%u outputs, forced turns=%u\n",
+         outputs_seen, kPictures, handoffs.load());
+}
+
 static void Mpeg4StateOnlyEosStillWakesEventWorker() {
   TeardownFixture fixture(1);
   fixture.decoder->profile = VAProfileMPEG4AdvancedSimple;
@@ -12048,6 +12106,12 @@ static void NeutralAuxiliaryContracts() {
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::strcmp(argv[1], "--output-worker-handoff") == 0) {
+      OutputBacklogWorkerReleasesDriverMutex();
+      BudgetedWorkerReleasesDriverMutex();
+      puts("VA-API output/input worker handoff PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--trace-admission") == 0) {
       TraceContendedAdmission();
       TraceIdentityUsesImmutableTokenAndLiveAliasOwner();
@@ -12228,6 +12292,7 @@ int main(int argc, char **argv) {
     TerminalPromotionFailureGrantsNoLeases();
     TerminalCloseDoesNotBlockReadySync();
     TerminateJoinsAnUnlockedTerminalDestroy();
+    OutputBacklogWorkerReleasesDriverMutex();
     BudgetedWorkerReleasesDriverMutex();
     Mpeg4StateOnlyEosStillWakesEventWorker();
     OutputPollHangupFailsWithoutSpinning();

@@ -7649,6 +7649,9 @@ static void RunDecodeWorker(Driver *driver) {
       // A ready control/output descriptor can make poll return immediately,
       // and std::mutex does not promise a waiting frontend the next handoff.
       // Release the mutex for one bounded turn before continuing the backlog.
+#if defined(CRYSTALHD_VAAPI_TEST_DECODE_WORKER_TURN)
+      CRYSTALHD_VAAPI_TEST_DECODE_WORKER_TURN(driver, lock);
+#endif
       driver->condition.wait_for(
           lock, std::chrono::milliseconds(1),
           [&] { return driver->stopping; });
