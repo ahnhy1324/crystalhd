@@ -95,6 +95,21 @@ files changed with the update before reloading or rebooting; remove options
 the older module does not support. Run `crystalhd-check` afterward. A Phase 1
 rollback also reverts newer optional features; use its own playback instructions.
 
+<a id="interrupted-runtime-installation"></a>
+
+Runtime installation and removal record their current stage in
+`/var/lib/crystalhd/runtime-install.pending`. If interrupted, run
+`sh scripts/crystalhd-check` from the intended source to inspect it; an older
+installed checker may not understand the marker, or removal may have deleted it.
+The updated checker reports failure even when an older VERSION record remains. Resolve the reported
+error, then rerun `sudo make install-runtime` from the intended source or release;
+to finish removal, rerun `sudo make uninstall-runtime` from the outgoing source.
+A successful complete sequence clears the marker. An overlapping install/removal
+is refused while another process or its surviving child still writes files.
+This supports diagnosis and full-sequence retry; multi-file atomic replacement,
+automatic restoration of previous files and power-loss recovery are separate
+work. Existing user configuration and direct/DKMS module ownership are unchanged.
+
 To uninstall this direct installation, close players and satisfy the idle
 preconditions first. From the source directory used to install it:
 

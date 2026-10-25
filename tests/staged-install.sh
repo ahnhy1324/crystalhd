@@ -150,6 +150,7 @@ bundle_version=$(cat "$repo_dir/VERSION")
 test "$(modinfo -F version "$stage_dir/lib/modules/$KVER/updates/crystalhd.ko")" = "$package_version"
 test "$(modinfo -F crystalhd_bundle "$stage_dir/lib/modules/$KVER/updates/crystalhd.ko")" = "$bundle_version"
 cmp "$repo_dir/VERSION" "$stage_dir/usr/share/crystalhd/VERSION"
+test ! -e "$stage_dir/var/lib/crystalhd/runtime-install.pending"
 test -f "$stage_dir/lib/udev/rules.d/20-crystalhd.rules"
 test -f "$stage_dir/lib/firmware/bcm70012fw.bin"
 test -f "$stage_dir/lib/firmware/bcm70015fw.bin"
@@ -249,6 +250,9 @@ fi
 
 sentinel="$stage_dir/usr/share/unrelated.keep"
 : >"$sentinel"
+user_settings="$stage_dir/etc/crystalhd/config.ini"
+mkdir -p "${user_settings%/*}"
+printf '%s\n' 'saved user defaults' >"$user_settings"
 dkms_sentinel="$stage_dir/lib/modules/$KVER/updates/dkms/crystalhd.ko"
 mkdir -p "${dkms_sentinel%/*}"
 : >"$dkms_sentinel"
@@ -268,8 +272,11 @@ make -C "$repo_dir" KVER="$KVER" KDIR="$KDIR" \
     DESTDIR="$stage_dir" uninstall
 test -f "$sentinel"
 test -f "$dkms_sentinel"
+test "$(cat "$user_settings")" = 'saved user defaults'
+test ! -e "$stage_dir/var/lib/crystalhd/runtime-install.pending"
 rm -f -- "$sentinel"
 rm -f -- "$dkms_sentinel"
+rm -f -- "$user_settings"
 
 remaining=$(find "$stage_dir" \( -type f -o -type l \) -print)
 if [ -n "$remaining" ]; then

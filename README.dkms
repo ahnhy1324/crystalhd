@@ -92,6 +92,8 @@ If switching from a direct module, complete the removal step in
 
 Stop at any failed command. Keep `/usr/src/crystalhd-$dkms_version` available
 for future kernel builds, including when you started from a downloaded archive.
+An interrupted userspace install/removal is diagnosed separately from DKMS;
+follow [runtime recovery](BRINGUP.md#interrupted-runtime-installation) before playback.
 Use `make -j1 library gstreamer vaapi` if a parallel userspace build exhausts
 memory. DKMS build failures are reported in its build `make.log`; the source
 build itself does not open the card.
