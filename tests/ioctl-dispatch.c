@@ -31,6 +31,7 @@ typedef struct poll_table_struct { int unused; } poll_table;
 #define static_assert _Static_assert
 #include "ioctl-compat.h"
 #define READ_ONCE(value) (value)
+#define WRITE_ONCE(value, next) ((value) = (next))
 #define dev_err(dev, ...) ((void)(dev))
 #define dev_dbg(dev, ...) ((void)(dev))
 #define ERESTARTSYS 512
@@ -63,7 +64,7 @@ struct crystalhd_hw {
     enum FLEA_POWER_STATES FleaPowerState;
     uint32_t FleaRawActive;
 };
-struct crystalhd_file { struct crystalhd_user *user; uint64_t generation; };
+struct crystalhd_file { struct crystalhd_user *user; struct test_lock release_lock; uint32_t tx_stopping; uint64_t generation; };
 struct file { void *private_data; };
 typedef BC_STATUS (*crystalhd_cmd_proc)(struct crystalhd_cmd *, crystalhd_ioctl_data *);
 struct crystalhd_cmd_tbl {
@@ -183,8 +184,22 @@ static int mutex_lock_interruptible(struct test_lock *lock)
     if (fail_tx_admission) adapter.present = false;
     return 0;
 }
+static void mutex_lock(struct test_lock *lock)
+{
+    Check(lock == &binding.release_lock && !lock->writers &&
+          !adapter.user_lock.readers && !adapter.user_lock.writers,
+          "RELEASE intent serializes before user admission");
+    lock->writers++;
+}
 static void mutex_unlock(struct test_lock *lock)
 {
+    if (lock == &binding.release_lock) {
+        Check(lock->writers == 1 && !adapter.user_lock.readers &&
+              !adapter.user_lock.writers && !binding.tx_stopping,
+              "RELEASE clears its intent after dropping user admission");
+        lock->writers--;
+        return;
+    }
     Check(lock == &adapter.tx_lock && lock->writers == 1 &&
           adapter.user_lock.readers == 1, "TX serialization ends before user admission");
     lock->writers--;
@@ -216,7 +231,8 @@ static int chd_dec_proc_user_data(struct crystalhd_adp *adp, crystalhd_ioctl_dat
 {
     Check(adp == &adapter && io == &pooled && pool_live &&
           ua == expected_address && compat == expected_compat &&
-          io->cmd == expected_cmd && io->u_id == 1,
+          io->cmd == expected_cmd &&
+          (io->u_id == 1 || (!set && io->cmd == BCM_IOC_RELEASE)),
           "copy boundary receives native command, caller identity and pointer mode");
     copies++;
     if (!set) {
@@ -498,6 +514,28 @@ static void Admission(void)
     Check(Call(BCM_IOC_RELEASE, false) == 0 && binding.user && caller_data.RetSts == BC_STS_IO_ERROR,
           "failed release preserves a still-owned binding");
 }
+static void ReleaseIntent(void)
+{
+    for (unsigned compat = 0; compat < 2; compat++) {
+        Reset();
+        copy_in_error = -EFAULT;
+        Check(Call(BCM_IOC_RELEASE, compat) == -EFAULT &&
+              !binding.tx_stopping && !binding.release_lock.writers &&
+              !user_writes && !handler_calls && frees == 1,
+              "an invalid RELEASE envelope never publishes stopping or waits for input");
+        Reset();
+        fail_user_admission = true;
+        Check(Call(BCM_IOC_RELEASE, compat) == -ENODEV &&
+              !binding.tx_stopping && !binding.release_lock.writers && frees == 1,
+              "failed RELEASE admission returns its prepared envelope and stop intent");
+        Reset();
+        adapter.cmds.state = BC_LINK_SUSPEND;
+        Check(Call(BCM_IOC_RELEASE, compat) == 0 &&
+              caller_data.RetSts == BC_STS_PWR_MGMT && binding.user &&
+              !binding.tx_stopping && !binding.release_lock.writers && frees == 1,
+              "PM-deferred RELEASE preserves the handle and permits later input");
+    }
+}
 static void ResultsAndCleanup(void)
 {
     const BC_STATUS statuses[] = { BC_STS_SUCCESS, BC_STS_BUSY, BC_STS_IO_ERROR,
@@ -641,6 +679,7 @@ int main(void)
     Routing();
     SessionOwnership();
     Admission();
+    ReleaseIntent();
     ResultsAndCleanup();
     Permissions();
     RawPowerAdmission();

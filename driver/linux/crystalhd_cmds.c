@@ -1525,7 +1525,8 @@ BC_STATUS crystalhd_tx_deadline_from_ms(u32 total_timeout_ms,
 static BC_STATUS crystalhd_tx_transfer_common(struct crystalhd_cmd *ctx,
 					      const struct crystalhd_tx_buffer *buffer,
 					      u8 data_flags, bool bounded,
-					      unsigned long deadline)
+					      unsigned long deadline,
+					      const uint32_t *tx_stopping)
 {
 	struct device *dev = chddev();
 	struct crystalhd_tx_completion completion = {
@@ -1542,6 +1543,8 @@ static BC_STATUS crystalhd_tx_transfer_common(struct crystalhd_cmd *ctx,
 		dev_err(dev, "%s: Invalid Arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	if (tx_stopping && READ_ONCE(*tx_stopping))
+		return BC_STS_CMD_CANCELLED;
 	if (bounded) {
 		sts = crystalhd_bounded_tx_status(ctx, deadline, false);
 		if (sts != BC_STS_SUCCESS)
@@ -1557,6 +1560,10 @@ static BC_STATUS crystalhd_tx_transfer_common(struct crystalhd_cmd *ctx,
 				 &completion, &tx_listid, data_flags);
 
 	while (sts == BC_STS_BUSY) {
+		if (tx_stopping && READ_ONCE(*tx_stopping)) {
+			sts = BC_STS_CMD_CANCELLED;
+			break;
+		}
 		if (bounded) {
 			sts = crystalhd_bounded_tx_status(ctx, deadline, false);
 			if (sts != BC_STS_SUCCESS)
@@ -1571,6 +1578,10 @@ static BC_STATUS crystalhd_tx_transfer_common(struct crystalhd_cmd *ctx,
 		}
 		if (sts != BC_STS_SUCCESS)
 			break;
+		if (tx_stopping && READ_ONCE(*tx_stopping)) {
+			sts = BC_STS_CMD_CANCELLED;
+			break;
+		}
 		if (bounded) {
 			sts = crystalhd_bounded_tx_status(ctx, deadline, true);
 			if (sts != BC_STS_SUCCESS)
@@ -1658,7 +1669,7 @@ BC_STATUS crystalhd_tx_transfer_until(struct crystalhd_cmd *ctx,
 				      unsigned long deadline)
 {
 	return crystalhd_tx_transfer_common(ctx, buffer, data_flags, true,
-					    deadline);
+					    deadline, NULL);
 }
 
 BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
@@ -1670,7 +1681,7 @@ BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 
 	if (!total_timeout_ms)
 		return crystalhd_tx_transfer_common(ctx, buffer, data_flags, false,
-						    0);
+						    0, NULL);
 
 	sts = crystalhd_tx_deadline_from_ms(total_timeout_ms, &deadline);
 	if (sts != BC_STS_SUCCESS)
@@ -1729,6 +1740,9 @@ static BC_STATUS bc_cproc_proc_input(struct crystalhd_cmd *ctx, crystalhd_ioctl_
 		return BC_STS_PWR_MGMT;
 	}
 
+	if (idata->tx_stopping && READ_ONCE(*idata->tx_stopping))
+		return BC_STS_CMD_CANCELLED;
+
 	ubuff = idata->udata.u.ProcInput.pDmaBuff;
 	ub_sz = idata->udata.u.ProcInput.BuffSz;
 
@@ -1746,8 +1760,9 @@ static BC_STATUS bc_cproc_proc_input(struct crystalhd_cmd *ctx, crystalhd_ioctl_
 	if (!dio_hnd)
 		return BC_STS_ERROR;
 
-	sts = crystalhd_tx_transfer_sync(ctx, &dio_hnd->tx_buffer,
-					 idata->udata.u.ProcInput.Encrypted, 0);
+	sts = crystalhd_tx_transfer_common(ctx, &dio_hnd->tx_buffer,
+					   idata->udata.u.ProcInput.Encrypted,
+					   false, 0, idata->tx_stopping);
 
 	crystalhd_unmap_dio(ctx->adp, dio_hnd);
 

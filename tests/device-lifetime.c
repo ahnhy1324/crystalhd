@@ -44,6 +44,7 @@ typedef int BC_STATUS;
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 
 struct mock_lock { unsigned int readers, writers, entries; };
+struct mutex { unsigned unused; };
 struct device { int unused; };
 struct pci_dev {
 	struct device dev;
