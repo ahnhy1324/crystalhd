@@ -235,16 +235,19 @@ static void synchronize_irq(int irq) {
 }
 static int release_status;
 static int data_refs;
-static crystalhd_ioctl_data *chd_dec_alloc_iodata(struct crystalhd_adp *a, bool isr) {
-    (void)a;
-    (void)isr;
+#define GFP_KERNEL 0
+static void *kzalloc(size_t bytes, int flags)
+{
+    check(bytes == sizeof(crystalhd_ioctl_data) && flags == GFP_KERNEL,
+          "private RELEASE envelope allocation");
+    void *memory = calloc(1, bytes);
+    check(memory != NULL, "test envelope allocation succeeds");
     __atomic_add_fetch(&data_refs, 1, __ATOMIC_SEQ_CST);
-    return calloc(1, sizeof(crystalhd_ioctl_data));
+    return memory;
 }
-static void chd_dec_free_iodata(struct crystalhd_adp *a, crystalhd_ioctl_data *d, bool isr) {
-    (void)a;
-    (void)isr;
-    free(d);
+static void kfree(void *memory)
+{
+    free(memory);
     __atomic_sub_fetch(&data_refs, 1, __ATOMIC_SEQ_CST);
 }
 static int chd_dec_proc_user_data(struct crystalhd_adp *a, crystalhd_ioctl_data *d,
@@ -271,7 +274,7 @@ static int chd_dec_api_cmd(struct crystalhd_adp *a, unsigned long ua, unsigned u
         return crystalhd_tx_transfer_common(&a->cmds, &b, 0, false, 0, stop);
     }
     if (cmd == BCM_IOC_RELEASE) {
-        chd_dec_free_iodata(a, prepared, false);
+        kfree(prepared);
         if (release_status)
             return release_status;
         if (uid == owner.uid) {

@@ -36,6 +36,7 @@ typedef struct poll_table_struct { int unused; } poll_table;
 #define dev_dbg(dev, ...) ((void)(dev))
 #define ERESTARTSYS 512
 #define CAP_SYS_RAWIO 17
+#define GFP_KERNEL 0
 
 struct device { int unused; };
 struct pci_dev { struct device dev; unsigned int device; };
@@ -80,7 +81,8 @@ static struct crystalhd_file binding;
 static struct file file;
 static struct test_lock chd_device_lock;
 static uint64_t chd_device_generation;
-static crystalhd_ioctl_data pooled;
+static crystalhd_ioctl_data pooled, release_envelope;
+static bool release_live, release_alloc_fail;
 static BC_IOCTL_DATA caller_data;
 static wait_queue_head_t chd_rx_poll_wait;
 static unsigned checks, handler_calls, color_calls, allocations, frees, copies;
@@ -210,6 +212,27 @@ static bool capable(int cap)
     return privileged;
 }
 static void *compat_ptr(unsigned long address) { return (void *)(uintptr_t)(uint32_t)address; }
+static void *kzalloc(size_t bytes, int flags)
+{
+    Check(bytes == sizeof(release_envelope) && flags == GFP_KERNEL && !release_live,
+          "RELEASE obtains its private envelope independently of the shared pool");
+    allocations++;
+    if (release_alloc_fail) return NULL;
+    memset(&release_envelope, 0, sizeof(release_envelope));
+    release_live = true;
+    return &release_envelope;
+}
+static void kfree(void *memory)
+{
+    Check(memory == &release_envelope && release_live && !release_envelope.add_cdata,
+          "RELEASE retires its private envelope exactly once");
+    release_live = false;
+    frees++;
+}
+static bool LiveEnvelope(crystalhd_ioctl_data *io)
+{
+    return (io == &pooled && pool_live) || (io == &release_envelope && release_live);
+}
 static crystalhd_ioctl_data *chd_dec_alloc_iodata(struct crystalhd_adp *adp, bool isr)
 {
     Check(adp == &adapter && !isr && !pool_live, "allocate the sole ioctl object once");
@@ -229,7 +252,7 @@ static void chd_dec_free_iodata(struct crystalhd_adp *adp, crystalhd_ioctl_data 
 static int chd_dec_proc_user_data(struct crystalhd_adp *adp, crystalhd_ioctl_data *io,
                                 unsigned long ua, bool set, bool compat)
 {
-    Check(adp == &adapter && io == &pooled && pool_live &&
+    Check(adp == &adapter && LiveEnvelope(io) &&
           ua == expected_address && compat == expected_compat &&
           io->cmd == expected_cmd &&
           (io->u_id == 1 || (!set && io->cmd == BCM_IOC_RELEASE)),
@@ -249,7 +272,7 @@ static int chd_dec_proc_user_data(struct crystalhd_adp *adp, crystalhd_ioctl_dat
 static void vfree(void *memory) { Check(memory != NULL, "attached allocation is live"); free(memory); extra_frees++; }
 static BC_STATUS Handle(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *io, unsigned command)
 {
-    Check(ctx == &adapter.cmds && io == &pooled && io->cmd == command &&
+    Check(ctx == &adapter.cmds && LiveEnvelope(io) && io->cmd == command &&
           command == expected_cmd, "production command table selects the correct handler");
     Check(chd_device_lock.readers == 1, "handler retains device lifetime protection");
     if (command == BCM_IOC_RELEASE || command == BCM_IOC_NOTIFY_MODE ||
@@ -308,7 +331,7 @@ static BC_STATUS crystalhd_legacy_color_access(struct crystalhd_cmd *ctx, crysta
 
 static void Reset(void)
 {
-    Check(!pool_live && !chd_device_lock.readers && !adapter.user_lock.readers &&
+    Check(!pool_live && !release_live && !chd_device_lock.readers && !adapter.user_lock.readers &&
           !adapter.user_lock.writers && !adapter.tx_lock.writers,
           "previous operation released all admission and temporary ownership");
     pci = (struct pci_dev){ .device = BC_PCI_DEVID_FLEA };
@@ -331,6 +354,7 @@ static void Reset(void)
     poll_registrations = 0;
     device_locks = user_reads = user_writes = tx_locks = 0;
     privileged = true;
+    release_alloc_fail = false;
     pool_empty = fail_user_admission = fail_tx_admission = interrupt_tx = false;
     release_user = attach_extra = false;
     copy_in_error = copy_out_error = 0;
@@ -517,6 +541,17 @@ static void Admission(void)
 static void ReleaseIntent(void)
 {
     for (unsigned compat = 0; compat < 2; compat++) {
+        Reset();
+        pool_empty = true;
+        release_user = true;
+        Check(Call(BCM_IOC_RELEASE, compat) == 0 && !binding.user &&
+              !binding.tx_stopping && !binding.release_lock.writers && frees == 1,
+              "RELEASE can retire its file even when the shared ioctl pool is exhausted");
+        Reset();
+        release_alloc_fail = true;
+        Check(Call(BCM_IOC_RELEASE, compat) == -ENOMEM && !binding.tx_stopping &&
+              !user_writes && !handler_calls && !frees && !release_live,
+              "failed private allocation leaves input and admission unchanged");
         Reset();
         copy_in_error = -EFAULT;
         Check(Call(BCM_IOC_RELEASE, compat) == -EFAULT &&

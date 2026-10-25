@@ -719,7 +719,10 @@ static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 			vfree(temp->add_cdata);
 			temp->add_cdata = NULL;
 		}
-		chd_dec_free_iodata(adp, temp, 0);
+		if (prepared)
+			kfree(temp);
+		else
+			chd_dec_free_iodata(adp, temp, 0);
 		temp = NULL;
 	}
 
@@ -771,16 +774,18 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 
 	/* Validate/copy RELEASE once before publishing its per-file stop intent.
 	 * A malformed envelope must not cancel a valid input. No hardware or user
-	 * slot is touched here; the outer device barrier keeps the pool alive.
+	 * slot is touched here. Do not reserve a shared ioctl-pool object while
+	 * waiting: queued RELEASE callers could exhaust that pool and prevent
+	 * the decoder owner from publishing the cancellation they wait for.
 	 */
 	if (cmd == BCM_IOC_RELEASE) {
-		prepared = chd_dec_alloc_iodata(adp, false);
+		prepared = kzalloc(sizeof(*prepared), GFP_KERNEL);
 		if (!prepared)
-			return -EINVAL;
+			return -ENOMEM;
 		prepared->cmd = cmd;
 		rc = chd_dec_proc_user_data(adp, prepared, ua, false, compat);
 		if (rc) {
-			chd_dec_free_iodata(adp, prepared, false);
+			kfree(prepared);
 			return rc;
 		}
 		/* Do not use cin_wait_exit: its consumable flush pulse can release
@@ -842,7 +847,7 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 	rc = chd_dec_api_cmd(adp, ua, uc->uid, cmd, cproc, compat,
 			      prepared, cmd == BCM_IOC_PROC_INPUT ?
 			      &binding->tx_stopping : NULL);
-	prepared = NULL; /* chd_dec_api_cmd returned it to the pool. */
+	prepared = NULL; /* chd_dec_api_cmd consumed the private envelope. */
 	if (cmd == BCM_IOC_RELEASE && !uc->in_use) {
 		binding->user = NULL;
 		crystalhd_rx_poll_wake(adp, EPOLLERR | EPOLLHUP);
@@ -850,7 +855,7 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 
 unlock:
 	if (prepared)
-		chd_dec_free_iodata(adp, prepared, false);
+		kfree(prepared);
 	if (tx_locked)
 		mutex_unlock(&adp->tx_lock);
 	if (exclusive)
