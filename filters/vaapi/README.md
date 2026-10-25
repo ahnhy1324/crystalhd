@@ -560,6 +560,13 @@ changing field selection, pixels or ownership. See the
 [bounded cost and negotiation results](../../HARDWARE-2026-09-13.md#output-scaling-cost-2026-10-25);
 these do not establish streaming or displayed-frame rates.
 
+Ordinary NV12 VPP also avoids clearing pixels that its ROI will overwrite,
+copies matching-width rows and reuses sampled rows independently for each
+interleaved field. Odd source-crop chroma phase and destination borders/pitch
+padding retain their previous values. The [native comparison](../../HARDWARE-2026-09-13.md#ordinary-nv12-vpp-2026-10-25)
+preserves all selected pixel/PTS references; it is a finite headless result,
+not new real-time or display acceptance.
+
 On the 1.2 implementation, VPP/Bob honors declared full-range NV12 for
 ARGB conversion; UNKNOWN input retains the existing limited-range interpretation.
 NV12 output preserves the input range, with range-correct black padding.

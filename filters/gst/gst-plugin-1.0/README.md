@@ -85,6 +85,10 @@ In a synthetic 720→1080 UYVY stage comparison it used about 44% less CPU
 than bilinear2, with harder/jagged edges; Catmull-Rom and Lanczos cost more.
 This is a filter-stage result, not a playback-rate guarantee. The Player's
 `--software-output-size` remains bilinear2; it has no filter-selection flag.
+A separate 30s Xv/Pulse Player comparison also lowers whole-process CPU with
+nearest, but retains frame/count deficits in both methods; it does not qualify
+zero-loss 50p/60p or change the Player default. See the
+[whole-path comparison](../../../HARDWARE-2026-09-13.md#ordinary-nv12-vpp-2026-10-25).
 Omitting that option and letting the sink fit the smaller picture can avoid
 CPU enlargement altogether. See the
 [comparison and exact scope](../../../HARDWARE-2026-09-13.md#output-scaling-cost-2026-10-25).

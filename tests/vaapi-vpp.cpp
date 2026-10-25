@@ -4,6 +4,10 @@
 #include <functional>
 #include <mutex>
 static thread_local unsigned bob_resampled_rows[2] = {};
+static thread_local size_t nv12_cleared_bytes = 0;
+static thread_local unsigned nv12_resampled_rows[2] = {};
+#define CRYSTALHD_VAAPI_TEST_NV12_CLEAR(bytes) (nv12_cleared_bytes += (bytes))
+#define CRYSTALHD_VAAPI_TEST_NV12_RESAMPLE_ROW(plane) (++nv12_resampled_rows[plane])
 #define CRYSTALHD_VAAPI_TEST_BOB_RESAMPLE_ROW(plane) (++bob_resampled_rows[plane])
 namespace {
 struct Driver;
@@ -31,6 +35,8 @@ void VppTestWorkerTurn(Driver *, std::unique_lock<std::mutex> &);
 #undef DtsDeviceOpen
 #undef CRYSTALHD_VAAPI_TEST_VPP_WORKER_TURN
 #undef CRYSTALHD_VAAPI_TEST_BOB_RESAMPLE_ROW
+#undef CRYSTALHD_VAAPI_TEST_NV12_CLEAR
+#undef CRYSTALHD_VAAPI_TEST_NV12_RESAMPLE_ROW
 
 #include <atomic>
 #include <cmath>
@@ -3362,6 +3368,116 @@ void VppFastModeKeepsNearestPixelsAndRejectsOtherFilters() {
     // Drop only the test submission; no EndPicture of rejected parameters.
     fixture.processor->target = VA_INVALID_SURFACE;
   }
+}
+
+void Nv12ScalingPreservesCropsBordersAndFieldRows() {
+  struct Case { VARectangle input, output; bool fields; unsigned width, height; };
+  const Case cases[] = {
+      {{0,0,16,16}, {0,0,24,24}, false, 24,24},
+      {{1,3,16,13}, {2,4,16,20}, false, 25,29},
+      {{1,1,21,17}, {2,4,12,8}, false, 25,19},
+      {{3,1,17,11}, {4,4,24,20}, false, 33,29},
+      {{2,4,16,12}, {4,4,24,20}, true, 33,29},
+      {{2,4,16,16}, {2,4,16,20}, true, 25,29},
+      {{2,4,24,20}, {2,4,12,8}, true, 25,19}};
+  for (const auto &item : cases) {
+    Surface source;
+    Require(source.AllocateCpuNv12(32,28), "allocate an ordinary VPP crop source");
+    auto target = PaddedBobOutput(item.width, item.height);
+    for (unsigned frame = 0; frame != 2; ++frame) {
+      for (unsigned plane = 0; plane != 2; ++plane)
+        for (unsigned y = 0; y < (plane == 0 ? 28 : 14); ++y)
+          for (unsigned x = 0; x != 32; ++x)
+            source.planes[plane][size_t{y} * source.pitch[plane] + x] =
+                static_cast<uint8_t>(frame * 97 + plane * 71 + y * 13 + x * 3);
+      source.ready = true;
+      source.expected_timestamp = source.frame_timestamp = (frame+1)*kTimestampStep;
+      const auto original = source.storage;
+      VppColorRange range;
+      range.source_full = frame != 0;
+      nv12_cleared_bytes = 0;
+      nv12_resampled_rows[0] = nv12_resampled_rows[1] = 0;
+      SwsContext *scaler = nullptr;
+      std::vector<uint8_t> staging;
+      Require(ProcessVpp(&scaler, &staging, &source, target.get(), item.input,
+                         item.output, false, {}, false, range, item.fields) == VA_STATUS_SUCCESS,
+              "ordinary VPP completes progressive/interleaved cropped output");
+      Require(source.storage == original && target->ready && !target->failed &&
+                  target->frame_timestamp == source.frame_timestamp &&
+                  target->expected_timestamp == source.expected_timestamp,
+              "ordinary VPP retains immutable source and exact picture timestamps");
+      for (unsigned plane = 0; plane != 2; ++plane) {
+        const unsigned rows = plane == 0 ? target->height : (target->height+1)/2;
+        const unsigned bytes = plane == 0 ? target->width : Align(target->width,2);
+        const unsigned top = item.output.y / (plane == 0 ? 1 : 2);
+        const unsigned active_rows = item.output.height / (plane == 0 ? 1 : 2);
+        const unsigned unit = plane == 0 ? 1 : 2;
+        std::set<unsigned> selected_rows;
+        for (unsigned y = 0; y != rows; ++y)
+          for (unsigned x = 0; x != target->pitch[plane]; ++x) {
+            uint8_t expected = 0xa5;
+            if (x < bytes) expected = plane == 0 ? (frame ? 0 : 16) : 128;
+            if (y >= top && y < top+active_rows &&
+                x >= unsigned(item.output.x) && x < unsigned(item.output.x)+item.output.width) {
+              const unsigned row = y-top, column = x-item.output.x;
+              // Independent closed-form pixel oracle, including odd crop phase.
+              const unsigned sy = item.fields
+                  ? item.input.y/unit + uint64_t{row/2}*(item.input.height/unit/2)/
+                        (active_rows/2)*2+row%2
+                  : (item.input.y + uint64_t{row}*unit*item.input.height/item.output.height)/unit;
+              unsigned sx = item.input.x + uint64_t{column/unit}*unit*
+                  item.input.width/item.output.width;
+              if (plane != 0) sx = (sx & ~1U) + column%2;
+              selected_rows.insert(sy);
+              expected = source.planes[plane][size_t{sy}*source.pitch[plane]+sx];
+            }
+            Require(target->planes[plane][size_t{y}*target->pitch[plane]+x] == expected,
+                    "nearest crop pixels, independent UV/field phase, borders and pitch tails are exact");
+          }
+        const unsigned expected_rows = item.input.width == item.output.width ? 0
+            : item.output.height > item.input.height ? selected_rows.size() : active_rows;
+        Require(nv12_resampled_rows[plane] == expected_rows,
+                "same-width copies avoid sampling; enlarged field rows resample once");
+      }
+      const size_t canvas = size_t{target->width}*target->height +
+          size_t{Align(target->width,2)}*((target->height+1)/2);
+      const size_t roi = size_t{item.output.width}*item.output.height*3/2;
+      Require(nv12_cleared_bytes == canvas-roi,
+              "ordinary VPP initializes only actual borders, not overwritten ROI");
+      const size_t used = size_t{target->pitch[0]}*target->height +
+          size_t{target->pitch[1]}*((target->height+1)/2);
+      Require(std::all_of(target->storage.begin()+used, target->storage.end(),
+                          [](uint8_t c) { return c == 0xa5; }), "ordinary VPP retains outer guard");
+      sws_freeContext(scaler);
+    }
+  }
+}
+
+void Nv12InPlaceCannotDestroyInput() {
+  Surface source;
+  Require(source.AllocateCpuNv12(16,16), "allocate an in-place negative control");
+  std::fill(source.storage.begin(), source.storage.end(), 0x73);
+  source.ready = true;
+  const auto original = source.storage;
+  SwsContext *scaler = nullptr;
+  std::vector<uint8_t> staging;
+  VARectangle region{0,0,16,16};
+  Require(ProcessVpp(&scaler, &staging, &source, &source, region, region) ==
+              VA_STATUS_ERROR_INVALID_PARAMETER && source.storage == original,
+          "internal dispatcher rejects self-overwrite before clearing source pixels");
+  // Public VPP already rejects this request because BeginPicture reserves its
+  // target before RenderPicture can accept it as a ready raw-upload source.
+  Fixture fixture;
+  fixture.driver.StopWorkers();
+  fixture.target->expected_timestamp = fixture.target->frame_timestamp = 0;
+  const auto before = fixture.target->storage;
+  VAProcPipelineParameterBuffer pipeline = {};
+  pipeline.surface = 2;
+  memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(), &pipeline, sizeof(pipeline));
+  Require(BeginPicture(&fixture.context,2,2) == VA_STATUS_SUCCESS &&
+              RenderPicture(&fixture.context,2,&fixture.parameters,1) == VA_STATUS_ERROR_INVALID_SURFACE &&
+              fixture.target->storage == before,
+          "public in-place raw upload remains rejected without writing pixels");
 }
 
 void BobAlignedOutputRegionsPreservePixelsAndBorders() {
@@ -7308,6 +7424,8 @@ int VppFullTestEntry(int argc, char **argv) {
     BobPipelineFilterValidation();
     BobImmediatePixelsAndWeaveReset();
     BobAlignedOutputRegionsPreservePixelsAndBorders();
+    Nv12ScalingPreservesCropsBordersAndFieldRows();
+    Nv12InPlaceCannotDestroyInput();
     BobHorizontalRowsReuseWithoutStalePixels();
     VppFastModeKeepsNearestPixelsAndRejectsOtherFilters();
     BobAlignedOutputRegionQueuedSnapshotAndCancellation();
@@ -7378,11 +7496,23 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 107 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 109 hardware-free regressions passed");
   return 0;
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--nv12-scaling") == 0) {
+    try {
+      Nv12ScalingPreservesCropsBordersAndFieldRows();
+      Nv12InPlaceCannotDestroyInput();
+      puts("VA-API ordinary NV12 scaling pixels/crops/fields/padding/work PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API ordinary NV12 scaling failed: %s\n", error.what());
+      return 1;
+    }
+  }
+
   if (argc == 2 && strcmp(argv[1], "--bob-resample-reuse") == 0) {
     try {
       BobHorizontalRowsReuseWithoutStalePixels();
@@ -7418,6 +7548,8 @@ int main(int argc, char **argv) {
       {"interleaved NV12 scaling preserves field lattices", VppInterleavedScalingPreservesFieldRows},
       {"720 Bob returns FHD through direct and staged VPP", Bob720ReturnsFhdThroughDirectAndTwoStageVpp},
       {"aligned NV12 Bob destination pixels and borders", BobAlignedOutputRegionsPreservePixelsAndBorders},
+      {"ordinary NV12 scaling preserves crops/fields/borders/work", Nv12ScalingPreservesCropsBordersAndFieldRows},
+      {"ordinary in-place negative controls preserve input", Nv12InPlaceCannotDestroyInput},
       {"Bob horizontal row reuse preserves changing full/compact fields", BobHorizontalRowsReuseWithoutStalePixels},
       {"standard FAST keeps nearest pixels and filter rejections", VppFastModeKeepsNearestPixelsAndRejectsOtherFilters},
       {"queued aligned Bob destination snapshot and cancellation", BobAlignedOutputRegionQueuedSnapshotAndCancellation},
