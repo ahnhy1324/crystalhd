@@ -3,6 +3,8 @@
 // device, firmware, browser, or CrystalHD device is opened by these tests.
 #include <functional>
 #include <mutex>
+static thread_local unsigned bob_resampled_rows[2] = {};
+#define CRYSTALHD_VAAPI_TEST_BOB_RESAMPLE_ROW(plane) (++bob_resampled_rows[plane])
 namespace {
 struct Driver;
 void VppTestWorkerTurn(Driver *, std::unique_lock<std::mutex> &);
@@ -28,6 +30,7 @@ void VppTestWorkerTurn(Driver *, std::unique_lock<std::mutex> &);
 #undef DtsStopDecoder
 #undef DtsDeviceOpen
 #undef CRYSTALHD_VAAPI_TEST_VPP_WORKER_TURN
+#undef CRYSTALHD_VAAPI_TEST_BOB_RESAMPLE_ROW
 
 #include <atomic>
 #include <cmath>
@@ -1187,7 +1190,7 @@ struct PipelineCapsFixture {
                 caps->output_pixel_format[0] == VA_FOURCC_NV12 &&
                 caps->output_pixel_format[1] == VA_FOURCC_ARGB &&
                 caps->rotation_flags == (1U << VA_ROTATION_NONE) &&
-                caps->filter_flags == (VA_FILTER_SCALING_DEFAULT |
+                caps->filter_flags == (VA_FILTER_SCALING_FAST |
                                       VA_FILTER_INTERPOLATION_NEAREST_NEIGHBOR) &&
                 caps->min_input_width == 16 && caps->min_input_height == 16 &&
                 caps->max_input_width == kMaxWidth && caps->max_input_height == kMaxHeight &&
@@ -3268,6 +3271,97 @@ void RequireBobOutputRegion(const Surface &source, const Surface &target,
   Require(std::all_of(target.storage.begin() + used, target.storage.end(),
                       [](uint8_t value) { return value == 0xa5; }),
           "Bob preserves the outer output guard");
+}
+
+// Repeated destination rows may reuse one private horizontal resample. Test
+// changing frames, both field parities, compact views, ROI borders and padding.
+void BobHorizontalRowsReuseWithoutStalePixels() {
+  for (bool compact : {false, true})
+    for (unsigned parity : {0U, 1U}) {
+      Surface full, source;
+      Require(full.AllocateCpuNv12(32, 24) &&
+                  source.AllocateCpuNv12(32, compact ? 12 : 24),
+              "allocate full and compact Bob inputs");
+      const VARectangle visible{0, 0, 32, 24}, output{4, 4, 48, 36};
+      auto target = PaddedBobOutput(56, 44);
+      SwsContext *scaler = nullptr;
+      std::vector<uint8_t> staging;
+      VppDeinterlace deinterlace;
+      deinterlace.bob = true;
+      deinterlace.field = static_cast<crystalhd_vpp_bob::FieldParity>(parity);
+      for (unsigned frame = 0; frame != 2; ++frame) {
+        for (unsigned plane = 0; plane != 2; ++plane) {
+          const unsigned rows = plane == 0 ? 24 : 12;
+          for (unsigned row = 0; row < rows; ++row)
+            for (unsigned col = 0; col != 32; ++col)
+              full.planes[plane][size_t{row} * full.pitch[plane] + col] =
+                  static_cast<uint8_t>(frame * 97 + plane * 43 + row * 7 + col * 3);
+          for (unsigned row = 0; row < (compact ? rows / 2 : rows); ++row)
+            memcpy(source.planes[plane] + size_t{row} * source.pitch[plane],
+                   full.planes[plane] + size_t{compact ? row * 2 + parity : row} *
+                       full.pitch[plane], 32);
+        }
+        source.ready = true;
+        const auto original = source.storage;
+        bob_resampled_rows[0] = bob_resampled_rows[1] = 0;
+        Require(ProcessVpp(&scaler, &staging, &source, target.get(), visible,
+                           output, false, deinterlace, compact) == VA_STATUS_SUCCESS,
+                "Bob resample completes for a changing full/compact field");
+        RequireBobOutputRegion(full, *target, visible, output, parity, false);
+        Require(source.storage == original, "row reuse never mutates input pixels");
+        Require(bob_resampled_rows[0] == 12 && bob_resampled_rows[1] == 6,
+                "resample each physical input row once instead of three times");
+      }
+      sws_freeContext(scaler);
+    }
+}
+
+void VppFastModeKeepsNearestPixelsAndRejectsOtherFilters() {
+  Fixture fixture;
+  fixture.driver.StopWorkers();
+  fixture.driver.stopping = false;
+  const auto picture = fixture.decoder->decoded_frames.at(kTimestampStep);
+  FillFieldRows(*picture);
+  std::vector<uint8_t> expected;
+  for (uint32_t flags : {VA_FILTER_SCALING_DEFAULT, VA_FILTER_SCALING_FAST,
+                        VA_FILTER_INTERPOLATION_NEAREST_NEIGHBOR,
+                        VA_FILTER_SCALING_FAST | VA_FILTER_INTERPOLATION_NEAREST_NEIGHBOR}) {
+    VAProcPipelineParameterBuffer pipeline = {};
+    pipeline.surface = 1;
+    VARectangle output{0, 0, 8, 8};
+    pipeline.output_region = &output;
+    pipeline.filter_flags = flags;
+    memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+           &pipeline, sizeof(pipeline));
+    fixture.SubmitParameters();
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                SyncSurface2(&fixture.context, 2, 0) == VA_STATUS_SUCCESS,
+            "standard FAST and nearest requests complete through ordinary VPP");
+    if (expected.empty()) expected = fixture.target->storage;
+    Require(fixture.target->storage == expected,
+            "FAST selects the existing DEFAULT pixels without a quality change");
+  }
+  for (uint32_t flags : {VA_FILTER_SCALING_HQ, VA_FILTER_SCALING_NL_ANAMORPHIC,
+                        VA_FILTER_INTERPOLATION_BILINEAR,
+                        VA_FILTER_INTERPOLATION_ADVANCED,
+                        VA_FILTER_SCALING_FAST | VA_FILTER_INTERPOLATION_BILINEAR,
+                        0x4000, 0x10000}) {
+    VAProcPipelineParameterBuffer pipeline = {};
+    pipeline.surface = 1;
+    pipeline.filter_flags = flags;
+    memcpy(fixture.driver.buffers.at(fixture.parameters).data.data(),
+           &pipeline, sizeof(pipeline));
+    Require(BeginPicture(&fixture.context, 2, 2) == VA_STATUS_SUCCESS,
+            "begin unsupported scaling request");
+    const auto previous = fixture.target->storage;
+    Require(RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                VA_STATUS_ERROR_UNSUPPORTED_FILTER &&
+                fixture.driver.pending_vpp.empty() &&
+                fixture.target->storage == previous && picture->vpp_readers == 0,
+            "unsupported encoded filter values reject before reading or writing");
+    // Drop only the test submission; no EndPicture of rejected parameters.
+    fixture.processor->target = VA_INVALID_SURFACE;
+  }
 }
 
 void BobAlignedOutputRegionsPreservePixelsAndBorders() {
@@ -7214,6 +7308,8 @@ int VppFullTestEntry(int argc, char **argv) {
     BobPipelineFilterValidation();
     BobImmediatePixelsAndWeaveReset();
     BobAlignedOutputRegionsPreservePixelsAndBorders();
+    BobHorizontalRowsReuseWithoutStalePixels();
+    VppFastModeKeepsNearestPixelsAndRejectsOtherFilters();
     BobAlignedOutputRegionQueuedSnapshotAndCancellation();
     Bob720ReturnsFhdThroughDirectAndTwoStageVpp();
     CompletedVppOutputsRetainChainedSnapshots();
@@ -7282,11 +7378,23 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 105 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 107 hardware-free regressions passed");
   return 0;
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--bob-resample-reuse") == 0) {
+    try {
+      BobHorizontalRowsReuseWithoutStalePixels();
+      VppFastModeKeepsNearestPixelsAndRejectsOtherFilters();
+      puts("VA-API Bob row reuse pixels/fields/padding PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API Bob row reuse failed: %s\n", error.what());
+      return 1;
+    }
+  }
+
   if (argc == 2 && strcmp(argv[1], "--native-dumb-offset") == 0)
     return NativeDumbOffsetTestEntry();
   if (argc == 2 && strcmp(argv[1], "--centered-readonly-pending") == 0)
@@ -7310,6 +7418,8 @@ int main(int argc, char **argv) {
       {"interleaved NV12 scaling preserves field lattices", VppInterleavedScalingPreservesFieldRows},
       {"720 Bob returns FHD through direct and staged VPP", Bob720ReturnsFhdThroughDirectAndTwoStageVpp},
       {"aligned NV12 Bob destination pixels and borders", BobAlignedOutputRegionsPreservePixelsAndBorders},
+      {"Bob horizontal row reuse preserves changing full/compact fields", BobHorizontalRowsReuseWithoutStalePixels},
+      {"standard FAST keeps nearest pixels and filter rejections", VppFastModeKeepsNearestPixelsAndRejectsOtherFilters},
       {"queued aligned Bob destination snapshot and cancellation", BobAlignedOutputRegionQueuedSnapshotAndCancellation},
       {"unsupported color ranges reject before capture", VppColorRangeRejectsUnsupportedRequests},
       {"private first-field Bob pixels preserve public readiness", FirstFieldCpuViewPreservesPublicReadiness},

@@ -1,0 +1,340 @@
+{
+  "schema": 1,
+  "issue": 471,
+  "pr": 508,
+  "baseline": "164b2096628ed62d188003498cce6ead80e38154",
+  "candidate": "1e58c3e77ec7da3f391f89357ae8ef9783adf61b",
+  "installed_va": "8c75183 source; b913a59 native payload; VA source unchanged through baseline164b209",
+  "environment": {
+    "os": "Ubuntu26.04.1 LTS",
+    "kernel": "7.0.0-38-generic",
+    "cpu": "Core2Duo T8100",
+    "device": "BCM70015",
+    "module": "3.10.13 unchanged",
+    "gstreamer": "1.28.2",
+    "libva": "1.23.0",
+    "libswscale": "9.1.100",
+    "l0s": "OFF:force_l0s_off=Y,session_l0s_off=N,root/endpoint LinkCtl0042",
+    "power": "AC; no PM/clock or installed changes"
+  },
+  "scope": "Bounded CPU scaling-stage and serialized native VA API batches; not sustained/live throughput, displayed cadence, physical A/V/E2E, power or Atom qualification. No application patch or default promotion.",
+  "checks": {
+    "vpp_full": "PASS:107/107",
+    "old_new_regression": "expected FAIL: Bob horizontal row-resample work count",
+    "native_i686": "PASS:focused new row-reuse/FAST pixel tests and26 CPU-only groups; no forbidden SIMD/cache instructions",
+    "pentium2_qemu": "PASS:same ELF32 focused tests; not native32 hardware acceptance",
+    "native_fast": "PASS:stock FFmpeg NV12 default/FAST60/60,exact original pixels/PTS; prior FAST unsupported; HQ/YUY2 remain unsupported",
+    "native_fast_kernel": "PASS:no matching errors; zero ref/pin net; AER and PM unchanged",
+    "sanitizer": "PASS:ASan/UBSan/LSan focused and full107 VPP regressions",
+    "native_bob": "PASS:900 originals/1800 Bob outputs complete,including warmups; first/last source and both FHD field outputs checked each epoch (72 complete outputs),source preservation/EOS/reopen,boundary checks",
+    "final_measurement": "three complete720-output crossed rounds PASS pixels; fourth round interrupted by85C thermal guard, preserved separately, not completed campaign"
+  },
+  "gstreamer": {
+    "methodology": "isolated UYVY1280x720 ->1920x1080 videoscale,2threads,add-borders=true,180outputs after8warmups; one appsrc push/appsink pull per unique50Hz PTS,unpaced; natural EOS; process CPU includes worker threads; real property readback",
+    "rows": [
+      {"method": 0, "actual_method": 0, "runs": 180, "warmup": 8, "cpu_ms_each": 5.972189, "wall_ms_each": 5.436507, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 1, "name": "nearest", "thermal_before": [52000, 43000]},
+      {"method": 4, "actual_method": 4, "runs": 180, "warmup": 8, "cpu_ms_each": 10.687534, "wall_ms_each": 7.98885, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 1, "name": "bilinear2", "thermal_before": [52000, 46000]},
+      {"method": 1, "actual_method": 1, "runs": 180, "warmup": 8, "cpu_ms_each": 10.643759, "wall_ms_each": 7.900827, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 1, "name": "bilinear", "thermal_before": [52000, 46000]},
+      {"method": 8, "actual_method": 8, "runs": 180, "warmup": 8, "cpu_ms_each": 20.762932, "wall_ms_each": 14.775398, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 1, "name": "catrom", "thermal_before": [53000, 49000]},
+      {"method": 3, "actual_method": 3, "runs": 180, "warmup": 8, "cpu_ms_each": 20.747926, "wall_ms_each": 14.70858, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 1, "name": "lanczos", "thermal_before": [59000, 52000]},
+      {"method": 3, "actual_method": 3, "runs": 180, "warmup": 8, "cpu_ms_each": 20.737944, "wall_ms_each": 14.648788, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 2, "name": "lanczos", "thermal_before": [62000, 52000]},
+      {"method": 8, "actual_method": 8, "runs": 180, "warmup": 8, "cpu_ms_each": 20.748646, "wall_ms_each": 14.856419, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 2, "name": "catrom", "thermal_before": [63000, 54000]},
+      {"method": 1, "actual_method": 1, "runs": 180, "warmup": 8, "cpu_ms_each": 10.635102, "wall_ms_each": 7.782567, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 2, "name": "bilinear", "thermal_before": [64000, 54000]},
+      {"method": 4, "actual_method": 4, "runs": 180, "warmup": 8, "cpu_ms_each": 10.6471, "wall_ms_each": 7.670414, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 2, "name": "bilinear2", "thermal_before": [64000, 52000]},
+      {"method": 0, "actual_method": 0, "runs": 180, "warmup": 8, "cpu_ms_each": 5.981072, "wall_ms_each": 4.609746, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 2, "name": "nearest", "thermal_before": [65000, 55000]},
+      {"method": 4, "actual_method": 4, "runs": 180, "warmup": 8, "cpu_ms_each": 10.644786, "wall_ms_each": 7.798148, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 3, "name": "bilinear2", "thermal_before": [65000, 51000]},
+      {"method": 0, "actual_method": 0, "runs": 180, "warmup": 8, "cpu_ms_each": 6.019051, "wall_ms_each": 4.633142, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 3, "name": "nearest", "thermal_before": [65000, 55000]},
+      {"method": 3, "actual_method": 3, "runs": 180, "warmup": 8, "cpu_ms_each": 20.749364, "wall_ms_each": 14.901366, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 3, "name": "lanczos", "thermal_before": [65000, 51000]},
+      {"method": 1, "actual_method": 1, "runs": 180, "warmup": 8, "cpu_ms_each": 10.651065, "wall_ms_each": 7.879497, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 3, "name": "bilinear", "thermal_before": [65000, 54000]},
+      {"method": 8, "actual_method": 8, "runs": 180, "warmup": 8, "cpu_ms_each": 20.745398, "wall_ms_each": 14.767002, "input": [1280, 720], "output": [1920, 1080], "format": "UYVY", "threads": 2, "pts_checked": true, "eos": true, "scope": "isolated unpaced GStreamer videoscale, not decoding or display", "repeat": 3, "name": "catrom", "thermal_before": [66000, 55000]}
+    ],
+    "comparisons": {
+      "bilinear_vs_bilinear2": "byte-identical",
+      "nearest_vs_bilinear2_different_bytes": 1436525,
+      "catrom_vs_lanczos_different_bytes": 928436,
+      "image": "scaler-comparison.png:1:1 crop480x240 at540,0 of actual1920x1080 UYVY outputs; common RGB conversion and32px labels; synthetic pattern, no personal image"
+    }
+  },
+  "cpu_vpp": {
+    "methodology": "actual production ProcessVpp on private CPU-owned NV12; both field parities alternate,8warmups; independent full-output origin-aligned nearest oracle; no device/graphics calls; CLOCK_PROCESS_CPUTIME_ID; oracle compares final output after each timed process, not every iteration",
+    "initial_180_output_paired_rows": [
+      {"source": [1280, 720], "target": [1920, 1080], "bob": true, "runs": 180, "cpu_ms_each": 4.901858, "wall_ms_each": 5.876182, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 1, "variant": "baseline"},
+      {"source": [1280, 720], "target": [1920, 1080], "bob": true, "runs": 180, "cpu_ms_each": 3.187091, "wall_ms_each": 3.782475, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 1, "variant": "optimized"},
+      {"source": [1920, 1080], "target": [1280, 720], "bob": true, "runs": 180, "cpu_ms_each": 2.478266, "wall_ms_each": 2.526925, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 1, "variant": "baseline"},
+      {"source": [1920, 1080], "target": [1280, 720], "bob": true, "runs": 180, "cpu_ms_each": 2.246111, "wall_ms_each": 2.420413, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 1, "variant": "optimized"},
+      {"source": [1280, 720], "target": [1280, 720], "bob": true, "runs": 180, "cpu_ms_each": 0.396912, "wall_ms_each": 0.40024, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 1, "variant": "baseline"},
+      {"source": [1280, 720], "target": [1280, 720], "bob": true, "runs": 180, "cpu_ms_each": 0.512984, "wall_ms_each": 0.513062, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 1, "variant": "optimized"},
+      {"source": [1280, 720], "target": [1920, 1080], "bob": false, "runs": 180, "cpu_ms_each": 8.024095, "wall_ms_each": 8.514335, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 1, "variant": "baseline"},
+      {"source": [1280, 720], "target": [1920, 1080], "bob": false, "runs": 180, "cpu_ms_each": 8.18462, "wall_ms_each": 8.711007, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 1, "variant": "optimized"},
+      {"source": [1280, 720], "target": [1920, 1080], "bob": true, "runs": 180, "cpu_ms_each": 3.119801, "wall_ms_each": 3.893412, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 2, "variant": "optimized"},
+      {"source": [1280, 720], "target": [1920, 1080], "bob": true, "runs": 180, "cpu_ms_each": 4.866763, "wall_ms_each": 5.432046, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 2, "variant": "baseline"},
+      {"source": [1920, 1080], "target": [1280, 720], "bob": true, "runs": 180, "cpu_ms_each": 2.282834, "wall_ms_each": 2.306243, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 2, "variant": "optimized"},
+      {"source": [1920, 1080], "target": [1280, 720], "bob": true, "runs": 180, "cpu_ms_each": 2.529036, "wall_ms_each": 2.623294, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 2, "variant": "baseline"},
+      {"source": [1280, 720], "target": [1280, 720], "bob": true, "runs": 180, "cpu_ms_each": 0.489914, "wall_ms_each": 0.626251, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 2, "variant": "optimized"},
+      {"source": [1280, 720], "target": [1280, 720], "bob": true, "runs": 180, "cpu_ms_each": 0.687554, "wall_ms_each": 1.197556, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 2, "variant": "baseline"},
+      {"source": [1280, 720], "target": [1920, 1080], "bob": false, "runs": 180, "cpu_ms_each": 8.208308, "wall_ms_each": 10.455846, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 2, "variant": "optimized"},
+      {"source": [1280, 720], "target": [1920, 1080], "bob": false, "runs": 180, "cpu_ms_each": 8.051407, "wall_ms_each": 8.555977, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 2, "variant": "baseline"},
+      {"source": [1280, 720], "target": [1920, 1080], "bob": true, "runs": 180, "cpu_ms_each": 4.803078, "wall_ms_each": 4.855096, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 3, "variant": "baseline"},
+      {"source": [1280, 720], "target": [1920, 1080], "bob": true, "runs": 180, "cpu_ms_each": 3.043932, "wall_ms_each": 3.162402, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 3, "variant": "optimized"},
+      {"source": [1920, 1080], "target": [1280, 720], "bob": true, "runs": 180, "cpu_ms_each": 2.439551, "wall_ms_each": 2.511292, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 3, "variant": "baseline"},
+      {"source": [1920, 1080], "target": [1280, 720], "bob": true, "runs": 180, "cpu_ms_each": 2.302255, "wall_ms_each": 2.374635, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 3, "variant": "optimized"},
+      {"source": [1280, 720], "target": [1280, 720], "bob": true, "runs": 180, "cpu_ms_each": 0.34705, "wall_ms_each": 0.352462, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 3, "variant": "baseline"},
+      {"source": [1280, 720], "target": [1280, 720], "bob": true, "runs": 180, "cpu_ms_each": 0.429848, "wall_ms_each": 0.494089, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 3, "variant": "optimized"},
+      {"source": [1280, 720], "target": [1920, 1080], "bob": false, "runs": 180, "cpu_ms_each": 8.272631, "wall_ms_each": 10.15262, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 3, "variant": "baseline"},
+      {"source": [1280, 720], "target": [1920, 1080], "bob": false, "runs": 180, "cpu_ms_each": 8.091815, "wall_ms_each": 8.445673, "pixel_mismatches": 0, "scope": "production ProcessVpp on private CPU memory; not DMA/display throughput", "repeat": 3, "variant": "optimized"}
+    ],
+    "initial_candidate_scope": "row-reuse prototype; ProcessVpp identical to candidate1e58c3e, before FAST flag admission",
+    "final_720_output_campaign": {
+      "status": "THERMAL_GUARD_STOP:85C before round4 unscaled control; no native run started",
+      "completed_rounds": [1, 2, 3],
+      "rows": [
+        {"repeat": 1, "variant": "baseline", "source": [1280, 720], "target": [1920, 1080], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 4.899, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 1, "variant": "final", "source": [1280, 720], "target": [1920, 1080], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 3.025, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 1, "variant": "baseline", "source": [1280, 720], "target": [1280, 720], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 0.437, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 1, "variant": "final", "source": [1280, 720], "target": [1280, 720], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 0.445, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 1, "variant": "baseline", "source": [1920, 1080], "target": [1280, 720], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 2.455, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 1, "variant": "final", "source": [1920, 1080], "target": [1280, 720], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 2.283, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 2, "variant": "final", "source": [1280, 720], "target": [1920, 1080], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 3.07, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 2, "variant": "baseline", "source": [1280, 720], "target": [1920, 1080], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 4.827, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 2, "variant": "final", "source": [1280, 720], "target": [1280, 720], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 0.388, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 2, "variant": "baseline", "source": [1280, 720], "target": [1280, 720], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 0.439, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 2, "variant": "final", "source": [1920, 1080], "target": [1280, 720], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 2.296, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 2, "variant": "baseline", "source": [1920, 1080], "target": [1280, 720], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 2.53, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 3, "variant": "baseline", "source": [1280, 720], "target": [1920, 1080], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 4.838, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 3, "variant": "final", "source": [1280, 720], "target": [1920, 1080], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 3.193, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 3, "variant": "baseline", "source": [1280, 720], "target": [1280, 720], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 0.316, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 3, "variant": "final", "source": [1280, 720], "target": [1280, 720], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 0.345, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 3, "variant": "baseline", "source": [1920, 1080], "target": [1280, 720], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 2.465, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 3, "variant": "final", "source": [1920, 1080], "target": [1280, 720], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 2.288, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 4, "variant": "final", "source": [1280, 720], "target": [1920, 1080], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 3.049, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0},
+        {"repeat": 4, "variant": "baseline", "source": [1280, 720], "target": [1920, 1080], "bob": true, "runs": 720, "warmup": 8, "cpu_ms_each": 4.826, "precision": "rounded to0.001ms in retained stdout", "pixel_mismatches": 0}
+      ]
+    },
+    "interpretation": "Completed final rounds1-3 show Bob enlargement4.838->3.070ms/output; downscale2.465->2.288. Unscaled control ranges overlap: do not claim improvement. Fourth round stopped at85C; remaining measurements not run. Native campaign started after cooling to70C."
+  },
+  "native_format_negotiation": {
+    "methodology": "unmodified stock FFmpeg forced VAAPI:60-AU H264High1920x1080p30,scale_vaapi=w=1280:h=720:mode=MODE:format=FORMAT,hwdownload,format=FORMAT; passthrough original1/30 timestamps; libva tracing diagnostic, not timing authority",
+    "fixture": "h264-1920x1080p30-high-60.h264",
+    "before": [
+      {
+        "name": "vainfo",
+        "exit": 0
+      },
+      {
+        "name": "nv12-default",
+        "mode": "default",
+        "requested_output": "nv12",
+        "exit": 0,
+        "frames": 60,
+        "mapping_observed": true,
+        "terminal_equal": true,
+        "scope": "unmodified FFmpeg negotiation; only successful full output claims decode/frame completion"
+      },
+      {
+        "name": "nv12-fast",
+        "mode": "fast",
+        "requested_output": "nv12",
+        "exit": 251,
+        "frames": 0,
+        "mapping_observed": true,
+        "terminal_equal": true,
+        "scope": "unmodified FFmpeg negotiation; only successful full output claims decode/frame completion"
+      },
+      {
+        "name": "nv12-hq",
+        "mode": "hq",
+        "requested_output": "nv12",
+        "exit": 251,
+        "frames": 0,
+        "mapping_observed": true,
+        "terminal_equal": true,
+        "scope": "unmodified FFmpeg negotiation; only successful full output claims decode/frame completion"
+      },
+      {
+        "name": "yuy2-default",
+        "mode": "default",
+        "requested_output": "yuyv422",
+        "exit": 234,
+        "frames": 0,
+        "mapping_observed": true,
+        "terminal_equal": true,
+        "scope": "unmodified FFmpeg negotiation; only successful full output claims decode/frame completion"
+      }
+    ],
+    "after": [
+      {
+        "name": "vainfo",
+        "exit": 0
+      },
+      {
+        "name": "nv12-default",
+        "mode": "default",
+        "requested_output": "nv12",
+        "exit": 0,
+        "frames": 60,
+        "mapping_observed": true,
+        "terminal_equal": true,
+        "scope": "unmodified FFmpeg negotiation; only successful full output claims decode/frame completion"
+      },
+      {
+        "name": "nv12-fast",
+        "mode": "fast",
+        "requested_output": "nv12",
+        "exit": 0,
+        "frames": 60,
+        "mapping_observed": true,
+        "terminal_equal": true,
+        "scope": "unmodified FFmpeg negotiation; only successful full output claims decode/frame completion"
+      },
+      {
+        "name": "nv12-hq",
+        "mode": "hq",
+        "requested_output": "nv12",
+        "exit": 251,
+        "frames": 0,
+        "mapping_observed": true,
+        "terminal_equal": true,
+        "scope": "unmodified FFmpeg negotiation; only successful full output claims decode/frame completion"
+      },
+      {
+        "name": "yuy2-default",
+        "mode": "default",
+        "requested_output": "yuyv422",
+        "exit": 234,
+        "frames": 0,
+        "mapping_observed": true,
+        "terminal_equal": true,
+        "scope": "unmodified FFmpeg negotiation; only successful full output claims decode/frame completion"
+      }
+    ],
+    "pixels_pts": "before/after DEFAULT and candidate FAST framemd5 files byte-identical,60 frames each",
+    "actual_decode": "VAProfileH264High/VLD; vaCreateConfig num_attribs0; surface format1 (YUV420),pixel-format0x3231564e (NV12),1920x1088 coded. VPP query advertises NV12/ARGB/BGRA.",
+    "packed_result": "FFmpeg rejects yuyv422 VPP output during supported-output-format negotiation; no422 target creation/EGL import/renderer experiment occurred. Source audit separately rejects YUV422 RT format. Do not infer GPU/display restrictions.",
+    "kernel": "PASS; pin/refcount0,AER unchanged,terminal boundary equal"
+  },
+  "native_bob": {
+    "methodology": "retained #48250-AU TFF API harness; one warmup+two timed epochs per process,50 originals/100 Bob outputs each; explicit card1280x720 output into1920x1080 Bob targets,strict finite; first/last source and both FHD fields checked outside timing (72 full output pictures over18 epochs),not every timed picture; installed/candidate/candidate/installed enlargement,one centered pair; no display",
+    "rows": [
+      {
+        "variant": "installed",
+        "route": "enlarge",
+        "run": 1,
+        "exit": 0,
+        "terminal_equal": true,
+        "mapping_observed": true,
+        "epochs": [
+          {"epoch": 0, "timed": 0, "route": "enlarge", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1296487, "decode_stage_cpu_us": 581742, "bob_stage_wall_us": 677220, "bob_stage_cpu_us": 657634, "timed_stage_sum_us": 1973707, "serial_composition_fields_per_s": 50.666082, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1},
+          {"epoch": 1, "timed": 1, "route": "enlarge", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1229479, "decode_stage_cpu_us": 353172, "bob_stage_wall_us": 648196, "bob_stage_cpu_us": 638897, "timed_stage_sum_us": 1877675, "serial_composition_fields_per_s": 53.257353, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1},
+          {"epoch": 2, "timed": 1, "route": "enlarge", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1171441, "decode_stage_cpu_us": 299501, "bob_stage_wall_us": 683003, "bob_stage_cpu_us": 642854, "timed_stage_sum_us": 1854444, "serial_composition_fields_per_s": 53.924519, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1}
+        ],
+        "scope": "retained native50-AU API harness; one warmup+two timed epochs;150 inputs/300 Bob outputs; no display"
+      },
+      {
+        "variant": "candidate",
+        "route": "enlarge",
+        "run": 2,
+        "exit": 0,
+        "terminal_equal": true,
+        "mapping_observed": true,
+        "epochs": [
+          {"epoch": 0, "timed": 0, "route": "enlarge", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1239547, "decode_stage_cpu_us": 533772, "bob_stage_wall_us": 445248, "bob_stage_cpu_us": 437537, "timed_stage_sum_us": 1684795, "serial_composition_fields_per_s": 59.354402, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1},
+          {"epoch": 1, "timed": 1, "route": "enlarge", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1220449, "decode_stage_cpu_us": 342604, "bob_stage_wall_us": 433240, "bob_stage_cpu_us": 425500, "timed_stage_sum_us": 1653689, "serial_composition_fields_per_s": 60.470862, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1},
+          {"epoch": 2, "timed": 1, "route": "enlarge", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1192515, "decode_stage_cpu_us": 310914, "bob_stage_wall_us": 499339, "bob_stage_cpu_us": 431108, "timed_stage_sum_us": 1691854, "serial_composition_fields_per_s": 59.106755, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1}
+        ],
+        "scope": "retained native50-AU API harness; one warmup+two timed epochs;150 inputs/300 Bob outputs; no display"
+      },
+      {
+        "variant": "candidate",
+        "route": "enlarge",
+        "run": 3,
+        "exit": 0,
+        "terminal_equal": true,
+        "mapping_observed": true,
+        "epochs": [
+          {"epoch": 0, "timed": 0, "route": "enlarge", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1235224, "decode_stage_cpu_us": 539174, "bob_stage_wall_us": 445508, "bob_stage_cpu_us": 437874, "timed_stage_sum_us": 1680732, "serial_composition_fields_per_s": 59.497885, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1},
+          {"epoch": 1, "timed": 1, "route": "enlarge", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1249192, "decode_stage_cpu_us": 350192, "bob_stage_wall_us": 663317, "bob_stage_cpu_us": 449840, "timed_stage_sum_us": 1912509, "serial_composition_fields_per_s": 52.287336, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1},
+          {"epoch": 2, "timed": 1, "route": "enlarge", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1165683, "decode_stage_cpu_us": 301600, "bob_stage_wall_us": 444178, "bob_stage_cpu_us": 417583, "timed_stage_sum_us": 1609861, "serial_composition_fields_per_s": 62.117164, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1}
+        ],
+        "scope": "retained native50-AU API harness; one warmup+two timed epochs;150 inputs/300 Bob outputs; no display"
+      },
+      {
+        "variant": "installed",
+        "route": "enlarge",
+        "run": 4,
+        "exit": 0,
+        "terminal_equal": true,
+        "mapping_observed": true,
+        "epochs": [
+          {"epoch": 0, "timed": 0, "route": "enlarge", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1249109, "decode_stage_cpu_us": 551342, "bob_stage_wall_us": 707671, "bob_stage_cpu_us": 665160, "timed_stage_sum_us": 1956780, "serial_composition_fields_per_s": 51.104365, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1},
+          {"epoch": 1, "timed": 1, "route": "enlarge", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1226908, "decode_stage_cpu_us": 342274, "bob_stage_wall_us": 675466, "bob_stage_cpu_us": 653775, "timed_stage_sum_us": 1902374, "serial_composition_fields_per_s": 52.565899, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1},
+          {"epoch": 2, "timed": 1, "route": "enlarge", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1167713, "decode_stage_cpu_us": 307218, "bob_stage_wall_us": 680958, "bob_stage_cpu_us": 647493, "timed_stage_sum_us": 1848671, "serial_composition_fields_per_s": 54.092913, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1}
+        ],
+        "scope": "retained native50-AU API harness; one warmup+two timed epochs;150 inputs/300 Bob outputs; no display"
+      },
+      {
+        "variant": "installed",
+        "route": "center",
+        "run": 5,
+        "exit": 0,
+        "terminal_equal": true,
+        "mapping_observed": true,
+        "epochs": [
+          {"epoch": 0, "timed": 0, "route": "center", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1234228, "decode_stage_cpu_us": 540581, "bob_stage_wall_us": 316131, "bob_stage_cpu_us": 290342, "timed_stage_sum_us": 1550359, "serial_composition_fields_per_s": 64.50119, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1},
+          {"epoch": 1, "timed": 1, "route": "center", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1241310, "decode_stage_cpu_us": 349289, "bob_stage_wall_us": 289490, "bob_stage_cpu_us": 278110, "timed_stage_sum_us": 1530800, "serial_composition_fields_per_s": 65.32532, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1},
+          {"epoch": 2, "timed": 1, "route": "center", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1166615, "decode_stage_cpu_us": 308613, "bob_stage_wall_us": 286267, "bob_stage_cpu_us": 279026, "timed_stage_sum_us": 1452882, "serial_composition_fields_per_s": 68.828714, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1}
+        ],
+        "scope": "retained native50-AU API harness; one warmup+two timed epochs;150 inputs/300 Bob outputs; no display"
+      },
+      {
+        "variant": "candidate",
+        "route": "center",
+        "run": 6,
+        "exit": 0,
+        "terminal_equal": true,
+        "mapping_observed": true,
+        "epochs": [
+          {"epoch": 0, "timed": 0, "route": "center", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1239477, "decode_stage_cpu_us": 542149, "bob_stage_wall_us": 295840, "bob_stage_cpu_us": 290637, "timed_stage_sum_us": 1535317, "serial_composition_fields_per_s": 65.133129, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1},
+          {"epoch": 1, "timed": 1, "route": "center", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1222647, "decode_stage_cpu_us": 350434, "bob_stage_wall_us": 291726, "bob_stage_cpu_us": 276570, "timed_stage_sum_us": 1514373, "serial_composition_fields_per_s": 66.03393, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1},
+          {"epoch": 2, "timed": 1, "route": "center", "width": 1280, "height": 720, "submitted": 50, "decoded_ready": 50, "bob_ready": 100, "actual_file_eof": 1, "module_refcount": 0, "decode_stage_wall_us": 1186742, "decode_stage_cpu_us": 307578, "bob_stage_wall_us": 407932, "bob_stage_cpu_us": 309208, "timed_stage_sum_us": 1594674, "serial_composition_fields_per_s": 62.708742, "source_unchanged": 1, "not_live": 1, "not_display_E2E": 1}
+        ],
+        "scope": "retained native50-AU API harness; one warmup+two timed epochs;150 inputs/300 Bob outputs; no display"
+      }
+    ],
+    "boundary_equal": true,
+    "kernel": "PASS:no matching errors",
+    "summary": {
+      "enlarge_cpu_ms_per_output": {
+        "installed": [6.38897, 6.42854, 6.53775, 6.47493],
+        "candidate": [4.255, 4.31108, 4.4984, 4.17583]
+      },
+      "enlarge_median_cpu_ms": {
+        "installed": 6.451734999999999,
+        "candidate": 4.28304
+      },
+      "enlarge_serial_stage_sum_fields_per_second": {
+        "installed": 53.590936,
+        "candidate": 59.7888085
+      },
+      "center_cpu_ms_median": {
+        "installed": 2.78568,
+        "candidate": 2.92889
+      },
+      "center_interpretation": "one pair only,2timed epochs each; no improvement claim and no distinct same-width algorithm change",
+      "totals": {
+        "all_originals": 900,
+        "all_bob_outputs": 1800,
+        "timed_originals": 600,
+        "timed_bob_outputs": 1200
+      },
+      "caveat": "serial decode/public materialization+Bob sum excludes setup/close; do not report as streaming/display fps",
+      "center_cpu_ms_per_output": {
+        "installed": [2.7811, 2.79026],
+        "candidate": [2.7657, 3.09208]
+      },
+      "center_median_cpu_ms": {
+        "installed": 2.78568,
+        "candidate": 2.92889
+      }
+    }
+  }
+}

@@ -125,6 +125,10 @@ scope to general full-rate FHD or hardware deinterlacing.
   — #477 records native/centered YUY2 completion spans, distinct from wire
   accounting and RX allocation. Next locate packed-4:2:2 decode-format,
   export/import and renderer negotiation boundaries in unmodified clients.
+  #508 reuses repeated CPU Bob resampling and accepts standard VA FAST with
+  unchanged nearest pixels; [scaler comparisons and native checks](HARDWARE-2026-09-13.md#output-scaling-cost-2026-10-25)
+  retain their stage/batch limits. NV12 decode/VPP format negotiation is
+  measured; packed export/EGL/rendering and displayed cadence remain open.
   Direct 4:2:2 VA/Kodi negotiation is not part of the v1.2 candidate.
 - [ ] [#477: Centered card output for ordinary VA clients](https://github.com/ahnhy1324/crystalhd/issues/477)
   — centered output and async completion are integrated through #494;
