@@ -1835,7 +1835,7 @@ static VAStatus ProcessVpp(SwsContext **scaler,
     source_storage_region.height /= 2;
   }
   if (scaler == nullptr || source == nullptr || destination == nullptr ||
-      source->fourcc != VA_FOURCC_NV12 ||
+      source == destination || source->fourcc != VA_FOURCC_NV12 ||
       (destination->fourcc != VA_FOURCC_NV12 &&
        !IsBgraStorageFormat(destination->fourcc)) ||
       (IsBgraStorageFormat(destination->fourcc) && argb_staging == nullptr) ||
@@ -2176,71 +2176,118 @@ static VAStatus ProcessVpp(SwsContext **scaler,
         }
       }
     } else {
-      for (unsigned int row = 0; row < destination->height; ++row)
-        memset(destination->planes[0] +
-                   static_cast<size_t>(row) * destination->pitch[0],
-               black_luma, destination->width);
-      for (unsigned int row = 0; row < (destination->height + 1) / 2; ++row)
-        memset(destination->planes[1] +
-                   static_cast<size_t>(row) * destination->pitch[1],
-               128, Align(destination->width, 2));
-      // Exactly floor(column * source_width / output_width), without a
-      // wide division per pixel. Rectangle extents are uint16_t, so the
-      // quotient/remainder steps and phase additions fit unsigned int.
-      const unsigned int y_whole = source_region.width / output_region.width;
-      const unsigned int y_remainder = source_region.width % output_region.width;
-      for (unsigned int row = 0; row < output_region.height; ++row) {
-        const unsigned int source_y = source_region.y +
-            (preserve_fields
-                 ? static_cast<uint64_t>(row / 2) * (source_region.height / 2) /
-                       (output_region.height / 2) * 2 + row % 2
-                 : static_cast<uint64_t>(row) * source_region.height /
-                       output_region.height);
-        uint8_t *destination_y =
-            destination->planes[0] +
-            static_cast<size_t>(output_region.y + row) * destination->pitch[0] +
-            output_region.x;
-        unsigned int source_x = source_region.x, phase = 0;
-        for (unsigned int column = 0; column < output_region.width; ++column) {
-          destination_y[column] = source->planes[0][
-              static_cast<size_t>(source_y) * source->pitch[0] + source_x];
-          source_x += y_whole;
-          phase += y_remainder;
-          if (phase >= output_region.width) {
-            phase -= output_region.width;
-            ++source_x;
+      // Ordinary NV12 output is even-aligned, but the source crop and coded
+      // canvas may be odd. Clear only borders (including coded UV bytes),
+      // leaving pitch tails untouched; every active ROI byte is written below.
+      std::array<std::array<uint8_t, kMaxWidth>, 2> resampled_rows;
+      for (unsigned int plane = 0; plane != 2; ++plane) {
+        const unsigned int rows = plane == 0
+            ? destination->height : (destination->height + 1U) / 2;
+        const unsigned int row_bytes = plane == 0
+            ? destination->width : Align(destination->width, 2);
+        const unsigned int top = plane == 0
+            ? output_region.y : output_region.y / 2;
+        const unsigned int target_rows = plane == 0
+            ? output_region.height : output_region.height / 2;
+        const unsigned int left = output_region.x;
+        const unsigned int right = left + output_region.width;
+        const uint8_t black = plane == 0 ? black_luma : 128;
+        const auto clear = [black](uint8_t *output, unsigned int bytes) {
+          if (bytes != 0) {
+#if defined(CRYSTALHD_VAAPI_TEST_NV12_CLEAR)
+            CRYSTALHD_VAAPI_TEST_NV12_CLEAR(bytes);
+#endif
+            memset(output, black, bytes);
+          }
+        };
+        for (unsigned int row = 0; row < rows; ++row) {
+          uint8_t *output = destination->planes[plane] +
+              static_cast<size_t>(row) * destination->pitch[plane];
+          if (row < top || row >= top + target_rows) {
+            clear(output, row_bytes);
+          } else {
+            clear(output, left);
+            clear(output + right, row_bytes - right);
           }
         }
-      }
-      // Generic crops may have odd x/width. Advance in byte coordinates,
-      // then align each selected UV pair, retaining the original phase.
-      const unsigned int uv_step = 2U * source_region.width;
-      const unsigned int uv_whole = uv_step / output_region.width;
-      const unsigned int uv_remainder = uv_step % output_region.width;
-      for (unsigned int row = 0; row < output_region.height; row += 2) {
-        const unsigned int source_uv_row = preserve_fields
-            ? source_region.y / 2 +
-                  static_cast<uint64_t>(row / 4) * (source_region.height / 4) /
-                      (output_region.height / 4) * 2 + (row / 2) % 2
-            : (source_region.y + static_cast<uint64_t>(row) *
-                   source_region.height / output_region.height) / 2;
-        uint8_t *destination_uv =
-            destination->planes[1] +
-            static_cast<size_t>((output_region.y + row) / 2) *
-                destination->pitch[1] + output_region.x;
-        unsigned int source_x = source_region.x, phase = 0;
-        for (unsigned int column = 0; column + 1 < output_region.width;
-             column += 2) {
-          const size_t source_offset =
-              static_cast<size_t>(source_uv_row) * source->pitch[1] +
-              (source_x & ~1U);
-          destination_uv[column] = source->planes[1][source_offset];
-          destination_uv[column + 1] = source->planes[1][source_offset + 1];
-          source_x += uv_whole;
-          phase += uv_remainder;
-          if (phase >= output_region.width) {
-            phase -= output_region.width;
-            ++source_x;
+        const bool same_width = source_region.width == output_region.width;
+        const bool reuse_row = !same_width &&
+            output_region.width <= resampled_rows[0].size() &&
+            output_region.height > source_region.height;
+        // Interleaved scaling alternates fields, so each field needs its own
+        // private row. Never copy from the possibly uncached destination.
+        std::array<const uint8_t *, 2> previous_inputs{{nullptr, nullptr}};
+        const unsigned int step = plane == 0 ? 1 : 2;
+        const unsigned int numerator = step * source_region.width;
+        const unsigned int whole = numerator / output_region.width;
+        const unsigned int remainder = numerator % output_region.width;
+        for (unsigned int row = 0; row < target_rows; ++row) {
+          unsigned int source_row;
+          if (plane == 0) {
+            source_row = source_region.y +
+                (preserve_fields
+                     ? static_cast<uint64_t>(row / 2) * (source_region.height / 2) /
+                           (output_region.height / 2) * 2 + row % 2
+                     : static_cast<uint64_t>(row) * source_region.height /
+                           output_region.height);
+          } else {
+            // Retain the old odd-crop phase: divide AFTER adding source Y.
+            source_row = preserve_fields
+                ? source_region.y / 2 +
+                      static_cast<uint64_t>(row / 2) * (source_region.height / 4) /
+                          (output_region.height / 4) * 2 + row % 2
+                : (source_region.y + static_cast<uint64_t>(row) * 2 *
+                       source_region.height / output_region.height) / 2;
+          }
+          const uint8_t *input = source->planes[plane] +
+              static_cast<size_t>(source_row) * source->pitch[plane];
+          uint8_t *output = destination->planes[plane] +
+              static_cast<size_t>(top + row) * destination->pitch[plane] + left;
+          if (same_width) {
+            memcpy(output, input + (plane == 0
+                       ? source_region.x : source_region.x & ~1U),
+                   output_region.width);
+            continue;
+          }
+          const unsigned int field = preserve_fields ? row % 2 : 0;
+          auto &resampled_row = resampled_rows[field];
+          if (reuse_row && previous_inputs[field] == input) {
+            memcpy(output, resampled_row.data(), output_region.width);
+            continue;
+          }
+          uint8_t *resampled = reuse_row ? resampled_row.data() : output;
+#if defined(CRYSTALHD_VAAPI_TEST_NV12_RESAMPLE_ROW)
+          CRYSTALHD_VAAPI_TEST_NV12_RESAMPLE_ROW(plane);
+#endif
+          unsigned int source_x = source_region.x, phase = 0;
+          // Keep constant-step Y/UV loops separate: a runtime sample size
+          // in this inner loop regresses downscaling on scalar legacy CPUs.
+          if (plane == 0) {
+            for (unsigned int column = 0; column < output_region.width; ++column) {
+              resampled[column] = input[source_x];
+              source_x += whole;
+              phase += remainder;
+              if (phase >= output_region.width) {
+                phase -= output_region.width;
+                ++source_x;
+              }
+            }
+          } else {
+            for (unsigned int column = 0; column < output_region.width; column += 2) {
+              const unsigned int sample = source_x & ~1U;
+              resampled[column] = input[sample];
+              resampled[column + 1] = input[sample + 1];
+              source_x += whole;
+              phase += remainder;
+              if (phase >= output_region.width) {
+                phase -= output_region.width;
+                ++source_x;
+              }
+            }
+          }
+          if (reuse_row) {
+            memcpy(output, resampled_row.data(), output_region.width);
+            previous_inputs[field] = input;
           }
         }
       }
