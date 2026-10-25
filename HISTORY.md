@@ -11,6 +11,8 @@ this development identity is not a release or a new support claim.
   natural EOS are not a displayed-frame count. Playback policy is unchanged.
 - Read and update host RX metadata through registered pinned pages, including
   status calls from a separate monitor process; preserve DMA synchronization.
+- Let validated concurrent RELEASE cancel its file's legacy BUSY input and
+  queued readers before exclusive teardown, preserving DMA retirement.
 
 <a id="120--prepared-final-package"></a>
 

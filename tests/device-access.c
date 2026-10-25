@@ -31,6 +31,7 @@ struct crystalhd_adp {
     unsigned present;
     bool hw_accessible;
 };
+struct mutex { unsigned unused; };
 struct crystalhd_user;
 #include "lifetime-binding.h"
 #include "access-binding.h"

@@ -333,6 +333,7 @@ typedef struct _crystalhd_ioctl_data {
 	uint32_t		cmd;		/* Cmd ID for driver's use. */
 	void			*add_cdata;	/* Additional command specific data..*/
 	uint32_t		add_cdata_sz;	/* Additional command specific data size */
+	const uint32_t		*tx_stopping;	/* Kernel-only synchronous input lifetime */
 	struct _crystalhd_ioctl_data *next;	/* List/Fifo management */
 } crystalhd_ioctl_data;
 

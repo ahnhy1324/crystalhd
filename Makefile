@@ -12,7 +12,7 @@ CONFIG_PRESET_MANIFEST := share/crystalhd/config-presets-v1.json
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: settings-ui-check install-settings uninstall-settings all driver library library-check raw-frame-check library-drain-test gstreamer vaapi vaapi-cpu-check examples browser configuration-check uapi-check dma-check l0s-check command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check h264-stream-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check install-config uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check uninstall-config clean
+.PHONY: settings-ui-check install-settings uninstall-settings all driver library library-check raw-frame-check library-drain-test gstreamer vaapi vaapi-cpu-check examples browser configuration-check uapi-check dma-check l0s-check command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check tx-release-check h264-stream-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check install-config uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check uninstall-config clean
 
 all: driver library gstreamer vaapi examples
 
@@ -177,6 +177,9 @@ fw-probe-tool:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror $(CFLAGS) -Iinclude \
 		tools/fw-research/flea_fw_probe.c -o tools/fw-research/flea-fw-probe
 
+tx-release-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/tx-release.sh
+
 tx-admission-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/tx-admission.sh
 
@@ -232,7 +235,7 @@ ioctl-dispatch-check:
 rx-output-receipts-check:
 	CXX="$(CXX)" sh ./tests/rx-output-receipts.sh
 
-architecture-check: command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-staging-check fw-probe-check tx-admission-check h264-stream-check rx-ownership-check rx-pages-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
+architecture-check: command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-staging-check fw-probe-check tx-admission-check tx-release-check h264-stream-check rx-ownership-check rx-pages-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
 
 pib-check:
 	CC="$(CC)" sh ./tests/flea-pib.sh

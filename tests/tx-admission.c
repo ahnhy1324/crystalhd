@@ -204,6 +204,7 @@ struct crystalhd_cmd {
 };
 typedef struct {
     uint32_t u_id;
+    const uint32_t *tx_stopping;
     struct { union {
         struct { void *pDmaBuff; uint32_t BuffSz; uint8_t Encrypted; } ProcInput;
         BC_FW_CMD fwCmd;
@@ -1528,6 +1529,21 @@ static void BusyErrors(void)
               "hard post errors after BUSY retry preserve status and retire the single mapping");
         Balanced();
     }
+}
+static void FileReleaseCancellation(void)
+{
+    uint32_t stopping = 1;
+
+    Reset();
+    input_ioctl.tx_stopping = &stopping;
+    Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_CMD_CANCELLED &&
+          !run.maps && !run.starts,
+          "an already queued file input cancels before pinning or DMA admission");
+    Balanced();
+    stopping = 0;
+    Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_SUCCESS,
+          "a deferred RELEASE leaves the same file usable after its intent clears");
+    Balanced();
 }
 static void BusyAndFlush(void)
 {
@@ -3285,7 +3301,7 @@ static void FleaPowerNestedAndBypass(void)
 
 int main(void)
 {
-    Admission(); OpaqueCookie(); CancelWithoutQueues(); CancelAllOwners(); Completion(); Rollback(); TransferArguments(); BusyErrors(); BusyAndFlush(); Cancellation();
+    Admission(); OpaqueCookie(); CancelWithoutQueues(); CancelAllOwners(); Completion(); Rollback(); TransferArguments(); BusyErrors(); FileReleaseCancellation(); BusyAndFlush(); Cancellation();
     BoundedTransfer(); BorrowedTransfer(); RetainedLeaseProtocol();
     ActualMappingLifetime();
     FleaNotificationGuard();

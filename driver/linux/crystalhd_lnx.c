@@ -54,6 +54,9 @@ static struct crystalhd_adp *chd_dma_quarantine;
 
 struct crystalhd_file {
 	struct crystalhd_user *user;
+	/* RELEASE serializes its stop intent without holding user_lock. */
+	struct mutex release_lock;
+	uint32_t tx_stopping;
 	u64 generation;
 };
 
@@ -653,7 +656,8 @@ static bool crystalhd_rawio_command(unsigned int cmd);
 
 static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 			   uint32_t uid, uint32_t cmd, crystalhd_cmd_proc func,
-			   bool compat)
+			   bool compat, crystalhd_ioctl_data *prepared,
+			   const uint32_t *tx_stopping)
 {
 	int rc;
 	crystalhd_ioctl_data *temp;
@@ -661,7 +665,7 @@ static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 	struct crystalhd_hw *raw_hw = NULL;
 	bool raw_owned = false;
 
-	temp = chd_dec_alloc_iodata(adp, 0);
+	temp = prepared ? prepared : chd_dec_alloc_iodata(adp, 0);
 	if (!temp) {
 		dev_err(chddev(), "Failed to get iodata..\n");
 		return -EINVAL;
@@ -669,8 +673,9 @@ static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 
 	temp->u_id = uid;
 	temp->cmd  = cmd;
+	temp->tx_stopping = tx_stopping;
 
-	rc = chd_dec_proc_user_data(adp, temp, ua, false, compat);
+	rc = prepared ? 0 : chd_dec_proc_user_data(adp, temp, ua, false, compat);
 	/* Old libraries discover the PCI identity before opening a session. */
 	if (!rc && cmd == BCM_IOC_RD_PCI_CFG && !capable(CAP_SYS_RAWIO) &&
 	    (temp->udata.u.pciCfg.Offset != 0 ||
@@ -748,6 +753,7 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 	struct crystalhd_user *uc;
 	bool exclusive;
 	bool tx_locked = false;
+	crystalhd_ioctl_data *prepared = NULL;
 	long rc;
 
 	/* Reject malformed native commands even while the device is suspended. */
@@ -762,6 +768,29 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 		return -ENODEV;
 	dev = &adp->pdev->dev;
 	dev_dbg(dev, "Entering %s\n", __func__);
+
+	/* Validate/copy RELEASE once before publishing its per-file stop intent.
+	 * A malformed envelope must not cancel a valid input. No hardware or user
+	 * slot is touched here; the outer device barrier keeps the pool alive.
+	 */
+	if (cmd == BCM_IOC_RELEASE) {
+		prepared = chd_dec_alloc_iodata(adp, false);
+		if (!prepared)
+			return -EINVAL;
+		prepared->cmd = cmd;
+		rc = chd_dec_proc_user_data(adp, prepared, ua, false, compat);
+		if (rc) {
+			chd_dec_free_iodata(adp, prepared, false);
+			return rc;
+		}
+		/* Do not use cin_wait_exit: its consumable flush pulse can release
+		 * one reader and strand another already queued behind tx_lock.
+		 * This token remains live through every ioctl's file reference and
+		 * cannot cancel another file or a reused user slot.
+		 */
+		mutex_lock(&binding->release_lock);
+		WRITE_ONCE(binding->tx_stopping, 1);
+	}
 
 	exclusive = cmd == BCM_IOC_NOTIFY_MODE || cmd == BCM_IOC_RELEASE ||
 		    cmd == BCM_IOC_FW_DOWNLOAD;
@@ -810,19 +839,32 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 		}
 	}
 
-	rc = chd_dec_api_cmd(adp, ua, uc->uid, cmd, cproc, compat);
+	rc = chd_dec_api_cmd(adp, ua, uc->uid, cmd, cproc, compat,
+			      prepared, cmd == BCM_IOC_PROC_INPUT ?
+			      &binding->tx_stopping : NULL);
+	prepared = NULL; /* chd_dec_api_cmd returned it to the pool. */
 	if (cmd == BCM_IOC_RELEASE && !uc->in_use) {
 		binding->user = NULL;
 		crystalhd_rx_poll_wake(adp, EPOLLERR | EPOLLHUP);
 	}
 
 unlock:
+	if (prepared)
+		chd_dec_free_iodata(adp, prepared, false);
 	if (tx_locked)
 		mutex_unlock(&adp->tx_lock);
 	if (exclusive)
 		up_write(&adp->user_lock);
 	else
 		up_read(&adp->user_lock);
+	if (cmd == BCM_IOC_RELEASE) {
+		/* Rejected/PM-deferred RELEASE must not poison later input.
+		 * Serialize publishers so a failed request cannot clear a second
+		 * pending request's cancellation. Successful release already
+		 * invalidated binding->user under the exclusive barrier. */
+		WRITE_ONCE(binding->tx_stopping, 0);
+		mutex_unlock(&binding->release_lock);
+	}
 	return rc;
 }
 
@@ -873,6 +915,7 @@ static int chd_dec_open_locked(struct inode *in, struct file *fd)
 	binding = kzalloc(sizeof(*binding), GFP_KERNEL);
 	if (!binding)
 		return -ENOMEM;
+	mutex_init(&binding->release_lock);
 	dev = &adp->pdev->dev;
 	dev_dbg(dev, "Entering %s\n", __func__);
 	down_write(&adp->user_lock);
