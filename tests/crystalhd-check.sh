@@ -294,6 +294,22 @@ assert_status 0
 assert_contains 'INFO: Runtime install record: unavailable (older or partial installation)'
 assert_contains 'INFO: BCM70015 session_l0s_off is unavailable in the loaded module'
 
+# A previous VERSION is not proof that an interrupted runtime update finished.
+make_root
+mkdir -p "$root/usr/share/crystalhd" "$root/var/lib/crystalhd"
+printf '%s\n' previous >"$root/usr/share/crystalhd/VERSION"
+printf '%s\n' '{"stage":"library"}' >"$root/var/lib/crystalhd/runtime-install.pending"
+run_check "$root"
+assert_status 1
+assert_contains 'FAIL: Runtime installation is incomplete or in progress'
+assert_contains 'INFO: Runtime version record: previous; not evidence of a completed installation'
+assert_not_contains 'INFO: Runtime install record: bundle previous'
+rm -- "$root/var/lib/crystalhd/runtime-install.pending"
+ln -s missing "$root/var/lib/crystalhd/runtime-install.pending"
+run_check "$root"
+assert_status 1
+assert_contains 'FAIL: Runtime installation is incomplete or in progress'
+
 # Session policy is visible, including force-policy precedence.
 make_root
 printf '%s\n' Y >"$root/sys/module/crystalhd/parameters/session_l0s_off"

@@ -127,9 +127,19 @@ emit INFO "Architecture: $abi_description; kernel $kernel_release"
 # A runtime-only update is valid with DKMS. Report its receipt separately from
 # actual module identity rather than assigning one release to the whole host.
 runtime_version_file=$root_prefix/usr/share/crystalhd/VERSION
+runtime_pending=$root_prefix/var/lib/crystalhd/runtime-install.pending
+runtime_incomplete=0
+if [ -e "$runtime_pending" ] || [ -L "$runtime_pending" ]; then
+    runtime_incomplete=1
+    emit FAIL "Runtime installation is incomplete or in progress; rerun make install-runtime from the intended source or release"
+fi
 if [ -r "$runtime_version_file" ]; then
     runtime_version=$(sed -n '1p' "$runtime_version_file")
-    emit INFO "Runtime install record: bundle $runtime_version (component identities checked separately)"
+    if [ "$runtime_incomplete" -eq 1 ]; then
+        emit INFO "Runtime version record: $runtime_version; not evidence of a completed installation"
+    else
+        emit INFO "Runtime install record: bundle $runtime_version (component identities checked separately)"
+    fi
 else
     emit INFO "Runtime install record: unavailable (older or partial installation)"
 fi
