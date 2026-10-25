@@ -129,6 +129,9 @@ scope to general full-rate FHD or hardware deinterlacing.
   unchanged nearest pixels; [scaler comparisons and native checks](HARDWARE-2026-09-13.md#output-scaling-cost-2026-10-25)
   retain their stage/batch limits. NV12 decode/VPP format negotiation is
   measured; packed export/EGL/rendering and displayed cadence remain open.
+  #509 additionally reduces ordinary NV12 VPP clearing/resampling; native
+  pixel/PTS checks pass. Whole-Player nearest/bilinear comparisons retain
+  presentation deficits, so lower CPU does not promote a zero-loss profile.
   Direct 4:2:2 VA/Kodi negotiation is not part of the v1.2 candidate.
 - [ ] [#477: Centered card output for ordinary VA clients](https://github.com/ahnhy1324/crystalhd/issues/477)
   — centered output and async completion are integrated through #494;
