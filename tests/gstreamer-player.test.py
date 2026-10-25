@@ -141,7 +141,7 @@ class PolicyAndControlTests(unittest.TestCase):
             StateChangeReturn=SimpleNamespace(FAILURE=0, SUCCESS=1, ASYNC=2, NO_PREROLL=3),
             MessageType=SimpleNamespace(APPLICATION=1, ERROR=2, EOS=3,
                 ASYNC_DONE=4, CLOCK_LOST=5, LATENCY=6, STATE_CHANGED=7, BUFFERING=8,
-                WARNING=9))
+                WARNING=9, QOS=10))
         control.args = SimpleNamespace(file=Path("/unused.ogg"))
         control.pipeline = mock.Mock()
         control.pipeline.query_position.return_value = (True, 12000)
@@ -1041,6 +1041,57 @@ class ManagedDefaultsTests(unittest.TestCase):
 
 
 class GStreamerApiTests(unittest.TestCase):
+    def test_video_qos_drop_is_visible_once_without_changing_playback_policy(self):
+        control = self.make_player()
+        Gst = self.Gst
+        source = Gst.ElementFactory.make("videoconvert")
+        if source is None:
+            self.skipTest("QoS fixture needs videoconvert")
+        original_qos = source.get_property("qos")
+        control.health.frame(1, "theoradec", SOFTWARE, True, 512, 1)
+        before = vars(control.health).copy()
+        messages = []
+        player.connect_bus_messages(control.bus, lambda _bus, message: messages.append(message))
+        message = Gst.Message.new_qos(source, False, 0, 0, 0, 20000000)
+        message.set_qos_stats(Gst.Format.BUFFERS, 20, 2)
+        self.assertTrue(control.bus.post(message))
+        context = self.GLib.MainContext.default()
+        error = io.StringIO()
+        with contextlib.redirect_stderr(error):
+            while context.pending():
+                context.iteration(False)
+            control.message(control.bus, message.copy())
+        self.assertTrue(any(m.type == Gst.MessageType.QOS for m in messages))
+        self.assertEqual(error.getvalue().count("video buffers were dropped"), 1)
+        self.assertIn("not a displayed-frame count", error.getvalue())
+        self.assertEqual(vars(control.health), before)
+        self.assertFalse(control.done)
+        self.assertEqual(source.get_property("qos"), original_qos)
+        control.qos_warned = False
+        control.args.software_output_size = (1920, 1080)
+        error = io.StringIO()
+        with contextlib.redirect_stderr(error):
+            control.message(control.bus, message.copy())
+        self.assertIn("omit --software-output-size", error.getvalue())
+
+    def test_qos_without_a_known_video_buffer_drop_is_quiet(self):
+        control = self.make_player()
+        Gst = self.Gst
+        video = Gst.ElementFactory.make("videoconvert")
+        audio = Gst.ElementFactory.make("audioconvert")
+        if video is None or audio is None:
+            self.skipTest("QoS fixture needs audio/video converters")
+        error = io.StringIO()
+        with contextlib.redirect_stderr(error):
+            for source, fmt, dropped in ((video, Gst.Format.BUFFERS, 0),
+                                         (video, Gst.Format.BUFFERS, Gst.CLOCK_TIME_NONE),
+                                         (video, Gst.Format.TIME, 2),
+                                         (audio, Gst.Format.BUFFERS, 2)):
+                message = Gst.Message.new_qos(source, False, 0, 0, 0, 20000000)
+                message.set_qos_stats(fmt, 20, dropped)
+                control.message(control.bus, message)
+        self.assertEqual(error.getvalue(), "")
+
     def test_saved_software_decoder_reaches_real_frames_and_eos(self):
         self.http_fixture()
         core = player.load_config_core();core.SYSTEM_CONFIG=None
