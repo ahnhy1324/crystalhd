@@ -288,12 +288,23 @@ install-runtime: library gstreamer vaapi
 		--destdir "$(DESTDIR)" --prefix "$(PREFIX)" \
 		--bindir "$(BINDIR)" --datadir "$(DATADIR)"
 
-.PHONY: install-runtime-record uninstall-runtime-record
+.PHONY: install-runtime-record uninstall-runtime-record install-runtime-activate
 install-runtime-record:
 	@umask 022; install -D -m 0644 VERSION "$(DESTDIR)$(DATADIR)/crystalhd/VERSION"
 
 uninstall-runtime-record:
 	rm -f -- "$(DESTDIR)$(DATADIR)/crystalhd/VERSION"
+
+# Staging does not reload udev or the host linker cache. Activate only after
+# the prepared payload has been copied to its final destinations.
+install-runtime-activate:
+	@if [ -z "$(DESTDIR)" ]; then \
+		if command -v udevadm >/dev/null 2>&1; then \
+			udevadm control --reload-rules || echo "WARN: udev rules installed, but the daemon did not reload them" >&2; \
+		fi; \
+		if command -v ldconfig >/dev/null 2>&1; then ldconfig; \
+		elif [ -x /sbin/ldconfig ]; then /sbin/ldconfig; fi; \
+	fi
 
 install-browser: browser
 	$(MAKE) -C browser $(USER_ARGS) install
