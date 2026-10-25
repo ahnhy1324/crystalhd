@@ -6,6 +6,10 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <errno.h>
+#include <poll.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
 
 #include <gst/gst.h>
 #include <gst/base/gstadapter.h>
@@ -20,6 +24,9 @@
 #include "gstcrystalhd-input.h"
 #include "gstcrystalhd-timing.h"
 #include "gstcrystalhd-diqos.h"
+
+/* Older libcrystalhd.so.3 installations need not provide this additive API. */
+extern BC_STATUS DtsDupOutputPollFd(HANDLE, int *) __attribute__((weak));
 
 G_STATIC_ASSERT(GST_CRYSTALHD_MPEG4_MAX_INPUT_SIZE ==
                 GST_CRYSTALHD_INPUT_CAPACITY);
@@ -100,6 +107,11 @@ typedef struct _GstCrystalHdDec {
   gboolean output_stop;
   gboolean output_paused;
   gboolean output_active;
+  gboolean output_waiting;
+  gboolean output_wake_pending;
+  gint output_control_fd;
+  gint output_poll_fd;
+  gboolean output_recovering;
   GstFlowReturn output_flow;
   guint64 generation;
   gboolean draining;
@@ -465,6 +477,7 @@ gst_crystalhd_reconcile_recovery(GstCrystalHdDec *self,
 
   *in_progress = FALSE;
   *changed = FALSE;
+  self->output_recovering = FALSE;
   if (self->device == NULL)
     return GST_FLOW_OK;
   status = DtsGetRecoveryStatus(self->device, &generation,
@@ -485,6 +498,7 @@ gst_crystalhd_reconcile_recovery(GstCrystalHdDec *self,
   }
 
   *in_progress = active != FALSE;
+  self->output_recovering = *in_progress;
   /* Do not consume the epoch until recovery has a final outcome. This keeps
    * completion observable so drain gets a fresh progress window and no old
    * frame is purged while firmware is still mutating its queues. */
@@ -560,6 +574,19 @@ gst_crystalhd_close_device(GstCrystalHdDec *self)
   guint32 replay_bytes = 0;
   gint64 deadline;
   gboolean skip_firmware_cleanup = FALSE;
+
+  /* A poll borrower must retire before this descriptor or the device can be
+   * closed/reopened. Normal callers have quiesced or joined the worker. */
+  g_mutex_lock(&self->output_lock);
+  if (self->output_active || self->output_waiting) {
+    g_mutex_unlock(&self->output_lock);
+    return BC_STS_BUSY;
+  }
+  if (self->output_poll_fd >= 0) {
+    close(self->output_poll_fd);
+    self->output_poll_fd = -1;
+  }
+  g_mutex_unlock(&self->output_lock);
 
   if (self->device == NULL)
     goto cleared;
@@ -1309,10 +1336,25 @@ gst_crystalhd_is_flushing(GstCrystalHdDec *self)
 }
 
 static void
+gst_crystalhd_signal_output_locked(GstCrystalHdDec *self)
+{
+  const uint64_t one = 1;
+  ssize_t result;
+  self->output_wake_pending = TRUE;
+  if (self->output_control_fd >= 0) {
+    do {
+      result = write(self->output_control_fd, &one, sizeof(one));
+    } while (result < 0 && errno == EINTR);
+    /* EAGAIN means that an earlier control wake is already latched. */
+  }
+  g_cond_signal(&self->output_cond);
+}
+
+static void
 gst_crystalhd_wake_output(GstCrystalHdDec *self)
 {
   g_mutex_lock(&self->output_lock);
-  g_cond_signal(&self->output_cond);
+  gst_crystalhd_signal_output_locked(self);
   g_mutex_unlock(&self->output_lock);
 }
 
@@ -1420,20 +1462,97 @@ gst_crystalhd_output_iteration(GstCrystalHdDec *self)
   return activity;
 }
 
+static gboolean
+gst_crystalhd_wait_ready(GstCrystalHdDec *self, gboolean no_progress_ready,
+                         gboolean *rx_ready)
+{
+  GstVideoDecoder *decoder = GST_VIDEO_DECODER(self);
+  struct pollfd descriptors[2];
+  gint timeout, result;
+  uint64_t counter;
+  ssize_t drained;
+
+  *rx_ready = FALSE;
+
+  g_mutex_lock(&self->output_lock);
+  if (self->output_stop || self->output_paused || self->output_wake_pending) {
+    gboolean running = !self->output_stop;
+    self->output_wake_pending = FALSE;
+    g_mutex_unlock(&self->output_lock);
+    return running;
+  }
+  if (self->output_poll_fd < 0 || self->output_control_fd < 0) {
+    g_cond_wait_until(&self->output_cond, &self->output_lock,
+                      g_get_monotonic_time() + 5000);
+    self->output_wake_pending = FALSE;
+    g_mutex_unlock(&self->output_lock);
+    return TRUE;
+  }
+  g_mutex_unlock(&self->output_lock);
+
+  /* Snapshot stream state in the established stream -> scheduling order.
+   * Registration is level-triggered, and the private control counter latches
+   * an input/stop wake that arrives between this snapshot and poll(). */
+  GST_VIDEO_DECODER_STREAM_LOCK(decoder);
+  g_mutex_lock(&self->output_lock);
+  if (self->output_stop || self->output_paused || self->output_wake_pending ||
+      self->output_poll_fd < 0) {
+    gboolean running = !self->output_stop;
+    self->output_wake_pending = FALSE;
+    g_mutex_unlock(&self->output_lock);
+    GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+    return running;
+  }
+  do {
+    drained = read(self->output_control_fd, &counter, sizeof(counter));
+  } while (drained < 0 && errno == EINTR);
+  descriptors[0] = (struct pollfd){self->output_control_fd, POLLIN, 0};
+  descriptors[1] = (struct pollfd){
+      !no_progress_ready && self->decoder_started && self->output_flow == GST_FLOW_OK &&
+      !g_queue_is_empty(&self->timestamps) ? self->output_poll_fd : -1,
+      POLLIN, 0};
+  /* EOS/recovery can change in the library without a kernel RX edge. Keep
+   * the existing bounded state probes for those windows. No idle READY queue
+   * is polled when this session has no outstanding picture identities. */
+  timeout = no_progress_ready || self->draining || self->output_recovering ||
+      self->recovery_abort_started_us != 0 ? 5 : -1;
+  self->output_waiting = TRUE;
+  g_mutex_unlock(&self->output_lock);
+  GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+  do {
+    result = poll(descriptors, 2, timeout);
+  } while (result < 0 && errno == EINTR);
+  g_mutex_lock(&self->output_lock);
+  self->output_waiting = FALSE;
+  *rx_ready = result > 0 && (descriptors[1].revents & POLLIN) != 0;
+  if (result < 0 ||
+      ((descriptors[0].revents | descriptors[1].revents) &
+       (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+    /* Suspend/removal and optional-fd failures retain ordinary status/recovery
+     * handling; never spin on a terminal descriptor or reuse it after reopen. */
+    GST_WARNING_OBJECT(self,
+        "output readiness ended (poll=%d, control=0x%x, RX=0x%x); using timed status checks",
+        result, (unsigned int)descriptors[0].revents,
+        (unsigned int)descriptors[1].revents);
+    close(self->output_poll_fd);
+    self->output_poll_fd = -1;
+  }
+  g_cond_broadcast(&self->output_cond);
+  g_mutex_unlock(&self->output_lock);
+  return TRUE;
+}
+
 static gpointer
 gst_crystalhd_output_thread(gpointer data)
 {
   GstCrystalHdDec *self = data;
+  gboolean rx_ready = FALSE;
 
   for (;;) {
+    gboolean activity = FALSE;
     g_mutex_lock(&self->output_lock);
-    if (!self->output_stop) {
-      if (self->output_paused)
-        g_cond_wait(&self->output_cond, &self->output_lock);
-      else
-        g_cond_wait_until(&self->output_cond, &self->output_lock,
-                          g_get_monotonic_time() + 5000);
-    }
+    while (self->output_paused && !self->output_stop)
+      g_cond_wait(&self->output_cond, &self->output_lock);
     if (self->output_stop) {
       g_mutex_unlock(&self->output_lock);
       break;
@@ -1442,7 +1561,11 @@ gst_crystalhd_output_thread(gpointer data)
     /* Consume ready output without a sleep between pictures, but release
      * the stream lock between iterations so input and flush can progress. */
     while (gst_crystalhd_output_iteration(self))
-      ;
+      activity = TRUE;
+    /* A stale READY indication must not turn a BUSY/NO_DATA response into
+     * a tight status loop. Mask RX for one bounded control/state-probe turn. */
+    if (!gst_crystalhd_wait_ready(self, rx_ready && !activity, &rx_ready))
+      break;
   }
   return NULL;
 }
@@ -1460,11 +1583,12 @@ gst_crystalhd_quiesce_output(GstCrystalHdDec *self, gboolean bounded)
 
   g_mutex_lock(&self->output_lock);
   self->output_paused = TRUE;
+  gst_crystalhd_signal_output_locked(self);
   g_mutex_unlock(&self->output_lock);
   GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
   do {
     g_mutex_lock(&self->output_lock);
-    active = self->output_active;
+    active = self->output_active || self->output_waiting;
     g_mutex_unlock(&self->output_lock);
     if (!active || (bounded && g_get_monotonic_time() >= deadline))
       break;
@@ -1483,7 +1607,7 @@ gst_crystalhd_resume_output(GstCrystalHdDec *self)
 {
   g_mutex_lock(&self->output_lock);
   self->output_paused = FALSE;
-  g_cond_signal(&self->output_cond);
+  gst_crystalhd_signal_output_locked(self);
   g_mutex_unlock(&self->output_lock);
 }
 
@@ -1599,6 +1723,8 @@ gst_crystalhd_start(GstVideoDecoder *decoder)
   GST_OBJECT_UNLOCK(self);
   if (gst_crystalhd_close_device(self) != BC_STS_SUCCESS)
     return FALSE;
+  if (self->output_control_fd < 0)
+    self->output_control_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
   self->next_hardware_timestamp = CRYSTALHD_TIMESTAMP_STEP;
   self->output_flow = GST_FLOW_OK;
   self->output_stop = FALSE;
@@ -1624,6 +1750,7 @@ gst_crystalhd_stop(GstVideoDecoder *decoder)
   g_mutex_lock(&self->output_lock);
   self->output_stop = TRUE;
   self->output_paused = TRUE;
+  gst_crystalhd_signal_output_locked(self);
   g_cond_broadcast(&self->output_cond);
   g_mutex_unlock(&self->output_lock);
   if (self->output_thread != NULL) {
@@ -1864,6 +1991,17 @@ gst_crystalhd_reopen_format(GstVideoDecoder *decoder, GstVideoCodecState *state,
   status = DtsStartCapture(self->device);
   if (status != BC_STS_SUCCESS)
     goto fail_status;
+
+  if (self->output_control_fd >= 0 && DtsDupOutputPollFd != NULL) {
+    int descriptor = -1;
+    status = DtsDupOutputPollFd(self->device, &descriptor);
+    g_mutex_lock(&self->output_lock);
+    if (status == BC_STS_SUCCESS)
+      self->output_poll_fd = descriptor;
+    g_mutex_unlock(&self->output_lock);
+    GST_DEBUG_OBJECT(self, "optional output readiness: %d (status %d)",
+                      descriptor >= 0 && status == BC_STS_SUCCESS, status);
+  }
 
   if (codec_data_mapped)
     gst_buffer_unmap(gst_value_get_buffer(codec_data_value), &codec_data_map);
@@ -2497,6 +2635,7 @@ gst_crystalhd_sink_event(GstVideoDecoder *decoder, GstEvent *event)
     gboolean result;
     g_mutex_lock(&self->output_lock);
     self->output_paused = TRUE;
+    gst_crystalhd_signal_output_locked(self);
     g_mutex_unlock(&self->output_lock);
     /* This event is nonserialized: cancel downstream BEFORE waiting on a
      * worker that may be in the sink's preroll/clock wait. */
@@ -2538,6 +2677,10 @@ gst_crystalhd_finalize(GObject *object)
     }
   }
   gst_crystalhd_clear_timestamps(self);
+  if (self->output_poll_fd >= 0)
+    close(self->output_poll_fd);
+  if (self->output_control_fd >= 0)
+    close(self->output_control_fd);
   g_cond_clear(&self->output_cond);
   g_mutex_clear(&self->output_lock);
   G_OBJECT_CLASS(gst_crystalhd_dec_parent_class)->finalize(object);
@@ -2591,6 +2734,8 @@ gst_crystalhd_dec_init(GstCrystalHdDec *self)
   self->wmv3_last_duration = GST_CLOCK_TIME_NONE;
   g_mutex_init(&self->output_lock);
   g_cond_init(&self->output_cond);
+  self->output_control_fd = -1;
+  self->output_poll_fd = -1;
   self->output_paused = TRUE;
   gst_video_info_init(&self->output_info);
   gst_video_decoder_set_packetized(GST_VIDEO_DECODER(self), TRUE);

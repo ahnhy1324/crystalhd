@@ -30,6 +30,8 @@ output; close, removal and session-lifetime changes wake a waiter with
 weak-links this symbol and retains its one-millisecond fallback with an older
 library or driver. The `libcrystalhd.so.3` ABI and legacy ioctl behavior are
 unchanged.
+The GStreamer worker also negotiates this optional interface, retaining its
+five-millisecond compatibility checks and bounded library EOS/recovery probes.
 
 `CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT` accepts exactly `8` or `16`; unset or
 invalid values use the default of 16. Eight buffers reduced average peak RSS
