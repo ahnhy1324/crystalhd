@@ -98,6 +98,13 @@ scope to general full-rate FHD or hardware deinterlacing.
   installed-path checks; G6 documentation/decision handoff is complete.
   Preserve the existing backup under the G0 exception.
   The release and public-archive verification are complete in #369.
+- [ ] [#510: Reliability and maintenance review](https://github.com/ahnhy1324/crystalhd/issues/510)
+  — [cross-process RX metadata correction](HARDWARE-2026-09-13.md#rx-monitor-pages-2026-10-25)
+  has a native reproduction, pinned-page fix and exact oracle follow-up.
+  Monitor close still returns an error and retains its FD until process exit;
+  legacy BUSY/cancellation ordering requires its own reproduction. Keep DIL
+  attachment work within the agreed logging-only scope; CI/provenance and
+  admission-timing follow-ups remain separate.
 - [ ] [#91: Deferred hardware and application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91)
   — alternate hardware, the LTS item executed through #371, bounded BCM70015
   deep-S3 coverage completed through #395/#397, remaining fault/removal work,
