@@ -257,8 +257,9 @@ Expect `Decoder: crystalhddec (hardware; video output confirmed)`, a nonzero
 decoded-video-frame count and playback through the end of the file. Compare
 motion and detail with the native run. For negotiated dimensions, use the
 verbose [GStreamer scaling example](filters/gst/gst-plugin-1.0/README.md#optional-bcm70015-output-scaling).
-To return to native output, close the player and launch it without either
-scaling option; the choices are not saved between invocations.
+To return to native output with saved defaults, use
+`--scale-width 0 --software-output-size native`; without saved scaling defaults,
+omit both options.
 
 With the reference host's qualified L0s workaround active, the H.264 High
 stream rose from about 46 to 65 unpaced frames/s with 1280-wide card output.

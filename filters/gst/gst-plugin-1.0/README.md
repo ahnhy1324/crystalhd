@@ -79,6 +79,16 @@ For this input, the verbose output should show `crystalhddec` source caps with
 `width=(int)1280`, `height=(int)720` and `pixel-aspect-ratio=(fraction)1/1`,
 followed by continuing playback and EOS. Replace the path with your file.
 
+For an explicitly CPU-enlarged buffer, stock GStreamer also offers
+`videoscale method=nearest-neighbour` before the requested raw-video size.
+In a synthetic 720→1080 UYVY stage comparison it used about 44% less CPU
+than bilinear2, with harder/jagged edges; Catmull-Rom and Lanczos cost more.
+This is a filter-stage result, not a playback-rate guarantee. The Player's
+`--software-output-size` remains bilinear2; it has no filter-selection flag.
+Omitting that option and letting the sink fit the smaller picture can avoid
+CPU enlargement altogether. See the
+[comparison and exact scope](../../../HARDWARE-2026-09-13.md#output-scaling-cost-2026-10-25).
+
 For interlaced FHD H.264 with the matching 1.2 plugin, reduce the
 card-to-host pixels first, then use GStreamer's CPU Bob at the returned size:
 

@@ -548,6 +548,18 @@ conversion in a separate video-processing context. Decode-integrated processing
 is a separate, opt-in H.264 path described below; omission or
 `VA_DEC_PROCESSING_NONE` retains ordinary decode. Separate VPP/Bob does not
 implicitly enable the card scaler.
+
+Unreleased 1.3 VPP accepts standard `VA_FILTER_SCALING_FAST` as well as
+DEFAULT; both select the existing nearest-neighbor kernel. For a built
+1.3 driver selected through `LIBVA_DRIVERS_PATH`, stock FFmpeg can use
+`scale_vaapi=w=1280:h=720:mode=fast` with NV12 output. This is host VPP,
+not card scaling. HQ, bilinear and advanced interpolation remain unsupported.
+When NV12 Bob resizing repeats a physical field row, its horizontal resample
+is now reused from private CPU memory, without reading the output surface or
+changing field selection, pixels or ownership. See the
+[bounded cost and negotiation results](../../HARDWARE-2026-09-13.md#output-scaling-cost-2026-10-25);
+these do not establish streaming or displayed-frame rates.
+
 On the 1.2 implementation, VPP/Bob honors declared full-range NV12 for
 ARGB conversion; UNKNOWN input retains the existing limited-range interpretation.
 NV12 output preserves the input range, with range-correct black padding.
