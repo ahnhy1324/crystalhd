@@ -194,5 +194,151 @@
       "location": "private observer-permission-fail log/output"
     }
   ],
-  "interpretation": "Admitted Kodi Sync/Export calls have a measurable mutex-wait tail. VPP run-to-retirement intervals overlap only20.09%/28.97% of total waits>=1ms for Sync/Export in the traced run. They do not explain all admission delay or prove a quiet-playback regression. Preserve lock ownership; next narrow attribution includes decode/materialization and API work before considering lease-safe separation."
+  "interpretation": "Admitted Kodi Sync/Export calls have a measurable mutex-wait tail. VPP run-to-retirement intervals overlap only20.09%/28.97% of total waits>=1ms for Sync/Export in the traced run. They do not explain all admission delay or prove a quiet-playback regression. Preserve lock ownership; next narrow attribution includes decode/materialization and API work before considering lease-safe separation.",
+  "output_only_handoff_followup": {
+    "test_source": "83e942c",
+    "runtime_source": "0263517",
+    "measured_integration": "a3ad169713718aac05884166074005734316810f",
+    "mechanism": "The existing1ms handoff covered only input-budget exhaustion. Continuously-ready RX can immediately reacquire the same unfair mutex after poll even with no queued input. Detect receive transport progress before pumping input and include it in the existing bounded handoff. No pixel/DMA work is unlocked; leases captured after handoff as before.",
+    "regression": {
+      "before": "RED valid old policy plus inert test hook: output-only handoff assertion fails",
+      "after": "GREEN frontend obtains mutex after1of24 outputs; existing input-budget control and full replay/identity/teardown suite PASS",
+      "sanitizers": "PASS full ASan/UBSan with leak detection; 1170 scalar boundary/alignment cases and worker/identity/teardown suites"
+    },
+    "lower_overhead_attribution": {
+      "scope": "Stock Kodi30s,VA JSON off,26read-onlyBPF probes; complete-call elapsed wall times include scheduling/synchronization. Nested totals must not be added. Function counts include internal SyncSurface2 calls; Sync/Export totals are not independent client-call totals.",
+      "decode_worker_receive_ms_mean": 6.132840601803156,
+      "nested_public_nv12_copy_ms_mean": 5.074890258543833,
+      "decode_worker_input_ms_mean": 0.019386817348377997,
+      "vpp_worker_ms_mean": 3.940336743440233
+    },
+    "predeclared_abba": [
+      {
+        "arm": "a1",
+        "status": "REVIEW",
+        "natural": "PASS",
+        "timing": {
+          "sync": {
+            "n": 3002,
+            "p95_ms": 6.941727,
+            "mean_ms": 0.894143934377082,
+            "max_ms": 31.398168
+          },
+          "export": {
+            "n": 1489,
+            "p95_ms": 13.628315,
+            "mean_ms": 3.146236785090665,
+            "max_ms": 67.669841
+          }
+        },
+        "balance": [
+          "AGGREGATE_END nested=0 record_limit=0 records=2357 active=0"
+        ]
+      },
+      {
+        "arm": "b1",
+        "status": "REVIEW",
+        "natural": "PASS",
+        "timing": {
+          "sync": {
+            "n": 3006,
+            "p95_ms": 4.926096,
+            "mean_ms": 0.8544128253493014,
+            "max_ms": 72.120552
+          },
+          "export": {
+            "n": 1493,
+            "p95_ms": 11.841071,
+            "mean_ms": 3.008910952444742,
+            "max_ms": 74.382311
+          }
+        },
+        "balance": [
+          "AGGREGATE_END nested=0 record_limit=0 records=2322 active=0"
+        ]
+      },
+      {
+        "arm": "b2",
+        "status": "FAIL",
+        "natural": "FAIL",
+        "timing": {
+          "sync": {
+            "n": 2987,
+            "p95_ms": 5.217901,
+            "mean_ms": 0.7656746699029126,
+            "max_ms": 35.299338
+          },
+          "export": {
+            "n": 1486,
+            "p95_ms": 11.540175,
+            "mean_ms": 2.920785075370121,
+            "max_ms": 90.304655
+          }
+        },
+        "balance": [
+          "AGGREGATE_END nested=0 record_limit=0 records=2254 active=0"
+        ]
+      },
+      {
+        "arm": "a2",
+        "status": "REVIEW",
+        "natural": "PASS",
+        "timing": {
+          "sync": {
+            "n": 3008,
+            "p95_ms": 5.958027,
+            "mean_ms": 0.8086946003989361,
+            "max_ms": 50.808932
+          },
+          "export": {
+            "n": 1495,
+            "p95_ms": 12.063564,
+            "mean_ms": 2.800037288963211,
+            "max_ms": 71.849519
+          }
+        },
+        "balance": [
+          "AGGREGATE_END nested=0 record_limit=0 records=2183 active=0"
+        ]
+      }
+    ],
+    "abba_scope": "All four arms ran; A2 was initially not run after B2 stop, then completed unchanged. A1/B1/A2 natural/reopen PASS with explicit-Stop REVIEW. B2 remains FAIL, excluded from qualified performance ranking; its intervals are retained diagnostic data. No complete4/4 acceptance, maximum-latency, CPU, display-fps or E2E improvement is established.",
+    "b2": {
+      "original_status": "FAIL retained",
+      "last_proven_hardware_identity_seconds": 29.621,
+      "fresh_normal_end_notification": true,
+      "next_rpc_labels": "unknown/zero after EOF",
+      "separate_timeout": "VAAPI Decode output-message wait timeout near EOF retained; cause not established by the terminal identity race",
+      "reopen": "NOT RUN in original B2",
+      "pre_existing_control": "The same output-message timeout is already retained in the pre-fix2482df3 traced Kodi control above; cause/rate not resolved and no full EOF qualification claimed."
+    },
+    "quiet_controls": [
+      {
+        "arm": "A",
+        "natural": "PASS",
+        "reopen": "PASS",
+        "lifecycle": "REVIEW",
+        "last_media_seconds": 29.606,
+        "cpu_one_core_percent_single_pair_only": 63.54006175832328,
+        "terminal_identity_guard_used": false
+      },
+      {
+        "arm": "B",
+        "natural": "PASS",
+        "reopen": "PASS",
+        "lifecycle": "REVIEW",
+        "last_media_seconds": 29.66,
+        "cpu_one_core_percent_single_pair_only": 63.894488713438236,
+        "terminal_identity_guard_used": false
+      }
+    ],
+    "native_ffmpeg": {
+      "outputs": 100,
+      "pixels_pts": "PASS all100 match retained qualified baseline2482df3",
+      "eos_exit_maps_card_ownership_resources_kernel": "PASS",
+      "scope": "FHD TFF50 ->Bob100, no physical display/E2E or throughput ranking"
+    },
+    "chart": "output-handoff-20261025.png",
+    "remaining": "Public-copy hold time and EOF/Stop compatibility warnings remain under existing issues; this is the bounded output-only fairness correction, not a complete playback-acceptance fix."
+  }
 }
