@@ -137,6 +137,10 @@ settings-ui-check:
 	$(PYTHON3) -B tests/crystalhd-settings-gtk.test.py
 	dbus-run-session -- $(PYTHON3) -B tests/crystalhd-settings-tray.test.py
 
+.PHONY: runtime-install-check
+runtime-install-check:
+	$(PYTHON3) -B tests/runtime-install.test.py
+
 uapi-check:
 	sh ./tests/uapi-abi.sh
 
@@ -258,7 +262,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv tests/maintenance-oracl
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
 	sh tests/phase1-release-gate.sh manifest-check tests/maintenance-oracle.tsv
 
-check: configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check vc1-seek-oracle-check fw-research-check all
+check: runtime-install-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check vc1-seek-oracle-check fw-research-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check
@@ -280,15 +284,16 @@ install-module: install-preflight driver
 	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) install-module
 
 install-runtime: library gstreamer vaapi
-	+@set -e; umask 022; \
-		$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) install-udev; \
-		$(MAKE) -C firmware DESTDIR=$(DESTDIR) install; \
-		$(MAKE) -C linux_lib/libcrystalhd $(USER_ARGS) install; \
-		$(MAKE) -C filters/gst/gst-plugin-1.0 $(USER_ARGS) install; \
-		$(MAKE) -C filters/vaapi $(USER_ARGS) install; \
-		$(MAKE) install-check; \
-		$(MAKE) install-config
+	+$(PYTHON3) -B scripts/install-runtime.py --make '$(MAKE)' \
+		--destdir "$(DESTDIR)" --prefix "$(PREFIX)" \
+		--bindir "$(BINDIR)" --datadir "$(DATADIR)"
+
+.PHONY: install-runtime-record uninstall-runtime-record
+install-runtime-record:
 	@umask 022; install -D -m 0644 VERSION "$(DESTDIR)$(DATADIR)/crystalhd/VERSION"
+
+uninstall-runtime-record:
+	rm -f -- "$(DESTDIR)$(DATADIR)/crystalhd/VERSION"
 
 install-browser: browser
 	$(MAKE) -C browser $(USER_ARGS) install
@@ -353,15 +358,9 @@ uninstall-module:
 	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) uninstall-module
 
 uninstall-runtime:
-	$(MAKE) uninstall-settings
-	rm -f -- "$(DESTDIR)$(DATADIR)/crystalhd/VERSION"
-	$(MAKE) uninstall-check
-	$(MAKE) -C filters/vaapi $(USER_ARGS) uninstall
-	$(MAKE) -C filters/gst/gst-plugin-1.0 $(USER_ARGS) uninstall
-	$(MAKE) -C linux_lib/libcrystalhd $(USER_ARGS) uninstall
-	$(MAKE) -C firmware DESTDIR=$(DESTDIR) uninstall
-	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) uninstall-udev
-	$(MAKE) uninstall-config
+	+$(PYTHON3) -B scripts/install-runtime.py --uninstall --make '$(MAKE)' \
+		--destdir "$(DESTDIR)" --prefix "$(PREFIX)" \
+		--bindir "$(BINDIR)" --datadir "$(DATADIR)"
 
 uninstall-browser:
 	$(MAKE) -C browser $(USER_ARGS) uninstall
