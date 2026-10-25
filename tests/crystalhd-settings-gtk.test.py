@@ -5,6 +5,8 @@ import importlib.util
 import os
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -22,6 +24,14 @@ def drain():
     while Gtk.events_pending():Gtk.main_iteration_do(False)
 
 
+def settle(predicate):
+    deadline = time.monotonic() + 5
+    while not predicate() and time.monotonic() < deadline:
+        drain()
+        time.sleep(.005)
+    assert predicate(), 'installation inspection did not finish'
+
+
 def select(combo,token):
     for row in combo.get_model():
         if row[0]==token:
@@ -37,10 +47,162 @@ class GtkSettingsTests(unittest.TestCase):
             select(app.controls['vaapi.debug'], 'true')
             draft = app.editor.draft
             app.installation_refresh.clicked();drain()
+            settle(lambda: app.installation_status.get_text() == 'File declaration only')
             self.assertIs(app.editor.draft, draft)
             self.assertTrue(app.editor.dirty)
             self.assertEqual(app.installation_status.get_text(), 'File declaration only')
             self.assertFalse(self.path.exists())
+
+    def test_slow_startup_inspection_keeps_ui_editable_and_quit_cancellable(self):
+        entered, release = threading.Event(), threading.Event()
+        threads = []
+        def inspect():
+            threads.append(threading.get_ident())
+            entered.set()
+            release.wait(10)  # Bounds the RED run with the old synchronous UI.
+            return {'readers': [{'state': 'declared-v1'}]}
+        try:
+            with mock.patch.object(CORE, 'inspect_installation', side_effect=inspect), \
+                    mock.patch.object(CORE, 'installation_text', return_value='Finished'):
+                app = self.app()
+                self.assertTrue(entered.wait(3))
+                self.assertNotEqual(threads[0], threading.get_ident())
+                self.assertFalse(release.is_set())
+                heartbeat = []
+                GLib.idle_add(lambda: heartbeat.append(True) and False)
+                select(app.controls['vaapi.debug'], 'true')
+                self.assertEqual(heartbeat, [True])
+                self.assertTrue(app.editor.dirty)
+                app.confirm = lambda *_: False
+                app.quit();drain()
+                self.assertFalse(app.quitting)
+                self.assertTrue(app.window.get_visible())
+                release.set()
+                settle(lambda: app.installation_status.get_text() == 'Finished')
+                self.assertTrue(app.editor.dirty)
+                self.assertFalse(self.path.exists())
+        finally:
+            release.set()
+
+    def test_refresh_burst_coalesces_and_never_publishes_superseded_results(self):
+        entered = [threading.Event(), threading.Event()]
+        release = [threading.Event(), threading.Event()]
+        calls = []
+        def inspect():
+            index = len(calls)
+            calls.append(index)
+            entered[index].set()
+            release[index].wait(10)
+            return {'scope': 'result-' + str(index), 'readers': [{'state': 'declared-v1'}]}
+        try:
+            with mock.patch.object(CORE, 'inspect_installation', side_effect=inspect), \
+                    mock.patch.object(CORE, 'installation_text', side_effect=lambda r: r['scope']):
+                app = self.app()
+                self.assertTrue(entered[0].wait(3))
+                select(app.player_controls['gstreamer.crystalhddec.scale_width'], 'custom')
+                app.player_entries['gstreamer.crystalhddec.scale_width'].set_text('unfinished')
+                draft, pending = app.editor.draft, dict(app.pending_player)
+                for _ in range(25):
+                    app.installation_refresh.clicked()
+                drain()
+                self.assertEqual(calls, [0])
+                release[0].set()
+                settle(entered[1].is_set)
+                self.assertNotEqual(app.installation_status.get_text(), 'result-0')
+                self.assertEqual(calls, [0, 1])
+                release[1].set()
+                settle(lambda: app.installation_status.get_text() == 'result-1')
+                self.assertIs(app.editor.draft, draft)
+                self.assertEqual(app.pending_player, pending)
+                self.assertEqual(app.player_entries['gstreamer.crystalhddec.scale_width'].get_text(), 'unfinished')
+                self.assertFalse(self.path.exists())
+        finally:
+            for event in release:event.set()
+
+    def test_destroy_during_inspection_does_not_wait_or_publish_to_dead_widgets(self):
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        def inspect():
+            entered.set()
+            release.wait(10)
+            finished.set()
+            return {'readers': [{'state': 'declared-v1'}]}
+        try:
+            with mock.patch.object(CORE, 'inspect_installation', side_effect=inspect), \
+                    mock.patch.object(CORE, 'installation_text', return_value='Too late'):
+                app = self.app()
+                self.assertTrue(entered.wait(3))
+                worker = app._inspection_worker
+                self.assertTrue(worker.daemon)
+                with mock.patch.object(app, 'update_preview') as update:
+                    app.window.destroy();drain()
+                    self.assertTrue(app._inspection_closed)
+                    self.assertEqual(app._inspection_source, 0)
+                    self.assertFalse(finished.is_set())
+                    release.set()
+                    worker.join(3)
+                    self.assertFalse(worker.is_alive())
+                    drain()
+                    update.assert_not_called()
+                self.assertNotEqual(app.installation_status.get_text(), 'Too late')
+        finally:
+            release.set()
+
+    def test_inspection_failure_is_redacted_and_refresh_can_retry(self):
+        with mock.patch.object(CORE, 'inspect_installation', side_effect=OSError('private-error-detail')):
+            app = self.app()
+            settle(lambda: 'failed' in app.installation_status.get_text())
+        self.assertNotIn('private-error-detail', app.installation_status.get_text())
+        with mock.patch.object(CORE, 'inspect_installation', return_value={'readers': [{'state': 'declared-v1'}]}), \
+                mock.patch.object(CORE, 'installation_text', return_value='Recovered'):
+            app.installation_refresh.clicked()
+            settle(lambda: app.installation_status.get_text() == 'Recovered')
+        self.assertFalse(self.path.exists())
+
+    def test_hide_to_tray_keeps_inspection_alive(self):
+        entered, release = threading.Event(), threading.Event()
+        def inspect():
+            entered.set();release.wait(10)
+            return {'readers': [{'state': 'declared-v1'}]}
+        try:
+            with mock.patch.object(CORE, 'inspect_installation', side_effect=inspect), \
+                    mock.patch.object(CORE, 'installation_text', return_value='Hidden result'):
+                app = self.app()
+                self.assertTrue(entered.wait(3))
+                app.tray_connected = True
+                app.close_window();drain()
+                self.assertFalse(app.window.get_visible())
+                release.set()
+                settle(lambda: app.installation_status.get_text() == 'Hidden result')
+                self.assertFalse(app._inspection_closed)
+        finally:
+            release.set()
+
+    def test_worker_start_failure_is_retryable_without_leaving_a_poll_source(self):
+        with mock.patch.object(UI.threading.Thread, 'start', side_effect=RuntimeError('private-start-detail')):
+            app = self.app()
+        self.assertIn('failed', app.installation_status.get_text())
+        self.assertNotIn('private-start-detail', app.installation_status.get_text())
+        self.assertIsNone(app._inspection_worker)
+        self.assertEqual(app._inspection_source, 0)
+        with mock.patch.object(CORE, 'inspect_installation', return_value={'readers': [{'state': 'unknown'}]}), \
+                mock.patch.object(CORE, 'installation_text', return_value='Retried'):
+            app.installation_refresh.clicked()
+            settle(lambda: app.installation_status.get_text() == 'Retried')
+        self.assertTrue(app.readers_unknown)
+        self.assertIn('Some inspected components', app.status.get_text())
+
+    def test_formatting_failure_keeps_last_report_caveat_and_can_retry(self):
+        with mock.patch.object(CORE, 'inspect_installation', return_value={'readers': [{'state': 'unknown'}]}), \
+                mock.patch.object(CORE, 'installation_text', return_value='Unknown reader'):
+            app = self.app()
+            settle(lambda: app.installation_status.get_text() == 'Unknown reader')
+        with mock.patch.object(CORE, 'inspect_installation', return_value={'readers': [{'state': 'declared-v1'}]}), \
+                mock.patch.object(CORE, 'installation_text', side_effect=ValueError('private-format-detail')):
+            app.installation_refresh.clicked()
+            settle(lambda: 'failed' in app.installation_status.get_text())
+        self.assertNotIn('private-format-detail', app.installation_status.get_text())
+        self.assertTrue(app.readers_unknown)
+        self.assertFalse(self.path.exists())
 
     def test_profile_buttons_target_preview_default_and_confirmed_removal(self):
         app = self.app()
@@ -110,6 +272,10 @@ class GtkSettingsTests(unittest.TestCase):
     def tearDown(self):
         for app in self.windows:
             app.quitting=True;app.window.destroy()
+            worker = app._inspection_worker
+            if worker is not None:
+                worker.join(3)
+                self.assertFalse(worker.is_alive(), 'test inspection did not retire')
         drain();self.temp.cleanup()
 
     def write(self,text):
