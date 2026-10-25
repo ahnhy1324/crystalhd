@@ -258,6 +258,40 @@ class RuntimeInstallTests(unittest.TestCase):
         user.write_text('must not overwrite defaults')
         with self.assertRaises(RuntimeError):INSTALLER.payload_files(prepared, self.stage)
 
+    def test_preparation_failure_retains_an_existing_incomplete_record(self):
+        self.seed()
+        self.pending.parent.mkdir(parents=True)
+        self.pending.write_text('{"stage":"previous-partial-publication"}')
+        previous = self.pending.read_bytes()
+        self.assertNotEqual(self.run_make(fail='library').returncode, 0)
+        self.assertEqual(self.pending.read_bytes(), previous)
+        self.assertEqual(self.version.read_text(), 'previous\n')
+
+    def test_payload_links_and_merged_usr_destination(self):
+        prepared = self.root/'linked-payload'
+        library = prepared/'usr/lib/libsample.so.3'
+        library.parent.mkdir(parents=True)
+        library.write_bytes(b'library')
+        library.chmod(0o755)
+        alias = library.with_name('libsample.so')
+        alias.symlink_to(library.name)
+        firmware = prepared/'lib/firmware/sample.bin'
+        firmware.parent.mkdir(parents=True)
+        firmware.write_bytes(b'firmware')
+        (self.stage/'usr/lib').mkdir(parents=True)
+        (self.stage/'lib').symlink_to('usr/lib', target_is_directory=True)
+        for relative, source in INSTALLER.payload_files(prepared, self.stage):
+            INSTALLER.publish_file(source, self.stage/relative)
+        self.assertEqual((self.stage/'usr/lib/firmware/sample.bin').read_bytes(), b'firmware')
+        self.assertEqual((self.stage/'usr/lib/libsample.so').read_bytes(), b'library')
+        self.assertEqual(os.readlink(str(self.stage/'usr/lib/libsample.so')), library.name)
+        self.assertEqual((self.stage/'usr/lib/libsample.so.3').stat().st_mode & 0o777, 0o755)
+        # An absolute link into the preparation directory would dangle after
+        # cleanup even though it resolves inside the payload during validation.
+        alias.unlink()
+        alias.symlink_to(library)
+        with self.assertRaises(RuntimeError):INSTALLER.payload_files(prepared, self.stage)
+
     def test_killed_parent_does_not_release_a_still_writing_childs_lock(self):
         environment = dict(self.environment, HOLD_STAGE='library')
         gate = self.root/'release';pidfile=gate.with_suffix('.pid')

@@ -68,7 +68,8 @@ def payload_files(prepared, destination):
             if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
                 raise RuntimeError('prepared payload is not a regular file or link')
             if source.is_symlink():
-                if prepared.resolve() not in source.resolve(strict=True).parents:
+                if (os.path.isabs(os.readlink(str(source))) or
+                        prepared.resolve() not in source.resolve(strict=True).parents):
                     raise RuntimeError('prepared symlink leaves its payload')
             relative = source.relative_to(prepared)
             if relative == Path('etc/crystalhd/config.ini') or relative.parts[:3] == ('var', 'lib', 'crystalhd'):
