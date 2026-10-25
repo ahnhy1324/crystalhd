@@ -4,10 +4,53 @@ name: CrystalHD CI
 
 on:
   push:
+    branches: [master]
+    tags: ['**']
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
+  classify:
+    runs-on: ubuntu-24.04
+    outputs:
+      heavy: ${{ steps.plan.outputs.heavy }}
+      contracts: ${{ steps.plan.outputs.contracts }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Select checks from the complete PR diff
+        id: plan
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_BASE: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 -B tests/ci-plan.py classify
+
+  docs:
+    needs: classify
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Check conservative selection and failure handling
+        run: python3 -B tests/ci-plan.test.py
+      - name: Check diff and selected documentation contracts
+        env:
+          CI_BASE: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_CONTRACTS: ${{ needs.classify.outputs.contracts }}
+        run: python3 -B tests/ci-plan.py docs
+
   build:
+    needs: classify
+    if: needs.classify.outputs.heavy == 'true'
     # Keep the older supported GStreamer API in the userspace release gate.
     runs-on: ubuntu-24.04
 
@@ -268,6 +311,8 @@ jobs:
           filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/mpeg2-closed.mov" --software --retain-old-frames
 
   upstream-kernel-api:
+    needs: classify
+    if: needs.classify.outputs.heavy == 'true'
     name: Kernel API (${{ matrix.track }}, ${{ matrix.arch }})
     runs-on: ubuntu-latest
     strategy:
@@ -347,3 +392,15 @@ jobs:
             ARCH="${{ matrix.arch }}" \
             M="$GITHUB_WORKSPACE/driver/linux" \
             CRYSTALHD_FW_RESEARCH=1 W=1 crystalhd.o
+
+  ci:
+    name: CI gate
+    if: always()
+    needs: [classify, docs, build, upstream-kernel-api]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require all selected checks
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 -B tests/ci-plan.py gate
