@@ -25,6 +25,7 @@
  **********************************************************************/
 
 #include <linux/device.h>
+#include <linux/highmem.h>
 #include <linux/sched/signal.h>
 
 #include "crystalhd_lnx.h"
@@ -143,33 +144,67 @@ static void crystalhd_dio_rx_sync_for_device(struct crystalhd_adp *adp,
 		crystalhd_dio_to_device(adp, dio);
 }
 
+static BC_STATUS crystalhd_dio_rx_copy(struct crystalhd_rx_buffer *buffer,
+				       uint32_t offset, void *data, size_t size,
+				       bool write)
+{
+	struct crystalhd_dio_req *dio;
+	u64 position;
+	unsigned int page, last;
+	size_t in_page, chunk;
+	char *bytes = data;
+
+	dio = container_of(buffer, struct crystalhd_dio_req, rx_buffer);
+	if (buffer->cookie != dio || !dio->uinfo.xfr_buff ||
+	    dio->uinfo.dir_tx || dio->sig != crystalhd_dio_sg_mapped ||
+	    !dio->pages || dio->page_cnt <= 0 ||
+	    buffer->capacity > dio->uinfo.xfr_len ||
+	    offset > buffer->capacity || size > buffer->capacity - offset)
+		return BC_STS_INV_ARG;
+	if (!size)
+		return BC_STS_SUCCESS;
+
+	/* GET_DRV_STAT may run in a monitor's mm. The original user VA is only
+	 * the registration's first-page offset; access the pinned backing, not
+	 * the current caller's mapping. The metadata parser owns DMA CPU sync.
+	 */
+	position = (u64)offset_in_page(dio->uinfo.xfr_buff) + offset;
+	page = position >> PAGE_SHIFT;
+	last = (position + size - 1) >> PAGE_SHIFT;
+	if (last >= (unsigned int)dio->page_cnt)
+		return BC_STS_INV_ARG;
+	/* Reject the whole range before a write can alter any metadata. */
+	for (; page <= last; page++)
+		if (!dio->pages[page])
+			return BC_STS_INV_ARG;
+
+	page = position >> PAGE_SHIFT;
+	in_page = position & (PAGE_SIZE - 1);
+	while (size) {
+		chunk = min_t(size_t, size, PAGE_SIZE - in_page);
+		if (write)
+			memcpy_to_page(dio->pages[page], in_page, bytes, chunk);
+		else
+			memcpy_from_page(bytes, dio->pages[page], in_page, chunk);
+		bytes += chunk;
+		size -= chunk;
+		page++;
+		in_page = 0;
+	}
+	return BC_STS_SUCCESS;
+}
+
 static BC_STATUS crystalhd_dio_rx_read(struct crystalhd_rx_buffer *buffer,
 				       uint32_t offset, void *dst, size_t size)
 {
-	struct crystalhd_dio_req *dio;
-	void __user *src;
-
-	dio = container_of(buffer, struct crystalhd_dio_req, rx_buffer);
-	if (buffer->cookie != dio || !dio->uinfo.xfr_buff)
-		return BC_STS_INV_ARG;
-
-	src = (uint8_t __user *)dio->uinfo.xfr_buff + offset;
-	return copy_from_user(dst, src, size) ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
+	return crystalhd_dio_rx_copy(buffer, offset, dst, size, false);
 }
 
 static BC_STATUS crystalhd_dio_rx_write(struct crystalhd_rx_buffer *buffer,
 					uint32_t offset, const void *src,
 					size_t size)
 {
-	struct crystalhd_dio_req *dio;
-	void __user *dst;
-
-	dio = container_of(buffer, struct crystalhd_dio_req, rx_buffer);
-	if (buffer->cookie != dio || !dio->uinfo.xfr_buff)
-		return BC_STS_INV_ARG;
-
-	dst = (uint8_t __user *)dio->uinfo.xfr_buff + offset;
-	return copy_to_user(dst, src, size) ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
+	return crystalhd_dio_rx_copy(buffer, offset, (void *)src, size, true);
 }
 
 static void crystalhd_dio_rx_release(struct crystalhd_adp *adp,

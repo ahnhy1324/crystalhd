@@ -1,0 +1,340 @@
+{
+  "schema": 1,
+  "date": "2026-10-25",
+  "issue": "https://github.com/ahnhy1324/crystalhd/issues/510",
+  "runtime_source": "11004418b1b6270c05dddd273bfd166f31e4b148",
+  "environment": {
+    "os": "Ubuntu 26.04.1 LTS",
+    "kernel": "7.0.0-38-generic",
+    "device": "BCM70015",
+    "gstreamer": "1.28.2",
+    "installed_gst_dil_source": "b913a59",
+    "original_module": "3.10.13",
+    "temporary_module": "3.10.14",
+    "force_l0s_off": "Y",
+    "session_l0s_off": "N"
+  },
+  "reproduction": {
+    "contract": "Independent normal DIL MONITOR open; alternate six TX-only controls and six ordinary status calls during a paced 150-picture hardware decode. No owner or monitor user mappings were replaced.",
+    "owner_workload": "H.264 1080i25 -> card1280x720 -> paced headless YUY2, first 150 complete pictures",
+    "before": {
+      "metadata_read": "FAIL",
+      "read_callback_returns": {
+        "BC_STS_IO_ERROR": 6
+      },
+      "write_calls": 0,
+      "status_api_failures": 0,
+      "owner_frames": 150,
+      "owner_invalid_buffers_or_pts": 0,
+      "owner_eos": true,
+      "monitor_close": -1,
+      "monitor_fd_after_close": "NOT MEASURED",
+      "overall": "FAIL",
+      "trials": [
+        {
+          "trial": 0,
+          "skip": 1,
+          "status": 0,
+          "ready": 3,
+          "free": 12,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 1,
+          "skip": 0,
+          "status": 0,
+          "ready": 4,
+          "free": 11,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 2,
+          "skip": 1,
+          "status": 0,
+          "ready": 6,
+          "free": 9,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 3,
+          "skip": 0,
+          "status": 0,
+          "ready": 7,
+          "free": 8,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 4,
+          "skip": 1,
+          "status": 0,
+          "ready": 9,
+          "free": 6,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 5,
+          "skip": 0,
+          "status": 0,
+          "ready": 10,
+          "free": 5,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 6,
+          "skip": 1,
+          "status": 0,
+          "ready": 12,
+          "free": 3,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 7,
+          "skip": 0,
+          "status": 0,
+          "ready": 13,
+          "free": 3,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 8,
+          "skip": 1,
+          "status": 0,
+          "ready": 15,
+          "free": 0,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 9,
+          "skip": 0,
+          "status": 0,
+          "ready": 16,
+          "free": 0,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 10,
+          "skip": 1,
+          "status": 0,
+          "ready": 14,
+          "free": 1,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 11,
+          "skip": 0,
+          "status": 0,
+          "ready": 16,
+          "free": 0,
+          "picture": 0,
+          "next": 0
+        }
+      ]
+    },
+    "after": {
+      "metadata_read": "PASS",
+      "read_callback_returns": {
+        "BC_STS_SUCCESS": 30
+      },
+      "write_calls": 0,
+      "status_api_failures": 0,
+      "owner_frames": 150,
+      "owner_invalid_buffers_or_pts": 0,
+      "owner_eos": true,
+      "monitor_close": -1,
+      "monitor_device_fds_after_close": 1,
+      "overall": "FAIL_MONITOR_CLOSE",
+      "trials": [
+        {
+          "trial": 0,
+          "skip": 1,
+          "status": 0,
+          "ready": 1,
+          "free": 14,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 1,
+          "skip": 0,
+          "status": 0,
+          "ready": 3,
+          "free": 12,
+          "picture": 5,
+          "next": 0
+        },
+        {
+          "trial": 2,
+          "skip": 1,
+          "status": 0,
+          "ready": 4,
+          "free": 11,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 3,
+          "skip": 0,
+          "status": 0,
+          "ready": 7,
+          "free": 9,
+          "picture": 6,
+          "next": 0
+        },
+        {
+          "trial": 4,
+          "skip": 1,
+          "status": 0,
+          "ready": 7,
+          "free": 8,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 5,
+          "skip": 0,
+          "status": 0,
+          "ready": 8,
+          "free": 7,
+          "picture": 8,
+          "next": 0
+        },
+        {
+          "trial": 6,
+          "skip": 1,
+          "status": 0,
+          "ready": 10,
+          "free": 5,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 7,
+          "skip": 0,
+          "status": 0,
+          "ready": 11,
+          "free": 5,
+          "picture": 9,
+          "next": 0
+        },
+        {
+          "trial": 8,
+          "skip": 1,
+          "status": 0,
+          "ready": 13,
+          "free": 2,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 9,
+          "skip": 0,
+          "status": 0,
+          "ready": 13,
+          "free": 2,
+          "picture": 10,
+          "next": 0
+        },
+        {
+          "trial": 10,
+          "skip": 1,
+          "status": 0,
+          "ready": 16,
+          "free": 0,
+          "picture": 0,
+          "next": 0
+        },
+        {
+          "trial": 11,
+          "skip": 0,
+          "status": 0,
+          "ready": 14,
+          "free": 1,
+          "picture": 11,
+          "next": 0
+        }
+      ]
+    },
+    "probe": "Read-only kernel entry/return probes filtered to monitor PID. Source-specific callback status; no data/address payload recording."
+  },
+  "cpu_regression": {
+    "old_callbacks": "RED: 13/50 checks fail, including both real child-address-space cases",
+    "new_callbacks": "GREEN: 50/50, x86-64 and i686, each plain and ASan/UBSan",
+    "covers": [
+      "registered offset and cross-page copies",
+      "child unmaps only its own owner-VA view",
+      "child maps unrelated data at same VA; that view remains unchanged",
+      "reject whole invalid span before partial metadata write",
+      "cookie, direction, mapping state, registered length/page inventory and padding guards"
+    ],
+    "not_native_32bit_hardware": true
+  },
+  "related_checks": {
+    "rx_ownership": "PASS, plain and sanitized",
+    "rx_fetch_wait": "PASS",
+    "flea_and_link_isr": "PASS",
+    "rx_receipts": "PASS, plain and sanitized",
+    "rx_output_receipts": "PASS, plain and sanitized",
+    "flea_metadata": "PASS, plain and sanitized",
+    "module_build": "PASS W=1 with driver -Werror"
+  },
+  "oracle": {
+    "manifest": "tests/maintenance-oracle-gst-1.28.2.tsv",
+    "exact_gstreamer_version": "1.28.2",
+    "criteria_changed": false,
+    "rows": [
+      {
+        "id": "h264-high-ipb",
+        "frames": 180,
+        "metadata": "PASS exact frozen oracle",
+        "pixels": "PASS exact frozen active rows",
+        "EOS": "PASS",
+        "resource_pm_aer": "PASS"
+      },
+      {
+        "id": "mpeg2-tff-ipb",
+        "frames": 50,
+        "metadata": "PASS exact frozen oracle",
+        "pixels": "PASS exact frozen active rows",
+        "EOS": "PASS",
+        "resource_pm_aer": "PASS"
+      },
+      {
+        "id": "mpeg2-bff-ipb",
+        "frames": 50,
+        "metadata": "PASS exact frozen oracle",
+        "pixels": "PASS exact frozen active rows",
+        "EOS": "PASS",
+        "resource_pm_aer": "PASS"
+      }
+    ],
+    "total_decoded_pictures": 280,
+    "scope": "Decoded YUY2 pictures/metadata/EOS, no deinterlacing, display or physical A/V acceptance"
+  },
+  "qualification_notes": {
+    "initial_pixel_launch": "NOT RUN: caller incorrectly supplied TS-only --epoch-sha256 for MP4; tool exited 2 before playback. The corrected supported caller compared the same full output metadata and active pixels to the frozen oracle.",
+    "completed_monitor_case": "Retained without repeating it when only the previously unrun pixel rows were executed."
+  },
+  "cleanup": {
+    "original_module_restored": true,
+    "installed_files_changed": false,
+    "parameters_restored": true,
+    "resource_pm_aer": "PASS per completed candidate case and after restoring installed module",
+    "initial_monitor_controller": "Exited on legacy close failure; later explicit idle/kernel checks retained rather than relabeling original run PASS"
+  },
+  "remaining": [
+    "DIL monitor close: valid local monitor is blocked by another active decoder PID before descriptor release. Source identified, not changed in this kernel patch.",
+    "Native BCM70012 impact/qualification NOT RUN.",
+    "Legacy persistent-BUSY cancellation is separate and not yet reproduced."
+  ]
+}

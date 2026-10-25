@@ -204,6 +204,10 @@ vc1-seek-oracle-check:
 rx-ownership-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/rx-ownership.sh
 
+.PHONY: rx-pages-check
+rx-pages-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/rx-pages.sh
+
 rx-receipt-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/rx-receipt.sh
 
@@ -228,7 +232,7 @@ ioctl-dispatch-check:
 rx-output-receipts-check:
 	CXX="$(CXX)" sh ./tests/rx-output-receipts.sh
 
-architecture-check: command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-staging-check fw-probe-check tx-admission-check h264-stream-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
+architecture-check: command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-staging-check fw-probe-check tx-admission-check h264-stream-check rx-ownership-check rx-pages-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
 
 pib-check:
 	CC="$(CC)" sh ./tests/flea-pib.sh

@@ -9,6 +9,8 @@ this development identity is not a release or a new support claim.
 
 - Report actual video QoS drops once in `crystalhd-play`; decoded output and
   natural EOS are not a displayed-frame count. Playback policy is unchanged.
+- Read and update host RX metadata through registered pinned pages, including
+  status calls from a separate monitor process; preserve DMA synchronization.
 
 <a id="120--prepared-final-package"></a>
 
