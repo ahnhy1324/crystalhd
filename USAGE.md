@@ -769,6 +769,14 @@ tuning switch.
 
 ## Troubleshooting and proof of hardware use
 
+The development `crystalhd-play` warns once if GStreamer reports dropped video
+buffers. Its decoded-frame counter measures decoder-pad output, not displayed
+frames;
+natural EOS alone does not prove complete presentation. For lower-cost display
+fitting, keep `--scale-width` and omit `--software-output-size`. The
+[measured frame-flow investigation](HARDWARE-2026-09-13.md#player-frame-flow-2026-10-25)
+separates decoder, transform and sink QoS loss from card/firmware failure.
+
 Start with `crystalhd-check`, then follow the matching symptom. Change one
 setting at a time.
 

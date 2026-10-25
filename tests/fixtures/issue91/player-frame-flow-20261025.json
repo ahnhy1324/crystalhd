@@ -1,0 +1,1245 @@
+{
+  "schema": 1,
+  "date": "2026-10-25",
+  "issue": "https://github.com/ahnhy1324/crystalhd/issues/91",
+  "environment": {
+    "os": "Ubuntu 26.04.1 LTS",
+    "kernel": "7.0.0-38-generic",
+    "cpu": "Core 2 Duo T8100",
+    "device": "BCM70015",
+    "gstreamer": "1.28.2",
+    "gst_core_package": "1.28.2-1",
+    "gst_base_package": "1.28.2-1ubuntu0.1",
+    "installed_gst_dil_source": "b913a59",
+    "installed_module": "3.10.13",
+    "force_l0s_off": "Y",
+    "session_l0s_off": "N",
+    "sink_max_lateness_ns": 5000000,
+    "sink_processing_deadline_ns": 15000000
+  },
+  "scope": [
+    "Read-only native Gst pad probes and read-only uprobes on installed vtable method addresses; external source files downloaded unmodified.",
+    "Source Player plus installed Gst/DIL; no VA path, no installation or power change.",
+    "CPU times are diagnostic startup-inclusive process times, not controlled untraced speed comparisons.",
+    "Render method/software sink counts are not physical scanout, perceptual A/V or E2E measurements.",
+    "Synthetic controls use black video and system clock with no audio; not the same content or clock as hardware dialogue.",
+    "All complete-output acceptance failures remain failures. No prototype playback policy was adopted."
+  ],
+  "sources": {
+    "video_decoder": "https://github.com/GStreamer/gstreamer/blob/1.28.2/subprojects/gst-plugins-base/gst-libs/gst/video/gstvideodecoder.c",
+    "base_transform": "https://github.com/GStreamer/gstreamer/blob/1.28.2/subprojects/gstreamer/libs/gst/base/gstbasetransform.c",
+    "base_sink": "https://github.com/GStreamer/gstreamer/blob/1.28.2/subprojects/gstreamer/libs/gst/base/gstbasesink.c",
+    "video_sink": "https://github.com/GStreamer/gstreamer/blob/1.28.2/subprojects/gst-plugins-base/gst-libs/gst/video/gstvideosink.c",
+    "xv_allocator": "https://github.com/GStreamer/gstreamer/blob/1.28.2/subprojects/gst-plugins-base/sys/xvimage/xvimageallocator.c"
+  },
+  "cases": [
+    {
+      "case": "baseline-04",
+      "player_source": "f49d99b",
+      "role": "full-call probe baseline",
+      "policy_change": "none",
+      "expected_rendered": 1500,
+      "result": {
+        "exit": 0,
+        "health_frames": 742,
+        "wall": 31.97132673091255,
+        "health_error": null
+      },
+      "overflow": 0,
+      "stage_ledger": [
+        {
+          "element": "crystalhddec0",
+          "factory": "crystalhddec",
+          "input": 750,
+          "output": 742,
+          "missing_pts_ns": [
+            11040000000,
+            11120000000,
+            11320000000,
+            13400000000,
+            13520000000,
+            16560000000,
+            16720000000,
+            22680000000
+          ]
+        },
+        {
+          "element": "deinterlace",
+          "factory": "deinterlace",
+          "input": 742,
+          "output": 1484
+        },
+        {
+          "element": "conv",
+          "factory": "videoconvert",
+          "input": 1481,
+          "output": 1463,
+          "missing_pts_ns": [
+            2100000000,
+            3520000000,
+            5400000000,
+            5420000000,
+            10380000000,
+            13500000000,
+            15840000000,
+            15920000000,
+            16460000000,
+            18080000000,
+            19380000000,
+            22200000000,
+            25760000000,
+            26760000000,
+            26780000000,
+            27880000000,
+            28680000000,
+            29400000000
+          ]
+        },
+        {
+          "element": "crystalhd-upscale",
+          "factory": "videoscale",
+          "input": 1482,
+          "output": 1481,
+          "missing_pts_ns": [
+            13380000000
+          ]
+        },
+        {
+          "element": "crystalhd-early-pack",
+          "factory": "videoconvert",
+          "input": 1482,
+          "output": 1482
+        },
+        {
+          "element": "filter-convert",
+          "factory": "videoconvert",
+          "input": 1484,
+          "output": 1482,
+          "missing_pts_ns": [
+            16520000000,
+            16700000000
+          ]
+        },
+        {
+          "element": "xvimagesink1",
+          "factory": "xvimagesink",
+          "input": 1463,
+          "output": null,
+          "rendered": 1447,
+          "dropped": 16,
+          "counter_resets": 0,
+          "xvimage_input_count": null
+        }
+      ],
+      "qos_messages": {},
+      "visible_drop_warnings": 0,
+      "decoder_qos_warnings": 8,
+      "rendered": 1447,
+      "sink_dropped": 16,
+      "complete_presentation": "FAIL",
+      "probe_counts": {
+        "ent": {
+          "P": 1,
+          "F": 750,
+          "R": 1447,
+          "S": 1448
+        },
+        "ret": {
+          "P": 1,
+          "F": 750,
+          "R": 1447,
+          "S": 1448
+        },
+        "total": {},
+        "min": {},
+        "max": {}
+      },
+      "probe_log_lost_event_warning": false,
+      "kernel_check": "kernel-log validation passed: no matching errors during the test",
+      "pts": {
+        "crystalhddec0": {
+          "count": 742,
+          "unique": 742,
+          "monotonic": true,
+          "first": 0,
+          "last": 29960000000
+        },
+        "xvimagesink1": {
+          "count": 1463,
+          "unique": 1463,
+          "monotonic": true,
+          "first": 0,
+          "last": 29980000000
+        }
+      }
+    },
+    {
+      "case": "xsync-baseline",
+      "player_source": "f49d99b",
+      "role": "Xv/XSync baseline",
+      "policy_change": "none",
+      "expected_rendered": 1500,
+      "result": {
+        "exit": 0,
+        "cpu_seconds": 27.677523,
+        "health_frames": 742,
+        "wall": 32.0617506809067,
+        "health_error": null
+      },
+      "overflow": 0,
+      "stage_ledger": [
+        {
+          "element": "crystalhddec0",
+          "factory": "crystalhddec",
+          "input": 750,
+          "output": 742,
+          "missing_pts_ns": [
+            5600000000,
+            5760000000,
+            18600000000,
+            18680000000,
+            18840000000,
+            19040000000,
+            19240000000,
+            19440000000
+          ]
+        },
+        {
+          "element": "deinterlace",
+          "factory": "deinterlace",
+          "input": 742,
+          "output": 1484
+        },
+        {
+          "element": "conv",
+          "factory": "videoconvert",
+          "input": 1482,
+          "output": 1461,
+          "missing_pts_ns": [
+            2240000000,
+            5320000000,
+            5340000000,
+            5840000000,
+            5860000000,
+            8400000000,
+            10660000000,
+            10760000000,
+            12680000000,
+            13280000000,
+            14180000000,
+            15200000000,
+            16360000000,
+            18480000000,
+            18540000000,
+            22000000000,
+            22720000000,
+            23420000000,
+            24120000000,
+            25120000000,
+            25260000000
+          ]
+        },
+        {
+          "element": "crystalhd-upscale",
+          "factory": "videoscale",
+          "input": 1482,
+          "output": 1482
+        },
+        {
+          "element": "crystalhd-early-pack",
+          "factory": "videoconvert",
+          "input": 1482,
+          "output": 1482
+        },
+        {
+          "element": "filter-convert",
+          "factory": "videoconvert",
+          "input": 1484,
+          "output": 1482,
+          "missing_pts_ns": [
+            18660000000,
+            18820000000
+          ]
+        },
+        {
+          "element": "xvimagesink1",
+          "factory": "xvimagesink",
+          "input": 1461,
+          "output": null,
+          "rendered": 1444,
+          "dropped": 17,
+          "counter_resets": 0,
+          "xvimage_input_count": 1461
+        }
+      ],
+      "qos_messages": {
+        "conv": 21,
+        "xvimagesink1": 17,
+        "crystalhddec0": 8,
+        "filter-convert": 2
+      },
+      "visible_drop_warnings": 0,
+      "decoder_qos_warnings": 8,
+      "rendered": 1444,
+      "sink_dropped": 17,
+      "complete_presentation": "FAIL",
+      "probe_counts": {
+        "ent": {
+          "V": 1445,
+          "X": 1445,
+          "S": 1445
+        },
+        "ret": {
+          "S": 1445,
+          "V": 1445,
+          "X": 1445
+        },
+        "total": {
+          "V": 31199877,
+          "X": 10194007994,
+          "S": 10377580906
+        },
+        "min": {
+          "V": 8731,
+          "X": 2447173,
+          "S": 2515968
+        },
+        "max": {
+          "V": 2473923,
+          "X": 67768416,
+          "S": 67854184
+        }
+      },
+      "probe_log_lost_event_warning": false,
+      "xsync_share_of_show_frame_time": 0.9823106257939301,
+      "missing_buffer_partition_exact": true,
+      "kernel_check": "kernel-log validation passed: no matching errors during the test",
+      "pts": {
+        "crystalhddec0": {
+          "count": 742,
+          "unique": 742,
+          "monotonic": true,
+          "first": 0,
+          "last": 29960000000
+        },
+        "xvimagesink1": {
+          "count": 1461,
+          "unique": 1461,
+          "monotonic": true,
+          "first": 0,
+          "last": 29980000000
+        }
+      }
+    },
+    {
+      "case": "synthetic-fhd50-02",
+      "player_source": null,
+      "role": "decoder-free direct FHD50 control",
+      "policy_change": "none",
+      "expected_rendered": 1500,
+      "result": {
+        "exit": 0,
+        "natural_eos": true,
+        "wall": 30.239282125839964,
+        "cpu_seconds": 4.541804
+      },
+      "overflow": 0,
+      "stage_ledger": [
+        {
+          "element": "output",
+          "factory": "xvimagesink",
+          "input": 1500,
+          "output": null,
+          "rendered": 1499,
+          "dropped": 1,
+          "counter_resets": 0,
+          "xvimage_input_count": 1500
+        }
+      ],
+      "qos_messages": {
+        "output": 1
+      },
+      "visible_drop_warnings": 0,
+      "decoder_qos_warnings": 0,
+      "rendered": 1499,
+      "sink_dropped": 1,
+      "complete_presentation": "FAIL",
+      "probe_counts": {
+        "ent": {
+          "V": 1500,
+          "S": 1500,
+          "X": 1500
+        },
+        "ret": {
+          "V": 1500,
+          "X": 1500,
+          "S": 1500
+        },
+        "total": {
+          "V": 23646917,
+          "X": 5576150848,
+          "S": 5713696497
+        },
+        "min": {
+          "V": 9080,
+          "X": 2423491,
+          "S": 2493195
+        },
+        "max": {
+          "V": 325470,
+          "X": 53753880,
+          "S": 53856480
+        }
+      },
+      "probe_log_lost_event_warning": false,
+      "xsync_share_of_show_frame_time": 0.9759270291881589,
+      "missing_buffer_partition_exact": true,
+      "kernel_check": "kernel-log validation passed: no matching errors during the test",
+      "pts": {
+        "output": {
+          "count": 1500,
+          "unique": 1500,
+          "monotonic": true,
+          "first": 0,
+          "last": 29980000000
+        }
+      }
+    },
+    {
+      "case": "synthetic-resize-fhd50",
+      "player_source": null,
+      "role": "decoder-free packing/upscale FHD50 control",
+      "policy_change": "none",
+      "expected_rendered": 1500,
+      "result": {
+        "exit": 0,
+        "natural_eos": true,
+        "wall": 30.282401270931587,
+        "cpu_seconds": 20.942429
+      },
+      "overflow": 0,
+      "stage_ledger": [
+        {
+          "element": "output",
+          "factory": "xvimagesink",
+          "input": 1484,
+          "output": null,
+          "rendered": 1467,
+          "dropped": 17,
+          "counter_resets": 0,
+          "xvimage_input_count": 1484
+        },
+        {
+          "element": "videoscale0",
+          "factory": "videoscale",
+          "input": 1487,
+          "output": 1484,
+          "missing_pts_ns": [
+            23100000000,
+            23180000000,
+            23420000000
+          ]
+        },
+        {
+          "element": "videoconvert0",
+          "factory": "videoconvert",
+          "input": 1500,
+          "output": 1487,
+          "missing_pts_ns": [
+            15020000000,
+            15100000000,
+            15120000000,
+            15180000000,
+            15380000000,
+            15460000000,
+            15540000000,
+            15580000000,
+            15600000000,
+            23120000000,
+            23280000000,
+            23500000000,
+            23700000000
+          ]
+        }
+      ],
+      "qos_messages": {
+        "output": 17,
+        "videoconvert0": 13,
+        "videoscale0": 3
+      },
+      "visible_drop_warnings": 0,
+      "decoder_qos_warnings": 0,
+      "rendered": 1467,
+      "sink_dropped": 17,
+      "complete_presentation": "FAIL",
+      "probe_counts": {
+        "ent": {
+          "X": 1468,
+          "S": 1468,
+          "V": 1468
+        },
+        "ret": {
+          "S": 1468,
+          "X": 1468,
+          "V": 1468
+        },
+        "total": {
+          "V": 30394935,
+          "X": 8859701567,
+          "S": 9042739660
+        },
+        "min": {
+          "V": 8800,
+          "X": 2406589,
+          "S": 2488444
+        },
+        "max": {
+          "V": 1658568,
+          "X": 56677721,
+          "S": 56918820
+        }
+      },
+      "probe_log_lost_event_warning": false,
+      "xsync_share_of_show_frame_time": 0.9797585577068355,
+      "missing_buffer_partition_exact": true,
+      "kernel_check": "kernel-log validation passed: no matching errors during the test",
+      "pts": {
+        "output": {
+          "count": 1484,
+          "unique": 1484,
+          "monotonic": true,
+          "first": 0,
+          "last": 29980000000
+        }
+      }
+    },
+    {
+      "case": "qualified-fhd-01",
+      "player_source": "6f89962675bcf35148f31245017664d041a6be44",
+      "role": "final Player explicit FHD i25",
+      "policy_change": "warning only",
+      "expected_rendered": 1500,
+      "result": {
+        "exit": 0,
+        "cpu_seconds": 28.038225,
+        "health_frames": 747,
+        "wall": 32.21484477398917,
+        "health_error": null
+      },
+      "overflow": 0,
+      "stage_ledger": [
+        {
+          "element": "crystalhddec0",
+          "factory": "crystalhddec",
+          "input": 750,
+          "output": 747,
+          "missing_pts_ns": [
+            17680000000,
+            26680000000,
+            26760000000
+          ]
+        },
+        {
+          "element": "deinterlace",
+          "factory": "deinterlace",
+          "input": 747,
+          "output": 1494
+        },
+        {
+          "element": "conv",
+          "factory": "videoconvert",
+          "input": 1493,
+          "output": 1467,
+          "missing_pts_ns": [
+            2600000000,
+            2680000000,
+            5360000000,
+            6720000000,
+            8120000000,
+            9300000000,
+            9980000000,
+            11560000000,
+            11580000000,
+            12700000000,
+            14300000000,
+            15080000000,
+            16000000000,
+            16240000000,
+            17620000000,
+            17640000000,
+            19560000000,
+            19680000000,
+            20720000000,
+            21280000000,
+            21880000000,
+            22180000000,
+            23500000000,
+            25860000000,
+            26840000000,
+            29160000000
+          ]
+        },
+        {
+          "element": "crystalhd-upscale",
+          "factory": "videoscale",
+          "input": 1494,
+          "output": 1493,
+          "missing_pts_ns": [
+            26740000000
+          ]
+        },
+        {
+          "element": "crystalhd-early-pack",
+          "factory": "videoconvert",
+          "input": 1494,
+          "output": 1494
+        },
+        {
+          "element": "filter-convert",
+          "factory": "videoconvert",
+          "input": 1494,
+          "output": 1494
+        },
+        {
+          "element": "xvimagesink1",
+          "factory": "xvimagesink",
+          "input": 1467,
+          "output": null,
+          "rendered": 1453,
+          "dropped": 14,
+          "counter_resets": 0,
+          "xvimage_input_count": 1467
+        }
+      ],
+      "qos_messages": {
+        "xvimagesink1": 14,
+        "conv": 26,
+        "crystalhddec0": 3,
+        "crystalhd-upscale": 1
+      },
+      "visible_drop_warnings": 1,
+      "decoder_qos_warnings": 3,
+      "rendered": 1453,
+      "sink_dropped": 14,
+      "complete_presentation": "FAIL",
+      "missing_buffer_partition_exact": true,
+      "kernel_check": "kernel-log validation passed: no matching errors during the test",
+      "pts": {
+        "crystalhddec0": {
+          "count": 747,
+          "unique": 747,
+          "monotonic": true,
+          "first": 0,
+          "last": 29960000000
+        },
+        "xvimagesink1": {
+          "count": 1467,
+          "unique": 1467,
+          "monotonic": true,
+          "first": 0,
+          "last": 29980000000
+        }
+      }
+    },
+    {
+      "case": "qualified-scale-only-01",
+      "player_source": "6f89962675bcf35148f31245017664d041a6be44",
+      "role": "final Player scale-only i25",
+      "policy_change": "warning only",
+      "expected_rendered": 1500,
+      "result": {
+        "exit": 0,
+        "cpu_seconds": 11.722739,
+        "health_frames": 750,
+        "wall": 31.91814517811872,
+        "health_error": null
+      },
+      "overflow": 0,
+      "stage_ledger": [
+        {
+          "element": "crystalhddec0",
+          "factory": "crystalhddec",
+          "input": 750,
+          "output": 750
+        },
+        {
+          "element": "deinterlace",
+          "factory": "deinterlace",
+          "input": 750,
+          "output": 1500
+        },
+        {
+          "element": "conv",
+          "factory": "videoconvert",
+          "input": 1500,
+          "output": 1499,
+          "missing_pts_ns": [
+            5520000000
+          ]
+        },
+        {
+          "element": "xvimagesink1",
+          "factory": "xvimagesink",
+          "input": 1499,
+          "output": null,
+          "rendered": 1499,
+          "dropped": 0,
+          "counter_resets": 0,
+          "xvimage_input_count": 1499
+        }
+      ],
+      "qos_messages": {
+        "conv": 1
+      },
+      "visible_drop_warnings": 1,
+      "decoder_qos_warnings": 0,
+      "rendered": 1499,
+      "sink_dropped": 0,
+      "complete_presentation": "FAIL",
+      "missing_buffer_partition_exact": true,
+      "kernel_check": "kernel-log validation passed: no matching errors during the test",
+      "pts": {
+        "crystalhddec0": {
+          "count": 750,
+          "unique": 750,
+          "monotonic": true,
+          "first": 0,
+          "last": 29960000000
+        },
+        "xvimagesink1": {
+          "count": 1499,
+          "unique": 1499,
+          "monotonic": true,
+          "first": 0,
+          "last": 29980000000
+        }
+      }
+    },
+    {
+      "case": "qualified-p60-01",
+      "player_source": "6f89962675bcf35148f31245017664d041a6be44",
+      "role": "final Player explicit FHD true60p",
+      "policy_change": "warning only",
+      "expected_rendered": 1800,
+      "result": {
+        "exit": 0,
+        "cpu_seconds": 32.169532000000004,
+        "health_frames": 1734,
+        "wall": 32.06379881687462,
+        "health_error": null
+      },
+      "overflow": 0,
+      "stage_ledger": [
+        {
+          "element": "crystalhddec0",
+          "factory": "crystalhddec",
+          "input": 1800,
+          "output": 1734,
+          "missing_pts_ns": [
+            183333333,
+            316666666,
+            600000000,
+            933333333,
+            1083333333,
+            1500000000,
+            1516666666,
+            1533333333,
+            1550000000,
+            1666666666,
+            1816666666,
+            2116666666,
+            2416666666,
+            2633333333,
+            3133333333,
+            3616666666,
+            3850000000,
+            4233333333,
+            4616666666,
+            4633333333,
+            4950000000,
+            5583333333,
+            6250000000,
+            6666666666,
+            6833333333,
+            7416666666,
+            7433333333,
+            7766666666,
+            7816666666,
+            7833333333,
+            7900000000,
+            7933333333,
+            7950000000,
+            7966666666,
+            8533333333,
+            9100000000,
+            9116666666,
+            10900000000,
+            11600000000,
+            12033333333,
+            13683333333,
+            14016666666,
+            14833333333,
+            16800000000,
+            18683333333,
+            18700000000,
+            19100000000,
+            19583333333,
+            19916666666,
+            20266666666,
+            21083333333,
+            21100000000,
+            21116666666,
+            21133333333,
+            21866666666,
+            21883333333,
+            22316666666,
+            23466666666,
+            23483333333,
+            23500000000,
+            23516666666,
+            23533333333,
+            25050000000,
+            25850000000,
+            26300000000,
+            29250000000
+          ]
+        },
+        {
+          "element": "deinterlace",
+          "factory": "deinterlace",
+          "input": 1734,
+          "output": 1734
+        },
+        {
+          "element": "conv",
+          "factory": "videoconvert",
+          "input": 1731,
+          "output": 1570,
+          "missing_pts_ns": [
+            166666666,
+            916666666,
+            1466666666,
+            1483333333,
+            1800000000,
+            2066666666,
+            2083333333,
+            2266666666,
+            2366666666,
+            2383333333,
+            2616666666,
+            2866666666,
+            2966666666,
+            3083333333,
+            3100000000,
+            3483333333,
+            3816666666,
+            4183333333,
+            4200000000,
+            4483333333,
+            4900000000,
+            4916666666,
+            5316666666,
+            5433333333,
+            5533333333,
+            5550000000,
+            5716666666,
+            6100000000,
+            6200000000,
+            6216666666,
+            6300000000,
+            6616666666,
+            6633333333,
+            6816666666,
+            7133333333,
+            7366666666,
+            7383333333,
+            7483333333,
+            7750000000,
+            7883333333,
+            8416666666,
+            8433333333,
+            8516666666,
+            8633333333,
+            9050000000,
+            9066666666,
+            9466666666,
+            9583333333,
+            9750000000,
+            9866666666,
+            9983333333,
+            10150000000,
+            10400000000,
+            10483333333,
+            10850000000,
+            10866666666,
+            11100000000,
+            11266666666,
+            11550000000,
+            11566666666,
+            11700000000,
+            11983333333,
+            12000000000,
+            12116666666,
+            12333333333,
+            12433333333,
+            12516666666,
+            12750000000,
+            12950000000,
+            13100000000,
+            13283333333,
+            13633333333,
+            13650000000,
+            13716666666,
+            13966666666,
+            13983333333,
+            14350000000,
+            14533333333,
+            14583333333,
+            14800000000,
+            15033333333,
+            15283333333,
+            15466666666,
+            15616666666,
+            15750000000,
+            16083333333,
+            16183333333,
+            16533333333,
+            16750000000,
+            16766666666,
+            17016666666,
+            17066666666,
+            17483333333,
+            17650000000,
+            17933333333,
+            18000000000,
+            18183333333,
+            18466666666,
+            18633333333,
+            18650000000,
+            19050000000,
+            19066666666,
+            19333333333,
+            19533333333,
+            19550000000,
+            19866666666,
+            19883333333,
+            20216666666,
+            20233333333,
+            20666666666,
+            21033333333,
+            21050000000,
+            21066666666,
+            21700000000,
+            21750000000,
+            21816666666,
+            21833333333,
+            22266666666,
+            22283333333,
+            22800000000,
+            22900000000,
+            23033333333,
+            23116666666,
+            23416666666,
+            23433333333,
+            23450000000,
+            23950000000,
+            24050000000,
+            24316666666,
+            24516666666,
+            24650000000,
+            24800000000,
+            25000000000,
+            25016666666,
+            25416666666,
+            25516666666,
+            25800000000,
+            25816666666,
+            26250000000,
+            26266666666,
+            26450000000,
+            26550000000,
+            26633333333,
+            27166666666,
+            27266666666,
+            27400000000,
+            27633333333,
+            27850000000,
+            28066666666,
+            28200000000,
+            28483333333,
+            28700000000,
+            28766666666,
+            28883333333,
+            29033333333,
+            29200000000,
+            29216666666,
+            29316666666,
+            29516666666,
+            29683333333,
+            29783333333
+          ]
+        },
+        {
+          "element": "crystalhd-upscale",
+          "factory": "videoscale",
+          "input": 1733,
+          "output": 1731,
+          "missing_pts_ns": [
+            583333333,
+            7800000000
+          ]
+        },
+        {
+          "element": "crystalhd-early-pack",
+          "factory": "videoconvert",
+          "input": 1733,
+          "output": 1733
+        },
+        {
+          "element": "filter-convert",
+          "factory": "videoconvert",
+          "input": 1734,
+          "output": 1733,
+          "missing_pts_ns": [
+            300000000
+          ]
+        },
+        {
+          "element": "xvimagesink1",
+          "factory": "xvimagesink",
+          "input": 1570,
+          "output": null,
+          "rendered": 1469,
+          "dropped": 101,
+          "counter_resets": 0,
+          "xvimage_input_count": 1570
+        }
+      ],
+      "qos_messages": {
+        "conv": 161,
+        "crystalhddec0": 66,
+        "xvimagesink1": 101,
+        "filter-convert": 1,
+        "crystalhd-upscale": 2
+      },
+      "visible_drop_warnings": 1,
+      "decoder_qos_warnings": 66,
+      "rendered": 1469,
+      "sink_dropped": 101,
+      "complete_presentation": "FAIL",
+      "missing_buffer_partition_exact": true,
+      "kernel_check": "kernel-log validation passed: no matching errors during the test",
+      "pts": {
+        "crystalhddec0": {
+          "count": 1734,
+          "unique": 1734,
+          "monotonic": true,
+          "first": 0,
+          "last": 29983333333
+        },
+        "xvimagesink1": {
+          "count": 1570,
+          "unique": 1570,
+          "monotonic": true,
+          "first": 0,
+          "last": 29983333333
+        }
+      }
+    }
+  ],
+  "checks": {
+    "player_regressions": "95 PASS",
+    "red_regression": "New real-bus QoS visibility regression fails before runtime change, then passes.",
+    "runtime_commit": "6f89962675bcf35148f31245017664d041a6be44",
+    "remaining": [
+      "Complete explicit-FHD presentation; no throughput fix established.",
+      "Exact server/driver/scheduling decomposition inside XSync is not established.",
+      "Historical intermittent firmware/input-space stall is separate and not closed."
+    ],
+    "per_stage_qos_pts": {
+      "qualified-fhd-01": {
+        "matching_per_stage_qos_timestamps": true,
+        "qos_messages": 44
+      },
+      "qualified-scale-only-01": {
+        "matching_per_stage_qos_timestamps": true,
+        "qos_messages": 1
+      },
+      "qualified-p60-01": {
+        "matching_per_stage_qos_timestamps": true,
+        "qos_messages": 331
+      }
+    }
+  },
+  "rejected_pilots": [
+    {
+      "case": "queue-01",
+      "role": "queue before resize pilot",
+      "policy_change": "not adopted",
+      "complete_presentation": "FAIL",
+      "rendered": 1385,
+      "sink_dropped": 43,
+      "result": {
+        "exit": 0,
+        "health_frames": 750,
+        "wall": 32.09823303297162,
+        "health_error": null,
+        "scope": "diagnostic observed run,not untraced performance or physicalAV"
+      },
+      "probe_counts": {
+        "ent": {
+          "P": 1,
+          "F": 750,
+          "R": 1385,
+          "S": 1386
+        },
+        "ret": {
+          "P": 1,
+          "F": 750,
+          "R": 1385,
+          "S": 1386
+        },
+        "total": {},
+        "min": {},
+        "max": {}
+      }
+    },
+    {
+      "case": "single-thread-01",
+      "role": "one scaler thread pilot",
+      "policy_change": "not adopted",
+      "complete_presentation": "FAIL",
+      "rendered": 1430,
+      "sink_dropped": 18,
+      "result": {
+        "exit": 0,
+        "health_frames": 737,
+        "wall": 32.00088657299057,
+        "health_error": null,
+        "scope": "diagnostic observed run,not untraced performance or physicalAV"
+      },
+      "probe_counts": {
+        "ent": {
+          "P": 1,
+          "F": 750,
+          "R": 1430,
+          "S": 1431
+        },
+        "ret": {
+          "P": 1,
+          "F": 750,
+          "R": 1430,
+          "S": 1431
+        },
+        "total": {},
+        "min": {},
+        "max": {}
+      }
+    },
+    {
+      "case": "native-baseline-01",
+      "role": "native-pad baseline",
+      "policy_change": "none",
+      "complete_presentation": "FAIL",
+      "rendered": 1453,
+      "sink_dropped": 14,
+      "result": {
+        "exit": 0,
+        "cpu_seconds": 27.572518000000002,
+        "health_frames": 744,
+        "wall": 32.061182025121525,
+        "health_error": null,
+        "scope": "diagnostic observed run,not untraced performance or physicalAV"
+      }
+    },
+    {
+      "case": "native-combined-01",
+      "role": "combined conversion/scaling pilot",
+      "policy_change": "not adopted",
+      "complete_presentation": "FAIL",
+      "rendered": 1432,
+      "sink_dropped": 12,
+      "result": {
+        "exit": 0,
+        "cpu_seconds": 32.201451999999996,
+        "health_frames": 731,
+        "wall": 31.990659717004746,
+        "health_error": null,
+        "scope": "diagnostic observed run,not untraced performance or physicalAV"
+      }
+    },
+    {
+      "case": "xsync-qos-off",
+      "role": "upstream QoS off, sink unchanged",
+      "policy_change": "not adopted",
+      "complete_presentation": "FAIL",
+      "rendered": 1363,
+      "sink_dropped": 137,
+      "result": {
+        "exit": 0,
+        "cpu_seconds": 28.14355,
+        "health_frames": 750,
+        "wall": 31.972577383974567,
+        "health_error": null,
+        "scope": "diagnostic observed run,not untraced performance or physicalAV"
+      },
+      "probe_counts": {
+        "ent": {
+          "X": 1364,
+          "S": 1364,
+          "V": 1364
+        },
+        "ret": {
+          "S": 1364,
+          "V": 1364,
+          "X": 1364
+        },
+        "total": {
+          "V": 34154589,
+          "X": 10648862740,
+          "S": 10837025227
+        },
+        "min": {
+          "V": 9010,
+          "X": 2527562,
+          "S": 2598872
+        },
+        "max": {
+          "V": 4171884,
+          "X": 67123946,
+          "S": 67224102
+        }
+      }
+    },
+    {
+      "case": "native-queue-after-01",
+      "role": "queue after resize pilot",
+      "policy_change": "not adopted",
+      "complete_presentation": "FAIL",
+      "rendered": 1464,
+      "sink_dropped": 14,
+      "result": {
+        "exit": 0,
+        "cpu_seconds": 28.014326,
+        "health_frames": 750,
+        "wall": 32.062864965060726,
+        "health_error": null,
+        "scope": "diagnostic observed run,not untraced performance or physicalAV"
+      }
+    },
+    {
+      "case": "native-video-01",
+      "role": "native-video flag pilot",
+      "policy_change": "not adopted",
+      "complete_presentation": "FAIL",
+      "result": {
+        "exit": 1,
+        "cpu_seconds": 0.7425520000000001,
+        "health_frames": 4,
+        "wall": 1.8290397198870778,
+        "health_error": "glcolorconvertelement0: Failed to convert video buffer",
+        "scope": "diagnostic observed run,not untraced performance or physicalAV"
+      }
+    }
+  ]
+}
