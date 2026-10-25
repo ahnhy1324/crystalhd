@@ -70,6 +70,19 @@ static const char managed_defaults_reader[] __attribute__((used)) =
 bc_dil_glob_s *bc_dil_glob_ptr=NULL;
 BOOL glob_mode_valid=TRUE;
 
+static void AttachDilShMem(uint32_t shmid, const char *path)
+{
+	// Keep the legacy public call and ignored result; diagnostics only.
+	if (DtsGetDilShMem(shmid) != BC_STS_SUCCESS) {
+		const int saved_errno = errno;
+		(void)path; // The legacy diagnostic macro may be compiled out.
+		DebugLog_Trace(LDIL_DBG,
+			"Shared memory attach failed: path=%s errno=%d\n",
+			path, saved_errno);
+		errno = saved_errno;
+	}
+}
+
 BC_STATUS DtsCreateShMem(int *shmem_id)
 {
 	int shmid=-1;
@@ -114,13 +127,13 @@ BC_STATUS DtsCreateShMem(int *shmem_id)
 					return BC_STS_INSUFF_RES;
 			    }
 				//attach to it
-				DtsGetDilShMem(shmid);
+				AttachDilShMem(shmid, "stale-recreated");
 
 		   }
 
 			else{ //someone is attached to it
 
-					DtsGetDilShMem(shmid);
+					AttachDilShMem(shmid, "existing");
 					mode = DtsGetOPMode();
 					if(! ((mode==1)||(mode==2)||(mode==4))&&(buf.shm_nattch==1) ) {
 						glob_mode_valid=FALSE;
@@ -136,7 +149,7 @@ BC_STATUS DtsCreateShMem(int *shmem_id)
 		   }
 	}else{
 		//we created just attach to it
-		DtsGetDilShMem(shmid);
+		AttachDilShMem(shmid, "new");
 	}
 
 	*shmem_id =shmid;
@@ -147,12 +160,14 @@ BC_STATUS DtsCreateShMem(int *shmem_id)
 BC_STATUS DtsGetDilShMem(uint32_t shmid)
 {
 	bc_dil_glob_ptr=(bc_dil_glob_s *)shmat(shmid,(void *)0,0);
-
 	if((long)bc_dil_glob_ptr==-1) {
-		DebugLog_Trace(LDIL_DBG,"Unable to open shared memory ...\n");
+		const int saved_errno = errno;
+		DebugLog_Trace(LDIL_DBG,
+			"Unable to open shared memory: stage=shmat errno=%d\n",
+			saved_errno);
+		errno = saved_errno;
 		return BC_STS_ERROR;
 	}
-
 	return BC_STS_SUCCESS;
 }
 

@@ -21,6 +21,8 @@ this development identity is not a release or a new support claim.
   captured VPP identity across queue, conversion and cancellation events.
 - Give waiting VA frontend calls a bounded mutex turn after autonomous RX
   progress, including output-only backlogs with no queued input.
+- Report shared-memory attachment stage, path and saved errno in DIL error
+  diagnostics, preserving legacy failure handling and the stderr sink.
 - Read and update host RX metadata through registered pinned pages, including
   status calls from a separate monitor process; preserve DMA synchronization.
 - Let validated concurrent RELEASE cancel its file's legacy BUSY input and

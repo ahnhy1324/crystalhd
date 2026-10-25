@@ -21,6 +21,7 @@ they pass.
 | Card found, no `/dev/crystalhd` | `modinfo crystalhd`; `sudo journalctl -k -b --no-pager` | Install the module for `uname -r` using your chosen route. If loading reports a signature/key error, resolve your distribution's module-signing policy. |
 | Permission denied | `ls -l /dev/crystalhd`; `id` | Follow [device access](#device-access-and-module-identity); log in again after a group change. |
 | Device busy | `sudo fuser -v /dev/crystalhd` | Close the listed player normally. The card supports one decoding session at a time. |
+| Shared-memory attachment fails | Capture the player's standard error | DIL reports `stage=shmat`, saved `errno`, and the `new`, `existing` or `stale-recreated` attachment path. Include these in a bug report. These diagnostics preserve legacy failure handling; a subsequent crash is still possible. |
 | Loaded/installed modules differ | `crystalhd-check` | Follow [idle reload](#reload-an-idle-device), or reboot after installing the intended module. |
 | Multiple module candidates / DKMS conflict | `crystalhd-check`; `dkms status -m crystalhd` if DKMS is installed | Choose one module owner. Follow the [DKMS migration instructions](README.dkms#switch-from-a-direct-install) instead of installing another copy over it. |
 | Unsupported input | Check codec/profile, not just the file extension | Choose an input from [supported formats](USAGE.md); hardware mode reports failure instead of silently selecting software. |
