@@ -28,13 +28,19 @@ library-check: export CRYSTALHD_CONFIG_DISABLE = 1
 library-check:
 	@set -eu; lib_test_dir=$$(mktemp -d /tmp/crystalhd-library-check.XXXXXX); \
 	trap 'rm -f "$$lib_test_dir/check"; rmdir "$$lib_test_dir"' EXIT HUP INT TERM; \
-	for lib_test in logging tx-ring flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem device-handle poll-fd capture capture-scaled fwload fw-version fwcmds raw-frame; do \
+	for lib_test in logging shmem-logging shmem-logging-disabled tx-ring flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem device-handle poll-fd capture capture-scaled fwload fw-version fwcmds raw-frame; do \
 		test_extra=; \
 		test_flags=; \
 		test_file=$$lib_test; \
 		test_sources="linux_lib/libcrystalhd/libcrystalhd_priv.cpp linux_lib/libcrystalhd/libcrystalhd_if.cpp"; \
 		case $$lib_test in \
 			logging) test_wrap=; test_sources= ;; \
+			shmem-logging|shmem-logging-disabled) test_file=shmem-logging; \
+				test_sources=linux_lib/libcrystalhd/libcrystalhd_priv.cpp; \
+				test_wrap=-Wl,--wrap=shmget,--wrap=shmat,--wrap=shmctl,--wrap=fprintf; \
+				if [ "$$lib_test" = shmem-logging-disabled ]; then \
+					test_flags="-include tests/library-logging-disabled.h"; \
+				fi ;; \
 			raw-frame) test_wrap=-Wl,--wrap=calloc; test_sources=linux_lib/libcrystalhd/libcrystalhd_raw_frame.cpp ;; \
 			copy|planar) test_wrap=; test_sources=linux_lib/libcrystalhd/libcrystalhd_int_if.cpp ;; \
 			format) test_wrap=; test_sources="linux_lib/libcrystalhd/libcrystalhd_int_if.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp linux_lib/libcrystalhd/libcrystalhd_if.cpp" ;; \
