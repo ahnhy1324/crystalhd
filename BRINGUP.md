@@ -97,7 +97,11 @@ rollback also reverts newer optional features; use its own playback instructions
 
 <a id="interrupted-runtime-installation"></a>
 
-Runtime installation and removal record their current stage in
+Runtime installation prepares the complete file set in a temporary directory
+before replacing runtime files. A preparation failure preserves the existing
+runtime and any earlier incomplete-state record. Prepared files are replaced
+individually, with VERSION published last; linker/udev activation uses the
+completed payload. Publishing and runtime removal record their current stage in
 `/var/lib/crystalhd/runtime-install.pending`. If interrupted, run
 `sh scripts/crystalhd-check` from the intended source to inspect it; an older
 installed checker may not understand the marker, or removal may have deleted it.

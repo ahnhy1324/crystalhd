@@ -15,6 +15,8 @@ this development identity is not a release or a new support claim.
   retain older-library status checks and bounded EOS/recovery probes.
 - Diagnose interrupted runtime installation/removal even with a previous VERSION
   record; serialize retry against any child still replacing files.
+- Prepare runtime files before replacement; retain the installed payload on
+  preparation failure and publish prepared bytes with atomic leaf replacement.
 - Read and update host RX metadata through registered pinned pages, including
   status calls from a separate monitor process; preserve DMA synchronization.
 - Let validated concurrent RELEASE cancel its file's legacy BUSY input and
