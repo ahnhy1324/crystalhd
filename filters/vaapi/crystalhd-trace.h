@@ -32,6 +32,9 @@ enum class Event {
   PresentationCommit,
   PresentationDrop,
   VppCapture,
+  VppQueued,
+  VppStart,
+  VppRun,
   VppCommit,
   VppCancel,
   ContextDestroy,
@@ -50,6 +53,11 @@ struct Fields {
   uint64_t submission_ordinal = 0;
   uint64_t operation = 0;
   uint64_t duration_ns = 0;
+  // Sync/Export entry is captured before the driver mutex, while binding
+  // identity is observed after admission. duration_ns remains post-admission;
+  // admission_ns + duration_ns covers entry through the exit sample.
+  uint64_t call_entry_ns = 0;
+  uint64_t admission_ns = 0;
   int64_t outcome = 0;
   // ReadExportReuseImplicitFenceProbe calls poll(POLLOUT, timeout=0) at the
   // next client reuse boundary. It does not wait for fence signaling, but the
@@ -101,16 +109,17 @@ class Trace {
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
-    char line[1024];
+    char line[1280];
     const int length = std::snprintf(
         line, sizeof(line),
-        "{\"schema\":\"crystalhd-vaapi-trace-v3\","
+        "{\"schema\":\"crystalhd-vaapi-trace-v4\","
         "\"ts_monotonic_ns\":%llu,\"session\":%llu,"
         "\"driver_instance\":%llu,\"pid\":%lld,\"seq\":%llu,"
         "\"event\":\"%s\",\"context\":%llu,\"generation\":%llu,"
         "\"surface\":%llu,\"token\":%llu,\"decode_identity\":%llu,"
         "\"owner\":%llu,\"submission_ordinal\":%llu,"
         "\"operation\":%llu,\"duration_ns\":%llu,"
+        "\"call_entry_ns\":%llu,\"admission_ns\":%llu,"
         "\"outcome\":%lld,\"identified_exported_object_count\":%llu,"
         "\"pollout_count\":%llu,\"not_pollout_count\":%llu,"
         "\"probe_error_count\":%llu,\"probe_errno\":%lld,"
@@ -131,6 +140,8 @@ class Trace {
         static_cast<unsigned long long>(fields.submission_ordinal),
         static_cast<unsigned long long>(fields.operation),
         static_cast<unsigned long long>(fields.duration_ns),
+        static_cast<unsigned long long>(fields.call_entry_ns),
+        static_cast<unsigned long long>(fields.admission_ns),
         static_cast<long long>(fields.outcome),
         static_cast<unsigned long long>(
             fields.identified_exported_object_count),
@@ -195,6 +206,9 @@ class Trace {
       case Event::PresentationCommit: return "presentation_commit";
       case Event::PresentationDrop: return "presentation_drop";
       case Event::VppCapture: return "vpp_capture";
+      case Event::VppQueued: return "vpp_queued";
+      case Event::VppStart: return "vpp_start";
+      case Event::VppRun: return "vpp_run";
       case Event::VppCommit: return "vpp_commit";
       case Event::VppCancel: return "vpp_cancel";
       case Event::ContextDestroy: return "context_destroy";

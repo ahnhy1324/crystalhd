@@ -63,6 +63,8 @@ int main() {
   trace.Emit(Event::Materialized, identity);
   trace.Emit(Event::BindingEnd, identity);
   identity.operation = 10;
+  identity.call_entry_ns = 1000;
+  identity.admission_ns = 70;
   trace.Emit(Event::SyncEnter, identity);
   identity.duration_ns = 250;
   trace.Emit(Event::SyncExit, identity);
@@ -97,6 +99,9 @@ int main() {
   trace.Emit(Event::PresentationDrop, identity);
   identity.outcome = 0;
   trace.Emit(Event::VppCapture, identity);
+  trace.Emit(Event::VppQueued, identity);
+  trace.Emit(Event::VppStart, identity);
+  trace.Emit(Event::VppRun, identity);
   trace.Emit(Event::VppCommit, identity);
   trace.Emit(Event::ContextDestroy, identity);
   trace.Emit(Event::SurfaceDestroy, identity);

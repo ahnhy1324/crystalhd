@@ -2,6 +2,8 @@
 // Production replay state and output processing with private CPU memory only.
 // No device, decoder, capture, firmware, or DRM operation is started.
 #include <mutex>
+static void TestTraceCallEntry();
+#define CRYSTALHD_VAAPI_TEST_CALL_ENTRY TestTraceCallEntry
 static void TestTerminalPromotionTurn(std::unique_lock<std::mutex> &lock);
 #define CRYSTALHD_VAAPI_TEST_TERMINAL_PROMOTION_TURN(driver, lock) \
   TestTerminalPromotionTurn(lock)
@@ -11,6 +13,11 @@ static void TestTerminalPromotionTurn(std::unique_lock<std::mutex> &lock);
 #include <new>
 #include <stdexcept>
 #include <string>
+
+static thread_local std::function<void()> trace_call_entry;
+static void TestTraceCallEntry() {
+  if (trace_call_entry) trace_call_entry();
+}
 
 static std::function<void(std::unique_lock<std::mutex> &)> terminal_promotion_turn;
 static void TestTerminalPromotionTurn(std::unique_lock<std::mutex> &lock) {
@@ -3531,6 +3538,85 @@ static void TraceIdentityUsesImmutableTokenAndLiveAliasOwner() {
                 TraceFieldIs(line, "submission_ordinal", 3) &&
                 !TraceFieldIs(line, "decode_identity", 12),
             "alias trace takes identity from its current canonical owner");
+  }
+}
+
+// The actual API entry sample is taken while another thread owns the real
+// driver mutex. This distinguishes admission delay from post-admission work.
+static void TraceContendedAdmission() {
+  TraceEnvironment environment;
+  for (bool export_call : {false, true}) {
+    const int fd = memfd_create("trace-admission", MFD_CLOEXEC);
+    Require(fd >= 0, "create admission trace sink");
+    {
+      Driver driver(-1, fd);
+      driver.StopWorkers();
+      driver.stopping = false;
+      auto owner = std::make_shared<Surface>();
+      owner->id = 1;
+      owner->ready = true;
+      owner->trace_context = 7;
+      owner->trace_generation = 3;
+      owner->trace_decode_identity = 19;
+      owner->trace_submission_ordinal = 4;
+      owner->expected_timestamp = owner->frame_timestamp = 400000;
+      driver.surfaces[1] = owner;
+      VADriverContext context = {};
+      context.pDriverData = &driver;
+      std::mutex gate;
+      std::condition_variable condition;
+      bool entered = false;
+      VAStatus result = VA_STATUS_ERROR_OPERATION_FAILED;
+      std::unique_lock<std::mutex> held(driver.mutex);
+      std::thread caller([&] {
+        trace_call_entry = [&] {
+          std::lock_guard<std::mutex> lock(gate);
+          entered = true;
+          condition.notify_one();
+        };
+        if (export_call) {
+          VADRMPRIMESurfaceDescriptor descriptor = {};
+          result = ExportSurfaceHandle(&context, 1,
+              VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+              VA_EXPORT_SURFACE_READ_ONLY, &descriptor);
+        } else {
+          result = SyncSurface2(&context, 1, VA_TIMEOUT_INFINITE);
+        }
+        trace_call_entry = {};
+      });
+      bool observed;
+      {
+        std::unique_lock<std::mutex> lock(gate);
+        observed = condition.wait_for(lock, std::chrono::seconds(2),
+                                      [&] { return entered; });
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      held.unlock();
+      caller.join();
+      Require(observed, "caller enters trace while driver mutex is held");
+      Require(result == (export_call ? VA_STATUS_ERROR_UNIMPLEMENTED
+                                    : VA_STATUS_SUCCESS),
+              "trace leaves actual sync/export return unchanged");
+      const auto line = FindTraceEvent(ReadTraceFd(fd),
+                                       export_call ? "export_exit" : "sync_exit");
+      auto number = [&](const char *key) {
+        const std::string marker = std::string("\"") + key + "\":";
+        const size_t at = line.find(marker);
+        Require(at != std::string::npos, "trace timing field exists");
+        return std::stoull(line.substr(at + marker.size()));
+      };
+      const uint64_t admission = number("admission_ns");
+      Require(admission >= 20000000 && number("call_entry_ns") != 0 &&
+                  number("ts_monotonic_ns") >= number("call_entry_ns") + admission &&
+                  TraceFieldIs(line, "decode_identity", 19) &&
+                  TraceFieldIs(line, "generation", 3),
+              "trace includes held-mutex delay with admitted binding identity");
+      printf("VA admission %s: wait=%llu ns service=%llu ns\n",
+             export_call ? "export" : "sync",
+             static_cast<unsigned long long>(admission),
+             static_cast<unsigned long long>(number("duration_ns")));
+    }
+    close(fd);
   }
 }
 
@@ -11962,6 +12048,12 @@ static void NeutralAuxiliaryContracts() {
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::strcmp(argv[1], "--trace-admission") == 0) {
+      TraceContendedAdmission();
+      TraceIdentityUsesImmutableTokenAndLiveAliasOwner();
+      puts("VA-API admission trace PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--exact-sync-ready") == 0) {
       ExactSyncLeavesLaterReadyOutputsQueued();
       ExperimentalReadyRetainsRxBacklogSelection();
@@ -12062,6 +12154,7 @@ int main(int argc, char **argv) {
     CardScalingPublicIdentityAndGeometry();
     CardScalingLivePolicyAndOwnership();
     RealH264SubmitCompletesFieldPairs();
+    TraceContendedAdmission();
     TraceIdentityUsesImmutableTokenAndLiveAliasOwner();
     TraceReadExportReuseBoundary();
     ExperimentalReadyRemapGate();
