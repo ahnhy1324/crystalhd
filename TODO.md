@@ -104,10 +104,12 @@ scope to general full-rate FHD or hardware deinterlacing.
   broader streams, and physical presentation/A/V synchronization.
   The matched output-size screen rules out deterministic 900p/990p failure:
   low-iowait repeats are zero-drop, while both FHD repeats retain small losses at low
-  iowait. Next: attribute the remaining explicit-FHD QoS/deadline loss after
-  native DI-QoS integration (30-minute run: 174/90,000 lost outputs); keep the
-  intermittent firmware/input-space stall separate. See the
-  [presentation results](HARDWARE-2026-09-13.md).
+  iowait. The [frame-flow investigation](HARDWARE-2026-09-13.md#player-frame-flow-2026-10-25)
+  now partitions bounded explicit-FHD loss into decoder/transform/sink QoS and
+  reproduces loss without CrystalHD. Complete FHD presentation and the original
+  30-minute FAIL (174/90,000 lost outputs) remain unresolved; pursue measured
+  render/CPU-cost reductions, not disabled QoS. Keep the separate intermittent
+  firmware/input-space stall distinct.
 - [ ] [#400: Managed settings and desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400)
   — shared storage, native readers, named profiles, Player defaults and the
   optional settings/tray editor are integrated through #498/#499/#502–#504.

@@ -7,6 +7,9 @@ RX bounds, optional output-aware backing and finite decoded-write performance
 follow-up remain tracked in #470/#471. They require their own qualification;
 this development identity is not a release or a new support claim.
 
+- Report actual video QoS drops once in `crystalhd-play`; decoded output and
+  natural EOS are not a displayed-frame count. Playback policy is unchanged.
+
 <a id="120--prepared-final-package"></a>
 
 ## 1.2.0

@@ -32,6 +32,7 @@ HANDLED_BUS_MESSAGE_DETAILS = (
     "clock-lost",
     "latency",
     "buffering",
+    "qos",
 )
 
 
@@ -601,6 +602,7 @@ class Player:
         self.rate = 1.0
         self.buffering = False
         self.is_live = False
+        self.qos_warned = False
         self.decoders = {}
         self.deinterlace_qos = {}
         self.next_decoder = 0
@@ -801,6 +803,29 @@ class Player:
             self.pipeline.recalculate_latency()
         elif message.type == Gst.MessageType.BUFFERING:
             self.buffering_changed(message.parse_buffering())
+        elif message.type == Gst.MessageType.QOS:
+            self.qos_message(message)
+
+    def qos_message(self, message):
+        if self.qos_warned:
+            return
+        Gst = self.Gst
+        fmt, _processed, dropped = message.parse_qos_stats()
+        if fmt != Gst.Format.BUFFERS or dropped in (0, Gst.CLOCK_TIME_NONE):
+            return
+        factory = (message.src.get_factory()
+                   if isinstance(message.src, Gst.Element) else None)
+        if factory is None or "Video" not in (factory.get_metadata("klass") or ""):
+            return
+        self.qos_warned = True
+        # QoS counters can reset on seeks and state changes. Do not add their
+        # snapshots, or turn the decoded-pad count into a presentation count.
+        print("crystalhd-play: warning: late video buffers were dropped to keep up "
+              "with playback; the decoded-frame counter is not a displayed-frame count.",
+              file=sys.stderr, flush=True)
+        if self.args.software_output_size:
+            print("For lower-cost display fitting, keep --scale-width and omit "
+                  "--software-output-size.", file=sys.stderr, flush=True)
 
     def set_state(self, state, failure):
         result = self.pipeline.set_state(state)
