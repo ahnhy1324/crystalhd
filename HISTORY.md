@@ -19,6 +19,8 @@ this development identity is not a release or a new support claim.
   preparation failure and publish prepared bytes with atomic leaf replacement.
 - Include mutex admission in optional VA Sync/Export diagnostics and retain
   captured VPP identity across queue, conversion and cancellation events.
+- Give waiting VA frontend calls a bounded mutex turn after autonomous RX
+  progress, including output-only backlogs with no queued input.
 - Read and update host RX metadata through registered pinned pages, including
   status calls from a separate monitor process; preserve DMA synchronization.
 - Let validated concurrent RELEASE cancel its file's legacy BUSY input and
