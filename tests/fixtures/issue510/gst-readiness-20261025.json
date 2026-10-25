@@ -1,0 +1,223 @@
+{
+  "schema": 1,
+  "issue": 510,
+  "baseline": "4024c04632dcedfe307b02fffdef09d01462ac9c",
+  "measured_runtime": "ebe299fc69b8ecc1215fd58b71494236b55a1b5c",
+  "review_followup": "96582a7",
+  "final_native_runtime": "656ee61e0b5ac13ca5c784514c4ad512cad0e9d1",
+  "scope": "bounded headless paced API control; no display/audio/E2E/maximum-FPS claim",
+  "environment": {
+    "os": "Ubuntu26.04.1 LTS",
+    "kernel": "7.0.0-38-generic",
+    "gstreamer": "1.28.2",
+    "device": "BCM70015",
+    "cpu": "Core2Duo T8100",
+    "loaded_module": "3.10.13",
+    "force_l0s_off": "Y",
+    "session_l0s_off": "N",
+    "library": "same unchanged source on both arms"
+  },
+  "paced_pipeline": "filesrc high.mp4 ! qtdemux ! h264parse ! identity sync=true ! crystalhddec ! appsink emit-signals=true sync=false",
+  "counter_scope": "same temporary LD_PRELOAD wrapper + explicit same DIL preload on both arms. Atomic DtsGetDriverStatus/DtsGetRecoveryStatus counters split by cached native thread-name role. CPU includes common instrumentation, setup and teardown. Status calls are not wakeup or presentation counts.",
+  "order": "AB/BA/AB",
+  "runs": [
+    {
+      "run": 1,
+      "arm": "baseline",
+      "fixture": "frozen high.mp4",
+      "expected": 180,
+      "frames": 180,
+      "caps": [
+        "video/x-raw, format=(string)YUY2, width=(int)640, height=(int)360, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)30/1"
+      ],
+      "first_pts_ns": 66666666,
+      "last_pts_ns": 6033333333,
+      "wall_s": 6.172797275008634,
+      "cpu_s": 0.6009599999999998,
+      "voluntary_switches": 1840,
+      "involuntary_switches": 328,
+      "status_worker": 1212,
+      "status_other": 334,
+      "recovery_worker": 2425,
+      "recovery_other": 743
+    },
+    {
+      "run": 2,
+      "arm": "candidate",
+      "fixture": "frozen high.mp4",
+      "expected": 180,
+      "frames": 180,
+      "caps": [
+        "video/x-raw, format=(string)YUY2, width=(int)640, height=(int)360, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)30/1"
+      ],
+      "first_pts_ns": 66666666,
+      "last_pts_ns": 6033333333,
+      "wall_s": 6.167495244881138,
+      "cpu_s": 0.546022,
+      "voluntary_switches": 1094,
+      "involuntary_switches": 215,
+      "status_worker": 740,
+      "status_other": 330,
+      "recovery_worker": 1482,
+      "recovery_other": 741
+    },
+    {
+      "run": 3,
+      "arm": "candidate",
+      "fixture": "frozen high.mp4",
+      "expected": 180,
+      "frames": 180,
+      "caps": [
+        "video/x-raw, format=(string)YUY2, width=(int)640, height=(int)360, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)30/1"
+      ],
+      "first_pts_ns": 66666666,
+      "last_pts_ns": 6033333333,
+      "wall_s": 6.174600688042119,
+      "cpu_s": 0.557743,
+      "voluntary_switches": 1108,
+      "involuntary_switches": 236,
+      "status_worker": 721,
+      "status_other": 330,
+      "recovery_worker": 1444,
+      "recovery_other": 736
+    },
+    {
+      "run": 4,
+      "arm": "baseline",
+      "fixture": "frozen high.mp4",
+      "expected": 180,
+      "frames": 180,
+      "caps": [
+        "video/x-raw, format=(string)YUY2, width=(int)640, height=(int)360, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)30/1"
+      ],
+      "first_pts_ns": 66666666,
+      "last_pts_ns": 6033333333,
+      "wall_s": 6.17710176599212,
+      "cpu_s": 0.5978129999999999,
+      "voluntary_switches": 1811,
+      "involuntary_switches": 287,
+      "status_worker": 1210,
+      "status_other": 332,
+      "recovery_worker": 2421,
+      "recovery_other": 738
+    },
+    {
+      "run": 5,
+      "arm": "baseline",
+      "fixture": "frozen high.mp4",
+      "expected": 180,
+      "frames": 180,
+      "caps": [
+        "video/x-raw, format=(string)YUY2, width=(int)640, height=(int)360, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)30/1"
+      ],
+      "first_pts_ns": 66666666,
+      "last_pts_ns": 6033333333,
+      "wall_s": 6.182757960865274,
+      "cpu_s": 0.613263,
+      "voluntary_switches": 1766,
+      "involuntary_switches": 285,
+      "status_worker": 1185,
+      "status_other": 332,
+      "recovery_worker": 2370,
+      "recovery_other": 745
+    },
+    {
+      "run": 6,
+      "arm": "candidate",
+      "fixture": "frozen high.mp4",
+      "expected": 180,
+      "frames": 180,
+      "caps": [
+        "video/x-raw, format=(string)YUY2, width=(int)640, height=(int)360, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)30/1"
+      ],
+      "first_pts_ns": 66666666,
+      "last_pts_ns": 6033333333,
+      "wall_s": 6.174066195962951,
+      "cpu_s": 0.5432359999999999,
+      "voluntary_switches": 1107,
+      "involuntary_switches": 285,
+      "status_worker": 710,
+      "status_other": 330,
+      "recovery_worker": 1422,
+      "recovery_other": 743
+    }
+  ],
+  "oracle": {
+    "source": "ebe299fc69b8ecc1215fd58b71494236b55a1b5c",
+    "rows": [
+      {
+        "id": "h264-high-ipb",
+        "frames": 180,
+        "pixels": "PASS exact frozen oracle",
+        "metadata": "PASS exact frozen oracle",
+        "EOS": "PASS",
+        "boundary": "PASS"
+      },
+      {
+        "id": "mpeg2-tff-ipb",
+        "frames": 50,
+        "pixels": "PASS exact frozen oracle",
+        "metadata": "PASS exact frozen oracle",
+        "EOS": "PASS",
+        "boundary": "PASS"
+      },
+      {
+        "id": "mpeg2-bff-ipb",
+        "frames": 50,
+        "pixels": "PASS exact frozen oracle",
+        "metadata": "PASS exact frozen oracle",
+        "EOS": "PASS",
+        "boundary": "PASS"
+      }
+    ],
+    "seek": "PASS unchanged harness count/PTS/EOS criteria",
+    "kernel_boundary": "PASS unchanged"
+  },
+  "final_native": {
+    "source": "656ee61e0b5ac13ca5c784514c4ad512cad0e9d1",
+    "rows": [
+      {
+        "arm": "final-active",
+        "frames": 180,
+        "metadata_pixels_EOS": "PASS",
+        "selection": "optional output readiness: 1",
+        "boundary": "PASS"
+      },
+      {
+        "arm": "final-forced-legacy",
+        "frames": 180,
+        "metadata_pixels_EOS": "PASS",
+        "selection": "optional output readiness: 0",
+        "boundary": "PASS"
+      }
+    ],
+    "boundary_equal": true
+  },
+  "unit": {
+    "source": "96582a7",
+    "normal_api_cases": 97,
+    "absent_api_cases": 88,
+    "plain": "PASS",
+    "ASan_UBSan_LSan": "PASS",
+    "Player": 95,
+    "DIQoS": 10,
+    "codecs": 12,
+    "other_selftests": "PASS existing criteria"
+  },
+  "initial_counter_setup": {
+    "status": "INVALID INSTRUMENTATION / EXCLUDED",
+    "result": "SIGSEGV in unresolved counter function pointer, not a valid timing comparison",
+    "cause": "RTLD_NEXT could not see RTLD_LOCAL Gst dependency",
+    "resolution": "same explicit DIL preload on both arms plus missing-symbol guard",
+    "boundary": "unchanged, scoped kernel check PASS"
+  },
+  "not_run": [
+    "native32 hardware",
+    "BCM70012 hardware",
+    "long soak",
+    "physical A/V",
+    "display/network/E2E latency"
+  ],
+  "installed_files_changed": false,
+  "external_code_patched": false
+}
