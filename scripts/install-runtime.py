@@ -17,10 +17,11 @@ import tempfile
 
 
 def dry_run():
-    # GNU make canonicalizes -n/--just-print into its initial short-flags word.
+    # Recursive recipes also run for make -n/-q/-t. None may publish state.
+    # GNU make canonicalizes these into its initial short-flags word.
     words = os.environ.get('MAKEFLAGS', '').split()
     return bool(words and not words[0].startswith('--') and '=' not in words[0]
-                and 'n' in words[0])
+                and any(flag in words[0] for flag in 'nqt'))
 
 
 def write_marker(path, bundle, phase, uninstall=False):

@@ -129,6 +129,16 @@ class RuntimeInstallTests(unittest.TestCase):
         self.assertEqual((self.stage/'usr/share/crystalhd/VERSION').read_text().strip(), self.bundle)
         self.assertFalse((self.stage/'var/lib/crystalhd/runtime-install.pending').exists())
 
+    def test_make_query_and_touch_do_not_change_installation_state(self):
+        for flag in ('-q', '-t'):
+            with self.subTest(flag=flag):
+                command = self.command()
+                command.insert(1, flag)
+                subprocess.run(command, cwd=str(ROOT), env=self.environment,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               timeout=15)
+                self.assertFalse(self.stage.exists())
+
     def test_uninstall_failure_and_repeated_success(self):
         self.assertEqual(self.run_make().returncode, 0)
         self.assertNotEqual(self.run_make('uninstall-runtime', fail='library').returncode, 0)
