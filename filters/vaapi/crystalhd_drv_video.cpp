@@ -2930,8 +2930,95 @@ struct PendingVpp {
   uint64_t decoder_generation = 0;
   int write_timeline = -1;
   bool worker_active = false;
+  bool pixels_active = false;
   crystalhd_vaapi_trace::Fields trace_binding;
 };
+
+// Borrow metadata, not ownership of fds. The retained surface pins the actual
+// allocation while the worker uses its own immutable geometry/state snapshot.
+struct VppPixelView : Surface {
+  std::shared_ptr<Surface> allocation;
+  ~VppPixelView() { object_fds.clear(); }
+  void Capture(const std::shared_ptr<Surface> &surface) {
+    allocation = surface;
+    width = surface->width;
+    height = surface->height;
+    fourcc = surface->fourcc;
+    for (unsigned plane = 0; plane != 2; ++plane) {
+      pitch[plane] = surface->pitch[plane];
+      planes[plane] = surface->planes[plane];
+    }
+    ready = surface->ready;
+    failed = surface->failed;
+    destroyed = surface->destroyed;
+    expected_timestamp = surface->expected_timestamp;
+    frame_timestamp = surface->frame_timestamp;
+    decode_identity = surface->decode_identity;
+    trace_context = surface->trace_context;
+    trace_generation = surface->trace_generation;
+    centered_geometry = surface->centered_geometry;
+    object_fds = surface->object_fds;
+  }
+};
+
+static bool PrivateVppPixels(const Surface &surface) {
+  return surface.fourcc == VA_FOURCC_NV12 && !surface.storage.empty() &&
+      surface.planes[0] == surface.storage.data() && surface.bo == nullptr &&
+      surface.dumb_drm_fd < 0 && surface.object_fds.empty() &&
+      surface.object_maps.empty() && !surface.direct_backing;
+}
+
+static bool CaptureVppPixels(const PendingVpp &operation,
+                             const std::shared_ptr<Surface> &source,
+                             bool source_is_field,
+                             VppPixelView *input, VppPixelView *output) {
+  if (operation.write_timeline >= 0 || !source || !source->ready ||
+      source->failed || source->destroyed ||
+      source == operation.source_owner.lock() ||
+      operation.target != operation.target_owner ||
+      operation.target->fourcc != VA_FOURCC_NV12 ||
+      operation.target->backing_owner != VA_INVALID_SURFACE ||
+      operation.target->image_write_locked ||
+      operation.target->vpp_external_write_exposed)
+    return false;
+  // A direct centered canvas has no private full planes. Admit it only when
+  // the existing dispatcher will use its immutable small CPU sidecar.
+  if (!PrivateVppPixels(*source)) {
+    if (!source->direct_backing ||
+        !CenteredBobUsesSidecar(*source, *operation.target,
+                               operation.source_region, operation.output_region,
+                               operation.deinterlace, operation.color_range,
+                               operation.preserve_fields, source_is_field))
+      return false;
+    const auto &small = source->centered_pixels;
+    if (!small || !small->ready || small->failed || small->destroyed ||
+        source->decode_identity == 0 ||
+        small->decode_identity != source->decode_identity ||
+        source->expected_timestamp == 0 ||
+        source->frame_timestamp != source->expected_timestamp ||
+        small->expected_timestamp != source->expected_timestamp ||
+        small->frame_timestamp != source->frame_timestamp ||
+        small->trace_context != source->trace_context ||
+        small->trace_generation != source->trace_generation)
+      return false;
+  }
+  if (source->centered_geometry.enabled &&
+      (!source->centered_pixels || !PrivateVppPixels(*source->centered_pixels)))
+    return false;
+  try {
+    input->Capture(source);
+    output->Capture(operation.target);
+    if (source->centered_geometry.enabled) {
+      auto small = std::make_shared<VppPixelView>();
+      small->Capture(source->centered_pixels);
+      input->centered_pixels = std::move(small);
+    }
+    return true;
+  } catch (const std::bad_alloc &) {
+    // The old locked path remains available if snapshot allocation fails.
+    return false;
+  }
+}
 
 struct Driver;
 static void RunDecodeWorker(Driver *driver);
@@ -7489,6 +7576,10 @@ static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
       [&](const PendingVpp &pending) { return pending.sequence == sequence; });
   if (found == driver->pending_vpp.end())
     return;
+  // An unlocked pixel writer still owns its mappings and access protocol.
+  // Cancellation can reject consumers now, but retirement waits for the worker.
+  if (found->pixels_active)
+    return;
   const PendingVpp operation = *found;
   // Flush CPU caches before signaling the fence imported into Chromium's
   // DMA-BUF. Every implicit GPU reader remains blocked until this point.
@@ -7760,6 +7851,11 @@ void Driver::StartDecodeWorker() {
 }
 
 static void RunVppWorker(Driver *driver) {
+  struct WorkerPixels {
+    SwsContext *scaler = nullptr;
+    std::vector<uint8_t> staging;
+    ~WorkerPixels() { if (scaler != nullptr) sws_freeContext(scaler); }
+  } pixels;
   std::unique_lock<std::mutex> lock(driver->mutex);
   for (;;) {
     driver->condition.wait(lock, [&] {
@@ -7826,7 +7922,39 @@ static void RunVppWorker(Driver *driver) {
     }
     if (status == VA_STATUS_SUCCESS) {
       driver->trace.Emit(crystalhd_vaapi_trace::Event::VppRun, operation.trace_binding);
-      status = ProcessVpp(&driver->vpp_scaler,
+      VppPixelView input, output;
+      const auto &source = first_field_view ? first_field_view : operation.source;
+      if (CaptureVppPixels(operation, source, first_field_view != nullptr,
+                           &input, &output)) {
+        completed->pixels_active = true;
+        lock.unlock();
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PIXELS)
+        CRYSTALHD_VAAPI_TEST_VPP_PIXELS(driver, operation.sequence);
+#endif
+        status = ProcessVpp(&pixels.scaler, &pixels.staging, &input, &output,
+                            operation.source_region, operation.output_region,
+                            false, operation.deinterlace,
+                            first_field_view != nullptr, operation.color_range,
+                            operation.preserve_fields);
+        lock.lock();
+        completed = std::find_if(driver->pending_vpp.begin(), driver->pending_vpp.end(),
+            [&](const PendingVpp &pending) { return pending.sequence == operation.sequence; });
+        if (completed == driver->pending_vpp.end())
+          continue; // Never publish metadata for a retired operation.
+        completed->pixels_active = false;
+        if (driver->stopping || PendingVppCanceled(driver, *completed) ||
+            operation.source->failed ||
+            source->expected_timestamp != input.expected_timestamp ||
+            source->frame_timestamp != input.frame_timestamp) {
+          ReleasePendingVpp(driver, operation.sequence, VA_STATUS_SUCCESS, false);
+          continue;
+        }
+        if (status == VA_STATUS_SUCCESS) {
+          operation.target->expected_timestamp = output.expected_timestamp;
+          operation.target->frame_timestamp = output.frame_timestamp;
+        }
+      } else {
+        status = ProcessVpp(&driver->vpp_scaler,
                           &driver->vpp_argb_staging,
                           first_field_view ? first_field_view.get() : operation.source.get(),
                           operation.target.get(),
@@ -7834,6 +7962,7 @@ static void RunVppWorker(Driver *driver) {
                           operation.write_timeline >= 0,
                           operation.deinterlace, first_field_view != nullptr,
                           operation.color_range, operation.preserve_fields);
+      }
     }
     ReleasePendingVpp(driver, operation.sequence, status, true);
     // Retire the completed operation before releasing the global mutex for
@@ -8319,16 +8448,43 @@ static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
   if (count < 0 || (count != 0 && surface_ids == nullptr))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   Driver *driver = GetDriver(context);
-  std::lock_guard<std::mutex> lock(driver->mutex);
+  std::unique_lock<std::mutex> lock(driver->mutex);
   if (static_cast<size_t>(count) > driver->surfaces.size())
     return VA_STATUS_ERROR_INVALID_SURFACE;
   // Validate the entire request before poisoning or removing any surface.
   // A late invalid/duplicate ID must not skip the decoder-generation reset
   // after partially destroying the decode pool.
   std::unordered_set<VASurfaceID> requested;
+  std::vector<std::shared_ptr<Surface>> retained;
+  try {
+    retained.reserve(static_cast<size_t>(count));
+    for (int i = 0; i < count; ++i) {
+      if (driver->surfaces.find(surface_ids[i]) == driver->surfaces.end() ||
+          !requested.insert(surface_ids[i]).second)
+        return VA_STATUS_ERROR_INVALID_SURFACE;
+      retained.push_back(driver->surfaces.at(surface_ids[i]));
+    }
+  } catch (const std::bad_alloc &) {
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
+  // Keep backing-owner discovery intact until an admitted writer stops using
+  // the mapping. Erasing first would let a new import bypass its write lease.
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_DESTROY_WAIT)
+  CRYSTALHD_VAAPI_TEST_VPP_DESTROY_WAIT();
+#endif
+  driver->condition.wait(lock, [&] {
+    return std::none_of(driver->pending_vpp.begin(), driver->pending_vpp.end(),
+        [&](const PendingVpp &pending) {
+          return pending.pixels_active &&
+              std::any_of(retained.begin(), retained.end(), [&](const auto &surface) {
+                return surface == pending.target || surface == pending.target_owner ||
+                    BackingOwner(driver, surface.get()) == pending.target_owner.get();
+              });
+        });
+  });
   for (int i = 0; i < count; ++i) {
-    if (driver->surfaces.find(surface_ids[i]) == driver->surfaces.end() ||
-        !requested.insert(surface_ids[i]).second)
+    const auto current = driver->surfaces.find(surface_ids[i]);
+    if (current == driver->surfaces.end() || current->second != retained[i])
       return VA_STATUS_ERROR_INVALID_SURFACE;
   }
   // Finite centered pictures may borrow their real public canvas. Preserve
@@ -10395,6 +10551,7 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
           driver->pending_vpp.begin(), driver->pending_vpp.end(),
           [&](const PendingVpp &pending) {
             return targets_surface(pending) &&
+                !pending.pixels_active &&
                 PendingVppCanceled(driver, pending);
           });
       if (canceled != driver->pending_vpp.end()) {
@@ -10411,6 +10568,8 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
                           ? VA_STATUS_SUCCESS
                           : VA_STATUS_ERROR_DECODING_ERROR);
       }
+      if (pending->pixels_active && PendingVppCanceled(driver, *pending))
+        return finish(VA_STATUS_ERROR_DECODING_ERROR);
 
       if (infinite) {
         driver->condition.wait(lock);

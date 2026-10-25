@@ -12,8 +12,12 @@ static thread_local unsigned nv12_resampled_rows[2] = {};
 namespace {
 struct Driver;
 void VppTestWorkerTurn(Driver *, std::unique_lock<std::mutex> &);
+void VppTestPixels(Driver *, uint64_t);
+void VppTestDestroyWait();
 }
 #define CRYSTALHD_VAAPI_TEST_VPP_WORKER_TURN VppTestWorkerTurn
+#define CRYSTALHD_VAAPI_TEST_VPP_PIXELS VppTestPixels
+#define CRYSTALHD_VAAPI_TEST_VPP_DESTROY_WAIT VppTestDestroyWait
 #define DtsGetDriverStatus VppTestGetDriverStatus
 #define DtsStopDecoder VppTestStopDecoder
 #define DtsDeviceOpen VppTestDeviceOpen
@@ -241,6 +245,15 @@ void VppTestWorkerTurn(Driver *driver, std::unique_lock<std::mutex> &lock) {
   // This controls cancellation ordering, not the scheduler's 1 ms latency.
   auto turn = std::move(vpp_worker_turn);
   if (turn) turn(driver, lock);
+}
+
+static thread_local std::function<void(Driver *, uint64_t)> vpp_pixels;
+static thread_local std::function<void()> vpp_destroy_wait;
+void VppTestPixels(Driver *driver, uint64_t sequence) {
+  if (vpp_pixels) vpp_pixels(driver, sequence);
+}
+void VppTestDestroyWait() {
+  if (vpp_destroy_wait) vpp_destroy_wait();
 }
 
 struct MockFenceScope {
@@ -5256,6 +5269,166 @@ void VppBacklogTurnPreservesCancellationAndOwnership() {
   }
 }
 
+void VppPixelLeaseAdmitsFrontendAndRetainsMappings() {
+  for (unsigned mode = 0; mode != 4; ++mode) {
+    Fixture f;
+    f.driver.StopWorkers();
+    f.driver.stopping = false;
+    auto picture = f.decoder->decoded_frames.at(kTimestampStep);
+    FillFieldRows(*picture);
+    const auto source_bytes = picture->storage;
+    const auto untouched = f.target->storage;
+    picture->ready = false;
+    VABufferID filter = CreateBobFilter(f);
+    SetPipelineFilters(f, &filter, 1);
+    f.SubmitParameters();
+    Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS,
+            "queue a real NV12 operation before its source completes");
+    picture->ready = true;
+    struct Control {
+      Driver &driver;
+      std::mutex mutex;
+      std::condition_variable condition;
+      bool entered = false, released = false, expired = false;
+      bool destroy_entered = false;
+      std::atomic<bool> action_done{false};
+      VAStatus action_status = VA_STATUS_ERROR_OPERATION_FAILED;
+      std::thread action;
+      explicit Control(Driver &value) : driver(value) {}
+      void Release() {
+        { std::lock_guard<std::mutex> lock(mutex); released = true; }
+        condition.notify_all();
+      }
+      ~Control() {
+        Release();
+        if (action.joinable()) action.join();
+        driver.StopWorkers();
+      }
+    } control(f.driver);
+    f.driver.vpp_worker = std::thread([&] {
+      vpp_pixels = [&](Driver *, uint64_t) {
+        std::unique_lock<std::mutex> lock(control.mutex);
+        control.entered = true;
+        control.condition.notify_all();
+        if (!control.condition.wait_for(lock, std::chrono::seconds(3),
+                                        [&] { return control.released; }))
+          control.expired = true;
+      };
+      RunVppWorker(&f.driver);
+    });
+    {
+      std::unique_lock<std::mutex> lock(control.mutex);
+      Require(control.condition.wait_for(lock, std::chrono::seconds(2),
+                                         [&] { return control.entered; }),
+              "the worker enters its unlocked pixel lease");
+    }
+    VASurfaceStatus state = VASurfaceReady;
+    Require(QuerySurfaceStatus(&f.context, 2, &state) == VA_STATUS_SUCCESS &&
+                state == VASurfaceRendering &&
+                BeginPicture(&f.context, 2, 2) == VA_STATUS_ERROR_HW_BUSY &&
+                f.target->storage == untouched,
+            "frontend admission is free while the target remains reserved and unready");
+    if (mode == 1) {
+      {
+        std::lock_guard<std::mutex> lock(f.driver.mutex);
+        f.decoder->Reset();
+      }
+      Require(SyncSurface2(&f.context, 2, 0) == VA_STATUS_ERROR_DECODING_ERROR,
+              "a canceled active conversion rejects the read without retiring its mapping");
+    } else if (mode == 2) {
+      control.action = std::thread([&] {
+        vpp_destroy_wait = [&] {
+          { std::lock_guard<std::mutex> lock(control.mutex); control.destroy_entered = true; }
+          control.condition.notify_all();
+        };
+        VASurfaceID target = 2;
+        control.action_status = DestroySurfaces(&f.context, &target, 1);
+        control.action_done = true;
+        control.condition.notify_all();
+      });
+      {
+        std::unique_lock<std::mutex> lock(control.mutex);
+        Require(control.condition.wait_for(lock, std::chrono::seconds(2),
+                                           [&] { return control.destroy_entered; }),
+                "target destruction reaches its real mapping-quiescence boundary");
+      }
+      Require(!control.action_done && f.driver.surfaces.count(2) == 1,
+              "destruction keeps the backing identity discoverable until the writer retires");
+    } else if (mode == 3) {
+      control.action = std::thread([&] {
+        f.driver.StopWorkers();
+        control.action_done = true;
+      });
+      std::unique_lock<std::mutex> lock(f.driver.mutex);
+      Require(f.driver.condition.wait_for(lock, std::chrono::seconds(2),
+                                          [&] { return f.driver.stopping; }),
+              "stop is admitted before the pixel writer finishes");
+      Require(!control.action_done, "stop joins the live allocation lease");
+    }
+    {
+      std::lock_guard<std::mutex> lock(f.driver.mutex);
+      Require(f.driver.pending_vpp.size() == 1 &&
+                  f.driver.pending_vpp.front().pixels_active &&
+                  f.target->vpp_writers == 1 && picture->vpp_readers == 1,
+              "active work keeps both reader and writer owners across frontend actions");
+    }
+    control.Release();
+    if (control.action.joinable()) control.action.join();
+    const VAStatus synced = mode == 2 ? VA_STATUS_ERROR_INVALID_SURFACE
+        : SyncSurface2(&f.context, 2, 1000000000ULL);
+    f.driver.StopWorkers();
+    Require(!control.expired && f.driver.pending_vpp.empty() &&
+                f.target->vpp_writers == 0 && picture->vpp_readers == 0 &&
+                picture->storage == source_bytes,
+            "completion/cancellation joins all pixel owners and preserves input bytes");
+    if (mode == 0) {
+      Require(synced == VA_STATUS_SUCCESS && f.target->ready && !f.target->failed &&
+                  f.target->frame_timestamp == kTimestampStep,
+              "the exact queued picture is published only after pixel completion");
+      RequireFieldRows(*f.target, 0, true);
+    } else if (mode == 2) {
+      Require(control.action_status == VA_STATUS_SUCCESS &&
+                  f.driver.surfaces.count(2) == 0 && f.target->destroyed,
+              "target destruction completes after pixel quiescence");
+    } else {
+      Require(synced != VA_STATUS_SUCCESS && !f.target->ready && f.target->failed,
+              "reset/stop cannot publish a canceled private result");
+    }
+  }
+  {
+    Fixture f;
+    f.driver.StopWorkers();
+    VASurfaceID target = 2;
+    allocation_fault::fail_next = true;
+    const VAStatus status = DestroySurfaces(&f.context, &target, 1);
+    allocation_fault::fail_next = false;
+    Require(status == VA_STATUS_ERROR_ALLOCATION_FAILED &&
+                f.driver.surfaces.count(2) == 1 && !f.target->destroyed,
+            "mapping-quiescence allocation failure preserves the whole destroy request");
+    int pipe_fds[2];
+    Require(pipe(pipe_fds) == 0, "create an actual borrowed descriptor");
+    f.target->object_fds.push_back(pipe_fds[0]);
+    {
+      PendingVpp operation;
+      operation.source_owner = f.source;
+      operation.target = operation.target_owner = f.target;
+      VppPixelView input, output;
+      Require(!CaptureVppPixels(operation, f.source, false, &input, &output),
+              "CPU allocation alone does not make a public upload source immutable");
+      Require(CaptureVppPixels(operation, f.decoder->decoded_frames.at(kTimestampStep),
+                               false, &input, &output),
+              "a separate private picture can pin an owned NV12 target");
+      VppPixelView borrowed;
+      borrowed.Capture(f.target);
+    }
+    Require(fcntl(pipe_fds[0], F_GETFD) >= 0,
+            "a pixel snapshot never closes its allocation's borrowed descriptors");
+    f.target->object_fds.clear();
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+  }
+}
+
 void ExposedQueuedVppStillRequiresFence() {
   FenceIoMock mock;
   MockFenceScope scope(mock);
@@ -7531,6 +7704,7 @@ int VppFullTestEntry(int argc, char **argv) {
     CenteredReadOnlyBobPending();
     SyncTimeoutAdmissionDoesNotBlockZeroQueries();
     VppBacklogTurnPreservesCancellationAndOwnership();
+    VppPixelLeaseAdmitsFrontendAndRetainsMappings();
     ExposedQueuedVppStillRequiresFence();
     ExposedColdVppFallbackCompletesBeforeReturning();
     UnsafeFenceFailuresCannotUseSynchronousFallback();
@@ -7573,11 +7747,21 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 109 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 110 hardware-free regressions passed");
   return 0;
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--pixel-lease") == 0) {
+    try {
+      VppPixelLeaseAdmitsFrontendAndRetainsMappings();
+      puts("VA-API VPP pixel lease admission/lifetime PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API VPP pixel lease failed: %s\n", error.what());
+      return 1;
+    }
+  }
   if (argc == 2 && strcmp(argv[1], "--nv12-scaling") == 0) {
     try {
       Nv12ScalingPreservesCropsBordersAndFieldRows();
@@ -7640,6 +7824,7 @@ int main(int argc, char **argv) {
       {"captured Bob rejects rebound owner after close", CapturedBobRejectsReboundOwnerAfterSuccessfulDecoderClose},
       {"queued Bob survives successful decoder close", QueuedBobSurvivesSuccessfulDecoderClose},
       {"ineligible decoder close cannot grant new Bob reads", IneligibleDecoderCloseCannotGrantNewBobReads},
+      {"VPP pixel lease admission and lifetime", VppPixelLeaseAdmitsFrontendAndRetainsMappings},
 #ifdef CRYSTALHD_LEGACY_CPU
       {"legacy exposed stopped-source rejection", LegacyExposedStoppedVppRemainsRejected},
       {"legacy synchronous fallback: nine no-cache-operation modes", LegacyExposedColdVppFallbackCompletesBeforeReturning}};
