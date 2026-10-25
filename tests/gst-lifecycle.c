@@ -2,7 +2,15 @@
 /* Exercise the real GstVideoDecoder subclass with an in-process fake library.
  * No CrystalHD library is linked, and no hardware device can be opened.
  */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <gst/check/gstharness.h>
+#include <sys/socket.h>
+#include <fcntl.h>
+#include <poll.h>
+
+static int lifecycle_poll(struct pollfd *fds, nfds_t count, int timeout);
 
 static gint64 lifecycle_time(void);
 static void lifecycle_sleep(gulong usecs);
@@ -15,12 +23,14 @@ static void lifecycle_stream_unlock(GRecMutex *mutex);
 #define g_thread_new lifecycle_thread_new
 #define g_thread_join lifecycle_thread_join
 #define g_rec_mutex_unlock lifecycle_stream_unlock
+#define poll lifecycle_poll
 #include "../filters/gst/gst-plugin-1.0/gstcrystalhd.c"
 #undef g_get_monotonic_time
 #undef g_usleep
 #undef g_thread_new
 #undef g_thread_join
 #undef g_rec_mutex_unlock
+#undef poll
 
 static gint64 lifecycle_now;
 static GstHarness *flush_during_wait;
@@ -29,11 +39,44 @@ static GstHarness *flush_during_quiesce;
 static GstCrystalHdDec *iteration_decoder;
 static gboolean real_workers;
 static guint8 fake_thread;
+static gboolean readiness_enabled;
+static gint readiness_rx = -1, readiness_tx = -1;
+static GMutex readiness_lock;
+static GCond readiness_changed;
+static guint readiness_calls, readiness_rx_calls, readiness_timed_calls;
+static guint readiness_masked_calls;
+static gboolean readiness_hold, readiness_entered, readiness_release;
+static gint readiness_eos_pending;
 G_LOCK_DEFINE_STATIC(mock_queue);
 static GstBuffer *new_input(GstClockTime pts);
 static gboolean change_h264_caps(GstHarness *harness);
 static void lifecycle_teardown(GstHarness *harness);
 static gboolean lifecycle_flush(GstVideoDecoder *decoder);
+
+static int
+lifecycle_poll(struct pollfd *fds, nfds_t count, int timeout)
+{
+  g_mutex_lock(&readiness_lock);
+  readiness_calls++;
+  if (count > 1 && fds[1].fd >= 0) {
+    readiness_rx_calls++;
+    if (readiness_hold) {
+      const gint64 deadline = g_get_monotonic_time() + 4 * G_USEC_PER_SEC;
+      readiness_entered = TRUE;
+      g_cond_broadcast(&readiness_changed);
+      while (!readiness_release)
+        g_assert_true(g_cond_wait_until(&readiness_changed, &readiness_lock, deadline));
+      readiness_hold = FALSE;
+    }
+  }
+  if (timeout == 5)
+    readiness_timed_calls++;
+  if (timeout == 5 && count > 1 && fds[1].fd < 0)
+    readiness_masked_calls++;
+  g_cond_broadcast(&readiness_changed);
+  g_mutex_unlock(&readiness_lock);
+  return poll(fds, count, timeout);
+}
 
 typedef struct {
   guint64 timestamp;
@@ -252,6 +295,10 @@ queue_picture_geometry(guint64 timestamp, guint8 pixel,
   picture->flags = flags;
   G_LOCK(mock_queue);
   g_queue_push_tail(&mock.pictures, picture);
+  if (readiness_tx >= 0) {
+    const guint8 one = 1;
+    g_assert_cmpint(send(readiness_tx, &one, 1, MSG_NOSIGNAL), ==, 1);
+  }
   G_UNLOCK(mock_queue);
 }
 
@@ -300,11 +347,36 @@ BC_STATUS DtsDeviceClose(HANDLE device)
     status = operation_status(MOCK_DEVICE_CLOSE);
   }
   mock.device_active = FALSE;
+  if (readiness_enabled && iteration_decoder != NULL) {
+    g_assert_false(iteration_decoder->output_waiting);
+    g_assert_cmpint(iteration_decoder->output_poll_fd, ==, -1);
+  }
+  if (readiness_rx >= 0) close(readiness_rx);
+  if (readiness_tx >= 0) close(readiness_tx);
+  readiness_rx = readiness_tx = -1;
   G_LOCK(mock_queue);
   g_queue_clear_full(&mock.pictures, g_free);
   G_UNLOCK(mock_queue);
   return status;
 }
+
+#ifndef GST_CRYSTALHD_TEST_NO_POLL_API
+BC_STATUS DtsDupOutputPollFd(HANDLE device, int *descriptor)
+{
+  int pair[2];
+  g_assert_true(device == &mock);
+  *descriptor = -1;
+  if (!readiness_enabled)
+    return BC_STS_NOT_IMPL;
+  g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+                            0, pair), ==, 0);
+  readiness_rx = pair[0];
+  readiness_tx = pair[1];
+  *descriptor = fcntl(readiness_rx, F_DUPFD_CLOEXEC, 0);
+  g_assert_cmpint(*descriptor, >=, 0);
+  return BC_STS_SUCCESS;
+}
+#endif
 
 BC_STATUS DtsCrystalHDVersion(HANDLE device, PBC_INFO_CRYSTAL version)
 {
@@ -542,6 +614,10 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
   }
   G_LOCK(mock_queue);
   picture = g_queue_pop_head(&mock.pictures);
+  if (picture != NULL && readiness_rx >= 0 && readiness_tx >= 0) {
+    guint8 one;
+    g_assert_cmpint(read(readiness_rx, &one, 1), ==, 1);
+  }
   G_UNLOCK(mock_queue);
   if (picture == NULL)
     return BC_STS_NO_DATA;
@@ -701,6 +777,8 @@ BC_STATUS DtsIsEndOfStream(HANDLE device, uint8_t *eos)
   }
   G_LOCK(mock_queue);
   *eos = mock.early_eos || g_queue_is_empty(&mock.pictures);
+  if (g_atomic_int_get(&readiness_eos_pending))
+    *eos = FALSE;
   publish = mock.publish_after_eos;
   mock.publish_after_eos = FALSE;
   G_UNLOCK(mock_queue);
@@ -3953,6 +4031,273 @@ test_autonomous_output(void)
   real_workers = FALSE;
 }
 
+#ifndef GST_CRYSTALHD_TEST_NO_POLL_API
+static GstHarness *
+new_readiness_decoder(void)
+{
+  GstHarness *harness;
+  g_mutex_lock(&readiness_lock);
+  readiness_calls = readiness_rx_calls = readiness_timed_calls = readiness_masked_calls = 0;
+  readiness_hold = readiness_entered = readiness_release = FALSE;
+  g_mutex_unlock(&readiness_lock);
+  readiness_enabled = real_workers = TRUE;
+  harness = new_decoder();
+  mock.auto_output = FALSE;
+  return harness;
+}
+
+static void
+readiness_done(GstHarness *harness)
+{
+  gst_harness_teardown(harness);
+  g_assert_cmpuint(mock.successful_opens, ==, mock.close_calls);
+  g_assert_cmpint(readiness_rx, ==, -1);
+  g_assert_cmpint(readiness_tx, ==, -1);
+  readiness_enabled = real_workers = FALSE;
+}
+
+static void
+readiness_wait_rx(void)
+{
+  const gint64 deadline = g_get_monotonic_time() + 2 * G_USEC_PER_SEC;
+  g_mutex_lock(&readiness_lock);
+  while (readiness_rx_calls == 0)
+    g_assert_true(g_cond_wait_until(&readiness_changed, &readiness_lock, deadline));
+  g_mutex_unlock(&readiness_lock);
+}
+
+static void
+test_readiness_output(gconstpointer before_wait)
+{
+  GstHarness *harness = new_readiness_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *output;
+  if (GPOINTER_TO_INT(before_wait)) {
+    g_mutex_lock(&readiness_lock);
+    readiness_hold = TRUE;
+    g_mutex_unlock(&readiness_lock);
+  }
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  readiness_wait_rx();
+  g_assert_cmpint(fcntl(self->output_poll_fd, F_GETFD) & FD_CLOEXEC, !=, 0);
+  /* Queue readiness without another input/control callback. The gated case
+   * publishes before the real poll call, proving level-triggered delivery. */
+  queue_picture(mock.accepted[0], 0x51);
+  g_mutex_lock(&readiness_lock);
+  readiness_release = TRUE;
+  g_cond_broadcast(&readiness_changed);
+  g_mutex_unlock(&readiness_lock);
+  output = wait_for_output(harness);
+  check_output(output, 0, 0x51);
+  gst_buffer_unref(output);
+  readiness_done(harness);
+}
+
+static void
+test_readiness_idle_and_library_eos(void)
+{
+  GstHarness *harness = new_readiness_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstVideoDecoder *decoder = GST_VIDEO_DECODER(self);
+  GstBuffer *output;
+  guint calls;
+  gint64 deadline;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  readiness_wait_rx();
+  g_mutex_lock(&readiness_lock);
+  calls = readiness_calls;
+  g_mutex_unlock(&readiness_lock);
+  g_usleep(30000);
+  g_mutex_lock(&readiness_lock);
+  g_assert_cmpuint(readiness_calls, ==, calls);
+  g_mutex_unlock(&readiness_lock);
+  queue_picture(mock.accepted[0], 0x52);
+  output = wait_for_output(harness);
+  check_output(output, 0, 0x52);
+  gst_buffer_unref(output);
+
+  g_atomic_int_set(&readiness_eos_pending, 1);
+  GST_VIDEO_DECODER_STREAM_LOCK(decoder);
+  self->draining = TRUE;
+  self->output_eos = FALSE;
+  GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+  gst_crystalhd_wake_output(self);
+  deadline = g_get_monotonic_time() + 2 * G_USEC_PER_SEC;
+  g_mutex_lock(&readiness_lock);
+  while (readiness_timed_calls == 0)
+    g_assert_true(g_cond_wait_until(&readiness_changed, &readiness_lock, deadline));
+  g_mutex_unlock(&readiness_lock);
+  g_atomic_int_set(&readiness_eos_pending, 0); /* No RX or control signal. */
+  for (;;) {
+    gboolean eos;
+    GST_VIDEO_DECODER_STREAM_LOCK(decoder);
+    eos = self->output_eos;
+    GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+    if (eos) break;
+    g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+    g_usleep(1000);
+  }
+  readiness_done(harness);
+}
+
+static void
+test_readiness_terminal_fallback(void)
+{
+  GstHarness *harness = new_readiness_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *output;
+  gint64 deadline = g_get_monotonic_time() + 2 * G_USEC_PER_SEC;
+  gboolean fallback;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  readiness_wait_rx();
+  G_LOCK(mock_queue);
+  close(readiness_tx);
+  readiness_tx = -1;
+  G_UNLOCK(mock_queue);
+  do {
+    g_mutex_lock(&self->output_lock);
+    fallback = self->output_poll_fd < 0;
+    g_mutex_unlock(&self->output_lock);
+    if (fallback) break;
+    g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+    g_usleep(1000);
+  } while (TRUE);
+  queue_picture(mock.accepted[0], 0x53);
+  output = wait_for_output(harness);
+  check_output(output, 0, 0x53);
+  gst_buffer_unref(output);
+  readiness_done(harness);
+}
+
+static void
+test_readiness_stale_ready_and_stop(void)
+{
+  GstHarness *harness = new_readiness_decoder();
+  const guint8 one = 1;
+  const gint64 deadline = g_get_monotonic_time() + 2 * G_USEC_PER_SEC;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  readiness_wait_rx();
+  g_assert_cmpint(send(readiness_tx, &one, 1, MSG_NOSIGNAL), ==, 1);
+  /* Deliberately no picture behind the level-ready descriptor. A control-only
+   * timed turn must interrupt the otherwise continuously readable RX loop. */
+  g_mutex_lock(&readiness_lock);
+  while (readiness_masked_calls == 0)
+    g_assert_true(g_cond_wait_until(&readiness_changed, &readiness_lock, deadline));
+  g_mutex_unlock(&readiness_lock);
+  readiness_done(harness); /* Stop must wake a blocked borrower too. */
+}
+
+static void
+test_readiness_recovery_without_rx(void)
+{
+  GstHarness *harness = new_readiness_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstVideoDecoder *decoder = GST_VIDEO_DECODER(self);
+  const gint64 deadline = g_get_monotonic_time() + 2 * G_USEC_PER_SEC;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  readiness_wait_rx();
+  GST_VIDEO_DECODER_STREAM_LOCK(decoder);
+  mock_latch_recovery();
+  GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+  gst_crystalhd_wake_output(self);
+  g_mutex_lock(&readiness_lock);
+  while (readiness_timed_calls == 0)
+    g_assert_true(g_cond_wait_until(&readiness_changed, &readiness_lock, deadline));
+  g_mutex_unlock(&readiness_lock);
+  GST_VIDEO_DECODER_STREAM_LOCK(decoder);
+  g_assert_true(self->output_recovering);
+  mock.recovery_active = FALSE; /* Library completion, no new descriptor event. */
+  GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+  for (;;) {
+    gboolean active;
+    GST_VIDEO_DECODER_STREAM_LOCK(decoder);
+    active = self->output_recovering;
+    if (!active) g_assert_cmpuint(self->timestamps.length, ==, 0);
+    GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+    if (!active) break;
+    g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+    g_usleep(1000);
+  }
+  readiness_done(harness);
+}
+
+static void
+test_readiness_control_unavailable(void)
+{
+  GstHarness *harness = new_readiness_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstVideoDecoder *decoder = GST_VIDEO_DECODER(self);
+  GstBuffer *output;
+  GST_VIDEO_DECODER_STREAM_LOCK(decoder);
+  g_assert_true(gst_crystalhd_quiesce_output(self, TRUE));
+  close(self->output_control_fd);
+  self->output_control_fd = -1;
+  gst_crystalhd_resume_output(self);
+  GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  queue_picture(mock.accepted[0], 0x56);
+  output = wait_for_output(harness);
+  check_output(output, 0, 0x56);
+  gst_buffer_unref(output);
+  readiness_done(harness);
+}
+
+static void
+test_readiness_70012_metadata_peek(void)
+{
+  GstHarness *harness;
+  readiness_enabled = real_workers = TRUE;
+  g_mutex_lock(&readiness_lock);
+  readiness_calls = readiness_rx_calls = readiness_timed_calls = readiness_masked_calls = 0;
+  readiness_hold = readiness_entered = readiness_release = FALSE;
+  g_mutex_unlock(&readiness_lock);
+  harness = new_decoder_with_caps_and_device(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=16,height=16,framerate=25/1", 0);
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  readiness_wait_rx();
+  GST_VIDEO_DECODER_STREAM_LOCK(GST_VIDEO_DECODER(harness->element));
+  g_assert_cmpuint(mock.status_unflagged_calls, >, 0);
+  g_assert_cmpuint(mock.status_no_ready_peek_calls, ==, 0);
+  g_assert_cmpuint(mock.status_invalid_requests, ==, 0);
+  GST_VIDEO_DECODER_STREAM_UNLOCK(GST_VIDEO_DECODER(harness->element));
+  readiness_done(harness);
+}
+
+static void
+test_readiness_flush_and_reopen(void)
+{
+  GstHarness *harness = new_readiness_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *output;
+  GstSegment segment;
+  gint old_writer;
+  guint8 one = 1;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  readiness_wait_rx();
+  old_writer = fcntl(readiness_tx, F_DUPFD_CLOEXEC, 0);
+  g_assert_cmpint(old_writer, >=, 0);
+  g_assert_true(gst_harness_push_event(harness, gst_event_new_flush_start()));
+  g_mutex_lock(&self->output_lock);
+  g_assert_false(self->output_waiting);
+  g_assert_false(self->output_active);
+  g_mutex_unlock(&self->output_lock);
+  g_assert_true(gst_harness_push_event(harness, gst_event_new_flush_stop(TRUE)));
+  gst_segment_init(&segment, GST_FORMAT_TIME);
+  g_assert_true(gst_harness_push_event(harness, gst_event_new_segment(&segment)));
+  g_assert_cmpint(send(old_writer, &one, 1, MSG_NOSIGNAL), ==, -1);
+  g_assert_cmpint(errno, ==, EPIPE);
+  close(old_writer);
+  g_assert_cmpint(gst_harness_push(harness, new_input(40 * GST_MSECOND)), ==, GST_FLOW_OK);
+  queue_picture(mock.accepted[mock.accepted_count - 1], 0x54);
+  output = wait_for_output(harness);
+  check_output(output, 40 * GST_MSECOND, 0x54);
+  gst_buffer_unref(output);
+  readiness_done(harness);
+}
+#endif
+
 static void
 test_vc1_recursive_input_wait(void)
 {
@@ -5186,6 +5531,17 @@ main(int argc, char **argv)
   g_test_add_func("/crystalhd/lifecycle/input-reservation-boundaries", test_input_reservation_boundaries);
   g_test_add_func("/crystalhd/lifecycle/metadata-admission", test_metadata_admission);
   g_test_add_func("/crystalhd/lifecycle/autonomous-output", test_autonomous_output);
+#ifndef GST_CRYSTALHD_TEST_NO_POLL_API
+  g_test_add_data_func("/crystalhd/readiness/output-after-wait", GINT_TO_POINTER(FALSE), test_readiness_output);
+  g_test_add_data_func("/crystalhd/readiness/output-before-wait", GINT_TO_POINTER(TRUE), test_readiness_output);
+  g_test_add_func("/crystalhd/readiness/idle-library-eos", test_readiness_idle_and_library_eos);
+  g_test_add_func("/crystalhd/readiness/terminal-fallback", test_readiness_terminal_fallback);
+  g_test_add_func("/crystalhd/readiness/flush-reopen", test_readiness_flush_and_reopen);
+  g_test_add_func("/crystalhd/readiness/stale-ready-stop", test_readiness_stale_ready_and_stop);
+  g_test_add_func("/crystalhd/readiness/recovery-without-rx", test_readiness_recovery_without_rx);
+  g_test_add_func("/crystalhd/readiness/control-unavailable", test_readiness_control_unavailable);
+  g_test_add_func("/crystalhd/readiness/70012-metadata-peek", test_readiness_70012_metadata_peek);
+#endif
   g_test_add_func("/crystalhd/lifecycle/vc1-recursive-input-wait", test_vc1_recursive_input_wait);
   g_test_add_data_func("/crystalhd/lifecycle/blocked-delivery-input", GINT_TO_POINTER(FALSE),
                        test_blocked_delivery);

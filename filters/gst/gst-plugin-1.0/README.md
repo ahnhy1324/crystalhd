@@ -263,6 +263,15 @@ counted harness for that claim. Final drain has a 10-second no-progress
 watchdog, renewed by successful delivery and suspended while stably paused.
 See [the bring-up guide](../../../BRINGUP.md) for failure diagnosis.
 
+The output worker uses negotiated kernel RX readiness and a private control wake
+when available. Older libraries/drivers, or an unavailable control descriptor,
+retain timed status checks. EOS/recovery and a READY indication without output
+still receive bounded state probes. Flush and close wake the worker and retire
+its descriptor borrower before replacing the session. BCM70012 retains its
+metadata peek. This requires no new option and does not change QoS or deadlines;
+[bounded measurements](../../../HARDWARE-2026-09-13.md#gst-output-readiness-2026-10-25)
+separate fewer status queries from display latency or throughput claims.
+
 MPEG-2 pictures with positively identified missing-reference prediction or
 missing coded frame rows are skipped before hardware submission with a warning.
 Inconclusive syntax keeps its existing decoding path. Skips are not decoded
