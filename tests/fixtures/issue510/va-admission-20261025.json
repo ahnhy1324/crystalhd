@@ -340,5 +340,354 @@
     },
     "chart": "output-handoff-20261025.png",
     "remaining": "Public-copy hold time and EOF/Stop compatibility warnings remain under existing issues; this is the bounded output-only fairness correction, not a complete playback-acceptance fix."
+  },
+  "public_copy_sync_followup": {
+    "baseline": "6d61f5548b28609f4d899fd19a3b4d73e0bd85dc; measured plugin built at08388ac, identical VA C++ source",
+    "candidate": "ea640d8522bcaf698da091bfda412289d71913e7; local-only rejected prototype, not part of master or installed payload",
+    "prototype": "SSE2 unaligned 16-byte source loads and aligned non-temporal stores, exact memcpy tail and one SFENCE before existing END; only owned linear dumb DecodedPublic targets with aligned planes/pitches. Imported/GBM/generic and no-SSE paths retain memcpy. No DMA-BUF/domain/lock protocol removal or new option.",
+    "decision": "REJECTED: candidate copy means5.030/4.890ms vs baseline4.953/4.832ms; no demonstrated improvement. Production copy unchanged.",
+    "scope": "Stock Kodi21.3 ordinary FHD Auto Bob, same30s750-original fixture and qualified DIL/module3.10.13; default input policy, VA JSON/debug OFF. PID-scoped read-only uprobes and actual DMA_BUF_IOCTL_SYNC enter/exit, 99Hz on-CPU sampling; no external application patch.",
+    "observer_limits": "Each run bounded55s,2000copy records,20000operation records,12000drain records,2048map keys. Guards verify actual stock-Kodi instructions before branch probes. Kernel stacks added only in the final baseline; candidate2 adds one SFENCE counter. Do not infer pure memcpy cost from time outside syscalls: it also includes border/access/userspace/probe/scheduling costs.",
+    "arms": [
+      {
+        "name": "cache-drain-before3",
+        "source": "08388acd578aa56fc6c16b881ea4a59a20b568a4",
+        "treatment": "baseline",
+        "original_controller_status": "REVIEW",
+        "natural": "PASS",
+        "reopen": "PASS",
+        "original_lifecycle": "REVIEW",
+        "original_results_preserved": true,
+        "natural_copies": 750,
+        "all_phase_copies": 844,
+        "write_start_and_end_count_each": 844,
+        "all_copies_ok": true,
+        "trace_balanced": true,
+        "sync_coverage": "actual nested DMA_BUF_IOCTL_SYNC syscalls, including compiler-inlined call sites",
+        "oncpu_samples": {
+          "1": 168,
+          "2": 172
+        },
+        "mapping_kind_dumb_count": null,
+        "streamed_count": null,
+        "warnings": [
+          {
+            "kind": "OutputPicture buffer-wait warning at explicit Stop",
+            "same_tid_unique_negative_return": true,
+            "actual_pointer_matches": true,
+            "branch": "ABORT_TAKEN",
+            "loaded_stop": 1,
+            "budget_ms": 500,
+            "elapsed_ms": 114.986706,
+            "log_minus_return_ms": -0.366435
+          }
+        ],
+        "final_drain": {
+          "decoded": 0,
+          "processed": 0,
+          "render": 0,
+          "result": 8,
+          "elapsed_ms": 0.08011
+        },
+        "drain_timeout_reproduced": false,
+        "natural_ms": {
+          "duration": {
+            "mean": 4.953384,
+            "p95": 8.692896,
+            "max": 29.54235
+          },
+          "sync": {
+            "mean": 2.188701,
+            "p95": 3.72418,
+            "max": 25.513375
+          },
+          "begin_write": {
+            "mean": 0.085653,
+            "p95": 0.020394,
+            "max": 6.700269
+          },
+          "end_write": {
+            "mean": 2.103048,
+            "p95": 3.387815,
+            "max": 25.49794
+          },
+          "outside_syscall": {
+            "mean": 2.764684,
+            "p95": 5.328828,
+            "max": 13.553493
+          }
+        }
+      },
+      {
+        "name": "cache-drain-stream1",
+        "source": "ea640d8522bcaf698da091bfda412289d71913e7",
+        "treatment": "streaming prototype",
+        "original_controller_status": "REVIEW",
+        "natural": "PASS",
+        "reopen": "PASS",
+        "original_lifecycle": "REVIEW",
+        "original_results_preserved": true,
+        "natural_copies": 750,
+        "all_phase_copies": 841,
+        "write_start_and_end_count_each": 841,
+        "all_copies_ok": true,
+        "trace_balanced": true,
+        "sync_coverage": "actual nested DMA_BUF_IOCTL_SYNC syscalls, including compiler-inlined call sites",
+        "oncpu_samples": {
+          "2": 152,
+          "1": 167
+        },
+        "mapping_kind_dumb_count": null,
+        "streamed_count": null,
+        "warnings": [
+          {
+            "kind": "OutputPicture buffer-wait warning at explicit Stop",
+            "same_tid_unique_negative_return": true,
+            "actual_pointer_matches": true,
+            "branch": "ABORT_TAKEN",
+            "loaded_stop": 1,
+            "budget_ms": 500,
+            "elapsed_ms": 101.339683,
+            "log_minus_return_ms": -0.439453
+          }
+        ],
+        "final_drain": {
+          "decoded": 0,
+          "processed": 0,
+          "render": 0,
+          "result": 8,
+          "elapsed_ms": 0.146462
+        },
+        "drain_timeout_reproduced": false,
+        "natural_ms": {
+          "duration": {
+            "mean": 5.029746,
+            "p95": 9.133668,
+            "max": 31.916644
+          },
+          "sync": {
+            "mean": 2.224151,
+            "p95": 4.205116,
+            "max": 27.36741
+          },
+          "begin_write": {
+            "mean": 0.078816,
+            "p95": 0.021442,
+            "max": 5.784899
+          },
+          "end_write": {
+            "mean": 2.145335,
+            "p95": 3.677033,
+            "max": 27.355676
+          },
+          "outside_syscall": {
+            "mean": 2.805594,
+            "p95": 5.590874,
+            "max": 29.012286
+          }
+        }
+      },
+      {
+        "name": "cache-drain-stream2",
+        "source": "ea640d8522bcaf698da091bfda412289d71913e7",
+        "treatment": "streaming prototype",
+        "original_controller_status": "REVIEW",
+        "natural": "PASS",
+        "reopen": "PASS",
+        "original_lifecycle": "REVIEW",
+        "original_results_preserved": true,
+        "natural_copies": 750,
+        "all_phase_copies": 847,
+        "write_start_and_end_count_each": 847,
+        "all_copies_ok": true,
+        "trace_balanced": true,
+        "sync_coverage": "actual nested DMA_BUF_IOCTL_SYNC syscalls, including compiler-inlined call sites",
+        "oncpu_samples": {
+          "1": 162,
+          "2": 171
+        },
+        "mapping_kind_dumb_count": 847,
+        "streamed_count": 847,
+        "warnings": [
+          {
+            "kind": "OutputPicture buffer-wait warning at explicit Stop",
+            "same_tid_unique_negative_return": true,
+            "actual_pointer_matches": true,
+            "branch": "ABORT_TAKEN",
+            "loaded_stop": 1,
+            "budget_ms": 500,
+            "elapsed_ms": 161.096654,
+            "log_minus_return_ms": -0.873097
+          }
+        ],
+        "final_drain": {
+          "decoded": 0,
+          "processed": 0,
+          "render": 0,
+          "result": 8,
+          "elapsed_ms": 0.013968
+        },
+        "drain_timeout_reproduced": false,
+        "natural_ms": {
+          "duration": {
+            "mean": 4.889725,
+            "p95": 8.649931,
+            "max": 19.686892
+          },
+          "sync": {
+            "mean": 2.074673,
+            "p95": 3.498093,
+            "max": 13.982454
+          },
+          "begin_write": {
+            "mean": 0.088695,
+            "p95": 0.021512,
+            "max": 11.167706
+          },
+          "end_write": {
+            "mean": 1.985979,
+            "p95": 3.012473,
+            "max": 9.090572
+          },
+          "outside_syscall": {
+            "mean": 2.815052,
+            "p95": 5.781057,
+            "max": 14.131848
+          }
+        }
+      },
+      {
+        "name": "cache-drain-before4",
+        "source": "08388acd578aa56fc6c16b881ea4a59a20b568a4",
+        "treatment": "baseline",
+        "original_controller_status": "REVIEW",
+        "natural": "PASS",
+        "reopen": "PASS",
+        "original_lifecycle": "REVIEW",
+        "original_results_preserved": true,
+        "natural_copies": 750,
+        "all_phase_copies": 843,
+        "write_start_and_end_count_each": 843,
+        "all_copies_ok": true,
+        "trace_balanced": true,
+        "sync_coverage": "actual nested DMA_BUF_IOCTL_SYNC syscalls, including compiler-inlined call sites",
+        "oncpu_samples": {
+          "1": 143,
+          "2": 168
+        },
+        "mapping_kind_dumb_count": 843,
+        "streamed_count": null,
+        "warnings": [
+          {
+            "kind": "OutputPicture buffer-wait warning at explicit Stop",
+            "same_tid_unique_negative_return": true,
+            "actual_pointer_matches": true,
+            "branch": "ABORT_TAKEN",
+            "loaded_stop": 1,
+            "budget_ms": 500,
+            "elapsed_ms": 177.074152,
+            "log_minus_return_ms": -0.933673
+          }
+        ],
+        "final_drain": {
+          "decoded": 0,
+          "processed": 0,
+          "render": 0,
+          "result": 8,
+          "elapsed_ms": 0.006915
+        },
+        "drain_timeout_reproduced": false,
+        "natural_ms": {
+          "duration": {
+            "mean": 4.832117,
+            "p95": 8.889143,
+            "max": 16.32967
+          },
+          "sync": {
+            "mean": 2.108004,
+            "p95": 3.734023,
+            "max": 9.216708
+          },
+          "begin_write": {
+            "mean": 0.083362,
+            "p95": 0.020254,
+            "max": 6.81117
+          },
+          "end_write": {
+            "mean": 2.024643,
+            "p95": 3.374819,
+            "max": 9.195615
+          },
+          "outside_syscall": {
+            "mean": 2.724112,
+            "p95": 5.339716,
+            "max": 13.631072
+          }
+        }
+      }
+    ],
+    "end_write_kernel_samples": [
+      {
+        "frames": [
+          "__sg_page_iter_next",
+          "i915_gem_clflush_object",
+          "flush_write_domain",
+          "i915_gem_object_set_to_gtt_domain",
+          "i915_gem_end_cpu_access",
+          "dma_buf_ioctl",
+          "__x64_sys_ioctl",
+          "x64_sys_call"
+        ],
+        "count": 5
+      },
+      {
+        "frames": [
+          "drm_clflush_sg",
+          "i915_gem_clflush_object",
+          "flush_write_domain",
+          "i915_gem_object_set_to_gtt_domain",
+          "i915_gem_end_cpu_access",
+          "dma_buf_ioctl",
+          "__x64_sys_ioctl",
+          "x64_sys_call"
+        ],
+        "count": 2
+      },
+      {
+        "frames": [
+          "drm_clflush_page",
+          "i915_gem_clflush_object",
+          "flush_write_domain",
+          "i915_gem_object_set_to_gtt_domain",
+          "i915_gem_end_cpu_access",
+          "dma_buf_ioctl",
+          "__x64_sys_ioctl",
+          "x64_sys_call"
+        ],
+        "count": 129
+      }
+    ],
+    "kernel_interpretation": "All136 sampled END kernel stacks traverse i915_gem_clflush_object/flush_write_domain/i915_gem_end_cpu_access;129 stop at drm_clflush_page. This establishes sampled host cache-flush work, not attribution of every END nanosecond or a card/firmware latency floor.",
+    "stop_interpretation": "All four fresh Stop warnings uniquely join the same-TID negative WaitForBuffer return and guarded ABORT_TAKEN with loaded_stop1 and matching actual pointer, not DEADLINE_TAKEN. Original REVIEW receipts remain unchanged; no claim that every historical warning is cancellation.",
+    "eof_interpretation": "All four fresh natural/reopen phases PASS; final all-zero drain returns VC_EOF8 without a drain timeout. The prior520/521 natural-playback output-message FAILs remain unresolved, not waived by these passes.",
+    "validation": {
+      "prototype_Werror_build": "PASS",
+      "prototype_cache_protocol": "PASS11groups2407checks",
+      "prototype_native": "PASS50TFF originals100Bob outputs exact retained2482df3 pixels/PTS,EOS,maps/card ownership,resource/PM/AER boundary,kernel log",
+      "final_idle": "PASS ref0 pin_net0, originalmodule3.10.13 forceY/sessionN PCIlinks0x42 AER0, kernel log since09:50UTC clean",
+      "sanitizers_and_legacy_candidate": "NOT RUN: prototype rejected before broader qualification",
+      "physical_av_display_cadence_e2e": "NOT RUN; BPF run CPU is not a speedup comparison"
+    },
+    "retained_attempts": [
+      {
+        "name": "cache-drain-before",
+        "status": "FAIL before playback: scalar len() is not supported in bpftrace END; no hardware result"
+      },
+      {
+        "name": "cache-drain-before2",
+        "status": "Natural/reopen PASS, Stop REVIEW; guarded Stop cause ABORT_TAKEN. Outlined SyncDmaBuf call count0 is UNQUALIFIED because compiler-inlined ioctl calls were missed; not zero sync cost."
+      }
+    ],
+    "next": "Preserve DMA ownership/default-off WC policy; any future reduction of shared-mutex hold requires immutable source/target leases, cancellation/generation revalidation and its own tests. No bare VPP/copy unlock. Investigate original EOF timeout on reproduction; do not patch external Kodi or manufacture EOS success."
   }
 }
