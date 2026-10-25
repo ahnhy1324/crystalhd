@@ -7613,13 +7613,17 @@ static void RunDecodeWorker(Driver *driver) {
     // context once before the polling delay.
     bool input_backpressured = false;
     bool input_budget_exhausted = false;
+    bool output_progress = false;
     bool needs_mpeg4_eos_probe = false;
     bool needs_timer_fallback = driver->decode_control_fd < 0;
     for (const auto &entry : driver->contexts) {
       const std::shared_ptr<DecodeContext> &decode = entry.second;
       if (!HasAutonomousDecodeWork(decode))
         continue;
+      const uint64_t before_receive = decode->transport_progress;
       VAStatus status = ReceiveAvailable(driver, decode.get(), 1);
+      output_progress = output_progress ||
+                        decode->transport_progress != before_receive;
       if (status == VA_STATUS_SUCCESS)
         status = PumpDecodeInput(driver, decode.get(), 4);
       // A queued MPEG-4 timing discontinuity is an explicit finite epoch,
@@ -7645,10 +7649,11 @@ static void RunDecodeWorker(Driver *driver) {
 
     if (driver->stopping)
       return;
-    if (input_budget_exhausted) {
+    if (input_budget_exhausted || output_progress) {
       // A ready control/output descriptor can make poll return immediately,
       // and std::mutex does not promise a waiting frontend the next handoff.
-      // Release the mutex for one bounded turn before continuing the backlog.
+      // Completed RX work needs the same bounded handoff as a full TX turn:
+      // poll may stay ready even with no more compressed input to submit.
 #if defined(CRYSTALHD_VAAPI_TEST_DECODE_WORKER_TURN)
       CRYSTALHD_VAAPI_TEST_DECODE_WORKER_TURN(driver, lock);
 #endif
