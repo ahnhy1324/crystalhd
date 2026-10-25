@@ -2930,6 +2930,7 @@ struct PendingVpp {
   uint64_t decoder_generation = 0;
   int write_timeline = -1;
   bool worker_active = false;
+  crystalhd_vaapi_trace::Fields trace_binding;
 };
 
 struct Driver;
@@ -7541,11 +7542,9 @@ static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
         operation.target_owner->destroyed,
         operation.target_owner->latest_vpp_sequence != operation.sequence,
         static_cast<unsigned long long>(operation.source->frame_timestamp));
-  crystalhd_vaapi_trace::Fields fields =
-      TraceFields(nullptr, operation.target.get(),
-                  successful_commit ? operation.source_timestamp
-                                    : operation.source->frame_timestamp);
-  fields.operation = operation.sequence;
+  // Preserve the captured source identity even when cancellation/reuse has
+  // rebound the public target by the time this operation retires.
+  crystalhd_vaapi_trace::Fields fields = operation.trace_binding;
   fields.outcome = status;
   driver->trace.Emit(successful_commit
                          ? crystalhd_vaapi_trace::Event::VppCommit
@@ -7784,6 +7783,7 @@ static void RunVppWorker(Driver *driver) {
 
     selected->worker_active = true;
     const PendingVpp operation = *selected;
+    driver->trace.Emit(crystalhd_vaapi_trace::Event::VppStart, operation.trace_binding);
     std::shared_ptr<Surface> first_field_view;
     VAStatus status = VA_STATUS_SUCCESS;
     if (operation.source->expected_timestamp !=
@@ -7817,6 +7817,7 @@ static void RunVppWorker(Driver *driver) {
       continue;
     }
     if (status == VA_STATUS_SUCCESS) {
+      driver->trace.Emit(crystalhd_vaapi_trace::Event::VppRun, operation.trace_binding);
       status = ProcessVpp(&driver->vpp_scaler,
                           &driver->vpp_argb_staging,
                           first_field_view ? first_field_view.get() : operation.source.get(),
@@ -10058,6 +10059,15 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     // while vaEndPicture still owns the destination. No asynchronous fence is
     // needed in this fast path.
     if (decoded_source->ready || decoded_source->failed) {
+      crystalhd_vaapi_trace::Fields fields;
+      if (driver->trace.enabled()) {
+        fields = TraceFields(source_decoder.get(), decoded_source.get(), timestamp);
+        fields.surface = TraceId(target_surface->id, VA_INVALID_SURFACE);
+        fields.owner = TraceOwner(target_owner.get());
+        fields.operation = sequence;
+        if (!decoded_source->failed)
+          driver->trace.Emit(crystalhd_vaapi_trace::Event::VppRun, fields);
+      }
       VAStatus status = decoded_source->failed
                             ? VA_STATUS_ERROR_DECODING_ERROR
                             : ProcessVpp(&driver->vpp_scaler,
@@ -10080,9 +10090,6 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
                       status != VA_STATUS_SUCCESS);
       if (status == VA_STATUS_SUCCESS)
         RetainCompletedVppPicture(target_owner.get());
-      crystalhd_vaapi_trace::Fields fields =
-          TraceFields(nullptr, target_surface.get(), timestamp);
-      fields.operation = sequence;
       fields.outcome = status;
       driver->trace.Emit(status == VA_STATUS_SUCCESS
                              ? crystalhd_vaapi_trace::Event::VppCommit
@@ -10125,6 +10132,12 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     pending.preserve_fields = decode_context->vpp_preserve_fields;
     pending.source_timestamp = timestamp;
     pending.sequence = sequence;
+    if (driver->trace.enabled()) {
+      pending.trace_binding = TraceFields(source_decoder.get(), decoded_source.get(), timestamp);
+      pending.trace_binding.surface = TraceId(target_surface->id, VA_INVALID_SURFACE);
+      pending.trace_binding.owner = TraceOwner(target_owner.get());
+      pending.trace_binding.operation = sequence;
+    }
     pending.decoder_generation = source_decoder
                                      ? source_decoder->generation
                                      : 0;
@@ -10149,12 +10162,15 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     driver->pending_vpp.back().write_timeline = write_timeline;
     ++decoded_source->vpp_readers;
     ++target_owner->vpp_writers;
+    driver->trace.Emit(crystalhd_vaapi_trace::Event::VppQueued,
+                       driver->pending_vpp.back().trace_binding);
     if (!cpu_pending_target && write_timeline < 0) {
       // The target has external consumers, but no fence could be published.
       // Retain normal ownership while waiting and finish all CPU writes before
       // returning EndPicture; never expose an unfenced asynchronous writer.
       driver->pending_vpp.back().worker_active = true;
       const PendingVpp operation = driver->pending_vpp.back();
+      driver->trace.Emit(crystalhd_vaapi_trace::Event::VppStart, operation.trace_binding);
       driver->condition.notify_all();
       const auto cancellation_mask = [&] {
         const auto processor = driver->contexts.find(context_id);
@@ -10206,6 +10222,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
               static_cast<unsigned long long>(operation.sequence), status);
       }
       if (status == VA_STATUS_SUCCESS) {
+        driver->trace.Emit(crystalhd_vaapi_trace::Event::VppRun, operation.trace_binding);
         status = ProcessVpp(&driver->vpp_scaler, &driver->vpp_argb_staging,
                             first_field_view ? first_field_view.get() : operation.source.get(),
                             operation.target.get(),
@@ -10259,6 +10276,12 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
 static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
                              uint64_t timeout_ns) {
   Driver *driver = GetDriver(context);
+  const bool trace_enabled = driver->trace.enabled();
+  const auto call_entry = trace_enabled ? std::chrono::steady_clock::now()
+                                        : std::chrono::steady_clock::time_point{};
+#if defined(CRYSTALHD_VAAPI_TEST_CALL_ENTRY)
+  CRYSTALHD_VAAPI_TEST_CALL_ENTRY();
+#endif
   std::unique_lock<std::mutex> lock(driver->mutex, std::defer_lock);
   if (timeout_ns == 0) {
     // A passive readiness query must not wait behind conversion or another
@@ -10269,6 +10292,8 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
   } else {
     lock.lock();
   }
+  const auto trace_start = trace_enabled ? std::chrono::steady_clock::now()
+                                         : std::chrono::steady_clock::time_point{};
   auto surface = driver->surfaces.find(surface_id);
   if (surface == driver->surfaces.end() ||
       !HasLiveBackingOwner(driver, surface->second.get()))
@@ -10285,14 +10310,15 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
   }
   if (synchronized_surface->image_write_locked)
     return VA_STATUS_ERROR_SURFACE_BUSY;
-  const bool trace_enabled = driver->trace.enabled();
   crystalhd_vaapi_trace::Fields trace_fields;
-  std::chrono::steady_clock::time_point trace_start;
   if (trace_enabled) {
     trace_fields = TraceRequestedOwnerFields(requested_surface.get(),
                                              synchronized_surface.get());
     trace_fields.operation = NextTraceCall(driver);
-    trace_start = std::chrono::steady_clock::now();
+    trace_fields.call_entry_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(call_entry.time_since_epoch()).count());
+    trace_fields.admission_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(trace_start - call_entry).count());
     driver->trace.Emit(crystalhd_vaapi_trace::Event::SyncEnter, trace_fields);
   }
   const auto finish = [&](VAStatus status) {
@@ -11114,12 +11140,18 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
        (flags & VA_EXPORT_SURFACE_COMPOSED_LAYERS) != 0))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   Driver *driver = GetDriver(context);
+  const bool trace_enabled = driver->trace.enabled();
+  const auto call_entry = trace_enabled ? std::chrono::steady_clock::now()
+                                        : std::chrono::steady_clock::time_point{};
+#if defined(CRYSTALHD_VAAPI_TEST_CALL_ENTRY)
+  CRYSTALHD_VAAPI_TEST_CALL_ENTRY();
+#endif
   std::unique_lock<std::mutex> lock(driver->mutex);
+  const auto trace_start = trace_enabled ? std::chrono::steady_clock::now()
+                                         : std::chrono::steady_clock::time_point{};
   const uint32_t access = flags & VA_EXPORT_SURFACE_READ_WRITE;
   const bool explicit_read_only = access == VA_EXPORT_SURFACE_READ_ONLY;
-  const bool trace_enabled = driver->trace.enabled();
   crystalhd_vaapi_trace::Fields trace_fields;
-  std::chrono::steady_clock::time_point trace_start;
   if (trace_enabled) {
     const auto traced = driver->surfaces.find(surface_id);
     if (traced != driver->surfaces.end() &&
@@ -11128,7 +11160,10 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
           traced->second.get(), BackingOwner(driver, traced->second.get()));
     trace_fields.surface = TraceId(surface_id, VA_INVALID_SURFACE);
     trace_fields.operation = NextTraceCall(driver);
-    trace_start = std::chrono::steady_clock::now();
+    trace_fields.call_entry_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(call_entry.time_since_epoch()).count());
+    trace_fields.admission_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(trace_start - call_entry).count());
     driver->trace.Emit(crystalhd_vaapi_trace::Event::ExportEnter,
                        trace_fields);
   }

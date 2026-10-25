@@ -8,7 +8,7 @@ EXPECTED_KEYS = {
     "schema", "ts_monotonic_ns", "session", "driver_instance", "pid", "seq",
     "event", "context", "generation", "surface", "token",
     "decode_identity", "owner", "submission_ordinal", "operation",
-    "duration_ns", "outcome", "identified_exported_object_count",
+    "duration_ns", "call_entry_ns", "admission_ns", "outcome", "identified_exported_object_count",
     "pollout_count", "not_pollout_count", "probe_error_count",
     "probe_errno", "payload_token", "payload_decode_identity",
     "payload_submission_ordinal", "submission_drift",
@@ -25,31 +25,33 @@ def strict_object(pairs):
 
 lines = [line for line in sys.stdin.read().splitlines() if line]
 records = [json.loads(line, object_pairs_hook=strict_object) for line in lines]
-assert len(records) == 18 + 4 * 16
-assert [record["event"] for record in records[:18]] == [
+assert len(records) == 21 + 4 * 16
+assert [record["event"] for record in records[:21]] == [
     "submit_bind", "input_sent", "prefeed_sent", "output_dequeued",
     "materialized", "binding_end", "sync_enter", "sync_exit",
     "export_enter", "export_exit",
     "read_export_reuse_implicit_fence_probe",
     "presentation_ready", "presentation_commit", "presentation_drop",
-    "vpp_capture", "vpp_commit",
+    "vpp_capture", "vpp_queued", "vpp_start", "vpp_run", "vpp_commit",
     "context_destroy", "surface_destroy",
 ]
 for index, record in enumerate(records, 1):
     assert set(record) == EXPECTED_KEYS
-    assert record["schema"] == "crystalhd-vaapi-trace-v3"
+    assert record["schema"] == "crystalhd-vaapi-trace-v4"
     assert record["seq"] == index
     assert record["session"] == record["driver_instance"] != 0
     assert all(isinstance(record[key], int) for key in EXPECTED_KEYS
                if key not in {"schema", "event"})
 for earlier, later in zip(records, records[1:]):
     assert earlier["ts_monotonic_ns"] <= later["ts_monotonic_ns"]
-for record in records[:18]:
+for record in records[:21]:
     assert (record["context"], record["generation"], record["surface"],
             record["token"], record["decode_identity"], record["owner"],
             record["submission_ordinal"]) == (7, 3, 11, 400000, 19, 11, 4)
 assert records[6]["operation"] == records[7]["operation"] == 10
 assert records[7]["duration_ns"] == 250
+assert records[7]["call_entry_ns"] == 1000
+assert records[7]["admission_ns"] == 70
 assert records[8]["operation"] == records[9]["operation"] == 11
 assert records[9]["duration_ns"] == 500
 assert records[10]["operation"] == 11
@@ -62,6 +64,6 @@ for record in records[11:14]:
     assert (record["payload_token"], record["payload_decode_identity"],
             record["payload_submission_ordinal"],
             record["submission_drift"]) == (300000, 18, 3, 1)
-assert all(record["event"] == "output_dequeued" for record in records[18:])
+assert all(record["event"] == "output_dequeued" for record in records[21:])
 assert all("0x" not in line and "/" not in line for line in lines)
 print(f"VA-API trace: {len(records)} strict JSONL records verified")

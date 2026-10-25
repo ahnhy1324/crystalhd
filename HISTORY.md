@@ -17,6 +17,8 @@ this development identity is not a release or a new support claim.
   record; serialize retry against any child still replacing files.
 - Prepare runtime files before replacement; retain the installed payload on
   preparation failure and publish prepared bytes with atomic leaf replacement.
+- Include mutex admission in optional VA Sync/Export diagnostics and retain
+  captured VPP identity across queue, conversion and cancellation events.
 - Read and update host RX metadata through registered pinned pages, including
   status calls from a separate monitor process; preserve DMA synchronization.
 - Let validated concurrent RELEASE cancel its file's legacy BUSY input and

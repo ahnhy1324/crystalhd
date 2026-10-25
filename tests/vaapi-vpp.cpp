@@ -1631,7 +1631,7 @@ struct Fixture {
   std::shared_ptr<Surface> target = Picture(0, 99);
   VABufferID parameters = VA_INVALID_ID;
 
-  Fixture() {
+  explicit Fixture(int trace_fd = STDERR_FILENO) : driver(-1, trace_fd) {
     context.pDriverData = &driver;
     processor->video_process = true;
     driver.contexts[1] = decoder;
@@ -1666,6 +1666,78 @@ struct Fixture {
     }
   }
 };
+
+static void VppTraceKeepsQueuedIdentity() {
+  const char *previous = getenv("CRYSTALHD_VAAPI_TRACE");
+  const bool had_value = previous != nullptr;
+  const std::string saved = previous ? previous : "";
+  struct Restore {
+    bool had; std::string value;
+    ~Restore() {
+      if (had) setenv("CRYSTALHD_VAAPI_TRACE", value.c_str(), 1);
+      else unsetenv("CRYSTALHD_VAAPI_TRACE");
+    }
+  } restore{had_value, saved};
+  setenv("CRYSTALHD_VAAPI_TRACE", "1", 1);
+  for (unsigned mode = 0; mode != 3; ++mode) {
+    FILE *file = tmpfile();
+    Require(file != nullptr, "create VPP trace file");
+    {
+      Fixture f(fileno(file));
+      f.driver.StopWorkers();
+      f.driver.stopping = false;
+      f.decoder->id = 7;
+      f.decoder->generation = 3;
+      f.target->id = 2;
+      auto picture = f.decoder->decoded_frames.at(kTimestampStep);
+      picture->trace_decode_identity = 19;
+      picture->trace_submission_ordinal = 4;
+      picture->ready = mode == 0;
+      f.SubmitParameters();
+      Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS, "trace immediate/queued VPP");
+      if (mode != 0) {
+        Require(f.driver.pending_vpp.size() == 1, "one traced queued operation");
+        if (mode == 2) f.decoder->Reset();
+        else picture->ready = true;
+        f.driver.vpp_worker = std::thread([&] { RunVppWorker(&f.driver); });
+        Require(SyncSurface2(&f.context, 2, 1000000000ULL) ==
+                    (mode == 2 ? VA_STATUS_ERROR_DECODING_ERROR : VA_STATUS_SUCCESS),
+                "trace leaves queued completion/cancellation unchanged");
+      }
+      Require(f.driver.pending_vpp.empty() && picture->vpp_readers == 0 &&
+                  f.target->vpp_writers == 0, "tracing retains no VPP leases");
+    }
+    Require(fseek(file, 0, SEEK_END) == 0, "size VPP trace");
+    std::string data(static_cast<size_t>(ftell(file)), '\0');
+    rewind(file);
+    Require(fread(&data[0], 1, data.size(), file) == data.size(), "read VPP trace");
+    fclose(file);
+    auto event = [&](const char *name) {
+      const std::string marker = std::string("\"event\":\"") + name + "\"";
+      const size_t at = data.find(marker);
+      Require(at != std::string::npos, "expected VPP stage recorded");
+      const size_t begin = data.rfind('\n', at);
+      return data.substr(begin == std::string::npos ? 0 : begin + 1,
+                         data.find('\n', at) - (begin == std::string::npos ? 0 : begin + 1));
+    };
+    const std::string terminal = event(mode == 2 ? "vpp_cancel" : "vpp_commit");
+    for (const char *field : {"\"context\":7,", "\"generation\":3,",
+                              "\"decode_identity\":19,", "\"operation\":1,"})
+      Require(terminal.find(field) != std::string::npos,
+              "terminal VPP trace retains captured identity after reset");
+    if (mode != 0) (void)event("vpp_queued");
+    if (mode == 1) {
+      (void)event("vpp_start");
+      (void)event("vpp_run");
+      Require(data.find("\"event\":\"vpp_queued\"") < data.find("\"event\":\"vpp_start\"") &&
+                  data.find("\"event\":\"vpp_start\"") < data.find("\"event\":\"vpp_run\""),
+              "queue, worker selection and conversion have ordered events");
+    }
+    if (mode == 0) (void)event("vpp_run");
+    if (mode == 2) Require(data.find("\"event\":\"vpp_run\"") == std::string::npos,
+                           "canceled source has no conversion-start event");
+  }
+}
 
 struct DecodeProcessingFixture : Fixture {
   VARectangle visible{0, 0, 256, 24};
@@ -7230,6 +7302,10 @@ static void FirstFieldCpuViewPreservesPublicReadiness() {
 // Keep the complete entry globally compiled for syntax coverage. CPU-only
 // section-GC builds retain only their selected state-machine groups below.
 int VppFullTestEntry(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--trace-vpp") == 0) {
+    try { VppTraceKeepsQueuedIdentity(); puts("VA-API VPP trace PASS"); return 0; }
+    catch (const std::exception &error) { fprintf(stderr, "%s\n", error.what()); return 1; }
+  }
   if (argc == 2 && strcmp(argv[1], "--bgra-images") == 0) {
     try {
       BgraImagesPreserveBytesAndDerivedOwnership();
@@ -7383,6 +7459,7 @@ int VppFullTestEntry(int argc, char **argv) {
       GenuineSwSyncCompletionStatuses();
       return 0;
     }
+    VppTraceKeepsQueuedIdentity();
     UnusedVppProbeDoesNotNotifyDecoder();
     DefaultVppCapabilitiesRemainAvailable();
     ConfigAttributesMatchAdvertisedSupport();

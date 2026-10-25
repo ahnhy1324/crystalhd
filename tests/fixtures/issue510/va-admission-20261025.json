@@ -1,0 +1,198 @@
+{
+  "schema": 1,
+  "date": "2026-10-25",
+  "issue": 510,
+  "runtime_source": "98d3940",
+  "measured_source": "2482df30c360940de03a67c7f198a3cf0cf85c47",
+  "environment": {
+    "os": "Ubuntu26.04.1 LTS",
+    "kernel": "7.0.0-38-generic",
+    "cpu": "Core2Duo T8100",
+    "card": "BCM70015",
+    "loaded_module": "3.10.13",
+    "force_l0s_off": true,
+    "session_l0s_off": false,
+    "installed_payload_changed": false,
+    "external_application_changes": false
+  },
+  "scope": "Opt-in admission/VPP diagnostics; no new performance, physical A/V, display cadence, E2E or i386 hardware acceptance claim.",
+  "validation": {
+    "production_build": "PASS -O2 -Wall -Wextra -Werror, unchanged qualified DIL reused",
+    "vpp": "PASS existing109 regressions and new immediate/queued/reset trace group, -O1",
+    "replay": "PASS full replay/identity/teardown suite including actual held-mutex timing regression, -O1",
+    "writer": "PASS85 strict JSONL records; plain and ASan/UBSan with leak detection",
+    "i386": "PASS85 writer records, no-SSE PentiumII build, native ELF32 and qemu-i386 PentiumII; not full32 VA or hardware",
+    "kernel_resource_pm_aer": "PASS scoped FFmpeg/Kodi and final idle/ref/pin/link/AER checks"
+  },
+  "native_ffmpeg": {
+    "fixture": "retained uniform-tff-50.h264,1920x1080 H264 TFF,50 originals",
+    "path": "stock FFmpeg VA Bob rate=field -> hwdownload NV12",
+    "quiet_outputs": 100,
+    "traced_outputs": 100,
+    "pixels_pts": "PASS all100 outputs identical trace OFF/ON",
+    "eos_exit_reopen_resources": "both exit0 with EOS and clean resource boundary",
+    "timing": {
+      "events": {
+        "submit_bind": 50,
+        "input_sent": 50,
+        "prefeed_sent": 51,
+        "vpp_capture": 100,
+        "vpp_queued": 4,
+        "vpp_start": 4,
+        "output_dequeued": 100,
+        "vpp_run": 100,
+        "vpp_commit": 100,
+        "sync_enter": 100,
+        "sync_exit": 100,
+        "materialized": 50,
+        "binding_end": 150,
+        "context_destroy": 2,
+        "surface_destroy": 18,
+        "session_destroy": 1
+      },
+      "sync_exit": {
+        "admission_ns": {
+          "n": 100,
+          "p50_ms": 0.00461,
+          "p95_ms": 0.588285,
+          "max_ms": 9.352289
+        },
+        "duration_ns": {
+          "n": 100,
+          "p50_ms": 0.0272385,
+          "p95_ms": 0.089748,
+          "max_ms": 135.863921
+        }
+      },
+      "vpp_queued->vpp_start": {
+        "n": 4,
+        "p50_ms": 17.481877,
+        "p95_ms": 109.646222,
+        "max_ms": 109.646222
+      },
+      "vpp_start->vpp_run": {
+        "n": 4,
+        "p50_ms": 10.443896,
+        "p95_ms": 140.24711,
+        "max_ms": 140.24711
+      },
+      "vpp_run->vpp_commit": {
+        "n": 100,
+        "p50_ms": 4.471855,
+        "p95_ms": 10.257241,
+        "max_ms": 21.573997
+      }
+    }
+  },
+  "stock_kodi": {
+    "fixture": "retained kodi-h264-1080i25-30s.mkv,750 originals",
+    "path": "stock Kodi21.3,private profile,ordinary FHD Auto VA Bob,default input policy,no centered/LIVE override",
+    "traced": {
+      "qualification": "FAIL natural-playback output-message timeout; natural EOF/reopen/process exit completed",
+      "originals_submitted": 750,
+      "bob_commits": 1500,
+      "exports": 1496,
+      "displayed_count": "NOT ESTABLISHED",
+      "timing": {
+        "scope": "natural open through EOF and aggregate detach; excludes reopen",
+        "events": {
+          "sync_enter": 3009,
+          "sync_exit": 3009,
+          "context_destroy": 3,
+          "surface_destroy": 26,
+          "submit_bind": 750,
+          "input_sent": 750,
+          "prefeed_sent": 751,
+          "vpp_capture": 1500,
+          "vpp_queued": 333,
+          "vpp_start": 333,
+          "output_dequeued": 1500,
+          "vpp_run": 1500,
+          "vpp_commit": 1500,
+          "materialized": 750,
+          "export_enter": 1496,
+          "export_exit": 1496,
+          "binding_end": 2250,
+          "session_destroy": 1
+        },
+        "sync_exit": {
+          "admission_ns": {
+            "n": 3009,
+            "p50_ms": 0.002026,
+            "p95_ms": 4.714313,
+            "max_ms": 107.428158
+          },
+          "duration_ns": {
+            "n": 3009,
+            "p50_ms": 0.018089,
+            "p95_ms": 0.392237,
+            "max_ms": 140.591157
+          }
+        },
+        "export_exit": {
+          "admission_ns": {
+            "n": 1496,
+            "p50_ms": 0.002794,
+            "p95_ms": 11.027187,
+            "max_ms": 81.486407
+          },
+          "duration_ns": {
+            "n": 1496,
+            "p50_ms": 0.060903,
+            "p95_ms": 0.120828,
+            "max_ms": 4.477547
+          }
+        },
+        "vpp_queued->vpp_start": {
+          "n": 333,
+          "p50_ms": 0.075151,
+          "p95_ms": 43.522909,
+          "max_ms": 104.876943
+        },
+        "vpp_start->vpp_run": {
+          "n": 333,
+          "p50_ms": 4.656484,
+          "p95_ms": 38.850082,
+          "max_ms": 138.176345
+        },
+        "vpp_run->vpp_commit": {
+          "n": 1500,
+          "p50_ms": 3.455853,
+          "p95_ms": 7.404376,
+          "max_ms": 25.37344
+        }
+      },
+      "vpp_interval_overlap": {
+        "sync_exit": {
+          "waits_at_least_1ms": 416,
+          "overlapping_vpp_run_retirement": 111,
+          "wait_total_ms": 2321.227759,
+          "overlap_ms": 466.403802,
+          "overlap_fraction": 0.2009297882086891
+        },
+        "export_exit": {
+          "waits_at_least_1ms": 588,
+          "overlapping_vpp_run_retirement": 322,
+          "wait_total_ms": 3853.829355,
+          "overlap_ms": 1116.498357,
+          "overlap_fraction": 0.2897114153618252
+        }
+      }
+    },
+    "quiet": {
+      "qualification": "natural playback PASS; short reopen PASS; lifecycle REVIEW",
+      "natural_playback_warnings": 0,
+      "explicit_stop_warning": "OutputPicture timeout waiting for buffer; exact return cause not established",
+      "eof_last_media_seconds": 29.676
+    },
+    "common": "Both runs retain explicit-Stop buffer-wait warning; no blanket lifecycle PASS. Traced timing is perturbed and not used for CPU/performance ranking."
+  },
+  "retained_unsuccessful_attempts": [
+    {
+      "status": "NOT QUALIFIED",
+      "cause": "first FFmpeg observer hit /proc/PID/fd PermissionError, child interrupted; observer corrected to read-only privileged fuser before qualifying the two completed runs",
+      "location": "private observer-permission-fail log/output"
+    }
+  ],
+  "interpretation": "Admitted Kodi Sync/Export calls have a measurable mutex-wait tail. VPP run-to-retirement intervals overlap only20.09%/28.97% of total waits>=1ms for Sync/Export in the traced run. They do not explain all admission delay or prove a quiet-playback regression. Preserve lock ownership; next narrow attribution includes decode/materialization and API work before considering lease-safe separation."
+}

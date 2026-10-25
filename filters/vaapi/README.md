@@ -828,6 +828,24 @@ These process-local controls are for debugging, not ordinary playback:
 Do not publish trace or debug output without checking it for media bytes,
 paths and application metadata.
 
+Trace schema `crystalhd-vaapi-trace-v4` separates admitted Sync/Export calls'
+`admission_ns` (entry through acquiring the driver mutex) from `duration_ns`
+(post-admission through the exit sample). Add them for that call's sampled
+elapsed time. `call_entry_ns` uses the same steady monotonic clock as event
+`ts_monotonic_ns`; enter records are emitted after admission and identify the
+binding observed then. Zero-timeout calls rejected before admission and early
+argument/surface rejections do not produce paired timing records. Timeout and
+readiness behavior are unchanged.
+
+For queued VPP, join `vpp_queued`, `vpp_start`, `vpp_run` and
+`vpp_commit`/`vpp_cancel` by session and operation. Queue-to-start includes
+scheduling; start-to-run includes waiting for the selected source; run-to-commit
+includes conversion and retirement, not pure CPU time. Immediate ready-source
+VPP has run/terminal records without a queue. Canceled work need not reach run.
+These VPP records retain the captured source identity and name the destination
+in surface/owner, including after reset or target reuse. Times from tracing are
+diagnostic observations, not physical display or end-to-end latency.
+
 ### Bounded H.264 admission diagnostic
 
 `make h264-au-admission-check` validates the fixture/readback checker without
