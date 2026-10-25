@@ -8,9 +8,11 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import stat
 import sys
+import threading
 
 DATA_RELATIVE = "@SETTINGS_DATA_RELATIVE@"
 
@@ -241,6 +243,12 @@ class SettingsWindow(object):
         self.tray_bus = None
         self.tray_subscriptions = []
         self.quitting = False
+        self.readers_unknown = False
+        self._inspection_generation = 0
+        self._inspection_worker = None
+        self._inspection_results = queue.Queue(maxsize=1)
+        self._inspection_source = 0
+        self._inspection_closed = False
         self.quit_callback = quit_callback
         self.started = False
         self.window_only = no_tray
@@ -253,6 +261,7 @@ class SettingsWindow(object):
         self.window.set_border_width(14)
         self.window.connect("delete-event", self.close_window)
         self.window.connect("key-press-event", self.key_press)
+        self.window.connect("destroy", self.cancel_installation)
         # PNG works even on minimal GTK/Qt hosts without an SVG loader.
         icon = data_directory() / "icons/hicolor/32x32/apps/crystalhd-settings.png"
         window_icon = data_directory() / "icons/hicolor/64x64/apps/crystalhd-settings.png"
@@ -369,7 +378,6 @@ class SettingsWindow(object):
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroll.add(installation)
         self.notebook.append_page(scroll, Gtk.Label(label=_("Installation")))
-        self.refresh_installation()
         location = Gtk.Label(label=_("User file: ") + str(editor.path), xalign=0)
         location.set_ellipsize(2)
         location.set_tooltip_text(str(editor.path))
@@ -395,13 +403,73 @@ class SettingsWindow(object):
         if not no_tray:
             self.setup_tray(icon)
         self.sync_form()
+        self.refresh_installation()
 
     def refresh_installation(self, *_args):
-        report = self.editor.core.inspect_installation()
-        self.installation_status.set_text(self.editor.core.installation_text(report))
-        self.readers_unknown = any(item["state"] != "declared-v1" for item in report["readers"])
-        if hasattr(self, "save_button"):
+        if self._inspection_closed or self.quitting:
+            return
+        self._inspection_generation += 1
+        self.installation_status.set_text(_("Inspecting installed components…"))
+        # One reader at a time. Repeated refreshes invalidate the old result
+        # and coalesce into one inspection of the latest on-disk state.
+        if self._inspection_worker is None:
+            self.start_installation()
+        if self._inspection_worker is not None and not self._inspection_source:
+            self._inspection_source = self.GLib.timeout_add(50, self.poll_installation)
+
+    def start_installation(self):
+        core, results = self.editor.core, self._inspection_results
+        generation = self._inspection_generation
+
+        def inspect():
+            # No editor/draft/GTK access from this thread. The queue, unlike
+            # a UI callback, can safely outlive a destroyed window.
+            try:
+                report = core.inspect_installation()
+                result = (core.installation_text(report),
+                          any(item["state"] != "declared-v1" for item in report["readers"]))
+            except Exception:
+                # Never reflect file contents or exception paths into status.
+                result = None
+            results.put_nowait((generation, result))
+
+        self._inspection_worker = threading.Thread(target=inspect, name="crystalhd-inspection", daemon=True)
+        try:
+            self._inspection_worker.start()
+        except (OSError, RuntimeError):
+            self._inspection_worker = None
+            self.installation_status.set_text(_("Installation inspection failed. Refresh to retry."))
+
+    def poll_installation(self):
+        if self._inspection_closed or self.quitting:
+            self._inspection_source = 0
+            return False
+        try:
+            generation, result = self._inspection_results.get_nowait()
+        except queue.Empty:
+            return True
+        self._inspection_worker = None
+        if generation != self._inspection_generation:
+            self.start_installation()
+            if self._inspection_worker is not None:
+                return True
+        elif result is None:
+            self.installation_status.set_text(_("Installation inspection failed. Refresh to retry."))
+        else:
+            text, self.readers_unknown = result
+            self.installation_status.set_text(text)
             self.update_preview()
+        self._inspection_source = 0
+        return False
+
+    def cancel_installation(self, *_args):
+        self._inspection_closed = True
+        self._inspection_generation += 1
+        if self._inspection_source:
+            self.GLib.source_remove(self._inspection_source)
+            self._inspection_source = 0
+        # A slow filesystem read cannot be interrupted safely. Do not join it
+        # on the UI thread or keep the app alive; late results are discarded.
 
     def choice(self, grid, row, text):
         label = self.Gtk.Label.new_with_mnemonic(text)

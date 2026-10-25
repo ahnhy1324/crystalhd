@@ -24,7 +24,10 @@ page inspect reader declarations in the PATH-selected Player and the inspector
 ABI's default linker-cache DIL/VA candidates. They do not execute these files,
 load a decoder or read saved configuration. `declared-v1` identifies the supported
 keys; absent declarations mean a legacy or unknown build. Refresh after updating
-components. Loader overrides and another application's ABI can select different
+components. In the settings window, inspection runs in the background so editing
+and closing remain available. Repeated refreshes keep only the latest request;
+closing the window without a tray discards pending results.
+Loader overrides and another application's ABI can select different
 files: this is file capability, not proof of settings applied in a running app.
 The report includes local file paths; review it before sharing. `bug-report`
 retains its separate redacted configuration-only format.
