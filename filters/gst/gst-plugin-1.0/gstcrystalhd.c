@@ -1484,6 +1484,7 @@ gst_crystalhd_wait_ready(GstCrystalHdDec *self, gboolean no_progress_ready,
   if (self->output_poll_fd < 0 || self->output_control_fd < 0) {
     g_cond_wait_until(&self->output_cond, &self->output_lock,
                       g_get_monotonic_time() + 5000);
+    self->output_wake_pending = FALSE;
     g_mutex_unlock(&self->output_lock);
     return TRUE;
   }
@@ -1529,7 +1530,10 @@ gst_crystalhd_wait_ready(GstCrystalHdDec *self, gboolean no_progress_ready,
        (POLLERR | POLLHUP | POLLNVAL)) != 0) {
     /* Suspend/removal and optional-fd failures retain ordinary status/recovery
      * handling; never spin on a terminal descriptor or reuse it after reopen. */
-    GST_WARNING_OBJECT(self, "output readiness ended; using timed status checks");
+    GST_WARNING_OBJECT(self,
+        "output readiness ended (poll=%d, control=0x%x, RX=0x%x); using timed status checks",
+        result, (unsigned int)descriptors[0].revents,
+        (unsigned int)descriptors[1].revents);
     close(self->output_poll_fd);
     self->output_poll_fd = -1;
   }
