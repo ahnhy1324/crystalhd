@@ -92,6 +92,13 @@ jobs:
           make -C tools/kodi-route-probe check-demux \
             KODI_SDK_INCLUDE="$kodi_probe_sdk/xbmc/addons/kodi-dev-kit/include" \
             TEST_MP4="$RUNNER_TEMP/kodi-route-aac.mp4"
+          ffmpeg -v error -nostdin -i "$RUNNER_TEMP/kodi-route-aac.mp4" -map 0 -c copy \
+            -bsf:v h264_metadata=video_full_range_flag=0:colour_primaries=5:transfer_characteristics=1:matrix_coefficients=5 \
+            -color_primaries 2 -color_trc 2 -colorspace 2 -color_range 0 \
+            "$RUNNER_TEMP/kodi-route-sps-color.mp4"
+          # Gst's canonical ISO matrix6 is equivalent to5; primaries5 stays distinct.
+          tools/kodi-route-probe/build/kodi-route-demux-test \
+            "$RUNNER_TEMP/kodi-route-sps-color.mp4" 6 5 1 1
 
       - name: Validate optional settings window without hardware
         run: |

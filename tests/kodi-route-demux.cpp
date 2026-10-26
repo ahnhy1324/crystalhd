@@ -46,6 +46,10 @@ static void demux() {
     const int v = av_find_best_stream(reference, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     kodi::addon::InputstreamInfo video_info; g_assert_true(stream.GetStream(0, video_info));
     const auto* color = reference->streams[v]->codecpar;
+    g_test_message("container color=%d/%d/%d/%d; resolved=%d/%d/%d/%d",
+        color->color_space, color->color_primaries, color->color_trc, color->color_range,
+        video_info.GetColorSpace(), video_info.GetColorPrimaries(),
+        video_info.GetColorTransferCharacteristic(), video_info.GetColorRange());
     if (!expected_color.empty()) {
       g_assert_cmpuint(video_info.GetColorSpace(), ==, expected_color[0]);
       g_assert_cmpuint(video_info.GetColorPrimaries(), ==, expected_color[1]);

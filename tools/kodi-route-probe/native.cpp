@@ -39,11 +39,18 @@ bool InspectAvcColor(const uint8_t* extra, size_t extra_size,
       GstVideoColorimetry color{};
       if (value && !gst_video_colorimetry_from_string(&color, value)) ok = false;
       if (value && ok) {
-        if (color.matrix != GST_VIDEO_COLOR_MATRIX_UNKNOWN)
+        /* Gst represents ISO matrix IDs 5 and 6 by the same BT.601 enum.
+         * Preserve an equivalent explicit container ID; with bitstream-only
+         * metadata to_iso returns its canonical equivalent (6). Primaries
+         * are a separate descriptor and must never be inferred from that ID. */
+        if (color.matrix != GST_VIDEO_COLOR_MATRIX_UNKNOWN &&
+            gst_video_color_matrix_from_iso(hints.matrix) != color.matrix)
           hints.matrix = gst_video_color_matrix_to_iso(color.matrix);
-        if (color.primaries != GST_VIDEO_COLOR_PRIMARIES_UNKNOWN)
+        if (color.primaries != GST_VIDEO_COLOR_PRIMARIES_UNKNOWN &&
+            gst_video_color_primaries_from_iso(hints.primaries) != color.primaries)
           hints.primaries = gst_video_color_primaries_to_iso(color.primaries);
-        if (color.transfer != GST_VIDEO_TRANSFER_UNKNOWN)
+        if (color.transfer != GST_VIDEO_TRANSFER_UNKNOWN &&
+            gst_video_transfer_function_from_iso(hints.transfer) != color.transfer)
           hints.transfer = gst_video_transfer_function_to_iso(color.transfer);
         if (color.range != GST_VIDEO_COLOR_RANGE_UNKNOWN)
           hints.range = color.range == GST_VIDEO_COLOR_RANGE_0_255 ? 2 : 1;
