@@ -47,6 +47,37 @@ identity, EOS/reopen and cancellation. `--card FILE` separately requires a
 50-picture H.264 fixture and the real decoder. Synthetic checks are not card,
 audio or physical acceptance. This consumer remains experimental.
 
+[Window results](window-field-output-20261027.json) qualify code `915e819`:
+36 full RGB comparisons pass (BT.601/709, both parities and progressive,
+two source generations, three geometries; maximum error 1/255). Three
+synthetic EOS/reopen runs and a second-field wait cancellation retire all
+owned resources; the cancellation closes in 28.3 ms. Player tests: 97 PASS.
+
+Real 30-second H.264/AAC playback selects `GstPulseSinkClock`, decodes 750
+pictures and delivers 1,408 audio buffers through PulseSink. Automated
+pause/resume, forward/backward seek and 0.5×/1×/2× playback reach EOS and clean
+close. The maintainer confirms physical A/V, speed/motion, then the actual
+window's pause/seek controls without persistent black/stall. An earlier
+unobserved control replay remains NOT RUN, not a second acceptance result.
+
+The initial audio-clocked consumer accumulated 3.25 s maximum swap age.
+Cost observations exposed refresh throttling after the late swap request.
+Earlier swap submission plus expiry/QoS bounds the subsequent ordinary run
+to 25.6 ms maximum swap age, with **229/1,500 field skips (15.27%)**. The
+fullscreen physical run skips **348/1,500 (23.2%)**. These combined policy
+changes are not an isolated GPU speedup measurement or lossless 50/60-field
+qualification. Draw timings can include backbuffer acquisition/throttling;
+swap return is not scanout. A/V confirmation is subjective, not numeric E2E.
+
+Retaining and reopening the raw H.264 parser graph produces nonmonotonic
+early PTS (`0, 80, 120, 120 ms`) in both software and CrystalHD output.
+A two-buffer queue does not fix this counterexample. Counts/EOS/resource
+checks alone do not make its cadence pass, and the sink does not rewrite
+these PTS. Timestamped-container playback above is a separate observation.
+Live input, NV12, native i386, long endurance and physical scanout timing
+remain unqualified. The installed module, PM, links, pins and AER boundaries
+are unchanged; finite playback does not advance #533's nonempty-drain gate.
+
 One immutable linear YUYV allocation supplies top/bottom EGLImages with
 offsets 0/S, pitch 2S and height H/2. Both field uses complete before source
 retirement. Two differently patterned allocations alternate by picture;

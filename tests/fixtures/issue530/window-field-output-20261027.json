@@ -1,0 +1,2977 @@
+{
+  "schema": 1,
+  "issue": 530,
+  "recorded_utc": "2026-10-26T22:46:59.790314+00:00",
+  "tested_source": "915e8191be785940212f286ca03a6294eba1a75e",
+  "decoder_source": "54752a1af514eb673b563fb80b6df6600223a666",
+  "scope": "Experimental rank-NONE XCB/EGL sink, optional Player field-gpu; no install/default/VA/ioctl/driver/firmware/PM changes. Submission/clock observations are not physical scanout or numeric A/V latency.",
+  "environment": {
+    "os": "Ubuntu26.04.1LTS",
+    "kernel": "7.0.0-38-generic",
+    "gstreamer": "1.28.2",
+    "gpu": "Intel965GM/Mesa26.0.8",
+    "display": "1024x768@60Hz",
+    "audio": "PulseSink/GstPulseSinkClock",
+    "card": "BCM70015, stable module3.10.13"
+  },
+  "synthetic": {
+    "initial_progressive_failure": [
+      {
+        "type": "gpu",
+        "renderer": "Mesa Intel(R) 965GM (CL)",
+        "gles": "OpenGL ES 2.0 Mesa 26.0.8-1ubuntu0.3"
+      },
+      {
+        "type": "allocation",
+        "kind": "gbm-linear-map",
+        "view": "YUYV",
+        "width": 1280,
+        "height": 720,
+        "pitch": 2560,
+        "bytes": 2097152,
+        "modifier": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 709,
+        "field": 0,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 709,
+        "field": 1,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 709,
+        "field": 2,
+        "max_error": 255,
+        "channels_over2": 562338
+      }
+    ],
+    "final": [
+      {
+        "type": "gpu",
+        "renderer": "Mesa Intel(R) 965GM (CL)",
+        "gles": "OpenGL ES 2.0 Mesa 26.0.8-1ubuntu0.3"
+      },
+      {
+        "type": "allocation",
+        "kind": "gbm-linear-map",
+        "view": "YUYV",
+        "width": 1280,
+        "height": 720,
+        "pitch": 2560,
+        "bytes": 2097152,
+        "modifier": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 709,
+        "field": 0,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 709,
+        "field": 1,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 709,
+        "field": 2,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 601,
+        "field": 0,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 601,
+        "field": 1,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 601,
+        "field": 2,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 709,
+        "field": 0,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 709,
+        "field": 1,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 709,
+        "field": 2,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 601,
+        "field": 0,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 601,
+        "field": 1,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1280,
+          720
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 601,
+        "field": 2,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "allocation",
+        "kind": "gbm-linear-map",
+        "view": "YUYV",
+        "width": 1920,
+        "height": 1080,
+        "pitch": 3840,
+        "bytes": 4194304,
+        "modifier": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1920,
+          1080
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 709,
+        "field": 0,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1920,
+          1080
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 709,
+        "field": 1,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1920,
+          1080
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 709,
+        "field": 2,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1920,
+          1080
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 601,
+        "field": 0,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1920,
+          1080
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 601,
+        "field": 1,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1920,
+          1080
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 601,
+        "field": 2,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1920,
+          1080
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 709,
+        "field": 0,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1920,
+          1080
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 709,
+        "field": 1,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1920,
+          1080
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 709,
+        "field": 2,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1920,
+          1080
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 601,
+        "field": 0,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1920,
+          1080
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 601,
+        "field": 1,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          1920,
+          1080
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 601,
+        "field": 2,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "allocation",
+        "kind": "gbm-linear-map",
+        "view": "YUYV",
+        "width": 720,
+        "height": 576,
+        "pitch": 1440,
+        "bytes": 917504,
+        "modifier": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          720,
+          576
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 709,
+        "field": 0,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          720,
+          576
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 709,
+        "field": 1,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          720,
+          576
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 709,
+        "field": 2,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          720,
+          576
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 601,
+        "field": 0,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          720,
+          576
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 601,
+        "field": 1,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          720,
+          576
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 0,
+        "matrix": 601,
+        "field": 2,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          720,
+          576
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 709,
+        "field": 0,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          720,
+          576
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 709,
+        "field": 1,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          720,
+          576
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 709,
+        "field": 2,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          720,
+          576
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 601,
+        "field": 0,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          720,
+          576
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 601,
+        "field": 1,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixels",
+        "source": [
+          720,
+          576
+        ],
+        "destination": [
+          640,
+          360
+        ],
+        "generation": 1,
+        "matrix": 601,
+        "field": 2,
+        "max_error": 1,
+        "channels_over2": 0
+      },
+      {
+        "type": "window-pixel-summary",
+        "comparisons": 36,
+        "pass": true
+      },
+      {
+        "type": "gpu",
+        "renderer": "Mesa Intel(R) 965GM (CL)",
+        "gles": "OpenGL ES 2.0 Mesa 26.0.8-1ubuntu0.3"
+      },
+      {
+        "type": "allocation",
+        "kind": "gbm-linear-map",
+        "view": "YUYV",
+        "width": 640,
+        "height": 360,
+        "pitch": 1280,
+        "bytes": 524288,
+        "modifier": 0
+      },
+      {
+        "type": "pipeline",
+        "synthetic": true,
+        "cancel": false,
+        "run": 0,
+        "fields": 24,
+        "prerolls": 1,
+        "cancelled": 0,
+        "stop_ms": 8.396,
+        "resources_after_null": 0,
+        "pass": true
+      },
+      {
+        "type": "gpu",
+        "renderer": "Mesa Intel(R) 965GM (CL)",
+        "gles": "OpenGL ES 2.0 Mesa 26.0.8-1ubuntu0.3"
+      },
+      {
+        "type": "allocation",
+        "kind": "gbm-linear-map",
+        "view": "YUYV",
+        "width": 640,
+        "height": 360,
+        "pitch": 1280,
+        "bytes": 524288,
+        "modifier": 0
+      },
+      {
+        "type": "pipeline",
+        "synthetic": true,
+        "cancel": false,
+        "run": 1,
+        "fields": 24,
+        "prerolls": 2,
+        "cancelled": 0,
+        "stop_ms": 15.198,
+        "resources_after_null": 0,
+        "pass": true
+      },
+      {
+        "type": "gpu",
+        "renderer": "Mesa Intel(R) 965GM (CL)",
+        "gles": "OpenGL ES 2.0 Mesa 26.0.8-1ubuntu0.3"
+      },
+      {
+        "type": "allocation",
+        "kind": "gbm-linear-map",
+        "view": "YUYV",
+        "width": 640,
+        "height": 360,
+        "pitch": 1280,
+        "bytes": 524288,
+        "modifier": 0
+      },
+      {
+        "type": "pipeline",
+        "synthetic": true,
+        "cancel": false,
+        "run": 2,
+        "fields": 24,
+        "prerolls": 3,
+        "cancelled": 0,
+        "stop_ms": 6.144,
+        "resources_after_null": 0,
+        "pass": true
+      },
+      {
+        "type": "gpu",
+        "renderer": "Mesa Intel(R) 965GM (CL)",
+        "gles": "OpenGL ES 2.0 Mesa 26.0.8-1ubuntu0.3"
+      },
+      {
+        "type": "allocation",
+        "kind": "gbm-linear-map",
+        "view": "YUYV",
+        "width": 640,
+        "height": 360,
+        "pitch": 1280,
+        "bytes": 524288,
+        "modifier": 0
+      },
+      {
+        "type": "pipeline",
+        "synthetic": true,
+        "cancel": true,
+        "run": 0,
+        "fields": 1,
+        "prerolls": 1,
+        "cancelled": 1,
+        "stop_ms": 28.313,
+        "resources_after_null": 0,
+        "pass": true
+      }
+    ],
+    "player_tests": {
+      "count": 97,
+      "result": "PASS",
+      "hardware_opened": false
+    }
+  },
+  "raw_reopen": {
+    "stats": [
+      {
+        "stage": "direct",
+        "source": "295740f",
+        "order": "tff",
+        "run": 0,
+        "cumulative_stats": {
+          "pictures": 50,
+          "fields": 100,
+          "prerolls": 1,
+          "redraws": 0,
+          "swaps": 101,
+          "cancelled": 0,
+          "clipped": 0,
+          "failures": 0,
+          "clocked-fields": 100,
+          "late-fields": 0,
+          "max-age-ns": 900700,
+          "allocations": 1,
+          "images": 2,
+          "retained-buffers": 1
+        }
+      },
+      {
+        "stage": "direct",
+        "source": "295740f",
+        "order": "tff",
+        "run": 1,
+        "cumulative_stats": {
+          "pictures": 100,
+          "fields": 200,
+          "prerolls": 2,
+          "redraws": 0,
+          "swaps": 202,
+          "cancelled": 0,
+          "clipped": 0,
+          "failures": 0,
+          "clocked-fields": 200,
+          "late-fields": 94,
+          "max-age-ns": 44971024,
+          "allocations": 1,
+          "images": 2,
+          "retained-buffers": 1
+        }
+      },
+      {
+        "stage": "direct",
+        "source": "295740f",
+        "order": "bff",
+        "run": 0,
+        "cumulative_stats": {
+          "pictures": 50,
+          "fields": 100,
+          "prerolls": 1,
+          "redraws": 0,
+          "swaps": 101,
+          "cancelled": 0,
+          "clipped": 0,
+          "failures": 0,
+          "clocked-fields": 100,
+          "late-fields": 0,
+          "max-age-ns": 9228168,
+          "allocations": 1,
+          "images": 2,
+          "retained-buffers": 1
+        }
+      },
+      {
+        "stage": "direct",
+        "source": "295740f",
+        "order": "bff",
+        "run": 1,
+        "cumulative_stats": {
+          "pictures": 100,
+          "fields": 200,
+          "prerolls": 2,
+          "redraws": 0,
+          "swaps": 202,
+          "cancelled": 0,
+          "clipped": 0,
+          "failures": 0,
+          "clocked-fields": 200,
+          "late-fields": 94,
+          "max-age-ns": 47261232,
+          "allocations": 1,
+          "images": 2,
+          "retained-buffers": 1
+        }
+      },
+      {
+        "stage": "queue2",
+        "source": "039e47b",
+        "order": "tff",
+        "run": 0,
+        "cumulative_stats": {
+          "pictures": 50,
+          "fields": 100,
+          "prerolls": 1,
+          "redraws": 0,
+          "swaps": 101,
+          "cancelled": 0,
+          "clipped": 0,
+          "failures": 0,
+          "clocked-fields": 100,
+          "late-fields": 0,
+          "max-age-ns": 978944,
+          "allocations": 1,
+          "images": 2,
+          "retained-buffers": 1
+        }
+      },
+      {
+        "stage": "queue2",
+        "source": "039e47b",
+        "order": "tff",
+        "run": 1,
+        "cumulative_stats": {
+          "pictures": 100,
+          "fields": 200,
+          "prerolls": 2,
+          "redraws": 0,
+          "swaps": 202,
+          "cancelled": 0,
+          "clipped": 0,
+          "failures": 0,
+          "clocked-fields": 200,
+          "late-fields": 94,
+          "max-age-ns": 32011012,
+          "allocations": 1,
+          "images": 2,
+          "retained-buffers": 1
+        }
+      },
+      {
+        "stage": "queue2",
+        "source": "039e47b",
+        "order": "bff",
+        "run": 0,
+        "cumulative_stats": {
+          "pictures": 50,
+          "fields": 100,
+          "prerolls": 1,
+          "redraws": 0,
+          "swaps": 101,
+          "cancelled": 0,
+          "clipped": 0,
+          "failures": 0,
+          "clocked-fields": 100,
+          "late-fields": 0,
+          "max-age-ns": 2918159,
+          "allocations": 1,
+          "images": 2,
+          "retained-buffers": 1
+        }
+      },
+      {
+        "stage": "queue2",
+        "source": "039e47b",
+        "order": "bff",
+        "run": 1,
+        "cumulative_stats": {
+          "pictures": 100,
+          "fields": 200,
+          "prerolls": 2,
+          "redraws": 0,
+          "swaps": 202,
+          "cancelled": 0,
+          "clipped": 0,
+          "failures": 0,
+          "clocked-fields": 200,
+          "late-fields": 94,
+          "max-age-ns": 43000009,
+          "allocations": 1,
+          "images": 2,
+          "retained-buffers": 1
+        }
+      }
+    ],
+    "timing_result": "FAIL on retained raw parser graph reopen; counts/cleanup alone are not cadence/identity PASS. A queue2 does not fix it.",
+    "pts_comparison": [
+      {
+        "decoder": "avdec_h264",
+        "run": 0,
+        "input": [
+          [
+            null,
+            0
+          ],
+          [
+            null,
+            40000000
+          ],
+          [
+            null,
+            80000000
+          ],
+          [
+            null,
+            120000000
+          ],
+          [
+            null,
+            160000000
+          ],
+          [
+            null,
+            200000000
+          ],
+          [
+            null,
+            240000000
+          ],
+          [
+            null,
+            280000000
+          ],
+          [
+            null,
+            320000000
+          ],
+          [
+            null,
+            360000000
+          ],
+          [
+            null,
+            400000000
+          ],
+          [
+            null,
+            440000000
+          ],
+          [
+            null,
+            480000000
+          ],
+          [
+            null,
+            520000000
+          ],
+          [
+            null,
+            560000000
+          ],
+          [
+            null,
+            600000000
+          ],
+          [
+            null,
+            640000000
+          ],
+          [
+            null,
+            680000000
+          ],
+          [
+            null,
+            720000000
+          ],
+          [
+            null,
+            760000000
+          ],
+          [
+            null,
+            800000000
+          ],
+          [
+            null,
+            840000000
+          ],
+          [
+            null,
+            880000000
+          ],
+          [
+            null,
+            920000000
+          ],
+          [
+            null,
+            960000000
+          ],
+          [
+            null,
+            1000000000
+          ],
+          [
+            null,
+            1040000000
+          ],
+          [
+            null,
+            1080000000
+          ],
+          [
+            null,
+            1120000000
+          ],
+          [
+            null,
+            1160000000
+          ],
+          [
+            null,
+            1200000000
+          ],
+          [
+            null,
+            1240000000
+          ],
+          [
+            null,
+            1280000000
+          ],
+          [
+            null,
+            1320000000
+          ],
+          [
+            null,
+            1360000000
+          ],
+          [
+            null,
+            1400000000
+          ],
+          [
+            null,
+            1440000000
+          ],
+          [
+            null,
+            1480000000
+          ],
+          [
+            null,
+            1520000000
+          ],
+          [
+            null,
+            1560000000
+          ],
+          [
+            null,
+            1600000000
+          ],
+          [
+            null,
+            1640000000
+          ],
+          [
+            null,
+            1680000000
+          ],
+          [
+            null,
+            1720000000
+          ],
+          [
+            null,
+            1760000000
+          ],
+          [
+            null,
+            1800000000
+          ],
+          [
+            null,
+            1840000000
+          ],
+          [
+            null,
+            1880000000
+          ],
+          [
+            null,
+            1920000000
+          ],
+          [
+            null,
+            1960000000
+          ]
+        ],
+        "output": [
+          [
+            0,
+            null
+          ],
+          [
+            40000000,
+            null
+          ],
+          [
+            80000000,
+            null
+          ],
+          [
+            120000000,
+            null
+          ],
+          [
+            160000000,
+            null
+          ],
+          [
+            200000000,
+            null
+          ],
+          [
+            240000000,
+            null
+          ],
+          [
+            280000000,
+            null
+          ],
+          [
+            320000000,
+            null
+          ],
+          [
+            360000000,
+            null
+          ],
+          [
+            400000000,
+            null
+          ],
+          [
+            440000000,
+            null
+          ],
+          [
+            480000000,
+            null
+          ],
+          [
+            520000000,
+            null
+          ],
+          [
+            560000000,
+            null
+          ],
+          [
+            600000000,
+            null
+          ],
+          [
+            640000000,
+            null
+          ],
+          [
+            680000000,
+            null
+          ],
+          [
+            720000000,
+            null
+          ],
+          [
+            760000000,
+            null
+          ],
+          [
+            800000000,
+            null
+          ],
+          [
+            840000000,
+            null
+          ],
+          [
+            880000000,
+            null
+          ],
+          [
+            920000000,
+            null
+          ],
+          [
+            960000000,
+            null
+          ],
+          [
+            1000000000,
+            null
+          ],
+          [
+            1040000000,
+            null
+          ],
+          [
+            1080000000,
+            null
+          ],
+          [
+            1120000000,
+            null
+          ],
+          [
+            1160000000,
+            null
+          ],
+          [
+            1200000000,
+            null
+          ],
+          [
+            1240000000,
+            null
+          ],
+          [
+            1280000000,
+            null
+          ],
+          [
+            1320000000,
+            null
+          ],
+          [
+            1360000000,
+            null
+          ],
+          [
+            1400000000,
+            null
+          ],
+          [
+            1440000000,
+            null
+          ],
+          [
+            1480000000,
+            null
+          ],
+          [
+            1520000000,
+            null
+          ],
+          [
+            1560000000,
+            null
+          ],
+          [
+            1600000000,
+            null
+          ],
+          [
+            1640000000,
+            null
+          ],
+          [
+            1680000000,
+            null
+          ],
+          [
+            1720000000,
+            null
+          ],
+          [
+            1760000000,
+            null
+          ],
+          [
+            1800000000,
+            null
+          ],
+          [
+            1840000000,
+            null
+          ],
+          [
+            1880000000,
+            null
+          ],
+          [
+            1920000000,
+            null
+          ],
+          [
+            1960000000,
+            null
+          ]
+        ]
+      },
+      {
+        "decoder": "avdec_h264",
+        "run": 1,
+        "input": [
+          [
+            0,
+            0
+          ],
+          [
+            40000000,
+            40000000
+          ],
+          [
+            80000000,
+            80000000
+          ],
+          [
+            120000000,
+            120000000
+          ],
+          [
+            160000000,
+            160000000
+          ],
+          [
+            200000000,
+            200000000
+          ],
+          [
+            240000000,
+            240000000
+          ],
+          [
+            280000000,
+            280000000
+          ],
+          [
+            320000000,
+            320000000
+          ],
+          [
+            360000000,
+            360000000
+          ],
+          [
+            400000000,
+            400000000
+          ],
+          [
+            440000000,
+            440000000
+          ],
+          [
+            480000000,
+            480000000
+          ],
+          [
+            520000000,
+            520000000
+          ],
+          [
+            560000000,
+            560000000
+          ],
+          [
+            600000000,
+            600000000
+          ],
+          [
+            640000000,
+            640000000
+          ],
+          [
+            680000000,
+            680000000
+          ],
+          [
+            720000000,
+            720000000
+          ],
+          [
+            760000000,
+            760000000
+          ],
+          [
+            800000000,
+            800000000
+          ],
+          [
+            840000000,
+            840000000
+          ],
+          [
+            880000000,
+            880000000
+          ],
+          [
+            920000000,
+            920000000
+          ],
+          [
+            960000000,
+            960000000
+          ],
+          [
+            1000000000,
+            1000000000
+          ],
+          [
+            1040000000,
+            1040000000
+          ],
+          [
+            1080000000,
+            1080000000
+          ],
+          [
+            1120000000,
+            1120000000
+          ],
+          [
+            1160000000,
+            1160000000
+          ],
+          [
+            1200000000,
+            1200000000
+          ],
+          [
+            1240000000,
+            1240000000
+          ],
+          [
+            1280000000,
+            1280000000
+          ],
+          [
+            1320000000,
+            1320000000
+          ],
+          [
+            1360000000,
+            1360000000
+          ],
+          [
+            1400000000,
+            1400000000
+          ],
+          [
+            1440000000,
+            1440000000
+          ],
+          [
+            1480000000,
+            1480000000
+          ],
+          [
+            1520000000,
+            1520000000
+          ],
+          [
+            1560000000,
+            1560000000
+          ],
+          [
+            1600000000,
+            1600000000
+          ],
+          [
+            1640000000,
+            1640000000
+          ],
+          [
+            1680000000,
+            1680000000
+          ],
+          [
+            1720000000,
+            1720000000
+          ],
+          [
+            1760000000,
+            1760000000
+          ],
+          [
+            1800000000,
+            1800000000
+          ],
+          [
+            1840000000,
+            1840000000
+          ],
+          [
+            1880000000,
+            1880000000
+          ],
+          [
+            1920000000,
+            1920000000
+          ],
+          [
+            1960000000,
+            1960000000
+          ]
+        ],
+        "output": [
+          [
+            0,
+            null
+          ],
+          [
+            80000000,
+            null
+          ],
+          [
+            120000000,
+            null
+          ],
+          [
+            120000000,
+            null
+          ],
+          [
+            160000000,
+            null
+          ],
+          [
+            200000000,
+            null
+          ],
+          [
+            240000000,
+            null
+          ],
+          [
+            280000000,
+            null
+          ],
+          [
+            320000000,
+            null
+          ],
+          [
+            360000000,
+            null
+          ],
+          [
+            400000000,
+            null
+          ],
+          [
+            440000000,
+            null
+          ],
+          [
+            480000000,
+            null
+          ],
+          [
+            520000000,
+            null
+          ],
+          [
+            560000000,
+            null
+          ],
+          [
+            600000000,
+            null
+          ],
+          [
+            640000000,
+            null
+          ],
+          [
+            680000000,
+            null
+          ],
+          [
+            720000000,
+            null
+          ],
+          [
+            760000000,
+            null
+          ],
+          [
+            800000000,
+            null
+          ],
+          [
+            840000000,
+            null
+          ],
+          [
+            880000000,
+            null
+          ],
+          [
+            920000000,
+            null
+          ],
+          [
+            960000000,
+            null
+          ],
+          [
+            1000000000,
+            null
+          ],
+          [
+            1040000000,
+            null
+          ],
+          [
+            1080000000,
+            null
+          ],
+          [
+            1120000000,
+            null
+          ],
+          [
+            1160000000,
+            null
+          ],
+          [
+            1200000000,
+            null
+          ],
+          [
+            1240000000,
+            null
+          ],
+          [
+            1280000000,
+            null
+          ],
+          [
+            1320000000,
+            null
+          ],
+          [
+            1360000000,
+            null
+          ],
+          [
+            1400000000,
+            null
+          ],
+          [
+            1440000000,
+            null
+          ],
+          [
+            1480000000,
+            null
+          ],
+          [
+            1520000000,
+            null
+          ],
+          [
+            1560000000,
+            null
+          ],
+          [
+            1600000000,
+            null
+          ],
+          [
+            1640000000,
+            null
+          ],
+          [
+            1680000000,
+            null
+          ],
+          [
+            1720000000,
+            null
+          ],
+          [
+            1760000000,
+            null
+          ],
+          [
+            1800000000,
+            null
+          ],
+          [
+            1840000000,
+            null
+          ],
+          [
+            1880000000,
+            null
+          ],
+          [
+            1920000000,
+            null
+          ],
+          [
+            1960000000,
+            null
+          ]
+        ]
+      },
+      {
+        "decoder": "crystalhddec",
+        "run": 0,
+        "input": [
+          [
+            null,
+            0
+          ],
+          [
+            null,
+            40000000
+          ],
+          [
+            null,
+            80000000
+          ],
+          [
+            null,
+            120000000
+          ],
+          [
+            null,
+            160000000
+          ],
+          [
+            null,
+            200000000
+          ],
+          [
+            null,
+            240000000
+          ],
+          [
+            null,
+            280000000
+          ],
+          [
+            null,
+            320000000
+          ],
+          [
+            null,
+            360000000
+          ],
+          [
+            null,
+            400000000
+          ],
+          [
+            null,
+            440000000
+          ],
+          [
+            null,
+            480000000
+          ],
+          [
+            null,
+            520000000
+          ],
+          [
+            null,
+            560000000
+          ],
+          [
+            null,
+            600000000
+          ],
+          [
+            null,
+            640000000
+          ],
+          [
+            null,
+            680000000
+          ],
+          [
+            null,
+            720000000
+          ],
+          [
+            null,
+            760000000
+          ],
+          [
+            null,
+            800000000
+          ],
+          [
+            null,
+            840000000
+          ],
+          [
+            null,
+            880000000
+          ],
+          [
+            null,
+            920000000
+          ],
+          [
+            null,
+            960000000
+          ],
+          [
+            null,
+            1000000000
+          ],
+          [
+            null,
+            1040000000
+          ],
+          [
+            null,
+            1080000000
+          ],
+          [
+            null,
+            1120000000
+          ],
+          [
+            null,
+            1160000000
+          ],
+          [
+            null,
+            1200000000
+          ],
+          [
+            null,
+            1240000000
+          ],
+          [
+            null,
+            1280000000
+          ],
+          [
+            null,
+            1320000000
+          ],
+          [
+            null,
+            1360000000
+          ],
+          [
+            null,
+            1400000000
+          ],
+          [
+            null,
+            1440000000
+          ],
+          [
+            null,
+            1480000000
+          ],
+          [
+            null,
+            1520000000
+          ],
+          [
+            null,
+            1560000000
+          ],
+          [
+            null,
+            1600000000
+          ],
+          [
+            null,
+            1640000000
+          ],
+          [
+            null,
+            1680000000
+          ],
+          [
+            null,
+            1720000000
+          ],
+          [
+            null,
+            1760000000
+          ],
+          [
+            null,
+            1800000000
+          ],
+          [
+            null,
+            1840000000
+          ],
+          [
+            null,
+            1880000000
+          ],
+          [
+            null,
+            1920000000
+          ],
+          [
+            null,
+            1960000000
+          ]
+        ],
+        "output": [
+          [
+            0,
+            null
+          ],
+          [
+            40000000,
+            null
+          ],
+          [
+            80000000,
+            null
+          ],
+          [
+            120000000,
+            null
+          ],
+          [
+            160000000,
+            null
+          ],
+          [
+            200000000,
+            null
+          ],
+          [
+            240000000,
+            null
+          ],
+          [
+            280000000,
+            null
+          ],
+          [
+            320000000,
+            null
+          ],
+          [
+            360000000,
+            null
+          ],
+          [
+            400000000,
+            null
+          ],
+          [
+            440000000,
+            null
+          ],
+          [
+            480000000,
+            null
+          ],
+          [
+            520000000,
+            null
+          ],
+          [
+            560000000,
+            null
+          ],
+          [
+            600000000,
+            null
+          ],
+          [
+            640000000,
+            null
+          ],
+          [
+            680000000,
+            null
+          ],
+          [
+            720000000,
+            null
+          ],
+          [
+            760000000,
+            null
+          ],
+          [
+            800000000,
+            null
+          ],
+          [
+            840000000,
+            null
+          ],
+          [
+            880000000,
+            null
+          ],
+          [
+            920000000,
+            null
+          ],
+          [
+            960000000,
+            null
+          ],
+          [
+            1000000000,
+            null
+          ],
+          [
+            1040000000,
+            null
+          ],
+          [
+            1080000000,
+            null
+          ],
+          [
+            1120000000,
+            null
+          ],
+          [
+            1160000000,
+            null
+          ],
+          [
+            1200000000,
+            null
+          ],
+          [
+            1240000000,
+            null
+          ],
+          [
+            1280000000,
+            null
+          ],
+          [
+            1320000000,
+            null
+          ],
+          [
+            1360000000,
+            null
+          ],
+          [
+            1400000000,
+            null
+          ],
+          [
+            1440000000,
+            null
+          ],
+          [
+            1480000000,
+            null
+          ],
+          [
+            1520000000,
+            null
+          ],
+          [
+            1560000000,
+            null
+          ],
+          [
+            1600000000,
+            null
+          ],
+          [
+            1640000000,
+            null
+          ],
+          [
+            1680000000,
+            null
+          ],
+          [
+            1720000000,
+            null
+          ],
+          [
+            1760000000,
+            null
+          ],
+          [
+            1800000000,
+            null
+          ],
+          [
+            1840000000,
+            null
+          ],
+          [
+            1880000000,
+            null
+          ],
+          [
+            1920000000,
+            null
+          ],
+          [
+            1960000000,
+            null
+          ]
+        ]
+      },
+      {
+        "decoder": "crystalhddec",
+        "run": 1,
+        "input": [
+          [
+            0,
+            0
+          ],
+          [
+            40000000,
+            40000000
+          ],
+          [
+            80000000,
+            80000000
+          ],
+          [
+            120000000,
+            120000000
+          ],
+          [
+            160000000,
+            160000000
+          ],
+          [
+            200000000,
+            200000000
+          ],
+          [
+            240000000,
+            240000000
+          ],
+          [
+            280000000,
+            280000000
+          ],
+          [
+            320000000,
+            320000000
+          ],
+          [
+            360000000,
+            360000000
+          ],
+          [
+            400000000,
+            400000000
+          ],
+          [
+            440000000,
+            440000000
+          ],
+          [
+            480000000,
+            480000000
+          ],
+          [
+            520000000,
+            520000000
+          ],
+          [
+            560000000,
+            560000000
+          ],
+          [
+            600000000,
+            600000000
+          ],
+          [
+            640000000,
+            640000000
+          ],
+          [
+            680000000,
+            680000000
+          ],
+          [
+            720000000,
+            720000000
+          ],
+          [
+            760000000,
+            760000000
+          ],
+          [
+            800000000,
+            800000000
+          ],
+          [
+            840000000,
+            840000000
+          ],
+          [
+            880000000,
+            880000000
+          ],
+          [
+            920000000,
+            920000000
+          ],
+          [
+            960000000,
+            960000000
+          ],
+          [
+            1000000000,
+            1000000000
+          ],
+          [
+            1040000000,
+            1040000000
+          ],
+          [
+            1080000000,
+            1080000000
+          ],
+          [
+            1120000000,
+            1120000000
+          ],
+          [
+            1160000000,
+            1160000000
+          ],
+          [
+            1200000000,
+            1200000000
+          ],
+          [
+            1240000000,
+            1240000000
+          ],
+          [
+            1280000000,
+            1280000000
+          ],
+          [
+            1320000000,
+            1320000000
+          ],
+          [
+            1360000000,
+            1360000000
+          ],
+          [
+            1400000000,
+            1400000000
+          ],
+          [
+            1440000000,
+            1440000000
+          ],
+          [
+            1480000000,
+            1480000000
+          ],
+          [
+            1520000000,
+            1520000000
+          ],
+          [
+            1560000000,
+            1560000000
+          ],
+          [
+            1600000000,
+            1600000000
+          ],
+          [
+            1640000000,
+            1640000000
+          ],
+          [
+            1680000000,
+            1680000000
+          ],
+          [
+            1720000000,
+            1720000000
+          ],
+          [
+            1760000000,
+            1760000000
+          ],
+          [
+            1800000000,
+            1800000000
+          ],
+          [
+            1840000000,
+            1840000000
+          ],
+          [
+            1880000000,
+            1880000000
+          ],
+          [
+            1920000000,
+            1920000000
+          ],
+          [
+            1960000000,
+            1960000000
+          ]
+        ],
+        "output": [
+          [
+            0,
+            null
+          ],
+          [
+            80000000,
+            null
+          ],
+          [
+            120000000,
+            null
+          ],
+          [
+            120000000,
+            null
+          ],
+          [
+            160000000,
+            null
+          ],
+          [
+            200000000,
+            null
+          ],
+          [
+            240000000,
+            null
+          ],
+          [
+            280000000,
+            null
+          ],
+          [
+            320000000,
+            null
+          ],
+          [
+            360000000,
+            null
+          ],
+          [
+            400000000,
+            null
+          ],
+          [
+            440000000,
+            null
+          ],
+          [
+            480000000,
+            null
+          ],
+          [
+            520000000,
+            null
+          ],
+          [
+            560000000,
+            null
+          ],
+          [
+            600000000,
+            null
+          ],
+          [
+            640000000,
+            null
+          ],
+          [
+            680000000,
+            null
+          ],
+          [
+            720000000,
+            null
+          ],
+          [
+            760000000,
+            null
+          ],
+          [
+            800000000,
+            null
+          ],
+          [
+            840000000,
+            null
+          ],
+          [
+            880000000,
+            null
+          ],
+          [
+            920000000,
+            null
+          ],
+          [
+            960000000,
+            null
+          ],
+          [
+            1000000000,
+            null
+          ],
+          [
+            1040000000,
+            null
+          ],
+          [
+            1080000000,
+            null
+          ],
+          [
+            1120000000,
+            null
+          ],
+          [
+            1160000000,
+            null
+          ],
+          [
+            1200000000,
+            null
+          ],
+          [
+            1240000000,
+            null
+          ],
+          [
+            1280000000,
+            null
+          ],
+          [
+            1320000000,
+            null
+          ],
+          [
+            1360000000,
+            null
+          ],
+          [
+            1400000000,
+            null
+          ],
+          [
+            1440000000,
+            null
+          ],
+          [
+            1480000000,
+            null
+          ],
+          [
+            1520000000,
+            null
+          ],
+          [
+            1560000000,
+            null
+          ],
+          [
+            1600000000,
+            null
+          ],
+          [
+            1640000000,
+            null
+          ],
+          [
+            1680000000,
+            null
+          ],
+          [
+            1720000000,
+            null
+          ],
+          [
+            1760000000,
+            null
+          ],
+          [
+            1800000000,
+            null
+          ],
+          [
+            1840000000,
+            null
+          ],
+          [
+            1880000000,
+            null
+          ],
+          [
+            1920000000,
+            null
+          ],
+          [
+            1960000000,
+            null
+          ]
+        ]
+      }
+    ],
+    "interpretation": "SW and CrystalHD reproduce same nonmonotonic output PTS after raw parser changes from absent PTS to interpolated decode-order PTS. Source pipeline compatibility observation; sink must not rewrite PTS to conceal it."
+  },
+  "dialogue_before": {
+    "source": "433da869d4fd84062f7ca6554f5840b61f035233",
+    "runs": [
+      {
+        "controls": false,
+        "actions": [],
+        "eos": true,
+        "peak_mC": 58000,
+        "audio_buffers": 1408,
+        "clock": "GstPulseSinkClock",
+        "audio_clock": "GstPulseSinkClock",
+        "field_stats": {
+          "pictures": 750,
+          "fields": 1500,
+          "prerolls": 1,
+          "redraws": 0,
+          "swaps": 1501,
+          "cancelled": 0,
+          "clipped": 0,
+          "failures": 0,
+          "clocked-fields": 1500,
+          "late-fields": 1254,
+          "max-age-ns": 3247943000,
+          "allocations": 0,
+          "images": 0,
+          "retained-buffers": 0
+        },
+        "code": 0,
+        "decoded": 750,
+        "elapsed_s": 34.793826771994645,
+        "cpu_s": 10.230527,
+        "health_error": null
+      },
+      {
+        "controls": true,
+        "actions": [
+          "pause",
+          "pause",
+          "forward",
+          "back",
+          "rate-half",
+          "rate-normal",
+          "rate-double"
+        ],
+        "eos": false,
+        "peak_mC": 62000,
+        "audio_buffers": 1454,
+        "clock": "GstPulseSinkClock",
+        "audio_clock": "GstPulseSinkClock",
+        "window_ids": 1,
+        "field_stats": {
+          "pictures": 701,
+          "fields": 1404,
+          "prerolls": 6,
+          "redraws": 2,
+          "swaps": 1412,
+          "cancelled": 4,
+          "clipped": 0,
+          "failures": 0,
+          "clocked-fields": 1404,
+          "late-fields": 1211,
+          "max-age-ns": 14408557250,
+          "allocations": 0,
+          "images": 0,
+          "retained-buffers": 0
+        },
+        "code": 1,
+        "decoded": 729,
+        "elapsed_s": 43.75337046500499,
+        "cpu_s": 9.740492,
+        "health_error": "test watchdog43s"
+      }
+    ]
+  },
+  "dialogue_after": {
+    "source": "915e8191be785940212f286ca03a6294eba1a75e",
+    "runs": [
+      {
+        "controls": false,
+        "actions": [],
+        "eos": true,
+        "peak_mC": 63000,
+        "audio_buffers": 1408,
+        "clock": "GstPulseSinkClock",
+        "audio_clock": "GstPulseSinkClock",
+        "field_stats": {
+          "pictures": 750,
+          "fields": 1271,
+          "prerolls": 1,
+          "redraws": 1,
+          "swaps": 1273,
+          "cancelled": 0,
+          "clipped": 0,
+          "failures": 0,
+          "clocked-fields": 1271,
+          "late-fields": 62,
+          "max-age-ns": 25599000,
+          "early-fields": 237,
+          "max-early-ns": 15000000,
+          "dropped-fields": 229,
+          "prepare-ns": 1571069115,
+          "draw-ns": 16531328948,
+          "wait-ns": 932982416,
+          "swap-ns": 8847244370,
+          "allocations": 0,
+          "images": 0,
+          "retained-buffers": 0
+        },
+        "code": 0,
+        "decoded": 750,
+        "elapsed_s": 31.754235797001456,
+        "cpu_s": 8.353463999999999,
+        "health_error": null,
+        "whole_buffer_drops": 0
+      },
+      {
+        "controls": true,
+        "actions": [
+          "pause",
+          "pause",
+          "forward",
+          "back",
+          "rate-half",
+          "rate-normal",
+          "rate-double"
+        ],
+        "eos": true,
+        "peak_mC": 65000,
+        "audio_buffers": 1450,
+        "clock": "GstPulseSinkClock",
+        "audio_clock": "GstPulseSinkClock",
+        "field_stats": {
+          "pictures": 600,
+          "fields": 879,
+          "prerolls": 6,
+          "redraws": 0,
+          "swaps": 885,
+          "cancelled": 4,
+          "clipped": 0,
+          "failures": 0,
+          "clocked-fields": 879,
+          "late-fields": 418,
+          "max-age-ns": 102783000,
+          "early-fields": 280,
+          "max-early-ns": 15000000,
+          "dropped-fields": 323,
+          "prepare-ns": 1468658020,
+          "draw-ns": 3541021891,
+          "wait-ns": 2226683215,
+          "swap-ns": 8497761188,
+          "allocations": 0,
+          "images": 0,
+          "retained-buffers": 0
+        },
+        "code": 0,
+        "decoded": 744,
+        "elapsed_s": 30.15195428300649,
+        "cpu_s": 8.851458999999998,
+        "health_error": null,
+        "whole_buffer_drops": 0
+      }
+    ]
+  },
+  "stage_observer": {
+    "source": "433da86 plus cost counters committed in915e819",
+    "result": [
+      {
+        "pictures": 46,
+        "fields": 93,
+        "prerolls": 1,
+        "redraws": 0,
+        "swaps": 94,
+        "cancelled": 0,
+        "clipped": 0,
+        "failures": 0,
+        "clocked-fields": 93,
+        "late-fields": 0,
+        "max-age-ns": 15595000,
+        "prepare-ns": 130130916,
+        "draw-ns": 338391021,
+        "wait-ns": 702776615,
+        "swap-ns": 703886846,
+        "allocations": 1,
+        "images": 2,
+        "retained-buffers": 1
+      },
+      {
+        "pictures": 121,
+        "fields": 242,
+        "prerolls": 1,
+        "redraws": 0,
+        "swaps": 243,
+        "cancelled": 0,
+        "clipped": 0,
+        "failures": 0,
+        "clocked-fields": 242,
+        "late-fields": 42,
+        "max-age-ns": 25992000,
+        "prepare-ns": 299303550,
+        "draw-ns": 846825979,
+        "wait-ns": 845472976,
+        "swap-ns": 2785641445,
+        "allocations": 1,
+        "images": 2,
+        "retained-buffers": 1
+      },
+      {
+        "pictures": 221,
+        "fields": 442,
+        "prerolls": 1,
+        "redraws": 0,
+        "swaps": 443,
+        "cancelled": 0,
+        "clipped": 0,
+        "failures": 0,
+        "clocked-fields": 442,
+        "late-fields": 242,
+        "max-age-ns": 43538000,
+        "prepare-ns": 528487397,
+        "draw-ns": 1523872379,
+        "wait-ns": 853557136,
+        "swap-ns": 5786563146,
+        "allocations": 1,
+        "images": 2,
+        "retained-buffers": 1
+      }
+    ],
+    "meaning": "Client elapsed prepare/draw/wait/swap costs, not isolated GPU timer measurements. Draw may include backbuffer acquisition/throttle."
+  },
+  "physical": {
+    "source": "915e8191be785940212f286ca03a6294eba1a75e",
+    "eos": true,
+    "peak_mC": 62000,
+    "human_result": {
+      "av_sync": "PASS",
+      "speed": "PASS",
+      "motion": "PASS",
+      "source": "maintainer response to new GPU output playback"
+    },
+    "code": 0,
+    "decoded": 750,
+    "stats": {
+      "pictures": 750,
+      "fields": 1152,
+      "prerolls": 1,
+      "redraws": 1,
+      "swaps": 1154,
+      "cancelled": 0,
+      "clipped": 0,
+      "failures": 0,
+      "clocked-fields": 1152,
+      "late-fields": 17,
+      "max-age-ns": 23945000,
+      "early-fields": 71,
+      "max-early-ns": 14483000,
+      "dropped-fields": 348,
+      "prepare-ns": 1994531900,
+      "draw-ns": 23746051583,
+      "wait-ns": 191345448,
+      "swap-ns": 2934034490,
+      "allocations": 0,
+      "images": 0,
+      "retained-buffers": 0
+    }
+  },
+  "physical_controls": {
+    "first": {
+      "source": "915e8191be785940212f286ca03a6294eba1a75e",
+      "keys": [
+        "F11",
+        "space",
+        "space",
+        "Right",
+        "Left"
+      ],
+      "human_result": "NOT RUN: maintainer did not observe post-control playback",
+      "peak_mC": 63000,
+      "returncode": 0,
+      "elapsed_s": 36.103928812997765
+    },
+    "observed_repeat": {
+      "source": "915e8191be785940212f286ca03a6294eba1a75e",
+      "keys": [
+        "F11",
+        "space",
+        "space",
+        "Right",
+        "Left"
+      ],
+      "human_result": {
+        "av_sync": "PASS",
+        "speed": "PASS",
+        "persistent_black_or_stall": "NONE",
+        "source": "maintainer response while replay still running after actual window key controls"
+      },
+      "peak_mC": 60000,
+      "returncode": 0,
+      "elapsed_s": 35.981935793002776
+    }
+  },
+  "boundary_before": {
+    "module": "3.10.13",
+    "refs": 0,
+    "pin_net": 0,
+    "force": "Y",
+    "session": "N",
+    "power": "on",
+    "links": {
+      "0000:02:00.0": "0042",
+      "0000:00:1c.0": "0042"
+    },
+    "aer": {
+      "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+      "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+      "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+    }
+  },
+  "boundary_after": {
+    "module": "3.10.13",
+    "refs": 0,
+    "pin_net": 0,
+    "force": "Y",
+    "session": "N",
+    "power": "on",
+    "links": {
+      "0000:02:00.0": "0042",
+      "0000:00:1c.0": "0042"
+    },
+    "aer": {
+      "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+      "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+      "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+    }
+  },
+  "limitations": [
+    "Physical A/V is subjective acceptance, not measured E2E or payload age.",
+    "Natural30s after fix:1271/1500 field submissions;229expired skips(15.27%). Fullscreen physical run1152/1500;348skips(23.2%). No lossless50/60-field claim.",
+    "At2x the display cannot present100fields/s; explicit QoS/skips keep audio time.",
+    "Live input, NV12, nativei386, live-window replacement, HDR and long endurance are not qualified.",
+    "No auxiliary Kick added; #533G2 remainsFAIL, #114/#115 unchanged."
+  ],
+  "kernel_error_scan": {
+    "since_epoch_s": 1793053248,
+    "matching_errors": [],
+    "result": "PASS"
+  }
+}
