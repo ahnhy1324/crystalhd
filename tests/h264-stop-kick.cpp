@@ -111,7 +111,9 @@ struct Decoder {
 };
 struct Frame { uint64_t token; uint32_t flags; std::vector<uint8_t> pixels; };
 constexpr size_t kBytes=640U*360U*2U;
-constexpr uint64_t kPrivate=(UINT64_C(1)<<40)+100000;
+// Distinct, positive even metadata in the gap between original tokens17/18;
+// avoid introducing an unrelated many-hour timestamp discontinuity.
+constexpr uint64_t kPrivate=1750000;
 
 int main(int argc,char **argv) {
     try {
