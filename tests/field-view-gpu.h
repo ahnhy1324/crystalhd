@@ -94,7 +94,8 @@ struct Image {
     EGLImageKHR image = EGL_NO_IMAGE_KHR;
     GLuint texture = 0;
     EGLint error = EGL_SUCCESS;
-    Image(yuy2_gpu::GPU &g, Allocation &source, bool field, unsigned parity)
+    template<class Source>
+    Image(yuy2_gpu::GPU &g, Source &source, bool field, unsigned parity)
         : gpu(g) {
         const unsigned height = field ? source.height / 2 : source.height;
         const unsigned pitch = source.pitch * (field ? 2 : 1);
@@ -136,6 +137,47 @@ struct Image {
         if (texture) glDeleteTextures(1, &texture);
         if (image != EGL_NO_IMAGE_KHR) gpu.destroy(gpu.display, image);
     }
+};
+
+// Native producer alternative: GBM owns the map/unmap coherency boundary.
+// Storage is a linear array of four-byte pairs; EGL interprets those bytes
+// as YUYV. No CPU color conversion is performed. map/unmap may internally
+// stage/copy, so its entire cost belongs to the producer measurement.
+struct GbmAllocation {
+    gbm_bo *bo=nullptr;
+    int fd=-1;
+    unsigned width,height,pitch;
+    size_t length=0;
+    bool initialized=false;
+    GbmAllocation(yuy2_gpu::GPU &gpu,unsigned w,unsigned h):width(w),height(h),pitch(0) {
+        need(w&&!(w&1)&&h&&!(h&1),"GBM even geometry");
+        bo=gbm_bo_create(gpu.gbm,w/2,h+8,GBM_FORMAT_ARGB8888,
+                         GBM_BO_USE_LINEAR|GBM_BO_USE_WRITE);
+        need(bo,"owned GBM linear pair storage");
+        need(gbm_bo_get_modifier(bo)==DRM_FORMAT_MOD_LINEAR,"actual linear GBM modifier");
+        pitch=gbm_bo_get_stride(bo);fd=gbm_bo_get_fd(bo);
+        need(fd>=0&&pitch>=w*2,"GBM export/pitch");
+        const off_t bytes=lseek(fd,0,SEEK_END);
+        need(bytes>0&&uint64_t(bytes)>=uint64_t(pitch)*(h+8),"GBM exported extent");
+        length=bytes;need(lseek(fd,0,SEEK_SET)==0,"DMA-BUF size query restore");
+        printf("{\"type\":\"allocation\",\"kind\":\"gbm-linear-map\",\"view\":\"YUYV\",\"width\":%u,\"height\":%u,\"pitch\":%u,\"bytes\":%zu,\"modifier\":0}\n",w,h,pitch,length);
+    }
+    void write(const uint8_t *source,size_t stride,size_t available) {
+        need(source&&stride>=width*2&&stride<=SIZE_MAX/height&&
+             available>=(height-1)*stride+width*2,"GBM mapped source extent");
+        // Caller has completed both uses and destroyed the old field images.
+        glFinish();uint32_t mapped_pitch=0;void *handle=nullptr;
+        auto *data=static_cast<uint8_t *>(gbm_bo_map(bo,0,0,width/2,height+8,
+                                      GBM_BO_TRANSFER_WRITE,&mapped_pitch,&handle));
+        need(data&&mapped_pitch>=width*2,"GBM writable transfer");
+        if(!initialized)for(unsigned row=0;row<height+8;++row)
+            memset(data+size_t(row)*mapped_pitch,0xa5,width*2);
+        for(unsigned row=0;row<height;++row)
+            memcpy(data+size_t(row)*mapped_pitch,source+row*stride,width*2);
+        gbm_bo_unmap(bo,handle);initialized=true;
+    }
+    GbmAllocation(const GbmAllocation &)=delete;
+    ~GbmAllocation(){if(fd>=0)close(fd);if(bo)gbm_bo_destroy(bo);}
 };
 
 // Stay inside the mathematically selected nearest texel even when an

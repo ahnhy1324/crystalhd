@@ -208,8 +208,8 @@ int main(int argc,char **argv) {
         need(GST_VIDEO_INFO_FPS_N(&info)>0&&GST_VIDEO_INFO_FPS_D(&info)>0,"declared frame rate");
         const GstClockTime nominal=gst_util_uint64_scale(GST_SECOND,GST_VIDEO_INFO_FPS_D(&info),GST_VIDEO_INFO_FPS_N(&info));
         need(nominal>=GST_SECOND/60&&nominal<=GST_SECOND/20,"20..60 pictures/s");
-        Renderer renderer(w,h,ow,oh);std::unique_ptr<Allocation> memory;std::unique_ptr<Upload> upload;
-        if(field){int heap=open("/dev/dma_heap/system",O_RDWR|O_CLOEXEC);need(heap>=0,"DMA heap");memory=std::make_unique<Allocation>(heap,w,h);close(heap);}
+        Renderer renderer(w,h,ow,oh);std::unique_ptr<GbmAllocation> memory;std::unique_ptr<Upload> upload;
+        if(field)memory=std::make_unique<GbmAllocation>(gpu,w,h);
         else upload=std::make_unique<Upload>(w,h,ow,oh);
         auto *digest=g_checksum_new(G_CHECKSUM_SHA256);need(digest,"source census digest");
         auto *signatures=g_checksum_new(G_CHECKSUM_SHA256);need(signatures,"signature census digest");
