@@ -147,6 +147,8 @@ static float nearest_bias(unsigned source, unsigned destination, int phase) {
 struct Renderer {
     yuy2_gpu::Picture picture;
     const unsigned source_w, source_h;
+    const float x_shift;
+    const std::array<float,2> y_shifts;
     GLuint program, affine_program;
     static GLuint link(const char *vertex, const char *fragment) {
         GLuint v = yuy2_gpu::shader(GL_VERTEX_SHADER, vertex);
@@ -160,7 +162,9 @@ struct Renderer {
         return result;
     }
     Renderer(unsigned w, unsigned h, unsigned output_w, unsigned output_h)
-        : picture(output_w, output_h), source_w(w), source_h(h) {
+        : picture(output_w, output_h), source_w(w), source_h(h),
+          x_shift(nearest_bias(w,output_w,2)),
+          y_shifts{nearest_bias(h,output_h,0),nearest_bias(h,output_h,1)} {
         const char *vertex = "attribute vec2 pos;void main(){gl_Position=vec4(pos,0.0,1.0);}";
         // Original field lines remain on their original vertical positions.
         // At an exactly equidistant missing line, choose the following line,
@@ -170,8 +174,8 @@ struct Renderer {
         const char *fragment =
             "#extension GL_OES_EGL_image_external : require\n"
             "precision highp float;uniform samplerExternalOES tex;"
-            "uniform vec2 size;uniform vec2 outputSize;uniform float parity;uniform float xshift;"
-            "void main(){float row=clamp(floor((gl_FragCoord.y*size.y/outputSize.y+0.5-parity)*0.5),"
+            "uniform vec2 size;uniform vec2 outputSize;uniform float parity;uniform float xshift;uniform float rowShift;"
+            "void main(){float row=clamp(floor(gl_FragCoord.y*(size.y/(2.0*outputSize.y))+rowShift),"
             "0.0,size.y*0.5-1.0);"
             "vec2 uv=vec2(gl_FragCoord.x/outputSize.x+xshift,(2.0*row+parity+0.5)/size.y);"
             "gl_FragColor=vec4(texture2D(tex,uv).rgb,1.0);}";
@@ -195,12 +199,12 @@ struct Renderer {
         if (field_view) {
             // Nearest only. Linear filtering requires its own phase oracle.
             glUniform2f(glGetUniformLocation(selected, "shift"),
-                        nearest_bias(source_w, picture.w, 2),
-                        nearest_bias(source_h, picture.h, parity));
+                        x_shift,y_shifts[parity]);
         } else {
             glUniform2f(glGetUniformLocation(selected, "size"), source_w, source_h);
             glUniform2f(glGetUniformLocation(selected, "outputSize"), picture.w, picture.h);
-            glUniform1f(glGetUniformLocation(selected, "xshift"), nearest_bias(source_w, picture.w, 2));
+            glUniform1f(glGetUniformLocation(selected, "xshift"),x_shift);
+            glUniform1f(glGetUniformLocation(selected, "rowShift"),y_shifts[parity]*source_h*0.5f);
             glUniform1f(glGetUniformLocation(selected, "parity"), parity);
         }
         static const float positions[] = {-1,-1, 1,-1, -1,1, 1,1};
