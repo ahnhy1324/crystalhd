@@ -111,9 +111,11 @@ struct Decoder {
 };
 struct Frame { uint64_t token; uint32_t flags; std::vector<uint8_t> pixels; };
 constexpr size_t kBytes=640U*360U*2U;
-// Distinct, positive even metadata in the gap between original tokens17/18;
-// avoid introducing an unrelated many-hour timestamp discontinuity.
-constexpr uint64_t kPrivate=1750000;
+// Flea's legacy SPES path quantizes timestamps to 2ms (20000 in 100ns
+// units). Use distinct exact round trips between original tokens17/18.
+constexpr uint64_t kPrivate=1740000;
+constexpr uint64_t kPrivateStep=20000;
+static_assert(kPrivate%20000==0&&kPrivateStep%20000==0,"legacy timestamp granularity");
 static std::vector<std::vector<uint8_t>> auxiliary_units(const std::vector<uint8_t> &data,unsigned expected) {
     std::vector<size_t> boundaries;
     for(size_t i=0;i+5<data.size();++i)
@@ -176,7 +178,7 @@ int main(int argc,char **argv) {
                 uint64_t token=out.PicInfo.timeStamp;
                 need(std::none_of(frames.begin(),frames.end(),[&](const Frame &f){return f.token==token;}),"duplicate output token");
                 Frame frame{token,out.PicInfo.flags,{out.Ybuff,out.Ybuff+kBytes}};
-                const bool is_private=private_expected&&(token==kPrivate||(private_expected==2&&token==kPrivate+25000));
+                const bool is_private=private_expected&&(token==kPrivate||(private_expected==2&&token==kPrivate+kPrivateStep));
                 if(is_private) {
                     need(private_outputs++<private_expected,"private identity");
                     need(std::all_of(frame.pixels.begin(),frame.pixels.end(),[](uint8_t v){return v==128;}),"private DC128 pixels");
@@ -218,7 +220,7 @@ int main(int argc,char **argv) {
                 // The timestamped prefix belongs to the actual private AU
                 // that follows. Its payload consumes that timestamp, exactly
                 // as the established Prefix Kick contract requires.
-                send(prefix,kPrivate+i*25000);send(units[i],0);
+                send(prefix,kPrivate+i*kPrivateStep);send(units[i],0);
             }
         } else if(mode=="picture") send(auxiliary,kPrivate);
         if(private_expected||mode=="prefix") send(prefix,0); // Untimed trailing delimiter, not a next-public Kick.
