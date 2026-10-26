@@ -27,6 +27,10 @@
 #ifndef _CRYSTALHD_FW_IF_H_
 #define _CRYSTALHD_FW_IF_H_
 
+/* Firmware picture flag, also published to legacy userspace as VDEC_FLAG_EOS. */
+#define CRYSTALHD_PICTURE_FLAG_EOS 0x0004U
+#define CRYSTALHD_PICTURE_FLAG_DECODE_ERROR 0x0800U
+
 #include <linux/types.h>
 
 /* TBD: Pull in only required defs into this file.. */

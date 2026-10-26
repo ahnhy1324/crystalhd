@@ -29,12 +29,22 @@ awk '
     END { if (found != 3 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_v4l2.c" > "$parent_test_dir/parent-binding.h"
 awk '
+    BEGIN {
+        count = split("init cleanup ctx_release queue_close_locked owner_get owner_retired owner_put ctx_retired close_worker ctx_create ctx_acquire ctx_close resume_ready release parent_get parent_put ctx_bind register unregister", names, " ")
+        for (i = 1; i <= count; i++) allowed["crystalhd_v4l2_" names[i]] = 1
+    }
     /^static struct workqueue_struct \*/ { print }
-    /^(static )?(void|int|bool) crystalhd_v4l2_[[:alnum:]_]+\(/ { copying = 1; found++ }
+    /^(static )?(void|int|bool) crystalhd_v4l2_[[:alnum:]_]+\(/ {
+        name = $0
+        sub(/\(.*/, "", name)
+        sub(/^.* /, "", name)
+        if (!(name in allowed) || seen[name]++) exit 1
+        copying = 1; found++
+    }
     /^static const struct crystalhd_session_owner_ops / { copying = 1; ops++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 16 || ops != 1 || copying) exit 1 }
+    END { if (found != count || ops != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_v4l2.c" > "$parent_test_dir/parent-functions.h"
 
 awk '
