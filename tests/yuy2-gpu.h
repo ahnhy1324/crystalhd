@@ -41,7 +41,8 @@ struct GPU {
  }
  GPU(const char* node,EGLDisplay borrowed_display,EGLContext borrowed_context):display(borrowed_display),context(borrowed_context),owns_context(false) {
   need(display!=EGL_NO_DISPLAY&&context!=EGL_NO_CONTEXT&&eglGetCurrentDisplay()==display&&eglGetCurrentContext()==context,"current borrowed EGL context");
-  drm=open(node,O_RDWR|O_CLOEXEC);need(drm>=0,"render node");gbm=gbm_create_device(drm);need(gbm,"GBM device");resolve();
+  try {drm=open(node,O_RDWR|O_CLOEXEC);need(drm>=0,"render node");gbm=gbm_create_device(drm);need(gbm,"GBM device");resolve();}
+  catch(...) {if(gbm){gbm_device_destroy(gbm);gbm=nullptr;}if(drm>=0){close(drm);drm=-1;}throw;}
  }
  void resolve() {
   const char* renderer=(const char*)glGetString(GL_RENDERER);need(renderer&&std::strstr(renderer,"Intel"),"real Intel GPU required");

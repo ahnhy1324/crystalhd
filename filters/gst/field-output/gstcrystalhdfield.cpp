@@ -12,6 +12,8 @@
 #include <mutex>
 #include <thread>
 #include "../../../tests/field-view-gpu.h"
+GST_DEBUG_CATEGORY_STATIC(field_debug);
+#define GST_CAT_DEFAULT field_debug
 
 namespace crystalhd_field {
 struct Counters {
@@ -342,6 +344,10 @@ struct Worker {
                     need(field_offset<GST_CLOCK_TIME_NONE-GST_BUFFER_PTS(command->buffer),"field PTS extent");
                     GstClockTime pts=GST_BUFFER_PTS(command->buffer)+field_offset;
                     GstClockTime running=gst_segment_to_running_time(&command->segment,GST_FORMAT_TIME,pts);
+                    GST_LOG_OBJECT(owner,"field pts=%" G_GUINT64_FORMAT " running=%" G_GUINT64_FORMAT
+                        " base=%" G_GUINT64_FORMAT " latency=%" G_GUINT64_FORMAT " preroll=%d now=%" G_GUINT64_FORMAT,
+                        pts,running,command->base,command->latency,command->preroll,
+                        command->clock?gst_clock_get_time(command->clock):0);
                     if(!GST_CLOCK_TIME_IS_VALID(running)){++stats.clipped;continue;}
                     if(!current(command->generation)){result=GST_FLOW_FLUSHING;++stats.cancelled;break;}
                     draw(parity,interlaced);
@@ -356,6 +362,7 @@ struct Worker {
                             GstClockTime target=0;need(target_time(*command,running,target),"field timing observation");
                             const auto actual=gst_clock_get_time(command->clock);
                             const guint64 age=actual>target?actual-target:0;
+                            GST_LOG_OBJECT(owner,"swap pts=%" G_GUINT64_FORMAT " target=%" G_GUINT64_FORMAT " age=%" G_GUINT64_FORMAT,pts,target,age);
                             ++stats.clocked;stats.max_age=std::max(stats.max_age.load(),age);
                             if(age>duration/(count*command->segment.rate))++stats.late;
                         }
@@ -486,6 +493,7 @@ static void finalize(GObject *object) {
     G_OBJECT_CLASS(gst_crystalhd_field_parent_class)->finalize(object);
 }
 static void gst_crystalhd_field_class_init(GstCrystalhdFieldClass *klass) {
+    GST_DEBUG_CATEGORY_INIT(field_debug,"crystalhdfield",0,"Experimental GPU field output");
     auto *object=G_OBJECT_CLASS(klass);auto *element=GST_ELEMENT_CLASS(klass);auto *base=GST_BASE_SINK_CLASS(klass);
     object->get_property=get_property;object->finalize=finalize;
     g_object_class_install_property(object,PROP_STATS,g_param_spec_boxed("field-stats","Field statistics",

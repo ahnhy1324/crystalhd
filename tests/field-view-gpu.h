@@ -123,6 +123,7 @@ struct Image {
                field ? "true" : "false", parity, source.width, height, offset,
                pitch, image != EGL_NO_IMAGE_KHR ? "true" : "false", unsigned(error));
         if (image == EGL_NO_IMAGE_KHR) return;
+      try {
         glGenTextures(1, &texture);
         glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture);
         gpu.target(GL_TEXTURE_EXTERNAL_OES, image);
@@ -131,6 +132,11 @@ struct Image {
         glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         need(glGetError() == GL_NO_ERROR, "external field texture");
+      } catch(...) {
+        if(texture){glDeleteTextures(1,&texture);texture=0;}
+        gpu.destroy(gpu.display,image);image=EGL_NO_IMAGE_KHR;
+        throw;
+      }
     }
     Image(const Image &) = delete;
     ~Image() {
