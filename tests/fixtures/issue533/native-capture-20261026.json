@@ -1,0 +1,21 @@
+{
+  "scope": "Isolated, opt-in V4L2 H.264 CAPTURE DMA-BUF experiment. Not a supported backend or resolution of nonempty STOP/START.",
+  "source_base": "e992c731d752dc0785efd6e1a6a4484fb04f088d",
+  "port_commit": "5bebc7a71b692b7df3eacb1f269802024adf26ac",
+  "kernel": "7.0.0-38-generic",
+  "first_native_attempt": {
+    "status": "FAIL",
+    "operation": "VIDIOC_S_FMT OUTPUT before decoder start or DMA",
+    "fault": "chd_set_fmt+0x18/0x1e0; NULL session argument +0x88",
+    "cause": "video_ioctl2 supplies NULL reserved callback argument. Old driver used it instead of file.private_data. Existing node models supplied a non-NULL argument and missed this boundary.",
+    "exit": "do_exit called chd_release, blocked on ioctl_lock held at fault; refcount2 prevented normal unload. No forced unload attempted. Installed module remains3.10.13; candidate was temporary3.10.14.",
+    "correction": "Resolve session from registered file.private_data in every own ioctl callback; normalize delegated vb2 callback argument for older kernels. Node scenarios now pass NULL.",
+    "native_decode": "NOT RUN: fault before decoder setup",
+    "direct_capture_GPU": "NOT RUN",
+    "recovery": "Normal reboot required to clear Oops-held mutex; existing remote autostart verified."
+  },
+  "kernel_source": "https://github.com/torvalds/linux/blob/v7.0/drivers/media/v4l2-core/v4l2-ioctl.c",
+  "gate533": "NOT TESTED; terminal nonempty START stays EOPNOTSUPP as documented by114.",
+  "external_app_changes": false,
+  "firmware_or_PM_changes": false
+}

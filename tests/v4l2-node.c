@@ -815,20 +815,20 @@ static void invalid_and_busy(void)
     struct v4l2_requestbuffers req = { .type = INVALID_CAPTURE_TYPE,
         .memory = V4L2_MEMORY_MMAP, .count = 0 };
     reset(false);
-    CHECK(chd_reqbufs(&handle, &fixture.fh, &req) == -EINVAL);
+    CHECK(chd_reqbufs(&handle, NULL, &req) == -EINVAL);
     CHECK(!enters && !joins && !req_calls);
-    CHECK(chd_streamon(&handle, &fixture.fh, INVALID_CAPTURE_TYPE) == -EINVAL);
-    CHECK(chd_streamoff(&handle, &fixture.fh, INVALID_CAPTURE_TYPE) == -EINVAL);
+    CHECK(chd_streamon(&handle, NULL, INVALID_CAPTURE_TYPE) == -EINVAL);
+    CHECK(chd_streamoff(&handle, NULL, INVALID_CAPTURE_TYPE) == -EINVAL);
     CHECK(!enters && !joins && !acquires && !streamon_calls && !streamoff_calls);
     reset(true); req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    CHECK(chd_reqbufs(&handle, &fixture.fh, &req) == -EBUSY);
+    CHECK(chd_reqbufs(&handle, NULL, &req) == -EBUSY);
     CHECK(!enters && !joins && !req_calls && hardware_owned && fixture.admitted);
-    CHECK(!chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT));
+    CHECK(!chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_OUTPUT));
     CHECK(!acquires && !streamon_calls);
     reset(false); req.memory = 2;
-    CHECK(chd_reqbufs(&handle, &fixture.fh, &req) == -EINVAL);
+    CHECK(chd_reqbufs(&handle, NULL, &req) == -EINVAL);
     CHECK(!enters && !joins && !req_calls);
-    CHECK(!chd_streamoff(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_CAPTURE));
+    CHECK(!chd_streamoff(&handle, NULL, V4L2_BUF_TYPE_VIDEO_CAPTURE));
     CHECK(!joins && !enters && !streamoff_calls);
 }
 
@@ -839,17 +839,17 @@ static void format_reallocation(void)
     reset(true); fixture.format_pending = true; fixture.capture_started = false;
     hardware_owned = false; join_hook = chd_kick;
     fixture.tx_active = true; fixture.tx_work.pending = true;
-    CHECK(!chd_streamoff(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_CAPTURE));
+    CHECK(!chd_streamoff(&handle, NULL, V4L2_BUF_TYPE_VIDEO_CAPTURE));
     CHECK(joins == 1 && !kicks && !enters && streamoff_calls == 1);
     CHECK(!tx_joins && fixture.tx_active && fixture.tx_work.pending);
     CHECK(fixture.format_known && fixture.format_pending && fixture.output_streaming &&
           !fixture.capture_streaming && fixture.decoder.count == 3);
-    CHECK(!chd_reqbufs(&handle, &fixture.fh, &req));
-    req.count = 6; CHECK(!chd_reqbufs(&handle, &fixture.fh, &req));
+    CHECK(!chd_reqbufs(&handle, NULL, &req));
+    req.count = 6; CHECK(!chd_reqbufs(&handle, NULL, &req));
     CHECK(req_calls == 2 && !enters && !releases && !stops && fixture.decoder.count == 3);
     CHECK(!tx_joins && fixture.tx_active && fixture.tx_work.pending);
     queues.dst.last = true;
-    CHECK(!chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_CAPTURE));
+    CHECK(!chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_CAPTURE));
     CHECK(fixture.capture_streaming && fixture.admitted && !fixture.format_pending &&
           !queues.dst.last && kicks == 1 && !acquires);
 }
@@ -861,7 +861,7 @@ static void stop_failures(void)
         if (i == 0) release_error = -EIO;
         if (i == 1) enter_error = -EAGAIN;
         if (i == 2) stop_error = -EIO;
-        CHECK(chd_streamoff(&handle, &fixture.fh, i == 2 ?
+        CHECK(chd_streamoff(&handle, NULL, i == 2 ?
               V4L2_BUF_TYPE_VIDEO_CAPTURE : V4L2_BUF_TYPE_VIDEO_OUTPUT) < 0);
         CHECK(!streamoff_calls && !req_calls && !returns && hardware_owned &&
               QUEUE_COUNT(&queues.src) == 4 && QUEUE_COUNT(&queues.dst) == 4);
@@ -872,7 +872,7 @@ static void stop_failures(void)
     {
         struct v4l2_requestbuffers req = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
             .memory = V4L2_MEMORY_MMAP, .count = 0 };
-        CHECK(chd_reqbufs(&handle, &fixture.fh, &req) == -EIO);
+        CHECK(chd_reqbufs(&handle, NULL, &req) == -EIO);
         CHECK(!req_calls && QUEUE_COUNT(&queues.dst) == 4 && hardware_owned && fixture.fatal);
     }
 }
@@ -882,15 +882,15 @@ static void restart_and_drain(void)
     struct v4l2_decoder_cmd cmd = { .cmd = V4L2_DEC_CMD_START };
     struct v4l2_buffer buf = { .type = V4L2_BUF_TYPE_VIDEO_OUTPUT };
     reset(true);
-    CHECK(!chd_streamoff(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT));
+    CHECK(!chd_streamoff(&handle, NULL, V4L2_BUF_TYPE_VIDEO_OUTPUT));
     CHECK(releases == 1 && !stops && !hardware_owned && !fixture.session_acquired &&
           !fixture.output_streaming && fixture.decoder.phase == CHD_V4L2_OFF);
-    CHECK(!chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT));
+    CHECK(!chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_OUTPUT));
     CHECK(acquires == 1 && array_calls == CHD_DISCOVERY_BUFFERS &&
           fixture.session_acquired && fixture.admitted);
     reset(true); fixture.decoder.phase = CHD_V4L2_DRAINED; fixture.drain_requested = true;
     queues.dst.last = true;
-    CHECK(chd_decoder_cmd(&handle, &fixture.fh, &cmd) == -EOPNOTSUPP);
+    CHECK(chd_decoder_cmd(&handle, NULL, &cmd) == -EOPNOTSUPP);
     CHECK(!releases && !stops && !flushes && !closes && !enters &&
           !streamoff_calls && queues.src.streaming && queues.dst.streaming &&
           QUEUE_COUNT(&queues.src) == 4 && QUEUE_COUNT(&queues.dst) == 4 &&
@@ -899,28 +899,28 @@ static void restart_and_drain(void)
           fixture.format_known && fixture.capture_started &&
           fixture.drain_requested && !fixture.drain_tx_done);
     reset(true);
-    CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
+    CHECK(!chd_decoder_cmd(&handle, NULL, &cmd));
     CHECK(!enters && !joins && !tx_joins &&
           !kicks && fixture.admitted);
     reset(true); fixture.decoder.phase = CHD_V4L2_DRAINING;
-    CHECK(chd_decoder_cmd(&handle, &fixture.fh, &cmd) == -EBUSY);
+    CHECK(chd_decoder_cmd(&handle, NULL, &cmd) == -EBUSY);
     CHECK(!joins && !enters);
     reset(true); fixture.decoder.phase = CHD_V4L2_DRAINED;
     fixture.drain_requested = fixture.drain_tx_done = queues.dst.last = true;
-    CHECK(chd_decoder_cmd(&handle, &fixture.fh, &cmd) == -EOPNOTSUPP);
-    CHECK(chd_decoder_cmd(&handle, &fixture.fh, &cmd) == -EOPNOTSUPP);
+    CHECK(chd_decoder_cmd(&handle, NULL, &cmd) == -EOPNOTSUPP);
+    CHECK(chd_decoder_cmd(&handle, NULL, &cmd) == -EOPNOTSUPP);
     CHECK(!fixture.admitted && !fixture.tx_active && !kicks && queues.dst.last &&
           fixture.drain_requested && fixture.drain_tx_done && hardware_owned &&
           fixture.decoder.phase == CHD_V4L2_DRAINED && !enters && !stops &&
           !closes && !flushes && !releases && !streamoff_calls && joins == 2);
     reset(true); cmd.cmd = V4L2_DEC_CMD_STOP;
-    CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
-    CHECK(fixture.drain_requested && !chd_qbuf(&handle, &fixture.fh, &buf));
+    CHECK(!chd_decoder_cmd(&handle, NULL, &cmd));
+    CHECK(fixture.drain_requested && !chd_qbuf(&handle, NULL, &buf));
     CHECK(qbuf_calls == 1 && !enters && !joins && !releases);
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    CHECK(!chd_qbuf(&handle, &fixture.fh, &buf) && qbuf_calls == 2);
+    CHECK(!chd_qbuf(&handle, NULL, &buf) && qbuf_calls == 2);
     cmd.flags = 1;
-    CHECK(!chd_try_decoder_cmd(&handle, &fixture.fh, &cmd) && !cmd.flags);
+    CHECK(!chd_try_decoder_cmd(&handle, NULL, &cmd) && !cmd.flags);
 }
 
 static void cleanup_and_scheduler(void)
@@ -945,34 +945,34 @@ static void cleanup_and_scheduler(void)
 static void streamon_allocation_failures(void)
 {
     reset(false);
-    CHECK(chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT) == -EINVAL);
+    CHECK(chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_OUTPUT) == -EINVAL);
     CHECK(!acquires && !enters && !array_calls && !fixture.session_acquired);
     reset(false); QUEUE_COUNT(&queues.src) = 4; acquire_error = -EBUSY;
-    CHECK(chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT) == -EBUSY);
+    CHECK(chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_OUTPUT) == -EBUSY);
     CHECK(acquires == 1 && !array_calls && !streamon_calls && !fixture.session_acquired);
     reset(false); QUEUE_COUNT(&queues.src) = 4; fail_edge = ARRAY_EDGE; fail_at = 1;
-    CHECK(chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT) == -ENOMEM);
+    CHECK(chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_OUTPUT) == -ENOMEM);
     CHECK(!fixture.session_acquired && !streamon_calls && !fixture.admitted &&
           releases == 1 && !adapter.cmds.session_owner);
     fail_edge = NO_FAILURE;
-    CHECK(!chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT));
+    CHECK(!chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_OUTPUT));
     CHECK(acquires == 2 && array_calls == 1 + CHD_DISCOVERY_BUFFERS &&
           streamon_calls == 1 && fixture.admitted);
     reset(false); QUEUE_COUNT(&queues.src) = 4; streamon_error = -EINVAL;
-    CHECK(chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT) == -EINVAL);
+    CHECK(chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_OUTPUT) == -EINVAL);
     CHECK(releases == 1 && !fixture.session_acquired && !fixture.fatal &&
           !live_arrays && !live_blocks && !live_maps && !live_vmaps);
     streamon_error = 0;
-    CHECK(!chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT));
+    CHECK(!chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_OUTPUT));
     CHECK(acquires == 2 && fixture.session_acquired);
     reset(false); QUEUE_COUNT(&queues.src) = 4;
     streamon_error = -EINVAL; release_error = -EIO;
-    CHECK(chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT) == -EIO);
+    CHECK(chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_OUTPUT) == -EIO);
     CHECK(releases == 1 && fixture.session_acquired && fixture.fatal &&
           adapter.cmds.session_owner == &lease && live_arrays && live_maps && live_vmaps);
     reset(true); hardware_owned = false; queues.dst.streaming = false;
     fixture.capture_streaming = false; streamon_error = -EINVAL;
-    CHECK(chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_CAPTURE) == -EINVAL);
+    CHECK(chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_CAPTURE) == -EINVAL);
     CHECK(!releases && !acquires && fixture.session_acquired && fixture.output_streaming &&
           adapter.cmds.session_owner == &lease);
 }
@@ -1272,15 +1272,18 @@ static void stop_during_tx(void)
 {
     struct v4l2_decoder_cmd cmd = { .cmd = V4L2_DEC_CMD_STOP };
     struct v4l2_buffer buf = { .type = V4L2_BUF_TYPE_VIDEO_OUTPUT };
-    CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
+    CHECK(!chd_decoder_cmd(&handle, NULL, &cmd));
     CHECK(fixture.drain_left == 1 && fixture.tx_active);
-    CHECK(!chd_qbuf(&handle, &fixture.fh, &buf));
+    CHECK(!chd_qbuf(&handle, NULL, &buf));
     source_next = &post_stop_buffer.m2m.vb;
-    CHECK(chd_decoder_cmd(&handle, &fixture.fh, &cmd) == -EBUSY);
+    CHECK(chd_decoder_cmd(&handle, NULL, &cmd) == -EBUSY);
     cmd.cmd = V4L2_DEC_CMD_START;
-    CHECK(chd_decoder_cmd(&handle, &fixture.fh, &cmd) == -EBUSY);
+    CHECK(chd_decoder_cmd(&handle, NULL, &cmd) == -EBUSY);
 }
 
+/* Modern video_ioctl2 deliberately supplies NULL as the reserved callback
+ * argument. Retrieve the session from the file, including delegated vb2 ops.
+ */
 static void stateful_lifecycle_cases(void)
 {
     struct v4l2_decoder_cmd cmd = { .cmd = V4L2_DEC_CMD_STOP };
@@ -1288,33 +1291,33 @@ static void stateful_lifecycle_cases(void)
     struct v4l2_format fmt = { .type = V4L2_BUF_TYPE_VIDEO_OUTPUT,
         .fmt.pix = { .width = 1920, .height = 1080 } };
     reset(false);
-    CHECK(!chd_set_fmt(&handle, &fixture.fh, &fmt));
+    CHECK(!chd_set_fmt(&handle, NULL, &fmt));
     CHECK(fixture.capture.width == 1920 && fixture.capture.height == 1080 &&
           fixture.capture.bytesperline == 3840 && fixture.capture.sizeimage > 1920 * 1080 * 2);
     QUEUE_COUNT(&queues.dst) = 2; fmt.fmt.pix.width = 640;
-    CHECK(chd_set_fmt(&handle, &fixture.fh, &fmt) == -EBUSY);
+    CHECK(chd_set_fmt(&handle, NULL, &fmt) == -EBUSY);
     CHECK(fixture.output.width == 1920);
     reset(false); fmt.fmt.pix.width = fmt.fmt.pix.height = 0;
-    CHECK(!chd_set_fmt(&handle, &fixture.fh, &fmt));
+    CHECK(!chd_set_fmt(&handle, NULL, &fmt));
     CHECK(fmt.fmt.pix.width && fmt.fmt.pix.height && fmt.fmt.pix.colorspace);
 
     for (unsigned mask = 0; mask < 3; mask++) {
         reset(false); fixture.output_streaming = mask & 1; fixture.capture_streaming = mask & 2;
         cmd.cmd = V4L2_DEC_CMD_STOP;
-        CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
+        CHECK(!chd_decoder_cmd(&handle, NULL, &cmd));
         CHECK(!fixture.drain_requested && !enters && !kicks);
         cmd.cmd = V4L2_DEC_CMD_START;
-        CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
+        CHECK(!chd_decoder_cmd(&handle, NULL, &cmd));
         CHECK(!enters && !joins && !kicks);
     }
     reset(false); fixture.output_streaming = fixture.capture_streaming = true;
     cmd.cmd = V4L2_DEC_CMD_START;
-    CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
+    CHECK(!chd_decoder_cmd(&handle, NULL, &cmd));
     CHECK(fixture.decoder.phase == CHD_V4L2_OFF && !enters && !joins && !kicks);
 
     reset(false); fixture.output_streaming = fixture.capture_streaming = fixture.admitted = true;
     cmd.cmd = V4L2_DEC_CMD_STOP;
-    CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
+    CHECK(!chd_decoder_cmd(&handle, NULL, &cmd));
     mutex_lock(&fixture.run_lock);
     CHECK(chd_empty_drain(&fixture));
     CHECK(fixture.decoder.phase == CHD_V4L2_OFF && !eos_events);
@@ -1326,19 +1329,19 @@ static void stateful_lifecycle_cases(void)
           last_buffer.done == VB2_BUF_STATE_DONE && (last_buffer.flags & V4L2_BUF_FLAG_LAST) &&
           !enters && !transports && eos_events == 1 && source);
     cmd.cmd = V4L2_DEC_CMD_START;
-    CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
+    CHECK(!chd_decoder_cmd(&handle, NULL, &cmd));
     CHECK(fixture.decoder.phase == CHD_V4L2_OFF && !fixture.drain_requested &&
           !fixture.empty_drain && !enters && source);
 
     reset(true); fixture.input_seen = false; fixture.decoder.count = 0;
     queues.dst_ready = &last_capture.m2m; cmd.cmd = V4L2_DEC_CMD_STOP;
-    CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
+    CHECK(!chd_decoder_cmd(&handle, NULL, &cmd));
     mutex_lock(&fixture.run_lock); CHECK(chd_empty_drain(&fixture)); mutex_unlock(&fixture.run_lock);
     CHECK(fixture.decoder.phase == CHD_V4L2_DRAINED && fixture.empty_drain &&
           !fixture.empty_drain_unopened && last_buffer.done == VB2_BUF_STATE_DONE &&
           (last_buffer.flags & V4L2_BUF_FLAG_LAST) && eos_events == 1);
     queues.dst.last = true; cmd.cmd = V4L2_DEC_CMD_START;
-    CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
+    CHECK(!chd_decoder_cmd(&handle, NULL, &cmd));
     CHECK(fixture.decoder.phase == CHD_V4L2_RUNNING && !fixture.drain_requested &&
           !fixture.drain_tx_done && !fixture.empty_drain && !queues.dst.last &&
           fixture.admitted && !enters);
@@ -1355,28 +1358,28 @@ static void stateful_lifecycle_cases(void)
     mutex_lock(&fixture.run_lock); CHECK(!chd_finish_last(&fixture)); mutex_unlock(&fixture.run_lock);
     CHECK(fixture.decoder.phase == CHD_V4L2_DRAINED && !source->done);
     unsigned resume_enters = enters;
-    CHECK(chd_decoder_cmd(&handle, &fixture.fh, &cmd) == -EOPNOTSUPP);
+    CHECK(chd_decoder_cmd(&handle, NULL, &cmd) == -EOPNOTSUPP);
     CHECK(fixture.decoder.phase == CHD_V4L2_DRAINED && fixture.drain_requested &&
           fixture.drain_tx_done && !fixture.admitted && source && !source->done &&
           enters == resume_enters);
     queues.dst.last = true;
-    CHECK(!chd_streamoff(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT));
+    CHECK(!chd_streamoff(&handle, NULL, V4L2_BUF_TYPE_VIDEO_OUTPUT));
     CHECK(releases == 1 && !fixture.session_acquired && !fixture.output_streaming &&
           fixture.decoder.phase == CHD_V4L2_OFF && !fixture.drain_requested &&
           !fixture.drain_tx_done && !fixture.input_seen && !fixture.format_known &&
           !fixture.format_pending && !hardware_owned && !queues.dst.last &&
           streamoff_calls == 1);
-    CHECK(!chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT));
+    CHECK(!chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_OUTPUT));
     CHECK(acquires == 1 && fixture.session_acquired && fixture.output_streaming &&
           fixture.decoder.phase == CHD_V4L2_OFF && fixture.admitted &&
           queues.src.streaming && streamon_calls == 1);
 
     reset(true); fixture.decoder.phase = CHD_V4L2_DRAINED;
     fixture.drain_requested = fixture.drain_tx_done = true; hardware_owned = false;
-    CHECK(!chd_streamoff(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_CAPTURE));
+    CHECK(!chd_streamoff(&handle, NULL, V4L2_BUF_TYPE_VIDEO_CAPTURE));
     CHECK(!enters && !stops && !flushes && !closes && !releases &&
           fixture.decoder.phase == CHD_V4L2_DRAINED && fixture.capture_started);
-    CHECK(chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_CAPTURE) == -EOPNOTSUPP);
+    CHECK(chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_CAPTURE) == -EOPNOTSUPP);
     CHECK(!enters && !stops && !closes && fixture.decoder.phase == CHD_V4L2_DRAINED &&
           !fixture.capture_streaming && !queues.dst.streaming && streamon_calls == 1 &&
           streamoff_calls == 2);
@@ -1387,11 +1390,11 @@ static void stateful_lifecycle_cases(void)
     queues.dst.bufs[1] = &spare.m2m.vb.vb2_buf;
     last_buffer.vb2_buf.size = 700000; spare.m2m.vb.vb2_buf.size = 699999;
     queues.dst_ready = &last_capture.m2m;
-    CHECK(chd_decoder_cmd(&handle, &fixture.fh, &cmd) == -EINVAL);
+    CHECK(chd_decoder_cmd(&handle, NULL, &cmd) == -EINVAL);
     CHECK(fixture.format_pending && !kicks && !enters);
     spare.m2m.vb.vb2_buf.size = 700000; queues.dst.last = true;
     fixture.drain_requested = true; fixture.drain_left = 2;
-    CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
+    CHECK(!chd_decoder_cmd(&handle, NULL, &cmd));
     CHECK(!fixture.format_pending && !queues.dst.last && last_capture.width == 640 &&
           last_capture.height == 480 && !enters && !joins && fixture.drain_left == 2 &&
           fixture.drain_requested);
@@ -1405,7 +1408,7 @@ static void colorimetry_cases(void)
                      .colorspace = V4L2_COLORSPACE_SMPTE170M,
                      .xfer_func = 2, .ycbcr_enc = 2, .quantization = 1 } };
     reset(false);
-    CHECK(!chd_set_fmt(&handle, &fixture.fh, &fmt));
+    CHECK(!chd_set_fmt(&handle, NULL, &fmt));
     CHECK(fixture.output.colorspace == V4L2_COLORSPACE_SMPTE170M &&
           fixture.output.xfer_func == 2 && fixture.output.ycbcr_enc == 2 &&
           fixture.output.quantization == 1 && !fixture.color_default &&
@@ -1416,7 +1419,7 @@ static void colorimetry_cases(void)
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     fmt.fmt.pix.colorspace = V4L2_COLORSPACE_REC709;
     fmt.fmt.pix.xfer_func = fmt.fmt.pix.ycbcr_enc = fmt.fmt.pix.quantization = 0;
-    CHECK(!chd_set_fmt(&handle, &fixture.fh, &fmt));
+    CHECK(!chd_set_fmt(&handle, NULL, &fmt));
     CHECK(fmt.fmt.pix.colorspace == V4L2_COLORSPACE_SMPTE170M &&
           fmt.fmt.pix.xfer_func == 2 && fmt.fmt.pix.ycbcr_enc == 2 && fmt.fmt.pix.quantization == 1);
     fixture.output.width = 1920; fixture.output.height = 1080;
@@ -1427,7 +1430,7 @@ static void colorimetry_cases(void)
     fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
     fmt.fmt.pix = (struct v4l2_pix_format){ .width = 640, .height = 480,
         .priv = V4L2_PIX_FMT_PRIV_MAGIC };
-    CHECK(!chd_set_fmt(&handle, &fixture.fh, &fmt));
+    CHECK(!chd_set_fmt(&handle, NULL, &fmt));
     CHECK(fixture.color_default && fixture.capture.colorspace == V4L2_COLORSPACE_SMPTE170M &&
           !fixture.capture.xfer_func && !fixture.capture.ycbcr_enc && !fixture.capture.quantization);
     fixture.output.width = 1920; fixture.output.height = 1080;
@@ -1441,12 +1444,12 @@ static void colorimetry_cases(void)
     fmt.fmt.pix = (struct v4l2_pix_format){ .width = 1280, .height = 720,
         .colorspace = V4L2_COLORSPACE_REC709, .xfer_func = 2,
         .ycbcr_enc = 2, .quantization = 1 }; /* Missing priv magic. */
-    CHECK(!chd_set_fmt(&handle, &fixture.fh, &fmt));
+    CHECK(!chd_set_fmt(&handle, NULL, &fmt));
     CHECK(!fmt.fmt.pix.xfer_func && !fmt.fmt.pix.ycbcr_enc && !fmt.fmt.pix.quantization);
     fmt.fmt.pix.colorspace = V4L2_COLORSPACE_BT878;
     fmt.fmt.pix.xfer_func = UINT32_MAX; fmt.fmt.pix.ycbcr_enc = 257;
     fmt.fmt.pix.quantization = 257;
-    CHECK(!chd_set_fmt(&handle, &fixture.fh, &fmt));
+    CHECK(!chd_set_fmt(&handle, NULL, &fmt));
     CHECK(fmt.fmt.pix.colorspace == V4L2_COLORSPACE_REC709 && !fmt.fmt.pix.xfer_func &&
           !fmt.fmt.pix.ycbcr_enc && !fmt.fmt.pix.quantization && fixture.color_default);
 }
@@ -1504,15 +1507,15 @@ static void discovery_watchdog_cases(void)
         for (unsigned gate = 0; gate < 4; gate++) {
             reset(false);
             QUEUE_COUNT(&queues.src) = QUEUE_COUNT(&queues.dst) = 4;
-            CHECK(!chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT));
-            CHECK(!chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_CAPTURE));
+            CHECK(!chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_OUTPUT));
+            CHECK(!chd_streamon(&handle, NULL, V4L2_BUF_TYPE_VIDEO_CAPTURE));
             CHECK(fixture.output_streaming && fixture.capture_streaming && !fixture.format_known);
             /* Model completed bootstrap and short input, not a discovered source. */
             fixture.decoder.phase = CHD_V4L2_RUNNING;
             fixture.decoder.count = owed; fixture.input_seen = true;
             fixture.capture_started = fixture.discovery[0].owned = true;
             struct v4l2_decoder_cmd stop = { .cmd = V4L2_DEC_CMD_STOP };
-            CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &stop));
+            CHECK(!chd_decoder_cmd(&handle, NULL, &stop));
             CHECK(fixture.drain_requested && !fixture.drain_left);
             schedule_tx(); CHECK(fixture.tx_active);
             execute_tx();
@@ -1543,7 +1546,7 @@ static void discovery_watchdog_cases(void)
         fixture.discovery[0].owned = true; source = &tx_buffer.m2m.vb;
         fixture.decoder.count = CRYSTALHD_V4L2_TIMESTAMPS;
         struct v4l2_decoder_cmd stop = { .cmd = V4L2_DEC_CMD_STOP };
-        CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &stop));
+        CHECK(!chd_decoder_cmd(&handle, NULL, &stop));
         schedule_tx(); CHECK(!tx_queues && fixture.drain_left == 1);
         if (gate == 1) fixture.discovery[0].owned = false;
         if (gate == 2) fixture.format_pending = true;
@@ -1583,7 +1586,7 @@ static void discovery_watchdog_cases(void)
     fixture.decoder.count--; chd_drain_watchdog(&fixture);
     CHECK(!fixture.fatal && !fixture.drain_clock_elapsed);
     fixture.drain_clock_running = true; fixture.drain_clock_elapsed = limit - 1;
-    CHECK(!chd_streamoff(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_CAPTURE));
+    CHECK(!chd_streamoff(&handle, NULL, V4L2_BUF_TYPE_VIDEO_CAPTURE));
     CHECK(!fixture.drain_clock_running && !fixture.drain_clock_elapsed && !fixture.capture_streaming);
 }
 
@@ -1596,7 +1599,7 @@ static void credit_watchdog_cases(void)
         fixture.active[0] = &last_capture; last_capture.owned = true;
         fixture.decoder.count = CRYSTALHD_V4L2_TIMESTAMPS;
         struct v4l2_decoder_cmd stop = { .cmd = V4L2_DEC_CMD_STOP };
-        CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &stop));
+        CHECK(!chd_decoder_cmd(&handle, NULL, &stop));
         CHECK(fixture.drain_requested && fixture.drain_left == 1);
         schedule_tx();
         CHECK(!tx_queues && !fixture.tx_active && !fixture.drain_tx_done);
@@ -1821,12 +1824,12 @@ static void constructor_cases(void)
     crystalhd_v4l2_node_unregister(NULL); crystalhd_v4l2_node_destroy(NULL);
     for (unsigned output = 0; output < 2; output++) {
         struct v4l2_fmtdesc fmt = { .type = output ? V4L2_BUF_TYPE_VIDEO_OUTPUT : V4L2_BUF_TYPE_VIDEO_CAPTURE };
-        CHECK(!chd_enum_fmt(&handle, &fixture.fh, &fmt));
+        CHECK(!chd_enum_fmt(&handle, NULL, &fmt));
         CHECK(fmt.pixelformat == (output ? V4L2_PIX_FMT_H264 : V4L2_PIX_FMT_YUYV));
         CHECK(fmt.flags == (output ? V4L2_FMT_FLAG_COMPRESSED : 0));
         fmt.index = 1;
         struct v4l2_fmtdesc saved = fmt;
-        CHECK(chd_enum_fmt(&handle, &fixture.fh, &fmt) == -EINVAL && !memcmp(&fmt, &saved, sizeof(fmt)));
+        CHECK(chd_enum_fmt(&handle, NULL, &fmt) == -EINVAL && !memcmp(&fmt, &saved, sizeof(fmt)));
     }
     constructor_mode = false;
 }

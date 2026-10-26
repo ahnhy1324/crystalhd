@@ -95,6 +95,9 @@ struct crystalhd_v4l2_file {
 	u64 last_epoch;
 };
 
+/* Linux 7.0 passes NULL in the reserved ioctl callback argument. The
+ * file owns the registered v4l2_fh on every supported kernel version.
+ */
 static struct crystalhd_v4l2_file *chd_file(void *fh)
 {
 	return container_of(fh, struct crystalhd_v4l2_file, fh);
@@ -1264,11 +1267,11 @@ static int chd_enum_fmt(struct file *file, void *fh, struct v4l2_fmtdesc *fmt)
 
 static int chd_try_fmt_locked(struct file *file, void *fh, struct v4l2_format *fmt)
 {
-	struct crystalhd_v4l2_file *f = chd_file(fh);
+	struct crystalhd_v4l2_file *f = chd_file(file->private_data);
 	struct v4l2_pix_format *p = &fmt->fmt.pix;
 	bool output = V4L2_TYPE_IS_OUTPUT(fmt->type);
 
-	(void)file;
+	(void)fh;
 	p->pixelformat = output ? V4L2_PIX_FMT_H264 : V4L2_PIX_FMT_YUYV;
 	p->field = V4L2_FIELD_NONE;
 	if (output) {
@@ -1296,7 +1299,7 @@ static int chd_try_fmt_locked(struct file *file, void *fh, struct v4l2_format *f
 
 static int chd_try_fmt(struct file *file, void *fh, struct v4l2_format *fmt)
 {
-	struct crystalhd_v4l2_file *f = chd_file(fh);
+	struct crystalhd_v4l2_file *f = chd_file(file->private_data);
 	int rc;
 
 	mutex_lock(&f->run_lock);
@@ -1307,9 +1310,9 @@ static int chd_try_fmt(struct file *file, void *fh, struct v4l2_format *fmt)
 
 static int chd_get_fmt(struct file *file, void *fh, struct v4l2_format *fmt)
 {
-	struct crystalhd_v4l2_file *f = chd_file(fh);
+	struct crystalhd_v4l2_file *f = chd_file(file->private_data);
 
-	(void)file;
+	(void)fh;
 	mutex_lock(&f->run_lock);
 	fmt->fmt.pix = V4L2_TYPE_IS_OUTPUT(fmt->type) ? f->output : f->capture;
 	mutex_unlock(&f->run_lock);
@@ -1318,7 +1321,7 @@ static int chd_get_fmt(struct file *file, void *fh, struct v4l2_format *fmt)
 
 static int chd_set_fmt(struct file *file, void *fh, struct v4l2_format *fmt)
 {
-	struct crystalhd_v4l2_file *f = chd_file(fh);
+	struct crystalhd_v4l2_file *f = chd_file(file->private_data);
 	struct vb2_queue *q = v4l2_m2m_get_vq(f->fh.m2m_ctx, fmt->type);
 	bool color_default = chd_default_colorspace(fmt->fmt.pix.colorspace);
 	int rc;
@@ -1351,11 +1354,12 @@ static int chd_set_fmt(struct file *file, void *fh, struct v4l2_format *fmt)
 
 static int chd_reqbufs(struct file *file, void *fh, struct v4l2_requestbuffers *req)
 {
-	struct crystalhd_v4l2_file *f = chd_file(fh);
+	struct crystalhd_v4l2_file *f = chd_file(file->private_data);
 	struct vb2_queue *q = v4l2_m2m_get_vq(f->fh.m2m_ctx, req->type);
 	int rc;
 	bool reset;
 
+	(void)fh;
 	if (req->type != V4L2_BUF_TYPE_VIDEO_OUTPUT &&
 	    req->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
@@ -1380,21 +1384,22 @@ static int chd_reqbufs(struct file *file, void *fh, struct v4l2_requestbuffers *
 		if (rc)
 			return rc;
 	}
-	return v4l2_m2m_ioctl_reqbufs(file, fh, req);
+	return v4l2_m2m_ioctl_reqbufs(file, file->private_data, req);
 }
 
 static int chd_qbuf(struct file *file, void *fh, struct v4l2_buffer *buf)
 {
-	struct crystalhd_v4l2_file *f = chd_file(fh);
+	struct crystalhd_v4l2_file *f = chd_file(file->private_data);
 	int rc = 0;
 
+	(void)fh;
 	mutex_lock(&f->run_lock);
 	if (f->fatal)
 		rc = -EIO;
 	mutex_unlock(&f->run_lock);
 	if (rc)
 		return rc;
-	return v4l2_m2m_ioctl_qbuf(file, fh, buf);
+	return v4l2_m2m_ioctl_qbuf(file, file->private_data, buf);
 }
 
 static int chd_resume(struct crystalhd_v4l2_file *f)
@@ -1459,11 +1464,12 @@ static int chd_reuse_capture(struct crystalhd_v4l2_file *f)
 
 static int chd_streamon(struct file *file, void *fh, enum v4l2_buf_type type)
 {
-	struct crystalhd_v4l2_file *f = chd_file(fh);
+	struct crystalhd_v4l2_file *f = chd_file(file->private_data);
 	bool acquired = false;
 	u32 i;
 	int rc, cleanup_rc;
 
+	(void)fh;
 	if (f->fatal)
 		return -EIO;
 	if (type != V4L2_BUF_TYPE_VIDEO_OUTPUT && type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
@@ -1485,13 +1491,13 @@ static int chd_streamon(struct file *file, void *fh, enum v4l2_buf_type type)
 		if (rc)
 			goto rollback;
 	}
-	rc = v4l2_m2m_ioctl_streamon(file, fh, type);
+	rc = v4l2_m2m_ioctl_streamon(file, file->private_data, type);
 	if (rc)
 		goto rollback;
 	if (!V4L2_TYPE_IS_OUTPUT(type) && crystalhd_v4l2_decoder_drained(&f->decoder)) {
 		rc = chd_resume(f);
 		if (rc) {
-			v4l2_m2m_ioctl_streamoff(file, fh, type);
+			v4l2_m2m_ioctl_streamoff(file, file->private_data, type);
 			return rc;
 		}
 	}
@@ -1526,10 +1532,11 @@ rollback:
 
 static int chd_streamoff(struct file *file, void *fh, enum v4l2_buf_type type)
 {
-	struct crystalhd_v4l2_file *f = chd_file(fh);
+	struct crystalhd_v4l2_file *f = chd_file(file->private_data);
 	bool output = V4L2_TYPE_IS_OUTPUT(type);
 	int rc;
 
+	(void)fh;
 	if (type != V4L2_BUF_TYPE_VIDEO_OUTPUT && type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
 	if (!vb2_is_streaming(v4l2_m2m_get_vq(f->fh.m2m_ctx, type)))
@@ -1563,7 +1570,7 @@ static int chd_streamoff(struct file *file, void *fh, enum v4l2_buf_type type)
 		f->capture_streaming = false;
 	}
 	mutex_unlock(&f->run_lock);
-	rc = v4l2_m2m_ioctl_streamoff(file, fh, type);
+	rc = v4l2_m2m_ioctl_streamoff(file, file->private_data, type);
 	if (!output && f->output_streaming && !f->format_pending &&
 	    !crystalhd_v4l2_decoder_drained(&f->decoder)) {
 		chd_admit(f, true);
@@ -1586,7 +1593,7 @@ static int chd_try_decoder_cmd(struct file *file, void *fh,
 
 static int chd_decoder_cmd(struct file *file, void *fh, struct v4l2_decoder_cmd *cmd)
 {
-	struct crystalhd_v4l2_file *f = chd_file(fh);
+	struct crystalhd_v4l2_file *f = chd_file(file->private_data);
 	int rc = chd_try_decoder_cmd(file, fh, cmd);
 
 	if (rc || f->fatal)
