@@ -8,6 +8,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <sys/resource.h>
 
 struct Trace {
     std::atomic<unsigned> inputs{0},outputs{0};
@@ -166,6 +167,7 @@ static unsigned device_fds() {
 
 int main(int argc,char **argv) {
     try {
+        const double main_start=clock_seconds(CLOCK_MONOTONIC);
         need(argc==7,"usage: gst-field-views ANNEXB_INPUT EXPECTED_PICTURES SCALE_WIDTH OUTPUT_HEIGHT field|cpu verify|clocked");
         const unsigned expected=std::stoul(argv[2]),scale=std::stoul(argv[3]),oh=std::stoul(argv[4]);
         const bool field=std::string(argv[5])=="field",verify=std::string(argv[6])=="verify";
@@ -235,10 +237,10 @@ int main(int argc,char **argv) {
             generations.insert(g_checksum_get_string(one));g_checksum_free(one);
             std::array<std::unique_ptr<Image>,2> views;
             if(field) {
-                const double pc=clock_seconds(CLOCK_PROCESS_CPUTIME_ID),pw=clock_seconds(CLOCK_MONOTONIC);
+                const double pc=clock_seconds(CLOCK_THREAD_CPUTIME_ID),pw=clock_seconds(CLOCK_MONOTONIC);
                 memory->write(data,stride,mapping.size-(address-origin));
                 for(unsigned p=0;p<2;++p){views[p]=std::make_unique<Image>(gpu,*memory,true,p);need(views[p]->texture,"both real field views");}
-                producer_cpu+=clock_seconds(CLOCK_PROCESS_CPUTIME_ID)-pc;producer_wall+=clock_seconds(CLOCK_MONOTONIC)-pw;
+                producer_cpu+=clock_seconds(CLOCK_THREAD_CPUTIME_ID)-pc;producer_wall+=clock_seconds(CLOCK_MONOTONIC)-pw;
             }
             for(unsigned use=0;use<2;++use) {
                 const unsigned parity=use^(tff?0:1);const auto due=base+running+use*(duration/2);
@@ -247,10 +249,10 @@ int main(int argc,char **argv) {
                     auto id=gst_clock_new_single_shot_id(clock,due);const auto waited=gst_clock_id_wait(id,nullptr);gst_clock_id_unref(id);
                     need(waited==GST_CLOCK_OK||waited==GST_CLOCK_EARLY,"original field deadline");
                 }
-                const double rc=clock_seconds(CLOCK_PROCESS_CPUTIME_ID),rw=clock_seconds(CLOCK_MONOTONIC);
+                const double rc=clock_seconds(CLOCK_THREAD_CPUTIME_ID),rw=clock_seconds(CLOCK_MONOTONIC);
                 if(field)renderer.draw(*views[parity],true,parity);
                 else {cpu_bob(data,stride,w,h,parity,bob);upload->draw(renderer,bob);}
-                render_cpu+=clock_seconds(CLOCK_PROCESS_CPUTIME_ID)-rc;render_wall+=clock_seconds(CLOCK_MONOTONIC)-rw;++fields;
+                render_cpu+=clock_seconds(CLOCK_THREAD_CPUTIME_ID)-rc;render_wall+=clock_seconds(CLOCK_MONOTONIC)-rw;++fields;
                 const auto completed=gst_clock_get_time(clock);
                 const double age=completed>due?double(completed-due)/GST_MSECOND:0;
                 if(!verify){maximum_age=std::max(maximum_age,age);late+=completed>due+duration/2;maximum_ready_age=std::max(maximum_ready_age,double(gst_util_get_timestamp()-ready)/GST_MSECOND);}
@@ -265,7 +267,8 @@ int main(int argc,char **argv) {
         const double cpu=clock_seconds(CLOCK_PROCESS_CPUTIME_ID)-cpu_start,wall=clock_seconds(CLOCK_MONOTONIC)-wall_start;
         gst_object_unref(clock);need(pictures==expected&&fields==2*expected&&pipeline.trace.outputs==expected,"complete real picture/field census");
         pipeline.finish();need(device_fds()==0,"live-process CrystalHD FD retirement");
-        printf("{\"type\":\"native-result\",\"path\":\"%s\",\"verify\":%s,\"pictures\":%u,\"input_pad_aus\":%u,\"completed_fields\":%u,\"late_fields\":%u,\"unique_source_pixels\":%zu,\"source_sha256\":\"%s\",\"producer_cpu_s\":%.9f,\"producer_wall_s\":%.9f,\"render_cpu_s\":%.9f,\"render_wall_s\":%.9f,\"whole_cpu_s\":%.9f,\"wall_s\":%.9f,\"max_deadline_age_ms\":%.6f,\"max_ready_age_ms\":%.6f,\"device_fds_after_null\":0,\"physical_presentation\":false}\n",field?"field":"cpu",verify?"true":"false",pictures,pipeline.trace.inputs.load(),fields,late,generations.size(),g_checksum_get_string(digest),producer_cpu,producer_wall,render_cpu,render_wall,cpu,wall,maximum_age,maximum_ready_age);
+        rusage usage{};need(getrusage(RUSAGE_SELF,&usage)==0,"peak RSS");
+        printf("{\"type\":\"native-result\",\"path\":\"%s\",\"verify\":%s,\"pictures\":%u,\"input_pad_aus\":%u,\"completed_fields\":%u,\"late_fields\":%u,\"unique_source_pixels\":%zu,\"source_sha256\":\"%s\",\"producer_thread_cpu_s\":%.9f,\"producer_wall_s\":%.9f,\"render_thread_cpu_s\":%.9f,\"render_wall_s\":%.9f,\"playback_process_cpu_s\":%.9f,\"playback_wall_s\":%.9f,\"process_cpu_s_at_null\":%.9f,\"main_wall_s_to_null\":%.9f,\"peak_rss_kib\":%ld,\"max_deadline_age_ms\":%.6f,\"max_ready_age_ms\":%.6f,\"device_fds_after_null\":0,\"natural_eos\":true,\"physical_presentation\":false}\n",field?"field":"cpu",verify?"true":"false",pictures,pipeline.trace.inputs.load(),fields,late,generations.size(),g_checksum_get_string(digest),producer_cpu,producer_wall,render_cpu,render_wall,cpu,wall,clock_seconds(CLOCK_PROCESS_CPUTIME_ID),clock_seconds(CLOCK_MONOTONIC)-main_start,usage.ru_maxrss,maximum_age,maximum_ready_age);
         g_checksum_free(digest);return 0;
     }catch(const std::exception &error){fprintf(stderr,"FAIL %s\n",error.what());return 1;}
 }
