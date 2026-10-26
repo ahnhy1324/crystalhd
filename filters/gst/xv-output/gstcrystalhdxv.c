@@ -402,7 +402,6 @@ static gpointer event_reader(gpointer user)
     gboolean done = FALSE, post = FALSE;
     g_mutex_lock(&c->lock);
     if (c->connection && !c->failed) receive_locked(c, release, &n);
-    if (c->failed && !posted) { posted = TRUE; post = TRUE; }
     if (c->failed || g_atomic_int_get(&c->stopping)) {
       if (c->connection) {
         if (!c->failed && c->colorspace_atom && c->active_colorspace != c->original_colorspace) {
@@ -443,6 +442,9 @@ static gpointer event_reader(gpointer user)
     gint timeout = c->connection ? (c->pending ? 50 : -1) : 100;
     for (m = c->images; m; m = m->next)
       if (m->dispose) timeout = 10;
+    /* A bus sync handler can stop the pipeline from this reader. Complete
+     * the bounded connection-close phase before invoking that handler. */
+    if (c->failed && c->closed && !posted) { posted = TRUE; post = TRUE; }
     const char *failure = c->failure;
     g_mutex_unlock(&c->lock);
     for (guint i = 0; i < n; i++) gst_buffer_unref(release[i]);

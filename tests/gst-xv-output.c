@@ -9,11 +9,12 @@
 #include <sys/wait.h>
 #include <xcb/xcb.h>
 #include <errno.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
-static gint fail_alloc_after = -1, fail_attach;
+static gint fail_alloc_after = -1, fail_attach, defer_detach;
 static gpointer drop_connection;
 static gpointer delay_connection, delayed_event;
 static gint release_delayed;
@@ -30,6 +31,13 @@ static void *test_shmat(int id, const void *address, int flags)
 {
   if (g_atomic_int_get(&fail_attach)) { errno = ENOMEM; return (void *)-1; }
   return shmat(id, address, flags);
+}
+static int test_shmctl(int id, int command, struct shmid_ds *status)
+{
+  int result = shmctl(id, command, status);
+  if (!result && command == IPC_STAT && g_atomic_int_get(&defer_detach))
+    status->shm_nattch = MAX(status->shm_nattch, 2);
+  return result;
 }
 static xcb_generic_event_t *test_poll_event(xcb_connection_t *connection)
 {
@@ -51,10 +59,12 @@ static xcb_generic_event_t *test_poll_event(xcb_connection_t *connection)
 }
 #define shmget test_shmget
 #define shmat test_shmat
+#define shmctl test_shmctl
 #define xcb_poll_for_event test_poll_event
 #include "../filters/gst/xv-output/gstcrystalhdxv.c"
 #undef shmget
 #undef shmat
+#undef shmctl
 #undef xcb_poll_for_event
 
 static guint own_segments(void)
@@ -327,6 +337,41 @@ static void test_transport_reopen(void)
   check_eos(pipeline, 24);
   gst_object_unref(sink); gst_object_unref(pipeline); clean_contexts();
 }
+typedef struct { GstElement *pipeline; gint finished; } StopJob;
+static GstBusSyncReply stop_on_output_error(GstBus *bus, GstMessage *message, gpointer data)
+{
+  (void)bus; StopJob *job = data;
+  if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+    GError *error = NULL; gst_message_parse_error(message, &error, NULL);
+    gboolean output_error = error->domain == GST_RESOURCE_ERROR && error->code == GST_RESOURCE_ERROR_WRITE;
+    g_error_free(error);
+    if (output_error) {
+      gst_element_set_state(job->pipeline, GST_STATE_NULL);
+      g_atomic_int_set(&job->finished, TRUE);
+    }
+  }
+  return GST_BUS_PASS;
+}
+static void test_reentrant_error_stop(void)
+{
+  if (!x11_enabled()) return;
+  GstElement *pipeline = new_pipeline(250, TRUE);
+  GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), "output");
+  gst_element_set_state(pipeline, GST_STATE_PAUSED);
+  XvContext *c = sink_context(XV_SINK(sink)); g_assert_nonnull(c);
+  g_atomic_pointer_set(&drop_connection, c->connection); g_atomic_int_set(&drop_type, c->completion_type);
+  g_atomic_int_set(&defer_detach, TRUE);
+  GstBus *bus = gst_element_get_bus(pipeline); StopJob job = {.pipeline = pipeline};
+  gst_bus_set_sync_handler(bus, stop_on_output_error, &job, NULL);
+  gst_element_set_state(pipeline, GST_STATE_PLAYING);
+  gint64 end = g_get_monotonic_time() + 4 * G_USEC_PER_SEC;
+  while (!g_atomic_int_get(&job.finished) && g_get_monotonic_time() < end) g_usleep(1000);
+  g_assert_true(g_atomic_int_get(&job.finished));
+  g_atomic_pointer_set(&drop_connection, NULL); g_atomic_int_set(&defer_detach, FALSE); wake_context(c);
+  gst_bus_set_sync_handler(bus, NULL, NULL, NULL);
+  context_unref(c); gst_object_unref(bus); gst_object_unref(sink); gst_object_unref(pipeline);
+  clean_contexts();
+}
 typedef struct { GstElement *sink; GstCaps *caps; gint started, finished; gboolean result; } CapsJob;
 static gpointer change_caps(gpointer data)
 {
@@ -484,6 +529,47 @@ static void test_quarantine(void)
   g_mutex_unlock(&c->lock); context_unref(c); gst_buffer_unref(buffer);
   g_assert_true(sink_stop(GST_BASE_SINK(sink))); gst_object_unref(sink); clean_contexts();
 }
+static guint device_fds(void)
+{
+  DIR *directory = opendir("/proc/self/fd"); g_assert_nonnull(directory);
+  struct dirent *entry; guint count = 0;
+  while ((entry = readdir(directory))) {
+    char target[256]; ssize_t length = readlinkat(dirfd(directory), entry->d_name, target, sizeof(target) - 1);
+    if (length >= 0) { target[length] = '\0'; if (!strcmp(target, "/dev/crystalhd")) count++; }
+  }
+  closedir(directory); return count;
+}
+static void test_native_error_reopen(void)
+{
+  if (!x11_enabled()) return;
+  const char *fixture = g_getenv("CRYSTALHD_XV_TEST_FIXTURE");
+  if (!fixture) { g_test_skip("Set CRYSTALHD_XV_TEST_FIXTURE to the qualified 50-picture H.264 fixture"); return; }
+  g_assert_true(g_file_test(fixture, G_FILE_TEST_IS_REGULAR));
+  GError *error = NULL;
+  GstElement *pipeline = gst_parse_launch("filesrc name=input ! h264parse ! "
+      "crystalhddec scale-width=1280 ! deinterlace method=linear fields=all mode=auto ! "
+      "videoconvert n-threads=1 ! video/x-raw,format=UYVY ! "
+      "crystalhdxvsink name=output show-preroll-frame=false sync=true qos=true", &error);
+  g_assert_no_error(error);
+  GstElement *source = gst_bin_get_by_name(GST_BIN(pipeline), "input");
+  GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), "output");
+  g_object_set(source, "location", fixture, NULL);
+  /* Lose only this output connection's completion. The application and
+   * decoder must close normally and reuse the same pipeline afterward. */
+  g_assert_cmpint(gst_element_set_state(pipeline, GST_STATE_PAUSED), !=, GST_STATE_CHANGE_FAILURE);
+  XvContext *c = sink_context(XV_SINK(sink)); g_assert_nonnull(c);
+  g_atomic_pointer_set(&drop_connection, c->connection); g_atomic_int_set(&drop_type, c->completion_type);
+  gst_element_set_state(pipeline, GST_STATE_PLAYING); await_message(pipeline, GST_MESSAGE_ERROR);
+  gst_element_set_state(pipeline, GST_STATE_NULL); g_atomic_pointer_set(&drop_connection, NULL);
+  g_assert_cmpuint(device_fds(), ==, 0);
+  context_unref(c); clean_contexts();
+  for (guint cycle = 0; cycle < 3; cycle++) {
+    check_eos(pipeline, 100);
+    g_assert_cmpuint(device_fds(), ==, 0);
+    g_test_message("Native same-pipeline reopen %u: 100 outputs, EOS, live-process device FD0", cycle + 1);
+  }
+  gst_object_unref(source); gst_object_unref(sink); gst_object_unref(pipeline); clean_contexts();
+}
 int main(int argc, char **argv)
 {
   if (argc == 2 && !strcmp(argv[1], "--hold-segment")) return hold_segment();
@@ -499,9 +585,11 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/x11/padded-copy", test_padded_copy);
   g_test_add_func("/xv/x11/partial-setup", test_partial_setup);
   g_test_add_func("/xv/x11/transport-reopen", test_transport_reopen);
+  g_test_add_func("/xv/x11/reentrant-error-stop", test_reentrant_error_stop);
   g_test_add_func("/xv/x11/two-instances", test_two_instances);
   g_test_add_func("/xv/x11/caps-flush", test_caps_and_flush);
   g_test_add_func("/xv/x11/held-pool-caps", test_held_pool_and_caps);
   g_test_add_func("/xv/x11/quarantine", test_quarantine);
+  g_test_add_func("/xv/card/error-reopen", test_native_error_reopen);
   int result = g_test_run(); g_free((gpointer)self_path); return result;
 }
