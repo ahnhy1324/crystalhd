@@ -616,7 +616,9 @@ def main() -> int:
     if result.wasSuccessful():
         print(
             "configuration schema oracle: PASS "
-            "(21 canonical keys; 29 production surfaces classified; production core)"
+            f"({len(RULES)} canonical keys; "
+            f"{len(INVENTORY_MARKER.findall(INVENTORY.read_text(encoding='utf-8')))} "
+            "production surfaces classified; production core)"
         )
         return 0
     return 1

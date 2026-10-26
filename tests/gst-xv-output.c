@@ -155,6 +155,13 @@ static void check_eos(GstElement *pipeline, guint count)
     g_test_message("Native stages: parsed=%d decoded=%d deinterlaced=%d sink-input=%d",
         g_atomic_int_get(&stages[0].buffers), g_atomic_int_get(&stages[1].buffers),
         g_atomic_int_get(&stages[2].buffers), g_atomic_int_get(&stages[3].buffers));
+    for (gint i = 0; i < MIN(stages[2].buffers, 512); i++) {
+      gboolean found = FALSE;
+      for (gint j = 0; j < MIN(stages[3].buffers, 512); j++)
+        if (stages[2].pts[i] == stages[3].pts[j]) { found = TRUE; break; }
+      if (!found) g_test_message("DI output absent at sink: index=%d PTS=%" GST_TIME_FORMAT,
+          i, GST_TIME_ARGS(stages[2].pts[i]));
+    }
     GstElement *controller = g_object_get_data(G_OBJECT(pipeline), "xv-native-controller");
     gboolean active, eligible; guint64 qos, forwarded;
     g_object_get(controller, "active", &active, "eligible", &eligible,

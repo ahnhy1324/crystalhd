@@ -28,7 +28,7 @@ check: all gst-xv-output-test
 
 # Explicit X11 test: opens temporary video windows; no CrystalHD device access.
 check-x11: all gst-xv-output-test
-	CRYSTALHD_TEST_X11=1 ./gst-xv-output-test
+	CRYSTALHD_TEST_X11=1 ./gst-xv-output-test -p /xv/x11
 
 clean:
 	rm -f libgstcrystalhdxv.so gst-xv-output-test
