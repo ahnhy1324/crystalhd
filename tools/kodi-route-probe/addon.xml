@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="inputstream.crystalhd.routeprobe" name="CrystalHD route probe (no hardware decode)"
+       version="0.0.1" provider-name="CrystalHD contributors">
+  <requires>
+    <import addon="kodi.binary.global.main" version="2.0.3"/>
+    <import addon="kodi.binary.instance.inputstream" version="3.4.0"/>
+    <import addon="kodi.binary.instance.videocodec" version="2.2.1"/>
+  </requires>
+  <extension point="kodi.inputstream" library_linux="inputstream.crystalhd.routeprobe.so"/>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Explicit InputStream to VideoCodec selection experiment</summary>
+    <description lang="en_GB">Demuxes a local H.264 sample and emits one synthetic YUY2 picture. No CrystalHD or software video decoding. Not a playback decoder.</description>
+    <platform>linux</platform>
+    <license>GPL-2.0-or-later</license>
+  </extension>
+</addon>
