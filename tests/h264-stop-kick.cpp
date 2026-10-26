@@ -129,17 +129,25 @@ static std::vector<std::vector<uint8_t>> auxiliary_units(const std::vector<uint8
 
 int main(int argc,char **argv) {
     try {
-        need(argc==4,"usage: h264-stop-kick G0_DIRECTORY RESULT_DIRECTORY reference|none|prefix|picture|prefed-picture|prefed-pair");
+        need(argc==4,"usage: h264-stop-kick G0_DIRECTORY RESULT_DIRECTORY reference|none|prefix|picture|prefed-picture|prefed-pair|input-idle-100|input-idle-1000|input-hold-1000|input-idle-multi|input-idle-empty");
         std::string input=argv[1],output=argv[2],mode=argv[3];
+        const bool idle=mode=="input-idle-100"||mode=="input-idle-1000"||
+            mode=="input-hold-1000"||mode=="input-idle-multi"||mode=="input-idle-empty";
+        const bool hold=mode=="input-hold-1000";
+        const bool empty=mode=="input-idle-empty";
+        const unsigned idle_ms=(mode=="input-idle-1000"||hold)?1000:100;
         need(mode=="reference"||mode=="none"||mode=="prefix"||mode=="picture"||
-             mode=="prefed-picture"||mode=="prefed-pair","mode");
+             mode=="prefed-picture"||mode=="prefed-pair"||idle,"mode");
         const bool reference=mode=="reference";
         const bool prefed=mode=="prefed-picture"||mode=="prefed-pair";
         const unsigned private_expected=mode=="prefed-pair"?2:(mode=="picture"||prefed?1:0);
         const auto source=packets(input);
-        auto prefix=read_file(input+"/prefix.h264");
-        auto auxiliary=read_file(input+(private_expected==2?"/kick2.h264":"/kick1.h264"));
-        need(prefix.size()==170 && auxiliary.size()>0 && auxiliary.size()<=16384,"bounded G0 payloads");
+        std::vector<uint8_t> prefix,auxiliary;
+        if(!idle) {
+            prefix=read_file(input+"/prefix.h264");
+            auxiliary=read_file(input+(private_expected==2?"/kick2.h264":"/kick1.h264"));
+            need(prefix.size()==170 && auxiliary.size()>0 && auxiliary.size()<=16384,"bounded G0 payloads");
+        }
         std::map<uint64_t,Frame> baseline;
         if(!reference) {
             auto data=read_file(output+"/native-reference.bin");size_t cursor=0;
@@ -154,7 +162,11 @@ int main(int argc,char **argv) {
         auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(12);
         auto bounded=[&]{need(std::chrono::steady_clock::now()<deadline,"12s session deadline");};
         std::vector<Frame> frames;std::vector<uint64_t> real_order;
-        unsigned real=0,private_outputs=0,unknown_outputs=0;uint32_t ready=0;bool eos=false,flush=false;
+        unsigned real=0,private_outputs=0,unknown_outputs=0,leases_acquired=0,leases_released=0;
+        uint32_t ready=0;bool eos=false,flush=false;
+        const char *phase="prefix";
+        auto last_input=std::chrono::steady_clock::now();
+        const HANDLE original_handle=decoder.handle;
         auto receive=[&]{
             for(unsigned attempt=0;attempt<32;++attempt) {
                 bounded();BC_DTS_STATUS status{};
@@ -165,11 +177,12 @@ int main(int argc,char **argv) {
                 if(result==BC_STS_FMT_CHANGE) continue;
                 if(result==BC_STS_NO_DATA||result==BC_STS_BUSY||result==BC_STS_TIMEOUT) break;
                 good("DtsProcOutputNoCopy",result);
+                ++leases_acquired;
                 struct Lease {
-                    API &api;HANDLE handle;bool live=true;
-                    void finish(){auto rc=api.DtsReleaseOutputBuffs(handle,nullptr,FALSE);live=false;good("DtsReleaseOutputBuffs",rc);}
-                    ~Lease(){if(live)api.DtsReleaseOutputBuffs(handle,nullptr,FALSE);}}
-                    lease{api,decoder.handle};
+                    API &api;HANDLE handle;unsigned &released;bool live=true;
+                    void finish(){auto rc=api.DtsReleaseOutputBuffs(handle,nullptr,FALSE);live=false;good("DtsReleaseOutputBuffs",rc);++released;}
+                    ~Lease(){if(live&&api.DtsReleaseOutputBuffs(handle,nullptr,FALSE)==BC_STS_SUCCESS)++released;}}
+                    lease{api,decoder.handle,leases_released};
                 if(out.PicInfo.flags&VDEC_FLAG_EOS){need(flush,"no early EOS");lease.finish();continue;}
                 need((out.PoutFlags&BC_POUT_FLAGS_PIB_VALID)&&out.Ybuff&&
                      out.PicInfo.width==640&&out.PicInfo.height==360&&
@@ -192,28 +205,42 @@ int main(int argc,char **argv) {
                         need(flush,"unknown/ghost output before terminal cleanup");
                         continue;
                     }
-                    if(!reference) need(baseline.at(token).pixels==frame.pixels,"original pixels changed");
+                    if(!reference) {
+                        need(baseline.at(token).pixels==frame.pixels,"original pixels changed");
+                        if(idle)need(baseline.at(token).flags==frame.flags,"original flags changed after input idle");
+                    }
                     ++real;real_order.push_back(token);
                 }
-                printf("{\"type\":\"picture\",\"mode\":\"%s\",\"token\":%llu,\"private\":%s,\"before_eos\":%s,\"flags\":%u}\n",
-                    mode.c_str(),static_cast<unsigned long long>(token),is_private?"true":"false",flush?"false":"true",frame.flags);
+                printf("{\"type\":\"picture\",\"mode\":\"%s\",\"token\":%llu,\"private\":%s,\"before_eos\":%s,\"flags\":%u,\"phase\":\"%s\"}\n",
+                    mode.c_str(),static_cast<unsigned long long>(token),is_private?"true":"false",flush?"false":"true",frame.flags,phase);
                 fflush(stdout);frames.push_back(std::move(frame));
                 lease.finish();
             }
             uint8_t end=0;good("DtsIsEndOfStream",api.DtsIsEndOfStream(decoder.handle,&end));eos=end!=0;
         };
         auto send=[&](const std::vector<uint8_t> &data,uint64_t token) {
+            need(decoder.handle==original_handle,"same original decoder handle");
             const size_t reserve=data.size()+32*(data.size()/60000+3)+128;
             while(api.DtsTxFreeSize(decoder.handle)<reserve){bounded();receive();usleep(1000);}
             auto padded=data;padded.resize(data.size()+64,0);
             good("DtsProcInput",api.DtsProcInput(decoder.handle,padded.data(),data.size(),token,FALSE));
+            last_input=std::chrono::steady_clock::now();
             receive();
         };
         auto wait=[&](unsigned milliseconds) {
             auto until=std::chrono::steady_clock::now()+std::chrono::milliseconds(milliseconds);
             do {receive();bounded();usleep(1000);} while(std::chrono::steady_clock::now()<until);
         };
-        for(unsigned i=0;i<(reference?20:17);++i) send(source[i].data,source[i].token);
+        for(unsigned i=0;i<(empty?0:reference?20:17);++i) {
+            send(source[i].data,source[i].token);
+            if(mode=="input-idle-multi"&&(i==4||i==8||i==12)) {
+                phase="intermediate-idle";const unsigned before=real;wait(100);
+                need(!eos,"no EOS during intermediate input idle");
+                printf("{\"type\":\"input-idle\",\"accepted\":%u,\"requested_ms\":100,\"real_before\":%u,\"real_after\":%u,\"actual_gap_ms\":%.3f}\n",
+                    i+1,before,real,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-last_input).count());
+                phase="prefix";
+            }
+        }
         if(prefed) {
             const auto units=auxiliary_units(auxiliary,private_expected);
             for(unsigned i=0;i<private_expected;++i) {
@@ -224,16 +251,33 @@ int main(int argc,char **argv) {
             }
         } else if(mode=="picture") send(auxiliary,kPrivate);
         if(private_expected||mode=="prefix") send(prefix,0); // Untimed trailing delimiter, not a next-public Kick.
-        wait(reference?30:600);
+        const unsigned before_idle=real;
+        if(idle)phase="input-idle";
+        if(hold) {
+            // Explicit host-output backpressure control: no receiving during
+            // this bounded interval, then drain ready outputs before resume.
+            const auto until=std::chrono::steady_clock::now()+std::chrono::milliseconds(idle_ms);
+            do {bounded();usleep(1000);}while(std::chrono::steady_clock::now()<until);
+            receive();
+        }else wait(idle?idle_ms:reference?30:600);
+        if(idle)printf("{\"type\":\"input-idle\",\"accepted\":%u,\"requested_ms\":%u,\"host_receive\":%s,\"real_before\":%u,\"real_after\":%u,\"actual_gap_ms\":%.3f}\n",
+            empty?0:17,idle_ms,hold?"false":"true",before_idle,real,
+            std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-last_input).count());
         const unsigned boundary_real=real,boundary_private=private_outputs;
-        const bool g2=!reference&&real==17&&private_outputs==private_expected&&!unknown_outputs&&!eos;
+        const bool g2=!reference&&!idle&&real==17&&private_outputs==private_expected&&!unknown_outputs&&!eos;
         printf("{\"type\":\"boundary\",\"mode\":\"%s\",\"real\":%u,\"private\":%u,\"eos\":%s,\"g2\":%s}\n",
                mode.c_str(),real,private_outputs,eos?"true":"false",g2?"true":"false");fflush(stdout);
-        if(g2) for(unsigned i=17;i<20;++i) send(source[i].data,source[i].token);
+        if(g2||idle) {
+            need(!eos&&decoder.handle==original_handle,"live original channel at input resume");
+            phase="continuation";
+            for(unsigned i=empty?0:17;i<20;++i)send(source[i].data,source[i].token);
+            if(idle)wait(30);
+        }
         // Final EOS is cleanup after the measured boundary. It is never used
         // to turn an incomplete G2 boundary into successful STOP/START.
-        need(!eos,"no EOS before terminal cleanup");good("DtsFlushInput",api.DtsFlushInput(decoder.handle,0));flush=true;
-        const unsigned expected=reference||g2?20:17;
+        need(!eos,"no EOS before terminal cleanup");phase="terminal-eos";
+        good("DtsFlushInput",api.DtsFlushInput(decoder.handle,0));flush=true;
+        const unsigned expected=reference||g2||idle?20:17;
         while(!eos||ready){
             bounded();receive();usleep(1000);
         }
@@ -242,6 +286,7 @@ int main(int argc,char **argv) {
         std::stable_sort(sorted.begin(),sorted.end(),[](const Packet &a,const Packet &b){return a.pts<b.pts;});
         std::vector<uint64_t> expected_order;for(const auto &packet:sorted) expected_order.push_back(packet.token);
         const bool full_order=real_order==expected_order;
+        need(leases_acquired==leases_released,"all public RX leases released before close");
         if(reference) {
             need(full_order,"reference display order");
             int fd=open((output+"/native-reference.bin").c_str(),O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);
@@ -256,12 +301,15 @@ int main(int argc,char **argv) {
             need(close(fd)==0,"reference close");
         }
         decoder.finish();
+        if(idle)printf("{\"type\":\"input-idle-result\",\"mode\":\"%s\",\"distinct_real\":%u,\"same_channel\":true,\"full_reference_order\":%s,\"full_pixels_and_flags_match\":true,\"leases_acquired\":%u,\"leases_released\":%u,\"terminal_eos\":%s,\"pass\":%s}\n",
+            mode.c_str(),real,full_order?"true":"false",leases_acquired,leases_released,eos?"true":"false",
+            full_order&&terminal_complete?"true":"false");
         printf("{\"type\":\"result\",\"mode\":\"%s\",\"boundary_real\":%u,\"boundary_private\":%u,"
                "\"g2\":%s,\"continuation_attempted\":%s,\"terminal_real\":%u,\"terminal_private\":%u,"
                "\"eos\":%s,\"full_reference_order\":%s,\"pixels_match_reference\":%s,"
                "\"unknown_outputs\":%u,\"terminal_complete\":%s}\n",mode.c_str(),
-               boundary_real,boundary_private,g2?"true":"false",g2?"true":"false",real,private_outputs,
+               boundary_real,boundary_private,g2?"true":"false",g2||idle?"true":"false",real,private_outputs,
                eos?"true":"false",full_order?"true":"false",reference?"null":"true",unknown_outputs,terminal_complete?"true":"false");
-        return (reference&&terminal_complete)||(g2&&full_order&&terminal_complete)?0:2;
+        return (reference&&terminal_complete)||((g2||idle)&&full_order&&terminal_complete)?0:2;
     } catch(const std::exception &error) {fprintf(stderr,"FAIL %s\n",error.what());return 1;}
 }
