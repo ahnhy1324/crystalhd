@@ -117,6 +117,14 @@ static guint stat32(GstStructure *stats, const char *key)
 {
   guint value; g_assert_true(gst_structure_get_uint(stats, key, &value)); return value;
 }
+typedef struct { gint buffers; GstClockTime pts[512]; } NativeStage;
+static GstPadProbeReturn count_native_stage(GstPad *pad, GstPadProbeInfo *probe, gpointer data)
+{
+  (void)pad; NativeStage *stage = data;
+  gint index = g_atomic_int_add(&stage->buffers, 1);
+  if (index < 512) stage->pts[index] = GST_BUFFER_PTS(GST_PAD_PROBE_INFO_BUFFER(probe));
+  return GST_PAD_PROBE_OK;
+}
 static void await_message(GstElement *pipeline, GstMessageType expected)
 {
   GstBus *bus = gst_element_get_bus(pipeline);
@@ -137,6 +145,28 @@ static void check_eos(GstElement *pipeline, guint count)
   GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), "output");
   GstStructure *stats = sink_stats(sink);
   gchar *description = gst_structure_to_string(stats); g_test_message("%s", description); g_free(description);
+  if (g_object_class_find_property(G_OBJECT_GET_CLASS(sink), "stats")) {
+    GstStructure *base = NULL; g_object_get(sink, "stats", &base, NULL);
+    if (base) { description = gst_structure_to_string(base); g_test_message("BaseSink: %s", description);
+      g_free(description); gst_structure_free(base); }
+  }
+  NativeStage *stages = g_object_get_data(G_OBJECT(pipeline), "xv-native-stages");
+  if (stages) {
+    g_test_message("Native stages: parsed=%d decoded=%d deinterlaced=%d sink-input=%d",
+        g_atomic_int_get(&stages[0].buffers), g_atomic_int_get(&stages[1].buffers),
+        g_atomic_int_get(&stages[2].buffers), g_atomic_int_get(&stages[3].buffers));
+    GstElement *controller = g_object_get_data(G_OBJECT(pipeline), "xv-native-controller");
+    gboolean active, eligible; guint64 qos, forwarded;
+    g_object_get(controller, "active", &active, "eligible", &eligible,
+        "qos-count", &qos, "forward-count", &forwarded, NULL);
+    g_test_message("DI controller: active=%d eligible=%d qos=%" G_GUINT64_FORMAT " forwarded=%" G_GUINT64_FORMAT,
+        active, eligible, qos, forwarded);
+  }
+  /* Preserve the failed census, but close owned decoder/X11 resources before
+   * an assertion terminates this isolated test process. */
+  g_assert_cmpint(gst_element_set_state(pipeline, GST_STATE_NULL), !=, GST_STATE_CHANGE_FAILURE);
+  gst_element_get_state(pipeline, NULL, NULL, 3 * GST_SECOND);
+  clean_contexts();
   g_assert_cmpuint(stat64(stats, "submitted"), ==, count);
   g_assert_cmpuint(stat64(stats, "acknowledged"), ==, count);
   g_assert_cmpuint(stat64(stats, "terminal-retired"), ==, 0);
@@ -144,9 +174,6 @@ static void check_eos(GstElement *pipeline, guint count)
   g_assert_cmpuint(stat64(stats, "pool-submitted"), ==, count);
   g_assert_cmpuint(stat64(stats, "copied-bytes"), ==, 0);
   gst_structure_free(stats); gst_object_unref(sink);
-  g_assert_cmpint(gst_element_set_state(pipeline, GST_STATE_NULL), !=, GST_STATE_CHANGE_FAILURE);
-  gst_element_get_state(pipeline, NULL, NULL, 3 * GST_SECOND);
-  clean_contexts();
 }
 static GstElement *direct_sink(void)
 {
@@ -546,8 +573,8 @@ static void test_native_error_reopen(void)
   if (!fixture) { g_test_skip("Set CRYSTALHD_XV_TEST_FIXTURE to the qualified 50-picture H.264 fixture"); return; }
   g_assert_true(g_file_test(fixture, G_FILE_TEST_IS_REGULAR));
   GError *error = NULL;
-  GstElement *pipeline = gst_parse_launch("filesrc name=input ! h264parse ! "
-      "crystalhddec scale-width=1280 ! deinterlace name=di method=linear fields=all mode=auto ! "
+  GstElement *pipeline = gst_parse_launch("filesrc name=input ! h264parse name=parser ! "
+      "crystalhddec name=decoder scale-width=1280 ! deinterlace name=di method=linear fields=all mode=auto ! "
       "videoconvert n-threads=1 ! video/x-raw,format=UYVY ! "
       "crystalhdxvsink name=output show-preroll-frame=false sync=true qos=true", &error);
   g_assert_no_error(error);
@@ -560,6 +587,17 @@ static void test_native_error_reopen(void)
   gint attached = -1;
   g_signal_emit_by_name(controller, "attach", deinterlace, bus, &attached);
   g_assert_cmpint(attached, ==, 1);
+  NativeStage stages[4] = {{0}};
+  const char *stage_names[] = {"parser", "decoder", "di", "output"};
+  for (guint i = 0; i < 4; i++) {
+    GstElement *element = gst_bin_get_by_name(GST_BIN(pipeline), stage_names[i]);
+    GstPad *pad = gst_element_get_static_pad(element, i == 3 ? "sink" : "src");
+    g_assert_cmpuint(gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER,
+        count_native_stage, &stages[i], NULL), !=, 0);
+    gst_object_unref(pad); gst_object_unref(element);
+  }
+  g_object_set_data(G_OBJECT(pipeline), "xv-native-stages", stages);
+  g_object_set_data(G_OBJECT(pipeline), "xv-native-controller", controller);
   g_object_set(source, "location", fixture, NULL);
   /* Lose only this output connection's completion. The application and
    * decoder must close normally and reuse the same pipeline afterward. */
@@ -573,6 +611,7 @@ static void test_native_error_reopen(void)
   for (guint cycle = 0; cycle < 3; cycle++) {
     /* One compatibility controller owns this deinterlacer for its lifetime,
      * including NULL/restart. Detach does not permit attaching a second owner. */
+    memset(stages, 0, sizeof(stages));
     check_eos(pipeline, 100);
     g_assert_cmpuint(device_fds(), ==, 0);
     g_test_message("Native same-pipeline reopen %u: 100 outputs, EOS, live-process device FD0", cycle + 1);
