@@ -62,3 +62,11 @@ Native source generation/lifetime, field PTS/media clock, decode-progress
 policy, EOS/seek/reopen, NV12 and physical A/V need separate proof. Removing
 CPU Bob does not inherit the VA-only auxiliary Kick trigger. No card, module,
 firmware, default or ABI was changed by these runs.
+
+On this recorded source, GStreamer's `gst_crystalhd_handle_frame` submits the
+real AU through `DtsProcInput`; its finite drain uses `DtsFlushInput(0)`.
+It has no VA-style Prefix/Auxiliary policy. In contrast, VA's
+`TryH264Auxiliary` requires Bob demand, 100 ms idle and the existing syntax,
+generation and ownership predicates. Native integration must qualify its
+actual producer/readiness owner rather than transplanting or assuming that
+trigger. This is source inspection, not a new runtime or Kick measurement.
