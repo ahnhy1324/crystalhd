@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Actual InputStream callbacks versus container packets; no video decoding,
- * libcrystalhd, GStreamer pipeline, device or speaker access. */
+/* Actual InputStream callbacks versus container packets. Metadata-only
+ * h264parse runs; no video decoder, libcrystalhd, device or speaker access. */
 #include "../tools/kodi-route-probe/probe.cpp"
 extern "C" {
 #include <libavcodec/avcodec.h>
