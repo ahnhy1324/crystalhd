@@ -549,7 +549,11 @@ static void gst_crystalhd_field_init(GstCrystalhdField *self) {
     self->state=new State;
     gst_base_sink_set_render_delay(GST_BASE_SINK(self),15*GST_MSECOND);
     gst_base_sink_set_max_lateness(GST_BASE_SINK(self),20*GST_MSECOND);
-    gst_base_sink_set_qos_enabled(GST_BASE_SINK(self),TRUE);
+    // One input picture owns two presentation deadlines. Whole-picture QoS
+    // feedback can make upstream raw converters discard a still-usable field
+    // pair. Keep this sink's max-lateness and per-field expiry, but let each
+    // decoded pair reach its actual field-deadline owner before dropping it.
+    gst_base_sink_set_qos_enabled(GST_BASE_SINK(self),FALSE);
     gst_base_sink_set_last_sample_enabled(GST_BASE_SINK(self),FALSE);
 }
 static gboolean plugin_init(GstPlugin *plugin) {
