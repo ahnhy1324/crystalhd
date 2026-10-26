@@ -152,7 +152,7 @@ static void check_eos(GstElement *pipeline, guint count)
   }
   NativeStage *stages = g_object_get_data(G_OBJECT(pipeline), "xv-native-stages");
   if (stages) {
-    g_test_message("Native stages: parsed=%d decoded=%d deinterlaced=%d sink-input=%d",
+    g_test_message("Native stages: parsed=%d decoded=%d post-process=%d sink-input=%d",
         g_atomic_int_get(&stages[0].buffers), g_atomic_int_get(&stages[1].buffers),
         g_atomic_int_get(&stages[2].buffers), g_atomic_int_get(&stages[3].buffers));
     for (guint s = 1; s < 4; s++) {
@@ -169,11 +169,13 @@ static void check_eos(GstElement *pipeline, guint count)
           i, GST_TIME_ARGS(stages[2].pts[i]));
     }
     GstElement *controller = g_object_get_data(G_OBJECT(pipeline), "xv-native-controller");
-    gboolean active, eligible; guint64 qos, forwarded;
-    g_object_get(controller, "active", &active, "eligible", &eligible,
-        "qos-count", &qos, "forward-count", &forwarded, NULL);
-    g_test_message("DI controller: active=%d eligible=%d qos=%" G_GUINT64_FORMAT " forwarded=%" G_GUINT64_FORMAT,
-        active, eligible, qos, forwarded);
+    if (controller) {
+      gboolean active, eligible; guint64 qos, forwarded;
+      g_object_get(controller, "active", &active, "eligible", &eligible,
+          "qos-count", &qos, "forward-count", &forwarded, NULL);
+      g_test_message("DI controller: active=%d eligible=%d qos=%" G_GUINT64_FORMAT " forwarded=%" G_GUINT64_FORMAT,
+          active, eligible, qos, forwarded);
+    }
   }
   /* Preserve the failed census, but close owned decoder/X11 resources before
    * an assertion terminates this isolated test process. */
@@ -579,14 +581,22 @@ static guint device_fds(void)
   }
   closedir(directory); return count;
 }
-static void native_error_reopen(gboolean clocked, gboolean preroll)
+static void native_error_reopen(gboolean clocked, gboolean preroll, gboolean mp4)
 {
   if (!x11_enabled()) return;
-  const char *fixture = g_getenv("CRYSTALHD_XV_TEST_FIXTURE");
-  if (!fixture) { g_test_skip("Set CRYSTALHD_XV_TEST_FIXTURE to the qualified 50-picture H.264 fixture"); return; }
+  const char *fixture = g_getenv(mp4 ? "CRYSTALHD_XV_TEST_MP4" : "CRYSTALHD_XV_TEST_FIXTURE");
+  if (!fixture) {
+    g_test_skip(mp4 ? "Set CRYSTALHD_XV_TEST_MP4 to the qualified 180-picture high.mp4 fixture" :
+        "Set CRYSTALHD_XV_TEST_FIXTURE to the qualified 50-picture interlaced H.264 fixture"); return;
+  }
   g_assert_true(g_file_test(fixture, G_FILE_TEST_IS_REGULAR));
+  guint originals = mp4 ? 180 : 50, outputs = mp4 ? 180 : 100;
   GError *error = NULL;
-  GstElement *pipeline = gst_parse_launch("filesrc name=input ! h264parse name=parser ! "
+  GstElement *pipeline = gst_parse_launch(mp4 ?
+      "filesrc name=input ! qtdemux ! h264parse name=parser ! crystalhddec name=decoder ! "
+      "videoconvert name=convert n-threads=1 ! video/x-raw,format=UYVY ! "
+      "crystalhdxvsink name=output qos=true" :
+      "filesrc name=input ! h264parse name=parser ! "
       "crystalhddec name=decoder scale-width=1280 ! deinterlace name=di method=linear fields=all mode=auto ! "
       "videoconvert n-threads=1 ! video/x-raw,format=UYVY ! "
       "crystalhdxvsink name=output show-preroll-frame=false qos=true", &error);
@@ -596,15 +606,17 @@ static void native_error_reopen(gboolean clocked, gboolean preroll)
   /* Separate an unclocked ownership/EOS census from the strict clocked
    * presentation census. The latter retains its 100-output requirement. */
   g_object_set(sink, "sync", clocked, "show-preroll-frame", preroll, NULL);
-  GstElement *deinterlace = gst_bin_get_by_name(GST_BIN(pipeline), "di");
-  GstElement *controller = gst_element_factory_make("crystalhddiqos", NULL);
+  GstElement *deinterlace = mp4 ? NULL : gst_bin_get_by_name(GST_BIN(pipeline), "di");
+  GstElement *controller = mp4 ? NULL : gst_element_factory_make("crystalhddiqos", NULL);
   GstBus *bus = gst_element_get_bus(pipeline);
-  g_assert_nonnull(controller);
-  gint attached = -1;
-  g_signal_emit_by_name(controller, "attach", deinterlace, bus, &attached);
-  g_assert_cmpint(attached, ==, 1);
+  if (!mp4) {
+    g_assert_nonnull(controller);
+    gint attached = -1;
+    g_signal_emit_by_name(controller, "attach", deinterlace, bus, &attached);
+    g_assert_cmpint(attached, ==, 1);
+  }
   NativeStage stages[4] = {{0}};
-  const char *stage_names[] = {"parser", "decoder", "di", "output"};
+  const char *stage_names[] = {"parser", "decoder", mp4 ? "convert" : "di", "output"};
   for (guint i = 0; i < 4; i++) {
     GstElement *element = gst_bin_get_by_name(GST_BIN(pipeline), stage_names[i]);
     GstPad *pad = gst_element_get_static_pad(element, i == 3 ? "sink" : "src");
@@ -628,24 +640,31 @@ static void native_error_reopen(gboolean clocked, gboolean preroll)
     /* One compatibility controller owns this deinterlacer for its lifetime,
      * including NULL/restart. Detach does not permit attaching a second owner. */
     memset(stages, 0, sizeof(stages));
-    check_eos(pipeline, preroll ? 101 : 100);
-    g_assert_cmpint(stages[0].buffers, ==, 50);
-    g_assert_cmpint(stages[1].buffers, ==, 50);
-    g_assert_cmpint(stages[2].buffers, ==, 100);
-    g_assert_cmpint(stages[3].buffers, ==, 100);
-    for (guint i = 0; i < 100; i++)
+    check_eos(pipeline, outputs + (preroll ? 1 : 0));
+    g_assert_cmpint(stages[0].buffers, ==, originals);
+    g_assert_cmpint(stages[1].buffers, ==, originals);
+    g_assert_cmpint(stages[2].buffers, ==, outputs);
+    g_assert_cmpint(stages[3].buffers, ==, outputs);
+    for (guint i = 0; i < outputs; i++) {
       g_assert_cmpuint(stages[2].pts[i], ==, stages[3].pts[i]);
+      if (mp4) {
+        g_assert_true(GST_CLOCK_TIME_IS_VALID(stages[3].pts[i]));
+        if (i) g_assert_cmpuint(stages[3].pts[i], >, stages[3].pts[i-1]);
+      }
+    }
     g_assert_cmpuint(device_fds(), ==, 0);
-    g_test_message("Native %s same-pipeline reopen %u: 100 outputs, EOS, live-process device FD0",
-        clocked ? "clocked" : "unclocked", cycle + 1);
+    g_test_message("Native %s same-pipeline reopen %u: %u outputs, EOS, live-process device FD0",
+        clocked ? "clocked" : "unclocked", cycle + 1, outputs);
   }
-  g_signal_emit_by_name(controller, "detach");
-  gst_object_unref(controller); gst_object_unref(deinterlace); gst_object_unref(bus);
+  if (controller) { g_signal_emit_by_name(controller, "detach"); gst_object_unref(controller); }
+  if (deinterlace) gst_object_unref(deinterlace);
+  gst_object_unref(bus);
   gst_object_unref(source); gst_object_unref(sink); gst_object_unref(pipeline); clean_contexts();
 }
-static void test_native_error_reopen(void) { native_error_reopen(TRUE, FALSE); }
-static void test_native_error_reopen_lifetime(void) { native_error_reopen(FALSE, FALSE); }
-static void test_native_error_reopen_default(void) { native_error_reopen(TRUE, TRUE); }
+static void test_native_error_reopen(void) { native_error_reopen(TRUE, FALSE, FALSE); }
+static void test_native_error_reopen_lifetime(void) { native_error_reopen(FALSE, FALSE, FALSE); }
+static void test_native_error_reopen_default(void) { native_error_reopen(TRUE, TRUE, FALSE); }
+static void test_native_error_reopen_mp4(void) { native_error_reopen(TRUE, TRUE, TRUE); }
 int main(int argc, char **argv)
 {
   if (argc == 2 && !strcmp(argv[1], "--hold-segment")) return hold_segment();
@@ -669,5 +688,6 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/card/error-reopen", test_native_error_reopen);
   g_test_add_func("/xv/card/error-reopen-lifetime", test_native_error_reopen_lifetime);
   g_test_add_func("/xv/card/error-reopen-default", test_native_error_reopen_default);
+  g_test_add_func("/xv/card/error-reopen-mp4", test_native_error_reopen_mp4);
   int result = g_test_run(); g_free((gpointer)self_path); return result;
 }
