@@ -19,7 +19,8 @@ namespace crystalhd_field {
 struct Counters {
     std::atomic<guint64> pictures{0},fields{0},prerolls{0},redraws{0},swaps{0},
         cancelled{0},clipped{0},failures{0},allocations{0},images{0},retained{0},
-        clocked{0},late{0},max_age{0};
+        clocked{0},late{0},max_age{0},early{0},max_early{0},dropped{0},
+        prepare_ns{0},draw_ns{0},wait_ns{0},swap_ns{0};
 };
 struct Command {
     GstBuffer *buffer=nullptr;
@@ -27,7 +28,7 @@ struct Command {
     GstVideoInfo info{};
     GstSegment segment{};
     guint64 generation=0;
-    GstClockTime base=0,latency=0;
+    GstClockTime base=0,latency=0,render_lead=0;
     gint64 offset=0;
     bool preroll=false,done=false;
     GstFlowReturn result=GST_FLOW_OK;
@@ -184,8 +185,8 @@ struct Worker {
         if(!GST_CLOCK_TIME_IS_VALID(running)||!GST_CLOCK_TIME_IS_VALID(command.base)||
            !GST_CLOCK_TIME_IS_VALID(command.latency)||command.latency>=GST_CLOCK_TIME_NONE-running)return false;
         // BaseSink applies latency and ts-offset in running time, then its
-        // render-delay wakes us early. Our presentation target adds no second
-        // render-delay subtraction. Negative offsets clamp before base-time.
+        // render-delay wakes us early. Keep the nominal media target separate
+        // from the earlier vsynced swap submission. Clamp before base-time.
         GstClockTime adjusted=running+command.latency;
         if(command.offset<0) {
             guint64 subtract=guint64(-(command.offset+1))+1;
@@ -199,6 +200,10 @@ struct Worker {
         if(!command.clock)return current(command.generation);
         GstClockTime target=0;
         need(target_time(command,running,target),"valid field clock target");
+        // SwapBuffers queues/throttles a vsynced presentation; it is not an
+        // instantaneous scanout. Waiting until the media target before calling
+        // it adds another refresh wait and can accumulate unbounded A/V lag.
+        target=target>command.base+command.render_lead?target-command.render_lead:command.base;
         GstClockID id=gst_clock_new_single_shot_id(command.clock,target);
         {
             std::lock_guard<std::mutex> lock(mutex);
@@ -318,6 +323,7 @@ struct Worker {
                     renderer=std::make_unique<Renderer>(info.width,info.height,2,2);previous=info;
                 }
                 if(command->buffer!=retained||held_generation!=command->generation) {
+                    const auto prepare_begin=gst_util_get_timestamp();
                     retire();GstVideoFrame frame{};
                     need(gst_video_frame_map(&frame,&info,command->buffer,GST_MAP_READ),"input video mapping");
                     try {
@@ -334,6 +340,7 @@ struct Worker {
                     need(views[0]->texture,"first field import");stats.images=1;
                     if(interlaced){views[1]=std::make_unique<Image>(gpu,*storage,true,1,matrix,false);need(views[1]->texture,"second field import");stats.images=2;}
                     retained=gst_buffer_ref(command->buffer);stats.retained=1;held_generation=command->generation;
+                    stats.prepare_ns+=gst_util_get_timestamp()-prepare_begin;
                 }
                 const unsigned count=interlaced?2:1;
                 const GstClockTime duration=GST_BUFFER_DURATION_IS_VALID(command->buffer)?GST_BUFFER_DURATION(command->buffer):
@@ -350,11 +357,25 @@ struct Worker {
                         command->clock?gst_clock_get_time(command->clock):0);
                     if(!GST_CLOCK_TIME_IS_VALID(running)){++stats.clipped;continue;}
                     if(!current(command->generation)){result=GST_FLOW_FLUSHING;++stats.cancelled;break;}
-                    draw(parity,interlaced);
+                    auto expired=[&] {
+                        if(command->preroll||!command->clock)return false;
+                        const auto end_pts=pts+gst_util_uint64_scale(duration,1,count);
+                        const auto end_running=gst_segment_to_running_time(&command->segment,GST_FORMAT_TIME,end_pts);
+                        GstClockTime end_target=0;
+                        return target_time(*command,end_running,end_target)&&gst_clock_get_time(command->clock)>=end_target;
+                    };
+                    if(expired()){++stats.dropped;continue;}
+                    const auto draw_begin=gst_util_get_timestamp();
+                    draw(parity,interlaced);stats.draw_ns+=gst_util_get_timestamp()-draw_begin;
+                    const auto wait_begin=gst_util_get_timestamp();
                     if((!command->preroll&&!wait(*command,running))||!current(command->generation)) {
                         result=GST_FLOW_FLUSHING;++stats.cancelled;break;
                     }
-                    swap();last_parity=parity;last_interlaced=interlaced;
+                    stats.wait_ns+=gst_util_get_timestamp()-wait_begin;
+                    if(expired()){++stats.dropped;continue;}
+                    const auto swap_begin=gst_util_get_timestamp();
+                    swap();stats.swap_ns+=gst_util_get_timestamp()-swap_begin;
+                    last_parity=parity;last_interlaced=interlaced;
                     if(command->preroll)++stats.prerolls;
                     else {
                         ++stats.fields;
@@ -362,6 +383,9 @@ struct Worker {
                             GstClockTime target=0;need(target_time(*command,running,target),"field timing observation");
                             const auto actual=gst_clock_get_time(command->clock);
                             const guint64 age=actual>target?actual-target:0;
+                            const guint64 early=actual<target?target-actual:0;
+                            if(early)++stats.early;
+                            stats.max_early=std::max(stats.max_early.load(),early);
                             GST_LOG_OBJECT(owner,"swap pts=%" G_GUINT64_FORMAT " target=%" G_GUINT64_FORMAT " age=%" G_GUINT64_FORMAT,pts,target,age);
                             ++stats.clocked;stats.max_age=std::max(stats.max_age.load(),age);
                             if(age>duration/(count*command->segment.rate))++stats.late;
@@ -446,6 +470,7 @@ static GstFlowReturn output(GstBaseSink *sink,GstBuffer *buffer,bool preroll) {
     if(!preroll&&gst_base_sink_get_sync(sink))command->clock=gst_element_get_clock(GST_ELEMENT(sink));
     command->base=gst_element_get_base_time(GST_ELEMENT(sink));
     command->latency=gst_base_sink_get_latency(sink);command->offset=gst_base_sink_get_ts_offset(sink);
+    command->render_lead=gst_base_sink_get_render_delay(sink);
     auto worker=get_worker(self);return worker?worker->submit(command):GST_FLOW_FLUSHING;
 }
 static GstFlowReturn render(GstBaseSink *sink,GstBuffer *buffer){return output(sink,buffer,false);}
@@ -484,6 +509,10 @@ static void get_property(GObject *object,guint id,GValue *value,GParamSpec *spec
         "clipped",G_TYPE_UINT64,c.clipped.load(),"failures",G_TYPE_UINT64,c.failures.load(),
         "clocked-fields",G_TYPE_UINT64,c.clocked.load(),"late-fields",G_TYPE_UINT64,c.late.load(),
         "max-age-ns",G_TYPE_UINT64,c.max_age.load(),
+        "early-fields",G_TYPE_UINT64,c.early.load(),"max-early-ns",G_TYPE_UINT64,c.max_early.load(),
+        "dropped-fields",G_TYPE_UINT64,c.dropped.load(),
+        "prepare-ns",G_TYPE_UINT64,c.prepare_ns.load(),"draw-ns",G_TYPE_UINT64,c.draw_ns.load(),
+        "wait-ns",G_TYPE_UINT64,c.wait_ns.load(),"swap-ns",G_TYPE_UINT64,c.swap_ns.load(),
         "allocations",G_TYPE_UINT64,c.allocations.load(),"images",G_TYPE_UINT64,c.images.load(),
         "retained-buffers",G_TYPE_UINT64,c.retained.load(),nullptr);
     g_value_take_boxed(value,stats);
@@ -511,8 +540,8 @@ static void gst_crystalhd_field_class_init(GstCrystalhdFieldClass *klass) {
 static void gst_crystalhd_field_init(GstCrystalhdField *self) {
     self->state=new State;
     gst_base_sink_set_render_delay(GST_BASE_SINK(self),15*GST_MSECOND);
-    gst_base_sink_set_max_lateness(GST_BASE_SINK(self),-1);
-    gst_base_sink_set_qos_enabled(GST_BASE_SINK(self),FALSE);
+    gst_base_sink_set_max_lateness(GST_BASE_SINK(self),20*GST_MSECOND);
+    gst_base_sink_set_qos_enabled(GST_BASE_SINK(self),TRUE);
     gst_base_sink_set_last_sample_enabled(GST_BASE_SINK(self),FALSE);
 }
 static gboolean plugin_init(GstPlugin *plugin) {

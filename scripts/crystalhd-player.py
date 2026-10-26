@@ -1005,6 +1005,13 @@ class Player:
         if self.pipeline.set_state(self.Gst.State.NULL) == self.Gst.StateChangeReturn.FAILURE:
             print("crystalhd-play: decoder teardown failed", file=sys.stderr)
             self.exit_code = max(self.exit_code, 1)
+        field_sink = getattr(self, "field_sink", None)
+        if field_sink is not None and field_sink.find_property("field-stats") is not None:
+            stats = field_sink.get_property("field-stats")
+            base_stats = field_sink.get_property("stats")
+            print(f"GPU field submissions: {stats.get_value('fields')}; "
+                  f"expired field skips: {stats.get_value('dropped-fields')}; "
+                  f"late whole-buffer drops: {base_stats.get_value('dropped')}", flush=True)
         for workaround in tuple(self.deinterlace_qos.values()):
             workaround.close()
         self.deinterlace_qos.clear()

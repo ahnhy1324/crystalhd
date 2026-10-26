@@ -33,8 +33,12 @@ replacement are unqualified. It does not add a Kick/readiness policy.
 Space, arrows and Q/Escape send application control messages handled by our
 Player; F11 toggles its managed window. `GstVideoOverlay` can embed a window
 provided before READY; paused expose/resize redraws retain the last field.
-Field targets follow pipeline running time, latency and timestamp offset,
-including an audio-selected clock. GPU completion/swap return is not physical
+Nominal field targets follow pipeline running time, latency and timestamp
+offset, including an audio-selected clock. Swaps are submitted with the
+reported render lead because a vsynced swap queues/throttles presentation.
+Expired fields are skipped, and ordinary sink QoS may drop late whole
+buffers; both counts are reported rather than accumulating an A/V backlog.
+GPU completion/swap return, including early/late counters, is not physical
 scanout or proof of speaker synchronization. `field-stats` distinguishes
 timed fields, preroll/redraw, cancellation and retained resources.
 
