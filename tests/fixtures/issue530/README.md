@@ -2,8 +2,9 @@
 
 [#530](https://github.com/ahnhy1324/crystalhd/issues/530) first-stage results:
 [source-qualified measurements and failed controls](egl-field-views-20261027.json).
-This is a synthetic display experiment on Intel 965GM, not a decoder, VA Bob
-replacement, supported frontend or physical presentation measurement.
+The first stage is a synthetic experiment on Intel 965GM. The subsequent
+native integration below uses real CrystalHD output. Neither stage qualifies
+a supported frontend, VA Bob replacement or physical presentation.
 
 One immutable linear YUYV allocation supplies top/bottom EGLImages with
 offsets 0/S, pitch 2S and height H/2. Both field uses complete before source
@@ -70,3 +71,72 @@ It has no VA-style Prefix/Auxiliary policy. In contrast, VA's
 generation and ownership predicates. Native integration must qualify its
 actual producer/readiness owner rather than transplanting or assuming that
 trigger. This is source inspection, not a new runtime or Kick measurement.
+
+## Native finite-file integration
+
+[`gst-field-views.cpp`](../../gst-field-views.cpp) connects the existing
+GStreamer decoder to the shared field renderer: BCM70015 → assembled YUY2 →
+one owned GBM transfer → two field EGLImages → offscreen GPU output. The
+card-to-Gst public copy remains. Each source sample and BO generation stay
+owned through both GPU completions; images retire before the next write.
+The first actual source is prepared during PAUSED preroll, with one extra
+GPU use counted separately from unique timed fields. Output PTS are unchanged.
+
+The final GBM path runs as an ordinary user with card/render-node access.
+GBM map/unmap supplies its coherency boundary, including any internal staging
+cost, without the heap producer's explicit CLFLUSH. The linear four-byte-pair
+storage is imported as YUYV; this is byte layout, not CPU color conversion.
+The final BFF/720→FHD proof checks all 50 distinct pictures/100 fields at
+maximum RGB error 1/255. Earlier CPU/TFF/BFF proofs remain source-qualified
+in the [native receipt](native-field-views-20261027.json).
+
+![Matched native CPU measurements](native-field-views-20261027.svg)
+
+Final timing source `05492a8`, two 50-picture trials per path in ABBA order:
+
+| Card720 → output; fields/s | Renderer-thread CPU reduction | Playback-process CPU reduction | Late fields, CPU / GBM (each /200) |
+| --- | ---: | ---: | ---: |
+| 720; 50 | 52.8% | 23.1% | 0 / 0 |
+| FHD; 50 | 52.7% | 22.7% | 3 / 1 |
+| FHD; 60 cadence stress | 58.3% | 33.0% | 113 / 68 |
+
+Every run completes 50 pictures/100 distinct field uses and natural EOS;
+late completions are retained, not dropped. FHD60 has no lossless-deadline
+qualification. The 60-field input is a separate VUI-cadence fixture: all
+50 VCL payloads/order remain identical, while GStreamer negotiates 30
+pictures/s. It is not representative newly encoded 30fps motion content.
+Peak RSS in the final matrix is about 154–156 MiB; no power result is claimed.
+
+Both paths use the same physical-nearest field reference and output size.
+The CPU control materializes source-size rows and uploads a packed texture; GBM imports
+field views. Renderer-thread CPU includes preparation/copy/map/cache/import
+and drawing. Playback-process CPU includes decoder/assembly and observers,
+but excludes initialization/preroll. Full main lifetime through NULL is
+reported separately. These are short headless completion measurements;
+physical A/V, scanout, E2E and steady-state endurance remain unqualified.
+
+Full-image RGB checks run separately from timing. The timed observer samples
+three YUYV pairs on every active row and compares 50 unique ordered signatures
+across arms; it is explicitly sparse, not a full-image hash. Earlier dual-SHA
+timed runs, cold first-field work, per-picture thermal-read overhead, and the
+rejected GBM bo-write creation flag remain in the receipt. The 85°C stop
+threshold is unchanged; thermal sampling is bounded at 250 ms.
+
+Build from the source root with GStreamer app/video development packages:
+
+```sh
+c++ -std=c++17 -O2 -Wall -Wextra -Werror tests/gst-field-views.cpp \
+    $(pkg-config --cflags --libs gstreamer-app-1.0 gstreamer-video-1.0 \
+      egl glesv2 gbm libdrm) -ldl -o /tmp/chd-gst-field-views
+/tmp/chd-gst-field-views /absolute/path/to/1080i25-50.h264 \
+    50 1280 1080 field verify
+/tmp/chd-gst-field-views /absolute/path/to/1080i25-50.h264 \
+    50 1280 1080 field clocked
+```
+
+Use an independently counted, supported Annex-B H.264 MBAFF fixture and an
+idle card. `cpu` selects the matched materialization control. The helper
+prints actual loaded library/plugin identities and checks live-process
+device FD retirement after NULL. It registers no player output or installed
+plugin. Native i386, seek/flush/reopen, network/live input, physical playback
+and broader geometry/color support require separate qualification.
