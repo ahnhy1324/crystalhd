@@ -4,6 +4,7 @@
 #include <gst/app/gstappsink.h>
 #include <gst/video/video.h>
 #include <atomic>
+#include <dlfcn.h>
 #include <map>
 #include <mutex>
 #include <set>
@@ -172,6 +173,16 @@ int main(int argc,char **argv) {
         setvbuf(stdout,nullptr,_IOLBF,0);gst_init(nullptr,nullptr);
         yuy2_gpu::GPU gpu("/dev/dri/renderD128");Pipeline pipeline;pipeline.setup(argv[1],scale);
         pipeline.state(GST_STATE_PAUSED);
+        need(device_fds()>0,"real CrystalHD device ownership at preroll");
+        auto *feature=gst_element_get_factory(pipeline.decoder);
+        auto *plugin=gst_plugin_feature_get_plugin(GST_PLUGIN_FEATURE(feature));
+        need(plugin,"actual decoder plugin");
+        auto *library=dlopen("libcrystalhd.so.3",RTLD_NOW|RTLD_NOLOAD);
+        need(library,"already loaded legacy library");Dl_info identity{};
+        need(dladdr(dlsym(library,"DtsProcInput"),&identity)&&identity.dli_fname,"actual library identity");
+        printf("{\"type\":\"runtime\",\"decoder\":\"%s\",\"library\":\"%s\",\"device_fds\":%u}\n",
+               gst_plugin_get_filename(plugin),identity.dli_fname,device_fds());
+        dlclose(library);gst_object_unref(plugin);
         auto *preroll=gst_app_sink_try_pull_preroll(GST_APP_SINK(pipeline.sink),GST_SECOND);
         need(preroll,"bounded preroll");GstVideoInfo info{};
         need(gst_video_info_from_caps(&info,gst_sample_get_caps(preroll)),"decoded caps");gst_sample_unref(preroll);
