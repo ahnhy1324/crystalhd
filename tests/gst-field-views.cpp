@@ -111,6 +111,16 @@ struct Sample {
         mapped=gst_video_frame_map(&frame,&info,gst_sample_get_buffer(s),GST_MAP_READ);
         if(!mapped){gst_sample_unref(sample);sample=nullptr;need(false,"read-only decoded frame mapping");}
     }
+    struct Rows { const uint8_t *data; size_t stride,available; };
+    Rows rows(unsigned w,unsigned h) const {
+        const auto *data=static_cast<const uint8_t *>(GST_VIDEO_FRAME_PLANE_DATA(&frame,0));
+        const auto stride=GST_VIDEO_FRAME_PLANE_STRIDE(&frame,0);
+        const auto &mapping=frame.map[0];
+        const auto address=reinterpret_cast<uintptr_t>(data),origin=reinterpret_cast<uintptr_t>(mapping.data);
+        need(stride>=int(w*2)&&address>=origin&&address-origin<=mapping.size&&
+             size_t(h-1)*stride+w*2<=mapping.size-(address-origin),"mapped row extent");
+        return {data,size_t(stride),mapping.size-(address-origin)};
+    }
     ~Sample(){if(mapped)gst_video_frame_unmap(&frame);gst_sample_unref(sample);}
 };
 
@@ -139,12 +149,12 @@ struct Upload {
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
         need(glGetError()==GL_NO_ERROR,"CPU control allocation");
     }
-    void draw(Renderer &renderer,const std::vector<uint8_t> &bob) {
+    void draw(Renderer &renderer,const std::vector<uint8_t> &bob,bool upload_pixels=true) {
         need(bob.size()==size_t(w)*h*2,"upload extent");
         glBindFramebuffer(GL_FRAMEBUFFER,renderer.picture.fbo);
         glViewport(0,0,renderer.picture.w,renderer.picture.h);glUseProgram(program);
         glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,texture);
-        glTexSubImage2D(GL_TEXTURE_2D,0,0,0,w/2,h,GL_RGBA,GL_UNSIGNED_BYTE,bob.data());
+        if(upload_pixels)glTexSubImage2D(GL_TEXTURE_2D,0,0,0,w/2,h,GL_RGBA,GL_UNSIGNED_BYTE,bob.data());
         glUniform1i(glGetUniformLocation(program,"tex"),0);
         glUniform1f(glGetUniformLocation(program,"width"),w);
         glUniform2f(glGetUniformLocation(program,"shift"),xshift,yshift);
@@ -190,7 +200,8 @@ int main(int argc,char **argv) {
         dlclose(library);gst_object_unref(plugin);
         auto *preroll=gst_app_sink_try_pull_preroll(GST_APP_SINK(pipeline.sink),GST_SECOND);
         need(preroll,"bounded preroll");GstVideoInfo info{};
-        need(gst_video_info_from_caps(&info,gst_sample_get_caps(preroll)),"decoded caps");gst_sample_unref(preroll);
+        need(gst_video_info_from_caps(&info,gst_sample_get_caps(preroll)),"decoded caps");
+        auto held_preroll=std::make_unique<Sample>(preroll,info);
         const unsigned w=GST_VIDEO_INFO_WIDTH(&info),h=GST_VIDEO_INFO_HEIGHT(&info),ow=oh*16/9;
         need(GST_VIDEO_INFO_FORMAT(&info)==GST_VIDEO_FORMAT_YUY2&&w&&h&&!(w%2)&&!(h%2)&&w<=1920&&h<=1088,"linear YUY2 geometry");
         need(GST_VIDEO_INFO_FPS_N(&info)>0&&GST_VIDEO_INFO_FPS_D(&info)>0,"declared frame rate");
@@ -202,6 +213,24 @@ int main(int argc,char **argv) {
         auto *digest=g_checksum_new(G_CHECKSUM_SHA256);need(digest,"source census digest");
         auto *signatures=g_checksum_new(G_CHECKSUM_SHA256);need(signatures,"signature census digest");
         std::set<std::string> generations;std::vector<uint8_t> bob,oracle,signature(size_t(h)*12);
+        std::array<std::unique_ptr<Image>,2> prepared_views;
+        auto *first_buffer=gst_sample_get_buffer(held_preroll->sample);
+        need(GST_BUFFER_FLAG_IS_SET(first_buffer,GST_VIDEO_BUFFER_FLAG_INTERLACED)&&
+             !GST_BUFFER_FLAG_IS_SET(first_buffer,GST_VIDEO_BUFFER_FLAG_ONEFIELD)&&
+             !GST_BUFFER_FLAG_IS_SET(first_buffer,GST_VIDEO_BUFFER_FLAG_RFF),"complete interlaced preroll");
+        const unsigned first_parity=GST_BUFFER_FLAG_IS_SET(first_buffer,GST_VIDEO_BUFFER_FLAG_TFF)?0:1;
+        const auto first_rows=held_preroll->rows(w,h);
+        // Prepare the actual first source while PAUSED. Do not rebase PTS or
+        // move the media clock to conceal cold upload/JIT work after PLAYING.
+        // This GPU use is preroll, not another unique presented field.
+        if(field) {
+            memory->write(first_rows.data,first_rows.stride,first_rows.available);
+            for(unsigned p=0;p<2;++p){prepared_views[p]=std::make_unique<Image>(gpu,*memory,true,p);need(prepared_views[p]->texture,"preroll field import");}
+            renderer.draw(*prepared_views[first_parity],true,first_parity);
+        } else {
+            cpu_bob(first_rows.data,first_rows.stride,w,h,first_parity,bob);
+            upload->draw(renderer,bob);
+        }
         unsigned pictures=0,fields=0,late=0;GstClockTime previous=GST_CLOCK_TIME_NONE;
         double producer_cpu=0,producer_wall=0,render_cpu=0,render_wall=0,observer_cpu=0,observer_wall=0,maximum_age=0,maximum_ready_age=0;
         const double cpu_start=clock_seconds(CLOCK_PROCESS_CPUTIME_ID),wall_start=clock_seconds(CLOCK_MONOTONIC);
@@ -227,11 +256,8 @@ int main(int argc,char **argv) {
             const auto *segment=gst_sample_get_segment(next);need(segment&&segment->rate==1.0,"ordinary media segment");
             const auto running=gst_segment_to_running_time(segment,GST_FORMAT_TIME,pts);need(GST_CLOCK_TIME_IS_VALID(running),"original segment PTS");
             const auto ready=pipeline.trace.take(pts);
-            const auto *data=static_cast<const uint8_t *>(GST_VIDEO_FRAME_PLANE_DATA(&sample.frame,0));
-            const auto stride=GST_VIDEO_FRAME_PLANE_STRIDE(&sample.frame,0);
-            const auto &mapping=sample.frame.map[0];const auto address=reinterpret_cast<uintptr_t>(data),origin=reinterpret_cast<uintptr_t>(mapping.data);
-            need(stride>=int(w*2)&&address>=origin&&address-origin<=mapping.size&&
-                 size_t(h-1)*stride+w*2<=mapping.size-(address-origin),"mapped row extent");
+            const auto mapped=sample.rows(w,h);const auto *data=mapped.data;const auto stride=mapped.stride;
+            if(pictures==0)need(buffer==first_buffer,"first source identity matches held preroll");
             auto *one=g_checksum_new(G_CHECKSUM_SHA256);need(one,"generation digest");
             const double oc=clock_seconds(CLOCK_THREAD_CPUTIME_ID),owall=clock_seconds(CLOCK_MONOTONIC);
             if(verify)oracle.resize(size_t(w)*h*2);
@@ -249,9 +275,10 @@ int main(int argc,char **argv) {
             generations.insert(g_checksum_get_string(one));g_checksum_free(one);
             observer_cpu+=clock_seconds(CLOCK_THREAD_CPUTIME_ID)-oc;observer_wall+=clock_seconds(CLOCK_MONOTONIC)-owall;
             std::array<std::unique_ptr<Image>,2> views;
-            if(field) {
+            if(field&&pictures==0)views=std::move(prepared_views);
+            else if(field) {
                 const double pc=clock_seconds(CLOCK_THREAD_CPUTIME_ID),pw=clock_seconds(CLOCK_MONOTONIC);
-                memory->write(data,stride,mapping.size-(address-origin));
+                memory->write(data,stride,mapped.available);
                 for(unsigned p=0;p<2;++p){views[p]=std::make_unique<Image>(gpu,*memory,true,p);need(views[p]->texture,"both real field views");}
                 producer_cpu+=clock_seconds(CLOCK_THREAD_CPUTIME_ID)-pc;producer_wall+=clock_seconds(CLOCK_MONOTONIC)-pw;
             }
@@ -264,7 +291,11 @@ int main(int argc,char **argv) {
                 }
                 const double rc=clock_seconds(CLOCK_THREAD_CPUTIME_ID),rw=clock_seconds(CLOCK_MONOTONIC);
                 if(field)renderer.draw(*views[parity],true,parity);
-                else {cpu_bob(data,stride,w,h,parity,bob);upload->draw(renderer,bob);}
+                else {
+                    const bool reuse= pictures==0&&use==0;
+                    if(!reuse)cpu_bob(data,stride,w,h,parity,bob);
+                    upload->draw(renderer,bob,!reuse);
+                }
                 render_cpu+=clock_seconds(CLOCK_THREAD_CPUTIME_ID)-rc;render_wall+=clock_seconds(CLOCK_MONOTONIC)-rw;++fields;
                 const auto completed=gst_clock_get_time(clock);
                 const double age=completed>due?double(completed-due)/GST_MSECOND:0;
@@ -274,6 +305,7 @@ int main(int argc,char **argv) {
             }
             // Both GPU uses finish before either image or the held source
             // sample is retired. Only the next iteration can update the BO.
+            if(pictures==0)held_preroll.reset();
             ++pictures;need(temperature()<85000,"temperature below85C");
             need(clock_seconds(CLOCK_MONOTONIC)-wall_start<60,"60s experiment deadline");
         }
