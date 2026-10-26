@@ -155,6 +155,12 @@ static void check_eos(GstElement *pipeline, guint count)
     g_test_message("Native stages: parsed=%d decoded=%d deinterlaced=%d sink-input=%d",
         g_atomic_int_get(&stages[0].buffers), g_atomic_int_get(&stages[1].buffers),
         g_atomic_int_get(&stages[2].buffers), g_atomic_int_get(&stages[3].buffers));
+    for (guint s = 1; s < 4; s++) {
+      GString *times = g_string_new(NULL);
+      for (gint i = 0; i < MIN(stages[s].buffers, 10); i++)
+        g_string_append_printf(times, " %" GST_TIME_FORMAT, GST_TIME_ARGS(stages[s].pts[i]));
+      g_test_message("Native stage %u first PTS:%s", s, times->str); g_string_free(times, TRUE);
+    }
     for (gint i = 0; i < MIN(stages[2].buffers, 512); i++) {
       gboolean found = FALSE;
       for (gint j = 0; j < MIN(stages[3].buffers, 512); j++)
@@ -573,7 +579,7 @@ static guint device_fds(void)
   }
   closedir(directory); return count;
 }
-static void native_error_reopen(gboolean clocked)
+static void native_error_reopen(gboolean clocked, gboolean preroll)
 {
   if (!x11_enabled()) return;
   const char *fixture = g_getenv("CRYSTALHD_XV_TEST_FIXTURE");
@@ -589,7 +595,7 @@ static void native_error_reopen(gboolean clocked)
   GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), "output");
   /* Separate an unclocked ownership/EOS census from the strict clocked
    * presentation census. The latter retains its 100-output requirement. */
-  g_object_set(sink, "sync", clocked, NULL);
+  g_object_set(sink, "sync", clocked, "show-preroll-frame", preroll, NULL);
   GstElement *deinterlace = gst_bin_get_by_name(GST_BIN(pipeline), "di");
   GstElement *controller = gst_element_factory_make("crystalhddiqos", NULL);
   GstBus *bus = gst_element_get_bus(pipeline);
@@ -622,7 +628,7 @@ static void native_error_reopen(gboolean clocked)
     /* One compatibility controller owns this deinterlacer for its lifetime,
      * including NULL/restart. Detach does not permit attaching a second owner. */
     memset(stages, 0, sizeof(stages));
-    check_eos(pipeline, 100);
+    check_eos(pipeline, preroll ? 101 : 100);
     g_assert_cmpint(stages[0].buffers, ==, 50);
     g_assert_cmpint(stages[1].buffers, ==, 50);
     g_assert_cmpint(stages[2].buffers, ==, 100);
@@ -637,8 +643,9 @@ static void native_error_reopen(gboolean clocked)
   gst_object_unref(controller); gst_object_unref(deinterlace); gst_object_unref(bus);
   gst_object_unref(source); gst_object_unref(sink); gst_object_unref(pipeline); clean_contexts();
 }
-static void test_native_error_reopen(void) { native_error_reopen(TRUE); }
-static void test_native_error_reopen_lifetime(void) { native_error_reopen(FALSE); }
+static void test_native_error_reopen(void) { native_error_reopen(TRUE, FALSE); }
+static void test_native_error_reopen_lifetime(void) { native_error_reopen(FALSE, FALSE); }
+static void test_native_error_reopen_default(void) { native_error_reopen(TRUE, TRUE); }
 int main(int argc, char **argv)
 {
   if (argc == 2 && !strcmp(argv[1], "--hold-segment")) return hold_segment();
@@ -661,5 +668,6 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/x11/quarantine", test_quarantine);
   g_test_add_func("/xv/card/error-reopen", test_native_error_reopen);
   g_test_add_func("/xv/card/error-reopen-lifetime", test_native_error_reopen_lifetime);
+  g_test_add_func("/xv/card/error-reopen-default", test_native_error_reopen_default);
   int result = g_test_run(); g_free((gpointer)self_path); return result;
 }
