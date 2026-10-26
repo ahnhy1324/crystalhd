@@ -57,7 +57,7 @@ struct XvContext {
   xcb_gcontext_t gc;
   xcb_xv_port_t port;
   guint width, height, opcode, completion_type;
-  xcb_atom_t delete_atom, colorspace_atom;
+  xcb_atom_t delete_atom, protocols_atom, colorspace_atom;
   gint original_colorspace, active_colorspace;
   gboolean own_window, failed, closed, detached, quarantined;
   const char *failure;
@@ -237,9 +237,9 @@ static gboolean open_locked(XvContext *c, const char *name, xcb_window_t window)
     xcb_change_property(c->connection, XCB_PROP_MODE_REPLACE, c->window,
         XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, sizeof(title) - 1, title);
     c->delete_atom = atom_locked(c, "WM_DELETE_WINDOW");
-    xcb_atom_t protocols = atom_locked(c, "WM_PROTOCOLS");
+    c->protocols_atom = atom_locked(c, "WM_PROTOCOLS");
     xcb_change_property(c->connection, XCB_PROP_MODE_REPLACE, c->window,
-        protocols, XCB_ATOM_ATOM, 32, 1, &c->delete_atom);
+        c->protocols_atom, XCB_ATOM_ATOM, 32, 1, &c->delete_atom);
     xcb_map_window(c->connection, c->window);
   } else {
     guint32 mask = XCB_EVENT_MASK_STRUCTURE_NOTIFY;
@@ -374,9 +374,15 @@ static void receive_locked(XvContext *c, GstBuffer **release, guint *n)
     } else if (type == XCB_CONFIGURE_NOTIFY) {
       const xcb_configure_notify_event_t *e = (const void *)raw;
       if (e->window == c->window) { c->width = e->width; c->height = e->height; }
-    } else if (type == XCB_DESTROY_NOTIFY ||
-        (type == XCB_CLIENT_MESSAGE && ((xcb_client_message_event_t *)raw)->data.data32[0] == c->delete_atom))
-      context_error(c, "The video output window was closed");
+    } else if (type == XCB_DESTROY_NOTIFY) {
+      if (((xcb_destroy_notify_event_t *)raw)->window == c->window)
+        context_error(c, "The video output window was closed");
+    } else if (type == XCB_CLIENT_MESSAGE) {
+      const xcb_client_message_event_t *e = (const void *)raw;
+      if (c->own_window && e->window == c->window && e->format == 32 &&
+          e->type == c->protocols_atom && e->data.data32[0] == c->delete_atom)
+        context_error(c, "The video output window was closed");
+    }
     free(raw);
   }
   if (xcb_connection_has_error(c->connection)) context_error(c, "X11 display disconnected");
@@ -528,7 +534,8 @@ static GstFlowReturn submit_buffer(XvContext *c, const GstVideoInfo *info,
   while (!c->failed && !g_atomic_int_get(&c->flushing) && !g_atomic_int_get(&c->stopping)) {
     for (index = 0; index < XV_DEPTH; index++)
       if (!c->flights[index].memory) { f = &c->flights[index]; break; }
-    if (f) break;
+    if (f && (!direct || !direct->server_owned)) break;
+    f = NULL;
     if (!g_cond_wait_until(&c->changed, &c->lock, end)) {
       context_error(c, "No completed Xv ring slot within deadline"); break;
     }
@@ -681,9 +688,13 @@ static gboolean sink_start(GstBaseSink *base)
 {
   GstCrystalHdXv *s = XV_SINK(base);
   gst_video_overlay_prepare_window_handle(GST_VIDEO_OVERLAY(s));
+  g_mutex_lock(&s->lock);
+  gchar *display_name = g_strdup(s->display); guintptr window = s->window;
+  g_mutex_unlock(&s->lock);
   GstBus *bus = gst_element_get_bus(GST_ELEMENT(s));
   GError *error = NULL;
-  XvContext *c = context_new(s->display, s->window, bus, &error);
+  XvContext *c = context_new(display_name, window, bus, &error);
+  g_free(display_name);
   if (bus) gst_object_unref(bus);
   if (!c) {
     GST_ELEMENT_ERROR(s, RESOURCE, OPEN_READ_WRITE, ("%s", error->message), (NULL));
@@ -733,11 +744,15 @@ static gboolean sink_set_caps(GstBaseSink *base, GstCaps *caps)
       info.width <= 0 || info.width > 4096 || info.width % 2 || info.height <= 0 ||
       info.height > 2160 || (guint64)info.width * info.height > XV_MAX_PIXELS ||
       GST_VIDEO_INFO_IS_INTERLACED(&info)) return FALSE;
+  if (!GST_BASE_SINK_CLASS(gst_crystalhd_xv_parent_class)->set_caps(base, caps)) return FALSE;
   XvContext *c = sink_context(s);
   if (!c) return FALSE;
   g_mutex_lock(&c->lock);
   gboolean ok = drain_locked(c) && colorspace_locked(c, &info);
-  if (ok) { s->info = info; c->epoch++; }
+  if (ok) {
+    s->info = info; c->epoch++;
+    GST_VIDEO_SINK_WIDTH(s) = info.width; GST_VIDEO_SINK_HEIGHT(s) = info.height;
+  }
   g_mutex_unlock(&c->lock); context_unref(c);
   return ok;
 }
@@ -869,8 +884,6 @@ static void gst_crystalhd_xv_init(GstCrystalHdXv *s)
 {
   g_mutex_init(&s->lock); gst_video_info_init(&s->info);
   gst_base_sink_set_qos_enabled(GST_BASE_SINK(s), TRUE);
-  /* Preroll still negotiates; display the first picture at its clock time. */
-  g_object_set(s, "show-preroll-frame", FALSE, NULL);
 }
 static gboolean plugin_init(GstPlugin *plugin)
 {
