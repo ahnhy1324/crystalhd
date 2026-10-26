@@ -54,10 +54,13 @@ public:
     picture.stride[0] = width * 2;
     picture.decodedDataSize = static_cast<size_t>(width) * height * 2;
     if (!GetFrameBuffer(picture)) return VC_ERROR;
-    const size_t offset = picture.planeOffsets[0], pitch = picture.stride[0];
-    const size_t end = offset + static_cast<size_t>(height - 1) * pitch + width * 2;
-    if (!picture.decodedData || pitch < width * 2 || end > picture.decodedDataSize) {
-      ReleaseFrameBuffer(picture.videoBufferHandle); picture.videoBufferHandle = nullptr;
+    const size_t offset = picture.planeOffsets[0], pitch = picture.stride[0], row_bytes = width * 2;
+    const size_t size = picture.decodedDataSize;
+    if (!picture.videoBufferHandle || !picture.decodedData || pitch < row_bytes ||
+        offset > size || row_bytes > size - offset ||
+        (height > 1 && pitch > (size - offset - row_bytes) / (height - 1))) {
+      if (picture.videoBufferHandle) ReleaseFrameBuffer(picture.videoBufferHandle);
+      picture.videoBufferHandle = nullptr;
       return VC_ERROR;
     }
     for (unsigned y = 0; y < height; ++y) {
@@ -98,6 +101,10 @@ public:
     if (video < 0 || format->streams[video]->codecpar->codec_id != AV_CODEC_ID_H264) {
       Close(); return false;
     }
+    const auto* p = format->streams[video]->codecpar;
+    if (p->width <= 0 || (p->width & 1) || p->width > 1920 ||
+        p->height <= 0 || p->height > 1088 || p->extradata_size < 0 ||
+        static_cast<size_t>(p->extradata_size) > max_packet) { Close(); return false; }
     kodi::Log(ADDON_LOG_INFO, "%s InputStream opened local H264; companion decode feature, no crypto", marker);
     return true;
   }

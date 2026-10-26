@@ -6,7 +6,7 @@ This optional binary add-on demuxes a selected local H.264 file and emits one
 It neither decodes the file nor accesses CrystalHD. It is not a playback
 decoder, performance test or physical display acceptance.
 
-Target: unmodified Kodi 22 RC1 `28ea2ea`, InputStream ABI 3.4.0 and VideoCodec
+Target: x86_64 Kodi 22 RC1 `28ea2ea`, InputStream ABI 3.4.0 and VideoCodec
 2.2.1. The installed Ubuntu Kodi 21.3 / VideoCodec 2.1.0 has no packed-format
 enum and cannot run this add-on. Build against the matching official SDK:
 
