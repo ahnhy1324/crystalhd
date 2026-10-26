@@ -30,7 +30,11 @@ explicit output reports an error rather than silently choosing another sink.
 The current input is progressive, limited-range BT.601/BT.709 UYVY. Playback
 uses the ordinary GStreamer deinterlacer when necessary; this is not hardware
 deinterlacing. `--weave` requires ordinary output. BT.709 additionally requires
-the adaptor's supported color-space attribute. A caller can supply a window
+the adaptor's supported color-space attribute.
+Unspecified colorimetry keeps GStreamer's ordinary interpretation rather than
+forcing a BT.601 conversion during format negotiation. Explicit unsupported
+matrix/range requests fail during caps admission, before image allocation.
+A caller can supply a window
 through `GstVideoOverlay` **before** starting; replacing a live window and
 redrawing a retained paused picture after expose are not implemented yet.
 

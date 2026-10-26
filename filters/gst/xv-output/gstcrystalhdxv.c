@@ -666,7 +666,7 @@ G_DEFINE_TYPE_WITH_CODE(GstCrystalHdXv, gst_crystalhd_xv, GST_TYPE_VIDEO_SINK,
 enum { PROP_ZERO, PROP_DISPLAY, PROP_STATS };
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink", GST_PAD_SINK,
     GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw,format=UYVY,width=[2,4096],height=[1,2160],"
-      "framerate=[0/1,2147483647/1],interlace-mode=progressive,colorimetry={bt601,bt709}"));
+      "framerate=[0/1,2147483647/1],interlace-mode=progressive"));
 static XvContext *sink_context(GstCrystalHdXv *s)
 {
   g_mutex_lock(&s->lock);

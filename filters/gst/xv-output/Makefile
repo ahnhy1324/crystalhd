@@ -23,6 +23,8 @@ check: all gst-xv-output-test
 		gst-inspect-1.0 crystalhdxvsink >/dev/null
 	./gst-xv-output-test -p /xv/identity
 	./gst-xv-output-test -p /xv/setup-failure
+	./gst-xv-output-test -p /xv/color-admission
+	./gst-xv-output-test -p /xv/unspecified-color-pixels
 
 # Explicit X11 test: opens temporary video windows; no CrystalHD device access.
 check-x11: all gst-xv-output-test

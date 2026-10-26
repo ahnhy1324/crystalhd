@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include <gst/gst.h>
 #include <gst/app/gstappsrc.h>
+#include <gst/app/gstappsink.h>
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -188,6 +189,58 @@ static void test_setup_failure(void)
   g_assert_error(error, GST_RESOURCE_ERROR, GST_RESOURCE_ERROR_OPEN_READ_WRITE); g_clear_error(&error);
   g_assert_null(context_new(":9876", 0, NULL, &error)); g_assert_nonnull(error); g_clear_error(&error);
   clean_contexts();
+}
+static void test_color_admission(void)
+{
+  const GstVideoColorRange ranges[] = {GST_VIDEO_COLOR_RANGE_0_255,
+      GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_RANGE_16_235};
+  const GstVideoColorMatrix matrices[] = {GST_VIDEO_COLOR_MATRIX_BT601,
+      GST_VIDEO_COLOR_MATRIX_BT2020, GST_VIDEO_COLOR_MATRIX_BT709};
+  for (guint i = 0; i < G_N_ELEMENTS(ranges); i++) {
+    XvContext c = {.wake_fd = -1}; g_mutex_init(&c.lock); g_cond_init(&c.changed);
+    GstVideoInfo info = info_for(320, 240);
+    info.colorimetry.range = ranges[i]; info.colorimetry.matrix = matrices[i];
+    g_mutex_lock(&c.lock);
+    g_assert_false(colorspace_locked(&c, &info));
+    g_assert_true(c.failed); g_assert_cmpuint(c.image_count, ==, 0);
+    g_mutex_unlock(&c.lock); g_mutex_clear(&c.lock); g_cond_clear(&c.changed);
+  }
+}
+static void test_unspecified_color_pixels(void)
+{
+  /* A sink must not turn an implicit HD matrix into a requested BT.601
+   * conversion. Use its real template in an otherwise card/display-free path. */
+  GError *error = NULL;
+  GstElement *pipeline = gst_parse_launch("appsrc name=input format=time ! videoconvert ! "
+      "capsfilter name=limits ! appsink name=result sync=false", &error);
+  g_assert_no_error(error);
+  GstElement *source = gst_bin_get_by_name(GST_BIN(pipeline), "input");
+  GstElement *filter = gst_bin_get_by_name(GST_BIN(pipeline), "limits");
+  GstElement *output = gst_bin_get_by_name(GST_BIN(pipeline), "result");
+  GstCaps *limits = gst_static_pad_template_get_caps(&sink_template);
+  g_object_set(filter, "caps", limits, NULL); gst_caps_unref(limits);
+  GstCaps *input = gst_caps_from_string("video/x-raw,format=UYVY,width=1280,height=720,"
+      "framerate=50/1,interlace-mode=progressive");
+  gst_app_src_set_caps(GST_APP_SRC(source), input);
+  GstVideoInfo info; g_assert_true(gst_video_info_from_caps(&info, input)); gst_caps_unref(input);
+  GstBuffer *expected = pattern_buffer(&info, 41);
+  gst_element_set_state(pipeline, GST_STATE_PLAYING);
+  g_assert_cmpint(gst_app_src_push_buffer(GST_APP_SRC(source), gst_buffer_ref(expected)), ==, GST_FLOW_OK);
+  gst_app_src_end_of_stream(GST_APP_SRC(source));
+  GstSample *sample = gst_app_sink_try_pull_sample(GST_APP_SINK(output), 3 * GST_SECOND);
+  g_assert_nonnull(sample);
+  GstVideoInfo result_info;
+  g_assert_true(gst_video_info_from_caps(&result_info, gst_sample_get_caps(sample)));
+  GstVideoFrame a, b;
+  g_assert_true(gst_video_frame_map(&a, &info, expected, GST_MAP_READ));
+  g_assert_true(gst_video_frame_map(&b, &result_info, gst_sample_get_buffer(sample), GST_MAP_READ));
+  for (gint y = 0; y < info.height; y++)
+    g_assert_cmpmem((guint8 *)GST_VIDEO_FRAME_PLANE_DATA(&a, 0) + y * GST_VIDEO_FRAME_PLANE_STRIDE(&a, 0),
+        info.width * 2, (guint8 *)GST_VIDEO_FRAME_PLANE_DATA(&b, 0) + y * GST_VIDEO_FRAME_PLANE_STRIDE(&b, 0),
+        info.width * 2);
+  gst_video_frame_unmap(&a); gst_video_frame_unmap(&b); gst_buffer_unref(expected); gst_sample_unref(sample);
+  gst_element_set_state(pipeline, GST_STATE_NULL);
+  gst_object_unref(source); gst_object_unref(filter); gst_object_unref(output); gst_object_unref(pipeline);
 }
 static void test_reopen(void)
 {
@@ -439,6 +492,8 @@ int main(int argc, char **argv)
   g_assert_true(plugin_init(NULL));
   g_test_add_func("/xv/identity", test_identity);
   g_test_add_func("/xv/setup-failure", test_setup_failure);
+  g_test_add_func("/xv/color-admission", test_color_admission);
+  g_test_add_func("/xv/unspecified-color-pixels", test_unspecified_color_pixels);
   g_test_add_func("/xv/x11/reopen", test_reopen);
   g_test_add_func("/xv/x11/preroll", test_preroll);
   g_test_add_func("/xv/x11/padded-copy", test_padded_copy);
