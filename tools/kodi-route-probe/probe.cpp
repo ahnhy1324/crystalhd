@@ -150,11 +150,21 @@ public:
     return true;
   }
   VIDEOCODEC_RETVAL GetPicture(VIDEOCODEC_PICTURE& picture) override {
+    const bool drain = (picture.flags & VIDEOCODEC_PICTURE_FLAG_DRAIN) != 0;
+    if (fatal && drain) {
+      /* This host drains until VC_EOF, including Reset/destruction after an
+       * error. Retire the failed session before acknowledging terminal drain.
+       * This is cancellation, NEVER a natural/media-completeness EOS pass. */
+      decoder.Close(); active = false;
+      kodi::Log(ADDON_LOG_WARNING, "CrystalHD-Native CANCELLED_ERROR_DRAIN accepted=%u pictures=%u; not natural EOS",
+                accepted, pictures);
+      return VC_EOF;
+    }
     if (fatal) return Fail(decoder.Error().empty() ? "invalid native packet" : decoder.Error().c_str());
-    if (!active) return VC_BUFFER;
+    if (!active) return drain ? VC_EOF : VC_BUFFER;
     using Result = crystalhd_kodi::NativeDecoder::Result;
     Result result;
-    GstSample* sample = decoder.Next((picture.flags & VIDEOCODEC_PICTURE_FLAG_DRAIN) != 0, result);
+    GstSample* sample = decoder.Next(drain, result);
     if (!sample) {
       if (result == Result::Error) return Fail(decoder.Error().c_str());
       if (result == Result::Eof) {

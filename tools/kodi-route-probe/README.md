@@ -46,7 +46,9 @@ buffer), not zero-copy. The source queue is bounded at 8 packets/4 MiB and the
 output queue at 4 pictures. EOS is reported only after real decoder EOS and
 queued pictures; seek Reset closes the old decoder and creates a fresh parser
 and decoder on the next packet. This avoids H264Parse's NULL/restart timestamp
-policy change. These are implementation properties, not completed native or
+policy change. An inactive/error session also terminates the host's drain loop;
+an error cancellation is logged separately and is not a natural EOS pass.
+These are implementation properties, not completed native or
 performance acceptance. Kodi may choose its own fallback when an add-on fails;
 verify the native session markers, actual device ownership and returned frames
 before calling playback a CrystalHD success.
@@ -56,6 +58,9 @@ appsrc/appsink retry/drain/cancel/reopen tests. `native-trace` is a separate
 diagnostic build that logs per-picture PTS and an active-row pixel digest at
 EOS; do not use that build as a performance measurement. Neither target
 installs anything or changes the normal Kodi/VA-API path.
+With the matching SDK, `check-codec` also runs the real add-on callbacks against
+a minimal host, including repeated Reset and terminal error drain, without
+loading a decoder plugin or opening a device.
 
 Source `f9c8b2f` passes the explicit route/buffer probe on published Flathub
 22 RC1 in a private Xvfb/software-GLES environment: a companion codec instance

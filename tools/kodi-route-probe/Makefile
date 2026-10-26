@@ -9,7 +9,7 @@ GST_PACKAGES := gstreamer-app-1.0 gstreamer-video-1.0
 NATIVE_OUTPUT := build-native/$(ADDON)
 TRACE_OUTPUT := build-trace/$(ADDON)
 
-.PHONY: all native native-trace check clean
+.PHONY: all native native-trace check check-codec clean
 all: $(OUTPUT)/$(ADDON).so $(OUTPUT)/addon.xml
 native: $(NATIVE_OUTPUT)/$(ADDON).so $(NATIVE_OUTPUT)/addon.xml
 native-trace: $(TRACE_OUTPUT)/$(ADDON).so $(TRACE_OUTPUT)/addon.xml
@@ -41,6 +41,17 @@ build/kodi-route-native-test: ../../tests/kodi-route-native.cpp native.cpp nativ
 
 check: build/kodi-route-native-test
 	./build/kodi-route-native-test
+
+build/kodi-route-codec-test: ../../tests/kodi-route-codec.cpp probe.cpp native.cpp native.h packed.h
+	@test -n "$(KODI_SDK_INCLUDE)" || { echo 'Set KODI_SDK_INCLUDE for the callback contract test'; exit 1; }
+	mkdir -p "$(@D)"
+	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Werror $(CPPFLAGS) $(CXXFLAGS) -DCRYSTALHD_KODI_NATIVE \
+		-isystem "$(KODI_SDK_INCLUDE)" $(shell $(PKG_CONFIG) --cflags $(PACKAGES) $(GST_PACKAGES)) \
+		../../tests/kodi-route-codec.cpp native.cpp \
+		$(shell $(PKG_CONFIG) --libs $(PACKAGES) $(GST_PACKAGES)) $(LDFLAGS) -o "$@"
+
+check-codec: build/kodi-route-codec-test
+	./build/kodi-route-codec-test
 
 clean:
 	rm -rf build build-native build-trace

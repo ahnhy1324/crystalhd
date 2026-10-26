@@ -82,7 +82,7 @@ jobs:
           git -C "$kodi_probe_sdk" sparse-checkout init --cone
           git -C "$kodi_probe_sdk" sparse-checkout set xbmc/addons/kodi-dev-kit
           git -C "$kodi_probe_sdk" checkout --detach FETCH_HEAD
-          make -C tools/kodi-route-probe all native native-trace check \
+          make -C tools/kodi-route-probe all native native-trace check check-codec \
             KODI_SDK_INCLUDE="$kodi_probe_sdk/xbmc/addons/kodi-dev-kit/include"
 
       - name: Validate optional settings window without hardware
