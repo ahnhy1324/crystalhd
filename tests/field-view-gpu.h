@@ -153,7 +153,7 @@ struct GbmAllocation {
       try {
         need(w&&!(w&1)&&h&&!(h&1),"GBM even geometry");
         bo=gbm_bo_create(gpu.gbm,w/2,h+8,GBM_FORMAT_ARGB8888,
-                         GBM_BO_USE_LINEAR|GBM_BO_USE_WRITE);
+                         GBM_BO_USE_LINEAR);
         need(bo,"owned GBM linear pair storage");
         need(gbm_bo_get_modifier(bo)==DRM_FORMAT_MOD_LINEAR,"actual linear GBM modifier");
         pitch=gbm_bo_get_stride(bo);fd=gbm_bo_get_fd(bo);
