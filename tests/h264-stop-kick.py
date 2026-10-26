@@ -248,7 +248,10 @@ def main():
     prefix = headers[:17]
     last_reference = next(h for h in reversed(prefix) if h['reference'])
     frame_num = (last_reference['frame_num']+1) % (1 << s['frame_bits'])
-    first_poc = max(h['poc'] for h in prefix)+1
+    # Place private pictures after the last decoded reference, not blindly
+    # after the highest pending POC. This preserves room for the original
+    # later B picture under the unchanged two-frame reorder restriction.
+    first_poc = last_reference['poc']+1
     assert first_poc&1 and all(h['poc']%2==0 for h in headers)
     assert first_poc+4-last_reference['poc'] < maximum//2
     args.output.mkdir(mode=0o700,parents=False,exist_ok=False)
@@ -304,8 +307,9 @@ def main():
     (args.output/'prefix.h264').write_bytes(aud)
     assert report['original_reorder_bound']<=s['max_num_reorder_frames']
     assert report['cases'][0]['hardware_eligible']
-    assert all(not item['hardware_eligible'] for item in report['cases'][1:])
-    report['result']='Single-picture G0 candidate eligible; multi-picture counterexamples ineligible. Native G2/G3 NOT RUN. Global output-order boundary is independently unresolved.'
+    assert not report['cases'][2]['hardware_eligible']
+    report['eligible_private_counts']=[item['private_pictures'] for item in report['cases'] if item['hardware_eligible']]
+    report['result']='G0 candidates evaluated; only listed counts are native-eligible. Native G2/G3 NOT RUN. Global output-order boundary is independently unresolved.'
     (args.output/'g0.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps({k:v for k,v in report.items() if k!='original_aus'},indent=2))
 

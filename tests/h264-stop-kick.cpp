@@ -114,15 +114,29 @@ constexpr size_t kBytes=640U*360U*2U;
 // Distinct, positive even metadata in the gap between original tokens17/18;
 // avoid introducing an unrelated many-hour timestamp discontinuity.
 constexpr uint64_t kPrivate=1750000;
+static std::vector<std::vector<uint8_t>> auxiliary_units(const std::vector<uint8_t> &data,unsigned expected) {
+    std::vector<size_t> boundaries;
+    for(size_t i=0;i+5<data.size();++i)
+        if(!data[i]&&!data[i+1]&&!data[i+2]&&data[i+3]==1&&(data[i+4]&31)==9)
+            boundaries.push_back(i);
+    need(boundaries.size()==expected&&boundaries.front()==0,"private AUD unit count");
+    boundaries.push_back(data.size());std::vector<std::vector<uint8_t>> result;
+    for(unsigned i=0;i<expected;++i)result.emplace_back(data.begin()+boundaries[i],data.begin()+boundaries[i+1]);
+    return result;
+}
 
 int main(int argc,char **argv) {
     try {
-        need(argc==4,"usage: h264-stop-kick G0_DIRECTORY RESULT_DIRECTORY reference|none|prefix|picture");
+        need(argc==4,"usage: h264-stop-kick G0_DIRECTORY RESULT_DIRECTORY reference|none|prefix|picture|prefed-picture|prefed-pair");
         std::string input=argv[1],output=argv[2],mode=argv[3];
-        need(mode=="reference"||mode=="none"||mode=="prefix"||mode=="picture","mode");
+        need(mode=="reference"||mode=="none"||mode=="prefix"||mode=="picture"||
+             mode=="prefed-picture"||mode=="prefed-pair","mode");
         const bool reference=mode=="reference";
+        const bool prefed=mode=="prefed-picture"||mode=="prefed-pair";
+        const unsigned private_expected=mode=="prefed-pair"?2:(mode=="picture"||prefed?1:0);
         const auto source=packets(input);
-        auto prefix=read_file(input+"/prefix.h264"),auxiliary=read_file(input+"/kick1.h264");
+        auto prefix=read_file(input+"/prefix.h264");
+        auto auxiliary=read_file(input+(private_expected==2?"/kick2.h264":"/kick1.h264"));
         need(prefix.size()==170 && auxiliary.size()>0 && auxiliary.size()<=16384,"bounded G0 payloads");
         std::map<uint64_t,Frame> baseline;
         if(!reference) {
@@ -138,7 +152,7 @@ int main(int argc,char **argv) {
         auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(12);
         auto bounded=[&]{need(std::chrono::steady_clock::now()<deadline,"12s session deadline");};
         std::vector<Frame> frames;std::vector<uint64_t> real_order;
-        unsigned real=0,private_outputs=0;uint32_t ready=0;bool eos=false,flush=false;
+        unsigned real=0,private_outputs=0,unknown_outputs=0;uint32_t ready=0;bool eos=false,flush=false;
         auto receive=[&]{
             for(unsigned attempt=0;attempt<32;++attempt) {
                 bounded();BC_DTS_STATUS status{};
@@ -162,16 +176,25 @@ int main(int argc,char **argv) {
                 uint64_t token=out.PicInfo.timeStamp;
                 need(std::none_of(frames.begin(),frames.end(),[&](const Frame &f){return f.token==token;}),"duplicate output token");
                 Frame frame{token,out.PicInfo.flags,{out.Ybuff,out.Ybuff+kBytes}};
-                if(token==kPrivate) {
-                    need(mode=="picture"&&private_outputs++==0,"private identity");
+                const bool is_private=private_expected&&(token==kPrivate||(private_expected==2&&token==kPrivate+25000));
+                if(is_private) {
+                    need(private_outputs++<private_expected,"private identity");
                     need(std::all_of(frame.pixels.begin(),frame.pixels.end(),[](uint8_t v){return v==128;}),"private DC128 pixels");
                 } else {
-                    need(std::any_of(source.begin(),source.end(),[&](const Packet &p){return p.token==token;}),"unknown/ghost output");
+                    const bool known=std::any_of(source.begin(),source.end(),[&](const Packet &p){return p.token==token;});
+                    if(!known) {
+                        const bool neutral=std::all_of(frame.pixels.begin(),frame.pixels.end(),[](uint8_t v){return v==128;});
+                        printf("{\"type\":\"unmatched\",\"mode\":\"%s\",\"token\":%llu,\"neutral_pixels\":%s,\"flags\":%u,\"before_eos\":%s}\n",
+                               mode.c_str(),static_cast<unsigned long long>(token),neutral?"true":"false",frame.flags,flush?"false":"true");
+                        fflush(stdout);++unknown_outputs;lease.finish();
+                        need(flush,"unknown/ghost output before terminal cleanup");
+                        continue;
+                    }
                     if(!reference) need(baseline.at(token).pixels==frame.pixels,"original pixels changed");
                     ++real;real_order.push_back(token);
                 }
                 printf("{\"type\":\"picture\",\"mode\":\"%s\",\"token\":%llu,\"private\":%s,\"before_eos\":%s,\"flags\":%u}\n",
-                    mode.c_str(),static_cast<unsigned long long>(token),token==kPrivate?"true":"false",flush?"false":"true",frame.flags);
+                    mode.c_str(),static_cast<unsigned long long>(token),is_private?"true":"false",flush?"false":"true",frame.flags);
                 fflush(stdout);frames.push_back(std::move(frame));
                 lease.finish();
             }
@@ -189,11 +212,19 @@ int main(int argc,char **argv) {
             do {receive();bounded();usleep(1000);} while(std::chrono::steady_clock::now()<until);
         };
         for(unsigned i=0;i<(reference?20:17);++i) send(source[i].data,source[i].token);
-        if(mode=="picture") send(auxiliary,kPrivate);
-        if(mode=="picture"||mode=="prefix") send(prefix,0); // Untimed delimiter; no invented next-public identity.
+        if(prefed) {
+            const auto units=auxiliary_units(auxiliary,private_expected);
+            for(unsigned i=0;i<private_expected;++i) {
+                // The timestamped prefix belongs to the actual private AU
+                // that follows. Its payload consumes that timestamp, exactly
+                // as the established Prefix Kick contract requires.
+                send(prefix,kPrivate+i*25000);send(units[i],0);
+            }
+        } else if(mode=="picture") send(auxiliary,kPrivate);
+        if(private_expected||mode=="prefix") send(prefix,0); // Untimed trailing delimiter, not a next-public Kick.
         wait(reference?30:600);
         const unsigned boundary_real=real,boundary_private=private_outputs;
-        const bool g2=!reference&&real==17&&private_outputs==(mode=="picture"?1U:0U)&&!eos;
+        const bool g2=!reference&&real==17&&private_outputs==private_expected&&!unknown_outputs&&!eos;
         printf("{\"type\":\"boundary\",\"mode\":\"%s\",\"real\":%u,\"private\":%u,\"eos\":%s,\"g2\":%s}\n",
                mode.c_str(),real,private_outputs,eos?"true":"false",g2?"true":"false");fflush(stdout);
         if(g2) for(unsigned i=17;i<20;++i) send(source[i].data,source[i].token);
@@ -201,9 +232,10 @@ int main(int argc,char **argv) {
         // to turn an incomplete G2 boundary into successful STOP/START.
         need(!eos,"no EOS before terminal cleanup");good("DtsFlushInput",api.DtsFlushInput(decoder.handle,0));flush=true;
         const unsigned expected=reference||g2?20:17;
-        while(!eos||ready||real!=expected||private_outputs!=(mode=="picture"?1U:0U)){
+        while(!eos||ready){
             bounded();receive();usleep(1000);
         }
+        const bool terminal_complete=real==expected&&private_outputs==private_expected&&!unknown_outputs;
         std::vector<Packet> sorted=source;
         std::stable_sort(sorted.begin(),sorted.end(),[](const Packet &a,const Packet &b){return a.pts<b.pts;});
         std::vector<uint64_t> expected_order;for(const auto &packet:sorted) expected_order.push_back(packet.token);
@@ -224,9 +256,10 @@ int main(int argc,char **argv) {
         decoder.finish();
         printf("{\"type\":\"result\",\"mode\":\"%s\",\"boundary_real\":%u,\"boundary_private\":%u,"
                "\"g2\":%s,\"continuation_attempted\":%s,\"terminal_real\":%u,\"terminal_private\":%u,"
-               "\"eos\":%s,\"full_reference_order\":%s,\"pixels_match_reference\":%s}\n",mode.c_str(),
+               "\"eos\":%s,\"full_reference_order\":%s,\"pixels_match_reference\":%s,"
+               "\"unknown_outputs\":%u,\"terminal_complete\":%s}\n",mode.c_str(),
                boundary_real,boundary_private,g2?"true":"false",g2?"true":"false",real,private_outputs,
-               eos?"true":"false",full_order?"true":"false",reference?"null":"true");
-        return reference||(g2&&full_order)?0:2;
+               eos?"true":"false",full_order?"true":"false",reference?"null":"true",unknown_outputs,terminal_complete?"true":"false");
+        return (reference&&terminal_complete)||(g2&&full_order&&terminal_complete)?0:2;
     } catch(const std::exception &error) {fprintf(stderr,"FAIL %s\n",error.what());return 1;}
 }
