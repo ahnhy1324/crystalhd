@@ -45,8 +45,11 @@ Missing/invalid timestamps, interlaced output and unexpected geometry fail.
 The existing decoder owns hardware NoCopy leases, CPB admission and recovery.
 There are **two host copies** (RX to GstBuffer, then checked rows to Kodi's
 buffer), not zero-copy. The source queue is bounded at 8 packets/4 MiB and the
-output queue at 4 pictures. EOS is reported only after real decoder EOS and
-queued pictures; seek Reset closes the old decoder and creates a fresh parser
+output queue at 4 pictures. Kodi DRAIN can mean temporary input starvation, so
+it never by itself ends the hardware stream. Final EOS requires the parent's
+demux EOF, every demuxed video packet submitted, real decoder EOS and queued
+pictures. A temporary squeeze phase can finish while preserving later input.
+Seek Reset closes the old decoder and creates a fresh parser
 and decoder on the next packet. This avoids H264Parse's NULL/restart timestamp
 policy change. An inactive/error session also terminates the host's drain loop;
 an error cancellation is logged separately and is not a natural EOS pass.

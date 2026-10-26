@@ -22,7 +22,7 @@ $(OUTPUT)/$(ADDON).so: probe.cpp packed.h
 		$< $(shell $(PKG_CONFIG) --libs $(PACKAGES)) -o "$@"
 
 $(TRACE_OUTPUT)/$(ADDON).so: CPPFLAGS += -DCRYSTALHD_KODI_TRACE
-$(NATIVE_OUTPUT)/$(ADDON).so $(TRACE_OUTPUT)/$(ADDON).so: probe.cpp native.cpp native.h packed.h
+$(NATIVE_OUTPUT)/$(ADDON).so $(TRACE_OUTPUT)/$(ADDON).so: probe.cpp native.cpp native.h packed.h input-progress.h
 	@test -n "$(KODI_SDK_INCLUDE)" || { echo 'Set KODI_SDK_INCLUDE to the unmodified Kodi 22 RC1 dev-kit include directory'; exit 1; }
 	mkdir -p "$(@D)"
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -Werror -fPIC -shared $(CPPFLAGS) -DCRYSTALHD_KODI_NATIVE \
@@ -48,10 +48,10 @@ check: build/kodi-route-native-test
 
 build/kodi-route-codec-test: TEST_SOURCE := ../../tests/kodi-route-codec.cpp
 build/kodi-route-demux-test: TEST_SOURCE := ../../tests/kodi-route-demux.cpp
-build/kodi-route-codec-test build/kodi-route-demux-test: ../../tests/kodi-route-codec.cpp ../../tests/kodi-route-demux.cpp probe.cpp native.cpp native.h packed.h
+build/kodi-route-codec-test build/kodi-route-demux-test: ../../tests/kodi-route-codec.cpp ../../tests/kodi-route-demux.cpp probe.cpp native.cpp native.h packed.h input-progress.h
 	@test -n "$(KODI_SDK_INCLUDE)" || { echo 'Set KODI_SDK_INCLUDE for the callback contract test'; exit 1; }
 	mkdir -p "$(@D)"
-	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Werror $(CPPFLAGS) $(CXXFLAGS) -DCRYSTALHD_KODI_NATIVE \
+	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Werror $(CPPFLAGS) $(CXXFLAGS) -DCRYSTALHD_KODI_NATIVE -DCRYSTALHD_KODI_TEST \
 		-isystem "$(KODI_SDK_INCLUDE)" $(shell $(PKG_CONFIG) --cflags $(PACKAGES) $(GST_PACKAGES)) \
 		$(TEST_SOURCE) native.cpp \
 		$(shell $(PKG_CONFIG) --libs $(PACKAGES) $(GST_PACKAGES)) $(LDFLAGS) -o "$@"

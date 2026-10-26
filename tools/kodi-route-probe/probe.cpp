@@ -11,6 +11,7 @@
 #include "packed.h"
 #ifdef CRYSTALHD_KODI_NATIVE
 #include "native.h"
+#include "input-progress.h"
 #include <gst/video/video.h>
 #endif
 extern "C" {
@@ -87,6 +88,8 @@ public:
 #ifdef CRYSTALHD_KODI_NATIVE
 class NativeCodec : public kodi::addon::CInstanceVideoCodec {
   crystalhd_kodi::NativeDecoder decoder;
+  std::shared_ptr<crystalhd_kodi::InputProgress> progress;
+  uint64_t input_epoch = 0;
   unsigned width = 0, height = 0, fps_n, fps_d;
   std::vector<uint8_t> extra;
   bool active = false, fatal = false, eof_logged = false;
@@ -97,6 +100,7 @@ class NativeCodec : public kodi::addon::CInstanceVideoCodec {
 #endif
   bool Start() {
     accepted = pictures = 0; last_pts = -1; eof_logged = false; fatal = false;
+    input_epoch = progress->epoch.load();
 #ifdef CRYSTALHD_KODI_TRACE
     if (checksum) g_checksum_free(checksum);
     checksum = g_checksum_new(G_CHECKSUM_SHA256);
@@ -118,8 +122,9 @@ class NativeCodec : public kodi::addon::CInstanceVideoCodec {
     return VC_ERROR;
   }
 public:
-  NativeCodec(const kodi::addon::IInstanceInfo& info, unsigned n, unsigned d)
-    : CInstanceVideoCodec(info), fps_n(n), fps_d(d) {}
+  NativeCodec(const kodi::addon::IInstanceInfo& info, unsigned n, unsigned d,
+              std::shared_ptr<crystalhd_kodi::InputProgress> state = std::make_shared<crystalhd_kodi::InputProgress>())
+    : CInstanceVideoCodec(info), progress(std::move(state)), fps_n(n), fps_d(d) {}
   ~NativeCodec() override {
     decoder.Close();
 #ifdef CRYSTALHD_KODI_TRACE
@@ -162,9 +167,17 @@ public:
     }
     if (fatal) return Fail(decoder.Error().empty() ? "invalid native packet" : decoder.Error().c_str());
     if (!active) return drain ? VC_EOF : VC_BUFFER;
+    if (progress->closed.load() || progress->epoch.load() != input_epoch) {
+      if (!drain) return VC_BUFFER;
+      decoder.Close(); active = false;
+      kodi::Log(ADDON_LOG_INFO, "CrystalHD-Native CANCELLED_CONTROL_DRAIN; not natural EOS");
+      return VC_EOF;
+    }
+    if (progress->failed.load()) return Fail("demux input failed before EOF");
     using Result = crystalhd_kodi::NativeDecoder::Result;
     Result result;
-    GstSample* sample = decoder.Next(drain, result);
+    const bool final_input = progress->Final(input_epoch, accepted);
+    GstSample* sample = decoder.Next(final_input, result);
     if (!sample) {
       if (result == Result::Error) return Fail(decoder.Error().c_str());
       if (result == Result::Eof) {
@@ -178,6 +191,10 @@ public:
         }
         return VC_EOF;
       }
+      /* VC_EOF here ends only a temporary squeeze phase. Keep the decoder
+       * open and accept later packets; do not flush the firmware DPB or log
+       * media EOS when the parent has not delivered complete finite input. */
+      if (drain && !final_input) return VC_EOF;
       return result == Result::NeedInput ? VC_BUFFER : VC_NONE;
     }
     GstVideoInfo info{}; GstMapInfo map{};
@@ -235,6 +252,12 @@ public:
     /* A seek starts a fresh decoder AND parser lazily on the next packet.
      * Reusing H264Parse across NULL changes its timestamp-inference policy. */
   }
+#ifdef CRYSTALHD_KODI_TEST
+  bool OpenRawTest() {
+    width = 4; height = 2; input_epoch = progress->epoch.load();
+    return active = decoder.OpenRawTest(width, height);
+  }
+#endif
 };
 #endif
 
@@ -244,6 +267,7 @@ class ProbeStream : public kodi::addon::CInstanceInputStream {
 #ifdef CRYSTALHD_KODI_NATIVE
   int audio = -1;
   int64_t media_end = 0;
+  std::shared_ptr<crystalhd_kodi::InputProgress> progress = std::make_shared<crystalhd_kodi::InputProgress>();
   unsigned video_packets = 0, audio_packets = 0;
 #endif
 public:
@@ -256,13 +280,16 @@ public:
     if (!format || video < 0) return ADDON_STATUS_UNKNOWN;
     const AVRational fps = av_guess_frame_rate(format, format->streams[video], nullptr);
     if (fps.num <= 0 || fps.den <= 0) return ADDON_STATUS_UNKNOWN;
-    handle = new NativeCodec(info, fps.num, fps.den); return ADDON_STATUS_OK;
+    handle = new NativeCodec(info, fps.num, fps.den, progress); return ADDON_STATUS_OK;
 #else
     handle = new ProbeCodec(info); return ADDON_STATUS_OK;
 #endif
   }
   bool Open(const kodi::addon::InputstreamProperty& props) override {
     Close(); const std::string path = props.GetURL(); struct stat st{};
+#ifdef CRYSTALHD_KODI_NATIVE
+    progress = std::make_shared<crystalhd_kodi::InputProgress>();
+#endif
     if (path.empty() || path.front() != '/' || stat(path.c_str(), &st) ||
         !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 256 * 1024 * 1024) return false;
     /* MP4 supplies the required codec parameters in its header. Do not run
@@ -321,6 +348,7 @@ public:
     if (format) kodi::Log(ADDON_LOG_INFO, "CrystalHD-Native Demux close video_packets=%u audio_packets=%u",
                           video_packets, audio_packets);
     audio = -1; media_end = 0; video_packets = audio_packets = 0;
+    progress->closed.store(true);
 #endif
     if (format) avformat_close_input(&format);
     video = -1;
@@ -398,6 +426,7 @@ public:
     const int64_t timestamp = av_rescale_q(static_cast<int64_t>(ms * 1000), AVRational{1, AV_TIME_BASE},
                                           format->streams[video]->time_base);
     if (av_seek_frame(format, video, timestamp, backwards ? AVSEEK_FLAG_BACKWARD : 0) < 0) return false;
+    progress->Seek();
     startpts = ms * 1000;
     return true;
   }
@@ -405,7 +434,8 @@ public:
   DEMUX_PACKET* DemuxRead() override {
     if (!format) return nullptr;
     AVPacket* input = av_packet_alloc(); if (!input) return nullptr;
-    while (av_read_frame(format, input) >= 0) {
+    int status;
+    while ((status = av_read_frame(format, input)) >= 0) {
       bool selected = input->stream_index == video;
 #ifdef CRYSTALHD_KODI_NATIVE
       selected |= audio >= 0 && input->stream_index == audio;
@@ -425,11 +455,17 @@ public:
       packet->dts = input->dts == AV_NOPTS_VALUE ? -std::numeric_limits<double>::infinity() : static_cast<double>(av_rescale_q(input->dts, from, to));
       packet->duration = av_rescale_q(input->duration, from, to);
 #ifdef CRYSTALHD_KODI_NATIVE
-      if (input->stream_index == video) ++video_packets; else ++audio_packets;
+      if (input->stream_index == video) { ++video_packets; progress->packets.fetch_add(1); }
+      else ++audio_packets;
 #endif
       av_packet_free(&input); return packet;
     }
-    av_packet_free(&input); return nullptr;
+    av_packet_free(&input);
+#ifdef CRYSTALHD_KODI_NATIVE
+    if (status == AVERROR_EOF) progress->eof.store(true);
+    else progress->failed.store(true);
+#endif
+    return nullptr;
   }
 };
 
