@@ -123,7 +123,7 @@ struct vb2_queue {
     unsigned num_buffers;
 #endif
     bool streaming, error, last;
-    struct vb2_buffer *bufs[BC_RX_LIST_CNT];
+    struct vb2_buffer *bufs[CHD_CAPTURE_MAX_BUFFERS];
     unsigned type, io_modes, buf_struct_size, timestamp_flags, bidirectional;
     void *drv_priv; const void *ops, *mem_ops;
     struct mutex *lock; struct device *dev;
@@ -737,6 +737,7 @@ static int crystalhd_v4l2_capture_prepare(struct crystalhd_v4l2_capture_buffer *
 static void crystalhd_rx_buffer_release(struct crystalhd_adp *, struct crystalhd_rx_buffer *);
 static unsigned long jiffies;
 static unsigned long msecs_to_jiffies(unsigned ms) { return (ms + 9U) / 10U; }
+static void *vb2_get_drv_priv(struct vb2_queue *q) { return q->drv_priv; }
 #include "node-production.h"
 
 static void down(struct semaphore *s) { assert(!s->held); s->held = true; }
@@ -1834,9 +1835,38 @@ static void constructor_cases(void)
     constructor_mode = false;
 }
 
+static void capture_pool_cases(void)
+{
+    static const struct { unsigned requested, expected; } cases[] = {
+        { 0, 2 }, { 12, 12 }, { 20, 20 }, { 32, 32 }, { UINT_MAX, 32 }
+    };
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        reset(false);
+        fixture.capture.sizeimage = 4096;
+        queues.dst.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        queues.dst.drv_priv = &fixture;
+        unsigned count = cases[i].requested, planes = 0, sizes[1] = {0};
+        CHECK(!chd_queue_setup(&queues.dst, &count, &planes, sizes, NULL));
+        CHECK(count == cases[i].expected && planes == 1 && sizes[0] == 4096);
+        CHECK(sizeof(fixture.active) / sizeof(fixture.active[0]) == BC_RX_LIST_CNT);
+        sizes[0] = 4095;
+        CHECK(chd_queue_setup(&queues.dst, &count, &planes, sizes, NULL) == -EINVAL);
+        sizes[0] = 4096;
+        CHECK(!chd_queue_setup(&queues.dst, &count, &planes, sizes, NULL));
+    }
+    reset(false);
+    fixture.output.sizeimage = CHD_CODED_SIZE;
+    queues.src.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+    queues.src.drv_priv = &fixture;
+    unsigned count = UINT_MAX, planes = 0, sizes[1] = {0};
+    CHECK(!chd_queue_setup(&queues.src, &count, &planes, sizes, NULL));
+    CHECK(count == BC_RX_LIST_CNT && planes == 1 && sizes[0] == CHD_CODED_SIZE);
+}
+
 int main(void)
 {
     node_api_cases();
+    capture_pool_cases();
     constructor_cases();
     discovery_watchdog_cases();
     credit_watchdog_cases();

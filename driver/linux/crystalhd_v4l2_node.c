@@ -24,6 +24,7 @@
 #define CHD_TX_TIMEOUT_MS 2000U
 #define CHD_DRAIN_TIMEOUT_MS 30000U
 #define CHD_DISCOVERY_BUFFERS 1U
+#define CHD_CAPTURE_MAX_BUFFERS 32U
 
 struct crystalhd_v4l2_node {
 	struct video_device video;
@@ -1011,7 +1012,14 @@ static int chd_queue_setup(struct vb2_queue *q, unsigned int *count,
 	mutex_unlock(&f->run_lock);
 	if (*planes)
 		return *planes == 1 && sizes[0] >= size ? 0 : -EINVAL;
-	*count = clamp_t(unsigned int, *count, 2, BC_RX_LIST_CNT);
+	/* Client-held frames and queued spares are not hardware RX rings. Keep
+	 * at most BC_RX_LIST_CNT active DMA targets, but allow the client its
+	 * larger capture pool (e.g. FFmpeg requests 20). Capping both at 16 can
+	 * exhaust its driver-owned buffers during drain before genuine LAST.
+	 */
+	*count = clamp_t(unsigned int, *count, 2,
+			V4L2_TYPE_IS_OUTPUT(q->type) ? BC_RX_LIST_CNT :
+			CHD_CAPTURE_MAX_BUFFERS);
 	*planes = 1;
 	sizes[0] = size;
 	return 0;
