@@ -200,9 +200,10 @@ int main(int argc,char **argv) {
         if(field){int heap=open("/dev/dma_heap/system",O_RDWR|O_CLOEXEC);need(heap>=0,"DMA heap");memory=std::make_unique<Allocation>(heap,w,h);close(heap);}
         else upload=std::make_unique<Upload>(w,h,ow,oh);
         auto *digest=g_checksum_new(G_CHECKSUM_SHA256);need(digest,"source census digest");
-        std::set<std::string> generations;std::vector<uint8_t> bob,oracle;
+        auto *signatures=g_checksum_new(G_CHECKSUM_SHA256);need(signatures,"signature census digest");
+        std::set<std::string> generations;std::vector<uint8_t> bob,oracle,signature(size_t(h)*12);
         unsigned pictures=0,fields=0,late=0;GstClockTime previous=GST_CLOCK_TIME_NONE;
-        double producer_cpu=0,producer_wall=0,render_cpu=0,render_wall=0,maximum_age=0,maximum_ready_age=0;
+        double producer_cpu=0,producer_wall=0,render_cpu=0,render_wall=0,observer_cpu=0,observer_wall=0,maximum_age=0,maximum_ready_age=0;
         const double cpu_start=clock_seconds(CLOCK_PROCESS_CPUTIME_ID),wall_start=clock_seconds(CLOCK_MONOTONIC);
         pipeline.state(GST_STATE_PLAYING);auto *clock=gst_element_get_clock(pipeline.pipeline);need(clock,"media clock");
         const auto base=gst_element_get_base_time(pipeline.pipeline);
@@ -232,9 +233,21 @@ int main(int argc,char **argv) {
             need(stride>=int(w*2)&&address>=origin&&address-origin<=mapping.size&&
                  size_t(h-1)*stride+w*2<=mapping.size-(address-origin),"mapped row extent");
             auto *one=g_checksum_new(G_CHECKSUM_SHA256);need(one,"generation digest");
+            const double oc=clock_seconds(CLOCK_THREAD_CPUTIME_ID),owall=clock_seconds(CLOCK_MONOTONIC);
             if(verify)oracle.resize(size_t(w)*h*2);
-            for(unsigned row=0;row<h;++row){g_checksum_update(digest,data+size_t(row)*stride,w*2);g_checksum_update(one,data+size_t(row)*stride,w*2);if(verify)memcpy(oracle.data()+size_t(row)*w*2,data+size_t(row)*stride,w*2);}
+            for(unsigned row=0;row<h;++row) {
+                const auto *line=data+size_t(row)*stride;
+                if(verify){g_checksum_update(digest,line,w*2);memcpy(oracle.data()+size_t(row)*w*2,line,w*2);}
+                // Timed identity observer: three original YUYV pairs on every
+                // active row. This is sparse, NOT a full-picture pixel hash.
+                memcpy(signature.data()+size_t(row)*12,line,4);
+                memcpy(signature.data()+size_t(row)*12+4,line+(w/4)*4,4);
+                memcpy(signature.data()+size_t(row)*12+8,line+(w-2)*2,4);
+            }
+            g_checksum_update(signatures,signature.data(),signature.size());
+            g_checksum_update(one,signature.data(),signature.size());
             generations.insert(g_checksum_get_string(one));g_checksum_free(one);
+            observer_cpu+=clock_seconds(CLOCK_THREAD_CPUTIME_ID)-oc;observer_wall+=clock_seconds(CLOCK_MONOTONIC)-owall;
             std::array<std::unique_ptr<Image>,2> views;
             if(field) {
                 const double pc=clock_seconds(CLOCK_THREAD_CPUTIME_ID),pw=clock_seconds(CLOCK_MONOTONIC);
@@ -268,7 +281,8 @@ int main(int argc,char **argv) {
         gst_object_unref(clock);need(pictures==expected&&fields==2*expected&&pipeline.trace.outputs==expected,"complete real picture/field census");
         pipeline.finish();need(device_fds()==0,"live-process CrystalHD FD retirement");
         rusage usage{};need(getrusage(RUSAGE_SELF,&usage)==0,"peak RSS");
-        printf("{\"type\":\"native-result\",\"path\":\"%s\",\"verify\":%s,\"pictures\":%u,\"input_pad_aus\":%u,\"completed_fields\":%u,\"late_fields\":%u,\"unique_source_pixels\":%zu,\"source_sha256\":\"%s\",\"producer_thread_cpu_s\":%.9f,\"producer_wall_s\":%.9f,\"render_thread_cpu_s\":%.9f,\"render_wall_s\":%.9f,\"playback_process_cpu_s\":%.9f,\"playback_wall_s\":%.9f,\"process_cpu_s_at_null\":%.9f,\"main_wall_s_to_null\":%.9f,\"peak_rss_kib\":%ld,\"max_deadline_age_ms\":%.6f,\"max_ready_age_ms\":%.6f,\"device_fds_after_null\":0,\"natural_eos\":true,\"physical_presentation\":false}\n",field?"field":"cpu",verify?"true":"false",pictures,pipeline.trace.inputs.load(),fields,late,generations.size(),g_checksum_get_string(digest),producer_cpu,producer_wall,render_cpu,render_wall,cpu,wall,clock_seconds(CLOCK_PROCESS_CPUTIME_ID),clock_seconds(CLOCK_MONOTONIC)-main_start,usage.ru_maxrss,maximum_age,maximum_ready_age);
-        g_checksum_free(digest);return 0;
+        const std::string source_hash=verify?std::string("\"")+g_checksum_get_string(digest)+"\"":"null";
+        printf("{\"type\":\"native-result\",\"path\":\"%s\",\"verify\":%s,\"pictures\":%u,\"input_pad_aus\":%u,\"completed_fields\":%u,\"late_fields\":%u,\"unique_sparse_signatures\":%zu,\"sparse_signature_sha256\":\"%s\",\"source_sha256\":%s,\"observer_thread_cpu_s\":%.9f,\"observer_wall_s\":%.9f,\"producer_thread_cpu_s\":%.9f,\"producer_wall_s\":%.9f,\"render_thread_cpu_s\":%.9f,\"render_wall_s\":%.9f,\"playback_process_cpu_s\":%.9f,\"playback_wall_s\":%.9f,\"process_cpu_s_at_null\":%.9f,\"main_wall_s_to_null\":%.9f,\"peak_rss_kib\":%ld,\"max_deadline_age_ms\":%.6f,\"max_ready_age_ms\":%.6f,\"device_fds_after_null\":0,\"natural_eos\":true,\"physical_presentation\":false}\n",field?"field":"cpu",verify?"true":"false",pictures,pipeline.trace.inputs.load(),fields,late,generations.size(),g_checksum_get_string(signatures),source_hash.c_str(),observer_cpu,observer_wall,producer_cpu,producer_wall,render_cpu,render_wall,cpu,wall,clock_seconds(CLOCK_PROCESS_CPUTIME_ID),clock_seconds(CLOCK_MONOTONIC)-main_start,usage.ru_maxrss,maximum_age,maximum_ready_age);
+        g_checksum_free(signatures);g_checksum_free(digest);return 0;
     }catch(const std::exception &error){fprintf(stderr,"FAIL %s\n",error.what());return 1;}
 }
