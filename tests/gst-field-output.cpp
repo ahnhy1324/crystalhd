@@ -119,9 +119,12 @@ static void pipeline(bool cancel) {
     }
     gst_object_unref(bus);gst_object_unref(pipeline);
 }
-static void card(const char *path) {
+static void card(const char *path,bool queued) {
     GError *error=nullptr;
-    auto *pipeline=gst_parse_launch("filesrc name=input ! h264parse ! crystalhddec name=decoder scale-width=1280 ! crystalhdfieldsink name=output",&error);
+    std::string chain="filesrc name=input ! h264parse ! crystalhddec name=decoder scale-width=1280 ! ";
+    if(queued)chain+="queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! ";
+    chain+="crystalhdfieldsink name=output";
+    auto *pipeline=gst_parse_launch(chain.c_str(),&error);
     need(!error&&pipeline,"card pipeline parse");
     auto *input=gst_bin_get_by_name(GST_BIN(pipeline),"input");
     auto *sink=gst_bin_get_by_name(GST_BIN(pipeline),"output");
@@ -138,7 +141,7 @@ static void card(const char *path) {
         need(counter(sink,"fields")==before+100,"50 native pictures/100 unique field uses");
         need(gst_element_set_state(pipeline,GST_STATE_NULL)!=GST_STATE_CHANGE_FAILURE,"card NULL");
         for(const char *key:{"allocations","images","retained-buffers","failures"})need(!counter(sink,key),"clean native retirement");
-        printf("{\"type\":\"card-window\",\"run\":%u,\"fields\":100,\"resources_after_null\":0,\"pass\":true}\n",run);
+        printf("{\"type\":\"card-window\",\"queued\":%s,\"run\":%u,\"fields\":100,\"resources_after_null\":0,\"pass\":true}\n",queued?"true":"false",run);
     }
     gst_object_unref(sink);gst_object_unref(bus);gst_object_unref(pipeline);
 }
@@ -147,8 +150,8 @@ int main(int argc,char **argv) {
         gst_init(&argc,&argv);
         need(temperature()<75000,"start temperature below75C");
         need(gst_element_register(nullptr,"crystalhdfieldsink",GST_RANK_NONE,gst_crystalhd_field_get_type()),"register experimental sink");
-        if(argc==3&&std::string(argv[1])=="--card")card(argv[2]);
-        else {need(argc==1,"usage: gst-field-output [--card 50-picture.h264]");pixels();pipeline(false);pipeline(true);}
+        if(argc==3&&(std::string(argv[1])=="--card"||std::string(argv[1])=="--card-direct"))card(argv[2],std::string(argv[1])=="--card");
+        else {need(argc==1,"usage: gst-field-output [--card|--card-direct 50-picture.h264]");pixels();pipeline(false);pipeline(true);}
         return 0;
     }catch(const std::exception &error){fprintf(stderr,"FAIL: %s\n",error.what());return 1;}
 }
