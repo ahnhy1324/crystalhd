@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Real standard-ioctl/MMAP smoke; usable from ILP32 or LP64 without FFmpeg. */
+/* Real standard-ioctl/MMAP/export smoke; ILP32 or LP64 without FFmpeg. */
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 #include <errno.h>
@@ -112,6 +112,21 @@ static void buffers(int fd, enum v4l2_buf_type type)
         require(map[0] == (unsigned char)(0x5aU + i) &&
                 map[buf.length - 1] == (unsigned char)(0xa5U - i),
                 "mapped allocation writable at both ends");
+        struct v4l2_exportbuffer exp = {
+            .type = type, .index = i, .flags = O_CLOEXEC | O_RDWR
+        };
+        checked(fd, VIDIOC_EXPBUF, &exp, "export MMAP backing");
+        require(exp.fd >= 0 && (fcntl(exp.fd, F_GETFD) & FD_CLOEXEC),
+                "export has a close-on-exec descriptor");
+        unsigned char *shared = mmap(NULL, buf.length, PROT_READ, MAP_SHARED,
+                                     exp.fd, 0);
+        require(shared != MAP_FAILED, "exported allocation mmap");
+        require(close(exp.fd) == 0, "close export descriptor while mapping lives");
+        require(shared[0] == map[0] && shared[buf.length - 1] == map[buf.length - 1],
+                "export maps original backing at both ends after fd close");
+        map[0] ^= 0xff;
+        require(shared[0] == map[0], "export observes original allocation updates");
+        require(munmap(shared, buf.length) == 0, "unmap exported view");
         require(munmap(map, buf.length) == 0, "munmap");
     }
     struct v4l2_buffer invalid = {
@@ -119,8 +134,8 @@ static void buffers(int fd, enum v4l2_buf_type type)
     };
     rejected(fd, VIDIOC_QUERYBUF, &invalid, EINVAL, "out-of-range QUERYBUF");
     rejected(fd, VIDIOC_S_FMT, &fmt, EBUSY, "S_FMT with allocated queue");
-    struct v4l2_exportbuffer exp = { .type = type, .index = 0 };
-    rejected(fd, VIDIOC_EXPBUF, &exp, ENOTTY, "no DMABUF export ioctl");
+    struct v4l2_exportbuffer exp = { .type = type, .index = req.count };
+    rejected(fd, VIDIOC_EXPBUF, &exp, EINVAL, "out-of-range export rejected");
 }
 
 static void release_buffers(int fd, enum v4l2_buf_type type)
@@ -134,7 +149,7 @@ int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
         puts("usage: v4l2-api --device /dev/videoN\n"
-             "Checks standard ioctls and MMAP only; no firmware, STREAMON or decode.");
+             "Checks standard ioctls, MMAP and export; no firmware, STREAMON or decode.");
         return 0;
     }
     if (argc != 3 || strcmp(argv[1], "--device") != 0) {
