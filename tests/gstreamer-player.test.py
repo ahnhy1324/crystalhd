@@ -1366,6 +1366,33 @@ class GStreamerApiTests(unittest.TestCase):
         self.assertIs(result.pipeline.get_property("video-sink"), result.field_sink)
         self.assertIsNone(result.pipeline.get_property("video-filter"))
 
+    def test_field_output_preserves_drop_diagnostic_before_null_resets_it(self):
+        result = self.make_player()
+        Gst = self.Gst
+        result.pipeline = Gst.parse_launch(
+            "videotestsrc num-buffers=4 ! video/x-raw,framerate=25/1 ! "
+            "identity sleep-time=60000 ! fakesink name=sink sync=true qos=true max-lateness=0")
+        sink = result.pipeline.get_by_name("sink")
+        fields = Gst.Structure.new_empty("field-stats")
+        fields.set_value("fields", 2)
+        fields.set_value("dropped-fields", 1)
+        # Only the research-specific fields are substituted. Sink lifecycle
+        # and the counter reset are the actual native GstBaseSink API.
+        result.field_sink = SimpleNamespace(
+            find_property=lambda name: True,
+            get_property=lambda name: fields if name == "field-stats" else sink.get_property(name))
+        result.pipeline.set_state(Gst.State.PLAYING)
+        message = result.pipeline.get_bus().timed_pop_filtered(
+            3*Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+        self.assertIsNotNone(message)
+        self.assertEqual(message.type, Gst.MessageType.EOS)
+        dropped = sink.get_property("stats").get_value("dropped")
+        self.assertGreater(dropped, 0)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            result.close()
+        self.assertEqual(sink.get_property("stats").get_value("dropped"), 0)
+        self.assertIn(f"late whole-buffer drops: {dropped}", output.getvalue())
+
     def test_weave_changes_only_deinterlacing_and_preserves_decoder_policy(self):
         reference = self.Gst.ElementFactory.make("playbin")
         original_flags = int(reference.get_property("flags"))

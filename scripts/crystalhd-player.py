@@ -1002,16 +1002,21 @@ class Player:
             if self.GLib.MainContext.default().find_source_by_id(source):
                 self.GLib.source_remove(source)
         self.bus.remove_signal_watch()
+        field_sink = getattr(self, "field_sink", None)
+        field_output = field_sink is not None and field_sink.find_property("field-stats") is not None
+        # GstBaseSink resets its QoS counters on the way to NULL. Capture the
+        # observed whole-buffer drops while they still belong to this run;
+        # inspect our owned-resource counters only after teardown completes.
+        late_whole_buffers = (field_sink.get_property("stats").get_value("dropped")
+                              if field_output else None)
         if self.pipeline.set_state(self.Gst.State.NULL) == self.Gst.StateChangeReturn.FAILURE:
             print("crystalhd-play: decoder teardown failed", file=sys.stderr)
             self.exit_code = max(self.exit_code, 1)
-        field_sink = getattr(self, "field_sink", None)
-        if field_sink is not None and field_sink.find_property("field-stats") is not None:
+        if field_output:
             stats = field_sink.get_property("field-stats")
-            base_stats = field_sink.get_property("stats")
             print(f"GPU field submissions: {stats.get_value('fields')}; "
                   f"expired field skips: {stats.get_value('dropped-fields')}; "
-                  f"late whole-buffer drops: {base_stats.get_value('dropped')}", flush=True)
+                  f"late whole-buffer drops: {late_whole_buffers}", flush=True)
         for workaround in tuple(self.deinterlace_qos.values()):
             workaround.close()
         self.deinterlace_qos.clear()

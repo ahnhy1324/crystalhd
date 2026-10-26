@@ -80,14 +80,31 @@ def main():
     report = dict(label=args.label, fullscreen=args.fullscreen, eos=False,
                   audio_buffers=0, audio_stream_muted=True, clock=None,
                   audio_clock=None, same_audio_clock=False, peak_mC=0, sizes=[],
-                  verified_initial_size=initial_size)
+                  verified_initial_size=initial_size, sink_buffers=0, sink_fields=0)
 
     def audio_probe(_pad, _info):
         report["audio_buffers"] += 1
         return Gst.PadProbeReturn.OK
 
     audio.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, audio_probe)
-    player.bus.connect("message::eos", lambda *_: report.update(eos=True))
+    def sink_probe(pad, info):
+        caps = pad.get_current_caps()
+        mode = caps.get_structure(0).get_string("interlace-mode")
+        interlaced = mode == "interleaved" or (mode == "mixed" and
+            int(info.get_buffer().get_flags()) & int(GstVideo.VideoBufferFlags.INTERLACED))
+        report["sink_buffers"] += 1
+        report["sink_fields"] += 2 if interlaced else 1
+        return Gst.PadProbeReturn.OK
+
+    player.field_sink.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, sink_probe)
+
+    def eos(*_):
+        stats = player.field_sink.get_property("stats")
+        report.update(eos=True, base_sink_before_null={
+            stats.nth_field_name(i): stats.get_value(stats.nth_field_name(i))
+            for i in range(stats.n_fields())})
+
+    player.bus.connect("message::eos", eos)
 
     def tick():
         report["peak_mC"] = max(report["peak_mC"], max(
@@ -116,14 +133,13 @@ def main():
     code = player.run()
     cpu1 = resource.getrusage(resource.RUSAGE_SELF)
     fields = player.field_sink.get_property("field-stats")
-    base = player.field_sink.get_property("stats")
     report.update(code=code, decoded=player.health.frames, health_error=player.health.error,
                   elapsed_s=time.monotonic()-begin,
                   cpu_s=cpu1.ru_utime+cpu1.ru_stime-cpu0.ru_utime-cpu0.ru_stime,
                   max_rss_kib=cpu1.ru_maxrss, start_mC=initial_temperature,
                   field_stats={fields.nth_field_name(i): fields.get_value(fields.nth_field_name(i))
                                for i in range(fields.n_fields())},
-                  whole_buffer_drops=base.get_value("dropped"))
+                  whole_buffer_drops=report.get("base_sink_before_null", {}).get("dropped"))
     window.destroy()
     clean = all(report["field_stats"][key] == 0
                 for key in ("failures", "allocations", "images", "retained-buffers"))
