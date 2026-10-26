@@ -130,7 +130,18 @@ struct Image {
 
 struct Renderer {
     yuy2_gpu::Picture picture;
-    GLuint program;
+    GLuint program, affine_program;
+    static GLuint link(const char *vertex, const char *fragment) {
+        GLuint v = yuy2_gpu::shader(GL_VERTEX_SHADER, vertex);
+        GLuint f = yuy2_gpu::shader(GL_FRAGMENT_SHADER, fragment);
+        GLuint result = glCreateProgram();
+        glAttachShader(result, v); glAttachShader(result, f);
+        glBindAttribLocation(result, 0, "pos"); glLinkProgram(result);
+        GLint linked = 0; glGetProgramiv(result, GL_LINK_STATUS, &linked);
+        glDeleteShader(v); glDeleteShader(f);
+        need(linked, "field shader link");
+        return result;
+    }
     Renderer(unsigned w, unsigned h) : picture(w, h) {
         const char *vertex = "attribute vec2 pos;void main(){gl_Position=vec4(pos,0.0,1.0);}";
         // Original field lines remain on their original vertical positions.
@@ -141,38 +152,46 @@ struct Renderer {
         const char *fragment =
             "#extension GL_OES_EGL_image_external : require\n"
             "precision highp float;uniform samplerExternalOES tex;"
-            "uniform vec2 size;uniform float parity;uniform float field_view;"
+            "uniform vec2 size;uniform float parity;"
             "void main(){float row=clamp(floor((floor(gl_FragCoord.y)-parity+1.0)*0.5),"
             "0.0,size.y*0.5-1.0);"
-            "float sy=mix(2.0*row+parity,row,field_view);"
-            "float sh=mix(size.y,size.y*0.5,field_view);"
-            "vec2 uv=vec2((floor(gl_FragCoord.x)+0.5)/size.x,(sy+0.5)/sh);"
+            "vec2 uv=vec2(gl_FragCoord.x/size.x,(2.0*row+parity+0.5)/size.y);"
             "gl_FragColor=vec4(texture2D(tex,uv).rgb,1.0);}";
-        GLuint v = yuy2_gpu::shader(GL_VERTEX_SHADER, vertex);
-        GLuint f = yuy2_gpu::shader(GL_FRAGMENT_SHADER, fragment);
-        program = glCreateProgram();
-        glAttachShader(program, v); glAttachShader(program, f);
-        glBindAttribLocation(program, 0, "pos"); glLinkProgram(program);
-        GLint linked = 0; glGetProgramiv(program, GL_LINK_STATUS, &linked);
-        glDeleteShader(v); glDeleteShader(f);
-        need(linked, "field shader link");
+        program = link(vertex, fragment);
+        const char *affine_vertex =
+            "attribute vec2 pos;uniform float shift;varying vec2 uv;"
+            "void main(){uv=(pos+1.0)*0.5;uv.y+=shift;gl_Position=vec4(pos,0.0,1.0);}";
+        const char *affine_fragment =
+            "#extension GL_OES_EGL_image_external : require\n"
+            "precision highp float;varying vec2 uv;uniform samplerExternalOES tex;"
+            "void main(){gl_FragColor=vec4(texture2D(tex,uv).rgb,1.0);}";
+        affine_program = link(affine_vertex, affine_fragment);
     }
     void draw(const Image &image, bool field_view, unsigned parity) {
         need(image.texture && parity < 2, "field draw admission");
         glBindFramebuffer(GL_FRAMEBUFFER, picture.fbo);
-        glViewport(0, 0, picture.w, picture.h); glUseProgram(program);
+        const GLuint selected = field_view ? affine_program : program;
+        glViewport(0, 0, picture.w, picture.h); glUseProgram(selected);
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_EXTERNAL_OES, image.texture);
-        glUniform1i(glGetUniformLocation(program, "tex"), 0);
-        glUniform2f(glGetUniformLocation(program, "size"), picture.w, picture.h);
-        glUniform1f(glGetUniformLocation(program, "parity"), parity);
-        glUniform1f(glGetUniformLocation(program, "field_view"), field_view ? 1 : 0);
+        glUniform1i(glGetUniformLocation(selected, "tex"), 0);
+        if (field_view) {
+            // Nearest-only: the quarter output-pixel bias resolves exact
+            // missing-line ties toward the following field row, away from
+            // interpolation-rounding boundaries. It does not change the CPU
+            // reference row selection. Linear filtering needs another phase.
+            glUniform1f(glGetUniformLocation(selected, "shift"),
+                         (0.75f - parity) / picture.h);
+        } else {
+            glUniform2f(glGetUniformLocation(selected, "size"), picture.w, picture.h);
+            glUniform1f(glGetUniformLocation(selected, "parity"), parity);
+        }
         static const float positions[] = {-1,-1, 1,-1, -1,1, 1,1};
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, positions);
         glEnableVertexAttribArray(0); glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         glFinish();
         need(glGetError() == GL_NO_ERROR, "field GPU completion");
     }
-    ~Renderer() { glDeleteProgram(program); }
+    ~Renderer() { glDeleteProgram(program); glDeleteProgram(affine_program); }
 };
 
 static std::vector<uint8_t> pattern(unsigned w, unsigned h, unsigned generation) {
@@ -244,10 +263,14 @@ int main(int argc, char **argv) {
                    w, h, import_ok ? "true" : "false");
             for (unsigned rate : {50U,60U}) for (bool tff : {true,false}) {
                 if (!fields) continue;
-                const char *gpu_mode = import_ok ? "field-view" : "full-image-shader-fallback";
-                for (const char *mode : {"cpu-bob-upload",gpu_mode,gpu_mode,"cpu-bob-upload"}) {
+                for (const char *mode : {"cpu-bob-upload", "field-view", "full-image-parity",
+                                         "full-image-parity", "field-view", "cpu-bob-upload"}) {
                     const bool cpu = std::string(mode) == "cpu-bob-upload";
+                    const bool field = std::string(mode) == "field-view";
+                    if (field && !import_ok) continue;
                     unsigned submitted = 0, completed = 0, late = 0;
+                    int hottest = 0;
+                    double materialize_cpu = 0, upload_cpu = 0, draw_wait_wall = 0;
                     double max_age = 0, cpu_start = clock_seconds(CLOCK_PROCESS_CPUTIME_ID);
                     const double start = clock_seconds(CLOCK_MONOTONIC);
                     for (unsigned i = 0; i < fields; ++i) {
@@ -259,18 +282,29 @@ int main(int argc, char **argv) {
                         do { error = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, nullptr); }
                         while (error == EINTR);
                         need(error == 0, "field deadline wait");
-                        if ((i & 15) == 0) need(temperature() < 85000, "temperature below85C");
+                        if ((i & 15) == 0) {
+                            hottest = std::max(hottest, temperature());
+                            need(hottest < 85000, "temperature below85C");
+                        }
                         if (cpu) {
+                            double phase = clock_seconds(CLOCK_PROCESS_CPUTIME_ID);
                             cpu_bob(sources[generation], w, h, parity, bob);
+                            materialize_cpu += clock_seconds(CLOCK_PROCESS_CPUTIME_ID) - phase;
+                            phase = clock_seconds(CLOCK_PROCESS_CPUTIME_ID);
                             glBindTexture(GL_TEXTURE_2D, renderer.picture.packed);
                             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w/2, h,
                                             GL_RGBA, GL_UNSIGNED_BYTE, bob.data());
+                            upload_cpu += clock_seconds(CLOCK_PROCESS_CPUTIME_ID) - phase;
                             ++submitted;
+                            phase = clock_seconds(CLOCK_MONOTONIC);
                             renderer.picture.draw(false, renderer.picture.packed);
+                            draw_wait_wall += clock_seconds(CLOCK_MONOTONIC) - phase;
                         } else {
                             ++submitted;
-                            renderer.draw(import_ok ? *views[generation][parity] : *full[generation],
-                                          import_ok, parity);
+                            const double phase = clock_seconds(CLOCK_MONOTONIC);
+                            renderer.draw(field ? *views[generation][parity] : *full[generation],
+                                          field, parity);
+                            draw_wait_wall += clock_seconds(CLOCK_MONOTONIC) - phase;
                         }
                         ++completed;
                         const double age = clock_seconds(CLOCK_MONOTONIC) - due;
@@ -285,9 +319,11 @@ int main(int argc, char **argv) {
                     printf("{\"type\":\"clocked\",\"mode\":\"%s\",\"width\":%u,\"height\":%u,"
                            "\"rate\":%u,\"tff\":%s,\"submitted\":%u,\"completed\":%u,\"late\":%u,"
                            "\"cpu_s\":%.9f,\"wall_s\":%.9f,\"max_deadline_age_ms\":%.6f,"
-                           "\"cpu_bob_bytes\":%zu,\"physical_presentation\":false}\n",
+                           "\"cpu_bob_bytes\":%zu,\"materialize_cpu_s\":%.9f,\"upload_cpu_s\":%.9f,"
+                           "\"draw_wait_wall_s\":%.9f,\"max_temp_mC\":%d,\"physical_presentation\":false}\n",
                            mode,w,h,rate,tff?"true":"false",submitted,completed,late,cpu_time,wall,
-                           max_age*1000,cpu?size_t(fields)*w*h*2:0);
+                           max_age*1000,cpu?size_t(fields)*w*h*2:0,materialize_cpu,upload_cpu,
+                           draw_wait_wall,hottest);
                 }
             }
         }
