@@ -66,6 +66,10 @@ make -C filters/gst/xv-output check
 make -C filters/gst/xv-output check-x11
 ```
 
-Current qualification and limitations belong to [#513](https://github.com/ahnhy1324/crystalhd/issues/513).
-Physical A/V acceptance and matched normal-Player performance remain separate
-from lifecycle and pixel tests; this component is experimental.
+The [current qualification](../../../HARDWARE-2026-09-13.md#development-per-instance-xv-output--2026-10-26)
+records complete bounded Player controls and a timestamped MP4 error/reopen
+test, alongside failed raw elementary H.264 field controls with duplicate
+decoder PTS. This output does not repair upstream timing. Physical A/V,
+endurance and native i386 acceptance remain unverified; short CPU measurements
+do not establish a speedup. [#513](https://github.com/ahnhy1324/crystalhd/issues/513)
+remains open and this component is experimental.

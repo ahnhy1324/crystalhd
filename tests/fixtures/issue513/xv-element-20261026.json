@@ -1,0 +1,503 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "status": "EXPERIMENTAL_NOT_SUPPORTED_BACKEND",
+  "environment": {
+    "os": "Ubuntu 26.04.1 LTS",
+    "kernel": "7.0.0-38-generic",
+    "gstreamer": "1.28.2",
+    "card": "BCM70015",
+    "cpu": "Core 2 Duo T8100",
+    "gpu": "GMA X3100",
+    "module": "3.10.13",
+    "force_l0s_off": true,
+    "session_disable_l0s": false,
+    "both_link_controls": "0x42"
+  },
+  "scope": "Separately built per-instance crystalhdxvsink and development Player; no install, module, firmware, PM, external application patch or default promotion.",
+  "decoder_stack_source": "54752a1af514eb673b563fb80b6df6600223a666",
+  "source_roles": {
+    "initial_player": "d8b58d7ce3afa43fa19b070bd4cb960f6a4e5f13",
+    "color_fix": "28252c93ac0ca3af023c2ee117bd529e993b7aac",
+    "error_notification_fix": "b96da1b",
+    "final_native_test": "e442941"
+  },
+  "player_controls": [
+    {
+      "case": "progressive180-new",
+      "source": "d8b58d7ce3afa43fa19b070bd4cb960f6a4e5f13",
+      "fixture": "high.mp4",
+      "sink": "crystalhdxvsink",
+      "originals": 180,
+      "gst_rendered": 180,
+      "gst_dropped": 0,
+      "cpu_seconds": 1.1308229220000001,
+      "natural_eos": true,
+      "device_fds_after_null": 0,
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "owned_shm_after_exit": 0,
+      "xv": {
+        "submitted": 181,
+        "acknowledged": 181,
+        "terminal-retired": 0,
+        "copied-bytes": 0,
+        "pending": 0
+      },
+      "xv_after_null": {
+        "images": 0,
+        "allocated": 6,
+        "freed": 6
+      },
+      "full_census": "PASS"
+    },
+    {
+      "case": "bob100-new",
+      "source": "d8b58d7ce3afa43fa19b070bd4cb960f6a4e5f13",
+      "fixture": "uniform-tff-50.h264",
+      "sink": "crystalhdxvsink",
+      "originals": 50,
+      "gst_rendered": 100,
+      "gst_dropped": 0,
+      "cpu_seconds": 1.5885036129999999,
+      "natural_eos": true,
+      "device_fds_after_null": 0,
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "owned_shm_after_exit": 0,
+      "xv": {
+        "submitted": 101,
+        "acknowledged": 101,
+        "terminal-retired": 0,
+        "copied-bytes": 0,
+        "pending": 0
+      },
+      "xv_after_null": {
+        "images": 0,
+        "allocated": 6,
+        "freed": 6
+      },
+      "full_census": "PASS"
+    },
+    {
+      "case": "fhd100-stock-a1",
+      "source": "d8b58d7ce3afa43fa19b070bd4cb960f6a4e5f13",
+      "fixture": "uniform-tff-50.h264",
+      "sink": "playsink",
+      "originals": 49,
+      "gst_rendered": null,
+      "gst_dropped": null,
+      "cpu_seconds": 2.4229958299999996,
+      "natural_eos": true,
+      "device_fds_after_null": 0,
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "owned_shm_after_exit": 0,
+      "classification": "EXCLUDED_OBSERVER_ERROR",
+      "reason": "Observer queried stats on playsink proxy instead of final video sink, interrupting EOS dispatch; not a valid stock performance result."
+    },
+    {
+      "case": "fhd100-stock-a1-v2",
+      "source": "d8b58d7ce3afa43fa19b070bd4cb960f6a4e5f13",
+      "fixture": "uniform-tff-50.h264",
+      "sink": "xvimagesink",
+      "originals": 49,
+      "gst_rendered": 98,
+      "gst_dropped": 0,
+      "cpu_seconds": 2.169843197,
+      "natural_eos": true,
+      "device_fds_after_null": 0,
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "owned_shm_after_exit": 0,
+      "full_census": "FAIL"
+    },
+    {
+      "case": "fhd100-new-b1-v2",
+      "source": "d8b58d7ce3afa43fa19b070bd4cb960f6a4e5f13",
+      "fixture": "uniform-tff-50.h264",
+      "sink": "crystalhdxvsink",
+      "originals": 45,
+      "gst_rendered": 89,
+      "gst_dropped": 0,
+      "cpu_seconds": 2.58743674,
+      "natural_eos": true,
+      "device_fds_after_null": 0,
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "owned_shm_after_exit": 0,
+      "xv": {
+        "submitted": 90,
+        "acknowledged": 90,
+        "terminal-retired": 0,
+        "copied-bytes": 0,
+        "pending": 0
+      },
+      "xv_after_null": {
+        "images": 0,
+        "allocated": 6,
+        "freed": 6
+      },
+      "full_census": "FAIL"
+    },
+    {
+      "case": "fhd100-new-b2-v2",
+      "source": "d8b58d7ce3afa43fa19b070bd4cb960f6a4e5f13",
+      "fixture": "uniform-tff-50.h264",
+      "sink": "crystalhdxvsink",
+      "originals": 46,
+      "gst_rendered": 90,
+      "gst_dropped": 0,
+      "cpu_seconds": 2.599844358,
+      "natural_eos": true,
+      "device_fds_after_null": 0,
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "owned_shm_after_exit": 0,
+      "xv": {
+        "submitted": 91,
+        "acknowledged": 91,
+        "terminal-retired": 0,
+        "copied-bytes": 0,
+        "pending": 0
+      },
+      "xv_after_null": {
+        "images": 0,
+        "allocated": 6,
+        "freed": 6
+      },
+      "full_census": "FAIL"
+    },
+    {
+      "case": "fhd100-stock-a2-v2",
+      "source": "d8b58d7ce3afa43fa19b070bd4cb960f6a4e5f13",
+      "fixture": "uniform-tff-50.h264",
+      "sink": "xvimagesink",
+      "originals": 50,
+      "gst_rendered": 100,
+      "gst_dropped": 0,
+      "cpu_seconds": 2.1916187149999997,
+      "natural_eos": true,
+      "device_fds_after_null": 0,
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "owned_shm_after_exit": 0,
+      "full_census": "PASS"
+    },
+    {
+      "case": "fhd100-stock-a1-v4",
+      "source": "28252c93ac0ca3af023c2ee117bd529e993b7aac",
+      "fixture": "uniform-tff-50.h264",
+      "sink": "xvimagesink",
+      "originals": 50,
+      "gst_rendered": 100,
+      "gst_dropped": 0,
+      "cpu_seconds": 2.1767337270000002,
+      "natural_eos": true,
+      "device_fds_after_null": 0,
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "owned_shm_after_exit": 0,
+      "full_census": "PASS"
+    },
+    {
+      "case": "fhd100-new-b1-v4",
+      "source": "28252c93ac0ca3af023c2ee117bd529e993b7aac",
+      "fixture": "uniform-tff-50.h264",
+      "sink": "crystalhdxvsink",
+      "originals": 50,
+      "gst_rendered": 100,
+      "gst_dropped": 0,
+      "cpu_seconds": 2.280813504,
+      "natural_eos": true,
+      "device_fds_after_null": 0,
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "owned_shm_after_exit": 0,
+      "xv": {
+        "submitted": 101,
+        "acknowledged": 101,
+        "terminal-retired": 0,
+        "copied-bytes": 0,
+        "pending": 0
+      },
+      "xv_after_null": {
+        "images": 0,
+        "allocated": 6,
+        "freed": 6
+      },
+      "full_census": "PASS"
+    },
+    {
+      "case": "fhd100-new-b2-v4",
+      "source": "28252c93ac0ca3af023c2ee117bd529e993b7aac",
+      "fixture": "uniform-tff-50.h264",
+      "sink": "crystalhdxvsink",
+      "originals": 50,
+      "gst_rendered": 100,
+      "gst_dropped": 0,
+      "cpu_seconds": 2.2942849279999997,
+      "natural_eos": true,
+      "device_fds_after_null": 0,
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "owned_shm_after_exit": 0,
+      "xv": {
+        "submitted": 101,
+        "acknowledged": 101,
+        "terminal-retired": 0,
+        "copied-bytes": 0,
+        "pending": 0
+      },
+      "xv_after_null": {
+        "images": 0,
+        "allocated": 6,
+        "freed": 6
+      },
+      "full_census": "PASS"
+    },
+    {
+      "case": "fhd100-stock-a2-v4",
+      "source": "28252c93ac0ca3af023c2ee117bd529e993b7aac",
+      "fixture": "uniform-tff-50.h264",
+      "sink": "xvimagesink",
+      "originals": 50,
+      "gst_rendered": 100,
+      "gst_dropped": 0,
+      "cpu_seconds": 2.1841102340000003,
+      "natural_eos": true,
+      "device_fds_after_null": 0,
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "owned_shm_after_exit": 0,
+      "full_census": "PASS"
+    }
+  ],
+  "native_lifecycle": [
+    {
+      "case": "native-lifecycle",
+      "source": "b96da1bdd2f0b5f3d39a3e47d8de6ea9fdfbff11",
+      "exit_code": -6,
+      "status": "FAIL",
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "kernel_check": "PASS",
+      "output_counts": [
+        {
+          "submitted": 98,
+          "acknowledged": 98
+        }
+      ],
+      "observations": [],
+      "reason": "Strict field census FAIL; admitted Xv requests all ACK. v5 includes diagnostic logging and is not a performance comparison."
+    },
+    {
+      "case": "native-lifecycle-v2",
+      "source": "d72035369351b272d6d53dc3c81490c517813533",
+      "exit_code": -6,
+      "status": "FAIL",
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "kernel_check": "PASS",
+      "output_counts": [],
+      "observations": [],
+      "reason": "Test incorrectly detached/reattached a single-owner DI controller; rejected -1, not a production controller defect."
+    },
+    {
+      "case": "native-lifecycle-v3",
+      "source": "86222c38b0b2cd4a3249adc3ac2df546eaa4d214",
+      "exit_code": -6,
+      "status": "FAIL",
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "kernel_check": "PASS",
+      "output_counts": [
+        {
+          "submitted": 99,
+          "acknowledged": 99
+        }
+      ],
+      "observations": [],
+      "reason": "Strict field census FAIL; admitted Xv requests all ACK. v5 includes diagnostic logging and is not a performance comparison."
+    },
+    {
+      "case": "native-lifecycle-v4-stages",
+      "source": "ee06b35ae0093e41de141d9f9bfb58a36c966af1",
+      "exit_code": -6,
+      "status": "FAIL",
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "kernel_check": "PASS",
+      "output_counts": [
+        {
+          "submitted": 99,
+          "acknowledged": 99
+        }
+      ],
+      "observations": [
+        "Native stages: parsed=50 decoded=50 deinterlaced=100 sink-input=99"
+      ],
+      "reason": "Strict field census FAIL; admitted Xv requests all ACK. v5 includes diagnostic logging and is not a performance comparison."
+    },
+    {
+      "case": "native-lifecycle-v5-qos",
+      "source": "3f77a0cdadca9e2d368f80280ab9e6af4d148b92",
+      "exit_code": -6,
+      "status": "FAIL",
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "kernel_check": "PASS",
+      "output_counts": [
+        {
+          "submitted": 97,
+          "acknowledged": 97
+        }
+      ],
+      "observations": [
+        "Native stages: parsed=50 decoded=49 deinterlaced=98 sink-input=97"
+      ],
+      "reason": "Strict field census FAIL; admitted Xv requests all ACK. v5 includes diagnostic logging and is not a performance comparison.",
+      "qos_drop": "videoconvert0: running PTS 0:00:00.120000000 <= earliest 0:00:00.124368130"
+    },
+    {
+      "case": "native-lifecycle-v6-unclocked",
+      "source": "56404df08f5d03bd9bde4f6e648fadc9a5d54a49",
+      "exit_code": -6,
+      "status": "FAIL",
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "kernel_check": "PASS",
+      "output_counts": [
+        {
+          "submitted": 98,
+          "acknowledged": 98
+        }
+      ],
+      "observations": [
+        "Native stages: parsed=50 decoded=50 deinterlaced=100 sink-input=98"
+      ],
+      "reason": "Strict field census FAIL; admitted Xv requests all ACK. v5 includes diagnostic logging and is not a performance comparison."
+    },
+    {
+      "case": "native-lifecycle-v7-default",
+      "source": "1e0496e5781dcfd19871d36667a5e3f861c3cdfe",
+      "exit_code": -6,
+      "status": "FAIL",
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "kernel_check": "PASS",
+      "output_counts": [
+        {
+          "submitted": 100,
+          "acknowledged": 100
+        }
+      ],
+      "observations": [
+        "Native stages: parsed=50 decoded=50 deinterlaced=100 sink-input=99",
+        "Native stage 1 first PTS: 0:00:00.000000000 0:00:00.080000000 0:00:00.120000000 0:00:00.120000000 0:00:00.160000000 0:00:00.200000000 0:00:00.240000000 0:00:00.280000000 0:00:00.320000000 0:00:00.360000000",
+        "Native stage 2 first PTS: 0:00:00.000000000 0:00:00.020000000 0:00:00.080000000 0:00:00.100000000 0:00:00.120000000 0:00:00.140000000 0:00:00.120000000 0:00:00.140000000 0:00:00.160000000 0:00:00.180000000",
+        "Native stage 3 first PTS: 0:00:00.000000000 0:00:00.020000000 0:00:00.080000000 0:00:00.100000000 0:00:00.120000000 0:00:00.140000000 0:00:00.140000000 0:00:00.160000000 0:00:00.180000000 0:00:00.200000000"
+      ],
+      "reason": "Strict field census FAIL; admitted Xv requests all ACK. v5 includes diagnostic logging and is not a performance comparison."
+    },
+    {
+      "case": "native-lifecycle-v8-mp4",
+      "source": "568fbba1fba55f9ec8ccbcace9803003ad1139ae",
+      "exit_code": -6,
+      "status": "FAIL",
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "kernel_check": "PASS",
+      "output_counts": [],
+      "observations": [],
+      "reason": "Test relied on parse-launch one-shot dynamic demux linking across NULL; fixed test relinks recreated pads in v9. Not a sink failure."
+    },
+    {
+      "case": "native-lifecycle-v9-mp4-relink",
+      "source": "e44294146f73fe3873a8aaae5326f7b461e1f86c",
+      "exit_code": 0,
+      "status": "PASS",
+      "runtime_maps_observed": true,
+      "card_fd_observed": true,
+      "boundaries_equal": true,
+      "kernel_check": "PASS",
+      "output_counts": [
+        {
+          "submitted": 181,
+          "acknowledged": 181
+        },
+        {
+          "submitted": 181,
+          "acknowledged": 181
+        },
+        {
+          "submitted": 181,
+          "acknowledged": 181
+        }
+      ],
+      "observations": [
+        "Native stages: parsed=180 decoded=180 post-process=180 sink-input=180",
+        "Native stage 1 first PTS: 0:00:00.066666666 0:00:00.100000000 0:00:00.133333333 0:00:00.166666666 0:00:00.200000000 0:00:00.233333333 0:00:00.266666666 0:00:00.300000000 0:00:00.333333333 0:00:00.366666666",
+        "Native stage 2 first PTS: 0:00:00.066666666 0:00:00.100000000 0:00:00.133333333 0:00:00.166666666 0:00:00.200000000 0:00:00.233333333 0:00:00.266666666 0:00:00.300000000 0:00:00.333333333 0:00:00.366666666",
+        "Native stage 3 first PTS: 0:00:00.066666666 0:00:00.100000000 0:00:00.133333333 0:00:00.166666666 0:00:00.200000000 0:00:00.233333333 0:00:00.266666666 0:00:00.300000000 0:00:00.333333333 0:00:00.366666666",
+        "Native clocked same-pipeline reopen 1: 180 outputs, EOS, live-process device FD0",
+        "Native stages: parsed=180 decoded=180 post-process=180 sink-input=180",
+        "Native stage 1 first PTS: 0:00:00.066666666 0:00:00.100000000 0:00:00.133333333 0:00:00.166666666 0:00:00.200000000 0:00:00.233333333 0:00:00.266666666 0:00:00.300000000 0:00:00.333333333 0:00:00.366666666",
+        "Native stage 2 first PTS: 0:00:00.066666666 0:00:00.100000000 0:00:00.133333333 0:00:00.166666666 0:00:00.200000000 0:00:00.233333333 0:00:00.266666666 0:00:00.300000000 0:00:00.333333333 0:00:00.366666666",
+        "Native stage 3 first PTS: 0:00:00.066666666 0:00:00.100000000 0:00:00.133333333 0:00:00.166666666 0:00:00.200000000 0:00:00.233333333 0:00:00.266666666 0:00:00.300000000 0:00:00.333333333 0:00:00.366666666",
+        "Native clocked same-pipeline reopen 2: 180 outputs, EOS, live-process device FD0",
+        "Native stages: parsed=180 decoded=180 post-process=180 sink-input=180",
+        "Native stage 1 first PTS: 0:00:00.066666666 0:00:00.100000000 0:00:00.133333333 0:00:00.166666666 0:00:00.200000000 0:00:00.233333333 0:00:00.266666666 0:00:00.300000000 0:00:00.333333333 0:00:00.366666666",
+        "Native stage 2 first PTS: 0:00:00.066666666 0:00:00.100000000 0:00:00.133333333 0:00:00.166666666 0:00:00.200000000 0:00:00.233333333 0:00:00.266666666 0:00:00.300000000 0:00:00.333333333 0:00:00.366666666",
+        "Native stage 3 first PTS: 0:00:00.066666666 0:00:00.100000000 0:00:00.133333333 0:00:00.166666666 0:00:00.200000000 0:00:00.233333333 0:00:00.266666666 0:00:00.300000000 0:00:00.333333333 0:00:00.366666666",
+        "Native clocked same-pipeline reopen 3: 180 outputs, EOS, live-process device FD0"
+      ]
+    }
+  ],
+  "device_free_checks": {
+    "source": "e442941",
+    "sanitizers": "ASan+UBSan+LSan",
+    "passed": 14,
+    "optional_card_tests_skipped": 4,
+    "sanitizer_findings": 0,
+    "player_tests_passed": 98,
+    "schema_tests_passed": 16,
+    "inventory_surfaces": 32,
+    "canonical_keys_unchanged": 21,
+    "ci_selector_tests_passed": 10,
+    "actionlint": "PASS",
+    "optional_build_and_four_headless_groups": "PASS"
+  },
+  "not_run": [
+    "physical A/V",
+    "physical scanout",
+    "payload age",
+    "E2E latency",
+    "endurance of this element",
+    "native i386 acceptance"
+  ],
+  "remaining": [
+    "Raw elementary interlaced stream after output error has duplicate/nonmonotonic decoder PTS; strict full census remains FAIL. Timestamp origin/causality is not repaired or attributed to firmware.",
+    "Live window replacement and retained paused exposure redraw are not implemented.",
+    "Matched short Player CPU time is higher than stock; no general performance gain or default promotion."
+  ]
+}
