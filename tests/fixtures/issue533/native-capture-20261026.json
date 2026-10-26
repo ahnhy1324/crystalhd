@@ -17,5 +17,58 @@
   "kernel_source": "https://github.com/torvalds/linux/blob/v7.0/drivers/media/v4l2-core/v4l2-ioctl.c",
   "gate533": "NOT TESTED; terminal nonempty START stays EOPNOTSUPP as documented by114.",
   "external_app_changes": false,
-  "firmware_or_PM_changes": false
+  "firmware_or_PM_changes": false,
+  "after_fix_runs": [
+    {
+      "case": "native-smoke-v2",
+      "status": "PASS",
+      "source": "d519054",
+      "module_source": "8402c66",
+      "kernel_check": 0,
+      "restored": true,
+      "maximum_temperature_millic": 67000,
+      "decode_pass_lines": [
+        "PASS frames=180 output_completed=180 last=1 after_last_epipe=1 seek=0 dynamic_boundaries=0 idle_before_stop_ms=250 yuyv_sha256=3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "terminal_recovery start_errno=EOPNOTSUPP output_streamoff=1 retired_done=0 retired_error=0 full_decode_follows=1",
+        "PASS frames=180 output_completed=180 last=1 after_last_epipe=1 seek=0 dynamic_boundaries=0 idle_before_stop_ms=250 yuyv_sha256=3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1"
+      ],
+      "rgb_checks": 0,
+      "rgb_max_error": 0
+    },
+    {
+      "case": "native-gpu-check-v1",
+      "status": "PASS",
+      "source": "d519054",
+      "module_source": "8402c66",
+      "kernel_check": 0,
+      "restored": true,
+      "maximum_temperature_millic": 67000,
+      "decode_pass_lines": [
+        "PASS frames=180 output_completed=180 last=1 after_last_epipe=1 seek=0 dynamic_boundaries=0 idle_before_stop_ms=250 yuyv_sha256=3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "GPU_PASS mode=check frames=180 render_cpu_s=0.226352721 render_wall_s=0.544941898 render_cpu_ms_per_frame=1.257515 completion=glFinish physical_display=NOT_RUN"
+      ],
+      "rgb_checks": 180,
+      "rgb_max_error": 1
+    }
+  ],
+  "recovery": "Normal reboot restored untouched installed3.10.13; both subsequent native cases restored exact original ownership/PM/AER boundary. No consumer-side cache flush or CPU write in direct import; nativeGPU180 full-frame checks pass without a new kernel flush.",
+  "previous_result": "https://github.com/ahnhy1324/crystalhd/blob/a6ca269/tests/fixtures/issue531/kodi-native-yuy2-20261026.json",
+  "host_retry_diagnosis": {
+    "source": "d519054",
+    "case": "native-tx-diagnostic-v1",
+    "status": "PASS (instrumented correctness run, not a throughput benchmark)",
+    "frames": 180,
+    "frozen_pixels_and_ordered_pts": true,
+    "tx_post_calls": 364,
+    "busy_retry_calls": 180,
+    "wrap_to_repost_ms": {
+      "minimum": 99.512,
+      "median": 100.804,
+      "maximum": 103.121
+    },
+    "wall_seconds_including_initialization_hashing_and_drain": 19.26,
+    "cause": "Every transient FIFO BUSY took the bounded helper's 100 ms retry timer without a device-wakeup predicate. This host backoff, rather than GPU copies or measured decoder execution, accounts for roughly18seconds.",
+    "correction": "Bounded typed TX polls at2ms, clipped to the existing absolute deadline. Legacy unbounded100ms wait is unchanged. No new option or firmware/PM write added.",
+    "requalification": "PENDING"
+  }
 }

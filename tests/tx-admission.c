@@ -258,7 +258,7 @@ static struct {
     BC_STATUS prep_status;
     unsigned wrap_calls, wrap_delay_ms;
     BC_STATUS wrap_status;
-    unsigned sleep_budget[4], sleep_budget_count, completion_budget;
+    unsigned sleep_budget[128], sleep_budget_count, completion_budget;
     unsigned post_delay_ms, wait_entry_delay_ms;
     unsigned cancel_on_sleep, remove_on_sleep, absolute_waits;
     int wait_result, sleep_result;
@@ -1721,7 +1721,7 @@ static void BoundedTransfer(void)
         Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
                   run.transfer_flags, 250) == (kind == 2 ? BC_STS_IO_ERROR : BC_STS_SUCCESS) &&
               run.wrap_calls == 1 && run.starts == (kind != 2) &&
-              run.sleeps == (kind != 2),
+              run.sleeps == (kind != 2) && jiffies == (kind != 2 ? 2UL : 0UL),
               "bounded wrap success/no-data retries; hard error stops before sleep or DMA");
         FinishBorrowedInput();
     }
@@ -1747,7 +1747,7 @@ static void BoundedTransfer(void)
 	Check(crystalhd_tx_transfer_until(&context, &request.tx_buffer,
 				      run.transfer_flags, 250) == BC_STS_TIMEOUT &&
 	      run.fifo_calls == 2 && run.sleeps == 1 && run.starts == 1 &&
-	      run.completion_budget == 100 && jiffies == 250 && run.stops == 1,
+	      run.completion_budget == 198 && jiffies == 250 && run.stops == 1,
 	      "absolute TX entry consumes an existing budget instead of renewing it");
 	FinishBorrowedInput();
 
@@ -1758,24 +1758,24 @@ static void BoundedTransfer(void)
 	      "an expired absolute deadline is rejected before hardware");
 	FinishBorrowedInput();
 
-    Reset(); PrepareBorrowedInput(); run.busy = 10;
+    Reset(); PrepareBorrowedInput(); run.busy = 1000;
     Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
-                                     run.transfer_flags, 250) == BC_STS_TIMEOUT &&
-          run.fifo_calls == 3 && run.sleeps == 3 &&
-          run.absolute_waits == 3 &&
-          run.sleep_budget_count == 3 && run.sleep_budget[0] == 100 &&
-          run.sleep_budget[1] == 100 && run.sleep_budget[2] == 50 &&
-          jiffies == 250 && !run.descriptors && !run.starts && !run.stops,
+                                     run.transfer_flags, 251) == BC_STS_TIMEOUT &&
+          run.fifo_calls == 126 && run.sleeps == 126 &&
+          run.absolute_waits == 126 &&
+          run.sleep_budget_count == 126 && run.sleep_budget[0] == 2 &&
+          run.sleep_budget[124] == 2 && run.sleep_budget[125] == 1 &&
+          jiffies == 251 && !run.descriptors && !run.starts && !run.stops,
           "bounded BUSY admission expires at one clipped absolute deadline");
     FinishBorrowedInput();
 
     Reset(); PrepareBorrowedInput(); run.busy = 10;
-    run.wait_entry_delay_ms = 120;
+    run.wait_entry_delay_ms = 4;
     Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
-                                     run.transfer_flags, 250) == BC_STS_TIMEOUT &&
+                                     run.transfer_flags, 7) == BC_STS_TIMEOUT &&
           run.fifo_calls == 3 && run.absolute_waits == 3 && run.sleeps == 2 &&
-          run.sleep_budget[0] == 100 && run.sleep_budget[1] == 30 &&
-          jiffies == 250 && !run.starts,
+          run.sleep_budget[0] == 2 && run.sleep_budget[1] == 1 &&
+          jiffies == 7 && !run.starts,
           "preemption before a bounded sleep cannot create a fresh relative budget");
     FinishBorrowedInput();
 
@@ -1783,7 +1783,7 @@ static void BoundedTransfer(void)
     Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
                                      run.transfer_flags, 250) == BC_STS_TIMEOUT &&
           run.fifo_calls == 3 && run.sleeps == 2 && run.starts == 1 &&
-          run.completion_budget == 50 && jiffies == 250 && run.stops == 1 &&
+          run.completion_budget == 246 && jiffies == 250 && run.stops == 1 &&
           run.irq_disables == 1 && run.irq_enables == 1 && run.syncs == 1,
           "DMA completion receives only the total budget left after admission");
     FinishBorrowedInput();
@@ -1814,18 +1814,18 @@ static void BoundedTransfer(void)
 
     Reset(); PrepareBorrowedInput(); run.busy = 2;
     Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
-                                     run.transfer_flags, 40) == BC_STS_TIMEOUT &&
+                                     run.transfer_flags, 1) == BC_STS_TIMEOUT &&
           run.fifo_calls == 1 && run.sleeps == 1 &&
-          run.sleep_budget[0] == 40 && jiffies == 40 && !run.starts,
+          run.sleep_budget[0] == 1 && jiffies == 1 && !run.starts,
           "a sub-retry budget cannot oversleep or attempt DMA after expiry");
     FinishBorrowedInput();
 
-    Reset(); PrepareBorrowedInput(); run.busy = 10;
+    Reset(); PrepareBorrowedInput(); run.busy = 1000;
     jiffies = ULONG_MAX - 149;
     Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
                                      run.transfer_flags, 250) == BC_STS_TIMEOUT &&
-          run.fifo_calls == 3 && run.sleep_budget[0] == 100 &&
-          run.sleep_budget[1] == 100 && run.sleep_budget[2] == 50 &&
+          run.fifo_calls == 125 && run.sleep_budget_count == 125 &&
+          run.sleep_budget[0] == 2 && run.sleep_budget[124] == 2 &&
           jiffies == 100 && !run.starts,
           "bounded admission keeps its deadline across jiffies wrap");
     FinishBorrowedInput();

@@ -1576,7 +1576,12 @@ static BC_STATUS crystalhd_tx_transfer_common(struct crystalhd_cmd *ctx,
 			sts = crystalhd_flea_request_tx_wrap(ctx->hw_ctx, buffer->bytes);
 			if (sts != BC_STS_SUCCESS && sts != BC_STS_NO_DATA)
 				break;
-			wait_deadline = jiffies + msecs_to_jiffies(100);
+			/* A completed TX can precede firmware's FIFO bookkeeping by
+			 * a short interval. A 100 ms poll stalls every AU in that case;
+			 * native TX has no legacy stats-driven producer to wake it.
+			 * Keep the absolute AU deadline and the legacy wait unchanged.
+			 */
+			wait_deadline = jiffies + msecs_to_jiffies(2);
 			if (time_after(wait_deadline, deadline))
 				wait_deadline = deadline;
 			sts = bc_cproc_codein_sleep(ctx, 0, true,
