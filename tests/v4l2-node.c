@@ -416,6 +416,12 @@ static struct vb2_v4l2_buffer *v4l2_m2m_dst_buf_remove(struct v4l2_m2m_ctx *m)
     if (!b) return NULL;
     m->dst_ready = b->next; b->next = NULL; return &b->vb;
 }
+static unsigned v4l2_m2m_num_dst_bufs_ready(struct v4l2_m2m_ctx *m)
+{
+    unsigned count = 0;
+    for (struct v4l2_m2m_buffer *b = m->dst_ready; b; b = b->next) count++;
+    return count;
+}
 static unsigned vb2_plane_size(struct vb2_buffer *b, unsigned plane)
 { assert(b && !plane); return b->size; }
 static void vb2_set_plane_payload(struct vb2_buffer *b, unsigned plane, unsigned size)
@@ -1849,6 +1855,35 @@ static void constructor_cases(void)
     constructor_mode = false;
 }
 
+static void drain_capture_credit_case(void)
+{
+    reset(true);
+    fixture.format_known = fixture.drain_requested = true;
+    fixture.decoder.count = 1;
+    fixture.capture.width = last_capture.width = 640;
+    fixture.capture.height = last_capture.height = 480;
+    last_buffer.vb2_buf.index = 31;
+    queues.dst_ready = &last_capture.m2m;
+    mutex_lock(&fixture.run_lock);
+    CHECK(!chd_submit_capture(&fixture, &adapter.cmds));
+    CHECK(!capture_submits && queues.dst_ready == &last_capture.m2m);
+    struct crystalhd_v4l2_capture_buffer spare = { .width = 640, .height = 480 };
+    last_capture.m2m.next = &spare.m2m;
+    CHECK(!chd_submit_capture(&fixture, &adapter.cmds));
+    CHECK(capture_submits == 1 && fixture.active[31] == &last_capture &&
+          queues.dst_ready == &spare.m2m && last_capture.owned);
+    fixture.active[31] = NULL; last_capture.owned = false;
+    fixture.decoder.count = 0; fixture.drain_left = 1;
+    CHECK(!chd_submit_capture(&fixture, &adapter.cmds));
+    CHECK(capture_submits == 1 && queues.dst_ready == &spare.m2m);
+    fixture.drain_left = 0;
+    CHECK(!chd_submit_capture(&fixture, &adapter.cmds));
+    CHECK(capture_submits == 2 && fixture.active[0] == &spare &&
+          spare.owned && !queues.dst_ready);
+    fixture.active[0] = NULL; spare.owned = false;
+    mutex_unlock(&fixture.run_lock);
+}
+
 static void capture_pool_cases(void)
 {
     static const struct { unsigned requested, expected; } cases[] = {
@@ -1908,6 +1943,7 @@ int main(void)
 {
     node_api_cases();
     capture_pool_cases();
+    drain_capture_credit_case();
     constructor_cases();
     discovery_watchdog_cases();
     credit_watchdog_cases();

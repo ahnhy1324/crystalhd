@@ -407,6 +407,15 @@ static int chd_submit_capture(struct crystalhd_v4l2_file *f,
 	for (i = 0; i < ARRAY_SIZE(f->active); i++)
 		if (f->active[i])
 			return 0;
+	/* Keep one client-queued buffer for genuine drain completion while
+	 * pictures remain. Otherwise an asynchronous sink can briefly hold the
+	 * entire pool and mistake that backpressure for EOF. A returned buffer
+	 * resumes picture DMA; after all picture tokens retire, this final
+	 * buffer receives the firmware EOS marker. No frame is discarded.
+	 */
+	if (f->drain_requested && (f->decoder.count || f->drain_left) &&
+	    v4l2_m2m_num_dst_bufs_ready(f->fh.m2m_ctx) <= 1)
+		return 0;
 	while ((vb = v4l2_m2m_dst_buf_remove(f->fh.m2m_ctx)) != NULL) {
 		b = container_of(vb, struct crystalhd_v4l2_capture_buffer, m2m.vb);
 		if (b->width != f->capture.width || b->height != f->capture.height) {
