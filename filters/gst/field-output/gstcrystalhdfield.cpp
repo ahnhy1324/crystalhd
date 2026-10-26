@@ -20,7 +20,7 @@ struct Counters {
     std::atomic<guint64> pictures{0},fields{0},prerolls{0},redraws{0},swaps{0},
         cancelled{0},clipped{0},failures{0},allocations{0},images{0},retained{0},
         clocked{0},late{0},max_age{0},early{0},max_early{0},dropped{0},
-        prepare_ns{0},draw_ns{0},wait_ns{0},swap_ns{0};
+        prepare_ns{0},draw_ns{0},wait_ns{0},swap_ns{0},retire_ns{0},retirements{0};
 };
 struct Command {
     GstBuffer *buffer=nullptr;
@@ -238,13 +238,20 @@ struct Worker {
         unsigned last_parity=0;
         bool last_interlaced=false;
         auto retire=[&] {
+            if(!retained&&!views[0]&&!views[1])return;
+            const auto begin=gst_util_get_timestamp();
+            // Both field submissions and paused redraws still own this exact
+            // generation. Complete every GPU use before releasing its source,
+            // destroying field views, or allowing the next producer write.
+            glFinish();
             views[0].reset();views[1].reset();stats.images=0;
-            if(retained){gst_buffer_unref(retained);retained=nullptr;stats.retained=0;}
+            if(retained){gst_buffer_unref(retained);retained=nullptr;stats.retained=0;++stats.retirements;}
+            stats.retire_ns+=gst_util_get_timestamp()-begin;
         };
         // Scope guard also runs on exceptions, while the EGL context is current.
-        struct RetainGuard { GstBuffer *&buffer;Counters &stats;
-            ~RetainGuard(){if(buffer)gst_buffer_unref(buffer);stats.retained=0;stats.images=0;stats.allocations=0;}
-        } guard{retained,stats};
+        struct RetainGuard { decltype(retire) &cleanup;Counters &stats;
+            ~RetainGuard(){cleanup();stats.allocations=0;}
+        } guard{retire,stats};
         {std::lock_guard<std::mutex> lock(mutex);ready=true;}changed.notify_all();
         auto draw=[&](unsigned parity,bool interlaced) {
             if(!retained||!window.width||!window.height)return;
@@ -254,7 +261,7 @@ struct Worker {
             unsigned w=window.width,h=std::max(1U,unsigned(std::lround(w/aspect)));
             if(h>window.height){h=window.height;w=std::max(1U,unsigned(std::lround(h*aspect)));}
             renderer->draw_to(*views[interlaced?parity:0],interlaced,parity,0,
-                (window.width-w)/2,(window.height-h)/2,w,h,true,!interlaced);
+                (window.width-w)/2,(window.height-h)/2,w,h,true,!interlaced,false);
         };
         auto swap=[&] {need(eglSwapBuffers(window.display,window.surface),"window swap");++stats.swaps;};
         for(;;) {
@@ -513,6 +520,7 @@ static void get_property(GObject *object,guint id,GValue *value,GParamSpec *spec
         "dropped-fields",G_TYPE_UINT64,c.dropped.load(),
         "prepare-ns",G_TYPE_UINT64,c.prepare_ns.load(),"draw-ns",G_TYPE_UINT64,c.draw_ns.load(),
         "wait-ns",G_TYPE_UINT64,c.wait_ns.load(),"swap-ns",G_TYPE_UINT64,c.swap_ns.load(),
+        "retire-ns",G_TYPE_UINT64,c.retire_ns.load(),"retirements",G_TYPE_UINT64,c.retirements.load(),
         "allocations",G_TYPE_UINT64,c.allocations.load(),"images",G_TYPE_UINT64,c.images.load(),
         "retained-buffers",G_TYPE_UINT64,c.retained.load(),nullptr);
     g_value_take_boxed(value,stats);
@@ -526,7 +534,7 @@ static void gst_crystalhd_field_class_init(GstCrystalhdFieldClass *klass) {
     auto *object=G_OBJECT_CLASS(klass);auto *element=GST_ELEMENT_CLASS(klass);auto *base=GST_BASE_SINK_CLASS(klass);
     object->get_property=get_property;object->finalize=finalize;
     g_object_class_install_property(object,PROP_STATS,g_param_spec_boxed("field-stats","Field statistics",
-        "GPU completion/swap counts, not physical scanout; live snapshots may span a transition",
+        "Swap submissions and fenced source retirements, not scanout; live snapshots may span a transition",
         GST_TYPE_STRUCTURE,GParamFlags(G_PARAM_READABLE|G_PARAM_STATIC_STRINGS)));
     gst_element_class_set_static_metadata(element,"Experimental CrystalHD GPU fields","Sink/Video",
         "Owned linear YUY2 field views with pipeline-clocked XCB/EGL output","CrystalHD contributors");

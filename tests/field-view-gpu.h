@@ -263,7 +263,8 @@ struct Renderer {
         draw_to(image,field_view,parity,picture.fbo,0,0,picture.w,picture.h,false,false);
     }
     void draw_to(const Image &image,bool field_view,unsigned parity,GLuint target,
-                 int x,int y,unsigned w,unsigned h,bool flip,bool progressive) {
+                 int x,int y,unsigned w,unsigned h,bool flip,bool progressive,
+                 bool complete=true) {
         need(image.texture && parity < 2, "field draw admission");
         glBindFramebuffer(GL_FRAMEBUFFER,target);
         const GLuint selected = field_view||progressive ? affine_program : program;
@@ -293,8 +294,10 @@ struct Renderer {
         static const float positions[] = {-1,-1, 1,-1, -1,1, 1,1};
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, positions);
         glEnableVertexAttribArray(0); glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        glFinish();
-        need(glGetError() == GL_NO_ERROR, "field GPU completion");
+        // A display owner may queue both field uses, but must complete them
+        // before retiring their images/source or writing this BO again.
+        if(complete)glFinish();else glFlush();
+        need(glGetError() == GL_NO_ERROR, "field GPU submission/completion");
     }
     ~Renderer() { glDeleteProgram(program); glDeleteProgram(affine_program); }
 };
