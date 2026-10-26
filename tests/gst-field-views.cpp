@@ -184,7 +184,8 @@ int main(int argc,char **argv) {
         need((field||std::string(argv[5])=="cpu")&&(verify||std::string(argv[6])=="clocked"),"mode");
         need(expected&&expected<=750&&(scale==0||(scale>=128&&scale<=1920&&!(scale%16)))&&
              (oh==360||oh==720||oh==1080),"bounded geometry/count");
-        need(temperature()<75000,"start temperature below75C");
+        const int initial_temperature=temperature();
+        need(initial_temperature<75000,"start temperature below75C");
         setvbuf(stdout,nullptr,_IOLBF,0);gst_init(nullptr,nullptr);
         yuy2_gpu::GPU gpu("/dev/dri/renderD128");Pipeline pipeline;pipeline.setup(argv[1],scale);
         pipeline.state(GST_STATE_PAUSED);
@@ -233,6 +234,8 @@ int main(int argc,char **argv) {
         }
         unsigned pictures=0,fields=0,late=0;GstClockTime previous=GST_CLOCK_TIME_NONE;
         double producer_cpu=0,producer_wall=0,render_cpu=0,render_wall=0,observer_cpu=0,observer_wall=0,maximum_age=0,maximum_ready_age=0;
+        double next_thermal=0,thermal_cpu=0,thermal_wall=0;
+        unsigned thermal_samples=0;int hottest=initial_temperature;
         const double cpu_start=clock_seconds(CLOCK_PROCESS_CPUTIME_ID),wall_start=clock_seconds(CLOCK_MONOTONIC);
         pipeline.state(GST_STATE_PLAYING);auto *clock=gst_element_get_clock(pipeline.pipeline);need(clock,"media clock");
         const auto base=gst_element_get_base_time(pipeline.pipeline);
@@ -306,13 +309,22 @@ int main(int argc,char **argv) {
             // Both GPU uses finish before either image or the held source
             // sample is retired. Only the next iteration can update the BO.
             if(pictures==0)held_preroll.reset();
-            ++pictures;need(temperature()<85000,"temperature below85C");
+            ++pictures;
+            const double now=clock_seconds(CLOCK_MONOTONIC);
+            if(now>=next_thermal) {
+                const double tc=clock_seconds(CLOCK_THREAD_CPUTIME_ID),tw=clock_seconds(CLOCK_MONOTONIC);
+                hottest=std::max(hottest,temperature());
+                thermal_cpu+=clock_seconds(CLOCK_THREAD_CPUTIME_ID)-tc;
+                thermal_wall+=clock_seconds(CLOCK_MONOTONIC)-tw;++thermal_samples;
+                need(hottest<85000,"temperature below85C");next_thermal=now+0.25;
+            }
             need(clock_seconds(CLOCK_MONOTONIC)-wall_start<60,"60s experiment deadline");
         }
         const double cpu=clock_seconds(CLOCK_PROCESS_CPUTIME_ID)-cpu_start,wall=clock_seconds(CLOCK_MONOTONIC)-wall_start;
         gst_object_unref(clock);need(pictures==expected&&fields==2*expected&&pipeline.trace.outputs==expected,"complete real picture/field census");
         pipeline.finish();need(device_fds()==0,"live-process CrystalHD FD retirement");
         rusage usage{};need(getrusage(RUSAGE_SELF,&usage)==0,"peak RSS");
+        printf("{\"type\":\"thermal-observer\",\"period_ms\":250,\"samples\":%u,\"thread_cpu_s\":%.9f,\"wall_s\":%.9f,\"max_sampled_temperature_mC\":%d}\n",thermal_samples,thermal_cpu,thermal_wall,hottest);
         const std::string source_hash=verify?std::string("\"")+g_checksum_get_string(digest)+"\"":"null";
         printf("{\"type\":\"native-result\",\"path\":\"%s\",\"verify\":%s,\"pictures\":%u,\"input_pad_aus\":%u,\"completed_fields\":%u,\"late_fields\":%u,\"unique_sparse_signatures\":%zu,\"sparse_signature_sha256\":\"%s\",\"source_sha256\":%s,\"observer_thread_cpu_s\":%.9f,\"observer_wall_s\":%.9f,\"producer_thread_cpu_s\":%.9f,\"producer_wall_s\":%.9f,\"render_thread_cpu_s\":%.9f,\"render_wall_s\":%.9f,\"playback_process_cpu_s\":%.9f,\"playback_wall_s\":%.9f,\"process_cpu_s_at_null\":%.9f,\"main_wall_s_to_null\":%.9f,\"peak_rss_kib\":%ld,\"max_deadline_age_ms\":%.6f,\"max_ready_age_ms\":%.6f,\"device_fds_after_null\":0,\"natural_eos\":true,\"physical_presentation\":false}\n",field?"field":"cpu",verify?"true":"false",pictures,pipeline.trace.inputs.load(),fields,late,generations.size(),g_checksum_get_string(signatures),source_hash.c_str(),observer_cpu,observer_wall,producer_cpu,producer_wall,render_cpu,render_wall,cpu,wall,clock_seconds(CLOCK_PROCESS_CPUTIME_ID),clock_seconds(CLOCK_MONOTONIC)-main_start,usage.ru_maxrss,maximum_age,maximum_ready_age);
         g_checksum_free(signatures);g_checksum_free(digest);return 0;
