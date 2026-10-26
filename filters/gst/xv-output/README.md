@@ -68,8 +68,11 @@ make -C filters/gst/xv-output check-x11
 
 The [current qualification](../../../HARDWARE-2026-09-13.md#development-per-instance-xv-output--2026-10-26)
 records complete bounded Player controls and a timestamped MP4 error/reopen
-test, alongside failed raw elementary H.264 field controls with duplicate
-decoder PTS. This output does not repair upstream timing. Physical A/V,
+test. A reused GStreamer 1.28.2 H.264 parser can infer incorrect raw-stream
+PTS after NULL; the same failure occurs with software decoding. A test-local
+restoration of its original parser policy passes 100/100 fields on three
+replays, while unmodified-parser failures remain recorded. This output does
+not change parser policy in applications. Physical A/V,
 endurance and native i386 acceptance remain unverified; short CPU measurements
 do not establish a speedup. [#513](https://github.com/ahnhy1324/crystalhd/issues/513)
 remains open and this component is experimental.
