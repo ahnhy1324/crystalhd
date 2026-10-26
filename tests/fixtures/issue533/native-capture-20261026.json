@@ -69,6 +69,783 @@
     "wall_seconds_including_initialization_hashing_and_drain": 19.26,
     "cause": "Every transient FIFO BUSY took the bounded helper's 100 ms retry timer without a device-wakeup predicate. This host backoff, rather than GPU copies or measured decoder execution, accounts for roughly18seconds.",
     "correction": "Bounded typed TX polls at2ms, clipped to the existing absolute deadline. Legacy unbounded100ms wait is unchanged. No new option or firmware/PM write added.",
-    "requalification": "PENDING"
-  }
+    "requalification": {
+      "source": "4667d31",
+      "status": "PASS",
+      "frames": 360,
+      "two_full_decode_oracles": 2,
+      "nonempty_start_rejected_and_explicit_reset_recovery": true,
+      "busy_retries": 321,
+      "retry_ms": {
+        "minimum": 2.074999999990723,
+        "median": 2.897999999959211,
+        "maximum": 4.845999999929518
+      },
+      "whole_probe_wall_seconds": 6.85,
+      "kernel_check": "PASS",
+      "original_module_restored": true,
+      "model": "10,860 checks each native and ASan/UBSan; absolute budget, clipped final retry, preemption, wrap, cancellation, DMA lifetime and legacy100ms scenarios retained."
+    }
+  },
+  "native_matrix": {
+    "source": "4667d31",
+    "method": "Every frame count/orderedPTS/fullYUYV SHA observed. GPUcheck reads all RGB pixels, fixed max2; no CPU write/flush of captured buffer. ABBA compares two-copy packedGLupload versus direct CAPTURE EXPBUF+EGL, each180frames, tracing disabled. Render timing excludes SHA and RGB observers; whole-process time includes them. No physical display or audio.",
+    "runs": [
+      {
+        "label": "native-640-check-v2",
+        "width": 640,
+        "mode": "check",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "render_timing": {
+          "mode": "check",
+          "frames": "180",
+          "render_cpu_s": "0.208153828",
+          "render_wall_s": "0.521548567",
+          "render_cpu_ms_per_frame": "1.156410",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=8.75 user_s=6.66 sys_s=0.30 rss_kib=123612",
+        "rgb_checks": 180,
+        "rgb_max_error": 1,
+        "maximum_temperature_millic": 67000,
+        "restored": true,
+        "kernel_check": "PASS"
+      },
+      {
+        "label": "native-1280-check-v2",
+        "width": 1280,
+        "mode": "check",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "c74afb04ede1a815a3d33b1214a8b9253a87bc3f48841d7ea4a5f6cfdf8b06dd",
+        "render_timing": {
+          "mode": "check",
+          "frames": "180",
+          "render_cpu_s": "0.206816118",
+          "render_wall_s": "1.432272880",
+          "render_cpu_ms_per_frame": "1.148978",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=30.40 user_s=26.47 sys_s=0.36 rss_kib=145496",
+        "rgb_checks": 180,
+        "rgb_max_error": 1,
+        "maximum_temperature_millic": 73000,
+        "restored": true,
+        "kernel_check": "PASS"
+      },
+      {
+        "label": "native-1920-check-v2",
+        "width": 1920,
+        "mode": "check",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "0112fb1c1be254ffcd1f68ff8737b45d0125527fd22de62f04b8ef6c3c4b0ee2",
+        "render_timing": {
+          "mode": "check",
+          "frames": "180",
+          "render_cpu_s": "0.202010390",
+          "render_wall_s": "2.970799632",
+          "render_cpu_ms_per_frame": "1.122280",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=66.42 user_s=59.63 sys_s=0.53 rss_kib=186756",
+        "rgb_checks": 180,
+        "rgb_max_error": 1,
+        "maximum_temperature_millic": 78000,
+        "restored": true,
+        "kernel_check": "PASS"
+      },
+      {
+        "label": "native-640-upload-abba0",
+        "width": 640,
+        "mode": "upload",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "render_timing": {
+          "mode": "upload",
+          "frames": "180",
+          "render_cpu_s": "0.160891323",
+          "render_wall_s": "0.456516023",
+          "render_cpu_ms_per_frame": "0.893841",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=4.08 user_s=2.31 sys_s=0.14 rss_kib=122404",
+        "rgb_checks": 0,
+        "rgb_max_error": 0,
+        "maximum_temperature_millic": 69000,
+        "restored": true,
+        "kernel_check": "PASS"
+      },
+      {
+        "label": "native-640-render-abba1",
+        "width": 640,
+        "mode": "render",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "render_timing": {
+          "mode": "render",
+          "frames": "180",
+          "render_cpu_s": "0.203754379",
+          "render_wall_s": "0.525908676",
+          "render_cpu_ms_per_frame": "1.131969",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=4.12 user_s=2.24 sys_s=0.26 rss_kib=122740",
+        "rgb_checks": 0,
+        "rgb_max_error": 0,
+        "maximum_temperature_millic": 71000,
+        "restored": true,
+        "kernel_check": "PASS"
+      },
+      {
+        "label": "native-640-render-abba2",
+        "width": 640,
+        "mode": "render",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "render_timing": {
+          "mode": "render",
+          "frames": "180",
+          "render_cpu_s": "0.204152831",
+          "render_wall_s": "0.532728659",
+          "render_cpu_ms_per_frame": "1.134182",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=4.20 user_s=2.25 sys_s=0.26 rss_kib=122672",
+        "rgb_checks": 0,
+        "rgb_max_error": 0,
+        "maximum_temperature_millic": 71000,
+        "restored": true,
+        "kernel_check": "PASS"
+      },
+      {
+        "label": "native-640-upload-abba3",
+        "width": 640,
+        "mode": "upload",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "render_timing": {
+          "mode": "upload",
+          "frames": "180",
+          "render_cpu_s": "0.153352249",
+          "render_wall_s": "0.439531298",
+          "render_cpu_ms_per_frame": "0.851957",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=4.06 user_s=2.33 sys_s=0.12 rss_kib=122476",
+        "rgb_checks": 0,
+        "rgb_max_error": 0,
+        "maximum_temperature_millic": 72000,
+        "restored": true,
+        "kernel_check": "PASS"
+      },
+      {
+        "label": "native-1280-upload-abba0",
+        "width": 1280,
+        "mode": "upload",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "c74afb04ede1a815a3d33b1214a8b9253a87bc3f48841d7ea4a5f6cfdf8b06dd",
+        "render_timing": {
+          "mode": "upload",
+          "frames": "180",
+          "render_cpu_s": "0.661946799",
+          "render_wall_s": "1.748438090",
+          "render_cpu_ms_per_frame": "3.677482",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=11.95 user_s=8.94 sys_s=0.19 rss_kib=141584",
+        "rgb_checks": 0,
+        "rgb_max_error": 0,
+        "maximum_temperature_millic": 74000,
+        "restored": true,
+        "kernel_check": "PASS"
+      },
+      {
+        "label": "native-1280-render-abba1",
+        "width": 1280,
+        "mode": "render",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "c74afb04ede1a815a3d33b1214a8b9253a87bc3f48841d7ea4a5f6cfdf8b06dd",
+        "render_timing": {
+          "mode": "render",
+          "frames": "180",
+          "render_cpu_s": "0.205823690",
+          "render_wall_s": "1.451831326",
+          "render_cpu_ms_per_frame": "1.143465",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=12.04 user_s=8.37 sys_s=0.31 rss_kib=141852",
+        "rgb_checks": 0,
+        "rgb_max_error": 0,
+        "maximum_temperature_millic": 75000,
+        "restored": true,
+        "kernel_check": "PASS"
+      },
+      {
+        "label": "native-1280-render-abba2",
+        "width": 1280,
+        "mode": "render",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "c74afb04ede1a815a3d33b1214a8b9253a87bc3f48841d7ea4a5f6cfdf8b06dd",
+        "render_timing": {
+          "mode": "render",
+          "frames": "180",
+          "render_cpu_s": "0.207667981",
+          "render_wall_s": "1.440653526",
+          "render_cpu_ms_per_frame": "1.153711",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=11.42 user_s=8.32 sys_s=0.29 rss_kib=141792",
+        "rgb_checks": 0,
+        "rgb_max_error": 0,
+        "maximum_temperature_millic": 75000,
+        "restored": true,
+        "kernel_check": "PASS"
+      },
+      {
+        "label": "native-1280-upload-abba3",
+        "width": 1280,
+        "mode": "upload",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "c74afb04ede1a815a3d33b1214a8b9253a87bc3f48841d7ea4a5f6cfdf8b06dd",
+        "render_timing": {
+          "mode": "upload",
+          "frames": "180",
+          "render_cpu_s": "0.660917278",
+          "render_wall_s": "1.733399672",
+          "render_cpu_ms_per_frame": "3.671763",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=11.88 user_s=8.88 sys_s=0.18 rss_kib=141776",
+        "rgb_checks": 0,
+        "rgb_max_error": 0,
+        "maximum_temperature_millic": 75000,
+        "restored": true,
+        "kernel_check": "PASS"
+      },
+      {
+        "label": "native-1920-upload-abba0",
+        "width": 1920,
+        "mode": "upload",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "0112fb1c1be254ffcd1f68ff8737b45d0125527fd22de62f04b8ef6c3c4b0ee2",
+        "render_timing": {
+          "mode": "upload",
+          "frames": "180",
+          "render_cpu_s": "1.563647481",
+          "render_wall_s": "3.954706960",
+          "render_cpu_ms_per_frame": "8.686930",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=24.57 user_s=19.93 sys_s=0.24 rss_kib=178168",
+        "rgb_checks": 0,
+        "rgb_max_error": 0,
+        "maximum_temperature_millic": 77000,
+        "restored": true,
+        "kernel_check": "PASS"
+      },
+      {
+        "label": "native-1920-render-abba1",
+        "width": 1920,
+        "mode": "render",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "0112fb1c1be254ffcd1f68ff8737b45d0125527fd22de62f04b8ef6c3c4b0ee2",
+        "render_timing": {
+          "mode": "render",
+          "frames": "180",
+          "render_cpu_s": "0.209153091",
+          "render_wall_s": "2.980670374",
+          "render_cpu_ms_per_frame": "1.161962",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=23.96 user_s=18.53 sys_s=0.35 rss_kib=178572",
+        "rgb_checks": 0,
+        "rgb_max_error": 0,
+        "maximum_temperature_millic": 78000,
+        "restored": true,
+        "kernel_check": "PASS"
+      },
+      {
+        "label": "native-1920-render-abba2",
+        "width": 1920,
+        "mode": "render",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "0112fb1c1be254ffcd1f68ff8737b45d0125527fd22de62f04b8ef6c3c4b0ee2",
+        "render_timing": {
+          "mode": "render",
+          "frames": "180",
+          "render_cpu_s": "0.203868921",
+          "render_wall_s": "2.975580039",
+          "render_cpu_ms_per_frame": "1.132605",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=23.64 user_s=18.51 sys_s=0.36 rss_kib=178468",
+        "rgb_checks": 0,
+        "rgb_max_error": 0,
+        "maximum_temperature_millic": 79000,
+        "restored": true,
+        "kernel_check": "PASS"
+      },
+      {
+        "label": "native-1920-upload-abba3",
+        "width": 1920,
+        "mode": "upload",
+        "source": "4667d31a22fb7b70ab536dcb3e995cb0e9b997b0",
+        "module_srcversion": "85E996725AD13C491866A66",
+        "status": "PASS",
+        "frames": 180,
+        "frozen_yuyv": "0112fb1c1be254ffcd1f68ff8737b45d0125527fd22de62f04b8ef6c3c4b0ee2",
+        "render_timing": {
+          "mode": "upload",
+          "frames": "180",
+          "render_cpu_s": "1.546792362",
+          "render_wall_s": "3.974388721",
+          "render_cpu_ms_per_frame": "8.593291",
+          "completion": "glFinish",
+          "physical_display": "NOT_RUN"
+        },
+        "process_timing": "wall_s=24.67 user_s=19.92 sys_s=0.27 rss_kib=178360",
+        "rgb_checks": 0,
+        "rgb_max_error": 0,
+        "maximum_temperature_millic": 79000,
+        "restored": true,
+        "kernel_check": "PASS"
+      }
+    ],
+    "status": "PASS",
+    "summary": [
+      {
+        "width": 640,
+        "modes": {
+          "upload": {
+            "runs": 2,
+            "mean_render_cpu_ms_per_frame": 0.872899,
+            "minimum_render_cpu_ms_per_frame": 0.851957,
+            "maximum_render_cpu_ms_per_frame": 0.893841,
+            "mean_process_cpu_seconds": 2.45,
+            "mean_whole_probe_wall_seconds": 4.07
+          },
+          "render": {
+            "runs": 2,
+            "mean_render_cpu_ms_per_frame": 1.1330755,
+            "minimum_render_cpu_ms_per_frame": 1.131969,
+            "maximum_render_cpu_ms_per_frame": 1.134182,
+            "mean_process_cpu_seconds": 2.505,
+            "mean_whole_probe_wall_seconds": 4.16
+          }
+        },
+        "render_cpu_reduction_percent": -29.806025668490843,
+        "whole_probe_cpu_reduction_percent": -2.244897959183656
+      },
+      {
+        "width": 1280,
+        "modes": {
+          "upload": {
+            "runs": 2,
+            "mean_render_cpu_ms_per_frame": 3.6746225,
+            "minimum_render_cpu_ms_per_frame": 3.671763,
+            "maximum_render_cpu_ms_per_frame": 3.677482,
+            "mean_process_cpu_seconds": 9.094999999999999,
+            "mean_whole_probe_wall_seconds": 11.915
+          },
+          "render": {
+            "runs": 2,
+            "mean_render_cpu_ms_per_frame": 1.148588,
+            "minimum_render_cpu_ms_per_frame": 1.143465,
+            "maximum_render_cpu_ms_per_frame": 1.153711,
+            "mean_process_cpu_seconds": 8.645,
+            "mean_whole_probe_wall_seconds": 11.73
+          }
+        },
+        "render_cpu_reduction_percent": 68.74269397740856,
+        "whole_probe_cpu_reduction_percent": 4.947773501924124
+      },
+      {
+        "width": 1920,
+        "modes": {
+          "upload": {
+            "runs": 2,
+            "mean_render_cpu_ms_per_frame": 8.6401105,
+            "minimum_render_cpu_ms_per_frame": 8.593291,
+            "maximum_render_cpu_ms_per_frame": 8.68693,
+            "mean_process_cpu_seconds": 20.18,
+            "mean_whole_probe_wall_seconds": 24.62
+          },
+          "render": {
+            "runs": 2,
+            "mean_render_cpu_ms_per_frame": 1.1472835,
+            "minimum_render_cpu_ms_per_frame": 1.132605,
+            "maximum_render_cpu_ms_per_frame": 1.161962,
+            "mean_process_cpu_seconds": 18.875,
+            "mean_whole_probe_wall_seconds": 23.8
+          }
+        },
+        "render_cpu_reduction_percent": 86.72142561139698,
+        "whole_probe_cpu_reduction_percent": 6.466798810703667
+      }
+    ],
+    "cases": 15,
+    "frames": 2700,
+    "independent_whole_RGB_checks": 540,
+    "maximum_rgb_channel_error": 1,
+    "maximum_temperature_millic": 79000,
+    "order": "Check640/check720/checkFHD then per-size upload/direct/direct/upload,180frames each. Active tracing and other decode stopped; start<75C/abort85C, cool between cases. One attempted arm was NOT RUN at initial thermal gate before module replacement and resumed later.",
+    "scope_limit": "Render CPU savings68.74percent720/86.72percentFHD do not describe whole-player CPU or energy. In the diagnostic with three SHA observers, whole-process CPU savings4.95percent/6.47percent;640 render29.81percentworse,wholeprobe2.24percentworse. Whole-probe wall includes expensive validation, so it cannot establish maximum hardware FPS. Only two timed arms per mode/geometry.",
+    "power": "NOT RUN",
+    "physical_display_av": "NOT RUN",
+    "source_scope": "All ABBA numbers retain4667d31 source identity, before later pool/drain fixes. The measured probe uses12 capture buffers and immediate requeue, so the new >16 indexing and reserve-when-only1ready paths are outside that benchmark. Later functional requalification is recorded separately; no new performance result is inferred."
+  },
+  "API_smoke": {
+    "test_source": "66073f6",
+    "module_source": "4667d31",
+    "status": "PASS",
+    "ILP32": {
+      "checks": 141,
+      "v4l2_buffer_bytes": 68
+    },
+    "LP64": {
+      "checks": 141,
+      "v4l2_buffer_bytes": 88
+    },
+    "scope": "Real standard ioctls,MMAP/EXPBUF alias,close-on-exec and live mapping after export-fd close. NoSTREAMON,firmware ordecode. Imported-DMABUF REQBUFS stays unsupported.",
+    "kernel_checks": "PASS",
+    "stable_module_restored": true
+  },
+  "fixtures": [
+    {
+      "width": 640,
+      "input": "existing high.mp4 via issue531 color-709-video.mp4",
+      "frames": 180,
+      "provenance": "Existing high H264 B2 fixture; SPS/container metadata set to709/limited without changing VCL reconstruction; frozen YUYV from531 retained."
+    },
+    {
+      "width": 1280,
+      "input": "color-709-720.mp4",
+      "frames": 180,
+      "provenance": "Scale existing fhd-samples/high.mp4 using FFmpeg scale1280:720:flags=bilinear; libx264 presetfast CRF23 threads2 B2 GOP60 yuv420p,709/limited SPS+container;6s30p. Full-frame decoded YUYV frozen at first GPUcheck and required unchanged in every ABBA arm."
+    },
+    {
+      "width": 1920,
+      "input": "color-709-1080.mp4",
+      "frames": 180,
+      "provenance": "Stream copy existing fhd-samples/high.mp4; h264_metadata colour_primaries1/transfer1/matrix1/fullrange0 and matching container tags;6s30p. VCL pixel reconstruction unchanged. Full-frame YUYV frozen at first GPUcheck and required unchanged across all ABBA arms."
+    }
+  ],
+  "unmodified_FFmpeg": {
+    "version": "8.0.1-3ubuntu2",
+    "decoder": "h264_v4l2m2m",
+    "output": "rawvideo yuyv422, fps_mode passthrough, SHA256 sink; no software decoder fallback",
+    "status": "PASS: default unmodified FFmpeg640/720/FHD each180pictures and exact frozenYUYV after830170b; earlier FAILs retained.",
+    "diagnosis": "The16-entry client pool clamp, then16-entry index tracking, conflated application buffer identity with RX ring bookkeeping. Independently, asynchronous downstream frame ownership can briefly leave no client-queued CAPTURE buffers during drain; the client can interpret that as completion before genuine LAST. Enlarging the pool alone improved but did not resolve720(127/180). A scheduling-slowed ioctl trace returned180, confirming timing sensitivity.",
+    "source_reference": "https://github.com/FFmpeg/FFmpeg/blob/n8.0.1/libavcodec/v4l2_context.c#L294",
+    "runs_before_fix": [
+      {
+        "label": "native-ffmpeg-v1",
+        "source": "4667d31 (module unchanged; probe/API-only66073f6HEAD)",
+        "status": "PASS",
+        "process_exit_code": 0,
+        "frames": 180,
+        "expected_frames": 180,
+        "yuyv_sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "capture_pool_warning": false,
+        "encoder_threads": "default",
+        "kernel_check": 0,
+        "restored": true
+      },
+      {
+        "label": "native-ffmpeg-720-v1",
+        "source": "4667d31 (module unchanged; probe/API-only66073f6HEAD)",
+        "status": "FAIL",
+        "process_exit_code": 0,
+        "frames": 79,
+        "expected_frames": 180,
+        "yuyv_sha256": "b6e77bf528c8e0332d0b5d5e84fe392e006e02b2704fa8f7874ae81e3b4c3075",
+        "capture_pool_warning": true,
+        "encoder_threads": "default",
+        "kernel_check": 0,
+        "restored": true
+      },
+      {
+        "label": "native-ffmpeg-1080-v1",
+        "source": "4667d31 (module unchanged; probe/API-only66073f6HEAD)",
+        "status": "FAIL",
+        "process_exit_code": 0,
+        "frames": 69,
+        "expected_frames": 180,
+        "yuyv_sha256": "658aa8bb7b68f3775fc470e01cc566e910949b07cd14d6c29742323032ddaac7",
+        "capture_pool_warning": true,
+        "encoder_threads": "default",
+        "kernel_check": 0,
+        "restored": true
+      },
+      {
+        "label": "native-ffmpeg-720-serial-v1",
+        "source": "4667d31 (module unchanged; probe/API-only66073f6HEAD)",
+        "status": "FAIL",
+        "process_exit_code": 0,
+        "frames": 79,
+        "expected_frames": 180,
+        "yuyv_sha256": "b6e77bf528c8e0332d0b5d5e84fe392e006e02b2704fa8f7874ae81e3b4c3075",
+        "capture_pool_warning": true,
+        "encoder_threads": 1,
+        "kernel_check": 0,
+        "restored": true
+      },
+      {
+        "label": "native-ffmpeg-1080-serial-v1",
+        "source": "4667d31 (module unchanged; probe/API-only66073f6HEAD)",
+        "status": "FAIL",
+        "process_exit_code": 0,
+        "frames": 62,
+        "expected_frames": 180,
+        "yuyv_sha256": "d5a7a6d1694a2fa37566c30968602810b28b8010da4ee5a47274d078008196bb",
+        "capture_pool_warning": true,
+        "encoder_threads": 1,
+        "kernel_check": 0,
+        "restored": true
+      }
+    ],
+    "final_default_runs": [
+      {
+        "label": "native-ffmpeg-cappool-640-v4",
+        "width": 640,
+        "status": "PASS",
+        "source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+        "module_srcversion": "E3D1535AB4C470BC21D6E32",
+        "frames": 180,
+        "expected_frames": 180,
+        "frozen_pixels": true,
+        "yuyv_sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "capture_pool_warning": false,
+        "kernel_check": 0,
+        "restored": true,
+        "process_timing": "wall_s=1.92 user_s=0.87 sys_s=0.10 rss_kib=100476"
+      },
+      {
+        "label": "native-ffmpeg-cappool-1280-v4",
+        "width": 1280,
+        "status": "PASS",
+        "source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+        "module_srcversion": "E3D1535AB4C470BC21D6E32",
+        "frames": 180,
+        "expected_frames": 180,
+        "frozen_pixels": true,
+        "yuyv_sha256": "c74afb04ede1a815a3d33b1214a8b9253a87bc3f48841d7ea4a5f6cfdf8b06dd",
+        "capture_pool_warning": false,
+        "kernel_check": 0,
+        "restored": true,
+        "process_timing": "wall_s=3.94 user_s=3.05 sys_s=0.17 rss_kib=146676"
+      },
+      {
+        "label": "native-ffmpeg-cappool-1920-v4",
+        "width": 1920,
+        "status": "PASS",
+        "source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+        "module_srcversion": "E3D1535AB4C470BC21D6E32",
+        "frames": 180,
+        "expected_frames": 180,
+        "frozen_pixels": true,
+        "yuyv_sha256": "0112fb1c1be254ffcd1f68ff8737b45d0125527fd22de62f04b8ef6c3c4b0ee2",
+        "capture_pool_warning": false,
+        "kernel_check": 0,
+        "restored": true,
+        "process_timing": "wall_s=7.57 user_s=6.77 sys_s=0.24 rss_kib=218092"
+      }
+    ],
+    "corrections": [
+      {
+        "commit": "a16a32c",
+        "result": "FAIL: capacity-only change640raised-EIOatclientindex16; FFmpeg aborted134. No kernel Oops; originalmodule restored. Exposed the incomplete index-bound change."
+      },
+      {
+        "commit": "034a817",
+        "result": "PASS large-index models and640180;720127FAIL. Active tracking/lookup/retirement now covers32 clientindices while retaining single-registration DMA admission. Pool-size fix alone was insufficient."
+      },
+      {
+        "commit": "830170b",
+        "result": "PASS default unmodified client all3sizes180/frozenpixels, no additional frontend options or source patches. During drain keep one existing client-queued CAPTURE buffer while picture tokens/queuedAUs remain; returned client frames resume DMA. Last credit receives actualFW EOS only after real pictures retire. No fabricatedframes/EOS or discardedAUs."
+      }
+    ],
+    "diagnostic_control": {
+      "source": "034a817",
+      "method": "strace ioctl instrumentation only, no sourcepatch",
+      "720_frames": 180,
+      "frozen_yuyv": true,
+      "performance": "Excluded: tracing changes scheduling",
+      "kernel_check": "PASS",
+      "restored": true
+    }
+  },
+  "ownership_and_recovery": {
+    "module_source": "4667d31",
+    "status": "PASS",
+    "frames": 360,
+    "contracts": [
+      "legacy_arbitration direction=legacy_blocks_native status=EBUSY legacy_closed=1 native_decode_follows=1",
+      "CONTRACT failed_streamon=EINVAL output_reqbufs=0 failed_fd_held=1 primary_decode_follows=1",
+      "CONTRACT empty_stop_last=1 after_last_epipe=1 empty_start=1 full_decode_follows=1",
+      "legacy_arbitration direction=native_blocks_legacy status=13 status_name=BC_STS_ERR_USAGE",
+      "legacy_arbitration direction=native_blocks_legacy status=13 status_name=BC_STS_ERR_USAGE",
+      "CONTRACT late_admission=1 capture_held=12 pending_output=1 native_busy=1 legacy_busy=1",
+      "terminal_recovery start_errno=EOPNOTSUPP output_streamoff=1 retired_done=0 retired_error=0 full_decode_follows=1",
+      "legacy_arbitration direction=native_blocks_legacy status=13 status_name=BC_STS_ERR_USAGE",
+      "legacy_arbitration direction=native_blocks_legacy status=13 status_name=BC_STS_ERR_USAGE",
+      "CONTRACT late_admission=1 capture_held=12 pending_output=1 native_busy=1 legacy_busy=1"
+    ],
+    "decoder_oracles": 2,
+    "kernel_check": 0,
+    "restored": true
+  },
+  "final_affected_qualification": [
+    {
+      "case": "native-min2-ownership-final",
+      "source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "status": "PASS",
+      "module_srcversion": "E3D1535AB4C470BC21D6E32",
+      "decode_passes": [
+        "legacy_arbitration direction=legacy_blocks_native status=EBUSY legacy_closed=1 native_decode_follows=1",
+        "CONTRACT failed_streamon=EINVAL output_reqbufs=0 failed_fd_held=1 primary_decode_follows=1",
+        "CONTRACT empty_stop_last=1 after_last_epipe=1 empty_start=1 full_decode_follows=1",
+        "legacy_arbitration direction=native_blocks_legacy status=13 status_name=BC_STS_ERR_USAGE",
+        "legacy_arbitration direction=native_blocks_legacy status=13 status_name=BC_STS_ERR_USAGE",
+        "CONTRACT late_admission=1 capture_held=12 pending_output=1 native_busy=1 legacy_busy=1",
+        "PASS frames=180 output_completed=180 last=1 after_last_epipe=1 seek=0 dynamic_boundaries=0 idle_before_stop_ms=250 yuyv_sha256=3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "terminal_recovery start_errno=EOPNOTSUPP output_streamoff=1 retired_done=0 retired_error=0 full_decode_follows=1",
+        "legacy_arbitration direction=native_blocks_legacy status=13 status_name=BC_STS_ERR_USAGE",
+        "legacy_arbitration direction=native_blocks_legacy status=13 status_name=BC_STS_ERR_USAGE",
+        "CONTRACT late_admission=1 capture_held=12 pending_output=1 native_busy=1 legacy_busy=1",
+        "PASS frames=180 output_completed=180 last=1 after_last_epipe=1 seek=0 dynamic_boundaries=0 idle_before_stop_ms=250 yuyv_sha256=3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1"
+      ],
+      "independent_rgb_checks": 0,
+      "maximum_rgb_error": 0,
+      "restored": true,
+      "kernel_check": "PASS",
+      "maximum_temperature_millic": 70000
+    },
+    {
+      "case": "native-gpu-pool32-final",
+      "source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "status": "PASS",
+      "module_srcversion": "E3D1535AB4C470BC21D6E32",
+      "decode_passes": [
+        "capture_pool requested=32 allocated=32",
+        "PASS frames=180 output_completed=180 last=1 after_last_epipe=1 seek=0 dynamic_boundaries=0 idle_before_stop_ms=250 yuyv_sha256=c74afb04ede1a815a3d33b1214a8b9253a87bc3f48841d7ea4a5f6cfdf8b06dd",
+        "GPU_PASS mode=check frames=180 render_cpu_s=0.209039797 render_wall_s=1.437953551 render_cpu_ms_per_frame=1.161332 completion=glFinish physical_display=NOT_RUN"
+      ],
+      "independent_rgb_checks": 180,
+      "maximum_rgb_error": 1,
+      "restored": true,
+      "kernel_check": "PASS",
+      "maximum_temperature_millic": 75000
+    },
+    {
+      "case": "native-api64-final",
+      "source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "status": "PASS",
+      "module_srcversion": "E3D1535AB4C470BC21D6E32",
+      "decode_passes": [
+        "PASS: 141 real API checks; no decoding performed"
+      ],
+      "independent_rgb_checks": 0,
+      "maximum_rgb_error": 0,
+      "restored": true,
+      "kernel_check": "PASS",
+      "maximum_temperature_millic": 74000
+    },
+    {
+      "case": "native-api32-final",
+      "source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "status": "PASS",
+      "module_srcversion": "E3D1535AB4C470BC21D6E32",
+      "decode_passes": [
+        "PASS: 141 real API checks; no decoding performed"
+      ],
+      "independent_rgb_checks": 0,
+      "maximum_rgb_error": 0,
+      "restored": true,
+      "kernel_check": "PASS",
+      "maximum_temperature_millic": 72000
+    }
+  ],
+  "build_and_model_qualification": {
+    "runtime_source": "830170b",
+    "kernel": "7.0.0-38-generic",
+    "default_W1_Werror": "PASS; no media dependencies",
+    "optin_W1_Werror": "PASS; srcversion matches final loaded module",
+    "default_module": {
+      "version": "3.10.14",
+      "depends": "",
+      "srcversion": "E6C6023F6EF161CFA9F5109"
+    },
+    "optin_module": {
+      "version": "3.10.14",
+      "depends": "v4l2-mem2mem,videodev,videobuf2-common,videobuf2-v4l2,videobuf2-dma-sg",
+      "srcversion": "E3D1535AB4C470BC21D6E32"
+    },
+    "node_models": "702 scenarios/5723 checks per API layout, normal+ASan/UBSan,5.15..7.2.8",
+    "TX_admission": "10860 checks normal+ASan/UBSan; legacy100ms wait/absolute bounds preserved",
+    "other_port_models": "buffers,decoder,output,parent,command-PM,lifetime,ioctl-dispatch,RX ownership,FleaRX metadata,H264 stream,TX release andWRAP passed before subsequent node-only changes; recorded original scope retained.",
+    "plain_probe_build": "PASS O2/Wall/Wextra/Werror, --help only",
+    "GPU_probe_build": "PASS O2/Wall/Wextra/Werror",
+    "nonexperimental_changes": "No library,legacyioctlheader,installation,firmware,image attachments orthirdparty source changes; opt-in node disabled bydefault.",
+    "physical_AV": "NOT RUN",
+    "long_duration_native_V4L2": "NOT RUN",
+    "native_i686_nonSSE_system": "NOT RUN; ILP32process API only was tested"
+  },
+  "final_state": "Experimental branch only. Stable3.10.13 restored and production files untouched. #114 nonempty STOP/START remains unsupported; #533 gates not closed or claimed."
 }
