@@ -73,6 +73,17 @@ jobs:
             libswscale-dev ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
             nodejs node-ws
 
+      - name: Build isolated Kodi route probe against its pinned SDK
+        run: |
+          kodi_probe_sdk="$RUNNER_TEMP/kodi-route-sdk"
+          git init "$kodi_probe_sdk"
+          git -C "$kodi_probe_sdk" remote add origin https://github.com/xbmc/xbmc.git
+          git -C "$kodi_probe_sdk" fetch --depth=1 --filter=blob:none origin 28ea2eac1eb7af8fdcbd2672d933ce87f594be79
+          git -C "$kodi_probe_sdk" sparse-checkout init --cone
+          git -C "$kodi_probe_sdk" sparse-checkout set xbmc/addons/kodi-dev-kit
+          git -C "$kodi_probe_sdk" checkout --detach FETCH_HEAD
+          make -C tools/kodi-route-probe KODI_SDK_INCLUDE="$kodi_probe_sdk/xbmc/addons/kodi-dev-kit/include"
+
       - name: Validate optional settings window without hardware
         run: |
           xvfb-run -a make settings-ui-check

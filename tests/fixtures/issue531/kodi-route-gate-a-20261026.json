@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "source": "f9c8b2f891fd3c03ee3d82d78df15ce3d31084e4",
+  "gate_a": "PASS_SELECTION_AND_SYNTHETIC_FRAME",
+  "scope": "Explicit InputStream-hosted VideoCodec selection and one synthetic YUY2 buffer only; no media/hardware decoding, no pixel/display/performance acceptance.",
+  "target": {
+    "kodi_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "runtime_distribution": "Published Flathub beta Kodi22RC1; original distribution launcher/addon-manifest patches; no application patch by this project",
+    "runtime_reported_version": "22.0-RC1 21.90.901 Git20260927-28ea2eac-dirty",
+    "inputstream_abi": "3.4.0",
+    "videocodec_abi": "2.2.1",
+    "arch": "x86_64",
+    "display": "private Xvfb, software GLES; physical display/speakers not used",
+    "host_sdk_control": "Ubuntu Kodi21.3/VideoCodec2.1.0 acceptsI420 syntax probe, rejectsYUYV422 enum"
+  },
+  "route": {
+    "explicit_selection": "ListItem inputstream=inputstream.crystalhd.routeprobe",
+    "ordinary_local_file_auto_interception": false,
+    "cleartext": true,
+    "fake_crypto": false,
+    "format_advertised_by_host": false,
+    "format_requested_by_probe": "VIDEOCODEC_FORMAT_YUYV422",
+    "negotiated_support_claim": false,
+    "width": 640,
+    "height": 360,
+    "stride": 1280,
+    "bytes": 460800,
+    "kodi_owned_buffer_returned_vc_picture": true,
+    "exit_code": 0
+  },
+  "preserved_attempts": [
+    {
+      "scope": "Private published Kodi22RC1; synthetic YUY2 route ONLY, no hardware decode or AV acceptance",
+      "gate_a": "FAIL",
+      "version": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "version": {
+            "major": 22,
+            "minor": 0,
+            "revision": "20260927-28ea2eac-dirty",
+            "tag": "releasecandidate",
+            "tagversion": "1"
+          }
+        }
+      },
+      "enable": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": "OK"
+      },
+      "markers": [
+        "2026-10-26 05:37:44.175 T:132      info <inputstream.crystalhd.routeprobe>: CrystalHD-GateA InputStream opened local H264; companion decode feature, no crypto",
+        "2026-10-26 05:37:44.284 T:132      info <inputstream.crystalhd.routeprobe>: CrystalHD-GateA VideoCodec instance created; NO hardware decode",
+        "2026-10-26 05:37:44.286 T:132      info <inputstream.crystalhd.routeprobe>: CrystalHD-GateA Open H264 640x360 YUY2 advertised=0; explicit synthetic-format probe",
+        "2026-10-26 05:37:44.310 T:133      info <general>: CAddonVideoCodec: GetPicture: EOF",
+        "2026-10-26 05:37:44.311 T:132     debug <general>: CAddonVideoCodec: Reset"
+      ],
+      "quit": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": "OK"
+      },
+      "exit_code": 0,
+      "case": "first",
+      "source": "c41d426",
+      "reason": "Own prototype omitted DEMUX_PACKET.iSize; allocator reserves storage/padding but leaves size0. Instance/Open succeeded, frame did not."
+    },
+    {
+      "scope": "Private published Kodi22RC1; synthetic YUY2 route ONLY, no hardware decode or AV acceptance",
+      "gate_a": "NOT RUN",
+      "error": "AssertionError: Kodi exited before RPC",
+      "exit_code": 255,
+      "case": "packet-size",
+      "source": "f9c8b2f891fd3c03ee3d82d78df15ce3d31084e4",
+      "reason": "NOT RUN: Xvfb reset tried to rewrite closed displayfd; failed GUI before RPC. Controlled harness now uses-noreset. Not an add-on regression."
+    },
+    {
+      "scope": "Private published Kodi22RC1; synthetic YUY2 route ONLY, no hardware decode or AV acceptance",
+      "gate_a": "PASS_SELECTION_AND_SYNTHETIC_FRAME",
+      "version": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "version": {
+            "major": 22,
+            "minor": 0,
+            "revision": "20260927-28ea2eac-dirty",
+            "tag": "releasecandidate",
+            "tagversion": "1"
+          }
+        }
+      },
+      "enable": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": "OK"
+      },
+      "markers": [
+        "2026-10-26 05:44:57.692 T:133      info <inputstream.crystalhd.routeprobe>: CrystalHD-GateA InputStream opened local H264; companion decode feature, no crypto",
+        "2026-10-26 05:44:57.820 T:133      info <inputstream.crystalhd.routeprobe>: CrystalHD-GateA VideoCodec instance created; NO hardware decode",
+        "2026-10-26 05:44:57.820 T:133      info <inputstream.crystalhd.routeprobe>: CrystalHD-GateA Open H264 640x360 YUY2 advertised=0; explicit synthetic-format probe",
+        "2026-10-26 05:44:57.831 T:134      info <inputstream.crystalhd.routeprobe>: CrystalHD-GateA VC_PICTURE synthetic YUY2 640x360 stride=1280 bytes=460800; Kodi-owned buffer",
+        "2026-10-26 05:44:57.894 T:134      info <general>: CAddonVideoCodec: GetPicture: EOF",
+        "2026-10-26 05:44:57.995 T:134      info <general>: CAddonVideoCodec: GetPicture: EOF",
+        "2026-10-26 05:44:57.997 T:133     debug <general>: CAddonVideoCodec: Reset"
+      ],
+      "quit": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": "OK"
+      },
+      "exit_code": 0,
+      "case": "packet-size-valid-display",
+      "source": "f9c8b2f891fd3c03ee3d82d78df15ce3d31084e4"
+    }
+  ],
+  "not_run": [
+    "actual CrystalHD decode via add-on",
+    "software pixel oracle/native frame hashes",
+    "confirmed renderer selections/physical scanout",
+    "audio/sync",
+    "seek/Stop/reopen acceptance",
+    "performance/traffic A/B",
+    "i386 add-on execution"
+  ],
+  "boundaries": "System Kodi21.3/profile, driver/library/firmware/PM/defaults unchanged; no CrystalHD device exposed to test namespace."
+}
