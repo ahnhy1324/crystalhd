@@ -16,13 +16,13 @@
 
 using yuy2_gpu::need;
 
-static double clock_seconds(clockid_t clock) {
+[[maybe_unused]] static double clock_seconds(clockid_t clock) {
     timespec value{};
     need(clock_gettime(clock, &value) == 0, "clock");
     return value.tv_sec + value.tv_nsec / 1e9;
 }
 
-static int temperature() {
+[[maybe_unused]] static int temperature() {
     int maximum = 0;
     for (const auto &entry : std::filesystem::directory_iterator("/sys/class/thermal")) {
         if (entry.path().filename().string().rfind("thermal_zone", 0) != 0) continue;
@@ -95,7 +95,8 @@ struct Image {
     GLuint texture = 0;
     EGLint error = EGL_SUCCESS;
     template<class Source>
-    Image(yuy2_gpu::GPU &g, Source &source, bool field, unsigned parity)
+    Image(yuy2_gpu::GPU &g, Source &source, bool field, unsigned parity,
+          EGLint matrix=EGL_ITU_REC709_EXT, bool trace=true)
         : gpu(g) {
         const unsigned height = field ? source.height / 2 : source.height;
         const unsigned pitch = source.pitch * (field ? 2 : 1);
@@ -108,7 +109,7 @@ struct Image {
             EGL_DMA_BUF_PLANE0_FD_EXT, source.fd,
             EGL_DMA_BUF_PLANE0_OFFSET_EXT, EGLint(offset),
             EGL_DMA_BUF_PLANE0_PITCH_EXT, EGLint(pitch),
-            EGL_YUV_COLOR_SPACE_HINT_EXT, EGL_ITU_REC709_EXT,
+            EGL_YUV_COLOR_SPACE_HINT_EXT, matrix,
             EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_NARROW_RANGE_EXT,
             EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_5_EXT,
             EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_5_EXT,
@@ -117,7 +118,7 @@ struct Image {
         image = gpu.create(gpu.display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT,
                            nullptr, attributes);
         error = eglGetError();
-        printf("{\"type\":\"import\",\"field\":%s,\"parity\":%u,\"width\":%u,"
+        if (trace) printf("{\"type\":\"import\",\"field\":%s,\"parity\":%u,\"width\":%u,"
                "\"height\":%u,\"offset\":%u,\"pitch\":%u,\"ok\":%s,\"egl_error\":%u}\n",
                field ? "true" : "false", parity, source.width, height, offset,
                pitch, image != EGL_NO_IMAGE_KHR ? "true" : "false", unsigned(error));
@@ -208,6 +209,10 @@ struct Renderer {
     const unsigned source_w, source_h;
     const float x_shift;
     const std::array<float,2> y_shifts;
+    unsigned viewport_w=0,viewport_h=0;
+    float viewport_x_shift=0;
+    float viewport_progressive_y_shift=0;
+    std::array<float,2> viewport_y_shifts{};
     GLuint program, affine_program;
     static GLuint link(const char *vertex, const char *fragment) {
         GLuint v = yuy2_gpu::shader(GL_VERTEX_SHADER, vertex);
@@ -240,8 +245,8 @@ struct Renderer {
             "gl_FragColor=vec4(texture2D(tex,uv).rgb,1.0);}";
         program = link(vertex, fragment);
         const char *affine_vertex =
-            "attribute vec2 pos;uniform vec2 shift;varying vec2 uv;"
-            "void main(){uv=(pos+1.0)*0.5+shift;gl_Position=vec4(pos,0.0,1.0);}";
+            "attribute vec2 pos;uniform vec2 shift;uniform float flip;varying vec2 uv;"
+            "void main(){uv=(pos+1.0)*0.5+shift;gl_Position=vec4(pos.x,pos.y*(1.0-2.0*flip),0.0,1.0);}";
         const char *affine_fragment =
             "#extension GL_OES_EGL_image_external : require\n"
             "precision highp float;varying vec2 uv;uniform samplerExternalOES tex;"
@@ -249,16 +254,29 @@ struct Renderer {
         affine_program = link(affine_vertex, affine_fragment);
     }
     void draw(const Image &image, bool field_view, unsigned parity) {
+        draw_to(image,field_view,parity,picture.fbo,0,0,picture.w,picture.h,false,false);
+    }
+    void draw_to(const Image &image,bool field_view,unsigned parity,GLuint target,
+                 int x,int y,unsigned w,unsigned h,bool flip,bool progressive) {
         need(image.texture && parity < 2, "field draw admission");
-        glBindFramebuffer(GL_FRAMEBUFFER, picture.fbo);
-        const GLuint selected = field_view ? affine_program : program;
-        glViewport(0, 0, picture.w, picture.h); glUseProgram(selected);
+        glBindFramebuffer(GL_FRAMEBUFFER,target);
+        const GLuint selected = field_view||progressive ? affine_program : program;
+        glViewport(x,y,w,h); glUseProgram(selected);
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_EXTERNAL_OES, image.texture);
         glUniform1i(glGetUniformLocation(selected, "tex"), 0);
-        if (field_view) {
+        if (field_view||progressive) {
             // Nearest only. Linear filtering requires its own phase oracle.
+            if (w!=viewport_w||h!=viewport_h) {
+                viewport_x_shift=w==picture.w?x_shift:nearest_bias(source_w,w,2);
+                for (unsigned p=0;p<2;++p)
+                    viewport_y_shifts[p]=h==picture.h?y_shifts[p]:nearest_bias(source_h,h,p);
+                viewport_progressive_y_shift=nearest_bias(source_h,h,2);
+                viewport_w=w;viewport_h=h;
+            }
             glUniform2f(glGetUniformLocation(selected, "shift"),
-                        x_shift,y_shifts[parity]);
+                        viewport_x_shift,
+                        progressive?viewport_progressive_y_shift:viewport_y_shifts[parity]);
+            glUniform1f(glGetUniformLocation(selected,"flip"),flip?1:0);
         } else {
             glUniform2f(glGetUniformLocation(selected, "size"), source_w, source_h);
             glUniform2f(glGetUniformLocation(selected, "outputSize"), picture.w, picture.h);
@@ -275,7 +293,7 @@ struct Renderer {
     ~Renderer() { glDeleteProgram(program); glDeleteProgram(affine_program); }
 };
 
-static void verify_scaled(Renderer &renderer, const std::vector<uint8_t> &source,
+[[maybe_unused]] static void verify_scaled(Renderer &renderer, const std::vector<uint8_t> &source,
                           unsigned parity, const char *path) {
     const unsigned w=renderer.picture.w, h=renderer.picture.h;
     const unsigned sw=renderer.source_w, sh=renderer.source_h;

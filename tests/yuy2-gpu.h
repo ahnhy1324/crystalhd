@@ -25,6 +25,7 @@ inline void need(bool b, const char *s) {
 }
 struct GPU {
  int drm=-1;gbm_device* gbm=nullptr;EGLDisplay display=EGL_NO_DISPLAY;EGLContext context=EGL_NO_CONTEXT;
+ bool owns_context=true;
  PFNEGLCREATEIMAGEKHRPROC create=nullptr;PFNEGLDESTROYIMAGEKHRPROC destroy=nullptr;
  PFNGLEGLIMAGETARGETTEXTURE2DOESPROC target=nullptr;
  GPU(const char* node) {
@@ -36,11 +37,18 @@ struct GPU {
   EGLConfig cfg{};EGLint n=0;need(eglChooseConfig(display,attrs,&cfg,1,&n)&&n==1,"EGL config");
   EGLint ca[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};context=eglCreateContext(display,cfg,EGL_NO_CONTEXT,ca);need(context!=EGL_NO_CONTEXT,"EGL context");
   need(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,context),"surfaceless context");
+  resolve();
+ }
+ GPU(const char* node,EGLDisplay borrowed_display,EGLContext borrowed_context):display(borrowed_display),context(borrowed_context),owns_context(false) {
+  need(display!=EGL_NO_DISPLAY&&context!=EGL_NO_CONTEXT&&eglGetCurrentDisplay()==display&&eglGetCurrentContext()==context,"current borrowed EGL context");
+  drm=open(node,O_RDWR|O_CLOEXEC);need(drm>=0,"render node");gbm=gbm_create_device(drm);need(gbm,"GBM device");resolve();
+ }
+ void resolve() {
   const char* renderer=(const char*)glGetString(GL_RENDERER);need(renderer&&std::strstr(renderer,"Intel"),"real Intel GPU required");
   std::printf("{\"type\":\"gpu\",\"renderer\":\"%s\",\"gles\":\"%s\"}\n",renderer,glGetString(GL_VERSION));
   create=(PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");destroy=(PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");target=(PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");need(create&&destroy&&target,"EGL image functions");
  }
- ~GPU(){if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}if(gbm)gbm_device_destroy(gbm);if(drm>=0)close(drm);}
+ ~GPU(){if(owns_context&&display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}if(gbm)gbm_device_destroy(gbm);if(drm>=0)close(drm);}
 };
 static GLuint shader(GLenum type,const char* text) {
  GLuint s=glCreateShader(type);glShaderSource(s,1,&text,nullptr);glCompileShader(s);GLint ok=0;glGetShaderiv(s,GL_COMPILE_STATUS,&ok);

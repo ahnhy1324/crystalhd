@@ -6,6 +6,43 @@ The first stage is a synthetic experiment on Intel 965GM. The subsequent
 native integration below uses real CrystalHD output. Neither stage qualifies
 a supported frontend, VA Bob replacement or physical presentation.
 
+## Experimental window consumer
+
+`filters/gst/field-output` is an explicit-build, rank-NONE GStreamer sink;
+there is no install target. It reuses the field-view helper and one GBM
+transfer per picture. One worker owns XCB/EGL, retains the source through
+both field uses, and cancels its clock wait on flushing/close. GPU fitting
+uses physical-nearest Bob and preserves the input pixel aspect ratio.
+
+The research Player can select it without changing saved settings:
+
+```sh
+make -C filters/gst/field-output
+field_plugins="$PWD/filters/gst/field-output"
+GST_PLUGIN_PATH_1_0="$field_plugins${GST_PLUGIN_PATH_1_0:+:$GST_PLUGIN_PATH_1_0}" \
+    scripts/crystalhd-play --video-output field-gpu --scale-width 1280 \
+    --software-output-size native /absolute/path/to/video.mkv
+```
+
+Run from the source root with a separately qualified CrystalHD GStreamer
+decoder/library available. This leaves the default output unchanged. The
+sink consumes limited-range YUY2 with BT.601/709 colorimetry. It accepts
+progressive or paired fields; ONEFIELD/RFF, reverse playback and live window
+replacement are unqualified. It does not add a Kick/readiness policy.
+
+Space, arrows and Q/Escape send application control messages handled by our
+Player; F11 toggles its managed window. `GstVideoOverlay` can embed a window
+provided before READY; paused expose/resize redraws retain the last field.
+Field targets follow pipeline running time, latency and timestamp offset,
+including an audio-selected clock. GPU completion/swap return is not physical
+scanout or proof of speaker synchronization. `field-stats` distinguishes
+timed fields, preroll/redraw, cancellation and retained resources.
+
+`tests/gst-field-output.cpp` exercises window RGB orientation/color/field
+identity, EOS/reopen and cancellation. `--card FILE` separately requires a
+50-picture H.264 fixture and the real decoder. Synthetic checks are not card,
+audio or physical acceptance. This consumer remains experimental.
+
 One immutable linear YUYV allocation supplies top/bottom EGLImages with
 offsets 0/S, pitch 2S and height H/2. Both field uses complete before source
 retirement. Two differently patterned allocations alternate by picture;

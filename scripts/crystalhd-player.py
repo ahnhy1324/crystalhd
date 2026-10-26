@@ -225,6 +225,8 @@ def arguments(argv=None, environment=None):
                        help="disable hardware video decoders; no automatic fallback")
     parser.add_argument("--weave", action="store_true",
                         help="preserve interlaced frames without deinterlacing; works with either decoder mode")
+    parser.add_argument("--video-output", choices=("auto", "field-gpu"), default="auto",
+                        help="video sink (field-gpu: experimental GPU nearest Bob and display fitting)")
     parser.add_argument("--scale-width", type=hardware_scale_width, default=argparse.SUPPRESS, metavar="PIXELS",
                         help="request an even BCM70015 output width from 128 to 1918 (interlaced H.264: multiple of 16; 0: native)")
     parser.add_argument("--software-output-size", type=requested_output_size,
@@ -238,6 +240,10 @@ def arguments(argv=None, environment=None):
         parser.error("--scale-width and --software-output-size require --hardware")
     if args.software_output_size and not args.scale_width:
         parser.error("--software-output-size requires a nonzero --scale-width")
+    if args.video_output == "field-gpu" and args.weave:
+        parser.error("--video-output field-gpu performs Bob; omit --weave")
+    if args.video_output == "field-gpu" and args.software_output_size:
+        parser.error("field-gpu fits on the GPU; use --software-output-size native")
     return args
 
 
@@ -619,15 +625,24 @@ class Player:
                                    else args.file)
         if args.subtitles:
             self.pipeline.set_property("suburi", args.subtitles.as_uri())
-        if args.mode == "software" or args.weave:
+        field_gpu = getattr(args, "video_output", "auto") == "field-gpu"
+        if args.mode == "software" or args.weave or field_gpu:
             flags = int(self.pipeline.get_property("flags"))
             # GstPlayFlags::FORCE_SW_DECODERS, present since GStreamer 1.18.
             if args.mode == "software":
                 flags |= 1 << 12
-            if args.weave:
+            if args.weave or field_gpu:
                 # GstPlayFlags::DEINTERLACE; leave audio, subtitles and other flags alone.
                 flags &= ~(1 << 9)
             self.pipeline.set_property("flags", flags)
+        if field_gpu:
+            if "video-sink" in (sinks or {}):
+                raise RuntimeError("field-gpu conflicts with an injected video sink")
+            self.field_sink = Gst.ElementFactory.make("crystalhdfieldsink", "crystalhd-fields")
+            if self.field_sink is None:
+                raise RuntimeError("experimental crystalhdfieldsink is unavailable; build the research plugin")
+            self.pipeline.set_property("video-sink", self.field_sink)
+            print("Output: experimental GPU nearest Bob; pipeline audio clock; GPU display fitting", flush=True)
         if args.weave:
             if int(self.pipeline.get_property("flags")) & (1 << 9):
                 raise RuntimeError("GStreamer did not disable deinterlacing for --weave")
@@ -779,6 +794,10 @@ class Player:
                     self.fail(fields.get_value("message"))
             elif fields.get_name() == "crystalhd-player-output-error":
                 self.fail(fields.get_value("message"))
+            elif fields.get_name() == "crystalhd-field-close":
+                self.control("quit")
+            elif fields.get_name() == "crystalhd-field-key":
+                self.control(fields.get_value("action"))
         elif message.type == Gst.MessageType.ERROR:
             error, _debug = message.parse_error()
             self.fail(input_error(self.args.file,

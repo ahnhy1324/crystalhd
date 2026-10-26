@@ -766,6 +766,19 @@ class CleanupTests(unittest.TestCase):
 
 
 class ArgumentTests(unittest.TestCase):
+    def test_field_output_is_explicit_and_rejects_double_processing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "video.mp4"
+            path.touch()
+            self.assertEqual(player.arguments([str(path)]).video_output, "auto")
+            args = player.arguments(["--video-output", "field-gpu", "--scale-width", "1280",
+                                     "--software-output-size", "native", str(path)])
+            self.assertEqual((args.video_output, args.scale_width, args.software_output_size),
+                             ("field-gpu", 1280, None))
+            for flags in (["--weave"], ["--scale-width", "1280", "--software-output-size", "1920x1080"]):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    player.arguments(["--video-output", "field-gpu"] + flags + [str(path)])
+
     def test_local_paths_and_subtitles_are_safely_encoded(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "video #?.mp4"
@@ -1333,6 +1346,24 @@ class GStreamerApiTests(unittest.TestCase):
         self.assertTrue(int(result.pipeline.get_property("flags")) & (1 << 12))
         self.assertTrue(result.pipeline.get_property("suburi").endswith("sub%20titles.srt"))
         self.assertIsNotNone(result.pipeline.get_property("video-sink"))
+        self.assertIsNone(result.pipeline.get_property("video-filter"))
+
+    def test_field_output_owns_bob_without_disabling_audio(self):
+        original_make = self.Gst.ElementFactory.make
+        reference = original_make("playbin")
+        expected = int(reference.get_property("flags")) & ~(1 << 9)
+        def make(name, instance=None):
+            return original_make("fakesink" if name == "crystalhdfieldsink" else name, instance)
+        args = SimpleNamespace(mode="hardware", weave=False, video_output="field-gpu",
+                               scale_width=1280, software_output_size=None,
+                               file=Path(self.temp.name) / "unused.ogg", subtitles=None)
+        with mock.patch.object(player, "configure_decoders"), \
+                mock.patch.object(self.Gst.ElementFactory, "make", side_effect=make), \
+                contextlib.redirect_stdout(io.StringIO()):
+            result = player.Player(args, self.Gst, self.GLib)
+        self.addCleanup(result.close)
+        self.assertEqual(int(result.pipeline.get_property("flags")), expected)
+        self.assertIs(result.pipeline.get_property("video-sink"), result.field_sink)
         self.assertIsNone(result.pipeline.get_property("video-filter"))
 
     def test_weave_changes_only_deinterlacing_and_preserves_decoder_policy(self):
