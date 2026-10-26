@@ -17,8 +17,10 @@ struct Trace {
         auto &self=*static_cast<Trace *>(opaque);
         auto *buffer=GST_PAD_PROBE_INFO_BUFFER(info);
         const unsigned i=self.inputs++;
-        printf("{\"type\":\"input-pad\",\"index\":%u,\"pts\":%llu,\"arrival_ns\":%llu}\n",
-               i,static_cast<unsigned long long>(GST_BUFFER_PTS(buffer)),
+        const auto pts=GST_BUFFER_PTS(buffer);
+        const auto text=GST_CLOCK_TIME_IS_VALID(pts)?std::to_string(pts):"null";
+        printf("{\"type\":\"input-pad\",\"index\":%u,\"pts\":%s,\"arrival_ns\":%llu}\n",
+               i,text.c_str(),
                static_cast<unsigned long long>(gst_util_get_timestamp()));
         return GST_PAD_PROBE_OK;
     }
@@ -48,8 +50,9 @@ struct Pipeline {
             "appsink name=output caps=\"video/x-raw,format=YUY2\" sync=false "
             "max-buffers=1 drop=false wait-on-eos=false enable-last-sample=false",&error);
         const std::string message=error?error->message:"pipeline";
+        const bool parsed=error==nullptr;
         if(error)g_error_free(error);
-        need(pipeline&&GST_IS_PIPELINE(pipeline),message.c_str());
+        need(parsed&&pipeline&&GST_IS_PIPELINE(pipeline),message.c_str());
         auto *input=gst_bin_get_by_name(GST_BIN(pipeline),"input");
         sink=gst_bin_get_by_name(GST_BIN(pipeline),"output");
         decoder=gst_bin_get_by_name(GST_BIN(pipeline),"decoder");
@@ -205,6 +208,11 @@ int main(int argc,char **argv) {
         while(true) {
             pipeline.error_check();auto *next=gst_app_sink_try_pull_sample(GST_APP_SINK(pipeline.sink),GST_SECOND);
             if(!next){pipeline.error_check();if(gst_app_sink_is_eos(GST_APP_SINK(pipeline.sink)))break;need(clock_seconds(CLOCK_MONOTONIC)-wall_start<60,"bounded sample wait");continue;}
+            GstVideoInfo current{};
+            if(!gst_video_info_from_caps(&current,gst_sample_get_caps(next))||
+               !gst_video_info_is_equal(&info,&current)) {
+                gst_sample_unref(next);need(false,"constant negotiated source geometry/timing");
+            }
             Sample sample(next,info);auto *buffer=gst_sample_get_buffer(next);const auto pts=GST_BUFFER_PTS(buffer);
             need(pictures<expected&&GST_CLOCK_TIME_IS_VALID(pts)&&(pictures==0||pts>previous),"picture count/ordered original PTS");previous=pts;
             need(GST_BUFFER_FLAG_IS_SET(buffer,GST_VIDEO_BUFFER_FLAG_INTERLACED)&&
