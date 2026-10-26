@@ -28,7 +28,7 @@ def main():
     gi.require_version("GstVideo", "1.0")
     gi.require_version("Gtk", "3.0")
     gi.require_version("GdkX11", "3.0")
-    from gi.repository import GLib, Gst, GstVideo, Gtk, GdkX11
+    from gi.repository import GLib, Gst, GstVideo, Gtk, Gdk, GdkX11
     Gst.init(None)
     factory = Gst.ElementFactory.find("crystalhdfieldsink")
     if factory is None or Path(factory.get_plugin().get_filename()).resolve() != args.expected_plugin.resolve():
@@ -51,12 +51,25 @@ def main():
     area = Gtk.DrawingArea()
     window.add(area)
     window.set_default_size(640, 360)
-    window.set_resizable(False)
-    if args.fullscreen:
-        window.fullscreen()
+    # Fixed size hints can prevent an actual fullscreen resize in a WM.
+    window.set_resizable(args.fullscreen)
     window.show_all()
     while Gtk.events_pending():
         Gtk.main_iteration_do(False)
+    if args.fullscreen:
+        window.fullscreen()
+        until = time.monotonic()+3
+        while time.monotonic() < until:
+            while Gtk.events_pending():
+                Gtk.main_iteration_do(False)
+            if window.get_window().get_state() & Gdk.WindowState.FULLSCREEN:
+                break
+            time.sleep(.01)
+        if not window.get_window().get_state() & Gdk.WindowState.FULLSCREEN:
+            player.close()
+            window.destroy()
+            raise RuntimeError("the WM did not grant fullscreen; no card run started")
+    initial_size = [area.get_allocated_width(), area.get_allocated_height()]
     native = area.get_window()
     if native is None:
         raise RuntimeError("the X11 benchmark area was not realized")
@@ -66,7 +79,8 @@ def main():
 
     report = dict(label=args.label, fullscreen=args.fullscreen, eos=False,
                   audio_buffers=0, audio_stream_muted=True, clock=None,
-                  audio_clock=None, same_audio_clock=False, peak_mC=0, sizes=[])
+                  audio_clock=None, same_audio_clock=False, peak_mC=0, sizes=[],
+                  verified_initial_size=initial_size)
 
     def audio_probe(_pad, _info):
         report["audio_buffers"] += 1
@@ -115,7 +129,8 @@ def main():
                 for key in ("failures", "allocations", "images", "retained-buffers"))
     report["pass"] = (code == 0 and report["eos"] and clean and
                       report["decoded"] == args.expected_pictures and
-                      report["audio_buffers"] > 0 and report["same_audio_clock"])
+                      report["audio_buffers"] > 0 and report["same_audio_clock"] and
+                      report["sizes"] == [initial_size])
     with args.results.open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2)
         stream.write("\n")
