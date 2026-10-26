@@ -9,7 +9,7 @@ GST_PACKAGES := gstreamer-app-1.0 gstreamer-video-1.0
 NATIVE_OUTPUT := build-native/$(ADDON)
 TRACE_OUTPUT := build-trace/$(ADDON)
 
-.PHONY: all native native-trace check check-codec clean
+.PHONY: all native native-trace check check-codec check-demux clean
 all: $(OUTPUT)/$(ADDON).so $(OUTPUT)/addon.xml
 native: $(NATIVE_OUTPUT)/$(ADDON).so $(NATIVE_OUTPUT)/addon.xml
 native-trace: $(TRACE_OUTPUT)/$(ADDON).so $(TRACE_OUTPUT)/addon.xml
@@ -29,7 +29,11 @@ $(NATIVE_OUTPUT)/$(ADDON).so $(TRACE_OUTPUT)/$(ADDON).so: probe.cpp native.cpp n
 		-isystem "$(KODI_SDK_INCLUDE)" $(shell $(PKG_CONFIG) --cflags $(PACKAGES) $(GST_PACKAGES)) \
 		probe.cpp native.cpp $(shell $(PKG_CONFIG) --libs $(PACKAGES) $(GST_PACKAGES)) -o "$@"
 
-$(OUTPUT)/addon.xml $(NATIVE_OUTPUT)/addon.xml $(TRACE_OUTPUT)/addon.xml: addon.xml
+$(OUTPUT)/addon.xml: addon.xml
+	mkdir -p "$(@D)"
+	cp "$<" "$@"
+
+$(NATIVE_OUTPUT)/addon.xml $(TRACE_OUTPUT)/addon.xml: addon-native.xml
 	mkdir -p "$(@D)"
 	cp "$<" "$@"
 
@@ -42,16 +46,22 @@ build/kodi-route-native-test: ../../tests/kodi-route-native.cpp native.cpp nativ
 check: build/kodi-route-native-test
 	./build/kodi-route-native-test
 
-build/kodi-route-codec-test: ../../tests/kodi-route-codec.cpp probe.cpp native.cpp native.h packed.h
+build/kodi-route-codec-test: TEST_SOURCE := ../../tests/kodi-route-codec.cpp
+build/kodi-route-demux-test: TEST_SOURCE := ../../tests/kodi-route-demux.cpp
+build/kodi-route-codec-test build/kodi-route-demux-test: ../../tests/kodi-route-codec.cpp ../../tests/kodi-route-demux.cpp probe.cpp native.cpp native.h packed.h
 	@test -n "$(KODI_SDK_INCLUDE)" || { echo 'Set KODI_SDK_INCLUDE for the callback contract test'; exit 1; }
 	mkdir -p "$(@D)"
 	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Werror $(CPPFLAGS) $(CXXFLAGS) -DCRYSTALHD_KODI_NATIVE \
 		-isystem "$(KODI_SDK_INCLUDE)" $(shell $(PKG_CONFIG) --cflags $(PACKAGES) $(GST_PACKAGES)) \
-		../../tests/kodi-route-codec.cpp native.cpp \
+		$(TEST_SOURCE) native.cpp \
 		$(shell $(PKG_CONFIG) --libs $(PACKAGES) $(GST_PACKAGES)) $(LDFLAGS) -o "$@"
 
 check-codec: build/kodi-route-codec-test
 	./build/kodi-route-codec-test
+
+check-demux: build/kodi-route-demux-test
+	@test -n "$(TEST_MP4)" || { echo 'Set TEST_MP4 to an absolute H264/AAC fixture path'; exit 1; }
+	./build/kodi-route-demux-test "$(TEST_MP4)"
 
 clean:
 	rm -rf build build-native build-trace

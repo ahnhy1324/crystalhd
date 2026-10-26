@@ -241,6 +241,11 @@ public:
 class ProbeStream : public kodi::addon::CInstanceInputStream {
   AVFormatContext* format = nullptr;
   int video = -1;
+#ifdef CRYSTALHD_KODI_NATIVE
+  int audio = -1;
+  int64_t media_end = 0;
+  unsigned video_packets = 0, audio_packets = 0;
+#endif
 public:
   explicit ProbeStream(const kodi::addon::IInstanceInfo& info) : CInstanceInputStream(info) {}
   ~ProbeStream() override { Close(); }
@@ -262,7 +267,9 @@ public:
         !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 256 * 1024 * 1024) return false;
     /* MP4 supplies the required codec parameters in its header. Do not run
      * find_stream_info: its probing can invoke a software video decoder. */
-    if (avformat_open_input(&format, path.c_str(), nullptr, nullptr) < 0) { Close(); return false; }
+    if (avformat_open_input(&format, path.c_str(), av_find_input_format("mov"), nullptr) < 0) {
+      Close(); return false;
+    }
     video = av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (video < 0 || format->streams[video]->codecpar->codec_id != AV_CODEC_ID_H264) {
       Close(); return false;
@@ -276,23 +283,76 @@ public:
         (p->field_order != AV_FIELD_UNKNOWN && p->field_order != AV_FIELD_PROGRESSIVE)) {
       Close(); return false;
     }
+    audio = av_find_best_stream(format, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    if (audio >= 0) {
+      const auto* a = format->streams[audio]->codecpar;
+      /* One ordinary AAC track goes to Kodi's own audio decoder. Never send
+       * audio into CrystalHD or silently discard an unsupported soundtrack. */
+      if (a->codec_id != AV_CODEC_ID_AAC || a->sample_rate <= 0 || a->sample_rate > 192000 ||
+          a->ch_layout.nb_channels < 1 || a->ch_layout.nb_channels > 2 ||
+          !a->extradata || a->extradata_size <= 0 || static_cast<size_t>(a->extradata_size) > max_packet) {
+        Close(); return false;
+      }
+    }
+    /* mov's track headers have duration before find_stream_info, but the
+     * AVFormatContext aggregate duration can still be AV_NOPTS_VALUE. Derive
+     * the finite seek range from selected track headers without decoding. */
+    for (int id : {video, audio}) {
+      if (id < 0) continue;
+      const AVStream* s = format->streams[id];
+      if (s->duration <= 0 || s->duration == AV_NOPTS_VALUE) continue;
+      const int64_t duration = av_rescale_q(s->duration, s->time_base, AVRational{1, AV_TIME_BASE});
+      const int64_t start = s->start_time == AV_NOPTS_VALUE ? 0 :
+          av_rescale_q(s->start_time, s->time_base, AVRational{1, AV_TIME_BASE});
+      if (duration <= 0 || duration > 86400000000LL || start < 0 || start > 86400000000LL - duration) {
+        Close(); return false;
+      }
+      media_end = std::max(media_end, start + duration);
+    }
+    if (!media_end) { Close(); return false; }
     kodi::Log(ADDON_LOG_INFO, "CrystalHD-Native InputStream selected; local H264, cleartext");
 #else
     kodi::Log(ADDON_LOG_INFO, "%s InputStream opened local H264; companion decode feature, no crypto", marker);
 #endif
     return true;
   }
-  void Close() override { if (format) avformat_close_input(&format); video = -1; }
+  void Close() override {
+#ifdef CRYSTALHD_KODI_NATIVE
+    if (format) kodi::Log(ADDON_LOG_INFO, "CrystalHD-Native Demux close video_packets=%u audio_packets=%u",
+                          video_packets, audio_packets);
+    audio = -1; media_end = 0; video_packets = audio_packets = 0;
+#endif
+    if (format) avformat_close_input(&format);
+    video = -1;
+  }
   void GetCapabilities(kodi::addon::InputstreamCapabilities& caps) override {
 #ifdef CRYSTALHD_KODI_NATIVE
-    caps.SetMask(INPUTSTREAM_SUPPORTS_IDEMUX | INPUTSTREAM_SUPPORTS_SEEK | INPUTSTREAM_SUPPORTS_PAUSE);
+    caps.SetMask(INPUTSTREAM_SUPPORTS_IDEMUX | INPUTSTREAM_SUPPORTS_SEEK |
+                 INPUTSTREAM_SUPPORTS_PAUSE | INPUTSTREAM_SUPPORTS_ITIME);
 #else
     caps.SetMask(INPUTSTREAM_SUPPORTS_IDEMUX);
 #endif
   }
   bool IsRealTimeStream() override { return false; }
-  bool GetStreamIds(std::vector<unsigned int>& ids) override { ids = {0}; return format != nullptr; }
+  bool GetStreamIds(std::vector<unsigned int>& ids) override {
+    ids = {0};
+#ifdef CRYSTALHD_KODI_NATIVE
+    if (audio >= 0) ids.push_back(1);
+#endif
+    return format != nullptr;
+  }
   bool GetStream(int id, kodi::addon::InputstreamInfo& info) override {
+#ifdef CRYSTALHD_KODI_NATIVE
+    if (format && id == 1 && audio >= 0) {
+      const auto* a = format->streams[audio]->codecpar;
+      info.SetStreamType(INPUTSTREAM_TYPE_AUDIO); info.SetFeatures(0);
+      info.SetCodecName("aac"); info.SetPhysicalIndex(1);
+      info.SetChannels(a->ch_layout.nb_channels); info.SetSampleRate(a->sample_rate);
+      info.SetBitRate(a->bit_rate > 0 && a->bit_rate <= 64000000 ? a->bit_rate : 0);
+      info.SetExtraData(a->extradata, a->extradata_size);
+      return true;
+    }
+#endif
     if (!format || id != 0) return false;
     const auto* p = format->streams[video]->codecpar;
     const AVRational fps = av_guess_frame_rate(format, format->streams[video], nullptr);
@@ -317,8 +377,22 @@ public:
     if (p->extradata && p->extradata_size > 0) info.SetExtraData(p->extradata, p->extradata_size);
     return true;
   }
-  bool OpenStream(int id) override { return format && id == 0; }
+  bool OpenStream(int id) override {
 #ifdef CRYSTALHD_KODI_NATIVE
+    if (format && id == 1 && audio >= 0) return true;
+#endif
+    return format && id == 0;
+  }
+#ifdef CRYSTALHD_KODI_NATIVE
+  bool GetTimes(kodi::addon::InputstreamTimes& times) override {
+    if (!format || !media_end) return false;
+    times.SetStartTime(0); times.SetPtsStart(0); times.SetPtsBegin(0);
+    times.SetPtsEnd(static_cast<double>(media_end));
+    return true;
+  }
+  int GetTotalTime() override {
+    return format ? static_cast<int>(media_end / 1000) : 0;
+  }
   bool DemuxSeekTime(double ms, bool backwards, double& startpts) override {
     if (!format || !std::isfinite(ms) || ms < 0 || ms > 86400000.0) return false;
     const int64_t timestamp = av_rescale_q(static_cast<int64_t>(ms * 1000), AVRational{1, AV_TIME_BASE},
@@ -332,19 +406,27 @@ public:
     if (!format) return nullptr;
     AVPacket* input = av_packet_alloc(); if (!input) return nullptr;
     while (av_read_frame(format, input) >= 0) {
-      if (input->stream_index != video) { av_packet_unref(input); continue; }
+      bool selected = input->stream_index == video;
+#ifdef CRYSTALHD_KODI_NATIVE
+      selected |= audio >= 0 && input->stream_index == audio;
+#endif
+      if (!selected) { av_packet_unref(input); continue; }
       if (input->size <= 0 || static_cast<size_t>(input->size) > max_packet) break;
       DEMUX_PACKET* packet = AllocateDemuxPacket(input->size);
       if (!packet) break;
       std::memcpy(packet->pData, input->data, input->size);
       /* Kodi's allocator reserves storage/padding but leaves iSize zero. */
-      packet->iSize = input->size; packet->iStreamId = 0;
-      const AVRational from = format->streams[video]->time_base, to{1, STREAM_TIME_BASE};
+      packet->iSize = input->size; packet->iStreamId = input->stream_index == video ? 0 : 1;
+      packet->recoveryPoint = (input->flags & AV_PKT_FLAG_KEY) != 0;
+      const AVRational from = format->streams[input->stream_index]->time_base, to{1, STREAM_TIME_BASE};
       /* Kodi's public STREAM_NOPTS_VALUE bit pattern is negative infinity.
        * Never fabricate a valid -1us DTS for a missing container timestamp. */
       packet->pts = input->pts == AV_NOPTS_VALUE ? -std::numeric_limits<double>::infinity() : static_cast<double>(av_rescale_q(input->pts, from, to));
       packet->dts = input->dts == AV_NOPTS_VALUE ? -std::numeric_limits<double>::infinity() : static_cast<double>(av_rescale_q(input->dts, from, to));
       packet->duration = av_rescale_q(input->duration, from, to);
+#ifdef CRYSTALHD_KODI_NATIVE
+      if (input->stream_index == video) ++video_packets; else ++audio_packets;
+#endif
       av_packet_free(&input); return packet;
     }
     av_packet_free(&input); return nullptr;

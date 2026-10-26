@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="inputstream.crystalhd.routeprobe" name="CrystalHD native YUY2 (experimental)"
+       version="0.0.1" provider-name="CrystalHD contributors">
+  <requires>
+    <import addon="kodi.binary.global.main" version="2.0.3"/>
+    <import addon="kodi.binary.instance.inputstream" version="3.4.0"/>
+    <import addon="kodi.binary.instance.videocodec" version="2.2.1"/>
+  </requires>
+  <extension point="kodi.inputstream" library_linux="inputstream.crystalhd.routeprobe.so"/>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Explicit local H.264/AAC CrystalHD YUY2 prototype</summary>
+    <description lang="en_GB">Optional Kodi 22 RC1 format-admission experiment. Progressive H.264 MP4 via crystalhddec, two host copies into Kodi YUY2 buffers; mono/stereo AAC via Kodi. Not negotiated packed-format support, ordinary-file interception or a performance/physical A/V acceptance claim.</description>
+    <platform>linux</platform>
+    <license>GPL-2.0-or-later</license>
+  </extension>
+</addon>

@@ -36,8 +36,10 @@ output and no autoplugged video decoder or NV12 conversion. It needs the
 project's GStreamer plugin and matching `libcrystalhd.so.3` at runtime, selected
 through the usual `GST_PLUGIN_PATH_1_0` / `LD_LIBRARY_PATH` environment.
 Use that directory instead of the synthetic build in a separate test profile;
-the explicit ListItem launcher stays the same. This prototype is **video only**:
-it does not yet forward audio, support MPEG-2 or expose interlaced field flags.
+the explicit ListItem launcher stays the same. A selected mono/stereo AAC
+soundtrack is forwarded to Kodi's audio decoder using its own packet timebase;
+another soundtrack format is rejected. MPEG-2 and interlaced field flags are
+not implemented in this prototype.
 Missing/invalid timestamps, interlaced output and unexpected geometry fail.
 
 The existing decoder owns hardware NoCopy leases, CPB admission and recovery.
