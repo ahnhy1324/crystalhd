@@ -136,7 +136,9 @@ public:
       if (input->size <= 0 || static_cast<size_t>(input->size) > max_packet) break;
       DEMUX_PACKET* packet = AllocateDemuxPacket(input->size);
       if (!packet) break;
-      std::memcpy(packet->pData, input->data, input->size); packet->iStreamId = 0;
+      std::memcpy(packet->pData, input->data, input->size);
+      /* Kodi's allocator reserves storage/padding but leaves iSize zero. */
+      packet->iSize = input->size; packet->iStreamId = 0;
       const AVRational from = format->streams[video]->time_base, to{1, STREAM_TIME_BASE};
       packet->pts = input->pts == AV_NOPTS_VALUE ? -1.0 : static_cast<double>(av_rescale_q(input->pts, from, to));
       packet->dts = input->dts == AV_NOPTS_VALUE ? -1.0 : static_cast<double>(av_rescale_q(input->dts, from, to));
