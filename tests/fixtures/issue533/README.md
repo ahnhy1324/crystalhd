@@ -173,3 +173,42 @@ an independently captured native reference in a private result directory.
 Its `reference`, `none`, `prefix`, `picture`, `prefed-picture`, and
 `prefed-pair` modes are research controls, not playback or drain options.
 No production syntax predicate, firmware or legacy ioctl behavior changes.
+
+## Input-only idle/resume follow-up
+
+Following [the separate hypothesis](https://github.com/ahnhy1324/crystalhd/issues/533#issuecomment-6429172668),
+`28e1116` tests input idle through the existing legacy API. It sends the first
+17 original AUs, waits without further input, then sends the actual remaining
+three non-IDR AUs on the same handle. There is no Kick, EOS, Stop, reset,
+reopen or replay at that boundary. Ordinary terminal EOS follows all 20 AUs.
+
+[Native receipt](input-idle-20261027.json): seven fresh opens / 140 original
+pictures, including a new uninterrupted control that matches the retained
+oracle byte for byte. The signed firmware, library, module and PM are fixed.
+Each of the six idle controls releases 20/20 public RX leases and preserves
+every YUYV byte, flag and original token/PTS order. Source POC is associated
+by that frozen identity, not read directly from firmware DPB memory.
+
+| Input pause / control | During idle | After real continuation | At terminal EOS | Total |
+| --- | ---: | ---: | ---: | ---: |
+| 100 ms | 12 | 3 | 5 | 20 |
+| 1 s, two fresh sessions | 12 | 3 | 5 | 20 each |
+| 1 s without host receiving | 12 after receiving resumes | 3 | 5 | 20 |
+| 100 ms after AUs 5/9/13/17 | 0/4/8/12 cumulative | 3 | 5 | 20 |
+| 100 ms before the first AU | 0 | 5 | 15 | 20 |
+
+![Original AU order and measured output phases](input-idle-20261027.svg)
+
+The first 17 AUs include POC34 (AU16); AU18 contains POC32. Holding the boundary preserves
+the correct 32-before-34 output order. The empty control is not evidence of a
+nonempty zero-reorder case, and host receive withholding is not a V4L2
+CAPTURE-starvation qualification. Client/reference/PM/link/AER boundaries
+return unchanged. These are bounded fixture results, not endurance or a claim
+that pausing an application stops its compressed input.
+
+The probe adds `input-idle-100`, `input-idle-1000`, `input-hold-1000`,
+`input-idle-multi` and `input-idle-empty` modes. First run `reference` into a
+new private result directory, then use that same directory for comparisons.
+The packet fixture and build requirements are unchanged. This establishes
+input-idle/resume feasibility; complete-drain G2 remains FAIL and nonempty
+drained START remains `EOPNOTSUPP`. Renderer catch-up remains separate.
