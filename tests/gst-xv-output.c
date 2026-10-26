@@ -547,12 +547,19 @@ static void test_native_error_reopen(void)
   g_assert_true(g_file_test(fixture, G_FILE_TEST_IS_REGULAR));
   GError *error = NULL;
   GstElement *pipeline = gst_parse_launch("filesrc name=input ! h264parse ! "
-      "crystalhddec scale-width=1280 ! deinterlace method=linear fields=all mode=auto ! "
+      "crystalhddec scale-width=1280 ! deinterlace name=di method=linear fields=all mode=auto ! "
       "videoconvert n-threads=1 ! video/x-raw,format=UYVY ! "
       "crystalhdxvsink name=output show-preroll-frame=false sync=true qos=true", &error);
   g_assert_no_error(error);
   GstElement *source = gst_bin_get_by_name(GST_BIN(pipeline), "input");
   GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), "output");
+  GstElement *deinterlace = gst_bin_get_by_name(GST_BIN(pipeline), "di");
+  GstElement *controller = gst_element_factory_make("crystalhddiqos", NULL);
+  GstBus *bus = gst_element_get_bus(pipeline);
+  g_assert_nonnull(controller);
+  gint attached = -1;
+  g_signal_emit_by_name(controller, "attach", deinterlace, bus, &attached);
+  g_assert_cmpint(attached, ==, 1);
   g_object_set(source, "location", fixture, NULL);
   /* Lose only this output connection's completion. The application and
    * decoder must close normally and reuse the same pipeline afterward. */
@@ -561,13 +568,20 @@ static void test_native_error_reopen(void)
   g_atomic_pointer_set(&drop_connection, c->connection); g_atomic_int_set(&drop_type, c->completion_type);
   gst_element_set_state(pipeline, GST_STATE_PLAYING); await_message(pipeline, GST_MESSAGE_ERROR);
   gst_element_set_state(pipeline, GST_STATE_NULL); g_atomic_pointer_set(&drop_connection, NULL);
+  g_signal_emit_by_name(controller, "detach");
   g_assert_cmpuint(device_fds(), ==, 0);
   context_unref(c); clean_contexts();
   for (guint cycle = 0; cycle < 3; cycle++) {
+    /* Match the existing Player's 1.28.2 compatibility path; do not disable
+     * sink QoS or change its 5ms lateness / 15ms processing deadline. */
+    g_signal_emit_by_name(controller, "attach", deinterlace, bus, &attached);
+    g_assert_cmpint(attached, ==, 1);
     check_eos(pipeline, 100);
+    g_signal_emit_by_name(controller, "detach");
     g_assert_cmpuint(device_fds(), ==, 0);
     g_test_message("Native same-pipeline reopen %u: 100 outputs, EOS, live-process device FD0", cycle + 1);
   }
+  gst_object_unref(controller); gst_object_unref(deinterlace); gst_object_unref(bus);
   gst_object_unref(source); gst_object_unref(sink); gst_object_unref(pipeline); clean_contexts();
 }
 int main(int argc, char **argv)
