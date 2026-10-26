@@ -13,6 +13,89 @@ Check existing issues first. Include what you can:
 
 Mark results **PASS**, **FAIL**, or **NOT RUN**, and distinguish real hardware from containers or emulation. Redact private paths, credentials, sensitive environment values, and media bytes before posting logs. See [BRINGUP.md](BRINGUP.md) for diagnostics.
 
+## Issue triage and known-issue policy
+
+Record impact and scheduling separately in the existing owning issue. Labels
+are optional; this policy does not require mass relabeling or duplicate issues.
+
+| Severity: impact | Definition |
+| --- | --- |
+| S0 critical | Confirmed unsafe DMA/buffer ownership, corruption, security impact, kernel crash or unrecoverable device/resource failure. Stop affected release activity and investigate. |
+| S1 high | Supported valid streams lose decoded picture identity/PTS or fail; serious reproducible regressions in ordinary seek, EOS, Stop, reopen or recovery. |
+| S2 moderate | Bounded, recoverable playback/output performance or quality degradation. Record measured scope and available alternatives. |
+| S3 low | Small user-visible impact, minor diagnostics/ergonomics, or isolated experimental quality deviation without a supported-path correctness claim. |
+
+**Unassessed is not S3.** Missing evidence does not establish low impact.
+
+| Priority: scheduling | Action |
+| --- | --- |
+| P0 immediate | Block affected work/release and investigate urgently. |
+| P1 high | Fix before the next affected release, or explicitly exclude the defective feature from its claims. |
+| P2 normal | Schedule behind safety, correctness and reliability work. |
+| P3 deferred | Known limitation, nonessential tuning or bounded research awaiting a stated trigger. |
+
+Choose priority using supported scope, repeatability, regression status,
+reachability, workaround, release claims, cost/risk and competing work. A
+workaround can change scheduling without removing the underlying impact.
+Only the maintainer/release tracker can designate an issue nonblocking for a
+specific release scope. [Release gates](RELEASING.md) and frozen oracles take
+precedence: deferral never turns **FAIL, HOLD, REVIEW, NOT RUN or UNKNOWN**
+into **PASS**, or supplies missing qualification.
+
+Keep video stages explicit: compressed AU admission; decoded picture/field
+completeness, identity and PTS; frontend output/QoS; sink render calls or
+X-server acknowledgments; physical scanout and A/V observation. A render drop
+is not a hardware decoder drop, and submission/completion is not physical
+presentation. Preserve exact source/component/host identities with results.
+Separate static firmware findings, synthetic/emulated tests, native hardware
+measurements and proven supported behavior.
+
+Known issues cannot waive unsafe DMA, memory corruption, kernel/lifecycle
+deadlock, silent unsupported fallback, unexplained valid decoded-picture loss,
+or supported count/pixel/PTS, EOS/drain, lifetime/resource and ABI/ioctl gates.
+Quantified deadline/QoS losses may be nonblocking for a specifically bounded
+or excluded display-performance claim; record frequency and burstiness. There
+is no universal acceptable drop percentage or resulting FPS/smoothness claim.
+Experimental pixel differences need separate investigation of chroma siting,
+filtering, rounding and scaling. They never silently change a frozen bit-exact
+oracle; production promotion requires conformance/quality evidence.
+
+Use this compact decision record in the owning issue; link existing evidence
+rather than copying long logs. A deferred limitation needs a reason and a
+revisit trigger, while a fixed result needs evidence of corrected behavior.
+
+```text
+Type: correctness / reliability / security / compatibility / quality / performance / research
+Severity: unassessed or S0–S3; Priority: P0–P3
+Disposition: active / known limitation (deferred) / not supported / needs evidence / fixed
+Affected: device, host, frontend/feature mode, code/package/version, fixture
+Observed / expected:
+Evidence: exact source, pipeline stage, static/synthetic/emulated/native, PASS/FAIL/REVIEW/NOT RUN
+Supported scope / next-release GO/HOLD impact / workaround:
+Decision: deferral reason, risks, owner or tracking issue, revisit triggers
+```
+
+Revisit on regression, broader support claims, loss of the workaround, QoS
+bursts, worse physical A/V or new evidence. Illustrative dispositions, not
+assignments to entire umbrella issues:
+
+- [#91](https://github.com/ahnhy1324/crystalhd/issues/91): the measured CPU-FHD/Xv
+  QoS row on the X61 can be S2/P2; retain its strict full-census FAIL. Card
+  `--scale-width 1280` with sink fitting is a measured alternative on that host,
+  not a general guarantee or a classification of all #91 work.
+- [#513](https://github.com/ahnhy1324/crystalhd/issues/513): async Xv/SHM is
+  experimental research/P3 pending prerequisites, not a supported backend or
+  proof of scanout/physical A/V.
+- [#92](https://github.com/ahnhy1324/crystalhd/issues/92): MPEG-1 via algorithm 1
+  is non-production research. Investigate chroma/reference differences before
+  making a production pixel-tolerance claim.
+- Confirmed valid picture loss, unrecoverable decoder ownership or a
+  DMA-lifetime fault on a supported path cannot use a renderer-QoS allowance.
+
+Keep user-facing limitations and workarounds in the existing
+[usage guide](USAGE.md#known-issues-and-deinterlacing-roadmap); reproduction,
+evidence and scheduling remain in each problem's issue.
+
 ## Pull requests
 
 - Keep changes focused and link related issues. Discuss broad ABI, firmware, DMA, or device-lifetime changes before implementation.

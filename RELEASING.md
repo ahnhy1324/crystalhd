@@ -6,6 +6,11 @@ bounded v1.2.0 scope and G0–G3 GO/HOLD rules. Optional performance and researc
 work belongs to [#472](https://github.com/ahnhy1324/crystalhd/issues/472),
 #91, #92 or #204 and is not silently promoted into a release requirement.
 
+Use the [issue triage policy](CONTRIBUTING.md#issue-triage-and-known-issue-policy)
+for scheduling and scoped known limitations. These release gates and frozen
+oracles take precedence; a deferred issue does not turn missing or failed
+mandatory evidence into PASS.
+
 The completed 1.0 campaign is historical evidence.
 The published `v1.0.0-rc.1` at
 `79c7cc963f69a6cbe22852c7fa30cee71a0c1737` and its bounded results remain
