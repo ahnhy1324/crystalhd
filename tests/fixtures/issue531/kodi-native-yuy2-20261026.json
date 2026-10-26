@@ -1,0 +1,184 @@
+{
+  "schema": "crystalhd-kodi-native-yuy2-v1",
+  "issue": 531,
+  "scope": "Explicit InputStream-hosted optional prototype; no normal-file interception or support/default promotion",
+  "runtime": {
+    "kodi_upstream": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "published_build": "22.0-RC1 21.90.901 Git20260927-28ea2eac-dirty; original Flathub distribution launcher/manifest patches",
+    "inputstream_abi": "3.4.0",
+    "videocodec_abi": "2.2.1",
+    "architecture": "x86_64",
+    "gstreamer": "1.28.6 (isolated org.freedesktop.Platform 26.08)",
+    "native_engine_source": "54752a1af514eb673b563fb80b6df6600223a666",
+    "module": "3.10.13; unchanged",
+    "presentation": "Xvfb960x540/software GLES, YUY2 shader selected; physical scanout NOT RUN",
+    "addon_build": "native-trace diagnostic; no performance acceptance"
+  },
+  "data_contract": {
+    "format": "YUY2 Y0 U Y1 V",
+    "geometry": "640x360p30",
+    "stride": 1280,
+    "bytes_per_picture": 460800,
+    "host_copies": 2,
+    "conversion_to_nv12": false,
+    "packing_negotiated": false,
+    "host_advertises": "YV12 only; experimental packed format API allocation/return",
+    "borrow_owner": "existing crystalhddec/libcrystalhd: RX copied and lease released before Gst sample; addon copies checked rows into Kodi-owned buffer; no RX pointer escapes"
+  },
+  "fixture": {
+    "original": "high.mp4",
+    "codec": "H264 High B2",
+    "pictures": 180,
+    "duration_seconds": 6,
+    "aac_variant": "Video stream copied; FFmpeg generated 440Hz/48kHz mono AAC,283packets; no media bodies added",
+    "frozen_yuy2_sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1"
+  },
+  "qualified_runs": [
+    {
+      "source": "cd0ddd2aab27b819952d36c9f5ae7686f0badced",
+      "case": "video-only same Kodi process",
+      "status": "PASS",
+      "cycles": 3,
+      "each": {
+        "pictures": 180,
+        "exact_ordered_pts": true,
+        "frozen_yuy2": true,
+        "actual_device_and_maps": true,
+        "live_fd_count": 22,
+        "card_retired_while_process_alive": true
+      },
+      "kernel": "PASS",
+      "final_boundary_equal": true
+    },
+    {
+      "source": "f8b0bcbdd984e5a391ac6349a4348060b64277ac",
+      "case": "H264/AAC plus controls in same Kodi process",
+      "status": "PASS_NATIVE_PICTURES_AND_CONTROL_LIFETIME",
+      "cases": [
+        {
+          "cycle": 1,
+          "frames": 180,
+          "sessions": 1,
+          "actual_device": true,
+          "actual_maps": true,
+          "live_retired_before_quit": true,
+          "live_fd_count": 36,
+          "status": "PASS_COMPLETE_NATIVE_FILE",
+          "originals": 180,
+          "aac_packets": 283,
+          "exact_pts": true,
+          "frozen_yuy2": true
+        },
+        {
+          "cycle": 2,
+          "frames": 184,
+          "sessions": 3,
+          "actual_device": true,
+          "actual_maps": true,
+          "live_retired_before_quit": true,
+          "live_fd_count": 36,
+          "status": "PASS_CONTROL_LIFETIME",
+          "operations": [
+            "pause(speed0)",
+            "resume(speed1)",
+            "seek+to3s(observed3.201s)",
+            "seek-back-to1s(fresh epoch;150orderedpictures1s..5.966667s)",
+            "finalEOS"
+          ],
+          "pixel_oracle_across_seeks": "NOT RUN; aggregate across cancelled epochs is not the full-file oracle"
+        },
+        {
+          "cycle": 3,
+          "frames": 21,
+          "sessions": 1,
+          "actual_device": true,
+          "actual_maps": true,
+          "live_retired_before_quit": true,
+          "live_fd_count": 35,
+          "status": "PASS_EXPLICIT_STOP",
+          "accepted": 24,
+          "returned": 21,
+          "natural_media_eos": false,
+          "accepted_not_returned_at_stop": 3
+        },
+        {
+          "cycle": 4,
+          "frames": 180,
+          "sessions": 1,
+          "actual_device": true,
+          "actual_maps": true,
+          "live_retired_before_quit": true,
+          "live_fd_count": 34,
+          "status": "PASS_COMPLETE_NATIVE_FILE",
+          "originals": 180,
+          "aac_packets": 283,
+          "exact_pts": true,
+          "frozen_yuy2": true
+        }
+      ],
+      "audio_route": "Original ALSA-name setting was normalized to PipeWire default. Do not describe this arm as null output. No operator acceptance.",
+      "kernel": "PASS",
+      "exit_code": 0,
+      "final_boundary_equal": true
+    },
+    {
+      "source": "f8b0bcbdd984e5a391ac6349a4348060b64277ac",
+      "case": "explicit PipeWire null output",
+      "status": "PASS_NATIVE_FILE_AND_RECONSTRUCTED_AUDIO_ROUTE",
+      "pictures": 180,
+      "exact_pts": true,
+      "frozen_yuy2": true,
+      "aac_packets": 283,
+      "audio_route": "Kodi client security PID -> client-owned audio stream node -> links to owned null sink playback ports, from retained pw-cli event log",
+      "observer_original": "FAIL_OBSERVER: PID tested on Node; actual identity was on its Client. Preserved original result; reconstructed from independent retained event log, no replacement of FAIL.",
+      "temporary_node_removed": true,
+      "kernel": "PASS",
+      "final_boundary_equal": true
+    }
+  ],
+  "failed_evidence_preserved": [
+    {
+      "source": "25c2a7456c55e9422c9d928d768c14deb0cf2c5a",
+      "result": "Frame/pixel180positive; identity observation incomplete because controller watched bwrap parent instead of Kodi child",
+      "followup": "Corrected child observer qualified subsequent three runs, not relabelled original identity gap"
+    },
+    {
+      "source": "25c2a7456c55e9422c9d928d768c14deb0cf2c5a",
+      "result": "Actual callback test RED: inactive DRAIN returned BUFFER; target host Reset loops until EOF",
+      "fix": "cd0ddd2; error drain closes/cancels and returns terminal acknowledgement separately from natural EOS; inactive drain terminates"
+    },
+    {
+      "source": "ef579da7bbd9c7e16701d9591eabaad8898ef47e",
+      "result": "FAIL_FULL_CENSUS:122/180; temporary Kodi DRAIN incorrectly triggered appsrc/firmware EOS. Environment also had no audio endpoint; audio backpressure starved video. All ownership/kernel boundaries restored.",
+      "fix": "f8b0bcbdd984e5a391ac6349a4348060b64277ac",
+      "counterexample": "New callback raw transport: parent EOF+2 demuxed, only1submitted; temporary drain, then second packet works, final2pictures. No device."
+    },
+    {
+      "case": "first private pw-cli null node startup",
+      "result": "NOT RUN: CLI stdin EOF immediately exited before native run; later kept pipe open"
+    },
+    {
+      "case": "first demux callback mock",
+      "result": "Harness missing SDK version string; fixed mock, no production failure claim"
+    },
+    {
+      "case": "MOV duration metadata",
+      "result": "AVFormatContext aggregate duration unknown before find_stream_info despite valid track header durations; derive finite range from selected track headers without software decoder probing"
+    }
+  ],
+  "drain_cause_source": "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp#L390",
+  "checks": {
+    "werror_build": "PASS synthetic/native/native-trace",
+    "device_free": "PASS 5 transport/bounds/timestamp +2 actual codec callbacks +1 actual demux callbacks",
+    "sanitizers": "ASan/UBSan/LSan PASS: unchanged transport5 at25c, codec2 and affected demux1 atf8b0bcb",
+    "side_effects": "No Kodi source patch, no installed apps/driver/library/firmware/default/PM changes; temporary null node removed"
+  },
+  "remaining": [
+    "Full RGB/asymmetric shader pixel oracle and broader source color/primaries acceptance",
+    "Matched VA/NV12 versus native YUY2 CPU/copy/upload/drop comparison: NOT RUN, no performance win claimed",
+    "Physical A/V,input/display acceptance: NOT RUN, operator unavailable",
+    "Native i386/BCM70012: NOT RUN; installed Kodi21.3 has no packed API",
+    "MPEG2 codec API mapping and interlaced picture flags unavailable in this bounded target; unchanged VA/NV12 remains the existing path",
+    "Single-copy direct DIL integration, endurance and broader files: NOT RUN"
+  ]
+}

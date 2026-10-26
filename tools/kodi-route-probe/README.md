@@ -53,8 +53,8 @@ Seek Reset closes the old decoder and creates a fresh parser
 and decoder on the next packet. This avoids H264Parse's NULL/restart timestamp
 policy change. An inactive/error session also terminates the host's drain loop;
 an error cancellation is logged separately and is not a natural EOS pass.
-These are implementation properties, not completed native or
-performance acceptance. Kodi may choose its own fallback when an add-on fails;
+Bounded native qualification is recorded below; it does not establish
+performance or physical A/V acceptance. Kodi may choose its own fallback when an add-on fails;
 verify the native session markers, actual device ownership and returned frames
 before calling playback a CrystalHD success.
 
@@ -74,3 +74,28 @@ bytes), then exits normally. This is **not a renderer or native decode pass**.
 The [receipt](../../tests/fixtures/issue531/kodi-route-gate-a-20261026.json)
 preserves the initial packet-size defect and an excluded virtual-display
 startup failure. The system Kodi/profile and device stack remain unchanged.
+
+
+## Native qualification
+
+At `cd0ddd2`, a single isolated Kodi process completes three video-only runs,
+each **180 ordered pictures with exact PTS and frozen YUY2 pixels**, returning
+its device resources between files. At `f8b0bcb`, H.264/AAC full playback and
+reopen also return **180/180**; pause/resume, forward/backward seek and an
+explicit mid-file Stop complete with clean card retirement. Kodi selects its
+ordinary **YUY2 GLES shader**. A separately routed null-audio run verifies the
+Kodi client-to-null-sink links; none of these are physical A/V acceptance.
+
+The [native receipt](../../tests/fixtures/issue531/kodi-native-yuy2-20261026.json)
+separates tested add-on and decoder-engine sources, full-file counts from
+cancelled seek/Stop epochs, earlier FAILs and observer corrections. It includes
+the fixed premature-EOS counterexample: the first AAC arm ended at 122/180
+because temporary DRAIN was treated as final input. The repaired callback test
+proves later input survives a temporary drain, including parent EOF with a
+packet still queued in Kodi.
+
+These bounded runs use a **software GLES/Xvfb** display, not a matched GPU
+performance comparison. Full RGB/asymmetric shader pixel checks, broader
+source color metadata, physical A/V, endurance, i386 and a matched VA/NV12 A/B
+remain open. No throughput, CPU saving or zero-copy claim is made. Installed
+Kodi 21.3 and the existing VA/NV12 path remain the ordinary playback route.
