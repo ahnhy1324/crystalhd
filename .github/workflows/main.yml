@@ -82,11 +82,13 @@ jobs:
           git -C "$kodi_probe_sdk" sparse-checkout init --cone
           git -C "$kodi_probe_sdk" sparse-checkout set xbmc/addons/kodi-dev-kit
           git -C "$kodi_probe_sdk" checkout --detach FETCH_HEAD
-          make -C tools/kodi-route-probe all native native-trace check check-codec \
+          make -C tools/kodi-route-probe all native native-trace rgb-test check check-codec \
             KODI_SDK_INCLUDE="$kodi_probe_sdk/xbmc/addons/kodi-dev-kit/include"
           ffmpeg -v error -nostdin -f lavfi -i testsrc2=size=64x48:rate=10 \
             -f lavfi -i sine=frequency=440:sample_rate=48000 \
-            -c:v libx264 -threads 1 -c:a aac -t 1 "$RUNNER_TEMP/kodi-route-aac.mp4"
+            -c:v libx264 -threads 1 -c:a aac -t 1 \
+            -color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv \
+            "$RUNNER_TEMP/kodi-route-aac.mp4"
           make -C tools/kodi-route-probe check-demux \
             KODI_SDK_INCLUDE="$kodi_probe_sdk/xbmc/addons/kodi-dev-kit/include" \
             TEST_MP4="$RUNNER_TEMP/kodi-route-aac.mp4"

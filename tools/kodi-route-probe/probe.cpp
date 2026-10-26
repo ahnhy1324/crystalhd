@@ -13,6 +13,9 @@
 #include "native.h"
 #include "input-progress.h"
 #include <gst/video/video.h>
+#ifdef CRYSTALHD_KODI_RGB_TEST
+#include "../../tests/kodi-rgb-observer.h"
+#endif
 #endif
 extern "C" {
 #include <libavformat/avformat.h>
@@ -22,6 +25,52 @@ extern "C" {
 namespace {
 constexpr const char* marker = "CrystalHD-GateA";
 constexpr size_t max_packet = crystalhd_kodi::packet_limit;
+
+#ifdef CRYSTALHD_KODI_NATIVE
+bool source_color(const std::string& path, const AVCodecParameters& params,
+                   crystalhd_kodi::ColorHints& color) {
+  color.matrix = params.color_space; color.primaries = params.color_primaries;
+  color.transfer = params.color_trc; color.range = params.color_range;
+  /* Inspect one AU in a separate demux context. The actual input's first
+   * video packet and negative-PTS AAC priming packet must remain untouched.
+   * Only h264parse runs: there is no software or hardware video decoder. */
+  AVFormatContext* probe = nullptr;
+  if (avformat_open_input(&probe, path.c_str(), av_find_input_format("mov"), nullptr) < 0) return false;
+  const int stream = av_find_best_stream(probe, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+  AVPacket* packet = av_packet_alloc(); bool ok = false; size_t bytes = 0;
+  for (unsigned n = 0; packet && stream >= 0 && n < 64 && av_read_frame(probe, packet) >= 0; ++n) {
+    if (packet->size <= 0 || static_cast<size_t>(packet->size) > max_packet - bytes) break;
+    bytes += packet->size;
+    if (packet->stream_index == stream) {
+      ok = crystalhd_kodi::InspectAvcColor(params.extradata, params.extradata_size,
+                                          packet->data, packet->size, color);
+      break;
+    }
+    av_packet_unref(packet);
+  }
+  av_packet_free(&packet); avformat_close_input(&probe);
+  return ok;
+}
+
+bool copy_color(const crystalhd_kodi::ColorHints& c, kodi::addon::InputstreamInfo& info) {
+  /* Both public APIs use ISO/IEC 23001-8 values. Admit only the prototype's
+   * SDR set, never silently replace an HDR/unsupported descriptor with 709.
+   * Static assertions keep this distinct from private pixel-enum coercion. */
+  static_assert(INPUTSTREAM_COLORPRIMARY_BT709 == 1 && INPUTSTREAM_COLORPRIMARY_BT470BG == 5 &&
+                INPUTSTREAM_COLORPRIMARY_SMPTE170M == 6 && INPUTSTREAM_COLORPRIMARY_UNSPECIFIED == 2);
+  static_assert(INPUTSTREAM_COLORTRC_BT709 == 1 && INPUTSTREAM_COLORTRC_UNSPECIFIED == 2);
+  auto member = [](unsigned value, std::initializer_list<unsigned> list) {
+    return std::find(list.begin(), list.end(), value) != list.end();
+  };
+  if (!member(c.matrix, {1,2,5,6,7}) || !member(c.primaries, {1,2,5,6,7}) ||
+      !member(c.transfer, {1,2,4,5,6,7,13}) || c.range > 1) return false;
+  info.SetColorSpace(static_cast<INPUTSTREAM_COLORSPACE>(c.matrix));
+  info.SetColorPrimaries(static_cast<INPUTSTREAM_COLORPRIMARIES>(c.primaries));
+  info.SetColorTransferCharacteristic(static_cast<INPUTSTREAM_COLORTRC>(c.transfer));
+  info.SetColorRange(static_cast<INPUTSTREAM_COLORRANGE>(c.range));
+  return true;
+}
+#endif
 
 class ProbeCodec : public kodi::addon::CInstanceVideoCodec {
   unsigned width = 0, height = 0;
@@ -238,7 +287,11 @@ public:
     gst_buffer_unmap(buffer, &map); gst_sample_unref(sample);
     /* No Gst sample or hardware borrow escapes this call. Only Kodi's own
      * backing is transferred to its renderer on VC_PICTURE. */
-    picture.pts = pts; last_pts = pts; ++pictures;
+    picture.pts = pts; last_pts = pts;
+#ifdef CRYSTALHD_KODI_RGB_TEST
+    observe_rgb_source(picture, pictures);
+#endif
+    ++pictures;
 #ifdef CRYSTALHD_KODI_TRACE
     kodi::Log(ADDON_LOG_DEBUG, "CrystalHD-Native frame=%u pts_us=%lld stride=%u", pictures,
               static_cast<long long>(pts), picture.stride[0]);
@@ -267,6 +320,7 @@ class ProbeStream : public kodi::addon::CInstanceInputStream {
 #ifdef CRYSTALHD_KODI_NATIVE
   int audio = -1;
   int64_t media_end = 0;
+  crystalhd_kodi::ColorHints color;
   std::shared_ptr<crystalhd_kodi::InputProgress> progress = std::make_shared<crystalhd_kodi::InputProgress>();
   unsigned video_packets = 0, audio_packets = 0;
 #endif
@@ -306,10 +360,14 @@ public:
         p->height <= 0 || p->height > 1088 || p->extradata_size < 0 ||
         static_cast<size_t>(p->extradata_size) > max_packet) { Close(); return false; }
 #ifdef CRYSTALHD_KODI_NATIVE
-    if (p->color_range == AVCOL_RANGE_JPEG ||
+    kodi::addon::InputstreamInfo color_check;
+    if (!source_color(path, *p, color) || !copy_color(color, color_check) ||
         (p->field_order != AV_FIELD_UNKNOWN && p->field_order != AV_FIELD_PROGRESSIVE)) {
+      kodi::Log(ADDON_LOG_ERROR, "CrystalHD-Native unsupported/malformed source color or field metadata");
       Close(); return false;
     }
+    kodi::Log(ADDON_LOG_INFO, "CrystalHD-Native source color matrix=%u primaries=%u transfer=%u range=%u (ISO; unknown preserved)",
+              color.matrix, color.primaries, color.transfer, color.range);
     audio = av_find_best_stream(format, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
     if (audio >= 0) {
       const auto* a = format->streams[audio]->codecpar;
@@ -389,13 +447,7 @@ public:
     info.SetCodecName("h264");
 #ifdef CRYSTALHD_KODI_NATIVE
     info.SetCodecInternalName("CrystalHD native YUY2 experiment");
-    if (p->color_range == AVCOL_RANGE_MPEG) info.SetColorRange(INPUTSTREAM_COLORRANGE_LIMITED);
-    switch (p->color_space) {
-    case AVCOL_SPC_BT709: info.SetColorSpace(INPUTSTREAM_COLORSPACE_BT709); break;
-    case AVCOL_SPC_BT470BG: info.SetColorSpace(INPUTSTREAM_COLORSPACE_BT470BG); break;
-    case AVCOL_SPC_SMPTE170M: info.SetColorSpace(INPUTSTREAM_COLORSPACE_SMPTE170M); break;
-    default: info.SetColorSpace(INPUTSTREAM_COLORSPACE_UNSPECIFIED); break;
-    }
+    if (!copy_color(color, info)) return false;
 #else
     info.SetCodecInternalName("CrystalHD route probe, NO hardware decode");
 #endif

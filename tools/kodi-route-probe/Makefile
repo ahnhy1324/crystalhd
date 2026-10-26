@@ -8,11 +8,13 @@ OUTPUT := build/$(ADDON)
 GST_PACKAGES := gstreamer-app-1.0 gstreamer-video-1.0
 NATIVE_OUTPUT := build-native/$(ADDON)
 TRACE_OUTPUT := build-trace/$(ADDON)
+RGB_OUTPUT := build-rgb/$(ADDON)
 
-.PHONY: all native native-trace check check-codec check-demux clean
+.PHONY: all native native-trace rgb-test check check-codec check-demux clean
 all: $(OUTPUT)/$(ADDON).so $(OUTPUT)/addon.xml
 native: $(NATIVE_OUTPUT)/$(ADDON).so $(NATIVE_OUTPUT)/addon.xml
 native-trace: $(TRACE_OUTPUT)/$(ADDON).so $(TRACE_OUTPUT)/addon.xml
+rgb-test: $(RGB_OUTPUT)/$(ADDON).so $(RGB_OUTPUT)/addon.xml
 
 $(OUTPUT)/$(ADDON).so: probe.cpp packed.h
 	@test -n "$(KODI_SDK_INCLUDE)" || { echo 'Set KODI_SDK_INCLUDE to the unmodified Kodi 22 RC1 dev-kit include directory'; exit 1; }
@@ -22,7 +24,9 @@ $(OUTPUT)/$(ADDON).so: probe.cpp packed.h
 		$< $(shell $(PKG_CONFIG) --libs $(PACKAGES)) -o "$@"
 
 $(TRACE_OUTPUT)/$(ADDON).so: CPPFLAGS += -DCRYSTALHD_KODI_TRACE
-$(NATIVE_OUTPUT)/$(ADDON).so $(TRACE_OUTPUT)/$(ADDON).so: probe.cpp native.cpp native.h packed.h input-progress.h
+$(RGB_OUTPUT)/$(ADDON).so: CPPFLAGS += -DCRYSTALHD_KODI_TRACE -DCRYSTALHD_KODI_RGB_TEST
+$(RGB_OUTPUT)/$(ADDON).so: ../../tests/kodi-rgb-observer.h
+$(NATIVE_OUTPUT)/$(ADDON).so $(TRACE_OUTPUT)/$(ADDON).so $(RGB_OUTPUT)/$(ADDON).so: probe.cpp native.cpp native.h packed.h input-progress.h
 	@test -n "$(KODI_SDK_INCLUDE)" || { echo 'Set KODI_SDK_INCLUDE to the unmodified Kodi 22 RC1 dev-kit include directory'; exit 1; }
 	mkdir -p "$(@D)"
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -Werror -fPIC -shared $(CPPFLAGS) -DCRYSTALHD_KODI_NATIVE \
@@ -33,7 +37,7 @@ $(OUTPUT)/addon.xml: addon.xml
 	mkdir -p "$(@D)"
 	cp "$<" "$@"
 
-$(NATIVE_OUTPUT)/addon.xml $(TRACE_OUTPUT)/addon.xml: addon-native.xml
+$(NATIVE_OUTPUT)/addon.xml $(TRACE_OUTPUT)/addon.xml $(RGB_OUTPUT)/addon.xml: addon-native.xml
 	mkdir -p "$(@D)"
 	cp "$<" "$@"
 
@@ -64,4 +68,4 @@ check-demux: build/kodi-route-demux-test
 	./build/kodi-route-demux-test "$(TEST_MP4)"
 
 clean:
-	rm -rf build build-native build-trace
+	rm -rf build build-native build-trace build-rgb

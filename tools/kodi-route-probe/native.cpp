@@ -3,6 +3,58 @@
 #include <gst/video/video.h>
 
 namespace crystalhd_kodi {
+bool InspectAvcColor(const uint8_t* extra, size_t extra_size,
+                     const uint8_t* au, size_t au_size, ColorHints& hints) {
+  if (!extra || extra_size < 7 || extra_size > packet_limit ||
+      !au || !au_size || au_size > packet_limit || extra[0] != 1) return false;
+  if (!gst_init_check(nullptr, nullptr, nullptr)) return false;
+  GstElement* pipeline = gst_pipeline_new(nullptr);
+  if (!pipeline) return false;
+  GstElement* source = gst_element_factory_make("appsrc", nullptr);
+  GstElement* parser = gst_element_factory_make("h264parse", nullptr);
+  GstElement* sink = gst_element_factory_make("appsink", nullptr);
+  if (!source || !parser || !sink) {
+    for (auto* element : {source, parser, sink}) if (element) gst_object_unref(element);
+    gst_object_unref(pipeline); return false;
+  }
+  gst_bin_add_many(GST_BIN(pipeline), source, parser, sink, nullptr);
+  GstBuffer* config = gst_buffer_new_allocate(nullptr, extra_size, nullptr);
+  gst_buffer_fill(config, 0, extra, extra_size);
+  GstCaps* caps = gst_caps_new_simple("video/x-h264", "stream-format", G_TYPE_STRING, "avc",
+      "alignment", G_TYPE_STRING, "au", "codec_data", GST_TYPE_BUFFER, config, nullptr);
+  gst_buffer_unref(config); gst_app_src_set_caps(GST_APP_SRC(source), caps); gst_caps_unref(caps);
+  g_object_set(sink, "sync", FALSE, "max-buffers", 1U, "enable-last-sample", FALSE, nullptr);
+  bool ok = gst_element_link_many(source, parser, sink, nullptr) &&
+            gst_element_set_state(pipeline, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE;
+  if (ok) {
+    GstBuffer* packet = gst_buffer_new_allocate(nullptr, au_size, nullptr);
+    gst_buffer_fill(packet, 0, au, au_size);
+    ok = gst_app_src_push_buffer(GST_APP_SRC(source), packet) == GST_FLOW_OK;
+    gst_app_src_end_of_stream(GST_APP_SRC(source));
+    GstSample* sample = ok ? gst_app_sink_try_pull_sample(GST_APP_SINK(sink), GST_SECOND) : nullptr;
+    ok = sample != nullptr;
+    if (sample) {
+      const auto* structure = gst_caps_get_structure(gst_sample_get_caps(sample), 0);
+      const char* value = gst_structure_get_string(structure, "colorimetry");
+      GstVideoColorimetry color{};
+      if (value && !gst_video_colorimetry_from_string(&color, value)) ok = false;
+      if (value && ok) {
+        if (color.matrix != GST_VIDEO_COLOR_MATRIX_UNKNOWN)
+          hints.matrix = gst_video_color_matrix_to_iso(color.matrix);
+        if (color.primaries != GST_VIDEO_COLOR_PRIMARIES_UNKNOWN)
+          hints.primaries = gst_video_color_primaries_to_iso(color.primaries);
+        if (color.transfer != GST_VIDEO_TRANSFER_UNKNOWN)
+          hints.transfer = gst_video_transfer_function_to_iso(color.transfer);
+        if (color.range != GST_VIDEO_COLOR_RANGE_UNKNOWN)
+          hints.range = color.range == GST_VIDEO_COLOR_RANGE_0_255 ? 2 : 1;
+      }
+      gst_sample_unref(sample);
+    }
+  }
+  gst_element_set_state(pipeline, GST_STATE_NULL); gst_object_unref(pipeline);
+  return ok;
+}
+
 void NativeDecoder::Close() {
   if (pipeline) {
     /* NULL synchronously joins our decoder's worker before object disposal.

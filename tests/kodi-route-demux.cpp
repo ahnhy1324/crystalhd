@@ -6,6 +6,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 }
 static std::string fixture;
+static std::vector<unsigned> expected_color;
 static void quiet_log(KODI_ADDON_BACKEND_HDL, int, const char*) {}
 static DEMUX_PACKET* allocate_packet(void*, int size) {
   auto* packet = new DEMUX_PACKET{};
@@ -42,6 +43,18 @@ static void demux() {
     INPUTSTREAM_TIMES times{}; g_assert_true(callbacks.get_times(&input, &times));
     AVFormatContext* reference = nullptr;
     g_assert_cmpint(avformat_open_input(&reference, fixture.c_str(), av_find_input_format("mov"), nullptr), ==, 0);
+    const int v = av_find_best_stream(reference, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    kodi::addon::InputstreamInfo video_info; g_assert_true(stream.GetStream(0, video_info));
+    const auto* color = reference->streams[v]->codecpar;
+    if (!expected_color.empty()) {
+      g_assert_cmpuint(video_info.GetColorSpace(), ==, expected_color[0]);
+      g_assert_cmpuint(video_info.GetColorPrimaries(), ==, expected_color[1]);
+      g_assert_cmpuint(video_info.GetColorTransferCharacteristic(), ==, expected_color[2]);
+      g_assert_cmpuint(video_info.GetColorRange(), ==, expected_color[3]);
+    } else if (color->color_primaries != AVCOL_PRI_UNSPECIFIED)
+      g_assert_cmpuint(video_info.GetColorPrimaries(), ==, color->color_primaries);
+    if (expected_color.empty() && color->color_trc != AVCOL_TRC_UNSPECIFIED)
+      g_assert_cmpuint(video_info.GetColorTransferCharacteristic(), ==, color->color_trc);
     AVPacket* original = av_packet_alloc(); unsigned counts[2]{}; int64_t last_end = 0;
     auto compare = [&] {
       DEMUX_PACKET* packet = stream.DemuxRead(); g_assert_nonnull(packet);
@@ -71,8 +84,9 @@ static void demux() {
   kodi::addon::CPrivateBase::m_interface = nullptr;
 }
 int main(int argc, char** argv) {
-  if (argc != 2 || argv[1][0] != '/') return 2;
+  if ((argc != 2 && argc != 6) || argv[1][0] != '/') return 2;
+  for (int i = 2; i < argc; ++i) expected_color.push_back(std::stoul(argv[i]));
   fixture = argv[1]; int test_argc = 1; g_test_init(&test_argc, &argv, nullptr);
   g_test_add_func("/kodi/demux/audio-video-timebases-seek", demux);
-  return g_test_run();
+  const int result = g_test_run(); gst_deinit(); return result;
 }
