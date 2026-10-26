@@ -1016,7 +1016,7 @@ class Player:
             stats = field_sink.get_property("field-stats")
             print(f"GPU field submissions: {stats.get_value('fields')}; "
                   f"expired field skips: {stats.get_value('dropped-fields')}; "
-                  f"late whole-buffer drops: {late_whole_buffers}", flush=True)
+                  f"late whole-buffer drops: {late_whole_buffers} (since last reset)", flush=True)
         for workaround in tuple(self.deinterlace_qos.values()):
             workaround.close()
         self.deinterlace_qos.clear()
