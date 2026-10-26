@@ -102,18 +102,29 @@ Runtime installation prepares the complete file set in a temporary directory
 before replacing runtime files. A preparation failure preserves the existing
 runtime and any earlier incomplete-state record. Prepared files are replaced
 individually, with VERSION published last; linker/udev activation uses the
-completed payload. Publishing and runtime removal record their current stage in
-`/var/lib/crystalhd/runtime-install.pending`. If interrupted, run
+completed payload. Before replacement, private `.crystalhd-undo-*` directories
+beside the destination files retain their original inodes through hard links.
+If this preparation fails, no runtime files are replaced. A caught publication
+or activation failure restores previous files and links, reactivates them if
+needed, and restores any earlier incomplete-state record. The installation
+still returns failure.
+
+Publishing and runtime removal record their current stage in
+`/var/lib/crystalhd/runtime-install.pending`. If restoration or reactivation
+fails, the marker and error message identify retained recovery directories.
+If interrupted, run
 `sh scripts/crystalhd-check` from the intended source to inspect it; an older
 installed checker may not understand the marker, or removal may have deleted it.
 The updated checker reports failure even when an older VERSION record remains.
 Resolve the reported error, then rerun `sudo make install-runtime` from this source;
 to finish removal, rerun `sudo make uninstall-runtime` from the outgoing source.
-A successful complete sequence clears the marker. An overlapping install/removal
-is refused while another process or its surviving child still writes files.
-This supports diagnosis and full-sequence retry; multi-file atomic replacement,
-automatic restoration of previous files and power-loss recovery are separate
-work. Existing user configuration and direct/DKMS module ownership are unchanged.
+A successful complete installation clears the marker and removes recognized
+recovery links from failed attempts. Removal retains the marker if recovery
+directories still need inspection. An overlapping install/removal is refused
+while another process or its surviving child still writes files. Forced process
+termination or power loss still requires inspection and full-sequence retry;
+file replacement is not atomic across the whole runtime. Existing user
+configuration and direct/DKMS module ownership are unchanged.
 For a release predating this marker, follow the rollback procedure above: remove
 the outgoing runtime with its updated source before installing the older runtime.
 

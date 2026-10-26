@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Prepare runtime files and publish with a durable incomplete-install marker.
+"""Prepare runtime files, undo caught failures, and mark interrupted updates.
 
 This detects process interruption; it is not an atomic multi-file transaction.
 """
@@ -25,15 +25,18 @@ def dry_run():
                 and any(flag in words[0] for flag in 'nqt'))
 
 
-def write_marker(path, bundle, phase, uninstall=False):
+def write_marker(path, bundle, phase, uninstall=False, recovery=None):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
                                          dir=str(path.parent), delete=False) as stream:
             temporary = stream.name
-            json.dump({'schema': 1, 'bundle': bundle, 'stage': phase,
-                       'operation': 'uninstall' if uninstall else 'install',
-                       'state': 'incomplete-or-in-progress'}, stream)
+            record = {'schema': 1, 'bundle': bundle, 'stage': phase,
+                      'operation': 'uninstall' if uninstall else 'install',
+                      'state': 'incomplete-or-in-progress'}
+            if recovery:
+                record['rollback_directories'] = [str(entry) for entry in recovery]
+            json.dump(record, stream)
             stream.write('\n')
             stream.flush()
             os.fchmod(stream.fileno(), 0o644)
@@ -116,6 +119,150 @@ def publish_file(source, target):
             os.unlink(temporary)
 
 
+class InstallRestored(RuntimeError):
+    """The failed attempt restored its incoming file/marker state, not success."""
+
+
+class InstallUndo:
+    """Retain original leaf inodes without copying runtime or user data.
+
+    Each private directory is on the target filesystem, so both retaining the
+    original inode and restoring it work across separate /usr, /lib or /boot
+    mounts. The installer only replaces leaves; it never writes these inodes.
+    """
+    def __init__(self, targets):
+        self.entries = {}
+        self.directories = {}
+        self.missing_parents = set()
+        self.changed = []
+        try:
+            for target in targets:
+                parent = target.parent
+                while not parent.exists():
+                    self.missing_parents.add(parent)
+                    parent = parent.parent
+                self.entries[target] = None
+                if not os.path.lexists(str(target)):
+                    continue
+                mode = target.lstat().st_mode
+                if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
+                    raise RuntimeError('rollback target is not a regular file or link')
+                parent = target.parent.resolve()
+                if parent not in self.directories:
+                    self.directories[parent] = Path(tempfile.mkdtemp(
+                        prefix='.crystalhd-undo-', dir=str(parent)))
+                backup = self.directories[parent] / target.name
+                os.link(str(target), str(backup), follow_symlinks=False)
+                self.entries[target] = backup
+                sync_directory(backup.parent)
+        except BaseException:
+            self.cleanup_warning()
+            raise
+
+    def touch(self, target):
+        # Include the failing call: replace may succeed before its fsync fails.
+        if target not in self.changed:
+            self.changed.append(target)
+
+    def restore(self, target):
+        backup = self.entries[target]
+        if backup is None:
+            if os.path.lexists(str(target)):
+                target.unlink()
+        else:
+            os.replace(str(backup), str(target))
+        if target.parent.exists():
+            try:
+                sync_directory(target.parent)
+            except OSError:
+                # Keep the old inode recoverable even if rename succeeded but
+                # the restored directory could not be made durable.
+                if backup is not None and not os.path.lexists(str(backup)):
+                    try:
+                        os.link(str(target), str(backup), follow_symlinks=False)
+                    except OSError:
+                        pass
+                raise
+
+    def restore_payload(self, marker):
+        failures = []
+        for target in reversed(self.changed):
+            if target == marker:
+                continue
+            try:
+                self.restore(target)
+            except OSError as error:
+                failures.append(error)
+        if failures:
+            raise RuntimeError('could not restore every replaced runtime file')
+
+    def cleanup(self):
+        # Only our leaf links live in these private directories; never recurse
+        # into unexpected files or follow a saved symlink during cleanup.
+        for directory in self.directories.values():
+            for entry in directory.iterdir():
+                entry.unlink()
+            directory.rmdir()
+
+    def cleanup_warning(self):
+        try:
+            self.cleanup()
+        except OSError:
+            print('WARN: runtime undo links need cleanup: ' +
+                  ', '.join(str(p) for p in self.directories.values()), file=sys.stderr)
+
+    def remove_new_parents(self):
+        for directory in sorted(self.missing_parents, key=lambda p: len(p.parts), reverse=True):
+            try:
+                directory.rmdir()
+            except OSError:
+                # Another owner may have added a file while installation ran.
+                # Restoring runtime leaves never authorizes removing that data.
+                pass
+
+
+def previous_recovery(marker):
+    if marker.is_symlink() or not marker.is_file():
+        return []
+    try:
+        record = json.loads(marker.read_text(encoding='utf-8'))
+    except (OSError, ValueError, UnicodeError):
+        return []
+    if not isinstance(record, dict) or record.get('schema') != 1:
+        return []
+    paths = record.get('rollback_directories', [])
+    return paths if isinstance(paths, list) else []
+
+
+def cleanup_previous(paths, targets):
+    """After a complete retry, discard only recognizable earlier undo links."""
+    allowed = {}
+    for target in targets:
+        allowed.setdefault(target.parent.resolve(), set()).add(target.name)
+    for name in paths:
+        if not isinstance(name, str):
+            continue
+        directory = Path(name)
+        if not os.path.lexists(str(directory)):
+            continue
+        try:
+            info = directory.lstat()
+            names = allowed.get(directory.parent.resolve(), set())
+            if (not names or not directory.is_absolute() or not directory.name.startswith('.crystalhd-undo-') or
+                    not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+                    stat.S_IMODE(info.st_mode) != 0o700):
+                raise RuntimeError('unrecognized previous recovery directory')
+            entries = list(directory.iterdir())
+            if any(entry.name not in names or not (stat.S_ISREG(entry.lstat().st_mode) or
+                       stat.S_ISLNK(entry.lstat().st_mode)) for entry in entries):
+                raise RuntimeError('unrecognized previous recovery entry')
+            for entry in entries:
+                entry.unlink()
+            directory.rmdir()
+        except (OSError, RuntimeError):
+            print('WARN: previous runtime recovery links retained: ' + str(directory), file=sys.stderr)
+
+
 def install(args):
     if dry_run():
         print('Runtime install: dry run; no installation state or payload changed')
@@ -142,6 +289,7 @@ def install(args):
         # A child still replacing files must retain the lock if its parent dies.
         os.set_inheritable(descriptor, True)
         marker = state / 'runtime-install.pending'
+        earlier_recovery = previous_recovery(marker)
         bundle = (root / 'VERSION').read_text(encoding='utf-8').strip()
         common = ['PREFIX=' + args.prefix, 'DESTDIR=' + args.destdir,
                   'BINDIR=' + args.bindir, 'DATADIR=' + args.datadir]
@@ -175,7 +323,7 @@ def install(args):
 
         if args.uninstall:
             for phase, command in stages:
-                write_marker(marker, bundle, phase, True)
+                write_marker(marker, bundle, phase, True, recovery=earlier_recovery)
                 run(command, common)
         else:
             # Materialize transformed scripts, headers, libraries and links
@@ -195,16 +343,68 @@ def install(args):
                 if len(versions) != 1 or versions[0].is_symlink():
                     raise RuntimeError('prepared runtime has no regular VERSION record')
                 bundle = versions[0].read_text(encoding='utf-8').strip()
-                write_marker(marker, bundle, 'publish')
-                for relative, source in files:
-                    if relative != version_relative:
-                        publish_file(source, destination / relative)
-                write_marker(marker, bundle, 'activate')
-                run(['install-runtime-activate'], common)
-                write_marker(marker, bundle, 'record')
-                publish_file(versions[0], destination / version_relative)
-        marker.unlink()
-        sync_directory(state)
+                targets = [destination / relative for relative, _ in files]
+                undo = InstallUndo(targets + [marker])
+                # A retry may also fail: keep older recovery links discoverable
+                # until a complete install can safely discard all of them.
+                recovery = earlier_recovery + list(undo.directories.values())
+                activation_attempted = False
+                try:
+                    undo.touch(marker)
+                    write_marker(marker, bundle, 'publish', recovery=recovery)
+                    for relative, source in files:
+                        if relative != version_relative:
+                            target = destination / relative
+                            undo.touch(target)
+                            publish_file(source, target)
+                    write_marker(marker, bundle, 'activate', recovery=recovery)
+                    activation_attempted = True
+                    run(['install-runtime-activate'], common)
+                    write_marker(marker, bundle, 'record', recovery=recovery)
+                    target = destination / version_relative
+                    undo.touch(target)
+                    publish_file(versions[0], target)
+                    marker.unlink()
+                    sync_directory(state)
+                except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+                    rollback_phase = 'rollback'
+                    try:
+                        try:
+                            write_marker(marker, bundle, 'rollback', recovery=recovery)
+                        except OSError:
+                            # A full state filesystem must not prevent undo on
+                            # another writable payload filesystem.
+                            pass
+                        undo.restore_payload(marker)
+                        if activation_attempted:
+                            rollback_phase = 'rollback-activate'
+                            try:
+                                write_marker(marker, bundle, 'rollback-activate', recovery=recovery)
+                            except OSError:
+                                pass
+                            run(['install-runtime-activate'], common)
+                        undo.restore(marker)
+                    except (OSError, RuntimeError, subprocess.CalledProcessError) as rollback_error:
+                        try:
+                            write_marker(marker, bundle, rollback_phase + '-failed', recovery=recovery)
+                        except OSError:
+                            pass
+                        # Preserve remaining old inodes; a failed restoration
+                        # must not be reported as a completed installation.
+                        raise RuntimeError('runtime rollback is incomplete: ' + str(rollback_error) +
+                                           '; recovery directories: ' +
+                                           ', '.join(str(path) for path in recovery)) from error
+                    undo.cleanup_warning()
+                    undo.remove_new_parents()
+                    raise InstallRestored('pre-install file state restored; any earlier pending record is retained') from error
+                undo.cleanup_warning()
+                cleanup_previous(earlier_recovery, targets + [marker])
+        if args.uninstall:
+            if any(isinstance(name, str) and os.path.lexists(name) for name in earlier_recovery):
+                write_marker(marker, bundle, 'uninstall-recovery-retained', True, recovery=earlier_recovery)
+                raise RuntimeError('runtime removed, but retained rollback links still need inspection')
+            marker.unlink()
+            sync_directory(state)
     finally:
         os.close(descriptor)
 
@@ -225,6 +425,13 @@ def main():
     try:
         install(args)
         return 0
+    except InstallRestored as error:
+        cause = error.__cause__
+        reason = (cause.strerror if isinstance(cause, OSError) else
+                  'installer subprocess failed' if isinstance(cause, subprocess.CalledProcessError)
+                  else str(cause))
+        print('Runtime installation failed: ' + reason + '; ' + str(error) + '.', file=sys.stderr)
+        return 1
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         reason = str(error) if isinstance(error, RuntimeError) else (
             error.strerror if isinstance(error, OSError) else 'installer subprocess failed')
