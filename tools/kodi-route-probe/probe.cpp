@@ -95,8 +95,9 @@ public:
     Close(); const std::string path = props.GetURL(); struct stat st{};
     if (path.empty() || path.front() != '/' || stat(path.c_str(), &st) ||
         !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 256 * 1024 * 1024) return false;
-    if (avformat_open_input(&format, path.c_str(), nullptr, nullptr) < 0 ||
-        avformat_find_stream_info(format, nullptr) < 0) { Close(); return false; }
+    /* MP4 supplies the required codec parameters in its header. Do not run
+     * find_stream_info: its probing can invoke a software video decoder. */
+    if (avformat_open_input(&format, path.c_str(), nullptr, nullptr) < 0) { Close(); return false; }
     video = av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (video < 0 || format->streams[video]->codecpar->codec_id != AV_CODEC_ID_H264) {
       Close(); return false;

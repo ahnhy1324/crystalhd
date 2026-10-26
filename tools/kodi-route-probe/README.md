@@ -1,7 +1,7 @@
 # Kodi route probe
 
 Issue [#531](https://github.com/ahnhy1324/crystalhd/issues/531), Gate A only.
-This optional binary add-on demuxes a selected local H.264 file and emits one
+This optional binary add-on demuxes a selected local H.264 MP4 and emits one
 **synthetic YUY2 picture** through an InputStream-hosted VideoCodec instance.
 It neither decodes the file nor accesses CrystalHD. It is not a playback
 decoder, performance test or physical display acceptance.
