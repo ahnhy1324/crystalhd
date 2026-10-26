@@ -63,7 +63,7 @@ struct crystalhd_v4l2_file {
 	struct work_struct tx_work;
 	struct crystalhd_v4l2_decoder decoder;
 	struct crystalhd_v4l2_discovery discovery[CHD_DISCOVERY_BUFFERS];
-	struct crystalhd_v4l2_capture_buffer *active[BC_RX_LIST_CNT];
+	struct crystalhd_v4l2_capture_buffer *active[CHD_CAPTURE_MAX_BUFFERS];
 	struct v4l2_pix_format output;
 	struct v4l2_pix_format capture;
 	u32 sequence;
@@ -326,7 +326,7 @@ static void chd_return_active(struct crystalhd_v4l2_file *f)
 {
 	u32 i;
 
-	for (i = 0; i < BC_RX_LIST_CNT; i++) {
+	for (i = 0; i < ARRAY_SIZE(f->active); i++) {
 		struct crystalhd_v4l2_capture_buffer *b = f->active[i];
 
 		if (!b)
@@ -404,7 +404,7 @@ static int chd_submit_capture(struct crystalhd_v4l2_file *f,
 	/* One native registration at a time prevents a second picture DMA from
 	 * crossing an unacknowledged format boundary. Client queues stay buffered.
 	 */
-	for (i = 0; i < BC_RX_LIST_CNT; i++)
+	for (i = 0; i < ARRAY_SIZE(f->active); i++)
 		if (f->active[i])
 			return 0;
 	while ((vb = v4l2_m2m_dst_buf_remove(f->fh.m2m_ctx)) != NULL) {
@@ -413,7 +413,7 @@ static int chd_submit_capture(struct crystalhd_v4l2_file *f,
 			v4l2_m2m_buf_done(vb, VB2_BUF_STATE_ERROR);
 			return -EINVAL;
 		}
-		if (vb->vb2_buf.index >= BC_RX_LIST_CNT ||
+		if (vb->vb2_buf.index >= ARRAY_SIZE(f->active) ||
 		    f->active[vb->vb2_buf.index]) {
 			v4l2_m2m_buf_done(vb, VB2_BUF_STATE_ERROR);
 			return -EIO;
@@ -454,7 +454,7 @@ static int chd_format(struct crystalhd_v4l2_file *f,
 		return crystalhd_status_to_errno(sts);
 	f->capture_started = false;
 	if (!initial) {
-		for (i = 0; i < BC_RX_LIST_CNT; i++) {
+		for (i = 0; i < ARRAY_SIZE(f->active); i++) {
 			if (!f->active[i])
 				continue;
 			boundary = f->active[i];
@@ -524,7 +524,7 @@ static int chd_receive(struct crystalhd_v4l2_file *f, struct crystalhd_cmd *cmd)
 		/* Only native client registrations remain after discovery retirement. */
 		b = result.cookie;
 		vb = &b->m2m.vb;
-		if (vb->vb2_buf.index >= BC_RX_LIST_CNT ||
+		if (vb->vb2_buf.index >= ARRAY_SIZE(f->active) ||
 		    f->active[vb->vb2_buf.index] != b)
 			return -EIO;
 		pixels = crystalhd_v4l2_capture_complete(b, &result, &image);
@@ -625,7 +625,7 @@ static bool chd_input_ready(struct crystalhd_v4l2_file *f)
 		return f->discovery[0].owned;
 	if (!f->capture_streaming || f->format_pending || f->pending_last)
 		return false;
-	for (i = 0; i < BC_RX_LIST_CNT; i++)
+	for (i = 0; i < ARRAY_SIZE(f->active); i++)
 		if (f->active[i])
 			return true;
 	return false;
@@ -806,7 +806,7 @@ static void chd_drain_watchdog(struct crystalhd_v4l2_file *f)
 			 */
 			eligible = f->discovery[0].owned;
 		} else if (f->format_known && f->capture_streaming) {
-			for (i = 0; i < BC_RX_LIST_CNT; i++)
+			for (i = 0; i < ARRAY_SIZE(f->active); i++)
 				if (f->active[i] && crystalhd_v4l2_capture_owned(f->active[i])) {
 					eligible = true;
 					break;
@@ -1013,8 +1013,8 @@ static int chd_queue_setup(struct vb2_queue *q, unsigned int *count,
 	if (*planes)
 		return *planes == 1 && sizes[0] >= size ? 0 : -EINVAL;
 	/* Client-held frames and queued spares are not hardware RX rings. Keep
-	 * at most BC_RX_LIST_CNT active DMA targets, but allow the client its
-	 * larger capture pool (e.g. FFmpeg requests 20). Capping both at 16 can
+	 * single-registration DMA admission unchanged, but allow a larger client
+	 * capture pool (e.g. FFmpeg requests 20). Capping both at 16 can
 	 * exhaust its driver-owned buffers during drain before genuine LAST.
 	 */
 	*count = clamp_t(unsigned int, *count, 2,
@@ -1450,7 +1450,7 @@ static int chd_reuse_capture(struct crystalhd_v4l2_file *f)
 
 	if (!f->capture_streaming || crystalhd_v4l2_num_buffers(q) < 2)
 		return -EINVAL;
-	for (i = 0; i < BC_RX_LIST_CNT; i++)
+	for (i = 0; i < ARRAY_SIZE(f->active); i++)
 		if (f->active[i])
 			return -EBUSY;
 	for (i = 0; i < crystalhd_v4l2_num_buffers(q); i++)

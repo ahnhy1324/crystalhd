@@ -32,6 +32,7 @@ typedef unsigned spinlock_t;
 #define VM_MAP 4
 #define PAGE_KERNEL 5
 #define DIV_ROUND_UP(v, a) (((v) + (a) - 1) / (a))
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define ALIGN(v, a) (((v) + (a) - 1) & ~((a) - 1))
 #include "node-size.h"
 #define container_of(p, t, m) ((t *)((char *)(p) - offsetof(t, m)))
@@ -737,6 +738,14 @@ static int crystalhd_v4l2_capture_prepare(struct crystalhd_v4l2_capture_buffer *
 static void crystalhd_rx_buffer_release(struct crystalhd_adp *, struct crystalhd_rx_buffer *);
 static unsigned long jiffies;
 static unsigned long msecs_to_jiffies(unsigned ms) { return (ms + 9U) / 10U; }
+static unsigned capture_submits;
+static BC_STATUS crystalhd_v4l2_capture_submit(struct crystalhd_cmd *cmd,
+        struct crystalhd_v4l2_capture_buffer *buffer)
+{
+    assert(cmd == &adapter.cmds && fixture.run_lock.held && !buffer->owned);
+    buffer->owned = true; capture_submits++;
+    return BC_STS_SUCCESS;
+}
 static void *vb2_get_drv_priv(struct vb2_queue *q) { return q->drv_priv; }
 #include "node-production.h"
 
@@ -781,6 +790,7 @@ static void reset(bool running)
     }
     assert(!live_arrays && !live_blocks && !live_tables && !live_maps && !live_vmaps);
     scenarios++;
+    capture_submits = 0;
     memset(&fixture, 0, sizeof(fixture)); memset(&node, 0, sizeof(node));
     memset(&queues, 0, sizeof(queues)); memset(&adapter, 0, sizeof(adapter));
     fixture.node = &node; fixture.lease = &lease; fixture.fh.m2m_ctx = &queues;
@@ -1457,16 +1467,20 @@ static void colorimetry_cases(void)
 
 static void native_error_completion(void)
 {
+    static const unsigned slots[] = { 0, 16, 31 };
+    for (unsigned i = 0; i < ARRAY_SIZE(slots); ++i)
     for (unsigned failure = 0; failure < 2; failure++) {
+        unsigned slot = slots[i];
         reset(true);
-        fixture.active[0] = &last_capture;
+        last_buffer.vb2_buf.index = slot;
+        fixture.active[slot] = &last_capture;
         last_capture.owned = true; error_receive = true;
         if (failure) decode_error_result = -ESTALE;
         mutex_lock(&fixture.run_lock);
         CHECK(chd_receive(&fixture, &adapter.cmds) == (failure ? -ESTALE : 0));
         CHECK(last_buffer.done == VB2_BUF_STATE_ERROR && !last_buffer.vb2_buf.payload &&
               !(last_buffer.flags & V4L2_BUF_FLAG_LAST) && !fixture.pending_last &&
-              !fixture.active[0] && !last_capture.owned && !eos_events &&
+              !fixture.active[slot] && !last_capture.owned && !eos_events &&
               fixture.decoder.phase == CHD_V4L2_RUNNING);
         CHECK(last_buffer.vb2_buf.timestamp == (failure ? 0 : UINT64_C(0x1234567890)) &&
               fixture.decoder.count == (failure ? 3 : 2));
@@ -1848,11 +1862,38 @@ static void capture_pool_cases(void)
         unsigned count = cases[i].requested, planes = 0, sizes[1] = {0};
         CHECK(!chd_queue_setup(&queues.dst, &count, &planes, sizes, NULL));
         CHECK(count == cases[i].expected && planes == 1 && sizes[0] == 4096);
-        CHECK(sizeof(fixture.active) / sizeof(fixture.active[0]) == BC_RX_LIST_CNT);
+        CHECK(sizeof(fixture.active) / sizeof(fixture.active[0]) == CHD_CAPTURE_MAX_BUFFERS);
         sizes[0] = 4095;
         CHECK(chd_queue_setup(&queues.dst, &count, &planes, sizes, NULL) == -EINVAL);
         sizes[0] = 4096;
         CHECK(!chd_queue_setup(&queues.dst, &count, &planes, sizes, NULL));
+    }
+    static const unsigned slots[] = { 0, 16, 31, 32 };
+    for (unsigned i = 0; i < ARRAY_SIZE(slots); ++i) {
+        unsigned slot = slots[i];
+        reset(true);
+        fixture.format_known = true;
+        fixture.capture.width = last_capture.width = 640;
+        fixture.capture.height = last_capture.height = 480;
+        last_buffer.vb2_buf.index = slot;
+        queues.dst_ready = &last_capture.m2m;
+        mutex_lock(&fixture.run_lock);
+        if (slot == CHD_CAPTURE_MAX_BUFFERS) {
+            CHECK(chd_submit_capture(&fixture, &adapter.cmds) == -EIO);
+            CHECK(!capture_submits && last_buffer.done == VB2_BUF_STATE_ERROR);
+        } else {
+            CHECK(!chd_submit_capture(&fixture, &adapter.cmds));
+            CHECK(capture_submits == 1 && last_capture.owned &&
+                  fixture.active[slot] == &last_capture);
+            queues.dst_ready = &last_capture.m2m;
+            CHECK(!chd_submit_capture(&fixture, &adapter.cmds));
+            CHECK(capture_submits == 1 && queues.dst_ready == &last_capture.m2m);
+            // Even a high buffer index keeps the single active registration.
+            queues.dst_ready = NULL;
+            fixture.active[slot] = NULL;
+            last_capture.owned = false;
+        }
+        mutex_unlock(&fixture.run_lock);
     }
     reset(false);
     fixture.output.sizeimage = CHD_CODED_SIZE;

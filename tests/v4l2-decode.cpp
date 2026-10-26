@@ -817,7 +817,8 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
     unsigned seek_at, unsigned idle_before_stop_ms, const std::string &busy_device,
     const std::vector<std::string> &expected_segments, bool after_empty_drain,
     const std::vector<std::string> &contract_hashes, LegacyLibrary *legacy,
-    const std::string &late_admission_device, const std::string &gpu_mode)
+    const std::string &late_admission_device, const std::string &gpu_mode,
+    unsigned capture_buffers)
 {
 #ifdef CRYSTALHD_TEST_GPU
     std::unique_ptr<CaptureRenderer> renderer;
@@ -925,7 +926,9 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
         printf("format width=%u height=%u stride=%u sizeimage=%u output_streaming=%u\n",
             width, height, stride, fmt.fmt.pix.sizeimage, output.streaming ? 1 : 0);
         if (!capture.streaming) {
-            capture.allocate(12);
+            capture.allocate(capture_buffers);
+            printf("capture_pool requested=%u allocated=%zu\n",
+                   capture_buffers, capture.buffers.size());
             for (unsigned i = 0; i < capture.buffers.size(); i++) capture.queue(i);
             capture.start();
         }
@@ -1136,6 +1139,7 @@ int main(int argc, char **argv)
         bool contracts = false, empty_stop = false, failed_streamon = false, late_admission = false;
         bool legacy_arbitration = false;
         unsigned seek_at = 0, idle_before_stop_ms = 250, legacy_prefix = 0;
+        unsigned capture_buffers = 12;
         for (int i = 1; i < argc; i++) {
             std::string arg = argv[i];
             if (arg == "--help") {
@@ -1143,6 +1147,7 @@ int main(int argc, char **argv)
                      "       [--raw frames.yuyv] [--timestamps source|stress] [--repeat N] [--expect-sha256 HEX]\n"
                      "       [--demux-only] (validate fixture without opening any device)\n"
                      "       [--gpu-check|--gpu-render|--gpu-upload] (opt-in GLES build; limited BT.709 fixture)\n"
+                     "       [--capture-buffers N] (2..32, default 12)\n"
                      "       [--seek-at N --expect-sha256 HEX] [--idle-before-stop-ms 250]\n"
                      "       [--check-busy] (second native session must fail STREAMON with EBUSY)\n"
                      "       [--next-input fixture.mp4 ...] [--expect-segment-sha256 HEX ...]\n"
@@ -1179,6 +1184,7 @@ int main(int argc, char **argv)
             else if (arg == "--expect-sha256") expected_hash = value;
             else if (arg == "--timeout") timeout = std::stoul(value);
             else if (arg == "--repeat") repeat = std::stoul(value);
+            else if (arg == "--capture-buffers") capture_buffers = std::stoul(value);
             else if (arg == "--seek-at") seek_at = std::stoul(value);
             else if (arg == "--legacy-contract") { legacy_prefix = std::stoul(value); require(legacy_prefix, "legacy prefix must be positive"); }
             else if (arg == "--idle-before-stop-ms") idle_before_stop_ms = std::stoul(value);
@@ -1188,6 +1194,8 @@ int main(int argc, char **argv)
         }
         require(!input_path.empty() && timeout && timeout <= 3600 && repeat && repeat <= 100,
             "provide --input and valid timeout/repeat bounds");
+        require(capture_buffers >= 2 && capture_buffers <= 32,
+            "capture buffer request must be 2..32");
         Input input = demux(input_path, stress);
         require(next_inputs.size() <= 8, "at most eight --next-input segments are supported");
         require(next_inputs.empty() || (!seek_at && repeat == 1),
@@ -1246,7 +1254,7 @@ int main(int argc, char **argv)
             decode(device.fd, output, capture, input, timeout, raw, expected_hash,
                 seek_at, idle_before_stop_ms, busy ? path : std::string(), expected_segments,
                 (contracts || empty_stop) && !i, contract_hashes, legacy.get(),
-                late_admission ? path : std::string(), gpu_mode);
+                late_admission ? path : std::string(), gpu_mode, capture_buffers);
         }
         return 0;
     } catch (const std::exception &e) {
