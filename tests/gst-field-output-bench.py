@@ -58,14 +58,18 @@ def main():
         Gtk.main_iteration_do(False)
     if args.fullscreen:
         window.fullscreen()
+        monitor = window.get_display().get_monitor_at_window(window.get_window()).get_geometry()
+        target_size = [monitor.width, monitor.height]
         until = time.monotonic()+3
         while time.monotonic() < until:
             while Gtk.events_pending():
                 Gtk.main_iteration_do(False)
-            if window.get_window().get_state() & Gdk.WindowState.FULLSCREEN:
+            if (window.get_window().get_state() & Gdk.WindowState.FULLSCREEN and
+                    [area.get_allocated_width(), area.get_allocated_height()] == target_size):
                 break
             time.sleep(.01)
-        if not window.get_window().get_state() & Gdk.WindowState.FULLSCREEN:
+        if (not window.get_window().get_state() & Gdk.WindowState.FULLSCREEN or
+                [area.get_allocated_width(), area.get_allocated_height()] != target_size):
             player.close()
             window.destroy()
             raise RuntimeError("the WM did not grant fullscreen; no card run started")
@@ -80,7 +84,8 @@ def main():
     report = dict(label=args.label, fullscreen=args.fullscreen, eos=False,
                   audio_buffers=0, audio_stream_muted=True, clock=None,
                   audio_clock=None, same_audio_clock=False, peak_mC=0, sizes=[],
-                  verified_initial_size=initial_size, sink_buffers=0, sink_fields=0)
+                  verified_initial_size=initial_size, sink_buffers=0, sink_fields=0,
+                  qos_sources={})
 
     def audio_probe(_pad, _info):
         report["audio_buffers"] += 1
@@ -105,6 +110,16 @@ def main():
             for i in range(stats.n_fields())})
 
     player.bus.connect("message::eos", eos)
+
+    def qos(_bus, message):
+        fmt, processed, dropped = message.parse_qos_stats()
+        if fmt != Gst.Format.BUFFERS or dropped in (0, Gst.CLOCK_TIME_NONE):
+            return
+        factory = message.src.get_factory() if isinstance(message.src, Gst.Element) else None
+        report["qos_sources"][message.src.get_name()] = dict(
+            factory=factory.get_name() if factory else None, processed=processed, dropped=dropped)
+
+    player.bus.connect("message::qos", qos)
 
     def tick():
         report["peak_mC"] = max(report["peak_mC"], max(
