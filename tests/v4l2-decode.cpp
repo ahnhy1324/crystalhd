@@ -21,6 +21,10 @@
 #include <vector>
 #include <algorithm>
 #include <memory>
+#ifdef CRYSTALHD_TEST_GPU
+#include "yuy2-gpu.h"
+#include <time.h>
+#endif
 extern "C" {
 #include "bc_dts_types.h"
 #include "bc_dts_defs.h"
@@ -45,6 +49,75 @@ static void checked(int fd, unsigned long request, void *arg, const char *what)
     if (call(fd, request, arg) < 0)
         throw std::runtime_error(std::string(what) + ": " + strerror(errno));
 }
+#ifdef CRYSTALHD_TEST_GPU
+// Completion precedes QBUF. RGB readback/reference work is deliberately outside
+// render timing; overall probe CPU still includes the existing SHA observers.
+class CaptureRenderer {
+    yuy2_gpu::GPU gpu;
+    std::unique_ptr<yuy2_gpu::Picture> picture;
+    std::vector<uint8_t> first, second;
+    std::string mode;
+    size_t frames = 0;
+    double cpu = 0, wall = 0;
+    static double clock(clockid_t kind) {
+        timespec t{};
+        require(clock_gettime(kind, &t) == 0, "GPU measurement clock");
+        return t.tv_sec + t.tv_nsec / 1e9;
+    }
+public:
+    explicit CaptureRenderer(const std::string &m)
+        : gpu("/dev/dri/renderD128"), mode(m) {}
+    void present(int fd, unsigned index, const void *address,
+                 unsigned width, unsigned height, unsigned stride) {
+        if (!picture || picture->w != width || picture->h != height) {
+            picture = std::make_unique<yuy2_gpu::Picture>(width, height);
+            first.resize(size_t(width) * height * 2);
+            second.resize(first.size());
+        }
+        double start_cpu = clock(CLOCK_PROCESS_CPUTIME_ID);
+        double start_wall = clock(CLOCK_MONOTONIC);
+        if (mode == "upload") {
+            for (unsigned y = 0; y < height; ++y)
+                memcpy(first.data() + size_t(y) * width * 2,
+                       static_cast<const uint8_t *>(address) + size_t(y) * stride,
+                       width * 2);
+            memcpy(second.data(), first.data(), first.size());
+            glBindTexture(GL_TEXTURE_2D, picture->packed);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width / 2, height,
+                            GL_RGBA, GL_UNSIGNED_BYTE, second.data());
+            picture->draw(false, picture->packed);
+        } else {
+            v4l2_exportbuffer exp{};
+            exp.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            exp.index = index;
+            exp.flags = O_CLOEXEC | O_RDONLY;
+            checked(fd, VIDIOC_EXPBUF, &exp, "EXPBUF CAPTURE");
+            // No CPU write, cache flush, or staging copy in the consumer.
+            try {
+                yuy2_gpu::Imported image(gpu, exp.fd, width, height, stride);
+                picture->draw(true, image.texture);
+            } catch (...) { close(exp.fd); throw; }
+            close(exp.fd);
+        }
+        cpu += clock(CLOCK_PROCESS_CPUTIME_ID) - start_cpu;
+        wall += clock(CLOCK_MONOTONIC) - start_wall;
+        ++frames;
+        if (mode == "check") {
+            for (unsigned y = 0; y < height; ++y)
+                memcpy(first.data() + size_t(y) * width * 2,
+                       static_cast<const uint8_t *>(address) + size_t(y) * stride,
+                       width * 2);
+            picture->verify(first, "v4l2-direct-capture");
+        }
+    }
+    void report() const {
+        printf("GPU_PASS mode=%s frames=%zu render_cpu_s=%.9f render_wall_s=%.9f "
+               "render_cpu_ms_per_frame=%.6f completion=glFinish "
+               "physical_display=NOT_RUN\n", mode.c_str(), frames, cpu, wall,
+               frames ? cpu * 1000 / frames : 0);
+    }
+};
+#endif
 struct Packet { std::vector<unsigned char> data; uint64_t timestamp; int64_t display_order; bool keyframe; };
 struct Segment { size_t begin, end; unsigned width, height; std::string path; };
 struct Input {
@@ -744,8 +817,14 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
     unsigned seek_at, unsigned idle_before_stop_ms, const std::string &busy_device,
     const std::vector<std::string> &expected_segments, bool after_empty_drain,
     const std::vector<std::string> &contract_hashes, LegacyLibrary *legacy,
-    const std::string &late_admission_device)
+    const std::string &late_admission_device, const std::string &gpu_mode)
 {
+#ifdef CRYSTALHD_TEST_GPU
+    std::unique_ptr<CaptureRenderer> renderer;
+    if (!gpu_mode.empty()) renderer = std::make_unique<CaptureRenderer>(gpu_mode);
+#else
+    require(gpu_mode.empty(), "GPU probe requires CRYSTALHD_TEST_GPU=1 build");
+#endif
     bool restarting = output.streaming;
     bool recovered_terminal_drain = false;
     v4l2_format fmt{};
@@ -777,6 +856,13 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
         fmt.fmt.pix.width = input.width; fmt.fmt.pix.height = input.height;
         fmt.fmt.pix.sizeimage = std::max(size_t(2 * 1024 * 1024), input.largest);
         fmt.fmt.pix.field = V4L2_FIELD_NONE;
+        if (!gpu_mode.empty()) {
+            fmt.fmt.pix.colorspace = V4L2_COLORSPACE_REC709;
+            fmt.fmt.pix.ycbcr_enc = V4L2_YCBCR_ENC_709;
+            fmt.fmt.pix.quantization = V4L2_QUANTIZATION_LIM_RANGE;
+            fmt.fmt.pix.xfer_func = V4L2_XFER_FUNC_709;
+            fmt.fmt.pix.priv = V4L2_PIX_FMT_PRIV_MAGIC;
+        }
         checked(fd, VIDIOC_S_FMT, &fmt, "S_FMT OUTPUT");
         require(fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_H264, "H264 OUTPUT format unavailable");
         output.allocate(8);
@@ -898,6 +984,10 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
                     "CAPTURE geometry does not match the expected fixture segment");
                 require(b.bytesused >= uint64_t(height - 1) * stride + width * 2,
                     "CAPTURE bytesused smaller than visible picture");
+#ifdef CRYSTALHD_TEST_GPU
+                if (renderer)
+                    renderer->present(fd, b.index, mapping.address, width, height, stride);
+#endif
                 uint64_t ts = uint64_t(b.timestamp.tv_sec) * 1000000 + b.timestamp.tv_usec;
                 auto expected = expected_timestamps.find(ts);
                 const std::string timestamp_detail = " frame=" + std::to_string(frames) +
@@ -1031,12 +1121,16 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
     require(expected_hash.empty() || digest == expected_hash, "aggregate YUYV SHA256 mismatch");
     printf("PASS frames=%zu output_completed=%zu last=1 after_last_epipe=1 seek=%u dynamic_boundaries=%u idle_before_stop_ms=%u yuyv_sha256=%s\n",
         frames, completed, seek_done ? 1 : 0, resolution_boundaries, idle_before_stop_ms, digest.c_str());
+#ifdef CRYSTALHD_TEST_GPU
+    if (renderer) renderer->report();
+#endif
 }
 
 int main(int argc, char **argv)
 {
+    setvbuf(stdout, nullptr, _IOLBF, 0);
     try {
-        std::string path, input_path, raw_path, expected_hash;
+        std::string path, input_path, raw_path, expected_hash, gpu_mode;
         std::vector<std::string> next_inputs, expected_segments;
         unsigned timeout = 60, repeat = 1; bool stress = false, demux_only = false, busy = false;
         bool contracts = false, empty_stop = false, failed_streamon = false, late_admission = false;
@@ -1048,6 +1142,7 @@ int main(int argc, char **argv)
                 puts("usage: v4l2-decode --input fixture.mp4 [--device /dev/videoN] [--timeout 60]\n"
                      "       [--raw frames.yuyv] [--timestamps source|stress] [--repeat N] [--expect-sha256 HEX]\n"
                      "       [--demux-only] (validate fixture without opening any device)\n"
+                     "       [--gpu-check|--gpu-render|--gpu-upload] (opt-in GLES build; limited BT.709 fixture)\n"
                      "       [--seek-at N --expect-sha256 HEX] [--idle-before-stop-ms 250]\n"
                      "       [--check-busy] (second native session must fail STREAMON with EBUSY)\n"
                      "       [--next-input fixture.mp4 ...] [--expect-segment-sha256 HEX ...]\n"
@@ -1063,6 +1158,11 @@ int main(int argc, char **argv)
                 return 0;
             }
             if (arg == "--demux-only") { demux_only = true; continue; }
+            if (arg == "--gpu-check" || arg == "--gpu-render" || arg == "--gpu-upload") {
+                require(gpu_mode.empty(), "select one GPU mode");
+                gpu_mode = arg.substr(6);
+                continue;
+            }
             if (arg == "--check-busy") { busy = true; continue; }
             if (arg == "--empty-stop") { empty_stop = true; continue; }
             if (arg == "--failed-streamon") { failed_streamon = true; continue; }
@@ -1112,7 +1212,7 @@ int main(int argc, char **argv)
         if (legacy_prefix) {
             require(next_inputs.empty() && !contracts && !empty_stop && !failed_streamon && !late_admission &&
                 !legacy_arbitration && !busy && !seek_at && repeat == 1 &&
-                raw_path.empty() && expected_hash.empty() && expected_segments.empty(),
+                raw_path.empty() && expected_hash.empty() && expected_segments.empty() && gpu_mode.empty(),
                 "--legacy-contract is a separate legacy-only mode; native options/hashes are not applied");
             legacy_contract(input, legacy_prefix, timeout);
             return 0;
@@ -1146,7 +1246,7 @@ int main(int argc, char **argv)
             decode(device.fd, output, capture, input, timeout, raw, expected_hash,
                 seek_at, idle_before_stop_ms, busy ? path : std::string(), expected_segments,
                 (contracts || empty_stop) && !i, contract_hashes, legacy.get(),
-                late_admission ? path : std::string());
+                late_admission ? path : std::string(), gpu_mode);
         }
         return 0;
     } catch (const std::exception &e) {
