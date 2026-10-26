@@ -72,7 +72,19 @@ test. A reused GStreamer 1.28.2 H.264 parser can infer incorrect raw-stream
 PTS after NULL; the same failure occurs with software decoding. A test-local
 restoration of its original parser policy passes 100/100 fields on three
 replays, while unmodified-parser failures remain recorded. This output does
-not change parser policy in applications. Physical A/V,
-endurance and native i386 acceptance remain unverified; short CPU measurements
-do not establish a speedup. [#513](https://github.com/ahnhy1324/crystalhd/issues/513)
+not change parser policy in applications.
+
+The subsequent 30-second speech check confirms audible A/V and normal speed
+with card720/Bob50. Pause/resume and forward/backward seek also complete;
+the control run has four BaseSink drops in its final post-seek snapshot, so
+it is not a zero-loss census. A decorated test-local GTK embedding window
+also passes F11/resize, EOS and resource retirement. This does not add a GUI
+or fullscreen shortcut to the installed Player.
+
+The planned ten-minute run remains incomplete after a normal 85°C CPU-guard
+stop at 359 seconds. Stock Xv also reaches the same guard; this does not
+establish a new-output-only thermal defect or an endurance PASS. Scanout,
+calibrated offset,
+E2E and native i386 acceptance remain unverified. Short CPU measurements do
+not establish a speedup. [#513](https://github.com/ahnhy1324/crystalhd/issues/513)
 remains open and this component is experimental.

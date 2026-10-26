@@ -531,17 +531,16 @@
     "optional_build_and_four_headless_groups": "PASS"
   },
   "not_run": [
-    "physical A/V",
     "physical scanout",
     "payload age",
     "E2E latency",
-    "endurance of this element",
     "native i386 acceptance"
   ],
   "remaining": [
     "Unmodified reused raw H264Parse controls remain FAIL. Parser policy reset is reproduced without CrystalHD and test-local public API restoration gives native100/100 three times. No general automatic runtime workaround/default or external source patch was added.",
     "Live window replacement and retained paused exposure redraw are not implemented.",
-    "Matched short Player CPU time is higher than stock; no general performance gain or default promotion."
+    "Matched short Player CPU time is higher than stock; no general performance gain or default promotion.",
+    "The planned600.761s continuous run stopped normally at CPU85C after359.165s, not a completed endurance PASS. Stock output also reaches85C; no async-only thermal cause established. Continuous ten-minute acceptance remains incomplete."
   ],
   "parser_control": {
     "gstreamer": "1.28.2",
@@ -691,5 +690,258 @@
         "strict_monotonic": true
       }
     ]
+  },
+  "physical_acceptance_20261027": {
+    "date": "2026-10-27",
+    "source": "db391add4fdb1583e06816a8e89a1a6bc772bd90",
+    "decoder_library_source": "54752a1",
+    "module": "3.10.13",
+    "force_l0s_off": "Y",
+    "session_l0s_off": "N",
+    "media": "30.037s H264 1080i25/AAC speech, card output1280x720, GStreamer linear Bob50, native-size UYVY Xv with PulseAudio",
+    "sync_qos": "sync=true,qos=true,max-lateness5ms,processing-deadline15ms; unchanged",
+    "physical_dialogue": {
+      "natural_eos": true,
+      "decoded_originals": 750,
+      "gst_stats": {
+        "average-rate": 0.21438097314953886,
+        "dropped": 0,
+        "rendered": 1500
+      },
+      "xv_stats_after_null": {
+        "submitted": 1501,
+        "acknowledged": 1501,
+        "terminal-retired": 0,
+        "copied-bytes": 0,
+        "pool-submitted": 1501,
+        "pending": 0,
+        "images": 0,
+        "bytes": 0,
+        "allocated": 6,
+        "freed": 6,
+        "failed": false,
+        "closed": true,
+        "quarantined": false
+      },
+      "device_fds_after_null": 0,
+      "wall_seconds": 31.67989835700064,
+      "cpu_seconds": 12.026474082,
+      "max_rss_kib": 219396,
+      "exit": 0,
+      "boundary_equal": true,
+      "human": "PASS: normal speed and audible synchronization",
+      "observer_correction": "Initial postcheck requested nonexistent owned-images. Actual images=0 and allocated=freed6 were validated from recorded property without replay; raw KeyError retained."
+    },
+    "controls": {
+      "natural_eos": true,
+      "decoded_originals": 698,
+      "gst_stats": {
+        "average-rate": 0.28122491554723483,
+        "dropped": 4,
+        "rendered": 961
+      },
+      "xv_stats_after_null": {
+        "submitted": 1372,
+        "acknowledged": 1372,
+        "terminal-retired": 0,
+        "copied-bytes": 0,
+        "pool-submitted": 1372,
+        "pending": 0,
+        "images": 0,
+        "bytes": 0,
+        "allocated": 6,
+        "freed": 6,
+        "failed": false,
+        "closed": true,
+        "quarantined": false
+      },
+      "device_fds_after_null": 0,
+      "wall_seconds": 34.20497538299969,
+      "cpu_seconds": 12.051757301999999,
+      "max_rss_kib": 223672,
+      "exit": 0,
+      "boundary_equal": true,
+      "actions": [
+        "pause at4s",
+        "resume at6s",
+        "forward6s at9s",
+        "backward4s at13s"
+      ],
+      "human": "Video/operations good; user identified borderless test-wrapper UX",
+      "census_limit": "BaseSink stats reset across seeks:961rendered/4dropped is a final snapshot, not total whole-session no-loss acceptance. Total1372Xvrequests/ACKs."
+    },
+    "window": {
+      "natural_eos": true,
+      "decoded_originals": 750,
+      "gst_stats": {
+        "average-rate": 0.20133378106615613,
+        "dropped": 0,
+        "rendered": 1500
+      },
+      "xv_stats_after_null": {
+        "submitted": 1501,
+        "acknowledged": 1501,
+        "terminal-retired": 0,
+        "copied-bytes": 0,
+        "pool-submitted": 1501,
+        "pending": 0,
+        "images": 0,
+        "bytes": 0,
+        "allocated": 6,
+        "freed": 6,
+        "failed": false,
+        "closed": true,
+        "quarantined": false
+      },
+      "device_fds_after_null": 0,
+      "wall_seconds": 31.646540902998822,
+      "cpu_seconds": 11.884999159,
+      "max_rss_kib": 218928,
+      "exit": 0,
+      "boundary_equal": true,
+      "f11_requests": [
+        true,
+        false
+      ],
+      "window_states": [
+        {
+          "seconds": 4.263430385999527,
+          "fullscreen": true
+        },
+        {
+          "seconds": 8.319443601001694,
+          "fullscreen": false
+        }
+      ],
+      "sizes": [
+        [
+          960,
+          540
+        ],
+        [
+          960,
+          540
+        ],
+        [
+          960,
+          540
+        ],
+        [
+          1024,
+          768
+        ],
+        [
+          1024,
+          768
+        ],
+        [
+          1024,
+          768
+        ],
+        [
+          960,
+          540
+        ],
+        [
+          960,
+          540
+        ],
+        [
+          800,
+          450
+        ]
+      ],
+      "scope": "Decorations, F11 and resize in corrected private GTK wrapper, selected exact visible toplevelXID. No production app or GUI source patch."
+    },
+    "sustained": {
+      "natural_eos": false,
+      "decoded_originals": 8931,
+      "xv_stats_after_null": {
+        "submitted": 17859,
+        "acknowledged": 17859,
+        "terminal-retired": 0,
+        "copied-bytes": 0,
+        "pool-submitted": 17859,
+        "pending": 0,
+        "images": 0,
+        "bytes": 0,
+        "allocated": 6,
+        "freed": 6,
+        "failed": false,
+        "closed": true,
+        "quarantined": false
+      },
+      "device_fds_after_null": 0,
+      "wall_seconds": 359.16530385199985,
+      "cpu_seconds": 135.324700801,
+      "max_rss_kib": 220896,
+      "exit": 130,
+      "boundary_equal": true,
+      "status": "INCOMPLETE_THERMAL_STOP",
+      "planned_seconds": 600.761,
+      "actual_seconds": 359.16530385199985,
+      "cpu_temperature_stop_mC": 85000,
+      "termination": "Normal SIGINT/pipelineNULL exit130, no health error; kernel PASS, boundary unchanged",
+      "samples": [
+        {
+          "seconds": 25.26846514600038,
+          "rss_kib": 219952,
+          "fds": 27,
+          "threads": 15,
+          "actual_xv_plugin": true,
+          "actual_decoder": true,
+          "actual_card": true
+        },
+        {
+          "seconds": 300.13352794300044,
+          "rss_kib": 221172,
+          "fds": 27,
+          "threads": 15,
+          "actual_xv_plugin": true,
+          "actual_decoder": true,
+          "actual_card": true
+        }
+      ],
+      "sampling_scope": "25s and300s live-process FD/RSS/thread/plugin/device samples; not a leak-proof long soak",
+      "census_limit": "No naturalEOS/render-finalstats;17859ACKs are SHM retirements, not unique field or scanout proof",
+      "window_attempt": "First automation hit hidden GTK leader, so F11/resize were NOT verified in this attempt. Later short window test supersedes only UI acceptance.",
+      "stock_control": "Also reaches85C; see stock_thermal_control. No async-only thermal cause established."
+    },
+    "not_claimed": [
+      "Calibrated physical A/V offset",
+      "Scanout/payload age/E2E",
+      "Native i386 playback",
+      "Uninterrupted10min acceptance",
+      "Production fullscreen UI: the GTK embedding wrapper is test-local"
+    ],
+    "stock_thermal_control": {
+      "status": "INCOMPLETE_THERMAL_STOP",
+      "source": "db391ad",
+      "backend": "stock xvimagesink, process-local selection verified in loaded plugin maps",
+      "same_conditions": "same600.761s fixture/card720/Bob50/Pulse/960x540 viewport/sync/QoS; both start below75C, no simultaneous benchmarks",
+      "initial_cpu_temp_mC": 72000,
+      "cpu_temperature_stop_mC": 85000,
+      "wall_seconds": 188.51996482600225,
+      "cpu_seconds": 67.42326899400001,
+      "decoded_originals": 4670,
+      "exit": 130,
+      "natural_eos": false,
+      "health_error": null,
+      "device_fds_after_null": 0,
+      "boundary_equal": true,
+      "kernel": "PASS",
+      "samples": [
+        {
+          "seconds": 25.03863398300018,
+          "rss_kib": 211724,
+          "fds": 24,
+          "threads": 15,
+          "actual_stock_xv": true,
+          "actual_decoder": true,
+          "actual_card": true
+        }
+      ],
+      "interpretation": "Both output modes hit the same CPU guard. This does not establish an async-Xv-only thermal defect or qualify either ten-minute run. Different thermal histories/ambient are not a randomized time-to-limit or power comparison."
+    }
   }
 }
