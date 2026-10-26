@@ -174,11 +174,557 @@
     "side_effects": "No Kodi source patch, no installed apps/driver/library/firmware/default/PM changes; temporary null node removed"
   },
   "remaining": [
-    "Full RGB/asymmetric shader pixel oracle and broader source color/primaries acceptance",
-    "Matched VA/NV12 versus native YUY2 CPU/copy/upload/drop comparison: NOT RUN, no performance win claimed",
-    "Physical A/V,input/display acceptance: NOT RUN, operator unavailable",
-    "Native i386/BCM70012: NOT RUN; installed Kodi21.3 has no packed API",
-    "MPEG2 codec API mapping and interlaced picture flags unavailable in this bounded target; unchanged VA/NV12 remains the existing path",
-    "Single-copy direct DIL integration, endurance and broader files: NOT RUN"
-  ]
+    "Physical A/V offset and unique displayed/scanout/drop counts: NOT RUN; bounded measurement is video-only and operator unavailable",
+    "Exact PCIe wire/descriptor/padding bytes, isolated native-copy CPU and GPU completion time: NOT MEASURED; observed counters and active-byte calculation have separate scope",
+    "No supported-addon/production-hardening decision; stop at measurement per531; existing installed21.3/VA-NV12 defaults unchanged",
+    "Native i386/BCM70012, interlaced flags, other codecs, endurance and ordinary-file auto-selection: outside this bounded prototype; no support claim"
+  ],
+  "color_qualification": {
+    "payload_source": "56c7268c9027b9cea5e42c7f66e8a02329bf1a82",
+    "fix_commits": [
+      "97170c0",
+      "56c7268"
+    ],
+    "tests_followup": "566a5de adds independent RGB oracle and updates the demux test comment; no addon runtime change",
+    "metadata_regression": "Original6b04881 forwarded reserved primaries0 instead of tagged709 primaries1. Actual InputStream callback RED, then repaired. Separate demux/parser inspection leaves the entire video/AAC packet payload/timebase/priming census unchanged.",
+    "sps_only_callback": "PASS: MP4 descriptors2/2/2/0 -> parsed6/5/1/1. Gst canonical ISO matrix6 represents the same BT601 matrix as5, without changing separate625 primaries5. Explicit equivalent container5 is preserved. Original strict matrix5 expectationFAIL retained.",
+    "checks": "O2/Werror synthetic/native/native-trace/rgb-test builds and actual callbacks PASS; affected metadata/demux ASan+UBSan+LSan PASS on709 and SPS-only625 fixtures; no video decoder or card used by these callback checks",
+    "software_gles": {
+      "709": {
+        "status": "PASS",
+        "width": 640,
+        "height": 360,
+        "matrix_iso": 1,
+        "primaries_iso": 1,
+        "max_rgb_error": 2,
+        "mean_rgb_error": 0.10241319444444444,
+        "channels_over_2": 0,
+        "nonopaque_pixels": 0,
+        "scope": "exact source rows to GLES capture; no physical scanout or AV claim"
+      },
+      "625": {
+        "status": "PASS",
+        "width": 640,
+        "height": 360,
+        "matrix_iso": 5,
+        "primaries_iso": 5,
+        "max_rgb_error": 1,
+        "mean_rgb_error": 0.06510416666666667,
+        "channels_over_2": 0,
+        "nonopaque_pixels": 0,
+        "scope": "exact source rows to GLES capture; no physical scanout or AV claim"
+      },
+      "scope": "Actual CrystalHD returned rows -> Kodi owned buffer -> GLES readback; all-IDR static reconstruction proven identical across observed source pictures; RGB captures stop playback mid-file, not a natural EOS test"
+    },
+    "gpu_matched_color": {
+      "addon_payload_source": "56c7268c9027b9cea5e42c7f66e8a02329bf1a82",
+      "controller_checkout": "566a5de; tests/comment only after payload",
+      "fixture": "Same static all-IDR640x360 H264 file, explicit SPS+container matrix1/primaries1/transfer1/limited1",
+      "source_pictures_observed": 17,
+      "distinct_source_pictures": 1,
+      "uv_adjacent_rows_equal": true,
+      "native": {
+        "status": "PASS",
+        "width": 640,
+        "height": 360,
+        "matrix_iso": 1,
+        "primaries_iso": 1,
+        "max_rgb_error": 2,
+        "mean_rgb_error": 0.10252025462962963,
+        "channels_over_2": 0,
+        "nonopaque_pixels": 0,
+        "scope": "exact source rows to GLES capture; no physical scanout or AV claim"
+      },
+      "va": {
+        "status": "PASS",
+        "width": 640,
+        "height": 360,
+        "matrix_iso": 1,
+        "primaries_iso": 1,
+        "max_rgb_error": 2,
+        "mean_rgb_error": 0.10263310185185186,
+        "channels_over_2": 0,
+        "nonopaque_pixels": 0,
+        "scope": "exact source rows to GLES capture; no physical scanout or AV claim"
+      },
+      "captures_difference": {
+        "max": 1,
+        "mean": 0.028246527777777777,
+        "channels_over2": 0
+      },
+      "scope": "Actual Intel965GM GLES2 GPU readbacks at640x360 in private headlessWayland; no physical scanout/AV acceptance"
+    },
+    "failure_evidence": [
+      {
+        "case": "First GUI startup",
+        "result": "NOT RUN: virtual-display displayfd reader closed early; no card opened; fixed harness kept pipe read end alive through process lifetime"
+      },
+      {
+        "case": "First static-looking IPB source",
+        "result": "Capture excluded from exact-picture oracle: repeated source reconstructed differently, so first dump could not identify captured frame; all-IDR fixed-QP static reconstruction used afterward"
+      },
+      {
+        "case": "Initial625 all-IDR file",
+        "result": "FAIL against625-primary model: file actually omitted primaries/TRC. Native forwarded6/2/2/0, and no-gamut model matched. Explicit SPS+container5/5/1/1 fixture then passed the intended625-primary oracle. No tolerance changed."
+      },
+      {
+        "case": "First709 GPU VA comparison, source primaries unspecified",
+        "result": "FAIL against709-primary model: max14,mean2.434810474537037,280216 channels over2. Normal Kodi FFmpeg applies an SD625-primary inference. With independent625 gamut model this same capture PASS(max2,mean0.07864149305555555); raw initialFAIL preserved. Explicit1/1/1/1 input then passes both paths; performance clip already had explicit1/1/1/1."
+      }
+    ],
+    "kodi_unspecified_primary_inference": "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecFFmpeg.cpp#L1229",
+    "model_scope": "Pinned SDR shader, limited-range709/601 matrices and625->709 gamma2.2/gamut where applicable; max2/255 fixed per-channel rounding allowance; no HDR/arbitrary chroma-siting/physicalAV claim",
+    "all_capture_boundaries": "PASS actual card/DIL maps, clean Stop and device retirement while Kodi alive, exit0, unchanged ref/pin0/module/PM/AER, kernelPASS"
+  },
+  "matched_measurement": {
+    "status": "PASS_BOUNDED_HARDWARE_ROUTE_AND_CPU_MEASUREMENT",
+    "performance_decision": "No CPU reduction observed in this two-host-copy/GStreamer prototype at640x360p30; no supported-addon or production-hardening decision",
+    "addon_payload_source": "56c7268c9027b9cea5e42c7f66e8a02329bf1a82",
+    "v2_controller_checkout": "566a5de (test oracle/comment additions only; same previously built addon payload)",
+    "engine_source": "54752a1af514eb673b563fb80b6df6600223a666",
+    "conditions": {
+      "kodi": "Same published stock22RC1 executable and process within each series",
+      "clip": "Same local640x360p30 H264High/B2,6s180pictures; BT709 limited, video-only",
+      "display": "Weston14.0.2 headless960x540@60Hz, same Intel965GM/GLES2.0 Mesa26.2.5, no physical scanout",
+      "native": "quiet native build; rgb-test and trace per-picture diagnostics excluded",
+      "va": "Installed crystalhd_drv_video.so, __vaDriverInit_1_23; installed VA source revision not asserted; matching DIL selected by read-only bind",
+      "v1_order": [
+        "va",
+        "native",
+        "native",
+        "va"
+      ],
+      "v2_order": [
+        "native",
+        "va"
+      ],
+      "v2_change": "Adds LoadPlane/RenderSinglePass/PresentSingle probes plus retained thread samples and compositor CPU; not pooled as identical instrumentation",
+      "window": "kodi-send file invocation to CVideoPlayer OnExit; includes open/decoder startup/drain; CPU from proc stat USER+SYS at100Hz",
+      "cold_warm": "First native use also scans the previously empty private Gst registry; later same-process native arm is warm",
+      "v1_thread_scope": "End-of-window surviving threads only",
+      "v2_thread_scope": "Last-seen thread CPU at50ms samples plus final snapshot; exited threads may lose final sub-sample ticks",
+      "timings": "Elapsed inclusive uprobe times, include scheduler/waits and overlap; not pure CPU phase costs or GPU timer results",
+      "inline_counterexample": "Packed upload helper is inlined into base UploadTexture in this binary. Zero out-of-line packed-upload calls is NOT zero upload work. v2 observes176 LoadPlane calls and226 RenderSinglePass calls for native arm."
+    },
+    "runs": [
+      {
+        "series": "v1",
+        "order": 1,
+        "arm": "va",
+        "wall_s": 7.00539103592746,
+        "kodi_cpu_s": 1.42,
+        "peak_rss_kib": 282304,
+        "compositor_cpu_s": null,
+        "thread_cpu_s_by_name": {
+          "kodi.bin": 0.7,
+          "VideoPlayer": 0.33,
+          "PeripBusCEC": 0.09,
+          "Vaapi-Output": 0.05,
+          "Announce": 0.02,
+          "PeripEventScan": 0.02,
+          "kodi.bin:gdrv0": 0.01
+        },
+        "successful_hardware_borrows": 180,
+        "successful_releases": 180,
+        "render_queue_acceptances": 180,
+        "inclusive_uprobe_timings": {
+          "render_queue": {
+            "calls": 180,
+            "total_ms": 11.387815,
+            "max_ms": 1.962866
+          },
+          "va_upload": {
+            "calls": 235,
+            "total_ms": 18.506704,
+            "max_ms": 0.71575
+          },
+          "hardware": {
+            "calls": 181,
+            "total_ms": 28.132932,
+            "max_ms": 1.153387
+          },
+          "va_copy_convert": {
+            "calls": 180,
+            "total_ms": 51.755349,
+            "max_ms": 0.694727
+          },
+          "release": {
+            "calls": 180,
+            "total_ms": 58.566151,
+            "max_ms": 2.065535
+          }
+        },
+        "return_counts": {
+          "hardware,18": 1,
+          "hardware,0": 180,
+          "release,0": 180,
+          "va_copy_convert,1": 180,
+          "render_queue,1": 180,
+          "va_upload,1": 235
+        },
+        "natural_native_eof": [],
+        "live_fd_count_after_file": 29
+      },
+      {
+        "series": "v1",
+        "order": 2,
+        "arm": "native",
+        "wall_s": 8.895932987099513,
+        "kodi_cpu_s": 1.84,
+        "peak_rss_kib": 375780,
+        "compositor_cpu_s": null,
+        "thread_cpu_s_by_name": {
+          "kodi.bin": 0.73,
+          "VideoPlayer": 0.39,
+          "appsrc1:src": 0.21,
+          "PeripBusCEC": 0.19,
+          "crystalhd-outpu": 0.15,
+          "PeripEventScan": 0.03,
+          "Announce": 0.02,
+          "PeripBusUSBUdev": 0.01,
+          "JobWorker": 0.01
+        },
+        "successful_hardware_borrows": 180,
+        "successful_releases": 180,
+        "render_queue_acceptances": 180,
+        "inclusive_uprobe_timings": {
+          "render_queue": {
+            "calls": 180,
+            "total_ms": 7.732873,
+            "max_ms": 1.629855
+          },
+          "hardware": {
+            "calls": 182,
+            "total_ms": 37.713022,
+            "max_ms": 13.035973
+          },
+          "release": {
+            "calls": 180,
+            "total_ms": 77.413208,
+            "max_ms": 4.825518
+          },
+          "native_next": {
+            "calls": 708,
+            "total_ms": 698.102662,
+            "max_ms": 8.233713
+          },
+          "native_picture": {
+            "calls": 714,
+            "total_ms": 784.196629,
+            "max_ms": 8.726734
+          }
+        },
+        "return_counts": {
+          "hardware,8": 1,
+          "hardware,18": 1,
+          "native_picture,4": 4,
+          "native_picture,2": 178,
+          "native_picture,3": 180,
+          "release,0": 180,
+          "render_queue,1": 180,
+          "hardware,0": 180,
+          "native_picture,0": 352
+        },
+        "natural_native_eof": [
+          "CrystalHD-Native EOF session=1 accepted=180 pictures=180 last_pts_us=5966667"
+        ],
+        "live_fd_count_after_file": 29
+      },
+      {
+        "series": "v1",
+        "order": 3,
+        "arm": "native",
+        "wall_s": 6.979210505029187,
+        "kodi_cpu_s": 1.42,
+        "peak_rss_kib": 377680,
+        "compositor_cpu_s": null,
+        "thread_cpu_s_by_name": {
+          "kodi.bin": 0.49,
+          "appsrc3:src": 0.21,
+          "PeripBusCEC": 0.18,
+          "crystalhd-outpu": 0.16,
+          "VideoPlayer": 0.23,
+          "PeripEventScan": 0.03,
+          "Announce": 0.02
+        },
+        "successful_hardware_borrows": 180,
+        "successful_releases": 180,
+        "render_queue_acceptances": 180,
+        "inclusive_uprobe_timings": {
+          "render_queue": {
+            "calls": 180,
+            "total_ms": 4.632399,
+            "max_ms": 0.140873
+          },
+          "hardware": {
+            "calls": 182,
+            "total_ms": 24.543585,
+            "max_ms": 1.473547
+          },
+          "release": {
+            "calls": 180,
+            "total_ms": 79.572893,
+            "max_ms": 3.830326
+          },
+          "native_next": {
+            "calls": 686,
+            "total_ms": 651.997403,
+            "max_ms": 4.670956
+          },
+          "native_picture": {
+            "calls": 691,
+            "total_ms": 737.359894,
+            "max_ms": 5.0956
+          }
+        },
+        "return_counts": {
+          "hardware,18": 1,
+          "hardware,8": 1,
+          "native_picture,4": 4,
+          "native_picture,2": 178,
+          "native_picture,3": 180,
+          "hardware,0": 180,
+          "release,0": 180,
+          "render_queue,1": 180,
+          "native_picture,0": 329
+        },
+        "natural_native_eof": [
+          "CrystalHD-Native EOF session=1 accepted=180 pictures=180 last_pts_us=5966667"
+        ],
+        "live_fd_count_after_file": 28
+      },
+      {
+        "series": "v1",
+        "order": 4,
+        "arm": "va",
+        "wall_s": 6.933591079898179,
+        "kodi_cpu_s": 1.32,
+        "peak_rss_kib": 374164,
+        "compositor_cpu_s": null,
+        "thread_cpu_s_by_name": {
+          "kodi.bin": 0.65,
+          "VideoPlayer": 0.29,
+          "PeripBusCEC": 0.17,
+          "Vaapi-Output": 0.05,
+          "Announce": 0.02,
+          "PeripEventScan": 0.02,
+          "JobWorker": 0.03
+        },
+        "successful_hardware_borrows": 180,
+        "successful_releases": 180,
+        "render_queue_acceptances": 180,
+        "inclusive_uprobe_timings": {
+          "render_queue": {
+            "calls": 180,
+            "total_ms": 7.147723,
+            "max_ms": 1.120281
+          },
+          "hardware": {
+            "calls": 181,
+            "total_ms": 24.344868,
+            "max_ms": 1.303828
+          },
+          "va_upload": {
+            "calls": 234,
+            "total_ms": 32.071585,
+            "max_ms": 13.505877
+          },
+          "va_copy_convert": {
+            "calls": 180,
+            "total_ms": 58.259273,
+            "max_ms": 2.29448
+          },
+          "release": {
+            "calls": 180,
+            "total_ms": 75.523264,
+            "max_ms": 4.988601
+          }
+        },
+        "return_counts": {
+          "hardware,18": 1,
+          "render_queue,1": 180,
+          "release,0": 180,
+          "hardware,0": 180,
+          "va_copy_convert,1": 180,
+          "va_upload,1": 234
+        },
+        "natural_native_eof": [],
+        "live_fd_count_after_file": 28
+      },
+      {
+        "series": "v2",
+        "order": 1,
+        "arm": "native",
+        "wall_s": 8.873993465909734,
+        "kodi_cpu_s": 1.97,
+        "peak_rss_kib": 303944,
+        "compositor_cpu_s": 0.19,
+        "thread_cpu_s_by_name": {
+          "kodi.bin": 0.75,
+          "VideoPlayer": 0.38,
+          "appsrc1:src": 0.21,
+          "PeripBusCEC": 0.19,
+          "crystalhd-outpu": 0.16,
+          "LanguageInvoker": 0.07,
+          "PeripEventScan": 0.03,
+          "kodi.bin:gdrv0": 0.02,
+          "Announce": 0.01
+        },
+        "successful_hardware_borrows": 180,
+        "successful_releases": 180,
+        "render_queue_acceptances": 180,
+        "inclusive_uprobe_timings": {
+          "render_queue": {
+            "calls": 180,
+            "total_ms": 4.078895,
+            "max_ms": 0.230202
+          },
+          "hardware": {
+            "calls": 182,
+            "total_ms": 25.961882,
+            "max_ms": 0.953147
+          },
+          "render_single": {
+            "calls": 226,
+            "total_ms": 33.937524,
+            "max_ms": 5.519479
+          },
+          "release": {
+            "calls": 180,
+            "total_ms": 64.592296,
+            "max_ms": 2.427392
+          },
+          "load_plane": {
+            "calls": 176,
+            "total_ms": 104.347758,
+            "max_ms": 3.005831
+          },
+          "present_single": {
+            "calls": 224,
+            "total_ms": 177.907816,
+            "max_ms": 6.04372
+          },
+          "native_next": {
+            "calls": 701,
+            "total_ms": 687.75193,
+            "max_ms": 4.389141
+          },
+          "native_picture": {
+            "calls": 710,
+            "total_ms": 768.608504,
+            "max_ms": 4.630029
+          }
+        },
+        "return_counts": {
+          "hardware,18": 1,
+          "hardware,8": 1,
+          "native_picture,4": 4,
+          "native_picture,2": 178,
+          "hardware,0": 180,
+          "native_picture,3": 180,
+          "render_queue,1": 180,
+          "release,0": 180,
+          "native_picture,0": 348
+        },
+        "natural_native_eof": [
+          "CrystalHD-Native EOF session=1 accepted=180 pictures=180 last_pts_us=5966667"
+        ],
+        "live_fd_count_after_file": 29
+      },
+      {
+        "series": "v2",
+        "order": 2,
+        "arm": "va",
+        "wall_s": 7.003121871966869,
+        "kodi_cpu_s": 1.3,
+        "peak_rss_kib": 368436,
+        "compositor_cpu_s": 0.14999999999999997,
+        "thread_cpu_s_by_name": {
+          "kodi.bin": 0.69,
+          "VideoPlayer": 0.33,
+          "PeripBusCEC": 0.09,
+          "Vaapi-Output": 0.04,
+          "LanguageInvoker": 0.03,
+          "Announce": 0.02,
+          "PeripEventScan": 0.02
+        },
+        "successful_hardware_borrows": 180,
+        "successful_releases": 180,
+        "render_queue_acceptances": 180,
+        "inclusive_uprobe_timings": {
+          "render_queue": {
+            "calls": 180,
+            "total_ms": 6.724766,
+            "max_ms": 0.802775
+          },
+          "va_upload": {
+            "calls": 241,
+            "total_ms": 20.346446,
+            "max_ms": 1.356071
+          },
+          "render_single": {
+            "calls": 233,
+            "total_ms": 23.633249,
+            "max_ms": 1.727147
+          },
+          "hardware": {
+            "calls": 181,
+            "total_ms": 24.311446,
+            "max_ms": 1.357608
+          },
+          "va_copy_convert": {
+            "calls": 180,
+            "total_ms": 54.338447,
+            "max_ms": 1.412853
+          },
+          "release": {
+            "calls": 180,
+            "total_ms": 63.751475,
+            "max_ms": 2.627631
+          },
+          "present_single": {
+            "calls": 230,
+            "total_ms": 147.428367,
+            "max_ms": 5.927712
+          }
+        },
+        "return_counts": {
+          "hardware,18": 1,
+          "hardware,0": 180,
+          "render_queue,1": 180,
+          "release,0": 180,
+          "va_copy_convert,1": 180,
+          "va_upload,1": 241
+        },
+        "natural_native_eof": [],
+        "live_fd_count_after_file": 29
+      }
+    ],
+    "derived": {
+      "v1_warm_native_cpu_s": 1.42,
+      "v1_va_last_cpu_s": 1.32,
+      "v1_warm_difference_percent": 7.576,
+      "active_yuy2_bytes_per_full_arm": 82944000,
+      "traffic_scope": "180 observed borrows x640x360x2 active bytes; inferred active payload, not measured PCIe wire traffic or descriptor/padding bytes. Both routes receive YUY2 from card."
+    },
+    "not_measured": [
+      "Unique source frames actually scanned out / physical frame drops;180queue acceptances is not180displayed frames",
+      "Physical A/V offset: video-only measurement; operator unavailable",
+      "PCIe wire bytes, GPU timer-query duration and isolated native copy CPU time",
+      "NV12 vs YUY2 quality across arbitrary chroma patterns/HDR/interlaced content",
+      "Endurance, i386 or BCM70012 qualification"
+    ],
+    "boundaries": "All6files return device ownership while same Kodi process remains alive, ref/pin0; module3.10.13 and L0s controls unchanged; AERunchanged0; kernel checkerPASS; both processes exit0. Weston and bpftrace stopped.",
+    "preflight_failures": [
+      {
+        "case": "X11/GLES published22RC1",
+        "result": "Not a VA hardware baseline: ff-h264 software decoder selected, no CrystalHD device/maps; excluded. Pinned X11GLES RefreshGLContext never calls VAAPIRegister."
+      },
+      {
+        "case": "First private Wayland setup",
+        "result": "No VA baseline: GPU identification inaccessible because sysfs absent; selected software GL/video. Read-only sysfs/udev exposure enabled Intel GPU and actual ff-h264-vaapi/NV12; no host settings changed."
+      }
+    ],
+    "x11_registration_source": "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/windowing/X11/WinSystemX11GLESContext.cpp#L301"
+  }
 }
