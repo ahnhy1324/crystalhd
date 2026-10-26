@@ -573,7 +573,7 @@ static guint device_fds(void)
   }
   closedir(directory); return count;
 }
-static void test_native_error_reopen(void)
+static void native_error_reopen(gboolean clocked)
 {
   if (!x11_enabled()) return;
   const char *fixture = g_getenv("CRYSTALHD_XV_TEST_FIXTURE");
@@ -583,10 +583,13 @@ static void test_native_error_reopen(void)
   GstElement *pipeline = gst_parse_launch("filesrc name=input ! h264parse name=parser ! "
       "crystalhddec name=decoder scale-width=1280 ! deinterlace name=di method=linear fields=all mode=auto ! "
       "videoconvert n-threads=1 ! video/x-raw,format=UYVY ! "
-      "crystalhdxvsink name=output show-preroll-frame=false sync=true qos=true", &error);
+      "crystalhdxvsink name=output show-preroll-frame=false qos=true", &error);
   g_assert_no_error(error);
   GstElement *source = gst_bin_get_by_name(GST_BIN(pipeline), "input");
   GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), "output");
+  /* Separate an unclocked ownership/EOS census from the strict clocked
+   * presentation census. The latter retains its 100-output requirement. */
+  g_object_set(sink, "sync", clocked, NULL);
   GstElement *deinterlace = gst_bin_get_by_name(GST_BIN(pipeline), "di");
   GstElement *controller = gst_element_factory_make("crystalhddiqos", NULL);
   GstBus *bus = gst_element_get_bus(pipeline);
@@ -620,13 +623,22 @@ static void test_native_error_reopen(void)
      * including NULL/restart. Detach does not permit attaching a second owner. */
     memset(stages, 0, sizeof(stages));
     check_eos(pipeline, 100);
+    g_assert_cmpint(stages[0].buffers, ==, 50);
+    g_assert_cmpint(stages[1].buffers, ==, 50);
+    g_assert_cmpint(stages[2].buffers, ==, 100);
+    g_assert_cmpint(stages[3].buffers, ==, 100);
+    for (guint i = 0; i < 100; i++)
+      g_assert_cmpuint(stages[2].pts[i], ==, stages[3].pts[i]);
     g_assert_cmpuint(device_fds(), ==, 0);
-    g_test_message("Native same-pipeline reopen %u: 100 outputs, EOS, live-process device FD0", cycle + 1);
+    g_test_message("Native %s same-pipeline reopen %u: 100 outputs, EOS, live-process device FD0",
+        clocked ? "clocked" : "unclocked", cycle + 1);
   }
   g_signal_emit_by_name(controller, "detach");
   gst_object_unref(controller); gst_object_unref(deinterlace); gst_object_unref(bus);
   gst_object_unref(source); gst_object_unref(sink); gst_object_unref(pipeline); clean_contexts();
 }
+static void test_native_error_reopen(void) { native_error_reopen(TRUE); }
+static void test_native_error_reopen_lifetime(void) { native_error_reopen(FALSE); }
 int main(int argc, char **argv)
 {
   if (argc == 2 && !strcmp(argv[1], "--hold-segment")) return hold_segment();
@@ -648,5 +660,6 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/x11/held-pool-caps", test_held_pool_and_caps);
   g_test_add_func("/xv/x11/quarantine", test_quarantine);
   g_test_add_func("/xv/card/error-reopen", test_native_error_reopen);
+  g_test_add_func("/xv/card/error-reopen-lifetime", test_native_error_reopen_lifetime);
   int result = g_test_run(); g_free((gpointer)self_path); return result;
 }
