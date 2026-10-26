@@ -4,6 +4,7 @@
 #include <gst/gst.h>
 #include <gst/app/gstappsrc.h>
 #include <gst/app/gstappsink.h>
+#include <gst/base/gstbaseparse.h>
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -594,7 +595,7 @@ static void link_native_video(GstElement *demux, GstPad *pad, gpointer data)
   g_assert_cmpint(gst_pad_link(pad, input), ==, GST_PAD_LINK_OK);
   gst_object_unref(input); gst_object_unref(parser);
 }
-static void native_error_reopen(gboolean clocked, gboolean preroll, gboolean mp4)
+static void native_error_reopen(gboolean clocked, gboolean preroll, gboolean mp4, gboolean restore_parser)
 {
   if (!x11_enabled()) return;
   const char *fixture = g_getenv(mp4 ? "CRYSTALHD_XV_TEST_MP4" : "CRYSTALHD_XV_TEST_FIXTURE");
@@ -666,6 +667,16 @@ static void native_error_reopen(gboolean clocked, gboolean preroll, gboolean mp4
     /* One compatibility controller owns this deinterlacer for its lifetime,
      * including NULL/restart. Detach does not permit attaching a second owner. */
     memset(stages, 0, sizeof(stages));
+    if (restore_parser) {
+      /* Test-local counterfactual: 1.28.2 BaseParse resets these policies at
+       * PAUSED->READY, while H264Parse disables them only during construction.
+       * Reapply its intended policy while stopped; do not rewrite timestamps,
+       * alter QoS or replace the unmodified raw-stream failure controls. */
+      GstElement *parser = gst_bin_get_by_name(GST_BIN(pipeline), "parser");
+      gst_base_parse_set_pts_interpolation(GST_BASE_PARSE(parser), FALSE);
+      gst_base_parse_set_infer_ts(GST_BASE_PARSE(parser), FALSE);
+      gst_object_unref(parser);
+    }
     check_eos(pipeline, outputs + (preroll ? 1 : 0));
     g_assert_cmpint(stages[0].buffers, ==, originals);
     g_assert_cmpint(stages[1].buffers, ==, originals);
@@ -673,7 +684,7 @@ static void native_error_reopen(gboolean clocked, gboolean preroll, gboolean mp4
     g_assert_cmpint(stages[3].buffers, ==, outputs);
     for (guint i = 0; i < outputs; i++) {
       g_assert_cmpuint(stages[2].pts[i], ==, stages[3].pts[i]);
-      if (mp4) {
+      if (mp4 || restore_parser) {
         g_assert_true(GST_CLOCK_TIME_IS_VALID(stages[3].pts[i]));
         if (i) g_assert_cmpuint(stages[3].pts[i], >, stages[3].pts[i-1]);
       }
@@ -687,10 +698,11 @@ static void native_error_reopen(gboolean clocked, gboolean preroll, gboolean mp4
   gst_object_unref(bus);
   gst_object_unref(source); gst_object_unref(sink); gst_object_unref(pipeline); clean_contexts();
 }
-static void test_native_error_reopen(void) { native_error_reopen(TRUE, FALSE, FALSE); }
-static void test_native_error_reopen_lifetime(void) { native_error_reopen(FALSE, FALSE, FALSE); }
-static void test_native_error_reopen_default(void) { native_error_reopen(TRUE, TRUE, FALSE); }
-static void test_native_error_reopen_mp4(void) { native_error_reopen(TRUE, TRUE, TRUE); }
+static void test_native_error_reopen(void) { native_error_reopen(TRUE, FALSE, FALSE, FALSE); }
+static void test_native_error_reopen_lifetime(void) { native_error_reopen(FALSE, FALSE, FALSE, FALSE); }
+static void test_native_error_reopen_default(void) { native_error_reopen(TRUE, TRUE, FALSE, FALSE); }
+static void test_native_error_reopen_mp4(void) { native_error_reopen(TRUE, TRUE, TRUE, FALSE); }
+static void test_native_error_reopen_parser_policy(void) { native_error_reopen(TRUE, TRUE, FALSE, TRUE); }
 int main(int argc, char **argv)
 {
   if (argc == 2 && !strcmp(argv[1], "--hold-segment")) return hold_segment();
@@ -715,5 +727,6 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/card/error-reopen-lifetime", test_native_error_reopen_lifetime);
   g_test_add_func("/xv/card/error-reopen-default", test_native_error_reopen_default);
   g_test_add_func("/xv/card/error-reopen-mp4", test_native_error_reopen_mp4);
+  g_test_add_func("/xv/card/error-reopen-parser-policy", test_native_error_reopen_parser_policy);
   int result = g_test_run(); g_free((gpointer)self_path); return result;
 }
