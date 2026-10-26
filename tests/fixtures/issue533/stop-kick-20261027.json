@@ -1,0 +1,1908 @@
+{
+  "issue": 533,
+  "date": "2026-10-27",
+  "scope": "Bounded public legacy-API progressive H264 G0/G1/G2, no native V4L2 module replacement",
+  "frozen_input": "phase1 high.mp4",
+  "input_sha256": "1b6ad927b660238dfabc4c25531439d4ea16d0742f249427784bc575e6270eec",
+  "library_source": "54752a1",
+  "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+  "g0_old": {
+    "scope": "OFFLINE G0 only; not native scheduling/STOP/START proof",
+    "fixture": "high.mp4",
+    "fixture_sha256": "1b6ad927b660238dfabc4c25531439d4ea16d0742f249427784bc575e6270eec",
+    "sps": {
+      "id": 0,
+      "profile": 100,
+      "level": 30,
+      "chroma": 1,
+      "frame_bits": 4,
+      "poc_bits": 6,
+      "refs": 4,
+      "gaps": 0,
+      "frame_only": 1,
+      "mbaff": 0,
+      "width_mbs": 40,
+      "map_rows": 23,
+      "crop": [
+        0,
+        0,
+        0,
+        4
+      ],
+      "max_num_reorder_frames": 2,
+      "max_dec_frame_buffering": 4
+    },
+    "pps": [
+      {
+        "id": 0,
+        "sps": 0,
+        "entropy": 1,
+        "bottom": 0,
+        "refs": [
+          3,
+          1
+        ],
+        "weighted": 1,
+        "bipred": 2,
+        "deblock": 1,
+        "redundant": 0
+      }
+    ],
+    "original_aus": [
+      {
+        "first_mb": 0,
+        "kind": 2,
+        "pps": 0,
+        "frame_num": 0,
+        "poc_lsb": 0,
+        "reference": 3,
+        "idr": true,
+        "mmco": [],
+        "index": 0,
+        "pts": 0,
+        "dts": -1024,
+        "poc": 0
+      },
+      {
+        "first_mb": 0,
+        "kind": 0,
+        "pps": 0,
+        "frame_num": 1,
+        "poc_lsb": 6,
+        "reference": 2,
+        "idr": false,
+        "mmco": [],
+        "index": 1,
+        "pts": 1536,
+        "dts": -512,
+        "poc": 6
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 2,
+        "poc_lsb": 2,
+        "reference": 2,
+        "idr": false,
+        "mmco": [],
+        "index": 2,
+        "pts": 512,
+        "dts": 0,
+        "poc": 2
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 3,
+        "poc_lsb": 4,
+        "reference": 0,
+        "idr": false,
+        "mmco": [],
+        "index": 3,
+        "pts": 1024,
+        "dts": 512,
+        "poc": 4
+      },
+      {
+        "first_mb": 0,
+        "kind": 0,
+        "pps": 0,
+        "frame_num": 3,
+        "poc_lsb": 14,
+        "reference": 2,
+        "idr": false,
+        "mmco": [],
+        "index": 4,
+        "pts": 3584,
+        "dts": 1024,
+        "poc": 14
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 4,
+        "poc_lsb": 10,
+        "reference": 2,
+        "idr": false,
+        "mmco": [
+          1,
+          1
+        ],
+        "index": 5,
+        "pts": 2560,
+        "dts": 1536,
+        "poc": 10
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 5,
+        "poc_lsb": 8,
+        "reference": 0,
+        "idr": false,
+        "mmco": [],
+        "index": 6,
+        "pts": 2048,
+        "dts": 2048,
+        "poc": 8
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 5,
+        "poc_lsb": 12,
+        "reference": 0,
+        "idr": false,
+        "mmco": [],
+        "index": 7,
+        "pts": 3072,
+        "dts": 2560,
+        "poc": 12
+      },
+      {
+        "first_mb": 0,
+        "kind": 0,
+        "pps": 0,
+        "frame_num": 5,
+        "poc_lsb": 22,
+        "reference": 2,
+        "idr": false,
+        "mmco": [],
+        "index": 8,
+        "pts": 5632,
+        "dts": 3072,
+        "poc": 22
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 6,
+        "poc_lsb": 18,
+        "reference": 2,
+        "idr": false,
+        "mmco": [
+          1,
+          1
+        ],
+        "index": 9,
+        "pts": 4608,
+        "dts": 3584,
+        "poc": 18
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 7,
+        "poc_lsb": 16,
+        "reference": 0,
+        "idr": false,
+        "mmco": [],
+        "index": 10,
+        "pts": 4096,
+        "dts": 4096,
+        "poc": 16
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 7,
+        "poc_lsb": 20,
+        "reference": 0,
+        "idr": false,
+        "mmco": [],
+        "index": 11,
+        "pts": 5120,
+        "dts": 4608,
+        "poc": 20
+      },
+      {
+        "first_mb": 0,
+        "kind": 0,
+        "pps": 0,
+        "frame_num": 7,
+        "poc_lsb": 28,
+        "reference": 2,
+        "idr": false,
+        "mmco": [],
+        "index": 12,
+        "pts": 7168,
+        "dts": 5120,
+        "poc": 28
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 8,
+        "poc_lsb": 24,
+        "reference": 2,
+        "idr": false,
+        "mmco": [
+          1,
+          1
+        ],
+        "index": 13,
+        "pts": 6144,
+        "dts": 5632,
+        "poc": 24
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 9,
+        "poc_lsb": 26,
+        "reference": 0,
+        "idr": false,
+        "mmco": [],
+        "index": 14,
+        "pts": 6656,
+        "dts": 6144,
+        "poc": 26
+      },
+      {
+        "first_mb": 0,
+        "kind": 0,
+        "pps": 0,
+        "frame_num": 9,
+        "poc_lsb": 34,
+        "reference": 2,
+        "idr": false,
+        "mmco": [],
+        "index": 15,
+        "pts": 8704,
+        "dts": 6656,
+        "poc": 34
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 10,
+        "poc_lsb": 30,
+        "reference": 2,
+        "idr": false,
+        "mmco": [
+          1,
+          1
+        ],
+        "index": 16,
+        "pts": 7680,
+        "dts": 7168,
+        "poc": 30
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 11,
+        "poc_lsb": 32,
+        "reference": 0,
+        "idr": false,
+        "mmco": [],
+        "index": 17,
+        "pts": 8192,
+        "dts": 7680,
+        "poc": 32
+      },
+      {
+        "first_mb": 0,
+        "kind": 0,
+        "pps": 0,
+        "frame_num": 11,
+        "poc_lsb": 42,
+        "reference": 2,
+        "idr": false,
+        "mmco": [],
+        "index": 18,
+        "pts": 10752,
+        "dts": 8192,
+        "poc": 42
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 12,
+        "poc_lsb": 38,
+        "reference": 2,
+        "idr": false,
+        "mmco": [
+          1,
+          1
+        ],
+        "index": 19,
+        "pts": 9728,
+        "dts": 8704,
+        "poc": 38
+      }
+    ],
+    "prefix_aus": 17,
+    "continuation_aus": 3,
+    "private_frame_num": 11,
+    "private_first_poc": 35,
+    "production_auxiliary": "ineligible: existing builder requires frame-coded MBAFF",
+    "private_candidate": "test-only non-reference progressive I16x16/DC, unused PPS254",
+    "software_original_frames": 20,
+    "cases": [
+      {
+        "private_pictures": 1,
+        "private_bytes": 945,
+        "software_frames": 21,
+        "software_private_outputs": 1,
+        "real_pixels_and_order_unchanged": true,
+        "all_outputs": true,
+        "required_reorder_bound": 2,
+        "within_original_reorder_limit": true,
+        "missing_original_indices": [],
+        "hardware_eligible": true
+      },
+      {
+        "private_pictures": 2,
+        "private_bytes": 1890,
+        "software_frames": 21,
+        "software_private_outputs": 2,
+        "real_pixels_and_order_unchanged": false,
+        "all_outputs": false,
+        "required_reorder_bound": 3,
+        "within_original_reorder_limit": false,
+        "missing_original_indices": [
+          16
+        ],
+        "hardware_eligible": false
+      },
+      {
+        "private_pictures": 3,
+        "private_bytes": 2835,
+        "software_frames": 22,
+        "software_private_outputs": 3,
+        "real_pixels_and_order_unchanged": false,
+        "all_outputs": false,
+        "required_reorder_bound": 4,
+        "within_original_reorder_limit": false,
+        "missing_original_indices": [
+          16
+        ],
+        "hardware_eligible": false
+      }
+    ],
+    "original_reorder_bound": 2,
+    "prefix_and_continuation_order_equals_uninterrupted": false,
+    "order_boundary_note": "Original prefix already owns POC34; the following non-IDR AU has POC32. Per-drain order differs from uninterrupted20. Do not silently waive the issue global-order criterion.",
+    "result": "Single-picture G0 candidate eligible; multi-picture counterexamples ineligible. Native G2/G3 NOT RUN. Global output-order boundary is independently unresolved."
+  },
+  "g0_current": {
+    "scope": "OFFLINE G0 only; not native scheduling/STOP/START proof",
+    "fixture": "high.mp4",
+    "fixture_sha256": "1b6ad927b660238dfabc4c25531439d4ea16d0742f249427784bc575e6270eec",
+    "sps": {
+      "id": 0,
+      "profile": 100,
+      "level": 30,
+      "chroma": 1,
+      "frame_bits": 4,
+      "poc_bits": 6,
+      "refs": 4,
+      "gaps": 0,
+      "frame_only": 1,
+      "mbaff": 0,
+      "width_mbs": 40,
+      "map_rows": 23,
+      "crop": [
+        0,
+        0,
+        0,
+        4
+      ],
+      "max_num_reorder_frames": 2,
+      "max_dec_frame_buffering": 4
+    },
+    "pps": [
+      {
+        "id": 0,
+        "sps": 0,
+        "entropy": 1,
+        "bottom": 0,
+        "refs": [
+          3,
+          1
+        ],
+        "weighted": 1,
+        "bipred": 2,
+        "deblock": 1,
+        "redundant": 0
+      }
+    ],
+    "original_aus": [
+      {
+        "first_mb": 0,
+        "kind": 2,
+        "pps": 0,
+        "frame_num": 0,
+        "poc_lsb": 0,
+        "reference": 3,
+        "idr": true,
+        "mmco": [],
+        "index": 0,
+        "pts": 0,
+        "dts": -1024,
+        "poc": 0
+      },
+      {
+        "first_mb": 0,
+        "kind": 0,
+        "pps": 0,
+        "frame_num": 1,
+        "poc_lsb": 6,
+        "reference": 2,
+        "idr": false,
+        "mmco": [],
+        "index": 1,
+        "pts": 1536,
+        "dts": -512,
+        "poc": 6
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 2,
+        "poc_lsb": 2,
+        "reference": 2,
+        "idr": false,
+        "mmco": [],
+        "index": 2,
+        "pts": 512,
+        "dts": 0,
+        "poc": 2
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 3,
+        "poc_lsb": 4,
+        "reference": 0,
+        "idr": false,
+        "mmco": [],
+        "index": 3,
+        "pts": 1024,
+        "dts": 512,
+        "poc": 4
+      },
+      {
+        "first_mb": 0,
+        "kind": 0,
+        "pps": 0,
+        "frame_num": 3,
+        "poc_lsb": 14,
+        "reference": 2,
+        "idr": false,
+        "mmco": [],
+        "index": 4,
+        "pts": 3584,
+        "dts": 1024,
+        "poc": 14
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 4,
+        "poc_lsb": 10,
+        "reference": 2,
+        "idr": false,
+        "mmco": [
+          1,
+          1
+        ],
+        "index": 5,
+        "pts": 2560,
+        "dts": 1536,
+        "poc": 10
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 5,
+        "poc_lsb": 8,
+        "reference": 0,
+        "idr": false,
+        "mmco": [],
+        "index": 6,
+        "pts": 2048,
+        "dts": 2048,
+        "poc": 8
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 5,
+        "poc_lsb": 12,
+        "reference": 0,
+        "idr": false,
+        "mmco": [],
+        "index": 7,
+        "pts": 3072,
+        "dts": 2560,
+        "poc": 12
+      },
+      {
+        "first_mb": 0,
+        "kind": 0,
+        "pps": 0,
+        "frame_num": 5,
+        "poc_lsb": 22,
+        "reference": 2,
+        "idr": false,
+        "mmco": [],
+        "index": 8,
+        "pts": 5632,
+        "dts": 3072,
+        "poc": 22
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 6,
+        "poc_lsb": 18,
+        "reference": 2,
+        "idr": false,
+        "mmco": [
+          1,
+          1
+        ],
+        "index": 9,
+        "pts": 4608,
+        "dts": 3584,
+        "poc": 18
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 7,
+        "poc_lsb": 16,
+        "reference": 0,
+        "idr": false,
+        "mmco": [],
+        "index": 10,
+        "pts": 4096,
+        "dts": 4096,
+        "poc": 16
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 7,
+        "poc_lsb": 20,
+        "reference": 0,
+        "idr": false,
+        "mmco": [],
+        "index": 11,
+        "pts": 5120,
+        "dts": 4608,
+        "poc": 20
+      },
+      {
+        "first_mb": 0,
+        "kind": 0,
+        "pps": 0,
+        "frame_num": 7,
+        "poc_lsb": 28,
+        "reference": 2,
+        "idr": false,
+        "mmco": [],
+        "index": 12,
+        "pts": 7168,
+        "dts": 5120,
+        "poc": 28
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 8,
+        "poc_lsb": 24,
+        "reference": 2,
+        "idr": false,
+        "mmco": [
+          1,
+          1
+        ],
+        "index": 13,
+        "pts": 6144,
+        "dts": 5632,
+        "poc": 24
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 9,
+        "poc_lsb": 26,
+        "reference": 0,
+        "idr": false,
+        "mmco": [],
+        "index": 14,
+        "pts": 6656,
+        "dts": 6144,
+        "poc": 26
+      },
+      {
+        "first_mb": 0,
+        "kind": 0,
+        "pps": 0,
+        "frame_num": 9,
+        "poc_lsb": 34,
+        "reference": 2,
+        "idr": false,
+        "mmco": [],
+        "index": 15,
+        "pts": 8704,
+        "dts": 6656,
+        "poc": 34
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 10,
+        "poc_lsb": 30,
+        "reference": 2,
+        "idr": false,
+        "mmco": [
+          1,
+          1
+        ],
+        "index": 16,
+        "pts": 7680,
+        "dts": 7168,
+        "poc": 30
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 11,
+        "poc_lsb": 32,
+        "reference": 0,
+        "idr": false,
+        "mmco": [],
+        "index": 17,
+        "pts": 8192,
+        "dts": 7680,
+        "poc": 32
+      },
+      {
+        "first_mb": 0,
+        "kind": 0,
+        "pps": 0,
+        "frame_num": 11,
+        "poc_lsb": 42,
+        "reference": 2,
+        "idr": false,
+        "mmco": [],
+        "index": 18,
+        "pts": 10752,
+        "dts": 8192,
+        "poc": 42
+      },
+      {
+        "first_mb": 0,
+        "kind": 1,
+        "pps": 0,
+        "frame_num": 12,
+        "poc_lsb": 38,
+        "reference": 2,
+        "idr": false,
+        "mmco": [
+          1,
+          1
+        ],
+        "index": 19,
+        "pts": 9728,
+        "dts": 8704,
+        "poc": 38
+      }
+    ],
+    "prefix_aus": 17,
+    "continuation_aus": 3,
+    "private_frame_num": 11,
+    "private_first_poc": 31,
+    "production_auxiliary": "ineligible: existing builder requires frame-coded MBAFF",
+    "private_candidate": "test-only non-reference progressive I16x16/DC, unused PPS254",
+    "software_original_frames": 20,
+    "cases": [
+      {
+        "private_pictures": 1,
+        "private_bytes": 945,
+        "software_frames": 21,
+        "software_private_outputs": 1,
+        "real_pixels_and_order_unchanged": true,
+        "all_outputs": true,
+        "required_reorder_bound": 2,
+        "within_original_reorder_limit": true,
+        "missing_original_indices": [],
+        "hardware_eligible": true
+      },
+      {
+        "private_pictures": 2,
+        "private_bytes": 1890,
+        "software_frames": 22,
+        "software_private_outputs": 2,
+        "real_pixels_and_order_unchanged": true,
+        "all_outputs": true,
+        "required_reorder_bound": 2,
+        "within_original_reorder_limit": true,
+        "missing_original_indices": [],
+        "hardware_eligible": true
+      },
+      {
+        "private_pictures": 3,
+        "private_bytes": 2835,
+        "software_frames": 22,
+        "software_private_outputs": 3,
+        "real_pixels_and_order_unchanged": false,
+        "all_outputs": false,
+        "required_reorder_bound": 3,
+        "within_original_reorder_limit": false,
+        "missing_original_indices": [
+          16
+        ],
+        "hardware_eligible": false
+      }
+    ],
+    "original_reorder_bound": 2,
+    "prefix_and_continuation_order_equals_uninterrupted": false,
+    "order_boundary_note": "Original prefix already owns POC34; the following non-IDR AU has POC32. Per-drain order differs from uninterrupted20. Do not silently waive the issue global-order criterion.",
+    "eligible_private_counts": [
+      1,
+      2
+    ],
+    "result": "G0 candidates evaluated; only listed counts are native-eligible. Native G2/G3 NOT RUN. Global output-order boundary is independently unresolved."
+  },
+  "native_first": {
+    "source": "552b6c48e773f404ca2de25f605908047a764460",
+    "cases": [
+      {
+        "mode": "reference",
+        "exit": 0,
+        "g0": "stop-kick-g0-v2",
+        "observations": [
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 100000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 300000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 400000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 200000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "boundary",
+            "mode": "reference",
+            "real": 4,
+            "private": 0,
+            "eos": false,
+            "g2": false
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 700000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 600000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 800000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 500000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 1100000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 1000000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 1200000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 900000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 1400000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 1500000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 1300000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 1700000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 1800000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 1600000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 2000000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "reference",
+            "token": 1900000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "result",
+            "mode": "reference",
+            "boundary_real": 4,
+            "boundary_private": 0,
+            "g2": false,
+            "continuation_attempted": false,
+            "terminal_real": 20,
+            "terminal_private": 0,
+            "eos": true,
+            "full_reference_order": true,
+            "pixels_match_reference": null
+          }
+        ],
+        "failure_lines": [],
+        "boundary_equal": true,
+        "temperature": {
+          "/sys/class/thermal/thermal_zone0/temp": 64000,
+          "/sys/class/thermal/thermal_zone1/temp": 55000
+        }
+      },
+      {
+        "mode": "none",
+        "exit": 2,
+        "g0": "stop-kick-g0-v2",
+        "observations": [
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 100000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 300000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 400000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 200000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 700000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 600000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 800000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 500000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 1100000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 1000000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 1200000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 900000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "boundary",
+            "mode": "none",
+            "real": 12,
+            "private": 0,
+            "eos": false,
+            "g2": false
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 1400000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 1500000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 1300000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 1700000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "none",
+            "token": 1600000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "result",
+            "mode": "none",
+            "boundary_real": 12,
+            "boundary_private": 0,
+            "g2": false,
+            "continuation_attempted": false,
+            "terminal_real": 17,
+            "terminal_private": 0,
+            "eos": true,
+            "full_reference_order": false,
+            "pixels_match_reference": true
+          }
+        ],
+        "failure_lines": [],
+        "boundary_equal": true,
+        "temperature": {
+          "/sys/class/thermal/thermal_zone0/temp": 64000,
+          "/sys/class/thermal/thermal_zone1/temp": 55000
+        }
+      },
+      {
+        "mode": "prefix",
+        "exit": 2,
+        "g0": "stop-kick-g0-v2",
+        "observations": [
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 100000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 300000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 400000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 200000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 700000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 600000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 800000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 500000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 1100000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 1000000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 1200000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 900000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "boundary",
+            "mode": "prefix",
+            "real": 12,
+            "private": 0,
+            "eos": false,
+            "g2": false
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 1400000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 1500000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 1300000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 1700000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefix",
+            "token": 1600000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "result",
+            "mode": "prefix",
+            "boundary_real": 12,
+            "boundary_private": 0,
+            "g2": false,
+            "continuation_attempted": false,
+            "terminal_real": 17,
+            "terminal_private": 0,
+            "eos": true,
+            "full_reference_order": false,
+            "pixels_match_reference": true
+          }
+        ],
+        "failure_lines": [],
+        "boundary_equal": true,
+        "temperature": {
+          "/sys/class/thermal/thermal_zone0/temp": 64000,
+          "/sys/class/thermal/thermal_zone1/temp": 56000
+        }
+      },
+      {
+        "mode": "picture",
+        "exit": 1,
+        "g0": "stop-kick-g0-v2",
+        "observations": [
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 100000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 300000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 400000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 200000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 700000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 600000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 800000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 500000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 1100000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 1000000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 1200000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 900000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 1400000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 1500000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 1300000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "boundary",
+            "mode": "picture",
+            "real": 15,
+            "private": 0,
+            "eos": false,
+            "g2": false
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 1700000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "picture",
+            "token": 1600000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          }
+        ],
+        "failure_lines": [
+          "FAIL unknown/ghost output"
+        ],
+        "boundary_equal": true,
+        "temperature": {
+          "/sys/class/thermal/thermal_zone0/temp": 65000,
+          "/sys/class/thermal/thermal_zone1/temp": 55000
+        }
+      }
+    ],
+    "module": "3.10.13",
+    "force_l0s_off": "Y",
+    "session_l0s_off": "N",
+    "boundaries_equal": true,
+    "kernel_log": "kernel-log validation passed: no matching errors during the test\n"
+  },
+  "native_prefed": {
+    "source": "309aee5a5e91c98310579ed78120b751517043fe",
+    "cases": [
+      {
+        "mode": "prefed-picture",
+        "exit": 2,
+        "g0": "stop-kick-g0-v2",
+        "observations": [
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 100000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 300000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 400000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 200000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 700000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 600000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 800000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 500000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 1100000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 1000000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 1200000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 900000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 1400000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 1500000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 1300000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "boundary",
+            "mode": "prefed-picture",
+            "real": 15,
+            "private": 0,
+            "eos": false,
+            "g2": false
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 1700000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-picture",
+            "token": 1600000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "unmatched",
+            "mode": "prefed-picture",
+            "token": 1740000,
+            "neutral_pixels": true,
+            "flags": 0,
+            "before_eos": false
+          },
+          {
+            "type": "result",
+            "mode": "prefed-picture",
+            "boundary_real": 15,
+            "boundary_private": 0,
+            "g2": false,
+            "continuation_attempted": false,
+            "terminal_real": 17,
+            "terminal_private": 0,
+            "eos": true,
+            "full_reference_order": false,
+            "pixels_match_reference": true,
+            "unknown_outputs": 1,
+            "terminal_complete": false
+          }
+        ],
+        "failure_lines": [],
+        "boundary_equal": true,
+        "temperature": {
+          "/sys/class/thermal/thermal_zone0/temp": 66000,
+          "/sys/class/thermal/thermal_zone1/temp": 56000
+        }
+      },
+      {
+        "mode": "prefed-pair",
+        "exit": 2,
+        "g0": "stop-kick-g0-v3",
+        "observations": [
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 100000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 300000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 400000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 200000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 700000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 600000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 800000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 500000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 1100000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 1000000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 1200000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 900000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 1400000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 1500000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 1300000,
+            "private": false,
+            "before_eos": true,
+            "flags": 0
+          },
+          {
+            "type": "boundary",
+            "mode": "prefed-pair",
+            "real": 15,
+            "private": 0,
+            "eos": false,
+            "g2": false
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 1700000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "unmatched",
+            "mode": "prefed-pair",
+            "token": 1740000,
+            "neutral_pixels": true,
+            "flags": 0,
+            "before_eos": false
+          },
+          {
+            "type": "unmatched",
+            "mode": "prefed-pair",
+            "token": 1760000,
+            "neutral_pixels": true,
+            "flags": 0,
+            "before_eos": false
+          },
+          {
+            "type": "picture",
+            "mode": "prefed-pair",
+            "token": 1600000,
+            "private": false,
+            "before_eos": false,
+            "flags": 0
+          },
+          {
+            "type": "result",
+            "mode": "prefed-pair",
+            "boundary_real": 15,
+            "boundary_private": 0,
+            "g2": false,
+            "continuation_attempted": false,
+            "terminal_real": 17,
+            "terminal_private": 0,
+            "eos": true,
+            "full_reference_order": false,
+            "pixels_match_reference": true,
+            "unknown_outputs": 2,
+            "terminal_complete": false
+          }
+        ],
+        "failure_lines": [],
+        "boundary_equal": true,
+        "temperature": {
+          "/sys/class/thermal/thermal_zone0/temp": 66000,
+          "/sys/class/thermal/thermal_zone1/temp": 56000
+        }
+      }
+    ],
+    "module": "3.10.13",
+    "force_l0s_off": "Y",
+    "session_l0s_off": "N",
+    "boundaries_equal": true,
+    "kernel_log": "kernel-log validation passed: no matching errors during the test\n"
+  },
+  "diagnostic_correction": {
+    "source": "771c279",
+    "executed": false,
+    "input": [
+      1750000,
+      1775000
+    ],
+    "observed": [
+      1740000,
+      1760000
+    ],
+    "unit": "100ns",
+    "cause": "Legacy Flea input scales to milliseconds; returned PIB PTS restores 2ms units. The neutral outputs match quantized private identity; raw unknown-token failures remain unchanged.",
+    "future_private_tokens": [
+      1740000,
+      1760000
+    ],
+    "effect": "Does not supply missing pre-EOS real pictures or turn G2 into PASS."
+  },
+  "gates": {
+    "G0": "PASS for listed software-eligible private syntax only; current production MBAFF predicate unchanged",
+    "G1": "20-AU software and hardware oracle PASS; destructive 17+3 control NOT RUN anew, retained #114 evidence only",
+    "G2": "FAIL: at most15/17 originals and zero private outputs before EOS",
+    "G3": "NOT RUN: G2 failed",
+    "G4": "NOT RUN: nonempty drained START remains EOPNOTSUPP",
+    "G5": "NOT RUN",
+    "G6": "Earlier independent buffer proof, not a STOP/START PASS"
+  },
+  "order_caveat": "Prefix17 already owns POC34; first continuation has POC32. Forced segment completion cannot be assumed to preserve uninterrupted global output order.",
+  "decision": "No non-destructive drain from these candidate families. No firmware change, guessed LAST, private-frame promotion, replay or V4L2 policy change."
+}

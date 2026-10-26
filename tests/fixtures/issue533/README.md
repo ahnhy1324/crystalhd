@@ -123,3 +123,53 @@ sudo /tmp/chd-yuy2-interop --frames 120
 It needs `/dev/dma_heap/system` access and x86 CLFLUSH/MFENCE capabilities.
 These are probe prerequisites; the driver and `libcrystalhd.so.3` ABI retain
 their existing requirements.
+
+## Separate non-destructive Kick discriminator
+
+[The 2026-10-27 G0/G1/G2 record](stop-kick-20261027.json) retains the frozen
+17+3-AU experiment, software counterexamples and actual legacy-channel traces.
+It does **not** qualify V4L2 STOP/START. The loaded stable 3.10.13 module,
+signed firmware and L0s policy were unchanged; idle references, RX pins, PCIe
+links and AER returned to their original boundary after every case.
+
+The progressive source is ineligible for the production MBAFF auxiliary
+builder. A test-only non-reference I16x16/DC picture with unused PPS254 is
+independently software-checked against all 20 original pictures. POC31/33
+allows one or two private pictures under the unchanged reorder limit 2;
+three exceed it and lose original POC32. Earlier POC35/37 counterexamples are
+also preserved. Ineligible cases were not sent to the card.
+
+Before any EOS, no extra input and an untimed AUD/filler delimiter return
+12/17 originals; one auxiliary returns 15/17. Prefeeding the actual private
+AU's identity, with one or two eligible pictures, still returns **15/17 and
+zero private outputs**. G2 therefore **FAILs**. Terminal EOS returns all 17
+originals with exact oracle pixels, but is cleanup, not a non-destructive
+drain. G3 continuation and G4/G5 integration are **NOT RUN**; no guessed LAST
+or successful nonempty START is implemented.
+
+The first checker also rejected private output identity. Follow-up traces
+show neutral private pixels with the known Flea 2 ms timestamp quantization:
+1750000→1740000 and 1775000→1760000 (100 ns units). Test revision `771c279`
+uses exact 2 ms tokens; it was not rerun merely to relabel this diagnostic.
+The raw failures remain. Fixing token granularity cannot supply the two
+missing pre-EOS originals or make G2 pass. The original destructive-EOS
+continuation control was not repeated; #114 remains its historical evidence.
+
+The prefix already contains POC34 while the first continuation has POC32.
+Segment completion versus uninterrupted global display order remains a
+separate contract question, not silently waived by a pixel match.
+
+For offline G0 only, use the retained Phase 1 `high.mp4` fixture (identity is
+checked) and a new output directory outside the source tree:
+
+```sh
+python3 -B tests/h264-stop-kick.py /absolute/path/to/high.mp4 \
+    /absolute/path/to/new-g0-directory
+```
+
+`tests/h264-stop-kick.cpp` is the bounded legacy-channel probe, compiled with
+the public headers and `-ldl`. It requires the generated packet container and
+an independently captured native reference in a private result directory.
+Its `reference`, `none`, `prefix`, `picture`, `prefed-picture`, and
+`prefed-pair` modes are research controls, not playback or drain options.
+No production syntax predicate, firmware or legacy ioctl behavior changes.
