@@ -119,10 +119,12 @@ class RuntimeInstallTests(unittest.TestCase):
         result = self.run_make(fail='activate')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.version.read_text(), 'previous\n')
-        self.assertEqual((self.stage/'usr/share/crystalhd-test/library').read_text(), 'new')
-        self.assertEqual((self.stage/'usr/share/crystalhd-test/vaapi').read_text(), 'new')
+        self.assertEqual((self.stage/'usr/share/crystalhd-test/library').read_text(), 'old')
+        self.assertEqual((self.stage/'usr/share/crystalhd-test/vaapi').read_text(), 'old')
         self.assertTrue(self.pending.exists())
+        self.assertEqual(json.loads(self.pending.read_text())['stage'], 'rollback-activate-failed')
         self.assertEqual(self.run_make().returncode, 0)
+        self.assertFalse(list(self.stage.rglob('.crystalhd-undo-*')))
         self.assertEqual((self.stage/'etc/crystalhd/config.ini').read_text(), 'private saved defaults\n')
 
     def test_dry_run_has_no_destination_side_effects(self):
@@ -182,16 +184,21 @@ class RuntimeInstallTests(unittest.TestCase):
         self.pending.symlink_to(outside)
         self.assertNotEqual(self.run_make(fail='activate').returncode, 0)
         self.assertFalse(self.pending.is_symlink())
-        self.assertEqual(json.loads(self.pending.read_text())['stage'], 'activate')
+        self.assertEqual(json.loads(self.pending.read_text())['stage'], 'rollback-activate-failed')
         self.assertEqual(outside.read_text(), 'preserve')
 
     def direct_arguments(self):
         return SimpleNamespace(make=str(self.mock), destdir=str(self.stage), prefix='/usr',
                                bindir='/usr/bin', datadir='/usr/share', uninstall=False)
 
-    def test_publish_failures_remain_marked_and_complete_retry_repairs_them(self):
+    def direct_install(self):
+        with mock.patch.dict(os.environ, self.environment, clear=True), \
+                mock.patch.object(INSTALLER.tempfile, 'tempdir', str(self.root/'preparation')):
+            INSTALLER.install(self.direct_arguments())
+
+    def test_publish_failure_restores_previous_payload_before_a_retry(self):
         original = INSTALLER.publish_file
-        for stop in (1, 4, 9):
+        for stop in range(1, 10):
             with self.subTest(publish=stop):
                 self.seed()
                 calls = []
@@ -203,14 +210,225 @@ class RuntimeInstallTests(unittest.TestCase):
                 with mock.patch.dict(os.environ, self.environment, clear=True), \
                         mock.patch.object(INSTALLER.tempfile, 'tempdir', str(self.root/'preparation')), \
                         mock.patch.object(INSTALLER, 'publish_file', side_effect=publish):
-                    with self.assertRaises(OSError):INSTALLER.install(self.direct_arguments())
-                self.assertTrue(self.pending.exists())
+                    with self.assertRaises((OSError, RuntimeError)):
+                        INSTALLER.install(self.direct_arguments())
+                self.assertFalse(self.pending.exists())
                 self.assertEqual(self.version.read_text(), 'previous\n')
+                for phase in STAGES:
+                    self.assertEqual((self.stage/'usr/share/crystalhd-test'/phase).read_text(), 'old')
+                self.assertFalse(list(self.stage.rglob('.crystalhd-undo-*')))
                 result = self.run_make()
                 self.assertEqual(result.returncode, 0, result.stdout)
                 self.assertFalse(self.pending.exists())
                 for phase in STAGES:
                     self.assertEqual((self.stage/'usr/share/crystalhd-test'/phase).read_text(), 'new')
+
+    def test_version_replace_then_error_restores_inode_modes_and_symlinks(self):
+        self.seed()
+        library = self.stage/'usr/share/crystalhd-test/library'
+        library.chmod(0o751)
+        alias = self.root/'old-library-alias'
+        os.link(str(library), str(alias))
+        outside = self.root/'outside-configuration'
+        outside.write_text('do not modify')
+        link = self.stage/'usr/share/crystalhd-test/config'
+        link.unlink(); link.symlink_to(outside)
+        previous = {p: p.lstat() for p in [library, link, self.version]}
+        original = INSTALLER.publish_file
+        def publish(source, target):
+            original(source, target)
+            if target == self.version:
+                raise OSError(5, 'post-replace failure')
+        with mock.patch.object(INSTALLER, 'publish_file', side_effect=publish):
+            with self.assertRaises(INSTALLER.InstallRestored):self.direct_install()
+        for path, old in previous.items():
+            current = path.lstat()
+            self.assertEqual((current.st_ino, current.st_mode, current.st_uid, current.st_gid,
+                              current.st_mtime_ns),
+                             (old.st_ino, old.st_mode, old.st_uid, old.st_gid, old.st_mtime_ns))
+        self.assertEqual(library.stat().st_ino, alias.stat().st_ino)
+        self.assertEqual(library.stat().st_nlink, 2)
+        self.assertEqual(library.read_text(), 'old')
+        self.assertEqual(os.readlink(str(link)), str(outside))
+        self.assertEqual(outside.read_text(), 'do not modify')
+        self.assertEqual(self.version.read_text(), 'previous\n')
+        self.assertFalse(self.pending.exists())
+        self.assertFalse(list(self.stage.rglob('.crystalhd-undo-*')))
+
+    def test_first_install_failure_removes_introduced_files(self):
+        original = INSTALLER.publish_file
+        def publish(source, target):
+            original(source, target)
+            if target.name == 'firmware':raise OSError(28, 'full destination')
+        with mock.patch.object(INSTALLER, 'publish_file', side_effect=publish):
+            with self.assertRaises(INSTALLER.InstallRestored):self.direct_install()
+        self.assertFalse(self.pending.exists())
+        self.assertFalse(self.version.exists())
+        self.assertFalse(list(self.stage.glob('usr/share/crystalhd-test/*')))
+        self.assertFalse(list(self.stage.rglob('.crystalhd-undo-*')))
+
+    def test_transient_activation_failure_reactivates_restored_files(self):
+        self.seed()
+        original = subprocess.run
+        activations = []
+        def run(command, **kwargs):
+            if 'install-runtime-activate' in command:
+                current = (self.stage/'usr/share/crystalhd-test/library').read_text()
+                activations.append(current)
+                if len(activations) == 1:
+                    self.assertEqual(current, 'new')
+                    raise subprocess.CalledProcessError(23, command)
+                self.assertEqual(current, 'old')
+            return original(command, **kwargs)
+        with mock.patch.object(INSTALLER.subprocess, 'run', side_effect=run):
+            with self.assertRaises(INSTALLER.InstallRestored):self.direct_install()
+        self.assertEqual(activations, ['new', 'old'])
+        self.assertEqual(self.version.read_text(), 'previous\n')
+        self.assertFalse(self.pending.exists())
+        self.assertFalse(list(self.stage.rglob('.crystalhd-undo-*')))
+
+    def test_previous_pending_inode_is_restored_instead_of_declaring_success(self):
+        self.seed()
+        self.pending.parent.mkdir(parents=True)
+        self.pending.write_bytes(b'previous incomplete state\n')
+        self.pending.chmod(0o600)
+        before = self.pending.stat()
+        original = INSTALLER.publish_file
+        def publish(source, target):
+            if target.name == 'library':raise OSError(28, 'full destination')
+            original(source, target)
+        with mock.patch.object(INSTALLER, 'publish_file', side_effect=publish):
+            with self.assertRaises(INSTALLER.InstallRestored):self.direct_install()
+        after = self.pending.stat()
+        self.assertEqual(self.pending.read_bytes(), b'previous incomplete state\n')
+        self.assertEqual((after.st_ino, after.st_mode), (before.st_ino, before.st_mode))
+        self.assertFalse(list(self.stage.rglob('.crystalhd-undo-*')))
+
+    def test_failed_rollback_retains_recovery_links_until_complete_retry(self):
+        self.seed()
+        original_publish = INSTALLER.publish_file
+        original_replace = os.replace
+        def publish(source, target):
+            if target == self.version:raise OSError(28, 'full destination')
+            original_publish(source, target)
+        def replace(source, target):
+            if (Path(source).parent.name.startswith('.crystalhd-undo-') and
+                    Path(target).name == 'library'):
+                raise PermissionError(13, 'injected rollback denial')
+            return original_replace(source, target)
+        with mock.patch.object(INSTALLER, 'publish_file', side_effect=publish), \
+                mock.patch.object(INSTALLER.os, 'replace', side_effect=replace):
+            with self.assertRaisesRegex(RuntimeError, 'rollback is incomplete'):
+                self.direct_install()
+        record = json.loads(self.pending.read_text())
+        self.assertEqual(record['stage'], 'rollback-failed')
+        copies = [Path(name)/'library' for name in record['rollback_directories']]
+        self.assertTrue(any(p.exists() and p.read_text() == 'old' for p in copies))
+        self.assertEqual((self.stage/'usr/share/crystalhd-test/library').read_text(), 'new')
+        result = self.run_make()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertFalse(self.pending.exists())
+        self.assertFalse(list(self.stage.rglob('.crystalhd-undo-*')))
+
+    def test_marker_write_failure_does_not_skip_file_restoration(self):
+        self.seed()
+        original_publish = INSTALLER.publish_file
+        original_marker = INSTALLER.write_marker
+        def publish(source, target):
+            if target.name == 'library':raise OSError(28, 'full destination')
+            original_publish(source, target)
+        def marker(path, bundle, phase, *args, **kwargs):
+            if phase == 'rollback':raise OSError(28, 'full state filesystem')
+            return original_marker(path, bundle, phase, *args, **kwargs)
+        with mock.patch.object(INSTALLER, 'publish_file', side_effect=publish), \
+                mock.patch.object(INSTALLER, 'write_marker', side_effect=marker):
+            with self.assertRaises(INSTALLER.InstallRestored):self.direct_install()
+        for phase in STAGES:
+            self.assertEqual((self.stage/'usr/share/crystalhd-test'/phase).read_text(), 'old')
+        self.assertFalse(self.pending.exists())
+
+    def test_repeated_failed_recovery_keeps_all_earlier_undo_links_indexed(self):
+        self.seed()
+        self.assertNotEqual(self.run_make(fail='activate').returncode, 0)
+        previous = set(json.loads(self.pending.read_text())['rollback_directories'])
+        self.assertTrue(previous)
+        self.assertNotEqual(self.run_make(fail='activate').returncode, 0)
+        current = set(json.loads(self.pending.read_text())['rollback_directories'])
+        self.assertTrue(previous <= current)
+        self.assertTrue(current - previous)
+        result = self.run_make()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertFalse(self.pending.exists())
+        self.assertFalse(list(self.stage.rglob('.crystalhd-undo-*')))
+
+    def test_undo_preparation_failure_changes_no_payload_or_marker(self):
+        self.seed()
+        with mock.patch.object(INSTALLER.os, 'link', side_effect=OSError(95, 'no hardlinks')):
+            with self.assertRaises(OSError):self.direct_install()
+        for phase in STAGES:
+            self.assertEqual((self.stage/'usr/share/crystalhd-test'/phase).read_text(), 'old')
+        self.assertEqual(self.version.read_text(), 'previous\n')
+        self.assertFalse(self.pending.exists())
+        self.assertFalse(list(self.stage.rglob('.crystalhd-undo-*')))
+
+    def test_successful_retry_does_not_remove_unrelated_recovery_directories(self):
+        self.seed()
+        self.pending.parent.mkdir(parents=True)
+        unrelated = self.root/'.crystalhd-undo-unrelated'
+        unrelated.mkdir(mode=0o700)
+        owned = self.stage/'usr/share/crystalhd-test/.crystalhd-undo-foreign'
+        owned.mkdir(mode=0o700)
+        (owned/'unrelated-data').write_text('preserve')
+        self.pending.write_text(json.dumps({'schema': 1, 'rollback_directories':
+                                            [str(unrelated), str(owned)]}))
+        result = self.run_make()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertTrue(unrelated.is_dir())
+        self.assertEqual((owned/'unrelated-data').read_text(), 'preserve')
+
+    def test_uninstall_retains_a_failed_updates_recovery_index(self):
+        self.seed()
+        result = self.run_make(fail='activate')
+        self.assertNotEqual(result.returncode, 0)
+        previous = json.loads(self.pending.read_text())['rollback_directories']
+        self.assertTrue(previous)
+        result = self.run_make('uninstall-runtime')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.version.exists())
+        record = json.loads(self.pending.read_text())
+        self.assertEqual(record['stage'], 'uninstall-recovery-retained')
+        self.assertEqual(record['rollback_directories'], previous)
+        self.assertTrue(any(Path(p).exists() for p in previous))
+
+    def test_restore_fsync_failure_retains_original_inode_and_incomplete_marker(self):
+        self.seed()
+        original_publish = INSTALLER.publish_file
+        original_sync = INSTALLER.sync_directory
+        original_replace = INSTALLER.os.replace
+        restoring = [False]
+        def publish(source, target):
+            if target == self.version:raise OSError(28, 'full destination')
+            original_publish(source, target)
+        def replace(source, target):
+            result = original_replace(source, target)
+            if (Path(source).parent.name.startswith('.crystalhd-undo-') and
+                    Path(target).name == 'library'):
+                restoring[0] = True
+            return result
+        def sync(directory):
+            if restoring[0] and directory == self.stage/'usr/share/crystalhd-test':
+                restoring[0] = False
+                raise OSError(5, 'restore directory sync failed')
+            return original_sync(directory)
+        with mock.patch.object(INSTALLER, 'publish_file', side_effect=publish), \
+                mock.patch.object(INSTALLER.os, 'replace', side_effect=replace), \
+                mock.patch.object(INSTALLER, 'sync_directory', side_effect=sync):
+            with self.assertRaisesRegex(RuntimeError, 'rollback is incomplete'):
+                self.direct_install()
+        record = json.loads(self.pending.read_text())
+        copies = [Path(name)/'library' for name in record['rollback_directories']]
+        self.assertTrue(any(p.exists() and p.read_text() == 'old' for p in copies))
+        self.assertEqual((self.stage/'usr/share/crystalhd-test/library').read_text(), 'old')
 
     def test_published_files_come_from_prepared_bytes(self):
         template = self.root/'build-input'
