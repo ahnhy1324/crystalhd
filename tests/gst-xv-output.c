@@ -581,6 +581,19 @@ static guint device_fds(void)
   }
   closedir(directory); return count;
 }
+static void link_native_video(GstElement *demux, GstPad *pad, gpointer data)
+{
+  (void)demux;
+  GstCaps *caps = gst_pad_query_caps(pad, NULL);
+  gboolean video = caps && gst_caps_get_size(caps) == 1 &&
+      gst_structure_has_name(gst_caps_get_structure(caps, 0), "video/x-h264");
+  if (caps) gst_caps_unref(caps);
+  if (!video) return;
+  GstElement *parser = gst_bin_get_by_name(GST_BIN(data), "parser");
+  GstPad *input = gst_element_get_static_pad(parser, "sink");
+  g_assert_cmpint(gst_pad_link(pad, input), ==, GST_PAD_LINK_OK);
+  gst_object_unref(input); gst_object_unref(parser);
+}
 static void native_error_reopen(gboolean clocked, gboolean preroll, gboolean mp4)
 {
   if (!x11_enabled()) return;
@@ -593,7 +606,8 @@ static void native_error_reopen(gboolean clocked, gboolean preroll, gboolean mp4
   guint originals = mp4 ? 180 : 50, outputs = mp4 ? 180 : 100;
   GError *error = NULL;
   GstElement *pipeline = gst_parse_launch(mp4 ?
-      "filesrc name=input ! qtdemux ! h264parse name=parser ! crystalhddec name=decoder ! "
+      "filesrc name=input ! qtdemux name=demux "
+      "h264parse name=parser ! crystalhddec name=decoder ! "
       "videoconvert name=convert n-threads=1 ! video/x-raw,format=UYVY ! "
       "crystalhdxvsink name=output qos=true" :
       "filesrc name=input ! h264parse name=parser ! "
@@ -602,6 +616,13 @@ static void native_error_reopen(gboolean clocked, gboolean preroll, gboolean mp4
       "crystalhdxvsink name=output show-preroll-frame=false qos=true", &error);
   g_assert_no_error(error);
   GstElement *source = gst_bin_get_by_name(GST_BIN(pipeline), "input");
+  if (mp4) {
+    /* qtdemux recreates dynamic pads on NULL/restart. gst_parse_launch's
+     * one-shot delayed link cannot own repeated demuxer lifetimes. */
+    GstElement *demux = gst_bin_get_by_name(GST_BIN(pipeline), "demux");
+    g_signal_connect(demux, "pad-added", G_CALLBACK(link_native_video), pipeline);
+    gst_object_unref(demux);
+  }
   GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), "output");
   /* Separate an unclocked ownership/EOS census from the strict clocked
    * presentation census. The latter retains its 100-output requirement. */
@@ -634,6 +655,11 @@ static void native_error_reopen(gboolean clocked, gboolean preroll, gboolean mp4
   g_atomic_pointer_set(&drop_connection, c->connection); g_atomic_int_set(&drop_type, c->completion_type);
   gst_element_set_state(pipeline, GST_STATE_PLAYING); await_message(pipeline, GST_MESSAGE_ERROR);
   gst_element_set_state(pipeline, GST_STATE_NULL); g_atomic_pointer_set(&drop_connection, NULL);
+  g_mutex_lock(&c->lock);
+  g_assert_true(c->failed); g_assert_cmpuint(c->submitted, >, 0);
+  g_assert_cmpuint(c->terminal, >, 0);
+  g_assert_cmpuint(c->submitted, ==, c->acknowledged + c->terminal);
+  g_mutex_unlock(&c->lock);
   g_assert_cmpuint(device_fds(), ==, 0);
   context_unref(c); clean_contexts();
   for (guint cycle = 0; cycle < 3; cycle++) {
