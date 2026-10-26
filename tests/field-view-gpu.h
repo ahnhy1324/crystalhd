@@ -150,6 +150,7 @@ struct GbmAllocation {
     size_t length=0;
     bool initialized=false;
     GbmAllocation(yuy2_gpu::GPU &gpu,unsigned w,unsigned h):width(w),height(h),pitch(0) {
+      try {
         need(w&&!(w&1)&&h&&!(h&1),"GBM even geometry");
         bo=gbm_bo_create(gpu.gbm,w/2,h+8,GBM_FORMAT_ARGB8888,
                          GBM_BO_USE_LINEAR|GBM_BO_USE_WRITE);
@@ -161,6 +162,11 @@ struct GbmAllocation {
         need(bytes>0&&uint64_t(bytes)>=uint64_t(pitch)*(h+8),"GBM exported extent");
         length=bytes;need(lseek(fd,0,SEEK_SET)==0,"DMA-BUF size query restore");
         printf("{\"type\":\"allocation\",\"kind\":\"gbm-linear-map\",\"view\":\"YUYV\",\"width\":%u,\"height\":%u,\"pitch\":%u,\"bytes\":%zu,\"modifier\":0}\n",w,h,pitch,length);
+      } catch(...) {
+        if(fd>=0){close(fd);fd=-1;}
+        if(bo){gbm_bo_destroy(bo);bo=nullptr;}
+        throw;
+      }
     }
     void write(const uint8_t *source,size_t stride,size_t available) {
         need(source&&stride>=width*2&&stride<=SIZE_MAX/height&&
@@ -169,7 +175,8 @@ struct GbmAllocation {
         glFinish();uint32_t mapped_pitch=0;void *handle=nullptr;
         auto *data=static_cast<uint8_t *>(gbm_bo_map(bo,0,0,width/2,height+8,
                                       GBM_BO_TRANSFER_WRITE,&mapped_pitch,&handle));
-        need(data&&mapped_pitch>=width*2,"GBM writable transfer");
+        if(data&&mapped_pitch<width*2){gbm_bo_unmap(bo,handle);need(false,"GBM transfer pitch");}
+        need(data,"GBM writable transfer");
         if(!initialized)for(unsigned row=0;row<height+8;++row)
             memset(data+size_t(row)*mapped_pitch,0xa5,width*2);
         for(unsigned row=0;row<height;++row)
