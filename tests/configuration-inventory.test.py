@@ -84,9 +84,21 @@ def module_parameters() -> set[str]:
 
 def gst_properties() -> set[str]:
     names: set[str] = set()
-    for path in (ROOT / "filters/gst/gst-plugin-1.0").glob("*.c"):
+    paths = list((ROOT / "filters/gst/gst-plugin-1.0").glob("*.c"))
+    paths += list((ROOT / "filters/gst/xv-output").glob("*.c"))
+    for path in paths:
         source = read(path)
         properties = set(GST_PROPERTY.findall(source))
+        if path.name == "gstcrystalhdxv.c":
+            # This renderer mixes the public display selector with one
+            # strictly read-only observation; retain the existing all-readonly
+            # controller check below unchanged.
+            observations = re.findall(r'g_param_spec_boxed\(\s*"xv-stats".*?\)\);', source, re.DOTALL)
+            if (len(observations) != 1 or
+                    not re.search(r'G_PARAM_READABLE\s*\|\s*G_PARAM_STATIC_STRINGS\s*\)\);$', observations[0]) or
+                    re.search(r'G_PARAM_(?:WRITABLE|READWRITE)', observations[0])):
+                raise ValueError("Xv statistics must remain read-only")
+            properties.discard("xv-stats")
         internal = INTERNAL_GST_OBSERVATIONS.get(path.name)
         if internal is not None:
             specs = re.findall(r"g_param_spec_[a-z0-9_]+\s*\(.*?\)\);", source, re.DOTALL)

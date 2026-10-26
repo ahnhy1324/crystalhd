@@ -118,6 +118,12 @@ fallback:
 crystalhd-play --software "/path/to/video.mp4"
 ```
 
+Unreleased development builds also offer the optional
+[X11 completion-controlled output](filters/gst/xv-output/README.md) through
+`--video-output xv-async`. Build its separate plugin first; `auto` remains the
+default. This is an experimental output choice, not a general speedup or
+physical A/V qualification.
+
 ### HTTP(S) input
 
 HTTP(S) input is included in 1.1.0 and RC4/RC5; the earlier 1.0.0 and

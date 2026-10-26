@@ -483,6 +483,8 @@ These current surfaces deliberately do not become ordinary merged keys:
 | `CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12` <!-- schema-boundary:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12=experimental-centered-nv12 --> | Native-only centered NV12 experiment; no canonical key, profile value, preset or manager translation. The VA driver alone validates its exact syntax and context/media eligibility |
 | `crystalhd-play --subtitles` <!-- schema-boundary:player-flag:--subtitles=invocation-only --> | Per-media invocation input, never a saved preset/profile value |
 | `crystalhd-play --weave` <!-- schema-boundary:player-flag:--weave=invocation-only --> | Per-invocation interlaced passthrough selection, never a saved preset/profile value |
+| `crystalhd-play --video-output` <!-- schema-boundary:player-flag:--video-output=invocation-only --> | Explicit optional output for this invocation; no saved profile/preset key or default promotion |
+| `crystalhdxvsink display` <!-- schema-boundary:gst-property:display=external-gst-output --> | Optional renderer's own GStreamer property; the manager does not set it or replace the X11 session's `DISPLAY` |
 
 External loader selectors such as `LIBVA_DRIVER_NAME`, `VAAPI_FORCE_INDIRECT`,
 `GST_PLUGIN_PATH` and `LD_LIBRARY_PATH` remain owned by their respective
