@@ -34,9 +34,21 @@ the adaptor's supported color-space attribute.
 Unspecified colorimetry keeps GStreamer's ordinary interpretation rather than
 forcing a BT.601 conversion during format negotiation. Explicit unsupported
 matrix/range requests fail during caps admission, before image allocation.
-A caller can supply a window
-through `GstVideoOverlay` **before** starting; replacing a live window and
-redrawing a retained paused picture after expose are not implemented yet.
+A caller can supply a window through `GstVideoOverlay` **before** starting.
+Exposure events, resize and `GstVideoOverlay.expose()` redraw the retained
+last picture while paused, including after EOS. This preserves its pixels
+and PTS and does not count as a new video frame. Replacing a live window is
+not implemented.
+
+The renderer holds one last source buffer independently of BaseSink's
+`enable-last-sample` setting. For negotiated pool memory, both SHM completion
+and the final Gst owner must retire before that storage is writable again.
+Copied input keeps its original source and repaints through a free SHM copy.
+Redraw requests coalesce
+and never block the completion reader waiting for ring space. A real flush,
+new caps/segment, output error or stop discards the old picture. Temporary
+BaseSink unlock during an ordinary pause preserves it. Resize/exposure also
+repaints the black bars around the video.
 
 The negotiated pool avoids an extra sink row copy when upstream uses its
 actual memory layout. Other ordinary buffers take a bounded row-copy path.
@@ -54,7 +66,10 @@ It neither aborts the application nor guesses an ACK. The ordinary decoder
 close path remains the application's normal pipeline teardown.
 
 The read-only `xv-stats` structure reports submissions, ACKs, terminal
-retirement, copied bytes and image ownership. Submissions include preroll when
+retirement, copied bytes and image ownership. `video-submitted` and
+`redraw-submitted` separate normal video calls from repaint requests;
+`submitted` counts both, including requests whose transport flush failed.
+`retained-picture` reports whether the last source is held. Video calls include preroll when
 the inherited `show-preroll-frame` property is enabled: twelve video frames
 can generate thirteen requests. ACKs measure X-server SHM retirement, **not
 unique video frames or physical scanout**. After stop the property retains a
@@ -74,12 +89,22 @@ restoration of its original parser policy passes 100/100 fields on three
 replays, while unmodified-parser failures remain recorded. This output does
 not change parser policy in applications.
 
-The subsequent 30-second speech check confirms audible A/V and normal speed
+The earlier `db391ad` 30-second speech check confirms audible A/V and normal speed
 with card720/Bob50. Pause/resume and forward/backward seek also complete;
 the control run has four BaseSink drops in its final post-seek snapshot, so
 it is not a zero-loss census. A decorated test-local GTK embedding window
 also passes F11/resize, EOS and resource retirement. This does not add a GUI
 or fullscreen shortcut to the installed Player.
+
+The [`7aaec83` paused-redraw follow-up](../../../tests/fixtures/issue513/xv-paused-redraw-20261027.json)
+passes 18 device-free/X11 ASan/UBSan/leak checks, including actual paused
+window pixels for both pool and copied input. Three native MP4 error/reopens
+return 180 originals each. Baseline and updated 30-second speech runs each
+decode 750 originals and render 1,500 with zero drops; the single-pair CPU
+difference is about 1%, not evidence of a speedup. A separate native control
+run repaints twice while paused without new video calls, then resumes/seeks
+and closes cleanly. Its seek/reset counters are not a unique-frame census.
+This is automated output/lifetime qualification, not new physical A/V acceptance.
 
 The planned ten-minute run remains incomplete after a normal 85°C CPU-guard
 stop at 359 seconds. Stock Xv also reaches the same guard; this does not
