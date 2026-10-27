@@ -2,6 +2,8 @@
 // Bounded #533 legacy-channel experiment, not a production drain policy.
 #include <algorithm>
 #include <chrono>
+#include <cerrno>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -176,12 +178,17 @@ static std::vector<std::vector<uint8_t>> auxiliary_units(const std::vector<uint8
 // Positive-candidate durability only. Input syntax is separately screened by
 // h264-pause-cycles.py over each complete multi-insertion sequence. This does
 // not issue STOP/START, drain at a pause, retag an output, or expose a decoder.
-static int cycle_run(const std::string &input,const std::string &output,const std::string &mode,const char *text) {
+static int cycle_run(const std::string &input,const std::string &output,const std::string &mode,const char *text,int export_fd=-1) {
     size_t used=0;const auto value=std::stoul(text,&used);
     need(used==strlen(text)&&(value==0||value==2||value==5||value==10||value==100),"bounded cycle stage");
     const unsigned cycles=static_cast<unsigned>(value);
-    const bool reference=mode=="cycles-reference",marker=mode=="cycles-marker";
+    const bool reference=mode=="cycles-reference",marker=mode=="cycles-marker"||mode=="cycles-marker-export";
     const bool dummy=mode=="cycles-next"||marker;
+    if(export_fd>=0) {
+        const int flags=fcntl(export_fd,F_GETFL);
+        need(flags>=0&&((flags&O_ACCMODE)==O_WRONLY||(flags&O_ACCMODE)==O_RDWR),"owned export descriptor must be writable");
+        std::signal(SIGPIPE,SIG_IGN); // A closed test consumer still takes normal decoder cleanup.
+    }
     need(reference==(cycles==0),"only uninterrupted oracle uses zero pauses");
     const auto source=packets(input,true);
     struct Plan {unsigned boundary;std::vector<std::vector<uint8_t>> units;};
@@ -247,6 +254,8 @@ static int cycle_run(const std::string &input,const std::string &output,const st
             }
             need((out.PoutFlags&BC_POUT_FLAGS_PIB_VALID)&&out.Ybuff&&out.PicInfo.width==640&&out.PicInfo.height==360&&
                  !(out.PicInfo.flags&VDEC_FLAG_INTERLACED_SRC)&&uint64_t(out.YBuffDoneSz)*4>=kBytes,"cycle progressive YUYV extent");
+            std::vector<uint8_t> exported;
+            if(export_fd>=0)exported.assign(out.Ybuff,out.Ybuff+kBytes);
             const bool is_private=token>=private_base&&(token-private_base)%kPrivateStep==0&&(token-private_base)/kPrivateStep<private_expected;
             if(is_private) {
                 const unsigned index=(token-private_base)/kPrivateStep;
@@ -277,6 +286,20 @@ static int cycle_run(const std::string &input,const std::string &output,const st
                     static_cast<unsigned long long>(token),static_cast<unsigned long long>(canonical),index%180+1,index/180+1,out.PicInfo.flags,reference?"null":"true",phase,elapsed()-accepted_at[index],elapsed());
             }
             lease.finish();printf("{\"type\":\"cycle-rx-release\",\"lease\":%u,\"eos_marker\":false,\"elapsed_ms\":%.3f}\n",rx_released,elapsed());fflush(stdout);
+            if(export_fd>=0) {
+                // Only an owned copy crosses the pipe; no RX address/lease
+                // is transferred or reused before DtsReleaseOutputBuffs.
+                std::vector<uint8_t> record{'C','H','D','P','I','C','0','1'};
+                auto put=[&](uint64_t value,unsigned bytes){for(unsigned b=0;b<bytes;++b)record.push_back(value>>(8*b));};
+                put(kBytes,4);put(token,8);put(out.PicInfo.flags,4);put(real+privates-1,4);put(640,4);put(360,4);
+                record.insert(record.end(),exported.begin(),exported.end());
+                size_t offset=0;
+                while(offset<record.size()) {
+                    const ssize_t n=write(export_fd,record.data()+offset,record.size()-offset);
+                    if(n<0&&errno==EINTR)continue;
+                    need(n>0,"owned frame export consumer closed");offset+=n;
+                }
+            }
         }
         uint8_t end=0;good("DtsIsEndOfStream",api.DtsIsEndOfStream(owner,&end));eos=end!=0;
     };
@@ -336,6 +359,11 @@ static int cycle_run(const std::string &input,const std::string &output,const st
 
 int main(int argc,char **argv) {
     try {
+        if(argc==6&&std::string(argv[3])=="cycles-marker-export") {
+            size_t used=0;const auto fd=std::stoul(argv[5],&used);
+            need(used==strlen(argv[5])&&fd>=3&&fd<=1024,"bounded owned export descriptor");
+            return cycle_run(argv[1],argv[2],argv[3],argv[4],static_cast<int>(fd));
+        }
         if(argc==5&&(std::string(argv[3])=="cycles-reference"||std::string(argv[3])=="cycles-none"||std::string(argv[3])=="cycles-next"||std::string(argv[3])=="cycles-marker"))
             return cycle_run(argv[1],argv[2],argv[3],argv[4]);
         need(argc==4||argc==6||argc==7||argc==8,"usage: h264-stop-kick G0_DIRECTORY RESULT_DIRECTORY MODE [BOUNDARY PRIVATE_COUNT [raw|prefed|adjacent]]; pts-idle|pts-preflight requires 18 5 next|previous|reserved-near|reserved-far|untimed zero|own");
