@@ -71,5 +71,11 @@
     "EOS and existing hardware/software requirements remain unchanged; diagnostics add no zero-drop gate",
     "No per-buffer observer added; a diagnostic inability does not stop NULL teardown",
     "Native measurement used identical Player implementation before its f354ae1 commit; extra final test/docs do not reattribute shared C++ payloads"
-  ]
+  ],
+  "ci_fixture_followup": {
+    "original_ci": "40447662966 FAIL at ee80b60: old Theora/playbin+sleep fixture produced zero sink drops on CI, so its positive-drop prerequisite failed. Original local1.28.2 PASS retained; not a new production regression or a waived test.",
+    "change": "Use a real appsrc/fakesink pipeline and private GstSystemClock. Render one buffer with dropping disabled, enable max-lateness0, advance only its clock5s, then submit4 stale buffers. Only playbin video-sink lookup is adapted; native timing/counters/EOS/NULL reset remain real.",
+    "criteria": "Positive rendered and dropped counts remain mandatory; preserve exact captured values after NULL resets to0, including idempotent close. No skips or softened thresholds.",
+    "local": "Focused PASS; full99 PASS. Original Player close still fails the new fixture after positive counters and real NULL reset."
+  }
 }
