@@ -23,80 +23,23 @@ struct Counters {
         prepare_ns{0},draw_ns{0},wait_ns{0},swap_ns{0},retire_ns{0},retirements{0},
         worst_field_pts{0},worst_field_index{0},worst_parity{0},worst_prepare_ns{0},
         worst_retire_ns{0},worst_draw_ns{0},worst_wait_ns{0},worst_swap_ns{0},
-        worst_monotonic_elapsed_ns{0},worst_clock_elapsed_ns{0},fence_supported{0},
-        fences_created{0},fences_destroyed{0},fences_live{0},retire_ready{0},retire_waits{0};
+        worst_monotonic_elapsed_ns{0},worst_clock_elapsed_ns{0};
     std::atomic<gint64> worst_head_age_ns{0},worst_preswap_age_ns{0};
 };
-// Two independent producer allocations let CPU preparation overlap the other
-// picture's queued display work. Only the selected slot's fence authorizes
-// reuse; a source is never released on SwapBuffers return alone.
-struct SourceSlot {
-    Counters &stats;
-    FieldSyncAPI &sync;
-    GbmAllocation storage;
-    std::unique_ptr<Image> views[2];
-    std::unique_ptr<FieldCompletion> completion;
-    GstBuffer *retained=nullptr;
-    guint64 generation=0;
-    SourceSlot(yuy2_gpu::GPU &gpu,unsigned w,unsigned h,Counters &s,FieldSyncAPI &api)
-        :stats(s),sync(api),storage(gpu,w,h){++stats.allocations;}
-    void clear_images() noexcept {
-        for(auto &view:views)if(view){view->uses_completed=true;view.reset();--stats.images;}
-        if(retained){gst_buffer_unref(retained);retained=nullptr;--stats.retained;++stats.retirements;}
-    }
-    void release_fence() {
-        if(completion) {
-            need(completion->release(),"destroy retired source fence");
-            completion.reset();--stats.fences_live;++stats.fences_destroyed;
-        }
-    }
-    void retire() {
-        if(!retained&&!views[0]&&!views[1])return;
-        const auto begin=gst_util_get_timestamp();
-        if(completion) {
-            if(completion->ready())++stats.retire_ready;
-            else {++stats.retire_waits;while(!completion->ready(GST_MSECOND)) {}}
-        }else glFinish(); // Missing extension or exception before checkpoint.
-        clear_images();release_fence();stats.retire_ns+=gst_util_get_timestamp()-begin;
-    }
-    void checkpoint() {
-        // Replaces the fence after every use, including paused redraws and
-        // timed reuse of the preroll buffer. The latest fence covers them all.
-        release_fence();
-        if(sync.supported) {
-            completion=std::make_unique<FieldCompletion>(sync);
-            ++stats.fences_created;++stats.fences_live;
-        }
-    }
-    void prepare(yuy2_gpu::GPU &gpu,const GstVideoInfo &info,GstBuffer *buffer,
-                 guint64 epoch,bool interlaced) {
-        retire();GstVideoFrame frame{};
-        need(gst_video_frame_map(&frame,&info,buffer,GST_MAP_READ),"input video mapping");
-        try {
-            const gint stride=GST_VIDEO_FRAME_PLANE_STRIDE(&frame,0);
-            need(stride>=info.width*2,"positive YUY2 input stride");
-            const auto *data=static_cast<const uint8_t *>(GST_VIDEO_FRAME_PLANE_DATA(&frame,0));
-            const auto *base=frame.map[0].data;
-            need(base&&data>=base&&size_t(data-base)<=frame.map[0].size,"mapped video plane origin");
-            // This exact BO is fresh or has passed retire(). Other slots may
-            // still be in use; no context-wide finish is needed for this write.
-            storage.write(data,stride,frame.map[0].size-size_t(data-base),true);
-        }catch(...){gst_video_frame_unmap(&frame);throw;}
-        gst_video_frame_unmap(&frame);
-        const EGLint matrix=info.colorimetry.matrix==GST_VIDEO_COLOR_MATRIX_BT601?EGL_ITU_REC601_EXT:EGL_ITU_REC709_EXT;
-        views[0]=std::make_unique<Image>(gpu,storage,interlaced,0,matrix,false);++stats.images;
-        need(views[0]->texture,"first field import");
-        if(interlaced){views[1]=std::make_unique<Image>(gpu,storage,true,1,matrix,false);++stats.images;need(views[1]->texture,"second field import");}
-        retained=gst_buffer_ref(buffer);++stats.retained;generation=epoch;
-    }
-    ~SourceSlot() {
-        // Error unwinding may follow an unchecked/failed fence or a draw that
-        // never reached checkpoint(). Complete all work before freeing memory.
-        if(retained||views[0]||views[1]){glFinish();clear_images();}
-        if(completion){if(!completion->release())++stats.failures;completion.reset();--stats.fences_live;++stats.fences_destroyed;}
-        --stats.allocations;
-    }
-};
+// The opaque video draw overwrites its entire rectangle. Clear only the bars;
+// clearing the video rectangle first adds a redundant full-rate GPU write.
+// Every window pixel is still written on every frame, including after resize.
+static void clear_borders(unsigned width,unsigned height,unsigned x,unsigned y,
+                          unsigned w,unsigned h) {
+    need(w&&h&&x<=width&&y<=height&&w<=width-x&&h<=height-y,"video rectangle extent");
+    glClearColor(0,0,0,1);glEnable(GL_SCISSOR_TEST);
+    auto clear=[](unsigned left,unsigned bottom,unsigned cw,unsigned ch) {
+        if(cw&&ch){glScissor(left,bottom,cw,ch);glClear(GL_COLOR_BUFFER_BIT);}
+    };
+    clear(0,0,width,y);clear(0,y+h,width,height-y-h);
+    clear(0,y,x,h);clear(x+w,y,width-x-w,h);
+    glDisable(GL_SCISSOR_TEST);
+}
 struct Command {
     GstBuffer *buffer=nullptr;
     GstClock *clock=nullptr;
@@ -304,26 +247,38 @@ struct Worker {
       try {
         Window window(handle);
         yuy2_gpu::GPU gpu("/dev/dri/renderD128",window.display,window.context);
-        FieldSyncAPI sync(gpu.display);stats.fence_supported=sync.supported;
-        std::unique_ptr<SourceSlot> slots[2];
-        SourceSlot *active=nullptr;
-        unsigned next_slot=0;
+        std::unique_ptr<GbmAllocation> storage;
         std::unique_ptr<Renderer> renderer;
+        std::unique_ptr<Image> views[2];
+        GstBuffer *retained=nullptr;
         GstVideoInfo previous{};
+        guint64 held_generation=0;
         unsigned last_parity=0;
         bool last_interlaced=false;
         auto retire=[&] {
-            for(auto &slot:slots)if(slot)slot->retire();
+            if(!retained&&!views[0]&&!views[1])return;
+            const auto begin=gst_util_get_timestamp();
+            // Both field submissions and paused redraws still own this exact
+            // generation. Complete every GPU use before releasing its source,
+            // destroying field views, or allowing the next producer write.
+            glFinish();
+            views[0].reset();views[1].reset();stats.images=0;
+            if(retained){gst_buffer_unref(retained);retained=nullptr;stats.retained=0;++stats.retirements;}
+            stats.retire_ns+=gst_util_get_timestamp()-begin;
         };
+        // Scope guard also runs on exceptions, while the EGL context is current.
+        struct RetainGuard { decltype(retire) &cleanup;Counters &stats;
+            ~RetainGuard(){cleanup();stats.allocations=0;}
+        } guard{retire,stats};
         {std::lock_guard<std::mutex> lock(mutex);ready=true;}changed.notify_all();
         auto draw=[&](unsigned parity,bool interlaced) {
-            if(!active||!active->retained||!window.width||!window.height)return;
+            if(!retained||!window.width||!window.height)return;
             glBindFramebuffer(GL_FRAMEBUFFER,0);glViewport(0,0,window.width,window.height);
-            glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
             const double aspect=double(previous.width)*previous.par_n/(double(previous.height)*previous.par_d);
             unsigned w=window.width,h=std::max(1U,unsigned(std::lround(w/aspect)));
             if(h>window.height){h=window.height;w=std::max(1U,unsigned(std::lround(h*aspect)));}
-            renderer->draw_to(*active->views[interlaced?parity:0],interlaced,parity,0,
+            clear_borders(window.width,window.height,(window.width-w)/2,(window.height-h)/2,w,h);
+            renderer->draw_to(*views[interlaced?parity:0],interlaced,parity,0,
                 (window.width-w)/2,(window.height-h)/2,w,h,true,!interlaced,false);
         };
         auto swap=[&] {need(eglSwapBuffers(window.display,window.surface),"window swap");++stats.swaps;};
@@ -368,11 +323,9 @@ struct Worker {
                 now_generation=generation;
                 if(!queue.empty()){command=queue.front();queue.pop_front();}
             }
-            if(active&&active->retained&&active->generation!=now_generation)retire();
+            if(retained&&held_generation!=now_generation)retire();
             if(!command) {
-                if(redraw&&active&&active->retained&&current(active->generation)){
-                    draw(last_parity,last_interlaced);swap();active->checkpoint();++stats.redraws;
-                }
+                if(redraw&&retained&&current(held_generation)){draw(last_parity,last_interlaced);swap();++stats.redraws;}
                 pollfd fds[]={{wake,POLLIN,0},{xcb_get_file_descriptor(window.connection),POLLIN,0}};
                 poll(fds,2,50);uint64_t value;while(read(wake,&value,sizeof(value))>0){}
                 continue;
@@ -390,16 +343,30 @@ struct Worker {
                    GST_BUFFER_FLAG_IS_SET(command->buffer,GST_VIDEO_BUFFER_FLAG_RFF))
                     throw std::runtime_error("one-field/repeat-field input is not qualified");
                 if(!gst_video_info_is_equal(&info,&previous)) {
-                    retire();for(auto &slot:slots)slot.reset();active=nullptr;next_slot=0;renderer.reset();
+                    retire();storage.reset();renderer.reset();
+                    storage=std::make_unique<GbmAllocation>(gpu,info.width,info.height);stats.allocations=1;
                     // Only the window default framebuffer is used; tiny helper FBO.
                     renderer=std::make_unique<Renderer>(info.width,info.height,2,2);previous=info;
                 }
-                if(!active||command->buffer!=active->retained||active->generation!=command->generation) {
+                if(command->buffer!=retained||held_generation!=command->generation) {
                     const auto prepare_begin=gst_util_get_timestamp();
                     const auto retirement_before=stats.retire_ns.load();
-                    const unsigned index=next_slot;next_slot=(next_slot+1)%(sync.supported?2:1);
-                    if(!slots[index])slots[index]=std::make_unique<SourceSlot>(gpu,info.width,info.height,stats,sync);
-                    active=slots[index].get();active->prepare(gpu,info,command->buffer,command->generation,interlaced);
+                    retire();GstVideoFrame frame{};
+                    need(gst_video_frame_map(&frame,&info,command->buffer,GST_MAP_READ),"input video mapping");
+                    try {
+                        const gint stride=GST_VIDEO_FRAME_PLANE_STRIDE(&frame,0);
+                        need(stride>=info.width*2,"positive YUY2 input stride");
+                        const auto *data=static_cast<const uint8_t *>(GST_VIDEO_FRAME_PLANE_DATA(&frame,0));
+                        const auto *base=frame.map[0].data;
+                        need(base&&data>=base&&size_t(data-base)<=frame.map[0].size,"mapped video plane origin");
+                        storage->write(data,stride,frame.map[0].size-size_t(data-base));
+                    }catch(...){gst_video_frame_unmap(&frame);throw;}
+                    gst_video_frame_unmap(&frame);
+                    const EGLint matrix=info.colorimetry.matrix==GST_VIDEO_COLOR_MATRIX_BT601?EGL_ITU_REC601_EXT:EGL_ITU_REC709_EXT;
+                    views[0]=std::make_unique<Image>(gpu,*storage,interlaced,0,matrix,false);
+                    need(views[0]->texture,"first field import");stats.images=1;
+                    if(interlaced){views[1]=std::make_unique<Image>(gpu,*storage,true,1,matrix,false);need(views[1]->texture,"second field import");stats.images=2;}
+                    retained=gst_buffer_ref(command->buffer);stats.retained=1;held_generation=command->generation;
                     preparation_ns=gst_util_get_timestamp()-prepare_begin;
                     retirement_ns=stats.retire_ns.load()-retirement_before;
                     stats.prepare_ns+=preparation_ns;
@@ -477,12 +444,11 @@ struct Worker {
                         }
                     }
                 }
-                active->checkpoint();
                 if(!command->preroll&&result==GST_FLOW_OK)++stats.pictures;
             }
             {std::lock_guard<std::mutex> lock(mutex);command->result=result;command->done=true;}changed.notify_all();
         }
-        retire();renderer.reset();for(auto &slot:slots)slot.reset();
+        retire();renderer.reset();storage.reset();stats.allocations=0;
       } catch(const std::exception &error) {
         ++stats.failures;
         {std::lock_guard<std::mutex> lock(mutex);failure=error.what();broken=true;}changed.notify_all();
@@ -612,12 +578,6 @@ static void get_property(GObject *object,guint id,GValue *value,GParamSpec *spec
         "worst-preswap-age-ns",G_TYPE_INT64,c.worst_preswap_age_ns.load(),
         "worst-monotonic-elapsed-ns",G_TYPE_UINT64,c.worst_monotonic_elapsed_ns.load(),
         "worst-clock-elapsed-ns",G_TYPE_UINT64,c.worst_clock_elapsed_ns.load(),
-        "fence-supported",G_TYPE_UINT64,c.fence_supported.load(),
-        "fences-created",G_TYPE_UINT64,c.fences_created.load(),
-        "fences-destroyed",G_TYPE_UINT64,c.fences_destroyed.load(),
-        "fences-live",G_TYPE_UINT64,c.fences_live.load(),
-        "retire-ready",G_TYPE_UINT64,c.retire_ready.load(),
-        "retire-waits",G_TYPE_UINT64,c.retire_waits.load(),
         "allocations",G_TYPE_UINT64,c.allocations.load(),"images",G_TYPE_UINT64,c.images.load(),
         "retained-buffers",G_TYPE_UINT64,c.retained.load(),nullptr);
     g_value_take_boxed(value,stats);
