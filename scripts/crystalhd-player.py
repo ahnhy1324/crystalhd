@@ -966,6 +966,51 @@ class Player:
         self.stop(128 + number)
         return True
 
+    def snapshot_video_output(self):
+        """Read available video-sink counters once, before NULL resets them."""
+        snapshots = []
+        try:
+            sink = self.pipeline.get_property("video-sink")
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            return snapshots
+        if sink is None:
+            return snapshots
+        elements = [sink]
+        # autovideosink and other bins wrap the selected renderer. Inspect
+        # only this video branch, never audio or arbitrary pipeline counters.
+        iterator = getattr(sink, "iterate_recurse", None)
+        if iterator is not None:
+            try:
+                children = iterator()
+                for _ in range(64):
+                    status, child = children.next()
+                    if status == self.Gst.IteratorResult.RESYNC:
+                        children.resync()
+                    elif status == self.Gst.IteratorResult.OK:
+                        elements.append(child)
+                    else:
+                        break
+            except (AttributeError, TypeError, ValueError, RuntimeError):
+                pass
+        seen = set()
+        for element in elements:
+            try:
+                if element in seen:
+                    continue
+                seen.add(element)
+                if element.find_property("stats") is None:
+                    continue
+                stats = element.get_property("stats")
+                rendered, dropped = stats.get_value("rendered"), stats.get_value("dropped")
+                if not all(type(value) is int and value >= 0 for value in (rendered, dropped)):
+                    continue
+                factory = element.get_factory()
+                snapshots.append({"sink": factory.get_name() if factory else "video sink",
+                                  "rendered": rendered, "dropped": dropped})
+            except (AttributeError, TypeError, ValueError, RuntimeError):
+                continue
+        return snapshots
+
     def close(self):
         if self.closed:
             return
@@ -983,6 +1028,8 @@ class Player:
             if self.GLib.MainContext.default().find_source_by_id(source):
                 self.GLib.source_remove(source)
         self.bus.remove_signal_watch()
+        # A diagnostic failure must not block decoder/resource teardown.
+        self.video_output_summary = self.snapshot_video_output()
         if self.pipeline.set_state(self.Gst.State.NULL) == self.Gst.StateChangeReturn.FAILURE:
             print("crystalhd-play: decoder teardown failed", file=sys.stderr)
             self.exit_code = max(self.exit_code, 1)
@@ -1021,6 +1068,13 @@ class Player:
                 print("No automatic fallback. Close other hardware players, or retry with --software.",
                       file=sys.stderr)
         print(f"Decoded video frames: {self.health.frames}", flush=True)
+        if self.video_output_summary:
+            for stats in self.video_output_summary:
+                print(f"Video sink ({stats['sink']}), before close: "
+                      f"rendered {stats['rendered']} buffers, dropped {stats['dropped']} "
+                      "(since last reset; not physical display counts)", flush=True)
+        else:
+            print("Video sink statistics: unavailable", flush=True)
         return self.exit_code
 
 

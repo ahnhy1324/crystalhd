@@ -118,6 +118,13 @@ fallback:
 crystalhd-play --software "/path/to/video.mp4"
 ```
 
+The development Player also reports available video-sink rendered/dropped
+buffer counts before closing. These counters are separate from decoded
+pictures: deinterlacing can produce two output buffers per picture, and seeks
+or state changes can reset sink counters. They are a snapshot before teardown,
+not physical display counts or a new playback pass criterion. A renderer
+without these statistics reports `Video sink statistics: unavailable`.
+
 ### HTTP(S) input
 
 HTTP(S) input is included in 1.1.0 and RC4/RC5; the earlier 1.0.0 and
