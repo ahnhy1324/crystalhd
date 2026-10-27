@@ -16,24 +16,21 @@ static std::vector<uint8_t> pattern(unsigned w,unsigned h,unsigned generation) {
     }
     return source;
 }
-static void pixels(bool cached=false) {
+static void pixels() {
     crystalhd_field::Window window(0);
     yuy2_gpu::GPU gpu("/dev/dri/renderD128",window.display,window.context);
     unsigned comparisons=0;
     for(auto dimensions:{std::array<unsigned,2>{1280,720},{1920,1080},{720,576}}) {
         const unsigned sw=dimensions[0],sh=dimensions[1];
         GbmAllocation storage(gpu,sw,sh);Renderer renderer(sw,sh,2,2);
-        std::unique_ptr<FieldRGBCache> rgb;
-        if(cached)rgb=std::make_unique<FieldRGBCache>(sw,sh);
         for(unsigned generation=0;generation<2;++generation) {
             const auto source=pattern(sw,sh,generation);storage.write(source.data(),sw*2,source.size());
             for(bool sd:{false,true})for(unsigned parity=0;parity<3;++parity) {
                 const bool interlaced=parity<2;
-                Image image(gpu,storage,interlaced&&!cached,interlaced&&!cached?parity:0,
+                Image image(gpu,storage,interlaced,interlaced?parity:0,
                     sd?EGL_ITU_REC601_EXT:EGL_ITU_REC709_EXT,false);
                 need(image.texture,"onscreen field import");
-                if(cached){rgb->build(image);rgb->draw_to(interlaced,parity<2?parity:0,0,0,0,window.width,window.height,true);}
-                else renderer.draw_to(image,interlaced,parity<2?parity:0,0,0,0,window.width,window.height,true,!interlaced,false);
+                renderer.draw_to(image,interlaced,parity<2?parity:0,0,0,0,window.width,window.height,true,!interlaced,false);
                 std::vector<uint8_t> actual(size_t(window.width)*window.height*4);
                 glReadPixels(0,0,window.width,window.height,GL_RGBA,GL_UNSIGNED_BYTE,actual.data());
                 need(glGetError()==GL_NO_ERROR,"window RGB readback");
@@ -63,32 +60,24 @@ static void pixels(bool cached=false) {
             }
         }
     }
-    printf("{\"type\":\"window-pixel-summary\",\"cached\":%s,\"comparisons\":%u,\"pass\":true}\n",cached?"true":"false",comparisons);
+    printf("{\"type\":\"window-pixel-summary\",\"comparisons\":%u,\"pass\":true}\n",comparisons);
 }
-static void retirement_pixels(bool cached=false) {
+static void retirement_pixels() {
     crystalhd_field::Window window(0);
     yuy2_gpu::GPU gpu("/dev/dri/renderD128",window.display,window.context);
     GbmAllocation storage(gpu,1280,720);
     Renderer top(1280,720,1920,1080),bottom(1280,720,1920,1080);
-    std::unique_ptr<FieldRGBCache> rgb;
-    if(cached)rgb=std::make_unique<FieldRGBCache>(1280,720);
     for(unsigned generation=0;generation<4;++generation) {
         const auto source=pattern(1280,720,generation);
         storage.write(source.data(),1280*2,source.size());
         {
-            Image upper(gpu,storage,!cached,0,EGL_ITU_REC709_EXT,false);
+            Image upper(gpu,storage,true,0,EGL_ITU_REC709_EXT,false);
             Image lower(gpu,storage,true,1,EGL_ITU_REC709_EXT,false);
             need(upper.texture&&lower.texture,"queued field imports");
             // Queue both uses without a per-field finish or readback. Keep
             // their views and source generation alive through completion.
-            if(cached) {
-                rgb->build(upper);
-                rgb->draw_to(true,0,top.picture.fbo,0,0,1920,1080,false);
-                rgb->draw_to(true,1,bottom.picture.fbo,0,0,1920,1080,false);
-            }else {
-                top.draw_to(upper,true,0,top.picture.fbo,0,0,1920,1080,false,false,false);
-                bottom.draw_to(lower,true,1,bottom.picture.fbo,0,0,1920,1080,false,false,false);
-            }
+            top.draw_to(upper,true,0,top.picture.fbo,0,0,1920,1080,false,false,false);
+            bottom.draw_to(lower,true,1,bottom.picture.fbo,0,0,1920,1080,false,false,false);
             glFinish();
             need(glGetError()==GL_NO_ERROR,"two-field retirement completion");
         }
@@ -102,7 +91,7 @@ static void retirement_pixels(bool cached=false) {
         glBindFramebuffer(GL_FRAMEBUFFER,bottom.picture.fbo);
         verify_scaled(bottom,source,1,"queued-bottom-retired-before-write");
     }
-    printf("{\"type\":\"retirement-pixels\",\"cached\":%s,\"generations\":4,\"comparisons\":8,\"pass\":true}\n",cached?"true":"false");
+    printf("{\"type\":\"retirement-pixels\",\"generations\":4,\"comparisons\":8,\"pass\":true}\n");
 }
 static guint64 counter(GstElement *sink,const char *key) {
     GstStructure *stats=nullptr;g_object_get(sink,"field-stats",&stats,nullptr);
@@ -193,7 +182,7 @@ int main(int argc,char **argv) {
         need(temperature()<75000,"start temperature below75C");
         need(gst_element_register(nullptr,"crystalhdfieldsink",GST_RANK_NONE,gst_crystalhd_field_get_type()),"register experimental sink");
         if(argc==3&&(std::string(argv[1])=="--card"||std::string(argv[1])=="--card-direct"))card(argv[2],std::string(argv[1])=="--card");
-        else {need(argc==1,"usage: gst-field-output [--card|--card-direct 50-picture.h264]");pixels();pixels(true);retirement_pixels();retirement_pixels(true);pipeline(false);pipeline(true);}
+        else {need(argc==1,"usage: gst-field-output [--card|--card-direct 50-picture.h264]");pixels();retirement_pixels();pipeline(false);pipeline(true);}
         return 0;
     }catch(const std::exception &error){fprintf(stderr,"FAIL: %s\n",error.what());return 1;}
 }

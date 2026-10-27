@@ -234,7 +234,7 @@ struct Worker {
         Window window(handle);
         yuy2_gpu::GPU gpu("/dev/dri/renderD128",window.display,window.context);
         std::unique_ptr<GbmAllocation> storage;
-        std::unique_ptr<FieldRGBCache> renderer;
+        std::unique_ptr<Renderer> renderer;
         std::unique_ptr<Image> views[2];
         GstBuffer *retained=nullptr;
         GstVideoInfo previous{};
@@ -264,8 +264,8 @@ struct Worker {
             const double aspect=double(previous.width)*previous.par_n/(double(previous.height)*previous.par_d);
             unsigned w=window.width,h=std::max(1U,unsigned(std::lround(w/aspect)));
             if(h>window.height){h=window.height;w=std::max(1U,unsigned(std::lround(h*aspect)));}
-            renderer->draw_to(interlaced,parity,0,
-                (window.width-w)/2,(window.height-h)/2,w,h,true);
+            renderer->draw_to(*views[interlaced?parity:0],interlaced,parity,0,
+                (window.width-w)/2,(window.height-h)/2,w,h,true,!interlaced,false);
         };
         auto swap=[&] {need(eglSwapBuffers(window.display,window.surface),"window swap");++stats.swaps;};
         for(;;) {
@@ -331,7 +331,8 @@ struct Worker {
                 if(!gst_video_info_is_equal(&info,&previous)) {
                     retire();storage.reset();renderer.reset();
                     storage=std::make_unique<GbmAllocation>(gpu,info.width,info.height);stats.allocations=1;
-                    renderer=std::make_unique<FieldRGBCache>(info.width,info.height);previous=info;
+                    // Only the window default framebuffer is used; tiny helper FBO.
+                    renderer=std::make_unique<Renderer>(info.width,info.height,2,2);previous=info;
                 }
                 if(command->buffer!=retained||held_generation!=command->generation) {
                     const auto prepare_begin=gst_util_get_timestamp();
@@ -348,10 +349,10 @@ struct Worker {
                     }catch(...){gst_video_frame_unmap(&frame);throw;}
                     gst_video_frame_unmap(&frame);
                     const EGLint matrix=info.colorimetry.matrix==GST_VIDEO_COLOR_MATRIX_BT601?EGL_ITU_REC601_EXT:EGL_ITU_REC709_EXT;
-                    views[0]=std::make_unique<Image>(gpu,*storage,false,0,matrix,false);
-                    need(views[0]->texture,"RGB cache full-picture import");stats.images=1;
+                    views[0]=std::make_unique<Image>(gpu,*storage,interlaced,0,matrix,false);
+                    need(views[0]->texture,"first field import");stats.images=1;
+                    if(interlaced){views[1]=std::make_unique<Image>(gpu,*storage,true,1,matrix,false);need(views[1]->texture,"second field import");stats.images=2;}
                     retained=gst_buffer_ref(command->buffer);stats.retained=1;held_generation=command->generation;
-                    renderer->build(*views[0]);
                     preparation_ns=gst_util_get_timestamp()-prepare_begin;
                     retirement_ns=stats.retire_ns.load()-retirement_before;
                     stats.prepare_ns+=preparation_ns;
