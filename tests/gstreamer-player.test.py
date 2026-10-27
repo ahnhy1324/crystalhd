@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import threading
 from types import SimpleNamespace
 import unittest
@@ -1334,6 +1335,95 @@ class GStreamerApiTests(unittest.TestCase):
         self.assertTrue(result.pipeline.get_property("suburi").endswith("sub%20titles.srt"))
         self.assertIsNotNone(result.pipeline.get_property("video-sink"))
         self.assertIsNone(result.pipeline.get_property("video-filter"))
+
+    def test_close_preserves_video_counts_before_native_null_reset(self):
+        result = self.make_player()
+        result.bus.remove_signal_watch()
+        pipeline = self.Gst.parse_launch(
+            'appsrc name=source is-live=true format=time '
+            'caps="video/x-raw,format=RGB,width=2,height=2,framerate=25/1" ! '
+            'fakesink name=sink sync=true async=false qos=true max-lateness=-1')
+        sink, source = pipeline.get_by_name("sink"), pipeline.get_by_name("source")
+        # Only adapt playbin's video-sink lookup. Clock, rendering, QoS
+        # accounting, EOS and NULL counter reset are the actual native API.
+        result.pipeline = mock.Mock(wraps=pipeline)
+        result.pipeline.get_property.side_effect = lambda name: (
+            sink if name == "video-sink" else pipeline.get_property(name))
+        result.bus = pipeline.get_bus()
+        result.bus.add_signal_watch()
+        clock = self.Gst.SystemClock()
+        pipeline.use_clock(clock)
+        self.assertNotEqual(pipeline.set_state(self.Gst.State.PLAYING),
+                            self.Gst.StateChangeReturn.FAILURE)
+        pipeline.get_state(self.Gst.SECOND)
+
+        def push(index):
+            buffer = self.Gst.Buffer.new_allocate(None, 16, None)
+            buffer.pts = index * 40 * self.Gst.MSECOND
+            buffer.duration = 40 * self.Gst.MSECOND
+            self.assertEqual(source.emit("push-buffer", buffer), self.Gst.FlowReturn.OK)
+
+        push(0)
+        deadline = time.monotonic() + 2
+        while sink.get_property("stats").get_value("rendered") == 0:
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(.001)
+        sink.set_property("max-lateness", 0)
+        # Advance this pipeline's private clock rather than relying on a slow
+        # decoder/filter to cause drops; playbin buffering/QoS differs by GST.
+        clock.set_calibration(clock.get_internal_time(),
+                              clock.get_time() + 5 * self.Gst.SECOND, 1, 1)
+        for index in range(1, 5):
+            push(index)
+        source.emit("end-of-stream")
+        message = result.bus.timed_pop_filtered(
+            2 * self.Gst.SECOND, self.Gst.MessageType.EOS | self.Gst.MessageType.ERROR)
+        self.assertIsNotNone(message)
+        self.assertEqual(message.type, self.Gst.MessageType.EOS)
+        stats = sink.get_property("stats")
+        rendered, dropped = stats.get_value("rendered"), stats.get_value("dropped")
+        self.assertGreater(rendered, 0)
+        self.assertGreater(dropped, 0)
+        result.close()
+        self.assertEqual(sink.get_property("stats").get_value("dropped"), 0)
+        self.assertEqual(result.video_output_summary, [
+            {"sink": "fakesink", "rendered": rendered, "dropped": dropped}])
+        result.close()
+        self.assertEqual(result.video_output_summary[0]["dropped"], dropped)
+
+    def test_video_summary_reads_wrapped_sink_without_adding_buffer_probes(self):
+        result = self.make_player()
+        wrapper = self.Gst.Bin.new("video-output-wrapper")
+        sink = self.Gst.ElementFactory.make("fakesink")
+        wrapper.add(sink)
+        wrapper.add_pad(self.Gst.GhostPad.new("sink", sink.get_static_pad("sink")))
+        result.pipeline.set_property("video-sink", wrapper)
+        self.assertEqual(result.snapshot_video_output(), [
+            {"sink": "fakesink", "rendered": 0, "dropped": 0}])
+        # Optional diagnostics must not prevent ordinary NULL teardown.
+        with mock.patch.object(result, "snapshot_video_output", return_value=[]):
+            result.close()
+        self.assertTrue(result.closed)
+        self.assertEqual(result.pipeline.get_state(0).state, self.Gst.State.NULL)
+
+    def test_video_summary_reports_unavailable_without_changing_playback_result(self):
+        self.http_fixture()
+        result = self.make_player(source=Path(self.temp.name) / "http-video.ogg")
+        result.pipeline.set_property("suburi", None)
+        with mock.patch.object(result, "snapshot_video_output", return_value=[]):
+            code, output, error = self.run_player(result)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(result.health.frames, 12)
+        self.assertIn("Video sink statistics: unavailable", output)
+
+    def test_failed_sink_counter_read_still_tears_down(self):
+        result = self.make_player()
+        sink = result.pipeline.get_property("video-sink")
+        with mock.patch.object(sink, "get_property", side_effect=RuntimeError("counter unavailable")):
+            result.close()
+        self.assertEqual(result.video_output_summary, [])
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.pipeline.get_state(0).state, self.Gst.State.NULL)
 
     def test_weave_changes_only_deinterlacing_and_preserves_decoder_policy(self):
         reference = self.Gst.ElementFactory.make("playbin")

@@ -1,0 +1,81 @@
+{
+  "issue": 510,
+  "objective": "Preserve available video-sink rendered/dropped counters before GstBaseSink NULL reset; distinguish decoded pictures from output buffers without new probes or success gates",
+  "payload_source": "f354ae1196d96b750e137c62cbd28f8b0e4c059e",
+  "base_source": "dfbbf265cc4f90cadb5cb4a83ee8f22126a0e50d",
+  "implementation_scope": "Player Python and usage only; optional counter inspection bounded to64 iterator results in selected video branch, deduplicated sink objects. Missing/failed counters remain unavailable; same decode/error/timeout/QoS behavior. No ABI or installed change.",
+  "tests": {
+    "old_code": "RED: real native GstBaseSink has positive drops, NULL resets them to0, original Player preserves no summary (AttributeError).",
+    "final": "99/99 existing+new Player tests PASS, including real EOS/drop/reset, wrapped sinks, missing counters, failed getter and idempotent close",
+    "command": "python3 tests/gstreamer-player.test.py",
+    "physical_av": "NOT RUN"
+  },
+  "native_video_only": {
+    "environment": {
+      "os": "Ubuntu26.04.1LTS",
+      "kernel": "7.0.0-38-generic",
+      "module": "3.10.13",
+      "gstreamer": "1.28.2",
+      "fixture": "high.mp4",
+      "coded": [
+        640,
+        360
+      ],
+      "pictures": 180,
+      "fps": 30,
+      "audio_streams": 0,
+      "scale_width": 0,
+      "sink": "stock xvimagesink"
+    },
+    "decoded": 180,
+    "before_null": {
+      "rendered": 180,
+      "dropped": 0
+    },
+    "reported_summary": [
+      {
+        "sink": "xvimagesink",
+        "rendered": 180,
+        "dropped": 0
+      }
+    ],
+    "sink_after_null": {
+      "rendered": 0,
+      "dropped": 0
+    },
+    "natural_eos": true,
+    "device_fds_after_null": 0,
+    "boundaries_equal": true,
+    "module_ref_before_after": [
+      0,
+      0
+    ],
+    "pin_difference_before_after": [
+      0,
+      0
+    ],
+    "links_unchanged": true,
+    "pm_unchanged": true,
+    "aer_unchanged": true,
+    "kernel_check_exit": 0,
+    "kernel_interval": "Original log creation precedes native start; follow-up reads that interval, no native rerun",
+    "peak_mC": 66000,
+    "library_mapping_verified": true,
+    "gst_mapping_verified": true,
+    "raw_private_harness_status": "FAIL: private harness required an audio clock from a video-only fixture. Original preserved; not a product failure.",
+    "scoped_status": "PASS output counts/EOS/ownership. Original overall harness FAIL retained because video-only input cannot supply an audio clock; no A/V acceptance inferred.",
+    "earlier_setup_failure": "640-wide fixture with scale-width1280 is not admitted. Device-free sink-caps check intersects640 input with scale-width0 but not1280. This invalid upscale attempt and logs are retained; default native geometry succeeds without production scaling changes."
+  },
+  "interpretation": [
+    "Sink counters are a snapshot before teardown and since last reset, not a full-session census after seeks or physical scanout",
+    "EOS and existing hardware/software requirements remain unchanged; diagnostics add no zero-drop gate",
+    "No per-buffer observer added; a diagnostic inability does not stop NULL teardown",
+    "Native measurement used identical Player implementation before its f354ae1 commit; extra final test/docs do not reattribute shared C++ payloads"
+  ],
+  "ci_fixture_followup": {
+    "original_ci": "40447662966 FAIL at ee80b60: old Theora/playbin+sleep fixture produced zero sink drops on CI, so its positive-drop prerequisite failed. Original local1.28.2 PASS retained; not a new production regression or a waived test.",
+    "change": "Use a real appsrc/fakesink pipeline and private GstSystemClock. Render one buffer with dropping disabled, enable max-lateness0, advance only its clock5s, then submit4 stale buffers. Only playbin video-sink lookup is adapted; native timing/counters/EOS/NULL reset remain real.",
+    "criteria": "Positive rendered and dropped counts remain mandatory; preserve exact captured values after NULL resets to0, including idempotent close. No skips or softened thresholds.",
+    "local": "Focused PASS; full99 PASS. Original Player close still fails the new fixture after positive counters and real NULL reset."
+  }
+}
