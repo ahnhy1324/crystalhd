@@ -175,6 +175,46 @@ pass; final owned resources are zero. Physical A/V for this source is NOT RUN.
 
 ![Policy screening and matched field-submission counts](swap-tail-20261027.svg)
 
+### Native fence and kernel-wait attribution
+
+The [source-qualified diagnostic receipt](native-wait-attribution-20261027.json)
+narrows the remaining tail without changing the submission/retirement policy.
+Source `846caca` captures 1,324 valid native-fence samples, with no owned fence
+FDs after close. All **162 swaps lasting at least 30 ms** contain a successful
+`DRM_IOCTL_SYNCOBJ_WAIT` on the graphics FD `/dev/dri/card1`. At the worst
+clock-age field (PTS 9.02 s), the actual swap lasts **53.827 ms**, including
+**53.639 ms (99.65%)** in that graphics wait. CrystalHD initialization/close
+ioctls outside the swap interval are separate events.
+
+The preceding complete public-call trace (`cc1dbc9`) found no long XCB/poll
+or public `drmIoctl` call in its roughly 54 ms outliers. Mesa's direct ioctl
+needed syscall tracing; shorter swaps do contain Present event waits. The
+first fence-only trace (`0af974c`) loses one serialized record to interleaved
+output and remains INCOMPLETE; its functional playback result is preserved.
+
+This identifies a [host wait on graphics synchronization objects](https://docs.kernel.org/gpu/drm-mm.html#host-side-wait-on-syncobjs),
+not the division between current GPU execution, older queued work and fence
+availability. GLES2 timer queries are unavailable on this renderer. An
+independent native-fence observer reports the first observed signal, an
+upper bound on completion; observing it after swap return does not prove
+completion occurred after return. The roughly 53 ms tail is **not solved**.
+
+The final instrumented run decodes 750 originals: 1,323 timed field swaps +
+177 expired fields account for all 1,500, plus one preroll swap. EOS, zero
+owned resources and the 64°C peak pass. Instrumented CPU is not a performance
+comparison. Physical A/V remains NOT RUN for this source.
+
+`make -C filters/gst/field-output wait-probe host-wait-probe` builds explicit
+diagnostic libraries under `wait-probe/`; ordinary `all` does not select them.
+The bounded [BPF template](kernel-waits.bt.in) requires a gated receiver PID
+and the absolute companion library path before attachment. Native-fence
+setup is outside the reported actual swap time; the sink's older inclusive
+swap counter also includes that setup. No installed stack, shared decoder,
+VA/Kick policy or source-retirement barrier changes. These sink changes do
+not enter Moonlight's FFmpeg/VA path; actual Sunshine retesting is NOT RUN.
+
+![Five longest swaps and their nested graphics waits](native-wait-attribution-20261027.svg)
+
 ## Offscreen EGL field-view probe
 
 One immutable linear YUYV allocation supplies top/bottom EGLImages with

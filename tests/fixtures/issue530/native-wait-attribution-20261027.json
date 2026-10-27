@@ -1,0 +1,1306 @@
+{
+  "issue": 530,
+  "scope": "Measured native diagnostic of existing optional GLES2 field sink; not a runtime optimization or physical scanout test",
+  "sources": {
+    "fence_only": "0af974cc4d640bb283ccace20b1b42f35e499878",
+    "complete_public_wait_trace": "cc1dbc9f6d373f9d9819d491ae902b6fde97e526",
+    "kernel_wait_trace": "846caca69b90a4c9a7c969f69a83f183d5069cf3"
+  },
+  "environment": {
+    "os": "Ubuntu 26.04.1 LTS",
+    "kernel": "7.0.0-38-generic",
+    "gstreamer": "1.28.2",
+    "mesa": "26.0.8-1ubuntu0.3",
+    "renderer": "Intel 965GM (CL), OpenGL ES 2",
+    "window": [
+      1024,
+      768
+    ],
+    "refresh_hz": 60,
+    "fixture": "dialogue-upsampled-coded-1080i25.mkv",
+    "coded": [
+      1920,
+      1080
+    ],
+    "card_output": [
+      1280,
+      720
+    ],
+    "duration_s": 30.037,
+    "expected_originals": 750,
+    "expected_fields": 1500,
+    "audio": "Real GstPulseSinkClock, only this PulseSink stream muted"
+  },
+  "method": {
+    "gl_elapsed_query": "GL_EXT_disjoint_timer_query absent; no GPU elapsed-time claim",
+    "native_fence": "EGL_ANDROID_native_fence_sync after field draw, glFlush, duplicate-owned sync_file FD; independent poll thread; original glFinish retirement unchanged",
+    "native_fence_bound": "First observed signal is an upper bound on completion. Positive SwapReturn-minus-observation is only a lower bound on post-draw wait. A late observation does not prove the GPU completed after swap returned.",
+    "public_waits": "Explicit companion LD_PRELOAD forwards poll/drmIoctl/XCB reply and special-event calls unchanged, recording >=1ms only inside marked real SwapBuffers; unmarked scanner/children silent.",
+    "kernel_waits": "Read-only BPF uprobes tag swap ordinals; target-PID ioctl and tagged futex syscall durations >=1ms; attach before gated receiver begins; auto-detach on receiver exit. Mesa direct libc ioctl bypasses the public drmIoctl wrapper.",
+    "timestamp_scope": "Swap ns excludes native-fence setup; field-stats worst-swap-ns includes diagnostic setup; fresh single-worker process required for sequence correlation",
+    "instrumentation": "Diagnostic source/build targets only; CPU values are instrumented and not a matched performance comparison"
+  },
+  "fence_only": {
+    "source": "0af974c",
+    "native_functional": "PASS",
+    "trace_export": "INCOMPLETE",
+    "reported_swaps": 1325,
+    "recoverable_complete_samples": 1324,
+    "cause": "One JSON record interleaved with Python output; record 1324 not recoverable. Original failure retained, subsequent diagnostic uses one direct write per record.",
+    "worst_swap": 1186,
+    "actual_swap_ns": 54148980,
+    "gpu_first_observed_from_enter_ns": 59595405,
+    "post_gpu_lower_bound_ns": 0
+  },
+  "public_wait_trace": {
+    "source": "cc1dbc9",
+    "native_result": {
+      "label": "cc1dbc9",
+      "fullscreen": true,
+      "eos": true,
+      "audio_buffers": 1408,
+      "audio_stream_muted": true,
+      "clock": "GstPulseSinkClock",
+      "audio_clock": "GstPulseSinkClock",
+      "same_audio_clock": true,
+      "peak_mC": 63000,
+      "sizes": [
+        [
+          1024,
+          768
+        ]
+      ],
+      "verified_initial_size": [
+        1024,
+        768
+      ],
+      "sink_buffers": 750,
+      "sink_fields": 1500,
+      "qos_sources": {},
+      "base_sink_before_null": {
+        "average-rate": -1.0,
+        "dropped": 0,
+        "rendered": 750
+      },
+      "code": 0,
+      "decoded": 750,
+      "health_error": null,
+      "elapsed_s": 31.685003844002495,
+      "cpu_s": 8.358613,
+      "max_rss_kib": 278680,
+      "start_mC": 61000,
+      "field_stats": {
+        "pictures": 750,
+        "fields": 1323,
+        "prerolls": 1,
+        "redraws": 0,
+        "swaps": 1324,
+        "cancelled": 0,
+        "clipped": 0,
+        "failures": 0,
+        "clocked-fields": 1323,
+        "late-fields": 338,
+        "max-age-ns": 52166000,
+        "early-fields": 120,
+        "max-early-ns": 14891000,
+        "dropped-fields": 177,
+        "prepare-ns": 8322156534,
+        "draw-ns": 439790872,
+        "wait-ns": 1070371140,
+        "swap-ns": 18606197342,
+        "retire-ns": 7110999049,
+        "retirements": 750,
+        "worst-field-pts": 29420000000,
+        "worst-field-index": 1,
+        "worst-parity": 1,
+        "worst-swap-sequence": 1302,
+        "worst-prepare-ns": 9932713,
+        "worst-retire-ns": 8715840,
+        "worst-draw-ns": 1221064,
+        "worst-wait-ns": 19137,
+        "worst-swap-ns": 51989264,
+        "worst-head-age-ns": -1018000,
+        "worst-preswap-age-ns": 228000,
+        "worst-monotonic-elapsed-ns": 53237287,
+        "worst-clock-elapsed-ns": 53184000,
+        "allocations": 0,
+        "images": 0,
+        "retained-buffers": 0
+      },
+      "whole_buffer_drops": 0,
+      "pass": true
+    },
+    "trace_summary": {
+      "type": "native-fence-summary",
+      "swaps": 1324,
+      "invalid_samples": 0,
+      "owned_fds_after_close": 0
+    },
+    "host_summary": {
+      "type": "host-wait-summary",
+      "events": 1184,
+      "dropped": 0
+    },
+    "worst_sample": {
+      "type": "native-fence-swap",
+      "swap": 1302,
+      "valid": true,
+      "swap_ok": true,
+      "setup_ns": 46655,
+      "swap_ns": 51934228,
+      "gpu_seen_from_enter_ns": 57435895,
+      "post_gpu_lower_bound_ns": 0,
+      "ready_before_swap": false
+    },
+    "worst_host_waits": [],
+    "finding": "Worst and other ~54ms swaps contain no >=1ms public XCB/poll/drmIoctl call. Shorter swaps include Present Idle/Complete waits; those do not establish the cause of long outliers. Nested poll/XCB durations must not be added."
+  },
+  "kernel_wait_trace": {
+    "source": "846caca69b90a4c9a7c969f69a83f183d5069cf3",
+    "native_result": {
+      "label": "846caca69b90a4c9a7c969f69a83f183d5069cf3",
+      "fullscreen": true,
+      "eos": true,
+      "audio_buffers": 1408,
+      "audio_stream_muted": true,
+      "clock": "GstPulseSinkClock",
+      "audio_clock": "GstPulseSinkClock",
+      "same_audio_clock": true,
+      "peak_mC": 64000,
+      "sizes": [
+        [
+          1024,
+          768
+        ]
+      ],
+      "verified_initial_size": [
+        1024,
+        768
+      ],
+      "sink_buffers": 750,
+      "sink_fields": 1500,
+      "qos_sources": {},
+      "base_sink_before_null": {
+        "average-rate": -1.0,
+        "dropped": 0,
+        "rendered": 750
+      },
+      "code": 0,
+      "decoded": 750,
+      "health_error": null,
+      "elapsed_s": 31.705467696003325,
+      "cpu_s": 8.934914000000001,
+      "max_rss_kib": 280548,
+      "start_mC": 62000,
+      "field_stats": {
+        "pictures": 750,
+        "fields": 1323,
+        "prerolls": 1,
+        "redraws": 0,
+        "swaps": 1324,
+        "cancelled": 0,
+        "clipped": 0,
+        "failures": 0,
+        "clocked-fields": 1323,
+        "late-fields": 284,
+        "max-age-ns": 53953000,
+        "early-fields": 164,
+        "max-early-ns": 15000000,
+        "dropped-fields": 177,
+        "prepare-ns": 8086713346,
+        "draw-ns": 521281382,
+        "wait-ns": 1230120346,
+        "swap-ns": 18503347373,
+        "retire-ns": 6788813293,
+        "retirements": 750,
+        "worst-field-pts": 9020000000,
+        "worst-field-index": 1,
+        "worst-parity": 1,
+        "worst-swap-sequence": 402,
+        "worst-prepare-ns": 8888573,
+        "worst-retire-ns": 7637055,
+        "worst-draw-ns": 193535,
+        "worst-wait-ns": 13968,
+        "worst-swap-ns": 53914344,
+        "worst-head-age-ns": -277000,
+        "worst-preswap-age-ns": -63000,
+        "worst-monotonic-elapsed-ns": 54129531,
+        "worst-clock-elapsed-ns": 54230000,
+        "allocations": 0,
+        "images": 0,
+        "retained-buffers": 0
+      },
+      "whole_buffer_drops": 0,
+      "pass": true
+    },
+    "trace_summary": {
+      "type": "native-fence-summary",
+      "swaps": 1324,
+      "invalid_samples": 0,
+      "owned_fds_after_close": 0
+    },
+    "receiver_exit": 0,
+    "tracer_exit": 0,
+    "ready_before_receiver": true,
+    "trace_end_seen": true,
+    "kernel_wait_records": 1485,
+    "tagged_syncobj_waits": 565,
+    "decoded_request": {
+      "decimal": 3223872707,
+      "hex": "0xc02864c3",
+      "uapi": "DRM_IOCTL_SYNCOBJ_WAIT = DRM_IOWR(0xC3, struct drm_syncobj_wait)",
+      "fd": 25,
+      "fd_target": "/dev/dri/card1",
+      "other_device_fds": {
+        "26-29": "/dev/dri/renderD128",
+        "31-32": "/dev/crystalhd"
+      }
+    },
+    "long_swap_threshold_ns": 30000000,
+    "long_swap_count": 162,
+    "all_long_swaps_have_successful_nested_graphics_wait": true,
+    "long_swap_row_fields": [
+      "swap",
+      "actual_swap_ns",
+      "wait_start_offset_ns",
+      "syncobj_wait_ns"
+    ],
+    "long_swaps": [
+      [
+        25,
+        33052024,
+        11385,
+        32948446
+      ],
+      [
+        27,
+        53296444,
+        10337,
+        53132242
+      ],
+      [
+        41,
+        37753856,
+        9638,
+        37599224
+      ],
+      [
+        43,
+        51265617,
+        12152,
+        50990157
+      ],
+      [
+        55,
+        31430268,
+        12292,
+        31283040
+      ],
+      [
+        57,
+        50765332,
+        10127,
+        50618452
+      ],
+      [
+        60,
+        34045401,
+        9848,
+        33913119
+      ],
+      [
+        69,
+        37547959,
+        10127,
+        37451296
+      ],
+      [
+        78,
+        30668141,
+        11873,
+        30584260
+      ],
+      [
+        80,
+        37165289,
+        14039,
+        37031330
+      ],
+      [
+        94,
+        33421493,
+        11035,
+        33320500
+      ],
+      [
+        96,
+        51768767,
+        9289,
+        51404326
+      ],
+      [
+        111,
+        46894631,
+        13479,
+        46778763
+      ],
+      [
+        125,
+        43057735,
+        18857,
+        42955067
+      ],
+      [
+        136,
+        39432883,
+        10267,
+        39290613
+      ],
+      [
+        145,
+        30116662,
+        11524,
+        29988570
+      ],
+      [
+        147,
+        38801711,
+        9848,
+        38681371
+      ],
+      [
+        152,
+        30281979,
+        12921,
+        30185526
+      ],
+      [
+        154,
+        30280793,
+        12572,
+        30054641
+      ],
+      [
+        168,
+        31888230,
+        10477,
+        31663265
+      ],
+      [
+        170,
+        36438153,
+        16693,
+        36341071
+      ],
+      [
+        173,
+        37493342,
+        12572,
+        37362665
+      ],
+      [
+        184,
+        32029383,
+        11874,
+        31904852
+      ],
+      [
+        199,
+        45056364,
+        10267,
+        44934697
+      ],
+      [
+        202,
+        34811649,
+        9987,
+        34651360
+      ],
+      [
+        215,
+        37729341,
+        10197,
+        37508986
+      ],
+      [
+        218,
+        37002276,
+        9778,
+        36905334
+      ],
+      [
+        229,
+        33955513,
+        12083,
+        33839574
+      ],
+      [
+        232,
+        31717534,
+        11175,
+        31154110
+      ],
+      [
+        234,
+        38711893,
+        10756,
+        38573115
+      ],
+      [
+        243,
+        39675028,
+        10407,
+        39541698
+      ],
+      [
+        248,
+        39415143,
+        16413,
+        39179143
+      ],
+      [
+        257,
+        31743934,
+        12083,
+        31616819
+      ],
+      [
+        259,
+        47322560,
+        10197,
+        47199217
+      ],
+      [
+        262,
+        37529031,
+        10407,
+        37423498
+      ],
+      [
+        273,
+        37132253,
+        13899,
+        36976224
+      ],
+      [
+        275,
+        51685584,
+        9848,
+        51463273
+      ],
+      [
+        288,
+        45289849,
+        15785,
+        45187389
+      ],
+      [
+        294,
+        31648039,
+        12292,
+        31549142
+      ],
+      [
+        296,
+        53316489,
+        9918,
+        53179038
+      ],
+      [
+        311,
+        48180302,
+        15924,
+        48060033
+      ],
+      [
+        324,
+        30377316,
+        10197,
+        30219610
+      ],
+      [
+        326,
+        35288886,
+        12152,
+        35037033
+      ],
+      [
+        341,
+        50148548,
+        12781,
+        50008374
+      ],
+      [
+        344,
+        35740981,
+        10267,
+        35601155
+      ],
+      [
+        354,
+        33147778,
+        10476,
+        33036589
+      ],
+      [
+        371,
+        46357539,
+        21861,
+        46213942
+      ],
+      [
+        387,
+        39476185,
+        11035,
+        39369954
+      ],
+      [
+        389,
+        38648824,
+        11663,
+        38476453
+      ],
+      [
+        400,
+        33284043,
+        11035,
+        33155671
+      ],
+      [
+        402,
+        53827180,
+        9149,
+        53638884
+      ],
+      [
+        404,
+        33161119,
+        16553,
+        33034284
+      ],
+      [
+        414,
+        31558081,
+        9917,
+        31419513
+      ],
+      [
+        416,
+        45671122,
+        9988,
+        45544286
+      ],
+      [
+        418,
+        30827244,
+        12991,
+        30711584
+      ],
+      [
+        430,
+        30753350,
+        23677,
+        30638388
+      ],
+      [
+        446,
+        34211488,
+        11245,
+        34096876
+      ],
+      [
+        448,
+        50329023,
+        20533,
+        50217065
+      ],
+      [
+        460,
+        30752582,
+        10965,
+        30406650
+      ],
+      [
+        462,
+        37728084,
+        10337,
+        37475392
+      ],
+      [
+        464,
+        53541034,
+        9289,
+        53388077
+      ],
+      [
+        479,
+        42855750,
+        11734,
+        42570371
+      ],
+      [
+        481,
+        39405923,
+        9987,
+        39168178
+      ],
+      [
+        492,
+        33169780,
+        10267,
+        32939437
+      ],
+      [
+        494,
+        52867608,
+        10407,
+        52736303
+      ],
+      [
+        509,
+        45605330,
+        11175,
+        45500286
+      ],
+      [
+        515,
+        32401785,
+        16692,
+        32298208
+      ],
+      [
+        517,
+        39770574,
+        10756,
+        39654494
+      ],
+      [
+        522,
+        37527426,
+        10477,
+        37380406
+      ],
+      [
+        529,
+        30537396,
+        12642,
+        30372287
+      ],
+      [
+        531,
+        36932363,
+        10686,
+        36692941
+      ],
+      [
+        545,
+        31101238,
+        12711,
+        30960994
+      ],
+      [
+        547,
+        39488478,
+        9988,
+        39356125
+      ],
+      [
+        552,
+        38734103,
+        11314,
+        38609853
+      ],
+      [
+        561,
+        37446198,
+        9778,
+        37325090
+      ],
+      [
+        563,
+        49953686,
+        11384,
+        49851087
+      ],
+      [
+        575,
+        30893595,
+        10337,
+        30763617
+      ],
+      [
+        577,
+        31089645,
+        12642,
+        30956034
+      ],
+      [
+        592,
+        46015727,
+        9917,
+        45923256
+      ],
+      [
+        595,
+        35402033,
+        10616,
+        35291890
+      ],
+      [
+        622,
+        34529832,
+        9498,
+        34394826
+      ],
+      [
+        624,
+        50479535,
+        12921,
+        50317779
+      ],
+      [
+        636,
+        30550387,
+        11524,
+        30428371
+      ],
+      [
+        638,
+        35081662,
+        10755,
+        34963698
+      ],
+      [
+        640,
+        53696086,
+        10337,
+        53539847
+      ],
+      [
+        653,
+        30744061,
+        17251,
+        29511122
+      ],
+      [
+        657,
+        30402040,
+        11105,
+        30279954
+      ],
+      [
+        659,
+        37105225,
+        12921,
+        37005000
+      ],
+      [
+        664,
+        37621854,
+        9988,
+        37521978
+      ],
+      [
+        673,
+        30383741,
+        13130,
+        30281840
+      ],
+      [
+        675,
+        39417797,
+        13550,
+        39312892
+      ],
+      [
+        690,
+        46726939,
+        15924,
+        46609463
+      ],
+      [
+        692,
+        39626558,
+        9639,
+        39452718
+      ],
+      [
+        703,
+        33742353,
+        10267,
+        33640731
+      ],
+      [
+        705,
+        52665692,
+        9569,
+        52553104
+      ],
+      [
+        707,
+        30573295,
+        14387,
+        30470417
+      ],
+      [
+        719,
+        33379588,
+        14528,
+        33176065
+      ],
+      [
+        736,
+        49541473,
+        14737,
+        49244012
+      ],
+      [
+        750,
+        31870211,
+        18718,
+        31760697
+      ],
+      [
+        756,
+        31405544,
+        12432,
+        31314818
+      ],
+      [
+        771,
+        33458720,
+        17112,
+        33344736
+      ],
+      [
+        777,
+        31534195,
+        11524,
+        31342197
+      ],
+      [
+        779,
+        35961964,
+        12013,
+        35829471
+      ],
+      [
+        782,
+        37572055,
+        10826,
+        37474065
+      ],
+      [
+        793,
+        30696079,
+        12991,
+        30586914
+      ],
+      [
+        795,
+        52944435,
+        10616,
+        52623157
+      ],
+      [
+        816,
+        52249497,
+        9568,
+        52137539
+      ],
+      [
+        831,
+        45154214,
+        16693,
+        44888880
+      ],
+      [
+        847,
+        40788955,
+        19067,
+        40626501
+      ],
+      [
+        849,
+        36031039,
+        15436,
+        35929696
+      ],
+      [
+        876,
+        33242417,
+        11944,
+        33106082
+      ],
+      [
+        878,
+        52796997,
+        10128,
+        52173088
+      ],
+      [
+        881,
+        39537578,
+        10057,
+        39401105
+      ],
+      [
+        892,
+        38591483,
+        10197,
+        38491957
+      ],
+      [
+        897,
+        37523794,
+        10616,
+        37387321
+      ],
+      [
+        906,
+        31700561,
+        16553,
+        31513801
+      ],
+      [
+        908,
+        31214315,
+        14318,
+        31069530
+      ],
+      [
+        921,
+        30786945,
+        11384,
+        30651310
+      ],
+      [
+        923,
+        36770816,
+        11524,
+        36529020
+      ],
+      [
+        937,
+        33158674,
+        12013,
+        32996918
+      ],
+      [
+        939,
+        34410541,
+        13340,
+        34263172
+      ],
+      [
+        944,
+        37554804,
+        10407,
+        37461842
+      ],
+      [
+        953,
+        35592075,
+        10337,
+        35464821
+      ],
+      [
+        955,
+        51189699,
+        9080,
+        51010482
+      ],
+      [
+        967,
+        31909951,
+        9428,
+        31760557
+      ],
+      [
+        969,
+        50795714,
+        10127,
+        50695141
+      ],
+      [
+        972,
+        33363873,
+        12083,
+        33109156
+      ],
+      [
+        983,
+        31640357,
+        15295,
+        31397024
+      ],
+      [
+        997,
+        31246652,
+        16623,
+        31115486
+      ],
+      [
+        999,
+        37025044,
+        10825,
+        36934948
+      ],
+      [
+        1016,
+        51543593,
+        10476,
+        51334833
+      ],
+      [
+        1027,
+        30018253,
+        12502,
+        29880941
+      ],
+      [
+        1044,
+        31603969,
+        14737,
+        31489496
+      ],
+      [
+        1050,
+        33606718,
+        12572,
+        33489660
+      ],
+      [
+        1067,
+        51572090,
+        17531,
+        51408936
+      ],
+      [
+        1081,
+        31282132,
+        11455,
+        31126102
+      ],
+      [
+        1083,
+        50655050,
+        9848,
+        50245561
+      ],
+      [
+        1111,
+        39811781,
+        10127,
+        39528498
+      ],
+      [
+        1119,
+        34750536,
+        10336,
+        34605124
+      ],
+      [
+        1136,
+        35417398,
+        17182,
+        35283369
+      ],
+      [
+        1142,
+        33591213,
+        12572,
+        33482677
+      ],
+      [
+        1159,
+        38026803,
+        12153,
+        37569541
+      ],
+      [
+        1165,
+        33198625,
+        10756,
+        33080939
+      ],
+      [
+        1182,
+        31266977,
+        14178,
+        31003249
+      ],
+      [
+        1188,
+        32941602,
+        25073,
+        32709863
+      ],
+      [
+        1190,
+        52778488,
+        10337,
+        52644459
+      ],
+      [
+        1205,
+        46273728,
+        10546,
+        46176716
+      ],
+      [
+        1207,
+        32140643,
+        12362,
+        31883970
+      ],
+      [
+        1221,
+        49519193,
+        15714,
+        49396340
+      ],
+      [
+        1235,
+        32234791,
+        23398,
+        31990829
+      ],
+      [
+        1241,
+        30554717,
+        22349,
+        30422365
+      ],
+      [
+        1243,
+        34011598,
+        12292,
+        33904179
+      ],
+      [
+        1245,
+        52146339,
+        10128,
+        52008469
+      ],
+      [
+        1255,
+        30788971,
+        18299,
+        30643209
+      ],
+      [
+        1257,
+        51731612,
+        9848,
+        51408867
+      ],
+      [
+        1271,
+        33445520,
+        9847,
+        33179698
+      ],
+      [
+        1273,
+        50395165,
+        15994,
+        50141914
+      ],
+      [
+        1287,
+        35996467,
+        12921,
+        35619734
+      ],
+      [
+        1289,
+        51461459,
+        10337,
+        51365494
+      ],
+      [
+        1299,
+        38246530,
+        8801,
+        38121789
+      ],
+      [
+        1309,
+        39595478,
+        10337,
+        39459982
+      ],
+      [
+        1318,
+        39137028,
+        11384,
+        38956414
+      ]
+    ],
+    "top_five": [
+      {
+        "swap": 402,
+        "swap_ns": 53827180,
+        "syncobj_wait_ns": 53638884,
+        "wait_share_percent": 99.65018416346537,
+        "gpu_first_observed_from_enter_ns": 58246777,
+        "post_gpu_lower_bound_ns": 0
+      },
+      {
+        "swap": 640,
+        "swap_ns": 53696086,
+        "syncobj_wait_ns": 53539847,
+        "wait_share_percent": 99.70903093383752,
+        "gpu_first_observed_from_enter_ns": 58170440,
+        "post_gpu_lower_bound_ns": 0
+      },
+      {
+        "swap": 464,
+        "swap_ns": 53541034,
+        "syncobj_wait_ns": 53388077,
+        "wait_share_percent": 99.71431818070604,
+        "gpu_first_observed_from_enter_ns": 58072030,
+        "post_gpu_lower_bound_ns": 0
+      },
+      {
+        "swap": 296,
+        "swap_ns": 53316489,
+        "syncobj_wait_ns": 53179038,
+        "wait_share_percent": 99.74219795305727,
+        "gpu_first_observed_from_enter_ns": 57773731,
+        "post_gpu_lower_bound_ns": 0
+      },
+      {
+        "swap": 27,
+        "swap_ns": 53296444,
+        "syncobj_wait_ns": 53132242,
+        "wait_share_percent": 99.69190815057004,
+        "gpu_first_observed_from_enter_ns": 57850069,
+        "post_gpu_lower_bound_ns": 0
+      }
+    ],
+    "worst_clock_age_field": {
+      "pts_ns": 9020000000,
+      "field_index": 1,
+      "parity": 1,
+      "swap": 402,
+      "swap_return_clock_age_ns": 53953000
+    },
+    "finding": "Every measured >=30ms actual swap contains a successful graphics sync-object wait. Worst 53.827180ms swap contains 53.638884ms wait (99.650%). No CrystalHD ioctl or tagged futex accounts for these swap outliers. Untagged CrystalHD initialization/close waits are separate."
+  },
+  "disposition": {
+    "tail": "NOT SOLVED: graphics fence wait identified; current draw execution versus older queued work versus fence availability is not distinguished. Do not infer an immutable GPU throughput ceiling.",
+    "resource_lifetime": "Original source retirement/glFinish remains authoritative; no early source reuse",
+    "physical_av": "NOT RUN for this source; previous human PASS remains scoped to 915e819",
+    "changes": "No installed/default/PM/firmware/kernel/shared library/VA/Kick change; optional diagnostic probes and one readonly worst-swap-sequence stat",
+    "moonlight": "Recent optional sink changes are outside its FFmpeg/VA/libcrystalhd path; actual Sunshine rerun NOT RUN",
+    "v4l2": "Issue533 nonempty STOP/START G2 remains FAIL"
+  },
+  "references": [
+    "https://docs.kernel.org/gpu/drm-mm.html#host-side-wait-on-syncobjs",
+    "https://registry.khronos.org/EGL/extensions/ANDROID/EGL_ANDROID_native_fence_sync.txt",
+    "https://registry.khronos.org/OpenGL/extensions/EXT/EXT_disjoint_timer_query.txt"
+  ]
+}
