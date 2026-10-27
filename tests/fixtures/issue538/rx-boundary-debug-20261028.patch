@@ -1,0 +1,428 @@
+diff --git a/linux_lib/libcrystalhd/libcrystalhd_priv.cpp b/linux_lib/libcrystalhd/libcrystalhd_priv.cpp
+index 81a30fa0540a737234ccad0345d3f8a957e17fe0..311f1e4d68d95e0a2088dab6fbc9865279b27011 100644
+--- a/linux_lib/libcrystalhd/libcrystalhd_priv.cpp
++++ b/linux_lib/libcrystalhd/libcrystalhd_priv.cpp
+@@ -54,0 +55 @@
++#include "libcrystalhd_rx_debug_guards.h"
+@@ -339,0 +341,35 @@ static BC_STATUS DtsGetRxBufferLayout(const DTS_LIB_CONTEXT *Ctx,
++#ifdef CRYSTALHD_RX_DEBUG_GUARDS
++static bool DtsRxDebugCheckPools(const DTS_LIB_CONTEXT *Ctx,
++	DtsRxGuardPhase phase)
++{
++	bool intact = true;
++	if (Ctx && Ctx->Mpools) {
++		for (uint32_t i = 0; i < Ctx->MpoolCnt; ++i) {
++			const DTS_MPOOL_TYPE &mp = Ctx->Mpools[i];
++			if ((mp.type & (BC_MEM_DEC_YUVBUFF | BC_MEM_USER_MODE_ALLOC)) ==
++			    (BC_MEM_DEC_YUVBUFF | BC_MEM_USER_MODE_ALLOC))
++				intact = DtsRxGuardCheck(mp.buff, mp.sz, phase) && intact;
++		}
++	}
++	return intact && DtsRxGuardClean();
++}
++
++static void DtsRxDebugCheckFetched(const DTS_LIB_CONTEXT *Ctx,
++	const uint8_t *buffer)
++{
++	if (!Ctx || !Ctx->Mpools || !buffer)
++		return;
++	for (uint32_t i = 0; i < Ctx->MpoolCnt; ++i) {
++		const DTS_MPOOL_TYPE &mp = Ctx->Mpools[i];
++		if (mp.buff == buffer &&
++		    (mp.type & (BC_MEM_DEC_YUVBUFF | BC_MEM_USER_MODE_ALLOC)) ==
++		    (BC_MEM_DEC_YUVBUFF | BC_MEM_USER_MODE_ALLOC)) {
++			/* Diagnose without changing an active FETCH's lease/repost
++			 * semantics. The sticky counter makes final cleanup fail. */
++			(void)DtsRxGuardCheck(mp.buff, mp.sz, DTS_RX_GUARD_FETCH);
++			return;
++		}
++	}
++}
++#endif
++
+@@ -346,0 +383,4 @@ static void DtsFreeRetiredRxBacking(uint8_t *buffer, uint32_t bytes)
++	if (!DtsRxAllowFree(buffer, bytes, DTS_RX_GUARD_FREE)) {
++		errno = saved_errno;
++		return;
++	}
+@@ -365 +405 @@ static void DtsFreeRetiredRxBacking(uint8_t *buffer, uint32_t bytes)
+-	free(buffer);
++	DtsRxFreeValidated(buffer);
+@@ -450 +490 @@ static BC_STATUS DtsEnsureRxBufferLayout(DTS_LIB_CONTEXT *Ctx)
+-		staged[i] = (uint8_t *)malloc(layout.allocationBytes);
++		staged[i] = DtsRxAllocate(layout.allocationBytes);
+@@ -453 +493,2 @@ static BC_STATUS DtsEnsureRxBufferLayout(DTS_LIB_CONTEXT *Ctx)
+-				free(staged[undo]);
++				(void)DtsRxFree(staged[undo], layout.allocationBytes,
++					DTS_RX_GUARD_ROLLBACK);
+@@ -1983 +2024 @@ static BC_STATUS DtsAllocMemPoolsInitialized(DTS_LIB_CONTEXT *Ctx)
+-		mp->buff = (uint8_t *)malloc(mp->sz);
++		mp->buff = DtsRxAllocate(mp->sz);
+@@ -2059 +2099,0 @@ void DtsReleaseMemPools(DTS_LIB_CONTEXT *Ctx)
+-#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+@@ -2062 +2102,2 @@ void DtsReleaseMemPools(DTS_LIB_CONTEXT *Ctx)
+-					    (BC_MEM_DEC_YUVBUFF | BC_MEM_USER_MODE_ALLOC))
++					    (BC_MEM_DEC_YUVBUFF | BC_MEM_USER_MODE_ALLOC)) {
++#ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
+@@ -2064 +2105,2 @@ void DtsReleaseMemPools(DTS_LIB_CONTEXT *Ctx)
+-					else
++#else
++						(void)DtsRxFree(mp->buff, mp->sz, DTS_RX_GUARD_FREE);
+@@ -2065,0 +2108 @@ void DtsReleaseMemPools(DTS_LIB_CONTEXT *Ctx)
++					} else {
+@@ -2066,0 +2110,3 @@ void DtsReleaseMemPools(DTS_LIB_CONTEXT *Ctx)
++					}
++				} else {
++					DtsRxGuardRetain();
+@@ -2091,0 +2138 @@ void DtsReleaseMemPools(DTS_LIB_CONTEXT *Ctx)
++	DtsRxGuardSummary("close");
+@@ -2290,0 +2338,8 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
++#ifdef CRYSTALHD_RX_DEBUG_GUARDS
++				/* A format notification is already reposted and owns no
++				 * host data lease. Inspect only an actual fetched RX buffer. */
++				if (!invalidReceipt &&
++				    (Ctx->pOutData->u.DecOutData.Flags & COMP_FLAG_DATA_VALID) &&
++				    !(Ctx->pOutData->u.DecOutData.Flags & COMP_FLAG_FMT_CHANGE))
++					DtsRxDebugCheckFetched(Ctx, buffer.YuvBuff);
++#endif
+@@ -2446,0 +2502,7 @@ BC_STATUS DtsUnmapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
++#ifdef CRYSTALHD_RX_DEBUG_GUARDS
++		/* The successful ioctl retired DMA ownership. Keep that ownership
++		 * fact even when this separate diagnostic reports damaged guards. */
++		if (!DtsRxDebugCheckPools(Ctx, DTS_RX_GUARD_UNMAP))
++			sts = BC_STS_IO_XFR_ERROR;
++		DtsRxGuardSummary("unmap");
++#endif
+@@ -2503,0 +2566,7 @@ BC_STATUS DtsMapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
++#ifdef CRYSTALHD_RX_DEBUG_GUARDS
++		if (!DtsRxGuardCheck(mp->buff, mp->sz, DTS_RX_GUARD_MAP) ||
++		    !DtsRxGuardClean()) {
++			sts = BC_STS_IO_XFR_ERROR;
++			goto done;
++		}
++#endif
+diff --git a/linux_lib/libcrystalhd/libcrystalhd_rx_debug_guards.h b/linux_lib/libcrystalhd/libcrystalhd_rx_debug_guards.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..75f2fa12f5cce97a7ff46ebe3f40f6fa75c5ece7
+--- /dev/null
++++ b/linux_lib/libcrystalhd/libcrystalhd_rx_debug_guards.h
+@@ -0,0 +1,226 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef LIBCRYSTALHD_RX_DEBUG_GUARDS_H
++#define LIBCRYSTALHD_RX_DEBUG_GUARDS_H
++
++#include <stddef.h>
++#include <stdint.h>
++#include <stdlib.h>
++
++enum DtsRxGuardPhase {
++	DTS_RX_GUARD_MAP,
++	DTS_RX_GUARD_FETCH,
++	DTS_RX_GUARD_UNMAP,
++	DTS_RX_GUARD_FREE,
++	DTS_RX_GUARD_ROLLBACK,
++	DTS_RX_GUARD_PHASE_COUNT
++};
++
++#ifdef CRYSTALHD_RX_DEBUG_GUARDS
++#include <errno.h>
++#include <stdio.h>
++#include <unistd.h>
++
++/* Guards enclose allocationBytes. For the diagnosed YUY2 path this equals
++ * registeredBytes; planar allocation padding is not a registration-end guard.
++ * No context/public-ABI or shutdown-destructor changes. Counters count
++ * observations, not distinct damaged allocations. */
++static uint32_t dts_rx_guard_allocations;
++static uint32_t dts_rx_guard_checks[DTS_RX_GUARD_PHASE_COUNT];
++static uint32_t dts_rx_guard_failures;
++static uint32_t dts_rx_guard_quarantines;
++static uint32_t dts_rx_guard_reported;
++
++static inline uint32_t DtsRxGuardLoad(const uint32_t *value)
++{
++	return __atomic_load_n(value, __ATOMIC_RELAXED);
++}
++
++static inline size_t DtsRxGuardPageSize()
++{
++	static const long page = sysconf(_SC_PAGESIZE);
++	return page > 0 && ((size_t)page % 16) == 0 ? (size_t)page : 0;
++}
++
++static inline uint8_t DtsRxGuardByte(size_t offset, bool after)
++{
++	return (uint8_t)((after ? 0x5aU : 0xa5U) ^
++	                 (uint8_t)(offset * 37U) ^ (uint8_t)(offset >> 8));
++}
++
++static inline const char *DtsRxGuardPhaseName(DtsRxGuardPhase phase)
++{
++	switch (phase) {
++	case DTS_RX_GUARD_MAP: return "map";
++	case DTS_RX_GUARD_FETCH: return "fetch";
++	case DTS_RX_GUARD_UNMAP: return "unmap";
++	case DTS_RX_GUARD_FREE: return "free";
++	case DTS_RX_GUARD_ROLLBACK: return "rollback";
++	default: return "invalid";
++	}
++}
++
++static inline void DtsRxGuardWrite(const char *text, size_t bytes)
++{
++	const int saved_errno = errno;
++	while (bytes) {
++		const ssize_t done = write(STDERR_FILENO, text, bytes);
++		if (done < 0 && errno == EINTR)
++			continue;
++		if (done <= 0)
++			break;
++		text += done;
++		bytes -= (size_t)done;
++	}
++	errno = saved_errno;
++}
++
++static inline bool DtsRxGuardReport(const uint8_t *buffer, size_t bytes,
++	DtsRxGuardPhase phase, const char *side, size_t offset,
++	uint8_t expected, uint8_t actual)
++{
++	__atomic_fetch_add(&dts_rx_guard_failures, 1U, __ATOMIC_RELAXED);
++	if (__atomic_exchange_n(&dts_rx_guard_reported, 1U, __ATOMIC_RELAXED) == 0) {
++		const int saved_errno = errno;
++		char text[256];
++		const int count = snprintf(text, sizeof(text),
++			"RX_GUARD_CORRUPTION phase=%s payload=%p bytes=%zu side=%s "
++			"offset=%zu expected=%02x actual=%02x\n",
++			DtsRxGuardPhaseName(phase), (const void *)buffer, bytes,
++			side, offset, (unsigned int)expected, (unsigned int)actual);
++		if (count > 0)
++			DtsRxGuardWrite(text, (size_t)count < sizeof(text) ?
++				(size_t)count : sizeof(text) - 1);
++		errno = saved_errno;
++	}
++	return false;
++}
++
++static inline uint8_t *DtsRxAllocate(size_t bytes)
++{
++	const size_t page = DtsRxGuardPageSize();
++	if (!page || page > SIZE_MAX / 2 || bytes > SIZE_MAX - 2 * page) {
++		errno = EOVERFLOW;
++		return NULL;
++	}
++	uint8_t *raw = (uint8_t *)malloc(bytes + 2 * page);
++	if (!raw)
++		return NULL;
++	uint8_t *buffer = raw + page;
++	for (size_t i = 0; i < page; ++i) {
++		raw[i] = DtsRxGuardByte(i, false);
++		buffer[bytes + i] = DtsRxGuardByte(i, true);
++	}
++	__atomic_fetch_add(&dts_rx_guard_allocations, 1U, __ATOMIC_RELAXED);
++	return buffer;
++}
++
++static inline bool DtsRxGuardCheck(const uint8_t *buffer, size_t bytes,
++	DtsRxGuardPhase phase)
++{
++	if (!buffer)
++		return true;
++	if ((unsigned int)phase >= DTS_RX_GUARD_PHASE_COUNT)
++		return DtsRxGuardReport(buffer, bytes, phase, "phase", 0, 0, 0);
++	__atomic_fetch_add(&dts_rx_guard_checks[phase], 1U, __ATOMIC_RELAXED);
++	const size_t page = DtsRxGuardPageSize();
++	if (!page || page > SIZE_MAX / 2 || bytes > SIZE_MAX - 2 * page)
++		return DtsRxGuardReport(buffer, bytes, phase, "extent", 0, 0, 0);
++	const volatile uint8_t *before = buffer - page;
++	const volatile uint8_t *after = buffer + bytes;
++	for (size_t i = 0; i < page; ++i) {
++		const uint8_t expected = DtsRxGuardByte(i, false);
++		const uint8_t actual = before[i];
++		if (actual != expected)
++			return DtsRxGuardReport(buffer, bytes, phase, "before", i,
++				expected, actual);
++	}
++	for (size_t i = 0; i < page; ++i) {
++		const uint8_t expected = DtsRxGuardByte(i, true);
++		const uint8_t actual = after[i];
++		if (actual != expected)
++			return DtsRxGuardReport(buffer, bytes, phase, "after", i,
++				expected, actual);
++	}
++	return true;
++}
++
++static inline bool DtsRxGuardClean()
++{
++	return DtsRxGuardLoad(&dts_rx_guard_failures) == 0;
++}
++
++static inline void DtsRxGuardRetain()
++{
++	__atomic_fetch_add(&dts_rx_guard_quarantines, 1U, __ATOMIC_RELAXED);
++}
++
++static inline bool DtsRxAllowFree(uint8_t *buffer, size_t bytes,
++	DtsRxGuardPhase phase)
++{
++	if (!buffer)
++		return true;
++	const bool intact = DtsRxGuardCheck(buffer, bytes, phase);
++	/* Stop allocator reuse after any observed violation, including a byte
++	 * that happened to change back. This diagnostic process should stop. */
++	if (!intact || !DtsRxGuardClean()) {
++		DtsRxGuardRetain();
++		return false;
++	}
++	return true;
++}
++
++static inline void DtsRxFreeValidated(uint8_t *buffer)
++{
++	free(buffer ? buffer - DtsRxGuardPageSize() : NULL);
++}
++
++static inline void DtsRxGuardSummary(const char *phase)
++{
++	const int saved_errno = errno;
++	char text[320];
++	const unsigned int map = DtsRxGuardLoad(&dts_rx_guard_checks[DTS_RX_GUARD_MAP]);
++	const unsigned int fetch = DtsRxGuardLoad(&dts_rx_guard_checks[DTS_RX_GUARD_FETCH]);
++	const unsigned int unmap = DtsRxGuardLoad(&dts_rx_guard_checks[DTS_RX_GUARD_UNMAP]);
++	const unsigned int freed = DtsRxGuardLoad(&dts_rx_guard_checks[DTS_RX_GUARD_FREE]);
++	const unsigned int rollback = DtsRxGuardLoad(&dts_rx_guard_checks[DTS_RX_GUARD_ROLLBACK]);
++	const int count = snprintf(text, sizeof(text),
++		"RX_GUARD_SUMMARY phase=%s allocations=%u checks=%u map=%u "
++		"fetch=%u unmap=%u free=%u rollback=%u mismatch=%u quarantine=%u\n",
++		phase, DtsRxGuardLoad(&dts_rx_guard_allocations),
++		map + fetch + unmap + freed + rollback, map, fetch, unmap, freed,
++		rollback, DtsRxGuardLoad(&dts_rx_guard_failures),
++		DtsRxGuardLoad(&dts_rx_guard_quarantines));
++	if (count > 0)
++		DtsRxGuardWrite(text, (size_t)count < sizeof(text) ?
++			(size_t)count : sizeof(text) - 1);
++	errno = saved_errno;
++}
++
++#else
++static inline uint8_t *DtsRxAllocate(size_t bytes)
++{
++	return (uint8_t *)malloc(bytes);
++}
++static inline bool DtsRxGuardCheck(const uint8_t *, size_t, DtsRxGuardPhase)
++{
++	return true;
++}
++static inline bool DtsRxGuardClean() { return true; }
++static inline void DtsRxGuardRetain() {}
++static inline bool DtsRxAllowFree(uint8_t *, size_t, DtsRxGuardPhase)
++{
++	return true;
++}
++static inline void DtsRxFreeValidated(uint8_t *buffer) { free(buffer); }
++static inline void DtsRxGuardSummary(const char *) {}
++#endif
++
++static inline bool DtsRxFree(uint8_t *buffer, size_t bytes, DtsRxGuardPhase phase)
++{
++	if (!DtsRxAllowFree(buffer, bytes, phase))
++		return false;
++	DtsRxFreeValidated(buffer);
++	return true;
++}
++
++#endif
+diff --git a/tests/rx-debug-guards.cpp b/tests/rx-debug-guards.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..d23b36659e50564bf6fc0d470aa2665027cadedf
+--- /dev/null
++++ b/tests/rx-debug-guards.cpp
+@@ -0,0 +1,64 @@
++// SPDX-License-Identifier: LGPL-2.1-or-later
++// Device-free private allocation-guard checks; intentional damage stays inside
++// the actual oversized allocation and never touches allocator metadata.
++#include <assert.h>
++#include <errno.h>
++#include <string.h>
++#include "../linux_lib/libcrystalhd/libcrystalhd_rx_debug_guards.h"
++
++int main()
++{
++	uint8_t *clean = DtsRxAllocate(67);
++	assert(clean);
++	memset(clean, 0x39, 67);
++	assert(DtsRxGuardCheck(clean, 67, DTS_RX_GUARD_MAP));
++	assert(DtsRxGuardCheck(clean, 67, DTS_RX_GUARD_FETCH));
++	assert(DtsRxGuardCheck(clean, 67, DTS_RX_GUARD_UNMAP));
++	assert(DtsRxFree(clean, 67, DTS_RX_GUARD_FREE));
++	assert(DtsRxFree(NULL, 0, DTS_RX_GUARD_ROLLBACK));
++
++#ifdef CRYSTALHD_RX_DEBUG_GUARDS
++	const size_t page = DtsRxGuardPageSize();
++	assert(page && (page % 16) == 0);
++	errno = 0;
++	assert(DtsRxAllocate(SIZE_MAX) == NULL);
++	assert(errno == EOVERFLOW);
++
++	uint8_t *prefix = DtsRxAllocate(67);
++	uint8_t *suffix = DtsRxAllocate(67);
++	assert(prefix && suffix);
++	assert((uintptr_t)prefix % 16 == (uintptr_t)(prefix - page) % 16);
++	assert((uintptr_t)prefix % page == (uintptr_t)(prefix - page) % page);
++	assert(DtsRxGuardCheck(prefix, 67, DTS_RX_GUARD_FETCH));
++	assert(DtsRxGuardCheck(suffix, 67, DTS_RX_GUARD_FETCH));
++
++	prefix[-1] ^= 1;
++	errno = E2BIG;
++	assert(!DtsRxGuardCheck(prefix, 67, DTS_RX_GUARD_FETCH));
++	assert(errno == E2BIG);
++	suffix[67] ^= 1;
++	assert(!DtsRxGuardCheck(suffix, 67, DTS_RX_GUARD_UNMAP));
++	assert(!DtsRxGuardClean());
++	assert(!DtsRxFree(prefix, 67, DTS_RX_GUARD_FREE));
++	assert(!DtsRxFree(suffix, 67, DTS_RX_GUARD_FREE));
++	assert(DtsRxGuardLoad(&dts_rx_guard_quarantines) == 2);
++
++	// Even repaired bytes must not erase a previously observed violation.
++	prefix[-1] = DtsRxGuardByte(page - 1, false);
++	assert(DtsRxGuardCheck(prefix, 67, DTS_RX_GUARD_UNMAP));
++	assert(!DtsRxFree(prefix, 67, DTS_RX_GUARD_FREE));
++	assert(DtsRxGuardLoad(&dts_rx_guard_quarantines) == 3);
++	assert(DtsRxGuardLoad(&dts_rx_guard_checks[DTS_RX_GUARD_FETCH]) > 0);
++	assert(DtsRxGuardLoad(&dts_rx_guard_checks[DTS_RX_GUARD_UNMAP]) > 0);
++	DtsRxGuardSummary("unit_intentional_corruption");
++
++	// Only this device-free test bypasses quarantine to release its known,
++	// never-registered fixtures. Production call sites must use AllowFree.
++	DtsRxFreeValidated(prefix);
++	DtsRxFreeValidated(suffix);
++#else
++	assert(DtsRxGuardClean());
++	DtsRxGuardSummary("disabled");
++#endif
++	return 0;
++}
+diff --git a/tests/rx-debug-guards.sh b/tests/rx-debug-guards.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..27613714d939b55dfe17088d9910eaeab5b979af
+--- /dev/null
++++ b/tests/rx-debug-guards.sh
+@@ -0,0 +1,17 @@
++#!/bin/sh
++# SPDX-License-Identifier: LGPL-2.1-or-later
++set -eu
++test_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
++test_tmp=$(mktemp -d "${TMPDIR:-/tmp}/crystalhd-rx-guards.XXXXXX")
++trap 'rm -rf "$test_tmp"' EXIT HUP INT TERM
++
++for mode in off on; do
++    guard_flag=
++    if [ "$mode" = on ]; then
++        guard_flag=-DCRYSTALHD_RX_DEBUG_GUARDS
++    fi
++    "${CXX:-c++}" ${CXXFLAGS:-} -std=c++11 -Wall -Wextra -Werror \
++        $guard_flag "$test_root/tests/rx-debug-guards.cpp" \
++        -o "$test_tmp/guards-$mode"
++    "$test_tmp/guards-$mode"
++done

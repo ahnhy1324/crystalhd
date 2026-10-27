@@ -1739,5 +1739,33 @@
     "preserved_incomplete_batch": "late-gdb-v2 planned8, stopped after2 because second had898/900 frame census FAIL; only4 total shutdowns includingv1, not10 or a completed8casebatch.",
     "restoration": "Both batches restore original3.10.13 and dependencies/ref/pin/PM/link/AER, kernel checks PASS.",
     "limits": "No fault stack captured. Normal exits do not fix original allocator aborts. The untraced898-frame cause is not assigned from the separate60p causal run."
+  },
+  "VA_RX_boundary_diagnostic": {
+    "status": "BOUNDED_DIAGNOSTIC_PASS; ORIGINAL_HEAP_ROOT_UNCONFIRMED",
+    "source_base": "54752a1af514eb673b563fb80b6df6600223a666",
+    "local_debug_source": "0f1ed213bb0a518c75e7e9303d71dec56990e958",
+    "source_status": "Local-only experimental DIL; complete own-source/test diff preserved in adjacent rx-boundary-debug-20261028.patch, not integrated or installed",
+    "enabled_by": "CRYSTALHD_RX_DEBUG_GUARDS private diagnostic build only; default-off allocation/free paths unchanged",
+    "method": "Prefix/suffix guards around the full registered RX allocation, checked after map, actual DATA_VALID fetch, successful destructive unmap acknowledgement, before MADV/free. Preserve existing alignment class, registered extent and unknown-unmap quarantine; no public/private context ABI change.",
+    "actual_registered_YUY2_bytes": 4185600,
+    "extent_note": "1920*1090*2 allocation, not merely active rows or 1088 coded rows; guards outside the complete payload",
+    "unit_qualification": "Four x64/i686 builds, each tests OFF and ON: eight mode executions. Plain and ASan/UBSan; i686 explicitly no SSE/SSE2/MMX. Expected deliberate damage detections and quarantine pass; no unexpected sanitizer/leak failure. Peak73C. Independent Astra code review no actionable findings.",
+    "native_case": "rx-guard-v1-1280-30-0-va",
+    "expected_frames": 900,
+    "returned_VA_frames": 900,
+    "app_exit": 0,
+    "final_guard_counters": {
+      "allocations": 16,
+      "map": 16,
+      "fetch": 900,
+      "unmap": 16,
+      "free": 16,
+      "checks": 948,
+      "mismatch": 0,
+      "quarantine": 0
+    },
+    "shutdown_observer": "Late GDB attach after VA close/ref0 before AppQuit; normal app exit, no allocator-fault stack captured.",
+    "restoration": "Original3.10.13, dependencies/ref/pin/PM/link/AER restored; kernel check0; null sink removed.",
+    "limits": "One guarded run does not fix or rule out the original rare heap abort. Guard placement changes allocations; no exclusion of in-payload late DMA, other CPU corruption, or earlier generation lifetime errors. No performance/physical-AV qualification or default/support change."
   }
 }
