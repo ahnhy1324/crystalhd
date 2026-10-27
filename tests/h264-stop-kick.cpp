@@ -158,7 +158,7 @@ int main(int argc,char **argv) {
         const bool prefed=mode=="prefed-picture"||mode=="prefed-pair"||matrix;
         const unsigned private_expected=matrix?matrix_private:mode=="prefed-pair"?2:(mode=="picture"||prefed?1:0);
         const auto source=packets(input);
-        const bool next_original_prefed=matrix_idle&&private_expected!=0;
+        const bool resume_prefix=matrix_idle&&private_expected!=0;
         // Private tags are identities, not media timestamps. Keep every
         // original token unchanged, and reserve distinct2ms tags beyond all
         // originals; no artificial four-token adjacent-gap limit is needed.
@@ -298,15 +298,7 @@ int main(int argc,char **argv) {
                 ++accepted_private;
             }
         } else if(mode=="picture") send(auxiliary,kPrivate);
-        if(private_expected||mode=="prefix") {
-            // For the input-resume experiment this is the prefix of actual
-            // AU19. Preserve its original timestamp here, then consume that
-            // prefix with the unchanged AU19 payload at resume. An untimed
-            // delimiter followed by a newly timestamped payload loses AU19's
-            // identity on the measured Flea path. Frozen drain controls keep
-            // their original untimed delimiter.
-            send(prefix,next_original_prefed?source[prefix_count].token:0);
-        }
+        if(private_expected||mode=="prefix") send(prefix,0);
         const unsigned before_idle=real;
         if(idle)phase="input-idle";
         if(hold) {
@@ -342,8 +334,11 @@ int main(int argc,char **argv) {
         if(g2||idle||matrix_idle) {
             need(!eos&&decoder.handle==original_handle,"live original channel at input resume");
             phase="continuation";
+            // Untimed extra-prefix control: preserve the exact18/3 pause
+            // state while separating delimiter bytes from timestamp ownership.
+            if(resume_prefix)send(prefix,0);
             for(unsigned i=empty?0:prefix_count;i<20;++i) {
-                send(source[i].data,next_original_prefed&&i==prefix_count?0:source[i].token);
+                send(source[i].data,source[i].token);
                 ++accepted_real;
             }
             if(idle||matrix_idle)wait(30);
