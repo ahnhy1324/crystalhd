@@ -167,11 +167,15 @@ class NativeCodec : public kodi::addon::CInstanceVideoCodec {
                            decoder.Error().c_str());
     else {
       gchar* version = gst_version_string();
+#ifdef CRYSTALHD_KODI_V4L2
+      kodi::Log(ADDON_LOG_INFO, "CrystalHD-Native session=%u H264 %ux%u actual V4L2/YUY2; %s metadata; one copy into Kodi",
+#else
       kodi::Log(ADDON_LOG_INFO, "CrystalHD-Native session=%u H264 %ux%u crystalhddec/YUY2; %s; two host copies",
+#endif
                 ++generation, width, height, version);
       g_free(version);
 #ifdef CRYSTALHD_KODI_PLAYBACK
-      kodi::Log(ADDON_LOG_INFO, "CrystalHD-Playback open generation=%llu; private input-idle facade, no dummy or V4L2 STOP",
+      kodi::Log(ADDON_LOG_INFO, "CrystalHD-Playback open generation=%llu; private input-idle facade; only finite source EOF requests terminal drain",
                 static_cast<unsigned long long>(decoder.Counts().generation));
 #endif
     }
@@ -203,7 +207,13 @@ public:
               std::find(formats.begin(), formats.end(), VIDEOCODEC_FORMAT_YUYV422) != formats.end());
     return Start();
   }
-  const char* GetName() override { return "CrystalHD native YUY2 (experimental add-on)"; }
+  const char* GetName() override {
+#ifdef CRYSTALHD_KODI_V4L2
+    return "CrystalHD V4L2 YUY2 (experimental add-on)";
+#else
+    return "CrystalHD native YUY2 (experimental add-on)";
+#endif
+  }
   bool AddData(const DEMUX_PACKET& packet) override {
     if (fatal) return true; // retrying a fatal packet is useless; GetPicture reports it
     if (!active && !Start()) { fatal = true; return true; }
@@ -312,6 +322,14 @@ public:
       picture.videoBufferHandle = nullptr;
       gst_buffer_unmap(buffer, &map); gst_sample_unref(sample); return Fail("unsafe Kodi destination rows");
     }
+#ifdef CRYSTALHD_KODI_V4L2
+    if (!pictures) {
+      VIDEOCODEC_PLATFORM_BUFFER platform{};
+      const bool available = GetFrameBufferPlatformHandle(picture.videoBufferHandle, platform);
+      kodi::Log(ADDON_LOG_INFO, "CrystalHD-V4L2 Kodi buffer=%ux%u stride=%u platform_type=%u available=%d; one CPU copy",
+                picture.width, picture.height, picture.stride[0], unsigned(platform.type), available);
+    }
+#endif
     for (unsigned y = 0; y < height; ++y) {
       auto* target = picture.decodedData + picture.planeOffsets[0] + static_cast<size_t>(y) * picture.stride[0];
       std::memcpy(target, map.data + offset + static_cast<size_t>(y) * stride, width * 2);

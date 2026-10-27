@@ -1,26 +1,34 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #pragma once
 #include "native.h"
+#ifdef CRYSTALHD_KODI_V4L2
+#include "v4l2.h"
+#endif
 
 namespace crystalhd_kodi {
 /* Private playback lifecycle, NOT a V4L2 ioctl implementation. Kodi's video
  * callbacks serialize this facade; InputProgress separates finite EOF and
  * private admission pause from Kodi's demux-speed notifications. The
- * qualified Gst decoder still owns the actual
- * accepted-input native-token -> source-PTS registry and all RX leases.
+ * selected decoder backend owns its accepted-input -> source-PTS registry
+ * and all borrowed output buffers.
  * No second FIFO/POC timestamp guess, private picture, or new copy is added.
  */
 class PlaybackDecoder {
 public:
-  using Submit = NativeDecoder::Submit;
-  using Result = NativeDecoder::Result;
+#ifdef CRYSTALHD_KODI_V4L2
+  using Backend = V4l2Decoder;
+#else
+  using Backend = NativeDecoder;
+#endif
+  using Submit = Backend::Submit;
+  using Result = Backend::Result;
   enum class State { Closed, Running, Paused, Draining, Ended, Failed };
   struct Census {
     uint64_t generation = 0, queued = 0, returned = 0;
     uint64_t pauses = 0, resumes = 0, terminal_eos = 0;
   };
 private:
-  NativeDecoder backend;
+  Backend backend;
   State state = State::Closed;
   Census census;
   uint64_t next_generation = 0;

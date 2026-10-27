@@ -11,14 +11,22 @@ TRACE_OUTPUT := build-trace/$(ADDON)
 RGB_OUTPUT := build-rgb/$(ADDON)
 PLAYBACK_OUTPUT := build-playback/$(ADDON)
 PLAYBACK_TRACE := build-playback-trace/$(ADDON)
+V4L2_OUTPUT := build-v4l2/$(ADDON)
+V4L2_TRACE := build-v4l2-trace/$(ADDON)
 
-.PHONY: all native native-trace rgb-test playback playback-trace check check-codec check-demux check-playback check-playback-codec clean
+.PHONY: all native native-trace rgb-test playback playback-trace v4l2 v4l2-trace check check-codec check-demux check-playback check-playback-codec clean
 all: $(OUTPUT)/$(ADDON).so $(OUTPUT)/addon.xml
 native: $(NATIVE_OUTPUT)/$(ADDON).so $(NATIVE_OUTPUT)/addon.xml
 native-trace: $(TRACE_OUTPUT)/$(ADDON).so $(TRACE_OUTPUT)/addon.xml
 rgb-test: $(RGB_OUTPUT)/$(ADDON).so $(RGB_OUTPUT)/addon.xml
 playback: $(PLAYBACK_OUTPUT)/$(ADDON).so $(PLAYBACK_OUTPUT)/addon.xml
 playback-trace: $(PLAYBACK_TRACE)/$(ADDON).so $(PLAYBACK_TRACE)/addon.xml
+v4l2: $(V4L2_OUTPUT)/$(ADDON).so $(V4L2_OUTPUT)/addon.xml
+v4l2-trace: $(V4L2_TRACE)/$(ADDON).so $(V4L2_TRACE)/addon.xml
+$(V4L2_OUTPUT)/$(ADDON).so $(V4L2_TRACE)/$(ADDON).so: CPPFLAGS += -DCRYSTALHD_KODI_PLAYBACK -DCRYSTALHD_KODI_V4L2
+$(V4L2_OUTPUT)/$(ADDON).so $(V4L2_TRACE)/$(ADDON).so: V4L2_SOURCES := v4l2.cpp
+$(V4L2_OUTPUT)/$(ADDON).so $(V4L2_TRACE)/$(ADDON).so: v4l2.cpp v4l2.h
+$(V4L2_TRACE)/$(ADDON).so: CPPFLAGS += -DCRYSTALHD_KODI_TRACE
 $(PLAYBACK_OUTPUT)/$(ADDON).so $(PLAYBACK_TRACE)/$(ADDON).so: CPPFLAGS += -DCRYSTALHD_KODI_PLAYBACK
 $(PLAYBACK_TRACE)/$(ADDON).so: CPPFLAGS += -DCRYSTALHD_KODI_TRACE
 
@@ -32,18 +40,18 @@ $(OUTPUT)/$(ADDON).so: probe.cpp packed.h
 $(TRACE_OUTPUT)/$(ADDON).so: CPPFLAGS += -DCRYSTALHD_KODI_TRACE
 $(RGB_OUTPUT)/$(ADDON).so: CPPFLAGS += -DCRYSTALHD_KODI_TRACE -DCRYSTALHD_KODI_RGB_TEST
 $(RGB_OUTPUT)/$(ADDON).so: ../../tests/kodi-rgb-observer.h
-$(NATIVE_OUTPUT)/$(ADDON).so $(TRACE_OUTPUT)/$(ADDON).so $(RGB_OUTPUT)/$(ADDON).so $(PLAYBACK_OUTPUT)/$(ADDON).so $(PLAYBACK_TRACE)/$(ADDON).so: probe.cpp native.cpp native.h packed.h input-progress.h playback.h
+$(NATIVE_OUTPUT)/$(ADDON).so $(TRACE_OUTPUT)/$(ADDON).so $(RGB_OUTPUT)/$(ADDON).so $(PLAYBACK_OUTPUT)/$(ADDON).so $(PLAYBACK_TRACE)/$(ADDON).so $(V4L2_OUTPUT)/$(ADDON).so $(V4L2_TRACE)/$(ADDON).so: probe.cpp native.cpp native.h packed.h input-progress.h playback.h
 	@test -n "$(KODI_SDK_INCLUDE)" || { echo 'Set KODI_SDK_INCLUDE to the unmodified Kodi 22 RC1 dev-kit include directory'; exit 1; }
 	mkdir -p "$(@D)"
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -Werror -fPIC -shared $(CPPFLAGS) -DCRYSTALHD_KODI_NATIVE \
 		-isystem "$(KODI_SDK_INCLUDE)" $(shell $(PKG_CONFIG) --cflags $(PACKAGES) $(GST_PACKAGES)) \
-		probe.cpp native.cpp $(shell $(PKG_CONFIG) --libs $(PACKAGES) $(GST_PACKAGES)) -o "$@"
+		probe.cpp native.cpp $(V4L2_SOURCES) $(shell $(PKG_CONFIG) --libs $(PACKAGES) $(GST_PACKAGES)) -o "$@"
 
 $(OUTPUT)/addon.xml: addon.xml
 	mkdir -p "$(@D)"
 	cp "$<" "$@"
 
-$(NATIVE_OUTPUT)/addon.xml $(TRACE_OUTPUT)/addon.xml $(RGB_OUTPUT)/addon.xml $(PLAYBACK_OUTPUT)/addon.xml $(PLAYBACK_TRACE)/addon.xml: addon-native.xml
+$(NATIVE_OUTPUT)/addon.xml $(TRACE_OUTPUT)/addon.xml $(RGB_OUTPUT)/addon.xml $(PLAYBACK_OUTPUT)/addon.xml $(PLAYBACK_TRACE)/addon.xml $(V4L2_OUTPUT)/addon.xml $(V4L2_TRACE)/addon.xml: addon-native.xml
 	mkdir -p "$(@D)"
 	cp "$<" "$@"
 
@@ -88,4 +96,4 @@ check-playback: build/kodi-playback-test
 	./build/kodi-playback-test
 
 clean:
-	rm -rf build build-native build-trace build-rgb build-playback build-playback-trace
+	rm -rf build build-native build-trace build-rgb build-playback build-playback-trace build-v4l2 build-v4l2-trace
