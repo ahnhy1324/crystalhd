@@ -116,6 +116,45 @@ struct Decoder {
     }
 };
 struct Frame { uint64_t token; uint32_t flags; std::vector<uint8_t> pixels; };
+struct Attribution {
+    unsigned matches=0;uint64_t original_token=0;bool flags=false,neutral=false;
+    bool strict(const Frame &frame) const {
+        return matches==1&&original_token==frame.token&&flags;
+    }
+};
+// Pixel association diagnoses transport failures. It never supplies a returned
+// identity: strict acceptance also requires the unchanged native token.
+static Attribution attribute(const Frame &frame,const std::map<uint64_t,Frame> &baseline) {
+    Attribution result;
+    result.neutral=std::all_of(frame.pixels.begin(),frame.pixels.end(),[](uint8_t v){return v==128;});
+    for(const auto &entry:baseline)if(entry.second.pixels==frame.pixels) {
+        ++result.matches;result.original_token=entry.first;result.flags=entry.second.flags==frame.flags;
+    }
+    return result;
+}
+static bool has_vcl(const std::vector<uint8_t> &data) {
+    for(size_t i=0;i+3<data.size();++i)
+        if(!data[i]&&!data[i+1]&&data[i+2]==1&&
+           (data[i+3]&31)>=1&&(data[i+3]&31)<=5)return true;
+    return false;
+}
+static void write_frames(const std::string &path,const std::vector<Frame> &frames) {
+    int fd=open(path.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);
+    need(fd>=0,"exclusive frame output");
+    for(const auto &frame:frames) {
+        std::vector<uint8_t> record;
+        for(unsigned b=0;b<8;++b)record.push_back(frame.token>>(8*b));
+        for(unsigned b=0;b<4;++b)record.push_back(frame.flags>>(8*b));
+        record.insert(record.end(),frame.pixels.begin(),frame.pixels.end());
+        size_t offset=0;
+        while(offset<record.size()) {
+            ssize_t n=write(fd,record.data()+offset,record.size()-offset);
+            if(n<=0){close(fd);need(false,"frame write");}
+            offset+=n;
+        }
+    }
+    need(close(fd)==0,"frame close");
+}
 constexpr size_t kBytes=640U*360U*2U;
 // Flea's legacy SPES path quantizes timestamps to 2ms (20000 in 100ns
 // units). Use distinct exact round trips between original tokens17/18.
@@ -135,15 +174,21 @@ static std::vector<std::vector<uint8_t>> auxiliary_units(const std::vector<uint8
 
 int main(int argc,char **argv) {
     try {
-        need(argc==4||argc==6||argc==7,"usage: h264-stop-kick G0_DIRECTORY RESULT_DIRECTORY reference|none|prefix|picture|prefed-picture|prefed-pair|input-idle-100|input-idle-1000|input-hold-1000|input-idle-multi|input-idle-empty|matrix|matrix-idle-100|matrix-idle-1000 [BOUNDARY PRIVATE_COUNT [raw|prefed|adjacent]]");
+        need(argc==4||argc==6||argc==7||argc==8,"usage: h264-stop-kick G0_DIRECTORY RESULT_DIRECTORY MODE [BOUNDARY PRIVATE_COUNT [raw|prefed|adjacent]]; pts-idle|pts-preflight requires 18 5 next|previous|reserved-near|reserved-far|untimed zero|own");
         std::string input=argv[1],output=argv[2],mode=argv[3];
-        const bool matrix_idle=mode=="matrix-idle-100"||mode=="matrix-idle-1000";
+        const bool preflight=mode=="pts-preflight";
+        const bool pts_audit=mode=="pts-idle"||preflight;
+        const bool matrix_idle=mode=="matrix-idle-100"||mode=="matrix-idle-1000"||pts_audit;
         const unsigned matrix_idle_ms=mode=="matrix-idle-1000"?1000:100;
         const bool matrix=mode=="matrix"||matrix_idle;
-        need(matrix==(argc>=6)&&!(argc==7&&!matrix_idle),"matrix requires boundary/count; transport control is input-idle only");
-        const std::string transport=argc==7?argv[6]:"raw";
-        need(transport=="raw"||transport=="prefed"||transport=="adjacent","research transport control");
-        const bool early_prefeed=transport=="prefed";
+        need(matrix==(argc>=6)&&!(argc==7&&!matrix_idle)&&pts_audit==(argc==8),"matrix/PTS argument shape");
+        const std::string transport=argc>=7?argv[6]:"raw";
+        const std::string resumed=pts_audit?argv[7]:"zero";
+        need(pts_audit?(transport=="next"||transport=="previous"||transport=="reserved-near"||
+             transport=="reserved-far"||transport=="untimed"):
+             (transport=="raw"||transport=="prefed"||transport=="adjacent"),"research transport control");
+        need(resumed=="zero"||resumed=="own","resumed payload token policy");
+        const bool early_prefeed=transport=="prefed"||pts_audit;
         const bool adjacent_tags=transport=="adjacent";
         const unsigned prefix_count=matrix?small_unsigned(argv[4]):17;
         const unsigned matrix_private=matrix?small_unsigned(argv[5]):0;
@@ -153,6 +198,7 @@ int main(int argc,char **argv) {
              "input-only continuation uses frozen boundary18 with0/4/5 private pictures");
         need(!adjacent_tags||matrix_private==4,"four distinct2ms private tags fit between original18/19");
         need(!early_prefeed||matrix_private!=0,"early real prefix control requires private input");
+        need(!pts_audit||(prefix_count==18&&matrix_private==5),"PTS audit freezes boundary18/private5");
         const bool idle=mode=="input-idle-100"||mode=="input-idle-1000"||
             mode=="input-hold-1000"||mode=="input-idle-multi"||mode=="input-idle-empty";
         const bool hold=mode=="input-hold-1000";
@@ -168,6 +214,17 @@ int main(int argc,char **argv) {
         // Keep every original token unchanged. Default private tags follow
         // all originals; the four-picture adjacent control tests tag order.
         const uint64_t private_base=matrix?(adjacent_tags?source[prefix_count-1].token+kPrivateStep:source.back().token+kPrivateStep):kPrivate;
+        const uint64_t early_token=transport=="previous"?source[prefix_count-1].token:
+            transport=="reserved-near"?source.back().token+6*kPrivateStep:
+            transport=="reserved-far"?source.back().token+50*kPrivateStep:
+            transport=="untimed"?0:early_prefeed?source[prefix_count].token:0;
+        if(pts_audit) {
+            need(early_token%kPrivateStep==0,"exact2ms early token");
+            if(transport=="reserved-near"||transport=="reserved-far") {
+                need(std::none_of(source.begin(),source.end(),[&](const Packet &p){return p.token==early_token;}),"reserved token versus originals");
+                need(early_token<private_base||early_token>=private_base+private_expected*kPrivateStep,"reserved token versus private pictures");
+            }
+        }
         std::vector<uint8_t> prefix,auxiliary;
         if(!idle) {
             prefix=read_file(input+"/prefix.h264");
@@ -185,16 +242,39 @@ int main(int argc,char **argv) {
                 need(baseline.emplace(token,std::move(f)).second,"unique reference token");
             }
         }
+        if(pts_audit) {
+            need(!has_vcl(prefix),"early prefix contains no original/private VCL");
+            const auto units=auxiliary_units(auxiliary,private_expected);
+            need(std::all_of(units.begin(),units.end(),has_vcl),"all five qualified private payloads have VCL");
+            need(baseline.size()==20&&std::all_of(source.begin(),source.end(),[&](const Packet &p){return baseline.count(p.token)&&has_vcl(p.data);}),"complete original native oracle");
+            if(preflight) {
+                for(const auto &entry:baseline)need(attribute(entry.second,baseline).strict(entry.second),"unique original pixel/flag oracle");
+                const Frame original=baseline.at(source[prefix_count].token);
+                for(uint64_t token:{uint64_t(0),source[prefix_count-1].token,
+                        source.back().token+6*kPrivateStep,source.back().token+50*kPrivateStep}) {
+                    Frame wrong=original;wrong.token=token;const auto a=attribute(wrong,baseline);
+                    need(a.matches==1&&a.original_token==original.token&&a.flags&&!a.strict(wrong),"wrong native token must stay strict FAIL");
+                }
+                Frame wrong=original;wrong.flags^=1;need(!attribute(wrong,baseline).strict(wrong),"wrong flags rejected");
+                wrong=original;wrong.pixels[0]^=1;need(!attribute(wrong,baseline).strict(wrong),"changed pixels rejected");
+                printf("{\"type\":\"pts-preflight\",\"policy\":\"%s\",\"resumed\":\"%s\",\"early_token\":%llu,\"original_au19_token\":%llu,\"device_opened\":false,\"pass\":true}\n",
+                    transport.c_str(),resumed.c_str(),static_cast<unsigned long long>(early_token),static_cast<unsigned long long>(source[prefix_count].token));
+                return 0;
+            }
+        }
         API api;Decoder decoder(api);decoder.start();
         auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(12);
         auto bounded=[&]{need(std::chrono::steady_clock::now()<deadline,"12s session deadline");};
         std::vector<Frame> frames;std::vector<uint64_t> real_order;
+        std::vector<uint64_t> pixel_order;bool diagnostic_flags=true;
         unsigned real=0,private_outputs=0,unknown_outputs=0,leases_acquired=0,leases_released=0;
         unsigned accepted_real=0,accepted_private=0;
         uint32_t ready=0;bool eos=false,flush=false;
         const char *phase="prefix";
         auto last_input=std::chrono::steady_clock::now();
         const HANDLE original_handle=decoder.handle;
+        const auto phase_start=std::chrono::steady_clock::now();
+        auto elapsed=[&]{return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-phase_start).count();};
         auto receive=[&]{
             for(unsigned attempt=0;attempt<32;++attempt) {
                 bounded();BC_DTS_STATUS status{};
@@ -206,22 +286,43 @@ int main(int argc,char **argv) {
                 if(result==BC_STS_NO_DATA||result==BC_STS_BUSY||result==BC_STS_TIMEOUT) break;
                 good("DtsProcOutputNoCopy",result);
                 ++leases_acquired;
+                if(pts_audit)printf("{\"type\":\"rx-acquire\",\"lease\":%u,\"token\":%llu,\"phase\":\"%s\",\"elapsed_ms\":%.3f}\n",
+                    leases_acquired,static_cast<unsigned long long>(out.PicInfo.timeStamp),phase,elapsed());
                 struct Lease {
                     API &api;HANDLE handle;unsigned &released;bool live=true;
                     void finish(){auto rc=api.DtsReleaseOutputBuffs(handle,nullptr,FALSE);live=false;good("DtsReleaseOutputBuffs",rc);++released;}
                     ~Lease(){if(live&&api.DtsReleaseOutputBuffs(handle,nullptr,FALSE)==BC_STS_SUCCESS)++released;}}
                     lease{api,decoder.handle,leases_released};
-                if(out.PicInfo.flags&VDEC_FLAG_EOS){need(flush,"no early EOS");lease.finish();continue;}
+                if(out.PicInfo.flags&VDEC_FLAG_EOS){need(flush,"no early EOS");lease.finish();
+                    if(pts_audit)printf("{\"type\":\"rx-release\",\"lease\":%u,\"eos_marker\":true,\"elapsed_ms\":%.3f}\n",leases_released,elapsed());
+                    continue;}
                 need((out.PoutFlags&BC_POUT_FLAGS_PIB_VALID)&&out.Ybuff&&
                      out.PicInfo.width==640&&out.PicInfo.height==360&&
                      !(out.PicInfo.flags&VDEC_FLAG_INTERLACED_SRC)&&
                      uint64_t(out.YBuffDoneSz)*4>=kBytes,"progressive YUYV extent");
                 uint64_t token=out.PicInfo.timeStamp;
-                need(std::none_of(frames.begin(),frames.end(),[&](const Frame &f){return f.token==token;}),"duplicate output token");
+                const bool duplicate=std::any_of(frames.begin(),frames.end(),[&](const Frame &f){return f.token==token;});
+                need(pts_audit||!duplicate,"duplicate output token");
+                need(!pts_audit||frames.size()<25,"bounded original/private output extent");
                 Frame frame{token,out.PicInfo.flags,{out.Ybuff,out.Ybuff+kBytes}};
                 const bool is_private=private_expected&&token>=private_base&&
                     (token-private_base)%kPrivateStep==0&&(token-private_base)/kPrivateStep<private_expected;
-                if(is_private) {
+                if(pts_audit) {
+                    const auto a=attribute(frame,baseline);
+                    const bool identity=!duplicate&&a.strict(frame)&&!is_private;
+                    printf("{\"type\":\"pts-attribution\",\"index\":%zu,\"actual_token\":%llu,\"flags\":%u,\"private_token\":%s,\"duplicate_token\":%s,"
+                           "\"pixel_matches\":%u,\"diagnostic_original_token\":%llu,\"diagnostic_flags_match\":%s,\"neutral_pixels\":%s,\"strict_original_identity\":%s,\"phase\":\"%s\",\"elapsed_ms\":%.3f}\n",
+                           frames.size(),static_cast<unsigned long long>(token),frame.flags,is_private?"true":"false",duplicate?"true":"false",a.matches,
+                           static_cast<unsigned long long>(a.original_token),a.flags?"true":"false",a.neutral?"true":"false",identity?"true":"false",phase,elapsed());
+                    if(is_private) {
+                        need(!duplicate&&a.neutral&&!a.matches&&private_outputs++<private_expected,"unambiguous private output attribution");
+                    }else {
+                        need(a.matches==1&&!a.neutral,"independent original pixel attribution");
+                        pixel_order.push_back(a.original_token);diagnostic_flags=diagnostic_flags&&a.flags;
+                        real_order.push_back(token);
+                        if(identity)++real;else ++unknown_outputs;
+                    }
+                }else if(is_private) {
                     need(private_outputs++<private_expected,"private identity");
                     need(std::all_of(frame.pixels.begin(),frame.pixels.end(),[](uint8_t v){return v==128;}),"private DC128 pixels");
                 } else {
@@ -252,15 +353,22 @@ int main(int argc,char **argv) {
                     mode.c_str(),static_cast<unsigned long long>(token),is_private?"true":"false",flush?"false":"true",frame.flags,phase);
                 fflush(stdout);frames.push_back(std::move(frame));
                 lease.finish();
+                if(pts_audit)printf("{\"type\":\"rx-release\",\"lease\":%u,\"eos_marker\":false,\"elapsed_ms\":%.3f}\n",leases_released,elapsed());
+                fflush(stdout);
             }
             uint8_t end=0;good("DtsIsEndOfStream",api.DtsIsEndOfStream(decoder.handle,&end));eos=end!=0;
         };
-        auto send=[&](const std::vector<uint8_t> &data,uint64_t token) {
+        unsigned input_calls=0;
+        auto send=[&](const std::vector<uint8_t> &data,uint64_t token,const char *kind="unspecified",unsigned association=0) {
             need(decoder.handle==original_handle,"same original decoder handle");
             const size_t reserve=data.size()+32*(data.size()/60000+3)+128;
             while(api.DtsTxFreeSize(decoder.handle)<reserve){bounded();receive();usleep(1000);}
             auto padded=data;padded.resize(data.size()+64,0);
-            good("DtsProcInput",api.DtsProcInput(decoder.handle,padded.data(),data.size(),token,FALSE));
+            const auto result=api.DtsProcInput(decoder.handle,padded.data(),data.size(),token,FALSE);
+            ++input_calls;
+            if(pts_audit)printf("{\"type\":\"input-call\",\"call\":%u,\"kind\":\"%s\",\"association\":%u,\"bytes\":%zu,\"vcl_present\":%s,\"token\":%llu,\"status\":%u,\"phase\":\"%s\",\"elapsed_ms\":%.3f}\n",
+                input_calls,kind,association,data.size(),has_vcl(data)?"true":"false",static_cast<unsigned long long>(token),unsigned(result),phase,elapsed());
+            fflush(stdout);good("DtsProcInput",result);
             last_input=std::chrono::steady_clock::now();
             receive();
         };
@@ -268,7 +376,6 @@ int main(int argc,char **argv) {
             auto until=std::chrono::steady_clock::now()+std::chrono::milliseconds(milliseconds);
             do {receive();bounded();usleep(1000);} while(std::chrono::steady_clock::now()<until);
         };
-        const auto phase_start=std::chrono::steady_clock::now();
         auto census=[&](const char *checkpoint) {
             need(decoder.handle==original_handle,"original channel at phase checkpoint");
             need(leases_acquired==leases_released,"no held public RX lease at phase checkpoint");
@@ -283,7 +390,7 @@ int main(int argc,char **argv) {
             prefix_count,private_expected,static_cast<unsigned long long>(private_base));
         if(matrix_idle)printf("{\"type\":\"input-transport\",\"policy\":\"%s\"}\n",transport.c_str());
         for(unsigned i=0;i<(empty?0:reference?20:prefix_count);++i) {
-            send(source[i].data,source[i].token);
+            send(source[i].data,source[i].token,"original",i+1);
             ++accepted_real;
             if(mode=="input-idle-multi"&&(i==4||i==8||i==12)) {
                 phase="intermediate-idle";const unsigned before=real;wait(100);
@@ -300,7 +407,7 @@ int main(int argc,char **argv) {
                 // The timestamped prefix belongs to the actual private AU
                 // that follows. Its payload consumes that timestamp, exactly
                 // as the established Prefix Kick contract requires.
-                send(prefix,private_base+i*kPrivateStep);send(units[i],0);
+                send(prefix,private_base+i*kPrivateStep,"private-prefix",i+1);send(units[i],0,"private-vcl",i+1);
                 ++accepted_private;
             }
         } else if(mode=="picture") send(auxiliary,kPrivate);
@@ -308,7 +415,9 @@ int main(int argc,char **argv) {
         // Its original timestamp is unchanged; no AU19 VCL bytes are sent
         // until resume, when the payload consumes this prefix with timestamp0.
         // Late/repeated timestamp controls did not repair the measured raw case.
-        if(private_expected||mode=="prefix")send(prefix,early_prefeed?source[prefix_count].token:0);
+        if(pts_audit)census("before-early-prefix");
+        if(private_expected||mode=="prefix")send(prefix,early_token,"early-prefix",prefix_count+1);
+        if(pts_audit)census("after-early-prefix-alone");
         const unsigned before_idle=real;
         if(idle)phase="input-idle";
         if(hold) {
@@ -322,7 +431,7 @@ int main(int argc,char **argv) {
             empty?0:17,idle_ms,hold?"false":"true",before_idle,real,
             std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-last_input).count());
         const unsigned boundary_real=real,boundary_private=private_outputs;
-        const bool g2=!reference&&!idle&&real==prefix_count&&private_outputs==private_expected&&!unknown_outputs&&!eos;
+        const bool g2=!pts_audit&&!reference&&!idle&&real==prefix_count&&private_outputs==private_expected&&!unknown_outputs&&!eos;
         printf("{\"type\":\"boundary\",\"mode\":\"%s\",\"real\":%u,\"private\":%u,\"eos\":%s,\"g2\":%s}\n",
                mode.c_str(),real,private_outputs,eos?"true":"false",g2?"true":"false");fflush(stdout);
         if(matrix_idle) {
@@ -330,8 +439,9 @@ int main(int argc,char **argv) {
             // Separate ordinary input-pause experiment, explicitly requested
             // after G2 failed. This does not establish a STOP/drain boundary.
             need(!eos&&!unknown_outputs,"live channel before input-only pause");
-            if(private_expected==5)
+            if(private_expected==5&&!pts_audit)
                 need(real==18&&private_outputs==(early_prefeed?4U:3U),"reproduce declared real/private pre-EOS state");
+            if(pts_audit)need(real==18&&private_outputs<=5,"all18 original identities before PTS-only pause");
             phase="input-idle";
             const auto pause_start=std::chrono::steady_clock::now();
             wait(matrix_idle_ms);
@@ -345,8 +455,10 @@ int main(int argc,char **argv) {
             need(!eos&&decoder.handle==original_handle,"live original channel at input resume");
             phase="continuation";
             for(unsigned i=empty?0:prefix_count;i<20;++i) {
-                send(source[i].data,early_prefeed&&i==prefix_count?0:source[i].token);
+                const uint64_t token=early_prefeed&&i==prefix_count&&resumed=="zero"?0:source[i].token;
+                send(source[i].data,token,"original",i+1);
                 ++accepted_real;
+                if(pts_audit)census(i==prefix_count?"after-original-au19":"after-original-au20");
             }
             if(idle||matrix_idle)wait(30);
             if(matrix_idle)census("after-real-continuation");
@@ -365,20 +477,17 @@ int main(int argc,char **argv) {
         std::stable_sort(sorted.begin(),sorted.end(),[](const Packet &a,const Packet &b){return a.pts<b.pts;});
         std::vector<uint64_t> expected_order;for(const auto &packet:sorted) expected_order.push_back(packet.token);
         const bool full_order=real_order==expected_order;
+        if(pts_audit) {
+            printf("{\"type\":\"pts-audit-result\",\"early_policy\":\"%s\",\"early_token\":%llu,\"resumed_policy\":\"%s\",\"pixel_order_continuity\":%s,\"pixel_flags_match\":%s,\"strict_original_identity\":%s,\"observed_pictures\":%zu}\n",
+                transport.c_str(),static_cast<unsigned long long>(early_token),resumed.c_str(),pixel_order==expected_order?"true":"false",diagnostic_flags?"true":"false",
+                full_order&&terminal_complete?"true":"false",frames.size());
+            write_frames(output+"/observed-output.bin",frames);
+        }
         if(matrix_idle)census("after-terminal-eos");
         need(leases_acquired==leases_released,"all public RX leases released before close");
         if(reference) {
             need(full_order,"reference display order");
-            int fd=open((output+"/native-reference.bin").c_str(),O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);
-            need(fd>=0,"exclusive reference output");
-            for(const auto &frame:frames) {
-                std::vector<uint8_t> record;
-                for(unsigned b=0;b<8;++b) record.push_back(frame.token>>(8*b));
-                for(unsigned b=0;b<4;++b) record.push_back(frame.flags>>(8*b));
-                record.insert(record.end(),frame.pixels.begin(),frame.pixels.end());
-                size_t offset=0;while(offset<record.size()) {ssize_t n=write(fd,record.data()+offset,record.size()-offset);need(n>0,"reference write");offset+=n;}
-            }
-            need(close(fd)==0,"reference close");
+            write_frames(output+"/native-reference.bin",frames);
         }
         decoder.finish();
         if(matrix)printf("{\"type\":\"matrix-retirement\",\"leases_acquired\":%u,\"leases_released\":%u}\n",
@@ -391,7 +500,7 @@ int main(int argc,char **argv) {
                "\"eos\":%s,\"full_reference_order\":%s,\"pixels_match_reference\":%s,"
                "\"unknown_outputs\":%u,\"terminal_complete\":%s}\n",mode.c_str(),
                boundary_real,boundary_private,g2?"true":"false",g2||idle||matrix_idle?"true":"false",real,private_outputs,
-               eos?"true":"false",full_order?"true":"false",reference?"null":"true",unknown_outputs,terminal_complete?"true":"false");
+               eos?"true":"false",full_order?"true":"false",reference?"null":pts_audit?(pixel_order==expected_order?"true":"false"):"true",unknown_outputs,terminal_complete?"true":"false");
         return (reference&&terminal_complete)||((g2||idle||matrix_idle)&&full_order&&terminal_complete)?0:2;
     } catch(const std::exception &error) {fprintf(stderr,"FAIL %s\n",error.what());return 1;}
 }
