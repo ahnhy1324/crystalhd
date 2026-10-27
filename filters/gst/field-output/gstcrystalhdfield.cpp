@@ -21,7 +21,7 @@ struct Counters {
         cancelled{0},clipped{0},failures{0},allocations{0},images{0},retained{0},
         clocked{0},late{0},max_age{0},early{0},max_early{0},dropped{0},
         prepare_ns{0},draw_ns{0},wait_ns{0},swap_ns{0},retire_ns{0},retirements{0},
-        worst_field_pts{0},worst_field_index{0},worst_parity{0},worst_prepare_ns{0},
+        worst_field_pts{0},worst_field_index{0},worst_parity{0},worst_swap_sequence{0},worst_prepare_ns{0},
         worst_retire_ns{0},worst_draw_ns{0},worst_wait_ns{0},worst_swap_ns{0},
         worst_monotonic_elapsed_ns{0},worst_clock_elapsed_ns{0};
     std::atomic<gint64> worst_head_age_ns{0},worst_preswap_age_ns{0};
@@ -431,7 +431,8 @@ struct Worker {
                                 // logging. Audio-clock and monotonic deltas distinguish
                                 // submission stalls from clock-reporting jumps.
                                 stats.worst_field_pts=pts;stats.worst_field_index=field;
-                                stats.worst_parity=parity;stats.worst_prepare_ns=preparation_ns;
+                                stats.worst_parity=parity;stats.worst_swap_sequence=stats.swaps.load();
+                                stats.worst_prepare_ns=preparation_ns;
                                 stats.worst_retire_ns=retirement_ns;stats.worst_draw_ns=draw_elapsed;
                                 stats.worst_wait_ns=wait_elapsed;stats.worst_swap_ns=swap_elapsed;
                                 stats.worst_head_age_ns=GST_CLOCK_DIFF(target,head_clock);
@@ -569,6 +570,7 @@ static void get_property(GObject *object,guint id,GValue *value,GParamSpec *spec
         "worst-field-pts",G_TYPE_UINT64,c.worst_field_pts.load(),
         "worst-field-index",G_TYPE_UINT64,c.worst_field_index.load(),
         "worst-parity",G_TYPE_UINT64,c.worst_parity.load(),
+        "worst-swap-sequence",G_TYPE_UINT64,c.worst_swap_sequence.load(),
         "worst-prepare-ns",G_TYPE_UINT64,c.worst_prepare_ns.load(),
         "worst-retire-ns",G_TYPE_UINT64,c.worst_retire_ns.load(),
         "worst-draw-ns",G_TYPE_UINT64,c.worst_draw_ns.load(),
