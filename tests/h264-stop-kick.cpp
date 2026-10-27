@@ -334,11 +334,14 @@ int main(int argc,char **argv) {
         if(g2||idle||matrix_idle) {
             need(!eos&&decoder.handle==original_handle,"live original channel at input resume");
             phase="continuation";
-            // Untimed extra-prefix control: preserve the exact18/3 pause
-            // state while separating delimiter bytes from timestamp ownership.
-            if(resume_prefix)send(prefix,0);
+            // Keep the measured18/3 pause boundary unchanged. On resume the
+            // next prefix belongs to actual AU19: its SPES timestamp must
+            // precede the AUD, and its unchanged payload consumes that owner.
+            // An otherwise byte-identical untimed-prefix control loses AU19's
+            // timestamp. No returned identity is repaired by the observer.
+            if(resume_prefix)send(prefix,source[prefix_count].token);
             for(unsigned i=empty?0:prefix_count;i<20;++i) {
-                send(source[i].data,source[i].token);
+                send(source[i].data,resume_prefix&&i==prefix_count?0:source[i].token);
                 ++accepted_real;
             }
             if(idle||matrix_idle)wait(30);
