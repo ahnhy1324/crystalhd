@@ -20,7 +20,11 @@ struct Counters {
     std::atomic<guint64> pictures{0},fields{0},prerolls{0},redraws{0},swaps{0},
         cancelled{0},clipped{0},failures{0},allocations{0},images{0},retained{0},
         clocked{0},late{0},max_age{0},early{0},max_early{0},dropped{0},
-        prepare_ns{0},draw_ns{0},wait_ns{0},swap_ns{0},retire_ns{0},retirements{0};
+        prepare_ns{0},draw_ns{0},wait_ns{0},swap_ns{0},retire_ns{0},retirements{0},
+        worst_field_pts{0},worst_field_index{0},worst_parity{0},worst_prepare_ns{0},
+        worst_retire_ns{0},worst_draw_ns{0},worst_wait_ns{0},worst_swap_ns{0},
+        worst_monotonic_elapsed_ns{0},worst_clock_elapsed_ns{0};
+    std::atomic<gint64> worst_head_age_ns{0},worst_preswap_age_ns{0};
 };
 struct Command {
     GstBuffer *buffer=nullptr;
@@ -316,6 +320,7 @@ struct Worker {
             if(!current(command->generation)){result=GST_FLOW_FLUSHING;++stats.cancelled;}
             else {
                 auto &info=command->info;
+                guint64 preparation_ns=0,retirement_ns=0;
                 const bool interlaced=info.interlace_mode==GST_VIDEO_INTERLACE_MODE_INTERLEAVED||
                     (info.interlace_mode==GST_VIDEO_INTERLACE_MODE_MIXED&&
                      GST_BUFFER_FLAG_IS_SET(command->buffer,GST_VIDEO_BUFFER_FLAG_INTERLACED));
@@ -331,6 +336,7 @@ struct Worker {
                 }
                 if(command->buffer!=retained||held_generation!=command->generation) {
                     const auto prepare_begin=gst_util_get_timestamp();
+                    const auto retirement_before=stats.retire_ns.load();
                     retire();GstVideoFrame frame{};
                     need(gst_video_frame_map(&frame,&info,command->buffer,GST_MAP_READ),"input video mapping");
                     try {
@@ -347,7 +353,9 @@ struct Worker {
                     need(views[0]->texture,"first field import");stats.images=1;
                     if(interlaced){views[1]=std::make_unique<Image>(gpu,*storage,true,1,matrix,false);need(views[1]->texture,"second field import");stats.images=2;}
                     retained=gst_buffer_ref(command->buffer);stats.retained=1;held_generation=command->generation;
-                    stats.prepare_ns+=gst_util_get_timestamp()-prepare_begin;
+                    preparation_ns=gst_util_get_timestamp()-prepare_begin;
+                    retirement_ns=stats.retire_ns.load()-retirement_before;
+                    stats.prepare_ns+=preparation_ns;
                 }
                 const unsigned count=interlaced?2:1;
                 const GstClockTime duration=GST_BUFFER_DURATION_IS_VALID(command->buffer)?GST_BUFFER_DURATION(command->buffer):
@@ -364,24 +372,33 @@ struct Worker {
                         command->clock?gst_clock_get_time(command->clock):0);
                     if(!GST_CLOCK_TIME_IS_VALID(running)){++stats.clipped;continue;}
                     if(!current(command->generation)){result=GST_FLOW_FLUSHING;++stats.cancelled;break;}
+                    GstClockTime phase_clock=0;
                     auto expired=[&] {
                         if(command->preroll||!command->clock)return false;
                         const auto end_pts=pts+gst_util_uint64_scale(duration,1,count);
                         const auto end_running=gst_segment_to_running_time(&command->segment,GST_FORMAT_TIME,end_pts);
                         GstClockTime end_target=0;
-                        return target_time(*command,end_running,end_target)&&gst_clock_get_time(command->clock)>=end_target;
+                        phase_clock=gst_clock_get_time(command->clock);
+                        return target_time(*command,end_running,end_target)&&phase_clock>=end_target;
                     };
                     if(expired()){++stats.dropped;continue;}
+                    const auto head_clock=phase_clock;
                     const auto draw_begin=gst_util_get_timestamp();
-                    draw(parity,interlaced);stats.draw_ns+=gst_util_get_timestamp()-draw_begin;
+                    draw(parity,interlaced);
+                    const auto draw_elapsed=gst_util_get_timestamp()-draw_begin;
+                    stats.draw_ns+=draw_elapsed;
                     const auto wait_begin=gst_util_get_timestamp();
                     if((!command->preroll&&!wait(*command,running))||!current(command->generation)) {
                         result=GST_FLOW_FLUSHING;++stats.cancelled;break;
                     }
-                    stats.wait_ns+=gst_util_get_timestamp()-wait_begin;
+                    const auto wait_elapsed=gst_util_get_timestamp()-wait_begin;
+                    stats.wait_ns+=wait_elapsed;
                     if(expired()){++stats.dropped;continue;}
+                    const auto preswap_clock=phase_clock;
                     const auto swap_begin=gst_util_get_timestamp();
-                    swap();stats.swap_ns+=gst_util_get_timestamp()-swap_begin;
+                    swap();const auto swap_end=gst_util_get_timestamp();
+                    const auto swap_elapsed=swap_end-swap_begin;
+                    stats.swap_ns+=swap_elapsed;
                     last_parity=parity;last_interlaced=interlaced;
                     if(command->preroll)++stats.prerolls;
                     else {
@@ -394,7 +411,21 @@ struct Worker {
                             if(early)++stats.early;
                             stats.max_early=std::max(stats.max_early.load(),early);
                             GST_LOG_OBJECT(owner,"swap pts=%" G_GUINT64_FORMAT " target=%" G_GUINT64_FORMAT " age=%" G_GUINT64_FORMAT,pts,target,age);
-                            ++stats.clocked;stats.max_age=std::max(stats.max_age.load(),age);
+                            ++stats.clocked;
+                            if(age>stats.max_age.load()) {
+                                // Capture only a new worst event, without per-field
+                                // logging. Audio-clock and monotonic deltas distinguish
+                                // submission stalls from clock-reporting jumps.
+                                stats.worst_field_pts=pts;stats.worst_field_index=field;
+                                stats.worst_parity=parity;stats.worst_prepare_ns=preparation_ns;
+                                stats.worst_retire_ns=retirement_ns;stats.worst_draw_ns=draw_elapsed;
+                                stats.worst_wait_ns=wait_elapsed;stats.worst_swap_ns=swap_elapsed;
+                                stats.worst_head_age_ns=GST_CLOCK_DIFF(target,head_clock);
+                                stats.worst_preswap_age_ns=GST_CLOCK_DIFF(target,preswap_clock);
+                                stats.worst_clock_elapsed_ns=actual-head_clock;
+                                stats.worst_monotonic_elapsed_ns=swap_end-draw_begin;
+                                stats.max_age=age;
+                            }
                             if(age>duration/(count*command->segment.rate))++stats.late;
                         }
                     }
@@ -521,6 +552,18 @@ static void get_property(GObject *object,guint id,GValue *value,GParamSpec *spec
         "prepare-ns",G_TYPE_UINT64,c.prepare_ns.load(),"draw-ns",G_TYPE_UINT64,c.draw_ns.load(),
         "wait-ns",G_TYPE_UINT64,c.wait_ns.load(),"swap-ns",G_TYPE_UINT64,c.swap_ns.load(),
         "retire-ns",G_TYPE_UINT64,c.retire_ns.load(),"retirements",G_TYPE_UINT64,c.retirements.load(),
+        "worst-field-pts",G_TYPE_UINT64,c.worst_field_pts.load(),
+        "worst-field-index",G_TYPE_UINT64,c.worst_field_index.load(),
+        "worst-parity",G_TYPE_UINT64,c.worst_parity.load(),
+        "worst-prepare-ns",G_TYPE_UINT64,c.worst_prepare_ns.load(),
+        "worst-retire-ns",G_TYPE_UINT64,c.worst_retire_ns.load(),
+        "worst-draw-ns",G_TYPE_UINT64,c.worst_draw_ns.load(),
+        "worst-wait-ns",G_TYPE_UINT64,c.worst_wait_ns.load(),
+        "worst-swap-ns",G_TYPE_UINT64,c.worst_swap_ns.load(),
+        "worst-head-age-ns",G_TYPE_INT64,c.worst_head_age_ns.load(),
+        "worst-preswap-age-ns",G_TYPE_INT64,c.worst_preswap_age_ns.load(),
+        "worst-monotonic-elapsed-ns",G_TYPE_UINT64,c.worst_monotonic_elapsed_ns.load(),
+        "worst-clock-elapsed-ns",G_TYPE_UINT64,c.worst_clock_elapsed_ns.load(),
         "allocations",G_TYPE_UINT64,c.allocations.load(),"images",G_TYPE_UINT64,c.images.load(),
         "retained-buffers",G_TYPE_UINT64,c.retained.load(),nullptr);
     g_value_take_boxed(value,stats);
