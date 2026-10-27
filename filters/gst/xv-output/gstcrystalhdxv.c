@@ -66,12 +66,28 @@ struct XvContext {
   GstBus *bus;
   XvMemory *images, *copies[XV_DEPTH];
   XvFlight flights[XV_DEPTH];
+  GstBuffer *last_buffer;
+  GstVideoInfo last_info;
+  guint64 last_epoch, video_submitted, redraw_submitted;
+  guint redraw_suspended;
+  gboolean redraw_pending, borders_dirty;
   guint image_count, image_bytes, pending;
   guint64 submitted, acknowledged, terminal, copied_bytes, generation, epoch;
   guint64 allocated, freed, stale, pool_submitted;
 };
 /* Bounds contexts retained after an unproved detach; no unbounded error loop. */
 static gint live_contexts;
+static XvMemory *buffer_memory(GstBuffer *buffer);
+static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
+    GstBuffer *buffer, XvMemory *direct, gboolean redraw, guint64 epoch);
+
+/* Transfer ownership to the caller; Gst unref may reenter the pool/context. */
+static GstBuffer *forget_picture_locked(XvContext *c)
+{
+  GstBuffer *old = c->last_buffer;
+  c->last_buffer = NULL; c->redraw_pending = FALSE;
+  return old;
+}
 
 static XvContext *context_ref(XvContext *c)
 {
@@ -229,7 +245,7 @@ static gboolean open_locked(XvContext *c, const char *name, xcb_window_t window)
   c->width = MIN(screen->width_in_pixels, 960);
   c->height = MIN(screen->height_in_pixels, 540);
   if (c->own_window) {
-    guint32 values[] = {screen->black_pixel, XCB_EVENT_MASK_STRUCTURE_NOTIFY};
+    guint32 values[] = {screen->black_pixel, XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_EXPOSURE};
     xcb_create_window(c->connection, XCB_COPY_FROM_PARENT, c->window, screen->root,
         0, 0, c->width, c->height, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual,
         XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, values);
@@ -242,7 +258,7 @@ static gboolean open_locked(XvContext *c, const char *name, xcb_window_t window)
         c->protocols_atom, XCB_ATOM_ATOM, 32, 1, &c->delete_atom);
     xcb_map_window(c->connection, c->window);
   } else {
-    guint32 mask = XCB_EVENT_MASK_STRUCTURE_NOTIFY;
+    guint32 mask = XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_EXPOSURE;
     xcb_change_window_attributes(c->connection, c->window, XCB_CW_EVENT_MASK, &mask);
     xcb_get_geometry_reply_t *geometry = reply_locked(c,
         xcb_get_geometry(c->connection, c->window).sequence);
@@ -251,6 +267,7 @@ static gboolean open_locked(XvContext *c, const char *name, xcb_window_t window)
   }
   c->gc = xcb_generate_id(c->connection);
   xcb_create_gc(c->connection, c->gc, c->window, 0, NULL);
+  c->borders_dirty = TRUE;
   return barrier_locked(c);
 }
 
@@ -373,7 +390,14 @@ static void receive_locked(XvContext *c, GstBuffer **release, guint *n)
       else if (!c->failed) retire_locked(c, owner, TRUE, release, n);
     } else if (type == XCB_CONFIGURE_NOTIFY) {
       const xcb_configure_notify_event_t *e = (const void *)raw;
-      if (e->window == c->window) { c->width = e->width; c->height = e->height; }
+      if (e->window == c->window) {
+        c->width = e->width; c->height = e->height;
+        c->redraw_pending = c->borders_dirty = TRUE;
+      }
+    } else if (type == XCB_EXPOSE) {
+      const xcb_expose_event_t *e = (const void *)raw;
+      if (e->window == c->window && !e->count)
+        c->redraw_pending = c->borders_dirty = TRUE;
     } else if (type == XCB_DESTROY_NOTIFY) {
       if (((xcb_destroy_notify_event_t *)raw)->window == c->window)
         context_error(c, "The video output window was closed");
@@ -397,11 +421,14 @@ static gpointer event_reader(gpointer user)
   gboolean posted = FALSE;
   gint64 disconnect_time = 0;
   for (;;) {
-    GstBuffer *release[XV_DEPTH]; guint n = 0;
+    GstBuffer *release[XV_DEPTH + 1]; guint n = 0;
+    GstBuffer *redraw = NULL; GstVideoInfo redraw_info; guint64 redraw_epoch = 0;
     XvMemory *garbage[XV_MAX_IMAGES]; guint ng = 0;
     gboolean done = FALSE, post = FALSE;
     g_mutex_lock(&c->lock);
     if (c->connection && !c->failed) receive_locked(c, release, &n);
+    if ((c->failed || g_atomic_int_get(&c->stopping) || g_atomic_int_get(&c->flushing)) && c->last_buffer)
+      release[n++] = forget_picture_locked(c);
     if (c->failed || g_atomic_int_get(&c->stopping)) {
       if (c->connection) {
         if (!c->failed && c->colorspace_atom && c->active_colorspace != c->original_colorspace) {
@@ -445,10 +472,25 @@ static gpointer event_reader(gpointer user)
     /* A bus sync handler can stop the pipeline from this reader. Complete
      * the bounded connection-close phase before invoking that handler. */
     if (c->failed && c->closed && !posted) { posted = TRUE; post = TRUE; }
+    if (!c->failed && !g_atomic_int_get(&c->stopping) && !g_atomic_int_get(&c->flushing) &&
+        !c->redraw_suspended && c->redraw_pending && c->last_buffer && c->pending < XV_DEPTH) {
+      XvMemory *direct = buffer_memory(c->last_buffer);
+      if (!direct || !direct->server_owned) {
+        redraw = gst_buffer_ref(c->last_buffer);
+        redraw_info = c->last_info; redraw_epoch = c->last_epoch;
+      }
+    }
     const char *failure = c->failure;
     g_mutex_unlock(&c->lock);
     for (guint i = 0; i < n; i++) gst_buffer_unref(release[i]);
     for (guint i = 0; i < ng; i++) destroy_memory(garbage[i]);
+    if (redraw) {
+      XvMemory *direct = buffer_memory(redraw);
+      if (direct && direct->context != c) direct = NULL;
+      /* Never wait for ring space on the only SHM-completion reader. */
+      submit_picture(c, &redraw_info, redraw, direct, TRUE, redraw_epoch);
+      gst_buffer_unref(redraw);
+    }
     if (post && c->bus) {
       GError *error = g_error_new_literal(GST_RESOURCE_ERROR, GST_RESOURCE_ERROR_WRITE, failure);
       gst_bus_post(c->bus, gst_message_new_error(NULL, error, "CrystalHD Xv output; no successful EOS inferred"));
@@ -502,12 +544,17 @@ static XvContext *context_new(const char *name, xcb_window_t window, GstBus *bus
 static gboolean drain_locked(XvContext *c)
 {
   gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US;
+  gboolean ok = TRUE;
+  c->redraw_suspended++;
   while (c->pending && !c->failed && !g_atomic_int_get(&c->flushing) &&
       !g_atomic_int_get(&c->stopping)) {
-    if (!g_cond_wait_until(&c->changed, &c->lock, end))
-      return context_error(c, "Output drain exceeded its completion deadline");
+    if (!g_cond_wait_until(&c->changed, &c->lock, end)) {
+      ok = context_error(c, "Output drain exceeded its completion deadline"); break;
+    }
   }
-  return !c->failed && !g_atomic_int_get(&c->flushing) && !g_atomic_int_get(&c->stopping);
+  c->redraw_suspended--;
+  if (c->redraw_pending) wake_context(c);
+  return ok && !c->failed && !g_atomic_int_get(&c->flushing) && !g_atomic_int_get(&c->stopping);
 }
 static gboolean colorspace_locked(XvContext *c, const GstVideoInfo *info)
 {
@@ -525,25 +572,42 @@ static gboolean colorspace_locked(XvContext *c, const GstVideoInfo *info)
   }
   return TRUE;
 }
-static GstFlowReturn submit_buffer(XvContext *c, const GstVideoInfo *info,
-                                   GstBuffer *buffer, XvMemory *direct)
+static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
+    GstBuffer *buffer, XvMemory *direct, gboolean redraw, guint64 epoch)
 {
   GstVideoFrame frame;
-  if (!gst_video_frame_map(&frame, info, buffer, GST_MAP_READ)) return GST_FLOW_ERROR;
+  if (!gst_video_frame_map(&frame, info, buffer, GST_MAP_READ)) {
+    if (redraw) { g_mutex_lock(&c->lock); context_error(c, "Cannot map retained Xv picture"); g_mutex_unlock(&c->lock); }
+    return GST_FLOW_ERROR;
+  }
+  GstBuffer *old = NULL;
   g_mutex_lock(&c->lock);
+  if (epoch != c->epoch || (redraw && (c->last_buffer != buffer || !c->redraw_pending || c->redraw_suspended))) {
+    g_mutex_unlock(&c->lock); gst_video_frame_unmap(&frame);
+    return redraw ? GST_FLOW_OK : GST_FLOW_FLUSHING;
+  }
   gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US;
   XvFlight *f = NULL; guint index = 0;
   while (!c->failed && !g_atomic_int_get(&c->flushing) && !g_atomic_int_get(&c->stopping)) {
-    for (index = 0; index < XV_DEPTH; index++)
-      if (!c->flights[index].memory) { f = &c->flights[index]; break; }
+    for (index = 0; index < XV_DEPTH; index++) {
+      XvMemory *copy = c->copies[index];
+      if (!c->flights[index].memory && (!redraw || direct ||
+          (copy && !copy->dispose && !copy->server_owned &&
+           copy->width == (guint)info->width && copy->height == (guint)info->height))) {
+        f = &c->flights[index]; break;
+      }
+    }
     if (f && (!direct || !direct->server_owned)) break;
     f = NULL;
+    if (redraw) break; /* Retry after completion; never self-wait here. */
     if (!g_cond_wait_until(&c->changed, &c->lock, end)) {
       context_error(c, "No completed Xv ring slot within deadline"); break;
     }
   }
   GstFlowReturn result = GST_FLOW_ERROR;
   if (g_atomic_int_get(&c->flushing) || g_atomic_int_get(&c->stopping)) result = GST_FLOW_FLUSHING;
+  else if (epoch != c->epoch) result = GST_FLOW_FLUSHING;
+  else if (redraw && !f && !c->failed) result = GST_FLOW_OK;
   else if (!c->failed && f && c->connection) {
     XvMemory *m = direct;
     if (!m) {
@@ -573,9 +637,19 @@ static GstFlowReturn submit_buffer(XvContext *c, const GstVideoInfo *info,
         if ((guint64)dw * ratio_d > (guint64)dh * ratio_n)
           dw = (guint64)dh * ratio_n / ratio_d;
         else dh = (guint64)dw * ratio_d / ratio_n;
+        dw = MAX(dw, 1); dh = MAX(dh, 1);
+        guint x = (c->width - dw) / 2, y = (c->height - dh) / 2;
+        if (c->borders_dirty) {
+          xcb_rectangle_t bars[4]; guint count = 0;
+          if (y) bars[count++] = (xcb_rectangle_t){0, 0, c->width, y};
+          if (y + dh < c->height) bars[count++] = (xcb_rectangle_t){0, y + dh, c->width, c->height - y - dh};
+          if (x) bars[count++] = (xcb_rectangle_t){0, y, x, dh};
+          if (x + dw < c->width) bars[count++] = (xcb_rectangle_t){x + dw, y, c->width - x - dw, dh};
+          if (count) xcb_poly_fill_rectangle(c->connection, c->window, c->gc, count, bars);
+        }
         guint32 sequence = xcb_xv_shm_put_image(c->connection, c->port, c->window, c->gc,
             m->segment, XV_UYVY, 0, 0, 0, info->width, info->height,
-            (c->width - dw) / 2, (c->height - dh) / 2, MAX(dw, 1), MAX(dh, 1),
+            x, y, dw, dh,
             info->width, info->height, TRUE).sequence;
         m->generation = ++c->generation;
         *f = (XvFlight){.memory = m, .buffer = direct ? gst_buffer_ref(buffer) : NULL,
@@ -583,7 +657,16 @@ static GstFlowReturn submit_buffer(XvContext *c, const GstVideoInfo *info,
             .pts = GST_BUFFER_PTS(buffer), .submitted = g_get_monotonic_time()};
         m->server_owned = TRUE; c->pending++; c->submitted++;
         if (direct) c->pool_submitted++;
-        if (xcb_flush(c->connection) > 0) result = GST_FLOW_OK;
+        if (xcb_flush(c->connection) > 0) {
+          result = GST_FLOW_OK;
+          if (redraw) c->redraw_submitted++;
+          else {
+            c->video_submitted++;
+            old = c->last_buffer; c->last_buffer = gst_buffer_ref(buffer);
+            c->last_info = *info; c->last_epoch = c->epoch;
+          }
+          c->redraw_pending = c->borders_dirty = FALSE;
+        }
         else context_error(c, "Xv image submission flush failed");
         wake_context(c);
       }
@@ -592,7 +675,14 @@ static GstFlowReturn submit_buffer(XvContext *c, const GstVideoInfo *info,
   }
   g_mutex_unlock(&c->lock);
   gst_video_frame_unmap(&frame);
+  if (old) gst_buffer_unref(old);
   return result;
+}
+static GstFlowReturn submit_buffer(XvContext *c, const GstVideoInfo *info,
+                                   GstBuffer *buffer, XvMemory *direct)
+{
+  g_mutex_lock(&c->lock); guint64 epoch = c->epoch; g_mutex_unlock(&c->lock);
+  return submit_picture(c, info, buffer, direct, FALSE, epoch);
 }
 
 /* Pool ownership is independent of X-server completion. Holding the actual
@@ -679,6 +769,8 @@ static GstStructure *stats_locked(XvContext *c)
 {
   return gst_structure_new("crystalhd-xv-statistics",
       "submitted", G_TYPE_UINT64, c->submitted, "acknowledged", G_TYPE_UINT64, c->acknowledged,
+      "video-submitted", G_TYPE_UINT64, c->video_submitted, "redraw-submitted", G_TYPE_UINT64, c->redraw_submitted,
+      "retained-picture", G_TYPE_BOOLEAN, c->last_buffer != NULL,
       "terminal-retired", G_TYPE_UINT64, c->terminal, "copied-bytes", G_TYPE_UINT64, c->copied_bytes,
       "pool-submitted", G_TYPE_UINT64, c->pool_submitted, "pending", G_TYPE_UINT, c->pending,
       "images", G_TYPE_UINT, c->image_count, "bytes", G_TYPE_UINT, c->image_bytes,
@@ -728,7 +820,9 @@ static gboolean sink_unlock(GstBaseSink *base)
   XvContext *c = sink_context(XV_SINK(base));
   if (c) {
     g_atomic_int_set(&c->flushing, TRUE); wake_context(c);
-    g_mutex_lock(&c->lock); g_cond_broadcast(&c->changed); g_mutex_unlock(&c->lock);
+    g_mutex_lock(&c->lock); GstBuffer *old = forget_picture_locked(c); c->epoch++;
+    g_cond_broadcast(&c->changed); g_mutex_unlock(&c->lock);
+    if (old) gst_buffer_unref(old);
     context_unref(c);
   }
   return TRUE;
@@ -750,12 +844,13 @@ static gboolean sink_set_caps(GstBaseSink *base, GstCaps *caps)
   XvContext *c = sink_context(s);
   if (!c) return FALSE;
   g_mutex_lock(&c->lock);
+  GstBuffer *old = forget_picture_locked(c);
   gboolean ok = drain_locked(c) && colorspace_locked(c, &info);
   if (ok) {
     s->info = info; c->epoch++;
     GST_VIDEO_SINK_WIDTH(s) = info.width; GST_VIDEO_SINK_HEIGHT(s) = info.height;
   }
-  g_mutex_unlock(&c->lock); context_unref(c);
+  g_mutex_unlock(&c->lock); if (old) gst_buffer_unref(old); context_unref(c);
   return ok;
 }
 static GstFlowReturn sink_show_frame(GstVideoSink *video, GstBuffer *buffer)
@@ -809,9 +904,9 @@ static gboolean sink_event(GstBaseSink *base, GstEvent *event)
   if (GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
     XvContext *c = sink_context(XV_SINK(base));
     if (c) {
-      g_mutex_lock(&c->lock); gboolean ok = drain_locked(c);
+      g_mutex_lock(&c->lock); GstBuffer *old = forget_picture_locked(c); gboolean ok = drain_locked(c);
       if (ok) c->epoch++;
-      g_mutex_unlock(&c->lock); context_unref(c);
+      g_mutex_unlock(&c->lock); if (old) gst_buffer_unref(old); context_unref(c);
       if (!ok) { gst_event_unref(event); return FALSE; }
     }
   }
@@ -825,7 +920,18 @@ static void sink_set_window(GstVideoOverlay *overlay, guintptr window)
   else GST_WARNING_OBJECT(s, "Set the window handle before starting Xv output");
   g_mutex_unlock(&s->lock);
 }
-static void overlay_init(GstVideoOverlayInterface *interface) { interface->set_window_handle = sink_set_window; }
+static void sink_expose(GstVideoOverlay *overlay)
+{
+  XvContext *c = sink_context(XV_SINK(overlay));
+  if (c) {
+    g_mutex_lock(&c->lock); c->redraw_pending = c->borders_dirty = TRUE;
+    g_mutex_unlock(&c->lock); wake_context(c); context_unref(c);
+  }
+}
+static void overlay_init(GstVideoOverlayInterface *interface)
+{
+  interface->set_window_handle = sink_set_window; interface->expose = sink_expose;
+}
 static void sink_set_property(GObject *object, guint id, const GValue *value, GParamSpec *spec)
 {
   GstCrystalHdXv *s = XV_SINK(object);
