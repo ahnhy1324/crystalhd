@@ -2,3 +2,5 @@
 /build-native/
 /build-trace/
 /build-rgb/
+/build-playback/
+/build-playback-trace/

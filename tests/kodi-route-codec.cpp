@@ -84,6 +84,12 @@ static void temporary_drain() {
     for (auto byte : backing) g_assert_cmpuint(byte, ==, 73);
     pull(VC_EOF); // temporary phase only; firmware/appsrc must stay open
     input.fill(129); packet.pts = packet.dts = 33333;
+#ifdef CRYSTALHD_KODI_PLAYBACK
+    progress->paused.store(true);
+    g_assert_false(callbacks.add_data(&video, &packet)); // no packet consumed
+    pull(VC_EOF); // end temporary host squeeze only, never media EOF
+    progress->paused.store(false);
+#endif
     g_assert_true(callbacks.add_data(&video, &packet));
     g_assert_cmpint(pull(VC_PICTURE), ==, 33333);
     for (auto byte : backing) g_assert_cmpuint(byte, ==, 129);

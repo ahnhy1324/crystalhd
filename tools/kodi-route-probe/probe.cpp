@@ -11,6 +11,9 @@
 #include "packed.h"
 #ifdef CRYSTALHD_KODI_NATIVE
 #include "native.h"
+#ifdef CRYSTALHD_KODI_PLAYBACK
+#include "playback.h"
+#endif
 #include "input-progress.h"
 #include <gst/video/video.h>
 #ifdef CRYSTALHD_KODI_RGB_TEST
@@ -135,8 +138,13 @@ public:
 };
 
 #ifdef CRYSTALHD_KODI_NATIVE
+#ifdef CRYSTALHD_KODI_PLAYBACK
+using PlaybackBackend = crystalhd_kodi::PlaybackDecoder;
+#else
+using PlaybackBackend = crystalhd_kodi::NativeDecoder;
+#endif
 class NativeCodec : public kodi::addon::CInstanceVideoCodec {
-  crystalhd_kodi::NativeDecoder decoder;
+  PlaybackBackend decoder;
   std::shared_ptr<crystalhd_kodi::InputProgress> progress;
   uint64_t input_epoch = 0;
   unsigned width = 0, height = 0, fps_n, fps_d;
@@ -162,6 +170,10 @@ class NativeCodec : public kodi::addon::CInstanceVideoCodec {
       kodi::Log(ADDON_LOG_INFO, "CrystalHD-Native session=%u H264 %ux%u crystalhddec/YUY2; %s; two host copies",
                 ++generation, width, height, version);
       g_free(version);
+#ifdef CRYSTALHD_KODI_PLAYBACK
+      kodi::Log(ADDON_LOG_INFO, "CrystalHD-Playback open generation=%llu; private input-idle facade, no dummy or V4L2 STOP",
+                static_cast<unsigned long long>(decoder.Counts().generation));
+#endif
     }
     return active;
   }
@@ -196,7 +208,10 @@ public:
     if (fatal) return true; // retrying a fatal packet is useless; GetPicture reports it
     if (!active && !Start()) { fatal = true; return true; }
     if (packet.iSize <= 0) { fatal = true; return true; }
-    using Submit = crystalhd_kodi::NativeDecoder::Submit;
+#ifdef CRYSTALHD_KODI_PLAYBACK
+    decoder.SetPaused(progress->paused.load());
+#endif
+    using Submit = PlaybackBackend::Submit;
     const Submit result = decoder.Push(packet.pData, packet.iSize, packet.pts, packet.dts, packet.duration);
     if (result == Submit::Retry) return false;
     if (result == Submit::Error) fatal = true;
@@ -223,7 +238,10 @@ public:
       return VC_EOF;
     }
     if (progress->failed.load()) return Fail("demux input failed before EOF");
-    using Result = crystalhd_kodi::NativeDecoder::Result;
+#ifdef CRYSTALHD_KODI_PLAYBACK
+    decoder.SetPaused(progress->paused.load());
+#endif
+    using Result = PlaybackBackend::Result;
     Result result;
     const bool final_input = progress->Final(input_epoch, accepted);
     GstSample* sample = decoder.Next(final_input, result);
@@ -237,6 +255,13 @@ public:
           kodi::Log(ADDON_LOG_INFO, "CrystalHD-Native TRACE YUY2-active-row-v1 sha256=%s", g_checksum_get_string(checksum));
 #endif
           eof_logged = true;
+#ifdef CRYSTALHD_KODI_PLAYBACK
+          const auto& c = decoder.Counts();
+          kodi::Log(ADDON_LOG_INFO, "CrystalHD-Playback EOF generation=%llu queued=%llu returned=%llu pauses=%llu resumes=%llu terminal_eos=%llu; queue counts, not scanout",
+                    static_cast<unsigned long long>(c.generation), static_cast<unsigned long long>(c.queued),
+                    static_cast<unsigned long long>(c.returned), static_cast<unsigned long long>(c.pauses),
+                    static_cast<unsigned long long>(c.resumes), static_cast<unsigned long long>(c.terminal_eos));
+#endif
         }
         return VC_EOF;
       }
@@ -473,6 +498,13 @@ public:
   int GetTotalTime() override {
     return format ? static_cast<int>(media_end / 1000) : 0;
   }
+#ifdef CRYSTALHD_KODI_PLAYBACK
+  void DemuxSetSpeed(int speed) override {
+    progress->paused.store(speed == 0);
+    kodi::Log(ADDON_LOG_INFO, "CrystalHD-Playback input_speed=%d epoch=%llu; no EOS/reset",
+              speed, static_cast<unsigned long long>(progress->epoch.load()));
+  }
+#endif
   bool DemuxSeekTime(double ms, bool backwards, double& startpts) override {
     if (!format || !std::isfinite(ms) || ms < 0 || ms > 86400000.0) return false;
     const int64_t timestamp = av_rescale_q(static_cast<int64_t>(ms * 1000), AVRational{1, AV_TIME_BASE},

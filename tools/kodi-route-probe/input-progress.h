@@ -10,6 +10,7 @@ namespace crystalhd_kodi {
 struct InputProgress {
   std::atomic<uint64_t> epoch{1}, packets{0};
   std::atomic<bool> eof{false}, failed{false}, closed{false};
+  std::atomic<bool> paused{false}; // input-idle playback, never decoder STOP
   void Seek() {
     eof.store(false); packets.store(0); failed.store(false);
     epoch.fetch_add(1);
