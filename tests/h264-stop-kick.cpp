@@ -135,14 +135,18 @@ static std::vector<std::vector<uint8_t>> auxiliary_units(const std::vector<uint8
 
 int main(int argc,char **argv) {
     try {
-        need(argc==4||argc==6,"usage: h264-stop-kick G0_DIRECTORY RESULT_DIRECTORY reference|none|prefix|picture|prefed-picture|prefed-pair|input-idle-100|input-idle-1000|input-hold-1000|input-idle-multi|input-idle-empty|matrix [BOUNDARY PRIVATE_COUNT]");
+        need(argc==4||argc==6,"usage: h264-stop-kick G0_DIRECTORY RESULT_DIRECTORY reference|none|prefix|picture|prefed-picture|prefed-pair|input-idle-100|input-idle-1000|input-hold-1000|input-idle-multi|input-idle-empty|matrix|matrix-idle-100|matrix-idle-1000 [BOUNDARY PRIVATE_COUNT]");
         std::string input=argv[1],output=argv[2],mode=argv[3];
-        const bool matrix=mode=="matrix";
+        const bool matrix_idle=mode=="matrix-idle-100"||mode=="matrix-idle-1000";
+        const unsigned matrix_idle_ms=mode=="matrix-idle-1000"?1000:100;
+        const bool matrix=mode=="matrix"||matrix_idle;
         need(matrix==(argc==6),"matrix requires boundary/count; other modes retain frozen arguments");
         const unsigned prefix_count=matrix?small_unsigned(argv[4]):17;
         const unsigned matrix_private=matrix?small_unsigned(argv[5]):0;
         need(!matrix||((prefix_count==12||prefix_count==15||prefix_count==18)&&matrix_private<=5),
              "matrix uses independently ordered boundaries and at most5 private pictures");
+        need(!matrix_idle||(prefix_count==18&&(matrix_private==0||matrix_private==4||matrix_private==5)),
+             "input-only continuation uses frozen boundary18 with0/4/5 private pictures");
         const bool idle=mode=="input-idle-100"||mode=="input-idle-1000"||
             mode=="input-hold-1000"||mode=="input-idle-multi"||mode=="input-idle-empty";
         const bool hold=mode=="input-hold-1000";
@@ -180,6 +184,7 @@ int main(int argc,char **argv) {
         auto bounded=[&]{need(std::chrono::steady_clock::now()<deadline,"12s session deadline");};
         std::vector<Frame> frames;std::vector<uint64_t> real_order;
         unsigned real=0,private_outputs=0,unknown_outputs=0,leases_acquired=0,leases_released=0;
+        unsigned accepted_real=0,accepted_private=0;
         uint32_t ready=0;bool eos=false,flush=false;
         const char *phase="prefix";
         auto last_input=std::chrono::steady_clock::now();
@@ -224,8 +229,8 @@ int main(int argc,char **argv) {
                         continue;
                     }
                     if(!reference) {
-                        need(baseline.at(token).pixels==frame.pixels,"original pixels changed");
-                        if(idle||matrix)need(baseline.at(token).flags==frame.flags,"original flags changed");
+                        need(baseline.at(token).pixels==frame.pixels,"original pixels changed token="+std::to_string(token));
+                        if(idle||matrix)need(baseline.at(token).flags==frame.flags,"original flags changed token="+std::to_string(token));
                     }
                     ++real;real_order.push_back(token);
                 }
@@ -249,10 +254,22 @@ int main(int argc,char **argv) {
             auto until=std::chrono::steady_clock::now()+std::chrono::milliseconds(milliseconds);
             do {receive();bounded();usleep(1000);} while(std::chrono::steady_clock::now()<until);
         };
+        const auto phase_start=std::chrono::steady_clock::now();
+        auto census=[&](const char *checkpoint) {
+            need(decoder.handle==original_handle,"original channel at phase checkpoint");
+            need(leases_acquired==leases_released,"no held public RX lease at phase checkpoint");
+            printf("{\"type\":\"phase-census\",\"checkpoint\":\"%s\",\"accepted_real\":%u,\"accepted_private\":%u,"
+                   "\"output_real\":%u,\"output_private\":%u,\"rx_acquired\":%u,\"rx_released\":%u,"
+                   "\"same_handle\":true,\"eos\":%s,\"elapsed_ms\":%.3f}\n",checkpoint,accepted_real,accepted_private,
+                   real,private_outputs,leases_acquired,leases_released,eos?"true":"false",
+                   std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-phase_start).count());
+            fflush(stdout);
+        };
         if(matrix)printf("{\"type\":\"matrix-input\",\"accepted_originals\":%u,\"private_count\":%u,\"private_token_base\":%llu}\n",
             prefix_count,private_expected,static_cast<unsigned long long>(private_base));
         for(unsigned i=0;i<(empty?0:reference?20:prefix_count);++i) {
             send(source[i].data,source[i].token);
+            ++accepted_real;
             if(mode=="input-idle-multi"&&(i==4||i==8||i==12)) {
                 phase="intermediate-idle";const unsigned before=real;wait(100);
                 need(!eos,"no EOS during intermediate input idle");
@@ -261,6 +278,7 @@ int main(int argc,char **argv) {
                 phase="prefix";
             }
         }
+        if(matrix_idle){census("after-original-prefix");phase="private-input";}
         if(prefed&&private_expected) {
             const auto units=auxiliary_units(auxiliary,private_expected);
             for(unsigned i=0;i<private_expected;++i) {
@@ -268,6 +286,7 @@ int main(int argc,char **argv) {
                 // that follows. Its payload consumes that timestamp, exactly
                 // as the established Prefix Kick contract requires.
                 send(prefix,private_base+i*kPrivateStep);send(units[i],0);
+                ++accepted_private;
             }
         } else if(mode=="picture") send(auxiliary,kPrivate);
         if(private_expected||mode=="prefix") send(prefix,0); // Untimed trailing delimiter, not a next-public Kick.
@@ -287,17 +306,35 @@ int main(int argc,char **argv) {
         const bool g2=!reference&&!idle&&real==prefix_count&&private_outputs==private_expected&&!unknown_outputs&&!eos;
         printf("{\"type\":\"boundary\",\"mode\":\"%s\",\"real\":%u,\"private\":%u,\"eos\":%s,\"g2\":%s}\n",
                mode.c_str(),real,private_outputs,eos?"true":"false",g2?"true":"false");fflush(stdout);
-        if(g2||idle) {
+        if(matrix_idle) {
+            census("after-private-settle");
+            // Separate ordinary input-pause experiment, explicitly requested
+            // after G2 failed. This does not establish a STOP/drain boundary.
+            need(!eos&&!unknown_outputs,"live channel before input-only pause");
+            if(private_expected==5)
+                need(real==18&&private_outputs==3,"reproduce18real/3private pre-EOS prerequisite");
+            phase="input-idle";
+            const auto pause_start=std::chrono::steady_clock::now();
+            wait(matrix_idle_ms);
+            need(!eos,"no EOS during dummy input-only pause");
+            printf("{\"type\":\"dummy-input-idle\",\"requested_ms\":%u,\"observed_ms\":%.3f,\"input_gap_ms\":%.3f}\n",
+                   matrix_idle_ms,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-pause_start).count(),
+                   std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-last_input).count());
+            census("after-input-idle");
+        }
+        if(g2||idle||matrix_idle) {
             need(!eos&&decoder.handle==original_handle,"live original channel at input resume");
             phase="continuation";
-            for(unsigned i=empty?0:prefix_count;i<20;++i)send(source[i].data,source[i].token);
-            if(idle)wait(30);
+            for(unsigned i=empty?0:prefix_count;i<20;++i){send(source[i].data,source[i].token);++accepted_real;}
+            if(idle||matrix_idle)wait(30);
+            if(matrix_idle)census("after-real-continuation");
         }
         // Final EOS is cleanup after the measured boundary. It is never used
         // to turn an incomplete G2 boundary into successful STOP/START.
         need(!eos,"no EOS before terminal cleanup");phase="terminal-eos";
+        need(!matrix_idle||accepted_real==20,"terminal EOS only after all20 originals submitted");
         good("DtsFlushInput",api.DtsFlushInput(decoder.handle,0));flush=true;
-        const unsigned expected=reference||g2||idle?20:prefix_count;
+        const unsigned expected=reference||g2||idle||matrix_idle?20:prefix_count;
         while(!eos||ready){
             bounded();receive();usleep(1000);
         }
@@ -306,6 +343,7 @@ int main(int argc,char **argv) {
         std::stable_sort(sorted.begin(),sorted.end(),[](const Packet &a,const Packet &b){return a.pts<b.pts;});
         std::vector<uint64_t> expected_order;for(const auto &packet:sorted) expected_order.push_back(packet.token);
         const bool full_order=real_order==expected_order;
+        if(matrix_idle)census("after-terminal-eos");
         need(leases_acquired==leases_released,"all public RX leases released before close");
         if(reference) {
             need(full_order,"reference display order");
@@ -330,8 +368,8 @@ int main(int argc,char **argv) {
                "\"g2\":%s,\"continuation_attempted\":%s,\"terminal_real\":%u,\"terminal_private\":%u,"
                "\"eos\":%s,\"full_reference_order\":%s,\"pixels_match_reference\":%s,"
                "\"unknown_outputs\":%u,\"terminal_complete\":%s}\n",mode.c_str(),
-               boundary_real,boundary_private,g2?"true":"false",g2||idle?"true":"false",real,private_outputs,
+               boundary_real,boundary_private,g2?"true":"false",g2||idle||matrix_idle?"true":"false",real,private_outputs,
                eos?"true":"false",full_order?"true":"false",reference?"null":"true",unknown_outputs,terminal_complete?"true":"false");
-        return (reference&&terminal_complete)||((g2||idle)&&full_order&&terminal_complete)?0:2;
+        return (reference&&terminal_complete)||((g2||idle||matrix_idle)&&full_order&&terminal_complete)?0:2;
     } catch(const std::exception &error) {fprintf(stderr,"FAIL %s\n",error.what());return 1;}
 }
