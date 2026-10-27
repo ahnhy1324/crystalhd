@@ -32,11 +32,11 @@ static unsigned small_unsigned(const char *text) {
     need(used==strlen(text)&&value<=20,"bounded integer argument");
     return static_cast<unsigned>(value);
 }
-static std::vector<uint8_t> read_file(const std::string &path) {
+static std::vector<uint8_t> read_file(const std::string &path,size_t maximum=16U*1024U*1024U) {
     std::ifstream stream(path,std::ios::binary);
     need(bool(stream),"open input "+path);
     std::vector<uint8_t> result((std::istreambuf_iterator<char>(stream)),{});
-    need(result.size()<=16U*1024U*1024U,"bounded input"); return result;
+    need(result.size()<=maximum,"bounded input"); return result;
 }
 static uint64_t integer(const std::vector<uint8_t> &data,size_t &cursor,unsigned bytes) {
     need(bytes<=8 && cursor<=data.size() && bytes<=data.size()-cursor,"container integer");
@@ -45,12 +45,13 @@ static uint64_t integer(const std::vector<uint8_t> &data,size_t &cursor,unsigned
     return value;
 }
 struct Packet { uint64_t token; int64_t pts; std::vector<uint8_t> data; };
-static std::vector<Packet> packets(const std::string &directory) {
-    auto data=read_file(directory+"/original20.packets");
-    need(data.size()>=12 && !memcmp(data.data(),"CHDKICK1",8),"container identity");
-    size_t cursor=8; need(integer(data,cursor,4)==20,"exact20 fixture");
+static std::vector<Packet> packets(const std::string &directory,bool cycles=false) {
+    auto data=read_file(directory+(cycles?"/original180.packets":"/original20.packets"));
+    need(data.size()>=12 && !memcmp(data.data(),cycles?"CHDCYCL1":"CHDKICK1",8),"container identity");
+    const unsigned count=cycles?180:20;
+    size_t cursor=8; need(integer(data,cursor,4)==count,"exact fixture count");
     std::vector<Packet> result;
-    for (unsigned i=0;i<20;++i) {
+    for (unsigned i=0;i<count;++i) {
         size_t count=integer(data,cursor,4);
         uint64_t token=integer(data,cursor,8); int64_t pts=integer(data,cursor,8);
         need(token==uint64_t(i+1)*100000 && count && count<=1024*1024 &&
@@ -172,8 +173,150 @@ static std::vector<std::vector<uint8_t>> auxiliary_units(const std::vector<uint8
     return result;
 }
 
+// Positive-candidate durability only. Input syntax is separately screened by
+// h264-pause-cycles.py over each complete multi-insertion sequence. This does
+// not issue STOP/START, drain at a pause, retag an output, or expose a decoder.
+static int cycle_run(const std::string &input,const std::string &output,const std::string &mode,const char *text) {
+    size_t used=0;const auto value=std::stoul(text,&used);
+    need(used==strlen(text)&&(value==0||value==2||value==5||value==10||value==100),"bounded cycle stage");
+    const unsigned cycles=static_cast<unsigned>(value);
+    const bool reference=mode=="cycles-reference",dummy=mode=="cycles-next";
+    need(reference==(cycles==0),"only uninterrupted oracle uses zero pauses");
+    const auto source=packets(input,true);
+    struct Plan {unsigned boundary;std::vector<std::vector<uint8_t>> units;};
+    std::vector<Plan> plans;std::ifstream plan_file(input+"/cycles.tsv");unsigned boundary,count;
+    need(bool(plan_file),"offline cycle plan");
+    while(plan_file>>boundary>>count) {
+        need(plans.size()<6&&count==5&&boundary>0&&boundary<=180&&
+             (plans.empty()||plans.back().boundary<boundary),"six ordered independently qualified insertions");
+        plans.push_back({boundary,auxiliary_units(read_file(input+"/private-"+std::to_string(boundary)+".h264"),5)});
+    }
+    need(plan_file.eof()&&plans.size()==6,"complete six-GOP plan");
+    const auto prefix=read_file(input+"/prefix.h264");need(prefix.size()==170&&!has_vcl(prefix),"prefix without VCL");
+    const unsigned repeats=reference?1:(cycles+5)/6,total=180*repeats,private_expected=dummy?5*cycles:0;
+    const uint64_t private_base=uint64_t(total+1)*100000;
+    std::map<uint64_t,Frame> baseline;
+    if(!reference) {
+        auto data=read_file(output+"/native-cycle-reference.bin",180*(12+kBytes));size_t cursor=0;
+        need(data.size()==180*(12+kBytes),"complete native180 reference");
+        while(cursor<data.size()) {
+            uint64_t token=integer(data,cursor,8);uint32_t flags=integer(data,cursor,4);
+            Frame f{token,flags,{data.begin()+cursor,data.begin()+cursor+kBytes}};cursor+=kBytes;
+            need(baseline.emplace(token,std::move(f)).second,"distinct base oracle tokens");
+        }
+        for(const auto &p:source)need(baseline.count(p.token),"every original AU has a native oracle");
+    }
+    auto sorted=source;std::stable_sort(sorted.begin(),sorted.end(),[](const Packet &a,const Packet &b){return a.pts<b.pts;});
+    std::vector<uint64_t> expected_order,actual_order;
+    for(unsigned repeat=0;repeat<repeats;++repeat)for(const auto &p:sorted)expected_order.push_back(p.token+uint64_t(repeat)*180*100000);
+    API api;Decoder decoder(api);decoder.start();const HANDLE owner=decoder.handle;
+    const auto start=std::chrono::steady_clock::now();
+    auto elapsed=[&]{return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();};
+    const unsigned watchdog_seconds=12+2*cycles+4*repeats;
+    auto bounded=[&]{need(elapsed()<1000.0*watchdog_seconds,"bounded complete-cycle session watchdog");};
+    std::vector<bool> real_seen(total),private_seen(private_expected);
+    std::vector<double> accepted_at(total);
+    std::vector<unsigned> per_cycle_private(cycles);
+    std::vector<Frame> reference_frames;
+    unsigned real=0,privates=0,accepted=0,accepted_private=0,rx_acquired=0,rx_released=0,calls=0,cycle=0;
+    uint32_t ready=0;bool eos=false,flush=false;
+    const char *phase="original-input";
+    auto receive=[&]{
+        for(unsigned attempt=0;attempt<32;++attempt) {
+            bounded();BC_DTS_STATUS status{};good("DtsGetDriverStatus",api.DtsGetDriverStatus(owner,&status));
+            ready=status.ReadyListCount;if(!ready)break;
+            BC_DTS_PROC_OUT out{};const auto rc=api.DtsProcOutputNoCopy(owner,0,&out);
+            if(rc==BC_STS_FMT_CHANGE)continue;
+            if(rc==BC_STS_NO_DATA||rc==BC_STS_BUSY||rc==BC_STS_TIMEOUT)break;
+            good("DtsProcOutputNoCopy",rc);++rx_acquired;
+            struct Lease {
+                API &api;HANDLE owner;unsigned &released;bool live=true;
+                void finish(){const auto rc=api.DtsReleaseOutputBuffs(owner,nullptr,FALSE);live=false;good("DtsReleaseOutputBuffs",rc);++released;}
+                ~Lease(){if(live&&api.DtsReleaseOutputBuffs(owner,nullptr,FALSE)==BC_STS_SUCCESS)++released;}
+            } lease{api,owner,rx_released};
+            const uint64_t token=out.PicInfo.timeStamp;
+            printf("{\"type\":\"cycle-rx-acquire\",\"lease\":%u,\"token\":%llu,\"cycle\":%u,\"elapsed_ms\":%.3f}\n",rx_acquired,static_cast<unsigned long long>(token),cycle,elapsed());
+            if(out.PicInfo.flags&VDEC_FLAG_EOS) {
+                need(flush,"no EOS at a repeated pause");lease.finish();
+                printf("{\"type\":\"cycle-rx-release\",\"lease\":%u,\"eos_marker\":true,\"elapsed_ms\":%.3f}\n",rx_released,elapsed());continue;
+            }
+            need((out.PoutFlags&BC_POUT_FLAGS_PIB_VALID)&&out.Ybuff&&out.PicInfo.width==640&&out.PicInfo.height==360&&
+                 !(out.PicInfo.flags&VDEC_FLAG_INTERLACED_SRC)&&uint64_t(out.YBuffDoneSz)*4>=kBytes,"cycle progressive YUYV extent");
+            const bool is_private=token>=private_base&&(token-private_base)%kPrivateStep==0&&(token-private_base)/kPrivateStep<private_expected;
+            if(is_private) {
+                const unsigned index=(token-private_base)/kPrivateStep;
+                need(!private_seen[index]&&std::all_of(out.Ybuff,out.Ybuff+kBytes,[](uint8_t v){return v==128;}),"distinct private token and full DC128 image");
+                private_seen[index]=true;++privates;++per_cycle_private[index/5];
+                printf("{\"type\":\"cycle-picture\",\"token\":%llu,\"private_generation\":%u,\"private_index\":%u,\"flags\":%u,\"phase\":\"%s\",\"elapsed_ms\":%.3f}\n",
+                    static_cast<unsigned long long>(token),index/5+1,index%5+1,out.PicInfo.flags,phase,elapsed());
+            }else {
+                need(token&&token%100000==0&&token/100000<=total,"actual original token without remapping");
+                const unsigned index=token/100000-1;
+                need(!real_seen[index]&&accepted_at[index]>0,"distinct accepted original identity");
+                if(!reference) {
+                    const auto &f=baseline.at(uint64_t(index%180+1)*100000);
+                    need(f.flags==out.PicInfo.flags&&std::equal(f.pixels.begin(),f.pixels.end(),out.Ybuff),"complete original YUYV/flags equality");
+                }else reference_frames.push_back({token,out.PicInfo.flags,{out.Ybuff,out.Ybuff+kBytes}});
+                real_seen[index]=true;++real;actual_order.push_back(token);
+                printf("{\"type\":\"cycle-picture\",\"token\":%llu,\"source_au\":%u,\"source_copy\":%u,\"flags\":%u,\"full_native_reference_match\":%s,\"phase\":\"%s\",\"accepted_to_output_ms\":%.3f,\"elapsed_ms\":%.3f}\n",
+                    static_cast<unsigned long long>(token),index%180+1,index/180+1,out.PicInfo.flags,reference?"null":"true",phase,elapsed()-accepted_at[index],elapsed());
+            }
+            lease.finish();printf("{\"type\":\"cycle-rx-release\",\"lease\":%u,\"eos_marker\":false,\"elapsed_ms\":%.3f}\n",rx_released,elapsed());fflush(stdout);
+        }
+        uint8_t end=0;good("DtsIsEndOfStream",api.DtsIsEndOfStream(owner,&end));eos=end!=0;
+    };
+    auto send=[&](const std::vector<uint8_t> &data,uint64_t token,const char *kind,unsigned association) {
+        need(decoder.handle==owner&&!eos,"unchanged live cycle channel");
+        const size_t reserve=data.size()+32*(data.size()/60000+3)+128;
+        while(api.DtsTxFreeSize(owner)<reserve){bounded();receive();usleep(1000);}
+        auto padded=data;padded.resize(data.size()+64,0);
+        good("DtsProcInput",api.DtsProcInput(owner,padded.data(),data.size(),token,FALSE));
+        ++calls;
+        if(!strcmp(kind,"original")){accepted_at.at(association-1)=elapsed();++accepted;}
+        if(!strcmp(kind,"private-vcl"))++accepted_private;
+        printf("{\"type\":\"cycle-input\",\"call\":%u,\"cycle\":%u,\"kind\":\"%s\",\"association\":%u,\"token\":%llu,\"bytes\":%zu,\"vcl_present\":%s,\"elapsed_ms\":%.3f}\n",
+            calls,cycle,kind,association,static_cast<unsigned long long>(token),data.size(),has_vcl(data)?"true":"false",elapsed());fflush(stdout);receive();
+    };
+    auto wait=[&](unsigned ms){const double until=elapsed()+ms;do{receive();bounded();usleep(1000);}while(elapsed()<until);};
+    auto census=[&](const char *checkpoint) {
+        need(decoder.handle==owner&&rx_acquired==rx_released,"same channel; no held public lease at cycle checkpoint");
+        printf("{\"type\":\"cycle-census\",\"cycle\":%u,\"checkpoint\":\"%s\",\"accepted_originals\":%u,\"output_originals\":%u,\"accepted_private\":%u,\"output_private\":%u,\"pending_private\":%u,\"current_private_outputs\":%u,\"rx_acquired\":%u,\"rx_released\":%u,\"same_handle\":true,\"eos\":%s,\"elapsed_ms\":%.3f}\n",
+            cycle,checkpoint,accepted,real,accepted_private,privates,accepted_private-privates,cycle?per_cycle_private.at(cycle-1):0,rx_acquired,rx_released,eos?"true":"false",elapsed());fflush(stdout);
+    };
+    uint64_t prefed_token=0;
+    for(unsigned repeat=0;repeat<repeats;++repeat)for(unsigned i=0;i<180;++i) {
+        const unsigned ordinal=repeat*180+i+1;const uint64_t token=uint64_t(ordinal)*100000;
+        phase="original-input";send(source[i].data,token==prefed_token?0:token,"original",ordinal);prefed_token=0;
+        if(cycle>=cycles||std::none_of(plans.begin(),plans.end(),[&](const Plan &p){return p.boundary==i+1;}))continue;
+        ++cycle;const auto &plan=*std::find_if(plans.begin(),plans.end(),[&](const Plan &p){return p.boundary==i+1;});
+        census("before-private");phase="private-input";
+        if(dummy) {
+            for(unsigned j=0;j<5;++j) {
+                send(prefix,private_base+uint64_t((cycle-1)*5+j)*kPrivateStep,"private-prefix",(cycle-1)*5+j+1);
+                send(plan.units[j],0,"private-vcl",(cycle-1)*5+j+1);
+            }
+            prefed_token=uint64_t(ordinal+1)*100000;
+            send(prefix,prefed_token,"next-original-prefix",ordinal+1);
+        }
+        census("after-prefix-alone");wait(600);need(!eos,"no EOS before repeated idle");census("before-idle");
+        phase="input-idle";wait(100);need(!eos,"no EOS during repeated idle");census("after-idle");
+    }
+    need(cycle==cycles&&accepted==total&&accepted_private==private_expected&&!prefed_token,"all planned input/pauses complete before true end");
+    phase="terminal-eos";good("DtsFlushInput",api.DtsFlushInput(owner,0));flush=true;
+    while(!eos||ready){bounded();receive();usleep(1000);}
+    census("after-terminal-eos");
+    need(actual_order==expected_order&&real==total&&privates==private_expected&&rx_acquired==rx_released,"complete original order/identity and all private retirement");
+    if(reference)write_frames(output+"/native-cycle-reference.bin",reference_frames);
+    decoder.finish();
+    printf("{\"type\":\"cycle-result\",\"mode\":\"%s\",\"cycles\":%u,\"repeats\":%u,\"originals\":%u,\"private\":%u,\"rx_acquired\":%u,\"rx_released\":%u,\"watchdog_seconds\":%u,\"same_channel\":true,\"strict_identity_pixels_flags_order\":true,\"eos_only_at_true_end\":true,\"wall_ms\":%.3f,\"pass\":true}\n",
+        mode.c_str(),cycles,repeats,real,privates,rx_acquired,rx_released,watchdog_seconds,elapsed());
+    return 0;
+}
+
 int main(int argc,char **argv) {
     try {
+        if(argc==5&&(std::string(argv[3])=="cycles-reference"||std::string(argv[3])=="cycles-none"||std::string(argv[3])=="cycles-next"))
+            return cycle_run(argv[1],argv[2],argv[3],argv[4]);
         need(argc==4||argc==6||argc==7||argc==8,"usage: h264-stop-kick G0_DIRECTORY RESULT_DIRECTORY MODE [BOUNDARY PRIVATE_COUNT [raw|prefed|adjacent]]; pts-idle|pts-preflight requires 18 5 next|previous|reserved-near|reserved-far|untimed zero|own");
         std::string input=argv[1],output=argv[2],mode=argv[3];
         const bool preflight=mode=="pts-preflight";
