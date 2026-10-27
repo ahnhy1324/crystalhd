@@ -1626,5 +1626,118 @@
       "reason": "Exact hardware PTS pass, but first post-flush epoch has zero render acceptances before next seek. Targeted FHD replay waits for matching-epoch output then subsequent render acceptance."
     }
   ],
-  "source_PTS_table_scope": "Accepted inputs are coded order and returned pictures display order, compared after sorting accepted values. Seek cases are separate flush epochs; never pair TSV columns as per-AU identity."
+  "source_PTS_table_scope": "Accepted inputs are coded order and returned pictures display order, compared after sorting accepted values. Seek cases are separate flush epochs; never pair TSV columns as per-AU identity.",
+  "VA_60p_causal_followup": {
+    "case": "va-causal-v1-1280-60-0-va",
+    "status": "CAUSE_IDENTIFIED_FOR_THIS_DIAGNOSTIC_RUN_ONLY",
+    "frame_census_result": "FAIL:1796/1800 retained",
+    "runtime": "Original published bundled FFmpeg9.0.2 in unchanged Kodi22RC1; same installedVA12dc/DIL547 and temporarydriver830 as above, not the replacement FFmpeg timing prefix.",
+    "actual_decode_inputs": 1800,
+    "metadata_probe_contexts_excluded": 2,
+    "returned_VA_frames": 1796,
+    "skip_frame_counts": {
+      "0": 1784,
+      "8": 16
+    },
+    "packet_evidence": "kodi-va-causal-20261028.tsv",
+    "packet_binding": "Actual accepted source PTS and payload byte count matched to bounded AVCC packet parsing, timebase1/15360. nal_ref_idc is read from source VCL NAL headers. No pixel/FIFO identity inference.",
+    "source_of_discard": "Unmodified Kodi SetCodecControl DROP_ANY0x10000000 sets AVCodecContext.skip_frame=AVDISCARD_NONREF8; independently verified header offset704 and actual binary writes.",
+    "missing_original_PTS_us": [
+      21933333,
+      21966666,
+      22083333,
+      24033333
+    ],
+    "skip8_controls": [
+      {
+        "returned": true,
+        "VCL_nal_ref_idc_values": [
+          2
+        ],
+        "packets": 10
+      },
+      {
+        "returned": false,
+        "VCL_nal_ref_idc_values": [
+          0
+        ],
+        "packets": 4
+      },
+      {
+        "returned": true,
+        "VCL_nal_ref_idc_values": [
+          3
+        ],
+        "packets": 2
+      }
+    ],
+    "all_1784_skip0_originals_return": true,
+    "returned_PTS_exactly_all_inputs_except_four_nonreference_discards": true,
+    "downstream_counts": {
+      "VA_End_success": 1796,
+      "DIL_picture_outputs": 1796,
+      "DIL_unique_output_tokens": 1796,
+      "DIL_successful_releases": 1796,
+      "AV_VA_frames": 1796,
+      "render_queue_acceptances": 1796
+    },
+    "DIL_transport_calls": 3592,
+    "DIL_transport_scope": "Prefeed/payload transport includes token0 and the next reserved token; not3592 source pictures.",
+    "last_returned_pts_us": 29983333,
+    "firmware_terminal_EOS": "NOT PROVEN: no DtsSendEOS call observed.",
+    "boundary_equal": true,
+    "original_module_restored": "3.10.13",
+    "kernel_check": "PASS",
+    "scope": [
+      "The four missing originals are midstream; full source tail is present. Deficit occurs before VA EndPicture/driver submission.",
+      "Older uninstrumented1798 results remain FAIL with unassigned root; this does not retroactively classify them.",
+      "Read-only probes add load. Not a quiet benchmark, a zero-drop claim or production-support qualification.",
+      "No external application changes or bypass of legitimate QoS. Physical AV/scanout/E2E/power not measured."
+    ]
+  },
+  "VA_heap_late_attach_followup": {
+    "method": "Attach GDB after natural playback close/join, VA close, no active player and ref/pin baseline; break at actual runtime malloc_printerr and SIGABRT, immediately before Application.Quit. Playback itself is not ptrace-traced.",
+    "cases": [
+      {
+        "case": "late-gdb-v1-1280-30-0-va",
+        "frame_census_status": "PASS",
+        "returned_VA_frames": 900,
+        "expected": 900,
+        "app_exit": 0,
+        "allocator_fault_observed": false,
+        "full_post_exit_boundary_equal": true
+      },
+      {
+        "case": "late-gdb-v1-1280-30-1-va",
+        "frame_census_status": "PASS",
+        "returned_VA_frames": 900,
+        "expected": 900,
+        "app_exit": 0,
+        "allocator_fault_observed": false,
+        "full_post_exit_boundary_equal": true
+      },
+      {
+        "case": "late-gdb-v2-1280-30-0-va",
+        "frame_census_status": "PASS",
+        "returned_VA_frames": 900,
+        "expected": 900,
+        "app_exit": 0,
+        "allocator_fault_observed": false,
+        "full_post_exit_boundary_equal": true
+      },
+      {
+        "case": "late-gdb-v2-1280-30-1-va",
+        "frame_census_status": "FAIL",
+        "returned_VA_frames": 898,
+        "expected": 900,
+        "app_exit": 0,
+        "allocator_fault_observed": false,
+        "full_post_exit_boundary_equal": true
+      }
+    ],
+    "status": "NOT REPRODUCED IN FOUR COMPLETED SHUTDOWNS; ROOT STILL UNCONFIRMED",
+    "preserved_incomplete_batch": "late-gdb-v2 planned8, stopped after2 because second had898/900 frame census FAIL; only4 total shutdowns includingv1, not10 or a completed8casebatch.",
+    "restoration": "Both batches restore original3.10.13 and dependencies/ref/pin/PM/link/AER, kernel checks PASS.",
+    "limits": "No fault stack captured. Normal exits do not fix original allocator aborts. The untraced898-frame cause is not assigned from the separate60p causal run."
+  }
 }

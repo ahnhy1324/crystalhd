@@ -383,4 +383,12 @@ unsupported standard nonempty STOP/START contract remain; this is not a new
 production-support claim. Installed defaults, external sources, legacy ABI,
 firmware and #114/#115 are unchanged.
 
+A separate traced VA 60p run locates four midstream omissions **before driver
+submission**: all four are non-reference packets accepted with `skip_frame=8`
+under the client's ordinary catch-up policy. All 1,796 submitted VA pictures
+return through DIL, FFmpeg and renderer-queue acceptance; the final source frame
+is present. The [packet table](../../tests/fixtures/issue538/kodi-va-causal-20261028.tsv)
+and receipt retain this diagnostic FAIL and its probe overhead. This establishes
+this run's cause; the earlier untraced 1,798-frame results remain unassigned.
+
 ![Built-in Kodi CPU and process RSS](../../tests/fixtures/issue538/kodi-native-v4l2-20261028.svg)
