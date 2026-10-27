@@ -63,11 +63,11 @@ static GLuint program(bool external) {
 }
 struct Picture {
  unsigned w,h;GLuint fbo=0,output=0,packed=0,external_program=0,packed_program=0;
- Picture(unsigned width,unsigned height):w(width),h(height) {
+ Picture(unsigned width,unsigned height,bool packed_storage=true):w(width),h(height) {
   external_program=program(true);packed_program=program(false);
   glGenTextures(1,&output);glBindTexture(GL_TEXTURE_2D,output);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
   glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,output,0);need(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE,"output FBO");
-  glGenTextures(1,&packed);glBindTexture(GL_TEXTURE_2D,packed);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,w/2,h,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);need(glGetError()==GL_NO_ERROR,"picture allocation");
+  if(packed_storage){glGenTextures(1,&packed);glBindTexture(GL_TEXTURE_2D,packed);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,w/2,h,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);}need(glGetError()==GL_NO_ERROR,"picture allocation");
  }
  void draw(bool external,GLuint texture) {
   GLuint p=external?external_program:packed_program;glBindFramebuffer(GL_FRAMEBUFFER,fbo);glViewport(0,0,w,h);glUseProgram(p);glActiveTexture(GL_TEXTURE0);glBindTexture(external?GL_TEXTURE_EXTERNAL_OES:GL_TEXTURE_2D,texture);glUniform1i(glGetUniformLocation(p,"tex"),0);if(!external)glUniform1f(glGetUniformLocation(p,"width"),w);
