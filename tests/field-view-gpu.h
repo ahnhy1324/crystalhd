@@ -16,6 +16,47 @@
 
 using yuy2_gpu::need;
 
+struct FieldSyncAPI {
+    EGLDisplay display;
+    PFNEGLCREATESYNCKHRPROC create=nullptr;
+    PFNEGLDESTROYSYNCKHRPROC destroy=nullptr;
+    PFNEGLCLIENTWAITSYNCKHRPROC wait=nullptr;
+    bool supported=false;
+    explicit FieldSyncAPI(EGLDisplay d):display(d) {
+        const char *egl=eglQueryString(d,EGL_EXTENSIONS);
+        const char *gl=reinterpret_cast<const char *>(glGetString(GL_EXTENSIONS));
+        supported=egl&&gl&&strstr(egl,"EGL_KHR_fence_sync")&&strstr(gl,"GL_OES_EGL_sync");
+        if(!supported)return;
+        create=reinterpret_cast<PFNEGLCREATESYNCKHRPROC>(eglGetProcAddress("eglCreateSyncKHR"));
+        destroy=reinterpret_cast<PFNEGLDESTROYSYNCKHRPROC>(eglGetProcAddress("eglDestroySyncKHR"));
+        wait=reinterpret_cast<PFNEGLCLIENTWAITSYNCKHRPROC>(eglGetProcAddress("eglClientWaitSyncKHR"));
+        need(create&&destroy&&wait,"field fence functions");
+    }
+};
+struct FieldCompletion {
+    FieldSyncAPI &api;
+    EGLSyncKHR sync=EGL_NO_SYNC_KHR;
+    explicit FieldCompletion(FieldSyncAPI &a):api(a) {
+        need(api.supported,"supported source completion fence");
+        sync=api.create(api.display,EGL_SYNC_FENCE_KHR,nullptr);
+        need(sync!=EGL_NO_SYNC_KHR,"source completion fence");
+        glFlush(); // Submit the fence as well as its preceding draws.
+    }
+    bool ready(EGLTimeKHR timeout=0) {
+        const EGLint status=api.wait(api.display,sync,0,timeout);
+        need(status==EGL_CONDITION_SATISFIED_KHR||status==EGL_TIMEOUT_EXPIRED_KHR,
+             "source fence wait");
+        return status==EGL_CONDITION_SATISFIED_KHR;
+    }
+    bool release() noexcept {
+        if(sync==EGL_NO_SYNC_KHR)return true;
+        if(!api.destroy(api.display,sync))return false;
+        sync=EGL_NO_SYNC_KHR;return true;
+    }
+    FieldCompletion(const FieldCompletion &)=delete;
+    ~FieldCompletion(){release();}
+};
+
 [[maybe_unused]] static double clock_seconds(clockid_t clock) {
     timespec value{};
     need(clock_gettime(clock, &value) == 0, "clock");
@@ -94,6 +135,7 @@ struct Image {
     EGLImageKHR image = EGL_NO_IMAGE_KHR;
     GLuint texture = 0;
     EGLint error = EGL_SUCCESS;
+    bool uses_completed=false;
     template<class Source>
     Image(yuy2_gpu::GPU &g, Source &source, bool field, unsigned parity,
           EGLint matrix=EGL_ITU_REC709_EXT, bool trace=true)
@@ -140,7 +182,7 @@ struct Image {
     }
     Image(const Image &) = delete;
     ~Image() {
-        glFinish();
+        if(!uses_completed)glFinish();
         if (texture) glDeleteTextures(1, &texture);
         if (image != EGL_NO_IMAGE_KHR) gpu.destroy(gpu.display, image);
     }
@@ -175,11 +217,12 @@ struct GbmAllocation {
         throw;
       }
     }
-    void write(const uint8_t *source,size_t stride,size_t available) {
+    void write(const uint8_t *source,size_t stride,size_t available,bool storage_retired=false) {
         need(source&&stride>=width*2&&stride<=SIZE_MAX/height&&
              available>=(height-1)*stride+width*2,"GBM mapped source extent");
         // Caller has completed both uses and destroyed the old field images.
-        glFinish();uint32_t mapped_pitch=0;void *handle=nullptr;
+        if(!storage_retired)glFinish();
+        uint32_t mapped_pitch=0;void *handle=nullptr;
         auto *data=static_cast<uint8_t *>(gbm_bo_map(bo,0,0,width/2,height+8,
                                       GBM_BO_TRANSFER_WRITE,&mapped_pitch,&handle));
         if(data&&mapped_pitch<width*2){gbm_bo_unmap(bo,handle);need(false,"GBM transfer pitch");}

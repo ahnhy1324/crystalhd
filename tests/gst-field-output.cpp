@@ -93,6 +93,52 @@ static void retirement_pixels() {
     }
     printf("{\"type\":\"retirement-pixels\",\"generations\":4,\"comparisons\":8,\"pass\":true}\n");
 }
+static void slot_retirement_pixels(bool fallback) {
+    crystalhd_field::Window window(0);
+    yuy2_gpu::GPU gpu("/dev/dri/renderD128",window.display,window.context);
+    FieldSyncAPI sync(gpu.display);
+    if(fallback)sync.supported=false;
+    crystalhd_field::Counters stats;
+    GstVideoInfo info{};gst_video_info_set_format(&info,GST_VIDEO_FORMAT_YUY2,1280,720);
+    info.colorimetry.matrix=GST_VIDEO_COLOR_MATRIX_BT709;
+    Renderer top0(1280,720,1920,1080),bottom0(1280,720,1920,1080);
+    Renderer top1(1280,720,1920,1080),bottom1(1280,720,1920,1080);
+    unsigned comparisons=0;
+    for(unsigned round=0;round<2;++round) {
+        std::unique_ptr<crystalhd_field::SourceSlot> slots[2];
+        for(auto &slot:slots)slot=std::make_unique<crystalhd_field::SourceSlot>(gpu,1280,720,stats,sync);
+        auto upload=[&](unsigned index,unsigned generation) {
+            const auto source=pattern(1280,720,generation);
+            auto *buffer=gst_buffer_new_allocate(nullptr,source.size(),nullptr);
+            need(buffer,"slot test source");gst_buffer_fill(buffer,0,source.data(),source.size());
+            slots[index]->prepare(gpu,info,buffer,generation,true);gst_buffer_unref(buffer);
+            need(GST_MINI_OBJECT_REFCOUNT_VALUE(slots[index]->retained)==1,"slot owns the exact source reference");
+            return source;
+        };
+        const auto first=upload(0,round*3);
+        top0.draw_to(*slots[0]->views[0],true,0,top0.picture.fbo,0,0,1920,1080,false,false,false);
+        bottom0.draw_to(*slots[0]->views[1],true,1,bottom0.picture.fbo,0,0,1920,1080,false,false,false);
+        slots[0]->checkpoint();
+        const auto second=upload(1,round*3+1);
+        top1.draw_to(*slots[1]->views[0],true,0,top1.picture.fbo,0,0,1920,1080,false,false,false);
+        bottom1.draw_to(*slots[1]->views[1],true,1,bottom1.picture.fbo,0,0,1920,1080,false,false,false);
+        slots[1]->checkpoint();
+        // Reuse the first BO while the other generation is still retained.
+        // No readback or context-wide finish preceded this fenced reuse.
+        upload(0,round*3+2);
+        need(stats.retained==2&&stats.images==4,"independent live source slots");
+        for(auto item:{std::make_pair(&top0,0U),std::make_pair(&bottom0,1U),
+                       std::make_pair(&top1,0U),std::make_pair(&bottom1,1U)}) {
+            glBindFramebuffer(GL_FRAMEBUFFER,item.first->picture.fbo);
+            verify_scaled(*item.first,item.first==&top0||item.first==&bottom0?first:second,
+                          item.second,"independent-slot-fenced-reuse");++comparisons;
+        }
+        for(auto &slot:slots){slot->retire();slot.reset();}
+        need(!stats.retained&&!stats.images&&!stats.allocations&&!stats.fences_live,"all slots retired");
+        need(stats.fences_created==stats.fences_destroyed,"all slot fences destroyed");
+    }
+    printf("{\"type\":\"slot-retirement-pixels\",\"fence_supported\":%s,\"forced_fallback\":%s,\"comparisons\":%u,\"resources_after_close\":0,\"pass\":true}\n",sync.supported?"true":"false",fallback?"true":"false",comparisons);
+}
 static guint64 counter(GstElement *sink,const char *key) {
     GstStructure *stats=nullptr;g_object_get(sink,"field-stats",&stats,nullptr);
     guint64 value=0;need(stats&&gst_structure_get_uint64(stats,key,&value),"counter");
@@ -143,7 +189,8 @@ static void pipeline(bool cancel) {
         need(gst_element_set_state(pipeline,GST_STATE_NULL)!=GST_STATE_CHANGE_FAILURE,"synthetic NULL");
         const double stop_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
         need(stop_ms<1000,"bounded cancellation/close");
-        for(const char *key:{"allocations","images","retained-buffers","failures"})need(!counter(sink,key),"clean worker retirement");
+        for(const char *key:{"allocations","images","retained-buffers","fences-live","failures"})need(!counter(sink,key),"clean worker retirement");
+        need(counter(sink,"fences-created")==counter(sink,"fences-destroyed"),"all worker fences destroyed");
         printf("{\"type\":\"pipeline\",\"synthetic\":true,\"cancel\":%s,\"run\":%u,\"fields\":%llu,\"prerolls\":%llu,\"cancelled\":%llu,\"stop_ms\":%.3f,\"resources_after_null\":0,\"pass\":true}\n",
             cancel?"true":"false",run,static_cast<unsigned long long>(counter(sink,"fields")-before),
             static_cast<unsigned long long>(counter(sink,"prerolls")),static_cast<unsigned long long>(counter(sink,"cancelled")),stop_ms);
@@ -182,7 +229,7 @@ int main(int argc,char **argv) {
         need(temperature()<75000,"start temperature below75C");
         need(gst_element_register(nullptr,"crystalhdfieldsink",GST_RANK_NONE,gst_crystalhd_field_get_type()),"register experimental sink");
         if(argc==3&&(std::string(argv[1])=="--card"||std::string(argv[1])=="--card-direct"))card(argv[2],std::string(argv[1])=="--card");
-        else {need(argc==1,"usage: gst-field-output [--card|--card-direct 50-picture.h264]");pixels();retirement_pixels();pipeline(false);pipeline(true);}
+        else {need(argc==1,"usage: gst-field-output [--card|--card-direct 50-picture.h264]");pixels();retirement_pixels();slot_retirement_pixels(false);slot_retirement_pixels(true);pipeline(false);pipeline(true);}
         return 0;
     }catch(const std::exception &error){fprintf(stderr,"FAIL: %s\n",error.what());return 1;}
 }
