@@ -82,7 +82,8 @@ jobs:
           git -C "$kodi_probe_sdk" sparse-checkout init --cone
           git -C "$kodi_probe_sdk" sparse-checkout set xbmc/addons/kodi-dev-kit
           git -C "$kodi_probe_sdk" checkout --detach FETCH_HEAD
-          make -C tools/kodi-route-probe all native native-trace rgb-test check check-codec \
+          make -C tools/kodi-route-probe all native native-trace rgb-test \
+            playback playback-trace check check-codec check-playback check-playback-codec \
             KODI_SDK_INCLUDE="$kodi_probe_sdk/xbmc/addons/kodi-dev-kit/include"
           ffmpeg -v error -nostdin -f lavfi -i testsrc2=size=64x48:rate=10 \
             -f lavfi -i sine=frequency=440:sample_rate=48000 \

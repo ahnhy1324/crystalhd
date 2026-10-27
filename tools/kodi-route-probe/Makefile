@@ -12,7 +12,7 @@ RGB_OUTPUT := build-rgb/$(ADDON)
 PLAYBACK_OUTPUT := build-playback/$(ADDON)
 PLAYBACK_TRACE := build-playback-trace/$(ADDON)
 
-.PHONY: all native native-trace rgb-test playback playback-trace check check-codec check-demux check-playback clean
+.PHONY: all native native-trace rgb-test playback playback-trace check check-codec check-demux check-playback check-playback-codec clean
 all: $(OUTPUT)/$(ADDON).so $(OUTPUT)/addon.xml
 native: $(NATIVE_OUTPUT)/$(ADDON).so $(NATIVE_OUTPUT)/addon.xml
 native-trace: $(TRACE_OUTPUT)/$(ADDON).so $(TRACE_OUTPUT)/addon.xml
@@ -57,17 +57,22 @@ check: build/kodi-route-native-test
 	./build/kodi-route-native-test
 
 build/kodi-route-codec-test: TEST_SOURCE := ../../tests/kodi-route-codec.cpp
+build/kodi-playback-codec-test: TEST_SOURCE := ../../tests/kodi-route-codec.cpp
+build/kodi-playback-codec-test: PLAYBACK_TEST_FLAGS := -DCRYSTALHD_KODI_PLAYBACK
 build/kodi-route-demux-test: TEST_SOURCE := ../../tests/kodi-route-demux.cpp
-build/kodi-route-codec-test build/kodi-route-demux-test: ../../tests/kodi-route-codec.cpp ../../tests/kodi-route-demux.cpp probe.cpp native.cpp native.h packed.h input-progress.h
+build/kodi-route-codec-test build/kodi-route-demux-test build/kodi-playback-codec-test: ../../tests/kodi-route-codec.cpp ../../tests/kodi-route-demux.cpp probe.cpp native.cpp native.h packed.h input-progress.h playback.h
 	@test -n "$(KODI_SDK_INCLUDE)" || { echo 'Set KODI_SDK_INCLUDE for the callback contract test'; exit 1; }
 	mkdir -p "$(@D)"
-	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Werror $(CPPFLAGS) $(CXXFLAGS) -DCRYSTALHD_KODI_NATIVE -DCRYSTALHD_KODI_TEST \
+	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Werror $(CPPFLAGS) $(CXXFLAGS) $(PLAYBACK_TEST_FLAGS) -DCRYSTALHD_KODI_NATIVE -DCRYSTALHD_KODI_TEST \
 		-isystem "$(KODI_SDK_INCLUDE)" $(shell $(PKG_CONFIG) --cflags $(PACKAGES) $(GST_PACKAGES)) \
 		$(TEST_SOURCE) native.cpp \
 		$(shell $(PKG_CONFIG) --libs $(PACKAGES) $(GST_PACKAGES)) $(LDFLAGS) -o "$@"
 
 check-codec: build/kodi-route-codec-test
 	./build/kodi-route-codec-test
+
+check-playback-codec: build/kodi-playback-codec-test
+	./build/kodi-playback-codec-test
 
 check-demux: build/kodi-route-demux-test
 	@test -n "$(TEST_MP4)" || { echo 'Set TEST_MP4 to an absolute H264/AAC fixture path'; exit 1; }
