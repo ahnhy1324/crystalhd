@@ -302,6 +302,77 @@ struct Renderer {
     ~Renderer() { glDeleteProgram(program); glDeleteProgram(affine_program); }
 };
 
+// Alternative consumer: convert the complete picture once on the GPU, then
+// select its original rows for each field. The RGB cache and YUYV source stay
+// immutable until both window submissions have completed. No CPU Bob output.
+struct FieldRGBCache {
+    unsigned width,height;
+    GLuint texture=0,fbo=0,convert=0,present=0;
+    FieldRGBCache(unsigned w,unsigned h):width(w),height(h) {
+      try {
+        need(w&&h&&!(h&1),"RGB cache geometry");
+        const char *vertex="attribute vec2 pos;uniform float flip;varying vec2 uv;"
+            "void main(){uv=(pos+1.0)*0.5;gl_Position=vec4(pos.x,pos.y*(1.0-2.0*flip),0.0,1.0);}";
+        convert=Renderer::link(vertex,
+            "#extension GL_OES_EGL_image_external : require\n"
+            "precision highp float;varying vec2 uv;uniform samplerExternalOES tex;"
+            "void main(){gl_FragColor=vec4(texture2D(tex,uv).rgb,1.0);}");
+        present=Renderer::link(vertex,
+            "precision highp float;varying vec2 uv;uniform sampler2D tex;"
+            "uniform vec2 size;uniform vec2 shift;uniform float field;uniform float parity;"
+            "void main(){vec2 p=uv+shift;"
+            "if(field>0.5){float row=clamp(floor(p.y*size.y*0.5),0.0,size.y*0.5-1.0);"
+            "p.y=(2.0*row+parity+0.5)/size.y;}"
+            "gl_FragColor=vec4(texture2D(tex,p).rgb,1.0);}");
+        glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,texture,0);
+        need(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE&&
+             glGetError()==GL_NO_ERROR,"RGB cache allocation");
+      }catch(...){cleanup();throw;}
+    }
+    static void quad() {
+        static const float positions[]={-1,-1,1,-1,-1,1,1,1};
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,positions);
+        glEnableVertexAttribArray(0);glDrawArrays(GL_TRIANGLE_STRIP,0,4);
+    }
+    void build(const Image &image) {
+        need(image.texture,"RGB cache full-picture import");
+        glBindFramebuffer(GL_FRAMEBUFFER,fbo);glViewport(0,0,width,height);
+        glUseProgram(convert);glUniform1f(glGetUniformLocation(convert,"flip"),0);
+        glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_EXTERNAL_OES,image.texture);
+        glUniform1i(glGetUniformLocation(convert,"tex"),0);quad();glFlush();
+        need(glGetError()==GL_NO_ERROR,"RGB cache conversion submission");
+    }
+    void draw_to(bool interlaced,unsigned parity,GLuint target,int x,int y,
+                 unsigned w,unsigned h,bool flip) {
+        need(parity<2&&w&&h,"RGB field presentation geometry");
+        glBindFramebuffer(GL_FRAMEBUFFER,target);glViewport(x,y,w,h);glUseProgram(present);
+        glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,texture);
+        glUniform1i(glGetUniformLocation(present,"tex"),0);
+        glUniform1f(glGetUniformLocation(present,"flip"),flip?1:0);
+        glUniform2f(glGetUniformLocation(present,"size"),width,height);
+        glUniform2f(glGetUniformLocation(present,"shift"),nearest_bias(width,w,2),
+                    nearest_bias(height,h,interlaced?int(parity):2));
+        glUniform1f(glGetUniformLocation(present,"field"),interlaced?1:0);
+        glUniform1f(glGetUniformLocation(present,"parity"),parity);
+        quad();glFlush();need(glGetError()==GL_NO_ERROR,"RGB field submission");
+    }
+    void cleanup() {
+        if(fbo)glDeleteFramebuffers(1,&fbo);
+        if(texture)glDeleteTextures(1,&texture);
+        if(convert)glDeleteProgram(convert);
+        if(present)glDeleteProgram(present);
+    }
+    FieldRGBCache(const FieldRGBCache &)=delete;
+    ~FieldRGBCache(){glFinish();cleanup();}
+};
+
 [[maybe_unused]] static void verify_scaled(Renderer &renderer, const std::vector<uint8_t> &source,
                           unsigned parity, const char *path) {
     const unsigned w=renderer.picture.w, h=renderer.picture.h;
