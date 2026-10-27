@@ -215,6 +215,33 @@ not enter Moonlight's FFmpeg/VA path; actual Sunshine retesting is NOT RUN.
 
 ![Five longest swaps and their nested graphics waits](native-wait-attribution-20261027.svg)
 
+The [next bounded discriminators](native-wait-discriminators-20261027.json)
+measure the current **50 Hz** display, rather than reusing the older 60 Hz
+conditions. At `4073f51`, both interval requests are accepted:
+
+| Requested swap interval | Timed fields / 1,500 | Maximum actual swap |
+| --- | ---: | ---: |
+| 1 | 1,321 | 53.770 ms |
+| 0 | 1,331 | 52.472 ms |
+
+Interval 0 does not remove the graphics wait; one run per arm does not
+establish a throughput gain. It is an explicit diagnostic build, with no
+ordinary renderer setting/default change or physical tearing claim.
+
+Source `c689c7f` additionally reads the exported sync-file's kernel-recorded
+signal timestamp. All 1,323 samples provide one signaled fence. In all 156
+swaps lasting at least 30 ms, that fence is recorded signaled **after** swap
+return. The worst swap lasts 54.189 ms; kernel signal is at +57.937 ms and
+the C++ poll observer at +58.001 ms. Its 65 µs observer delay does not explain
+the long call. This is kernel completion signaling, not GPU hardware elapsed
+time: queued dependencies, GPU execution and driver/IRQ signal delay remain
+unseparated. The source-retirement barrier stays intact and the tail remains
+unresolved. Three native runs each decode 750 originals, account for all
+1,500 fields including expiry, reach EOS and retire owned resources; scoped
+kernel/boundary checks pass. Physical A/V for these sources is NOT RUN.
+
+![Interval control and independent signal timing](native-wait-discriminators-20261027.svg)
+
 ## Offscreen EGL field-view probe
 
 One immutable linear YUYV allocation supplies top/bottom EGLImages with
