@@ -341,6 +341,17 @@ Kodi trial. It does not launch Kodi or load a module. Use the **whole matching
 shared-library set** in the private runtime; overlaying only `libavcodec` is
 insufficient. This minimum build is not a general FFmpeg replacement.
 
+A [no-local-build study](../../tests/fixtures/issue539/native-runtime-activation-20261028.json)
+now activates the same matched libraries from a freshly extracted private archive
+in the pinned Kodi 22 / Platform 26.08 environment, without compiler tools in
+that runtime. Both sizes pass pause/seek/EOS/reopen; removing the private extract
+leaves original-bundle VA playback working. The 8,017,920-byte archive excludes
+Kodi/Platform/GL and the experimental driver. It is **not a public installer**:
+Core2/glibc 2.43 dependencies, corresponding-source/notices, neutral build paths
+and update ownership still require a distribution decision under
+[#539](https://github.com/ahnhy1324/crystalhd/issues/539). This is same-host
+isolated activation, not an independent clean-OS or physical A/V qualification.
+
 On Core 2 Duo T8100 / Intel 965GM / Ubuntu 26.04.1, 30-second H.264 (High at 30p, Main at 60p; both B2)
 plus AAC, source-size GPU headless output at 60 Hz, fresh profile/process per
 arm, VA → native → native → VA:

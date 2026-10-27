@@ -1,0 +1,737 @@
+{
+  "schema": 1,
+  "issue": 539,
+  "date": "2026-10-28",
+  "decision": "PASS for private same-host fresh-prefix native activation, removal/VA fallback and re-extraction without compiling FFmpeg. NOT RUN on an independently clean OS. No public installer or binary distribution; experimental support boundaries unchanged.",
+  "source_roles": {
+    "FFmpeg_source": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "published_FFmpeg": "https://github.com/jc-kynesim/rpi-ffmpeg/tree/12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "FFmpeg_source_modifications": false,
+    "FFmpeg_binary_version_banner": "12cc1f4; 9.0.2-based published branch",
+    "build_helper": "199dee43918f765cfd628eef2612e1947e762ff0",
+    "native_driver_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+    "native_driver_runtime": "Temporary3.10.14/E3D1535AB4C470BC21D6E32",
+    "Kodi_published_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "Kodi_OSTree": "0a381e42781914ae76ed338d3aa11f9403c55c57f5c9c194e1f4fb437cf71630",
+    "Platform26_08_OSTree": "e7f7b0fb20662fe92e4eac65d58a57019cefae45a39559c4b50440a88acc0491",
+    "Platform_GL_default26_08_OSTree": "25dbbb0cd3a63b2ef8a24ee948ad43998960f3e2bea713263742cc076840aec2",
+    "analysis_checkout_at_activation": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+    "analysis_checkout_scope": "Recorded checkout for analysis/data only; not a rebuilt FFmpeg/Kodi/driver payload or a transferred CI result.",
+    "fallback_DIL": "54752a1af514eb673b563fb80b6df6600223a666",
+    "fallback_VA_plugin": "Unchanged installed plugin; build-id12dc033b87ad4501b8ba93ba415867b1e4ff9ff8. Exact installed VA source revision not asserted."
+  },
+  "environment": {
+    "host": "Same existing Ubuntu26.04.1LTS/Core2DuoT8100/Intel965GM/BCM70015 development machine",
+    "output": "GPU headless Wayland at source dimensions/60Hz; AAC to a nondefault null sink",
+    "new_private_prefix": true,
+    "host_has_development_tools_outside_namespace": true,
+    "FFmpeg_or_Kodi_builds_during_archive_staging_extract_or_activation": 0,
+    "compiler_tools_absent_inside_App_Platform_namespace": {
+      "cc": null,
+      "gcc": null,
+      "g++": null,
+      "c++": null,
+      "clang": null,
+      "clang++": null,
+      "make": null,
+      "nasm": null,
+      "yasm": null,
+      "meson": null,
+      "ninja": null
+    },
+    "observers": "Read-only codec/render/ioctl probes target the newly extracted codec/util files. Host bpftrace observation is test instrumentation, not an end-user runtime requirement.",
+    "physical_display_speaker_AV": "NOT RUN"
+  },
+  "private_artifact": {
+    "archive": "crystalhd-native-ffmpeg-core2-12cc1f42-private.tar",
+    "archive_bytes": 8017920,
+    "uncompressed": true,
+    "real_runtime_binary_bytes": 7931560,
+    "real_DSO_count": 7,
+    "SONAME_symlink_count": 7,
+    "includes": "Seven matching FFmpegDSOs/relativeSONAMElinks, ffmpeg/ffprobe, LGPL/license/NOTICE and source/config/runtime metadata.",
+    "excludes": "Kodi, Platform, GL extension, kernel driver, firmware, corresponding full source bundle and public installer.",
+    "one_complete_extracted_binary_byte_compare": "PASS; existing qualified originals copied without binary/source patching",
+    "relocation": "All seven extractedDSOs loaded from the process-local native-prefix mount; noRPATH/RUNPATH or global library replacement.",
+    "CPU_and_ABI": "Actual-march=core2, x86_64 only; libavcodec63/libswscale10 require atan2f@GLIBC_2.43, supplied by pinnedPlatform26.08. Do not labelgeneric or nativei386.",
+    "shared_library_versions": {
+      "libavcodec.so.63": [
+        63,
+        1,
+        102
+      ],
+      "libavdevice.so.63": [
+        63,
+        1,
+        102
+      ],
+      "libavfilter.so.12": [
+        12,
+        1,
+        102
+      ],
+      "libavformat.so.63": [
+        63,
+        1,
+        102
+      ],
+      "libavutil.so.61": [
+        61,
+        1,
+        102
+      ],
+      "libswresample.so.7": [
+        7,
+        1,
+        102
+      ],
+      "libswscale.so.10": [
+        10,
+        1,
+        102
+      ]
+    },
+    "h264_v4l2m2m_HW_configs": [
+      {
+        "pix_fmt": 178,
+        "format": "drm_prime",
+        "methods": 4,
+        "device_type": 0
+      }
+    ],
+    "required_external_SONAMEs": [
+      "libc.so.6",
+      "libm.so.6",
+      "libva.so.2",
+      "libva-drm.so.2",
+      "libdrm.so.2",
+      "libz.so.1"
+    ],
+    "configuration": [
+      "--prefix=PRIVATE_BUILD_PREFIX_OMITTED",
+      "--enable-shared",
+      "--disable-static",
+      "--disable-doc",
+      "--disable-debug",
+      "--disable-autodetect",
+      "--disable-everything",
+      "--enable-ffmpeg",
+      "--enable-ffprobe",
+      "--disable-ffplay",
+      "--enable-libdrm",
+      "--enable-zlib",
+      "--enable-vaapi",
+      "--enable-v4l2-m2m",
+      "--enable-runtime-cpudetect",
+      "--cpu=core2",
+      "--enable-decoder=h264,h264_v4l2m2m,aac,pcm_s16le,pcm_s16be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,pcm_u8,png,mjpeg",
+      "--enable-hwaccel=h264_vaapi",
+      "--enable-parser=h264,aac,aac_latm,png,mjpeg",
+      "--enable-bsf=h264_mp4toannexb,extract_extradata",
+      "--enable-demuxer=mov,matroska,mpegts,h264,rawvideo,wav,image2,image2pipe,image_png_pipe,image_jpeg_pipe",
+      "--enable-muxer=null,rawvideo,framecrc,framemd5",
+      "--enable-protocol=file,pipe",
+      "--enable-encoder=rawvideo,wrapped_avframe,pcm_s16le",
+      "--enable-filter=scale,format,aformat,aresample,hwdownload,hwupload,null,anull"
+    ],
+    "configuration_scope": "Only the private prefix path is omitted from this public metadata; actual unchanged binaries still embed the private build prefix. Archive is not published.",
+    "capability_scope": "MinimalH264/AAC/GUI dependencies, not a general FFmpeg replacement; ordinary installedKodi/VA defaults stay separate."
+  },
+  "activation_cases": [
+    {
+      "case": "archive-activate-v1-1280-seek",
+      "status": "PASS_BOUNDED_FRESH_PREFIX_ACTIVATION",
+      "operation": "destructive_seek",
+      "width": 1280,
+      "height": 720,
+      "analysis_checkout": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "actual_video_node_seen": true,
+      "actual_legacy_node_seen": false,
+      "audio_to_nondefault_null_sink": true,
+      "actual_capture_layout": {
+        "format": "YUYV",
+        "DRM_fourcc": 1448695129,
+        "AVFrame_format": 178,
+        "objects": 1,
+        "pitch_bytes": 2560
+      },
+      "returned_originals": 855,
+      "render_queue_acceptances": 818,
+      "genuine_LAST": 3,
+      "successful_STOP_commands": 3,
+      "successful_native_codec_opens": 1,
+      "fresh_extracted_prefix_bind": true,
+      "read_only_probes_target_extracted_codec_inode": true,
+      "per_file_idle_retirement": [
+        true
+      ],
+      "app_exit": 0,
+      "case_idle_boundary_equal": true,
+      "temporary_audio_sink_removed": true,
+      "fixture": "video1280-30-30av.mp4",
+      "post_seek_output": [
+        {
+          "flush_epoch": 1,
+          "new_epoch_originals_observed": 47,
+          "subsequent_renderer_acceptances": 26,
+          "binding": "Temporal acceptance after matching-context/epoch hardware output; not PTS-bound scanout."
+        },
+        {
+          "flush_epoch": 2,
+          "new_epoch_originals_observed": 780,
+          "subsequent_renderer_acceptances": 777,
+          "binding": "Temporal acceptance after matching-context/epoch hardware output; not PTS-bound scanout."
+        }
+      ],
+      "preserved_unsupported_capture_restart": {
+        "errno": 95,
+        "name": "EOPNOTSUPP",
+        "observed_count": 1,
+        "subsequent_recovery": "Full destructive OUTPUT reset; not same-DPB nonempty STOP/START."
+      },
+      "controls": [
+        {
+          "action": "pause_resume",
+          "requested_pause_s": 0.1,
+          "actual_pause_s": 0.10601510600827169,
+          "speed_while_paused": 0,
+          "native_node_stays_open": true,
+          "no_new_STOP_STREAMOFF_LAST_or_codec_open": true
+        },
+        {
+          "action": "seek",
+          "target_s": 15.0,
+          "observed_player_time_s": 15.0,
+          "matching_flush_epoch": 1,
+          "sample_new_epoch_picture_pts_us": 14000000,
+          "new_epoch_hardware_picture_then_temporal_renderer_acceptance": true
+        },
+        {
+          "action": "seek",
+          "target_s": 5.0,
+          "observed_player_time_s": 5.0,
+          "matching_flush_epoch": 2,
+          "sample_new_epoch_picture_pts_us": 4000000,
+          "new_epoch_hardware_picture_then_temporal_renderer_acceptance": true
+        }
+      ],
+      "generations": [
+        {
+          "kind": "flush_epoch",
+          "generation": 0,
+          "accepted_originals": 28,
+          "returned_originals": 28,
+          "exact_accepted_input_PTS_once": true,
+          "first_returned_pts_us": 0,
+          "last_returned_pts_us": 933333
+        },
+        {
+          "kind": "flush_epoch",
+          "generation": 1,
+          "accepted_originals": 47,
+          "returned_originals": 47,
+          "exact_accepted_input_PTS_once": true,
+          "first_returned_pts_us": 14000000,
+          "last_returned_pts_us": 15566666
+        },
+        {
+          "kind": "flush_epoch",
+          "generation": 2,
+          "accepted_originals": 780,
+          "returned_originals": 780,
+          "exact_accepted_input_PTS_once": true,
+          "first_returned_pts_us": 4000000,
+          "last_returned_pts_us": 29966666
+        }
+      ]
+    },
+    {
+      "case": "archive-activate-v1-1280-reopen",
+      "status": "PASS_BOUNDED_FRESH_PREFIX_ACTIVATION",
+      "operation": "same_process_reopen",
+      "width": 1280,
+      "height": 720,
+      "analysis_checkout": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "actual_video_node_seen": true,
+      "actual_legacy_node_seen": false,
+      "audio_to_nondefault_null_sink": true,
+      "actual_capture_layout": {
+        "format": "YUYV",
+        "DRM_fourcc": 1448695129,
+        "AVFrame_format": 178,
+        "objects": 1,
+        "pitch_bytes": 2560
+      },
+      "returned_originals": 360,
+      "render_queue_acceptances": 360,
+      "genuine_LAST": 2,
+      "successful_STOP_commands": 2,
+      "successful_native_codec_opens": 2,
+      "fresh_extracted_prefix_bind": true,
+      "read_only_probes_target_extracted_codec_inode": true,
+      "per_file_idle_retirement": [
+        true,
+        true
+      ],
+      "app_exit": 0,
+      "case_idle_boundary_equal": true,
+      "temporary_audio_sink_removed": true,
+      "fixture": "h264-720-av.mp4",
+      "generations": [
+        {
+          "kind": "codec_open_cycle",
+          "generation": 0,
+          "accepted_originals": 180,
+          "returned_originals": 180,
+          "exact_accepted_input_PTS_once": true,
+          "first_returned_pts_us": 0,
+          "last_returned_pts_us": 5966666
+        },
+        {
+          "kind": "codec_open_cycle",
+          "generation": 1,
+          "accepted_originals": 180,
+          "returned_originals": 180,
+          "exact_accepted_input_PTS_once": true,
+          "first_returned_pts_us": 0,
+          "last_returned_pts_us": 5966666
+        }
+      ]
+    },
+    {
+      "case": "archive-activate-v1-1920-seek",
+      "status": "PASS_BOUNDED_FRESH_PREFIX_ACTIVATION",
+      "operation": "destructive_seek",
+      "width": 1920,
+      "height": 1080,
+      "analysis_checkout": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "actual_video_node_seen": true,
+      "actual_legacy_node_seen": false,
+      "audio_to_nondefault_null_sink": true,
+      "actual_capture_layout": {
+        "format": "YUYV",
+        "DRM_fourcc": 1448695129,
+        "AVFrame_format": 178,
+        "objects": 1,
+        "pitch_bytes": 3840
+      },
+      "returned_originals": 847,
+      "render_queue_acceptances": 821,
+      "genuine_LAST": 3,
+      "successful_STOP_commands": 3,
+      "successful_native_codec_opens": 1,
+      "fresh_extracted_prefix_bind": true,
+      "read_only_probes_target_extracted_codec_inode": true,
+      "per_file_idle_retirement": [
+        true
+      ],
+      "app_exit": 0,
+      "case_idle_boundary_equal": true,
+      "temporary_audio_sink_removed": true,
+      "fixture": "video1920-30-30av.mp4",
+      "post_seek_output": [
+        {
+          "flush_epoch": 1,
+          "new_epoch_originals_observed": 37,
+          "subsequent_renderer_acceptances": 25,
+          "binding": "Temporal acceptance after matching-context/epoch hardware output; not PTS-bound scanout."
+        },
+        {
+          "flush_epoch": 2,
+          "new_epoch_originals_observed": 780,
+          "subsequent_renderer_acceptances": 780,
+          "binding": "Temporal acceptance after matching-context/epoch hardware output; not PTS-bound scanout."
+        }
+      ],
+      "preserved_unsupported_capture_restart": {
+        "errno": 95,
+        "name": "EOPNOTSUPP",
+        "observed_count": 1,
+        "subsequent_recovery": "Full destructive OUTPUT reset; not same-DPB nonempty STOP/START."
+      },
+      "controls": [
+        {
+          "action": "pause_resume",
+          "requested_pause_s": 0.1,
+          "actual_pause_s": 0.12314324099861551,
+          "speed_while_paused": 0,
+          "native_node_stays_open": true,
+          "no_new_STOP_STREAMOFF_LAST_or_codec_open": true
+        },
+        {
+          "action": "seek",
+          "target_s": 15.0,
+          "observed_player_time_s": 15.0,
+          "matching_flush_epoch": 1,
+          "sample_new_epoch_picture_pts_us": 15000000,
+          "new_epoch_hardware_picture_then_temporal_renderer_acceptance": true
+        },
+        {
+          "action": "seek",
+          "target_s": 5.0,
+          "observed_player_time_s": 5.0,
+          "matching_flush_epoch": 2,
+          "sample_new_epoch_picture_pts_us": 4000000,
+          "new_epoch_hardware_picture_then_temporal_renderer_acceptance": true
+        }
+      ],
+      "generations": [
+        {
+          "kind": "flush_epoch",
+          "generation": 0,
+          "accepted_originals": 30,
+          "returned_originals": 30,
+          "exact_accepted_input_PTS_once": true,
+          "first_returned_pts_us": 0,
+          "last_returned_pts_us": 966666
+        },
+        {
+          "kind": "flush_epoch",
+          "generation": 1,
+          "accepted_originals": 37,
+          "returned_originals": 37,
+          "exact_accepted_input_PTS_once": true,
+          "first_returned_pts_us": 15000000,
+          "last_returned_pts_us": 16266666
+        },
+        {
+          "kind": "flush_epoch",
+          "generation": 2,
+          "accepted_originals": 780,
+          "returned_originals": 780,
+          "exact_accepted_input_PTS_once": true,
+          "first_returned_pts_us": 4000000,
+          "last_returned_pts_us": 29966666
+        }
+      ]
+    },
+    {
+      "case": "archive-activate-v1-1920-reopen",
+      "status": "PASS_BOUNDED_FRESH_PREFIX_ACTIVATION",
+      "operation": "same_process_reopen",
+      "width": 1920,
+      "height": 1080,
+      "analysis_checkout": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "actual_video_node_seen": true,
+      "actual_legacy_node_seen": false,
+      "audio_to_nondefault_null_sink": true,
+      "actual_capture_layout": {
+        "format": "YUYV",
+        "DRM_fourcc": 1448695129,
+        "AVFrame_format": 178,
+        "objects": 1,
+        "pitch_bytes": 3840
+      },
+      "returned_originals": 360,
+      "render_queue_acceptances": 360,
+      "genuine_LAST": 2,
+      "successful_STOP_commands": 2,
+      "successful_native_codec_opens": 2,
+      "fresh_extracted_prefix_bind": true,
+      "read_only_probes_target_extracted_codec_inode": true,
+      "per_file_idle_retirement": [
+        true,
+        true
+      ],
+      "app_exit": 0,
+      "case_idle_boundary_equal": true,
+      "temporary_audio_sink_removed": true,
+      "fixture": "h264-1080-av.mp4",
+      "generations": [
+        {
+          "kind": "codec_open_cycle",
+          "generation": 0,
+          "accepted_originals": 180,
+          "returned_originals": 180,
+          "exact_accepted_input_PTS_once": true,
+          "first_returned_pts_us": 0,
+          "last_returned_pts_us": 5966666
+        },
+        {
+          "kind": "codec_open_cycle",
+          "generation": 1,
+          "accepted_originals": 180,
+          "returned_originals": 180,
+          "exact_accepted_input_PTS_once": true,
+          "first_returned_pts_us": 0,
+          "last_returned_pts_us": 5966666
+        }
+      ]
+    }
+  ],
+  "PTS_evidence": {
+    "file": "native-runtime-activation-20261028.tsv",
+    "rows": 2422,
+    "groups": 10,
+    "ordering": "Accepted input column uses coded order, returned picture column display order. Verify sorted(accepted)==returned separately per case/kind/generation; columns are not per-AU identity pairs.",
+    "reopen_grouping": "Each codec-open cycle is a separate180-original file in one Kodi process.",
+    "seek_grouping": "Each actualavcodec_flush_buffers starts a new tracked epoch; 3 genuineLAST per case cover two pre-seek drains and actualfinalEOF.",
+    "selection_scope": "RealV4L2node andYUYVDRMdescriptor/returnedPTS observed; successful renderer-queue acceptance is not physical scanout or an independent RGB pixel oracle."
+  },
+  "rollback_and_fallback": {
+    "status": "PASS_BOUNDED_PRIVATE_RUNTIME_REMOVAL_VA_FALLBACK_AND_REEXTRACTION",
+    "actually_removed_only_owned_extract": true,
+    "cases": [
+      {
+        "case": "archive-rollback-v1-1280-va",
+        "status": "PASS_BOUNDED_ORIGINAL_VA_FALLBACK",
+        "width": 1280,
+        "height": 720,
+        "original_bundled_FFmpeg": true,
+        "native_private_runtime_absent_during_playback": true,
+        "no_native_prefix_mount_or_lookup": true,
+        "actual_legacy_node_seen": true,
+        "actual_video_node_seen": false,
+        "returned_VA_frames": 180,
+        "render_queue_acceptances": 180,
+        "natural_file_close": true,
+        "live_idle_retirement": true,
+        "app_exit": 0,
+        "boundary_equal": true,
+        "temporary_audio_sink_removed": true,
+        "installed_module": "3.10.13",
+        "installed_module_srcversion": "F76E163690F147B91495DDD"
+      },
+      {
+        "case": "archive-rollback-v1-1920-va",
+        "status": "PASS_BOUNDED_ORIGINAL_VA_FALLBACK",
+        "width": 1920,
+        "height": 1080,
+        "original_bundled_FFmpeg": true,
+        "native_private_runtime_absent_during_playback": true,
+        "no_native_prefix_mount_or_lookup": true,
+        "actual_legacy_node_seen": true,
+        "actual_video_node_seen": false,
+        "returned_VA_frames": 180,
+        "render_queue_acceptances": 180,
+        "natural_file_close": true,
+        "live_idle_retirement": true,
+        "app_exit": 0,
+        "boundary_equal": true,
+        "temporary_audio_sink_removed": true,
+        "installed_module": "3.10.13",
+        "installed_module_srcversion": "F76E163690F147B91495DDD"
+      }
+    ],
+    "fresh_reextract": true,
+    "reextract_all_seven_DSO_metadata_and_drm_prime_config": "PASS",
+    "compiler_tools_still_absent_in_reextract_namespace": {
+      "cc": null,
+      "gcc": null,
+      "g++": null,
+      "c++": null,
+      "clang": null,
+      "clang++": null,
+      "make": null,
+      "nasm": null,
+      "yasm": null,
+      "meson": null,
+      "ninja": null
+    },
+    "installed_module_unchanged": "3.10.13",
+    "no_module_change_during_fallback": true,
+    "boundary_equal": true,
+    "kernel_check_exit": 0,
+    "scope": "Unchanged publishedKodi22/originalbundledFFmpeg VA path with fresh isolated profiles on existinginstalledmodule. This is not a new desktop-installedKodi21.3 acceptance or independent cleanOS installation."
+  },
+  "restoration": {
+    "activation_batch_status": "PASS",
+    "all_four_cases_PASS": true,
+    "original_module_restored": true,
+    "activation_kernel_check_exit": 0,
+    "ref_pin_PM_link_AER_restored": true,
+    "fallback_kernel_check_exit": 0,
+    "external_apps_installed_libraries_user_profiles_firmware_defaults_changed": false
+  },
+  "package_inventory_source_metadata_only": [
+    {
+      "target": "Ubuntu26.04.1LTS amd64 installed",
+      "Kodi": "2:21.3+dfsg-1ubuntu1",
+      "FFmpeg": "7:8.0.1-3ubuntu2",
+      "available_architectures_relevant": [
+        "amd64"
+      ],
+      "actual_HW_config_status": "Existing #538 installed-library metadata has zero usable h264_v4l2m2m DRM_PRIME configurations; no new playback run.",
+      "sources": [
+        "https://packages.ubuntu.com/resolute/kodi",
+        "https://packages.ubuntu.com/resolute/ffmpeg",
+        "local apt-cache policy/show corroboration",
+        "https://github.com/ahnhy1324/crystalhd/blob/14b7693878a01693acd5bd22046f48d73787f99e/tests/fixtures/issue538/kodi-builtin-selection-20261027.json"
+      ]
+    },
+    {
+      "target": "Ubuntu26.04LTS i386",
+      "Kodi": "No i386 kodi/kodi-bin binary listed in official Ubuntu package architectures or local configured i386 index",
+      "FFmpeg": "7:8.0.1-3ubuntu2 ffmpeg/libavcodec62:i386 available",
+      "actual_HW_config_status": "NOT RUN; no official Ubuntu i386 Kodi pairing identified. This does not negate driver/library i686 support.",
+      "sources": [
+        "https://packages.ubuntu.com/resolute/kodi",
+        "https://packages.ubuntu.com/search?keywords=ffmpeg&suite=resolute"
+      ]
+    },
+    {
+      "target": "Ubuntu26.10 stonking amd64 source/package candidate",
+      "Kodi": "2:21.3+dfsg-1.2",
+      "FFmpeg": "7:8.1.2-2ubuntu2",
+      "actual_HW_config_status": "NOT RUN; official8.1.2 decoder source lacks hw_configs/DRM_PRIME. Package binary not imported or executed.",
+      "sources": [
+        "https://packages.ubuntu.com/kodi",
+        "https://packages.ubuntu.com/ffmpeg",
+        "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n8.1.2/libavcodec/v4l2_m2m_dec.c"
+      ]
+    },
+    {
+      "target": "Debian13 trixie amd64/i386",
+      "Kodi": "2:21.2+dfsg-4",
+      "FFmpeg": "7:7.1.5-0+deb13u1",
+      "available_architectures_relevant": [
+        "amd64",
+        "i386"
+      ],
+      "actual_HW_config_status": "NOT RUN; official7.1.5 decoder source lacks hw_configs/DRM_PRIME. Distribution-specific binary metadata not executed.",
+      "sources": [
+        "https://packages.debian.org/trixie/kodi",
+        "https://packages.debian.org/trixie/ffmpeg",
+        "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n7.1.5/libavcodec/v4l2_m2m_dec.c"
+      ]
+    },
+    {
+      "target": "Debian sid amd64/i386",
+      "Kodi": "2:21.3+dfsg-2",
+      "FFmpeg": "7:9.0.2-4",
+      "available_architectures_relevant": [
+        "amd64",
+        "i386"
+      ],
+      "actual_HW_config_status": "NOT RUN; official9.0.2 source lacks DRM_PRIME HW config; Debian9.0.2-4 patch series contains only Opus/Vorbis/HLS changes, no V4L2 DRM implementation. Metadata availability and matching SONAME do not prove native entry.",
+      "sources": [
+        "https://packages.debian.org/sid/ffmpeg",
+        "https://packages.debian.org/sid/amd64/kodi-bin",
+        "https://packages.debian.org/sid/i386/kodi-bin",
+        "https://deb.debian.org/debian/pool/main/f/ffmpeg/ffmpeg_9.0.2-4.debian.tar.xz"
+      ]
+    },
+    {
+      "target": "Flathub stable",
+      "Kodi": "21.3-Omega, source a3a448d26b8d560a65655dab2cd122994dc4e146",
+      "FFmpeg_source": "6.1.6",
+      "runtime": "org.freedesktop.Platform24.08",
+      "available_architectures": [
+        "aarch64",
+        "x86_64"
+      ],
+      "actual_HW_config_status": "NOT RUN; source feature gap. Actual ELF/DSO inventory not read from this artifact; manifest default FFmpeg build does not enable shared libraries and cleans /lib, so do not assume a swappable libavcodec.so.60 runtime.",
+      "i386_ref": "HTTP404 for official app/tv.kodi.Kodi/i386/stable",
+      "sources": [
+        "https://flathub.org/api/v2/summary/tv.kodi.Kodi",
+        "https://dl.flathub.org/repo/refs/heads/app/tv.kodi.Kodi/x86_64/stable",
+        "https://raw.githubusercontent.com/flathub/tv.kodi.Kodi/30f8c953d763802968b5e1b1fa7c84a9453308f2/tv.kodi.Kodi.yml"
+      ]
+    },
+    {
+      "target": "Flathub beta x86_64",
+      "Kodi": "22RC1, unchanged source28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+      "FFmpeg": "9.0.2",
+      "runtime": "org.freedesktop.Platform26.08",
+      "actual_HW_config_status": "Existing #538 ordinary-file native selection negative reused; live published beta ref is still the same immutable tested commit. No repeated selection run.",
+      "i386_ref": "HTTP404 for official app/tv.kodi.Kodi/i386/beta",
+      "sources": [
+        "https://dl.flathub.org/beta-repo/refs/heads/app/tv.kodi.Kodi/x86_64/beta",
+        "https://raw.githubusercontent.com/flathub/tv.kodi.Kodi/c6c9cfc581cc688beff001c000319dff8071df9e/tv.kodi.Kodi.yml",
+        "https://github.com/ahnhy1324/crystalhd/blob/14b7693878a01693acd5bd22046f48d73787f99e/tests/fixtures/issue538/kodi-builtin-selection-20261027.json"
+      ]
+    }
+  ],
+  "compatibility_delta": {
+    "official_FFmpeg_source": "https://github.com/FFmpeg/FFmpeg/blob/n9.0.2/libavcodec/v4l2_m2m_dec.c",
+    "source_gap": "OfficialstatefulM2Mdecoder has no usableDRM_PRIME hw_configs in reviewed6.1.6/7.1.5/8.0.1/8.1.2/9.0.2/master sources. Only alreadytestedbinaries have runtime-negative proof; newlyinventoriedpackages remainNOTRUN.",
+    "required_surfaces": [
+      "Realhwconfiguration/get_format negotiation",
+      "EXPBUF and correctAVDRMFrameDescriptor foractualYUYV/pitch/offset/linear modifier",
+      "DRMFD/pool/context/consumer lifetime integration with existingAVBufferRef ownership",
+      "Single/multiplane queue/format/flush/EOS behavior withoutfakingunsupportednonemptyrestart"
+    ],
+    "selected_nine_helper_file_diff_against_official9": {
+      "insertions": 3332,
+      "deletions": 755,
+      "scope": "Includesotheralternateimplementationfeatures; not claimedminimumrequiredpatchsize."
+    },
+    "not_a_simple_driver_or_metadata_flag": true
+  },
+  "ranked_paths": [
+    {
+      "rank": 1,
+      "path": "Existingcompatibleofficialruntime",
+      "availability": "No reviewedcompatiblex86nativepairingdemonstrated; package/sourcegap remains.",
+      "user_local_FFmpeg_build": "None if a genuinelycompatiblepackage appears",
+      "architectures": "Package availability inventoried; newnativei386 and otherbinaries NOTRUN",
+      "next": "Inspectnewbinarymetadata onlywhen candidate changes; donotrepeat establishednegative selectionruns."
+    },
+    {
+      "rank": 2,
+      "path": "Isolatedprebuiltmatchingruntime",
+      "availability": "Privatefresh-prefix/source-qualifiedsamehostproofPASS; no publicdistribution",
+      "user_local_FFmpeg_build": "None during testedarchiveactivation",
+      "architecture": "TestedCore2/x86_64 and pinnedKodi22/Platform26.08 only",
+      "maintenance": "Project must own pinnedfork/security/ABI updates, neutralbuildprefix, dependency/notices and source delivery before publication."
+    },
+    {
+      "rank": 3,
+      "path": "Upstream/downstreamDRM M2Mintegration",
+      "availability": "Future substantive implementation/integration work, not an availableflag",
+      "user_local_FFmpeg_build": "None if later packaged by maintainers",
+      "maintenance": "Requiresdescriptor/ownership/lifecycle work and qualification; no upstreammessage, externalpatch or shipment performed."
+    },
+    {
+      "rank": 4,
+      "path": "OriginalVA/NV12fallback",
+      "availability": "Thislocalrollbackproof returns180/180 at720/FHD in unchangedKodi22/originalFFmpeg",
+      "user_local_FFmpeg_build": "None",
+      "maintenance": "Keepinstalledmodule/defaultsindependent; thisboundedfallbackdoesnotclaimrareVAshutdownabortfixed or universal60p reliability."
+    }
+  ],
+  "D3_build_and_size": {
+    "prior_build_source": "Existingbuild-pipes receipt, not a newbuild",
+    "prior_configure_build_stage_seconds": 1072.9426748130063,
+    "prior_build_scope": "Core2DuoT8100/make-j1/gcc15.2.0; excludes source fetching and compiler/NASM/dev-package setup.",
+    "private_archive_bytes": 8017920,
+    "peak_build_RAM": "NOT RECORDED",
+    "first_user_total_download_disk_commands": "NOT MEASURED; publiclauncher/installer not delivered, and archive excludescachedApp/Platform/GL/driver/source."
+  },
+  "D5_redistribution_and_maintenance": {
+    "status": "PENDING; privateproofisnotpublicationapproval",
+    "sources": [
+      "https://ffmpeg.org/legal.html",
+      "https://github.com/jc-kynesim/rpi-ffmpeg/blob/12cc1f42f06ff0e85633c2602c96786fbd280b70/LICENSE.md"
+    ],
+    "actual_license_banner": "LGPLv2.1-or-later; GPL/NONFREE/VERSION3 disabled in this build",
+    "remaining": [
+      "Neutralbuildprefix needed beforepublicbinarypublication; existingprivatearchive contains an embeddedprivatebuildpath.",
+      "Prepare exactlycorresponding12cc1f42forksource/configuration and requiredcomponentnotices; official9.0.2source alone does not contain the usedimplementation.",
+      "MJPEG/IJG componentacknowledgment is included inprivateNOTICE; full publicredistribution/dependency review remainspending.",
+      "KeepallmatchingDSOs andpinnedconsumer/runtime ABI; legacy/unqualifieddependencydirectories shouldnot be blindlyredistributed.",
+      "Ownforksecurity/update validation and separate32-bit/genericCPUqualification; current Core2/GLIBC2.43 artifact is not a portableallLinux package."
+    ]
+  },
+  "acceptance_ledger": {
+    "D0": "PARTIAL; existingnegativebinaryevidence reused, package/sourceinventorycomplete within statedscope, newcandidateactualselectionNOTRUN",
+    "D1": "Requiredfeature surfacesidentified; minimumstandaloneupstreamdelta not implemented",
+    "D2": "PASS boundedprivateprebuilt/extractactivation andfallback; publicdistributionNOTDONE",
+    "D3": "Priorbuildtime andlocalarchivebytes recorded; fullnewuserdownload/RAM/disk/UXcomparisonNOTDONE",
+    "D4": "PASS scopedfreshprivateprefixwithoutFFmpegcompilation insidepinnedruntime; independentcleanOS/nativei386/physicalAVNOTRUN",
+    "D5": "PENDING publicpackaging/license/security-maintenance decision"
+  },
+  "preserved_limits": [
+    "G2FAIL and nonemptydrainedSTART EOPNOTSUPP remain; destructive seekreset is not sameDPBcontinuation.",
+    "PhysicalA/V, uniquescanout/dropFPS, calibratedE2E, power, independentRGBoracle, nativei386/Atom, BCM70012 and broadcodec/interlace/endurance areNOTRUN for thisarchiveactivation.",
+    "Original#538CPU/RSSmeasurements are reference evidence only, not newlymeasured or transferredto thisfixture.",
+    "No archive/binary/sourceimplementation change was published by thisdataexport; no release, issueclosure or upstreamoperation."
+  ],
+  "performance_reference": "https://github.com/ahnhy1324/crystalhd/blob/95ba2c72e4cd6229e249e059ca14f6bd5ab4e33d/tests/fixtures/issue538/kodi-native-v4l2-20261028.json",
+  "validation": {
+    "derived_case_statuses": "4/4 activation +2/2 fallback PASS; rawexactPTS andextractedprobe/mountassociations checked in thisexport",
+    "new_source_builds_or_hardware_tests_during_data_export": 0,
+    "review": "Root JSON/TSV/privacy/LF/link checks and focused independent Astra raw-evidence review PASS: all2422 PTS/10groups, stage counts/source roles/cleanup/scope match. Existing package inventory not re-audited by this final reviewer; no CI or additional hardware result claimed."
+  },
+  "public_native_no_build_availability": "NOT YET PRACTICAL for ordinary users: no reviewed compatible official pairing or approved public installer is available from this work. The qualified archive is private only; a future isolated prebuilt runtime is conditional on packaging, source/notice and maintenance decisions."
+}
