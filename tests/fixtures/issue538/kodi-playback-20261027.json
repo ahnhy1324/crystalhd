@@ -1,0 +1,293 @@
+{
+  "schema": 1,
+  "issue": 538,
+  "scope": "Separate opt-in Kodi private-playback experiment. No V4L2 node/ioctl implementation, private Kick, installed/default/library/driver/firmware/PM/ABI/external-source or release change. Kodi buffer delivery is not scanout.",
+  "sources": {
+    "initial_facade": "6466338a11123bb0948bbce501e34e81fbc1a7da",
+    "paused_final_squeeze_fix": "31e4e20bdee68f4a113394e5ffb79dfa3f575af2",
+    "SDK_speed_admission_fix": "64801fc10d69d5dac34b85ff982666f3e92bde54",
+    "engine_source": "54752a1af514eb673b563fb80b6df6600223a666",
+    "SDK": "Kodi 22 RC1 28ea2ea; InputStream 3.4.0 / VideoCodec 2.2.1",
+    "runtime_version": {
+      "major": 22,
+      "minor": 0,
+      "revision": "20260927-28ea2eac-dirty",
+      "tag": "releasecandidate",
+      "tagversion": "1"
+    },
+    "native_backend_runtime": "GStreamer 1.28.6 inside the isolated published Kodi runtime; device-free host tests use GStreamer 1.28.2.",
+    "module": "3.10.13"
+  },
+  "selection": {
+    "ordinary_file": "Measured published Kodi 22 RC1 normal file selected CDVDVideoCodecFFmpeg H264 and GLES YV12. OnPlayBackEnded observed; no card FD or native-library mapping. Selection-only PASS derived from retained normal-file log.",
+    "source_basis": [
+      "https://github.com/xbmc/xbmc/blob/28ea2ea/xbmc/cores/VideoPlayer/DVDCodecs/DVDFactoryCodec.cpp#L54",
+      "https://github.com/xbmc/xbmc/blob/28ea2ea/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecFFmpeg.cpp#L356"
+    ],
+    "actual_private_entry": "CrystalHD native YUY2 (experimental add-on)",
+    "real_V4L2_node": "NOT RUN: no research node exposed in this study. Ordinary-file selection does not establish behavior with a node present.",
+    "installed_Kodi21": "Packed VideoCodec ABI absent; not a selected new route",
+    "format_scope": "22 RC1 advertises YV12 but exposes the packed-buffer API. YUY2 remains explicitly selected and nonadvertised; no general negotiated-support claim."
+  },
+  "facade": {
+    "operations": [
+      "Open",
+      "Push",
+      "Next",
+      "SetPaused",
+      "Close"
+    ],
+    "states": [
+      "Closed",
+      "Running",
+      "Paused",
+      "Draining",
+      "Ended",
+      "Failed"
+    ],
+    "identity": "Qualified GStreamer accepted-native-token to source-PTS registry reused unchanged. No FIFO/POC guess, raw-token repair or runtime pixel-hash matching.",
+    "stock_Kodi_pause": "Kodi controls input dispatch. Its speed notification leaves already queued codec packets admissible. Explicit private pause_input is separate; facade pause counters of zero in these stock Kodi tests are expected.",
+    "buffer_path": "Existing RX->ownedGst->checkedKodi-ownedYUY2 rows, two host copies. No added copy, zero-copy, EXPBUF/EGL or no-mapping claim.",
+    "completion": "Finite parent demux EOF plus delivery of all video packets permits exactly one terminal EOS. Returned pictures must equal accepted queue census; temporary DRAIN is not finite EOF.",
+    "count_scope": "Queue acceptance and output to Kodi, not raw DIL call counts, render submissions or scanout."
+  },
+  "cases": [
+    {
+      "name": "original-natural",
+      "measured_source": "31e4e20bdee68f4a113394e5ffb79dfa3f575af2",
+      "grade": "PASS",
+      "role": "Earlier31e4e20 natural H264/AAC control, before SDK speed/admission fix",
+      "source_pictures_returned_to_Kodi": 180,
+      "native_session_opens": 1,
+      "natural_EOF_events": 1,
+      "whole_active_YUY2_digests": [
+        "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1"
+      ],
+      "exact_source_PTS_and_picture_census": true,
+      "YUY2_renderer_selected": true,
+      "no_internal_software_fallback": "crystalhddec required; actual card and pinned library/plugin mappings observed",
+      "actual_card_and_maps_observed": true,
+      "kernel_check_exit": 0,
+      "final_boundary_restored": true,
+      "peak_host_mC_for_guard": 80000,
+      "demux_packets_at_close": [
+        [
+          180,
+          283
+        ]
+      ]
+    },
+    {
+      "name": "original-100ms-1s-pause",
+      "measured_source": "31e4e20bdee68f4a113394e5ffb79dfa3f575af2",
+      "grade": "FAIL",
+      "role": "SDK speed0 incorrectly blocked queued codec input; audio-stall re-sync and decoder Reset; incomplete original sequence. Not a native-G2 or firmware failure.",
+      "source_pictures_returned_to_Kodi": 47,
+      "native_session_opens": 2,
+      "natural_EOF_events": 1,
+      "whole_active_YUY2_digests": [
+        "8ebc563c22095d144cf68a4435e60749c5ce2d67b3e700f85b29c999607d6b30"
+      ],
+      "exact_source_PTS_and_picture_census": false,
+      "YUY2_renderer_selected": true,
+      "no_internal_software_fallback": "crystalhddec required; actual card and pinned library/plugin mappings observed",
+      "actual_card_and_maps_observed": true,
+      "kernel_check_exit": 0,
+      "final_boundary_restored": true,
+      "peak_host_mC_for_guard": 80000,
+      "demux_packets_at_close": [
+        [
+          170,
+          267
+        ]
+      ]
+    },
+    {
+      "name": "fixed-100ms-1s-pause",
+      "measured_source": "64801fc10d69d5dac34b85ff982666f3e92bde54",
+      "grade": "PASS",
+      "role": "Same Kodi controls after separating speed notification from explicit input admission pause",
+      "source_pictures_returned_to_Kodi": 180,
+      "native_session_opens": 1,
+      "natural_EOF_events": 1,
+      "whole_active_YUY2_digests": [
+        "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1"
+      ],
+      "exact_source_PTS_and_picture_census": true,
+      "YUY2_renderer_selected": true,
+      "no_internal_software_fallback": "crystalhddec required; actual card and pinned library/plugin mappings observed",
+      "actual_card_and_maps_observed": true,
+      "kernel_check_exit": 0,
+      "final_boundary_restored": true,
+      "peak_host_mC_for_guard": 79000,
+      "demux_packets_at_close": [
+        [
+          180,
+          283
+        ]
+      ]
+    },
+    {
+      "name": "fixed-fresh-reopen",
+      "measured_source": "64801fc10d69d5dac34b85ff982666f3e92bde54",
+      "grade": "PASS",
+      "role": "New file in same Kodi process after the controlled file; original resources retired before next open",
+      "source_pictures_returned_to_Kodi": 180,
+      "native_session_opens": 1,
+      "natural_EOF_events": 1,
+      "whole_active_YUY2_digests": [
+        "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1"
+      ],
+      "exact_source_PTS_and_picture_census": true,
+      "YUY2_renderer_selected": true,
+      "no_internal_software_fallback": "crystalhddec required; actual card and pinned library/plugin mappings observed",
+      "actual_card_and_maps_observed": true,
+      "kernel_check_exit": 0,
+      "final_boundary_restored": true,
+      "peak_host_mC_for_guard": 79000,
+      "demux_packets_at_close": [
+        [
+          180,
+          283
+        ]
+      ]
+    },
+    {
+      "name": "fixed-3s-pause",
+      "measured_source": "64801fc10d69d5dac34b85ff982666f3e92bde54",
+      "grade": "PASS",
+      "role": "Longer bounded Kodi pause/resume; same live decoder and full original sequence",
+      "source_pictures_returned_to_Kodi": 180,
+      "native_session_opens": 1,
+      "natural_EOF_events": 1,
+      "whole_active_YUY2_digests": [
+        "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1"
+      ],
+      "exact_source_PTS_and_picture_census": true,
+      "YUY2_renderer_selected": true,
+      "no_internal_software_fallback": "crystalhddec required; actual card and pinned library/plugin mappings observed",
+      "actual_card_and_maps_observed": true,
+      "kernel_check_exit": 0,
+      "final_boundary_restored": true,
+      "peak_host_mC_for_guard": 79000,
+      "demux_packets_at_close": [
+        [
+          180,
+          283
+        ]
+      ]
+    }
+  ],
+  "native_event_trace": "kodi-playback-20261027.jsonl",
+  "pause_controls": {
+    "original_FAIL": [
+      {
+        "requested_gap_s": 0.1,
+        "observed_gap_s": 0.12005352300184313,
+        "Kodi_speed_at_pause": 0,
+        "AAC_track_selected": true,
+        "actual_card_FDs_retained": true,
+        "session_opens_during_pause": 1,
+        "reset_events_during_pause": 0,
+        "returned_before": 9,
+        "returned_after": 10
+      },
+      {
+        "requested_gap_s": 1.0,
+        "observed_gap_s": 1.0292925060057314,
+        "Kodi_speed_at_pause": 0,
+        "AAC_track_selected": true,
+        "actual_card_FDs_retained": true,
+        "session_opens_during_pause": 1,
+        "reset_events_during_pause": 0,
+        "returned_before": 15,
+        "returned_after": 16
+      }
+    ],
+    "fixed_short": [
+      {
+        "requested_gap_s": 0.1,
+        "observed_gap_s": 0.11753043001226615,
+        "Kodi_speed_at_pause": 0,
+        "AAC_track_selected": true,
+        "actual_card_FDs_retained": true,
+        "session_opens_during_pause": 1,
+        "reset_events_during_pause": 0,
+        "returned_before": 13,
+        "returned_after": 20
+      },
+      {
+        "requested_gap_s": 1.0,
+        "observed_gap_s": 1.0255527999979677,
+        "Kodi_speed_at_pause": 0,
+        "AAC_track_selected": true,
+        "actual_card_FDs_retained": true,
+        "session_opens_during_pause": 1,
+        "reset_events_during_pause": 0,
+        "returned_before": 23,
+        "returned_after": 28
+      }
+    ],
+    "fixed_long": [
+      {
+        "requested_gap_s": 3.0,
+        "observed_gap_s": 3.017773286002921,
+        "Kodi_speed_at_pause": 0,
+        "AAC_track_selected": true,
+        "actual_card_FDs_retained": true,
+        "session_opens_during_pause": 1,
+        "reset_events_during_pause": 0,
+        "returned_before": 18,
+        "returned_after": 23
+      }
+    ]
+  },
+  "audio": {
+    "AAC": "Each completed native file demuxes 283 AAC packets for the stock Kodi audio decoder. Selected AAC track verified via RPC.",
+    "route": "Actual Kodi PID to PipeWire Client to stream Node to owned nondefault null sink links verified. Temporary node removed after every guardian; system default output unchanged.",
+    "cached_client_PID_property_types": [
+      "int"
+    ],
+    "physical_A_V": "NOT RUN. Null endpoint and sourcePTS correctness do not calibrate lip sync or physical output latency."
+  },
+  "review_and_device_free": {
+    "strict_build": "O2 -Wall -Wextra -Werror playback and playback-trace PASS; original native target separately builds.",
+    "sanitizers": "Two real raw appsrc/appsink groups and two actual SDK callback groups pass ASan/UBSan/LSan. Callback suite repeated only for changed integration.",
+    "paused_final_RED": "At 6466338, pause after both packets are accepted but before first final-input GetPicture: 3-second temporary-squeeze deadline abort. Pausing after that pull was not a valid reproduction because EOS was already submitted.",
+    "paused_final_GREEN": "31e4e20 uses the same applied pause state for EOS request and temporary DRAIN completion; EOS remains deferred until resume. Actual callback GREEN.",
+    "speed_zero_guard": "64801fc callback test keeps SDK speed zero while accepting queued packets. Explicit private pause consumes nothing; paused final-input squeeze still terminates.",
+    "Astra": "Focused read-only review found the paused final-input hang. Fix and speed/admission separation rechecked without remaining actionable findings. Reviewer ran no tests or hardware."
+  },
+  "preserved_exclusions": [
+    {
+      "stage": "first bwrap setup",
+      "grade": "NOT RUN before card open",
+      "reason": "Read-only /probe/deps target missing; private helper now creates mountpoint first."
+    },
+    {
+      "stage": "display startups",
+      "grade": "NOT RUN before card open",
+      "reason": "Incomplete/failed Xvfb startup; helper now consumes full newline-delimited display handshake and verifies display query before Kodi."
+    },
+    {
+      "stage": "ordinary-file selection guardian",
+      "grade": "Selection log usable; original overall guardian FAIL retained",
+      "reason": "Audio graph matcher did not normalize PIDproperty types. No physicalA_V or verifiedaudio-route grade inferred for this control."
+    }
+  ],
+  "grades": {
+    "K0": "PARTIAL: actual default FFmpeg versus explicit add-on selection proved; real node NOT RUN.",
+    "K1": "PASS: bounded private facade and explicit Kodi bridge.",
+    "K2": "PASS: measured 640x360 progressive H264/AAC copied path, PTS/pixels, EOS/reopen. No scanout or physical A/V grade.",
+    "K3": "PASS: bounded no-dummy 100 ms, 1 s and 3 s input-idle controls. Private-progress insertion NOT RUN.",
+    "K4": "NOT RUN: current-study real-node unsupported STOP negative test. Prior #533 evidence not relabeled as new.",
+    "K5": "NOT RUN: matched performance and 720p/FHD. Software-GLES diagnostic runs are not performance measurements."
+  },
+  "limits": [
+    "G2 FAIL unchanged; standard nonempty drained START stays -EOPNOTSUPP; #114/#115 unchanged.",
+    "General private-picture eligibility and raw token-0 output identification not solved.",
+    "No new RGB capture, physical frame census, A/V calibration, E2E, power, endurance or native i686 result.",
+    "No new CPU benefit claim; #531 two-copy 360p finding unchanged.",
+    "Experimental branch only; no supported Kodi/V4L2 frontend or default promotion."
+  ]
+}

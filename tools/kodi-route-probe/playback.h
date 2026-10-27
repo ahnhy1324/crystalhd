@@ -4,8 +4,9 @@
 
 namespace crystalhd_kodi {
 /* Private playback lifecycle, NOT a V4L2 ioctl implementation. Kodi's video
- * callbacks serialize this facade; InputStream publishes pause/EOF through
- * InputProgress atomics. The qualified Gst decoder still owns the actual
+ * callbacks serialize this facade; InputProgress separates finite EOF and
+ * private admission pause from Kodi's demux-speed notifications. The
+ * qualified Gst decoder still owns the actual
  * accepted-input native-token -> source-PTS registry and all RX leases.
  * No second FIFO/POC timestamp guess, private picture, or new copy is added.
  */

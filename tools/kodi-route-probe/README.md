@@ -163,3 +163,49 @@ PCIe wire traffic or GPU completion time.
 
 Physical A/V, endurance and native i386 remain unqualified. Installed Kodi
 21.3 and the existing VA/NV12 path remain the ordinary playback route.
+
+## Separate private playback experiment
+
+Issue [#538](https://github.com/ahnhy1324/crystalhd/issues/538) authorizes a
+separate experiment; #531's completed measurement and stop decision stand.
+Build the private facade against the same unmodified SDK:
+
+```sh
+make -C tools/kodi-route-probe playback \
+    KODI_SDK_INCLUDE="/absolute/path/to/kodi-dev-kit/include"
+```
+
+Use `build-playback/inputstream.crystalhd.routeprobe/` in a separate test
+profile with the existing explicit ListItem launcher. `playback-trace` builds
+the diagnostic variant in its own directory. Neither target installs,
+registers ordinary files or creates a V4L2 node. Kodi 21.3 still lacks the
+required packed VideoCodec ABI; the measured Kodi 22 RC1 route remains an
+explicit, nonadvertised YUY2 experiment with two host copies.
+
+`PlaybackDecoder` exposes private queue/output/pause/close operations over
+the existing GStreamer decoder. That decoder retains its accepted-input
+native-owner/source-PTS registry and RX lifetime rules. No extra timestamp
+guess, pixel copy or private Kick is introduced.
+
+| Operation | Local semantics |
+| --- | --- |
+| `SetPaused(true)` | Explicit private admission pause; retry new AUs without consuming them, keep the channel and service accepted output. |
+| `SetPaused(false)` | Resume the same channel without EOS/reset. |
+| `Next(true, ...)` | Caller has proved demux EOF and all video packets submitted; defer while privately paused, then send terminal EOS once and require every accepted original returned. |
+| `Close()` / codec Reset | Retire the old decoder; a subsequent open is a fresh generation. Reset is destructive, not same-DPB STOP/START. |
+| Kodi `DemuxSetSpeed(0)` | Clock/demux notification only. Already queued codec packets remain admissible; Kodi controls its own input dispatch and playback clock. |
+
+Blocking codec admission on Kodi's speed notification caused a measured
+resume stall and resynchronizing Reset at `31e4e20`. The separation at
+`64801fc` fixes the same control; the failure remains in the
+[source-qualified receipt](../../tests/fixtures/issue538/kodi-playback-20261027.json).
+An earlier paused-final-input squeeze hang is independently reproduced and
+fixed: temporary Kodi DRAIN can finish while terminal EOS stays deferred.
+
+The receipt distinguishes exact decoded-picture/PTS census, Kodi-owned
+buffer delivery, AAC routing, EOS and resource retirement from displayed
+frame counts and physical A/V. Current tests do not qualify a real V4L2
+selection path, standard nonempty STOP/START, private-picture insertion,
+720p/FHD performance, scanout, physical A/V, endurance or native i686.
+G2 remains FAIL. Installed applications, stable modules, VA/NV12 defaults,
+the legacy ABI and the published #531 performance finding are unchanged.
