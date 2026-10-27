@@ -7952,11 +7952,12 @@
   ],
   "decision": {
     "result": "Only actual-next-AU early token preserves its identity. The own token on resumed VCL does not override the early token. Generic/previous markers advance4/5 private pictures but fail strict native identity.",
-    "duplicate_private_token_or_final_private_prefix": "NOT RUN: all five private DC128 images/flags are indistinguishable without their distinct native tokens; no independent source-private POC returned.",
     "reused_generic_marker_across_cycles": "NOT RUN: no no-lookahead candidate passed P1.",
     "raw_untimed_control": "Previously failed raw control reproduced with new attribution; not a novel workaround.",
     "prefer_ordinary_pause": "No-dummy input-only idle/resume requires neither private pictures nor next-AU lookahead.",
-    "limits": "No inferred output retagging; no integration/default promotion; no firmware instruction/physical PPB lease/STOP-START claim."
+    "limits": "No inferred output retagging; no integration/default promotion; no firmware instruction/physical PPB lease/STOP-START claim.",
+    "same_token_on_multiple_private_pictures": "NOT RUN: identical DC128 private images/flags cannot independently distinguish the source private picture once their distinct native tokens are lost.",
+    "repeat_final_private_token_on_real_prefix": "NOT RUN: optional arm outside the measured A-D matrix. The current native observer deliberately requires every private-range token to carry a neutral private image; handling a collision between an original image and a private-range token needs a separately validated diagnostic classification. This is not a claim that the optional control is intrinsically unmeasurable."
   },
   "started_utc": "2026-10-27 07:27:08 UTC",
   "checks": {

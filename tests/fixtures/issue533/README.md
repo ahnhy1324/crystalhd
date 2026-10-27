@@ -327,9 +327,12 @@ returns AU19 with token 0. No pixel-based retagging is performed.
 | Untimed: 0 | 1900000 | 0 | FAIL; known raw control |
 
 These are diagnostic API identities, not calibrated media timestamps. The
-actual-next-token requirement remains. Reusing private tokens is NOT RUN:
-their identical DC128 images do not independently identify the source private
-picture if native tokens collide. No generic marker qualifies for cycling.
+actual-next-token requirement remains. Assigning one token to several private pictures is NOT RUN:
+their identical DC128 images do not independently identify those source
+pictures once private tokens collide. The optional last-private-prefix arm
+is also NOT RUN; the current observer rejects a nonneutral original image
+with a private-range token. This is an instrumentation boundary, not proof
+that such a control is unmeasurable. No generic marker qualifies for cycling.
 
 **The frozen 18+5 placement cannot be copied into a complete GOP.** Adding
 the remaining original B pictures raises its required reorder bound to 4,
