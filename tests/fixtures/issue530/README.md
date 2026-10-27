@@ -142,6 +142,41 @@ Physical confirmation of the new completion/deadline policy is **NOT RUN**;
 audio-clock equality and automated playback do not replace it. This remains
 an optional research output with no installed/default or VA-contract change.
 
+### Swap-stall attribution and redundant clears
+
+[`20201fe` results and rejected policies](swap-tail-20261027.json) distinguish
+clock age from actual blocking: the diagnostic control spends **52.930 ms
+inside `eglSwapBuffers`** at its worst event. This is not purely an audio-clock
+reporting difference; the precise rendering/presentation cause remains open.
+
+Three bounded alternatives were not adopted: per-field completion fences
+lower age by omitting more fields; a full-picture RGB cache worsens both count
+and age; two producer BOs eliminate retirement waits but move that time into
+swap, without increasing submissions. Their code revisions, pixel proofs and
+original results remain in the receipt. The final path keeps single-source
+retirement and clears only the bars around the opaque video draw. It still
+replaces every window pixel, including after resize; it adds no user option.
+
+Matched BAAB uses the same 30-second fixture, real audio clock and fullscreen
+geometry, with two runs per version:
+
+| Metric | `678351c` full clear | `20201fe` bars only |
+| --- | ---: | ---: |
+| Mean submissions / 1,500 expected | 1,281 | 1,321.5 |
+| Non-submitted fields | 14.6% | 11.9% |
+| Mean client CPU time | 8.162 s | 8.238 s |
+| Worst observed swap-return clock age | 68.167 ms | 52.711 ms |
+
+This sample has 3.16% more submissions; the 0.93% CPU increase is small and
+does not establish a CPU saving. The remaining roughly 53 ms tail is **not
+solved**, and two repetitions do not establish a latency bound. Forty-seven
+RGB/retirement/border checks, three EOS/reopens and clock-wait cancellation
+pass; final owned resources are zero. Physical A/V for this source is NOT RUN.
+
+![Policy screening and matched field-submission counts](swap-tail-20261027.svg)
+
+## Offscreen EGL field-view probe
+
 One immutable linear YUYV allocation supplies top/bottom EGLImages with
 offsets 0/S, pitch 2S and height H/2. Both field uses complete before source
 retirement. Two differently patterned allocations alternate by picture;
