@@ -327,12 +327,15 @@ returns AU19 with token 0. No pixel-based retagging is performed.
 | Untimed: 0 | 1900000 | 0 | FAIL; known raw control |
 
 These are diagnostic API identities, not calibrated media timestamps. The
-actual-next-token requirement remains. Assigning one token to several private pictures is NOT RUN:
+actual-next-token requirement remains for this strict native gate.
+Assigning one token to several private pictures is NOT RUN:
 their identical DC128 images do not independently identify those source
 pictures once private tokens collide. The optional last-private-prefix arm
 is also NOT RUN; the current observer rejects a nonneutral original image
 with a private-range token. This is an instrumentation boundary, not proof
-that such a control is unmeasurable. No generic marker qualifies for cycling.
+that such a control is unmeasurable. No generic marker qualifies for
+strict-native-identity cycling. The separate host-source-PTS study below
+retains that native FAIL.
 
 **The frozen 18+5 placement cannot be copied into a complete GOP.** Adding
 the remaining original B pictures raises its required reorder bound to 4,
@@ -398,6 +401,76 @@ The result identifies an input-transport requirement, not the firmware
 instruction that selects a timestamp owner. No new physical A/V,
 i686/non-SSE playback, energy or endurance qualification;
 no production helper/default, firmware, ABI or external-application change.
+
+## Host source PTS with a reserved native owner
+
+The [separate host-metadata proposal](https://github.com/ahnhy1324/crystalhd/issues/533#issuecomment-6436305327)
+has a narrow positive result. A fresh, collision-free native marker can be
+reserved **without knowing the next original PTS**. Only after the actual
+next original VCL is accepted does the host bind that marker to its saved
+source AU/PTS/DTS/timebase. A returned marker then selects that record;
+the raw firmware token remains unchanged. Private owners are hidden. Zero,
+duplicate, stale, unbound or colliding owners stop metadata publication.
+Image hashes, POC rank, picture ordinal and output FIFO position never select
+the runtime association. Token 0 remains **UNSUPPORTED**, even with only one
+original record left; the first post-resume output can still be private.
+
+[Source-qualified receipt and API audit](host-source-pts-20261027.json),
+[actual input/output/RX/host-projection trace](host-source-pts-20261027.jsonl).
+
+| Check | Result and scope |
+| --- | --- |
+| H0/H1 | Six existing controls map all 20 source PTS offline; previous-real collisions and token 0 fail closed. |
+| H2 | Fresh unique-marker native control: raw original identity FAIL, **host source PTS 20/20 PASS**, exact original pixels/flags/order and 5 private outputs retired. |
+| H3 native | Synthetic GOP 30/30p and natural GOP 24/25p each pass 2/5/10/100 pauses on one channel. At 100, each maps 3,060 originals and retires 500 private outputs; raw markers remain diagnostic. |
+| Source PTS variants | Whole 100-cycle traces replay duplicate/missing/nonmonotonic/wrapped caller metadata **offline only**. Missing PTS stays absent; no inferred timestamp or playback-clock claim. |
+| Audio clock | Actual card picture copies plus the MP4's AAC use `GstPulseSinkClock`: 180 video renders, 0 drops, 10 private pictures hidden, natural EOS and clean close. Muted headless test. |
+| Physical A/V | NOT RUN; screen/speaker confirmation remains separate from automatic clock scheduling. |
+| Consumer errors | Closed/stalled output consumers reach normal cleanup; native deadline bounds the stalled pipe. A fresh 180-picture reopen exactly matches the pre-failure oracle. |
+
+H2 measures mapper `fa1c029` with native probe `2c27857`. H3 uses
+`bf05401`, with independently screened natural input from `8e2bd8b`.
+Final audio-clock/export qualification is `7882424`; metadata replays use
+`4993f37`. Earlier `932c3ed` controls retain their original scope. Focused
+Astra review found missing media/timebase binding and a blocking export
+write that bypassed the native deadline. Both are fixed and rechecked:
+explicit source/remux identity, actual timebase validation, nonblocking pipe
+writes and deadline-aware polling. The new error controls preserve their
+intentional incomplete decode; cleanup is their acceptance criterion.
+
+![Native identity versus host PTS and actual common-clock handoffs](host-source-pts-20261027.svg)
+
+`tests/h264-host-pts-map.py` and `tests/h264-host-pts-replay.py` are device-free
+mapping/replay tools. `tests/h264-host-pts-player.py` is a separate research
+frontend. Its native probe copies actual returned pixels before RX release
+and transfers only that owned copy afterwards. The frontend feeds saved
+source PTS and packet durations to GStreamer through `appsrc`.
+The qualified source must be progressive 640×360 H.264/AAC with 180 original
+pictures. After preparing the existing input/oracle prerequisites:
+
+```sh
+python3 -B tests/h264-host-pts-player.py \
+    "/absolute/path/to/qualified-cycle-inputs" \
+    "/absolute/path/to/native-cycle-reference.bin" \
+    "/absolute/path/to/qualified-h264-aac.mp4" \
+    "/absolute/path/to/new-results" \
+    --probe "/absolute/path/to/h264-stop-kick" \
+    --library "/absolute/path/to/libcrystalhd.so.3" --headless
+```
+
+The media must match the input qualification's content and timebase. A
+separately verified video-identical/AAC-prefix remux needs an explicit
+`--media-manifest` descriptor, with the source/selected-file identities and
+packet relation shown in the receipt. The player never generates or selects
+that descriptor automatically. Results and temporary media stay outside the
+source tree; no source clips or user photographs are included here.
+
+This eliminates **source-PTS lookahead** for the measured reserved-owner
+strategy, not arbitrary H.264 private-picture eligibility. All inserted
+sequences still require their complete offline syntax/software screen.
+Interlaced mapping, physical A/V calibration and production integration
+remain unqualified. G2 FAIL, nonempty drained START=`EOPNOTSUPP`, and
+#114/#115 remain unchanged; no physical PPB lease or standalone MFD claim.
 
 Use the qualified `b18-f11-p31-n5` private payload and the fresh native reference
 requirements above. Strict success requires all 20 actual returned tokens,
