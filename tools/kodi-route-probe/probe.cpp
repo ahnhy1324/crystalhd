@@ -244,7 +244,17 @@ public:
     using Result = PlaybackBackend::Result;
     Result result;
     const bool final_input = progress->Final(input_epoch, accepted);
-    GstSample* sample = decoder.Next(final_input, result);
+#ifdef CRYSTALHD_KODI_PLAYBACK
+    /* End a paused host squeeze even when the parent already reached EOF.
+     * The facade defers terminal EOS until Resume; using final_input below
+     * would otherwise keep Kodi's Reset/destructor drain loop alive forever.
+     * Use the applied state, not a second racing read of the parent's flag. */
+    const bool terminal_input = final_input &&
+        decoder.Current() != crystalhd_kodi::PlaybackDecoder::State::Paused;
+#else
+    const bool terminal_input = final_input;
+#endif
+    GstSample* sample = decoder.Next(terminal_input, result);
     if (!sample) {
       if (result == Result::Error) return Fail(decoder.Error().c_str());
       if (result == Result::Eof) {
@@ -268,7 +278,7 @@ public:
       /* VC_EOF here ends only a temporary squeeze phase. Keep the decoder
        * open and accept later packets; do not flush the firmware DPB or log
        * media EOS when the parent has not delivered complete finite input. */
-      if (drain && !final_input) return VC_EOF;
+      if (drain && !terminal_input) return VC_EOF;
       return result == Result::NeedInput ? VC_BUFFER : VC_NONE;
     }
     GstVideoInfo info{}; GstMapInfo map{};

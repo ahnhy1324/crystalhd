@@ -91,8 +91,15 @@ static void temporary_drain() {
     progress->paused.store(false);
 #endif
     g_assert_true(callbacks.add_data(&video, &packet));
+#ifdef CRYSTALHD_KODI_PLAYBACK
+    progress->paused.store(true); // pause before the first final-input pull
+#endif
     g_assert_cmpint(pull(VC_PICTURE), ==, 33333);
     for (auto byte : backing) g_assert_cmpuint(byte, ==, 129);
+#ifdef CRYSTALHD_KODI_PLAYBACK
+    pull(VC_EOF); // final input while paused still ends only a temporary squeeze
+    progress->paused.store(false);
+#endif
     pull(VC_EOF); // actual finite input is now complete
     callbacks.reset(&video);
   }
