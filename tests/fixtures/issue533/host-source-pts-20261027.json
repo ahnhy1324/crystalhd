@@ -17,7 +17,8 @@
       "version": "3.10.13",
       "srcversion": "F76E163690F147B91495DDD"
     },
-    "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9"
+    "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+    "GUI_overlay_and_packing": "4d6fe83a090beeeae403b6f4de0ec50196387fd7"
   },
   "API_surface_audit": {
     "source_revision": "54752a1af514eb673b563fb80b6df6600223a666",
@@ -8273,6 +8274,84 @@
       "kernel_check_exit": 0,
       "idle_boundary_restored": true,
       "peak_host_millic": 49000
+    },
+    {
+      "study": "H3-visible-common-clock",
+      "name": "clock-gui-overlay-fixed-20261027",
+      "measured_source": {
+        "native": "7882424f3a991f1e2949d6b670dfbf9f79756155",
+        "host_player": "4d6fe83a090beeeae403b6f4de0ec50196387fd7"
+      },
+      "role": "Visible replay after fixing pre-device GI initialization; explicit YUY2-to-UYVY packing for this display",
+      "raw_original_native_identity": "FAIL retained",
+      "host_effective_PTS": "PASS180/180 on actual copied pictures",
+      "originals": 180,
+      "private_retired": 10,
+      "private_hidden_from_video": 10,
+      "observed_RX_acquired_released": 190,
+      "clock_name": "GstPulseSinkClock",
+      "uses_real_provided_audio_clock": true,
+      "source_time_base": [
+        1,
+        12800
+      ],
+      "actual_card_and_pinned_library_observed": true,
+      "video_sink_stats": {
+        "rendered": 180,
+        "dropped": 0
+      },
+      "audio_sink_stats": {
+        "rendered": 340,
+        "dropped": 0
+      },
+      "EOS": true,
+      "native_exit": 0,
+      "threads_retired": true,
+      "idle_boundary_restored": true,
+      "kernel_check_exit": 0,
+      "peak_host_millic": 61000,
+      "per_stream_audio_muted": false,
+      "human_A_V": "NOT RUN: no operator confirmation for this individual run",
+      "physical_scope": "7.253-second progressive dialogue clip, 640x360 at25p. No calibrated physical offset, scanout or E2E measurement; no seek/pause-control qualification."
+    },
+    {
+      "study": "H3-visible-common-clock",
+      "name": "clock-gui-overlay-visible-20261027",
+      "measured_source": {
+        "native": "7882424f3a991f1e2949d6b670dfbf9f79756155",
+        "host_player": "4d6fe83a090beeeae403b6f4de0ec50196387fd7"
+      },
+      "role": "Visible replay after fixing pre-device GI initialization; explicit YUY2-to-UYVY packing for this display",
+      "raw_original_native_identity": "FAIL retained",
+      "host_effective_PTS": "PASS180/180 on actual copied pictures",
+      "originals": 180,
+      "private_retired": 10,
+      "private_hidden_from_video": 10,
+      "observed_RX_acquired_released": 190,
+      "clock_name": "GstPulseSinkClock",
+      "uses_real_provided_audio_clock": true,
+      "source_time_base": [
+        1,
+        12800
+      ],
+      "actual_card_and_pinned_library_observed": true,
+      "video_sink_stats": {
+        "rendered": 180,
+        "dropped": 0
+      },
+      "audio_sink_stats": {
+        "rendered": 340,
+        "dropped": 0
+      },
+      "EOS": true,
+      "native_exit": 0,
+      "threads_retired": true,
+      "idle_boundary_restored": true,
+      "kernel_check_exit": 0,
+      "peak_host_millic": 61000,
+      "per_stream_audio_muted": false,
+      "human_A_V": "PASS qualitative: operator confirms visible video, normal lip sync and speed",
+      "physical_scope": "7.253-second progressive dialogue clip, 640x360 at25p. No calibrated physical offset, scanout or E2E measurement; no seek/pause-control qualification."
     }
   ],
   "native_trace": "host-source-pts-20261027.jsonl",
@@ -8447,17 +8526,33 @@
     ],
     "fixed": "7882424",
     "read_only_recheck": "Neither original finding remains actionable; no other actionable identity/RX-lifetime/false-PASS issue. Reviewer did not run hardware/tests.",
-    "root_validation": "Nine preflight media/timebase/content guards, final actual-card/common-clock playback, real closed/stalled consumers and fresh180-picture reopen verified after fixes."
+    "root_validation": "Nine preflight media/timebase/content guards, final actual-card/common-clock playback, real closed/stalled consumers and fresh180-picture reopen verified after fixes.",
+    "GUI_read_only_recheck": {
+      "range": "e855195..4d6fe83",
+      "result": "No actionable blockers; import order corrected, owned-buffer packing preserves timestamps/dimensions, setup precedes hardware launch, pipeline NULL before window destruction. Reviewer did not run hardware/tests."
+    }
   },
   "limits": {
-    "physical_A_V": "NOT RUN: operator availability question pending; no user confirmation or calibrated offset invented.",
+    "physical_A_V": "PASS qualitative only for the visible 7.253-second dialogue replay at player4d6fe83/native7882424: visible video, lip sync and speed confirmed by operator. Calibrated offset, E2E and player controls NOT RUN.",
     "generic_zero_token_recovery": "UNSUPPORTED; unknown output remains rejected even with one original owner left.",
     "general_codec_private_eligibility": "Not solved. Each complete coded sequence/private insertion was independently screened before hardware; no arbitrary-stream helper/default promotion.",
     "interlaced_mapping": "Not qualified; field/unknown-source output rejected by this progressive mapper.",
-    "clock_scope": "Actual card picture pipe + source PTS + real muted Pulse audio clock tested; fakesink timings are not panel scanout, physical A/V offset, maximumFPS,decoder-only latency or E2E.",
+    "clock_scope": "Headless fakesink handoffs and visible xvimagesink playback use the actual provided Pulse audio clock. Headless timing samples remain scheduler observations; neither they nor qualitative GUI acceptance measure panel scanout, physical A/V offset, maximumFPS, decoder-only time or E2E.",
     "G2_and_V4L2": "FAIL unchanged. Some selected points have no private debt, but do not establish general LAST/EPIPE/nonemptySTOP-START. #114/#115 and -EOPNOTSUPP remain.",
     "physical_PPB_leasing_standalone_MFD": "Not solved or claimed.",
     "next_decision": "Experimental input-only host helper is feasible for unique reserved owners under the measured prerequisites. Plain no-dummy input pause remains simpler; production/helper/default integration needs a separate decision.",
     "serialized_input_output": "Measured serialized probe admission/output publication, with one actual decoder owner. A production multi-thread admission/publish implementation and reopening-generation contract are not qualified by this research frontend."
+  },
+  "GUI_setup_failure": {
+    "measured_checkout": "e8551959afd6e8bccd16a7644d16aeea3f376cb1",
+    "player_body": "7882424f3a991f1e2949d6b670dfbf9f79756155",
+    "result": "FAIL before native launch; no hardware decode or A/V result",
+    "exception": "AttributeError: type object 'GstVideoOverlay' has no attribute 'set_window_handle'",
+    "cause": "GstVideo imported after overlay implementer creation, leaving a cached interface without its methods; reproduced device-free using both import orders.",
+    "actual_card_and_pinned_library_observed": false,
+    "idle_boundary_restored": true,
+    "kernel_check_exit": 0,
+    "fixed_player": "4d6fe83a090beeeae403b6f4de0ec50196387fd7",
+    "display_capability_check": "Queried actual xvimagesink READY caps without opening CrystalHD: UYVY supported, native YUY2 not advertised. Explicit owned-buffer packing added for GUI output."
   }
 }

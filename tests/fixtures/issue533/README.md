@@ -402,6 +402,19 @@ instruction that selects a timestamp owner. No new physical A/V,
 i686/non-SSE playback, energy or endurance qualification;
 no production helper/default, firmware, ABI or external-application change.
 
+Use the qualified `b18-f11-p31-n5` private payload and the fresh native reference
+requirements above. Strict success requires all 20 actual returned tokens,
+pixels, flags and original order, plus all private RX releases. Ten reference
+controls and the complete 22-session history preserve seven timestamp FAILs
+and one changed-state precondition abort. Kernel/ref/pin/PM/link/AER checks pass.
+
+**G2 remains FAIL:** one private output is still pending before terminal EOS.
+The raw 18/3 failure remains; the successful 18/4 variant is an experimental
+input-pause strategy requiring the actual next timestamp in advance. No LAST,
+EPIPE, compliant STOP/START, stock-player adoption or production change follows.
+
+![Actual timestamp retention and the successful input-pause phases](dummy-input-resume-20261027.svg)
+
 ## Host source PTS with a reserved native owner
 
 The [separate host-metadata proposal](https://github.com/ahnhy1324/crystalhd/issues/533#issuecomment-6436305327)
@@ -425,7 +438,7 @@ original record left; the first post-resume output can still be private.
 | H3 native | Synthetic GOP 30/30p and natural GOP 24/25p each pass 2/5/10/100 pauses on one channel. At 100, each maps 3,060 originals and retires 500 private outputs; raw markers remain diagnostic. |
 | Source PTS variants | Whole 100-cycle traces replay duplicate/missing/nonmonotonic/wrapped caller metadata **offline only**. Missing PTS stays absent; no inferred timestamp or playback-clock claim. |
 | Audio clock | Actual card picture copies plus the MP4's AAC use `GstPulseSinkClock`: 180 video renders, 0 drops, 10 private pictures hidden, natural EOS and clean close. Muted headless test. |
-| Physical A/V | NOT RUN; screen/speaker confirmation remains separate from automatic clock scheduling. |
+| Visible A/V | Operator confirms visible video, normal lip sync and speed in the 7.253-second dialogue replay. Qualitative only; calibrated physical offset and E2E are not measured. |
 | Consumer errors | Closed/stalled output consumers reach normal cleanup; native deadline bounds the stalled pipe. A fresh 180-picture reopen exactly matches the pre-failure oracle. |
 
 H2 measures mapper `fa1c029` with native probe `2c27857`. H3 uses
@@ -437,6 +450,16 @@ write that bypassed the native deadline. Both are fixed and rechecked:
 explicit source/remux identity, actual timebase validation, nonblocking pipe
 writes and deadline-aware polling. The new error controls preserve their
 intentional incomplete decode; cleanup is their acceptance criterion.
+
+GUI player `4d6fe83` uses the unchanged native probe from `7882424`.
+The first GUI attempt failed before opening the card because GstVideo was
+loaded after sink creation; that failure remains in the receipt. Loading
+the interface first and explicitly packing owned YUY2 buffers as this
+display's supported UYVY fixes the output. Both corrected GUI runs render
+180 video pictures and 340 AAC buffers without drops, hide 10 private
+pictures, release all 190 RX outputs and reach EOS with clean teardown.
+The second run has the operator's A/V confirmation; player controls were
+not qualified by this short research frontend.
 
 ![Native identity versus host PTS and actual common-clock handoffs](host-source-pts-20261027.svg)
 
@@ -471,16 +494,3 @@ sequences still require their complete offline syntax/software screen.
 Interlaced mapping, physical A/V calibration and production integration
 remain unqualified. G2 FAIL, nonempty drained START=`EOPNOTSUPP`, and
 #114/#115 remain unchanged; no physical PPB lease or standalone MFD claim.
-
-Use the qualified `b18-f11-p31-n5` private payload and the fresh native reference
-requirements above. Strict success requires all 20 actual returned tokens,
-pixels, flags and original order, plus all private RX releases. Ten reference
-controls and the complete 22-session history preserve seven timestamp FAILs
-and one changed-state precondition abort. Kernel/ref/pin/PM/link/AER checks pass.
-
-**G2 remains FAIL:** one private output is still pending before terminal EOS.
-The raw 18/3 failure remains; the successful 18/4 variant is an experimental
-input-pause strategy requiring the actual next timestamp in advance. No LAST,
-EPIPE, compliant STOP/START, stock-player adoption or production change follows.
-
-![Actual timestamp retention and the successful input-pause phases](dummy-input-resume-20261027.svg)
