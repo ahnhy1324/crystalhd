@@ -1,0 +1,287 @@
+{
+  "schema": 1,
+  "issue": 533,
+  "date": "2026-10-27",
+  "scope": "Offline syntax/pixel/order screening plus bounded native legacy-channel output progress. Not a V4L2 STOP/START implementation or physical PPB lease proof.",
+  "frozen_fixture_sha256": "1b6ad927b660238dfabc4c25531439d4ea16d0742f249427784bc575e6270eec",
+  "software": {
+    "source": "b96e53834dbd74ed0395937fad48fded08287f0b",
+    "ffmpeg": "ffmpeg version 8.0.1-3ubuntu2 Copyright (c) 2000-2025 the FFmpeg developers",
+    "baseline_originals": 20,
+    "cases": 52,
+    "originals_preserved": 40,
+    "screened_progress": 39,
+    "screened_order_safe": 34,
+    "larger_three_to_five_picture_candidates": 12,
+    "larger_candidates_pass_software": true,
+    "reference_syntax": "https://www.itu.int/rec/dologin_pub.asp?id=T-REC-H.264-201201-S%21%21PDF-E&lang=e&type=items",
+    "frame_num_rule": "H.264 (01/2012) 7.4.3: this progressive, non-IDR, gaps=0 picture uses (PrevRefFrameNum+1)%MaxFrameNum. Neighbor values are invalid controls even if software accepts them.",
+    "columns": [
+      "boundary",
+      "frame_num",
+      "private_pocs",
+      "invalid_frame_num_control",
+      "reorder_bound",
+      "software_pictures",
+      "private_outputs",
+      "original_pixels_and_order_match",
+      "missing_display_indices",
+      "segment_order_equals_uninterrupted",
+      "screened_progress",
+      "screened_order_safe",
+      "decoder_error"
+    ],
+    "rows": [
+      [12,7,[19],false,2,21,1,true,[],true,true,true,null],
+      [12,7,[19,21],false,2,22,2,true,[],true,true,true,null],
+      [12,7,[21],false,2,21,1,true,[],true,true,true,null],
+      [12,7,[21,23],false,2,22,2,true,[],true,true,true,null],
+      [12,7,[23],false,2,21,1,true,[],true,true,true,null],
+      [12,7,[23,25],false,2,22,2,true,[],true,true,true,null],
+      [12,7,[25],false,2,21,1,true,[],true,true,true,null],
+      [12,7,[25,27],false,3,21,2,false,[12],true,false,false,null],
+      [12,6,[19],true,2,null,null,null,null,true,false,false,{"exit":183,"partial_bytes_not_a_complete_census":4147200,"stderr":"[h264 @ <decoder>] reference picture missing during reorder\n[h264 @ <decoder>] Missing reference picture, default is 65562\n[h264 @ <decoder>] co located POCs unavailable\n[h264 @ <decoder>] mmco: unref short failure\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Error submitting packet to decoder: Invalid data found when processing input\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Error processing packet in decoder: Invalid data found when processing input\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Task finished with error code: -1094995529 (Invalid data found when processing input)\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Terminating thread with return code -1094995529 (Invalid data found when processing input)\n"}],
+      [12,8,[19],true,2,null,null,null,null,true,false,false,{"exit":183,"partial_bytes_not_a_complete_census":3801600,"stderr":"[h264 @ <decoder>] illegal short term buffer state detected\n[h264 @ <decoder>] decode_slice_header error\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Error submitting packet to decoder: Invalid data found when processing input\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Error processing packet in decoder: Invalid data found when processing input\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Task finished with error code: -1094995529 (Invalid data found when processing input)\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Terminating thread with return code -1094995529 (Invalid data found when processing input)\n"}],
+      [12,7,[19,21,23],false,2,23,3,true,[],true,true,true,null],
+      [12,7,[19,21,23,25],false,2,24,4,true,[],true,true,true,null],
+      [12,7,[21,23,25],false,2,23,3,true,[],true,true,true,null],
+      [15,9,[25],false,2,21,1,true,[],true,true,true,null],
+      [15,9,[25,27],false,2,22,2,true,[],true,true,true,null],
+      [15,9,[27],false,2,21,1,true,[],true,true,true,null],
+      [15,9,[27,29],false,2,22,2,true,[],true,true,true,null],
+      [15,9,[29],false,2,21,1,true,[],true,true,true,null],
+      [15,9,[29,31],false,2,22,2,true,[],true,true,true,null],
+      [15,9,[31],false,2,21,1,true,[],true,true,true,null],
+      [15,9,[31,33],false,3,21,2,false,[15],true,false,false,null],
+      [15,8,[25],true,2,null,null,null,null,true,false,false,{"exit":183,"partial_bytes_not_a_complete_census":5184000,"stderr":"[h264 @ <decoder>] reference picture missing during reorder\n[h264 @ <decoder>] Missing reference picture, default is 65568\n[h264 @ <decoder>] co located POCs unavailable\n[h264 @ <decoder>] mmco: unref short failure\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Error submitting packet to decoder: Invalid data found when processing input\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Error processing packet in decoder: Invalid data found when processing input\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Task finished with error code: -1094995529 (Invalid data found when processing input)\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Terminating thread with return code -1094995529 (Invalid data found when processing input)\n"}],
+      [15,10,[25],true,2,null,null,null,null,true,false,false,{"exit":183,"partial_bytes_not_a_complete_census":4838400,"stderr":"[h264 @ <decoder>] illegal short term buffer state detected\n[h264 @ <decoder>] decode_slice_header error\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Error submitting packet to decoder: Invalid data found when processing input\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Error processing packet in decoder: Invalid data found when processing input\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Task finished with error code: -1094995529 (Invalid data found when processing input)\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Terminating thread with return code -1094995529 (Invalid data found when processing input)\n"}],
+      [15,9,[25,27,29],false,2,23,3,true,[],true,true,true,null],
+      [15,9,[25,27,29,31],false,2,24,4,true,[],true,true,true,null],
+      [15,9,[27,29,31],false,2,23,3,true,[],true,true,true,null],
+      [17,11,[31],false,2,21,1,true,[],false,true,false,null],
+      [17,11,[31,33],false,2,22,2,true,[],false,true,false,null],
+      [17,11,[33],false,2,21,1,true,[],false,true,false,null],
+      [17,11,[33,35],false,3,21,2,false,[16],false,false,false,null],
+      [17,11,[35],false,2,21,1,true,[],false,true,false,null],
+      [17,11,[35,37],false,3,21,2,false,[16],false,false,false,null],
+      [17,11,[37],false,2,21,1,true,[],false,true,false,null],
+      [17,11,[37,39],false,3,21,2,false,[16],false,false,false,null],
+      [17,10,[31],true,2,21,1,true,[],false,false,false,null],
+      [17,12,[31],true,2,null,null,null,null,false,false,false,{"exit":183,"partial_bytes_not_a_complete_census":6220800,"stderr":"[h264 @ <decoder>] co located POCs unavailable\n    Last message repeated 1 times\n[h264 @ <decoder>] mmco: unref short failure\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Error submitting packet to decoder: Invalid data found when processing input\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Error processing packet in decoder: Invalid data found when processing input\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Task finished with error code: -1094995529 (Invalid data found when processing input)\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Terminating thread with return code -1094995529 (Invalid data found when processing input)\n"}],
+      [18,11,[31],false,2,21,1,true,[],true,true,true,null],
+      [18,11,[31,33],false,2,22,2,true,[],true,true,true,null],
+      [18,11,[33],false,2,21,1,true,[],true,true,true,null],
+      [18,11,[33,35],false,2,22,2,true,[],true,true,true,null],
+      [18,11,[35],false,2,21,1,true,[],true,true,true,null],
+      [18,11,[35,37],false,2,22,2,true,[],true,true,true,null],
+      [18,11,[37],false,2,21,1,true,[],true,true,true,null],
+      [18,11,[37,39],false,2,22,2,true,[],true,true,true,null],
+      [18,10,[31],true,2,null,null,null,null,true,false,false,{"exit":183,"partial_bytes_not_a_complete_census":6220800,"stderr":"[h264 @ <decoder>] reference picture missing during reorder\n[h264 @ <decoder>] Missing reference picture, default is 65574\n[h264 @ <decoder>] mmco: unref short failure\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Error submitting packet to decoder: Invalid data found when processing input\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Error processing packet in decoder: Invalid data found when processing input\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Task finished with error code: -1094995529 (Invalid data found when processing input)\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Terminating thread with return code -1094995529 (Invalid data found when processing input)\n"}],
+      [18,12,[31],true,2,null,null,null,null,true,false,false,{"exit":183,"partial_bytes_not_a_complete_census":5875200,"stderr":"[h264 @ <decoder>] illegal short term buffer state detected\n[h264 @ <decoder>] decode_slice_header error\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Error submitting packet to decoder: Invalid data found when processing input\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Error processing packet in decoder: Invalid data found when processing input\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Task finished with error code: -1094995529 (Invalid data found when processing input)\n[vist#0:0/h264 @ <decoder>] [dec:h264 @ <decoder>] Terminating thread with return code -1094995529 (Invalid data found when processing input)\n"}],
+      [18,11,[31,33,35],false,2,23,3,true,[],true,true,true,null],
+      [18,11,[31,33,35,37],false,2,24,4,true,[],true,true,true,null],
+      [18,11,[31,33,35,37,39],false,2,25,5,true,[],true,true,true,null],
+      [18,11,[33,35,37],false,2,23,3,true,[],true,true,true,null],
+      [18,11,[33,35,37,39],false,2,24,4,true,[],true,true,true,null],
+      [18,11,[35,37,39],false,2,23,3,true,[],true,true,true,null]
+    ]
+  },
+  "native": {
+    "sources": [
+      "5f1ce9b7de821a29024837a0c84a7affb99b2723",
+      "d8f8bd2cdfde6b6f224e33e3ae3ef03c4e004113"
+    ],
+    "library_source": "54752a1af514eb673b563fb80b6df6600223a666",
+    "module": "3.10.13",
+    "kernel": "7.0.0-38-generic",
+    "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+    "boundary": 18,
+    "private_builder": "Original SPS/PPS0 untouched; PPS254, non-reference I16x16/DC, frame_num11, POCs31/33/35/37/39 as selected.",
+    "receive_window_ms": 600,
+    "prefix_kick": "Each actual private AU receives its own timestamped prefix; final delimiter is untimed.",
+    "reference_controls": [
+      {
+        "source": "5f1ce9b7de821a29024837a0c84a7affb99b2723",
+        "name": "reference-before",
+        "originals": 20,
+        "full_bytes_flags_and_order_match": true,
+        "exit": 0
+      },
+      {
+        "source": "5f1ce9b7de821a29024837a0c84a7affb99b2723",
+        "name": "reference-after",
+        "originals": 20,
+        "full_bytes_flags_and_order_match": true,
+        "exit": 0
+      },
+      {
+        "source": "d8f8bd2cdfde6b6f224e33e3ae3ef03c4e004113",
+        "name": "reference-before",
+        "originals": 20,
+        "full_bytes_flags_and_order_match": true,
+        "exit": 0
+      },
+      {
+        "source": "d8f8bd2cdfde6b6f224e33e3ae3ef03c4e004113",
+        "name": "reference-after",
+        "originals": 20,
+        "full_bytes_flags_and_order_match": true,
+        "exit": 0
+      }
+    ],
+    "cases": [
+      {
+        "source": "5f1ce9b7de821a29024837a0c84a7affb99b2723",
+        "private_count": 0,
+        "private_token_base": 1820000,
+        "before_eos_originals": 14,
+        "before_eos_private": 0,
+        "pending_original_pocs": [
+          28,
+          30,
+          32,
+          34
+        ],
+        "observed_private_pocs": [],
+        "unreturned_private_pocs": [],
+        "terminal_originals": 18,
+        "terminal_private": 0,
+        "all_original_bytes_flags_and_prefix_order_match": true,
+        "rx_leases_acquired_released": [
+          18,
+          18
+        ],
+        "G2": "FAIL",
+        "continuation": "NOT RUN",
+        "exit": 2
+      },
+      {
+        "source": "5f1ce9b7de821a29024837a0c84a7affb99b2723",
+        "private_count": 1,
+        "private_token_base": 1820000,
+        "before_eos_originals": 15,
+        "before_eos_private": 0,
+        "pending_original_pocs": [
+          30,
+          32,
+          34
+        ],
+        "observed_private_pocs": [],
+        "unreturned_private_pocs": [
+          31
+        ],
+        "terminal_originals": 18,
+        "terminal_private": 1,
+        "all_original_bytes_flags_and_prefix_order_match": true,
+        "rx_leases_acquired_released": [
+          19,
+          19
+        ],
+        "G2": "FAIL",
+        "continuation": "NOT RUN",
+        "exit": 2
+      },
+      {
+        "source": "5f1ce9b7de821a29024837a0c84a7affb99b2723",
+        "private_count": 4,
+        "private_token_base": 1820000,
+        "before_eos_originals": 17,
+        "before_eos_private": 2,
+        "pending_original_pocs": [
+          34
+        ],
+        "observed_private_pocs": [
+          31,
+          33
+        ],
+        "unreturned_private_pocs": [
+          35,
+          37
+        ],
+        "terminal_originals": 18,
+        "terminal_private": 4,
+        "all_original_bytes_flags_and_prefix_order_match": true,
+        "rx_leases_acquired_released": [
+          22,
+          22
+        ],
+        "G2": "FAIL",
+        "continuation": "NOT RUN",
+        "exit": 2
+      },
+      {
+        "source": "d8f8bd2cdfde6b6f224e33e3ae3ef03c4e004113",
+        "private_count": 4,
+        "private_token_base": 2020000,
+        "before_eos_originals": 17,
+        "before_eos_private": 2,
+        "pending_original_pocs": [
+          34
+        ],
+        "observed_private_pocs": [
+          31,
+          33
+        ],
+        "unreturned_private_pocs": [
+          35,
+          37
+        ],
+        "terminal_originals": 18,
+        "terminal_private": 4,
+        "all_original_bytes_flags_and_prefix_order_match": true,
+        "rx_leases_acquired_released": [
+          22,
+          22
+        ],
+        "G2": "FAIL",
+        "continuation": "NOT RUN",
+        "exit": 2
+      },
+      {
+        "source": "d8f8bd2cdfde6b6f224e33e3ae3ef03c4e004113",
+        "private_count": 5,
+        "private_token_base": 2020000,
+        "before_eos_originals": 18,
+        "before_eos_private": 3,
+        "pending_original_pocs": [],
+        "observed_private_pocs": [
+          31,
+          33,
+          35
+        ],
+        "unreturned_private_pocs": [
+          37,
+          39
+        ],
+        "terminal_originals": 18,
+        "terminal_private": 5,
+        "all_original_bytes_flags_and_prefix_order_match": true,
+        "rx_leases_acquired_released": [
+          23,
+          23
+        ],
+        "G2": "FAIL",
+        "continuation": "NOT RUN",
+        "exit": 2
+      }
+    ],
+    "all_card_library_observations_pass": true,
+    "all_ref_pin_pm_link_aer_boundaries_unchanged": true,
+    "both_unchanged_kernel_checks_pass": true,
+    "peak_mC": 73000,
+    "full_originals_retired": 170,
+    "full_private_outputs_retired": 14,
+    "physical_av": "NOT RUN",
+    "payload_age": "NOT MEASURED"
+  },
+  "findings": [
+    "Frozen17+3 remains structurally incompatible with uninterrupted global order: POC34 is already accepted before future POC32. Its G2 FAIL is unchanged.",
+    "Software preserving20 originals does not imply syntax conformance: one invalid repeated-frame_num control also preserves every pixel. It remains excluded.",
+    "New ordered-boundary candidates admit3\u20135 private pictures under the unchanged reorder restriction; five is not the known-invalid third picture at boundary17.",
+    "Four private pictures leave original POC34 unreturned before EOS. Moving private tags outside all original identities retains the same17/18 real and2/4 private result in the two controls.",
+    "Five private pictures return all18 originals before EOS, but only3/5 private pictures. Final EOS returns the other2. No claim of an RX leak or established physical PPB ownership.",
+    "All observed RX leases retire and all original bytes/flags/prefix order match. Subsequent original non-IDR continuation is NOT RUN because complete-private-output G2 remains FAIL.",
+    "The finite dummy strategy advances output on this fixture; it does not establish completely transparent state, a valid LAST/EPIPE boundary, nonempty drained START, or that every possible strategy is exhausted."
+  ],
+  "disposition": "Preserve the measured limited progress and failure. No production/default/ABI/firmware change; #114/#115 and nonempty drained START=EOPNOTSUPP remain unchanged."
+}

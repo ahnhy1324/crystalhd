@@ -212,3 +212,53 @@ new private result directory, then use that same directory for comparisons.
 The packet fixture and build requirements are unchanged. This establishes
 input-idle/resume feasibility; complete-drain G2 remains FAIL and nonempty
 drained START remains `EOPNOTSUPP`. Renderer catch-up remains separate.
+
+## Ordered-boundary dummy-picture follow-up
+
+[The source-qualified receipt](dummy-progress-20261027.json) preserves 52
+offline combinations and nine native sessions, including four fresh full-file
+reference controls. The original 17+3 boundary and its failed G2 are unchanged.
+The additional 12/15/18-AU boundaries preserve the original global order;
+only combinations within the unchanged reorder restriction admit 3–5 private
+pictures to software screening. Of 52 combinations, 40 preserve all 20 original
+software pictures, 39 also pass the syntax/reorder screen, and 34 have an
+ordered segment boundary. These counts are screening results, not hardware passes.
+
+One invalid repeated-`frame_num` control also preserves every software pixel.
+It remains excluded under [H.264 §7.4.3](https://www.itu.int/rec/dologin_pub.asp?id=T-REC-H.264-201201-S%21%21PDF-E&lang=e&type=items):
+this progressive no-gap fixture requires the next reference-relative number.
+SPS/PPS0, original AU bytes and original identities are untouched; private
+non-reference I16x16/DC pictures use PPS254. Reuse the generated G0 directory:
+
+```sh
+python3 -B tests/h264-dummy-matrix.py /absolute/path/to/frozen-g0-directory \
+    /absolute/path/to/new-offline-matrix
+```
+
+At the separately ordered 18-AU boundary, a 600 ms receive phase gives:
+
+| Accepted private pictures | Original pictures before EOS | Private outputs before EOS |
+| --- | ---: | ---: |
+| 0 | 14/18 | 0/0 |
+| 1 | 15/18 | 0/1 |
+| 4, two distinct tag placements | 17/18 | 2/4 |
+| 5 | **18/18** | **3/5** |
+
+Four pictures leave original POC34 pending; five advance every accepted
+original, but two private outputs still require terminal EOS. **G2 remains
+FAIL; subsequent non-IDR continuation is NOT RUN.** This establishes limited
+output progress, not a complete non-destructive drain or transparent state.
+All 170 original and 14 private outputs retire at cleanup, original pixels,
+flags and prefix order match, and kernel/ref/pin/PM/link/AER checks pass.
+No physical A/V, PPB lease, production policy or #114/#115 change is implied.
+
+The bounded native probe adds `matrix BOUNDARY PRIVATE_COUNT` after its two
+directory arguments. Only 12/15/18 and counts 0–5 are admitted; selected inputs
+must first pass the offline screen, with the existing packet/prefix files,
+the corresponding `kickN.h264` and a fresh native reference. The final probe
+reserves distinct 2 ms private identity tags beyond all original tokens; these
+are synthetic diagnostic tags, not presentation timestamps. The receipt keeps
+the earlier four-picture tag control separately. Terminal EOS is cleanup and
+never supplies pre-EOS completion credit.
+
+![Software screening and actual native output progress](dummy-progress-20261027.svg)
