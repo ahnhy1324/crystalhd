@@ -1,0 +1,34 @@
+/* Read-only bounded diagnostic template: replace @LIB@ with the absolute
+ * companion host-wait SO path, @PID@ with the gated receiver's numeric PID.
+ * Attach before releasing the receiver gate. No device/register writes. */
+BEGIN { printf("{\"type\":\"kernel-ready\"}\n"); }
+uprobe:@LIB@:crystalhd_host_wait_mark /pid == @PID@/ {
+  @swap[tid] = arg0;
+  if (arg0) { printf("{\"type\":\"swap-marker\",\"tid\":%d,\"swap\":%llu,\"ns\":%llu}\n", tid, arg0, nsecs); }
+}
+tracepoint:syscalls:sys_enter_ioctl /pid == @PID@/ {
+  @io_start[tid] = nsecs; @io_fd[tid] = args->fd; @io_cmd[tid] = args->cmd; @io_swap[tid] = @swap[tid];
+}
+tracepoint:syscalls:sys_exit_ioctl /pid == @PID@ && @io_start[tid]/ {
+  $start = @io_start[tid]; $delta = nsecs - $start;
+  if ($delta >= 1000000) {
+    printf("{\"type\":\"kernel-wait\",\"call\":\"ioctl\",\"tid\":%d,\"swap\":%llu,\"fd\":%llu,\"request\":%llu,\"start_ns\":%llu,\"elapsed_ns\":%llu,\"ret\":%lld}\n", tid, @io_swap[tid], @io_fd[tid], @io_cmd[tid], $start, $delta, args->ret);
+  }
+  delete(@io_start[tid]); delete(@io_fd[tid]); delete(@io_cmd[tid]); delete(@io_swap[tid]);
+}
+tracepoint:syscalls:sys_enter_futex /pid == @PID@ && @swap[tid]/ {
+  @fx_start[tid] = nsecs; @fx_op[tid] = args->op; @fx_swap[tid] = @swap[tid];
+}
+tracepoint:syscalls:sys_exit_futex /pid == @PID@ && @fx_start[tid]/ {
+  $start = @fx_start[tid]; $delta = nsecs - $start;
+  if ($delta >= 1000000) {
+    printf("{\"type\":\"kernel-wait\",\"call\":\"futex\",\"tid\":%d,\"swap\":%llu,\"op\":%llu,\"start_ns\":%llu,\"elapsed_ns\":%llu,\"ret\":%lld}\n", tid, @fx_swap[tid], @fx_op[tid], $start, $delta, args->ret);
+  }
+  delete(@fx_start[tid]); delete(@fx_op[tid]); delete(@fx_swap[tid]);
+}
+tracepoint:sched:sched_process_exit /pid == @PID@ && tid == @PID@/ { exit(); }
+END {
+  clear(@swap); clear(@io_start); clear(@io_fd); clear(@io_cmd); clear(@io_swap);
+  clear(@fx_start); clear(@fx_op); clear(@fx_swap);
+  printf("{\"type\":\"kernel-trace-end\"}\n");
+}

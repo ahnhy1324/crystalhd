@@ -107,10 +107,10 @@ struct SwapObserver {
         for(const auto &sample:samples) {
             const auto enter=sample->entered.load(),end=sample->returned.load(),ready=sample->ready.load();
             dprintf(STDOUT_FILENO,"{\"type\":\"native-fence-swap\",\"swap\":%u,\"valid\":%s,\"swap_ok\":%s,"
-                "\"setup_ns\":%" G_GUINT64_FORMAT ",\"swap_ns\":%" G_GUINT64_FORMAT ","
+                "\"entered_ns\":%" G_GUINT64_FORMAT ",\"setup_ns\":%" G_GUINT64_FORMAT ",\"swap_ns\":%" G_GUINT64_FORMAT ","
                 "\"gpu_seen_from_enter_ns\":%" G_GINT64_FORMAT ",\"post_gpu_lower_bound_ns\":%" G_GUINT64_FORMAT ","
                 "\"ready_before_swap\":%s}\n",sample->sequence,sample->valid&&ready&&enter&&end?"true":"false",
-                sample->swap_ok?"true":"false",enter>=sample->created?enter-sample->created:0,end>=enter?end-enter:0,
+                sample->swap_ok?"true":"false",enter,enter>=sample->created?enter-sample->created:0,end>=enter?end-enter:0,
                 ready&&enter?GST_CLOCK_DIFF(enter,ready):0,ready&&end>ready?end-ready:0,
                 ready&&enter&&ready<=enter?"true":"false");
         }
