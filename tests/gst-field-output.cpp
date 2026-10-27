@@ -127,11 +127,10 @@ static void slot_retirement_pixels(bool fallback) {
         // No readback or context-wide finish preceded this fenced reuse.
         upload(0,round*3+2);
         need(stats.retained==2&&stats.images==4,"independent live source slots");
-        for(auto item:{std::make_pair(&top0,0U),std::make_pair(&bottom0,1U),
-                       std::make_pair(&top1,0U),std::make_pair(&bottom1,1U)}) {
-            glBindFramebuffer(GL_FRAMEBUFFER,item.first->picture.fbo);
-            verify_scaled(*item.first,item.first==&top0||item.first==&bottom0?first:second,
-                          item.second,"independent-slot-fenced-reuse");++comparisons;
+        Renderer *outputs[]={&top0,&bottom0,&top1,&bottom1};
+        for(unsigned i=0;i<4;++i) {
+            glBindFramebuffer(GL_FRAMEBUFFER,outputs[i]->picture.fbo);
+            verify_scaled(*outputs[i],i<2?first:second,i&1,"independent-slot-fenced-reuse");++comparisons;
         }
         for(auto &slot:slots){slot->retire();slot.reset();}
         need(!stats.retained&&!stats.images&&!stats.allocations&&!stats.fences_live,"all slots retired");
