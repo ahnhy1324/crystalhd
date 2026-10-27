@@ -335,6 +335,31 @@ static void test_padded_copy(void)
   g_assert_true(sink_stop(GST_BASE_SINK(sink))); context_unref(c);
   gst_object_unref(sink); clean_contexts();
 }
+static void test_paused_expose(void)
+{
+  if (!x11_enabled()) return;
+  GstElement *sink = direct_sink(); XvContext *c = sink_context(XV_SINK(sink));
+  GstVideoInfo info = info_for(320, 240);
+  GstCaps *caps = gst_video_info_to_caps(&info);
+  g_assert_true(sink_set_caps(GST_BASE_SINK(sink), caps)); gst_caps_unref(caps);
+  GstBuffer *buffer = pattern_buffer(&info, 7);
+  GST_BUFFER_PTS(buffer) = 40 * GST_MSECOND;
+  g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), buffer), ==, GST_FLOW_OK);
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+  guint64 before = c->submitted; g_mutex_unlock(&c->lock);
+  gst_video_overlay_expose(GST_VIDEO_OVERLAY(sink));
+  gint64 end = g_get_monotonic_time() + G_USEC_PER_SEC;
+  guint64 after;
+  do {
+    g_mutex_lock(&c->lock); after = c->submitted; g_mutex_unlock(&c->lock);
+    if (after > before) break;
+    g_usleep(1000);
+  } while (g_get_monotonic_time() < end);
+  g_test_message("Paused expose: requests before=%" G_GUINT64_FORMAT " after=%" G_GUINT64_FORMAT, before, after);
+  gst_buffer_unref(buffer); sink_stop(GST_BASE_SINK(sink));
+  context_unref(c); gst_object_unref(sink); clean_contexts();
+  g_assert_cmpuint(after, >, before);
+}
 static void test_partial_setup(void)
 {
   if (!x11_enabled()) return;
@@ -716,6 +741,7 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/x11/reopen", test_reopen);
   g_test_add_func("/xv/x11/preroll", test_preroll);
   g_test_add_func("/xv/x11/padded-copy", test_padded_copy);
+  g_test_add_func("/xv/x11/paused-expose", test_paused_expose);
   g_test_add_func("/xv/x11/partial-setup", test_partial_setup);
   g_test_add_func("/xv/x11/transport-reopen", test_transport_reopen);
   g_test_add_func("/xv/x11/reentrant-error-stop", test_reentrant_error_stop);
