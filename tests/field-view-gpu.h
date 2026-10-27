@@ -16,47 +16,6 @@
 
 using yuy2_gpu::need;
 
-// A presentation fence complements (never replaces) source retirement.
-// The display owner still completes all GPU uses before updating its BO.
-struct FieldSyncAPI {
-    EGLDisplay display;
-    PFNEGLCREATESYNCKHRPROC create=nullptr;
-    PFNEGLDESTROYSYNCKHRPROC destroy=nullptr;
-    PFNEGLCLIENTWAITSYNCKHRPROC wait=nullptr;
-    bool supported=false;
-    explicit FieldSyncAPI(EGLDisplay d):display(d) {
-        const char *egl=eglQueryString(d,EGL_EXTENSIONS);
-        const char *gl=reinterpret_cast<const char *>(glGetString(GL_EXTENSIONS));
-        supported=egl&&gl&&strstr(egl,"EGL_KHR_fence_sync")&&strstr(gl,"GL_OES_EGL_sync");
-        if(!supported)return;
-        create=reinterpret_cast<PFNEGLCREATESYNCKHRPROC>(eglGetProcAddress("eglCreateSyncKHR"));
-        destroy=reinterpret_cast<PFNEGLDESTROYSYNCKHRPROC>(eglGetProcAddress("eglDestroySyncKHR"));
-        wait=reinterpret_cast<PFNEGLCLIENTWAITSYNCKHRPROC>(eglGetProcAddress("eglClientWaitSyncKHR"));
-        need(create&&destroy&&wait,"field fence functions");
-    }
-};
-struct FieldCompletion {
-    FieldSyncAPI &api;
-    EGLSyncKHR sync=EGL_NO_SYNC_KHR;
-    explicit FieldCompletion(FieldSyncAPI &a):api(a) {
-        if(!api.supported){glFinish();return;}
-        sync=api.create(api.display,EGL_SYNC_FENCE_KHR,nullptr);
-        need(sync!=EGL_NO_SYNC_KHR,"field completion fence");
-        // The fence command follows the draw. Flush that command as well;
-        // otherwise a later client wait could wait on an unsubmitted fence.
-        glFlush();
-    }
-    bool ready(EGLTimeKHR timeout=0) {
-        if(!api.supported)return true;
-        const EGLint status=api.wait(api.display,sync,0,timeout);
-        need(status==EGL_CONDITION_SATISFIED_KHR||status==EGL_TIMEOUT_EXPIRED_KHR,
-             "field fence wait");
-        return status==EGL_CONDITION_SATISFIED_KHR;
-    }
-    FieldCompletion(const FieldCompletion &)=delete;
-    ~FieldCompletion(){if(sync!=EGL_NO_SYNC_KHR)api.destroy(api.display,sync);}
-};
-
 [[maybe_unused]] static double clock_seconds(clockid_t clock) {
     timespec value{};
     need(clock_gettime(clock, &value) == 0, "clock");
