@@ -23,7 +23,9 @@ struct Counters {
         prepare_ns{0},draw_ns{0},wait_ns{0},swap_ns{0},retire_ns{0},retirements{0},
         worst_field_pts{0},worst_field_index{0},worst_parity{0},worst_prepare_ns{0},
         worst_retire_ns{0},worst_draw_ns{0},worst_wait_ns{0},worst_swap_ns{0},
-        worst_monotonic_elapsed_ns{0},worst_clock_elapsed_ns{0};
+        worst_monotonic_elapsed_ns{0},worst_clock_elapsed_ns{0},worst_gpu_wait_ns{0},
+        fence_supported{0},fences_created{0},fences_destroyed{0},fences_live{0},
+        fence_wait_ns{0},gpu_expired{0},finish_fallbacks{0};
     std::atomic<gint64> worst_head_age_ns{0},worst_preswap_age_ns{0};
 };
 struct Command {
@@ -233,6 +235,7 @@ struct Worker {
       try {
         Window window(handle);
         yuy2_gpu::GPU gpu("/dev/dri/renderD128",window.display,window.context);
+        FieldSyncAPI sync_api(gpu.display);stats.fence_supported=sync_api.supported;
         std::unique_ptr<GbmAllocation> storage;
         std::unique_ptr<Renderer> renderer;
         std::unique_ptr<Image> views[2];
@@ -387,6 +390,16 @@ struct Worker {
                     draw(parity,interlaced);
                     const auto draw_elapsed=gst_util_get_timestamp()-draw_begin;
                     stats.draw_ns+=draw_elapsed;
+                    // Declared before the fence so the live count retires only
+                    // after the EGL object is destroyed, on every exit path.
+                    struct FenceCount {
+                        Counters &stats;bool live=false;
+                        ~FenceCount(){if(live){--stats.fences_live;++stats.fences_destroyed;}}
+                    } fence_count{stats};
+                    FieldCompletion completion(sync_api);
+                    if(sync_api.supported) {
+                        ++stats.fences_created;++stats.fences_live;fence_count.live=true;
+                    }else ++stats.finish_fallbacks;
                     const auto wait_begin=gst_util_get_timestamp();
                     if((!command->preroll&&!wait(*command,running))||!current(command->generation)) {
                         result=GST_FLOW_FLUSHING;++stats.cancelled;break;
@@ -394,6 +407,20 @@ struct Worker {
                     const auto wait_elapsed=gst_util_get_timestamp()-wait_begin;
                     stats.wait_ns+=wait_elapsed;
                     if(expired()){++stats.dropped;continue;}
+                    // SwapBuffers can block on outstanding rendering. Wait
+                    // for this field's GPU work with cancellation/deadline
+                    // checks first, rather than submitting an already expired
+                    // field into an uninterruptible presentation wait.
+                    const auto gpu_wait_begin=gst_util_get_timestamp();
+                    bool gpu_ready=completion.ready();
+                    while(!gpu_ready&&current(command->generation)&&!expired())
+                        gpu_ready=completion.ready(GST_MSECOND);
+                    const auto gpu_wait_elapsed=gst_util_get_timestamp()-gpu_wait_begin;
+                    stats.fence_wait_ns+=gpu_wait_elapsed;
+                    if(!current(command->generation)) {
+                        result=GST_FLOW_FLUSHING;++stats.cancelled;break;
+                    }
+                    if(!gpu_ready||expired()){++stats.dropped;++stats.gpu_expired;continue;}
                     const auto preswap_clock=phase_clock;
                     const auto swap_begin=gst_util_get_timestamp();
                     swap();const auto swap_end=gst_util_get_timestamp();
@@ -420,6 +447,7 @@ struct Worker {
                                 stats.worst_parity=parity;stats.worst_prepare_ns=preparation_ns;
                                 stats.worst_retire_ns=retirement_ns;stats.worst_draw_ns=draw_elapsed;
                                 stats.worst_wait_ns=wait_elapsed;stats.worst_swap_ns=swap_elapsed;
+                                stats.worst_gpu_wait_ns=gpu_wait_elapsed;
                                 stats.worst_head_age_ns=GST_CLOCK_DIFF(target,head_clock);
                                 stats.worst_preswap_age_ns=GST_CLOCK_DIFF(target,preswap_clock);
                                 stats.worst_clock_elapsed_ns=actual-head_clock;
@@ -564,6 +592,14 @@ static void get_property(GObject *object,guint id,GValue *value,GParamSpec *spec
         "worst-preswap-age-ns",G_TYPE_INT64,c.worst_preswap_age_ns.load(),
         "worst-monotonic-elapsed-ns",G_TYPE_UINT64,c.worst_monotonic_elapsed_ns.load(),
         "worst-clock-elapsed-ns",G_TYPE_UINT64,c.worst_clock_elapsed_ns.load(),
+        "worst-gpu-wait-ns",G_TYPE_UINT64,c.worst_gpu_wait_ns.load(),
+        "fence-supported",G_TYPE_UINT64,c.fence_supported.load(),
+        "fences-created",G_TYPE_UINT64,c.fences_created.load(),
+        "fences-destroyed",G_TYPE_UINT64,c.fences_destroyed.load(),
+        "fences-live",G_TYPE_UINT64,c.fences_live.load(),
+        "fence-wait-ns",G_TYPE_UINT64,c.fence_wait_ns.load(),
+        "gpu-expired-fields",G_TYPE_UINT64,c.gpu_expired.load(),
+        "finish-fallbacks",G_TYPE_UINT64,c.finish_fallbacks.load(),
         "allocations",G_TYPE_UINT64,c.allocations.load(),"images",G_TYPE_UINT64,c.images.load(),
         "retained-buffers",G_TYPE_UINT64,c.retained.load(),nullptr);
     g_value_take_boxed(value,stats);

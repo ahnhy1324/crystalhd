@@ -67,7 +67,11 @@ static void retirement_pixels() {
     yuy2_gpu::GPU gpu("/dev/dri/renderD128",window.display,window.context);
     GbmAllocation storage(gpu,1280,720);
     Renderer top(1280,720,1920,1080),bottom(1280,720,1920,1080);
-    for(unsigned generation=0;generation<4;++generation) {
+    FieldSyncAPI sync(gpu.display);const bool native_sync=sync.supported;
+    for(unsigned generation=0;generation<5;++generation) {
+        // Last generation exercises the existing glFinish fallback even on
+        // a host with native fence support, without a product option.
+        sync.supported=generation==4?false:native_sync;
         const auto source=pattern(1280,720,generation);
         storage.write(source.data(),1280*2,source.size());
         {
@@ -77,7 +81,13 @@ static void retirement_pixels() {
             // Queue both uses without a per-field finish or readback. Keep
             // their views and source generation alive through completion.
             top.draw_to(upper,true,0,top.picture.fbo,0,0,1920,1080,false,false,false);
+            FieldCompletion top_complete(sync);
             bottom.draw_to(lower,true,1,bottom.picture.fbo,0,0,1920,1080,false,false,false);
+            FieldCompletion bottom_complete(sync);
+            const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+            while(!bottom_complete.ready(GST_MSECOND))
+                need(std::chrono::steady_clock::now()<until,"bounded real field fence completion");
+            need(top_complete.ready(),"first field completes before second fence");
             glFinish();
             need(glGetError()==GL_NO_ERROR,"two-field retirement completion");
         }
@@ -91,7 +101,7 @@ static void retirement_pixels() {
         glBindFramebuffer(GL_FRAMEBUFFER,bottom.picture.fbo);
         verify_scaled(bottom,source,1,"queued-bottom-retired-before-write");
     }
-    printf("{\"type\":\"retirement-pixels\",\"generations\":4,\"comparisons\":8,\"pass\":true}\n");
+    printf("{\"type\":\"retirement-pixels\",\"generations\":5,\"comparisons\":10,\"native_fence\":%s,\"fallback_checked\":true,\"pass\":true}\n",native_sync?"true":"false");
 }
 static guint64 counter(GstElement *sink,const char *key) {
     GstStructure *stats=nullptr;g_object_get(sink,"field-stats",&stats,nullptr);
@@ -143,7 +153,8 @@ static void pipeline(bool cancel) {
         need(gst_element_set_state(pipeline,GST_STATE_NULL)!=GST_STATE_CHANGE_FAILURE,"synthetic NULL");
         const double stop_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
         need(stop_ms<1000,"bounded cancellation/close");
-        for(const char *key:{"allocations","images","retained-buffers","failures"})need(!counter(sink,key),"clean worker retirement");
+        for(const char *key:{"allocations","images","retained-buffers","fences-live","failures"})need(!counter(sink,key),"clean worker retirement");
+        need(counter(sink,"fences-created")==counter(sink,"fences-destroyed"),"every field fence destroyed");
         printf("{\"type\":\"pipeline\",\"synthetic\":true,\"cancel\":%s,\"run\":%u,\"fields\":%llu,\"prerolls\":%llu,\"cancelled\":%llu,\"stop_ms\":%.3f,\"resources_after_null\":0,\"pass\":true}\n",
             cancel?"true":"false",run,static_cast<unsigned long long>(counter(sink,"fields")-before),
             static_cast<unsigned long long>(counter(sink,"prerolls")),static_cast<unsigned long long>(counter(sink,"cancelled")),stop_ms);
