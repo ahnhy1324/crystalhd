@@ -427,7 +427,7 @@ static gpointer event_reader(gpointer user)
     gboolean done = FALSE, post = FALSE;
     g_mutex_lock(&c->lock);
     if (c->connection && !c->failed) receive_locked(c, release, &n);
-    if ((c->failed || g_atomic_int_get(&c->stopping) || g_atomic_int_get(&c->flushing)) && c->last_buffer)
+    if ((c->failed || g_atomic_int_get(&c->stopping)) && c->last_buffer)
       release[n++] = forget_picture_locked(c);
     if (c->failed || g_atomic_int_get(&c->stopping)) {
       if (c->connection) {
@@ -681,8 +681,8 @@ static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
 static GstFlowReturn submit_buffer(XvContext *c, const GstVideoInfo *info,
                                    GstBuffer *buffer, XvMemory *direct)
 {
-  g_mutex_lock(&c->lock); guint64 epoch = c->epoch; g_mutex_unlock(&c->lock);
-  return submit_picture(c, info, buffer, direct, FALSE, epoch);
+  g_mutex_lock(&c->lock); guint64 epoch = c->epoch; GstVideoInfo snapshot = *info; g_mutex_unlock(&c->lock);
+  return submit_picture(c, &snapshot, buffer, direct, FALSE, epoch);
 }
 
 /* Pool ownership is independent of X-server completion. Holding the actual
@@ -820,9 +820,11 @@ static gboolean sink_unlock(GstBaseSink *base)
   XvContext *c = sink_context(XV_SINK(base));
   if (c) {
     g_atomic_int_set(&c->flushing, TRUE); wake_context(c);
-    g_mutex_lock(&c->lock); GstBuffer *old = forget_picture_locked(c); c->epoch++;
+    g_mutex_lock(&c->lock); c->epoch++;
+    /* BaseSink also calls unlock for PLAYING -> PAUSED. Preserve the picture
+     * across that temporary suspension; real flush/segment events discard it. */
+    if (c->last_buffer) c->last_epoch = c->epoch;
     g_cond_broadcast(&c->changed); g_mutex_unlock(&c->lock);
-    if (old) gst_buffer_unref(old);
     context_unref(c);
   }
   return TRUE;
@@ -901,6 +903,13 @@ static GstFlowReturn sink_wait_event(GstBaseSink *base, GstEvent *event)
 }
 static gboolean sink_event(GstBaseSink *base, GstEvent *event)
 {
+  if (GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_START) {
+    XvContext *c = sink_context(XV_SINK(base));
+    if (c) {
+      g_mutex_lock(&c->lock); GstBuffer *old = forget_picture_locked(c); c->epoch++;
+      g_mutex_unlock(&c->lock); if (old) gst_buffer_unref(old); context_unref(c);
+    }
+  }
   if (GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
     XvContext *c = sink_context(XV_SINK(base));
     if (c) {

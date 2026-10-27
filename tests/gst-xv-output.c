@@ -183,11 +183,12 @@ static void check_eos(GstElement *pipeline, guint count)
   g_assert_cmpint(gst_element_set_state(pipeline, GST_STATE_NULL), !=, GST_STATE_CHANGE_FAILURE);
   gst_element_get_state(pipeline, NULL, NULL, 3 * GST_SECOND);
   clean_contexts();
-  g_assert_cmpuint(stat64(stats, "submitted"), ==, count);
-  g_assert_cmpuint(stat64(stats, "acknowledged"), ==, count);
+  g_assert_cmpuint(stat64(stats, "video-submitted"), ==, count);
+  g_assert_cmpuint(stat64(stats, "submitted"), ==, count + stat64(stats, "redraw-submitted"));
+  g_assert_cmpuint(stat64(stats, "acknowledged"), ==, stat64(stats, "submitted"));
   g_assert_cmpuint(stat64(stats, "terminal-retired"), ==, 0);
   g_assert_cmpuint(stat32(stats, "pending"), ==, 0);
-  g_assert_cmpuint(stat64(stats, "pool-submitted"), ==, count);
+  g_assert_cmpuint(stat64(stats, "pool-submitted"), ==, stat64(stats, "submitted"));
   g_assert_cmpuint(stat64(stats, "copied-bytes"), ==, 0);
   gst_structure_free(stats); gst_object_unref(sink);
 }
@@ -311,9 +312,10 @@ static void test_preroll(void)
   gst_element_set_state(pipeline, GST_STATE_PLAYING); await_message(pipeline, GST_MESSAGE_EOS);
   GstStructure *stats = sink_stats(sink);
   /* One preroll submission plus twelve clocked frames; not thirteen unique frames. */
-  g_assert_cmpuint(stat64(stats, "submitted"), ==, 13);
-  g_assert_cmpuint(stat64(stats, "acknowledged"), ==, 13);
-  g_assert_cmpuint(stat64(stats, "pool-submitted"), ==, 13);
+  g_assert_cmpuint(stat64(stats, "video-submitted"), ==, 13);
+  g_assert_cmpuint(stat64(stats, "submitted"), ==, 13 + stat64(stats, "redraw-submitted"));
+  g_assert_cmpuint(stat64(stats, "acknowledged"), ==, stat64(stats, "submitted"));
+  g_assert_cmpuint(stat64(stats, "pool-submitted"), ==, stat64(stats, "submitted"));
   gst_structure_free(stats); gst_element_set_state(pipeline, GST_STATE_NULL);
   gst_object_unref(sink); gst_object_unref(pipeline); clean_contexts();
 }
@@ -326,7 +328,10 @@ static void test_padded_copy(void)
     GstBuffer *buffer = pattern_buffer(&info, index);
     g_assert_cmpint(submit_buffer(c, &info, buffer, NULL), ==, GST_FLOW_OK);
     g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
-    XvMemory *m = c->copies[0];
+    XvMemory *m = NULL;
+    for (guint i = 0; i < XV_DEPTH; i++)
+      if (c->copies[i] && (!m || c->copies[i]->generation > m->generation)) m = c->copies[i];
+    g_assert_nonnull(m);
     for (gint y = 0; y < info.height; y++)
       for (gint x = 0; x < info.width * 2; x++)
         g_assert_cmpuint(m->data[m->offset + y * m->pitch + x], ==, (index + y * 3 + x) % 251);
@@ -360,6 +365,108 @@ static void test_paused_expose(void)
   context_unref(c); gst_object_unref(sink); clean_contexts();
   g_assert_cmpuint(after, >, before);
 }
+static void await_redraw(XvContext *c, guint64 before, guint width, guint height)
+{
+  gint64 end = g_get_monotonic_time() + 3 * G_USEC_PER_SEC;
+  g_mutex_lock(&c->lock);
+  while (!c->failed && (c->redraw_submitted <= before || c->pending ||
+      c->width != width || c->height != height))
+    if (!g_cond_wait_until(&c->changed, &c->lock, end)) break;
+  g_assert_false(c->failed); g_assert_cmpuint(c->redraw_submitted, >, before);
+  g_assert_cmpuint(c->pending, ==, 0);
+  g_assert_cmpuint(c->width, ==, width); g_assert_cmpuint(c->height, ==, height);
+  g_assert_cmpuint(c->submitted, ==, c->acknowledged);
+  g_mutex_unlock(&c->lock);
+}
+static void window_pixel_locked(XvContext *c, guint x, guint y, gboolean white)
+{
+  xcb_get_image_reply_t *reply = reply_locked(c,
+      xcb_get_image(c->connection, XCB_IMAGE_FORMAT_Z_PIXMAP, c->window,
+          x, y, 1, 1, UINT32_MAX).sequence);
+  g_assert_nonnull(reply); g_assert_cmpuint(reply->depth, ==, 24);
+  g_assert_cmpint(xcb_get_image_data_length(reply), >=, 3);
+  const guint8 *rgb = xcb_get_image_data(reply);
+  for (guint i = 0; i < 3; i++) {
+    if (white) g_assert_cmpuint(rgb[i], >=, 248);
+    else g_assert_cmpuint(rgb[i], <=, 2);
+  }
+  free(reply);
+}
+static void paused_resize(gboolean pooled)
+{
+  if (!x11_enabled()) return;
+  GError *error = NULL;
+  GstElement *pipeline = gst_parse_launch(pooled ?
+      "videotestsrc num-buffers=1 pattern=white ! "
+      "video/x-raw,format=UYVY,width=320,height=240,framerate=50/1,colorimetry=bt601 ! "
+      "crystalhdxvsink name=output enable-last-sample=false" :
+      "appsrc name=input format=time ! crystalhdxvsink name=output enable-last-sample=false", &error);
+  g_assert_no_error(error); GstVideoInfo info = info_for(320, 240);
+  if (!pooled) {
+    GstElement *source = gst_bin_get_by_name(GST_BIN(pipeline), "input");
+    GstCaps *caps = gst_video_info_to_caps(&info); gst_app_src_set_caps(GST_APP_SRC(source), caps); gst_caps_unref(caps);
+    GstBuffer *buffer = pattern_buffer(&info, 0); GstVideoFrame frame;
+    g_assert_true(gst_video_frame_map(&frame, &info, buffer, GST_MAP_WRITE));
+    for (gint y = 0; y < info.height; y++) {
+      guint8 *row = (guint8 *)GST_VIDEO_FRAME_PLANE_DATA(&frame, 0) + y * GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0);
+      for (gint x = 0; x < info.width * 2; x += 4) {row[x] = row[x+2] = 128; row[x+1] = row[x+3] = 235;}
+    }
+    gst_video_frame_unmap(&frame);
+    g_assert_cmpint(gst_app_src_push_buffer(GST_APP_SRC(source), buffer), ==, GST_FLOW_OK);
+    gst_app_src_end_of_stream(GST_APP_SRC(source)); gst_object_unref(source);
+  }
+  gst_element_set_state(pipeline, GST_STATE_PLAYING); await_message(pipeline, GST_MESSAGE_EOS);
+  g_assert_cmpint(gst_element_set_state(pipeline, GST_STATE_PAUSED), !=, GST_STATE_CHANGE_FAILURE);
+  GstState state;
+  g_assert_cmpint(gst_element_get_state(pipeline, &state, NULL, 2*GST_SECOND), !=, GST_STATE_CHANGE_FAILURE);
+  g_assert_cmpint(state, ==, GST_STATE_PAUSED);
+  GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), "output");
+  g_assert_null(gst_base_sink_get_last_sample(GST_BASE_SINK(sink)));
+  XvContext *c = sink_context(XV_SINK(sink)); g_assert_nonnull(c);
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+  g_assert_nonnull(c->last_buffer);
+  g_assert_cmpint(buffer_memory(c->last_buffer) != NULL, ==, pooled);
+  guint64 video = c->video_submitted, before = c->redraw_submitted;
+  GstBuffer *identity = c->last_buffer; GstClockTime pts = GST_BUFFER_PTS(identity);
+  guint width = c->width, height = c->height;
+  window_pixel_locked(c, width/2, height/2, TRUE);
+  xcb_rectangle_t all = {0, 0, width, height};
+  xcb_poly_fill_rectangle(c->connection, c->window, c->gc, 1, &all);
+  window_pixel_locked(c, width/2, height/2, FALSE);
+  g_mutex_unlock(&c->lock);
+  gst_video_overlay_expose(GST_VIDEO_OVERLAY(sink)); await_redraw(c, before, width, height);
+  g_mutex_lock(&c->lock);
+  window_pixel_locked(c, width/2, height/2, TRUE); window_pixel_locked(c, 0, 0, FALSE);
+  before = c->redraw_submitted;
+  guint32 dimensions[] = {640, 360};
+  xcb_configure_window(c->connection, c->window, XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, dimensions);
+  xcb_flush(c->connection); g_mutex_unlock(&c->lock);
+  await_redraw(c, before, 640, 360);
+  g_mutex_lock(&c->lock);
+  window_pixel_locked(c, 320, 180, TRUE); window_pixel_locked(c, 0, 0, FALSE);
+  before = c->redraw_submitted;
+  xcb_clear_area(c->connection, TRUE, c->window, 0, 0, 640, 360); xcb_flush(c->connection);
+  g_mutex_unlock(&c->lock); await_redraw(c, before, 640, 360);
+  g_mutex_lock(&c->lock);
+  window_pixel_locked(c, 320, 180, TRUE); window_pixel_locked(c, 0, 0, FALSE);
+  g_assert_true(c->last_buffer == identity); g_assert_cmpuint(GST_BUFFER_PTS(c->last_buffer), ==, pts);
+  g_assert_cmpuint(c->video_submitted, ==, video);
+  before = c->redraw_submitted; g_mutex_unlock(&c->lock);
+  gst_element_send_event(pipeline, gst_event_new_flush_start());
+  gst_element_send_event(pipeline, gst_event_new_flush_stop(TRUE));
+  gst_video_overlay_expose(GST_VIDEO_OVERLAY(sink));
+  g_usleep(50000);
+  g_mutex_lock(&c->lock);
+  g_assert_null(c->last_buffer); g_assert_cmpuint(c->redraw_submitted, ==, before);
+  g_test_message("Actual PAUSED %s: video=%" G_GUINT64_FORMAT " redraw=%" G_GUINT64_FORMAT
+      ", visible white/black pixels, resize/expose, source identity/PTS preserved, flush suppresses stale redraw",
+      pooled ? "negotiated pool" : "copied input", video, before);
+  g_mutex_unlock(&c->lock);
+  gst_element_set_state(pipeline, GST_STATE_NULL); context_unref(c);
+  gst_object_unref(sink); gst_object_unref(pipeline); clean_contexts();
+}
+static void test_paused_resize_pool(void) { paused_resize(TRUE); }
+static void test_paused_resize_copy(void) { paused_resize(FALSE); }
 static void test_partial_setup(void)
 {
   if (!x11_enabled()) return;
@@ -504,9 +611,11 @@ static void test_held_pool_and_caps(void)
   g_assert_cmpuint(c->epoch, ==, 2); g_mutex_unlock(&c->lock);
   gst_buffer_unref(new_buffer);
   for (guint i = 0; i < 6; i++) if (buffers[i]) gst_buffer_unref(buffers[i]);
+  /* The renderer's retained last picture is a real Gst owner as well. */
+  sink_stop(GST_BASE_SINK(sink));
   g_assert_true(gst_buffer_pool_set_active(pool, FALSE)); gst_object_unref(pool);
   g_assert_true(gst_buffer_pool_set_active(new_pool, FALSE)); gst_object_unref(new_pool);
-  sink_stop(GST_BASE_SINK(sink)); context_unref(c); gst_object_unref(sink); clean_contexts();
+  context_unref(c); gst_object_unref(sink); clean_contexts();
 }
 static void test_two_instances(void)
 {
@@ -543,8 +652,9 @@ static void test_caps_and_flush(void)
   gst_app_src_end_of_stream(GST_APP_SRC(source)); await_message(pipeline, GST_MESSAGE_EOS);
   GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), "output");
   GstStructure *stats = sink_stats(sink);
-  g_assert_cmpuint(stat64(stats, "submitted"), ==, 24);
-  g_assert_cmpuint(stat64(stats, "acknowledged"), ==, 24);
+  g_assert_cmpuint(stat64(stats, "video-submitted"), ==, 24);
+  g_assert_cmpuint(stat64(stats, "submitted"), ==, 24 + stat64(stats, "redraw-submitted"));
+  g_assert_cmpuint(stat64(stats, "acknowledged"), ==, stat64(stats, "submitted"));
   g_assert_cmpuint(stat64(stats, "copied-bytes"), >, 0);
   gst_structure_free(stats); gst_element_set_state(pipeline, GST_STATE_NULL);
   gst_object_unref(sink); gst_object_unref(source); gst_object_unref(pipeline); clean_contexts();
@@ -742,6 +852,8 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/x11/preroll", test_preroll);
   g_test_add_func("/xv/x11/padded-copy", test_padded_copy);
   g_test_add_func("/xv/x11/paused-expose", test_paused_expose);
+  g_test_add_func("/xv/x11/paused-resize-pool", test_paused_resize_pool);
+  g_test_add_func("/xv/x11/paused-resize-copy", test_paused_resize_copy);
   g_test_add_func("/xv/x11/partial-setup", test_partial_setup);
   g_test_add_func("/xv/x11/transport-reopen", test_transport_reopen);
   g_test_add_func("/xv/x11/reentrant-error-stop", test_reentrant_error_stop);
