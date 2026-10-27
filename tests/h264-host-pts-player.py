@@ -23,7 +23,8 @@ import time
 
 import gi
 gi.require_version('Gst', '1.0')
-from gi.repository import GLib, Gst
+gi.require_version('GstVideo', '1.0')
+from gi.repository import GLib, Gst, GstVideo
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('hostmap', ROOT/'tests/h264-host-pts-map.py')
@@ -98,10 +99,15 @@ def main():
             os.environ.setdefault(key, value); env.setdefault(key, value)
     Gst.init(None)
     sink_name = 'fakesink' if args.headless else 'xvimagesink'
+    # Load GstVideo before constructing an overlay implementer: importing it
+    # afterwards leaves a methodless cached GI interface on this runtime.
+    # This display exposes UYVY but not native YUY2; packing conversion does
+    # not change source dimensions, timestamps or decoded-picture ownership.
+    packing = '' if args.headless else '! videoconvert n-threads=1 ! video/x-raw,format=UYVY '
     pipeline = Gst.parse_launch(
         'appsrc name=video format=time block=true max-buffers=8 max-bytes=3686400 '
         '! queue max-size-buffers=8 max-size-bytes=0 max-size-time=0 '
-        '! '+sink_name+' name=display sync=true qos=true '
+        +packing+'! '+sink_name+' name=display sync=true qos=true '
         'filesrc name=audio_file ! qtdemux name=demux '
         'queue name=audio_queue ! aacparse ! avdec_aac ! audioconvert '
         '! audioresample ! pulsesink name=audio sync=true')
@@ -121,8 +127,7 @@ def main():
     window = None
     if not args.headless:
         gi.require_version('Gtk', '3.0'); gi.require_version('GdkX11', '3.0')
-        gi.require_version('GstVideo', '1.0')
-        from gi.repository import GdkX11, GstVideo, Gtk
+        from gi.repository import GdkX11, Gtk
         window = Gtk.Window(title='CrystalHD PTS playback test')
         window.set_default_size(800, 450)
         drawing = Gtk.DrawingArea(); window.add(drawing); window.show_all()
