@@ -106,6 +106,19 @@ run repaints twice while paused without new video calls, then resumes/seeks
 and closes cleanly. Its seek/reset counters are not a unique-frame census.
 This is automated output/lifetime qualification, not new physical A/V acceptance.
 
+The [bounded paced-HTTP test](../../../tests/fixtures/issue513/xv-paced-http-20261027.json)
+also passes at the same runtime. Endless chunked H.264/AAC input pauses for
+10.01 seconds, then resumes with the same decoder and audio clock. After
+buffered input drains, 142 decoded pictures and 281 video requests stay
+unchanged while resize/exposure adds two acknowledged repaints. Resuming
+reaches 245 decoded pictures; explicit quit closes in 0.296 s. A new HTTP
+connection/pipeline in the same process decodes 106 pictures and closes in
+0.270 s. Device FDs, owned SHM and retained pictures retire; kernel and
+module/pin/PM/link/AER boundaries pass. Counts include preroll/in-flight calls,
+not a full-input EOS or scanout census. Initial buffering takes about eight
+seconds; source-loop boundaries, physical A/V and network latency are not
+qualified. The earlier invalid 4 Mbps transport control is retained separately.
+
 The planned ten-minute run remains incomplete after a normal 85°C CPU-guard
 stop at 359 seconds. Stock Xv also reaches the same guard; this does not
 establish a new-output-only thermal defect or an endurance PASS. Scanout,
