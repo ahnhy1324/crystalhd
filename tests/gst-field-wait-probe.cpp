@@ -12,11 +12,27 @@
 #include <dlfcn.h>
 static EGLBoolean observed_swap(EGLDisplay,EGLSurface);
 static EGLBoolean observed_terminate(EGLDisplay);
+static EGLBoolean observed_interval(EGLDisplay,EGLint);
+#ifndef CRYSTALHD_WAIT_SWAP_INTERVAL
+#define CRYSTALHD_WAIT_SWAP_INTERVAL 1
+#endif
 #define eglSwapBuffers observed_swap
 #define eglTerminate observed_terminate
+#define eglSwapInterval observed_interval
 #include "../filters/gst/field-output/gstcrystalhdfield.cpp"
 #undef eglSwapBuffers
 #undef eglTerminate
+#undef eglSwapInterval
+
+static EGLBoolean observed_interval(EGLDisplay display,EGLint requested) {
+    const EGLint selected=CRYSTALHD_WAIT_SWAP_INTERVAL;
+    const EGLBoolean result=eglSwapInterval(display,selected);
+    // Explicit diagnostic only: an accepted request is not proof of physical
+    // scanout behavior or absence of tearing. The ordinary renderer keeps 1.
+    dprintf(STDOUT_FILENO,"{\"type\":\"swap-interval-probe\",\"requested\":%d,\"selected\":%d,\"accepted\":%s}\n",
+            requested,selected,result?"true":"false");
+    return result;
+}
 
 namespace {
 struct SwapSample {
