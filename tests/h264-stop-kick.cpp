@@ -222,8 +222,16 @@ int main(int argc,char **argv) {
                     const bool known=std::any_of(source.begin(),source.end(),[&](const Packet &p){return p.token==token;});
                     if(!known) {
                         const bool neutral=std::all_of(frame.pixels.begin(),frame.pixels.end(),[](uint8_t v){return v==128;});
-                        printf("{\"type\":\"unmatched\",\"mode\":\"%s\",\"token\":%llu,\"neutral_pixels\":%s,\"flags\":%u,\"before_eos\":%s}\n",
-                               mode.c_str(),static_cast<unsigned long long>(token),neutral?"true":"false",frame.flags,flush?"false":"true");
+                        unsigned matching_references=0;uint64_t matched_token=0;bool matched_flags=false;
+                        for(const auto &entry:baseline)if(entry.second.pixels==frame.pixels) {
+                            ++matching_references;matched_token=entry.first;matched_flags=entry.second.flags==frame.flags;
+                        }
+                        // Diagnostic only. Never use pixel matching to repair
+                        // or accept the missing public timestamp identity.
+                        printf("{\"type\":\"unmatched\",\"mode\":\"%s\",\"token\":%llu,\"neutral_pixels\":%s,\"flags\":%u,\"before_eos\":%s,"
+                               "\"matching_references\":%u,\"matched_reference_token\":%llu,\"matched_reference_flags\":%s}\n",
+                               mode.c_str(),static_cast<unsigned long long>(token),neutral?"true":"false",frame.flags,flush?"false":"true",
+                               matching_references,static_cast<unsigned long long>(matched_token),matched_flags?"true":"false");
                         fflush(stdout);++unknown_outputs;lease.finish();
                         need(flush,"unknown/ghost output before terminal cleanup");
                         continue;
