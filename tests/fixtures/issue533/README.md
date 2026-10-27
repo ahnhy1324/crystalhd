@@ -262,3 +262,53 @@ the earlier four-picture tag control separately. Terminal EOS is cleanup and
 never supplies pre-EOS completion credit.
 
 ![Software screening and actual native output progress](dummy-progress-20261027.svg)
+
+## Input-only continuation after private progress
+
+The [requested follow-up](https://github.com/ahnhy1324/crystalhd/issues/533#issuecomment-6434700798)
+is measured separately in the [continuation receipt](dummy-input-resume-20261027.json),
+with original AU19/20 on the same handle and EOS only after all 20 full original
+payloads. The raw **18-real/3-private** boundary fails timestamp retention:
+AU19's full pixels and flags match the oracle, but its returned timestamp is 0.
+Diagnostic pixel matching never repairs that identity or turns the failure into
+a PASS. Late prefixes and repeated PTS fail too; all failures are retained.
+
+Binding AU19's original timestamp to its prefix **before** the idle gap works.
+This distinct variant returns **18 real/4 private** before pause; AU19's VCL
+bytes remain unsubmitted until resume, when its payload consumes the prefed
+timestamp. Its codec bytes and original timestamp values are unchanged.
+
+| Input-only control | Before pause: real/private | Final original identity/pixels/flags/order |
+| --- | ---: | --- |
+| No private picture, added 1 s pause | 14/0 | 20/20 PASS |
+| Four private pictures, either tag range, added 1 s | 17/2 | FAIL: AU19 timestamp 0 |
+| Five private pictures, raw added 100 ms | 18/3 | FAIL: AU19 timestamp 0 |
+| Five + early AU19 prefix, added 100 ms / 1 s / repeated 1 s | 18/4 | **20/20 PASS on each; all 5 private outputs retire** |
+
+Each added pause follows the same 600 ms receive/verification interval. The
+three successful total compressed-input gaps are **700.387/1600.448/1602.125 ms**;
+these are not 100/1000 ms total gaps. No EOS or channel restart occurs at pause.
+The native API tokens are frozen diagnostic identities; the receipt separately
+maps the original media PTS/POC. This is not a physical A/V measurement.
+
+The probe adds `matrix-idle-100` and `matrix-idle-1000` with boundary 18 and
+private counts 0/4/5. An optional final research control is `raw` (default),
+`adjacent` (four private tags), or `prefed` (early actual-next-AU prefix):
+
+```sh
+/path/to/h264-stop-kick /absolute/path/to/prepared-inputs \
+    /absolute/path/to/private-reference-results matrix-idle-1000 18 5 prefed
+```
+
+Use the qualified `b18-f11-p31-n5` private payload and the fresh native reference
+requirements above. Strict success requires all 20 actual returned tokens,
+pixels, flags and original order, plus all private RX releases. Ten reference
+controls and the complete 22-session history preserve seven timestamp FAILs
+and one changed-state precondition abort. Kernel/ref/pin/PM/link/AER checks pass.
+
+**G2 remains FAIL:** one private output is still pending before terminal EOS.
+The raw 18/3 failure remains; the successful 18/4 variant is an experimental
+input-pause strategy requiring the actual next timestamp in advance. No LAST,
+EPIPE, compliant STOP/START, stock-player adoption or production change follows.
+
+![Actual timestamp retention and the successful input-pause phases](dummy-input-resume-20261027.svg)

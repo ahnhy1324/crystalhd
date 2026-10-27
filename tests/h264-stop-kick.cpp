@@ -164,9 +164,9 @@ int main(int argc,char **argv) {
         const bool prefed=mode=="prefed-picture"||mode=="prefed-pair"||matrix;
         const unsigned private_expected=matrix?matrix_private:mode=="prefed-pair"?2:(mode=="picture"||prefed?1:0);
         const auto source=packets(input);
-        // Private tags are identities, not media timestamps. Keep every
-        // original token unchanged, and reserve distinct2ms tags beyond all
-        // originals; no artificial four-token adjacent-gap limit is needed.
+        // These are synthetic diagnostic identities, not media timestamps.
+        // Keep every original token unchanged. Default private tags follow
+        // all originals; the four-picture adjacent control tests tag order.
         const uint64_t private_base=matrix?(adjacent_tags?source[prefix_count-1].token+kPrivateStep:source.back().token+kPrivateStep):kPrivate;
         std::vector<uint8_t> prefix,auxiliary;
         if(!idle) {
@@ -304,6 +304,10 @@ int main(int argc,char **argv) {
                 ++accepted_private;
             }
         } else if(mode=="picture") send(auxiliary,kPrivate);
+        // The prefed control binds actual AU19 before the input-idle gap.
+        // Its original timestamp is unchanged; no AU19 VCL bytes are sent
+        // until resume, when the payload consumes this prefix with timestamp0.
+        // Late/repeated timestamp controls did not repair the measured raw case.
         if(private_expected||mode=="prefix")send(prefix,early_prefeed?source[prefix_count].token:0);
         const unsigned before_idle=real;
         if(idle)phase="input-idle";
