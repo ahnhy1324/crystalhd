@@ -300,6 +300,102 @@ private counts 0/4/5. An optional final research control is `raw` (default),
     /absolute/path/to/private-reference-results matrix-idle-1000 18 5 prefed
 ```
 
+## Early timestamp ownership and repeated input pause
+
+The [follow-up request](https://github.com/ahnhy1324/crystalhd/issues/533#issuecomment-6436004320)
+is measured in two separate source-qualified probes: `2c27857` for the
+[early-token matrix](early-token-20261027.json), and `d6edf35` for
+[complete-sequence screening and repeated pause](input-cycles-20261027.json).
+The previous 20-picture native oracle is reused; a new uninterrupted
+180-picture oracle also preserves every one of its original images/flags.
+
+Every tested nonzero early prefix advances four of five private outputs.
+That does **not** make an arbitrary marker safe: original AU19 returns the early
+prefix's token, even when its resumed VCL carries its correct original token.
+Within these controls, only its exact original early token preserves all
+20 native identities.
+Pixels/flags/order pass in all nine controls; a wrong returned token remains
+FAIL, including the duplicate previous-real token. The untimed control still
+returns AU19 with token 0. No pixel-based retagging is performed.
+
+| Early prefix | Resumed AU19 token | AU19 actually returned | Strict identity |
+| --- | --- | --- | --- |
+| Actual AU19: 1900000 | 0 / 1900000 | 1900000 / 1900000 | PASS / PASS |
+| Previous AU18: 1800000 | 0 / 1900000 | 1800000 / 1800000 | FAIL / FAIL |
+| Reserved: 2120000 | 0 / 1900000 | 2120000 / 2120000 | FAIL / FAIL |
+| Reserved: 3000000 | 0 / 1900000 | 3000000 / 3000000 | FAIL / FAIL |
+| Untimed: 0 | 1900000 | 0 | FAIL; known raw control |
+
+These are diagnostic API identities, not calibrated media timestamps. The
+actual-next-token requirement remains. Reusing private tokens is NOT RUN:
+their identical DC128 images do not independently identify the source private
+picture if native tokens collide. No generic marker qualifies for cycling.
+
+**The frozen 18+5 placement cannot be copied into a complete GOP.** Adding
+the remaining original B pictures raises its required reorder bound to 4,
+above the unchanged limit 2. It was rejected offline. The new
+`tests/h264-pause-cycles.py` screens every insertion against its complete GOP,
+then strictly software-decodes the entire combined stream, including the
+actual AUD/filler prefix transport. Original AU bytes/source PTS, references,
+SPS reorder/buffering limits and signed firmware stay unchanged. This is a
+syntax-envelope/software screen, not a general conformance or PPB proof.
+
+Six independently qualified positions include source boundary 82 before a
+non-IDR AU; the other selected positions precede IDRs. No-dummy and
+exact-next-prefix candidates each pass **2, 5, 10 and 100** pauses on their
+original physical channel, with no EOS/reset/reopen between pauses. At 100:
+3,060 originals pass exact native tokens/full YUYV/flags/order in each arm;
+the candidate also retires all 500 distinct private outputs. Source copies
+repeat the original 180 AUs; diagnostic identity generations are separate
+from their unchanged per-copy source media PTS.
+
+At every candidate idle checkpoint, all accepted originals have returned.
+There are 84 checkpoints with one current private output pending and 16 with
+none, at source-copy boundaries. Older private generations never remain at
+those checkpoints; later original input retires the pending picture.
+This does not change the frozen G2 FAIL or establish general LAST/EPIPE or
+nonempty STOP/START. For ordinary pause, prefer **no-dummy input idle/resume**;
+it does not require a completed drain or next-AU lookahead.
+
+The [compact native trace](input-cycles-20261027.jsonl) retains every input,
+actual returned token/flag, whole-reference comparison, RX acquire/release and
+phase census. Its header defines columns; private generation IDs remain
+distinct. All 18 fresh sessions retire 8,550 observed RX outputs, preserve
+module/ref/pin/PM/link/AER boundaries and pass scoped kernel checks; peak 69°C.
+The deliberate pauses are 600 ms settlement plus 100 ms idle. Logged latency
+is input-call-return to verified output observation, including intentional
+input waiting; it is not decoder-only time, live throughput, scanout or E2E.
+
+![Actual native identity and private-picture backlog](early-token-cycles-20261027.svg)
+
+From the source root, build the probe and prepare a **new directory outside
+the source tree**, retaining the frozen G0 inputs. All example paths are
+user-selected absolute paths; create the probe's parent directory first.
+
+```sh
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Iinclude \
+    -Ilinux_lib/libcrystalhd tests/h264-stop-kick.cpp -ldl \
+    -o "/absolute/path/to/h264-stop-kick"
+python3 -B tests/h264-pause-cycles.py "/absolute/path/to/high.mp4" \
+    "/absolute/path/to/frozen-g0" "/absolute/path/to/new-cycle-inputs"
+```
+
+After the existing idle/thermal/identity prerequisites, `cycles-reference 0`
+captures `native-cycle-reference.bin` in a private result directory.
+`cycles-none 2` and `cycles-next 2` use that same oracle; keep their stdout as
+separate traces. Advance to `5`, `10`, then `100` only after both preceding
+arms pass. Each command takes input directory, result directory, mode and
+count; explicitly select the pinned library with `CRYSTALHD_LEGACY_LIB`.
+The `pts-preflight 18 5 POLICY zero|own` mode reads inputs/oracle without
+loading a library or opening a device; `pts-idle` performs its bounded native
+counterpart. Policies are `next`, `previous`, `reserved-near`, `reserved-far`
+and `untimed`. These are experimental probe modes, not player options.
+
+The result identifies an input-transport requirement, not the firmware
+instruction that selects a timestamp owner. No new physical A/V,
+i686/non-SSE playback, energy or endurance qualification;
+no production helper/default, firmware, ABI or external-application change.
+
 Use the qualified `b18-f11-p31-n5` private payload and the fresh native reference
 requirements above. Strict success requires all 20 actual returned tokens,
 pixels, flags and original order, plus all private RX releases. Ten reference

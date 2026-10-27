@@ -1,0 +1,7972 @@
+{
+  "issue": 533,
+  "authority": "https://github.com/ahnhy1324/crystalhd/issues/533#issuecomment-6436004320",
+  "device": "BCM70015",
+  "library_source": "54752a1af514eb673b563fb80b6df6600223a666",
+  "module": {
+    "version": "3.10.13",
+    "srcversion": "F76E163690F147B91495DDD"
+  },
+  "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+  "native_clock": "Synthetic2ms-aligned API identity tokens in100ns units. Source PTS/POC association is independently parsed, not measured firmware DPB state or calibrated A/V.",
+  "kernel_check_exit": 0,
+  "scope": "Research test probes only; same installed stable module/signed firmware/library/PM, no application patch/default/API/ABI/release change. G2 remains FAIL; nonempty drained V4L2 START remains EOPNOTSUPP.",
+  "schema": 1,
+  "probe_source": "2c27857758f81f71eec4f634483b9cdf8fd5a242",
+  "reused_reference_source": "3d0e4235d38a13526df0c3eb5e18fb4fcad14ca2",
+  "oracle_reuse": "Existing native20 oracle; not a new reference run. New full180 oracle below independently matches each of its20 full images/flags.",
+  "input_sha256": {
+    "original20.packets": "f342053c60031361a4bdbdebb32ebeaa836c53602c950eb1c4daf9da85a7845c",
+    "prefix.h264": "957a3359c7dd66e35f7ece4608f46f268be1d60a80b283412dc3af6b979abdb3",
+    "kick5.h264": "6747e2bb824b872efe50cff14090aabae518bb18e5dd34f53e16600c53d60641"
+  },
+  "offline_preflight": {
+    "valid_policies": 10,
+    "invalid_argument_guards": 4,
+    "device_or_library_opened": false,
+    "includes_wrong_token_flags_pixel_rejection": true
+  },
+  "original_aus": [
+    {
+      "index": 0,
+      "pts": 0,
+      "dts": -1024,
+      "poc": 0,
+      "frame_num": 0,
+      "reference": 3,
+      "idr": true
+    },
+    {
+      "index": 1,
+      "pts": 1536,
+      "dts": -512,
+      "poc": 6,
+      "frame_num": 1,
+      "reference": 2,
+      "idr": false
+    },
+    {
+      "index": 2,
+      "pts": 512,
+      "dts": 0,
+      "poc": 2,
+      "frame_num": 2,
+      "reference": 2,
+      "idr": false
+    },
+    {
+      "index": 3,
+      "pts": 1024,
+      "dts": 512,
+      "poc": 4,
+      "frame_num": 3,
+      "reference": 0,
+      "idr": false
+    },
+    {
+      "index": 4,
+      "pts": 3584,
+      "dts": 1024,
+      "poc": 14,
+      "frame_num": 3,
+      "reference": 2,
+      "idr": false
+    },
+    {
+      "index": 5,
+      "pts": 2560,
+      "dts": 1536,
+      "poc": 10,
+      "frame_num": 4,
+      "reference": 2,
+      "idr": false
+    },
+    {
+      "index": 6,
+      "pts": 2048,
+      "dts": 2048,
+      "poc": 8,
+      "frame_num": 5,
+      "reference": 0,
+      "idr": false
+    },
+    {
+      "index": 7,
+      "pts": 3072,
+      "dts": 2560,
+      "poc": 12,
+      "frame_num": 5,
+      "reference": 0,
+      "idr": false
+    },
+    {
+      "index": 8,
+      "pts": 5632,
+      "dts": 3072,
+      "poc": 22,
+      "frame_num": 5,
+      "reference": 2,
+      "idr": false
+    },
+    {
+      "index": 9,
+      "pts": 4608,
+      "dts": 3584,
+      "poc": 18,
+      "frame_num": 6,
+      "reference": 2,
+      "idr": false
+    },
+    {
+      "index": 10,
+      "pts": 4096,
+      "dts": 4096,
+      "poc": 16,
+      "frame_num": 7,
+      "reference": 0,
+      "idr": false
+    },
+    {
+      "index": 11,
+      "pts": 5120,
+      "dts": 4608,
+      "poc": 20,
+      "frame_num": 7,
+      "reference": 0,
+      "idr": false
+    },
+    {
+      "index": 12,
+      "pts": 7168,
+      "dts": 5120,
+      "poc": 28,
+      "frame_num": 7,
+      "reference": 2,
+      "idr": false
+    },
+    {
+      "index": 13,
+      "pts": 6144,
+      "dts": 5632,
+      "poc": 24,
+      "frame_num": 8,
+      "reference": 2,
+      "idr": false
+    },
+    {
+      "index": 14,
+      "pts": 6656,
+      "dts": 6144,
+      "poc": 26,
+      "frame_num": 9,
+      "reference": 0,
+      "idr": false
+    },
+    {
+      "index": 15,
+      "pts": 8704,
+      "dts": 6656,
+      "poc": 34,
+      "frame_num": 9,
+      "reference": 2,
+      "idr": false
+    },
+    {
+      "index": 16,
+      "pts": 7680,
+      "dts": 7168,
+      "poc": 30,
+      "frame_num": 10,
+      "reference": 2,
+      "idr": false
+    },
+    {
+      "index": 17,
+      "pts": 8192,
+      "dts": 7680,
+      "poc": 32,
+      "frame_num": 11,
+      "reference": 0,
+      "idr": false
+    },
+    {
+      "index": 18,
+      "pts": 10752,
+      "dts": 8192,
+      "poc": 42,
+      "frame_num": 11,
+      "reference": 2,
+      "idr": false
+    },
+    {
+      "index": 19,
+      "pts": 9728,
+      "dts": 8704,
+      "poc": 38,
+      "frame_num": 12,
+      "reference": 2,
+      "idr": false
+    }
+  ],
+  "cases": [
+    {
+      "name": "next-zero",
+      "exit_code": 0,
+      "early_native_token": 1900000,
+      "resumed_au19_native_token": 0,
+      "au19_actual_returned_token": 1900000,
+      "private_outputs_at_pause": 4,
+      "original_outputs_at_pause": 18,
+      "gap": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 101.109,
+        "input_gap_ms": 701.236
+      },
+      "grades": {
+        "original_full_pixels_flags_order": "PASS20/20",
+        "strict_original_native_identity": "PASS20/20",
+        "private_retirement": "PASS5/5 at true-end EOS",
+        "observed_RX": "PASS25/25 acquired/released after accepted VCL",
+        "pause_state_unchanged": true,
+        "multi_cycle": "NOT RUN in P1"
+      },
+      "peak_millic": 63000,
+      "actual_card_and_frozen_library_observed": true,
+      "idle_boundary_restored": true,
+      "phases": [
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-prefix",
+          "accepted_real": 18,
+          "accepted_private": 0,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 2.058
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "before-early-prefix",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 3.446
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-early-prefix-alone",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 3.487
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-private-settle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 603.58
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-input-idle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.756
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au19",
+          "accepted_real": 19,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.911
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au20",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.977
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-real-continuation",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 735.872
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-terminal-eos",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 20,
+          "output_private": 5,
+          "rx_acquired": 25,
+          "rx_released": 25,
+          "same_handle": true,
+          "eos": true,
+          "elapsed_ms": 772.506
+        }
+      ],
+      "input_columns": [
+        "call",
+        "kind",
+        "association",
+        "bytes",
+        "vcl_present",
+        "native_token",
+        "status",
+        "phase",
+        "elapsed_ms"
+      ],
+      "inputs": [
+        [
+          1,
+          "original",
+          1,
+          10416,
+          true,
+          100000,
+          0,
+          "prefix",
+          0.294
+        ],
+        [
+          2,
+          "original",
+          2,
+          5827,
+          true,
+          200000,
+          0,
+          "prefix",
+          0.422
+        ],
+        [
+          3,
+          "original",
+          3,
+          3945,
+          true,
+          300000,
+          0,
+          "prefix",
+          0.485
+        ],
+        [
+          4,
+          "original",
+          4,
+          3344,
+          true,
+          400000,
+          0,
+          "prefix",
+          0.546
+        ],
+        [
+          5,
+          "original",
+          5,
+          5458,
+          true,
+          500000,
+          0,
+          "prefix",
+          0.608
+        ],
+        [
+          6,
+          "original",
+          6,
+          3971,
+          true,
+          600000,
+          0,
+          "prefix",
+          0.662
+        ],
+        [
+          7,
+          "original",
+          7,
+          3396,
+          true,
+          700000,
+          0,
+          "prefix",
+          0.713
+        ],
+        [
+          8,
+          "original",
+          8,
+          3398,
+          true,
+          800000,
+          0,
+          "prefix",
+          1.154
+        ],
+        [
+          9,
+          "original",
+          9,
+          5368,
+          true,
+          900000,
+          0,
+          "prefix",
+          1.23
+        ],
+        [
+          10,
+          "original",
+          10,
+          3780,
+          true,
+          1000000,
+          0,
+          "prefix",
+          1.286
+        ],
+        [
+          11,
+          "original",
+          11,
+          3371,
+          true,
+          1100000,
+          0,
+          "prefix",
+          1.338
+        ],
+        [
+          12,
+          "original",
+          12,
+          3488,
+          true,
+          1200000,
+          0,
+          "prefix",
+          1.393
+        ],
+        [
+          13,
+          "original",
+          13,
+          5108,
+          true,
+          1300000,
+          0,
+          "prefix",
+          1.726
+        ],
+        [
+          14,
+          "original",
+          14,
+          3777,
+          true,
+          1400000,
+          0,
+          "prefix",
+          1.817
+        ],
+        [
+          15,
+          "original",
+          15,
+          3684,
+          true,
+          1500000,
+          0,
+          "prefix",
+          1.87
+        ],
+        [
+          16,
+          "original",
+          16,
+          4955,
+          true,
+          1600000,
+          0,
+          "prefix",
+          1.929
+        ],
+        [
+          17,
+          "original",
+          17,
+          3790,
+          true,
+          1700000,
+          0,
+          "prefix",
+          1.982
+        ],
+        [
+          18,
+          "original",
+          18,
+          3501,
+          true,
+          1800000,
+          0,
+          "prefix",
+          2.033
+        ],
+        [
+          19,
+          "private-prefix",
+          1,
+          170,
+          false,
+          2020000,
+          0,
+          "private-input",
+          2.318
+        ],
+        [
+          20,
+          "private-vcl",
+          1,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.815
+        ],
+        [
+          21,
+          "private-prefix",
+          2,
+          170,
+          false,
+          2040000,
+          0,
+          "private-input",
+          2.848
+        ],
+        [
+          22,
+          "private-vcl",
+          2,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.887
+        ],
+        [
+          23,
+          "private-prefix",
+          3,
+          170,
+          false,
+          2060000,
+          0,
+          "private-input",
+          2.914
+        ],
+        [
+          24,
+          "private-vcl",
+          3,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.974
+        ],
+        [
+          25,
+          "private-prefix",
+          4,
+          170,
+          false,
+          2080000,
+          0,
+          "private-input",
+          3.001
+        ],
+        [
+          26,
+          "private-vcl",
+          4,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          3.036
+        ],
+        [
+          27,
+          "private-prefix",
+          5,
+          170,
+          false,
+          2100000,
+          0,
+          "private-input",
+          3.062
+        ],
+        [
+          28,
+          "private-vcl",
+          5,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          3.422
+        ],
+        [
+          29,
+          "early-prefix",
+          19,
+          170,
+          false,
+          1900000,
+          0,
+          "private-input",
+          3.466
+        ],
+        [
+          30,
+          "original",
+          19,
+          5085,
+          true,
+          0,
+          0,
+          "continuation",
+          704.875
+        ],
+        [
+          31,
+          "original",
+          20,
+          4288,
+          true,
+          2000000,
+          0,
+          "continuation",
+          704.951
+        ]
+      ],
+      "outputs": [
+        {
+          "actual_token": 100000,
+          "flags": 0,
+          "pixel_sha256": "3497c7ab0e63b45241aaa947fd750546d17c82a2d275b8d2be3870ada7f0b2b6",
+          "diagnostic_original_token": 100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 300000,
+          "flags": 0,
+          "pixel_sha256": "70d09a53fddef2798d02aa1b4d7e02840293e52825df27f4d2db4246c5552c4c",
+          "diagnostic_original_token": 300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 400000,
+          "flags": 0,
+          "pixel_sha256": "d13db5bf3ea23933129e2d191534cef87cbbc291108f855741d1c062acc02463",
+          "diagnostic_original_token": 400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 200000,
+          "flags": 0,
+          "pixel_sha256": "1740fcadf9ec61afdff9fff8a4473187929d307767f99ac9017c040adac99f71",
+          "diagnostic_original_token": 200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 700000,
+          "flags": 0,
+          "pixel_sha256": "b58af1608483233eec0a83a58e5fdbfbcdc6105d61ee9029eeaf1c48c84d0d0e",
+          "diagnostic_original_token": 700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 600000,
+          "flags": 0,
+          "pixel_sha256": "51c8c065ecbf3b5c2962b77da8d2598e6b72dcf7b42103cb651ea6cf42e09bc5",
+          "diagnostic_original_token": 600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 800000,
+          "flags": 0,
+          "pixel_sha256": "cb2d6bd7808ce48721470eed53921f05c31fa96b32abb9352511e30c4bf8550a",
+          "diagnostic_original_token": 800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 500000,
+          "flags": 0,
+          "pixel_sha256": "1fa6a788250a0eaac4d5872678071eb32679d362e15c52e183e3f1f0504246c2",
+          "diagnostic_original_token": 500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1100000,
+          "flags": 0,
+          "pixel_sha256": "9f75f26a5c5717e0cc8590092230301425ca555a3c056c624ffafe22ae2a585d",
+          "diagnostic_original_token": 1100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1000000,
+          "flags": 0,
+          "pixel_sha256": "ddf0610674885e97e7512322e1a04ebd555666db02172ddf9e4cd8f8853ab231",
+          "diagnostic_original_token": 1000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1200000,
+          "flags": 0,
+          "pixel_sha256": "bdc468f752ddd4fbfe1f5fef1a85562373da236a8a4e62ac6a27316e84ec4d2a",
+          "diagnostic_original_token": 1200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 900000,
+          "flags": 0,
+          "pixel_sha256": "04f93fb22586ca110bc42d7616441ec92ea7bac7a6662e610759dc6f03fc75a0",
+          "diagnostic_original_token": 900000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1400000,
+          "flags": 0,
+          "pixel_sha256": "d8f690f267ae29b1edee5ef58fcb8513617ef70f85ada14b88abbacf29e952b3",
+          "diagnostic_original_token": 1400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1500000,
+          "flags": 0,
+          "pixel_sha256": "0dbde38377bab2fe2dc921a38a15a6a24bca65f85bc3bf0f6d2a7767506fd7bd",
+          "diagnostic_original_token": 1500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1300000,
+          "flags": 0,
+          "pixel_sha256": "fcd1d964a4eee26b3ff6902bdf8dfc9653195f68f8a6eaa3f1ff218734f3f6d7",
+          "diagnostic_original_token": 1300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1700000,
+          "flags": 0,
+          "pixel_sha256": "4297eb111bfcfff14a13423d6cbfef7afd367dde24667588adc1bf668ff48b8e",
+          "diagnostic_original_token": 1700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2020000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1800000,
+          "flags": 0,
+          "pixel_sha256": "925a8fa0bf8b5712c54291c1a043429ad541f6029667a7937fd790cfa8c2c1d2",
+          "diagnostic_original_token": 1800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2040000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1600000,
+          "flags": 0,
+          "pixel_sha256": "afaa94ddc7adf694c0b8b5ed3d63dbfe396a2a80cb835600e31a8e7f165d843f",
+          "diagnostic_original_token": 1600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2060000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2080000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2100000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2000000,
+          "flags": 0,
+          "pixel_sha256": "d19780f9b99c71369c17309384226985e326f5b1368ca8da0545f88018b34fc0",
+          "diagnostic_original_token": 2000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1900000,
+          "flags": 0,
+          "pixel_sha256": "11e4d460966337149c4ef429171466150ba99131cd421d80868795caf631471d",
+          "diagnostic_original_token": 1900000,
+          "strict_original_identity": true
+        }
+      ],
+      "rx_columns": [
+        "lease",
+        "actual_token",
+        "phase",
+        "acquired_ms",
+        "released_ms"
+      ],
+      "rx": [
+        [
+          1,
+          100000,
+          "private-input",
+          17.648,
+          18.355
+        ],
+        [
+          2,
+          300000,
+          "private-input",
+          20.91,
+          21.531
+        ],
+        [
+          3,
+          400000,
+          "private-input",
+          23.99,
+          24.644
+        ],
+        [
+          4,
+          200000,
+          "private-input",
+          26.999,
+          27.91
+        ],
+        [
+          5,
+          700000,
+          "private-input",
+          30.414,
+          31.456
+        ],
+        [
+          6,
+          600000,
+          "private-input",
+          33.908,
+          34.823
+        ],
+        [
+          7,
+          800000,
+          "private-input",
+          37.193,
+          38.213
+        ],
+        [
+          8,
+          500000,
+          "private-input",
+          40.785,
+          41.818
+        ],
+        [
+          9,
+          1100000,
+          "private-input",
+          44.288,
+          45.28
+        ],
+        [
+          10,
+          1000000,
+          "private-input",
+          46.626,
+          47.781
+        ],
+        [
+          11,
+          1200000,
+          "private-input",
+          50.344,
+          51.57
+        ],
+        [
+          12,
+          900000,
+          "private-input",
+          53.067,
+          55.307
+        ],
+        [
+          13,
+          1400000,
+          "private-input",
+          56.683,
+          58.182
+        ],
+        [
+          14,
+          1500000,
+          "private-input",
+          59.626,
+          61.176
+        ],
+        [
+          15,
+          1300000,
+          "private-input",
+          63.751,
+          64.92
+        ],
+        [
+          16,
+          1700000,
+          "private-input",
+          67.165,
+          68.393
+        ],
+        [
+          17,
+          2020000,
+          "private-input",
+          69.724,
+          71.225
+        ],
+        [
+          18,
+          1800000,
+          "private-input",
+          72.809,
+          74.065
+        ],
+        [
+          19,
+          2040000,
+          "private-input",
+          76.407,
+          77.493
+        ],
+        [
+          20,
+          1600000,
+          "private-input",
+          78.845,
+          79.784
+        ],
+        [
+          21,
+          2060000,
+          "private-input",
+          82.251,
+          83.333
+        ],
+        [
+          22,
+          2080000,
+          "private-input",
+          85.782,
+          86.848
+        ],
+        [
+          23,
+          2100000,
+          "terminal-eos",
+          743.471,
+          745.01
+        ],
+        [
+          24,
+          2000000,
+          "terminal-eos",
+          747.438,
+          748.453
+        ],
+        [
+          25,
+          1900000,
+          "terminal-eos",
+          750.971,
+          751.88
+        ]
+      ]
+    },
+    {
+      "name": "next-own",
+      "exit_code": 0,
+      "early_native_token": 1900000,
+      "resumed_au19_native_token": 1900000,
+      "au19_actual_returned_token": 1900000,
+      "private_outputs_at_pause": 4,
+      "original_outputs_at_pause": 18,
+      "gap": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 101.017,
+        "input_gap_ms": 702.14
+      },
+      "grades": {
+        "original_full_pixels_flags_order": "PASS20/20",
+        "strict_original_native_identity": "PASS20/20",
+        "private_retirement": "PASS5/5 at true-end EOS",
+        "observed_RX": "PASS25/25 acquired/released after accepted VCL",
+        "pause_state_unchanged": true,
+        "multi_cycle": "NOT RUN in P1"
+      },
+      "peak_millic": 64000,
+      "actual_card_and_frozen_library_observed": true,
+      "idle_boundary_restored": true,
+      "phases": [
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-prefix",
+          "accepted_real": 18,
+          "accepted_private": 0,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 2.175
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "before-early-prefix",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 2.55
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-early-prefix-alone",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 2.594
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-private-settle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 603.685
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-input-idle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.754
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au19",
+          "accepted_real": 19,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.995
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au20",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 705.122
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-real-continuation",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 735.714
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-terminal-eos",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 20,
+          "output_private": 5,
+          "rx_acquired": 25,
+          "rx_released": 25,
+          "same_handle": true,
+          "eos": true,
+          "elapsed_ms": 782.903
+        }
+      ],
+      "input_columns": [
+        "call",
+        "kind",
+        "association",
+        "bytes",
+        "vcl_present",
+        "native_token",
+        "status",
+        "phase",
+        "elapsed_ms"
+      ],
+      "inputs": [
+        [
+          1,
+          "original",
+          1,
+          10416,
+          true,
+          100000,
+          0,
+          "prefix",
+          0.672
+        ],
+        [
+          2,
+          "original",
+          2,
+          5827,
+          true,
+          200000,
+          0,
+          "prefix",
+          0.8
+        ],
+        [
+          3,
+          "original",
+          3,
+          3945,
+          true,
+          300000,
+          0,
+          "prefix",
+          0.85
+        ],
+        [
+          4,
+          "original",
+          4,
+          3344,
+          true,
+          400000,
+          0,
+          "prefix",
+          1.346
+        ],
+        [
+          5,
+          "original",
+          5,
+          5458,
+          true,
+          500000,
+          0,
+          "prefix",
+          1.452
+        ],
+        [
+          6,
+          "original",
+          6,
+          3971,
+          true,
+          600000,
+          0,
+          "prefix",
+          1.507
+        ],
+        [
+          7,
+          "original",
+          7,
+          3396,
+          true,
+          700000,
+          0,
+          "prefix",
+          1.555
+        ],
+        [
+          8,
+          "original",
+          8,
+          3398,
+          true,
+          800000,
+          0,
+          "prefix",
+          1.602
+        ],
+        [
+          9,
+          "original",
+          9,
+          5368,
+          true,
+          900000,
+          0,
+          "prefix",
+          1.661
+        ],
+        [
+          10,
+          "original",
+          10,
+          3780,
+          true,
+          1000000,
+          0,
+          "prefix",
+          1.712
+        ],
+        [
+          11,
+          "original",
+          11,
+          3371,
+          true,
+          1100000,
+          0,
+          "prefix",
+          1.761
+        ],
+        [
+          12,
+          "original",
+          12,
+          3488,
+          true,
+          1200000,
+          0,
+          "prefix",
+          1.81
+        ],
+        [
+          13,
+          "original",
+          13,
+          5108,
+          true,
+          1300000,
+          0,
+          "prefix",
+          1.894
+        ],
+        [
+          14,
+          "original",
+          14,
+          3777,
+          true,
+          1400000,
+          0,
+          "prefix",
+          1.949
+        ],
+        [
+          15,
+          "original",
+          15,
+          3684,
+          true,
+          1500000,
+          0,
+          "prefix",
+          1.994
+        ],
+        [
+          16,
+          "original",
+          16,
+          4955,
+          true,
+          1600000,
+          0,
+          "prefix",
+          2.047
+        ],
+        [
+          17,
+          "original",
+          17,
+          3790,
+          true,
+          1700000,
+          0,
+          "prefix",
+          2.098
+        ],
+        [
+          18,
+          "original",
+          18,
+          3501,
+          true,
+          1800000,
+          0,
+          "prefix",
+          2.149
+        ],
+        [
+          19,
+          "private-prefix",
+          1,
+          170,
+          false,
+          2020000,
+          0,
+          "private-input",
+          2.205
+        ],
+        [
+          20,
+          "private-vcl",
+          1,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.243
+        ],
+        [
+          21,
+          "private-prefix",
+          2,
+          170,
+          false,
+          2040000,
+          0,
+          "private-input",
+          2.269
+        ],
+        [
+          22,
+          "private-vcl",
+          2,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.311
+        ],
+        [
+          23,
+          "private-prefix",
+          3,
+          170,
+          false,
+          2060000,
+          0,
+          "private-input",
+          2.339
+        ],
+        [
+          24,
+          "private-vcl",
+          3,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.404
+        ],
+        [
+          25,
+          "private-prefix",
+          4,
+          170,
+          false,
+          2080000,
+          0,
+          "private-input",
+          2.431
+        ],
+        [
+          26,
+          "private-vcl",
+          4,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.465
+        ],
+        [
+          27,
+          "private-prefix",
+          5,
+          170,
+          false,
+          2100000,
+          0,
+          "private-input",
+          2.492
+        ],
+        [
+          28,
+          "private-vcl",
+          5,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.526
+        ],
+        [
+          29,
+          "early-prefix",
+          19,
+          170,
+          false,
+          1900000,
+          0,
+          "private-input",
+          2.57
+        ],
+        [
+          30,
+          "original",
+          19,
+          5085,
+          true,
+          1900000,
+          0,
+          "continuation",
+          704.923
+        ],
+        [
+          31,
+          "original",
+          20,
+          4288,
+          true,
+          2000000,
+          0,
+          "continuation",
+          705.085
+        ]
+      ],
+      "outputs": [
+        {
+          "actual_token": 100000,
+          "flags": 0,
+          "pixel_sha256": "3497c7ab0e63b45241aaa947fd750546d17c82a2d275b8d2be3870ada7f0b2b6",
+          "diagnostic_original_token": 100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 300000,
+          "flags": 0,
+          "pixel_sha256": "70d09a53fddef2798d02aa1b4d7e02840293e52825df27f4d2db4246c5552c4c",
+          "diagnostic_original_token": 300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 400000,
+          "flags": 0,
+          "pixel_sha256": "d13db5bf3ea23933129e2d191534cef87cbbc291108f855741d1c062acc02463",
+          "diagnostic_original_token": 400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 200000,
+          "flags": 0,
+          "pixel_sha256": "1740fcadf9ec61afdff9fff8a4473187929d307767f99ac9017c040adac99f71",
+          "diagnostic_original_token": 200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 700000,
+          "flags": 0,
+          "pixel_sha256": "b58af1608483233eec0a83a58e5fdbfbcdc6105d61ee9029eeaf1c48c84d0d0e",
+          "diagnostic_original_token": 700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 600000,
+          "flags": 0,
+          "pixel_sha256": "51c8c065ecbf3b5c2962b77da8d2598e6b72dcf7b42103cb651ea6cf42e09bc5",
+          "diagnostic_original_token": 600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 800000,
+          "flags": 0,
+          "pixel_sha256": "cb2d6bd7808ce48721470eed53921f05c31fa96b32abb9352511e30c4bf8550a",
+          "diagnostic_original_token": 800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 500000,
+          "flags": 0,
+          "pixel_sha256": "1fa6a788250a0eaac4d5872678071eb32679d362e15c52e183e3f1f0504246c2",
+          "diagnostic_original_token": 500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1100000,
+          "flags": 0,
+          "pixel_sha256": "9f75f26a5c5717e0cc8590092230301425ca555a3c056c624ffafe22ae2a585d",
+          "diagnostic_original_token": 1100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1000000,
+          "flags": 0,
+          "pixel_sha256": "ddf0610674885e97e7512322e1a04ebd555666db02172ddf9e4cd8f8853ab231",
+          "diagnostic_original_token": 1000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1200000,
+          "flags": 0,
+          "pixel_sha256": "bdc468f752ddd4fbfe1f5fef1a85562373da236a8a4e62ac6a27316e84ec4d2a",
+          "diagnostic_original_token": 1200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 900000,
+          "flags": 0,
+          "pixel_sha256": "04f93fb22586ca110bc42d7616441ec92ea7bac7a6662e610759dc6f03fc75a0",
+          "diagnostic_original_token": 900000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1400000,
+          "flags": 0,
+          "pixel_sha256": "d8f690f267ae29b1edee5ef58fcb8513617ef70f85ada14b88abbacf29e952b3",
+          "diagnostic_original_token": 1400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1500000,
+          "flags": 0,
+          "pixel_sha256": "0dbde38377bab2fe2dc921a38a15a6a24bca65f85bc3bf0f6d2a7767506fd7bd",
+          "diagnostic_original_token": 1500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1300000,
+          "flags": 0,
+          "pixel_sha256": "fcd1d964a4eee26b3ff6902bdf8dfc9653195f68f8a6eaa3f1ff218734f3f6d7",
+          "diagnostic_original_token": 1300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1700000,
+          "flags": 0,
+          "pixel_sha256": "4297eb111bfcfff14a13423d6cbfef7afd367dde24667588adc1bf668ff48b8e",
+          "diagnostic_original_token": 1700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2020000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1800000,
+          "flags": 0,
+          "pixel_sha256": "925a8fa0bf8b5712c54291c1a043429ad541f6029667a7937fd790cfa8c2c1d2",
+          "diagnostic_original_token": 1800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2040000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1600000,
+          "flags": 0,
+          "pixel_sha256": "afaa94ddc7adf694c0b8b5ed3d63dbfe396a2a80cb835600e31a8e7f165d843f",
+          "diagnostic_original_token": 1600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2060000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2080000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2100000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2000000,
+          "flags": 0,
+          "pixel_sha256": "d19780f9b99c71369c17309384226985e326f5b1368ca8da0545f88018b34fc0",
+          "diagnostic_original_token": 2000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1900000,
+          "flags": 0,
+          "pixel_sha256": "11e4d460966337149c4ef429171466150ba99131cd421d80868795caf631471d",
+          "diagnostic_original_token": 1900000,
+          "strict_original_identity": true
+        }
+      ],
+      "rx_columns": [
+        "lease",
+        "actual_token",
+        "phase",
+        "acquired_ms",
+        "released_ms"
+      ],
+      "rx": [
+        [
+          1,
+          100000,
+          "private-input",
+          14.425,
+          15.116
+        ],
+        [
+          2,
+          300000,
+          "private-input",
+          17.631,
+          18.278
+        ],
+        [
+          3,
+          400000,
+          "private-input",
+          21.023,
+          21.839
+        ],
+        [
+          4,
+          200000,
+          "private-input",
+          24.299,
+          25.228
+        ],
+        [
+          5,
+          700000,
+          "private-input",
+          27.704,
+          28.728
+        ],
+        [
+          6,
+          600000,
+          "private-input",
+          30.071,
+          30.993
+        ],
+        [
+          7,
+          800000,
+          "private-input",
+          33.523,
+          34.447
+        ],
+        [
+          8,
+          500000,
+          "private-input",
+          37.016,
+          38.068
+        ],
+        [
+          9,
+          1100000,
+          "private-input",
+          40.638,
+          41.702
+        ],
+        [
+          10,
+          1000000,
+          "private-input",
+          44.27,
+          45.357
+        ],
+        [
+          11,
+          1200000,
+          "private-input",
+          48.747,
+          50.949
+        ],
+        [
+          12,
+          900000,
+          "private-input",
+          51.187,
+          54.098
+        ],
+        [
+          13,
+          1400000,
+          "private-input",
+          54.304,
+          55.491
+        ],
+        [
+          14,
+          1500000,
+          "private-input",
+          56.838,
+          58.04
+        ],
+        [
+          15,
+          1300000,
+          "private-input",
+          59.436,
+          60.609
+        ],
+        [
+          16,
+          1700000,
+          "private-input",
+          63.126,
+          64.228
+        ],
+        [
+          17,
+          2020000,
+          "private-input",
+          66.576,
+          68.252
+        ],
+        [
+          18,
+          1800000,
+          "private-input",
+          69.584,
+          70.826
+        ],
+        [
+          19,
+          2040000,
+          "private-input",
+          73.698,
+          74.821
+        ],
+        [
+          20,
+          1600000,
+          "private-input",
+          77.797,
+          78.805
+        ],
+        [
+          21,
+          2060000,
+          "private-input",
+          79.027,
+          80.187
+        ],
+        [
+          22,
+          2080000,
+          "private-input",
+          82.646,
+          83.722
+        ],
+        [
+          23,
+          2100000,
+          "terminal-eos",
+          740.438,
+          742.308
+        ],
+        [
+          24,
+          2000000,
+          "terminal-eos",
+          746.062,
+          749.935
+        ],
+        [
+          25,
+          1900000,
+          "terminal-eos",
+          750.321,
+          752.846
+        ]
+      ]
+    },
+    {
+      "name": "previous-zero",
+      "exit_code": 2,
+      "early_native_token": 1800000,
+      "resumed_au19_native_token": 0,
+      "au19_actual_returned_token": 1800000,
+      "private_outputs_at_pause": 4,
+      "original_outputs_at_pause": 18,
+      "gap": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 101.137,
+        "input_gap_ms": 701.311
+      },
+      "grades": {
+        "original_full_pixels_flags_order": "PASS20/20",
+        "strict_original_native_identity": "FAIL AU19 native token",
+        "private_retirement": "PASS5/5 at true-end EOS",
+        "observed_RX": "PASS25/25 acquired/released after accepted VCL",
+        "pause_state_unchanged": true,
+        "multi_cycle": "NOT RUN in P1"
+      },
+      "peak_millic": 65000,
+      "actual_card_and_frozen_library_observed": true,
+      "idle_boundary_restored": true,
+      "phases": [
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-prefix",
+          "accepted_real": 18,
+          "accepted_private": 0,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 2.24
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "before-early-prefix",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 2.58
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-early-prefix-alone",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 2.621
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-private-settle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 602.766
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-input-idle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 703.942
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au19",
+          "accepted_real": 19,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.1
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au20",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.159
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-real-continuation",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 735.165
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-terminal-eos",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 19,
+          "output_private": 5,
+          "rx_acquired": 25,
+          "rx_released": 25,
+          "same_handle": true,
+          "eos": true,
+          "elapsed_ms": 773.429
+        }
+      ],
+      "input_columns": [
+        "call",
+        "kind",
+        "association",
+        "bytes",
+        "vcl_present",
+        "native_token",
+        "status",
+        "phase",
+        "elapsed_ms"
+      ],
+      "inputs": [
+        [
+          1,
+          "original",
+          1,
+          10416,
+          true,
+          100000,
+          0,
+          "prefix",
+          1.256
+        ],
+        [
+          2,
+          "original",
+          2,
+          5827,
+          true,
+          200000,
+          0,
+          "prefix",
+          1.369
+        ],
+        [
+          3,
+          "original",
+          3,
+          3945,
+          true,
+          300000,
+          0,
+          "prefix",
+          1.422
+        ],
+        [
+          4,
+          "original",
+          4,
+          3344,
+          true,
+          400000,
+          0,
+          "prefix",
+          1.47
+        ],
+        [
+          5,
+          "original",
+          5,
+          5458,
+          true,
+          500000,
+          0,
+          "prefix",
+          1.54
+        ],
+        [
+          6,
+          "original",
+          6,
+          3971,
+          true,
+          600000,
+          0,
+          "prefix",
+          1.588
+        ],
+        [
+          7,
+          "original",
+          7,
+          3396,
+          true,
+          700000,
+          0,
+          "prefix",
+          1.631
+        ],
+        [
+          8,
+          "original",
+          8,
+          3398,
+          true,
+          800000,
+          0,
+          "prefix",
+          1.704
+        ],
+        [
+          9,
+          "original",
+          9,
+          5368,
+          true,
+          900000,
+          0,
+          "prefix",
+          1.767
+        ],
+        [
+          10,
+          "original",
+          10,
+          3780,
+          true,
+          1000000,
+          0,
+          "prefix",
+          1.823
+        ],
+        [
+          11,
+          "original",
+          11,
+          3371,
+          true,
+          1100000,
+          0,
+          "prefix",
+          1.868
+        ],
+        [
+          12,
+          "original",
+          12,
+          3488,
+          true,
+          1200000,
+          0,
+          "prefix",
+          1.915
+        ],
+        [
+          13,
+          "original",
+          13,
+          5108,
+          true,
+          1300000,
+          0,
+          "prefix",
+          1.968
+        ],
+        [
+          14,
+          "original",
+          14,
+          3777,
+          true,
+          1400000,
+          0,
+          "prefix",
+          2.015
+        ],
+        [
+          15,
+          "original",
+          15,
+          3684,
+          true,
+          1500000,
+          0,
+          "prefix",
+          2.062
+        ],
+        [
+          16,
+          "original",
+          16,
+          4955,
+          true,
+          1600000,
+          0,
+          "prefix",
+          2.122
+        ],
+        [
+          17,
+          "original",
+          17,
+          3790,
+          true,
+          1700000,
+          0,
+          "prefix",
+          2.167
+        ],
+        [
+          18,
+          "original",
+          18,
+          3501,
+          true,
+          1800000,
+          0,
+          "prefix",
+          2.216
+        ],
+        [
+          19,
+          "private-prefix",
+          1,
+          170,
+          false,
+          2020000,
+          0,
+          "private-input",
+          2.275
+        ],
+        [
+          20,
+          "private-vcl",
+          1,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.308
+        ],
+        [
+          21,
+          "private-prefix",
+          2,
+          170,
+          false,
+          2040000,
+          0,
+          "private-input",
+          2.332
+        ],
+        [
+          22,
+          "private-vcl",
+          2,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.369
+        ],
+        [
+          23,
+          "private-prefix",
+          3,
+          170,
+          false,
+          2060000,
+          0,
+          "private-input",
+          2.394
+        ],
+        [
+          24,
+          "private-vcl",
+          3,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.447
+        ],
+        [
+          25,
+          "private-prefix",
+          4,
+          170,
+          false,
+          2080000,
+          0,
+          "private-input",
+          2.471
+        ],
+        [
+          26,
+          "private-vcl",
+          4,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.503
+        ],
+        [
+          27,
+          "private-prefix",
+          5,
+          170,
+          false,
+          2100000,
+          0,
+          "private-input",
+          2.527
+        ],
+        [
+          28,
+          "private-vcl",
+          5,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.558
+        ],
+        [
+          29,
+          "early-prefix",
+          19,
+          170,
+          false,
+          1800000,
+          0,
+          "private-input",
+          2.598
+        ],
+        [
+          30,
+          "original",
+          19,
+          5085,
+          true,
+          0,
+          0,
+          "continuation",
+          704.071
+        ],
+        [
+          31,
+          "original",
+          20,
+          4288,
+          true,
+          2000000,
+          0,
+          "continuation",
+          704.14
+        ]
+      ],
+      "outputs": [
+        {
+          "actual_token": 100000,
+          "flags": 0,
+          "pixel_sha256": "3497c7ab0e63b45241aaa947fd750546d17c82a2d275b8d2be3870ada7f0b2b6",
+          "diagnostic_original_token": 100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 300000,
+          "flags": 0,
+          "pixel_sha256": "70d09a53fddef2798d02aa1b4d7e02840293e52825df27f4d2db4246c5552c4c",
+          "diagnostic_original_token": 300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 400000,
+          "flags": 0,
+          "pixel_sha256": "d13db5bf3ea23933129e2d191534cef87cbbc291108f855741d1c062acc02463",
+          "diagnostic_original_token": 400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 200000,
+          "flags": 0,
+          "pixel_sha256": "1740fcadf9ec61afdff9fff8a4473187929d307767f99ac9017c040adac99f71",
+          "diagnostic_original_token": 200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 700000,
+          "flags": 0,
+          "pixel_sha256": "b58af1608483233eec0a83a58e5fdbfbcdc6105d61ee9029eeaf1c48c84d0d0e",
+          "diagnostic_original_token": 700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 600000,
+          "flags": 0,
+          "pixel_sha256": "51c8c065ecbf3b5c2962b77da8d2598e6b72dcf7b42103cb651ea6cf42e09bc5",
+          "diagnostic_original_token": 600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 800000,
+          "flags": 0,
+          "pixel_sha256": "cb2d6bd7808ce48721470eed53921f05c31fa96b32abb9352511e30c4bf8550a",
+          "diagnostic_original_token": 800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 500000,
+          "flags": 0,
+          "pixel_sha256": "1fa6a788250a0eaac4d5872678071eb32679d362e15c52e183e3f1f0504246c2",
+          "diagnostic_original_token": 500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1100000,
+          "flags": 0,
+          "pixel_sha256": "9f75f26a5c5717e0cc8590092230301425ca555a3c056c624ffafe22ae2a585d",
+          "diagnostic_original_token": 1100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1000000,
+          "flags": 0,
+          "pixel_sha256": "ddf0610674885e97e7512322e1a04ebd555666db02172ddf9e4cd8f8853ab231",
+          "diagnostic_original_token": 1000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1200000,
+          "flags": 0,
+          "pixel_sha256": "bdc468f752ddd4fbfe1f5fef1a85562373da236a8a4e62ac6a27316e84ec4d2a",
+          "diagnostic_original_token": 1200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 900000,
+          "flags": 0,
+          "pixel_sha256": "04f93fb22586ca110bc42d7616441ec92ea7bac7a6662e610759dc6f03fc75a0",
+          "diagnostic_original_token": 900000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1400000,
+          "flags": 0,
+          "pixel_sha256": "d8f690f267ae29b1edee5ef58fcb8513617ef70f85ada14b88abbacf29e952b3",
+          "diagnostic_original_token": 1400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1500000,
+          "flags": 0,
+          "pixel_sha256": "0dbde38377bab2fe2dc921a38a15a6a24bca65f85bc3bf0f6d2a7767506fd7bd",
+          "diagnostic_original_token": 1500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1300000,
+          "flags": 0,
+          "pixel_sha256": "fcd1d964a4eee26b3ff6902bdf8dfc9653195f68f8a6eaa3f1ff218734f3f6d7",
+          "diagnostic_original_token": 1300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1700000,
+          "flags": 0,
+          "pixel_sha256": "4297eb111bfcfff14a13423d6cbfef7afd367dde24667588adc1bf668ff48b8e",
+          "diagnostic_original_token": 1700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2020000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1800000,
+          "flags": 0,
+          "pixel_sha256": "925a8fa0bf8b5712c54291c1a043429ad541f6029667a7937fd790cfa8c2c1d2",
+          "diagnostic_original_token": 1800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2040000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1600000,
+          "flags": 0,
+          "pixel_sha256": "afaa94ddc7adf694c0b8b5ed3d63dbfe396a2a80cb835600e31a8e7f165d843f",
+          "diagnostic_original_token": 1600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2060000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2080000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2100000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2000000,
+          "flags": 0,
+          "pixel_sha256": "d19780f9b99c71369c17309384226985e326f5b1368ca8da0545f88018b34fc0",
+          "diagnostic_original_token": 2000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1800000,
+          "flags": 0,
+          "pixel_sha256": "11e4d460966337149c4ef429171466150ba99131cd421d80868795caf631471d",
+          "diagnostic_original_token": 1900000,
+          "strict_original_identity": false
+        }
+      ],
+      "rx_columns": [
+        "lease",
+        "actual_token",
+        "phase",
+        "acquired_ms",
+        "released_ms"
+      ],
+      "rx": [
+        [
+          1,
+          100000,
+          "private-input",
+          17.468,
+          18.217
+        ],
+        [
+          2,
+          300000,
+          "private-input",
+          20.723,
+          21.447
+        ],
+        [
+          3,
+          400000,
+          "private-input",
+          23.945,
+          24.646
+        ],
+        [
+          4,
+          200000,
+          "private-input",
+          27.044,
+          27.874
+        ],
+        [
+          5,
+          700000,
+          "private-input",
+          31.475,
+          32.496
+        ],
+        [
+          6,
+          600000,
+          "private-input",
+          33.827,
+          34.877
+        ],
+        [
+          7,
+          800000,
+          "private-input",
+          37.343,
+          38.767
+        ],
+        [
+          8,
+          500000,
+          "private-input",
+          41.216,
+          42.191
+        ],
+        [
+          9,
+          1100000,
+          "private-input",
+          43.586,
+          44.891
+        ],
+        [
+          10,
+          1000000,
+          "private-input",
+          47.948,
+          49.007
+        ],
+        [
+          11,
+          1200000,
+          "private-input",
+          50.306,
+          51.343
+        ],
+        [
+          12,
+          900000,
+          "private-input",
+          54.104,
+          55.437
+        ],
+        [
+          13,
+          1400000,
+          "private-input",
+          58.102,
+          59.292
+        ],
+        [
+          14,
+          1500000,
+          "private-input",
+          60.611,
+          61.77
+        ],
+        [
+          15,
+          1300000,
+          "private-input",
+          63.299,
+          67.136
+        ],
+        [
+          16,
+          1700000,
+          "private-input",
+          67.535,
+          69.311
+        ],
+        [
+          17,
+          2020000,
+          "private-input",
+          69.457,
+          72.122
+        ],
+        [
+          18,
+          1800000,
+          "private-input",
+          73.462,
+          74.462
+        ],
+        [
+          19,
+          2040000,
+          "private-input",
+          75.839,
+          76.997
+        ],
+        [
+          20,
+          1600000,
+          "private-input",
+          79.472,
+          80.466
+        ],
+        [
+          21,
+          2060000,
+          "private-input",
+          82.938,
+          84.1
+        ],
+        [
+          22,
+          2080000,
+          "private-input",
+          86.533,
+          87.616
+        ],
+        [
+          23,
+          2100000,
+          "terminal-eos",
+          739.904,
+          744.604
+        ],
+        [
+          24,
+          2000000,
+          "terminal-eos",
+          744.804,
+          748.746
+        ],
+        [
+          25,
+          1800000,
+          "terminal-eos",
+          748.971,
+          750.302
+        ]
+      ]
+    },
+    {
+      "name": "previous-own",
+      "exit_code": 2,
+      "early_native_token": 1800000,
+      "resumed_au19_native_token": 1900000,
+      "au19_actual_returned_token": 1800000,
+      "private_outputs_at_pause": 4,
+      "original_outputs_at_pause": 18,
+      "gap": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 100.308,
+        "input_gap_ms": 701.285
+      },
+      "grades": {
+        "original_full_pixels_flags_order": "PASS20/20",
+        "strict_original_native_identity": "FAIL AU19 native token",
+        "private_retirement": "PASS5/5 at true-end EOS",
+        "observed_RX": "PASS25/25 acquired/released after accepted VCL",
+        "pause_state_unchanged": true,
+        "multi_cycle": "NOT RUN in P1"
+      },
+      "peak_millic": 65000,
+      "actual_card_and_frozen_library_observed": true,
+      "idle_boundary_restored": true,
+      "phases": [
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-prefix",
+          "accepted_real": 18,
+          "accepted_private": 0,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 4.591
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "before-early-prefix",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 5.575
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-early-prefix-alone",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 5.613
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-private-settle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 606.563
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-input-idle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 706.916
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au19",
+          "accepted_real": 19,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 707.101
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au20",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 707.256
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-real-continuation",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 737.662
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-terminal-eos",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 19,
+          "output_private": 5,
+          "rx_acquired": 25,
+          "rx_released": 25,
+          "same_handle": true,
+          "eos": true,
+          "elapsed_ms": 775.362
+        }
+      ],
+      "input_columns": [
+        "call",
+        "kind",
+        "association",
+        "bytes",
+        "vcl_present",
+        "native_token",
+        "status",
+        "phase",
+        "elapsed_ms"
+      ],
+      "inputs": [
+        [
+          1,
+          "original",
+          1,
+          10416,
+          true,
+          100000,
+          0,
+          "prefix",
+          0.173
+        ],
+        [
+          2,
+          "original",
+          2,
+          5827,
+          true,
+          200000,
+          0,
+          "prefix",
+          0.298
+        ],
+        [
+          3,
+          "original",
+          3,
+          3945,
+          true,
+          300000,
+          0,
+          "prefix",
+          0.357
+        ],
+        [
+          4,
+          "original",
+          4,
+          3344,
+          true,
+          400000,
+          0,
+          "prefix",
+          0.793
+        ],
+        [
+          5,
+          "original",
+          5,
+          5458,
+          true,
+          500000,
+          0,
+          "prefix",
+          0.894
+        ],
+        [
+          6,
+          "original",
+          6,
+          3971,
+          true,
+          600000,
+          0,
+          "prefix",
+          0.944
+        ],
+        [
+          7,
+          "original",
+          7,
+          3396,
+          true,
+          700000,
+          0,
+          "prefix",
+          1.262
+        ],
+        [
+          8,
+          "original",
+          8,
+          3398,
+          true,
+          800000,
+          0,
+          "prefix",
+          1.389
+        ],
+        [
+          9,
+          "original",
+          9,
+          5368,
+          true,
+          900000,
+          0,
+          "prefix",
+          2.594
+        ],
+        [
+          10,
+          "original",
+          10,
+          3780,
+          true,
+          1000000,
+          0,
+          "prefix",
+          2.647
+        ],
+        [
+          11,
+          "original",
+          11,
+          3371,
+          true,
+          1100000,
+          0,
+          "prefix",
+          3.242
+        ],
+        [
+          12,
+          "original",
+          12,
+          3488,
+          true,
+          1200000,
+          0,
+          "prefix",
+          3.312
+        ],
+        [
+          13,
+          "original",
+          13,
+          5108,
+          true,
+          1300000,
+          0,
+          "prefix",
+          3.373
+        ],
+        [
+          14,
+          "original",
+          14,
+          3777,
+          true,
+          1400000,
+          0,
+          "prefix",
+          4.047
+        ],
+        [
+          15,
+          "original",
+          15,
+          3684,
+          true,
+          1500000,
+          0,
+          "prefix",
+          4.379
+        ],
+        [
+          16,
+          "original",
+          16,
+          4955,
+          true,
+          1600000,
+          0,
+          "prefix",
+          4.461
+        ],
+        [
+          17,
+          "original",
+          17,
+          3790,
+          true,
+          1700000,
+          0,
+          "prefix",
+          4.515
+        ],
+        [
+          18,
+          "original",
+          18,
+          3501,
+          true,
+          1800000,
+          0,
+          "prefix",
+          4.566
+        ],
+        [
+          19,
+          "private-prefix",
+          1,
+          170,
+          false,
+          2020000,
+          0,
+          "private-input",
+          4.618
+        ],
+        [
+          20,
+          "private-vcl",
+          1,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          4.656
+        ],
+        [
+          21,
+          "private-prefix",
+          2,
+          170,
+          false,
+          2040000,
+          0,
+          "private-input",
+          4.682
+        ],
+        [
+          22,
+          "private-vcl",
+          2,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          5.331
+        ],
+        [
+          23,
+          "private-prefix",
+          3,
+          170,
+          false,
+          2060000,
+          0,
+          "private-input",
+          5.38
+        ],
+        [
+          24,
+          "private-vcl",
+          3,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          5.438
+        ],
+        [
+          25,
+          "private-prefix",
+          4,
+          170,
+          false,
+          2080000,
+          0,
+          "private-input",
+          5.465
+        ],
+        [
+          26,
+          "private-vcl",
+          4,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          5.499
+        ],
+        [
+          27,
+          "private-prefix",
+          5,
+          170,
+          false,
+          2100000,
+          0,
+          "private-input",
+          5.526
+        ],
+        [
+          28,
+          "private-vcl",
+          5,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          5.556
+        ],
+        [
+          29,
+          "early-prefix",
+          19,
+          170,
+          false,
+          1800000,
+          0,
+          "private-input",
+          5.592
+        ],
+        [
+          30,
+          "original",
+          19,
+          5085,
+          true,
+          1900000,
+          0,
+          "continuation",
+          707.072
+        ],
+        [
+          31,
+          "original",
+          20,
+          4288,
+          true,
+          2000000,
+          0,
+          "continuation",
+          707.173
+        ]
+      ],
+      "outputs": [
+        {
+          "actual_token": 100000,
+          "flags": 0,
+          "pixel_sha256": "3497c7ab0e63b45241aaa947fd750546d17c82a2d275b8d2be3870ada7f0b2b6",
+          "diagnostic_original_token": 100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 300000,
+          "flags": 0,
+          "pixel_sha256": "70d09a53fddef2798d02aa1b4d7e02840293e52825df27f4d2db4246c5552c4c",
+          "diagnostic_original_token": 300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 400000,
+          "flags": 0,
+          "pixel_sha256": "d13db5bf3ea23933129e2d191534cef87cbbc291108f855741d1c062acc02463",
+          "diagnostic_original_token": 400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 200000,
+          "flags": 0,
+          "pixel_sha256": "1740fcadf9ec61afdff9fff8a4473187929d307767f99ac9017c040adac99f71",
+          "diagnostic_original_token": 200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 700000,
+          "flags": 0,
+          "pixel_sha256": "b58af1608483233eec0a83a58e5fdbfbcdc6105d61ee9029eeaf1c48c84d0d0e",
+          "diagnostic_original_token": 700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 600000,
+          "flags": 0,
+          "pixel_sha256": "51c8c065ecbf3b5c2962b77da8d2598e6b72dcf7b42103cb651ea6cf42e09bc5",
+          "diagnostic_original_token": 600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 800000,
+          "flags": 0,
+          "pixel_sha256": "cb2d6bd7808ce48721470eed53921f05c31fa96b32abb9352511e30c4bf8550a",
+          "diagnostic_original_token": 800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 500000,
+          "flags": 0,
+          "pixel_sha256": "1fa6a788250a0eaac4d5872678071eb32679d362e15c52e183e3f1f0504246c2",
+          "diagnostic_original_token": 500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1100000,
+          "flags": 0,
+          "pixel_sha256": "9f75f26a5c5717e0cc8590092230301425ca555a3c056c624ffafe22ae2a585d",
+          "diagnostic_original_token": 1100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1000000,
+          "flags": 0,
+          "pixel_sha256": "ddf0610674885e97e7512322e1a04ebd555666db02172ddf9e4cd8f8853ab231",
+          "diagnostic_original_token": 1000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1200000,
+          "flags": 0,
+          "pixel_sha256": "bdc468f752ddd4fbfe1f5fef1a85562373da236a8a4e62ac6a27316e84ec4d2a",
+          "diagnostic_original_token": 1200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 900000,
+          "flags": 0,
+          "pixel_sha256": "04f93fb22586ca110bc42d7616441ec92ea7bac7a6662e610759dc6f03fc75a0",
+          "diagnostic_original_token": 900000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1400000,
+          "flags": 0,
+          "pixel_sha256": "d8f690f267ae29b1edee5ef58fcb8513617ef70f85ada14b88abbacf29e952b3",
+          "diagnostic_original_token": 1400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1500000,
+          "flags": 0,
+          "pixel_sha256": "0dbde38377bab2fe2dc921a38a15a6a24bca65f85bc3bf0f6d2a7767506fd7bd",
+          "diagnostic_original_token": 1500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1300000,
+          "flags": 0,
+          "pixel_sha256": "fcd1d964a4eee26b3ff6902bdf8dfc9653195f68f8a6eaa3f1ff218734f3f6d7",
+          "diagnostic_original_token": 1300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1700000,
+          "flags": 0,
+          "pixel_sha256": "4297eb111bfcfff14a13423d6cbfef7afd367dde24667588adc1bf668ff48b8e",
+          "diagnostic_original_token": 1700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2020000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1800000,
+          "flags": 0,
+          "pixel_sha256": "925a8fa0bf8b5712c54291c1a043429ad541f6029667a7937fd790cfa8c2c1d2",
+          "diagnostic_original_token": 1800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2040000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1600000,
+          "flags": 0,
+          "pixel_sha256": "afaa94ddc7adf694c0b8b5ed3d63dbfe396a2a80cb835600e31a8e7f165d843f",
+          "diagnostic_original_token": 1600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2060000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2080000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2100000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2000000,
+          "flags": 0,
+          "pixel_sha256": "d19780f9b99c71369c17309384226985e326f5b1368ca8da0545f88018b34fc0",
+          "diagnostic_original_token": 2000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1800000,
+          "flags": 0,
+          "pixel_sha256": "11e4d460966337149c4ef429171466150ba99131cd421d80868795caf631471d",
+          "diagnostic_original_token": 1900000,
+          "strict_original_identity": false
+        }
+      ],
+      "rx_columns": [
+        "lease",
+        "actual_token",
+        "phase",
+        "acquired_ms",
+        "released_ms"
+      ],
+      "rx": [
+        [
+          1,
+          100000,
+          "private-input",
+          13.778,
+          14.435
+        ],
+        [
+          2,
+          300000,
+          "private-input",
+          16.895,
+          17.574
+        ],
+        [
+          3,
+          400000,
+          "private-input",
+          20.104,
+          20.794
+        ],
+        [
+          4,
+          200000,
+          "private-input",
+          23.319,
+          24.076
+        ],
+        [
+          5,
+          700000,
+          "private-input",
+          26.53,
+          27.537
+        ],
+        [
+          6,
+          600000,
+          "private-input",
+          30.045,
+          31.154
+        ],
+        [
+          7,
+          800000,
+          "private-input",
+          33.555,
+          34.606
+        ],
+        [
+          8,
+          500000,
+          "private-input",
+          37.044,
+          38.029
+        ],
+        [
+          9,
+          1100000,
+          "private-input",
+          40.472,
+          41.398
+        ],
+        [
+          10,
+          1000000,
+          "private-input",
+          43.765,
+          45.002
+        ],
+        [
+          11,
+          1200000,
+          "private-input",
+          46.396,
+          47.465
+        ],
+        [
+          12,
+          900000,
+          "private-input",
+          50.015,
+          51.483
+        ],
+        [
+          13,
+          1400000,
+          "private-input",
+          53.143,
+          54.677
+        ],
+        [
+          14,
+          1500000,
+          "private-input",
+          56.045,
+          57.527
+        ],
+        [
+          15,
+          1300000,
+          "private-input",
+          60.127,
+          61.388
+        ],
+        [
+          16,
+          1700000,
+          "private-input",
+          63.462,
+          64.684
+        ],
+        [
+          17,
+          2020000,
+          "private-input",
+          67.381,
+          68.725
+        ],
+        [
+          18,
+          1800000,
+          "private-input",
+          68.856,
+          70.046
+        ],
+        [
+          19,
+          2040000,
+          "private-input",
+          72.473,
+          73.85
+        ],
+        [
+          20,
+          1600000,
+          "private-input",
+          76.324,
+          77.338
+        ],
+        [
+          21,
+          2060000,
+          "private-input",
+          78.653,
+          79.727
+        ],
+        [
+          22,
+          2080000,
+          "private-input",
+          82.239,
+          83.531
+        ],
+        [
+          23,
+          2100000,
+          "terminal-eos",
+          741.814,
+          745.209
+        ],
+        [
+          24,
+          2000000,
+          "terminal-eos",
+          746.42,
+          747.377
+        ],
+        [
+          25,
+          1800000,
+          "terminal-eos",
+          749.755,
+          750.735
+        ]
+      ]
+    },
+    {
+      "name": "reserved-near-zero",
+      "exit_code": 2,
+      "early_native_token": 2120000,
+      "resumed_au19_native_token": 0,
+      "au19_actual_returned_token": 2120000,
+      "private_outputs_at_pause": 4,
+      "original_outputs_at_pause": 18,
+      "gap": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 101.043,
+        "input_gap_ms": 702.191
+      },
+      "grades": {
+        "original_full_pixels_flags_order": "PASS20/20",
+        "strict_original_native_identity": "FAIL AU19 native token",
+        "private_retirement": "PASS5/5 at true-end EOS",
+        "observed_RX": "PASS25/25 acquired/released after accepted VCL",
+        "pause_state_unchanged": true,
+        "multi_cycle": "NOT RUN in P1"
+      },
+      "peak_millic": 65000,
+      "actual_card_and_frozen_library_observed": true,
+      "idle_boundary_restored": true,
+      "phases": [
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-prefix",
+          "accepted_real": 18,
+          "accepted_private": 0,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 1.251
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "before-early-prefix",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 1.826
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-early-prefix-alone",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 1.867
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-private-settle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 602.984
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-input-idle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.087
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au19",
+          "accepted_real": 19,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.725
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au20",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.796
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-real-continuation",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 735.815
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-terminal-eos",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 19,
+          "output_private": 5,
+          "rx_acquired": 25,
+          "rx_released": 25,
+          "same_handle": true,
+          "eos": true,
+          "elapsed_ms": 769.462
+        }
+      ],
+      "input_columns": [
+        "call",
+        "kind",
+        "association",
+        "bytes",
+        "vcl_present",
+        "native_token",
+        "status",
+        "phase",
+        "elapsed_ms"
+      ],
+      "inputs": [
+        [
+          1,
+          "original",
+          1,
+          10416,
+          true,
+          100000,
+          0,
+          "prefix",
+          0.184
+        ],
+        [
+          2,
+          "original",
+          2,
+          5827,
+          true,
+          200000,
+          0,
+          "prefix",
+          0.342
+        ],
+        [
+          3,
+          "original",
+          3,
+          3945,
+          true,
+          300000,
+          0,
+          "prefix",
+          0.43
+        ],
+        [
+          4,
+          "original",
+          4,
+          3344,
+          true,
+          400000,
+          0,
+          "prefix",
+          0.482
+        ],
+        [
+          5,
+          "original",
+          5,
+          5458,
+          true,
+          500000,
+          0,
+          "prefix",
+          0.543
+        ],
+        [
+          6,
+          "original",
+          6,
+          3971,
+          true,
+          600000,
+          0,
+          "prefix",
+          0.596
+        ],
+        [
+          7,
+          "original",
+          7,
+          3396,
+          true,
+          700000,
+          0,
+          "prefix",
+          0.644
+        ],
+        [
+          8,
+          "original",
+          8,
+          3398,
+          true,
+          800000,
+          0,
+          "prefix",
+          0.688
+        ],
+        [
+          9,
+          "original",
+          9,
+          5368,
+          true,
+          900000,
+          0,
+          "prefix",
+          0.753
+        ],
+        [
+          10,
+          "original",
+          10,
+          3780,
+          true,
+          1000000,
+          0,
+          "prefix",
+          0.805
+        ],
+        [
+          11,
+          "original",
+          11,
+          3371,
+          true,
+          1100000,
+          0,
+          "prefix",
+          0.854
+        ],
+        [
+          12,
+          "original",
+          12,
+          3488,
+          true,
+          1200000,
+          0,
+          "prefix",
+          0.899
+        ],
+        [
+          13,
+          "original",
+          13,
+          5108,
+          true,
+          1300000,
+          0,
+          "prefix",
+          0.953
+        ],
+        [
+          14,
+          "original",
+          14,
+          3777,
+          true,
+          1400000,
+          0,
+          "prefix",
+          1.015
+        ],
+        [
+          15,
+          "original",
+          15,
+          3684,
+          true,
+          1500000,
+          0,
+          "prefix",
+          1.066
+        ],
+        [
+          16,
+          "original",
+          16,
+          4955,
+          true,
+          1600000,
+          0,
+          "prefix",
+          1.125
+        ],
+        [
+          17,
+          "original",
+          17,
+          3790,
+          true,
+          1700000,
+          0,
+          "prefix",
+          1.175
+        ],
+        [
+          18,
+          "original",
+          18,
+          3501,
+          true,
+          1800000,
+          0,
+          "prefix",
+          1.228
+        ],
+        [
+          19,
+          "private-prefix",
+          1,
+          170,
+          false,
+          2020000,
+          0,
+          "private-input",
+          1.278
+        ],
+        [
+          20,
+          "private-vcl",
+          1,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          1.312
+        ],
+        [
+          21,
+          "private-prefix",
+          2,
+          170,
+          false,
+          2040000,
+          0,
+          "private-input",
+          1.336
+        ],
+        [
+          22,
+          "private-vcl",
+          2,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          1.398
+        ],
+        [
+          23,
+          "private-prefix",
+          3,
+          170,
+          false,
+          2060000,
+          0,
+          "private-input",
+          1.638
+        ],
+        [
+          24,
+          "private-vcl",
+          3,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          1.692
+        ],
+        [
+          25,
+          "private-prefix",
+          4,
+          170,
+          false,
+          2080000,
+          0,
+          "private-input",
+          1.717
+        ],
+        [
+          26,
+          "private-vcl",
+          4,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          1.749
+        ],
+        [
+          27,
+          "private-prefix",
+          5,
+          170,
+          false,
+          2100000,
+          0,
+          "private-input",
+          1.773
+        ],
+        [
+          28,
+          "private-vcl",
+          5,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          1.804
+        ],
+        [
+          29,
+          "early-prefix",
+          19,
+          170,
+          false,
+          2120000,
+          0,
+          "private-input",
+          1.845
+        ],
+        [
+          30,
+          "original",
+          19,
+          5085,
+          true,
+          0,
+          0,
+          "continuation",
+          704.687
+        ],
+        [
+          31,
+          "original",
+          20,
+          4288,
+          true,
+          2000000,
+          0,
+          "continuation",
+          704.771
+        ]
+      ],
+      "outputs": [
+        {
+          "actual_token": 100000,
+          "flags": 0,
+          "pixel_sha256": "3497c7ab0e63b45241aaa947fd750546d17c82a2d275b8d2be3870ada7f0b2b6",
+          "diagnostic_original_token": 100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 300000,
+          "flags": 0,
+          "pixel_sha256": "70d09a53fddef2798d02aa1b4d7e02840293e52825df27f4d2db4246c5552c4c",
+          "diagnostic_original_token": 300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 400000,
+          "flags": 0,
+          "pixel_sha256": "d13db5bf3ea23933129e2d191534cef87cbbc291108f855741d1c062acc02463",
+          "diagnostic_original_token": 400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 200000,
+          "flags": 0,
+          "pixel_sha256": "1740fcadf9ec61afdff9fff8a4473187929d307767f99ac9017c040adac99f71",
+          "diagnostic_original_token": 200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 700000,
+          "flags": 0,
+          "pixel_sha256": "b58af1608483233eec0a83a58e5fdbfbcdc6105d61ee9029eeaf1c48c84d0d0e",
+          "diagnostic_original_token": 700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 600000,
+          "flags": 0,
+          "pixel_sha256": "51c8c065ecbf3b5c2962b77da8d2598e6b72dcf7b42103cb651ea6cf42e09bc5",
+          "diagnostic_original_token": 600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 800000,
+          "flags": 0,
+          "pixel_sha256": "cb2d6bd7808ce48721470eed53921f05c31fa96b32abb9352511e30c4bf8550a",
+          "diagnostic_original_token": 800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 500000,
+          "flags": 0,
+          "pixel_sha256": "1fa6a788250a0eaac4d5872678071eb32679d362e15c52e183e3f1f0504246c2",
+          "diagnostic_original_token": 500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1100000,
+          "flags": 0,
+          "pixel_sha256": "9f75f26a5c5717e0cc8590092230301425ca555a3c056c624ffafe22ae2a585d",
+          "diagnostic_original_token": 1100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1000000,
+          "flags": 0,
+          "pixel_sha256": "ddf0610674885e97e7512322e1a04ebd555666db02172ddf9e4cd8f8853ab231",
+          "diagnostic_original_token": 1000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1200000,
+          "flags": 0,
+          "pixel_sha256": "bdc468f752ddd4fbfe1f5fef1a85562373da236a8a4e62ac6a27316e84ec4d2a",
+          "diagnostic_original_token": 1200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 900000,
+          "flags": 0,
+          "pixel_sha256": "04f93fb22586ca110bc42d7616441ec92ea7bac7a6662e610759dc6f03fc75a0",
+          "diagnostic_original_token": 900000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1400000,
+          "flags": 0,
+          "pixel_sha256": "d8f690f267ae29b1edee5ef58fcb8513617ef70f85ada14b88abbacf29e952b3",
+          "diagnostic_original_token": 1400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1500000,
+          "flags": 0,
+          "pixel_sha256": "0dbde38377bab2fe2dc921a38a15a6a24bca65f85bc3bf0f6d2a7767506fd7bd",
+          "diagnostic_original_token": 1500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1300000,
+          "flags": 0,
+          "pixel_sha256": "fcd1d964a4eee26b3ff6902bdf8dfc9653195f68f8a6eaa3f1ff218734f3f6d7",
+          "diagnostic_original_token": 1300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1700000,
+          "flags": 0,
+          "pixel_sha256": "4297eb111bfcfff14a13423d6cbfef7afd367dde24667588adc1bf668ff48b8e",
+          "diagnostic_original_token": 1700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2020000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1800000,
+          "flags": 0,
+          "pixel_sha256": "925a8fa0bf8b5712c54291c1a043429ad541f6029667a7937fd790cfa8c2c1d2",
+          "diagnostic_original_token": 1800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2040000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1600000,
+          "flags": 0,
+          "pixel_sha256": "afaa94ddc7adf694c0b8b5ed3d63dbfe396a2a80cb835600e31a8e7f165d843f",
+          "diagnostic_original_token": 1600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2060000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2080000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2100000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2000000,
+          "flags": 0,
+          "pixel_sha256": "d19780f9b99c71369c17309384226985e326f5b1368ca8da0545f88018b34fc0",
+          "diagnostic_original_token": 2000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2120000,
+          "flags": 0,
+          "pixel_sha256": "11e4d460966337149c4ef429171466150ba99131cd421d80868795caf631471d",
+          "diagnostic_original_token": 1900000,
+          "strict_original_identity": false
+        }
+      ],
+      "rx_columns": [
+        "lease",
+        "actual_token",
+        "phase",
+        "acquired_ms",
+        "released_ms"
+      ],
+      "rx": [
+        [
+          1,
+          100000,
+          "private-input",
+          16.937,
+          17.669
+        ],
+        [
+          2,
+          300000,
+          "private-input",
+          20.188,
+          20.87
+        ],
+        [
+          3,
+          400000,
+          "private-input",
+          23.344,
+          24.133
+        ],
+        [
+          4,
+          200000,
+          "private-input",
+          26.618,
+          27.425
+        ],
+        [
+          5,
+          700000,
+          "private-input",
+          29.89,
+          30.945
+        ],
+        [
+          6,
+          600000,
+          "private-input",
+          33.7,
+          34.934
+        ],
+        [
+          7,
+          800000,
+          "private-input",
+          36.233,
+          37.518
+        ],
+        [
+          8,
+          500000,
+          "private-input",
+          39.999,
+          42.441
+        ],
+        [
+          9,
+          1100000,
+          "private-input",
+          42.714,
+          43.908
+        ],
+        [
+          10,
+          1000000,
+          "private-input",
+          46.653,
+          47.783
+        ],
+        [
+          11,
+          1200000,
+          "private-input",
+          49.654,
+          52.317
+        ],
+        [
+          12,
+          900000,
+          "private-input",
+          52.558,
+          54.819
+        ],
+        [
+          13,
+          1400000,
+          "private-input",
+          56.626,
+          57.778
+        ],
+        [
+          14,
+          1500000,
+          "private-input",
+          59.127,
+          61.838
+        ],
+        [
+          15,
+          1300000,
+          "private-input",
+          62.014,
+          63.058
+        ],
+        [
+          16,
+          1700000,
+          "private-input",
+          65.579,
+          66.5
+        ],
+        [
+          17,
+          2020000,
+          "private-input",
+          68.872,
+          69.922
+        ],
+        [
+          18,
+          1800000,
+          "private-input",
+          72.309,
+          73.303
+        ],
+        [
+          19,
+          2040000,
+          "private-input",
+          75.7,
+          77.052
+        ],
+        [
+          20,
+          1600000,
+          "private-input",
+          78.313,
+          79.3
+        ],
+        [
+          21,
+          2060000,
+          "private-input",
+          81.639,
+          82.867
+        ],
+        [
+          22,
+          2080000,
+          "private-input",
+          85.424,
+          86.643
+        ],
+        [
+          23,
+          2100000,
+          "terminal-eos",
+          740.612,
+          741.822
+        ],
+        [
+          24,
+          2000000,
+          "terminal-eos",
+          744.217,
+          745.198
+        ],
+        [
+          25,
+          2120000,
+          "terminal-eos",
+          747.586,
+          748.577
+        ]
+      ]
+    },
+    {
+      "name": "reserved-near-own",
+      "exit_code": 2,
+      "early_native_token": 2120000,
+      "resumed_au19_native_token": 1900000,
+      "au19_actual_returned_token": 2120000,
+      "private_outputs_at_pause": 4,
+      "original_outputs_at_pause": 18,
+      "gap": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 100.579,
+        "input_gap_ms": 701.329
+      },
+      "grades": {
+        "original_full_pixels_flags_order": "PASS20/20",
+        "strict_original_native_identity": "FAIL AU19 native token",
+        "private_retirement": "PASS5/5 at true-end EOS",
+        "observed_RX": "PASS25/25 acquired/released after accepted VCL",
+        "pause_state_unchanged": true,
+        "multi_cycle": "NOT RUN in P1"
+      },
+      "peak_millic": 65000,
+      "actual_card_and_frozen_library_observed": true,
+      "idle_boundary_restored": true,
+      "phases": [
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-prefix",
+          "accepted_real": 18,
+          "accepted_private": 0,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 2.084
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "before-early-prefix",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 2.485
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-early-prefix-alone",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 2.53
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-private-settle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 603.241
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-input-idle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 703.865
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au19",
+          "accepted_real": 19,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.049
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au20",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.116
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-real-continuation",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 734.327
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-terminal-eos",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 19,
+          "output_private": 5,
+          "rx_acquired": 25,
+          "rx_released": 25,
+          "same_handle": true,
+          "eos": true,
+          "elapsed_ms": 774.166
+        }
+      ],
+      "input_columns": [
+        "call",
+        "kind",
+        "association",
+        "bytes",
+        "vcl_present",
+        "native_token",
+        "status",
+        "phase",
+        "elapsed_ms"
+      ],
+      "inputs": [
+        [
+          1,
+          "original",
+          1,
+          10416,
+          true,
+          100000,
+          0,
+          "prefix",
+          0.876
+        ],
+        [
+          2,
+          "original",
+          2,
+          5827,
+          true,
+          200000,
+          0,
+          "prefix",
+          1.133
+        ],
+        [
+          3,
+          "original",
+          3,
+          3945,
+          true,
+          300000,
+          0,
+          "prefix",
+          1.21
+        ],
+        [
+          4,
+          "original",
+          4,
+          3344,
+          true,
+          400000,
+          0,
+          "prefix",
+          1.265
+        ],
+        [
+          5,
+          "original",
+          5,
+          5458,
+          true,
+          500000,
+          0,
+          "prefix",
+          1.326
+        ],
+        [
+          6,
+          "original",
+          6,
+          3971,
+          true,
+          600000,
+          0,
+          "prefix",
+          1.375
+        ],
+        [
+          7,
+          "original",
+          7,
+          3396,
+          true,
+          700000,
+          0,
+          "prefix",
+          1.421
+        ],
+        [
+          8,
+          "original",
+          8,
+          3398,
+          true,
+          800000,
+          0,
+          "prefix",
+          1.47
+        ],
+        [
+          9,
+          "original",
+          9,
+          5368,
+          true,
+          900000,
+          0,
+          "prefix",
+          1.53
+        ],
+        [
+          10,
+          "original",
+          10,
+          3780,
+          true,
+          1000000,
+          0,
+          "prefix",
+          1.588
+        ],
+        [
+          11,
+          "original",
+          11,
+          3371,
+          true,
+          1100000,
+          0,
+          "prefix",
+          1.641
+        ],
+        [
+          12,
+          "original",
+          12,
+          3488,
+          true,
+          1200000,
+          0,
+          "prefix",
+          1.731
+        ],
+        [
+          13,
+          "original",
+          13,
+          5108,
+          true,
+          1300000,
+          0,
+          "prefix",
+          1.792
+        ],
+        [
+          14,
+          "original",
+          14,
+          3777,
+          true,
+          1400000,
+          0,
+          "prefix",
+          1.845
+        ],
+        [
+          15,
+          "original",
+          15,
+          3684,
+          true,
+          1500000,
+          0,
+          "prefix",
+          1.897
+        ],
+        [
+          16,
+          "original",
+          16,
+          4955,
+          true,
+          1600000,
+          0,
+          "prefix",
+          1.955
+        ],
+        [
+          17,
+          "original",
+          17,
+          3790,
+          true,
+          1700000,
+          0,
+          "prefix",
+          2.008
+        ],
+        [
+          18,
+          "original",
+          18,
+          3501,
+          true,
+          1800000,
+          0,
+          "prefix",
+          2.059
+        ],
+        [
+          19,
+          "private-prefix",
+          1,
+          170,
+          false,
+          2020000,
+          0,
+          "private-input",
+          2.113
+        ],
+        [
+          20,
+          "private-vcl",
+          1,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.149
+        ],
+        [
+          21,
+          "private-prefix",
+          2,
+          170,
+          false,
+          2040000,
+          0,
+          "private-input",
+          2.204
+        ],
+        [
+          22,
+          "private-vcl",
+          2,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.256
+        ],
+        [
+          23,
+          "private-prefix",
+          3,
+          170,
+          false,
+          2060000,
+          0,
+          "private-input",
+          2.283
+        ],
+        [
+          24,
+          "private-vcl",
+          3,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.341
+        ],
+        [
+          25,
+          "private-prefix",
+          4,
+          170,
+          false,
+          2080000,
+          0,
+          "private-input",
+          2.368
+        ],
+        [
+          26,
+          "private-vcl",
+          4,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.402
+        ],
+        [
+          27,
+          "private-prefix",
+          5,
+          170,
+          false,
+          2100000,
+          0,
+          "private-input",
+          2.428
+        ],
+        [
+          28,
+          "private-vcl",
+          5,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.461
+        ],
+        [
+          29,
+          "early-prefix",
+          19,
+          170,
+          false,
+          2120000,
+          0,
+          "private-input",
+          2.505
+        ],
+        [
+          30,
+          "original",
+          19,
+          5085,
+          true,
+          1900000,
+          0,
+          "continuation",
+          704.017
+        ],
+        [
+          31,
+          "original",
+          20,
+          4288,
+          true,
+          2000000,
+          0,
+          "continuation",
+          704.091
+        ]
+      ],
+      "outputs": [
+        {
+          "actual_token": 100000,
+          "flags": 0,
+          "pixel_sha256": "3497c7ab0e63b45241aaa947fd750546d17c82a2d275b8d2be3870ada7f0b2b6",
+          "diagnostic_original_token": 100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 300000,
+          "flags": 0,
+          "pixel_sha256": "70d09a53fddef2798d02aa1b4d7e02840293e52825df27f4d2db4246c5552c4c",
+          "diagnostic_original_token": 300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 400000,
+          "flags": 0,
+          "pixel_sha256": "d13db5bf3ea23933129e2d191534cef87cbbc291108f855741d1c062acc02463",
+          "diagnostic_original_token": 400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 200000,
+          "flags": 0,
+          "pixel_sha256": "1740fcadf9ec61afdff9fff8a4473187929d307767f99ac9017c040adac99f71",
+          "diagnostic_original_token": 200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 700000,
+          "flags": 0,
+          "pixel_sha256": "b58af1608483233eec0a83a58e5fdbfbcdc6105d61ee9029eeaf1c48c84d0d0e",
+          "diagnostic_original_token": 700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 600000,
+          "flags": 0,
+          "pixel_sha256": "51c8c065ecbf3b5c2962b77da8d2598e6b72dcf7b42103cb651ea6cf42e09bc5",
+          "diagnostic_original_token": 600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 800000,
+          "flags": 0,
+          "pixel_sha256": "cb2d6bd7808ce48721470eed53921f05c31fa96b32abb9352511e30c4bf8550a",
+          "diagnostic_original_token": 800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 500000,
+          "flags": 0,
+          "pixel_sha256": "1fa6a788250a0eaac4d5872678071eb32679d362e15c52e183e3f1f0504246c2",
+          "diagnostic_original_token": 500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1100000,
+          "flags": 0,
+          "pixel_sha256": "9f75f26a5c5717e0cc8590092230301425ca555a3c056c624ffafe22ae2a585d",
+          "diagnostic_original_token": 1100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1000000,
+          "flags": 0,
+          "pixel_sha256": "ddf0610674885e97e7512322e1a04ebd555666db02172ddf9e4cd8f8853ab231",
+          "diagnostic_original_token": 1000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1200000,
+          "flags": 0,
+          "pixel_sha256": "bdc468f752ddd4fbfe1f5fef1a85562373da236a8a4e62ac6a27316e84ec4d2a",
+          "diagnostic_original_token": 1200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 900000,
+          "flags": 0,
+          "pixel_sha256": "04f93fb22586ca110bc42d7616441ec92ea7bac7a6662e610759dc6f03fc75a0",
+          "diagnostic_original_token": 900000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1400000,
+          "flags": 0,
+          "pixel_sha256": "d8f690f267ae29b1edee5ef58fcb8513617ef70f85ada14b88abbacf29e952b3",
+          "diagnostic_original_token": 1400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1500000,
+          "flags": 0,
+          "pixel_sha256": "0dbde38377bab2fe2dc921a38a15a6a24bca65f85bc3bf0f6d2a7767506fd7bd",
+          "diagnostic_original_token": 1500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1300000,
+          "flags": 0,
+          "pixel_sha256": "fcd1d964a4eee26b3ff6902bdf8dfc9653195f68f8a6eaa3f1ff218734f3f6d7",
+          "diagnostic_original_token": 1300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1700000,
+          "flags": 0,
+          "pixel_sha256": "4297eb111bfcfff14a13423d6cbfef7afd367dde24667588adc1bf668ff48b8e",
+          "diagnostic_original_token": 1700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2020000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1800000,
+          "flags": 0,
+          "pixel_sha256": "925a8fa0bf8b5712c54291c1a043429ad541f6029667a7937fd790cfa8c2c1d2",
+          "diagnostic_original_token": 1800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2040000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1600000,
+          "flags": 0,
+          "pixel_sha256": "afaa94ddc7adf694c0b8b5ed3d63dbfe396a2a80cb835600e31a8e7f165d843f",
+          "diagnostic_original_token": 1600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2060000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2080000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2100000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2000000,
+          "flags": 0,
+          "pixel_sha256": "d19780f9b99c71369c17309384226985e326f5b1368ca8da0545f88018b34fc0",
+          "diagnostic_original_token": 2000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2120000,
+          "flags": 0,
+          "pixel_sha256": "11e4d460966337149c4ef429171466150ba99131cd421d80868795caf631471d",
+          "diagnostic_original_token": 1900000,
+          "strict_original_identity": false
+        }
+      ],
+      "rx_columns": [
+        "lease",
+        "actual_token",
+        "phase",
+        "acquired_ms",
+        "released_ms"
+      ],
+      "rx": [
+        [
+          1,
+          100000,
+          "private-input",
+          16.665,
+          17.473
+        ],
+        [
+          2,
+          300000,
+          "private-input",
+          19.883,
+          20.709
+        ],
+        [
+          3,
+          400000,
+          "private-input",
+          23.217,
+          23.877
+        ],
+        [
+          4,
+          200000,
+          "private-input",
+          26.382,
+          27.134
+        ],
+        [
+          5,
+          700000,
+          "private-input",
+          29.562,
+          30.617
+        ],
+        [
+          6,
+          600000,
+          "private-input",
+          33.092,
+          34.19
+        ],
+        [
+          7,
+          800000,
+          "private-input",
+          36.586,
+          37.529
+        ],
+        [
+          8,
+          500000,
+          "private-input",
+          42.074,
+          43.435
+        ],
+        [
+          9,
+          1100000,
+          "private-input",
+          44.063,
+          45.274
+        ],
+        [
+          10,
+          1000000,
+          "private-input",
+          47.233,
+          48.376
+        ],
+        [
+          11,
+          1200000,
+          "private-input",
+          49.861,
+          51.133
+        ],
+        [
+          12,
+          900000,
+          "private-input",
+          52.505,
+          53.578
+        ],
+        [
+          13,
+          1400000,
+          "private-input",
+          56.459,
+          57.973
+        ],
+        [
+          14,
+          1500000,
+          "private-input",
+          59.888,
+          61.399
+        ],
+        [
+          15,
+          1300000,
+          "private-input",
+          62.766,
+          63.88
+        ],
+        [
+          16,
+          1700000,
+          "private-input",
+          65.393,
+          66.348
+        ],
+        [
+          17,
+          2020000,
+          "private-input",
+          68.841,
+          69.937
+        ],
+        [
+          18,
+          1800000,
+          "private-input",
+          72.307,
+          73.358
+        ],
+        [
+          19,
+          2040000,
+          "private-input",
+          75.816,
+          76.927
+        ],
+        [
+          20,
+          1600000,
+          "private-input",
+          78.26,
+          79.23
+        ],
+        [
+          21,
+          2060000,
+          "private-input",
+          81.708,
+          82.813
+        ],
+        [
+          22,
+          2080000,
+          "private-input",
+          85.316,
+          86.472
+        ],
+        [
+          23,
+          2100000,
+          "terminal-eos",
+          739.007,
+          740.317
+        ],
+        [
+          24,
+          2000000,
+          "terminal-eos",
+          742.212,
+          743.458
+        ],
+        [
+          25,
+          2120000,
+          "terminal-eos",
+          745.879,
+          747.103
+        ]
+      ]
+    },
+    {
+      "name": "reserved-far-zero",
+      "exit_code": 2,
+      "early_native_token": 3000000,
+      "resumed_au19_native_token": 0,
+      "au19_actual_returned_token": 3000000,
+      "private_outputs_at_pause": 4,
+      "original_outputs_at_pause": 18,
+      "gap": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 101.143,
+        "input_gap_ms": 702.243
+      },
+      "grades": {
+        "original_full_pixels_flags_order": "PASS20/20",
+        "strict_original_native_identity": "FAIL AU19 native token",
+        "private_retirement": "PASS5/5 at true-end EOS",
+        "observed_RX": "PASS25/25 acquired/released after accepted VCL",
+        "pause_state_unchanged": true,
+        "multi_cycle": "NOT RUN in P1"
+      },
+      "peak_millic": 65000,
+      "actual_card_and_frozen_library_observed": true,
+      "idle_boundary_restored": true,
+      "phases": [
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-prefix",
+          "accepted_real": 18,
+          "accepted_private": 0,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 1.878
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "before-early-prefix",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 2.26
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-early-prefix-alone",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 2.306
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-private-settle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 603.363
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-input-idle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.568
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au19",
+          "accepted_real": 19,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.835
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au20",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.946
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-real-continuation",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 735.171
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-terminal-eos",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 19,
+          "output_private": 5,
+          "rx_acquired": 25,
+          "rx_released": 25,
+          "same_handle": true,
+          "eos": true,
+          "elapsed_ms": 766.063
+        }
+      ],
+      "input_columns": [
+        "call",
+        "kind",
+        "association",
+        "bytes",
+        "vcl_present",
+        "native_token",
+        "status",
+        "phase",
+        "elapsed_ms"
+      ],
+      "inputs": [
+        [
+          1,
+          "original",
+          1,
+          10416,
+          true,
+          100000,
+          0,
+          "prefix",
+          0.192
+        ],
+        [
+          2,
+          "original",
+          2,
+          5827,
+          true,
+          200000,
+          0,
+          "prefix",
+          0.316
+        ],
+        [
+          3,
+          "original",
+          3,
+          3945,
+          true,
+          300000,
+          0,
+          "prefix",
+          0.371
+        ],
+        [
+          4,
+          "original",
+          4,
+          3344,
+          true,
+          400000,
+          0,
+          "prefix",
+          0.418
+        ],
+        [
+          5,
+          "original",
+          5,
+          5458,
+          true,
+          500000,
+          0,
+          "prefix",
+          0.485
+        ],
+        [
+          6,
+          "original",
+          6,
+          3971,
+          true,
+          600000,
+          0,
+          "prefix",
+          0.539
+        ],
+        [
+          7,
+          "original",
+          7,
+          3396,
+          true,
+          700000,
+          0,
+          "prefix",
+          0.589
+        ],
+        [
+          8,
+          "original",
+          8,
+          3398,
+          true,
+          800000,
+          0,
+          "prefix",
+          0.64
+        ],
+        [
+          9,
+          "original",
+          9,
+          5368,
+          true,
+          900000,
+          0,
+          "prefix",
+          0.7
+        ],
+        [
+          10,
+          "original",
+          10,
+          3780,
+          true,
+          1000000,
+          0,
+          "prefix",
+          0.752
+        ],
+        [
+          11,
+          "original",
+          11,
+          3371,
+          true,
+          1100000,
+          0,
+          "prefix",
+          1.401
+        ],
+        [
+          12,
+          "original",
+          12,
+          3488,
+          true,
+          1200000,
+          0,
+          "prefix",
+          1.459
+        ],
+        [
+          13,
+          "original",
+          13,
+          5108,
+          true,
+          1300000,
+          0,
+          "prefix",
+          1.511
+        ],
+        [
+          14,
+          "original",
+          14,
+          3777,
+          true,
+          1400000,
+          0,
+          "prefix",
+          1.559
+        ],
+        [
+          15,
+          "original",
+          15,
+          3684,
+          true,
+          1500000,
+          0,
+          "prefix",
+          1.604
+        ],
+        [
+          16,
+          "original",
+          16,
+          4955,
+          true,
+          1600000,
+          0,
+          "prefix",
+          1.715
+        ],
+        [
+          17,
+          "original",
+          17,
+          3790,
+          true,
+          1700000,
+          0,
+          "prefix",
+          1.791
+        ],
+        [
+          18,
+          "original",
+          18,
+          3501,
+          true,
+          1800000,
+          0,
+          "prefix",
+          1.853
+        ],
+        [
+          19,
+          "private-prefix",
+          1,
+          170,
+          false,
+          2020000,
+          0,
+          "private-input",
+          1.91
+        ],
+        [
+          20,
+          "private-vcl",
+          1,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          1.946
+        ],
+        [
+          21,
+          "private-prefix",
+          2,
+          170,
+          false,
+          2040000,
+          0,
+          "private-input",
+          1.973
+        ],
+        [
+          22,
+          "private-vcl",
+          2,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.015
+        ],
+        [
+          23,
+          "private-prefix",
+          3,
+          170,
+          false,
+          2060000,
+          0,
+          "private-input",
+          2.043
+        ],
+        [
+          24,
+          "private-vcl",
+          3,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.102
+        ],
+        [
+          25,
+          "private-prefix",
+          4,
+          170,
+          false,
+          2080000,
+          0,
+          "private-input",
+          2.125
+        ],
+        [
+          26,
+          "private-vcl",
+          4,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.177
+        ],
+        [
+          27,
+          "private-prefix",
+          5,
+          170,
+          false,
+          2100000,
+          0,
+          "private-input",
+          2.201
+        ],
+        [
+          28,
+          "private-vcl",
+          5,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.235
+        ],
+        [
+          29,
+          "early-prefix",
+          19,
+          170,
+          false,
+          3000000,
+          0,
+          "private-input",
+          2.281
+        ],
+        [
+          30,
+          "original",
+          19,
+          5085,
+          true,
+          0,
+          0,
+          "continuation",
+          704.731
+        ],
+        [
+          31,
+          "original",
+          20,
+          4288,
+          true,
+          2000000,
+          0,
+          "continuation",
+          704.911
+        ]
+      ],
+      "outputs": [
+        {
+          "actual_token": 100000,
+          "flags": 0,
+          "pixel_sha256": "3497c7ab0e63b45241aaa947fd750546d17c82a2d275b8d2be3870ada7f0b2b6",
+          "diagnostic_original_token": 100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 300000,
+          "flags": 0,
+          "pixel_sha256": "70d09a53fddef2798d02aa1b4d7e02840293e52825df27f4d2db4246c5552c4c",
+          "diagnostic_original_token": 300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 400000,
+          "flags": 0,
+          "pixel_sha256": "d13db5bf3ea23933129e2d191534cef87cbbc291108f855741d1c062acc02463",
+          "diagnostic_original_token": 400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 200000,
+          "flags": 0,
+          "pixel_sha256": "1740fcadf9ec61afdff9fff8a4473187929d307767f99ac9017c040adac99f71",
+          "diagnostic_original_token": 200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 700000,
+          "flags": 0,
+          "pixel_sha256": "b58af1608483233eec0a83a58e5fdbfbcdc6105d61ee9029eeaf1c48c84d0d0e",
+          "diagnostic_original_token": 700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 600000,
+          "flags": 0,
+          "pixel_sha256": "51c8c065ecbf3b5c2962b77da8d2598e6b72dcf7b42103cb651ea6cf42e09bc5",
+          "diagnostic_original_token": 600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 800000,
+          "flags": 0,
+          "pixel_sha256": "cb2d6bd7808ce48721470eed53921f05c31fa96b32abb9352511e30c4bf8550a",
+          "diagnostic_original_token": 800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 500000,
+          "flags": 0,
+          "pixel_sha256": "1fa6a788250a0eaac4d5872678071eb32679d362e15c52e183e3f1f0504246c2",
+          "diagnostic_original_token": 500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1100000,
+          "flags": 0,
+          "pixel_sha256": "9f75f26a5c5717e0cc8590092230301425ca555a3c056c624ffafe22ae2a585d",
+          "diagnostic_original_token": 1100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1000000,
+          "flags": 0,
+          "pixel_sha256": "ddf0610674885e97e7512322e1a04ebd555666db02172ddf9e4cd8f8853ab231",
+          "diagnostic_original_token": 1000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1200000,
+          "flags": 0,
+          "pixel_sha256": "bdc468f752ddd4fbfe1f5fef1a85562373da236a8a4e62ac6a27316e84ec4d2a",
+          "diagnostic_original_token": 1200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 900000,
+          "flags": 0,
+          "pixel_sha256": "04f93fb22586ca110bc42d7616441ec92ea7bac7a6662e610759dc6f03fc75a0",
+          "diagnostic_original_token": 900000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1400000,
+          "flags": 0,
+          "pixel_sha256": "d8f690f267ae29b1edee5ef58fcb8513617ef70f85ada14b88abbacf29e952b3",
+          "diagnostic_original_token": 1400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1500000,
+          "flags": 0,
+          "pixel_sha256": "0dbde38377bab2fe2dc921a38a15a6a24bca65f85bc3bf0f6d2a7767506fd7bd",
+          "diagnostic_original_token": 1500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1300000,
+          "flags": 0,
+          "pixel_sha256": "fcd1d964a4eee26b3ff6902bdf8dfc9653195f68f8a6eaa3f1ff218734f3f6d7",
+          "diagnostic_original_token": 1300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1700000,
+          "flags": 0,
+          "pixel_sha256": "4297eb111bfcfff14a13423d6cbfef7afd367dde24667588adc1bf668ff48b8e",
+          "diagnostic_original_token": 1700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2020000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1800000,
+          "flags": 0,
+          "pixel_sha256": "925a8fa0bf8b5712c54291c1a043429ad541f6029667a7937fd790cfa8c2c1d2",
+          "diagnostic_original_token": 1800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2040000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1600000,
+          "flags": 0,
+          "pixel_sha256": "afaa94ddc7adf694c0b8b5ed3d63dbfe396a2a80cb835600e31a8e7f165d843f",
+          "diagnostic_original_token": 1600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2060000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2080000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2100000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2000000,
+          "flags": 0,
+          "pixel_sha256": "d19780f9b99c71369c17309384226985e326f5b1368ca8da0545f88018b34fc0",
+          "diagnostic_original_token": 2000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 3000000,
+          "flags": 0,
+          "pixel_sha256": "11e4d460966337149c4ef429171466150ba99131cd421d80868795caf631471d",
+          "diagnostic_original_token": 1900000,
+          "strict_original_identity": false
+        }
+      ],
+      "rx_columns": [
+        "lease",
+        "actual_token",
+        "phase",
+        "acquired_ms",
+        "released_ms"
+      ],
+      "rx": [
+        [
+          1,
+          100000,
+          "private-input",
+          15.213,
+          16.367
+        ],
+        [
+          2,
+          300000,
+          "private-input",
+          17.664,
+          18.523
+        ],
+        [
+          3,
+          400000,
+          "private-input",
+          21.018,
+          22.014
+        ],
+        [
+          4,
+          200000,
+          "private-input",
+          24.452,
+          25.438
+        ],
+        [
+          5,
+          700000,
+          "private-input",
+          27.908,
+          28.905
+        ],
+        [
+          6,
+          600000,
+          "private-input",
+          31.326,
+          32.237
+        ],
+        [
+          7,
+          800000,
+          "private-input",
+          34.724,
+          35.609
+        ],
+        [
+          8,
+          500000,
+          "private-input",
+          38.111,
+          39.036
+        ],
+        [
+          9,
+          1100000,
+          "private-input",
+          41.504,
+          43.683
+        ],
+        [
+          10,
+          1000000,
+          "private-input",
+          43.913,
+          45.089
+        ],
+        [
+          11,
+          1200000,
+          "private-input",
+          47.527,
+          48.522
+        ],
+        [
+          12,
+          900000,
+          "private-input",
+          50.956,
+          51.899
+        ],
+        [
+          13,
+          1400000,
+          "private-input",
+          54.349,
+          55.284
+        ],
+        [
+          14,
+          1500000,
+          "private-input",
+          57.698,
+          58.679
+        ],
+        [
+          15,
+          1300000,
+          "private-input",
+          59.992,
+          61.044
+        ],
+        [
+          16,
+          1700000,
+          "private-input",
+          63.552,
+          64.677
+        ],
+        [
+          17,
+          2020000,
+          "private-input",
+          67.081,
+          68.183
+        ],
+        [
+          18,
+          1800000,
+          "private-input",
+          70.552,
+          71.481
+        ],
+        [
+          19,
+          2040000,
+          "private-input",
+          73.842,
+          74.91
+        ],
+        [
+          20,
+          1600000,
+          "private-input",
+          76.166,
+          77.169
+        ],
+        [
+          21,
+          2060000,
+          "private-input",
+          79.51,
+          80.714
+        ],
+        [
+          22,
+          2080000,
+          "private-input",
+          83.041,
+          84.192
+        ],
+        [
+          23,
+          2100000,
+          "terminal-eos",
+          740.053,
+          741.189
+        ],
+        [
+          24,
+          2000000,
+          "terminal-eos",
+          743.529,
+          744.866
+        ],
+        [
+          25,
+          3000000,
+          "terminal-eos",
+          747.241,
+          748.221
+        ]
+      ]
+    },
+    {
+      "name": "reserved-far-own",
+      "exit_code": 2,
+      "early_native_token": 3000000,
+      "resumed_au19_native_token": 1900000,
+      "au19_actual_returned_token": 3000000,
+      "private_outputs_at_pause": 4,
+      "original_outputs_at_pause": 18,
+      "gap": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 100.952,
+        "input_gap_ms": 702.042
+      },
+      "grades": {
+        "original_full_pixels_flags_order": "PASS20/20",
+        "strict_original_native_identity": "FAIL AU19 native token",
+        "private_retirement": "PASS5/5 at true-end EOS",
+        "observed_RX": "PASS25/25 acquired/released after accepted VCL",
+        "pause_state_unchanged": true,
+        "multi_cycle": "NOT RUN in P1"
+      },
+      "peak_millic": 65000,
+      "actual_card_and_frozen_library_observed": true,
+      "idle_boundary_restored": true,
+      "phases": [
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-prefix",
+          "accepted_real": 18,
+          "accepted_private": 0,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 1.801
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "before-early-prefix",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 2.37
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-early-prefix-alone",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 2.416
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-private-settle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 603.47
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-input-idle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.465
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au19",
+          "accepted_real": 19,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.622
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au20",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 704.73
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-real-continuation",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 735.193
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-terminal-eos",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 19,
+          "output_private": 5,
+          "rx_acquired": 25,
+          "rx_released": 25,
+          "same_handle": true,
+          "eos": true,
+          "elapsed_ms": 779.107
+        }
+      ],
+      "input_columns": [
+        "call",
+        "kind",
+        "association",
+        "bytes",
+        "vcl_present",
+        "native_token",
+        "status",
+        "phase",
+        "elapsed_ms"
+      ],
+      "inputs": [
+        [
+          1,
+          "original",
+          1,
+          10416,
+          true,
+          100000,
+          0,
+          "prefix",
+          0.441
+        ],
+        [
+          2,
+          "original",
+          2,
+          5827,
+          true,
+          200000,
+          0,
+          "prefix",
+          0.541
+        ],
+        [
+          3,
+          "original",
+          3,
+          3945,
+          true,
+          300000,
+          0,
+          "prefix",
+          0.597
+        ],
+        [
+          4,
+          "original",
+          4,
+          3344,
+          true,
+          400000,
+          0,
+          "prefix",
+          0.646
+        ],
+        [
+          5,
+          "original",
+          5,
+          5458,
+          true,
+          500000,
+          0,
+          "prefix",
+          0.715
+        ],
+        [
+          6,
+          "original",
+          6,
+          3971,
+          true,
+          600000,
+          0,
+          "prefix",
+          0.768
+        ],
+        [
+          7,
+          "original",
+          7,
+          3396,
+          true,
+          700000,
+          0,
+          "prefix",
+          0.82
+        ],
+        [
+          8,
+          "original",
+          8,
+          3398,
+          true,
+          800000,
+          0,
+          "prefix",
+          0.871
+        ],
+        [
+          9,
+          "original",
+          9,
+          5368,
+          true,
+          900000,
+          0,
+          "prefix",
+          0.932
+        ],
+        [
+          10,
+          "original",
+          10,
+          3780,
+          true,
+          1000000,
+          0,
+          "prefix",
+          0.985
+        ],
+        [
+          11,
+          "original",
+          11,
+          3371,
+          true,
+          1100000,
+          0,
+          "prefix",
+          1.067
+        ],
+        [
+          12,
+          "original",
+          12,
+          3488,
+          true,
+          1200000,
+          0,
+          "prefix",
+          1.451
+        ],
+        [
+          13,
+          "original",
+          13,
+          5108,
+          true,
+          1300000,
+          0,
+          "prefix",
+          1.51
+        ],
+        [
+          14,
+          "original",
+          14,
+          3777,
+          true,
+          1400000,
+          0,
+          "prefix",
+          1.562
+        ],
+        [
+          15,
+          "original",
+          15,
+          3684,
+          true,
+          1500000,
+          0,
+          "prefix",
+          1.614
+        ],
+        [
+          16,
+          "original",
+          16,
+          4955,
+          true,
+          1600000,
+          0,
+          "prefix",
+          1.673
+        ],
+        [
+          17,
+          "original",
+          17,
+          3790,
+          true,
+          1700000,
+          0,
+          "prefix",
+          1.725
+        ],
+        [
+          18,
+          "original",
+          18,
+          3501,
+          true,
+          1800000,
+          0,
+          "prefix",
+          1.776
+        ],
+        [
+          19,
+          "private-prefix",
+          1,
+          170,
+          false,
+          2020000,
+          0,
+          "private-input",
+          1.831
+        ],
+        [
+          20,
+          "private-vcl",
+          1,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          1.867
+        ],
+        [
+          21,
+          "private-prefix",
+          2,
+          170,
+          false,
+          2040000,
+          0,
+          "private-input",
+          1.893
+        ],
+        [
+          22,
+          "private-vcl",
+          2,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          1.935
+        ],
+        [
+          23,
+          "private-prefix",
+          3,
+          170,
+          false,
+          2060000,
+          0,
+          "private-input",
+          1.962
+        ],
+        [
+          24,
+          "private-vcl",
+          3,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.205
+        ],
+        [
+          25,
+          "private-prefix",
+          4,
+          170,
+          false,
+          2080000,
+          0,
+          "private-input",
+          2.242
+        ],
+        [
+          26,
+          "private-vcl",
+          4,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.277
+        ],
+        [
+          27,
+          "private-prefix",
+          5,
+          170,
+          false,
+          2100000,
+          0,
+          "private-input",
+          2.303
+        ],
+        [
+          28,
+          "private-vcl",
+          5,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          2.337
+        ],
+        [
+          29,
+          "early-prefix",
+          19,
+          170,
+          false,
+          3000000,
+          0,
+          "private-input",
+          2.391
+        ],
+        [
+          30,
+          "original",
+          19,
+          5085,
+          true,
+          1900000,
+          0,
+          "continuation",
+          704.598
+        ],
+        [
+          31,
+          "original",
+          20,
+          4288,
+          true,
+          2000000,
+          0,
+          "continuation",
+          704.694
+        ]
+      ],
+      "outputs": [
+        {
+          "actual_token": 100000,
+          "flags": 0,
+          "pixel_sha256": "3497c7ab0e63b45241aaa947fd750546d17c82a2d275b8d2be3870ada7f0b2b6",
+          "diagnostic_original_token": 100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 300000,
+          "flags": 0,
+          "pixel_sha256": "70d09a53fddef2798d02aa1b4d7e02840293e52825df27f4d2db4246c5552c4c",
+          "diagnostic_original_token": 300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 400000,
+          "flags": 0,
+          "pixel_sha256": "d13db5bf3ea23933129e2d191534cef87cbbc291108f855741d1c062acc02463",
+          "diagnostic_original_token": 400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 200000,
+          "flags": 0,
+          "pixel_sha256": "1740fcadf9ec61afdff9fff8a4473187929d307767f99ac9017c040adac99f71",
+          "diagnostic_original_token": 200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 700000,
+          "flags": 0,
+          "pixel_sha256": "b58af1608483233eec0a83a58e5fdbfbcdc6105d61ee9029eeaf1c48c84d0d0e",
+          "diagnostic_original_token": 700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 600000,
+          "flags": 0,
+          "pixel_sha256": "51c8c065ecbf3b5c2962b77da8d2598e6b72dcf7b42103cb651ea6cf42e09bc5",
+          "diagnostic_original_token": 600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 800000,
+          "flags": 0,
+          "pixel_sha256": "cb2d6bd7808ce48721470eed53921f05c31fa96b32abb9352511e30c4bf8550a",
+          "diagnostic_original_token": 800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 500000,
+          "flags": 0,
+          "pixel_sha256": "1fa6a788250a0eaac4d5872678071eb32679d362e15c52e183e3f1f0504246c2",
+          "diagnostic_original_token": 500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1100000,
+          "flags": 0,
+          "pixel_sha256": "9f75f26a5c5717e0cc8590092230301425ca555a3c056c624ffafe22ae2a585d",
+          "diagnostic_original_token": 1100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1000000,
+          "flags": 0,
+          "pixel_sha256": "ddf0610674885e97e7512322e1a04ebd555666db02172ddf9e4cd8f8853ab231",
+          "diagnostic_original_token": 1000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1200000,
+          "flags": 0,
+          "pixel_sha256": "bdc468f752ddd4fbfe1f5fef1a85562373da236a8a4e62ac6a27316e84ec4d2a",
+          "diagnostic_original_token": 1200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 900000,
+          "flags": 0,
+          "pixel_sha256": "04f93fb22586ca110bc42d7616441ec92ea7bac7a6662e610759dc6f03fc75a0",
+          "diagnostic_original_token": 900000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1400000,
+          "flags": 0,
+          "pixel_sha256": "d8f690f267ae29b1edee5ef58fcb8513617ef70f85ada14b88abbacf29e952b3",
+          "diagnostic_original_token": 1400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1500000,
+          "flags": 0,
+          "pixel_sha256": "0dbde38377bab2fe2dc921a38a15a6a24bca65f85bc3bf0f6d2a7767506fd7bd",
+          "diagnostic_original_token": 1500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1300000,
+          "flags": 0,
+          "pixel_sha256": "fcd1d964a4eee26b3ff6902bdf8dfc9653195f68f8a6eaa3f1ff218734f3f6d7",
+          "diagnostic_original_token": 1300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1700000,
+          "flags": 0,
+          "pixel_sha256": "4297eb111bfcfff14a13423d6cbfef7afd367dde24667588adc1bf668ff48b8e",
+          "diagnostic_original_token": 1700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2020000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1800000,
+          "flags": 0,
+          "pixel_sha256": "925a8fa0bf8b5712c54291c1a043429ad541f6029667a7937fd790cfa8c2c1d2",
+          "diagnostic_original_token": 1800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2040000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1600000,
+          "flags": 0,
+          "pixel_sha256": "afaa94ddc7adf694c0b8b5ed3d63dbfe396a2a80cb835600e31a8e7f165d843f",
+          "diagnostic_original_token": 1600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2060000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2080000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2100000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2000000,
+          "flags": 0,
+          "pixel_sha256": "d19780f9b99c71369c17309384226985e326f5b1368ca8da0545f88018b34fc0",
+          "diagnostic_original_token": 2000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 3000000,
+          "flags": 0,
+          "pixel_sha256": "11e4d460966337149c4ef429171466150ba99131cd421d80868795caf631471d",
+          "diagnostic_original_token": 1900000,
+          "strict_original_identity": false
+        }
+      ],
+      "rx_columns": [
+        "lease",
+        "actual_token",
+        "phase",
+        "acquired_ms",
+        "released_ms"
+      ],
+      "rx": [
+        [
+          1,
+          100000,
+          "private-input",
+          16.146,
+          16.763
+        ],
+        [
+          2,
+          300000,
+          "private-input",
+          19.289,
+          19.993
+        ],
+        [
+          3,
+          400000,
+          "private-input",
+          22.375,
+          23.03
+        ],
+        [
+          4,
+          200000,
+          "private-input",
+          26.506,
+          27.464
+        ],
+        [
+          5,
+          700000,
+          "private-input",
+          28.765,
+          29.865
+        ],
+        [
+          6,
+          600000,
+          "private-input",
+          32.313,
+          33.333
+        ],
+        [
+          7,
+          800000,
+          "private-input",
+          35.743,
+          36.67
+        ],
+        [
+          8,
+          500000,
+          "private-input",
+          39.114,
+          40.043
+        ],
+        [
+          9,
+          1100000,
+          "private-input",
+          42.403,
+          43.496
+        ],
+        [
+          10,
+          1000000,
+          "private-input",
+          45.928,
+          46.886
+        ],
+        [
+          11,
+          1200000,
+          "private-input",
+          49.286,
+          50.376
+        ],
+        [
+          12,
+          900000,
+          "private-input",
+          54.852,
+          56.145
+        ],
+        [
+          13,
+          1400000,
+          "private-input",
+          56.377,
+          57.876
+        ],
+        [
+          14,
+          1500000,
+          "private-input",
+          58.12,
+          59.393
+        ],
+        [
+          15,
+          1300000,
+          "private-input",
+          63.069,
+          64.499
+        ],
+        [
+          16,
+          1700000,
+          "private-input",
+          64.716,
+          65.998
+        ],
+        [
+          17,
+          2020000,
+          "private-input",
+          68.593,
+          69.961
+        ],
+        [
+          18,
+          1800000,
+          "private-input",
+          72.259,
+          74.248
+        ],
+        [
+          19,
+          2040000,
+          "private-input",
+          74.4,
+          76.403
+        ],
+        [
+          20,
+          1600000,
+          "private-input",
+          77.629,
+          78.632
+        ],
+        [
+          21,
+          2060000,
+          "private-input",
+          80.961,
+          82.087
+        ],
+        [
+          22,
+          2080000,
+          "private-input",
+          84.561,
+          85.713
+        ],
+        [
+          23,
+          2100000,
+          "terminal-eos",
+          740.268,
+          743.852
+        ],
+        [
+          24,
+          2000000,
+          "terminal-eos",
+          744.472,
+          747.262
+        ],
+        [
+          25,
+          3000000,
+          "terminal-eos",
+          747.511,
+          749.313
+        ]
+      ]
+    },
+    {
+      "name": "untimed-own",
+      "exit_code": 2,
+      "early_native_token": 0,
+      "resumed_au19_native_token": 1900000,
+      "au19_actual_returned_token": 0,
+      "private_outputs_at_pause": 3,
+      "original_outputs_at_pause": 18,
+      "gap": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 100.175,
+        "input_gap_ms": 700.577
+      },
+      "grades": {
+        "original_full_pixels_flags_order": "PASS20/20",
+        "strict_original_native_identity": "FAIL AU19 native token",
+        "private_retirement": "PASS5/5 at true-end EOS",
+        "observed_RX": "PASS25/25 acquired/released after accepted VCL",
+        "pause_state_unchanged": true,
+        "multi_cycle": "NOT RUN in P1"
+      },
+      "peak_millic": 65000,
+      "actual_card_and_frozen_library_observed": true,
+      "idle_boundary_restored": true,
+      "phases": [
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-prefix",
+          "accepted_real": 18,
+          "accepted_private": 0,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 1.157
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "before-early-prefix",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 1.517
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-early-prefix-alone",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 0,
+          "output_private": 0,
+          "rx_acquired": 0,
+          "rx_released": 0,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 1.567
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-private-settle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 3,
+          "rx_acquired": 21,
+          "rx_released": 21,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 601.936
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-input-idle",
+          "accepted_real": 18,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 3,
+          "rx_acquired": 21,
+          "rx_released": 21,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 702.159
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au19",
+          "accepted_real": 19,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 3,
+          "rx_acquired": 21,
+          "rx_released": 21,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 702.344
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-original-au20",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 3,
+          "rx_acquired": 21,
+          "rx_released": 21,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 702.406
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-real-continuation",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 18,
+          "output_private": 4,
+          "rx_acquired": 22,
+          "rx_released": 22,
+          "same_handle": true,
+          "eos": false,
+          "elapsed_ms": 732.642
+        },
+        {
+          "type": "phase-census",
+          "checkpoint": "after-terminal-eos",
+          "accepted_real": 20,
+          "accepted_private": 5,
+          "output_real": 19,
+          "output_private": 5,
+          "rx_acquired": 25,
+          "rx_released": 25,
+          "same_handle": true,
+          "eos": true,
+          "elapsed_ms": 764.251
+        }
+      ],
+      "input_columns": [
+        "call",
+        "kind",
+        "association",
+        "bytes",
+        "vcl_present",
+        "native_token",
+        "status",
+        "phase",
+        "elapsed_ms"
+      ],
+      "inputs": [
+        [
+          1,
+          "original",
+          1,
+          10416,
+          true,
+          100000,
+          0,
+          "prefix",
+          0.184
+        ],
+        [
+          2,
+          "original",
+          2,
+          5827,
+          true,
+          200000,
+          0,
+          "prefix",
+          0.265
+        ],
+        [
+          3,
+          "original",
+          3,
+          3945,
+          true,
+          300000,
+          0,
+          "prefix",
+          0.326
+        ],
+        [
+          4,
+          "original",
+          4,
+          3344,
+          true,
+          400000,
+          0,
+          "prefix",
+          0.373
+        ],
+        [
+          5,
+          "original",
+          5,
+          5458,
+          true,
+          500000,
+          0,
+          "prefix",
+          0.433
+        ],
+        [
+          6,
+          "original",
+          6,
+          3971,
+          true,
+          600000,
+          0,
+          "prefix",
+          0.517
+        ],
+        [
+          7,
+          "original",
+          7,
+          3396,
+          true,
+          700000,
+          0,
+          "prefix",
+          0.572
+        ],
+        [
+          8,
+          "original",
+          8,
+          3398,
+          true,
+          800000,
+          0,
+          "prefix",
+          0.621
+        ],
+        [
+          9,
+          "original",
+          9,
+          5368,
+          true,
+          900000,
+          0,
+          "prefix",
+          0.683
+        ],
+        [
+          10,
+          "original",
+          10,
+          3780,
+          true,
+          1000000,
+          0,
+          "prefix",
+          0.73
+        ],
+        [
+          11,
+          "original",
+          11,
+          3371,
+          true,
+          1100000,
+          0,
+          "prefix",
+          0.781
+        ],
+        [
+          12,
+          "original",
+          12,
+          3488,
+          true,
+          1200000,
+          0,
+          "prefix",
+          0.827
+        ],
+        [
+          13,
+          "original",
+          13,
+          5108,
+          true,
+          1300000,
+          0,
+          "prefix",
+          0.885
+        ],
+        [
+          14,
+          "original",
+          14,
+          3777,
+          true,
+          1400000,
+          0,
+          "prefix",
+          0.939
+        ],
+        [
+          15,
+          "original",
+          15,
+          3684,
+          true,
+          1500000,
+          0,
+          "prefix",
+          0.986
+        ],
+        [
+          16,
+          "original",
+          16,
+          4955,
+          true,
+          1600000,
+          0,
+          "prefix",
+          1.04
+        ],
+        [
+          17,
+          "original",
+          17,
+          3790,
+          true,
+          1700000,
+          0,
+          "prefix",
+          1.088
+        ],
+        [
+          18,
+          "original",
+          18,
+          3501,
+          true,
+          1800000,
+          0,
+          "prefix",
+          1.134
+        ],
+        [
+          19,
+          "private-prefix",
+          1,
+          170,
+          false,
+          2020000,
+          0,
+          "private-input",
+          1.184
+        ],
+        [
+          20,
+          "private-vcl",
+          1,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          1.217
+        ],
+        [
+          21,
+          "private-prefix",
+          2,
+          170,
+          false,
+          2040000,
+          0,
+          "private-input",
+          1.242
+        ],
+        [
+          22,
+          "private-vcl",
+          2,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          1.279
+        ],
+        [
+          23,
+          "private-prefix",
+          3,
+          170,
+          false,
+          2060000,
+          0,
+          "private-input",
+          1.304
+        ],
+        [
+          24,
+          "private-vcl",
+          3,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          1.358
+        ],
+        [
+          25,
+          "private-prefix",
+          4,
+          170,
+          false,
+          2080000,
+          0,
+          "private-input",
+          1.382
+        ],
+        [
+          26,
+          "private-vcl",
+          4,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          1.414
+        ],
+        [
+          27,
+          "private-prefix",
+          5,
+          170,
+          false,
+          2100000,
+          0,
+          "private-input",
+          1.438
+        ],
+        [
+          28,
+          "private-vcl",
+          5,
+          945,
+          true,
+          0,
+          0,
+          "private-input",
+          1.469
+        ],
+        [
+          29,
+          "early-prefix",
+          19,
+          170,
+          false,
+          0,
+          0,
+          "private-input",
+          1.544
+        ],
+        [
+          30,
+          "original",
+          19,
+          5085,
+          true,
+          1900000,
+          0,
+          "continuation",
+          702.315
+        ],
+        [
+          31,
+          "original",
+          20,
+          4288,
+          true,
+          2000000,
+          0,
+          "continuation",
+          702.388
+        ]
+      ],
+      "outputs": [
+        {
+          "actual_token": 100000,
+          "flags": 0,
+          "pixel_sha256": "3497c7ab0e63b45241aaa947fd750546d17c82a2d275b8d2be3870ada7f0b2b6",
+          "diagnostic_original_token": 100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 300000,
+          "flags": 0,
+          "pixel_sha256": "70d09a53fddef2798d02aa1b4d7e02840293e52825df27f4d2db4246c5552c4c",
+          "diagnostic_original_token": 300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 400000,
+          "flags": 0,
+          "pixel_sha256": "d13db5bf3ea23933129e2d191534cef87cbbc291108f855741d1c062acc02463",
+          "diagnostic_original_token": 400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 200000,
+          "flags": 0,
+          "pixel_sha256": "1740fcadf9ec61afdff9fff8a4473187929d307767f99ac9017c040adac99f71",
+          "diagnostic_original_token": 200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 700000,
+          "flags": 0,
+          "pixel_sha256": "b58af1608483233eec0a83a58e5fdbfbcdc6105d61ee9029eeaf1c48c84d0d0e",
+          "diagnostic_original_token": 700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 600000,
+          "flags": 0,
+          "pixel_sha256": "51c8c065ecbf3b5c2962b77da8d2598e6b72dcf7b42103cb651ea6cf42e09bc5",
+          "diagnostic_original_token": 600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 800000,
+          "flags": 0,
+          "pixel_sha256": "cb2d6bd7808ce48721470eed53921f05c31fa96b32abb9352511e30c4bf8550a",
+          "diagnostic_original_token": 800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 500000,
+          "flags": 0,
+          "pixel_sha256": "1fa6a788250a0eaac4d5872678071eb32679d362e15c52e183e3f1f0504246c2",
+          "diagnostic_original_token": 500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1100000,
+          "flags": 0,
+          "pixel_sha256": "9f75f26a5c5717e0cc8590092230301425ca555a3c056c624ffafe22ae2a585d",
+          "diagnostic_original_token": 1100000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1000000,
+          "flags": 0,
+          "pixel_sha256": "ddf0610674885e97e7512322e1a04ebd555666db02172ddf9e4cd8f8853ab231",
+          "diagnostic_original_token": 1000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1200000,
+          "flags": 0,
+          "pixel_sha256": "bdc468f752ddd4fbfe1f5fef1a85562373da236a8a4e62ac6a27316e84ec4d2a",
+          "diagnostic_original_token": 1200000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 900000,
+          "flags": 0,
+          "pixel_sha256": "04f93fb22586ca110bc42d7616441ec92ea7bac7a6662e610759dc6f03fc75a0",
+          "diagnostic_original_token": 900000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1400000,
+          "flags": 0,
+          "pixel_sha256": "d8f690f267ae29b1edee5ef58fcb8513617ef70f85ada14b88abbacf29e952b3",
+          "diagnostic_original_token": 1400000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1500000,
+          "flags": 0,
+          "pixel_sha256": "0dbde38377bab2fe2dc921a38a15a6a24bca65f85bc3bf0f6d2a7767506fd7bd",
+          "diagnostic_original_token": 1500000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1300000,
+          "flags": 0,
+          "pixel_sha256": "fcd1d964a4eee26b3ff6902bdf8dfc9653195f68f8a6eaa3f1ff218734f3f6d7",
+          "diagnostic_original_token": 1300000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 1700000,
+          "flags": 0,
+          "pixel_sha256": "4297eb111bfcfff14a13423d6cbfef7afd367dde24667588adc1bf668ff48b8e",
+          "diagnostic_original_token": 1700000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2020000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1800000,
+          "flags": 0,
+          "pixel_sha256": "925a8fa0bf8b5712c54291c1a043429ad541f6029667a7937fd790cfa8c2c1d2",
+          "diagnostic_original_token": 1800000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2040000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 1600000,
+          "flags": 0,
+          "pixel_sha256": "afaa94ddc7adf694c0b8b5ed3d63dbfe396a2a80cb835600e31a8e7f165d843f",
+          "diagnostic_original_token": 1600000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 2060000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2080000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2100000,
+          "flags": 0,
+          "pixel_sha256": "73823d84994013a88f8612a523e15f280853ff8ae95baeda0c33ed395d81021d",
+          "diagnostic_original_token": null,
+          "strict_original_identity": false
+        },
+        {
+          "actual_token": 2000000,
+          "flags": 0,
+          "pixel_sha256": "d19780f9b99c71369c17309384226985e326f5b1368ca8da0545f88018b34fc0",
+          "diagnostic_original_token": 2000000,
+          "strict_original_identity": true
+        },
+        {
+          "actual_token": 0,
+          "flags": 0,
+          "pixel_sha256": "11e4d460966337149c4ef429171466150ba99131cd421d80868795caf631471d",
+          "diagnostic_original_token": 1900000,
+          "strict_original_identity": false
+        }
+      ],
+      "rx_columns": [
+        "lease",
+        "actual_token",
+        "phase",
+        "acquired_ms",
+        "released_ms"
+      ],
+      "rx": [
+        [
+          1,
+          100000,
+          "private-input",
+          15.807,
+          16.509
+        ],
+        [
+          2,
+          300000,
+          "private-input",
+          20.067,
+          20.842
+        ],
+        [
+          3,
+          400000,
+          "private-input",
+          23.276,
+          23.953
+        ],
+        [
+          4,
+          200000,
+          "private-input",
+          26.404,
+          27.181
+        ],
+        [
+          5,
+          700000,
+          "private-input",
+          29.653,
+          30.962
+        ],
+        [
+          6,
+          600000,
+          "private-input",
+          32.256,
+          33.342
+        ],
+        [
+          7,
+          800000,
+          "private-input",
+          35.756,
+          39.547
+        ],
+        [
+          8,
+          500000,
+          "private-input",
+          39.76,
+          41.211
+        ],
+        [
+          9,
+          1100000,
+          "private-input",
+          48.893,
+          50.73
+        ],
+        [
+          10,
+          1000000,
+          "private-input",
+          51.242,
+          52.615
+        ],
+        [
+          11,
+          1200000,
+          "private-input",
+          52.803,
+          54.165
+        ],
+        [
+          12,
+          900000,
+          "private-input",
+          54.402,
+          55.963
+        ],
+        [
+          13,
+          1400000,
+          "private-input",
+          56.162,
+          57.59
+        ],
+        [
+          14,
+          1500000,
+          "private-input",
+          58.977,
+          60.025
+        ],
+        [
+          15,
+          1300000,
+          "private-input",
+          62.453,
+          63.406
+        ],
+        [
+          16,
+          1700000,
+          "private-input",
+          64.631,
+          65.725
+        ],
+        [
+          17,
+          2020000,
+          "private-input",
+          68.161,
+          69.306
+        ],
+        [
+          18,
+          1800000,
+          "private-input",
+          71.682,
+          72.59
+        ],
+        [
+          19,
+          2040000,
+          "private-input",
+          74.94,
+          76.04
+        ],
+        [
+          20,
+          1600000,
+          "private-input",
+          78.39,
+          79.373
+        ],
+        [
+          21,
+          2060000,
+          "private-input",
+          81.714,
+          82.993
+        ],
+        [
+          22,
+          2080000,
+          "continuation",
+          706.937,
+          708.074
+        ],
+        [
+          23,
+          2100000,
+          "terminal-eos",
+          737.416,
+          738.687
+        ],
+        [
+          24,
+          2000000,
+          "terminal-eos",
+          741.141,
+          742.207
+        ],
+        [
+          25,
+          0,
+          "terminal-eos",
+          744.559,
+          745.535
+        ]
+      ]
+    }
+  ],
+  "decision": {
+    "result": "Only actual-next-AU early token preserves its identity. The own token on resumed VCL does not override the early token. Generic/previous markers advance4/5 private pictures but fail strict native identity.",
+    "duplicate_private_token_or_final_private_prefix": "NOT RUN: all five private DC128 images/flags are indistinguishable without their distinct native tokens; no independent source-private POC returned.",
+    "reused_generic_marker_across_cycles": "NOT RUN: no no-lookahead candidate passed P1.",
+    "raw_untimed_control": "Previously failed raw control reproduced with new attribution; not a novel workaround.",
+    "prefer_ordinary_pause": "No-dummy input-only idle/resume requires neither private pictures nor next-AU lookahead.",
+    "limits": "No inferred output retagging; no integration/default promotion; no firmware instruction/physical PPB lease/STOP-START claim."
+  },
+  "started_utc": "2026-10-27 07:27:08 UTC",
+  "checks": {
+    "O2_Wall_Wextra_Werror": "PASS at2c27857",
+    "native_sessions": 9,
+    "strict_pass": 2,
+    "strict_fail_retained": 7,
+    "full_original_pixels_flags_order": "PASS all9",
+    "observed_RX_acquired_released": 225,
+    "scoped_kernel_check": "PASS",
+    "peak_millic": 65000
+  }
+}
