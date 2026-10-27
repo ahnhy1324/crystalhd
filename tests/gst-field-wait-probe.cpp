@@ -9,6 +9,8 @@
 #include <thread>
 #include <poll.h>
 #include <sys/eventfd.h>
+#include <sys/ioctl.h>
+#include <linux/sync_file.h>
 #include <dlfcn.h>
 static EGLBoolean observed_swap(EGLDisplay,EGLSurface);
 static EGLBoolean observed_terminate(EGLDisplay);
@@ -40,9 +42,29 @@ struct SwapSample {
     unsigned sequence=0;
     guint64 created=0;
     std::atomic<guint64> entered{0},returned{0},ready{0};
+    guint64 kernel_ready=0;
+    unsigned fence_parts=0;
+    int info_error=0;
     bool valid=true,swap_ok=false;
     ~SwapSample(){if(fd>=0)close(fd);}
 };
+static void observe_signal(SwapSample &sample,guint64 observed) noexcept {
+    sample.ready=observed;
+    // Query only our exported sync_file. This is the kernel's recorded signal
+    // time, not a GPU hardware timestamp and not permission to reuse the BO.
+    sync_fence_info parts[8]={};sync_file_info info={};
+    info.num_fences=8;info.sync_fence_info=reinterpret_cast<uintptr_t>(parts);
+    if(ioctl(sample.fd,SYNC_IOC_FILE_INFO,&info)<0)sample.info_error=errno;
+    else if(info.status==1&&info.num_fences>0&&info.num_fences<=8) {
+        bool valid=true;guint64 latest=0;sample.fence_parts=info.num_fences;
+        for(unsigned i=0;i<info.num_fences;++i) {
+            valid=valid&&parts[i].status==1&&parts[i].timestamp_ns>0;
+            latest=std::max(latest,static_cast<guint64>(parts[i].timestamp_ns));
+        }
+        if(valid&&latest<=observed)sample.kernel_ready=latest;
+    }
+    close(sample.fd);sample.fd=-1;
+}
 struct SwapObserver {
     EGLDisplay display;
     PFNEGLCREATESYNCKHRPROC create;
@@ -78,7 +100,7 @@ struct SwapObserver {
         pollfd ready={sample->fd,POLLIN,0};
         const int polled=poll(&ready,1,0);
         if(polled>0&&(ready.revents&POLLIN)&&!(ready.revents&(POLLERR|POLLHUP|POLLNVAL))) {
-            sample->ready=gst_util_get_timestamp();close(sample->fd);sample->fd=-1;
+            observe_signal(*sample,gst_util_get_timestamp());
         }else need(polled>=0&&!(ready.revents&(POLLERR|POLLHUP|POLLNVAL)),"native fence initial poll");
         {
             std::lock_guard<std::mutex> lock(mutex);
@@ -102,9 +124,9 @@ struct SwapObserver {
             for(size_t i=pending.size();i>0;--i) {
                 auto &sample=pending[i-1];const auto events=fds[i].revents;
                 if(result<0||events&(POLLERR|POLLHUP|POLLNVAL)||stopping||events&POLLIN) {
-                    if(result>=0&&(events&POLLIN)&&!(events&(POLLERR|POLLHUP|POLLNVAL)))sample->ready=observed;
-                    else sample->valid=false;
-                    close(sample->fd);sample->fd=-1;pending.erase(pending.begin()+i-1);
+                    if(result>=0&&(events&POLLIN)&&!(events&(POLLERR|POLLHUP|POLLNVAL)))observe_signal(*sample,observed);
+                    else {sample->valid=false;close(sample->fd);sample->fd=-1;}
+                    pending.erase(pending.begin()+i-1);
                 }
             }
             if(stopping)break;
@@ -116,18 +138,23 @@ struct SwapObserver {
         // final arrivals once, then close every diagnostic-owned descriptor.
         for(auto &sample:incoming) {
             pollfd fd={sample->fd,POLLIN,0};
-            if(poll(&fd,1,0)>0&&(fd.revents&POLLIN)&&!(fd.revents&(POLLERR|POLLHUP|POLLNVAL)))sample->ready=gst_util_get_timestamp();
-            else sample->valid=false;
-            close(sample->fd);sample->fd=-1;
+            if(poll(&fd,1,0)>0&&(fd.revents&POLLIN)&&!(fd.revents&(POLLERR|POLLHUP|POLLNVAL)))observe_signal(*sample,gst_util_get_timestamp());
+            else {sample->valid=false;close(sample->fd);sample->fd=-1;}
         }
         for(const auto &sample:samples) {
             const auto enter=sample->entered.load(),end=sample->returned.load(),ready=sample->ready.load();
             dprintf(STDOUT_FILENO,"{\"type\":\"native-fence-swap\",\"swap\":%u,\"valid\":%s,\"swap_ok\":%s,"
                 "\"entered_ns\":%" G_GUINT64_FORMAT ",\"setup_ns\":%" G_GUINT64_FORMAT ",\"swap_ns\":%" G_GUINT64_FORMAT ","
                 "\"gpu_seen_from_enter_ns\":%" G_GINT64_FORMAT ",\"post_gpu_lower_bound_ns\":%" G_GUINT64_FORMAT ","
+                "\"kernel_signal_from_enter_ns\":%" G_GINT64_FORMAT ",\"kernel_signal_available\":%s,"
+                "\"observer_delay_ns\":%" G_GUINT64_FORMAT ",\"post_kernel_signal_ns\":%" G_GUINT64_FORMAT ","
+                "\"fence_parts\":%u,\"fence_info_error\":%d,"
                 "\"ready_before_swap\":%s}\n",sample->sequence,sample->valid&&ready&&enter&&end?"true":"false",
                 sample->swap_ok?"true":"false",enter,enter>=sample->created?enter-sample->created:0,end>=enter?end-enter:0,
                 ready&&enter?GST_CLOCK_DIFF(enter,ready):0,ready&&end>ready?end-ready:0,
+                sample->kernel_ready&&enter?GST_CLOCK_DIFF(enter,sample->kernel_ready):0,sample->kernel_ready?"true":"false",
+                sample->kernel_ready&&ready>=sample->kernel_ready?ready-sample->kernel_ready:0,
+                sample->kernel_ready&&end>sample->kernel_ready?end-sample->kernel_ready:0,sample->fence_parts,sample->info_error,
                 ready&&enter&&ready<=enter?"true":"false");
         }
         close(wake);
