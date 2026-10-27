@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <mutex>
 #include <vector>
+#include <atomic>
 
 namespace {
 thread_local unsigned active_swap;
@@ -32,6 +33,7 @@ struct Entry {
     bool present=false;
 };
 struct Log {
+    std::atomic<bool> activated{false};
     std::mutex mutex;
     std::vector<Entry> entries;
     unsigned dropped=0;
@@ -42,6 +44,9 @@ struct Log {
         try{entries.push_back(entry);}catch(...){++dropped;}
     }
     ~Log() {
+        // Plugin-scanner/timeout children inherit LD_PRELOAD as well. Their
+        // stdout may be a binary protocol: never emit without our swap marker.
+        if(!activated)return;
         for(const auto &e:entries)
             dprintf(STDOUT_FILENO,"{\"type\":\"host-wait\",\"swap\":%u,\"function\":\"%s\",\"elapsed_ns\":%llu,"
                 "\"request\":%lu,\"present\":%s,\"extension\":%u,\"event_type\":%u,\"serial\":%u,"
@@ -52,7 +57,7 @@ struct Log {
     }
 } log;
 }
-extern "C" void crystalhd_host_wait_mark(unsigned swap) {active_swap=swap;}
+extern "C" void crystalhd_host_wait_mark(unsigned swap) {active_swap=swap;if(swap)log.activated=true;}
 extern "C" int poll(pollfd *fds,nfds_t count,int timeout) {
     using Function=int(*)(pollfd*,nfds_t,int);static auto real=original<Function>("poll");
     const auto swap=active_swap;const auto start=swap?now():0;
@@ -90,6 +95,8 @@ extern "C" xcb_generic_event_t *xcb_wait_for_special_event(xcb_connection_t *con
             if(entry.present&&ge->event_type==XCB_PRESENT_COMPLETE_NOTIFY) {
                 const auto *complete=reinterpret_cast<const xcb_present_complete_notify_event_t *>(reply);
                 entry.serial=complete->serial;entry.msc=complete->msc;entry.kind=complete->kind;entry.mode=complete->mode;
+            }else if(entry.present&&ge->event_type==XCB_PRESENT_IDLE_NOTIFY) {
+                entry.serial=reinterpret_cast<const xcb_present_idle_notify_event_t *>(reply)->serial;
             }
         }
         log.add(entry);
