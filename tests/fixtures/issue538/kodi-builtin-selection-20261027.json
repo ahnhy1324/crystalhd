@@ -1,0 +1,284 @@
+{
+  "schema": 1,
+  "issue": 538,
+  "date": "2026-10-27",
+  "result": "BUILT-IN KODI V4L2 NOT SELECTED on tested published22RC1 stack. Requested native hardware resource comparison remains NOT RUN. Earlier YUY2 CPU table is our InputStream/VideoCodec addon path only.",
+  "scope": "Actual unchanged published Kodi ordinary-file playback, no custom InputStream/VideoCodec addon, decoder hook, LD_PRELOAD, external source patch or installed/default change. Corrected prime-hw settings are actually tested, not inferred only from source.",
+  "sources": {
+    "Kodi": "Published Flathub22RC1; version20260927-28ea2eac-dirty is publisher version, not a local patch",
+    "app_deployment": "0a381e42781914ae76ed338d3aa11f9403c55c57f5c9c194e1f4fb437cf71630",
+    "source_inspected": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "driver": "830170b28ad58ad77ff196ef14e039cae2797e4f, temporary3.10.14, same known native-resolution real V4L2 module as earlier work",
+    "evidence_branch_base": "6358ba03ce2f8a404252f24ba3c67a6fde434930; no new production payload for these selection probes"
+  },
+  "environment": {
+    "host": "Ubuntu26.04.1, kernel7.0.0-38-generic, Core2DuoT8100, BCM70015, Intel965GM",
+    "display": "Private GPU headless Wayland1280x720@60Hz; no system display change",
+    "available_devices": "Actual CrystalHD /dev/video0 and /dev/crystalhd exposed; /sys and GPU exposed read-only/as devices; existing permitted /dev/udmabuf and /dev/dma_heap exposed. No permissions changed.",
+    "audio": "Same AAC to temporary nondefault null sink; verified links; no physical AV claim"
+  },
+  "runtime_codec_metadata": {
+    "scope": "Read-only codec metadata; no device or decoder opened",
+    "by_codec_ID": "h264",
+    "H264_decoders": [
+      {
+        "name": "h264",
+        "hardware_configs": [
+          {
+            "pixel_format": "cuda",
+            "methods": 3,
+            "device": "cuda"
+          },
+          {
+            "pixel_format": "vaapi",
+            "methods": 11,
+            "device": "vaapi"
+          },
+          {
+            "pixel_format": "vdpau",
+            "methods": 11,
+            "device": "vdpau"
+          },
+          {
+            "pixel_format": "vulkan",
+            "methods": 11,
+            "device": "vulkan"
+          }
+        ]
+      },
+      {
+        "name": "h264_v4l2m2m",
+        "hardware_configs": []
+      },
+      {
+        "name": "h264_amf",
+        "hardware_configs": [
+          {
+            "pixel_format": "amf",
+            "methods": 3,
+            "device": "amf"
+          }
+        ]
+      },
+      {
+        "name": "h264_cuvid",
+        "hardware_configs": [
+          {
+            "pixel_format": "cuda",
+            "methods": 7,
+            "device": "cuda"
+          }
+        ]
+      }
+    ]
+  },
+  "installed_Kodi21_metadata_only": {
+    "scope": "Metadata only; no device/decoder opened",
+    "packages": [
+      "kodi 2:21.3+dfsg-1ubuntu1",
+      "kodi-bin 2:21.3+dfsg-1ubuntu1",
+      "libavcodec62:amd64 7:8.0.1-3ubuntu2"
+    ],
+    "by_codec_ID": "h264",
+    "h264_v4l2m2m_present": true,
+    "hardware_configs": []
+  },
+  "mechanism": {
+    "ordinary_FFmpeg": "DVDVideoCodecFFmpeg::Open uses avcodec_find_decoder(H264); actual bundled library returns h264. V4L2 wrapper is a different codec name, not one of that decoder hardware configs.",
+    "DRM_PRIME_entry": "Wayland GLES registers DVDVideoCodecDRMPRIME; corrected private settings enable useprimedecoder and useprimedecoderforhw, disable VAAPI. Registration/setting alone does not establish hardware decoding.",
+    "DRM_PRIME_filter": "FindDecoder loops H264 codecs; FindHWConfig requires AV_PIX_FMT_DRM_PRIME and HW_DEVICE_CTX or INTERNAL. Bundled h264_v4l2m2m has zero returned hardware configs; no candidate matches. Fallback selects native CPU h264.",
+    "actual_confirmation": "avcodec_open2 uprobes record h264 and no h264_v4l2m2m; open/openat/openat2 tracepoints record no CrystalHD node opens during file decode. fd samples independently see neither decode node.",
+    "driver_boundary": "Selection happens before any query/decode of our V4L2 node. Driver QUERYCAP/G_FMT/EXPBUF changes cannot supply missing userspace AVCodec hardware config or change Kodi avcodec_find_decoder calls. No driver fix is justified by this pre-open failure.",
+    "scope_limit": "Current deployed library/build pair, not a claim that every Kodi/FFmpeg build lacks V4L2 support."
+  },
+  "primary_source_links": [
+    "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp#L164",
+    "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecFFmpeg.cpp#L328",
+    "https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/v4l2_m2m_dec.c"
+  ],
+  "trace_scope": "Actual kodi.bin PID/tgid, probes attached before ordinary file invocation through close; codec avcodec_open2 plus kernel sys_enter_open/openat/openat2 filtered to actual CrystalHD decode node paths. Other h264 opens include demux probing; they are not picture counts.",
+  "cases": [
+    {
+      "case": "builtin-v1-ffmpeg",
+      "selection_observation": "PASS",
+      "CrystalHD_V4L2_decode": "NOT SELECTED",
+      "geometry": [
+        1280,
+        720
+      ],
+      "source": "Same progressive High/B2 H264/AAC six-second 180-picture fixture used by prior addon comparison; source30p, output1280x720@60Hz",
+      "settings_saved_by_Kodi": {
+        "videoplayer.usevaapi": "false",
+        "videoplayer.useprimedecoder": "false",
+        "videoplayer.useprimedecoderforhw": "true"
+      },
+      "decoder_labels": [
+        "ff-h264"
+      ],
+      "decoder_open_lines": [
+        "CDVDVideoCodecFFmpeg::Open() Using codec: H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10",
+        "CDVDVideoCodecFFmpeg::Open() Using codec: H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10"
+      ],
+      "avcodec_open2_calls": {
+        "mjpeg": 1,
+        "png": 2,
+        "aac": 3,
+        "h264": 4
+      },
+      "h264_v4l2m2m_opens": 0,
+      "decode_device_open_syscalls": {
+        "/dev/video0": 0,
+        "/dev/crystalhd": 0
+      },
+      "active_card_FDs_observed": false,
+      "render_queue_acceptances": 180,
+      "count_scope": "CPU-decoded playback; these180acceptances are NOT CrystalHD decoding or physical scanout",
+      "AAC_to_owned_nondefault_null_sink": true,
+      "codec_addon_installed_or_selected": false,
+      "live_card_module_ref": 0,
+      "live_global_page_pin_net": 0,
+      "post_Kodi_quit_ref_pin_restored": true,
+      "temporary_sink_removed": true,
+      "pixel_format_labels": [
+        "yuv420p"
+      ]
+    },
+    {
+      "case": "builtin-v2-prime-hw",
+      "selection_observation": "PASS",
+      "CrystalHD_V4L2_decode": "NOT SELECTED",
+      "geometry": [
+        1280,
+        720
+      ],
+      "source": "Same progressive High/B2 H264/AAC six-second 180-picture fixture used by prior addon comparison; source30p, output1280x720@60Hz",
+      "settings_saved_by_Kodi": {
+        "videoplayer.usevaapi": "false",
+        "videoplayer.useprimedecoder": "true",
+        "videoplayer.useprimedecoderforhw": "true"
+      },
+      "decoder_labels": [
+        "ff-h264-drm_prime"
+      ],
+      "decoder_open_lines": [
+        "CDVDVideoCodecDRMPRIME::Open - using decoder H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10"
+      ],
+      "avcodec_open2_calls": {
+        "mjpeg": 1,
+        "png": 2,
+        "h264": 3,
+        "aac": 3
+      },
+      "h264_v4l2m2m_opens": 0,
+      "decode_device_open_syscalls": {
+        "/dev/video0": 0,
+        "/dev/crystalhd": 0
+      },
+      "active_card_FDs_observed": false,
+      "render_queue_acceptances": 180,
+      "count_scope": "CPU-decoded playback; these180acceptances are NOT CrystalHD decoding or physical scanout",
+      "AAC_to_owned_nondefault_null_sink": true,
+      "codec_addon_installed_or_selected": false,
+      "live_card_module_ref": 0,
+      "live_global_page_pin_net": 3744,
+      "post_Kodi_quit_ref_pin_restored": true,
+      "temporary_sink_removed": true,
+      "pixel_format_labels": [
+        "yuv420p"
+      ]
+    },
+    {
+      "case": "builtin-v2-prime-sw",
+      "selection_observation": "PASS",
+      "CrystalHD_V4L2_decode": "NOT SELECTED",
+      "geometry": [
+        1280,
+        720
+      ],
+      "source": "Same progressive High/B2 H264/AAC six-second 180-picture fixture used by prior addon comparison; source30p, output1280x720@60Hz",
+      "settings_saved_by_Kodi": {
+        "videoplayer.usevaapi": "false",
+        "videoplayer.useprimedecoder": "true",
+        "videoplayer.useprimedecoderforhw": "false"
+      },
+      "decoder_labels": [
+        "ff-h264-drm_prime"
+      ],
+      "decoder_open_lines": [
+        "CDVDVideoCodecDRMPRIME::Open - using decoder H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10"
+      ],
+      "avcodec_open2_calls": {
+        "mjpeg": 1,
+        "png": 2,
+        "h264": 3,
+        "aac": 3
+      },
+      "h264_v4l2m2m_opens": 0,
+      "decode_device_open_syscalls": {
+        "/dev/video0": 0,
+        "/dev/crystalhd": 0
+      },
+      "active_card_FDs_observed": false,
+      "render_queue_acceptances": 180,
+      "count_scope": "CPU-decoded playback; these180acceptances are NOT CrystalHD decoding or physical scanout",
+      "AAC_to_owned_nondefault_null_sink": true,
+      "codec_addon_installed_or_selected": false,
+      "live_card_module_ref": 0,
+      "live_global_page_pin_net": 3744,
+      "post_Kodi_quit_ref_pin_restored": true,
+      "temporary_sink_removed": true,
+      "pixel_format_labels": [
+        "yuv420p"
+      ]
+    }
+  ],
+  "preserved_guardian_failure": {
+    "case": "builtin-v1-prime-hw",
+    "status": "FAIL",
+    "actual_observation": "180CPU-decoded render accepts; no card FD or module reference; no V4L2 codec/node call. The old whole-boundary live-file assertion failed while software DRM PRIME presentation still held global page pins. Full equality returned after KodiQuit.",
+    "handling": "Original failed run preserved. Follow-up selection-only guardian records live global pins separately, requires card ref/FD retirement, and still requires complete post-Quit boundary equality. Original addon/hardware qualification and release scripts/criteria unchanged.",
+    "pin_observation": "Both corrected PRIME controls record live global pin_net3744 and final0; not attributed to CrystalHD DMA, not claimed as unique physical RAM or an endurance leak result."
+  },
+  "boundaries": [
+    {
+      "batch": "builtin-v1",
+      "guardian_status": "FAIL",
+      "original_module_restored": "3.10.13",
+      "boundary_equal": true,
+      "kernel_check_exit": 0,
+      "PM": "force_l0s_off1/session_l0s_off0, LinkCtl0x42 unchanged",
+      "AER_unchanged": true,
+      "ref_pin_before_after": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "batch": "builtin-v2",
+      "guardian_status": "PASS",
+      "original_module_restored": "3.10.13",
+      "boundary_equal": true,
+      "kernel_check_exit": 0,
+      "PM": "force_l0s_off1/session_l0s_off0, LinkCtl0x42 unchanged",
+      "AER_unchanged": true,
+      "ref_pin_before_after": [
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "grades": {
+    "built_in_entry_settings_and_CPU_fallback_observation": "PASS, three configurations, including actual PRIME hardware option enabled",
+    "built_in_CrystalHD_V4L2": "NOT SELECTED",
+    "native_V4L2_720p_FHD_CPU_memory_comparison": "NOT RUN; software fallback not substituted",
+    "physical_AV_60p_endurance": "NOT RUN",
+    "driver_regression_in_this_selection": "NOT DEMONSTRATED; decoder device not opened",
+    "addon_measurement": "Prior addon results retained; not native acceptance"
+  },
+  "next_requirement": "A Kodi/FFmpeg combination that genuinely selects a V4L2 decoder and returns supported hardware frames is required before native resource comparison. No external patches/forks/hooks or new addon substituted in this test; no speculative driver changes, support promotion, merge or issue closure.",
+  "review": "Astra read-only consistency review: no material unsupported claims/mismatches; no tests, hardware runs or edits by reviewer."
+}

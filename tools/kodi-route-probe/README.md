@@ -212,6 +212,9 @@ the legacy ABI and the published #531 performance finding are unchanged.
 
 ## Actual V4L2 backend and Kodi resource comparison
 
+**This measures our experimental InputStream/VideoCodec add-on, not Kodi's
+built-in V4L2 decoder.** Native selection was checked separately below.
+
 The separate #538 backend uses the **real CrystalHD research V4L2 node**:
 H.264 AVCC → Annex-B → OUTPUT QBUF → YUYV CAPTURE DQBUF → checked rows in
 Kodi's buffer → GLES. GStreamer supplies color parsing and sample metadata;
@@ -268,3 +271,32 @@ observer exclusions. All batches restore the original 3.10.13 module,
 dependencies and idle/ref/pin/PM/link/AER state; kernel checks pass. G2 FAIL,
 unsupported standard nonempty STOP/START and #531's earlier 360p result
 remain unchanged. Installed applications, defaults and firmware are unchanged.
+
+## Built-in Kodi selection
+
+The requested **built-in V4L2 resource comparison remains NOT RUN** on this
+published Kodi 22 RC1 / bundled FFmpeg stack. With the actual research node
+exposed and no custom codec add-on, ordinary-file replay gives:
+
+| VA-API | DRM PRIME decoder | PRIME hardware option | Actual video decoder |
+| --- | --- | --- | --- |
+| Off | Off | On | CPU `h264`, label `ff-h264` |
+| Off | On | On | CPU `h264`, label `ff-h264-drm_prime` |
+| Off | On | Off | CPU `h264`, label `ff-h264-drm_prime` |
+
+The PRIME label alone is not hardware-decoding evidence. All three files
+produce 180 render-queue acceptances, but tracepoints observe no CrystalHD
+device opens and codec probes observe no `h264_v4l2m2m` open. The actual
+bundled library contains that wrapper yet reports **zero hardware configs**
+for it. Kodi's PRIME selector requires a `DRM_PRIME` hardware config; its
+fallback opens CPU `h264`. The installed Kodi 21.3 / FFmpeg 8.0.1 library
+has the same metadata limitation; no new installed-Kodi replay is claimed.
+
+This fails before driver format/buffer negotiation. Changing our V4L2
+capabilities cannot supply a missing FFmpeg codec hardware configuration.
+No external application patch, decoder interposition or add-on is used to
+turn the fallback into a native success. The
+[selection receipt](../../tests/fixtures/issue538/kodi-builtin-selection-20261027.json)
+records actual settings, codec/device probes, the earlier live-page-pin
+guardian failure and full post-Kodi-exit/module restoration. A compatible
+native decoder/frame path is needed before a native CPU/RSS comparison.

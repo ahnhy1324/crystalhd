@@ -2142,5 +2142,9 @@
     "Physical AV/scanout, exact display drops, E2E latency, GPU-completion timing, whole-system watts, native i686/Atom/BCM70012 and endurance NOT RUN.",
     "720p60/FHD60 performance not qualified by these 30p sources.",
     "No meaningful CPU improvement concluded from two short timing arms; no supported Kodi addon/default promotion or issue closure."
-  ]
+  ],
+  "builtin_selection_followup": {
+    "receipt": "kodi-builtin-selection-20261027.json",
+    "scope": "This CPU table measures our experimental InputStream/VideoCodec addon. Built-in Kodi ordinary-file V4L2 selection remains NOT SELECTED in the current stack; no native resource grade."
+  }
 }
