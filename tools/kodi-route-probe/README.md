@@ -1,5 +1,9 @@
 # Kodi route probe
 
+For the separate **built-in V4L2** path and measurements, see
+[the compatible FFmpeg experiment](#built-in-kodi-with-published-drm-prime-ffmpeg).
+The add-on probes below are independent experiments.
+
 Issue [#531](https://github.com/ahnhy1324/crystalhd/issues/531).
 The default Gate A build demuxes a selected local H.264 MP4 and emits one
 **synthetic YUY2 picture** through an InputStream-hosted VideoCodec instance.
@@ -274,8 +278,9 @@ remain unchanged. Installed applications, defaults and firmware are unchanged.
 
 ## Built-in Kodi selection
 
-The requested **built-in V4L2 resource comparison remains NOT RUN** on this
-published Kodi 22 RC1 / bundled FFmpeg stack. With the actual research node
+**The bundled FFmpeg does not select native hardware.** The separate
+[compatible-library experiment below](#built-in-kodi-with-published-drm-prime-ffmpeg)
+now connects and measures it; the original bundled-library result is preserved here. With the actual research node
 exposed and no custom codec add-on, ordinary-file replay gives:
 
 | VA-API | DRM PRIME decoder | PRIME hardware option | Actual video decoder |
@@ -298,5 +303,84 @@ No external application patch, decoder interposition or add-on is used to
 turn the fallback into a native success. The
 [selection receipt](../../tests/fixtures/issue538/kodi-builtin-selection-20261027.json)
 records actual settings, codec/device probes, the earlier live-page-pin
-guardian failure and full post-Kodi-exit/module restoration. A compatible
-native decoder/frame path is needed before a native CPU/RSS comparison.
+guardian failure and full post-Kodi-exit/module restoration. The following
+experiment supplies the compatible native frame path.
+
+
+## Built-in Kodi with published DRM PRIME FFmpeg
+
+**Bounded hardware connection works without our decoder add-on.** Unchanged
+published Kodi 22 RC1 selects `h264_v4l2m2m` using the existing
+[jc-kynesim implementation](https://github.com/jc-kynesim/rpi-ffmpeg/tree/12cc1f42f06ff0e85633c2602c96786fbd280b70),
+built unchanged into a private prefix. Real YUYV CAPTURE buffers reach its
+built-in DRM PRIME/GLES renderer through EXPBUF and cached EGL imports.
+Both 1280×720 and 1920×1080 retain source dimensions and `width*2` pitch.
+GPU readback confirms a nonblank synthetic picture at both sizes.
+
+This requires the separate [experimental driver at `830170b`](https://github.com/ahnhy1324/crystalhd/commit/830170b28ad58ad77ff196ef14e039cae2797e4f),
+a matching Kodi 22/FFmpeg 9 runtime, and a private profile with VA-API **off**,
+DRM PRIME decoder **on**, and PRIME hardware decoding **on**. Open the ordinary
+MP4 without an InputStream property. The installed Kodi 21.3/FFmpeg 8 and the
+unchanged bundled FFmpeg above do not acquire this capability from a setting.
+
+The [build helper](build-native-ffmpeg.sh) needs a C toolchain, make,
+pkg-config, NASM (3.01 tested), and libdrm/libva/zlib development headers.
+All paths below are absolute; build and prefix must be new private directories:
+
+```sh
+source_dir="/absolute/path/to/new-ffmpeg-source"
+git clone --filter=blob:none --no-checkout --single-branch \
+    --branch test/9.0.2/main https://github.com/jc-kynesim/rpi-ffmpeg.git "$source_dir"
+git -C "$source_dir" checkout --detach 12cc1f42f06ff0e85633c2602c96786fbd280b70
+FFMPEG_CPU=core2 tools/kodi-route-probe/build-native-ffmpeg.sh \
+    "$source_dir" "/absolute/path/to/new-build" "/absolute/path/to/new-private-prefix"
+```
+
+The helper builds H.264/AAC plus the PNG/JPEG/WAV dependencies needed by this
+Kodi trial. It does not launch Kodi or load a module. Use the **whole matching
+shared-library set** in the private runtime; overlaying only `libavcodec` is
+insufficient. This minimum build is not a general FFmpeg replacement.
+
+On Core 2 Duo T8100 / Intel 965GM / Ubuntu 26.04.1, 30-second H.264 (High at 30p, Main at 60p; both B2)
+plus AAC, source-size GPU headless output at 60 Hz, fresh profile/process per
+arm, VA → native → native → VA:
+
+| Source | VA CPU seconds | Native CPU seconds | VA / native peak RSS (MiB) |
+| --- | ---: | ---: | ---: |
+| 1280×720p30 | 8.34 | 4.22 | 275.7 / 233.3 |
+| 1920×1080p30 | 12.32 | 4.31 | 307.3 / 237.2 |
+| 1280×720p60 | 12.89* | 4.62 | 284.1* / 232.9 |
+
+CPU is Kodi USER+SYS through natural file close; medians of two full-census
+arms, except *VA 60p has one qualifying arm*. Its other arm returns 1,798 of
+1,800 pictures and stays **FAIL/excluded**, not silently averaged in. All six
+native timing arms deliver every original (900 or 1,800) and genuine LAST.
+A separate 60p trace verifies all 1,800 output PTS against actual accepted
+input PTS. Both sizes pass 0.1/1/3-second no-dummy pauses and two-file reopen
+in the same Kodi process. Render-queue counts do not measure physical scanout.
+
+Both sizes also recover after seeking forward to 15 seconds and backward to
+5 seconds. Each destructive flush starts a new tracked generation; all accepted
+PTS in each generation return exactly once, and new hardware output is followed
+by renderer-queue acceptance. The two pre-seek drains and final EOF each have
+genuine LAST. An intermediate CAPTURE restart returns `EOPNOTSUPP`; the subsequent
+full OUTPUT reset recovers. This is bounded seek recovery, **not** working
+nonempty STOP/START continuation. Seek preroll/discards are not zero display drops.
+
+[Per-arm data and failures](../../tests/fixtures/issue538/kodi-native-v4l2-20261028.json),
+[plot data](../../tests/fixtures/issue538/kodi-native-v4l2-20261028.tsv) and
+[input/output PTS sequences](../../tests/fixtures/issue538/kodi-native-pts-20261028.tsv)
+retain source identities, buffer capacities, separate native-worker CPU and
+whole-invocation CPU. TSV inputs use coded order; outputs use display order,
+and the verified comparison is `sorted(accepted) == returned`. RSS excludes some kernel/GPU backing; lower RSS is not
+a proven saving in unique physical RAM.
+
+**Compatibility remains experimental:** two earlier private-prefix VA runs
+aborted during app shutdown after complete playback; the cause is unconfirmed
+and later clean runs do not establish a fix. Physical A/V, unique display-frame
+counts, watts, native i686 and BCM70012 remain untested here. G2 FAIL and the
+unsupported standard nonempty STOP/START contract remain; this is not a new
+production-support claim. Installed defaults, external sources, legacy ABI,
+firmware and #114/#115 are unchanged.
+
+![Built-in Kodi CPU and process RSS](../../tests/fixtures/issue538/kodi-native-v4l2-20261028.svg)

@@ -1,0 +1,1630 @@
+{
+  "schema": 1,
+  "issue": 538,
+  "date": "2026-10-28",
+  "date_timezone": "Asia/Seoul; runtime logs use UTC on 2026-10-27",
+  "decision": "Built-in native hardware connection and bounded original/PTS/pause/reopen/destructive-seek proof PASS. Native timing arms PASS. VA comparator PARTIAL: one 60p arm returns1798/1800. Two earlier VA shutdown allocator aborts remain unexplained, so no production-support or stability promotion.",
+  "sources": {
+    "native_driver": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+    "driver_runtime": "temporary3.10.14, srcversion E3D1535AB4C470BC21D6E32; original3.10.13 restored",
+    "published_FFmpeg": "https://github.com/jc-kynesim/rpi-ffmpeg/tree/12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "FFmpeg_source_revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "FFmpeg_source_modifications": false,
+    "FFmpeg_version": "9.0.2; libavcodec63.1.102, avutil61.1.102",
+    "build_helper": "199dee43918f765cfd628eef2612e1947e762ff0",
+    "tested_build_configuration": [
+      "configure",
+      "--prefix=PRIVATE_PREFIX",
+      "--enable-shared",
+      "--disable-static",
+      "--disable-doc",
+      "--disable-debug",
+      "--disable-autodetect",
+      "--disable-everything",
+      "--enable-ffmpeg",
+      "--enable-ffprobe",
+      "--disable-ffplay",
+      "--enable-libdrm",
+      "--enable-zlib",
+      "--enable-vaapi",
+      "--enable-v4l2-m2m",
+      "--enable-runtime-cpudetect",
+      "--cpu=core2",
+      "--enable-decoder=h264,h264_v4l2m2m,aac,pcm_s16le,pcm_s16be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,pcm_u8,png,mjpeg",
+      "--enable-hwaccel=h264_vaapi",
+      "--enable-parser=h264,aac,aac_latm,png,mjpeg",
+      "--enable-bsf=h264_mp4toannexb,extract_extradata",
+      "--enable-demuxer=mov,matroska,mpegts,h264,rawvideo,wav,image2,image2pipe,image_png_pipe,image_jpeg_pipe",
+      "--enable-muxer=null,rawvideo,framecrc,framemd5",
+      "--enable-protocol=file,pipe",
+      "--enable-encoder=rawvideo,wrapped_avframe,pcm_s16le",
+      "--enable-filter=scale,format,aformat,aresample,hwdownload,hwupload,null,anull"
+    ],
+    "VA_DIL": "54752a1af514eb673b563fb80b6df6600223a666",
+    "VA_plugin": "Unchanged installed crystalhd_drv_video.so, __vaDriverInit_1_23; build-id 12dc033b87ad4501b8ba93ba415867b1e4ff9ff8. Exact installed VA source revision not asserted.",
+    "Kodi": "Published Flathub 22.0rc1 / 20260927-28ea2eac-dirty. Publisher version suffix preserved; no local external app/source patches.",
+    "Kodi_OSTree": "0a381e42781914ae76ed338d3aa11f9403c55c57f5c9c194e1f4fb437cf71630",
+    "runtime_OSTree": "e7f7b0fb20662fe92e4eac65d58a57019cefae45a39559c4b50440a88acc0491"
+  },
+  "environment": {
+    "OS": "Ubuntu 26.04.1 LTS",
+    "kernel": "7.0.0-38-generic",
+    "CPU": "Core 2 Duo T8100",
+    "decoder": "BCM70015",
+    "GPU": "Mesa Intel 965GM (CL), OpenGL ES 2.0 Mesa 26.2.5",
+    "display": "Private GPU Weston 14.0.2 headless, source dimensions (1280x720 or 1920x1080), 60 Hz; system display unchanged",
+    "audio": "Same AAC file/stock Kodi decoder; private nondefault PipeWire null sink, link verified; physical AV NOT RUN"
+  },
+  "selection": {
+    "file_entry": "Ordinary MP4 ListItem with no inputstream property; built-in DRM PRIME codec. No custom decoder addon, decoder hook or source patch.",
+    "settings": {
+      "videoplayer.usevaapi": false,
+      "videoplayer.useprimedecoder": true,
+      "videoplayer.useprimedecoderforhw": true
+    },
+    "codec": "h264_v4l2m2m with published HW_CONFIG_INTERNAL(DRM_PRIME), methods4",
+    "actual_path": "H264 OUTPUT MMAP -> real CrystalHD node -> YUYV CAPTURE -> EXPBUF DRM descriptor -> cached EGL import/GLES",
+    "pixel_format": "AV_PIX_FMT_DRM_PRIME178; DRM YUYV1448695129, one object, source width/height, pitch width*2",
+    "scope": "GPU readback confirms nonblank source-size synthetic picture; not physical scanout, calibrated AV or an independent RGB color oracle. Bundled FFmpeg still lacks this native codec configuration."
+  },
+  "measurement": {
+    "media": "30s H264 with two B pictures of reorder plus continuous48kHz mono AAC; 900 frames at30p,1800 at60p. See per-fixture actual profile/level below. Synthetic pattern, not natural-content codec-wide acceptance. Existing30p issue533 source looped by stream copy; new720p60 testsrc2 encoded x264 presetultrafast/GOP60/crf23 then looped by stream copy.",
+    "order": "VA/native/native/VA per resolution/rate; fresh Kodi/profile each arm. Same replacement FFmpeg prefix in both measured modes.",
+    "file_CPU_scope": "Actual Kodi /proc USER+SYS from file invocation through natural close/join and empty active-player list. One core=100%. Kodi CPU excludes async kernel work.",
+    "whole_process_CPU_scope": "GNU time USER+SYS for bwrap/Kodi family including initialization, play, drain and app exit; not just playback cadence.",
+    "observer": "Read-only aggregate codec/render/ioctl and native-worker probes; second SIGABRT observer compiles after5s outside Kodi. No per-picture log/hash/RGB work in timing arms. Observer/background CPU and compositor are not included in Kodi CPU.",
+    "native_worker_scope": "sched-switch-adjusted on-CPU wall inside chd_run/chd_tx_run, including nested IRQ time; not all kernel CPU and not a VA kernel-cost comparator.",
+    "host_CPU_scope": "Includes desktop, observer, IRQ/kernel and unrelated work; no exclusive or total-system saving claim.",
+    "memory_scope": "RSS is per-process resident mappings, not unique physical RAM. Queried CAPTURE/OUTPUT capacities are separate overlapping/kernel-backed accounting, not additive RSS or a proven physical-memory saving.",
+    "limits": "Render-queue acceptances are not unique scanout frames, zero display drops, E2E latency or physical AV. Watts/nativei686/BCM70012 NOT RUN.",
+    "plot_whiskers": "Per-mode min/max, not confidence intervals."
+  },
+  "timing_arms": [
+    {
+      "case": "perf-matrix-v1-1280-30-0-va",
+      "mode": "va",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "status": "PASS",
+      "error": null,
+      "frames": {
+        "1280,720,44": 900
+      },
+      "render_queue_acceptances": {
+        "1": 900
+      },
+      "actual_video_node": false,
+      "actual_legacy_node": true,
+      "audio_null_link": true,
+      "file_elapsed_s": 31.73096079399693,
+      "Kodi_CPU_s": 8.350000000000001,
+      "Kodi_peak_RSS_KiB": 282584,
+      "compositor_CPU_s": 0.8,
+      "host_busy_s": 29.880000000004657,
+      "whole_process": {
+        "wall_s": 40.59,
+        "user_s": 6.45,
+        "sys_s": 5.09,
+        "rss_kib": 282500.0
+      },
+      "native_worker_on_CPU_wall_ns": {},
+      "native_worker_calls": {},
+      "requested_buffer_counts_by_V4L2_type": {},
+      "queried_buffer_lengths": {},
+      "drm_layout": {},
+      "texture_import": {},
+      "egl_image_create": {},
+      "frame_transfer_calls": 0,
+      "genuine_LAST": 0,
+      "boundary_equal": true,
+      "exit_code": 0
+    },
+    {
+      "case": "perf-matrix-v1-1280-30-1-builtin",
+      "mode": "native",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "status": "PASS",
+      "error": null,
+      "frames": {
+        "1280,720,178": 900
+      },
+      "render_queue_acceptances": {
+        "1": 900
+      },
+      "actual_video_node": true,
+      "actual_legacy_node": false,
+      "audio_null_link": true,
+      "file_elapsed_s": 31.43475151399616,
+      "Kodi_CPU_s": 4.2,
+      "Kodi_peak_RSS_KiB": 239720,
+      "compositor_CPU_s": 0.74,
+      "host_busy_s": 26.81999999999971,
+      "whole_process": {
+        "wall_s": 40.59,
+        "user_s": 4.19,
+        "sys_s": 3.16,
+        "rss_kib": 239648.0
+      },
+      "native_worker_on_CPU_wall_ns": {
+        "2": 65546341,
+        "1": 286440759
+      },
+      "native_worker_calls": {
+        "2": 901,
+        "1": 11344
+      },
+      "requested_buffer_counts_by_V4L2_type": {
+        "2": 16,
+        "1": 20
+      },
+      "queried_buffer_lengths": {
+        "2,7": 2097152,
+        "2,3": 2097152,
+        "1,15": 1846052,
+        "1,1": 1846052,
+        "2,6": 2097152,
+        "1,0": 1846052,
+        "1,16": 1846052,
+        "1,19": 1846052,
+        "2,11": 2097152,
+        "1,17": 1846052,
+        "2,8": 2097152,
+        "1,4": 1846052,
+        "1,13": 1846052,
+        "2,15": 2097152,
+        "1,9": 1846052,
+        "1,6": 1846052,
+        "1,5": 1846052,
+        "2,2": 2097152,
+        "2,12": 2097152,
+        "1,7": 1846052,
+        "2,1": 2097152,
+        "1,10": 1846052,
+        "2,5": 2097152,
+        "2,10": 2097152,
+        "1,11": 1846052,
+        "2,4": 2097152,
+        "1,3": 1846052,
+        "1,2": 1846052,
+        "2,13": 2097152,
+        "1,18": 1846052,
+        "1,8": 1846052,
+        "1,12": 1846052,
+        "2,9": 2097152,
+        "1,14": 1846052,
+        "2,0": 2097152,
+        "2,14": 2097152
+      },
+      "drm_layout": {
+        "1280,720,1,1448695129,2560": 900
+      },
+      "texture_import": {
+        "1": 20
+      },
+      "egl_image_create": {
+        "1": 20
+      },
+      "frame_transfer_calls": 0,
+      "genuine_LAST": 1,
+      "boundary_equal": true,
+      "exit_code": 0
+    },
+    {
+      "case": "perf-matrix-v1-1280-30-2-builtin",
+      "mode": "native",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "status": "PASS",
+      "error": null,
+      "frames": {
+        "1280,720,178": 900
+      },
+      "render_queue_acceptances": {
+        "1": 900
+      },
+      "actual_video_node": true,
+      "actual_legacy_node": false,
+      "audio_null_link": true,
+      "file_elapsed_s": 31.62274859099125,
+      "Kodi_CPU_s": 4.24,
+      "Kodi_peak_RSS_KiB": 238164,
+      "compositor_CPU_s": 0.75,
+      "host_busy_s": 27.549999999995634,
+      "whole_process": {
+        "wall_s": 40.61,
+        "user_s": 4.15,
+        "sys_s": 3.23,
+        "rss_kib": 237884.0
+      },
+      "native_worker_on_CPU_wall_ns": {
+        "2": 64921490,
+        "1": 286774297
+      },
+      "native_worker_calls": {
+        "2": 901,
+        "1": 11422
+      },
+      "requested_buffer_counts_by_V4L2_type": {
+        "2": 16,
+        "1": 20
+      },
+      "queried_buffer_lengths": {
+        "1,1": 1846052,
+        "2,3": 2097152,
+        "1,8": 1846052,
+        "1,13": 1846052,
+        "1,17": 1846052,
+        "1,15": 1846052,
+        "2,13": 2097152,
+        "1,7": 1846052,
+        "1,6": 1846052,
+        "2,8": 2097152,
+        "2,2": 2097152,
+        "2,11": 2097152,
+        "1,19": 1846052,
+        "1,0": 1846052,
+        "1,9": 1846052,
+        "1,18": 1846052,
+        "1,5": 1846052,
+        "2,12": 2097152,
+        "2,10": 2097152,
+        "1,3": 1846052,
+        "2,6": 2097152,
+        "1,10": 1846052,
+        "1,4": 1846052,
+        "2,15": 2097152,
+        "1,2": 1846052,
+        "1,12": 1846052,
+        "1,16": 1846052,
+        "2,4": 2097152,
+        "2,7": 2097152,
+        "1,11": 1846052,
+        "2,9": 2097152,
+        "2,5": 2097152,
+        "2,0": 2097152,
+        "2,1": 2097152,
+        "1,14": 1846052,
+        "2,14": 2097152
+      },
+      "drm_layout": {
+        "1280,720,1,1448695129,2560": 900
+      },
+      "texture_import": {
+        "1": 20
+      },
+      "egl_image_create": {
+        "1": 20
+      },
+      "frame_transfer_calls": 0,
+      "genuine_LAST": 1,
+      "boundary_equal": true,
+      "exit_code": 0
+    },
+    {
+      "case": "perf-matrix-v1-1280-30-3-va",
+      "mode": "va",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "status": "PASS",
+      "error": null,
+      "frames": {
+        "1280,720,44": 900
+      },
+      "render_queue_acceptances": {
+        "1": 900
+      },
+      "actual_video_node": false,
+      "actual_legacy_node": true,
+      "audio_null_link": true,
+      "file_elapsed_s": 31.742457340995315,
+      "Kodi_CPU_s": 8.32,
+      "Kodi_peak_RSS_KiB": 282036,
+      "compositor_CPU_s": 0.79,
+      "host_busy_s": 29.80999999999767,
+      "whole_process": {
+        "wall_s": 40.66,
+        "user_s": 6.53,
+        "sys_s": 4.99,
+        "rss_kib": 282312.0
+      },
+      "native_worker_on_CPU_wall_ns": {},
+      "native_worker_calls": {},
+      "requested_buffer_counts_by_V4L2_type": {},
+      "queried_buffer_lengths": {},
+      "drm_layout": {},
+      "texture_import": {},
+      "egl_image_create": {},
+      "frame_transfer_calls": 0,
+      "genuine_LAST": 0,
+      "boundary_equal": true,
+      "exit_code": 0
+    },
+    {
+      "case": "perf-matrix-v1-1280-60-0-va",
+      "mode": "va",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "status": "PASS",
+      "error": null,
+      "frames": {
+        "1280,720,44": 1800
+      },
+      "render_queue_acceptances": {
+        "1": 1800
+      },
+      "actual_video_node": false,
+      "actual_legacy_node": true,
+      "audio_null_link": true,
+      "file_elapsed_s": 31.838940797999385,
+      "Kodi_CPU_s": 12.89,
+      "Kodi_peak_RSS_KiB": 290880,
+      "compositor_CPU_s": 0.76,
+      "host_busy_s": 34.40999999999622,
+      "whole_process": {
+        "wall_s": 41.11,
+        "user_s": 9.89,
+        "sys_s": 6.22,
+        "rss_kib": 299832.0
+      },
+      "native_worker_on_CPU_wall_ns": {},
+      "native_worker_calls": {},
+      "requested_buffer_counts_by_V4L2_type": {},
+      "queried_buffer_lengths": {},
+      "drm_layout": {},
+      "texture_import": {},
+      "egl_image_create": {},
+      "frame_transfer_calls": 0,
+      "genuine_LAST": 0,
+      "boundary_equal": true,
+      "exit_code": 0
+    },
+    {
+      "case": "perf-matrix-v1-1280-60-1-builtin",
+      "mode": "native",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "status": "PASS",
+      "error": null,
+      "frames": {
+        "1280,720,178": 1800
+      },
+      "render_queue_acceptances": {
+        "1": 1800
+      },
+      "actual_video_node": true,
+      "actual_legacy_node": false,
+      "audio_null_link": true,
+      "file_elapsed_s": 31.617249122005887,
+      "Kodi_CPU_s": 4.62,
+      "Kodi_peak_RSS_KiB": 235644,
+      "compositor_CPU_s": 0.76,
+      "host_busy_s": 27.25,
+      "whole_process": {
+        "wall_s": 40.63,
+        "user_s": 4.35,
+        "sys_s": 3.41,
+        "rss_kib": 235368.0
+      },
+      "native_worker_on_CPU_wall_ns": {
+        "2": 106725684,
+        "1": 343081150
+      },
+      "native_worker_calls": {
+        "2": 1801,
+        "1": 13133
+      },
+      "requested_buffer_counts_by_V4L2_type": {
+        "2": 16,
+        "1": 20
+      },
+      "queried_buffer_lengths": {
+        "2,1": 2097152,
+        "1,6": 1846052,
+        "2,3": 2097152,
+        "1,9": 1846052,
+        "1,13": 1846052,
+        "1,12": 1846052,
+        "2,4": 2097152,
+        "1,3": 1846052,
+        "1,10": 1846052,
+        "1,15": 1846052,
+        "1,8": 1846052,
+        "2,11": 2097152,
+        "2,15": 2097152,
+        "1,5": 1846052,
+        "2,2": 2097152,
+        "1,4": 1846052,
+        "2,13": 2097152,
+        "2,12": 2097152,
+        "2,7": 2097152,
+        "1,19": 1846052,
+        "1,1": 1846052,
+        "2,8": 2097152,
+        "2,9": 2097152,
+        "1,7": 1846052,
+        "1,0": 1846052,
+        "2,0": 2097152,
+        "2,10": 2097152,
+        "2,5": 2097152,
+        "1,17": 1846052,
+        "1,2": 1846052,
+        "1,14": 1846052,
+        "2,6": 2097152,
+        "1,16": 1846052,
+        "2,14": 2097152,
+        "1,11": 1846052,
+        "1,18": 1846052
+      },
+      "drm_layout": {
+        "1280,720,1,1448695129,2560": 1800
+      },
+      "texture_import": {
+        "1": 20
+      },
+      "egl_image_create": {
+        "1": 20
+      },
+      "frame_transfer_calls": 0,
+      "genuine_LAST": 1,
+      "boundary_equal": true,
+      "exit_code": 0
+    },
+    {
+      "case": "perf-matrix-v1-1280-60-2-builtin",
+      "mode": "native",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "status": "PASS",
+      "error": null,
+      "frames": {
+        "1280,720,178": 1800
+      },
+      "render_queue_acceptances": {
+        "1": 1800
+      },
+      "actual_video_node": true,
+      "actual_legacy_node": false,
+      "audio_null_link": true,
+      "file_elapsed_s": 31.555656420998275,
+      "Kodi_CPU_s": 4.62,
+      "Kodi_peak_RSS_KiB": 241392,
+      "compositor_CPU_s": 0.74,
+      "host_busy_s": 27.360000000000582,
+      "whole_process": {
+        "wall_s": 40.62,
+        "user_s": 4.43,
+        "sys_s": 3.37,
+        "rss_kib": 243392.0
+      },
+      "native_worker_on_CPU_wall_ns": {
+        "2": 105990897,
+        "1": 341177260
+      },
+      "native_worker_calls": {
+        "2": 1801,
+        "1": 13107
+      },
+      "requested_buffer_counts_by_V4L2_type": {
+        "2": 16,
+        "1": 20
+      },
+      "queried_buffer_lengths": {
+        "1,2": 1846052,
+        "1,0": 1846052,
+        "2,12": 2097152,
+        "1,6": 1846052,
+        "1,10": 1846052,
+        "1,16": 1846052,
+        "2,10": 2097152,
+        "1,5": 1846052,
+        "1,14": 1846052,
+        "2,11": 2097152,
+        "1,11": 1846052,
+        "2,15": 2097152,
+        "1,3": 1846052,
+        "1,4": 1846052,
+        "2,2": 2097152,
+        "2,1": 2097152,
+        "1,18": 1846052,
+        "2,9": 2097152,
+        "2,0": 2097152,
+        "2,6": 2097152,
+        "2,14": 2097152,
+        "1,13": 1846052,
+        "2,8": 2097152,
+        "1,9": 1846052,
+        "1,1": 1846052,
+        "2,3": 2097152,
+        "1,17": 1846052,
+        "1,8": 1846052,
+        "1,19": 1846052,
+        "1,15": 1846052,
+        "2,7": 2097152,
+        "2,4": 2097152,
+        "2,5": 2097152,
+        "1,7": 1846052,
+        "1,12": 1846052,
+        "2,13": 2097152
+      },
+      "drm_layout": {
+        "1280,720,1,1448695129,2560": 1800
+      },
+      "texture_import": {
+        "1": 20
+      },
+      "egl_image_create": {
+        "1": 20
+      },
+      "frame_transfer_calls": 0,
+      "genuine_LAST": 1,
+      "boundary_equal": true,
+      "exit_code": 0
+    },
+    {
+      "case": "perf-matrix-v1-1280-60-3-va",
+      "mode": "va",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "status": "FAIL",
+      "error": "AssertionError: actual VA hardware output census",
+      "frames": {
+        "1280,720,44": 1798
+      },
+      "render_queue_acceptances": {
+        "1": 1798
+      },
+      "actual_video_node": false,
+      "actual_legacy_node": true,
+      "audio_null_link": true,
+      "file_elapsed_s": 31.82193708299019,
+      "Kodi_CPU_s": 12.88,
+      "Kodi_peak_RSS_KiB": 288960,
+      "compositor_CPU_s": 0.77,
+      "host_busy_s": 35.830000000001746,
+      "whole_process": {
+        "wall_s": 41.28,
+        "user_s": 9.98,
+        "sys_s": 6.09,
+        "rss_kib": 289312.0
+      },
+      "native_worker_on_CPU_wall_ns": {},
+      "native_worker_calls": {},
+      "requested_buffer_counts_by_V4L2_type": {},
+      "queried_buffer_lengths": {},
+      "drm_layout": {},
+      "texture_import": {},
+      "egl_image_create": {},
+      "frame_transfer_calls": 0,
+      "genuine_LAST": 0,
+      "boundary_equal": true,
+      "exit_code": 0
+    },
+    {
+      "case": "perf-matrix-v1-1920-30-0-va",
+      "mode": "va",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "status": "PASS",
+      "error": null,
+      "frames": {
+        "1920,1080,44": 900
+      },
+      "render_queue_acceptances": {
+        "1": 900
+      },
+      "actual_video_node": false,
+      "actual_legacy_node": true,
+      "audio_null_link": true,
+      "file_elapsed_s": 31.85329414399166,
+      "Kodi_CPU_s": 12.309999999999999,
+      "Kodi_peak_RSS_KiB": 314124,
+      "compositor_CPU_s": 0.71,
+      "host_busy_s": 33.849999999998545,
+      "whole_process": {
+        "wall_s": 41.15,
+        "user_s": 9.93,
+        "sys_s": 5.53,
+        "rss_kib": 322824.0
+      },
+      "native_worker_on_CPU_wall_ns": {},
+      "native_worker_calls": {},
+      "requested_buffer_counts_by_V4L2_type": {},
+      "queried_buffer_lengths": {},
+      "drm_layout": {},
+      "texture_import": {},
+      "egl_image_create": {},
+      "frame_transfer_calls": 0,
+      "genuine_LAST": 0,
+      "boundary_equal": true,
+      "exit_code": 0
+    },
+    {
+      "case": "perf-matrix-v1-1920-30-1-builtin",
+      "mode": "native",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "status": "PASS",
+      "error": null,
+      "frames": {
+        "1920,1080,178": 900
+      },
+      "render_queue_acceptances": {
+        "1": 900
+      },
+      "actual_video_node": true,
+      "actual_legacy_node": false,
+      "audio_null_link": true,
+      "file_elapsed_s": 31.63894381899445,
+      "Kodi_CPU_s": 4.290000000000001,
+      "Kodi_peak_RSS_KiB": 242924,
+      "compositor_CPU_s": 0.74,
+      "host_busy_s": 26.830000000001746,
+      "whole_process": {
+        "wall_s": 40.64,
+        "user_s": 4.11,
+        "sys_s": 3.27,
+        "rss_kib": 242784.0
+      },
+      "native_worker_on_CPU_wall_ns": {
+        "2": 59088490,
+        "1": 280726334
+      },
+      "native_worker_calls": {
+        "2": 901,
+        "1": 11409
+      },
+      "requested_buffer_counts_by_V4L2_type": {
+        "2": 16,
+        "1": 20
+      },
+      "queried_buffer_lengths": {
+        "2,1": 2097152,
+        "1,5": 4151332,
+        "1,13": 4151332,
+        "1,14": 4151332,
+        "2,9": 2097152,
+        "1,3": 4151332,
+        "2,3": 2097152,
+        "2,10": 2097152,
+        "2,8": 2097152,
+        "2,7": 2097152,
+        "1,17": 4151332,
+        "2,13": 2097152,
+        "2,2": 2097152,
+        "1,0": 4151332,
+        "1,12": 4151332,
+        "2,11": 2097152,
+        "2,12": 2097152,
+        "1,4": 4151332,
+        "1,7": 4151332,
+        "2,4": 2097152,
+        "1,1": 4151332,
+        "1,11": 4151332,
+        "2,5": 2097152,
+        "1,9": 4151332,
+        "1,8": 4151332,
+        "1,15": 4151332,
+        "1,6": 4151332,
+        "2,14": 2097152,
+        "2,6": 2097152,
+        "1,2": 4151332,
+        "2,0": 2097152,
+        "2,15": 2097152,
+        "1,10": 4151332,
+        "1,19": 4151332,
+        "1,16": 4151332,
+        "1,18": 4151332
+      },
+      "drm_layout": {
+        "1920,1080,1,1448695129,3840": 900
+      },
+      "texture_import": {
+        "1": 20
+      },
+      "egl_image_create": {
+        "1": 20
+      },
+      "frame_transfer_calls": 0,
+      "genuine_LAST": 1,
+      "boundary_equal": true,
+      "exit_code": 0
+    },
+    {
+      "case": "perf-matrix-v1-1920-30-2-builtin",
+      "mode": "native",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "status": "PASS",
+      "error": null,
+      "frames": {
+        "1920,1080,178": 900
+      },
+      "render_queue_acceptances": {
+        "1": 900
+      },
+      "actual_video_node": true,
+      "actual_legacy_node": false,
+      "audio_null_link": true,
+      "file_elapsed_s": 31.644282637003926,
+      "Kodi_CPU_s": 4.32,
+      "Kodi_peak_RSS_KiB": 242856,
+      "compositor_CPU_s": 0.74,
+      "host_busy_s": 28.119999999995343,
+      "whole_process": {
+        "wall_s": 40.69,
+        "user_s": 4.17,
+        "sys_s": 3.25,
+        "rss_kib": 242612.0
+      },
+      "native_worker_on_CPU_wall_ns": {
+        "2": 59016566,
+        "1": 286214121
+      },
+      "native_worker_calls": {
+        "2": 901,
+        "1": 11402
+      },
+      "requested_buffer_counts_by_V4L2_type": {
+        "2": 16,
+        "1": 20
+      },
+      "queried_buffer_lengths": {
+        "1,1": 4151332,
+        "2,14": 2097152,
+        "1,5": 4151332,
+        "1,10": 4151332,
+        "1,18": 4151332,
+        "1,7": 4151332,
+        "2,4": 2097152,
+        "1,14": 4151332,
+        "1,4": 4151332,
+        "1,3": 4151332,
+        "1,8": 4151332,
+        "1,12": 4151332,
+        "2,1": 2097152,
+        "2,8": 2097152,
+        "2,3": 2097152,
+        "1,13": 4151332,
+        "1,17": 4151332,
+        "2,13": 2097152,
+        "2,2": 2097152,
+        "2,10": 2097152,
+        "1,16": 4151332,
+        "2,15": 2097152,
+        "1,2": 4151332,
+        "1,6": 4151332,
+        "1,0": 4151332,
+        "2,0": 2097152,
+        "1,15": 4151332,
+        "2,11": 2097152,
+        "1,19": 4151332,
+        "2,12": 2097152,
+        "2,7": 2097152,
+        "1,11": 4151332,
+        "2,5": 2097152,
+        "2,6": 2097152,
+        "2,9": 2097152,
+        "1,9": 4151332
+      },
+      "drm_layout": {
+        "1920,1080,1,1448695129,3840": 900
+      },
+      "texture_import": {
+        "1": 20
+      },
+      "egl_image_create": {
+        "1": 20
+      },
+      "frame_transfer_calls": 0,
+      "genuine_LAST": 1,
+      "boundary_equal": true,
+      "exit_code": 0
+    },
+    {
+      "case": "perf-matrix-v1-1920-30-3-va",
+      "mode": "va",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "status": "PASS",
+      "error": null,
+      "frames": {
+        "1920,1080,44": 900
+      },
+      "render_queue_acceptances": {
+        "1": 900
+      },
+      "actual_video_node": false,
+      "actual_legacy_node": true,
+      "audio_null_link": true,
+      "file_elapsed_s": 31.99202971700288,
+      "Kodi_CPU_s": 12.32,
+      "Kodi_peak_RSS_KiB": 315132,
+      "compositor_CPU_s": 0.72,
+      "host_busy_s": 33.94999999999709,
+      "whole_process": {
+        "wall_s": 41.16,
+        "user_s": 9.87,
+        "sys_s": 5.54,
+        "rss_kib": 314948.0
+      },
+      "native_worker_on_CPU_wall_ns": {},
+      "native_worker_calls": {},
+      "requested_buffer_counts_by_V4L2_type": {},
+      "queried_buffer_lengths": {},
+      "drm_layout": {},
+      "texture_import": {},
+      "egl_image_create": {},
+      "frame_transfer_calls": 0,
+      "genuine_LAST": 0,
+      "boundary_equal": true,
+      "exit_code": 0
+    }
+  ],
+  "summary_valid_full_census_arms": [
+    {
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "va": {
+        "passed_samples": 2,
+        "CPU_s_median": 8.335,
+        "CPU_s_min": 8.32,
+        "CPU_s_max": 8.350000000000001,
+        "RSS_MiB_median": 275.693359375,
+        "RSS_MiB_min": 275.42578125,
+        "RSS_MiB_max": 275.9609375,
+        "whole_process_CPU_s_median": 11.53
+      },
+      "native": {
+        "passed_samples": 2,
+        "CPU_s_median": 4.220000000000001,
+        "CPU_s_min": 4.2,
+        "CPU_s_max": 4.24,
+        "RSS_MiB_median": 233.341796875,
+        "RSS_MiB_min": 232.58203125,
+        "RSS_MiB_max": 234.1015625,
+        "whole_process_CPU_s_median": 7.365
+      },
+      "Kodi_CPU_reduction_percent": 49.370125974805035
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "va": {
+        "passed_samples": 2,
+        "CPU_s_median": 12.315,
+        "CPU_s_min": 12.309999999999999,
+        "CPU_s_max": 12.32,
+        "RSS_MiB_median": 307.25390625,
+        "RSS_MiB_min": 306.76171875,
+        "RSS_MiB_max": 307.74609375,
+        "whole_process_CPU_s_median": 15.435
+      },
+      "native": {
+        "passed_samples": 2,
+        "CPU_s_median": 4.305000000000001,
+        "CPU_s_min": 4.290000000000001,
+        "CPU_s_max": 4.32,
+        "RSS_MiB_median": 237.197265625,
+        "RSS_MiB_min": 237.1640625,
+        "RSS_MiB_max": 237.23046875,
+        "whole_process_CPU_s_median": 7.4
+      },
+      "Kodi_CPU_reduction_percent": 65.04263093788063
+    },
+    {
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "va": {
+        "passed_samples": 1,
+        "CPU_s_median": 12.89,
+        "CPU_s_min": 12.89,
+        "CPU_s_max": 12.89,
+        "RSS_MiB_median": 284.0625,
+        "RSS_MiB_min": 284.0625,
+        "RSS_MiB_max": 284.0625,
+        "whole_process_CPU_s_median": 16.11
+      },
+      "native": {
+        "passed_samples": 2,
+        "CPU_s_median": 4.62,
+        "CPU_s_min": 4.62,
+        "CPU_s_max": 4.62,
+        "RSS_MiB_median": 232.927734375,
+        "RSS_MiB_min": 230.12109375,
+        "RSS_MiB_max": 235.734375,
+        "whole_process_CPU_s_median": 7.779999999999999
+      },
+      "Kodi_CPU_reduction_percent": 64.15826221877424
+    }
+  ],
+  "qualification": [
+    {
+      "case": "capture-native-final-1280",
+      "status": "PASS",
+      "width": 1280,
+      "height": 720,
+      "accepted_originals": 180,
+      "returned_originals": 180,
+      "exact_input_bound_PTS": true,
+      "genuine_LAST": 1,
+      "render_queue_acceptances": {
+        "1": 180
+      },
+      "drm_layout": {
+        "1280,720,1,1448695129,2560": 180
+      },
+      "boundary_equal": true,
+      "exit_code": 0,
+      "controls": [],
+      "GPU_readback": {
+        "status": "CAPTURED",
+        "bytes": 3686400,
+        "format": "BGRA",
+        "width": 1280,
+        "height": 720,
+        "before_time": 0.0,
+        "after_time": 0.0
+      },
+      "texture_import": {
+        "1": 20
+      },
+      "EGL_image_create": {
+        "1": 20
+      }
+    },
+    {
+      "case": "capture-native-final-1920",
+      "status": "PASS",
+      "width": 1920,
+      "height": 1080,
+      "accepted_originals": 180,
+      "returned_originals": 180,
+      "exact_input_bound_PTS": true,
+      "genuine_LAST": 1,
+      "render_queue_acceptances": {
+        "1": 180
+      },
+      "drm_layout": {
+        "1920,1080,1,1448695129,3840": 180
+      },
+      "boundary_equal": true,
+      "exit_code": 0,
+      "controls": [],
+      "GPU_readback": {
+        "status": "CAPTURED",
+        "bytes": 8294400,
+        "format": "BGRA",
+        "width": 1920,
+        "height": 1080,
+        "before_time": 0.0,
+        "after_time": 0.0
+      },
+      "texture_import": {
+        "1": 20
+      },
+      "EGL_image_create": {
+        "1": 20
+      }
+    },
+    {
+      "case": "controls-native-final-1280-pause",
+      "status": "PASS",
+      "width": 1280,
+      "height": 720,
+      "accepted_originals": 900,
+      "returned_originals": 900,
+      "exact_input_bound_PTS": true,
+      "genuine_LAST": 1,
+      "render_queue_acceptances": {
+        "1": 899
+      },
+      "drm_layout": {
+        "1280,720,1,1448695129,2560": 900
+      },
+      "boundary_equal": true,
+      "exit_code": 0,
+      "controls": [
+        {
+          "requested_gap_s": 0.1,
+          "actual_gap_s": 0.10631056899728719,
+          "properties": {
+            "id": 1,
+            "jsonrpc": "2.0",
+            "result": {
+              "speed": 0,
+              "time": {
+                "hours": 0,
+                "milliseconds": 111,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          "actual_node_open": true,
+          "before": {
+            "CODEC_OPEN": 1,
+            "DECODER_CMD": 1,
+            "STREAM_IOCTL": 2,
+            "CAPTURE_LAST": 0
+          },
+          "after": {
+            "CODEC_OPEN": 1,
+            "DECODER_CMD": 1,
+            "STREAM_IOCTL": 2,
+            "CAPTURE_LAST": 0
+          }
+        },
+        {
+          "requested_gap_s": 1.0,
+          "actual_gap_s": 1.012776016999851,
+          "properties": {
+            "id": 1,
+            "jsonrpc": "2.0",
+            "result": {
+              "speed": 0,
+              "time": {
+                "hours": 0,
+                "milliseconds": 347,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          "actual_node_open": true,
+          "before": {
+            "CODEC_OPEN": 1,
+            "DECODER_CMD": 1,
+            "STREAM_IOCTL": 2,
+            "CAPTURE_LAST": 0
+          },
+          "after": {
+            "CODEC_OPEN": 1,
+            "DECODER_CMD": 1,
+            "STREAM_IOCTL": 2,
+            "CAPTURE_LAST": 0
+          }
+        },
+        {
+          "requested_gap_s": 3.0,
+          "actual_gap_s": 3.0056505510001443,
+          "properties": {
+            "id": 1,
+            "jsonrpc": "2.0",
+            "result": {
+              "speed": 0,
+              "time": {
+                "hours": 0,
+                "milliseconds": 584,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          "actual_node_open": true,
+          "before": {
+            "CODEC_OPEN": 1,
+            "DECODER_CMD": 1,
+            "STREAM_IOCTL": 2,
+            "CAPTURE_LAST": 0
+          },
+          "after": {
+            "CODEC_OPEN": 1,
+            "DECODER_CMD": 1,
+            "STREAM_IOCTL": 2,
+            "CAPTURE_LAST": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "controls-native-final-1920-pause",
+      "status": "PASS",
+      "width": 1920,
+      "height": 1080,
+      "accepted_originals": 900,
+      "returned_originals": 900,
+      "exact_input_bound_PTS": true,
+      "genuine_LAST": 1,
+      "render_queue_acceptances": {
+        "1": 900
+      },
+      "drm_layout": {
+        "1920,1080,1,1448695129,3840": 900
+      },
+      "boundary_equal": true,
+      "exit_code": 0,
+      "controls": [
+        {
+          "requested_gap_s": 0.1,
+          "actual_gap_s": 0.10887100000400096,
+          "properties": {
+            "id": 1,
+            "jsonrpc": "2.0",
+            "result": {
+              "speed": 0,
+              "time": {
+                "hours": 0,
+                "milliseconds": 109,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          "actual_node_open": true,
+          "before": {
+            "CODEC_OPEN": 1,
+            "DECODER_CMD": 1,
+            "STREAM_IOCTL": 2,
+            "CAPTURE_LAST": 0
+          },
+          "after": {
+            "CODEC_OPEN": 1,
+            "DECODER_CMD": 1,
+            "STREAM_IOCTL": 2,
+            "CAPTURE_LAST": 0
+          }
+        },
+        {
+          "requested_gap_s": 1.0,
+          "actual_gap_s": 1.0056682330032345,
+          "properties": {
+            "id": 1,
+            "jsonrpc": "2.0",
+            "result": {
+              "speed": 0,
+              "time": {
+                "hours": 0,
+                "milliseconds": 410,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          "actual_node_open": true,
+          "before": {
+            "CODEC_OPEN": 1,
+            "DECODER_CMD": 1,
+            "STREAM_IOCTL": 2,
+            "CAPTURE_LAST": 0
+          },
+          "after": {
+            "CODEC_OPEN": 1,
+            "DECODER_CMD": 1,
+            "STREAM_IOCTL": 2,
+            "CAPTURE_LAST": 0
+          }
+        },
+        {
+          "requested_gap_s": 3.0,
+          "actual_gap_s": 3.0082589550002012,
+          "properties": {
+            "id": 1,
+            "jsonrpc": "2.0",
+            "result": {
+              "speed": 0,
+              "time": {
+                "hours": 0,
+                "milliseconds": 626,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          "actual_node_open": true,
+          "before": {
+            "CODEC_OPEN": 1,
+            "DECODER_CMD": 1,
+            "STREAM_IOCTL": 2,
+            "CAPTURE_LAST": 0
+          },
+          "after": {
+            "CODEC_OPEN": 1,
+            "DECODER_CMD": 1,
+            "STREAM_IOCTL": 2,
+            "CAPTURE_LAST": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "qual-native-60-final-1280",
+      "status": "PASS",
+      "width": 1280,
+      "height": 720,
+      "accepted_originals": 1800,
+      "returned_originals": 1800,
+      "exact_input_bound_PTS": true,
+      "genuine_LAST": 1,
+      "render_queue_acceptances": {
+        "1": 1800
+      },
+      "drm_layout": {
+        "1280,720,1,1448695129,2560": 1800
+      },
+      "boundary_equal": true,
+      "exit_code": 0,
+      "controls": []
+    }
+  ],
+  "same_process_reopen": [
+    {
+      "width": 1280,
+      "height": 720,
+      "completed_files": 2,
+      "originals": 360,
+      "genuine_LAST": 2,
+      "render_queue_acceptances": {
+        "1": 360
+      },
+      "per_file_retirement": [
+        true,
+        true
+      ],
+      "final_boundary_equal": true,
+      "exit_code": 0
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "completed_files": 2,
+      "originals": 360,
+      "genuine_LAST": 2,
+      "render_queue_acceptances": {
+        "1": 360
+      },
+      "per_file_retirement": [
+        true,
+        true
+      ],
+      "final_boundary_equal": true,
+      "exit_code": 0
+    }
+  ],
+  "source_PTS_table": "kodi-native-pts-20261028.tsv",
+  "known_failures": [
+    {
+      "case": "perf-native-v2-1280-30-3-va",
+      "status": "FAIL",
+      "scope": "VA through the private replacement FFmpeg; no addon",
+      "event": "Allocator abort during app shutdown after complete 900-picture file",
+      "exit_code": 134,
+      "hardware_frames": {
+        "1280,720,44": 900
+      },
+      "render_queue_acceptances": {
+        "1": 900
+      },
+      "full_post_exit_boundary_equal": true,
+      "root_cause": "UNCONFIRMED; later clean runs do not constitute a fix"
+    },
+    {
+      "case": "perf-native-final-1280-30-0-va.failure-before-signal",
+      "status": "FAIL",
+      "scope": "VA through the private replacement FFmpeg; no addon",
+      "event": "Allocator abort during app shutdown after complete 900-picture file",
+      "exit_code": 134,
+      "hardware_frames": {
+        "1280,720,44": 900
+      },
+      "render_queue_acceptances": {
+        "1": 900
+      },
+      "full_post_exit_boundary_equal": true,
+      "root_cause": "UNCONFIRMED; later clean runs do not constitute a fix"
+    },
+    {
+      "case": "perf-matrix-v1-1280-60-3-va",
+      "status": "FAIL",
+      "expected_originals": 1800,
+      "returned_hardware_frames": 1798,
+      "render_queue_acceptances": 1798,
+      "exit_code": 0,
+      "boundary_equal": true,
+      "disposition": "Retained and excluded from full-census medians; missing2pictures(0.1111%) not relabeled PASS. Cause not determined by count alone."
+    }
+  ],
+  "preserved_boundaries": [
+    "G2 FAIL; nonempty drained START remains EOPNOTSUPP; #114/#115 unchanged. Plain pause is not V4L2 STOP.",
+    "No private dummy/Kick pictures, physical PPB leasing or standalone MFD claim.",
+    "Original installed apps/libraries/driver and stable defaults/firmware/legacy ABI unchanged. No merge/release/issue closure."
+  ],
+  "validation": {
+    "native_qualifications": "PASS",
+    "native_timing_arms": "6/6 PASS",
+    "matched_ABBA": "11/12 PASS; comparator frame census FAIL retained",
+    "restoration": "Every completed batch restores original module/dependencies, refs/pins, PM/link/AER; kernel checks PASS",
+    "builder": "Exact configure argument comparison, fresh private configure/build/stage PASS; source tracked diff empty; shell syntax, CLI guards and focused Astra review PASS",
+    "physical_AV": "NOT RUN",
+    "destructive_seek": "720p/FHD bounded recovery PASS; raw trace ordering independently checked and focused Astra review PASS. Nonempty restart -95 preserved."
+  },
+  "CPU_only_control_720p30": [
+    {
+      "status": "PASS",
+      "hardware_frames": {
+        "1280,720,0": 900
+      },
+      "render_queue_acceptances": {
+        "1": 900
+      },
+      "actual_video_node": false,
+      "actual_legacy_node": false,
+      "Kodi_CPU_s": 9.91,
+      "Kodi_peak_RSS_KiB": 219536,
+      "boundary_equal": true,
+      "exit_code": 0,
+      "scope": "Deliberate software H264 control; our VA driver name disabled, not CrystalHD acceptance."
+    },
+    {
+      "status": "PASS",
+      "hardware_frames": {
+        "1280,720,0": 900
+      },
+      "render_queue_acceptances": {
+        "1": 900
+      },
+      "actual_video_node": false,
+      "actual_legacy_node": false,
+      "Kodi_CPU_s": 9.77,
+      "Kodi_peak_RSS_KiB": 220548,
+      "boundary_equal": true,
+      "exit_code": 0,
+      "scope": "Deliberate software H264 control; our VA driver name disabled, not CrystalHD acceptance."
+    }
+  ],
+  "original_bundled_FFmpeg_VA60_crosscheck": {
+    "status": "FAIL",
+    "scope": "Original published bundled FFmpeg9.0.2, identical installed VA/DIL/module; replacement prefix not selected. Separate diagnostic, excluded from matched-prefix table.",
+    "hardware_frames": {
+      "1280,720,44": 1798
+    },
+    "render_queue_acceptances": {
+      "1": 1792
+    },
+    "expected_originals": 1800,
+    "exit_code": 0,
+    "boundary_equal": true,
+    "observation": "Missing2 hardware-returned pictures also occurs with original published libraries; count alone does not locate the cause."
+  },
+  "fixtures": [
+    {
+      "file": "video1280-30-30av.mp4",
+      "stream": {
+        "codec_name": "h264",
+        "width": 1280,
+        "height": 720,
+        "has_b_frames": 2,
+        "color_range": "tv",
+        "color_space": "bt709",
+        "color_transfer": "bt709",
+        "color_primaries": "bt709",
+        "r_frame_rate": "30/1",
+        "time_base": "1/15360",
+        "duration": "30.000000",
+        "nb_frames": "900",
+        "profile": "High",
+        "level": 31
+      },
+      "frames": 900,
+      "source": "existing source-qualified30p clip looped by stream copy; or newly encoded6s60p testsrc2 looped by stream copy",
+      "audio": "same continuous30s mono48kHz AAC sine, no physicalAV calibration"
+    },
+    {
+      "file": "video1920-30-30av.mp4",
+      "stream": {
+        "codec_name": "h264",
+        "width": 1920,
+        "height": 1080,
+        "has_b_frames": 2,
+        "color_range": "tv",
+        "color_space": "bt709",
+        "color_transfer": "bt709",
+        "color_primaries": "bt709",
+        "r_frame_rate": "30/1",
+        "time_base": "1/15360",
+        "duration": "30.000000",
+        "nb_frames": "900",
+        "profile": "High",
+        "level": 40
+      },
+      "frames": 900,
+      "source": "existing source-qualified30p clip looped by stream copy; or newly encoded6s60p testsrc2 looped by stream copy",
+      "audio": "same continuous30s mono48kHz AAC sine, no physicalAV calibration"
+    },
+    {
+      "file": "video1280-60-30av.mp4",
+      "stream": {
+        "codec_name": "h264",
+        "width": 1280,
+        "height": 720,
+        "has_b_frames": 2,
+        "color_range": "tv",
+        "color_space": "bt709",
+        "color_transfer": "bt709",
+        "color_primaries": "bt709",
+        "r_frame_rate": "60/1",
+        "time_base": "1/15360",
+        "duration": "30.000000",
+        "nb_frames": "1800",
+        "profile": "Main",
+        "level": 32
+      },
+      "frames": 1800,
+      "source": "existing source-qualified30p clip looped by stream copy; or newly encoded6s60p testsrc2 looped by stream copy",
+      "audio": "same continuous30s mono48kHz AAC sine, no physicalAV calibration"
+    }
+  ],
+  "fixture_reproduction": {
+    "30p_source_recipe": "https://github.com/ahnhy1324/crystalhd/blob/2399430992a81aa16344aab3630999f874c5c853/tests/fixtures/issue533/README.md#source-paced-resource-comparison--2026-10-27",
+    "continuous_audio": "ffmpeg -f lavfi -i sine=frequency=440:sample_rate=48000 -t 30 -ac 1 -c:a aac -b:a 128k -threads 1 audio30.m4a",
+    "60p_video": "ffmpeg -filter_threads 1 -f lavfi -i testsrc2=size=1280x720:rate=60 -t 6 -an -c:v libx264 -preset ultrafast -crf 23 -profile:v high -level:v 3.2 -g 60 -keyint_min 60 -sc_threshold 0 -bf 2 -threads 1 -pix_fmt yuv420p -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 video720-60-6.mp4",
+    "30s_mux": "ffmpeg -stream_loop 4 -i SOURCE_VIDEO -i audio30.m4a -map 0:v:0 -map 1:a:0 -c copy -t 30 -bsf:v h264_metadata=video_full_range_flag=0:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1 -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -movflags +faststart OUTPUT.mp4"
+  },
+  "destructive_seek": [
+    {
+      "case": "seek-native-final-1280-pause",
+      "status": "PASS_BOUNDED_DESTRUCTIVE_SEEK_RECOVERY",
+      "width": 1280,
+      "height": 720,
+      "seek_targets_s": [
+        15,
+        5
+      ],
+      "observed_positions_s": [
+        15.0,
+        5.0
+      ],
+      "generations": [
+        {
+          "epoch": 0,
+          "accepted_originals": 26,
+          "returned_originals": 26,
+          "exact_input_bound_PTS": true,
+          "first_returned_pts_us": 0,
+          "last_returned_pts_us": 866666
+        },
+        {
+          "epoch": 1,
+          "accepted_originals": 48,
+          "returned_originals": 48,
+          "exact_input_bound_PTS": true,
+          "first_returned_pts_us": 14000000,
+          "last_returned_pts_us": 15566666
+        },
+        {
+          "epoch": 2,
+          "accepted_originals": 780,
+          "returned_originals": 780,
+          "exact_input_bound_PTS": true,
+          "first_returned_pts_us": 4000000,
+          "last_returned_pts_us": 29966666
+        }
+      ],
+      "post_flush_output_and_render": [
+        {
+          "epoch": 1,
+          "hardware_outputs": 48,
+          "temporally_subsequent_render_acceptances": 26,
+          "binding_scope": "temporal order after matching-context/epoch output; not PTS-bound presentation or scanout"
+        },
+        {
+          "epoch": 2,
+          "hardware_outputs": 780,
+          "temporally_subsequent_render_acceptances": 775,
+          "binding_scope": "temporal order after matching-context/epoch output; not PTS-bound presentation or scanout"
+        }
+      ],
+      "actual_drm_layout": {
+        "1280,720,1,1448695129,2560": 854
+      },
+      "genuine_LAST": 3,
+      "successful_STOP_commands": 3,
+      "render_queue_acceptances": 816,
+      "preserved_unsupported_streamon": [
+        "STREAM_IOCTL op=1074026002 type=1 ret=-95"
+      ],
+      "boundary_equal": true,
+      "exit_code": 0,
+      "scope": "Natural EOS and destructive OUTPUT reset recover. Unsupported nonempty drained restart remains -95. Preroll/seek discards make render counts differ from decoded counts; not a display-drop or physical A/V test."
+    },
+    {
+      "case": "seek-native-render-1920-pause",
+      "status": "PASS_BOUNDED_DESTRUCTIVE_SEEK_RECOVERY",
+      "width": 1920,
+      "height": 1080,
+      "seek_targets_s": [
+        15,
+        5
+      ],
+      "observed_positions_s": [
+        15.0,
+        5.0
+      ],
+      "generations": [
+        {
+          "epoch": 0,
+          "accepted_originals": 28,
+          "returned_originals": 28,
+          "exact_input_bound_PTS": true,
+          "first_returned_pts_us": 0,
+          "last_returned_pts_us": 966666
+        },
+        {
+          "epoch": 1,
+          "accepted_originals": 36,
+          "returned_originals": 36,
+          "exact_input_bound_PTS": true,
+          "first_returned_pts_us": 15000000,
+          "last_returned_pts_us": 16166666
+        },
+        {
+          "epoch": 2,
+          "accepted_originals": 780,
+          "returned_originals": 780,
+          "exact_input_bound_PTS": true,
+          "first_returned_pts_us": 4000000,
+          "last_returned_pts_us": 29966666
+        }
+      ],
+      "post_flush_output_and_render": [
+        {
+          "epoch": 1,
+          "hardware_outputs": 36,
+          "temporally_subsequent_render_acceptances": 24,
+          "binding_scope": "temporal order after matching-context/epoch output; not PTS-bound presentation or scanout"
+        },
+        {
+          "epoch": 2,
+          "hardware_outputs": 780,
+          "temporally_subsequent_render_acceptances": 780,
+          "binding_scope": "temporal order after matching-context/epoch output; not PTS-bound presentation or scanout"
+        }
+      ],
+      "actual_drm_layout": {
+        "1920,1080,1,1448695129,3840": 844
+      },
+      "genuine_LAST": 3,
+      "successful_STOP_commands": 3,
+      "render_queue_acceptances": 818,
+      "preserved_unsupported_streamon": [
+        "STREAM_IOCTL op=1074026002 type=1 ret=-95"
+      ],
+      "boundary_equal": true,
+      "exit_code": 0,
+      "scope": "Natural EOS and destructive OUTPUT reset recover. Unsupported nonempty drained restart remains -95. Preroll/seek discards make render counts differ from decoded counts; not a display-drop or physical A/V test."
+    }
+  ],
+  "seek_observer_exclusions": [
+    {
+      "case": "seek-native-v1-1280-pause",
+      "status": "FAIL_OBSERVER",
+      "reason": "Wrong JSON-RPC seek value rejected before decoder flush; no hardware seek claim."
+    },
+    {
+      "case": "seek-native-v2-1280-pause",
+      "status": "FAIL_OBSERVER",
+      "reason": "Expected one LAST despite two pre-seek drains plus final EOS; actual three genuine LAST retained."
+    },
+    {
+      "case": "seek-native-final-1920-pause",
+      "status": "EXCLUDED_FORWARD_PRESENTATION_PROOF",
+      "reason": "Exact hardware PTS pass, but first post-flush epoch has zero render acceptances before next seek. Targeted FHD replay waits for matching-epoch output then subsequent render acceptance."
+    }
+  ],
+  "source_PTS_table_scope": "Accepted inputs are coded order and returned pictures display order, compared after sorting accepted values. Seek cases are separate flush epochs; never pair TSV columns as per-AU identity."
+}
