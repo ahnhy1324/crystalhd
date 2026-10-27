@@ -123,6 +123,20 @@ zeros, rejected fullscreen request, initial allocation race and transient
 global pin snapshot remain archived. Three final quiescent boundary reads
 match the starting state and the scoped kernel error scan is clear.
 
+For the same bounded 30-second/750-picture fixture, use a new results file
+outside the source tree and the separately qualified decoder/library
+environment. The benchmark verifies the loaded field plugin and actual
+fullscreen allocation; it mutes only its audio stream:
+
+```sh
+field_plugins="$PWD/filters/gst/field-output"
+GST_PLUGIN_PATH_1_0="$field_plugins${GST_PLUGIN_PATH_1_0:+:$GST_PLUGIN_PATH_1_0}" \
+    python3 tests/gst-field-output-bench.py /absolute/path/to/fixture.mkv \
+    --results /absolute/path/to/new-results.json \
+    --expected-plugin "$field_plugins/libgstcrystalhdfield.so" \
+    --label local-build --fullscreen
+```
+
 The maintainer's physical A/V/control PASS remains scoped to `915e819`.
 Physical confirmation of the new completion/deadline policy is **NOT RUN**;
 audio-clock equality and automated playback do not replace it. This remains
