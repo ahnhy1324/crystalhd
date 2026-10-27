@@ -1,0 +1,192 @@
+diff --git a/filters/vaapi/crystalhd_drv_video.cpp b/filters/vaapi/crystalhd_drv_video.cpp
+index 36895a68ac00f7a8f49accaa3dbca17b35350c0b..53526e92e1fa7a67a36f34ee55013e17636a4a1d 100644
+--- a/filters/vaapi/crystalhd_drv_video.cpp
++++ b/filters/vaapi/crystalhd_drv_video.cpp
+@@ -4301,12 +4301,61 @@ static bool CopyNv12Pixels(const Surface &source, Surface *destination,
+-  for (unsigned int row = 0; row < height; ++row) {
+-    memcpy(destination->planes[0] +
+-               static_cast<size_t>(row) * destination->pitch[0],
+-           source.planes[0] + static_cast<size_t>(row) * source.pitch[0],
+-           width);
+-  }
+-  for (unsigned int row = 0; row < (height + 1) / 2; ++row) {
+-    memcpy(destination->planes[1] +
+-               static_cast<size_t>(row) * destination->pitch[1],
+-           source.planes[1] + static_cast<size_t>(row) * source.pitch[1],
+-           width);
+-  }
++#if defined(__SSE2__)
++  const bool stream_public = purpose == CopyPurpose::DecodedPublic &&
++      !destination->object_fds.empty() && width >= 256;
++  bool streamed = false;
++#endif
++  const auto copy_plane = [&](unsigned int plane, unsigned int rows) {
++    if (width == 0 || rows == 0)
++      return;
++#if defined(__SSE2__)
++    if (stream_public) {
++      for (unsigned int row = 0; row < rows; ++row) {
++        const uint8_t *input = source.planes[plane] +
++            static_cast<size_t>(row) * source.pitch[plane];
++        uint8_t *output = destination->planes[plane] +
++            static_cast<size_t>(row) * destination->pitch[plane];
++        const size_t prefix =
++            (64U - (reinterpret_cast<uintptr_t>(output) & 63U)) & 63U;
++        const size_t stream_end = prefix +
++            ((static_cast<size_t>(width) - prefix) & ~size_t{63});
++        // Keep cached edge writes on separate cache lines from the streaming
++        // stores. No load or store crosses the logical row or its padding.
++        if (prefix != 0)
++          memcpy(output, input, prefix);
++        for (size_t offset = prefix; offset < stream_end; offset += 64) {
++          for (size_t block = 0; block < 64; block += 16) {
++            const __m128i pixels = _mm_loadu_si128(
++                reinterpret_cast<const __m128i *>(input + offset + block));
++            _mm_stream_si128(
++                reinterpret_cast<__m128i *>(output + offset + block), pixels);
++          }
++        }
++        if (stream_end < width)
++          memcpy(output + stream_end, input + stream_end, width - stream_end);
++        streamed = true;
++      }
++      return;
++    }
++#endif
++    // A tightly packed plane has no intervening pitch padding. Keep cropped
++    // or strided rows separate, and bound the whole-plane size on 32-bit hosts.
++    if (source.pitch[plane] == width && destination->pitch[plane] == width &&
++        rows <= SIZE_MAX / width) {
++      memcpy(destination->planes[plane], source.planes[plane],
++             static_cast<size_t>(width) * rows);
++      return;
++    }
++    for (unsigned int row = 0; row < rows; ++row) {
++      memcpy(destination->planes[plane] +
++                 static_cast<size_t>(row) * destination->pitch[plane],
++             source.planes[plane] +
++                 static_cast<size_t>(row) * source.pitch[plane],
++             width);
++    }
++  };
++  copy_plane(0, height);
++  copy_plane(1, chroma_rows);
++#if defined(__SSE2__)
++  // Complete both planes' streaming writes before returning CPU ownership.
++  if (streamed)
++    _mm_sfence();
++#endif
+diff --git a/tests/vaapi-cache.cpp b/tests/vaapi-cache.cpp
+index 9fe556d7bf1e904a0ac648b25da36ac5c1113384..b89c3672268cccf7fa7d60110d8bced2b5e9ad07 100644
+--- a/tests/vaapi-cache.cpp
++++ b/tests/vaapi-cache.cpp
+@@ -246,0 +247,104 @@ struct DecodedCopyFixture {
++void Nv12CopyPixelsAndGuards() {
++  struct Geometry {
++    unsigned int source_width, source_height, width, height;
++    unsigned int source_y_pitch, source_uv_pitch, y_pitch, uv_pitch;
++    unsigned int y_alignment = 7, uv_alignment = 0;
++  };
++  const Geometry cases[] = {
++      {64, 4, 64, 4, 64, 64, 64, 64},
++      {64, 3, 64, 3, 64, 64, 64, 64},
++      {16, 4, 16, 4, 16, 18, 16, 20},
++      {16, 4, 16, 4, 18, 16, 20, 16},
++      {17, 3, 19, 5, 19, 21, 23, 25},
++      {64, 4, 32, 3, 64, 64, 40, 42},
++      {32, 3, 64, 4, 36, 38, 64, 64},
++      {17, 4, 17, 4, 20, 22, 24, 26},
++      {0, 4, 16, 4, 0, 0, 16, 16},
++      {16, 0, 16, 4, 16, 16, 16, 16},
++      {16, 4, 0, 4, 16, 16, 0, 0},
++      {16, 4, 16, 0, 16, 16, 16, 16},
++      {256, 4, 256, 4, 256, 256, 256, 256, 0, 0},
++      {256, 4, 256, 4, 256, 256, 263, 269, 1, 63},
++      {383, 3, 383, 3, 389, 391, 397, 401, 7, 1},
++      {319, 3, 383, 5, 327, 329, 389, 391, 63, 7},
++      {384, 4, 320, 3, 384, 384, 320, 320, 0, 17},
++      {257, 3, 257, 3, 263, 265, 271, 273, 0, 32},
++  };
++  unsigned int case_number = 0;
++  for (const Geometry &geometry : cases) {
++    for (CopyPurpose purpose : {CopyPurpose::Generic,
++                                CopyPurpose::DecodedPublic}) {
++      Fixture fixture;
++      Surface source;
++      source.width = geometry.source_width;
++      source.height = geometry.source_height;
++      source.fourcc = VA_FOURCC_NV12;
++      source.pitch[0] = geometry.source_y_pitch;
++      source.pitch[1] = geometry.source_uv_pitch;
++      const size_t y_size = static_cast<size_t>(source.pitch[0]) * source.height;
++      const size_t uv_size = static_cast<size_t>(source.pitch[1]) *
++                             ((source.height + 1) / 2);
++      source.storage.resize(11 + y_size + 17 + uv_size + 23);
++      for (size_t index = 0; index < source.storage.size(); ++index)
++        source.storage[index] = static_cast<uint8_t>(37 + index * 71);
++      if (source.width != 0 && source.height != 0) {
++        source.planes[0] = source.storage.data() + 11;
++        source.planes[1] = source.planes[0] + y_size + 17;
++      }
++      source.frame_timestamp = 0x112233;
++      const auto unchanged = source.storage;
++      Surface &target = fixture.surface;
++      target.width = geometry.width;
++      target.height = geometry.height;
++      target.fourcc = VA_FOURCC_NV12;
++      target.pitch[0] = geometry.y_pitch;
++      target.pitch[1] = geometry.uv_pitch;
++      const size_t target_y_size = static_cast<size_t>(target.pitch[0]) *
++                                   target.height;
++      const size_t target_uv_size = static_cast<size_t>(target.pitch[1]) *
++                                    ((target.height + 1) / 2);
++      std::vector<uint8_t> pixels(target_y_size + target_uv_size + 512, 0xa5);
++      const auto aligned = [](uint8_t *pointer) {
++        return reinterpret_cast<uint8_t *>(
++            (reinterpret_cast<uintptr_t>(pointer) + 63U) & ~uintptr_t{63});
++      };
++      target.planes[0] = aligned(pixels.data() + 64) + geometry.y_alignment;
++      target.planes[1] = aligned(target.planes[0] + target_y_size + 65) +
++                          geometry.uv_alignment;
++      auto expected = pixels;
++      const unsigned int width = std::min(source.width, target.width);
++      const unsigned int height = std::min(source.height, target.height);
++      // Independent logical-pixel oracle. Bytes outside the logical planes,
++      // including row padding and the gap between planes, remain guards.
++      for (unsigned int plane = 0; plane < 2; ++plane) {
++        const unsigned int rows = plane == 0 ? target.height
++                                             : (target.height + 1) / 2;
++        const unsigned int copied_rows = plane == 0 ? height : (height + 1) / 2;
++        const unsigned int row_bytes = plane == 0 ? target.width
++                                                  : Align(target.width, 2);
++        const size_t offset = target.planes[plane] - pixels.data();
++        for (unsigned int row = 0; row < rows; ++row)
++          for (unsigned int x = 0; x < row_bytes; ++x)
++            expected[offset + static_cast<size_t>(row) * target.pitch[plane] + x] =
++                row < copied_rows && x < width
++                    ? source.planes[plane][static_cast<size_t>(row) *
++                                               source.pitch[plane] + x]
++                    : (plane == 0 ? 16 : 128);
++      }
++      const std::string label = "NV12 pixel/guard case " +
++                                std::to_string(case_number++);
++      Require(CopyNv12Surface(source, &target, purpose), label.c_str());
++      Require(pixels == expected,
++              "NV12 copy preserves logical pixels, neutral borders and all guards");
++      Require(source.storage == unchanged,
++              "NV12 copy leaves source pixels and guards unchanged");
++      Require(target.ready && !target.failed &&
++                  target.frame_timestamp == source.frame_timestamp &&
++                  fixture.mock.events == std::vector<std::string>{
++                      "start", "start", "end", "end"} &&
++                  fixture.mock.owned == 0 && fixture.mock.read_owned == 0,
++              "NV12 copy publishes identity only after balanced CPU ownership");
++    }
++  }
++}
++
+@@ -675,0 +780 @@ int main() {
++    Nv12CopyPixelsAndGuards();
+@@ -687 +792 @@ int main() {
+-  printf("VA-API cache protocol: 10 groups, %u checks PASS (default async cache: %s)\n",
++  printf("VA-API cache protocol: 11 groups, %u checks PASS (default async cache: %s)\n",

@@ -1,0 +1,3160 @@
+{
+  "schema": 1,
+  "issue": 471,
+  "date": "2026-10-28",
+  "date_timezone": "Asia/Seoul",
+  "decision": "DO_NOT_MERGE_PROTOTYPES",
+  "conclusion": "RAM-only bulk copy gains did not establish lower Kodi CPU or a native playback benefit; both native studies retain one census FAIL. Preserve the prototypes as experiments only.",
+  "sources": {
+    "baseline_VA": "34e3b030343b6f902e889d56e8a4afdabf11ff93",
+    "bulk_local_commit": "50eb5f58e6aeb8406d2c24a55743e49c1893dd52",
+    "NT_local_commit": "3023a653c935dfba6d360d01f547c3afea4b549e",
+    "local_commit_scope": "Bulk/NT commits are local identifiers, not published source links. The adjacent .patch preserves the complete production/test delta BASE..NT without applying it.",
+    "patch_file": "nv12-copy-prototypes-20261028.patch",
+    "patch_base": "34e3b030343b6f902e889d56e8a4afdabf11ff93",
+    "patch_tip": "3023a653c935dfba6d360d01f547c3afea4b549e",
+    "patch_options": [
+      "--full-index",
+      "--unified=0"
+    ],
+    "patch_validation": "git apply --cached --check --unidiff-zero against an isolated index of patch_base; no worktree application",
+    "controller": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+    "DIL_unchanged": "54752a1af514eb673b563fb80b6df6600223a666",
+    "DIL_build_id": "c2066dd6b224e974d63acb454669af290fe0352f",
+    "measured_module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+    "measured_module_version": "3.10.14",
+    "restored_module_version": "3.10.13",
+    "VA_build_ids": {
+      "baseline": "ab53e2a813dbbd8510df78b3eee68a597618526a",
+      "bulk": "4012ae1b645c06c56f38bf212943cc8a9d0cda04",
+      "non_temporal": "02f13b27b739ddcd5c6a09955814782dd4fab766"
+    },
+    "micro_build_ids": {
+      "baseline": "33883fb339090f3c5d83f84b2efc820922d42abb",
+      "bulk": "de63d118928e88727d132aabfe369a392473ab60"
+    }
+  },
+  "prototype_scope": {
+    "bulk": "Coalesce each tightly packed NV12 plane; retain stride/crop fallback, neutral padding, zero extents, 32-bit whole-plane overflow guard and CPU ownership.",
+    "non_temporal": "On top of bulk, SSE2 DecodedPublic DMA-BUF writes width>=256 use cached prefix, destination-aligned full64B NT lines and cached tail; one SFENCE before unchanged END. Generic, CPU-only and non-SSE keep prior paths.",
+    "compiler": "g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+    "native_flags": "-O2 -std=c++17 -Wall -Wextra -Werror -fPIC -msse2; same unchanged headers/pkg-config libraries and DIL for all VA builds",
+    "status": "No production code/default/ABI/legacy ioctl/external-app change is adopted by these fixtures."
+  },
+  "environment": {
+    "OS": "Ubuntu 26.04.1 LTS",
+    "kernel": "7.0.0-38-generic",
+    "CPU": "Core 2 Duo T8100",
+    "decoder": "BCM70015",
+    "GPU": "Mesa Intel 965GM (CL), OpenGL ES 2.0 Mesa 26.2.5",
+    "display": "Private GPU Weston 14.0.2 headless, source dimensions (1280x720 or 1920x1080), 60 Hz; system display unchanged",
+    "audio": "Same AAC file/stock Kodi decoder; private nondefault PipeWire null sink, link verified; physical AV NOT RUN"
+  },
+  "measurement": {
+    "native": "Two separate studies, each ABBA at1080p30 then720p60, same30s synthetic motion+AAC files; pristine Kodi22RC1 original bundled FFmpeg9.0.2. All16 arms executed; PASS-only summaries do not erase the two FAILs.",
+    "Kodi_CPU": "/proc process USER+SYS from file invocation through natural close/join and empty active-player list; one core=100%; excludes compositor, observer, background and asynchronous kernel CPU.",
+    "profiler": "Read-only entry/return uprobes. Function wall_ns are inclusive elapsed wall, including nested access, blocking/scheduling and instrumentation. They are not exclusive CPU or memcpy-only time; never sum nested timings.",
+    "inlining": "Out-of-line Begin/End coverage is incomplete: EndCpuAccess count1 does not measure all END calls. Explicit in-Copy ioctl flags2/6 timing is the separate destination START/END evidence when present.",
+    "sync_flags": {
+      "2": "DMA_BUF_SYNC_START|WRITE",
+      "6": "DMA_BUF_SYNC_END|WRITE"
+    },
+    "scope": "Headless GPU rendering and null audio; render return counts are software submissions, not physical displayed frames. Physical A/V, scanout, latency and power NOT RUN in these arms.",
+    "comparison_limits": "Two full-census controls per geometry; failed720p60 candidates leave only one valid candidate each. No confidence interval or causal attribution of those failures; no established native improvement."
+  },
+  "RAM_micro": {
+    "method": "Exact production CopyNv12Pixels on private CPU vectors with no DMA-BUF fds/device/card/GPU; noinline wrapper and compiler barrier. Allocation/pattern/oracle verification outside timing;32 warmups then1024 calls/sample. CLOCK_PROCESS_CPUTIME_ID; wall measured separately.",
+    "scope": "Bulk candidate only; NT micro NOT RUN. Independent logical-pixel/padding oracle and unchanged source checked. RAM CPU gain is not native or physical playback evidence.",
+    "batches": [
+      {
+        "batch": "initial",
+        "source_file": "micro-results.private.json",
+        "runs_per_sample": 1024,
+        "warmup_per_sample": 32,
+        "order_per_geometry": "baseline,candidate,candidate,baseline",
+        "samples": [
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1280,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 658456010,
+            "wall_ns": 775881480,
+            "cpu_ns_per_copy": 643023.447265625,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1280,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 647394376,
+            "wall_ns": 722745732,
+            "cpu_ns_per_copy": 632221.0703125,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1280,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 597283929,
+            "wall_ns": 691510219,
+            "cpu_ns_per_copy": 583285.086914062,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1280,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 656271193,
+            "wall_ns": 731112917,
+            "cpu_ns_per_copy": 640889.836914062,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1920,
+            "height": 1088,
+            "stride": 1920,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 2549197865,
+            "wall_ns": 2852841968,
+            "cpu_ns_per_copy": 2489451.040039062,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1920,
+            "height": 1088,
+            "stride": 1920,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 1851406216,
+            "wall_ns": 2005889630,
+            "cpu_ns_per_copy": 1808013.8828125,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1920,
+            "height": 1088,
+            "stride": 1920,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 1868523585,
+            "wall_ns": 2008885540,
+            "cpu_ns_per_copy": 1824730.063476562,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1920,
+            "height": 1088,
+            "stride": 1920,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 2582929311,
+            "wall_ns": 2839718957,
+            "cpu_ns_per_copy": 2522391.905273438,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1312,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 596956369,
+            "wall_ns": 661641040,
+            "cpu_ns_per_copy": 582965.204101562,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1312,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 586771268,
+            "wall_ns": 664260639,
+            "cpu_ns_per_copy": 573018.81640625,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1312,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 652579110,
+            "wall_ns": 725935454,
+            "cpu_ns_per_copy": 637284.287109375,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1312,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 599185006,
+            "wall_ns": 659938618,
+            "cpu_ns_per_copy": 585141.607421875,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          }
+        ],
+        "summary": [
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1280,
+            "baseline": {
+              "n": 2,
+              "cpu_ns_per_copy_median": 641956.6420898435,
+              "min": 640889.836914062,
+              "max": 643023.447265625
+            },
+            "candidate": {
+              "n": 2,
+              "cpu_ns_per_copy_median": 607753.078613281,
+              "min": 583285.086914062,
+              "max": 632221.0703125
+            },
+            "candidate_cpu_reduction_percent": 5.328017693720755
+          },
+          {
+            "width": 1920,
+            "height": 1088,
+            "stride": 1920,
+            "baseline": {
+              "n": 2,
+              "cpu_ns_per_copy_median": 2505921.47265625,
+              "min": 2489451.040039062,
+              "max": 2522391.905273438
+            },
+            "candidate": {
+              "n": 2,
+              "cpu_ns_per_copy_median": 1816371.973144531,
+              "min": 1808013.8828125,
+              "max": 1824730.063476562
+            },
+            "candidate_cpu_reduction_percent": 27.516803979527893
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1312,
+            "baseline": {
+              "n": 2,
+              "cpu_ns_per_copy_median": 584053.4057617185,
+              "min": 582965.204101562,
+              "max": 585141.607421875
+            },
+            "candidate": {
+              "n": 2,
+              "cpu_ns_per_copy_median": 605151.5517578125,
+              "min": 573018.81640625,
+              "max": 637284.287109375
+            },
+            "candidate_cpu_reduction_percent": -3.612365887769786
+          }
+        ]
+      },
+      {
+        "batch": "repeat",
+        "source_file": "micro-repeat-results.private.json",
+        "runs_per_sample": 1024,
+        "warmup_per_sample": 32,
+        "order_per_geometry": "baseline,candidate,candidate,baseline repeated twice",
+        "samples": [
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1280,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 572146389,
+            "wall_ns": 611534071,
+            "cpu_ns_per_copy": 558736.708007812,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1280,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 599060937,
+            "wall_ns": 674382175,
+            "cpu_ns_per_copy": 585020.446289062,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1280,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 516245403,
+            "wall_ns": 580418690,
+            "cpu_ns_per_copy": 504145.901367188,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1280,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 674206111,
+            "wall_ns": 834530441,
+            "cpu_ns_per_copy": 658404.405273438,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1280,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 566113076,
+            "wall_ns": 636494892,
+            "cpu_ns_per_copy": 552844.80078125,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1280,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 498820517,
+            "wall_ns": 554894096,
+            "cpu_ns_per_copy": 487129.411132812,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1280,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 554631601,
+            "wall_ns": 606560693,
+            "cpu_ns_per_copy": 541632.422851562,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1280,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 595349351,
+            "wall_ns": 675428910,
+            "cpu_ns_per_copy": 581395.850585938,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1920,
+            "height": 1088,
+            "stride": 1920,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 2560676524,
+            "wall_ns": 2854984166,
+            "cpu_ns_per_copy": 2500660.66796875,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1920,
+            "height": 1088,
+            "stride": 1920,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 1864337915,
+            "wall_ns": 2030624533,
+            "cpu_ns_per_copy": 1820642.495117188,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1920,
+            "height": 1088,
+            "stride": 1920,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 1893622346,
+            "wall_ns": 1962279298,
+            "cpu_ns_per_copy": 1849240.572265625,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1920,
+            "height": 1088,
+            "stride": 1920,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 2568434763,
+            "wall_ns": 2898365776,
+            "cpu_ns_per_copy": 2508237.073242188,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1920,
+            "height": 1088,
+            "stride": 1920,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 2576339529,
+            "wall_ns": 2936544370,
+            "cpu_ns_per_copy": 2515956.571289062,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1920,
+            "height": 1088,
+            "stride": 1920,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 1839872011,
+            "wall_ns": 1946988786,
+            "cpu_ns_per_copy": 1796750.010742188,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1920,
+            "height": 1088,
+            "stride": 1920,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 1905150719,
+            "wall_ns": 2158475175,
+            "cpu_ns_per_copy": 1860498.749023438,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1920,
+            "height": 1088,
+            "stride": 1920,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 2574725039,
+            "wall_ns": 2991442034,
+            "cpu_ns_per_copy": 2514379.920898438,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1312,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 647828174,
+            "wall_ns": 714858739,
+            "cpu_ns_per_copy": 632644.701171875,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1312,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 634825794,
+            "wall_ns": 672975112,
+            "cpu_ns_per_copy": 619947.064453125,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1312,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 591507440,
+            "wall_ns": 653236937,
+            "cpu_ns_per_copy": 577643.984375,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1312,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 678417190,
+            "wall_ns": 712555109,
+            "cpu_ns_per_copy": 662516.787109375,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1312,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 648054094,
+            "wall_ns": 689917263,
+            "cpu_ns_per_copy": 632865.326171875,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1312,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 647093977,
+            "wall_ns": 687384549,
+            "cpu_ns_per_copy": 631927.711914062,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1312,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 623787279,
+            "wall_ns": 685381732,
+            "cpu_ns_per_copy": 609167.264648438,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "candidate"
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1312,
+            "runs": 1024,
+            "warmup": 32,
+            "cpu_ns": 600161085,
+            "wall_ns": 625362199,
+            "cpu_ns_per_copy": 586094.809570312,
+            "pixels_and_padding": "PASS",
+            "source_unchanged": true,
+            "mode": "baseline"
+          }
+        ],
+        "summary": [
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1280,
+            "baseline": {
+              "n": 4,
+              "cpu_ns_per_copy_median": 570066.279296875,
+              "min": 552844.80078125,
+              "max": 658404.405273438
+            },
+            "candidate": {
+              "n": 4,
+              "cpu_ns_per_copy_median": 522889.162109375,
+              "min": 487129.411132812,
+              "max": 585020.446289062
+            },
+            "candidate_cpu_reduction_percent": 8.275724928983463
+          },
+          {
+            "width": 1920,
+            "height": 1088,
+            "stride": 1920,
+            "baseline": {
+              "n": 4,
+              "cpu_ns_per_copy_median": 2511308.497070313,
+              "min": 2500660.66796875,
+              "max": 2515956.571289062
+            },
+            "candidate": {
+              "n": 4,
+              "cpu_ns_per_copy_median": 1834941.5336914065,
+              "min": 1796750.010742188,
+              "max": 1860498.749023438
+            },
+            "candidate_cpu_reduction_percent": 26.93285051071801
+          },
+          {
+            "width": 1280,
+            "height": 720,
+            "stride": 1312,
+            "baseline": {
+              "n": 4,
+              "cpu_ns_per_copy_median": 632755.013671875,
+              "min": 586094.809570312,
+              "max": 662516.787109375
+            },
+            "candidate": {
+              "n": 4,
+              "cpu_ns_per_copy_median": 614557.1645507815,
+              "min": 577643.984375,
+              "max": 631927.711914062
+            },
+            "candidate_cpu_reduction_percent": 2.875970751379975
+          }
+        ]
+      }
+    ],
+    "interpretation": "FHD tightly packed copy CPU falls26.93\u201327.52%;720 falls5.33\u20138.28%. Strided fallback changes sign across batches, so no gain/regression established there."
+  },
+  "native_batches": [
+    {
+      "study": "bulk",
+      "executed": 8,
+      "PASS": 7,
+      "FAIL": 1,
+      "status": "FAIL",
+      "before": {
+        "module": "3.10.13",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "after": {
+        "module": "3.10.13",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "boundary_equal": true,
+      "restored": true,
+      "kernel_log_check_exit": 0,
+      "retained_FAIL_cases": [
+        "copy-ab-v1-1280-60-2-candidate"
+      ]
+    },
+    {
+      "study": "non_temporal",
+      "executed": 8,
+      "PASS": 7,
+      "FAIL": 1,
+      "status": "FAIL",
+      "before": {
+        "module": "3.10.13",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "after": {
+        "module": "3.10.13",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "boundary_equal": true,
+      "restored": true,
+      "kernel_log_check_exit": 0,
+      "retained_FAIL_cases": [
+        "nt-ab-v1-1280-60-2-nt"
+      ]
+    }
+  ],
+  "native_arms": [
+    {
+      "id": "copy-ab-v1-1920-30-0-baseline",
+      "study": "bulk",
+      "variant": "baseline",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "expected_frames": 900,
+      "decoded_frames": 900,
+      "render_successes": 900,
+      "render_return_counts": {
+        "1": 900
+      },
+      "status": "PASS",
+      "supervisor_exit": 0,
+      "app_exit": 0,
+      "error": null,
+      "Kodi_CPU_s": 12.379999999999999,
+      "elapsed_s": 31.77501170200412,
+      "Kodi_CPU_one_core_percent": 38.961433330390136,
+      "peak_RSS_KiB": 320716,
+      "compositor_CPU_s_separate": 0.7,
+      "VA_source": "34e3b030343b6f902e889d56e8a4afdabf11ff93",
+      "VA_build_id": "ab53e2a813dbbd8510df78b3eee68a597618526a",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 2951428500
+        },
+        "CopyNv12Pixels": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 3977168323
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 2701,
+          "returns": {
+            "1": 2701
+          },
+          "inclusive_wall_ns": 98010573
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 48123
+        }
+      },
+      "nested_destination_sync": null,
+      "copy_geometry": [],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": null,
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1920,1080,44": 900
+      }
+    },
+    {
+      "id": "copy-ab-v1-1920-30-1-candidate",
+      "study": "bulk",
+      "variant": "bulk",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "expected_frames": 900,
+      "decoded_frames": 900,
+      "render_successes": 900,
+      "render_return_counts": {
+        "1": 900
+      },
+      "status": "PASS",
+      "supervisor_exit": 0,
+      "app_exit": 0,
+      "error": null,
+      "Kodi_CPU_s": 12.43,
+      "elapsed_s": 31.899636129994178,
+      "Kodi_CPU_one_core_percent": 38.96596170986565,
+      "peak_RSS_KiB": 323180,
+      "compositor_CPU_s_separate": 0.72,
+      "VA_source": "50eb5f58e6aeb8406d2c24a55743e49c1893dd52",
+      "VA_build_id": "4012ae1b645c06c56f38bf212943cc8a9d0cda04",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 3082093623
+        },
+        "CopyNv12Pixels": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 4052590891
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 2701,
+          "returns": {
+            "1": 2701
+          },
+          "inclusive_wall_ns": 111753203
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 35760
+        }
+      },
+      "nested_destination_sync": null,
+      "copy_geometry": [],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": null,
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1920,1080,44": 900
+      }
+    },
+    {
+      "id": "copy-ab-v1-1920-30-2-candidate",
+      "study": "bulk",
+      "variant": "bulk",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "expected_frames": 900,
+      "decoded_frames": 900,
+      "render_successes": 900,
+      "render_return_counts": {
+        "1": 900
+      },
+      "status": "PASS",
+      "supervisor_exit": 0,
+      "app_exit": 0,
+      "error": null,
+      "Kodi_CPU_s": 12.379999999999999,
+      "elapsed_s": 31.821731909993105,
+      "Kodi_CPU_one_core_percent": 38.90423071571494,
+      "peak_RSS_KiB": 323080,
+      "compositor_CPU_s_separate": 0.71,
+      "VA_source": "50eb5f58e6aeb8406d2c24a55743e49c1893dd52",
+      "VA_build_id": "4012ae1b645c06c56f38bf212943cc8a9d0cda04",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 2921738727
+        },
+        "CopyNv12Pixels": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 3961771321
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 2701,
+          "returns": {
+            "1": 2701
+          },
+          "inclusive_wall_ns": 93441478
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 33036
+        }
+      },
+      "nested_destination_sync": null,
+      "copy_geometry": [],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": null,
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1920,1080,44": 900
+      }
+    },
+    {
+      "id": "copy-ab-v1-1920-30-3-baseline",
+      "study": "bulk",
+      "variant": "baseline",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "expected_frames": 900,
+      "decoded_frames": 900,
+      "render_successes": 900,
+      "render_return_counts": {
+        "1": 900
+      },
+      "status": "PASS",
+      "supervisor_exit": 0,
+      "app_exit": 0,
+      "error": null,
+      "Kodi_CPU_s": 12.32,
+      "elapsed_s": 31.800186221997137,
+      "Kodi_CPU_one_core_percent": 38.74191149068771,
+      "peak_RSS_KiB": 322812,
+      "compositor_CPU_s_separate": 0.71,
+      "VA_source": "34e3b030343b6f902e889d56e8a4afdabf11ff93",
+      "VA_build_id": "ab53e2a813dbbd8510df78b3eee68a597618526a",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 2948812616
+        },
+        "CopyNv12Pixels": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 4010193878
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 2701,
+          "returns": {
+            "1": 2701
+          },
+          "inclusive_wall_ns": 115878571
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 36249
+        }
+      },
+      "nested_destination_sync": null,
+      "copy_geometry": [],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": null,
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1920,1080,44": 900
+      }
+    },
+    {
+      "id": "copy-ab-v1-1280-60-0-baseline",
+      "study": "bulk",
+      "variant": "baseline",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "expected_frames": 1800,
+      "decoded_frames": 1800,
+      "render_successes": 1800,
+      "render_return_counts": {
+        "1": 1800
+      },
+      "status": "PASS",
+      "supervisor_exit": 0,
+      "app_exit": 0,
+      "error": null,
+      "Kodi_CPU_s": 13.010000000000002,
+      "elapsed_s": 31.75524168300035,
+      "Kodi_CPU_one_core_percent": 40.96961418172639,
+      "peak_RSS_KiB": 298760,
+      "compositor_CPU_s_separate": 0.76,
+      "VA_source": "34e3b030343b6f902e889d56e8a4afdabf11ff93",
+      "VA_build_id": "ab53e2a813dbbd8510df78b3eee68a597618526a",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 1800,
+          "returns": {
+            "1": 1800
+          },
+          "inclusive_wall_ns": 2676629234
+        },
+        "CopyNv12Pixels": {
+          "calls": 1800,
+          "returns": {
+            "1": 1800
+          },
+          "inclusive_wall_ns": 3401953176
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 5401,
+          "returns": {
+            "1": 5401
+          },
+          "inclusive_wall_ns": 112813297
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 32337
+        }
+      },
+      "nested_destination_sync": null,
+      "copy_geometry": [],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": null,
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1280,720,44": 1800
+      }
+    },
+    {
+      "id": "copy-ab-v1-1280-60-1-candidate",
+      "study": "bulk",
+      "variant": "bulk",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "expected_frames": 1800,
+      "decoded_frames": 1800,
+      "render_successes": 1800,
+      "render_return_counts": {
+        "1": 1800
+      },
+      "status": "PASS",
+      "supervisor_exit": 0,
+      "app_exit": 0,
+      "error": null,
+      "Kodi_CPU_s": 12.98,
+      "elapsed_s": 31.768590096005937,
+      "Kodi_CPU_one_core_percent": 40.85796681808644,
+      "peak_RSS_KiB": 299308,
+      "compositor_CPU_s_separate": 0.76,
+      "VA_source": "50eb5f58e6aeb8406d2c24a55743e49c1893dd52",
+      "VA_build_id": "4012ae1b645c06c56f38bf212943cc8a9d0cda04",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 1800,
+          "returns": {
+            "1": 1800
+          },
+          "inclusive_wall_ns": 2597465563
+        },
+        "CopyNv12Pixels": {
+          "calls": 1800,
+          "returns": {
+            "1": 1800
+          },
+          "inclusive_wall_ns": 3444592167
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 5401,
+          "returns": {
+            "1": 5401
+          },
+          "inclusive_wall_ns": 134689611
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 37297
+        }
+      },
+      "nested_destination_sync": null,
+      "copy_geometry": [],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": null,
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1280,720,44": 1800
+      }
+    },
+    {
+      "id": "copy-ab-v1-1280-60-2-candidate",
+      "study": "bulk",
+      "variant": "bulk",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "expected_frames": 1800,
+      "decoded_frames": 1731,
+      "render_successes": 1731,
+      "render_return_counts": {
+        "1": 1731
+      },
+      "status": "FAIL",
+      "supervisor_exit": 1,
+      "app_exit": 0,
+      "error": "AssertionError: actual VA hardware output census",
+      "Kodi_CPU_s": 12.76,
+      "elapsed_s": 31.892176192006445,
+      "Kodi_CPU_one_core_percent": 40.00981282424436,
+      "peak_RSS_KiB": 299168,
+      "compositor_CPU_s_separate": 0.73,
+      "VA_source": "50eb5f58e6aeb8406d2c24a55743e49c1893dd52",
+      "VA_build_id": "4012ae1b645c06c56f38bf212943cc8a9d0cda04",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 1731,
+          "returns": {
+            "1": 1731
+          },
+          "inclusive_wall_ns": 3085799181
+        },
+        "CopyNv12Pixels": {
+          "calls": 1731,
+          "returns": {
+            "1": 1731
+          },
+          "inclusive_wall_ns": 4590030681
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 5194,
+          "returns": {
+            "1": 5194
+          },
+          "inclusive_wall_ns": 127143104
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 102181
+        }
+      },
+      "nested_destination_sync": null,
+      "copy_geometry": [],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": "NOT ESTABLISHED in this run; do not assign causes from older #538 causal runs",
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1280,720,44": 1731
+      }
+    },
+    {
+      "id": "copy-ab-v1-1280-60-3-baseline",
+      "study": "bulk",
+      "variant": "baseline",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "expected_frames": 1800,
+      "decoded_frames": 1800,
+      "render_successes": 1800,
+      "render_return_counts": {
+        "1": 1800
+      },
+      "status": "PASS",
+      "supervisor_exit": 0,
+      "app_exit": 0,
+      "error": null,
+      "Kodi_CPU_s": 12.89,
+      "elapsed_s": 31.614000136003597,
+      "Kodi_CPU_one_core_percent": 40.77307504443333,
+      "peak_RSS_KiB": 299440,
+      "compositor_CPU_s_separate": 0.75,
+      "VA_source": "34e3b030343b6f902e889d56e8a4afdabf11ff93",
+      "VA_build_id": "ab53e2a813dbbd8510df78b3eee68a597618526a",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 1800,
+          "returns": {
+            "1": 1800
+          },
+          "inclusive_wall_ns": 2699952953
+        },
+        "CopyNv12Pixels": {
+          "calls": 1800,
+          "returns": {
+            "1": 1800
+          },
+          "inclusive_wall_ns": 3478021873
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 5401,
+          "returns": {
+            "1": 5401
+          },
+          "inclusive_wall_ns": 111458249
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 42604
+        }
+      },
+      "nested_destination_sync": null,
+      "copy_geometry": [],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": null,
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1280,720,44": 1800
+      }
+    },
+    {
+      "id": "nt-ab-v1-1920-30-0-baseline",
+      "study": "non_temporal",
+      "variant": "baseline",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "expected_frames": 900,
+      "decoded_frames": 900,
+      "render_successes": 900,
+      "render_return_counts": {
+        "1": 900
+      },
+      "status": "PASS",
+      "supervisor_exit": 0,
+      "app_exit": 0,
+      "error": null,
+      "Kodi_CPU_s": 12.54,
+      "elapsed_s": 31.75146320500062,
+      "Kodi_CPU_one_core_percent": 39.49424289216707,
+      "peak_RSS_KiB": 322656,
+      "compositor_CPU_s_separate": 0.71,
+      "VA_source": "34e3b030343b6f902e889d56e8a4afdabf11ff93",
+      "VA_build_id": "ab53e2a813dbbd8510df78b3eee68a597618526a",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 3364523562
+        },
+        "CopyNv12Pixels": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 4589743603
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 2701,
+          "returns": {
+            "1": 2701
+          },
+          "inclusive_wall_ns": 153336225
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 58878
+        }
+      },
+      "nested_destination_sync": {
+        "calls_by_flags_and_return": {
+          "6,0": 900,
+          "2,0": 900
+        },
+        "inclusive_wall_ns_by_flags": {
+          "2": 96172909,
+          "6": 1923017542
+        }
+      },
+      "copy_geometry": [
+        {
+          "source_width": 1920,
+          "source_height": 1088,
+          "source_pitch": [
+            1920,
+            1920
+          ],
+          "destination_width": 1920,
+          "destination_height": 1088,
+          "destination_pitch": [
+            1920,
+            1920
+          ],
+          "purpose": 1,
+          "destination_dma_buf_objects": 1,
+          "owned_i915_dumb": false,
+          "experimental_i915_wc": false,
+          "calls": 900
+        }
+      ],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": null,
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1920,1080,44": 900
+      }
+    },
+    {
+      "id": "nt-ab-v1-1920-30-1-nt",
+      "study": "non_temporal",
+      "variant": "non_temporal",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "expected_frames": 900,
+      "decoded_frames": 900,
+      "render_successes": 900,
+      "render_return_counts": {
+        "1": 900
+      },
+      "status": "PASS",
+      "supervisor_exit": 0,
+      "app_exit": 0,
+      "error": null,
+      "Kodi_CPU_s": 12.309999999999999,
+      "elapsed_s": 31.891506425992702,
+      "Kodi_CPU_one_core_percent": 38.599619082173284,
+      "peak_RSS_KiB": 322792,
+      "compositor_CPU_s_separate": 0.71,
+      "VA_source": "3023a653c935dfba6d360d01f547c3afea4b549e",
+      "VA_build_id": "02f13b27b739ddcd5c6a09955814782dd4fab766",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 2887144545
+        },
+        "CopyNv12Pixels": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 4002242920
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 2701,
+          "returns": {
+            "1": 2701
+          },
+          "inclusive_wall_ns": 137728013
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 38065
+        }
+      },
+      "nested_destination_sync": {
+        "calls_by_flags_and_return": {
+          "2,0": 900,
+          "6,0": 900
+        },
+        "inclusive_wall_ns_by_flags": {
+          "2": 91317339,
+          "6": 1747988659
+        }
+      },
+      "copy_geometry": [
+        {
+          "source_width": 1920,
+          "source_height": 1088,
+          "source_pitch": [
+            1920,
+            1920
+          ],
+          "destination_width": 1920,
+          "destination_height": 1088,
+          "destination_pitch": [
+            1920,
+            1920
+          ],
+          "purpose": 1,
+          "destination_dma_buf_objects": 1,
+          "owned_i915_dumb": false,
+          "experimental_i915_wc": false,
+          "calls": 900
+        }
+      ],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": null,
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1920,1080,44": 900
+      }
+    },
+    {
+      "id": "nt-ab-v1-1920-30-2-nt",
+      "study": "non_temporal",
+      "variant": "non_temporal",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "expected_frames": 900,
+      "decoded_frames": 900,
+      "render_successes": 900,
+      "render_return_counts": {
+        "1": 900
+      },
+      "status": "PASS",
+      "supervisor_exit": 0,
+      "app_exit": 0,
+      "error": null,
+      "Kodi_CPU_s": 12.47,
+      "elapsed_s": 31.859188991991687,
+      "Kodi_CPU_one_core_percent": 39.140983793198664,
+      "peak_RSS_KiB": 322004,
+      "compositor_CPU_s_separate": 0.69,
+      "VA_source": "3023a653c935dfba6d360d01f547c3afea4b549e",
+      "VA_build_id": "02f13b27b739ddcd5c6a09955814782dd4fab766",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 2969247520
+        },
+        "CopyNv12Pixels": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 4135259895
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 2701,
+          "returns": {
+            "1": 2701
+          },
+          "inclusive_wall_ns": 129462620
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 35341
+        }
+      },
+      "nested_destination_sync": {
+        "calls_by_flags_and_return": {
+          "2,0": 900,
+          "6,0": 900
+        },
+        "inclusive_wall_ns_by_flags": {
+          "2": 82296804,
+          "6": 1763685363
+        }
+      },
+      "copy_geometry": [
+        {
+          "source_width": 1920,
+          "source_height": 1088,
+          "source_pitch": [
+            1920,
+            1920
+          ],
+          "destination_width": 1920,
+          "destination_height": 1088,
+          "destination_pitch": [
+            1920,
+            1920
+          ],
+          "purpose": 1,
+          "destination_dma_buf_objects": 1,
+          "owned_i915_dumb": false,
+          "experimental_i915_wc": false,
+          "calls": 900
+        }
+      ],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": null,
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1920,1080,44": 900
+      }
+    },
+    {
+      "id": "nt-ab-v1-1920-30-3-baseline",
+      "study": "non_temporal",
+      "variant": "baseline",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "expected_frames": 900,
+      "decoded_frames": 900,
+      "render_successes": 900,
+      "render_return_counts": {
+        "1": 900
+      },
+      "status": "PASS",
+      "supervisor_exit": 0,
+      "app_exit": 0,
+      "error": null,
+      "Kodi_CPU_s": 12.41,
+      "elapsed_s": 31.95544269599486,
+      "Kodi_CPU_one_core_percent": 38.835324918078534,
+      "peak_RSS_KiB": 322752,
+      "compositor_CPU_s_separate": 0.72,
+      "VA_source": "34e3b030343b6f902e889d56e8a4afdabf11ff93",
+      "VA_build_id": "ab53e2a813dbbd8510df78b3eee68a597618526a",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 2918491147
+        },
+        "CopyNv12Pixels": {
+          "calls": 900,
+          "returns": {
+            "1": 900
+          },
+          "inclusive_wall_ns": 4019292083
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 2701,
+          "returns": {
+            "1": 2701
+          },
+          "inclusive_wall_ns": 124959428
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 38973
+        }
+      },
+      "nested_destination_sync": {
+        "calls_by_flags_and_return": {
+          "6,0": 900,
+          "2,0": 900
+        },
+        "inclusive_wall_ns_by_flags": {
+          "2": 74845592,
+          "6": 1773555377
+        }
+      },
+      "copy_geometry": [
+        {
+          "source_width": 1920,
+          "source_height": 1088,
+          "source_pitch": [
+            1920,
+            1920
+          ],
+          "destination_width": 1920,
+          "destination_height": 1088,
+          "destination_pitch": [
+            1920,
+            1920
+          ],
+          "purpose": 1,
+          "destination_dma_buf_objects": 1,
+          "owned_i915_dumb": false,
+          "experimental_i915_wc": false,
+          "calls": 900
+        }
+      ],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": null,
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1920,1080,44": 900
+      }
+    },
+    {
+      "id": "nt-ab-v1-1280-60-0-baseline",
+      "study": "non_temporal",
+      "variant": "baseline",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "expected_frames": 1800,
+      "decoded_frames": 1800,
+      "render_successes": 1800,
+      "render_return_counts": {
+        "1": 1800
+      },
+      "status": "PASS",
+      "supervisor_exit": 0,
+      "app_exit": 0,
+      "error": null,
+      "Kodi_CPU_s": 13.08,
+      "elapsed_s": 31.6832631869911,
+      "Kodi_CPU_one_core_percent": 41.283626382810674,
+      "peak_RSS_KiB": 299472,
+      "compositor_CPU_s_separate": 0.76,
+      "VA_source": "34e3b030343b6f902e889d56e8a4afdabf11ff93",
+      "VA_build_id": "ab53e2a813dbbd8510df78b3eee68a597618526a",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 1800,
+          "returns": {
+            "1": 1800
+          },
+          "inclusive_wall_ns": 2674813297
+        },
+        "CopyNv12Pixels": {
+          "calls": 1800,
+          "returns": {
+            "1": 1800
+          },
+          "inclusive_wall_ns": 3593317116
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 5401,
+          "returns": {
+            "1": 5401
+          },
+          "inclusive_wall_ns": 147692953
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 45746
+        }
+      },
+      "nested_destination_sync": {
+        "calls_by_flags_and_return": {
+          "6,0": 1800,
+          "2,0": 1800
+        },
+        "inclusive_wall_ns_by_flags": {
+          "2": 60708972,
+          "6": 1523674102
+        }
+      },
+      "copy_geometry": [
+        {
+          "source_width": 1280,
+          "source_height": 720,
+          "source_pitch": [
+            1280,
+            1280
+          ],
+          "destination_width": 1280,
+          "destination_height": 720,
+          "destination_pitch": [
+            1280,
+            1280
+          ],
+          "purpose": 1,
+          "destination_dma_buf_objects": 1,
+          "owned_i915_dumb": false,
+          "experimental_i915_wc": false,
+          "calls": 1800
+        }
+      ],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": null,
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1280,720,44": 1800
+      }
+    },
+    {
+      "id": "nt-ab-v1-1280-60-1-nt",
+      "study": "non_temporal",
+      "variant": "non_temporal",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "expected_frames": 1800,
+      "decoded_frames": 1800,
+      "render_successes": 1800,
+      "render_return_counts": {
+        "1": 1800
+      },
+      "status": "PASS",
+      "supervisor_exit": 0,
+      "app_exit": 0,
+      "error": null,
+      "Kodi_CPU_s": 13.030000000000001,
+      "elapsed_s": 31.737174923007842,
+      "Kodi_CPU_one_core_percent": 41.055954197592776,
+      "peak_RSS_KiB": 298284,
+      "compositor_CPU_s_separate": 0.76,
+      "VA_source": "3023a653c935dfba6d360d01f547c3afea4b549e",
+      "VA_build_id": "02f13b27b739ddcd5c6a09955814782dd4fab766",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 1800,
+          "returns": {
+            "1": 1800
+          },
+          "inclusive_wall_ns": 2677623296
+        },
+        "CopyNv12Pixels": {
+          "calls": 1800,
+          "returns": {
+            "1": 1800
+          },
+          "inclusive_wall_ns": 3603631882
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 5401,
+          "returns": {
+            "1": 5401
+          },
+          "inclusive_wall_ns": 158241680
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 32825
+        }
+      },
+      "nested_destination_sync": {
+        "calls_by_flags_and_return": {
+          "6,0": 1800,
+          "2,0": 1800
+        },
+        "inclusive_wall_ns_by_flags": {
+          "2": 62023671,
+          "6": 1520034171
+        }
+      },
+      "copy_geometry": [
+        {
+          "source_width": 1280,
+          "source_height": 720,
+          "source_pitch": [
+            1280,
+            1280
+          ],
+          "destination_width": 1280,
+          "destination_height": 720,
+          "destination_pitch": [
+            1280,
+            1280
+          ],
+          "purpose": 1,
+          "destination_dma_buf_objects": 1,
+          "owned_i915_dumb": false,
+          "experimental_i915_wc": false,
+          "calls": 1800
+        }
+      ],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": null,
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1280,720,44": 1800
+      }
+    },
+    {
+      "id": "nt-ab-v1-1280-60-2-nt",
+      "study": "non_temporal",
+      "variant": "non_temporal",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "expected_frames": 1800,
+      "decoded_frames": 1799,
+      "render_successes": 1793,
+      "render_return_counts": {
+        "1": 1793
+      },
+      "status": "FAIL",
+      "supervisor_exit": 1,
+      "app_exit": 0,
+      "error": "AssertionError: actual VA hardware output census",
+      "Kodi_CPU_s": 12.99,
+      "elapsed_s": 31.777819611990708,
+      "Kodi_CPU_one_core_percent": 40.87756856388753,
+      "peak_RSS_KiB": 298608,
+      "compositor_CPU_s_separate": 0.75,
+      "VA_source": "3023a653c935dfba6d360d01f547c3afea4b549e",
+      "VA_build_id": "02f13b27b739ddcd5c6a09955814782dd4fab766",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 1799,
+          "returns": {
+            "1": 1799
+          },
+          "inclusive_wall_ns": 2744003631
+        },
+        "CopyNv12Pixels": {
+          "calls": 1799,
+          "returns": {
+            "1": 1799
+          },
+          "inclusive_wall_ns": 3603165038
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 5398,
+          "returns": {
+            "1": 5398
+          },
+          "inclusive_wall_ns": 168954127
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 34711
+        }
+      },
+      "nested_destination_sync": {
+        "calls_by_flags_and_return": {
+          "2,0": 1799,
+          "6,0": 1799
+        },
+        "inclusive_wall_ns_by_flags": {
+          "2": 72873796,
+          "6": 1532846620
+        }
+      },
+      "copy_geometry": [
+        {
+          "source_width": 1280,
+          "source_height": 720,
+          "source_pitch": [
+            1280,
+            1280
+          ],
+          "destination_width": 1280,
+          "destination_height": 720,
+          "destination_pitch": [
+            1280,
+            1280
+          ],
+          "purpose": 1,
+          "destination_dma_buf_objects": 1,
+          "owned_i915_dumb": false,
+          "experimental_i915_wc": false,
+          "calls": 1799
+        }
+      ],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": "NOT ESTABLISHED in this run; do not assign causes from older #538 causal runs",
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1280,720,44": 1799
+      }
+    },
+    {
+      "id": "nt-ab-v1-1280-60-3-baseline",
+      "study": "non_temporal",
+      "variant": "baseline",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "expected_frames": 1800,
+      "decoded_frames": 1800,
+      "render_successes": 1800,
+      "render_return_counts": {
+        "1": 1800
+      },
+      "status": "PASS",
+      "supervisor_exit": 0,
+      "app_exit": 0,
+      "error": null,
+      "Kodi_CPU_s": 12.979999999999999,
+      "elapsed_s": 31.740939333991264,
+      "Kodi_CPU_one_core_percent": 40.893559775969706,
+      "peak_RSS_KiB": 297692,
+      "compositor_CPU_s_separate": 0.76,
+      "VA_source": "34e3b030343b6f902e889d56e8a4afdabf11ff93",
+      "VA_build_id": "ab53e2a813dbbd8510df78b3eee68a597618526a",
+      "VA_mount_identity_verified": true,
+      "controller_source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+      "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+      "costs": {
+        "CopyYuy2ToSurface": {
+          "calls": 1800,
+          "returns": {
+            "1": 1800
+          },
+          "inclusive_wall_ns": 2594616679
+        },
+        "CopyNv12Pixels": {
+          "calls": 1800,
+          "returns": {
+            "1": 1800
+          },
+          "inclusive_wall_ns": 3522367534
+        },
+        "BeginCpuAccess_out_of_line": {
+          "calls": 5401,
+          "returns": {
+            "1": 5401
+          },
+          "inclusive_wall_ns": 154575038
+        },
+        "EndCpuAccess_out_of_line": {
+          "calls": 1,
+          "returns": {
+            "1": 1
+          },
+          "inclusive_wall_ns": 41626
+        }
+      },
+      "nested_destination_sync": {
+        "calls_by_flags_and_return": {
+          "6,0": 1800,
+          "2,0": 1800
+        },
+        "inclusive_wall_ns_by_flags": {
+          "2": 69683234,
+          "6": 1481567182
+        }
+      },
+      "copy_geometry": [
+        {
+          "source_width": 1280,
+          "source_height": 720,
+          "source_pitch": [
+            1280,
+            1280
+          ],
+          "destination_width": 1280,
+          "destination_height": 720,
+          "destination_pitch": [
+            1280,
+            1280
+          ],
+          "purpose": 1,
+          "destination_dma_buf_objects": 1,
+          "owned_i915_dumb": false,
+          "experimental_i915_wc": false,
+          "calls": 1800
+        }
+      ],
+      "terminal_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_file_boundary": {
+        "module": "3.10.14",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on"
+      },
+      "live_boundary_matches_profile_baseline": true,
+      "boundary_equal": true,
+      "private_null_sink_removed": true,
+      "failure_cause": null,
+      "actual_legacy_decoder_node": true,
+      "actual_native_V4L2_node": false,
+      "FFmpeg_H264_frame_dimensions_and_format_enum": {
+        "1280,720,44": 1800
+      }
+    }
+  ],
+  "PASS_only_summary": [
+    {
+      "study": "bulk",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "baseline": {
+        "valid_n": 2,
+        "excluded_FAIL_n": 0,
+        "Kodi_CPU_s": {
+          "median": 12.35,
+          "min": 12.32,
+          "max": 12.379999999999999
+        },
+        "Kodi_CPU_one_core_percent": {
+          "median": 38.851672410538924,
+          "min": 38.74191149068771,
+          "max": 38.961433330390136
+        },
+        "CopyNv12Pixels_inclusive_wall_ns": {
+          "median": 3993681100.5,
+          "min": 3977168323,
+          "max": 4010193878
+        }
+      },
+      "bulk": {
+        "valid_n": 2,
+        "excluded_FAIL_n": 0,
+        "Kodi_CPU_s": {
+          "median": 12.405,
+          "min": 12.379999999999999,
+          "max": 12.43
+        },
+        "Kodi_CPU_one_core_percent": {
+          "median": 38.9350962127903,
+          "min": 38.90423071571494,
+          "max": 38.96596170986565
+        },
+        "CopyNv12Pixels_inclusive_wall_ns": {
+          "median": 4007181106.0,
+          "min": 3961771321,
+          "max": 4052590891
+        }
+      }
+    },
+    {
+      "study": "bulk",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "baseline": {
+        "valid_n": 2,
+        "excluded_FAIL_n": 0,
+        "Kodi_CPU_s": {
+          "median": 12.950000000000001,
+          "min": 12.89,
+          "max": 13.010000000000002
+        },
+        "Kodi_CPU_one_core_percent": {
+          "median": 40.871344613079856,
+          "min": 40.77307504443333,
+          "max": 40.96961418172639
+        },
+        "CopyNv12Pixels_inclusive_wall_ns": {
+          "median": 3439987524.5,
+          "min": 3401953176,
+          "max": 3478021873
+        }
+      },
+      "bulk": {
+        "valid_n": 1,
+        "excluded_FAIL_n": 1,
+        "Kodi_CPU_s": {
+          "median": 12.98,
+          "min": 12.98,
+          "max": 12.98
+        },
+        "Kodi_CPU_one_core_percent": {
+          "median": 40.85796681808644,
+          "min": 40.85796681808644,
+          "max": 40.85796681808644
+        },
+        "CopyNv12Pixels_inclusive_wall_ns": {
+          "median": 3444592167,
+          "min": 3444592167,
+          "max": 3444592167
+        }
+      }
+    },
+    {
+      "study": "non_temporal",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "baseline": {
+        "valid_n": 2,
+        "excluded_FAIL_n": 0,
+        "Kodi_CPU_s": {
+          "median": 12.475,
+          "min": 12.41,
+          "max": 12.54
+        },
+        "Kodi_CPU_one_core_percent": {
+          "median": 39.1647839051228,
+          "min": 38.835324918078534,
+          "max": 39.49424289216707
+        },
+        "CopyNv12Pixels_inclusive_wall_ns": {
+          "median": 4304517843.0,
+          "min": 4019292083,
+          "max": 4589743603
+        }
+      },
+      "non_temporal": {
+        "valid_n": 2,
+        "excluded_FAIL_n": 0,
+        "Kodi_CPU_s": {
+          "median": 12.39,
+          "min": 12.309999999999999,
+          "max": 12.47
+        },
+        "Kodi_CPU_one_core_percent": {
+          "median": 38.870301437685974,
+          "min": 38.599619082173284,
+          "max": 39.140983793198664
+        },
+        "CopyNv12Pixels_inclusive_wall_ns": {
+          "median": 4068751407.5,
+          "min": 4002242920,
+          "max": 4135259895
+        }
+      }
+    },
+    {
+      "study": "non_temporal",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "baseline": {
+        "valid_n": 2,
+        "excluded_FAIL_n": 0,
+        "Kodi_CPU_s": {
+          "median": 13.03,
+          "min": 12.979999999999999,
+          "max": 13.08
+        },
+        "Kodi_CPU_one_core_percent": {
+          "median": 41.08859307939019,
+          "min": 40.893559775969706,
+          "max": 41.283626382810674
+        },
+        "CopyNv12Pixels_inclusive_wall_ns": {
+          "median": 3557842325.0,
+          "min": 3522367534,
+          "max": 3593317116
+        }
+      },
+      "non_temporal": {
+        "valid_n": 1,
+        "excluded_FAIL_n": 1,
+        "Kodi_CPU_s": {
+          "median": 13.030000000000001,
+          "min": 13.030000000000001,
+          "max": 13.030000000000001
+        },
+        "Kodi_CPU_one_core_percent": {
+          "median": 41.055954197592776,
+          "min": 41.055954197592776,
+          "max": 41.055954197592776
+        },
+        "CopyNv12Pixels_inclusive_wall_ns": {
+          "median": 3603631882,
+          "min": 3603631882,
+          "max": 3603631882
+        }
+      }
+    }
+  ],
+  "geometry_and_sync_control": {
+    "id": "va-geometry-v1-1920-30-0-va",
+    "status": "PASS",
+    "app_exit": 0,
+    "VA_source": "34e3b030343b6f902e889d56e8a4afdabf11ff93",
+    "VA_build_id": "ab53e2a813dbbd8510df78b3eee68a597618526a",
+    "decoded_frames": 900,
+    "copy_geometry": [
+      {
+        "source_width": 1920,
+        "source_height": 1088,
+        "source_pitch": [
+          1920,
+          1920
+        ],
+        "destination_width": 1920,
+        "destination_height": 1088,
+        "destination_pitch": [
+          1920,
+          1920
+        ],
+        "purpose": 1,
+        "destination_dma_buf_objects": 1,
+        "owned_i915_dumb": false,
+        "experimental_i915_wc": false,
+        "calls": 900
+      }
+    ],
+    "costs": {
+      "CopyYuy2ToSurface": {
+        "calls": 900,
+        "returns": {
+          "1": 900
+        },
+        "inclusive_wall_ns": 2932484295
+      },
+      "CopyNv12Pixels": {
+        "calls": 900,
+        "returns": {
+          "1": 900
+        },
+        "inclusive_wall_ns": 4001095173
+      },
+      "BeginCpuAccess_out_of_line": {
+        "calls": 2701,
+        "returns": {
+          "1": 2701
+        },
+        "inclusive_wall_ns": 129956846
+      },
+      "EndCpuAccess_out_of_line": {
+        "calls": 1,
+        "returns": {
+          "1": 1
+        },
+        "inclusive_wall_ns": 35830
+      }
+    },
+    "nested_destination_sync": {
+      "calls_by_flags_and_return": {
+        "6,0": 900,
+        "2,0": 900
+      },
+      "inclusive_wall_ns_by_flags": {
+        "2": 80045331,
+        "6": 1698951370
+      }
+    },
+    "copy_inclusive_minus_observed_START_END_wall_ns": 2222098472,
+    "subtraction_scope": "Residual inclusive elapsed wall, NOT pure memcpy or exclusive CPU. Source storage has no DMA-BUFs; nested flags2/6 are destination writes. Bulk eligibility is directly measured, not inferred.",
+    "no_userspace_flush_in_decoded_END": "EndDecodedCpuWrite uses DMA-BUF END or existing i915 GTT transition. Explicit FlushCpuWrites/CLFLUSH belongs fenced asynchronous VPP, not this decoded-public copy.",
+    "boundary_equal": true,
+    "private_null_sink_removed": true,
+    "restored": true
+  },
+  "pixel_proof": {
+    "status": "PASS",
+    "method": "Unmodified system FFmpeg forced VAAPI,hwdownload,format=nv12,-fps_mode passthrough,framemd5; all per-frame tuples compared in order, including PTS/duration/byte count and active-picture MD5. No new measurements/hashes computed for this archive.",
+    "cases": [
+      {
+        "id": "pixels-nt-v1-1280-baseline",
+        "exit": 0,
+        "frames": 180,
+        "boundary_equal": true
+      },
+      {
+        "id": "pixels-nt-v1-1280-nt",
+        "exit": 0,
+        "frames": 180,
+        "boundary_equal": true
+      },
+      {
+        "id": "pixels-nt-v1-1920-baseline",
+        "exit": 0,
+        "frames": 180,
+        "boundary_equal": true
+      },
+      {
+        "id": "pixels-nt-v1-1920-nt",
+        "exit": 0,
+        "frames": 180,
+        "boundary_equal": true
+      }
+    ],
+    "comparisons": [
+      {
+        "width": 1280,
+        "height": 720,
+        "frames": 180,
+        "status": "PASS",
+        "baseline_and_NT_tables_exactly_equal": true,
+        "header": [
+          "#format: frame checksums",
+          "#version: 2",
+          "#hash: MD5",
+          "#software: Lavf62.3.100",
+          "#tb 0: 1/30",
+          "#media_type 0: video",
+          "#codec_id 0: rawvideo",
+          "#dimensions 0: 1280x720",
+          "#sar 0: 1/1",
+          "#stream#, dts,        pts, duration,     size, hash"
+        ],
+        "columns": ["stream","dts","pts","duration","bytes","MD5"],
+        "identical_table": [
+          ["0","0","0","1","1382400","75ea7d2add4cce1c9973e3c4bb3b3215"],
+          ["0","1","1","1","1382400","db7f1bbe5f8a8cb88b4ae2dc8b678119"],
+          ["0","2","2","1","1382400","c12419079b7ef417cf3b756d121dcfbb"],
+          ["0","3","3","1","1382400","25281b7f6f3ad07cf1e80ff0e9742d74"],
+          ["0","4","4","1","1382400","6a7f687b08e1d4da2dc49488d6152adc"],
+          ["0","5","5","1","1382400","174c8393508a075a6444b268b494ebb8"],
+          ["0","6","6","1","1382400","7830b6a6d15c325516b3999558b99de4"],
+          ["0","7","7","1","1382400","1986447d4f025438741e737c84c1b9e2"],
+          ["0","8","8","1","1382400","bf4b49037698467e7ba6d4e8b3aacf5c"],
+          ["0","9","9","1","1382400","334b2ba4b9e0e08d4c05d9b04f905a3f"],
+          ["0","10","10","1","1382400","739336ef99a6cde01af5f76ac6335566"],
+          ["0","11","11","1","1382400","2c1fb7503f018678b72e2fb36e892d45"],
+          ["0","12","12","1","1382400","8fb6ffea80c9bbe9781ebfb46d78f80e"],
+          ["0","13","13","1","1382400","9ca842e47470acdc93b37a739aca2cd1"],
+          ["0","14","14","1","1382400","93d4172796c69c4601eaecba35f15050"],
+          ["0","15","15","1","1382400","808340a27d6168bbdb7059739b396011"],
+          ["0","16","16","1","1382400","1a998968c67eda039c212b07fed4a266"],
+          ["0","17","17","1","1382400","6a57f67eb2f290756d4d997b1f9f2ed3"],
+          ["0","18","18","1","1382400","0a55c54986db6ff8515cdc917f930815"],
+          ["0","19","19","1","1382400","9b2d06e36997e33446d4deb13a044650"],
+          ["0","20","20","1","1382400","77ad5d054b3017fe9f6bc8cb6348ef5d"],
+          ["0","21","21","1","1382400","3db4fe579e539372849ae0c2deff912b"],
+          ["0","22","22","1","1382400","f18e64651ed5d0e658161cd8b086a344"],
+          ["0","23","23","1","1382400","733b5c10ca6a0fc77cea8bfbe5e00bc2"],
+          ["0","24","24","1","1382400","f42dca868e0b32a9d36e5eaa0517f18f"],
+          ["0","25","25","1","1382400","d91484717f2a257019ade2f9ef6772e5"],
+          ["0","26","26","1","1382400","e91f83b5f3dca2813e94006e3fd75f2a"],
+          ["0","27","27","1","1382400","7bc539840fbd2d8af1bff6ccc0bb933b"],
+          ["0","28","28","1","1382400","5c8a56cbb2aeddcfdfdcb393f6907ed0"],
+          ["0","29","29","1","1382400","99c57c792ddaa8dfb912a89efa5b6a19"],
+          ["0","30","30","1","1382400","42959b2050b0ba314e5a51876a29e44e"],
+          ["0","31","31","1","1382400","5b3ea8ea4e794c69e9e5ec3411688da1"],
+          ["0","32","32","1","1382400","d3066c4d0a6c752a770dd9574f5e44cf"],
+          ["0","33","33","1","1382400","185d0a0ba953b4805c830bb893ab53cd"],
+          ["0","34","34","1","1382400","c9e85be9bad75a9e243c712201adc136"],
+          ["0","35","35","1","1382400","81094a9d418d17d38af254c142bf58d6"],
+          ["0","36","36","1","1382400","33cf3d3f24cc5d95cc97bff9da4278d6"],
+          ["0","37","37","1","1382400","878f680398ae2558f6a29a14bb6ccd72"],
+          ["0","38","38","1","1382400","f5394bc9dd741c2e64889cd511dcf8d8"],
+          ["0","39","39","1","1382400","58eefea0769e732b97b078c8884a2177"],
+          ["0","40","40","1","1382400","e1cce6abe574ab8ed60f0fbf23a85dc2"],
+          ["0","41","41","1","1382400","63146259540dc143cc3c2964e46edb8c"],
+          ["0","42","42","1","1382400","661c5645f74e1f2022503dcbb16a91f6"],
+          ["0","43","43","1","1382400","51952141d9b8b17101eb5cbced8abad8"],
+          ["0","44","44","1","1382400","1d766a57e95014e0ea298ca4d22f86f6"],
+          ["0","45","45","1","1382400","0cfd178422d7e2674f892361282a2aa6"],
+          ["0","46","46","1","1382400","d8bf11084e0bfa1f3392b44592951894"],
+          ["0","47","47","1","1382400","a2aec791d2766ac895da89123bfd9ba4"],
+          ["0","48","48","1","1382400","ec257ddfbbd2f06afa2e624e0c827a0f"],
+          ["0","49","49","1","1382400","6e620a3f5b1dcfab824da05bce40471b"],
+          ["0","50","50","1","1382400","dadc8c20b18e4e1d0422b18d6cb6a907"],
+          ["0","51","51","1","1382400","63964b292845ffb7f9ce238e8f6ffb39"],
+          ["0","52","52","1","1382400","043954f63863a22721fa2e57d7331311"],
+          ["0","53","53","1","1382400","86b8151ecbc3bf99f725f71f3b9a48b8"],
+          ["0","54","54","1","1382400","d241023e8306494b1edc20d64ad41f9f"],
+          ["0","55","55","1","1382400","92ebf81dfb8dbb9038328440acf5ba74"],
+          ["0","56","56","1","1382400","7bad4d8f9fcd5ea37964f7ea53b1e9c4"],
+          ["0","57","57","1","1382400","e2534f1718d194a2c13a516b1105df17"],
+          ["0","58","58","1","1382400","5476d6da76a2a70cc705b11f3ce6cad0"],
+          ["0","59","59","1","1382400","ac018ee012f73bc4e04fc7f6ebbab8c2"],
+          ["0","60","60","1","1382400","62a25c50dc591af57489333eba1ca7bd"],
+          ["0","61","61","1","1382400","adac49143ec5fe060eb3e5dd4d48e8d0"],
+          ["0","62","62","1","1382400","aa2298d09a548dae3e5b3d286bd9aa6a"],
+          ["0","63","63","1","1382400","daa15af75c4373d4277b3612a712c39e"],
+          ["0","64","64","1","1382400","0609ac7146e53a34c5bd29436b7ca6a2"],
+          ["0","65","65","1","1382400","d86c20c7b0b01915fa47555683f90f6f"],
+          ["0","66","66","1","1382400","9e3651b06deb4435c6ea4218940f6256"],
+          ["0","67","67","1","1382400","fee9122995923ebf9e0348dc294d9e87"],
+          ["0","68","68","1","1382400","c0c30807652eccecd8cc0a91b2e5cce7"],
+          ["0","69","69","1","1382400","e8e5249300ece0ae6382a2fd908fba78"],
+          ["0","70","70","1","1382400","59c2a1e5550f16560818bb0e7e540133"],
+          ["0","71","71","1","1382400","d99702f4ce05084ce1860950962a6347"],
+          ["0","72","72","1","1382400","ea7feaf49ab7f68a68de378bef316436"],
+          ["0","73","73","1","1382400","df31b9409022c9acbc543fa66602a444"],
+          ["0","74","74","1","1382400","5096f385f2bd81d47749486175cce667"],
+          ["0","75","75","1","1382400","bbe4b532f34e2d198e31ee4f9226c38c"],
+          ["0","76","76","1","1382400","1588e921a2969591ff091262bf82d56c"],
+          ["0","77","77","1","1382400","24380736a073ed2084c8514a340bac56"],
+          ["0","78","78","1","1382400","3219986f12c89c2210b646726e80a70c"],
+          ["0","79","79","1","1382400","6edff1fe81d62bc692d9fb2bd37ae167"],
+          ["0","80","80","1","1382400","12534762fe10492b77c8b2ab1a91b13a"],
+          ["0","81","81","1","1382400","cea8a402a67010020ca82750989881d9"],
+          ["0","82","82","1","1382400","ba612c5b9c86bf303eb5b88f20fba4d2"],
+          ["0","83","83","1","1382400","ae26926b61176fb92de6d2668b891f95"],
+          ["0","84","84","1","1382400","1cac71265b1c046ecf18a5ef792be192"],
+          ["0","85","85","1","1382400","d452e3fe9a38101ead64b842f3756740"],
+          ["0","86","86","1","1382400","cf50f8c2218c2eead538bcb891ffe113"],
+          ["0","87","87","1","1382400","b690f4f5090bb5e15376dd6ffea2b3df"],
+          ["0","88","88","1","1382400","22b5b522be56823dcbb3c5d28407fc23"],
+          ["0","89","89","1","1382400","d2a1aad8216033ed1381272e34cf40cf"],
+          ["0","90","90","1","1382400","354ebc89a7281def00d7bdadff2f4fb8"],
+          ["0","91","91","1","1382400","5a0c4ca499c0d0f1321d8273f335df04"],
+          ["0","92","92","1","1382400","10c626754c19c314e68d6e0c99cd0ba3"],
+          ["0","93","93","1","1382400","ff817423b7291cbc8a6f3a986faa86e8"],
+          ["0","94","94","1","1382400","85dfd47342e87fba836b097f352af90b"],
+          ["0","95","95","1","1382400","884fc6c33607803bd55bdf066324a3ed"],
+          ["0","96","96","1","1382400","ec71e56e79757b99d1777f0518f5289c"],
+          ["0","97","97","1","1382400","a6d69e403157e70b19567e1b2ee123f2"],
+          ["0","98","98","1","1382400","e6c8bf210072cb2b431c622a9f4b8ec0"],
+          ["0","99","99","1","1382400","52a6e262a639d7928d5e32fad44109cc"],
+          ["0","100","100","1","1382400","d7b58bed855ee39cf56f63bb1c2111fc"],
+          ["0","101","101","1","1382400","7abc781744b31137bf7efedf11b62b89"],
+          ["0","102","102","1","1382400","894c290571979e8646f405434fac9a73"],
+          ["0","103","103","1","1382400","a01c2ad0aaaee68cb33d97da5d637172"],
+          ["0","104","104","1","1382400","18455ed95f0a049cbc0615ada0a3b47b"],
+          ["0","105","105","1","1382400","3a7fdab9f41c59bc2fa1473b65ef3316"],
+          ["0","106","106","1","1382400","0f3740a882e067ddc2feeab91394aae5"],
+          ["0","107","107","1","1382400","6ad8eaa351886a3e63d941428ceb1c1e"],
+          ["0","108","108","1","1382400","07108c2a3dc03bd3163c7d48f651b450"],
+          ["0","109","109","1","1382400","8aaf0528f3101b28427aa83c1ca3b99b"],
+          ["0","110","110","1","1382400","b2bf926940ffc68fc341d8de3d9fc5ed"],
+          ["0","111","111","1","1382400","910906f68413f1f191dc9335314c4170"],
+          ["0","112","112","1","1382400","f73c2a659f8b51e8cc56068c4c2a5545"],
+          ["0","113","113","1","1382400","acacf96c713d0d15c312b3ac17ae10c5"],
+          ["0","114","114","1","1382400","3a7c7b5fcf018b688fb6373d55816380"],
+          ["0","115","115","1","1382400","6c1ae59d2177bd227d7199263f94d553"],
+          ["0","116","116","1","1382400","b5200420f3367ff20107bec3bebf5982"],
+          ["0","117","117","1","1382400","523e95ab7bb524c4d84047d567d2e834"],
+          ["0","118","118","1","1382400","c5d83df32417785948990319f4cb1342"],
+          ["0","119","119","1","1382400","60abc66745b9b7bb460cceef8da5387e"],
+          ["0","120","120","1","1382400","d7de65139301367f79026d3d30550134"],
+          ["0","121","121","1","1382400","aa9367b2896725c8d664d20dadd918f7"],
+          ["0","122","122","1","1382400","7effe466bb9e58fe4b5fccf4aa3203ea"],
+          ["0","123","123","1","1382400","cb1d33f870041b6b2815a28cd7e41658"],
+          ["0","124","124","1","1382400","33dffebcfd0ea86a277a5f8f8b3af65d"],
+          ["0","125","125","1","1382400","18c90a7f65e5cb59db9901f9f781723d"],
+          ["0","126","126","1","1382400","adb11a2c6cf73cc45e6567f6159b0047"],
+          ["0","127","127","1","1382400","ee781799b048ac8034a491fba4204e9d"],
+          ["0","128","128","1","1382400","a2b22384fdb0cbe09378fe0af6e879a6"],
+          ["0","129","129","1","1382400","892c038fd27068b2e0346d7c6a562cfe"],
+          ["0","130","130","1","1382400","f6bd169f793ef965d52ac23d590ebe8e"],
+          ["0","131","131","1","1382400","b92c96fe46918e53913f4846bdc509e9"],
+          ["0","132","132","1","1382400","77f6a86053caf49816a30d2a6c64beb9"],
+          ["0","133","133","1","1382400","c3aa84719b78156387a383a10901653a"],
+          ["0","134","134","1","1382400","3bd5705f353c6fc2f9cff1ac972bfbc0"],
+          ["0","135","135","1","1382400","c43e9c9d3ecd008747a6476776ef3c72"],
+          ["0","136","136","1","1382400","24a1c1b2c5ae5c34e136017f23c56cf5"],
+          ["0","137","137","1","1382400","82d76023450a43a81c10667ed8e2f1ed"],
+          ["0","138","138","1","1382400","d197aae25c88dc7f50bc3b29543f70e2"],
+          ["0","139","139","1","1382400","b6f75b11b5f7abf1a5eafe32b5430619"],
+          ["0","140","140","1","1382400","0966fce57159b27906325b82b77aa207"],
+          ["0","141","141","1","1382400","dcccffb4db23e1652d8705a100f1a143"],
+          ["0","142","142","1","1382400","bcf5e3ad0ff71adbe907348a3cf956d4"],
+          ["0","143","143","1","1382400","cdd2659d65c078b928914760c4678374"],
+          ["0","144","144","1","1382400","57b98a567d0825c58bda72404a06f2e2"],
+          ["0","145","145","1","1382400","5169296bef98b8d161af3c5f402706a3"],
+          ["0","146","146","1","1382400","5def0728a41436c91c6c24e3f6e92bc4"],
+          ["0","147","147","1","1382400","95ba7599f6c6b5c7d5b4c16f973a2cb6"],
+          ["0","148","148","1","1382400","2ce8199af4435fee13eb113a22ab1386"],
+          ["0","149","149","1","1382400","fb6c12deaa4f35d15ea60677b7f17d20"],
+          ["0","150","150","1","1382400","c486220741c3f57b05added30dfb9f14"],
+          ["0","151","151","1","1382400","e0ad287fb2077e4ce3ad0bc1c26614c4"],
+          ["0","152","152","1","1382400","91b56d791f17be1989a95550f66f865e"],
+          ["0","153","153","1","1382400","368cbac0ed1d42f8d503b64454033cad"],
+          ["0","154","154","1","1382400","cb8e876ade08cba97d3721bb5e18c919"],
+          ["0","155","155","1","1382400","7091a1a38bfb267a070696b6c13a89b0"],
+          ["0","156","156","1","1382400","686dfa4ba61d9f3533a7f84943b23a1e"],
+          ["0","157","157","1","1382400","6539997567f8446a7d1b30420452d553"],
+          ["0","158","158","1","1382400","b2ffab47f06a60b0c2cc8efe4ba0130e"],
+          ["0","159","159","1","1382400","df8e0094a99ca69c384ad9ce966a1e0e"],
+          ["0","160","160","1","1382400","61e778cc49c141c77e790c4cae5d883a"],
+          ["0","161","161","1","1382400","06c570f14d048e2e26d991888a099759"],
+          ["0","162","162","1","1382400","5dede2b2ffc90f80e2b1d8014732ef7d"],
+          ["0","163","163","1","1382400","46120084b4725bccee51a64a26e66df4"],
+          ["0","164","164","1","1382400","043edbe5b8f314e5023d99ce83622da0"],
+          ["0","165","165","1","1382400","74e74a79ad4d36f2968f6b1edf83fb38"],
+          ["0","166","166","1","1382400","6da10d2b546b1c0182af67803c603f58"],
+          ["0","167","167","1","1382400","64cde91d8d0b2f360b0e7ecb0c92495c"],
+          ["0","168","168","1","1382400","4a1c720a6da508c4963500a871e7d8ff"],
+          ["0","169","169","1","1382400","74ca4d9fcdd47fcbcc2da690a9618aa4"],
+          ["0","170","170","1","1382400","a2764f6002ad7e77bc52eaa5027afa98"],
+          ["0","171","171","1","1382400","fc10c83f280102ab0d5029a620d58459"],
+          ["0","172","172","1","1382400","1fb25df03f864cc37db02c47f38ecf86"],
+          ["0","173","173","1","1382400","a7b88bea5791877256dd610515f5061d"],
+          ["0","174","174","1","1382400","d98492deaa5de2f8604fddc06c678fa7"],
+          ["0","175","175","1","1382400","ba3e24b08b33f66fdfa50aa64def260e"],
+          ["0","176","176","1","1382400","f71e76821dc7a9a52f7ffd83824cb108"],
+          ["0","177","177","1","1382400","8242a4918ccd4e9bcd34c8523dd2c9ba"],
+          ["0","178","178","1","1382400","a12ac035ba37bc9776d0aba2927d7b56"],
+          ["0","179","179","1","1382400","f87e89cc946723f1250e909218099e6e"]
+        ]
+      },
+      {
+        "width": 1920,
+        "height": 1080,
+        "frames": 180,
+        "status": "PASS",
+        "baseline_and_NT_tables_exactly_equal": true,
+        "header": [
+          "#format: frame checksums",
+          "#version: 2",
+          "#hash: MD5",
+          "#software: Lavf62.3.100",
+          "#tb 0: 1/30",
+          "#media_type 0: video",
+          "#codec_id 0: rawvideo",
+          "#dimensions 0: 1920x1080",
+          "#sar 0: 1/1",
+          "#stream#, dts,        pts, duration,     size, hash"
+        ],
+        "columns": ["stream","dts","pts","duration","bytes","MD5"],
+        "identical_table": [
+          ["0","0","0","1","3110400","5d289bc04791a864406153edf7f187ca"],
+          ["0","1","1","1","3110400","cfd47fa322a0223c453c381432a4ac5d"],
+          ["0","2","2","1","3110400","41c3949bef09eee03c7836255c0d0518"],
+          ["0","3","3","1","3110400","eb0a8d77b29972434a2c1064432dfe1b"],
+          ["0","4","4","1","3110400","94b07ff802ec69087f7a7120bf38ebd2"],
+          ["0","5","5","1","3110400","ea5f583d9b44441857d6359c228411c9"],
+          ["0","6","6","1","3110400","437e39ac5fba771a745772eb31b81c07"],
+          ["0","7","7","1","3110400","07351559a7a93da7c04a8e49ac7ded7e"],
+          ["0","8","8","1","3110400","0babac10bd12578a51af82f7307a2230"],
+          ["0","9","9","1","3110400","0d727d6d41ea2d24afca33eb15ba7f6d"],
+          ["0","10","10","1","3110400","d5063d567407bcf2f015f7262b51b2dc"],
+          ["0","11","11","1","3110400","bc9af06b76e7c62cb5969889b727ea33"],
+          ["0","12","12","1","3110400","442963efcc0ad432bf78adfeefbf33d8"],
+          ["0","13","13","1","3110400","5f7d43a7a85b228372c436ab85355f69"],
+          ["0","14","14","1","3110400","e8d159aac28eebd97c13430467d7e702"],
+          ["0","15","15","1","3110400","116363c477e5d625602822f809c31780"],
+          ["0","16","16","1","3110400","babdc70cde838d5cafeb47c206bfaee2"],
+          ["0","17","17","1","3110400","ae6cfa26c0588f8c0caa2f326fb579cc"],
+          ["0","18","18","1","3110400","d131db8b3a4b1cd781416d9288758366"],
+          ["0","19","19","1","3110400","6a7fe8991ac82207cfca1df5dc5dde72"],
+          ["0","20","20","1","3110400","8f119ab20c9613da9af99e6bb23da014"],
+          ["0","21","21","1","3110400","2e0b1cccaccf9bf37fa3c1e129082f8d"],
+          ["0","22","22","1","3110400","15914120d6506610994b3f99f149f42b"],
+          ["0","23","23","1","3110400","f3b66ab92359353f9c5f1e7b9aae232f"],
+          ["0","24","24","1","3110400","c7da09b435678948e15f34e75a092b69"],
+          ["0","25","25","1","3110400","de728416641e0c863c2f5e174b046b0b"],
+          ["0","26","26","1","3110400","4d3b52a89251d61a815fd09a67b9e9e5"],
+          ["0","27","27","1","3110400","0c727c233b65aa888a334889d9468e20"],
+          ["0","28","28","1","3110400","9e1557d46497538d6553075c15b735ee"],
+          ["0","29","29","1","3110400","d31d5eecca64a60cab2de25edc6eae31"],
+          ["0","30","30","1","3110400","3114f2164c3a8be9e9e010d4c2e2ffc2"],
+          ["0","31","31","1","3110400","3a535e8eebaaef6b6a73c9bbf0efbb0f"],
+          ["0","32","32","1","3110400","62a0703cad994e23287862e8fa8ce5c1"],
+          ["0","33","33","1","3110400","2ee6b6e969f0d903c96035481bab5582"],
+          ["0","34","34","1","3110400","84a06476ac0c501ae6efb4b06bbbb96d"],
+          ["0","35","35","1","3110400","b0e7af27998ba04f1c5f2c87b8e7e0b5"],
+          ["0","36","36","1","3110400","2a82acb4d37b14eda3e43140fc0e00f0"],
+          ["0","37","37","1","3110400","47e195d658ed75bf734badba6afa3975"],
+          ["0","38","38","1","3110400","0cdbb0ca30a4d1ee91cfb62a2218f6b1"],
+          ["0","39","39","1","3110400","5fcca20b1adc88443790bbfb40714429"],
+          ["0","40","40","1","3110400","8d9dc17356d69d492bcfde8cdf1b19c8"],
+          ["0","41","41","1","3110400","559b7f8904bfb4e52d1976f54fb7ac58"],
+          ["0","42","42","1","3110400","3cdf77c4eba3f55ac0d1b92af0b69dd2"],
+          ["0","43","43","1","3110400","9815bc2caa12a0a358aa1ea9dd3ed741"],
+          ["0","44","44","1","3110400","c27871e0415201a64863ff43175c18f2"],
+          ["0","45","45","1","3110400","41460ae2e642e1fd9feb3ca8ee455a9b"],
+          ["0","46","46","1","3110400","e077f95ea995927af213f8e9cb404492"],
+          ["0","47","47","1","3110400","655f5b022bd8a8d2caf574853bdc9399"],
+          ["0","48","48","1","3110400","f21a863a1c7c3c6e9f98820c88f5a39f"],
+          ["0","49","49","1","3110400","c38c6c877c75a9299e4c75bec704f118"],
+          ["0","50","50","1","3110400","8500a945c14f6d68d3b430ee585fb6f0"],
+          ["0","51","51","1","3110400","c349d081424d9478e5cd18bc067b6902"],
+          ["0","52","52","1","3110400","30b8855183960c98d0d5596601c55c07"],
+          ["0","53","53","1","3110400","f49a17903f9a47a489a340143004c6e9"],
+          ["0","54","54","1","3110400","d9b26c48fa8b40a04c0222601660acfe"],
+          ["0","55","55","1","3110400","bb0b194a9e1527d2e4197fa05674ae2e"],
+          ["0","56","56","1","3110400","6203958fa0e9e6c70bf333702bdfde4e"],
+          ["0","57","57","1","3110400","8e8495d5e17ddf0d7dcfdcf8e284af1e"],
+          ["0","58","58","1","3110400","f4ed9f6b3f1680aea53eb470b166622f"],
+          ["0","59","59","1","3110400","14426371f2302137265228dc9f7b6e59"],
+          ["0","60","60","1","3110400","3865fd736bdfcb799964952b44570844"],
+          ["0","61","61","1","3110400","fda392993e1540e5321a58a1b703091a"],
+          ["0","62","62","1","3110400","3dd9fb42b00100bb1040279a9f01ea83"],
+          ["0","63","63","1","3110400","b99d7d6b5c74a99b548c5a291d005469"],
+          ["0","64","64","1","3110400","2fa87da94d1ea7905ee22680f212bdff"],
+          ["0","65","65","1","3110400","24e3987a1e1f29f6375df0ee5b356e48"],
+          ["0","66","66","1","3110400","012d0379da595d14008e8104e848635b"],
+          ["0","67","67","1","3110400","f88dadfb308bb10dbeb441a3c147243f"],
+          ["0","68","68","1","3110400","efc7b89db826c925c7c5ce5d9b96e85d"],
+          ["0","69","69","1","3110400","b369635eebbd6931da3a7065e5291036"],
+          ["0","70","70","1","3110400","6585d57583e05e9cc9b6c11939a9e699"],
+          ["0","71","71","1","3110400","96327f1dd977f213d85bfe840eb518bf"],
+          ["0","72","72","1","3110400","c8bd43cad878c8e5af34d927dbb83bb3"],
+          ["0","73","73","1","3110400","cf510964dbaf2824ab283f10cc2cc7b9"],
+          ["0","74","74","1","3110400","12361fe98433766b0fd12897def4aa10"],
+          ["0","75","75","1","3110400","315a395a7b2919cd16adea69ace466ee"],
+          ["0","76","76","1","3110400","106da599af3db8ce845dbd1b45273604"],
+          ["0","77","77","1","3110400","028f437889941e83669c3f854058800e"],
+          ["0","78","78","1","3110400","077447db2f2a070ce42c482ff37b5b98"],
+          ["0","79","79","1","3110400","83658a060f30418d2c3a47d6a1f62965"],
+          ["0","80","80","1","3110400","501ba28451cc1e47fa3455d1a1f3a375"],
+          ["0","81","81","1","3110400","794380b6cbaae12c0edf7a7a9dc66e25"],
+          ["0","82","82","1","3110400","a9d8276faeb0f86cf15f5db9c877a60b"],
+          ["0","83","83","1","3110400","81a7f7da2f269309fc464df218c242ea"],
+          ["0","84","84","1","3110400","873448504b255dfa4e2c3d7866081016"],
+          ["0","85","85","1","3110400","4d5f17b1c3119b6aa29cc6fbb1d5776b"],
+          ["0","86","86","1","3110400","2a9422ff5ce06bc3aa2b1c1a005dd405"],
+          ["0","87","87","1","3110400","abc938b5c140ffa0a26ddabdee9006d8"],
+          ["0","88","88","1","3110400","0afd3225ee07e00c1a2900ce5a55165e"],
+          ["0","89","89","1","3110400","7796c1c140cb211de977e5aa931655b8"],
+          ["0","90","90","1","3110400","bf5b888cb8c2c2e92746f4f68c2e1f6e"],
+          ["0","91","91","1","3110400","fe367b352955dc74b3c60f8e3f9f720e"],
+          ["0","92","92","1","3110400","4ab1e2e56c307379cc3473787763142f"],
+          ["0","93","93","1","3110400","802577782a60b676b749aec8182a63a3"],
+          ["0","94","94","1","3110400","81caa407d4898bfa4913b43e90117915"],
+          ["0","95","95","1","3110400","eea16e1ddb7f0dae2a7681da592211c7"],
+          ["0","96","96","1","3110400","96bda99471a76904cee14533e28e4dcf"],
+          ["0","97","97","1","3110400","5187eb6c0bc929fe39cd15b37dbd3e6f"],
+          ["0","98","98","1","3110400","8bdebffa891f43d27e18d0063b538cfa"],
+          ["0","99","99","1","3110400","7e1d9ce0fe5caaeeca306ff64e78ad31"],
+          ["0","100","100","1","3110400","fd47dc6f9bd6b1ccb972d0c911f76de2"],
+          ["0","101","101","1","3110400","9ca406a7964c87c5788902f5a2a9c4c7"],
+          ["0","102","102","1","3110400","6a5625addac8f5ee97775d4cce7f79a9"],
+          ["0","103","103","1","3110400","9b559ad6d1224bd06a8dcd386023ea25"],
+          ["0","104","104","1","3110400","aca43cb712717e72726f8ff65dc65169"],
+          ["0","105","105","1","3110400","22464592f17e871552ce85890f3d33aa"],
+          ["0","106","106","1","3110400","bd5525695b991b50cf754231acb84c1e"],
+          ["0","107","107","1","3110400","59563dc7e082b018c61b53ee57508313"],
+          ["0","108","108","1","3110400","6c2cf2f897dbb7fb5eac9ebeda145b47"],
+          ["0","109","109","1","3110400","6fa86951a6925e67f839877031a30f9e"],
+          ["0","110","110","1","3110400","64e5cb324a36ad2ccac4925444731978"],
+          ["0","111","111","1","3110400","74417ba00f12ec86c1405f1db9955bf6"],
+          ["0","112","112","1","3110400","98b30aa59636a1b4d350d22adf8e9bd1"],
+          ["0","113","113","1","3110400","8e45134c3b292a19ef717abe2a1da1bf"],
+          ["0","114","114","1","3110400","bd51166e4ea4b06021f754812beb850e"],
+          ["0","115","115","1","3110400","223db3b754c6ab89bc8d7c05e4d73b30"],
+          ["0","116","116","1","3110400","31096728126f12819cf76b5964bf073e"],
+          ["0","117","117","1","3110400","66fba4ec0bdf844e55e32edb7ae00acb"],
+          ["0","118","118","1","3110400","56b76ae6570539d15740a8970f5c45b2"],
+          ["0","119","119","1","3110400","d1944a29e4d537e99c3a9357a886ac29"],
+          ["0","120","120","1","3110400","7d44838fb166c820e66164ca209a1eee"],
+          ["0","121","121","1","3110400","7b31629f487fa14055048d54e089a44b"],
+          ["0","122","122","1","3110400","a3f4b0cbbf71a18fe4f324aaf81c3769"],
+          ["0","123","123","1","3110400","e6ac0d0418d4ffc1cf26d8ead56a3ab0"],
+          ["0","124","124","1","3110400","483800ec2e8fbd9b08bce5fcdeb2ee7c"],
+          ["0","125","125","1","3110400","b88ce7716a8eebc8b1d02ca42a743fed"],
+          ["0","126","126","1","3110400","ff98993926d3ae378ae7b0e8e2fd6b64"],
+          ["0","127","127","1","3110400","5868c6f8ed994c60b68ee195b874cefb"],
+          ["0","128","128","1","3110400","49f60fd80ee758c3d4464ea47391b8b1"],
+          ["0","129","129","1","3110400","9a2e9d15052b77b698b3f8428e17161d"],
+          ["0","130","130","1","3110400","f9c714d009541d8cdde588427069afe5"],
+          ["0","131","131","1","3110400","aaeae5409c4e2521a14b12e70426e5f0"],
+          ["0","132","132","1","3110400","9b32e6ee44aa145fe600cb5c5a58aba7"],
+          ["0","133","133","1","3110400","3e144c70ff3ac7114def7edbdac61a01"],
+          ["0","134","134","1","3110400","11a4fcf290ad36127823cb720681350b"],
+          ["0","135","135","1","3110400","05f751cac893cf3b7070b2e65baebc6d"],
+          ["0","136","136","1","3110400","77b0a6a087134bfeda138d69e120ce7f"],
+          ["0","137","137","1","3110400","f0104f5ee048d504530aa2526533591b"],
+          ["0","138","138","1","3110400","2a1161db2da83e1e2e4871aedfac331f"],
+          ["0","139","139","1","3110400","48b29621cd9e33613c76839b302e2e87"],
+          ["0","140","140","1","3110400","0930d33d69dd26d34297946a8c87304b"],
+          ["0","141","141","1","3110400","9ac99e802c101ea350da4eaff9ace334"],
+          ["0","142","142","1","3110400","24951292d785a3ef5b640f6a7b0af571"],
+          ["0","143","143","1","3110400","6c9bcf858b1155681b43358786cae092"],
+          ["0","144","144","1","3110400","d67b505e62bf36f3c59d0fb41f063bbe"],
+          ["0","145","145","1","3110400","96c6eee751200a6b0e8bd38d43aff9ca"],
+          ["0","146","146","1","3110400","f4b9cb9004336a5f787780847465fb7f"],
+          ["0","147","147","1","3110400","c11ded651d02c4abd24a0ef6db7d174e"],
+          ["0","148","148","1","3110400","9c337e83bab5399b0b961bce5f2b4728"],
+          ["0","149","149","1","3110400","3ab38b488652f9f2177c1653e0994e47"],
+          ["0","150","150","1","3110400","f59e538c81e0acf86ec1b417a1f59060"],
+          ["0","151","151","1","3110400","a24d1994bb742febb68130ba6c4df1a0"],
+          ["0","152","152","1","3110400","5b06c63f9198482d9c00ca49fee7e3c9"],
+          ["0","153","153","1","3110400","4e3711fabfa03618f72a97e29f7f6287"],
+          ["0","154","154","1","3110400","6df42fbd95061b487f262ad6ebd60e38"],
+          ["0","155","155","1","3110400","3495c615b09be3c7b4a40e46685baa0e"],
+          ["0","156","156","1","3110400","23ae2a3c8dc1e790fcad767d37ce8c0a"],
+          ["0","157","157","1","3110400","854ea661b35212475fc9f189c9471d77"],
+          ["0","158","158","1","3110400","e73bd5c2ccb618f813dc30be98f831c1"],
+          ["0","159","159","1","3110400","0e1e0f3db4cc3bbb24adad30e0dc0bc2"],
+          ["0","160","160","1","3110400","7dbfe6c333f7a3f392bc5f6f85eee5d5"],
+          ["0","161","161","1","3110400","da25548c117e01176b07c4fbca226f28"],
+          ["0","162","162","1","3110400","e8f2b98ac245b8d7a9f5c290898b0d3b"],
+          ["0","163","163","1","3110400","16d8f0b652e89e3ebd708a47889dc8df"],
+          ["0","164","164","1","3110400","8e9f38eb9ea4fa403e1df11ec3a0ae3b"],
+          ["0","165","165","1","3110400","668b42b94a6dc2ebce14dc7b4126e074"],
+          ["0","166","166","1","3110400","f42266005cc5b82d86899b1a452c1edd"],
+          ["0","167","167","1","3110400","fea334bc11ce95a9553bb387f15e9b17"],
+          ["0","168","168","1","3110400","d76a359b3b94ca3cbe06b11a09257db5"],
+          ["0","169","169","1","3110400","3a598b1ef261f9409045cb7326d6631f"],
+          ["0","170","170","1","3110400","3a3848495608d2968a7127c92a05d28b"],
+          ["0","171","171","1","3110400","d0679bc915a78cb5a4d091cf1ec0bd6e"],
+          ["0","172","172","1","3110400","557985010b882d96219395c0e8336318"],
+          ["0","173","173","1","3110400","fa242e0fc4b6571025788c2b61020999"],
+          ["0","174","174","1","3110400","09c5fca2446701d04b8d22bda318b7a0"],
+          ["0","175","175","1","3110400","05cf2d346df7c0a404394cacbf5fcfa8"],
+          ["0","176","176","1","3110400","f1921b2a15cc2bf2d7c6bd19e7d127a7"],
+          ["0","177","177","1","3110400","c3053199e86e9d4b57691f7e0d5e764e"],
+          ["0","178","178","1","3110400","d7dcb1709907cbc8e243e4c4d378dd7a"],
+          ["0","179","179","1","3110400","ca1b3224c9d4787a1a23a23143073c28"]
+        ]
+      }
+    ],
+    "restored": true,
+    "kernel_log_check_exit": 0,
+    "scope": "Four180-frame native arms (720 and1080 baseline/NT). Exact equality to baseline is not an independent color oracle, interlace coverage, physical scanout or performance test.",
+    "fixtures": "../issue538/kodi-native-v4l2-20261028.json: fixtures and fixture_reproduction"
+  },
+  "device_free_checks": [
+    {
+      "variant": "bulk",
+      "result": "VA-API cache protocol: 11 groups, 2775 checks PASS (default async cache: enabled)",
+      "thermal": {
+        "thermal_guard_exit": 0,
+        "peak_mC": 69000,
+        "pauses": 0,
+        "elapsed_s": 0.5020116099913139
+      },
+      "private_source_log": "cache-run.private.log"
+    },
+    {
+      "variant": "bulk_ASan_UBSan",
+      "result": "VA-API cache protocol: 11 groups, 2775 checks PASS (default async cache: enabled)",
+      "thermal": {
+        "thermal_guard_exit": 0,
+        "peak_mC": 68000,
+        "pauses": 0,
+        "elapsed_s": 0.5023989760084078
+      },
+      "private_source_log": "cache-asan-run.private.log"
+    },
+    {
+      "variant": "bulk_i686_no_SSE",
+      "result": "VA-API cache protocol: 11 groups, 2761 checks PASS (default async cache: unavailable)",
+      "thermal": {
+        "thermal_guard_exit": 0,
+        "peak_mC": 66000,
+        "pauses": 0,
+        "elapsed_s": 0.5035602419957286
+      },
+      "private_source_log": "cache-legacy32-run.private.log"
+    },
+    {
+      "variant": "bulk_QEMU_Pentium2",
+      "result": "VA-API cache protocol: 11 groups, 2761 checks PASS (default async cache: unavailable)",
+      "thermal": {
+        "thermal_guard_exit": 0,
+        "peak_mC": 66000,
+        "pauses": 0,
+        "elapsed_s": 0.5020625299948733
+      },
+      "private_source_log": "cache-pentium2-run.private.log"
+    },
+    {
+      "variant": "NT_O0_SSE2",
+      "result": "VA-API cache protocol: 11 groups, 2979 checks PASS (default async cache: enabled)",
+      "thermal": {
+        "thermal_guard_exit": 0,
+        "peak_mC": 66000,
+        "pauses": 0,
+        "elapsed_s": 0.5022702050046064
+      },
+      "private_source_log": "cache-nt-o0-run.private.log"
+    }
+  ],
+  "NT_deferred_checks": {
+    "ASan_UBSan": "NOT RUN for NT; native benefit not established",
+    "i686_no_SSE": "NOT RUN for NT; earlier bulk-only result is not NT validation",
+    "long_soak": "NOT RUN"
+  },
+  "related_causal_study": {
+    "issue": "https://github.com/ahnhy1324/crystalhd/issues/538",
+    "source": "d6b2dc4f772a5af4000fd1068ced53b70584b755",
+    "fixture": "../issue538/kodi-native-v4l2-20261028.json",
+    "sections": [
+      "VA_60p_causal_followup",
+      "VA_heap_late_attach_followup"
+    ],
+    "table": "../issue538/kodi-va-causal-20261028.tsv",
+    "separation": "The older causal run measured losses before VA submission. It does not establish the causes of the1731/1800 or1799/1800 FAILs here."
+  },
+  "related_RX_guard_control": {
+    "status": "NO_MISMATCH_OBSERVED_IN_THIS_BOUNDED_DIAGNOSTIC",
+    "source": "0f1ed213bb0a518c75e7e9303d71dec56990e958",
+    "base_DIL_source": "54752a1af514eb673b563fb80b6df6600223a666",
+    "decoded_frames": 900,
+    "app_exit": 0,
+    "summaries": [
+      {
+        "allocations": 16,
+        "checks": 932,
+        "map": 16,
+        "fetch": 900,
+        "unmap": 16,
+        "free": 0,
+        "rollback": 0,
+        "mismatch": 0,
+        "quarantine": 0,
+        "phase": "unmap"
+      },
+      {
+        "allocations": 16,
+        "checks": 948,
+        "map": 16,
+        "fetch": 900,
+        "unmap": 16,
+        "free": 16,
+        "rollback": 0,
+        "mismatch": 0,
+        "quarantine": 0,
+        "phase": "close"
+      }
+    ],
+    "limit": "One bounded900-frame run observed no guard mismatch. Heap fault origin remains unresolved; this does not prove RX innocence or a heap fix."
+  },
+  "preserved_failures": [
+    {
+      "id": "copy-ab-v1-1280-60-2-candidate",
+      "status": "FAIL",
+      "expected_frames": 1800,
+      "decoded_frames": 1731,
+      "render_successes": 1731,
+      "error": "AssertionError: actual VA hardware output census",
+      "cause": "NOT ESTABLISHED in this run; do not assign causes from older #538 causal runs"
+    },
+    {
+      "id": "nt-ab-v1-1280-60-2-nt",
+      "status": "FAIL",
+      "expected_frames": 1800,
+      "decoded_frames": 1799,
+      "render_successes": 1793,
+      "error": "AssertionError: actual VA hardware output census",
+      "cause": "NOT ESTABLISHED in this run; do not assign causes from older #538 causal runs"
+    }
+  ]
+}
