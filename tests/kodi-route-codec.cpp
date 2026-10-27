@@ -69,6 +69,9 @@ static void temporary_drain() {
     std::array<uint8_t, 16> input{}; input.fill(73);
     DEMUX_PACKET packet{}; packet.pData = input.data(); packet.iSize = input.size();
     packet.pts = packet.dts = 0; packet.duration = 33333;
+#ifdef CRYSTALHD_KODI_PLAYBACK
+    progress->SetSpeed(0); // Kodi's clock pause must not block queued packets
+#endif
     g_assert_true(callbacks.add_data(&video, &packet));
     auto pull = [&](VIDEOCODEC_RETVAL expected) {
       const auto until = g_get_monotonic_time() + 3000000;
@@ -85,20 +88,20 @@ static void temporary_drain() {
     pull(VC_EOF); // temporary phase only; firmware/appsrc must stay open
     input.fill(129); packet.pts = packet.dts = 33333;
 #ifdef CRYSTALHD_KODI_PLAYBACK
-    progress->paused.store(true);
+    progress->pause_input.store(true);
     g_assert_false(callbacks.add_data(&video, &packet)); // no packet consumed
     pull(VC_EOF); // end temporary host squeeze only, never media EOF
-    progress->paused.store(false);
+    progress->pause_input.store(false);
 #endif
     g_assert_true(callbacks.add_data(&video, &packet));
 #ifdef CRYSTALHD_KODI_PLAYBACK
-    progress->paused.store(true); // pause before the first final-input pull
+    progress->pause_input.store(true); // pause before the first final-input pull
 #endif
     g_assert_cmpint(pull(VC_PICTURE), ==, 33333);
     for (auto byte : backing) g_assert_cmpuint(byte, ==, 129);
 #ifdef CRYSTALHD_KODI_PLAYBACK
     pull(VC_EOF); // final input while paused still ends only a temporary squeeze
-    progress->paused.store(false);
+    progress->pause_input.store(false);
 #endif
     pull(VC_EOF); // actual finite input is now complete
     callbacks.reset(&video);

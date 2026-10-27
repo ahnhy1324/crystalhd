@@ -10,7 +10,14 @@ namespace crystalhd_kodi {
 struct InputProgress {
   std::atomic<uint64_t> epoch{1}, packets{0};
   std::atomic<bool> eof{false}, failed{false}, closed{false};
-  std::atomic<bool> paused{false}; // input-idle playback, never decoder STOP
+  std::atomic<bool> pause_input{false}; // explicit private admission control
+  std::atomic<int> demux_speed{1000};
+  void SetSpeed(int speed) {
+    // Kodi reports presentation/demux speed independently of already queued
+    // codec packets. Blocking those packets can prevent the host from ever
+    // processing Resume. A speed notification is not our pause_input API.
+    demux_speed.store(speed);
+  }
   void Seek() {
     eof.store(false); packets.store(0); failed.store(false);
     epoch.fetch_add(1);

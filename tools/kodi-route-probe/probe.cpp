@@ -209,7 +209,7 @@ public:
     if (!active && !Start()) { fatal = true; return true; }
     if (packet.iSize <= 0) { fatal = true; return true; }
 #ifdef CRYSTALHD_KODI_PLAYBACK
-    decoder.SetPaused(progress->paused.load());
+    decoder.SetPaused(progress->pause_input.load());
 #endif
     using Submit = PlaybackBackend::Submit;
     const Submit result = decoder.Push(packet.pData, packet.iSize, packet.pts, packet.dts, packet.duration);
@@ -239,7 +239,7 @@ public:
     }
     if (progress->failed.load()) return Fail("demux input failed before EOF");
 #ifdef CRYSTALHD_KODI_PLAYBACK
-    decoder.SetPaused(progress->paused.load());
+    decoder.SetPaused(progress->pause_input.load());
 #endif
     using Result = PlaybackBackend::Result;
     Result result;
@@ -510,8 +510,8 @@ public:
   }
 #ifdef CRYSTALHD_KODI_PLAYBACK
   void DemuxSetSpeed(int speed) override {
-    progress->paused.store(speed == 0);
-    kodi::Log(ADDON_LOG_INFO, "CrystalHD-Playback input_speed=%d epoch=%llu; no EOS/reset",
+    progress->SetSpeed(speed);
+    kodi::Log(ADDON_LOG_INFO, "CrystalHD-Playback demux_speed=%d epoch=%llu; queued codec input remains admissible, no EOS/reset",
               speed, static_cast<unsigned long long>(progress->epoch.load()));
   }
 #endif
