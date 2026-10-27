@@ -584,6 +584,12 @@ static void test_held_pool_and_caps(void)
   gint64 end = g_get_monotonic_time() + G_USEC_PER_SEC;
   while (!g_atomic_pointer_get(&delayed_event) && g_get_monotonic_time() < end) g_usleep(1000);
   g_assert_nonnull(g_atomic_pointer_get(&delayed_event));
+  gst_video_overlay_expose(GST_VIDEO_OVERLAY(sink));
+  g_usleep(50000);
+  g_mutex_lock(&c->lock);
+  g_assert_true(c->last_buffer == buffers[0]); g_assert_true(buffer_memory(buffers[0])->server_owned);
+  g_assert_cmpuint(c->submitted, ==, 1); g_assert_cmpuint(c->redraw_submitted, ==, 0);
+  g_mutex_unlock(&c->lock);
   CapsJob job = {.sink = sink, .caps = gst_video_info_to_caps(&next)};
   GThread *thread = g_thread_new("xv-caps-test", change_caps, &job);
   while (!g_atomic_int_get(&job.started)) g_usleep(1000);
@@ -594,6 +600,9 @@ static void test_held_pool_and_caps(void)
   g_atomic_int_set(&release_delayed, TRUE); wake_context(c);
   g_thread_join(thread); g_assert_true(job.result); gst_caps_unref(job.caps);
   g_atomic_pointer_set(&delay_connection, NULL); g_assert_null(g_atomic_pointer_get(&delayed_event));
+  g_mutex_lock(&c->lock);
+  g_assert_null(c->last_buffer); g_assert_cmpuint(c->redraw_submitted, ==, 0);
+  g_mutex_unlock(&c->lock);
   GstBuffer *empty = NULL;
   GstBufferPoolAcquireParams params = {.flags = GST_BUFFER_POOL_ACQUIRE_FLAG_DONTWAIT};
   g_assert_cmpint(gst_buffer_pool_acquire_buffer(pool, &empty, &params), !=, GST_FLOW_OK);
