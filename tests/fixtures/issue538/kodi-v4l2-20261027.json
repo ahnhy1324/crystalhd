@@ -1,0 +1,2146 @@
+{
+  "schema": 1,
+  "issue": 538,
+  "date": "2026-10-27",
+  "decision": "Actual opt-in Kodi V4L2 YUY2 integration and bounded 720p/FHD resource measurement PASS. No material CPU saving established over VA/NV12; FHD RSS is higher. This is not standalone EXPBUF/EGL direct import and not supported/default Kodi playback.",
+  "sources": {
+    "addon_payload": "779d94268fbdacca44b6a1345673644456aba4bf",
+    "addon_metadata_followup": "New addon-v4l2.xml describes the same tested ELF; metadata only, no binary change.",
+    "module_source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+    "module": "3.10.14 temporary research module; original 3.10.13 restored",
+    "DIL_for_VA_control": "54752a1af514eb673b563fb80b6df6600223a666",
+    "VA_control": "Unchanged installed crystalhd_drv_video.so, __vaDriverInit_1_23; build-id 12dc033b87ad4501b8ba93ba415867b1e4ff9ff8. Exact installed VA source revision not asserted.",
+    "Kodi": "Published Flathub 22.0rc1 / 20260927-28ea2eac-dirty. Publisher version suffix preserved; no local external app/source patches.",
+    "Kodi_OSTree_deployment": "0a381e42781914ae76ed338d3aa11f9403c55c57f5c9c194e1f4fb437cf71630",
+    "runtime_OSTree_deployment": "e7f7b0fb20662fe92e4eac65d58a57019cefae45a39559c4b50440a88acc0491",
+    "SDK": "Kodi 28ea2ea, InputStream 3.4.0, VideoCodec 2.2.1"
+  },
+  "environment": {
+    "OS": "Ubuntu 26.04.1 LTS",
+    "kernel": "7.0.0-38-generic",
+    "CPU": "Core 2 Duo T8100",
+    "decoder": "BCM70015",
+    "GPU": "Mesa Intel 965GM (CL), OpenGL ES 2.0 Mesa 26.2.5",
+    "display": "Private GPU Weston 14.0.2 headless, source dimensions (1280x720 or 1920x1080), 60 Hz; system display unchanged",
+    "audio": "Same AAC file/stock Kodi decoder; private nondefault PipeWire null sink, link verified; physical AV NOT RUN"
+  },
+  "selection": {
+    "ordinary_file_with_node_exposed": "ff-h264-vaapi and actual /dev/crystalhd only; accessible V4L2 node not selected",
+    "explicit_entry": "Existing ListItem inputstream.crystalhd.routeprobe property; companion VideoCodec names actual V4L2 YUY2 backend",
+    "actual_V4L2": "INPUT H264->MP4-to-AnnexB BSF->real OUTPUT MMAP/QBUF; SOURCE_CHANGE->real YUYV G_FMT->CAPTURE MMAP/DQBUF; no software video decoder fallback",
+    "output": "Exact source dimensions, width*2 stride, limited BT709 4:2:2, borrowed MMAP sample->ONE checked row copy into Kodi-owned YUY2->normal GLES shader. Gst is metadata/parser-only in this backend; crystalhddec is not the decoder.",
+    "buffer_boundary": "GetFrameBufferPlatformHandle returns false/type0 at both resolutions. No import of arbitrary CAPTURE EXPBUF through this VideoCodec callback; no zero-copy claim."
+  },
+  "fixtures": {
+    "1280": {
+      "stream": {
+        "codec_name": "h264",
+        "profile": "High",
+        "width": 1280,
+        "height": 720,
+        "has_b_frames": 2,
+        "color_range": "tv",
+        "color_space": "bt709",
+        "color_transfer": "bt709",
+        "color_primaries": "bt709",
+        "r_frame_rate": "30/1",
+        "time_base": "1/15360",
+        "nb_frames": "180"
+      },
+      "coded_packet_count": 180,
+      "packet_PTS_reorder_observed": true,
+      "video_preparation": "Stream-copy existing issue533 color-709 source; h264_metadata tags limited BT709 matrix/primaries/transfer. Reconstructed video unchanged. Stream-copy first 6.05 s of the issue531 AAC track; no video/audio re-encoding. No media committed.",
+      "source_reference": "https://github.com/ahnhy1324/crystalhd/blob/2399430992a81aa16344aab3630999f874c5c853/tests/fixtures/issue533/README.md#source-paced-resource-comparison--2026-10-27",
+      "audio": "AAC mono, 48 kHz, 283 packets; stock Kodi audio decoder to owned nondefault null sink",
+      "video_preparation_command": "ffmpeg -i SOURCE_VIDEO -i SOURCE_AAC -map 0:v:0 -map 1:a:0 -c copy -t 6.05 -bsf:v h264_metadata=video_full_range_flag=0:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1 -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 OUTPUT.mp4"
+    },
+    "1920": {
+      "stream": {
+        "codec_name": "h264",
+        "profile": "High",
+        "width": 1920,
+        "height": 1080,
+        "has_b_frames": 2,
+        "color_range": "tv",
+        "color_space": "bt709",
+        "color_transfer": "bt709",
+        "color_primaries": "bt709",
+        "r_frame_rate": "30/1",
+        "time_base": "1/15360",
+        "nb_frames": "180"
+      },
+      "coded_packet_count": 180,
+      "packet_PTS_reorder_observed": true,
+      "video_preparation": "Stream-copy existing issue533 color-709 source; h264_metadata tags limited BT709 matrix/primaries/transfer. Reconstructed video unchanged. Stream-copy first 6.05 s of the issue531 AAC track; no video/audio re-encoding. No media committed.",
+      "source_reference": "https://github.com/ahnhy1324/crystalhd/blob/2399430992a81aa16344aab3630999f874c5c853/tests/fixtures/issue533/README.md#source-paced-resource-comparison--2026-10-27",
+      "audio": "AAC mono, 48 kHz, 283 packets; stock Kodi audio decoder to owned nondefault null sink",
+      "video_preparation_command": "ffmpeg -i SOURCE_VIDEO -i SOURCE_AAC -map 0:v:0 -map 1:a:0 -c copy -t 6.05 -bsf:v h264_metadata=video_full_range_flag=0:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1 -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 OUTPUT.mp4"
+    }
+  },
+  "qualification_cases": [
+    {
+      "case": "qual-v3-1280",
+      "cycle": 0,
+      "width": 1280,
+      "height": 720,
+      "status": "PASS",
+      "returned_originals": 180,
+      "exact_ordered_source_PTS": true,
+      "last_PTS_us": 5966667,
+      "whole_active_row_YUY2_sha256": "c74afb04ede1a815a3d33b1214a8b9253a87bc3f48841d7ea4a5f6cfdf8b06dd",
+      "actual_video_node": true,
+      "legacy_character_node_used": false,
+      "natural_EOF": [
+        "CrystalHD-Native EOF session=1 accepted=180 pictures=180 last_pts_us=5966667"
+      ],
+      "kernel_terminal": "real STOP at complete finite source EOF; real LAST/EPIPE; 180 accepted/completed/pictures; zero borrowed buffers",
+      "kodi_platform": [
+        "CrystalHD-V4L2 Kodi buffer=1280x720 stride=2560 platform_type=0 available=0; one CPU copy"
+      ],
+      "audio_null_link": true,
+      "live_process_retirement": true,
+      "controls": []
+    },
+    {
+      "case": "qual-v3-1280",
+      "cycle": 1,
+      "width": 1280,
+      "height": 720,
+      "status": "PASS",
+      "returned_originals": 180,
+      "exact_ordered_source_PTS": true,
+      "last_PTS_us": 5966667,
+      "whole_active_row_YUY2_sha256": "c74afb04ede1a815a3d33b1214a8b9253a87bc3f48841d7ea4a5f6cfdf8b06dd",
+      "actual_video_node": true,
+      "legacy_character_node_used": false,
+      "natural_EOF": [
+        "CrystalHD-Native EOF session=1 accepted=180 pictures=180 last_pts_us=5966667"
+      ],
+      "kernel_terminal": "real STOP at complete finite source EOF; real LAST/EPIPE; 180 accepted/completed/pictures; zero borrowed buffers",
+      "kodi_platform": [
+        "CrystalHD-V4L2 Kodi buffer=1280x720 stride=2560 platform_type=0 available=0; one CPU copy"
+      ],
+      "audio_null_link": true,
+      "live_process_retirement": true,
+      "controls": []
+    },
+    {
+      "case": "qual-v3-1920",
+      "cycle": 0,
+      "width": 1920,
+      "height": 1080,
+      "status": "PASS",
+      "returned_originals": 180,
+      "exact_ordered_source_PTS": true,
+      "last_PTS_us": 5966667,
+      "whole_active_row_YUY2_sha256": "0112fb1c1be254ffcd1f68ff8737b45d0125527fd22de62f04b8ef6c3c4b0ee2",
+      "actual_video_node": true,
+      "legacy_character_node_used": false,
+      "natural_EOF": [
+        "CrystalHD-Native EOF session=1 accepted=180 pictures=180 last_pts_us=5966667"
+      ],
+      "kernel_terminal": "real STOP at complete finite source EOF; real LAST/EPIPE; 180 accepted/completed/pictures; zero borrowed buffers",
+      "kodi_platform": [
+        "CrystalHD-V4L2 Kodi buffer=1920x1080 stride=3840 platform_type=0 available=0; one CPU copy"
+      ],
+      "audio_null_link": true,
+      "live_process_retirement": true,
+      "controls": []
+    },
+    {
+      "case": "qual-v3-1920",
+      "cycle": 1,
+      "width": 1920,
+      "height": 1080,
+      "status": "PASS",
+      "returned_originals": 180,
+      "exact_ordered_source_PTS": true,
+      "last_PTS_us": 5966667,
+      "whole_active_row_YUY2_sha256": "0112fb1c1be254ffcd1f68ff8737b45d0125527fd22de62f04b8ef6c3c4b0ee2",
+      "actual_video_node": true,
+      "legacy_character_node_used": false,
+      "natural_EOF": [
+        "CrystalHD-Native EOF session=1 accepted=180 pictures=180 last_pts_us=5966667"
+      ],
+      "kernel_terminal": "real STOP at complete finite source EOF; real LAST/EPIPE; 180 accepted/completed/pictures; zero borrowed buffers",
+      "kodi_platform": [
+        "CrystalHD-V4L2 Kodi buffer=1920x1080 stride=3840 platform_type=0 available=0; one CPU copy"
+      ],
+      "audio_null_link": true,
+      "live_process_retirement": true,
+      "controls": []
+    },
+    {
+      "case": "controls-v1-1280",
+      "cycle": 0,
+      "width": 1280,
+      "height": 720,
+      "status": "PASS",
+      "returned_originals": 180,
+      "exact_ordered_source_PTS": true,
+      "last_PTS_us": 5966667,
+      "whole_active_row_YUY2_sha256": "c74afb04ede1a815a3d33b1214a8b9253a87bc3f48841d7ea4a5f6cfdf8b06dd",
+      "actual_video_node": true,
+      "legacy_character_node_used": false,
+      "natural_EOF": [
+        "CrystalHD-Native EOF session=1 accepted=180 pictures=180 last_pts_us=5966667"
+      ],
+      "kernel_terminal": "real STOP at complete finite source EOF; real LAST/EPIPE; 180 accepted/completed/pictures; zero borrowed buffers",
+      "kodi_platform": [
+        "CrystalHD-V4L2 Kodi buffer=1280x720 stride=2560 platform_type=0 available=0; one CPU copy"
+      ],
+      "audio_null_link": true,
+      "live_process_retirement": true,
+      "controls": [
+        {
+          "requested_gap_s": 0.1,
+          "observed_gap_s": 0.11053667101077735,
+          "kodi_speed": 0,
+          "actual_node_retained": true,
+          "resets": 0,
+          "terminal_EOF_during_pause": 0
+        },
+        {
+          "requested_gap_s": 1.0,
+          "observed_gap_s": 1.0175674199999776,
+          "kodi_speed": 0,
+          "actual_node_retained": true,
+          "resets": 0,
+          "terminal_EOF_during_pause": 0
+        },
+        {
+          "requested_gap_s": 3.0,
+          "observed_gap_s": 3.010556204986642,
+          "kodi_speed": 0,
+          "actual_node_retained": true,
+          "resets": 0,
+          "terminal_EOF_during_pause": 0
+        }
+      ]
+    },
+    {
+      "case": "controls-v1-1920",
+      "cycle": 0,
+      "width": 1920,
+      "height": 1080,
+      "status": "PASS",
+      "returned_originals": 180,
+      "exact_ordered_source_PTS": true,
+      "last_PTS_us": 5966667,
+      "whole_active_row_YUY2_sha256": "0112fb1c1be254ffcd1f68ff8737b45d0125527fd22de62f04b8ef6c3c4b0ee2",
+      "actual_video_node": true,
+      "legacy_character_node_used": false,
+      "natural_EOF": [
+        "CrystalHD-Native EOF session=1 accepted=180 pictures=180 last_pts_us=5966667"
+      ],
+      "kernel_terminal": "real STOP at complete finite source EOF; real LAST/EPIPE; 180 accepted/completed/pictures; zero borrowed buffers",
+      "kodi_platform": [
+        "CrystalHD-V4L2 Kodi buffer=1920x1080 stride=3840 platform_type=0 available=0; one CPU copy"
+      ],
+      "audio_null_link": true,
+      "live_process_retirement": true,
+      "controls": [
+        {
+          "requested_gap_s": 0.1,
+          "observed_gap_s": 0.10826237300352659,
+          "kodi_speed": 0,
+          "actual_node_retained": true,
+          "resets": 0,
+          "terminal_EOF_during_pause": 0
+        },
+        {
+          "requested_gap_s": 1.0,
+          "observed_gap_s": 1.008461642995826,
+          "kodi_speed": 0,
+          "actual_node_retained": true,
+          "resets": 0,
+          "terminal_EOF_during_pause": 0
+        },
+        {
+          "requested_gap_s": 3.0,
+          "observed_gap_s": 3.0112504539865768,
+          "kodi_speed": 0,
+          "actual_node_retained": true,
+          "resets": 0,
+          "terminal_EOF_during_pause": 0
+        }
+      ]
+    }
+  ],
+  "performance_conditions": {
+    "order_per_geometry": [
+      "va",
+      "v4l2",
+      "v4l2",
+      "va"
+    ],
+    "n_per_route_per_geometry": 2,
+    "processes": "Fresh private Kodi profile/process per timing arm; same unchanged executable, experimental module, source, output geometry, AAC sink, renderer and settings",
+    "window": "File invocation (kodi-send) through CVideoPlayer OnExit AND live device ownership retirement; includes addon/module context setup and drain, excludes Kodi/compositor initial process launch and Application.Quit",
+    "CPU": "/proc actual kodi.bin USER+SYS, 100 Hz. One core=100%; last-seen thread samples may miss final exited-thread ticks. Kernel-worker/IRQ/GPU CPU not wholly attributed. Compositor measured separately.",
+    "diagnostics": "quiet v4l2 build; no per-frame logs/digests/RGB work. Shared AddVideoPicture uretprobe counts; VA also has DtsProcOutputNoCopy return counter. Probe overhead is not subtracted. No simultaneous build/soak. Host background not isolated.",
+    "startup": "Fresh V4L2 profile incurs first Gst metadata/parser registry setup. Lower CPU percentage over its longer wall window is NOT CPU saving; compare CPU seconds per equal 180-picture file.",
+    "RSS": "VmRSS peak from same actual Kodi PID. Includes resident mappings, not unique physical allocation; no additive mapped-buffer RAM claim.",
+    "frames": "180 successful AddVideoPicture returns per arm; source 30.000 label is declared stream rate. These are not unique source pictures physically scanned out or an actual display/drop FPS measurement.",
+    "counter_exclusion": "Requested Player.Process(videodroppedframes/videoskippedframes) are not supported labels in pinned Kodi; empty results are NOT zero drops. Physical scanout/drop counts NOT RUN.",
+    "common_nonfatal_warnings": "Both routes log LinuxRendererGLES Configure SetVideoOutput failed in this headless environment; Intel GLES renderer and exact selected resolution are verified; no shader/software fallback inferred."
+  },
+  "runs": [
+    {
+      "case": "perf-v1-1280-0-va",
+      "arm": "va",
+      "width": 1280,
+      "height": 720,
+      "status": "PASS",
+      "source": "779d94268fbdacca44b6a1345673644456aba4bf",
+      "cpu_s": 2.2299999999999995,
+      "cpu_ms_per_source_picture": 12.388888888888888,
+      "wall_s": 7.6675205459905555,
+      "cpu_percent_one_core_over_own_invocation_window": 29.083717306321336,
+      "peak_RSS_KiB": 289028,
+      "compositor_CPU_s_separate": 0.17,
+      "thread_CPU_s_last_seen": [
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.59
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.5
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.36
+        },
+        {
+          "name": "PeripBusCEC",
+          "cpu_s": 0.08000000000000002
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.06
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.06
+        },
+        {
+          "name": "Vaapi-Output",
+          "cpu_s": 0.06
+        },
+        {
+          "name": "ActiveAE",
+          "cpu_s": 0.049999999999999996
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.04
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.039999999999999994
+        },
+        {
+          "name": "Announce",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "LanguageInvoker",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "pipewire",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "AESink",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "PeripEventScan",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.010000000000000002
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.01
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.009999999999999995
+        },
+        {
+          "name": "LanguageInvoker",
+          "cpu_s": 0.009999999999999981
+        },
+        {
+          "name": "Lirc",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$1",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$2",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$3",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "PeripBusUSBUdev",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "PeripBusAddon",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "EventServer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        }
+      ],
+      "render_queue_return_counts": {
+        "1": 180
+      },
+      "DIL_return_counts": {
+        "18": 1,
+        "0": 180
+      },
+      "source_pictures": 180,
+      "active_YUY2_card_payload_bytes_inferred": 331776000,
+      "actual_video_node": false,
+      "actual_legacy_node": true,
+      "audio_null_link": true,
+      "live_process_retirement": true,
+      "selected_info_labels": {
+        "Player.Process(videofps)": [
+          "0.000",
+          "30.000"
+        ],
+        "System.ScreenHeight": [
+          "720"
+        ],
+        "System.ScreenWidth": [
+          "1280"
+        ],
+        "Player.Process(pixformat)": [
+          "vaapi"
+        ],
+        "Player.Process(videodecoder)": [
+          "ff-h264-vaapi"
+        ]
+      },
+      "native_EOF": [],
+      "kodi_platform": []
+    },
+    {
+      "case": "perf-v1-1280-1-v4l2",
+      "arm": "v4l2",
+      "width": 1280,
+      "height": 720,
+      "status": "PASS",
+      "source": "779d94268fbdacca44b6a1345673644456aba4bf",
+      "cpu_s": 2.34,
+      "cpu_ms_per_source_picture": 13.0,
+      "wall_s": 9.307648714006064,
+      "cpu_percent_one_core_over_own_invocation_window": 25.14061361682881,
+      "peak_RSS_KiB": 286696,
+      "compositor_CPU_s_separate": 0.19999999999999998,
+      "thread_CPU_s_last_seen": [
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.9700000000000002
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.35
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.24
+        },
+        {
+          "name": "PeripBusCEC",
+          "cpu_s": 0.18
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.07
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.06
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.05
+        },
+        {
+          "name": "ActiveAE",
+          "cpu_s": 0.049999999999999996
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.030000000000000013
+        },
+        {
+          "name": "Announce",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "AESink",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "PeripEventScan",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "pipewire",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "LanguageInvoker",
+          "cpu_s": 0.01999999999999999
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.010000000000000002
+        },
+        {
+          "name": "Lirc",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$1",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$2",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$3",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "PeripBusUSBUdev",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "PeripBusAddon",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "EventServer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "LanguageInvoker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "pool-spawner",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "appsrc0:src",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "pool-1",
+          "cpu_s": 0.0
+        }
+      ],
+      "render_queue_return_counts": {
+        "1": 180
+      },
+      "DIL_return_counts": null,
+      "source_pictures": 180,
+      "active_YUY2_card_payload_bytes_inferred": 331776000,
+      "actual_video_node": true,
+      "actual_legacy_node": false,
+      "audio_null_link": true,
+      "live_process_retirement": true,
+      "selected_info_labels": {
+        "Player.Process(videofps)": [
+          "0.000",
+          "30.000"
+        ],
+        "System.ScreenHeight": [
+          "720"
+        ],
+        "System.ScreenWidth": [
+          "1280"
+        ],
+        "Player.Process(pixformat)": [
+          "unknown",
+          "yuyv422"
+        ],
+        "Player.Process(videodecoder)": [
+          "CrystalHD V4L2 YUY2 (experimental add-on)",
+          "unknown"
+        ]
+      },
+      "native_EOF": [
+        "CrystalHD-Native EOF session=1 accepted=180 pictures=180 last_pts_us=5966667"
+      ],
+      "kodi_platform": [
+        "CrystalHD-V4L2 Kodi buffer=1280x720 stride=2560 platform_type=0 available=0; one CPU copy"
+      ]
+    },
+    {
+      "case": "perf-v1-1280-2-v4l2",
+      "arm": "v4l2",
+      "width": 1280,
+      "height": 720,
+      "status": "PASS",
+      "source": "779d94268fbdacca44b6a1345673644456aba4bf",
+      "cpu_s": 2.3400000000000003,
+      "cpu_ms_per_source_picture": 13.000000000000002,
+      "wall_s": 9.285598667993327,
+      "cpu_percent_one_core_over_own_invocation_window": 25.20031377261417,
+      "peak_RSS_KiB": 287116,
+      "compositor_CPU_s_separate": 0.20999999999999996,
+      "thread_CPU_s_last_seen": [
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.97
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.35
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.24
+        },
+        {
+          "name": "PeripBusCEC",
+          "cpu_s": 0.18000000000000002
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.06
+        },
+        {
+          "name": "ActiveAE",
+          "cpu_s": 0.06
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.05
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.04000000000000001
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.039999999999999994
+        },
+        {
+          "name": "pipewire",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "AESink",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "PeripEventScan",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "Announce",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "PeripBusUSBUdev",
+          "cpu_s": 0.010000000000000009
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.010000000000000002
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.01
+        },
+        {
+          "name": "Lirc",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$1",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$2",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$3",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "PeripBusAddon",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "LanguageInvoker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "EventServer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "pool-spawner",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "appsrc0:src",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "pool-1",
+          "cpu_s": 0.0
+        }
+      ],
+      "render_queue_return_counts": {
+        "1": 180
+      },
+      "DIL_return_counts": null,
+      "source_pictures": 180,
+      "active_YUY2_card_payload_bytes_inferred": 331776000,
+      "actual_video_node": true,
+      "actual_legacy_node": false,
+      "audio_null_link": true,
+      "live_process_retirement": true,
+      "selected_info_labels": {
+        "Player.Process(videofps)": [
+          "0.000",
+          "30.000"
+        ],
+        "System.ScreenHeight": [
+          "720"
+        ],
+        "System.ScreenWidth": [
+          "1280"
+        ],
+        "Player.Process(pixformat)": [
+          "unknown",
+          "yuyv422"
+        ],
+        "Player.Process(videodecoder)": [
+          "CrystalHD V4L2 YUY2 (experimental add-on)",
+          "unknown"
+        ]
+      },
+      "native_EOF": [
+        "CrystalHD-Native EOF session=1 accepted=180 pictures=180 last_pts_us=5966667"
+      ],
+      "kodi_platform": [
+        "CrystalHD-V4L2 Kodi buffer=1280x720 stride=2560 platform_type=0 available=0; one CPU copy"
+      ]
+    },
+    {
+      "case": "perf-v1-1280-3-va",
+      "arm": "va",
+      "width": 1280,
+      "height": 720,
+      "status": "PASS",
+      "source": "779d94268fbdacca44b6a1345673644456aba4bf",
+      "cpu_s": 2.27,
+      "cpu_ms_per_source_picture": 12.61111111111111,
+      "wall_s": 7.6321515389863634,
+      "cpu_percent_one_core_over_own_invocation_window": 29.742596021638768,
+      "peak_RSS_KiB": 289900,
+      "compositor_CPU_s_separate": 0.19,
+      "thread_CPU_s_last_seen": [
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.58
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.51
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.38
+        },
+        {
+          "name": "PeripBusCEC",
+          "cpu_s": 0.08000000000000002
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.06
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.06
+        },
+        {
+          "name": "Vaapi-Output",
+          "cpu_s": 0.06
+        },
+        {
+          "name": "ActiveAE",
+          "cpu_s": 0.049999999999999996
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.04999999999999999
+        },
+        {
+          "name": "LanguageInvoker",
+          "cpu_s": 0.04000000000000001
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.04
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "Announce",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "pipewire",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "AESink",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "PeripEventScan",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "Lirc",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$1",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$2",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$3",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "PeripBusUSBUdev",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "PeripBusAddon",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "EventServer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        }
+      ],
+      "render_queue_return_counts": {
+        "1": 180
+      },
+      "DIL_return_counts": {
+        "18": 1,
+        "0": 180
+      },
+      "source_pictures": 180,
+      "active_YUY2_card_payload_bytes_inferred": 331776000,
+      "actual_video_node": false,
+      "actual_legacy_node": true,
+      "audio_null_link": true,
+      "live_process_retirement": true,
+      "selected_info_labels": {
+        "Player.Process(videofps)": [
+          "0.000",
+          "30.000"
+        ],
+        "System.ScreenHeight": [
+          "720"
+        ],
+        "System.ScreenWidth": [
+          "1280"
+        ],
+        "Player.Process(pixformat)": [
+          "vaapi"
+        ],
+        "Player.Process(videodecoder)": [
+          "ff-h264-vaapi"
+        ]
+      },
+      "native_EOF": [],
+      "kodi_platform": []
+    },
+    {
+      "case": "perf-v1-1920-0-va",
+      "arm": "va",
+      "width": 1920,
+      "height": 1080,
+      "status": "PASS",
+      "source": "779d94268fbdacca44b6a1345673644456aba4bf",
+      "cpu_s": 3.1299999999999994,
+      "cpu_ms_per_source_picture": 17.388888888888886,
+      "wall_s": 8.03634946999955,
+      "cpu_percent_one_core_over_own_invocation_window": 38.94803245782907,
+      "peak_RSS_KiB": 320796,
+      "compositor_CPU_s_separate": 0.15,
+      "thread_CPU_s_last_seen": [
+        {
+          "name": "kodi.bin",
+          "cpu_s": 1.24
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.59
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.49
+        },
+        {
+          "name": "PeripBusCEC",
+          "cpu_s": 0.09
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.07
+        },
+        {
+          "name": "Vaapi-Output",
+          "cpu_s": 0.06
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.05
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.049999999999999996
+        },
+        {
+          "name": "ActiveAE",
+          "cpu_s": 0.04
+        },
+        {
+          "name": "Announce",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "pipewire",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "AESink",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.020000000000000004
+        },
+        {
+          "name": "PeripEventScan",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "PeripBusUSBUdev",
+          "cpu_s": 0.010000000000000009
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.01
+        },
+        {
+          "name": "LanguageInvoker",
+          "cpu_s": 0.01
+        },
+        {
+          "name": "Lirc",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$1",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$2",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$3",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "PeripBusAddon",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "LanguageInvoker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "EventServer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        }
+      ],
+      "render_queue_return_counts": {
+        "1": 180
+      },
+      "DIL_return_counts": {
+        "18": 1,
+        "0": 180
+      },
+      "source_pictures": 180,
+      "active_YUY2_card_payload_bytes_inferred": 746496000,
+      "actual_video_node": false,
+      "actual_legacy_node": true,
+      "audio_null_link": true,
+      "live_process_retirement": true,
+      "selected_info_labels": {
+        "Player.Process(videofps)": [
+          "0.000",
+          "30.000"
+        ],
+        "System.ScreenHeight": [
+          "1080"
+        ],
+        "System.ScreenWidth": [
+          "1920"
+        ],
+        "Player.Process(pixformat)": [
+          "vaapi"
+        ],
+        "Player.Process(videodecoder)": [
+          "ff-h264-vaapi"
+        ]
+      },
+      "native_EOF": [],
+      "kodi_platform": []
+    },
+    {
+      "case": "perf-v1-1920-1-v4l2",
+      "arm": "v4l2",
+      "width": 1920,
+      "height": 1080,
+      "status": "PASS",
+      "source": "779d94268fbdacca44b6a1345673644456aba4bf",
+      "cpu_s": 3.1,
+      "cpu_ms_per_source_picture": 17.22222222222222,
+      "wall_s": 9.283783649007091,
+      "cpu_percent_one_core_over_own_invocation_window": 33.391557981120634,
+      "peak_RSS_KiB": 334196,
+      "compositor_CPU_s_separate": 0.18,
+      "thread_CPU_s_last_seen": [
+        {
+          "name": "kodi.bin",
+          "cpu_s": 1.3000000000000003
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.8
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.26
+        },
+        {
+          "name": "PeripBusCEC",
+          "cpu_s": 0.19
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.05
+        },
+        {
+          "name": "ActiveAE",
+          "cpu_s": 0.04
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.030000000000000002
+        },
+        {
+          "name": "Announce",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "AESink",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "pipewire",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "PeripEventScan",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.010000000000000002
+        },
+        {
+          "name": "PeripBusUSBUdev",
+          "cpu_s": 0.009999999999999898
+        },
+        {
+          "name": "Lirc",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$1",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$2",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$3",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "PeripBusAddon",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "LanguageInvoker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "EventServer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "pool-spawner",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "appsrc0:src",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "pool-1",
+          "cpu_s": 0.0
+        }
+      ],
+      "render_queue_return_counts": {
+        "1": 180
+      },
+      "DIL_return_counts": null,
+      "source_pictures": 180,
+      "active_YUY2_card_payload_bytes_inferred": 746496000,
+      "actual_video_node": true,
+      "actual_legacy_node": false,
+      "audio_null_link": true,
+      "live_process_retirement": true,
+      "selected_info_labels": {
+        "Player.Process(videofps)": [
+          "0.000",
+          "30.000"
+        ],
+        "System.ScreenHeight": [
+          "1080"
+        ],
+        "System.ScreenWidth": [
+          "1920"
+        ],
+        "Player.Process(pixformat)": [
+          "unknown",
+          "yuyv422"
+        ],
+        "Player.Process(videodecoder)": [
+          "CrystalHD V4L2 YUY2 (experimental add-on)",
+          "unknown"
+        ]
+      },
+      "native_EOF": [
+        "CrystalHD-Native EOF session=1 accepted=180 pictures=180 last_pts_us=5966667"
+      ],
+      "kodi_platform": [
+        "CrystalHD-V4L2 Kodi buffer=1920x1080 stride=3840 platform_type=0 available=0; one CPU copy"
+      ]
+    },
+    {
+      "case": "perf-v1-1920-2-v4l2",
+      "arm": "v4l2",
+      "width": 1920,
+      "height": 1080,
+      "status": "PASS",
+      "source": "779d94268fbdacca44b6a1345673644456aba4bf",
+      "cpu_s": 3.18,
+      "cpu_ms_per_source_picture": 17.666666666666668,
+      "wall_s": 9.357511407986749,
+      "cpu_percent_one_core_over_own_invocation_window": 33.98339431663243,
+      "peak_RSS_KiB": 334460,
+      "compositor_CPU_s_separate": 0.18000000000000002,
+      "thread_CPU_s_last_seen": [
+        {
+          "name": "kodi.bin",
+          "cpu_s": 1.33
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.81
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.26
+        },
+        {
+          "name": "PeripBusCEC",
+          "cpu_s": 0.18000000000000002
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.05
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.05
+        },
+        {
+          "name": "ActiveAE",
+          "cpu_s": 0.04
+        },
+        {
+          "name": "Announce",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "AESink",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "LanguageInvoker",
+          "cpu_s": 0.020000000000000018
+        },
+        {
+          "name": "pipewire",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "PeripEventScan",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.010000000000000002
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.01
+        },
+        {
+          "name": "LanguageInvoker",
+          "cpu_s": 0.01
+        },
+        {
+          "name": "Lirc",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$1",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$2",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$3",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "PeripBusUSBUdev",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "PeripBusAddon",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "EventServer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "pool-spawner",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "appsrc0:src",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "pool-1",
+          "cpu_s": 0.0
+        }
+      ],
+      "render_queue_return_counts": {
+        "1": 180
+      },
+      "DIL_return_counts": null,
+      "source_pictures": 180,
+      "active_YUY2_card_payload_bytes_inferred": 746496000,
+      "actual_video_node": true,
+      "actual_legacy_node": false,
+      "audio_null_link": true,
+      "live_process_retirement": true,
+      "selected_info_labels": {
+        "Player.Process(videofps)": [
+          "0.000",
+          "30.000"
+        ],
+        "System.ScreenHeight": [
+          "1080"
+        ],
+        "System.ScreenWidth": [
+          "1920"
+        ],
+        "Player.Process(pixformat)": [
+          "unknown",
+          "yuyv422"
+        ],
+        "Player.Process(videodecoder)": [
+          "CrystalHD V4L2 YUY2 (experimental add-on)",
+          "unknown"
+        ]
+      },
+      "native_EOF": [
+        "CrystalHD-Native EOF session=1 accepted=180 pictures=180 last_pts_us=5966667"
+      ],
+      "kodi_platform": [
+        "CrystalHD-V4L2 Kodi buffer=1920x1080 stride=3840 platform_type=0 available=0; one CPU copy"
+      ]
+    },
+    {
+      "case": "perf-v1-1920-3-va",
+      "arm": "va",
+      "width": 1920,
+      "height": 1080,
+      "status": "PASS",
+      "source": "779d94268fbdacca44b6a1345673644456aba4bf",
+      "cpu_s": 3.27,
+      "cpu_ms_per_source_picture": 18.166666666666668,
+      "wall_s": 8.727275518001989,
+      "cpu_percent_one_core_over_own_invocation_window": 37.46873801858188,
+      "peak_RSS_KiB": 321064,
+      "compositor_CPU_s_separate": 0.17,
+      "thread_CPU_s_last_seen": [
+        {
+          "name": "kodi.bin",
+          "cpu_s": 1.15
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.67
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.54
+        },
+        {
+          "name": "PeripBusCEC",
+          "cpu_s": 0.19000000000000003
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.08
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.06
+        },
+        {
+          "name": "Vaapi-Output",
+          "cpu_s": 0.06
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.05
+        },
+        {
+          "name": "ActiveAE",
+          "cpu_s": 0.04
+        },
+        {
+          "name": "AESink",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "PeripEventScan",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.03
+        },
+        {
+          "name": "Announce",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "pipewire",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "VideoPlayer",
+          "cpu_s": 0.02
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.010000000000000009
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.010000000000000002
+        },
+        {
+          "name": "kodi.bi:disk$0",
+          "cpu_s": 0.01
+        },
+        {
+          "name": "LanguageInvoker",
+          "cpu_s": 0.01
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.009999999999999995
+        },
+        {
+          "name": "Lirc",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin:gdrv0",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$1",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$2",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bi:disk$3",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "PeripBusUSBUdev",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "PeripBusAddon",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "LanguageInvoker",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "EventServer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "MHD-listen",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "kodi.bin",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "Timer",
+          "cpu_s": 0.0
+        },
+        {
+          "name": "JobWorker",
+          "cpu_s": 0.0
+        }
+      ],
+      "render_queue_return_counts": {
+        "1": 180
+      },
+      "DIL_return_counts": {
+        "18": 1,
+        "0": 180
+      },
+      "source_pictures": 180,
+      "active_YUY2_card_payload_bytes_inferred": 746496000,
+      "actual_video_node": false,
+      "actual_legacy_node": true,
+      "audio_null_link": true,
+      "live_process_retirement": true,
+      "selected_info_labels": {
+        "Player.Process(videofps)": [
+          "0.000",
+          "30.000"
+        ],
+        "System.ScreenHeight": [
+          "1080"
+        ],
+        "System.ScreenWidth": [
+          "1920"
+        ],
+        "Player.Process(pixformat)": [
+          "vaapi"
+        ],
+        "Player.Process(videodecoder)": [
+          "ff-h264-vaapi"
+        ]
+      },
+      "native_EOF": [],
+      "kodi_platform": []
+    }
+  ],
+  "derived": [
+    {
+      "width": 1280,
+      "height": 720,
+      "arm": "va",
+      "n": 2,
+      "median_CPU_s_per_6s_file": 2.25,
+      "median_CPU_ms_per_source_picture": 12.5,
+      "median_peak_RSS_MiB": 282.6796875,
+      "median_wall_s": 7.6498360424884595,
+      "median_compositor_CPU_s_separate": 0.18
+    },
+    {
+      "width": 1280,
+      "height": 720,
+      "arm": "v4l2",
+      "n": 2,
+      "median_CPU_s_per_6s_file": 2.34,
+      "median_CPU_ms_per_source_picture": 13.0,
+      "median_peak_RSS_MiB": 280.181640625,
+      "median_wall_s": 9.296623690999695,
+      "median_compositor_CPU_s_separate": 0.20499999999999996
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "arm": "va",
+      "n": 2,
+      "median_CPU_s_per_6s_file": 3.1999999999999997,
+      "median_CPU_ms_per_source_picture": 17.77777777777778,
+      "median_peak_RSS_MiB": 313.408203125,
+      "median_wall_s": 8.38181249400077,
+      "median_compositor_CPU_s_separate": 0.16
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "arm": "v4l2",
+      "n": 2,
+      "median_CPU_s_per_6s_file": 3.14,
+      "median_CPU_ms_per_source_picture": 17.444444444444443,
+      "median_peak_RSS_MiB": 326.4921875,
+      "median_wall_s": 9.32064752849692,
+      "median_compositor_CPU_s_separate": 0.18
+    }
+  ],
+  "boundaries": [
+    {
+      "batch": "qual-v3",
+      "status": "PASS",
+      "cases": 2,
+      "installed_module_restored": "3.10.13",
+      "ref_pin_before_after": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "unchanged_PM": "force_l0s_off=1; session_l0s_off=0; power/control=on",
+      "unchanged_LinkCtl": true,
+      "unchanged_AER": true,
+      "kernel_check_exit": 0,
+      "new_dependencies_removed": true
+    },
+    {
+      "batch": "controls-v1",
+      "status": "PASS",
+      "cases": 2,
+      "installed_module_restored": "3.10.13",
+      "ref_pin_before_after": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "unchanged_PM": "force_l0s_off=1; session_l0s_off=0; power/control=on",
+      "unchanged_LinkCtl": true,
+      "unchanged_AER": true,
+      "kernel_check_exit": 0,
+      "new_dependencies_removed": true
+    },
+    {
+      "batch": "perf-v1",
+      "status": "PASS",
+      "cases": 8,
+      "installed_module_restored": "3.10.13",
+      "ref_pin_before_after": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "unchanged_PM": "force_l0s_off=1; session_l0s_off=0; power/control=on",
+      "unchanged_LinkCtl": true,
+      "unchanged_AER": true,
+      "kernel_check_exit": 0,
+      "new_dependencies_removed": true
+    }
+  ],
+  "preserved_observer_exclusions": [
+    {
+      "case": "qual720",
+      "status": "NOT RUN before node open",
+      "reason": "Weston socket path exceeded Unix 108-byte limit; subsequent private runtime uses short temporary path."
+    },
+    {
+      "case": "qual-v2",
+      "status": "Guardian FAIL retained; not pooled",
+      "reason": "Observer stopped at OnExit before video worker drain joined. Retained full log later shows 180/180 and real LAST/EPIPE. qual-v3 waits for actual live resource retirement; no production code changed for this correction."
+    }
+  ],
+  "review": {
+    "strict_build": "O2 -Wall -Wextra -Werror v4l2 and v4l2-trace PASS",
+    "Astra": "Read-only focused review found premature STOP before CAPTURE start; fixed before hardware at779d942. Final review: no actionable blocker; independent of hardware/performance results. Final artifact review independently recomputed CPU/RSS medians and found no material mismatch; no tests/hardware/edits by reviewer.",
+    "shared_callback_checks": "PASS: check-playback (2 groups) and check-playback-codec (2 real SDK callback groups); -Wall -Wextra -Werror. Device-free legacy/shared facade regression checks, not a substitute for the separate real V4L2 hardware cases."
+  },
+  "limits": [
+    "No modification of Kodi/FFmpeg/external source, installed applications/defaults/firmware/PM/legacy ABI. Main checkout unchanged.",
+    "G2 FAIL and nonempty drained START EOPNOTSUPP unchanged. No physical PPB leasing/private-picture insertion or standard V4L2 conformance claim.",
+    "Separate prior standalone K4 rejection evidence is retained in issue533; no new Kodi standard STOP/START pass asserted.",
+    "Physical AV/scanout, exact display drops, E2E latency, GPU-completion timing, whole-system watts, native i686/Atom/BCM70012 and endurance NOT RUN.",
+    "720p60/FHD60 performance not qualified by these 30p sources.",
+    "No meaningful CPU improvement concluded from two short timing arms; no supported Kodi addon/default promotion or issue closure."
+  ]
+}

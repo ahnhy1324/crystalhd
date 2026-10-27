@@ -204,8 +204,67 @@ fixed: temporary Kodi DRAIN can finish while terminal EOS stays deferred.
 
 The receipt distinguishes exact decoded-picture/PTS census, Kodi-owned
 buffer delivery, AAC routing, EOS and resource retirement from displayed
-frame counts and physical A/V. Current tests do not qualify a real V4L2
-selection path, standard nonempty STOP/START, private-picture insertion,
+frame counts and physical A/V. Those GStreamer-facade tests do not qualify
+a real V4L2 selection path, standard nonempty STOP/START, private-picture insertion,
 720p/FHD performance, scanout, physical A/V, endurance or native i686.
 G2 remains FAIL. Installed applications, stable modules, VA/NV12 defaults,
 the legacy ABI and the published #531 performance finding are unchanged.
+
+## Actual V4L2 backend and Kodi resource comparison
+
+The separate #538 backend uses the **real CrystalHD research V4L2 node**:
+H.264 AVCC → Annex-B → OUTPUT QBUF → YUYV CAPTURE DQBUF → checked rows in
+Kodi's buffer → GLES. GStreamer supplies color parsing and sample metadata;
+`crystalhddec` does not decode this route. There is **one host picture copy**,
+not the standalone EXPBUF/EGL direct-import path.
+
+```sh
+make -C tools/kodi-route-probe v4l2 \
+    KODI_SDK_INCLUDE="/absolute/path/to/kodi-dev-kit/include"
+```
+
+Use `build-v4l2/inputstream.crystalhd.routeprobe/` in an isolated Kodi 22 RC1
+profile with the existing explicit ListItem launcher. This requires the
+separate experimental driver from
+[#533, source 830170b](https://github.com/ahnhy1324/crystalhd/commit/830170b28ad58ad77ff196ef14e039cae2797e4f);
+the stable module has no such node. It is not an installation recommendation
+or automatic selection by ordinary Kodi. `v4l2-trace` builds the diagnostic
+variant; exclude it from performance measurements.
+
+At add-on source `779d942`, actual CAPTURE, Kodi buffers and private GPU
+Wayland outputs are **1280×720 / stride 2560** and **1920×1080 / stride 3840**,
+respectively. These are source-size progressive H.264 High/B2 files, not
+smaller pictures in an FHD canvas. Six qualification/control files pass
+180 ordered original PTS/pictures and frozen YUY2 pixels each, natural EOF
+with real LAST/EPIPE, live-process resource retirement and fresh reopen.
+Kodi pauses of 0.1/1/3 seconds preserve the decoder and full source sequence;
+they do not invoke nonempty drained START. Both sizes return no Kodi
+platform handle (`available=0`), so this callback does not share CAPTURE
+buffers directly with the renderer.
+
+Matched **VA → V4L2 → V4L2 → VA**, fresh profile/process per arm, the same
+six-second 30p H.264/AAC source, Intel 965GM GLES, exact-size headless output
+at 60 Hz and nondefault null audio sink:
+
+| Source | VA/NV12 CPU time | V4L2/YUY2 CPU time | VA / V4L2 peak RSS |
+| --- | ---: | ---: | ---: |
+| 1280×720p30 | 2.25 s | 2.34 s | 282.7 / 280.2 MiB |
+| 1920×1080p30 | 3.20 s | 3.14 s | 313.4 / 326.5 MiB |
+
+Values are medians of two arms. CPU is actual Kodi USER+SYS per equal
+180-picture file, including open/drain. V4L2's fresh metadata/parser setup
+extends invocation wall time; its lower CPU percentage over that longer
+window is **not a CPU saving**. No material benefit is established here,
+and FHD RSS is higher. RSS includes mapped pages, not unique physical RAM.
+Every timing arm has 180 successful render-queue acceptances, which does not
+measure physical scanout, display drops or lip sync. No 60p, endurance,
+i686 or hardware-deinterlacing qualification follows.
+
+The [receipt](../../tests/fixtures/issue538/kodi-v4l2-20261027.json),
+[plot data](../../tests/fixtures/issue538/kodi-v4l2-20261027.tsv) and
+[comparison figure](../../tests/fixtures/issue538/kodi-v4l2-20261027.svg)
+record per-arm/thread CPU, memory, ownership, controls, exact sources and
+observer exclusions. All batches restore the original 3.10.13 module,
+dependencies and idle/ref/pin/PM/link/AER state; kernel checks pass. G2 FAIL,
+unsupported standard nonempty STOP/START and #531's earlier 360p result
+remain unchanged. Installed applications, defaults and firmware are unchanged.

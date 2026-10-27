@@ -51,7 +51,11 @@ $(OUTPUT)/addon.xml: addon.xml
 	mkdir -p "$(@D)"
 	cp "$<" "$@"
 
-$(NATIVE_OUTPUT)/addon.xml $(TRACE_OUTPUT)/addon.xml $(RGB_OUTPUT)/addon.xml $(PLAYBACK_OUTPUT)/addon.xml $(PLAYBACK_TRACE)/addon.xml $(V4L2_OUTPUT)/addon.xml $(V4L2_TRACE)/addon.xml: addon-native.xml
+$(NATIVE_OUTPUT)/addon.xml $(TRACE_OUTPUT)/addon.xml $(RGB_OUTPUT)/addon.xml $(PLAYBACK_OUTPUT)/addon.xml $(PLAYBACK_TRACE)/addon.xml: addon-native.xml
+	mkdir -p "$(@D)"
+	cp "$<" "$@"
+
+$(V4L2_OUTPUT)/addon.xml $(V4L2_TRACE)/addon.xml: addon-v4l2.xml
 	mkdir -p "$(@D)"
 	cp "$<" "$@"
 

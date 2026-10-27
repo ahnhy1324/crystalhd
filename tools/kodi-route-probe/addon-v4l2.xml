@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="inputstream.crystalhd.routeprobe" name="CrystalHD V4L2 YUY2 (experimental)"
+       version="0.0.1" provider-name="CrystalHD contributors">
+  <requires>
+    <import addon="kodi.binary.global.main" version="2.0.3"/>
+    <import addon="kodi.binary.instance.inputstream" version="3.4.0"/>
+    <import addon="kodi.binary.instance.videocodec" version="2.2.1"/>
+  </requires>
+  <extension point="kodi.inputstream" library_linux="inputstream.crystalhd.routeprobe.so"/>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Explicit local H.264/AAC through the CrystalHD research V4L2 node</summary>
+    <description lang="en_GB">Optional Kodi 22 RC1 experiment. Progressive H.264 MP4 through the actual CrystalHD V4L2 decoder, one copy into Kodi-owned YUY2 buffers; AAC via Kodi. Requires the separate research module. No internal software decoder fallback, zero-copy or standard nonempty STOP/START support claim.</description>
+    <platform>linux</platform>
+    <license>GPL-2.0-or-later</license>
+  </extension>
+</addon>
