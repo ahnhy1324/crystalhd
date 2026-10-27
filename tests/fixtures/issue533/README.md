@@ -14,6 +14,69 @@ source identities, unsuccessful controls and subsequent corrections. The heap
 CPU-write proof needed cache writeback; the real CAPTURE GPU consumer performs
 neither CPU writes nor cache flushes. The two producers must be distinguished.
 
+## Source-paced resource comparison — 2026-10-27
+
+The [new resource receipt](yuy2-resources-20261027.json) uses benchmark
+`3613b2b` with unchanged module `830170b`. Actual single-plane CAPTURE is
+YUYV 4:2:2 at the source's 640×360, 1280×720 or 1920×1080 dimensions; stride
+is 1280, 2560 or 3840 bytes. GPU output uses that same geometry.
+There is no larger canvas, software upscaling or timed pixel-hash/RGB audit.
+Existing pixel qualification below retains its original source and criteria.
+
+Each arm returns all 180 original timestamps/pictures. At the source's 30p
+cadence, mean of two upload/direct/direct/upload timing arms:
+
+| Actual output | Copies + upload CPU | Direct import CPU | Upload / direct peak RSS | Direct cadence |
+| --- | ---: | ---: | ---: | ---: |
+| 640×360 | 3.64% | 4.27% | 119.8 / 119.1 MiB | 30.03 fps |
+| 1280×720 | 11.83% | 4.41% | 138.4 / 135.1 MiB | 30.04 fps |
+| 1920×1080 | 24.20% | 4.77% | 174.3 / 166.6 MiB | 30.02 fps |
+
+CPU is process time during STREAMON→LAST/EPIPE, with one core equal to 100%.
+It excludes context initialization/close and asynchronous kernel/GPU work.
+Whole-invocation CPU, requested buffer extents and host CPU are separately
+retained. Host background alone measured about 65% of one core, so host busy
+time cannot be attributed exclusively to this path. RSS includes mappings;
+do not add the buffer extents to RSS as separate physical memory.
+
+The direct consumer performs no full-picture CPU copy and allocates no unused
+staging arrays/packed texture. GPU completion/image destruction still precede
+requeue. FHD consumer staging falls from 8,294,400 bytes to zero. At 360p,
+import overhead costs more process CPU than upload; no general speedup claim.
+
+![Measured native-resolution process resources](yuy2-resources-20261027.svg)
+
+The separate unpaced 30p-source runs observed 90.43 fps at 720p and 44.45 fps
+at FHD over 180 pictures, including decode/import/GPU completion. These are
+short accelerated-source observations, not sustainable maxima or 60p-source
+acceptance. Across 17 cases, all 3,060 pictures and real LAST/EPIPE complete;
+nonempty START rejects with `EOPNOTSUPP` after every drain. The next fresh
+files complete, kernel checks pass and installed 3.10.13/PM state is restored.
+This does not upgrade G2 or establish Kodi, scanout, physical A/V or power use.
+
+`tests/v4l2-resource-bench.cpp` is a separate benchmark, built with the same
+includes/libraries as the GPU qualification probe below. Use `--input FILE
+--mode decode|upload|direct`; `--preflight` validates source packets without
+opening devices. Default cadence uses actual PTS; `--unpaced` is explicit.
+Use independently qualified progressive limited-BT.709 fixtures. Perform
+source metadata qualification outside the measured process; its MP4/Annex-B
+path deliberately omits stream-info probing/software decoding. Container
+descriptors remain explicit even when the source's colour is carried in VUI.
+
+Build from the repository root, then run under the controlled temporary-module
+procedure with device access. Results do not qualify a default installation:
+
+```sh
+c++ -std=c++17 -O2 -g -Wall -Wextra -Werror \
+    -Iinclude -Ilinux_lib/libcrystalhd \
+    $(pkg-config --cflags libavformat libavcodec libavutil egl glesv2 gbm libdrm) \
+    tests/v4l2-resource-bench.cpp \
+    $(pkg-config --libs libavformat libavcodec libavutil egl glesv2 gbm libdrm) \
+    -ldl -o "/absolute/path/to/v4l2-resource-bench"
+sudo "/absolute/path/to/v4l2-resource-bench" \
+    --input "/absolute/path/to/qualified-bt709.mp4" --mode direct --timeout 30
+```
+
 ## Results
 
 Kernel 7.0.0-38, Mesa 26.0.8, Intel 965GM; six-second 30p H.264 High/B2 fixtures.
