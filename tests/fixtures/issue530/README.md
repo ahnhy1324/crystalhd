@@ -36,8 +36,10 @@ provided before READY; paused expose/resize redraws retain the last field.
 Nominal field targets follow pipeline running time, latency and timestamp
 offset, including an audio-selected clock. Swaps are submitted with the
 reported render lead because a vsynced swap queues/throttles presentation.
-Expired fields are skipped, and ordinary sink QoS may drop late whole
-buffers; both counts are reported rather than accumulating an A/V backlog.
+Expired fields are skipped, and the sink's lateness limit may drop late
+whole buffers. Both counts are reported rather than accumulating an A/V
+backlog. Default whole-picture QoS feedback upstream is disabled: each
+decoded pair must reach its actual field-deadline owner first.
 GPU completion/swap return, including early/late counters, is not physical
 scanout or proof of speaker synchronization. `field-stats` distinguishes
 timed fields, preroll/redraw, cancellation and retained resources.
@@ -77,6 +79,54 @@ these PTS. Timestamped-container playback above is a separate observation.
 Live input, NV12, native i386, long endurance and physical scanout timing
 remain unqualified. The installed module, PM, links, pins and AER boundaries
 are unchanged; finite playback does not advance #533's nonempty-drain gate.
+
+### Completion and deadline ownership follow-up
+
+[`678351c` results](field-retirement-20261027.json) retain the controlled
+completion experiment, failed observers and final qualification. Field draws
+now queue with `glFlush`; `glFinish` remains at source retirement, including
+exception cleanup, before destroying views, releasing the original sample
+or writing the BO again. Forty-four full RGB checks pass, including eight
+two-field/FHD-output checks that replace the producer only after retirement.
+Three EOS/reopen runs and cancellation close cleanly; 98 Player tests pass.
+
+The final comparison uses ABBA order, two 30-second arms per version, the
+same real audio clock and matched 1024×768 fullscreen area. All four decode
+750 pictures, deliver all 1,500 fields to the sink and finish with EOS and
+zero owned resources. CPU includes Player preroll/close and identical Python
+observers; Xorg/audio-server CPU and energy are excluded.
+
+| Metric | `915e819` | `678351c` |
+| --- | ---: | ---: |
+| Mean client CPU time | 10.748 s | 10.207 s |
+| Mean field submissions / 1,500 expected | 1,154 | 1,309.5 |
+| Non-submitted fields | 23.07% | 12.70% |
+| Worst observed swap-return clock age | 20.675 ms | 52.026 ms |
+
+This bounded comparison has 5.03% lower client CPU and 13.47% more submissions;
+it does **not** establish lower latency or lossless presentation. The earlier
+small-window comparison changes CPU by only 0.52%, within run variability.
+
+The intermediate upstream QoS policy delivered only 734 of 750 decoded
+pictures to this sink: a converter's normal whole-picture QoS handling
+dropped 16. The final policy preserves all 750 pairs, then applies local
+field expiry/lateness. In the separate diagnostic run, 1,311 submissions +
+189 expired fields account for all 1,500; no upstream picture is lost.
+
+The Player also now snapshots BaseSink drops **before** NULL resets them.
+A native device-free regression reproduces the old false-zero report and
+passes after correction. The count is since the last reset, particularly
+after seeks; it is not combined with cumulative field counts as though both
+cover the same interval. Automatic pause/seek/0.5×/1×/2×/close passes and
+preserves the actual final sink-drop snapshot (23). The original post-NULL
+zeros, rejected fullscreen request, initial allocation race and transient
+global pin snapshot remain archived. Three final quiescent boundary reads
+match the starting state and the scoped kernel error scan is clear.
+
+The maintainer's physical A/V/control PASS remains scoped to `915e819`.
+Physical confirmation of the new completion/deadline policy is **NOT RUN**;
+audio-clock equality and automated playback do not replace it. This remains
+an optional research output with no installed/default or VA-contract change.
 
 One immutable linear YUYV allocation supplies top/bottom EGLImages with
 offsets 0/S, pitch 2S and height H/2. Both field uses complete before source
