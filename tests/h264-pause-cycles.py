@@ -39,12 +39,16 @@ def main():
     parser.add_argument('fixture', type=Path)
     parser.add_argument('frozen_g0', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--new-fixture', action='store_true',
+        help='Independently screen another progressive640x360/180-AU fixture; never changes the frozen fixture acceptance')
     args = parser.parse_args()
     frozen = json.loads((args.frozen_g0/'g0.json').read_text())
-    assert hashlib.sha256(args.fixture.read_bytes()).hexdigest() == frozen['fixture_sha256']
+    fixture_sha = hashlib.sha256(args.fixture.read_bytes()).hexdigest()
+    if not args.new_fixture:
+        assert fixture_sha == frozen['fixture_sha256']
     run = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0',
         '-show_streams', '-show_packets', '-show_data', '-show_entries',
-        'stream=width,height,extradata:packet=pts,dts,data,size', '-of', 'json',
+        'stream=width,height,extradata,time_base,r_frame_rate:packet=pts,dts,data,size', '-of', 'json',
         str(args.fixture)], capture_output=True, text=True, timeout=30)
     assert run.returncode == 0 and not run.stderr
     probe = json.loads(run.stdout)
@@ -65,7 +69,9 @@ def main():
     pp = {v['id']: v for v in map(G.pps, parameters)}
     assert len(ss) == len(pp) == 1 and 254 not in pp
     sequence = next(iter(ss.values()))
-    assert sequence == frozen['sps'] and sequence['gaps'] == 0
+    assert sequence['gaps'] == 0 and sequence['max_num_reorder_frames'] == 2
+    if not args.new_fixture:
+        assert sequence == frozen['sps']
     initial = b''.join(b'\0\0\0\1'+n for n in sequences+parameters)
     units, headers = [], []
     for index, packet in enumerate(probe['packets']):
@@ -84,19 +90,28 @@ def main():
     assert len(units) == 180
     # The first20 AU payloads are precisely the existing P1 source, including
     # the original first-AU parameter sets. No regenerated source VCL.
-    assert units[:20] == M.packets(args.frozen_g0)
+    if not args.new_fixture:
+        assert units[:20] == M.packets(args.frozen_g0)
     keys = [i for i, h in enumerate(headers) if h['idr']]
-    assert keys == list(range(0, 180, 30))
-    plans, rejected = [], []
+    if not args.new_fixture:
+        assert keys == list(range(0, 180, 30))
+    assert keys and keys[0] == 0 and len(keys) >= 6
     for generation, start in enumerate(keys):
-        hs = headers[start:start+30]
-        # This fixture's closed30-AU GOPs have no POC wrap or MMCO5.
+        end = keys[generation+1] if generation+1 < len(keys) else len(headers)
+        for header in headers[start:end]:
+            header['gop_id'] = generation
+    plans, rejected = [], []
+    for generation, start in enumerate(keys[:6]):
+        end = keys[generation+1] if generation+1 < len(keys) else len(headers)
+        hs = headers[start:end]
+        # Each selected closed GOP must fit this no-POC-wrap envelope.
+        # The imported parser independently rejects MMCO5.
         assert hs[0]['idr'] and not any(h['idr'] for h in hs[1:])
         assert all(h['poc_lsb'] < (1 << (sequence['poc_bits']-1))*2 for h in hs)
         pocs = [h['poc_lsb'] for h in hs]
-        assert len(set(pocs)) == 30 and min(pocs) == 0 and max(pocs) == 58
+        assert len(hs) >= 6 and len(set(pocs)) == len(hs) and min(pocs) == 0 and max(pocs) == 2*(len(hs)-1)
         eligible = []
-        for candidate in range(6, 31):
+        for candidate in range(6, len(hs)+1):
             ref = next(h for h in reversed(hs[:candidate]) if h['reference'])
             order_safe = sorted(pocs[:candidate])+sorted(pocs[candidate:]) == sorted(pocs)
             for first_poc in range(1, (1 << sequence['poc_bits'])-8, 2):
@@ -154,7 +169,9 @@ def main():
     neutral = hashlib.md5(bytes([128])*(640*360*3//2)).hexdigest()
     assert len(baseline) == 180 and neutral not in baseline
     report = dict(scope='Offline complete-sequence syntax-envelope and software pixel/order screen; not native scheduling, physical PPB ownership or STOP/START',
-        source_fixture_sha256=frozen['fixture_sha256'], sps=sequence,
+        source_fixture_sha256=fixture_sha, frozen_fixture=not args.new_fixture,
+        source_time_base=stream['time_base'], source_frame_rate=stream['r_frame_rate'],
+        source_idr_indices=keys, sps=sequence,
         original_aus=headers, original180_pixels=baseline, insertion_plans=plans,
         rejected_boundaries=rejected,
         source_au_bytes_and_pts_unchanged=True, copies='Repeat unchanged original180 AUs; each copy starts with its original IDR/SPS/PPS. Source media PTS preserved per-copy. Native API identity generations are separate diagnostic tokens.',
