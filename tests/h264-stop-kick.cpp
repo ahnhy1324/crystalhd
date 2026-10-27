@@ -180,7 +180,8 @@ static int cycle_run(const std::string &input,const std::string &output,const st
     size_t used=0;const auto value=std::stoul(text,&used);
     need(used==strlen(text)&&(value==0||value==2||value==5||value==10||value==100),"bounded cycle stage");
     const unsigned cycles=static_cast<unsigned>(value);
-    const bool reference=mode=="cycles-reference",dummy=mode=="cycles-next";
+    const bool reference=mode=="cycles-reference",marker=mode=="cycles-marker";
+    const bool dummy=mode=="cycles-next"||marker;
     need(reference==(cycles==0),"only uninterrupted oracle uses zero pauses");
     const auto source=packets(input,true);
     struct Plan {unsigned boundary;std::vector<std::vector<uint8_t>> units;};
@@ -195,6 +196,10 @@ static int cycle_run(const std::string &input,const std::string &output,const st
     const auto prefix=read_file(input+"/prefix.h264");need(prefix.size()==170&&!has_vcl(prefix),"prefix without VCL");
     const unsigned repeats=reference?1:(cycles+5)/6,total=180*repeats,private_expected=dummy?5*cycles:0;
     const uint64_t private_base=uint64_t(total+1)*100000;
+    // Separate collision-free native identities, allocated without source
+    // PTS knowledge. They stay outside original/private token spaces here.
+    const uint64_t marker_base=private_base+uint64_t(private_expected+1)*kPrivateStep;
+    std::map<uint64_t,unsigned> marker_owners;uint64_t pending_marker=0;
     std::map<uint64_t,Frame> baseline;
     if(!reference) {
         auto data=read_file(output+"/native-cycle-reference.bin",180*(12+kBytes));size_t cursor=0;
@@ -219,7 +224,7 @@ static int cycle_run(const std::string &input,const std::string &output,const st
     std::vector<unsigned> per_cycle_private(cycles);
     std::vector<Frame> reference_frames;
     unsigned real=0,privates=0,accepted=0,accepted_private=0,rx_acquired=0,rx_released=0,calls=0,cycle=0;
-    uint32_t ready=0;bool eos=false,flush=false;
+    uint32_t ready=0;bool eos=false,flush=false,native_identity=true;
     const char *phase="original-input";
     auto receive=[&]{
         for(unsigned attempt=0;attempt<32;++attempt) {
@@ -250,16 +255,26 @@ static int cycle_run(const std::string &input,const std::string &output,const st
                 printf("{\"type\":\"cycle-picture\",\"token\":%llu,\"private_generation\":%u,\"private_index\":%u,\"flags\":%u,\"phase\":\"%s\",\"elapsed_ms\":%.3f}\n",
                     static_cast<unsigned long long>(token),index/5+1,index%5+1,out.PicInfo.flags,phase,elapsed());
             }else {
-                need(token&&token%100000==0&&token/100000<=total,"actual original token without remapping");
-                const unsigned index=token/100000-1;
+                uint64_t canonical=token;
+                if(marker) {
+                    const auto found=marker_owners.find(token);
+                    if(found!=marker_owners.end()) {
+                        need(found->second!=0,"reserved marker returned before its actual original VCL admission");
+                        canonical=uint64_t(found->second)*100000;
+                    }
+                }
+                need(canonical&&canonical%100000==0&&canonical/100000<=total,"actual native identity has an admitted original owner");
+                const unsigned index=canonical/100000-1;
                 need(!real_seen[index]&&accepted_at[index]>0,"distinct accepted original identity");
                 if(!reference) {
                     const auto &f=baseline.at(uint64_t(index%180+1)*100000);
                     need(f.flags==out.PicInfo.flags&&std::equal(f.pixels.begin(),f.pixels.end(),out.Ybuff),"complete original YUYV/flags equality");
                 }else reference_frames.push_back({token,out.PicInfo.flags,{out.Ybuff,out.Ybuff+kBytes}});
-                real_seen[index]=true;++real;actual_order.push_back(token);
-                printf("{\"type\":\"cycle-picture\",\"token\":%llu,\"source_au\":%u,\"source_copy\":%u,\"flags\":%u,\"full_native_reference_match\":%s,\"phase\":\"%s\",\"accepted_to_output_ms\":%.3f,\"elapsed_ms\":%.3f}\n",
-                    static_cast<unsigned long long>(token),index%180+1,index/180+1,out.PicInfo.flags,reference?"null":"true",phase,elapsed()-accepted_at[index],elapsed());
+                real_seen[index]=true;++real;actual_order.push_back(canonical);native_identity=native_identity&&token==canonical;
+                // canonical is the input owner's validation key, never a
+                // replacement for the raw firmware token or an output PTS.
+                printf("{\"type\":\"cycle-picture\",\"token\":%llu,\"validator_input_owner\":%llu,\"source_au\":%u,\"source_copy\":%u,\"flags\":%u,\"full_native_reference_match\":%s,\"phase\":\"%s\",\"accepted_to_output_ms\":%.3f,\"elapsed_ms\":%.3f}\n",
+                    static_cast<unsigned long long>(token),static_cast<unsigned long long>(canonical),index%180+1,index/180+1,out.PicInfo.flags,reference?"null":"true",phase,elapsed()-accepted_at[index],elapsed());
             }
             lease.finish();printf("{\"type\":\"cycle-rx-release\",\"lease\":%u,\"eos_marker\":false,\"elapsed_ms\":%.3f}\n",rx_released,elapsed());fflush(stdout);
         }
@@ -272,7 +287,11 @@ static int cycle_run(const std::string &input,const std::string &output,const st
         auto padded=data;padded.resize(data.size()+64,0);
         good("DtsProcInput",api.DtsProcInput(owner,padded.data(),data.size(),token,FALSE));
         ++calls;
-        if(!strcmp(kind,"original")){accepted_at.at(association-1)=elapsed();++accepted;}
+        if(!strcmp(kind,"original")){
+            accepted_at.at(association-1)=elapsed();++accepted;
+            // Bind only after this actual original input call succeeded.
+            if(pending_marker){marker_owners.at(pending_marker)=association;pending_marker=0;}
+        }
         if(!strcmp(kind,"private-vcl"))++accepted_private;
         printf("{\"type\":\"cycle-input\",\"call\":%u,\"cycle\":%u,\"kind\":\"%s\",\"association\":%u,\"token\":%llu,\"bytes\":%zu,\"vcl_present\":%s,\"elapsed_ms\":%.3f}\n",
             calls,cycle,kind,association,static_cast<unsigned long long>(token),data.size(),has_vcl(data)?"true":"false",elapsed());fflush(stdout);receive();
@@ -296,26 +315,28 @@ static int cycle_run(const std::string &input,const std::string &output,const st
                 send(plan.units[j],0,"private-vcl",(cycle-1)*5+j+1);
             }
             prefed_token=uint64_t(ordinal+1)*100000;
-            send(prefix,prefed_token,"next-original-prefix",ordinal+1);
+            const uint64_t prefix_token=marker?marker_base+uint64_t(cycle-1)*100000:prefed_token;
+            if(marker){need(marker_owners.emplace(prefix_token,0).second,"fresh per-cycle marker");pending_marker=prefix_token;}
+            send(prefix,prefix_token,marker?"reserved-original-prefix":"next-original-prefix",ordinal+1);
         }
         census("after-prefix-alone");wait(600);need(!eos,"no EOS before repeated idle");census("before-idle");
         phase="input-idle";wait(100);need(!eos,"no EOS during repeated idle");census("after-idle");
     }
-    need(cycle==cycles&&accepted==total&&accepted_private==private_expected&&!prefed_token,"all planned input/pauses complete before true end");
+    need(cycle==cycles&&accepted==total&&accepted_private==private_expected&&!prefed_token&&!pending_marker,"all planned input/pauses complete before true end");
     phase="terminal-eos";good("DtsFlushInput",api.DtsFlushInput(owner,0));flush=true;
     while(!eos||ready){bounded();receive();usleep(1000);}
     census("after-terminal-eos");
     need(actual_order==expected_order&&real==total&&privates==private_expected&&rx_acquired==rx_released,"complete original order/identity and all private retirement");
     if(reference)write_frames(output+"/native-cycle-reference.bin",reference_frames);
     decoder.finish();
-    printf("{\"type\":\"cycle-result\",\"mode\":\"%s\",\"cycles\":%u,\"repeats\":%u,\"originals\":%u,\"private\":%u,\"rx_acquired\":%u,\"rx_released\":%u,\"watchdog_seconds\":%u,\"same_channel\":true,\"strict_identity_pixels_flags_order\":true,\"eos_only_at_true_end\":true,\"wall_ms\":%.3f,\"pass\":true}\n",
-        mode.c_str(),cycles,repeats,real,privates,rx_acquired,rx_released,watchdog_seconds,elapsed());
+    printf("{\"type\":\"cycle-result\",\"mode\":\"%s\",\"cycles\":%u,\"repeats\":%u,\"originals\":%u,\"private\":%u,\"rx_acquired\":%u,\"rx_released\":%u,\"watchdog_seconds\":%u,\"same_channel\":true,\"strict_identity_pixels_flags_order\":%s,\"native_identity_pass\":%s,\"input_owner_pixels_flags_order\":true,\"eos_only_at_true_end\":true,\"wall_ms\":%.3f,\"pass\":true}\n",
+        mode.c_str(),cycles,repeats,real,privates,rx_acquired,rx_released,watchdog_seconds,native_identity?"true":"false",native_identity?"true":"false",elapsed());
     return 0;
 }
 
 int main(int argc,char **argv) {
     try {
-        if(argc==5&&(std::string(argv[3])=="cycles-reference"||std::string(argv[3])=="cycles-none"||std::string(argv[3])=="cycles-next"))
+        if(argc==5&&(std::string(argv[3])=="cycles-reference"||std::string(argv[3])=="cycles-none"||std::string(argv[3])=="cycles-next"||std::string(argv[3])=="cycles-marker"))
             return cycle_run(argv[1],argv[2],argv[3],argv[4]);
         need(argc==4||argc==6||argc==7||argc==8,"usage: h264-stop-kick G0_DIRECTORY RESULT_DIRECTORY MODE [BOUNDARY PRIVATE_COUNT [raw|prefed|adjacent]]; pts-idle|pts-preflight requires 18 5 next|previous|reserved-near|reserved-far|untimed zero|own");
         std::string input=argv[1],output=argv[2],mode=argv[3];

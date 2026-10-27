@@ -6,7 +6,7 @@ A unique prefed native identity may be reserved before source PTS is known,
 then bound to the actual next accepted original VCL. Output lookup uses that
 identity, never image hashes, fixture POC rank, display ordinal or FIFO guesses.
 Raw firmware tokens remain unchanged. Zero/colliding identities fail closed.
-This finite progressive20-AU prototype is not a production library policy.
+This bounded progressive prototype is not a production library policy.
 """
 import argparse
 import json
@@ -31,12 +31,14 @@ class Source(NamedTuple):
     reference: int
     idr: bool
     time_base: Tuple[int, int]
+    gop_id: int = 0
+    source_copy: int = 0
 
 
 class HostMap:
     """One generation, one outstanding early marker; bounded finite experiment."""
     def __init__(self, generation, capacity=64):
-        if not generation or not 1 <= capacity <= 64:
+        if not generation or not 1 <= capacity <= 4096:
             raise Unsupported('invalid generation/capacity')
         self.generation, self.capacity = generation, capacity
         self.records, self.used, self.pending_marker = {}, set(), None
@@ -94,6 +96,7 @@ class HostMap:
             'raw_native_token': raw_token, 'canonical_token': owner.canonical_token,
             'effective_pts': owner.pts, 'source_dts': owner.dts,
             'source_poc': owner.poc, 'time_base': list(owner.time_base),
+            'source_gop': owner.gop_id, 'source_copy': owner.source_copy,
             'generation': generation, 'source_pts_present': owner.pts is not None}
         self.published.append(result)
         return result
@@ -207,6 +210,7 @@ def self_test():
         count += 1
     m = HostMap('g', capacity=1); m.private(2020000, 'g')
     reject(lambda: m.reserve(2120000, 'g'))
+    reject(lambda: HostMap('g', capacity=4097))
     m = HostMap('g'); m.private(2020000, 'g')
     assert not m.output(2020000, 'g')['display']
     reject(lambda: m.output(2020000, 'g'))
