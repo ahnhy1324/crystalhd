@@ -135,18 +135,24 @@ static std::vector<std::vector<uint8_t>> auxiliary_units(const std::vector<uint8
 
 int main(int argc,char **argv) {
     try {
-        need(argc==4||argc==6,"usage: h264-stop-kick G0_DIRECTORY RESULT_DIRECTORY reference|none|prefix|picture|prefed-picture|prefed-pair|input-idle-100|input-idle-1000|input-hold-1000|input-idle-multi|input-idle-empty|matrix|matrix-idle-100|matrix-idle-1000 [BOUNDARY PRIVATE_COUNT]");
+        need(argc==4||argc==6||argc==7,"usage: h264-stop-kick G0_DIRECTORY RESULT_DIRECTORY reference|none|prefix|picture|prefed-picture|prefed-pair|input-idle-100|input-idle-1000|input-hold-1000|input-idle-multi|input-idle-empty|matrix|matrix-idle-100|matrix-idle-1000 [BOUNDARY PRIVATE_COUNT [raw|prefed|adjacent]]");
         std::string input=argv[1],output=argv[2],mode=argv[3];
         const bool matrix_idle=mode=="matrix-idle-100"||mode=="matrix-idle-1000";
         const unsigned matrix_idle_ms=mode=="matrix-idle-1000"?1000:100;
         const bool matrix=mode=="matrix"||matrix_idle;
-        need(matrix==(argc==6),"matrix requires boundary/count; other modes retain frozen arguments");
+        need(matrix==(argc>=6)&&!(argc==7&&!matrix_idle),"matrix requires boundary/count; transport control is input-idle only");
+        const std::string transport=argc==7?argv[6]:"raw";
+        need(transport=="raw"||transport=="prefed"||transport=="adjacent","research transport control");
+        const bool early_prefeed=transport=="prefed";
+        const bool adjacent_tags=transport=="adjacent";
         const unsigned prefix_count=matrix?small_unsigned(argv[4]):17;
         const unsigned matrix_private=matrix?small_unsigned(argv[5]):0;
         need(!matrix||((prefix_count==12||prefix_count==15||prefix_count==18)&&matrix_private<=5),
              "matrix uses independently ordered boundaries and at most5 private pictures");
         need(!matrix_idle||(prefix_count==18&&(matrix_private==0||matrix_private==4||matrix_private==5)),
              "input-only continuation uses frozen boundary18 with0/4/5 private pictures");
+        need(!adjacent_tags||matrix_private==4,"four distinct2ms private tags fit between original18/19");
+        need(!early_prefeed||matrix_private!=0,"early real prefix control requires private input");
         const bool idle=mode=="input-idle-100"||mode=="input-idle-1000"||
             mode=="input-hold-1000"||mode=="input-idle-multi"||mode=="input-idle-empty";
         const bool hold=mode=="input-hold-1000";
@@ -158,11 +164,10 @@ int main(int argc,char **argv) {
         const bool prefed=mode=="prefed-picture"||mode=="prefed-pair"||matrix;
         const unsigned private_expected=matrix?matrix_private:mode=="prefed-pair"?2:(mode=="picture"||prefed?1:0);
         const auto source=packets(input);
-        const bool resume_prefix=matrix_idle&&private_expected!=0;
         // Private tags are identities, not media timestamps. Keep every
         // original token unchanged, and reserve distinct2ms tags beyond all
         // originals; no artificial four-token adjacent-gap limit is needed.
-        const uint64_t private_base=matrix?source.back().token+kPrivateStep:kPrivate;
+        const uint64_t private_base=matrix?(adjacent_tags?source[prefix_count-1].token+kPrivateStep:source.back().token+kPrivateStep):kPrivate;
         std::vector<uint8_t> prefix,auxiliary;
         if(!idle) {
             prefix=read_file(input+"/prefix.h264");
@@ -276,6 +281,7 @@ int main(int argc,char **argv) {
         };
         if(matrix)printf("{\"type\":\"matrix-input\",\"accepted_originals\":%u,\"private_count\":%u,\"private_token_base\":%llu}\n",
             prefix_count,private_expected,static_cast<unsigned long long>(private_base));
+        if(matrix_idle)printf("{\"type\":\"input-transport\",\"policy\":\"%s\"}\n",transport.c_str());
         for(unsigned i=0;i<(empty?0:reference?20:prefix_count);++i) {
             send(source[i].data,source[i].token);
             ++accepted_real;
@@ -298,7 +304,7 @@ int main(int argc,char **argv) {
                 ++accepted_private;
             }
         } else if(mode=="picture") send(auxiliary,kPrivate);
-        if(private_expected||mode=="prefix") send(prefix,0);
+        if(private_expected||mode=="prefix")send(prefix,early_prefeed?source[prefix_count].token:0);
         const unsigned before_idle=real;
         if(idle)phase="input-idle";
         if(hold) {
@@ -321,7 +327,7 @@ int main(int argc,char **argv) {
             // after G2 failed. This does not establish a STOP/drain boundary.
             need(!eos&&!unknown_outputs,"live channel before input-only pause");
             if(private_expected==5)
-                need(real==18&&private_outputs==3,"reproduce18real/3private pre-EOS prerequisite");
+                need(real==18&&private_outputs==(early_prefeed?4U:3U),"reproduce declared real/private pre-EOS state");
             phase="input-idle";
             const auto pause_start=std::chrono::steady_clock::now();
             wait(matrix_idle_ms);
@@ -334,13 +340,8 @@ int main(int argc,char **argv) {
         if(g2||idle||matrix_idle) {
             need(!eos&&decoder.handle==original_handle,"live original channel at input resume");
             phase="continuation";
-            // Keep the measured18/3 pause boundary unchanged. Test AU19's
-            // original timestamp on both its resume prefix and actual payload;
-            // prefix-only ownership did not preserve it in the measured case.
-            // No original AU bytes or returned identities are rewritten.
-            if(resume_prefix)send(prefix,source[prefix_count].token);
             for(unsigned i=empty?0:prefix_count;i<20;++i) {
-                send(source[i].data,source[i].token);
+                send(source[i].data,early_prefeed&&i==prefix_count?0:source[i].token);
                 ++accepted_real;
             }
             if(idle||matrix_idle)wait(30);
