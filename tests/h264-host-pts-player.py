@@ -8,6 +8,7 @@ The same MP4's AAC uses an unmodified GStreamer audio branch/common clock.
 This is a single180-picture progressive fixture test, not a supported player.
 """
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -32,6 +33,37 @@ BYTES = 640*360*2
 HEADER = struct.Struct('<8sIQIIII')
 
 
+def validate_video_probe(probe, original):
+    stream = probe['streams'][0]
+    if stream.get('codec_name') != 'h264' or (stream.get('width'), stream.get('height')) != (640, 360) or stream.get('time_base') != original['source_time_base']:
+        raise H.Unsupported('media video codec/geometry/timebase differs from qualified input')
+    packets = probe['packets']
+    if len(packets) != 180 or len(original['original_aus']) != 180 or not all(
+            p['pts'] == h['pts'] and p['dts'] == h['dts'] and p.get('duration', 0) > 0
+            for p, h in zip(packets, original['original_aus'])):
+        raise H.Unsupported('media video timestamp/duration descriptors differ')
+    return packets
+
+
+def validate_media(media, original, manifest=None):
+    actual = hashlib.sha256(media.read_bytes()).hexdigest()
+    expected = original['source_fixture_sha256']
+    if manifest is not None:
+        record = json.loads(manifest.read_text())
+        # A separately qualified, video-identical A/V remux is permitted only
+        # through its explicit bound descriptor; the player never creates it.
+        if not record.get('video_packets_identical') or not record.get('audio_prefix_packets_identical') or record.get('qualified_source_fixture_sha256') != expected or record.get('source_time_base') != original['source_time_base'] or record.get('video_packet_count') != 180:
+            raise H.Unsupported('A/V manifest does not bind this qualified video source')
+        expected = record.get('media_sha256')
+    if actual != expected:
+        raise H.Unsupported('selected media identity differs from qualified source/manifest')
+    probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+        '-show_packets', '-show_streams', '-show_entries',
+        'stream=codec_name,width,height,time_base:packet=pts,dts,duration', '-of', 'json',
+        str(media)], capture_output=True, text=True, check=True, timeout=10)
+    return validate_video_probe(json.loads(probe.stdout), original)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('inputs', 'oracle', 'media', 'results'):
@@ -39,17 +71,13 @@ def main():
     parser.add_argument('--probe', required=True, type=Path)
     parser.add_argument('--library', required=True, type=Path)
     parser.add_argument('--headless', action='store_true')
+    parser.add_argument('--media-manifest', type=Path,
+        help='Explicit descriptor for a separately verified video-identical A/V remux')
     args = parser.parse_args()
     args.results.mkdir(mode=0o700, exist_ok=False)
     (args.results/'native-cycle-reference.bin').symlink_to(args.oracle.resolve())
     original = json.loads((args.inputs/'offline.json').read_text())
-    probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0',
-        '-show_packets', '-show_entries', 'packet=pts,dts,duration', '-of', 'json',
-        str(args.media)], capture_output=True, text=True, check=True, timeout=10)
-    packets = json.loads(probe.stdout)['packets']
-    assert len(packets) == len(original['original_aus']) == 180
-    assert all(p['pts'] == h['pts'] and p['dts'] == h['dts'] and p['duration'] > 0
-               for p, h in zip(packets, original['original_aus']))
+    packets = validate_media(args.media, original, args.media_manifest)
     time_base = tuple(map(int, original['source_time_base'].split('/')))
     provided, durations = [], {}
     def provider(ordinal):

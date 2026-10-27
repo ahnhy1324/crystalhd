@@ -12,8 +12,10 @@
 #include <fcntl.h>
 #include <fstream>
 #include <map>
+#include <poll.h>
 #include <stdexcept>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
 extern "C" {
@@ -186,7 +188,10 @@ static int cycle_run(const std::string &input,const std::string &output,const st
     const bool dummy=mode=="cycles-next"||marker;
     if(export_fd>=0) {
         const int flags=fcntl(export_fd,F_GETFL);
-        need(flags>=0&&((flags&O_ACCMODE)==O_WRONLY||(flags&O_ACCMODE)==O_RDWR),"owned export descriptor must be writable");
+        struct stat status{};
+        need(flags>=0&&((flags&O_ACCMODE)==O_WRONLY||(flags&O_ACCMODE)==O_RDWR)&&
+             fstat(export_fd,&status)==0&&S_ISFIFO(status.st_mode),"owned export descriptor must be a writable pipe");
+        need(fcntl(export_fd,F_SETFL,flags|O_NONBLOCK)==0,"nonblocking owned export pipe");
         std::signal(SIGPIPE,SIG_IGN); // A closed test consumer still takes normal decoder cleanup.
     }
     need(reference==(cycles==0),"only uninterrupted oracle uses zero pauses");
@@ -295,8 +300,16 @@ static int cycle_run(const std::string &input,const std::string &output,const st
                 record.insert(record.end(),exported.begin(),exported.end());
                 size_t offset=0;
                 while(offset<record.size()) {
+                    bounded();
                     const ssize_t n=write(export_fd,record.data()+offset,record.size()-offset);
                     if(n<0&&errno==EINTR)continue;
+                    if(n<0&&(errno==EAGAIN||errno==EWOULDBLOCK)) {
+                        struct pollfd pipe{export_fd,POLLOUT,0};
+                        const int rc=poll(&pipe,1,25);
+                        if(rc<0&&errno==EINTR)continue;
+                        need(rc>=0&&!(pipe.revents&(POLLHUP|POLLERR|POLLNVAL)),"owned frame export consumer closed");
+                        continue;
+                    }
                     need(n>0,"owned frame export consumer closed");offset+=n;
                 }
             }
