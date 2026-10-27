@@ -17,10 +17,16 @@
 
 static gint fail_alloc_after = -1, fail_attach, defer_detach;
 static gpointer drop_connection;
+static gpointer fail_flush_connection;
 static gpointer delay_connection, delayed_event;
 static gint release_delayed;
 static gint drop_type;
 static const char *self_path;
+static int test_flush(xcb_connection_t *connection)
+{
+  if (g_atomic_pointer_compare_and_exchange(&fail_flush_connection, connection, NULL)) return 0;
+  return xcb_flush(connection);
+}
 static int test_shmget(key_t key, size_t size, int flags)
 {
   gint budget = g_atomic_int_get(&fail_alloc_after);
@@ -62,11 +68,13 @@ static xcb_generic_event_t *test_poll_event(xcb_connection_t *connection)
 #define shmat test_shmat
 #define shmctl test_shmctl
 #define xcb_poll_for_event test_poll_event
+#define xcb_flush test_flush
 #include "../filters/gst/xv-output/gstcrystalhdxv.c"
 #undef shmget
 #undef shmat
 #undef shmctl
 #undef xcb_poll_for_event
+#undef xcb_flush
 
 static guint own_segments(void)
 {
@@ -626,6 +634,27 @@ static void test_held_pool_and_caps(void)
   g_assert_true(gst_buffer_pool_set_active(new_pool, FALSE)); gst_object_unref(new_pool);
   context_unref(c); gst_object_unref(sink); clean_contexts();
 }
+static void test_submit_flush_failure(void)
+{
+  if (!x11_enabled()) return;
+  GstElement *sink = direct_sink(); XvContext *c = sink_context(XV_SINK(sink));
+  GstVideoInfo info = info_for(320, 240); GstCaps *caps = gst_video_info_to_caps(&info);
+  g_assert_true(sink_set_caps(GST_BASE_SINK(sink), caps)); gst_caps_unref(caps);
+  GstBufferPool *pool = make_pool(sink, &info); GstBuffer *buffer;
+  g_assert_cmpint(gst_buffer_pool_acquire_buffer(pool, &buffer, NULL), ==, GST_FLOW_OK);
+  XvMemory *m = buffer_memory(buffer); g_assert_nonnull(m); memset(m->data, 128, m->size);
+  g_atomic_pointer_set(&fail_flush_connection, c->connection);
+  g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), buffer), ==, GST_FLOW_ERROR);
+  g_assert_null(g_atomic_pointer_get(&fail_flush_connection));
+  gst_buffer_unref(buffer); sink_stop(GST_BASE_SINK(sink));
+  g_mutex_lock(&c->lock);
+  g_assert_cmpuint(c->submitted, ==, 1); g_assert_cmpuint(c->video_submitted, ==, 1);
+  g_assert_cmpuint(c->redraw_submitted, ==, 0); g_assert_cmpuint(c->terminal, ==, 1);
+  g_assert_cmpuint(c->acknowledged, ==, 0); g_assert_cmpuint(c->pending, ==, 0);
+  g_assert_null(c->last_buffer); g_mutex_unlock(&c->lock);
+  g_assert_true(gst_buffer_pool_set_active(pool, FALSE)); gst_object_unref(pool);
+  context_unref(c); gst_object_unref(sink); clean_contexts();
+}
 static void test_two_instances(void)
 {
   if (!x11_enabled()) return;
@@ -869,6 +898,7 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/x11/two-instances", test_two_instances);
   g_test_add_func("/xv/x11/caps-flush", test_caps_and_flush);
   g_test_add_func("/xv/x11/held-pool-caps", test_held_pool_and_caps);
+  g_test_add_func("/xv/x11/submit-flush-failure", test_submit_flush_failure);
   g_test_add_func("/xv/x11/quarantine", test_quarantine);
   g_test_add_func("/xv/card/error-reopen", test_native_error_reopen);
   g_test_add_func("/xv/card/error-reopen-lifetime", test_native_error_reopen_lifetime);

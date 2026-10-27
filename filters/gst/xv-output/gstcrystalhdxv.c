@@ -656,12 +656,11 @@ static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
             .sequence = sequence, .generation = m->generation, .epoch = c->epoch,
             .pts = GST_BUFFER_PTS(buffer), .submitted = g_get_monotonic_time()};
         m->server_owned = TRUE; c->pending++; c->submitted++;
+        if (redraw) c->redraw_submitted++; else c->video_submitted++;
         if (direct) c->pool_submitted++;
         if (xcb_flush(c->connection) > 0) {
           result = GST_FLOW_OK;
-          if (redraw) c->redraw_submitted++;
-          else {
-            c->video_submitted++;
+          if (!redraw) {
             old = c->last_buffer; c->last_buffer = gst_buffer_ref(buffer);
             c->last_info = *info; c->last_epoch = c->epoch;
           }
