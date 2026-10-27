@@ -141,9 +141,8 @@ int main(int argc,char **argv) {
         need(matrix==(argc==6),"matrix requires boundary/count; other modes retain frozen arguments");
         const unsigned prefix_count=matrix?small_unsigned(argv[4]):17;
         const unsigned matrix_private=matrix?small_unsigned(argv[5]):0;
-        need(!matrix||((prefix_count==12||prefix_count==15||prefix_count==18)&&matrix_private<=4),
-             "matrix uses independently ordered boundaries and at most4 distinct2ms private tokens");
-        const uint64_t private_base=matrix?uint64_t(prefix_count)*100000+kPrivateStep:kPrivate;
+        need(!matrix||((prefix_count==12||prefix_count==15||prefix_count==18)&&matrix_private<=5),
+             "matrix uses independently ordered boundaries and at most5 private pictures");
         const bool idle=mode=="input-idle-100"||mode=="input-idle-1000"||
             mode=="input-hold-1000"||mode=="input-idle-multi"||mode=="input-idle-empty";
         const bool hold=mode=="input-hold-1000";
@@ -155,6 +154,10 @@ int main(int argc,char **argv) {
         const bool prefed=mode=="prefed-picture"||mode=="prefed-pair"||matrix;
         const unsigned private_expected=matrix?matrix_private:mode=="prefed-pair"?2:(mode=="picture"||prefed?1:0);
         const auto source=packets(input);
+        // Private tags are identities, not media timestamps. Keep every
+        // original token unchanged, and reserve distinct2ms tags beyond all
+        // originals; no artificial four-token adjacent-gap limit is needed.
+        const uint64_t private_base=matrix?source.back().token+kPrivateStep:kPrivate;
         std::vector<uint8_t> prefix,auxiliary;
         if(!idle) {
             prefix=read_file(input+"/prefix.h264");
