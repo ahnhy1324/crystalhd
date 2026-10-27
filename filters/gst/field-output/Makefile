@@ -9,17 +9,24 @@ LDLIBS += $(shell pkg-config --libs $(PACKAGES)) -pthread
 all: libgstcrystalhdfield.so
 
 # Explicit bounded diagnostic, never used by the ordinary all target.
-.PHONY: wait-probe
+.PHONY: wait-probe host-wait-probe
 wait-probe: wait-probe/libgstcrystalhdfield.so
 
 wait-probe/libgstcrystalhdfield.so: ../../../tests/gst-field-wait-probe.cpp gstcrystalhdfield.cpp ../../../tests/field-view-gpu.h ../../../tests/yuy2-gpu.h
 	mkdir -p wait-probe
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -shared $< $(LDFLAGS) $(LDLIBS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -shared $< $(LDFLAGS) $(LDLIBS) -ldl -o $@
+
+host-wait-probe: wait-probe/libcrystalhdhostwait.so
+
+wait-probe/libcrystalhdhostwait.so: ../../../tests/gst-field-host-wait-probe.cpp
+	mkdir -p wait-probe
+	$(CXX) $(CPPFLAGS) $(shell pkg-config --cflags xcb-present) $(CXXFLAGS) -shared $< $(LDFLAGS) \
+		-Wl,--no-as-needed $(shell pkg-config --libs xcb-present libdrm) -Wl,--as-needed -ldl -o $@
 
 libgstcrystalhdfield.so: gstcrystalhdfield.cpp ../../../tests/field-view-gpu.h ../../../tests/yuy2-gpu.h
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -shared $< $(LDLIBS) -o $@
 
 clean:
-	rm -f libgstcrystalhdfield.so wait-probe/libgstcrystalhdfield.so
+	rm -f libgstcrystalhdfield.so wait-probe/libgstcrystalhdfield.so wait-probe/libcrystalhdhostwait.so
 
 .PHONY: all clean

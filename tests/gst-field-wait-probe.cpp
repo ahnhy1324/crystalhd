@@ -9,6 +9,7 @@
 #include <thread>
 #include <poll.h>
 #include <sys/eventfd.h>
+#include <dlfcn.h>
 static EGLBoolean observed_swap(EGLDisplay,EGLSurface);
 static EGLBoolean observed_terminate(EGLDisplay);
 #define eglSwapBuffers observed_swap
@@ -105,7 +106,7 @@ struct SwapObserver {
         }
         for(const auto &sample:samples) {
             const auto enter=sample->entered.load(),end=sample->returned.load(),ready=sample->ready.load();
-            printf("{\"type\":\"native-fence-swap\",\"swap\":%u,\"valid\":%s,\"swap_ok\":%s,"
+            dprintf(STDOUT_FILENO,"{\"type\":\"native-fence-swap\",\"swap\":%u,\"valid\":%s,\"swap_ok\":%s,"
                 "\"setup_ns\":%" G_GUINT64_FORMAT ",\"swap_ns\":%" G_GUINT64_FORMAT ","
                 "\"gpu_seen_from_enter_ns\":%" G_GINT64_FORMAT ",\"post_gpu_lower_bound_ns\":%" G_GUINT64_FORMAT ","
                 "\"ready_before_swap\":%s}\n",sample->sequence,sample->valid&&ready&&enter&&end?"true":"false",
@@ -119,7 +120,7 @@ struct SwapObserver {
             live+=sample->fd>=0;
             invalid+=!sample->valid||!sample->ready.load()||!sample->entered.load()||!sample->returned.load();
         }
-        printf("{\"type\":\"native-fence-summary\",\"swaps\":%zu,\"invalid_samples\":%zu,\"owned_fds_after_close\":%zu}\n",
+        dprintf(STDOUT_FILENO,"{\"type\":\"native-fence-summary\",\"swaps\":%zu,\"invalid_samples\":%zu,\"owned_fds_after_close\":%zu}\n",
                samples.size(),invalid,live);
     }
 };
@@ -130,9 +131,13 @@ static EGLBoolean observed_swap(EGLDisplay display,EGLSurface surface) {
     std::shared_ptr<SwapObserver> observer;
     {std::lock_guard<std::mutex> lock(observers_mutex);
      auto &entry=observers[display];if(!entry)entry=std::make_shared<SwapObserver>(display);observer=entry;}
-    auto sample=observer->watch();sample->entered=gst_util_get_timestamp();
+    using Marker=void(*)(unsigned);
+    static auto marker=reinterpret_cast<Marker>(dlsym(RTLD_DEFAULT,"crystalhd_host_wait_mark"));
+    auto sample=observer->watch();if(marker)marker(sample->sequence);
+    sample->entered=gst_util_get_timestamp();
     const EGLBoolean result=eglSwapBuffers(display,surface);
-    sample->returned=gst_util_get_timestamp();sample->swap_ok=result;return result;
+    sample->returned=gst_util_get_timestamp();if(marker)marker(0);
+    sample->swap_ok=result;return result;
 }
 static EGLBoolean observed_terminate(EGLDisplay display) {
     std::shared_ptr<SwapObserver> observer;
