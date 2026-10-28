@@ -2845,6 +2845,13 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 			DebugLog_Trace(LDIL_DBG,
 				"DtsReleaseInterface: capture cleanup failed: %d\n",
 				cleanup_sts);
+		/* Retire only initialization state owned by this admitted session.
+		 * RELEASE can hand hardware to a new opener before returning, so the
+		 * old owner must finish this update while it still owns the session. */
+		if (Ctx->driverSessionOwned) {
+			DtsSetHwInitSts(BC_DIL_HWINIT_NOT_YET);
+			Ctx->driverSessionOwned = false;
+		}
 		const BC_STATUS release_sts = DtsReleaseUserHandle(Ctx);
 		if (cleanup_sts == BC_STS_SUCCESS)
 			cleanup_sts = release_sts;
@@ -2870,11 +2877,6 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 	/* Normal ownership is retired before userspace backing is freed. If an
 	 * unmap was not confirmed, DtsReleaseMemPools quarantines that backing. */
 	DtsReleaseMemPools(Ctx);
-
-	/* Monitor teardown releases only its local interface.  It must not make an
-	 * independently owned playback device appear uninitialized. */
-	if (Ctx->OpMode != DTS_MONITOR_MODE)
-		DtsSetHwInitSts(BC_DIL_HWINIT_NOT_YET);
 
 	DtsDelDilShMem();
 
@@ -2927,6 +2929,7 @@ BC_STATUS DtsNotifyOperatingMode(HANDLE hDevice,uint32_t Mode)
 		return sts;
 	}
 
+	Ctx->driverSessionOwned = (Mode & 0xFF) != DTS_MONITOR_MODE;
 	DtsRelIoctlData(Ctx,pIocData);
 	return sts;
 }

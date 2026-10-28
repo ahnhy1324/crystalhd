@@ -65,6 +65,11 @@ static DTS_LIB_CONTEXT *mode_update_during_capture_flush;
 static uint32_t mode_set_during_capture_flush;
 static uint32_t mode_cleared_during_capture_flush;
 static bool capture_flush_mode_update_seen;
+static bool expect_hw_reset_before_release;
+static uint32_t hw_state_during_release;
+static uint32_t hw_state_during_close;
+static bool hw_release_handoff_seen;
+static bool hw_close_handoff_seen;
 
 struct IoctlRecord {
 	int fd;
@@ -352,6 +357,10 @@ extern "C" int __wrap_close(int fd)
 		      ioctl_count <= sizeof(ioctl_log) / sizeof(ioctl_log[0]) &&
 		      ioctl_log[ioctl_count - 1].command == BCM_IOC_RELEASE,
 		      "device close follows the driver release command");
+	if (hw_state_during_close) {
+		shared_state.gHwInitSts = hw_state_during_close;
+		hw_close_handoff_seen = true;
+	}
 	if (fail_close) {
 		errno = EIO;
 		return -1;
@@ -400,6 +409,14 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 		      "open notifies the selected mode");
 		break;
 	case BCM_IOC_RELEASE:
+		if (expect_hw_reset_before_release)
+			Check(shared_state.gHwInitSts == BC_DIL_HWINIT_NOT_YET,
+			      "hardware owner retires initialization state before driver release");
+		if (hw_state_during_release) {
+			shared_state.gHwInitSts = hw_state_during_release;
+			hw_release_handoff_seen = true;
+		}
+		break;
 	case BCM_IOC_FW_CMD:
 		break;
 	default:
@@ -573,6 +590,9 @@ static void BeginCase(int descriptor)
 	mode_update_during_capture_flush = nullptr;
 	mode_set_during_capture_flush = mode_cleared_during_capture_flush = 0;
 	capture_flush_mode_update_seen = false;
+	expect_hw_reset_before_release = false;
+	hw_state_during_release = hw_state_during_close = 0;
+	hw_release_handoff_seen = hw_close_handoff_seen = false;
 	raw_close_expected = false;
 	ioctl_count = 0;
 	failed_command = 0;
@@ -1479,6 +1499,142 @@ static void CheckSystemOpenFailure()
 	EndCase("system open failure leaves no allocation");
 }
 
+static void CheckFailedNonMonitorOpenPreservesHardware(uint32_t mode,
+		uint32_t hw_state, unsigned long command, bool syscall_failure)
+{
+	BeginCase(66);
+	expected_mode = mode;
+	initial_hw_state = hw_state;
+	initial_decoder_owner = getpid();
+	initial_op_mode = 0x1 | 0x4;
+	shared_exists = true;
+	shared_nattch = 1;
+	failed_command = command;
+	fail_with_syscall = syscall_failure;
+	fail_with_status = !syscall_failure;
+	HANDLE device = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	Check(DtsDeviceOpen(&device, mode) ==
+	          (syscall_failure ? BC_STS_ERROR : BC_STS_BUSY),
+	      "failed non-monitor open preserves the setup error");
+	Check(device == nullptr,
+	      "failed non-monitor open publishes no partial handle");
+	Check(shared_state.gHwInitSts == hw_state,
+	      "failed non-monitor open preserves another session's hardware state");
+	Check(shared_state.g_bDecOpened && shared_state.g_nProcID == getpid() &&
+	      shared_state.gDilOpMode == initial_op_mode,
+	      "failed non-monitor open preserves the existing decoder and mode owners");
+	Check(open_calls == 1 && close_calls == 1 && closed_fd == 66 &&
+	      shared_attach_calls == 1 && shared_detach_calls == 1 &&
+	      shared_remove_calls == 0,
+	      "failed non-monitor open releases only its local descriptor and mapping");
+	if (command == BCM_IOC_GET_HWTYPE)
+		CheckIoctls(66, {BCM_IOC_GET_HWTYPE, BCM_IOC_RELEASE},
+		      "failed hardware query performs only local retirement commands");
+	else if (command == BCM_IOC_GET_VERSION)
+		CheckIoctls(66,
+		      {BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_RELEASE},
+		      "failed version query performs only local retirement commands");
+	else
+		CheckIoctls(66, {BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION,
+		      BCM_IOC_NOTIFY_MODE, BCM_IOC_RELEASE},
+		      "rejected mode notification performs only local retirement commands");
+	EndCase("failed non-monitor open releases every local allocation");
+}
+
+static void CheckHardwareStateHandoff(uint32_t peer_state, bool during_release,
+		bool close_failure)
+{
+	BeginCase(67);
+	expected_mode = DTS_DIAG_MODE;
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	initial_op_mode = 0x4;
+	shared_exists = true;
+	shared_nattch = 1;
+	HANDLE device = nullptr;
+	Check(DtsDeviceOpen(&device, DTS_DIAG_MODE) == BC_STS_SUCCESS && device,
+	      "hardware handoff fixture acquires its driver session");
+	if (!device) {
+		EndCase("failed hardware handoff fixture releases every allocation");
+		return;
+	}
+	expect_hw_reset_before_release = true;
+	if (during_release)
+		hw_state_during_release = peer_state;
+	else
+		hw_state_during_close = peer_state;
+	fail_close = close_failure;
+	Check(DtsDeviceClose(device) ==
+	          (close_failure ? BC_STS_ERROR : BC_STS_SUCCESS),
+	      "hardware handoff reports the exact consuming close result");
+	Check(shared_state.gHwInitSts == peer_state,
+	      "retired session preserves initialization published after driver release");
+	if (peer_state)
+		Check(during_release ? hw_release_handoff_seen : hw_close_handoff_seen,
+		      "peer initialization is published at the selected handoff boundary");
+	Check(shared_state.gDilOpMode == 0x4 && close_calls == 1 &&
+	      shared_detach_calls == 1 && shared_remove_calls == 0,
+	      "hardware handoff retires only its local mode, descriptor and mapping");
+	CheckIoctls(67, {BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION,
+	      BCM_IOC_NOTIFY_MODE, BCM_IOC_RELEASE},
+	      "hardware handoff preserves public open and release ordering");
+	EndCase("hardware handoff releases every local allocation");
+}
+
+static void CheckPartialNonMonitorOpenPreservesHardware()
+{
+	BeginCase(69);
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	initial_decoder_owner = getpid();
+	initial_op_mode = 0x1 | 0x4;
+	shared_exists = true;
+	shared_nattch = 1;
+	/* txScratch is allocated after the context, pools, ring and alignBuf. */
+	failed_aligned_size = CIRC_TX_BUF_SIZE;
+	failed_aligned_occurrence = 2;
+	HANDLE device = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	Check(DtsDeviceOpen(&device, DTS_HWINIT_MODE) == BC_STS_INSUFF_RES &&
+	      device == nullptr && aligned_failure_fired,
+	      "partial non-monitor allocation failure publishes only its resource error");
+	Check(shared_state.gHwInitSts == BC_DIL_HWINIT_DONE &&
+	      shared_state.g_bDecOpened && shared_state.g_nProcID == getpid() &&
+	      shared_state.gDilOpMode == initial_op_mode,
+	      "unnotified partial context preserves every existing hardware owner");
+	Check(thread_create_calls == 0 && open_calls == 1 && close_calls == 1 &&
+	      closed_fd == 69 && shared_attach_calls == 1 && shared_detach_calls == 1 &&
+	      shared_remove_calls == 0,
+	      "partial non-monitor failure retires its local resources before worker creation");
+	CheckIoctls(69, {BCM_IOC_RELEASE},
+	      "partial context retirement performs no hardware query or notification");
+	EndCase("partial non-monitor allocation failure releases every allocation");
+}
+
+static void CheckUnnotifiedInterfacePreservesHardware(bool notify)
+{
+	BeginCase(68);
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	shared_nattch = 1;
+	expected_mode = DTS_DIAG_MODE;
+	AcquireFixtureSharedState();
+	HANDLE device = nullptr;
+	Check(DtsInitInterface(68, &device, DTS_DIAG_MODE) == BC_STS_SUCCESS && device,
+	      "internal interface fixture allocates its local context");
+	if (device) {
+		if (notify)
+			Check(DtsNotifyOperatingMode(device, DTS_DIAG_MODE) == BC_STS_SUCCESS,
+			      "internal interface explicitly acquires a driver session");
+		expect_hw_reset_before_release = notify;
+		Check(DtsReleaseInterface(DtsGetContext(device)) == BC_STS_SUCCESS,
+		      "internal interface retires its local resources");
+	}
+	Check(shared_state.gHwInitSts ==
+	          (notify ? BC_DIL_HWINIT_NOT_YET : BC_DIL_HWINIT_DONE),
+	      "only a notified hardware owner may reset shared initialization state");
+	Check(close_calls == 1 && shared_attach_calls == 1 &&
+	      shared_detach_calls == 1 && shared_remove_calls == 0,
+	      "internal interface balances its descriptor and shared reference");
+	EndCase("internal interface releases every local allocation");
+}
+
 static void CheckHardwareInitOpen(uint32_t initial_state, BC_STATUS push_status,
 				 BC_STATUS init_status, BC_STATUS expected,
 				 unsigned pushes, unsigned initializations)
@@ -1785,6 +1941,22 @@ int main()
 		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
 		 BCM_IOC_RELEASE});
 	CheckSystemOpenFailure();
+	for (uint32_t mode : {DTS_PLAYBACK_MODE, DTS_DIAG_MODE, DTS_HWINIT_MODE})
+		for (uint32_t hw_state : {BC_DIL_HWINIT_IN_PROGRESS, BC_DIL_HWINIT_DONE})
+			for (unsigned long command : {BCM_IOC_GET_HWTYPE,
+			                             BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE})
+				for (bool syscall_failure : {false, true})
+					CheckFailedNonMonitorOpenPreservesHardware(
+						mode, hw_state, command, syscall_failure);
+	for (bool close_failure : {false, true}) {
+		CheckHardwareStateHandoff(BC_DIL_HWINIT_NOT_YET, false, close_failure);
+		for (uint32_t peer_state : {BC_DIL_HWINIT_IN_PROGRESS, BC_DIL_HWINIT_DONE})
+			for (bool during_release : {false, true})
+				CheckHardwareStateHandoff(peer_state, during_release, close_failure);
+	}
+	for (bool notify : {false, true})
+		CheckUnnotifiedInterfacePreservesHardware(notify);
+	CheckPartialNonMonitorOpenPreservesHardware();
 	CheckHardwareInitOpen(BC_DIL_HWINIT_NOT_YET, BC_STS_SUCCESS,
 		BC_STS_SUCCESS, BC_STS_SUCCESS, 1, 1);
 	CheckHardwareInitOpen(BC_DIL_HWINIT_NOT_YET, BC_STS_IO_XFR_ERROR,

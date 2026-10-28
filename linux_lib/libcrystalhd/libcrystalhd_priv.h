@@ -252,6 +252,8 @@ typedef struct _DTS_LIB_CONTEXT{
 	uint32_t				MpoolCnt;		/* Number of entries */
 	uint32_t				CfgFlags;		/* Application specifi flags */
 	uint32_t				OpMode;			/* Mode of operation playback etc..*/
+	/* Only a successful non-monitor NOTIFY owns shared hardware state. */
+	bool driverSessionOwned;
 	uint32_t				DevId;			/* HW Device ID */
 	uint32_t				hwRevId;		/* HW revision ID */
 	uint32_t				VendorId;		/* HW vendor ID - should always be Broadcom 0x14e4 */
