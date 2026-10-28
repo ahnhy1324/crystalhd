@@ -70,6 +70,17 @@ test('legacy readable shell config overrides an inherited launcher value', () =>
     '--hardware-video-device-path=/dev/dri/inherited'));
 });
 
+test('managed launch boundary bypasses the legacy shell config', () => {
+  const result = launch({
+    CRYSTALHD_CHROMIUM_CONFIG_DISABLE: '1',
+    CRYSTALHD_CHROMIUM_PASSWORD_STORE: '',
+  }, 'Chromium 999.0', 'CRYSTALHD_CHROMIUM_PASSWORD_STORE=basic\n');
+  assert.equal(result.status, 0, result.stderr);
+  const invocation = JSON.parse(result.stdout);
+  assert.ok(!invocation.args.some((argument) =>
+    argument.startsWith('--password-store=')));
+});
+
 for (const acknowledgement of ['', '1']) {
   test(`software default keeps GPU sandbox (legacy acknowledgement=${acknowledgement || 'unset'})`, () => {
     const result = launch({CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX: acknowledgement});

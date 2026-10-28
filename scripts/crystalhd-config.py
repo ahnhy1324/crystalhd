@@ -444,10 +444,23 @@ LAUNCH_ENVIRONMENT = {
     "vaapi.i915_wc": "CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC",
     "vaapi.debug": "CRYSTALHD_VAAPI_DEBUG",
     "vaapi.trace": "CRYSTALHD_VAAPI_TRACE",
+    "chromium.executable": "CRYSTALHD_CHROMIUM",
+    "chromium.drm_device": "CRYSTALHD_DRM_DEVICE",
+    "chromium.password_store": "CRYSTALHD_CHROMIUM_PASSWORD_STORE",
+    "chromium.profile_dir": "CRYSTALHD_CHROMIUM_PROFILE_DIR",
+    "chromium.native_gl": "CRYSTALHD_CHROMIUM_NATIVE_GL",
     "player.python": "CRYSTALHD_PLAYER_PYTHON",
 }
 
 NATIVE_CONFIG_DISABLE_ENVIRONMENT = "CRYSTALHD_CONFIG_DISABLE"
+CHROMIUM_CONFIG_DISABLE_ENVIRONMENT = "CRYSTALHD_CHROMIUM_CONFIG_DISABLE"
+CHROMIUM_LAUNCH_KEYS = frozenset((
+    "chromium.executable",
+    "chromium.drm_device",
+    "chromium.password_store",
+    "chromium.profile_dir",
+    "chromium.native_gl",
+))
 
 CENTERED_NV12_ENVIRONMENT = "CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12"
 CENTERED_NV12_MODEL_CAVEAT = (
@@ -498,9 +511,10 @@ class SaveResult(object):
 
 
 class LaunchPlan(object):
-    def __init__(self, environment, requested_keys):
+    def __init__(self, environment, requested_keys, chromium_config_bypassed=False):
         self.environment = environment
         self.requested_keys = tuple(sorted(requested_keys))
+        self.chromium_config_bypassed = chromium_config_bypassed
 
 
 class InvalidNativeValue(object):
@@ -559,7 +573,7 @@ class NativeRejection(object):
 class Resolution(object):
     def __init__(self, requested, origins, effective, activity, raw_receipts,
                  rejections, preset, profile, centered_nv12_environment_present=False,
-                 native_config_disabled=False):
+                 native_config_disabled=False, configured_origins=None):
         self.requested = requested
         self.origins = origins
         self.effective = effective
@@ -571,6 +585,7 @@ class Resolution(object):
         # This native-only boundary retains presence, never its raw value.
         self.centered_nv12_environment_present = centered_nv12_environment_present
         self.native_config_disabled = native_config_disabled
+        self.configured_origins = configured_origins or {}
 
 
 class PresetEntry(object):
@@ -1145,7 +1160,8 @@ def resolve(system, user, presets, explicit_preset=None, explicit_profile=None,
     return Resolution(requested, origins, effective, activity, receipts,
                       rejections, preset, profile,
                       CENTERED_NV12_ENVIRONMENT in environment,
-                      environment.get(NATIVE_CONFIG_DISABLE_ENVIRONMENT) == "1")
+                      environment.get(NATIVE_CONFIG_DISABLE_ENVIRONMENT) == "1",
+                      canonical_origins)
 
 
 def validate_managed(values):
@@ -1169,11 +1185,12 @@ def encode_existing_target(key, value):
     if key == "vaapi.h264.mode":
         return {"bounded": ABSENT, "strict": "0", "live": "1"}[value]
     if key in ("vaapi.h264.low_latency", "vaapi.h264.ready_remap", "vaapi.i915_wc",
-               "vaapi.debug", "vaapi.trace"):
+               "vaapi.debug", "vaapi.trace", "chromium.native_gl"):
         return "1" if value else ABSENT
     if key == "libcrystalhd.rx_pool_count":
         return str(value)
-    if key == "player.python":
+    if key in ("player.python", "chromium.executable", "chromium.drm_device",
+               "chromium.profile_dir"):
         return value
     if key == "chromium.password_store":
         return value
@@ -1210,13 +1227,18 @@ def prepare_launch(system, user, catalog, environment, explicit_preset=None,
     )
     child_environment = dict(environment)
     requested_keys, required = [], set()
+    chromium_config_bypassed = any(
+        key in CHROMIUM_LAUNCH_KEYS and origin != "compiled"
+        for key, origin in resolution.configured_origins.items()
+    )
     for key, origin in resolution.origins.items():
         if origin == "compiled" or origin.startswith("environment:"):
             continue
         if key not in LAUNCH_ENVIRONMENT:
             raise SchemaError("run has no supported environment adapter for {0}".format(key))
         value = resolution.requested[key]
-        if key in ("vaapi.h264.ready_remap", "vaapi.i915_wc") and value is True:
+        if key in ("vaapi.h264.ready_remap", "vaapi.i915_wc",
+                   "chromium.native_gl") and value is True:
             raise SchemaError("run does not support activation of {0}".format(key))
         requested_keys.append(key)
         encoded = (ABSENT if origin.endswith(":unset")
@@ -1241,7 +1263,11 @@ def prepare_launch(system, user, catalog, environment, explicit_preset=None,
             or set(system.metadata) - {"schema"} or set(user.metadata) - {"schema"}):
         # The resolved child is authoritative, including absence for false/unset.
         child_environment[NATIVE_CONFIG_DISABLE_ENVIRONMENT] = "1"
-    return LaunchPlan(child_environment, requested_keys)
+    if chromium_config_bypassed:
+        # Do not let the launcher's legacy sourced shell file replace values
+        # after the strict layers and environment have already been resolved.
+        child_environment[CHROMIUM_CONFIG_DISABLE_ENVIRONMENT] = "1"
+    return LaunchPlan(child_environment, requested_keys, chromium_config_bypassed)
 
 
 def _launch_diagnostic(message):
@@ -1271,6 +1297,8 @@ def execute_launch(plan, child_argv):
         if plan.environment.get(NATIVE_CONFIG_DISABLE_ENVIRONMENT) == "1":
             summary = (", ".join(plan.requested_keys) or "no setting overrides")
             summary += "; native file reading bypassed"
+        if plan.chromium_config_bypassed:
+            summary += "; legacy Chromium shell config bypassed"
         _launch_diagnostic("REQUESTED FOR THIS CHILD: {0}; "
                            "active state unconfirmed; existing processes unchanged".format(
                   summary

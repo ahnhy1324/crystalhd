@@ -366,18 +366,23 @@ with the inspector's effective fallback. With no managed requests or overrides,
 the child inherits the environment unchanged. Application CLI/GObject inputs
 retain their own higher priority.
 
-The first adapter supports RX pool count, H.264 mode and explicit prefeed,
-VA debug/trace, and `player.python`. READY remap and i915 WC may be requested
-off or unset, but not activated. A new managed RX8 request requires the transient
+The adapter supports RX pool count, H.264 mode and explicit prefeed,
+VA debug/trace, `player.python`, and bounded Chromium launcher keys for the
+executable, DRM path, password store, profile directory and native GL. A
+managed Chromium request also sets `CRYSTALHD_CHROMIUM_CONFIG_DISABLE=1`, so
+the launcher's legacy shell file cannot override the already resolved strict
+layers. READY remap, i915 WC and Chromium native GL may be requested off or
+unset, but not activated. A new managed RX8 request requires the transient
 `low-memory-8-buffer` acknowledgement; a new managed LIVE/prefeed request requires
 `bcm70015-live-h264-drain`. Supply the exact union of these and any selected
 preset's required `--acknowledge-risk TOKEN` values. Tokens are never inferred
 from the saved file or inherited environment. Canonical prefeed `false` removes
 its variable; inherited raw `0` remains an explicit native auto-prefeed opt-out.
 
-Managed READY policy/delay changes, Chromium settings, and the three player/GStreamer
-CLI/GObject-only keys have no adapter in this command and are rejected before
-execution, even for `unset` or a native-valued request. A schema-selectable preset
+Managed READY policy/delay changes, Chromium hardware-decode/sandbox/policy
+acknowledgements, and the three player/GStreamer CLI/GObject-only keys have no
+adapter in this command and are rejected before execution, even for `unset` or
+a native-valued request. A schema-selectable preset
 such as Quality can therefore be unavailable to this adapter. It also rejects
 changes which would indirectly activate inherited READY remapping. Use
 `show-effective` to inspect the configured layers; an unsupported request is not
@@ -480,6 +485,7 @@ These current surfaces deliberately do not become ordinary merged keys:
 | `session_l0s_off` <!-- schema-boundary:module:session_l0s_off=staged-module --> | Same separate module-load lifetime and topology checks |
 | `CRYSTALHD_CONFIG_DISABLE` <!-- schema-boundary:environment:CRYSTALHD_CONFIG_DISABLE=native-config-bootstrap --> | Exactly `1` bypasses native managed-file consumption; not a saved setting or risk acknowledgement. `config run` sets it for its already-resolved child when needed |
 | `CRYSTALHD_CHROMIUM_CONFIG` <!-- schema-boundary:environment:CRYSTALHD_CHROMIUM_CONFIG=legacy-bootstrap --> | Selects the existing trusted shell file; it cannot recursively select the strict schema |
+| `CRYSTALHD_CHROMIUM_CONFIG_DISABLE` <!-- schema-boundary:environment:CRYSTALHD_CHROMIUM_CONFIG_DISABLE=managed-launch-boundary --> | Exactly `1` prevents the launcher from sourcing the legacy shell file. `config run` sets it only when a strict Chromium launcher key participates; it is not a saved setting or risk acknowledgement |
 | `CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12` <!-- schema-boundary:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12=experimental-centered-nv12 --> | Native-only centered NV12 experiment; no canonical key, profile value, preset or manager translation. The VA driver alone validates its exact syntax and context/media eligibility |
 | `crystalhd-play --subtitles` <!-- schema-boundary:player-flag:--subtitles=invocation-only --> | Per-media invocation input, never a saved preset/profile value |
 | `crystalhd-play --weave` <!-- schema-boundary:player-flag:--weave=invocation-only --> | Per-invocation interlaced passthrough selection, never a saved preset/profile value |
@@ -666,11 +672,12 @@ privileges.  Assignments in that file override inherited launcher variables.
 Direct launcher use preserves that compatibility behavior.
 
 The strict v1 manager must never parse, source or automatically migrate this
-shell file.  A future **explicit managed invocation** requires an additive
-launcher mode which does not source the legacy file.  That mode is not
-implemented today; until it exists, the manager must not claim that it can
-launch Chromium with a fully determined effective configuration.  No process
-name matching or implicit bypass is permitted.
+shell file. An explicit managed invocation which resolves a bounded Chromium key
+sets `CRYSTALHD_CHROMIUM_CONFIG_DISABLE=1` in that child; the launcher then
+skips the legacy file and consumes only the resolved environment. This applies
+only to that new process and does not alter an already-running browser. The
+hardware-decode, sandbox-disable and H.264-policy acknowledgement keys remain
+outside this adapter. No process-name matching or implicit bypass is used.
 
 ## Versioning and migration
 

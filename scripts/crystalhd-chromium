@@ -7,7 +7,7 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(CDPATH= cd -- "$script_dir/.." 2>/dev/null && pwd || true)
 config_file=${CRYSTALHD_CHROMIUM_CONFIG:-${XDG_CONFIG_HOME:-"$HOME/.config"}/crystalhd/chromium.conf}
 
-if [ -r "$config_file" ]; then
+if [ "${CRYSTALHD_CHROMIUM_CONFIG_DISABLE:-0}" != 1 ] && [ -r "$config_file" ]; then
     # This trusted shell configuration runs with the launcher's current
     # privileges. Do not run the launcher elevated or select an untrusted file.
     # shellcheck disable=SC1090
