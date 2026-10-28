@@ -17,6 +17,40 @@ broader performance and research remain in
 [#472](https://github.com/ahnhy1324/crystalhd/issues/472) and do not expand the
 scope to general full-rate FHD or hardware deinterlacing.
 
+## Current bug-fix order
+
+2026-10-28: prioritize failures in ordinary use before optional performance or
+new-backend research. For each item, reproduce the failure, make the smallest
+fix and recheck the affected user operation. Run wider regression checks at
+the end of a related change set, rather than repeating unrelated experiments.
+
+1. **Open/close state and resource ownership (#510).** Failed-open publication
+   is prepared in [#552](https://github.com/ahnhy1324/crystalhd/pull/552); combined
+   mode preservation and atomic updates are locally fixed and review-ready.
+   Complete integration while preserving failure cleanup and the legacy ABI.
+   Same-mode reference counts and same-handle concurrent close/use are separate
+   questions, not implied fixes.
+2. **Ordinary Kodi EOF, Stop, seek and reopen (#445/#429).** Address reproducible
+   user-operation failures. The observed zero-counter two-second EOF wait is
+   in Kodi's drain loop; keep that upstream compatibility boundary distinct
+   from our decoder cleanup. Further runs need a new condition that can
+   distinguish causes, not an indefinite soak or fabricated EOS.
+3. **Shutdown heap abort (#538).** Capture the fault stack or first corruption
+   in the affected private-FFmpeg VA combination, then verify a fix against
+   that condition. Clean exits alone do not resolve the original abort.
+4. **Installation, recovery and settings (#510/#400, then #539).** Fix concrete
+   update/rollback and saved-versus-applied setting failures before extending
+   adapters. The experimental Kodi no-build path still needs a distribution
+   decision; existing private activation is not a public installer.
+5. **Optional research.** Defer #533 STOP/START, #513 Xv, #530 EGL Bob and
+   #92/#204 hardware exploration until the correctness work above is handled,
+   unless new evidence establishes an ordinary-use fault needing priority.
+
+Keep merged, locally fixed/review-ready, needs-reproduction and upstream-only
+items distinct. A child fix does not close its broader acceptance issue.
+
+## Tracked work
+
 - [x] [#473: v1.2.0 bounded release scope and gates](https://github.com/ahnhy1324/crystalhd/issues/473)
   — RC2 completed G0/G1, selected Kodi/720p50/endurance G2 and direct/DKMS
   package/rollback G3. Its retained strict Kodi count failures are bounded to
@@ -110,9 +144,10 @@ scope to general full-rate FHD or hardware deinterlacing.
   [#550](https://github.com/ahnhy1324/crystalhd/pull/550) and
   [#551](https://github.com/ahnhy1324/crystalhd/pull/551). These separately scoped
   functional repairs supersede the original logging-only attachment task;
-  retain its historical failure evidence. Mode-bit reference semantics,
-  cross-process mode updates and same-handle close/use lifetime remain separate
-  follow-ups; the shared-mapping fix alone does not qualify them. CI/provenance
+  retain its historical failure evidence. Local atomic mode updates now preserve
+  unrelated bits through open and consuming close. Same-mode reference counts
+  and same-handle close/use lifetime remain separate follow-ups; the
+  shared-mapping fix alone does not qualify them. CI/provenance
   and admission-timing acceptance remain separately tracked.
 - [ ] [#91: Deferred hardware and application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91)
   — alternate hardware, the LTS item executed through #371, bounded BCM70015
