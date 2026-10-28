@@ -306,6 +306,30 @@ records actual settings, codec/device probes, the earlier live-page-pin
 guardian failure and full post-Kodi-exit/module restoration. The following
 experiment supplies the compatible native frame path.
 
+### Package metadata probe
+
+Inspect another package without opening Kodi, video hardware or a media file by
+selecting its actual Kodi ELF and the directory containing its exact FFmpeg
+SONAME files:
+
+```sh
+python3 tools/kodi-route-probe/ffmpeg-hwconfig-probe.py \
+  --kodi-binary "/absolute/path/to/kodi.bin" \
+  --library-dir "/absolute/path/to/that/runtime/lib" \
+  --require-kodi-drm-prime --pretty
+```
+
+The JSON records Kodi's directly linked `libavcodec`, `libavformat` and
+`libavutil` SONAMEs, resolved files and versions, then enumerates
+`avcodec_get_hw_config()` for `h264_v4l2m2m`. A decoder with zero configs is
+not a DRM PRIME candidate. A positive result is only package preflight: actual
+Kodi selection, EXPBUF/import lifetime, device use and playback remain separate
+runtime gates. Run the probe inside the matching architecture/runtime (including
+a Flatpak runtime); it never enters one automatically. The explicit library
+directory makes a missing package file fail instead of falling back to a host
+library. `check-capability` tests missing, zero-config, non-DRM and DRM PRIME
+cases with synthetic DSOs and opens no device.
+
 
 ## Built-in Kodi with published DRM PRIME FFmpeg
 

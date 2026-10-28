@@ -14,7 +14,7 @@ PLAYBACK_TRACE := build-playback-trace/$(ADDON)
 V4L2_OUTPUT := build-v4l2/$(ADDON)
 V4L2_TRACE := build-v4l2-trace/$(ADDON)
 
-.PHONY: all native native-trace rgb-test playback playback-trace v4l2 v4l2-trace check check-codec check-demux check-playback check-playback-codec clean
+.PHONY: all native native-trace rgb-test playback playback-trace v4l2 v4l2-trace check check-capability check-codec check-demux check-playback check-playback-codec clean
 all: $(OUTPUT)/$(ADDON).so $(OUTPUT)/addon.xml
 native: $(NATIVE_OUTPUT)/$(ADDON).so $(NATIVE_OUTPUT)/addon.xml
 native-trace: $(TRACE_OUTPUT)/$(ADDON).so $(TRACE_OUTPUT)/addon.xml
@@ -65,8 +65,11 @@ build/kodi-route-native-test: ../../tests/kodi-route-native.cpp native.cpp nativ
 		$(shell $(PKG_CONFIG) --cflags $(GST_PACKAGES)) ../../tests/kodi-route-native.cpp native.cpp \
 		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES)) $(LDFLAGS) -o "$@"
 
-check: build/kodi-route-native-test
+check: check-capability build/kodi-route-native-test
 	./build/kodi-route-native-test
+
+check-capability:
+	python3 ../../tests/kodi-ffmpeg-hwconfig-probe.py ./ffmpeg-hwconfig-probe.py
 
 build/kodi-route-codec-test: TEST_SOURCE := ../../tests/kodi-route-codec.cpp
 build/kodi-playback-codec-test: TEST_SOURCE := ../../tests/kodi-route-codec.cpp
