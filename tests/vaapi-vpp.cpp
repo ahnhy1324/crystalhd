@@ -57,11 +57,16 @@ void VppTestDestroyWait();
 namespace allocation_fault {
 thread_local bool fail_next = false;
 thread_local size_t only_size = 0, failed_size = 0;
+thread_local unsigned skip_matches = 0;
 void *Allocate(size_t bytes) {
   if (fail_next && (only_size == 0 || bytes == only_size)) {
-    fail_next = false;
-    failed_size = bytes;
-    throw std::bad_alloc();
+    if (skip_matches != 0) {
+      --skip_matches;
+    } else {
+      fail_next = false;
+      failed_size = bytes;
+      throw std::bad_alloc();
+    }
   }
   if (void *result = std::malloc(bytes == 0 ? 1 : bytes)) return result;
   throw std::bad_alloc();
@@ -284,6 +289,7 @@ struct NativeNodeMock {
   unsigned render_stats = 0, primary_stats = 0;
   unsigned creates = 0, destroys = 0, maps = 0, unmaps = 0;
   unsigned map_attempts = 0;
+  unsigned fail_bookkeeping_map = 0, fail_bookkeeping_allocation = 0;
   uint64_t dumb_offset_base = 0, last_mapped_offset = 0;
   bool override_create_size = false;
   uint64_t create_size_override = 0;
@@ -470,6 +476,12 @@ struct NativeNodeMock {
     auto pixels = std::make_unique<std::vector<uint8_t>>(size);
     void *address = pixels->data();
     mappings.emplace(address, std::move(pixels));
+    if (maps == fail_bookkeeping_map) {
+      allocation_fault::only_size = 0;
+      allocation_fault::failed_size = 0;
+      allocation_fault::skip_matches = fail_bookkeeping_allocation - 1;
+      allocation_fault::fail_next = true;
+    }
     return address;
   }
   int Unmap(void *address, size_t size) {
@@ -1479,6 +1491,62 @@ void NativeSurfaceFilesRetainOriginalLifetime() {
               mock.maps == 17 && mock.unmaps == 17 && mock.invalid == 0 &&
               driver.surfaces.empty() && driver.contexts.empty(),
           "even failed DESTROY_DUMB retains the original last-file-close cleanup");
+}
+
+void NativeDumbBookkeepingFailure(unsigned allocation) {
+  Driver driver{-1};
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  driver.drm_fd = NativeNodeMock::render_fd;
+  NativeNodeMock mock;
+  MockNativeNodeScope scope(mock);
+  struct CleanupUnderMock {
+    Driver &driver;
+    ~CleanupUnderMock() { driver.surfaces.clear(); }
+  } cleanup{driver};
+  // The first surface succeeds. Fail one of the next surface's three
+  // metadata allocations only after its private mock mmap has completed.
+  mock.fail_bookkeeping_map = 2;
+  mock.fail_bookkeeping_allocation = allocation;
+  VASurfaceID surfaces[2] = {VA_INVALID_SURFACE, VA_INVALID_SURFACE};
+  VAStatus status = VA_STATUS_SUCCESS;
+  bool escaped = false;
+  try {
+    status = CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 64, 32,
+                            surfaces, 2, nullptr, 0);
+  } catch (const std::bad_alloc &) {
+    escaped = true;
+  }
+  const bool failed = !allocation_fault::fail_next;
+  const size_t failed_size = allocation_fault::failed_size;
+  allocation_fault::fail_next = false;
+  allocation_fault::only_size = 0;
+  allocation_fault::skip_matches = 0;
+  Require(failed && failed_size == (allocation == 3 ? sizeof(int) : sizeof(void *)),
+          "the selected mapped-surface metadata allocation actually fails");
+  Require(!escaped && status == VA_STATUS_ERROR_ALLOCATION_FAILED,
+          "DUMB bookkeeping OOM returns an allocation error without escaping");
+  Require(surfaces[1] == VA_INVALID_SURFACE && driver.surfaces.empty() &&
+              driver.backing_owners.empty(),
+          "DUMB bookkeeping OOM publishes no failed surface and rolls back earlier surfaces");
+  Require(mock.creates == 2 && mock.destroys == 2 && mock.maps == 2 &&
+              mock.unmaps == 2 && mock.files.empty() && mock.dumbs.empty() &&
+              mock.mappings.empty() && mock.invalid == 0,
+          "DUMB bookkeeping OOM retires each mapping, PRIME fd and handle exactly once");
+  mock.fail_bookkeeping_map = 0;
+  Require(CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 64, 32,
+                          surfaces, 1, nullptr, 0) == VA_STATUS_SUCCESS &&
+              DestroySurfaces(&context, surfaces, 1) == VA_STATUS_SUCCESS,
+          "surface creation and destruction recover after bookkeeping OOM");
+  Require(mock.creates == 3 && mock.destroys == 3 && mock.maps == 3 &&
+              mock.unmaps == 3 && mock.files.empty() && mock.dumbs.empty() &&
+              mock.mappings.empty() && mock.invalid == 0,
+          "recovery after bookkeeping OOM leaves no resources behind");
+}
+
+void NativeDumbBookkeepingFailures() {
+  for (unsigned allocation = 1; allocation <= 3; ++allocation)
+    NativeDumbBookkeepingFailure(allocation);
 }
 
 void NativeDumbMappingPreserves64BitOffsets() {
@@ -7663,6 +7731,7 @@ int VppFullTestEntry(int argc, char **argv) {
     NativeNodeCacheInvalidatesChangedIdentities();
     NativeNodeCacheFailuresRetryWithoutLeases();
     NativeSurfaceFilesRetainOriginalLifetime();
+    NativeDumbBookkeepingFailures();
     NativeDumbMappingPreserves64BitOffsets();
     I915WcMappingRequiresExactOffsetIdentity();
     AbortPathsPublishErrorFences();
@@ -7747,11 +7816,23 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 110 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 111 hardware-free regressions passed");
   return 0;
 }
 
 int main(int argc, char **argv) {
+  if (argc == 3 && strcmp(argv[1], "--native-dumb-allocation") == 0) {
+    const unsigned allocation = static_cast<unsigned>(strtoul(argv[2], nullptr, 10));
+    if (allocation < 1 || allocation > 3) return 2;
+    try {
+      NativeDumbBookkeepingFailure(allocation);
+      puts("VA-API DUMB allocation failure cleanup PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API DUMB allocation failure cleanup failed: %s\n", error.what());
+      return 1;
+    }
+  }
   if (argc == 2 && strcmp(argv[1], "--pixel-lease") == 0) {
     try {
       VppPixelLeaseAdmitsFrontendAndRetainsMappings();
@@ -7798,6 +7879,7 @@ int main(int argc, char **argv) {
   const bool processing_only = argc == 2 && strcmp(argv[1], "--decode-processing") == 0;
   if (argc != 1 && !processing_only) return 2;
   const std::pair<const char *, void (*)()> groups[] = {
+      {"native DUMB bookkeeping failure cleanup", NativeDumbBookkeepingFailures},
       {"native DUMB 64-bit offsets preserve pixels and cleanup", NativeDumbMappingPreserves64BitOffsets},
       {"configuration matches advertised support", ConfigAttributesMatchAdvertisedSupport},
       {"card scaling captures explicit additional output", DecodeProcessingAdmissionIsExplicitAndCaptured},

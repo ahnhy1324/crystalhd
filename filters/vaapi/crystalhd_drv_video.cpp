@@ -763,6 +763,22 @@ struct Surface {
                              static_cast<off64_t>(map.offset));
           }
           if (mapping != MAP_FAILED) {
+            // Keep the mapped object local until every bookkeeping allocation
+            // succeeds. A partially appended map/size pair is unsafe to unwind.
+            try {
+              object_maps.reserve(object_maps.size() + 1);
+              object_sizes.reserve(object_sizes.size() + 1);
+              object_fds.reserve(object_fds.size() + 1);
+            } catch (const std::bad_alloc &) {
+              munmap(mapping, static_cast<size_t>(create.size));
+              close(prime_fd);
+              drm_mode_destroy_dumb destroy = {};
+              destroy.handle = create.handle;
+              ioctl(dumb_drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+              close(dumb_drm_fd);
+              dumb_drm_fd = -1;
+              return false;
+            }
             dumb_handle = create.handle;
             object_maps.push_back(mapping);
             object_sizes.push_back(create.size);
