@@ -696,9 +696,12 @@ class RuntimeInstallTests(unittest.TestCase):
                 gate.touch()
                 # Retry only after that exact child has retired its directory lock.
                 deadline=time.monotonic()+3
-                while Path('/proc',str(child)).exists():
-                    status=Path('/proc',str(child),'status')
-                    if status.exists() and 'State:\tZ' in status.read_text():break
+                while True:
+                    try:
+                        status=Path('/proc',str(child),'status').read_text()
+                    except (FileNotFoundError, ProcessLookupError):
+                        break
+                    if 'State:\tZ' in status:break
                     self.assertLess(time.monotonic(),deadline);time.sleep(.01)
                 result=self.run_make()
                 self.assertEqual(result.returncode,0,result.stdout)
