@@ -1,0 +1,189 @@
+{
+  "schema": 1,
+  "issue": 445,
+  "observation_date": "2026-10-29",
+  "summary": "Stock Kodi consumed the last PICTURE before its producer retired the processed count. The next drain entered with 0/1/0, received locked 0/0/0 STATS, then waited about two seconds and returned an error. A normal run entered its final drain with 0/0/0 and returned EOF while consumer references were still held.",
+  "metadata": {
+    "derivation": "Timestamps, reference counts and hashes are computed from retained raw logs and analysis receipts; no user cache paths are included.",
+    "artifact_sha256": {
+      "normal-returns-1x30/drain-publication-return.log": "f9e9487196ce0abd43e99e56234a96128dc69ac79d169250d96162eed209d4d5",
+      "normal-returns-1x30/kodi-stdout.log": "bfa1892ed147bc06aa7e3976af13ebb41a3585ee94b14ef146e4fe45a4b63bbd",
+      "normal-returns-1x30/result.json": "be38913c0c0aab7042ceeaa6916c306bca39972c61553aab6f1e53790f4b3572",
+      "normal-returns-1x30/running-abi.json": "f7e841c1f664e5d3dcbc76da8544212b8b014bc730d1a6856c2fe5a79b6230dd",
+      "normal-returns-1x30/observer.json": "0fb52be398637e54ab49859ff85d5f4603879c6bd043810dac7eb6998d49621b",
+      "normal-returns-1x30.analysis.json": "6c47eb2b4e5d5efc6af9a285048d4fdfb5e9cb873b83b1182954a61de8af0658",
+      "receiver-priority-observed-tids-1x30/drain-publication-return.log": "d10439149d49e6ea993873953d7a87f15f9abc362da572f03f5b1798ae7b788e",
+      "receiver-priority-observed-tids-1x30/kodi-stdout.log": "0f73d5061c7dc874d48a1ab1f42f66d9323902ccb5eca6a23c7c130aec24fb48",
+      "receiver-priority-observed-tids-1x30/result.json": "a3c9443d1e663777a1de206db848726225738a518f6dd73efccf450036e93384",
+      "receiver-priority-observed-tids-1x30/running-abi.json": "84467ddb7d520cbd0815b1b048869457d65dcd97757a98145426fdba970241cd",
+      "receiver-priority-observed-tids-1x30/observer.json": "f3c8d1971feef0f5d498c8632d86e12cb554ee8b37a6965a027ca9c9e45fb9aa",
+      "receiver-priority-observed-tids-1x30.analysis.json": "96ef5fbeb9efebe429f735aef90732c010c139de88f14ee2233219caffd85126"
+    },
+    "parser": {"label": "analyze.py","sha256": "d5fee853824707e1b6f5caa03b328b1978151ce6b93679e196a78fb937cb2ef9"},
+    "probe_program": {"label": "probe_program.py","sha256": "cadb2234379147ea92cc257fb23c9c6a53f8aabb19c830b5dd79e4f29d56f18a"},
+    "stock_kodi": {"build_id": "7c380536c41d8e33d51e556770d167717209e322","sha256": "4ea2a8cf9e639a9f46535cc8f62c61acf4a24c1f870cf75e94f3c8940447125e","version": {"major": 21,"minor": 3,"revision": "20260315-nogitfound","tag": "stable"}},
+    "candidate_va_dil": {
+      "source": "45c3f11c03cde1d953bf41cca3b4337a7943ea0e",
+      "build_options": "-O2 -g; CRYSTALHD_EXPERIMENTAL_SCALED_RX; centered1280/sized16",
+      "private_libraries": true,
+      "runtime_environment": {"CRYSTALHD_VAAPI_TRACE": "1","CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12": "1280x720@1920x1080:limited","CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT": "16","CRYSTALHD_CONFIG_DISABLE": "1"}
+    },
+    "media": {"label": "1080-bff-30s-v2.mkv","duration_seconds": 30.0,"playback": "one natural EOF per private process; VAAPI Bob"},
+    "time_basis": "Signed integer nanoseconds relative to each case anchor; event clocks are monotonic. Outcomes describe recorded trace calls.",
+    "native_parent_key": ["session","driver_instance","context","generation","token","decode_identity","submission_ordinal"],
+    "join": "Native parent/generation and target surface plus operation identify each field; publication/take/return use time windows and proc_id/picture identity to handle surface and pointer reuse.",
+    "limits": [
+      "Software callback completion is not GPU release or physical presentation.",
+      "Recorded zero VA outcomes do not prove every libva call, rendered pixel or GPU operation correct.",
+      "The receiver-priority case is a private diagnostic schedule, not an ordinary scheduling sample.",
+      "STATS send is observed at call entry; no message-unique send/receive identity was measured.",
+      "This observation does not establish the cause of all warnings from 2026-10-24.",
+      "Installed binary identity and source-unit reasoning are separate; no full source-rebuild binding is claimed."
+    ]
+  },
+  "cases": {
+    "normal-returns-1x30": {
+      "condition": "normal",
+      "eof_observation": "TIMEOUT_NOT_REPRODUCED",
+      "natural_end": true,
+      "exit_code": 0,
+      "resource_boundary_equal": true,
+      "coverage": {
+        "status": "COMPLETE",
+        "condition_status": "VALID",
+        "native_decode_parents": 750,
+        "native_vpp_fields": 1500,
+        "native_records": 20880,
+        "event_counts": {"begin": 1500,"sent": 1500,"retired": 1500,"taken": 1500,"processed_ref_cleared": 1500,"render_returned": 1500,"ffmpeg_ref_released": 750},
+        "taken_before_retired": 1,
+        "native_nonzero_outcomes": {},
+        "coverage_errors": [],
+        "negative_controls": {"duplicate_one_return": true,"remove_all_returns": true,"remove_one_return": true,"unknown_return_identity": true}
+      },
+      "anchor": {"event": "drain_initial","monotonic_ns": 186992009526547,"drain_call_id": 186992009526547},
+      "last_publication": {"proc_id": 1499,"surface": 19,"output": 139473359293288,"stats": 139473359295160,"picture": 139473359302112},
+      "timeline": [
+        {"event": "stats_send","relative_ns": -799704,"origin": "returnpic"},
+        {"event": "begin","relative_ns": -122785,"proc_id": 1499,"surface": 19},
+        {"event": "sent","relative_ns": -102670,"proc_id": 1499,"surface": 19},
+        {"event": "retired","relative_ns": -96524,"proc_id": 1499,"surface": 19,"decoded_processed_render": [0,0,1]},
+        {"event": "taken","relative_ns": -65723,"proc_id": 1499,"surface": 19,"decoded_processed_render": [0,0,0]},
+        {"event": "drain_return","relative_ns": -60205,"result": 4,"elapsed_ns": 207993},
+        {"event": "drain_initial","relative_ns": 0,"decoded_processed_render": [0,0,0]},
+        {"event": "drain_return","relative_ns": 6984,"result": 8,"elapsed_ns": 6984}
+      ],
+      "references_at_anchor": {"publications": 1500,"taken": 1500,"processed_ref_outstanding": 3,"render_return_outstanding": 3,"ffmpeg_ref_outstanding": 4},
+      "last_two_fields": [
+        {
+          "proc_id": 1498,
+          "target_surface": 20,
+          "parent": [3,3,2,1,74700000,5952,747],
+          "before_anchor": [{"event": "vpp_commit","operation": 1499,"relative_ns": -6686217,"outcome": 0},{"event": "sync_exit","operation": 4501,"relative_ns": -450279,"outcome": 0}]
+        },
+        {
+          "proc_id": 1499,
+          "target_surface": 19,
+          "parent": [3,3,2,1,74700000,5952,747],
+          "before_anchor": [{"event": "vpp_commit","operation": 1500,"relative_ns": -932964,"outcome": 0},{"event": "sync_exit","operation": 4502,"relative_ns": -134169,"outcome": 0}]
+        }
+      ],
+      "references_at_eof_return": {"publications": 1500,"taken": 1500,"processed_ref_outstanding": 3,"render_return_outstanding": 3,"ffmpeg_ref_outstanding": 4},
+      "private_schedule": {"changes": []}
+    },
+    "receiver-priority-observed-tids-1x30": {
+      "condition": "receiver-priority",
+      "eof_observation": "TIMEOUT_CAPTURED",
+      "natural_end": true,
+      "exit_code": 0,
+      "resource_boundary_equal": true,
+      "coverage": {
+        "status": "COMPLETE",
+        "condition_status": "VALID",
+        "native_decode_parents": 750,
+        "native_vpp_fields": 1500,
+        "native_records": 20868,
+        "event_counts": {"begin": 1500,"sent": 1500,"retired": 1500,"taken": 1500,"processed_ref_cleared": 1500,"render_returned": 1500,"ffmpeg_ref_released": 750},
+        "taken_before_retired": 6,
+        "native_nonzero_outcomes": {},
+        "coverage_errors": [],
+        "negative_controls": {"duplicate_one_return": true,"remove_all_returns": true,"remove_one_return": true,"unknown_return_identity": true}
+      },
+      "anchor": {"event": "drain_wait_enter","monotonic_ns": 187466572208787,"drain_call_id": 187466557053815},
+      "last_publication": {"proc_id": 1499,"surface": 20,"output": 123180736399912,"stats": 123180736401784,"picture": 123180736409680},
+      "timeline": [
+        {"event": "begin","relative_ns": -15313515,"proc_id": 1499,"surface": 20},
+        {"event": "taken","relative_ns": -15234523,"proc_id": 1499,"surface": 20,"decoded_processed_render": [0,1,0]},
+        {"event": "drain_return","relative_ns": -15226351,"result": 4,"elapsed_ns": 447345},
+        {"event": "drain_initial","relative_ns": -15154972,"decoded_processed_render": [0,1,0]},
+        {"event": "drain_wait_enter","relative_ns": -15143238,"timeout_ms": 2000},
+        {"event": "sent","relative_ns": -15118723,"proc_id": 1499,"surface": 20},
+        {"event": "retired","relative_ns": -15112716,"proc_id": 1499,"surface": 20,"decoded_processed_render": [0,0,0]},
+        {"event": "stats_send","relative_ns": -113215,"origin": "returnpic"},
+        {"event": "drain_wait_return","relative_ns": -19067,"result": 1,"elapsed_ns": 15124171},
+        {"event": "drain_stats","relative_ns": -5587,"decoded_processed_render": [0,0,0]},
+        {"event": "drain_wait_enter","relative_ns": 0,"timeout_ms": 2000},
+        {"event": "drain_wait_return","relative_ns": 2000137586,"result": 0,"elapsed_ns": 2000137586},
+        {"event": "drain_timeout","relative_ns": 2000181099},
+        {"event": "drain_return","relative_ns": 2000344601,"result": 1,"elapsed_ns": 2015499573}
+      ],
+      "references_at_anchor": {"publications": 1500,"taken": 1500,"processed_ref_outstanding": 2,"render_return_outstanding": 2,"ffmpeg_ref_outstanding": 4},
+      "last_two_fields": [
+        {
+          "proc_id": 1498,
+          "target_surface": 19,
+          "parent": [3,3,2,1,74700000,5952,747],
+          "before_anchor": [
+            {"event": "vpp_commit","operation": 1499,"relative_ns": -19918340,"outcome": 0},
+            {"event": "sync_exit","operation": 4503,"relative_ns": -15843205,"outcome": 0},
+            {"event": "export_exit","operation": 4505,"relative_ns": -1156043,"outcome": 0},
+            {"event": "sync_exit","operation": 4506,"relative_ns": -1122169,"outcome": 0}
+          ]
+        },
+        {
+          "proc_id": 1499,
+          "target_surface": 20,
+          "parent": [3,3,2,1,74700000,5952,747],
+          "before_anchor": [
+            {"event": "vpp_commit","operation": 1500,"relative_ns": -16295858,"outcome": 0},
+            {"event": "sync_exit","operation": 4504,"relative_ns": -15353675,"outcome": 0},
+            {"event": "export_exit","operation": 4507,"relative_ns": -886797,"outcome": 0},
+            {"event": "sync_exit","operation": 4508,"relative_ns": -839933,"outcome": 0}
+          ]
+        }
+      ],
+      "private_schedule": {
+        "media_seconds": 27.388,
+        "phase": "natural-30",
+        "scope": "Only these private-process threads; settings expire when that owned process exits.",
+        "changes": [
+          {"role": "producer","tid": 716483,"comm": "Vaapi-Output","start_ticks": 18743563,"before_cpu": [0,1],"before_nice": 0,"cpu": [0],"nice": 19,"applied_ns": 187464236405123},
+          {"role": "consumer","tid": 716479,"comm": "VideoPlayer","start_ticks": 18743558,"before_cpu": [0,1],"before_nice": 0,"cpu": [0],"nice": 0,"applied_ns": 187464236766351}
+        ],
+        "observed_ns": 187464236896190,
+        "role_identity_proc_id": 1385,
+        "post_schedule_publications": 112
+      },
+      "references_at_timeout": {"publications": 1500,"taken": 1500,"processed_ref_outstanding": 2,"render_return_outstanding": 2,"ffmpeg_ref_outstanding": 4},
+      "remaining_reference_callbacks": [
+        {"event": "ffmpeg_ref_released","relative_ns": 2001030251,"surface": 10},
+        {"event": "ffmpeg_ref_released","relative_ns": 2001069992,"surface": 5},
+        {"event": "ffmpeg_ref_released","relative_ns": 2001177550,"surface": 9},
+        {"event": "ffmpeg_ref_released","relative_ns": 2001203182,"surface": 8},
+        {"event": "processed_ref_cleared","relative_ns": 2491494800,"proc_id": 1499,"surface": 20},
+        {"event": "render_returned","relative_ns": 2491525671,"proc_id": 1499,"surface": 20,"site": 6},
+        {"event": "processed_ref_cleared","relative_ns": 2491535868,"proc_id": 1498,"surface": 19},
+        {"event": "render_returned","relative_ns": 2491542433,"proc_id": 1498,"surface": 19,"site": 6}
+      ],
+      "stats_sender": {"same_output_stats_sends_between_initial_and_zero_stats": 1,"candidate_origin": "returnpic","sends_after_final_wait": 0,"send_receive_pairing": "NOT_ESTABLISHED: no message-unique identity; send counts are not causal proof."}
+    }
+  },
+  "candidate_patch_validation": {
+    "source_unit_schedule_test": "PASS (separate source-unit regression)",
+    "harness": "tests/kodi-vaapi-publish-order.py",
+    "harness_sha256": "5333d7941ba36effab112f927ab9d7c9d66a7693b16ebd484c6bb066df84478e",
+    "upstream_source_revision": "a3a448d26b8d560a65655dab2cd122994dc4e146",
+    "upstream_source_sha256": "6239d286046bbc0b8c724f78cce5409278cbb56c0a4d8ee306f6738f3353de38",
+    "full_kodi_with_candidate_patch": "NOT RUN",
+    "scope": "The source-unit scaffold applies the candidate patch and exercises the chosen publication schedule; it does not run Kodi Actor queues, VA, GPU or playback."
+  }
+}

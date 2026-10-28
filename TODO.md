@@ -34,13 +34,15 @@ the end of a related change set, rather than repeating unrelated experiments.
    questions, not implied fixes. Next reproduce terminal decoder-owner handoff
    across RELEASE/close before changing its recovery reservation.
 2. **Ordinary Kodi EOF, Stop, seek and reopen (#445/#429).** Address reproducible
-   user-operation failures. One traced zero-counter two-second EOF wait occurs
-   in Kodi's drain loop, but the originating fault remains unresolved. Verify
-   our VA completion, surface ownership and client message ordering before
-   attributing the failure to a component. Zero application queue counters,
-   natural EOF and clean DMA retirement do not establish correct VA drain.
-   Further runs need a condition that distinguishes causes, not an indefinite
-   soak or fabricated EOS.
+   user-operation failures. A controlled last-picture handoff now reproduces
+   the two-second drain timeout with complete per-picture return observations;
+   see the [scoped evidence](tests/fixtures/issue445/publish-order-observation-20261029.json).
+   The [candidate compatibility patch](patches/kodi/0001-vaapi-account-before-publish.patch)
+   retires processed accounting before publishing PICTURE. Its source-unit
+   regression passes; full candidate Kodi playback still needs qualification.
+   The patch is not installed or activated by CrystalHD. Other historical
+   warnings remain unassigned. Zero application counters, natural EOF and
+   clean DMA retirement alone do not establish correct VA behavior.
 3. **Shutdown heap abort (#538).** Capture the fault stack or first corruption
    in the affected private-FFmpeg VA combination, then verify a fix against
    that condition. Clean exits alone do not resolve the original abort.
