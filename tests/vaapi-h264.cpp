@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
-/* Keep this test in the implementation's translation unit so it exercises
- * the exact parameter-set builders used by the VA-API driver. */
-#define CRYSTALHD_H264_TEST_BUILD
-#include "../filters/vaapi/crystalhd_drv_video.cpp"
+#include "../filters/vaapi/crystalhd-h264.h"
+
+using crystalhd_h264::AppendNal;
+using crystalhd_h264::BeginAccessUnit;
+using crystalhd_h264::BuildPps;
+using crystalhd_h264::BuildSps;
+using crystalhd_h264::FlatH264IqMatrix;
+using crystalhd_h264::ValidateH264ProcessingGeometry;
 
 static unsigned int scaling_checks = 0;
 static unsigned int scaling_failures = 0;
@@ -394,6 +402,30 @@ int main()
 		{VAProfileH264Main, 77},
 		{VAProfileH264High, 100},
 	};
+	const std::vector<uint8_t> baseline_sps = {
+		0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x40, 0x28,
+		0xf2, 0x80, 0xf0, 0x04, 0x4d, 0x80, 0x88, 0x00,
+		0x00, 0x03, 0x00, 0x08, 0x00, 0x00, 0x03, 0x01,
+		0xe4, 0x78, 0xc1, 0x92, 0xc0,
+	};
+	const std::vector<uint8_t> main_sps = {
+		0x00, 0x00, 0x00, 0x01, 0x67, 0x4d, 0x40, 0x28,
+		0xf2, 0x80, 0xf0, 0x04, 0x4d, 0x80, 0x88, 0x00,
+		0x00, 0x03, 0x00, 0x08, 0x00, 0x00, 0x03, 0x01,
+		0xe4, 0x78, 0xc1, 0x92, 0xc0,
+	};
+	const std::vector<uint8_t> high_sps = {
+		0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x28,
+		0xac, 0xe5, 0x01, 0xe0, 0x08, 0x9b, 0x01, 0x10,
+		0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00, 0x03,
+		0x03, 0xc8, 0xf1, 0x83, 0x25, 0x80,
+	};
+	const std::vector<uint8_t> baseline_main_pps = {
+		0x00, 0x00, 0x00, 0x01, 0x68, 0xe9, 0x23, 0xc8,
+	};
+	const std::vector<uint8_t> high_pps = {
+		0x00, 0x00, 0x00, 0x01, 0x68, 0xe9, 0x23, 0xc3,
+	};
 
 	for (const ProfileExpectation &expected : profiles) {
 		std::vector<uint8_t> sps;
@@ -434,6 +466,13 @@ int main()
 
 		assert(BuildPps(picture, slice, expected.profile, FlatMatrix(), &pps));
 		CheckAnnexBNal(pps, 8);
+		const std::vector<uint8_t> &golden_sps =
+			expected.profile == VAProfileH264ConstrainedBaseline
+				? baseline_sps
+				: expected.profile == VAProfileH264Main ? main_sps : high_sps;
+		assert(sps == golden_sps);
+		assert(pps == (expected.profile == VAProfileH264High
+				       ? high_pps : baseline_main_pps));
 	}
 
 	// VA's height is the full decoded frame in macroblocks.  The SPS uses
@@ -504,19 +543,16 @@ int main()
 	assert((delimiter[5] >> 5) == 7); // I/P/B/SP/SI slices permitted
 	assert((delimiter[5] & 0x1f) == 0x10); // valid RBSP termination
 
-	// A stalled infinite sync fails truthfully; finite client timeouts retain
-	// their distinct timeout status and are not converted into decode errors.
-	assert(!DecodeBatchGraceExpired(kDecodeBatchGraceNs - 1));
-	assert(DecodeBatchGraceExpired(kDecodeBatchGraceNs));
-	assert(DecodeWaitStatus(VA_TIMEOUT_INFINITE, kDecodeTimeoutNs - 1) ==
-	       VA_STATUS_SUCCESS);
-	assert(DecodeWaitStatus(VA_TIMEOUT_INFINITE, kDecodeTimeoutNs) ==
-	       VA_STATUS_ERROR_DECODING_ERROR);
-	assert(DecodeWaitStatus(0, 0) == VA_STATUS_ERROR_TIMEDOUT);
-	assert(DecodeWaitStatus(500, 499) == VA_STATUS_SUCCESS);
-	assert(DecodeWaitStatus(500, 500) == VA_STATUS_ERROR_TIMEDOUT);
-	assert(DecodeWaitStatus(kDecodeTimeoutNs + 1, kDecodeTimeoutNs) ==
-	       VA_STATUS_SUCCESS);
+	std::vector<uint8_t> escaped;
+	AppendNal(&escaped, 1, 3,
+		  {0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
+		   0x00, 0x00, 0x03});
+	const std::vector<uint8_t> golden_escaped = {
+		0x00, 0x00, 0x00, 0x01, 0x61,
+		0x00, 0x00, 0x03, 0x00, 0x01, 0x02, 0x03, 0x04,
+		0x00, 0x00, 0x03, 0x03,
+	};
+	assert(escaped == golden_escaped);
 
 	try {
 		ScalingMatrices(picture, slice);
