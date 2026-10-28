@@ -89,6 +89,28 @@ Safety labels mean:
 variables do not add to the `libcrystalhd.so.3` ABI, and none of these controls
 changes the legacy ioctl ABI.
 
+## Chromium launch settings
+
+Bounded saved Chromium values are applied only through an explicit new launcher
+process; they do not modify an already-running browser:
+
+```sh
+crystalhd-config save 'chromium.password_store=""' \
+  'chromium.profile_dir="/absolute/path/to/profile"'
+crystalhd-config run -- crystalhd-chromium "https://www.youtube.com/"
+# One launch forces software GL despite an inherited native-GL request;
+# saved values are unchanged.
+crystalhd-config run --override chromium.native_gl=false -- \
+  crystalhd-chromium "https://www.youtube.com/"
+```
+
+The manager never parses the legacy `chromium.conf`. When a strict Chromium
+key participates, the child launcher skips that shell file so it cannot replace
+the resolved system/user/profile/environment/CLI precedence. Direct
+`crystalhd-chromium` use retains the legacy behavior. The managed adapter does
+not expose hardware decode, GPU-sandbox disabling or policy acknowledgement.
+It may disable or unset native GL, but does not activate that experiment.
+
 ## Player defaults
 
 Updated `crystalhd-play` reads the saved decoder mode, card scale width and optional
@@ -281,6 +303,7 @@ remains experimental and is not a daily-use support claim.
 | Control | Owner | Device/backend | Default and accepted values | Dependencies | Read/apply lifecycle | Safety | Public API |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `CRYSTALHD_CHROMIUM_CONFIG` <!-- config-surface:environment:CRYSTALHD_CHROMIUM_CONFIG --> | `crystalhd-chromium` | Launcher, both modes | `$XDG_CONFIG_HOME/crystalhd/chromium.conf`, falling back to `$HOME/.config/crystalhd/chromium.conf`; or a readable path | File must be trusted: it is sourced as shell code with the launcher's existing privileges; run the launcher unprivileged and never select untrusted code | Path is selected once, then the file is sourced before the remaining launcher variables are read | **Security-sensitive** — arbitrary trusted shell code | Yes — launcher environment |
+| `CRYSTALHD_CHROMIUM_CONFIG_DISABLE` <!-- config-surface:environment:CRYSTALHD_CHROMIUM_CONFIG_DISABLE --> | `crystalhd-config run` / `crystalhd-chromium` | Managed launcher boundary | Unset/other values preserve legacy sourcing; exactly `1` skips it | Set automatically for a managed Chromium request; not a saved option or acknowledgement | Read before any legacy shell file | **Standard** — process-local precedence boundary | Yes — launcher environment |
 | `CRYSTALHD_CHROMIUM` <!-- config-surface:environment:CRYSTALHD_CHROMIUM --> | `crystalhd-chromium` | Launcher, both modes | Autodetects `google-chrome-stable`, `google-chrome`, `chromium`, then `chromium-browser`; or an executable path | Non-Snap browser; Snap confinement cannot access the device | Resolved once at launch | **Standard** | Yes — launcher environment |
 | `CRYSTALHD_DRM_DEVICE` <!-- config-surface:environment:CRYSTALHD_DRM_DEVICE --> | `crystalhd-chromium` | Experimental hardware mode | `/dev/dri/renderD128`; any explicit device path is passed to Chromium | Must select the display GPU render node | Read at launch; effective only in hardware mode | **Experimental** | Yes — launcher environment |
 | `CRYSTALHD_CHROMIUM_PASSWORD_STORE` <!-- config-surface:environment:CRYSTALHD_CHROMIUM_PASSWORD_STORE --> | `crystalhd-chromium` | Chromium argument, both modes | Unset or empty preserves the browser/platform default; a nonempty string becomes `--password-store=VALUE` | Browser must accept the selected upstream backend | Read at launch | **Standard** — upstream browser setting | Yes — launcher environment |
@@ -290,9 +313,10 @@ remains experimental and is not a daily-use support claim.
 | `CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX` <!-- config-surface:environment:CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX --> | `crystalhd-chromium` | Experimental hardware mode | Off; exactly `1` acknowledges and adds `--disable-gpu-sandbox` | Required when experimental hardware decode is `1` | Read at launch; launcher refuses hardware mode without it | **Security-sensitive** — disables Chromium GPU sandboxing | Yes — launcher environment |
 | `CRYSTALHD_CHROMIUM_H264_POLICY` <!-- config-surface:environment:CRYSTALHD_CHROMIUM_H264_POLICY --> | `crystalhd-chromium` | Google Chrome warning | Off; exactly `1` suppresses the policy warning | The user must install/verify any actual H.264 policy separately | Read at launch; changes warning only | **Standard** — acknowledgement, not codec enforcement | Yes — launcher environment |
 
-The config file is sourced after its path is selected. Consequently, an
-assignment in that file can override an inherited variable; this is the
-current launcher behavior, not the proposed future config precedence model.
+For direct launcher use, the config file is sourced after its path is selected,
+so an assignment in that file can override an inherited variable. A managed
+`crystalhd-config run` invocation bypasses this file whenever a strict Chromium
+key participates, preserving the resolved strict precedence for that child.
 Extra launcher arguments are passed to the browser and remain upstream
 Chromium options rather than CrystalHD settings.
 
@@ -366,7 +390,8 @@ literal library/VA environment reads, CrystalHD-named variables in installed
 scripts, production GStreamer properties and explicit `crystalhd-play` options.
 Missing and stale rows both fail.
 
-The schema conformance check also classifies all 28 surfaces: 23 userspace
-surfaces map to 21 canonical keys, the two module parameters retain a separate
-module-load lifetime, `CRYSTALHD_CHROMIUM_CONFIG` remains a legacy bootstrap,
-and `--subtitles` and `--weave` remain invocation-only.
+The schema conformance check also classifies all 31 surfaces: 23 userspace
+surfaces map to 21 canonical keys; the two module parameters retain a separate
+module-load lifetime; `CRYSTALHD_CONFIG_DISABLE`, `CRYSTALHD_CHROMIUM_CONFIG`,
+`CRYSTALHD_CHROMIUM_CONFIG_DISABLE` and centered NV12 remain explicit
+environment boundaries; and `--subtitles` and `--weave` remain invocation-only.

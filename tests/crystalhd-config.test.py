@@ -1872,6 +1872,64 @@ class ConfigCliTest(unittest.TestCase):
         self.assertNotIn("CRYSTALHD_VAAPI_DEBUG", off.environment)
         self.assertEqual(off.environment["CRYSTALHD_VAAPI_LOW_LATENCY_H264"], "0")
 
+    def test_run_adapts_bounded_chromium_settings_and_bypasses_legacy_shell_config(self):
+        user = CONFIG.empty_document()
+        user.settings = {
+            "chromium.executable": "/private/browser",
+            "chromium.drm_device": "/dev/dri/private-render",
+            "chromium.password_store": "",
+            "chromium.profile_dir": "/private/profile",
+            "chromium.native_gl": False,
+        }
+        plan = self.launch_plan(user)
+        self.assertEqual(plan.environment, {
+            "CRYSTALHD_CONFIG_DISABLE": "1",
+            "CRYSTALHD_CHROMIUM_CONFIG_DISABLE": "1",
+            "CRYSTALHD_CHROMIUM": "/private/browser",
+            "CRYSTALHD_DRM_DEVICE": "/dev/dri/private-render",
+            "CRYSTALHD_CHROMIUM_PASSWORD_STORE": "",
+            "CRYSTALHD_CHROMIUM_PROFILE_DIR": "/private/profile",
+        })
+        self.assertEqual(plan.requested_keys, tuple(sorted(user.settings)))
+        self.assertTrue(plan.chromium_config_bypassed)
+
+    def test_run_chromium_environment_wins_but_strict_layers_still_bypass_legacy_file(self):
+        user = CONFIG.empty_document()
+        user.settings["chromium.executable"] = "/saved/browser"
+        inherited = {
+            "CRYSTALHD_CHROMIUM": "/environment/browser",
+            "CRYSTALHD_CHROMIUM_CONFIG_DISABLE": "0",
+            "UNRELATED": "preserved",
+        }
+        plan = self.launch_plan(user, inherited)
+        self.assertEqual(plan.environment, {
+            "CRYSTALHD_CHROMIUM": "/environment/browser",
+            "CRYSTALHD_CHROMIUM_CONFIG_DISABLE": "1",
+            "CRYSTALHD_CONFIG_DISABLE": "1",
+            "UNRELATED": "preserved",
+        })
+        self.assertEqual(plan.requested_keys, ())
+        self.assertTrue(plan.chromium_config_bypassed)
+
+    def test_run_chromium_false_unset_and_empty_override_only_the_child(self):
+        inherited = {
+            "CRYSTALHD_CHROMIUM_NATIVE_GL": "1",
+            "CRYSTALHD_CHROMIUM_PROFILE_DIR": "/environment/profile",
+            "CRYSTALHD_CHROMIUM_PASSWORD_STORE": "basic",
+            "UNRELATED": "preserved",
+        }
+        plan = self.launch_plan(environment=inherited, overrides={
+            "chromium.native_gl": False,
+            "chromium.profile_dir": CONFIG.UNSET,
+            "chromium.password_store": "",
+        })
+        self.assertNotIn("CRYSTALHD_CHROMIUM_NATIVE_GL", plan.environment)
+        self.assertNotIn("CRYSTALHD_CHROMIUM_PROFILE_DIR", plan.environment)
+        self.assertEqual(plan.environment["CRYSTALHD_CHROMIUM_PASSWORD_STORE"], "")
+        self.assertEqual(plan.environment["CRYSTALHD_CHROMIUM_CONFIG_DISABLE"], "1")
+        self.assertEqual(plan.environment["CRYSTALHD_CONFIG_DISABLE"], "1")
+        self.assertEqual(plan.environment["UNRELATED"], "preserved")
+
     def test_run_supported_modes_native_resets_and_safe_disabling_requests(self):
         inherited = {"CRYSTALHD_VAAPI_LIVE_H264": "1", "CRYSTALHD_VAAPI_LOW_LATENCY_H264": "1",
                      "CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP": "1",
@@ -1950,9 +2008,8 @@ class ConfigCliTest(unittest.TestCase):
             {"vaapi.h264.ready_remap": True, "vaapi.h264.mode": "live", "vaapi.h264.low_latency": True},
             {"vaapi.i915_wc": True}, {"vaapi.h264.ready_policy": "previous"},
             {"vaapi.h264.ready_policy": CONFIG.UNSET}, {"vaapi.h264.ready_delay_us": 0},
-            {"vaapi.h264.ready_delay_us": CONFIG.UNSET}, {"chromium.executable": "/private/browser"},
-            {"chromium.drm_device": "/dev/private-drm"}, {"chromium.password_store": ""},
-            {"chromium.profile_dir": "/private/profile"}, {"chromium.native_gl": True},
+            {"vaapi.h264.ready_delay_us": CONFIG.UNSET},
+            {"chromium.native_gl": True},
             {"chromium.experimental_hw_decode": True, "chromium.disable_gpu_sandbox": True},
             {"chromium.disable_gpu_sandbox": True}, {"chromium.h264_policy_ack": True},
             {"gstreamer.crystalhddec.scale_width": 0}, {"player.decoder": "software"},
@@ -2000,6 +2057,44 @@ class ConfigCliTest(unittest.TestCase):
         self.assertEqual(self.user_file.read_bytes(), original)
         self.assertEqual(set(path.name for path in self.user_dir.iterdir()), {"config.ini"})
 
+    def test_run_cli_launches_chromium_with_strict_values_not_legacy_shell_values(self):
+        browser = self.root / "mock-browser"
+        receipt = self.root / "browser-receipt"
+        profile = self.root / "managed-profile"
+        legacy = self.root / "legacy-chromium.conf"
+        browser.write_text(
+            "#!/bin/sh\n"
+            "if [ \"${1:-}\" = --version ]; then echo 'Chromium 999'; exit 0; fi\n"
+            "{ printf '%s\\n' \"${CRYSTALHD_CHROMIUM_PASSWORD_STORE-}\" "
+            "\"${CRYSTALHD_CHROMIUM_CONFIG_DISABLE-}\" "
+            "\"${LIBGL_ALWAYS_SOFTWARE-}\" \"${GALLIUM_DRIVER-}\"; "
+            "printf 'arg=%s\\n' \"$@\"; } > \"$BROWSER_RECEIPT\"\n",
+            encoding="utf-8",
+        )
+        browser.chmod(0o700)
+        legacy.write_text("CRYSTALHD_CHROMIUM_PASSWORD_STORE=legacy-store\n", encoding="utf-8")
+        legacy.chmod(0o600)
+        self.write_user(
+            "[crystalhd]\nschema = 1\n[settings]\n"
+            "chromium.executable = \"{0}\"\nchromium.password_store = \"managed-store\"\n"
+            "chromium.profile_dir = \"{1}\"\nchromium.native_gl = false\n".format(browser, profile)
+        )
+        original = self.user_file.read_bytes()
+        result = self.run_cli(
+            "run", *self.writer_options(), "--", str(ROOT / "scripts/crystalhd-chromium"),
+            "https://example.invalid/video",
+            environment={"CRYSTALHD_CHROMIUM_CONFIG": str(legacy),
+                         "BROWSER_RECEIPT": str(receipt)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = receipt.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[:4], ["managed-store", "1", "1", "llvmpipe"])
+        self.assertIn("arg=--password-store=managed-store", lines)
+        self.assertIn("arg=--user-data-dir=" + str(profile), lines)
+        self.assertNotIn("arg=--password-store=legacy-store", lines)
+        self.assertIn("legacy Chromium shell config bypassed", result.stderr)
+        self.assertEqual(self.user_file.read_bytes(), original)
+
     def test_run_cli_rejects_invalid_and_unsupported_requests_before_exec(self):
         marker = self.root / "child-was-executed"
         command = ["/bin/sh", "-c", 'printf executed > "$1"', "unused", str(marker)]
@@ -2007,6 +2102,7 @@ class ConfigCliTest(unittest.TestCase):
             ("--override", "vaapi.debug=true", "--override", "vaapi.debug=false"),
             ("--override", "unknown.key=true"), ("--override", "vaapi.debug=0"),
             ("--override", "vaapi.i915_wc=true"), ("--override", "vaapi.h264.ready_delay_us=0"),
+            ("--override", "chromium.native_gl=true"),
             ("--preset", "quality"), ("--ignore-environment",),
             ("--override", "libcrystalhd.rx_pool_count=8"),
         )
