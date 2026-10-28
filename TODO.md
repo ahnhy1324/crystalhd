@@ -39,7 +39,12 @@ the end of a related change set, rather than repeating unrelated experiments.
    see the [scoped evidence](tests/fixtures/issue445/publish-order-observation-20261029.json).
    The [candidate compatibility patch](patches/kodi/0001-vaapi-account-before-publish.patch)
    retires processed accounting before publishing PICTURE. Its source-unit
-   regression passes; full candidate Kodi playback still needs qualification.
+   regression passes. In [matched private Ubuntu 21.3 playback](tests/fixtures/issue445/publish-order-playback-20261029.json),
+   the baseline times out while the patch reaches EOF with all 750 originals
+   and 1,500 outputs when the receiver takes the last picture before the
+   producer's send returns. The candidate also
+   completes normal EOF and two reopens. Qualification of the full installed
+   feature set, Stop and seek remains separate.
    The patch is not installed or activated by CrystalHD. Other historical
    warnings remain unassigned. Zero application counters, natural EOF and
    clean DMA retirement alone do not establish correct VA behavior.
