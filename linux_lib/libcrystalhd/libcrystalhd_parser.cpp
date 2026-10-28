@@ -1233,7 +1233,8 @@ int DtsGetNaluType(HANDLE hDevice, uint8_t* pInputBuf, uint32_t ulSize, NALU_t* 
 	uint32_t Pos = 0;
 	uint32_t Header, End, Consumed;
 	int Prefix;
-	if (!Ctx || !pInputBuf || !pNalu || !ulSize || ulSize > INT_MAX)
+	if (!Ctx || !pInputBuf || !pNalu || !ulSize || ulSize > INT_MAX ||
+	    !DtsContextIsCurrentProcess(Ctx))
 		return -1;
 
 	if (bSkipSyncMarker)

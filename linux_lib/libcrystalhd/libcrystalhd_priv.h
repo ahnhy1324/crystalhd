@@ -32,6 +32,7 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdio.h>
+#include <unistd.h>
 #include "bc_dts_glob_lnx.h"
 #include "libcrystalhd_parser.h"
 
@@ -420,6 +421,14 @@ typedef struct _DTS_LIB_CONTEXT{
 
 }DTS_LIB_CONTEXT;
 
+/* Process-owned contexts cannot be transferred across fork. ProcessID is
+ * assigned only after a public open completes, so zero remains valid while
+ * that same process is constructing an unpublished context. */
+static inline bool DtsContextIsCurrentProcess(const DTS_LIB_CONTEXT *Ctx)
+{
+	return Ctx && (Ctx->ProcessID == 0 || Ctx->ProcessID == getpid());
+}
+
 /* Caller holds thLock. A completed STOP can restart; an unresolved one
  * survives ordinary ring resets and can only be recovered or retired.
  */
@@ -435,6 +444,9 @@ static inline bool DtsStopIsUnresolved(const DTS_LIB_CONTEXT *Ctx)
 {																		\
 	if( !(_c = DtsGetContext(_uh)) ){									\
 		return BC_STS_INV_ARG;											\
+	}																	\
+	if( !DtsContextIsCurrentProcess(_c) ){								\
+		return BC_STS_ERROR;											\
 	}																	\
 }
 
