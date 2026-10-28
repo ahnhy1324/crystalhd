@@ -370,8 +370,8 @@ install-settings: install-config
 		$(PYTHON3) -c \
 			'import json,sys; p=sys.argv[1]; s=open(p,encoding="utf-8").read(); token="\"@SETTINGS_DATA_RELATIVE@\""; s.count(token)==1 or sys.exit("unexpected settings data token count"); open(p,"w",encoding="utf-8",newline="\n").write(s.replace(token,json.dumps(sys.argv[2],ensure_ascii=False)))' \
 			"$(DESTDIR)$(BINDIR)/crystalhd-settings" "$$data_relative"; \
-		install -D -m 0644 share/applications/crystalhd-settings.desktop \
-			"$(DESTDIR)$(DATADIR)/applications/crystalhd-settings.desktop"; \
+		$(PYTHON3) -B scripts/render-settings-desktop.py --bindir "$(BINDIR)" \
+			--output "$(DESTDIR)$(DATADIR)/applications/crystalhd-settings.desktop"; \
 		for size in scalable symbolic 16x16 22x22 24x24 32x32 64x64 128x128; do \
 			for icon in share/icons/hicolor/$$size/apps/crystalhd-settings*; do \
 				install -D -m 0644 "$$icon" \

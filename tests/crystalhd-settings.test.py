@@ -311,7 +311,7 @@ class SettingsModelTests(unittest.TestCase):
 
     def test_help_and_model_import_do_not_need_gui_and_syntax_is_python36(self):
         script=ROOT/'scripts/crystalhd-settings.py'
-        for p in (script, ROOT/'tests/crystalhd-settings.test.py'):
+        for p in (script, ROOT/'scripts/render-settings-desktop.py', ROOT/'tests/crystalhd-settings.test.py'):
             if sys.version_info >= (3,8):
                 ast.parse(p.read_text(),feature_version=(3,6))
             else:
@@ -325,6 +325,59 @@ class SettingsModelTests(unittest.TestCase):
 
 
 class SettingsPackagingTests(unittest.TestCase):
+    def test_desktop_uses_installed_executable_without_path_lookup(self):
+        probe = r'''
+import json,os,pathlib,sys,time
+import gi
+try:
+    gi.require_version('GioUnix','2.0')
+    from gi.repository import GioUnix
+    DesktopAppInfo=GioUnix.DesktopAppInfo
+except (ValueError,ImportError):
+    from gi.repository import Gio
+    DesktopAppInfo=Gio.DesktopAppInfo
+desktop,expected,record=sys.argv[1:]
+app=DesktopAppInfo.new_from_filename(desktop)
+assert app is not None,'desktop entry was ignored'
+app.launch([],None)
+end=time.monotonic()+5
+while not pathlib.Path(record).exists() and time.monotonic()<end:
+    time.sleep(.01)
+actual=json.loads(pathlib.Path(record).read_text())
+assert actual==[expected,'--tray'],repr(actual)
+assert app.get_string('TryExec')==expected,app.get_string('TryExec')
+'''
+        available=subprocess.run([sys.executable,'-B','-c','import gi; from gi.repository import Gio'],
+                                 stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        if available.returncode:
+            self.skipTest('Gio introspection is unavailable on this interpreter')
+        with tempfile.TemporaryDirectory(prefix='crystalhd-settings-menu-') as folder:
+            root=Path(folder)
+            # A PATH entry with an older homonymous app must never win. These
+            # stand-ins only record argv; the settings application is not run.
+            decoy=root/'old-bin';decoy.mkdir()
+            for name in ('ordinary','설정 공백','percent%f%u%%','normal=1','percent%f=1'):
+                with self.subTest(path=name):
+                    prefix=root/name
+                    args=['DESTDIR=','PREFIX='+str(prefix),'PYTHON3='+sys.executable]
+                    result=subprocess.run(['make','install-settings']+args,cwd=str(ROOT),
+                                          stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
+                                          universal_newlines=True)
+                    self.assertEqual(result.returncode,0,result.stdout)
+                    gui=prefix/'bin/crystalhd-settings';record=root/'argv.json'
+                    program=('#!'+sys.executable+'\nimport json,os,sys\n'
+                             'with open('+repr(str(record)+'.new')+',"w") as stream:json.dump(sys.argv,stream)\n'
+                             'os.replace('+repr(str(record)+'.new')+','+repr(str(record))+')\n')
+                    gui.write_text(program);gui.chmod(0o755)
+                    old=decoy/'crystalhd-settings';old.write_text(program);old.chmod(0o755)
+                    desktop=prefix/'share/applications/crystalhd-settings.desktop'
+                    environment=dict(os.environ,PATH=str(decoy))
+                    run=subprocess.run([sys.executable,'-B','-c',probe,str(desktop),str(gui),str(record)],
+                                       env=environment,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                                       universal_newlines=True,timeout=10)
+                    self.assertEqual(run.returncode,0,run.stderr)
+                    record.unlink()
+
     def test_staged_custom_paths_install_core_icon_launcher_and_remove_only_ui(self):
         with tempfile.TemporaryDirectory(prefix='crystalhd-settings-stage-') as folder:
             stage=Path(folder)/'stage';data='/opt/crystalhd data/share';bindir='/opt/crystalhd bin'
@@ -352,6 +405,8 @@ class SettingsPackagingTests(unittest.TestCase):
             sentinel=iconroot/'32x32/apps/other-app.png';sentinel.write_bytes(b'untouched')
             desktop=stage/data.lstrip('/')/'applications/crystalhd-settings.desktop'
             self.assertTrue(desktop.is_file())
+            self.assertIn('TryExec='+bindir+'/crystalhd-settings\n',desktop.read_text())
+            self.assertNotIn(str(stage),desktop.read_text())
             for name in ('install-settings','uninstall-settings','uninstall-settings'):
                 result=subprocess.run(['make',name]+args,cwd=str(ROOT),stdout=subprocess.PIPE,
                                       stderr=subprocess.STDOUT,universal_newlines=True)
