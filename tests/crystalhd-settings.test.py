@@ -182,6 +182,65 @@ class SettingsModelTests(unittest.TestCase):
         a.reload();self.assertFalse(a.dirty)
         self.assertEqual(a.draft.settings,{'vaapi.trace':True})
 
+    def test_freshness_receipt_detects_saved_input_changes_without_mutating_draft(self):
+        e = self.editor()
+        user_receipt, system_receipt = e.freshness_receipt()
+        state = lambda: UI.read_saved_file_state(
+            CORE, str(self.path), None, user_receipt, system_receipt)
+        self.assertEqual(state(), 'current')
+        self.assertFalse(self.path.parent.exists())
+
+        e.set_literal('vaapi.debug', 'true')
+        draft = CORE.serialize_document(e.draft)
+        other = self.editor()
+        other.set_literal('vaapi.trace', 'true')
+        other.save()
+        self.assertEqual(state(), 'changed')
+        self.assertEqual(CORE.serialize_document(e.draft), draft)
+
+        e.reload()
+        user_receipt, system_receipt = e.freshness_receipt()
+        original = self.path.read_bytes()
+        replacement = self.path.with_name('replacement.ini')
+        replacement.write_bytes(original)
+        replacement.chmod(0o600)
+        os.replace(str(replacement), str(self.path))
+        self.assertEqual(state(), 'changed')
+
+        e.reload()
+        user_receipt, system_receipt = e.freshness_receipt()
+        self.path.unlink()
+        self.assertEqual(state(), 'changed')
+
+    def test_freshness_receipt_rejects_unsafe_input_and_detects_system_semantics(self):
+        self.write(HEADER)
+        e = self.editor()
+        user_receipt, system_receipt = e.freshness_receipt()
+        self.path.chmod(0o666)
+        with self.assertRaises(CORE.SchemaError):
+            UI.read_saved_file_state(CORE, str(self.path), None,
+                                     user_receipt, system_receipt)
+        self.path.chmod(0o600)
+        changed_system = CORE.parse_document(
+            (HEADER + '[profile.desk]\nvaapi.debug=true\n').encode('utf-8'))
+        with mock.patch.object(CORE, 'load_document', return_value=changed_system):
+            self.assertEqual(UI.read_saved_file_state(
+                CORE, str(self.path), '/system/config.ini', user_receipt,
+                system_receipt), 'changed')
+
+    def test_successful_save_rebases_the_system_freshness_receipt(self):
+        e = self.editor()
+        e.set_literal('vaapi.debug', 'true')
+        changed_system = CORE.parse_document(
+            (HEADER + '[profile.desk]\nvaapi.trace=true\n').encode('utf-8'))
+        with mock.patch.object(CORE, 'load_document', return_value=changed_system):
+            e.save()
+            user_receipt, system_receipt = e.freshness_receipt()
+            self.assertEqual(system_receipt, CORE.serialize_document(changed_system))
+            self.assertEqual(UI.read_saved_file_state(
+                CORE, str(self.path), '/system/config.ini', user_receipt,
+                system_receipt), 'current')
+
     def test_malformed_reset_uses_original_snapshot_and_cannot_bypass_unsafe_file(self):
         self.write('not an INI\n')
         e = self.editor()

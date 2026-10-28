@@ -182,6 +182,9 @@ and profiles; system defaults remain. Conflicting edits and uncertain write
 outcomes require review/reload, never a blind overwrite. Ctrl+S saves, Ctrl+R reloads,
 Ctrl+Q exits, and Escape closes/hides the window. Labels and keyboard mnemonics are
 provided; UI messages are prepared for gettext translation (English is supplied).
+Reopening a long-running tray window checks the saved user and system files in the
+background. An external change preserves every draft but requires an explicit
+**Reload file** before Save or Clear, so the window never silently merges or overwrites it.
 
 The displayed model belongs to the settings process, including its environment;
 it does not certify a running player's settings or installed reader version.

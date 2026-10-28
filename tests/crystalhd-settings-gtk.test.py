@@ -272,10 +272,11 @@ class GtkSettingsTests(unittest.TestCase):
     def tearDown(self):
         for app in self.windows:
             app.quitting=True;app.window.destroy()
-            worker = app._inspection_worker
-            if worker is not None:
-                worker.join(3)
-                self.assertFalse(worker.is_alive(), 'test inspection did not retire')
+            for name in ('_inspection_worker', '_freshness_worker'):
+                worker = getattr(app, name)
+                if worker is not None:
+                    worker.join(3)
+                    self.assertFalse(worker.is_alive(), 'test worker did not retire')
         drain();self.temp.cleanup()
 
     def write(self,text):
@@ -326,6 +327,136 @@ class GtkSettingsTests(unittest.TestCase):
         self.assertEqual(CORE.parse_document(self.path.read_bytes()).settings,{'vaapi.trace':True})
         self.assertTrue(app.editor.dirty)
         self.assertIn('reload',app.status.get_text().lower())
+
+    def test_reopen_reports_external_change_and_preserves_drafts_until_reload(self):
+        app=self.app()
+        select(app.controls['vaapi.debug'],'true')
+        select(app.player_controls['gstreamer.crystalhddec.scale_width'],'custom')
+        app.player_entries['gstreamer.crystalhddec.scale_width'].set_text('unfinished')
+        draft,pending=app.editor.draft,dict(app.pending_player)
+        self.write(HEADER+'[settings]\nvaapi.trace=true\n')
+
+        app.show_settings();drain()
+        settle(lambda:'changed outside' in app.status.get_text())
+        self.assertIs(app.editor.draft,draft)
+        self.assertEqual(app.pending_player,pending)
+        self.assertFalse(app.save_button.get_sensitive())
+        self.assertFalse(app.reset_button.get_sensitive())
+
+        app.confirm=lambda *_:False
+        app.reload_button.clicked();drain()
+        self.assertIs(app.editor.draft,draft)
+        self.assertEqual(app.pending_player,pending)
+        self.assertIn('changed outside',app.status.get_text())
+
+        app.confirm=lambda *_:True
+        app.reload_button.clicked();drain()
+        self.assertEqual(app.editor.draft.settings,{'vaapi.trace':True})
+        self.assertFalse(app.pending_player)
+        self.assertNotIn('changed outside',app.status.get_text())
+
+    def test_slow_reopen_freshness_check_does_not_block_edits(self):
+        entered,release=threading.Event(),threading.Event()
+        def inspect(*_args):
+            entered.set();release.wait(10)
+            return 'current'
+        try:
+            with mock.patch.object(UI,'read_saved_file_state',side_effect=inspect):
+                app=self.app();app.show_settings();drain()
+                self.assertTrue(entered.wait(3))
+                self.assertFalse(app.save_button.get_sensitive())
+                self.assertFalse(app.reset_button.get_sensitive())
+                heartbeat=[]
+                GLib.idle_add(lambda:heartbeat.append(True) and False)
+                select(app.controls['vaapi.debug'],'true')
+                self.assertEqual(heartbeat,[True])
+                self.assertTrue(app.editor.dirty)
+                release.set()
+                settle(lambda:app._freshness_worker is None)
+                self.assertTrue(app.editor.dirty)
+        finally:
+            release.set()
+
+    def test_tray_loss_checks_files_before_allowing_writes(self):
+        app=self.app(no_tray=False)
+        app.tray_connected=True
+        app.close_window();drain()
+        self.assertFalse(app.window.get_visible())
+        self.write(HEADER+'[settings]\nvaapi.debug=true\n')
+        with mock.patch.object(UI,'tray_host_present',return_value=False):
+            app.tray_connection_changed(None,False);drain()
+        self.assertTrue(app.window.get_visible())
+        settle(lambda:'changed outside' in app.status.get_text())
+        self.assertFalse(app.save_button.get_sensitive())
+        self.assertFalse(app.reset_button.get_sensitive())
+
+    def test_reload_discards_an_older_freshness_result(self):
+        entered,release=threading.Event(),threading.Event()
+        calls=[]
+        def inspect(*_args):
+            calls.append(len(calls))
+            if len(calls)==1:
+                entered.set();release.wait(10)
+                return 'changed'
+            return 'current'
+        try:
+            with mock.patch.object(UI,'read_saved_file_state',side_effect=inspect):
+                app=self.app();app.show_settings();drain()
+                self.assertTrue(entered.wait(3))
+                app.reload_button.clicked();drain()
+                release.set()
+                settle(lambda:len(calls)==2 and app._freshness_worker is None)
+                self.assertEqual(app.external_freshness,'current')
+                self.assertNotIn('changed outside',app.status.get_text())
+        finally:
+            release.set()
+
+    def test_unsafe_freshness_result_blocks_writes_and_can_retry(self):
+        self.write(HEADER)
+        real=UI.read_saved_file_state
+        calls=[]
+        def inspect(*args):
+            calls.append(len(calls))
+            if len(calls)==1:
+                raise CORE.SchemaError('private detail')
+            return real(*args)
+        with mock.patch.object(UI,'read_saved_file_state',side_effect=inspect):
+            app=self.app()
+            app.editor.set_literal('vaapi.debug','true')
+            app.show_settings();drain()
+            settle(lambda:app.external_freshness=='unreadable')
+            self.assertNotIn('private detail',app.status.get_text())
+            self.assertFalse(app.save_button.get_sensitive())
+            self.assertFalse(app.reset_button.get_sensitive())
+            app.show_settings();drain()
+            settle(lambda:app.external_freshness=='current')
+            self.assertTrue(app.save_button.get_sensitive())
+            self.assertTrue(app.reset_button.get_sensitive())
+
+    def test_modal_confirm_rechecks_freshness_before_reset_and_save(self):
+        self.write(HEADER+'[settings]\nvaapi.trace=true\n')
+        app=self.app()
+        original=self.path.read_bytes()
+        def stale_reset(*_args):
+            app.external_freshness='changed'
+            return True
+        app.confirm=stale_reset
+        app.reset()
+        self.assertEqual(self.path.read_bytes(),original)
+        self.assertIn('changed outside',app.status.get_text())
+
+        self.write(HEADER+'preset="low-memory"\n')
+        experimental=self.app()
+        select(experimental.controls['vaapi.debug'],'true')
+        original=self.path.read_bytes()
+        def stale_save(*_args):
+            experimental.external_freshness='changed'
+            return True
+        experimental.confirm=stale_save
+        experimental.save()
+        self.assertEqual(self.path.read_bytes(),original)
+        self.assertTrue(experimental.editor.dirty)
+        self.assertIn('changed outside',experimental.status.get_text())
 
     def test_no_host_fallback_and_lost_tray_reveal_window_without_losing_edits(self):
         with mock.patch.object(UI,'tray_host_present',return_value=False), mock.patch.object(UI,'load_indicator') as indicator:

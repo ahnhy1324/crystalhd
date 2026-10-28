@@ -64,6 +64,20 @@ def load_core():
     return core
 
 
+def read_saved_file_state(core, user_path, system_path, expected_user,
+                          expected_system):
+    """Read trusted saved inputs and compare them with an immutable receipt."""
+    current = core.load_user_document_for_edit(user_path, reset=True)
+    observed = (current.directory_identity, current.file_identity,
+                current.original_bytes)
+    if observed != expected_user:
+        return "changed"
+    system = core.load_document(system_path, "system configuration", system=True)
+    if core.serialize_document(system) != expected_system:
+        return "changed"
+    return "current"
+
+
 
 
 class Editor(object):
@@ -75,6 +89,7 @@ class Editor(object):
 
     def reload(self):
         self.snapshot = self.draft = self.catalog = self.system = None
+        self.system_canonical = None
         self.load_error = None
         self.write_blocked = False
         self.saved_canonical = None
@@ -82,6 +97,7 @@ class Editor(object):
         try:
             self.catalog = self.core.load_preset_catalog()
             self.system = self.core.load_document(self.system_path, "system configuration", system=True)
+            self.system_canonical = self.core.serialize_document(self.system)
             # Retain the safe identity/raw bytes even if INI parsing fails, so
             # an explicitly confirmed Reset still uses stale-write protection.
             self.snapshot = self.core.load_user_document_for_edit(self.path, reset=True)
@@ -90,6 +106,12 @@ class Editor(object):
             self.saved_canonical = self.core.serialize_document(self.draft)
         except self.core.SchemaError as error:
             self.load_error = str(error)
+
+    def freshness_receipt(self):
+        if self.snapshot is None or self.system_canonical is None:
+            raise self.core.SchemaError("reload a valid configuration before checking freshness")
+        return ((self.snapshot.directory_identity, self.snapshot.file_identity,
+                 self.snapshot.original_bytes), self.system_canonical)
 
     @property
     def dirty(self):
@@ -178,7 +200,10 @@ class Editor(object):
             fresh = self.core.load_user_document_for_edit(self.path)
             if fresh.original_bytes != serialized:
                 raise self.core.SchemaError("configuration changed after save")
-            self.system = self.core.load_document(self.system_path, "system configuration", system=True)
+            fresh_system = self.core.load_document(
+                self.system_path, "system configuration", system=True)
+            fresh_system_canonical = self.core.serialize_document(fresh_system)
+            self.system, self.system_canonical = fresh_system, fresh_system_canonical
             self.snapshot, self.draft = fresh, fresh.document
             self.saved_canonical = serialized
             self.edited_profiles.clear()
@@ -249,6 +274,12 @@ class SettingsWindow(object):
         self._inspection_results = queue.Queue(maxsize=1)
         self._inspection_source = 0
         self._inspection_closed = False
+        self._freshness_generation = 0
+        self._freshness_worker = None
+        self._freshness_results = queue.Queue(maxsize=1)
+        self._freshness_source = 0
+        self._freshness_closed = False
+        self.external_freshness = "current"
         self.quit_callback = quit_callback
         self.started = False
         self.window_only = no_tray
@@ -262,6 +293,7 @@ class SettingsWindow(object):
         self.window.connect("delete-event", self.close_window)
         self.window.connect("key-press-event", self.key_press)
         self.window.connect("destroy", self.cancel_installation)
+        self.window.connect("destroy", self.cancel_freshness)
         # PNG works even on minimal GTK/Qt hosts without an SVG loader.
         icon = data_directory() / "icons/hicolor/32x32/apps/crystalhd-settings.png"
         window_icon = data_directory() / "icons/hicolor/64x64/apps/crystalhd-settings.png"
@@ -470,6 +502,77 @@ class SettingsWindow(object):
             self._inspection_source = 0
         # A slow filesystem read cannot be interrupted safely. Do not join it
         # on the UI thread or keep the app alive; late results are discarded.
+
+    def request_freshness(self):
+        if self._freshness_closed or self.quitting:
+            return
+        self._freshness_generation += 1
+        self.external_freshness = "checking"
+        self.update_preview()
+        if self._freshness_worker is None:
+            self.start_freshness()
+        if self._freshness_worker is not None and not self._freshness_source:
+            self._freshness_source = self.GLib.timeout_add(50, self.poll_freshness)
+
+    def start_freshness(self):
+        try:
+            expected_user, expected_system = self.editor.freshness_receipt()
+        except self.editor.core.SchemaError:
+            self.external_freshness = "unreadable"
+            self.update_preview()
+            return
+        core, user_path, system_path = (self.editor.core, self.editor.path,
+                                        self.editor.system_path)
+        results = self._freshness_results
+        generation = self._freshness_generation
+
+        def inspect():
+            try:
+                result = read_saved_file_state(core, user_path, system_path,
+                                               expected_user, expected_system)
+            except Exception:
+                # Do not expose paths, file contents or parser details here.
+                result = "unreadable"
+            results.put_nowait((generation, result))
+
+        self._freshness_worker = threading.Thread(
+            target=inspect, name="crystalhd-settings-freshness", daemon=True)
+        try:
+            self._freshness_worker.start()
+        except (OSError, RuntimeError):
+            self._freshness_worker = None
+            self.external_freshness = "unreadable"
+            self.update_preview()
+
+    def poll_freshness(self):
+        if self._freshness_closed or self.quitting:
+            self._freshness_source = 0
+            return False
+        try:
+            generation, result = self._freshness_results.get_nowait()
+        except queue.Empty:
+            return True
+        self._freshness_worker = None
+        if generation != self._freshness_generation:
+            self.start_freshness()
+            if self._freshness_worker is not None:
+                return True
+        else:
+            self.external_freshness = result
+            self.update_preview()
+        self._freshness_source = 0
+        return False
+
+    def reset_freshness(self):
+        self._freshness_generation += 1
+        self.external_freshness = "current"
+
+    def cancel_freshness(self, *_args):
+        self._freshness_closed = True
+        self._freshness_generation += 1
+        if self._freshness_source:
+            self.GLib.source_remove(self._freshness_source)
+            self._freshness_source = 0
 
     def choice(self, grid, row, text):
         label = self.Gtk.Label.new_with_mnemonic(text)
@@ -693,6 +796,12 @@ class SettingsWindow(object):
             status += "\n" + _("Settings conflict: ") + preview_error
         if self.editor.load_error:
             status = _("Configuration could not be loaded: ") + self.editor.load_error
+        if self.external_freshness == "changed":
+            status += "\n" + _("Saved configuration changed outside this window. Drafts are preserved; Reload before saving.")
+        elif self.external_freshness == "unreadable":
+            status += "\n" + _("Saved configuration could not be checked safely. Drafts are preserved; Reload before saving.")
+        elif self.external_freshness == "checking":
+            status += "\n" + _("Checking saved configuration in the background; Save and Clear will resume when it finishes.")
         if partial_model:
             status += "\n" + _("Model is partial: native-only environment settings are not validated here.")
         if native_rejected:
@@ -703,8 +812,9 @@ class SettingsWindow(object):
         self.close_button.set_label(_("Hide to tray") if self.tray_connected else _("_Close"))
         self.close_button.set_visible(self.tray_connected)
         self.close_button.set_tooltip_text(_("Keep settings running; reopen from the tray icon.") if self.tray_connected else _("No tray is available; closing exits the settings app."))
-        self.save_button.set_sensitive(valid and self.editor.dirty and not self.editor.write_blocked and not self.pending_player)
-        self.reset_button.set_sensitive(self.editor.snapshot is not None and not self.editor.write_blocked)
+        fresh = self.external_freshness == "current"
+        self.save_button.set_sensitive(valid and fresh and self.editor.dirty and not self.editor.write_blocked and not self.pending_player)
+        self.reset_button.set_sensitive(fresh and self.editor.snapshot is not None and not self.editor.write_blocked)
         self.delete_profile_button.set_sensitive(bool(self.editor.draft is not None and not self.editor.write_blocked and self.editing_profile in self.editor.draft.profiles))
 
     def setting_changed(self, combo, key):
@@ -792,6 +902,14 @@ class SettingsWindow(object):
         dialog.destroy()
         return response == self.Gtk.ResponseType.OK
 
+    def saved_inputs_current(self):
+        # A modal confirmation runs a nested GTK loop. Recheck after it closes
+        # because a tray/reopen event may have started or completed inspection.
+        if self.external_freshness == "current":
+            return True
+        self.update_preview()
+        return False
+
     def save(self, *_args):
         if self.pending_player:
             self.notice = _("Correct the highlighted Player values before saving.")
@@ -802,9 +920,16 @@ class SettingsWindow(object):
             if required and not self.confirm(_("Save launch-only experimental defaults?"),
                     _("This does not enable experiments in ordinary Kodi. An acknowledged launch remains required. Risks: ") + ", ".join(required)):
                 return
+            if not self.saved_inputs_current():
+                return
             self.notice = self.editor.save(required, profile=self.editing_profile)
+            if self.editor.write_blocked:
+                self.request_freshness()
+            else:
+                self.reset_freshness()
         except self.editor.core.SchemaError as error:
             self.notice = str(error) + " " + _("Keep your edits; Reload to review changes before retrying.")
+            self.request_freshness()
         self.sync_form()
 
     def reload(self, *_args):
@@ -812,18 +937,25 @@ class SettingsWindow(object):
             return
         self.pending_player.clear()
         self.editor.reload()
+        self.reset_freshness()
         self.notice = ""
         self.sync_form()
 
     def reset(self, *_args):
         if not self.confirm(_("Clear all saved user settings?"), _("This deletes every user override and profile, including unfinished edits. System settings and process overrides remain.")):
             return
+        if not self.saved_inputs_current():
+            return
         try:
             self.notice = self.editor.reset()
             if not self.editor.write_blocked:
                 self.pending_player.clear()
+                self.reset_freshness()
+            else:
+                self.request_freshness()
         except self.editor.core.SchemaError as error:
             self.notice = str(error)
+            self.request_freshness()
         self.sync_form()
 
     def close_window(self, *_args):
@@ -862,6 +994,7 @@ class SettingsWindow(object):
     def show_settings(self, *_args):
         self.startup_hide_pending = False
         self.window.present()
+        self.request_freshness()
 
     def key_press(self, _widget, event):
         control = event.state & self.Gdk.ModifierType.CONTROL_MASK
@@ -922,6 +1055,7 @@ class SettingsWindow(object):
         self.tray_connected = self.indicator_connected and tray_host_present(self.Gio, self.GLib)
         if not self.tray_connected:
             self.window.present()
+            self.request_freshness()
         else:
             self.hide_on_startup_if_connected()
         self.update_preview()
