@@ -50,6 +50,9 @@ make -C "$repo_dir" DESTDIR="$config_stage" uninstall-config
 make -C "$repo_dir" DESTDIR="$config_stage" uninstall-config
 test ! -e "$config_stage/usr/bin/crystalhd-config"
 test ! -e "$config_stage/usr/share/crystalhd/config-presets-v1.json"
+test -f "$config_stage/usr/share/crystalhd/provenance.py"
+make -C "$repo_dir" DESTDIR="$config_stage" uninstall-provenance
+test ! -e "$config_stage/usr/share/crystalhd/provenance.py"
 
 # Nondefault binary/data directories retain a relocation-safe relationship;
 # the generated tool does not search the host installation, cwd or HOME.
@@ -72,6 +75,9 @@ make -C "$repo_dir" DESTDIR="$custom_stage" \
     BINDIR="$custom_bindir" DATADIR="$custom_datadir" uninstall-config
 test ! -e "$custom_stage$custom_bindir/crystalhd-config"
 test ! -e "$custom_stage$custom_datadir/crystalhd/config-presets-v1.json"
+test -f "$custom_stage$custom_datadir/crystalhd/provenance.py"
+make -C "$repo_dir" DESTDIR="$custom_stage" DATADIR="$custom_datadir" \
+    uninstall-provenance
 
 # The generated Python literal must preserve a supplementary Unicode code
 # point as UTF-8, rather than splitting it into two surrogate code units.
@@ -86,6 +92,21 @@ make -C "$repo_dir" DESTDIR="$unicode_stage" \
     BINDIR="$custom_bindir" DATADIR="$unicode_datadir" uninstall-config
 test ! -e "$unicode_stage$custom_bindir/crystalhd-config"
 test ! -e "$unicode_stage$unicode_datadir/crystalhd/config-presets-v1.json"
+test -f "$unicode_stage$unicode_datadir/crystalhd/provenance.py"
+make -C "$repo_dir" DESTDIR="$unicode_stage" DATADIR="$unicode_datadir" \
+    uninstall-provenance
+
+# The shared verifier survives either consumer's partial uninstall. Full
+# runtime uninstall owns its final removal through uninstall-provenance.
+helper_stage="$stage_dir/helper-lifecycle"
+make -C "$repo_dir" DESTDIR="$helper_stage" install-check install-config
+make -C "$repo_dir" DESTDIR="$helper_stage" uninstall-check
+test -x "$helper_stage/usr/bin/crystalhd-config"
+test -f "$helper_stage/usr/share/crystalhd/provenance.py"
+make -C "$repo_dir" DESTDIR="$helper_stage" install-check uninstall-config
+test -x "$helper_stage/usr/bin/crystalhd-check"
+test -f "$helper_stage/usr/share/crystalhd/provenance.py"
+make -C "$repo_dir" DESTDIR="$helper_stage" uninstall-check uninstall-provenance
 
 # A restrictive caller umask must not hide installed components from ordinary
 # users. Owner-only checks would miss inaccessible directories in a root install.
@@ -150,6 +171,16 @@ bundle_version=$(cat "$repo_dir/VERSION")
 test "$(modinfo -F version "$stage_dir/lib/modules/$KVER/updates/crystalhd.ko")" = "$package_version"
 test "$(modinfo -F crystalhd_bundle "$stage_dir/lib/modules/$KVER/updates/crystalhd.ko")" = "$bundle_version"
 cmp "$repo_dir/VERSION" "$stage_dir/usr/share/crystalhd/VERSION"
+runtime_receipt="$stage_dir/usr/share/crystalhd/runtime-components-v1.json"
+provenance_helper="$stage_dir/usr/share/crystalhd/provenance.py"
+test -f "$runtime_receipt"
+test -f "$provenance_helper"
+test "$(stat -c '%a' "$runtime_receipt")" = 644
+test "$(stat -c '%a' "$provenance_helper")" = 644
+if grep -F "$stage_dir" "$runtime_receipt" >/dev/null; then
+    echo 'DESTDIR leaked into the runtime component receipt' >&2
+    exit 1
+fi
 test ! -e "$stage_dir/var/lib/crystalhd/runtime-install.pending"
 test -f "$stage_dir/lib/udev/rules.d/20-crystalhd.rules"
 test -f "$stage_dir/lib/firmware/bcm70012fw.bin"
@@ -208,6 +239,17 @@ env -u GST_PLUGIN_PATH -u GST_PLUGIN_PATH_1_0 -u LD_LIBRARY_PATH \
 test ! -e "$stage_dir/etc/crystalhd/config.ini"
 va_driver_dir=$(pkg-config --variable=libdir libva)/dri
 test -f "$stage_dir$va_driver_dir/crystalhd_drv_video.so"
+provenance_output=$(python3 -B "$provenance_helper" verify \
+    --receipt "$runtime_receipt" --root "$stage_dir" \
+    --runtime-version "$bundle_version" \
+    --observed "dil=$stage_dir/usr/lib/libcrystalhd.so.3" \
+    --observed "gstreamer=$discovered_plugin" \
+    --observed "vaapi=$stage_dir$va_driver_dir/crystalhd_drv_video.so")
+printf '%s\n' "$provenance_output" | grep -F 'OK' >/dev/null
+if printf '%s\n' "$provenance_output" | grep -F 'FAIL' >/dev/null; then
+    printf '%s\n' "$provenance_output" >&2
+    exit 1
+fi
 test ! -e "$stage_dir/usr/bin/crystalhd-chromium"
 test ! -e "$stage_dir/usr/bin/setup-crystalhd-chrome-default"
 
@@ -274,6 +316,8 @@ test -f "$sentinel"
 test -f "$dkms_sentinel"
 test "$(cat "$user_settings")" = 'saved user defaults'
 test ! -e "$stage_dir/var/lib/crystalhd/runtime-install.pending"
+test ! -e "$runtime_receipt"
+test ! -e "$provenance_helper"
 rm -f -- "$sentinel"
 rm -f -- "$dkms_sentinel"
 rm -f -- "$user_settings"

@@ -14,6 +14,16 @@ warn_count=0
 fail_count=0
 info_count=0
 temporary_registry=
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+provenance_helper_relative='@PROVENANCE_HELPER_RELATIVE@'
+provenance_data_dir='@PROVENANCE_DATA_DIR@'
+case "$provenance_helper_relative" in
+    @*@) provenance_helper=$script_dir/crystalhd_provenance.py ;;
+    *) provenance_helper=$script_dir/$provenance_helper_relative ;;
+esac
+case "$provenance_data_dir" in
+    @*@) provenance_data_dir=/usr/share/crystalhd ;;
+esac
 
 usage()
 {
@@ -126,7 +136,8 @@ emit INFO "Architecture: $abi_description; kernel $kernel_release"
 
 # A runtime-only update is valid with DKMS. Report its receipt separately from
 # actual module identity rather than assigning one release to the whole host.
-runtime_version_file=$root_prefix/usr/share/crystalhd/VERSION
+runtime_version=
+runtime_version_file=$root_prefix$provenance_data_dir/VERSION
 runtime_pending=$root_prefix/var/lib/crystalhd/runtime-install.pending
 runtime_incomplete=0
 if [ -e "$runtime_pending" ] || [ -L "$runtime_pending" ]; then
@@ -529,6 +540,7 @@ fi
 case "$gst_plugin" in
     */filters/gst/gst-plugin-1.0/*) emit WARN "GStreamer: a source-tree plugin is active, not the normal installed plugin" ;;
 esac
+gst_library=
 if [ -n "$gst_plugin" ] && command -v ldd >/dev/null 2>&1; then
     gst_ldd_output=$(unset LD_LIBRARY_PATH; ldd "$gst_plugin" 2>/dev/null || true)
     case "$gst_ldd_output" in
@@ -588,6 +600,7 @@ elif [ -z "$drm_device" ] && [ "$render_count" -gt 1 ]; then
 fi
 
 va_driver=
+va_opened=
 if command -v pkg-config >/dev/null 2>&1 &&
     (unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR; pkg-config --exists libva 2>/dev/null); then
     va_libdir=$(unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR
@@ -635,6 +648,49 @@ if [ -n "$drm_device" ]; then
         fi
     else
         emit WARN "VA-API: vainfo is not installed"
+    fi
+fi
+
+runtime_receipt=$root_prefix$provenance_data_dir/runtime-components-v1.json
+if [ "$runtime_incomplete" -eq 1 ]; then
+    if [ -e "$runtime_receipt" ] || [ -L "$runtime_receipt" ]; then
+        emit INFO "Runtime component receipt is present, but is not evidence of completion while installation is incomplete"
+    fi
+elif [ ! -e "$runtime_receipt" ] && [ ! -L "$runtime_receipt" ]; then
+    emit WARN "Runtime component provenance: UNKNOWN (older installation has no completed component receipt)"
+elif [ ! -r "$provenance_helper" ]; then
+    emit FAIL "Runtime component provenance helper is unavailable: $provenance_helper"
+elif ! command -v python3 >/dev/null 2>&1; then
+    emit WARN "Runtime component provenance: UNKNOWN (python3 is unavailable)"
+else
+    set -- verify --receipt "$runtime_receipt" --root "$root_prefix" \
+        --runtime-version "$runtime_version"
+    [ -z "$selected_library" ] || set -- "$@" --observed "dil=$selected_library"
+    [ -z "$gst_library" ] || set -- "$@" --observed "dil=$gst_library"
+    [ -z "$gst_plugin" ] || set -- "$@" --observed "gstreamer=$gst_plugin"
+    va_selected=${va_opened:-$va_driver}
+    [ -z "$va_selected" ] || set -- "$@" --observed "vaapi=$va_selected"
+    provenance_output=$(python3 -B "$provenance_helper" "$@" 2>&1)
+    provenance_status=$?
+    provenance_failure_line=0
+    provenance_protocol_failure=0
+    tab=$(printf '\t')
+    while IFS="$tab" read -r provenance_level provenance_message; do
+        [ -n "$provenance_level$provenance_message" ] || continue
+        case "$provenance_level" in
+            OK|WARN|FAIL|INFO)
+                emit "$provenance_level" "$provenance_message"
+                [ "$provenance_level" != FAIL ] || provenance_failure_line=1
+                ;;
+            *) provenance_protocol_failure=1 ;;
+        esac
+    done <<EOF
+$provenance_output
+EOF
+    if [ "$provenance_protocol_failure" -eq 1 ]; then
+        emit FAIL "Runtime component provenance helper returned malformed output"
+    elif [ "$provenance_status" -ne 0 ] && [ "$provenance_failure_line" -eq 0 ]; then
+        emit FAIL "Runtime component provenance helper failed without a diagnostic"
     fi
 fi
 

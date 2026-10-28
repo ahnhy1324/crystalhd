@@ -101,8 +101,9 @@ rollback also reverts newer optional features; use its own playback instructions
 Runtime installation prepares the complete file set in a temporary directory
 before replacing runtime files. A preparation failure preserves the existing
 runtime and any earlier incomplete-state record. Prepared files are replaced
-individually, with VERSION published last; linker/udev activation uses the
-completed payload. Before replacement, private `.crystalhd-undo-*` directories
+individually. Linker/udev activation uses the completed payload, then the
+on-disk userspace component receipt and VERSION are published, with VERSION
+last. Before replacement, private `.crystalhd-undo-*` directories
 beside the destination files retain their original inodes through hard links.
 If this preparation fails, no runtime files are replaced. A caught publication
 or activation failure restores previous files and links, reactivates them if
@@ -116,6 +117,14 @@ If interrupted, run
 `sh scripts/crystalhd-check` from the intended source to inspect it; an older
 installed checker may not understand the marker, or removal may have deleted it.
 The updated checker reports failure even when an older VERSION record remains.
+For a completed new installation it also compares DIL, GStreamer and VA-API
+GNU Build IDs plus both Player files' source markers and recorded sizes with
+`runtime-components-v1.json`. This identifies same-VERSION userspace mixtures
+without assigning that identity to the separately checked kernel module.
+An older installation without the receipt reports provenance `UNKNOWN`, not a
+false match. A pending marker always takes precedence over a matching receipt.
+The receipt covers files on disk; it does not inspect mappings already held by
+running applications.
 Resolve the reported error, then rerun `sudo make install-runtime` from this source;
 to finish removal, rerun `sudo make uninstall-runtime` from the outgoing source.
 A successful complete installation clears the marker and removes recognized

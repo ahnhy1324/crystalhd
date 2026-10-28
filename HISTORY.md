@@ -11,6 +11,8 @@ this development identity is not a release or a new support claim.
   natural EOS are not a displayed-frame count. Playback policy is unchanged.
 - Keep the settings window responsive during installation inspection; preserve
   drafts across refreshes and discard late results after exiting.
+- Record and verify the completed on-disk DIL, GStreamer, VA-API and Player
+  userspace cohort independently of VERSION and kernel-module identity.
 - Use negotiated RX readiness in GStreamer with a cancellable control wake;
   retain older-library status checks and bounded EOS/recovery probes.
 - Diagnose interrupted runtime installation/removal even with a previous VERSION

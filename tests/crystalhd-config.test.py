@@ -31,9 +31,119 @@ if SPEC is None or SPEC.loader is None:
     raise RuntimeError("cannot import crystalhd-config")
 CONFIG = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONFIG)
+PROVENANCE_SPEC = importlib.util.spec_from_file_location(
+    "crystalhd_provenance_test", ROOT / "scripts/crystalhd_provenance.py")
+PROVENANCE = importlib.util.module_from_spec(PROVENANCE_SPEC)
+PROVENANCE_SPEC.loader.exec_module(PROVENANCE)
 
 
 class ConfigCliTest(unittest.TestCase):
+    def test_provenance_build_id_reader_does_not_block_on_fifo(self):
+        fifo = self.root / 'provenance-fifo'
+        os.mkfifo(str(fifo))
+        program = (
+            'import importlib.util,sys;'
+            'spec=importlib.util.spec_from_file_location("provenance",sys.argv[1]);'
+            'module=importlib.util.module_from_spec(spec);'
+            'spec.loader.exec_module(module);'
+            'module.gnu_build_id(sys.argv[2])'
+        )
+        result = subprocess.run(
+            [sys.executable, '-B', '-c', program,
+             str(ROOT / 'scripts/crystalhd_provenance.py'), str(fifo)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=2)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('not a regular file', result.stderr)
+
+    def test_default_provenance_pending_path_is_absolute_and_authoritative(self):
+        expected = '/var/lib/crystalhd/runtime-install.pending'
+        with mock.patch.object(CONFIG.os.path, 'lexists', return_value=True) as exists:
+            report = CONFIG.inspect_runtime_provenance()
+        exists.assert_called_once_with(expected)
+        self.assertEqual(report['state'], 'incomplete')
+
+    def test_installation_provenance_is_separate_from_reader_declarations(self):
+        stage = self.root / 'installed'
+        source_id = 'git:' + ('0' * 40)
+        for relative in ('usr/lib/libcrystalhd.so.3.6',
+                         'usr/lib/gstreamer-1.0/libgstcrystalhd.so',
+                         'usr/lib/dri/crystalhd_drv_video.so'):
+            target = stage / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile('/bin/true', str(target))
+        for relative in ('usr/bin/crystalhd-play',
+                         'usr/share/crystalhd/player.py'):
+            target = stage / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('# CrystalHD source identity: ' + source_id + '\n')
+        version = stage / 'usr/share/crystalhd/VERSION'
+        version.write_text('same-version\n')
+        receipt = PROVENANCE.create_receipt(
+            stage, 'same-version', '/usr/bin', '/usr/share', source_id)
+        helper = stage / 'usr/share/crystalhd/provenance.py'
+        shutil.copyfile(str(ROOT/'scripts/crystalhd_provenance.py'), str(helper))
+        before = sorted(str(path.relative_to(stage)) for path in stage.rglob('*'))
+        with mock.patch.object(CONFIG, 'PROVENANCE_HELPER_RELATIVE', str(helper)):
+            report = CONFIG.inspect_runtime_provenance(str(stage))
+        after = sorted(str(path.relative_to(stage)) for path in stage.rglob('*'))
+        self.assertEqual(after, before)
+        self.assertEqual(report['state'], 'match')
+        self.assertIn('running mappings not inspected', report['scope'])
+        messages, failed = PROVENANCE.verify_receipt(
+            receipt, stage, 'same-version', {
+                'gstreamer': '/usr/lib/gstreamer-1.0/libgstcrystalhd.so',
+            })
+        self.assertTrue(failed)
+        self.assertTrue(any('GStreamer selection' in message
+                            for level, message in messages))
+        external_wrapper = self.root / 'external-crystalhd-play'
+        external_wrapper.write_text('# CrystalHD source identity: ' +
+                                    source_id + '\n')
+        messages, failed = PROVENANCE.verify_receipt(
+            receipt, stage, 'same-version', {
+                'player': [external_wrapper,
+                           stage / 'usr/share/crystalhd/player.py'],
+            })
+        self.assertTrue(failed)
+        self.assertTrue(any('Player selection' in message
+                            for level, message in messages))
+
+        plugin = stage / 'usr/lib/gstreamer-1.0/libgstcrystalhd.so'
+        plugin.unlink()
+        plugin.symlink_to(plugin.name)
+        with mock.patch.object(CONFIG, 'PROVENANCE_HELPER_RELATIVE', str(helper)):
+            report = CONFIG.inspect_runtime_provenance(str(stage))
+        self.assertEqual(report['state'], 'mismatch')
+        self.assertTrue(any('GStreamer provenance: missing' in item['text']
+                            for item in report['messages']))
+        plugin.unlink()
+        shutil.copyfile('/bin/true', str(plugin))
+
+        shutil.copyfile('/bin/false',
+                        str(plugin))
+        with mock.patch.object(CONFIG, 'PROVENANCE_HELPER_RELATIVE', str(helper)):
+            report = CONFIG.inspect_runtime_provenance(str(stage))
+        self.assertEqual(report['state'], 'mismatch')
+        self.assertTrue(any('GStreamer provenance' in item['text']
+                            for item in report['messages']))
+
+        pending = stage / 'var/lib/crystalhd/runtime-install.pending'
+        pending.parent.mkdir(parents=True)
+        pending.write_text('{}\n')
+        with mock.patch.object(CONFIG, 'PROVENANCE_HELPER_RELATIVE', str(helper)):
+            self.assertEqual(CONFIG.inspect_runtime_provenance(str(stage))['state'],
+                             'incomplete')
+        pending.unlink()
+        receipt.unlink()
+        with mock.patch.object(CONFIG, 'PROVENANCE_HELPER_RELATIVE', str(helper)):
+            self.assertEqual(CONFIG.inspect_runtime_provenance(str(stage))['state'],
+                             'unknown')
+        receipt.symlink_to(stage/'missing-receipt')
+        with mock.patch.object(CONFIG, 'PROVENANCE_HELPER_RELATIVE', str(helper)):
+            self.assertEqual(CONFIG.inspect_runtime_provenance(str(stage))['state'],
+                             'mismatch')
+
     def test_installation_declarations_do_not_execute_components_or_load_config(self):
         root = self.root / 'reader-files'
         root.mkdir()

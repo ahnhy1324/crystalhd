@@ -1,6 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # CrystalHD Player controller-location protocol v1
+# CrystalHD source identity: @PLAYER_SOURCE_ID@
 set -eu
 
 player_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)

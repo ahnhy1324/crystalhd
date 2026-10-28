@@ -405,7 +405,7 @@ class SettingsWindow(object):
         self.installation_status.set_selectable(True)
         installation.pack_start(self.installation_status, False, False, 0)
         self.installation_refresh = self.button(installation, _("Refresh installation status"), self.refresh_installation)
-        self.installation_refresh.set_tooltip_text(_("Read component file declarations. Does not save settings, load a decoder or restart applications."))
+        self.installation_refresh.set_tooltip_text(_("Read component declarations and the completed on-disk userspace receipt. Does not save settings, load a decoder, inspect running mappings or restart applications."))
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroll.add(installation)

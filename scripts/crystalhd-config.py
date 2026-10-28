@@ -27,9 +27,11 @@ MAXIMUM_BYTES = 64 * 1024
 MAXIMUM_INTEGER_DIGITS = 10
 SYSTEM_CONFIG = "/etc/crystalhd/config.ini"
 PRESET_MANIFEST_RELATIVE = "@PRESET_MANIFEST_RELATIVE@"
+PROVENANCE_HELPER_RELATIVE = "@PROVENANCE_HELPER_RELATIVE@"
 SOURCE_PRESET_MANIFEST_RELATIVE = os.path.join(
     "..", "share", "crystalhd", "config-presets-v1.json"
 )
+SOURCE_PROVENANCE_HELPER_RELATIVE = "crystalhd_provenance.py"
 PRESET_NAMES = (
     "default", "quality", "performance", "low-memory", "streaming",
     "experimental", "custom",
@@ -156,6 +158,73 @@ def _player_reader_path(wrapper):
         return None
 
 
+def provenance_helper_path():
+    relative = PROVENANCE_HELPER_RELATIVE
+    if relative.startswith("@") and relative.endswith("@"):
+        relative = SOURCE_PROVENANCE_HELPER_RELATIVE
+    return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         relative))
+
+
+def inspect_runtime_provenance(root="", observed=None):
+    """Inspect our completed on-disk userspace cohort, never running mappings."""
+    if (PROVENANCE_HELPER_RELATIVE.startswith("@") and
+            PROVENANCE_HELPER_RELATIVE.endswith("@")):
+        data_directory = os.path.join(root or os.sep, "usr/share/crystalhd")
+    else:
+        data_directory = os.path.dirname(provenance_helper_path())
+    receipt = os.path.join(data_directory, "runtime-components-v1.json")
+    version = os.path.join(data_directory, "VERSION")
+    pending = os.path.join(root or os.sep,
+                           "var/lib/crystalhd/runtime-install.pending")
+    result = {
+        "state": "unknown",
+        "scope": "completed on-disk userspace files; running mappings not inspected",
+        "receipt": receipt,
+        "messages": [],
+    }
+    if os.path.lexists(pending):
+        result.update(state="incomplete", messages=[{
+            "level": "FAIL",
+            "text": "runtime installation is incomplete or in progress",
+        }])
+        return result
+    if not os.path.lexists(receipt):
+        result["messages"] = [{
+            "level": "WARN",
+            "text": "UNKNOWN: older installation has no completed component receipt",
+        }]
+        return result
+    helper = provenance_helper_path()
+    try:
+        source = _inspection_bytes(helper, 1024 * 1024).decode("utf-8", "strict")
+        namespace = {"__name__": "_crystalhd_runtime_provenance",
+                     "__file__": helper}
+        exec(compile(source, helper, "exec"), namespace)
+        verify_receipt = namespace.get("verify_receipt")
+        if not callable(verify_receipt):
+            raise ValueError("helper has no verifier")
+        runtime_version = _inspection_bytes(version, 4096).decode(
+            "utf-8", "strict").splitlines()[0]
+        messages, failed = verify_receipt(
+            receipt, root, runtime_version, observed or {})
+        result["messages"] = [{"level": level, "text": text}
+                              for level, text in messages]
+        if failed:
+            result["state"] = "mismatch"
+        elif any(level == "WARN" for level, text in messages):
+            result["state"] = "unknown"
+        else:
+            result["state"] = "match"
+    except (OSError, RuntimeError, ValueError, UnicodeError, IndexError,
+            KeyError, SyntaxError):
+        result.update(state="invalid", messages=[{
+            "level": "FAIL",
+            "text": "component receipt or verifier is unavailable or invalid",
+        }])
+    return result
+
+
 def inspect_installation(environment=None, cache_text=None):
     """Inspect declarations only; never execute an inspected component or load INI."""
     environment = os.environ if environment is None else environment
@@ -169,7 +238,8 @@ def inspect_installation(environment=None, cache_text=None):
     va = (os.path.join(os.path.dirname(os.path.realpath(libva)), "dri", "crystalhd_drv_video.so")
           if libva else None)
     wrapper = shutil.which("crystalhd-play", path=environment.get("PATH", os.defpath))
-    return {"scope": "file declarations only; running applications are not inspected",
+    player = _player_reader_path(wrapper)
+    return {"scope": "file declarations and completed on-disk provenance; running applications are not inspected",
             "abi_bits": elf_class * 32, "linker_cache": cache_state,
             "player_wrapper": wrapper,
             "overrides_present": [name for name in (
@@ -178,7 +248,10 @@ def inspect_installation(environment=None, cache_text=None):
             "caveat": "Default cache candidates can be overridden. Other client ABIs and mapped files may differ.",
             "readers": [inspect_reader(dil, "dil", elf_class),
                         inspect_reader(va, "vaapi", elf_class),
-                        inspect_reader(_player_reader_path(wrapper), "player")]}
+                        inspect_reader(player, "player")],
+            "provenance": inspect_runtime_provenance(
+                observed={"dil": dil, "vaapi": va,
+                          "player": [wrapper, player]})}
 
 
 def installation_text(report):
@@ -190,6 +263,11 @@ def installation_text(report):
                      item["path"] or "no file", item["detail"]))
         if item["keys"]:
             lines.append("  Keys: " + ", ".join(item["keys"]))
+    provenance = report["provenance"]
+    lines.append("On-disk userspace provenance: " + provenance["state"])
+    for message in provenance["messages"]:
+        lines.append("  {0}: {1}".format(message["level"], message["text"]))
+    lines.append("  Scope: " + provenance["scope"])
     lines.append("Overrides present (values omitted): " + (", ".join(report["overrides_present"]) or "none"))
     lines.append(report["caveat"])
     return "\n".join(lines)

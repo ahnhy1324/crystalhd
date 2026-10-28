@@ -41,7 +41,7 @@ override CXXFLAGS += -std=c++17 -Wall -Wextra -Werror -fPIC \
 	$(shell $(PKG_CONFIG) --cflags libva libva-drm libdrm gbm \
 	libswscale)
 CRYSTALHD_NORMAL_CPU_FLAGS := -msse2
-LDFLAGS += -shared -L$(ROOTDIR)/linux_lib/libcrystalhd
+LDFLAGS += -shared -Wl,--build-id=sha1 -L$(ROOTDIR)/linux_lib/libcrystalhd
 LDLIBS += $(shell $(PKG_CONFIG) --libs libva libva-drm libdrm gbm \
 	libswscale) \
 	-lcrystalhd -pthread

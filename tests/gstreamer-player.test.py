@@ -1038,6 +1038,21 @@ class ManagedDefaultsTests(unittest.TestCase):
                                 stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn(str(controller),str(Path(result.stdout.strip().rsplit(' --help',1)[0]).resolve()))
+
+    def test_installer_rejects_malformed_source_identity(self):
+        stage = self.root/'bad-source-id-stage'
+        flags = ['DESTDIR='+str(stage), 'BINDIR=/usr/bin',
+                 'DATADIR=/usr/share']
+        for value in ('git:'+('a'*44), 'archive:'+('b'*36), 'branch:main'):
+            with self.subTest(value=value):
+                environment = dict(os.environ, CRYSTALHD_SOURCE_ID=value)
+                result = subprocess.run(
+                    ['make','-C','filters/gst/gst-plugin-1.0','install-player']+flags,
+                    cwd=str(ROOT), env=environment, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, universal_newlines=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((stage/'usr/bin/crystalhd-play').exists())
+                self.assertFalse((stage/'usr/share/crystalhd/player.py').exists())
         self.assertFalse(list(stage.rglob('__pycache__')))
 
 
