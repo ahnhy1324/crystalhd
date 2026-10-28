@@ -55,6 +55,7 @@ BACKEND_HEADERS := $(ROOTDIR)/include/crystalhd-config.h \
 	 ../crystalhd-h264-output.h \
 	crystalhd-access-unit-limits.h crystalhd-decode-replay.h \
 	crystalhd-centered-output.h \
+	crystalhd-h264.h \
 	crystalhd-private-backing.h \
 	crystalhd-vpp-bob.h \
 	crystalhd-mpeg2.h crystalhd-mpeg2-replay.h \
@@ -69,7 +70,7 @@ $(IMPORT_TEST): $(ROOTDIR)/tests/vaapi-import.cpp
 		$(shell $(PKG_CONFIG) --cflags libva libva-drm) $< -o $@ \
 		$(shell $(PKG_CONFIG) --libs libva libva-drm) $(CRYSTALHD_CPU_FLAGS)
 
-$(H264_TEST): $(ROOTDIR)/tests/vaapi-h264.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
+$(H264_TEST): $(ROOTDIR)/tests/vaapi-h264.cpp crystalhd-h264.h
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CRYSTALHD_CPU_FLAGS) $< -o $@
 
 $(MPEG2_TEST): $(ROOTDIR)/tests/vaapi-mpeg2.cpp crystalhd-mpeg2.h
