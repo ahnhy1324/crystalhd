@@ -25,7 +25,7 @@ CPPFLAGS += -D__LINUX_USER__ -I$(ROOTDIR)/linux_lib/libcrystalhd \
 	-I$(ROOTDIR)/include
 CFLAGS ?= -O2
 CFLAGS += -Wall -Wextra -Werror -fPIC $(shell $(PKG_CONFIG) --cflags $(GST_PACKAGES))
-LDFLAGS += -shared -L$(ROOTDIR)/linux_lib/libcrystalhd
+LDFLAGS += -shared -Wl,--build-id=sha1 -L$(ROOTDIR)/linux_lib/libcrystalhd
 LDLIBS += $(shell $(PKG_CONFIG) --libs $(GST_PACKAGES)) -lcrystalhd
 
 .PHONY: all clean install install-player uninstall check codec-playback-test check-codec-playback check-player check-diqos

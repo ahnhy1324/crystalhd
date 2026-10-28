@@ -18,9 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('runtime_installer', str(ROOT/'scripts/install-runtime.py'))
 INSTALLER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(INSTALLER)
+PROVENANCE = sys.modules['crystalhd_provenance']
 STAGES = ('udev', 'firmware', 'library', 'gstreamer', 'vaapi', 'check', 'config', 'record')
 MOCK = r'''
-import os,sys,time
+import os,shutil,sys,time
 from pathlib import Path
 args=sys.argv[1:]
 directory=args[args.index('-C')+1] if '-C' in args else ''
@@ -38,11 +39,28 @@ path.parent.mkdir(parents=True,exist_ok=True)
 if remove:
  if path.exists():path.unlink()
 else:path.write_text(Path(os.environ['TEST_TEMPLATE']).read_text() if 'TEST_TEMPLATE' in os.environ else 'new')
+component_paths={
+ 'library':[root/'usr/lib/libcrystalhd.so.3.6'],
+ 'gstreamer':[root/'usr/lib/gstreamer-1.0/libgstcrystalhd.so',
+              root/'usr/bin/crystalhd-play',root/'usr/share/crystalhd/player.py'],
+ 'vaapi':[root/'usr/lib/dri/crystalhd_drv_video.so'],
+}.get(phase,[])
+if remove:
+ for component in component_paths:
+  if component.exists():component.unlink()
+else:
+ for component in component_paths:
+  component.parent.mkdir(parents=True,exist_ok=True)
+  if component.name in ('crystalhd-play','player.py'):
+   component.write_text('# CrystalHD source identity: '+os.environ['CRYSTALHD_SOURCE_ID']+'\n')
+  else:shutil.copyfile(os.environ.get('TEST_ELF','/bin/true'),component)
 if phase=='record':
  version=root/data.lstrip('/')/'crystalhd/VERSION'
+ receipt=root/data.lstrip('/')/'crystalhd/runtime-components-v1.json'
  version.parent.mkdir(parents=True,exist_ok=True)
  if remove:
   if version.exists():version.unlink()
+  if receipt.exists():receipt.unlink()
  else:version.write_text(os.environ['TEST_BUNDLE']+chr(10))
 if os.environ.get('HOLD_STAGE')==phase:
  gate=Path(os.environ['TEST_GATE']);gate.with_suffix('.pid').write_text(str(os.getpid()))
@@ -65,7 +83,10 @@ class RuntimeInstallTests(unittest.TestCase):
         self.mock.chmod(0o755)
         self.pending = self.stage / 'var/lib/crystalhd/runtime-install.pending'
         self.version = self.stage / 'usr/share/crystalhd/VERSION'
-        self.environment = dict(os.environ, TEST_BUNDLE=self.bundle, TEST_GATE=str(self.root/'release'))
+        self.source_id = 'git:' + ('0' * 40)
+        self.environment = dict(os.environ, TEST_BUNDLE=self.bundle,
+                                TEST_GATE=str(self.root/'release'),
+                                CRYSTALHD_SOURCE_ID=self.source_id)
         preparation = self.root/'preparation'
         preparation.mkdir()
         self.environment['TMPDIR'] = str(preparation)
@@ -97,6 +118,24 @@ class RuntimeInstallTests(unittest.TestCase):
             path = self.stage/'usr/share/crystalhd-test'/phase
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('old')
+        old_components = [
+            self.stage/'usr/lib/libcrystalhd.so.3.6',
+            self.stage/'usr/lib/gstreamer-1.0/libgstcrystalhd.so',
+            self.stage/'usr/lib/dri/crystalhd_drv_video.so',
+        ]
+        for path in old_components:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copyfile('/bin/false', str(path))
+        for path in (self.stage/'usr/bin/crystalhd-play',
+                     self.stage/'usr/share/crystalhd/player.py'):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('# CrystalHD source identity: ' + self.source_id + '\n')
+        receipt = self.stage/'usr/share/crystalhd/runtime-components-v1.json'
+        if receipt.exists():
+            receipt.unlink()
+        INSTALLER.create_receipt(self.stage, 'previous', '/usr/bin',
+                                 '/usr/share', self.source_id)
         user = self.stage/'etc/crystalhd/config.ini'
         user.parent.mkdir(parents=True, exist_ok=True)
         user.write_text('private saved defaults\n')
@@ -116,6 +155,9 @@ class RuntimeInstallTests(unittest.TestCase):
 
     def test_old_version_and_user_defaults_survive_until_record_stage(self):
         self.seed()
+        receipt = self.stage/'usr/share/crystalhd/runtime-components-v1.json'
+        receipt_before = receipt.stat()
+        receipt_bytes = receipt.read_bytes()
         result = self.run_make(fail='activate')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.version.read_text(), 'previous\n')
@@ -123,6 +165,10 @@ class RuntimeInstallTests(unittest.TestCase):
         self.assertEqual((self.stage/'usr/share/crystalhd-test/vaapi').read_text(), 'old')
         self.assertTrue(self.pending.exists())
         self.assertEqual(json.loads(self.pending.read_text())['stage'], 'rollback-activate-failed')
+        receipt_after = receipt.stat()
+        self.assertEqual(receipt.read_bytes(), receipt_bytes)
+        self.assertEqual((receipt_after.st_ino, receipt_after.st_mode),
+                         (receipt_before.st_ino, receipt_before.st_mode))
         self.assertEqual(self.run_make().returncode, 0)
         self.assertFalse(list(self.stage.rglob('.crystalhd-undo-*')))
         self.assertEqual((self.stage/'etc/crystalhd/config.ini').read_text(), 'private saved defaults\n')
@@ -133,11 +179,71 @@ class RuntimeInstallTests(unittest.TestCase):
         self.assertEqual(self.run_make('uninstall-runtime', dry=True).returncode, 0)
         self.assertFalse(self.stage.exists())
 
+    def test_success_records_each_userspace_component(self):
+        result = self.run_make()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        receipt = self.stage/'usr/share/crystalhd/runtime-components-v1.json'
+        record = json.loads(receipt.read_text())
+        self.assertEqual(record['schema'], 1)
+        self.assertEqual(record['bundle'], self.bundle)
+        self.assertEqual(set(record['components']),
+                         {'dil', 'gstreamer', 'vaapi', 'player'})
+        messages, failed = PROVENANCE.verify_receipt(
+            receipt, self.stage, self.bundle, {})
+        self.assertFalse(failed, messages)
+        self.assertEqual([level for level, message in messages].count('OK'), 4)
+
+    def test_source_identity_distinguishes_archive_clean_git_and_dirty_tree(self):
+        archive = self.root / 'archive'
+        archive.mkdir()
+        revision = '1' * 40
+        (archive / 'SOURCE_REVISION').write_text(revision + '\n')
+        with mock.patch.dict(os.environ, {'CRYSTALHD_SOURCE_ID': ''}):
+            self.assertEqual(PROVENANCE.source_identity(archive),
+                             'archive:' + revision)
+
+        checkout = self.root / 'checkout'
+        checkout.mkdir()
+        (checkout / 'SOURCE_REVISION').write_text('$Format:%H$\n')
+        completed = subprocess.CompletedProcess([], 0)
+        with mock.patch.dict(os.environ, {'CRYSTALHD_SOURCE_ID': ''}), \
+                mock.patch.object(PROVENANCE.subprocess, 'run',
+                                  return_value=completed), \
+                mock.patch.object(PROVENANCE.subprocess, 'check_output',
+                                  return_value=('2' * 40) + '\n'):
+            self.assertEqual(PROVENANCE.source_identity(checkout),
+                             'git:' + ('2' * 40))
+        completed = subprocess.CompletedProcess([], 1)
+        with mock.patch.dict(os.environ, {'CRYSTALHD_SOURCE_ID': ''}), \
+                mock.patch.object(PROVENANCE.subprocess, 'run',
+                                  return_value=completed), \
+                mock.patch.object(PROVENANCE.subprocess, 'check_output',
+                                  return_value=('2' * 40) + '\n'):
+            self.assertEqual(PROVENANCE.source_identity(checkout), 'unknown')
+
+    def test_same_version_distinct_builds_have_distinct_component_identities(self):
+        self.assertEqual(self.run_make().returncode, 0)
+        receipt = self.stage/'usr/share/crystalhd/runtime-components-v1.json'
+        first = json.loads(receipt.read_text())
+        self.environment['TEST_ELF'] = '/bin/false'
+        self.environment['CRYSTALHD_SOURCE_ID'] = 'git:' + ('1' * 40)
+        result = self.run_make()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        second = json.loads(receipt.read_text())
+        self.assertEqual(first['bundle'], second['bundle'])
+        for component in ('dil', 'gstreamer', 'vaapi'):
+            self.assertNotEqual(
+                first['components'][component]['files'][0]['gnu_build_id'],
+                second['components'][component]['files'][0]['gnu_build_id'])
+        self.assertNotEqual(first['components']['player']['source_id'],
+                            second['components']['player']['source_id'])
+
     def test_alternate_root_with_spaces_and_unicode(self):
         self.stage = self.root/'stage with spaces 🧪'
         result = self.run_make()
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual((self.stage/'usr/share/crystalhd/VERSION').read_text().strip(), self.bundle)
+        self.assertTrue((self.stage/'usr/share/crystalhd/runtime-components-v1.json').is_file())
         self.assertFalse((self.stage/'var/lib/crystalhd/runtime-install.pending').exists())
 
     def test_make_query_and_touch_do_not_change_installation_state(self):
@@ -159,6 +265,7 @@ class RuntimeInstallTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertFalse(self.pending.exists())
             self.assertFalse(self.version.exists())
+            self.assertFalse((self.stage/'usr/share/crystalhd/runtime-components-v1.json').exists())
         self.assertFalse(list(self.stage.rglob('*.lock')))
 
     def test_state_symlink_escape_and_unsafe_directory_fail_before_payload(self):
@@ -233,7 +340,8 @@ class RuntimeInstallTests(unittest.TestCase):
         outside.write_text('do not modify')
         link = self.stage/'usr/share/crystalhd-test/config'
         link.unlink(); link.symlink_to(outside)
-        previous = {p: p.lstat() for p in [library, link, self.version]}
+        receipt = self.stage/'usr/share/crystalhd/runtime-components-v1.json'
+        previous = {p: p.lstat() for p in [library, link, self.version, receipt]}
         original = INSTALLER.publish_file
         def publish(source, target):
             original(source, target)
@@ -255,6 +363,42 @@ class RuntimeInstallTests(unittest.TestCase):
         self.assertFalse(self.pending.exists())
         self.assertFalse(list(self.stage.rglob('.crystalhd-undo-*')))
 
+    def test_receipt_publish_failure_restores_previous_receipt_and_payload(self):
+        self.seed()
+        receipt = self.stage/'usr/share/crystalhd/runtime-components-v1.json'
+        before = receipt.stat()
+        old_receipt = receipt.read_bytes()
+        original = INSTALLER.publish_file
+        def publish(source, target):
+            original(source, target)
+            if target == receipt:
+                raise OSError(28, 'injected receipt publication failure')
+        with mock.patch.object(INSTALLER, 'publish_file', side_effect=publish):
+            with self.assertRaises(INSTALLER.InstallRestored):
+                self.direct_install()
+        after = receipt.stat()
+        self.assertEqual(receipt.read_bytes(), old_receipt)
+        self.assertEqual((after.st_ino, after.st_mode),
+                         (before.st_ino, before.st_mode))
+        self.assertEqual(self.version.read_text(), 'previous\n')
+        self.assertEqual((self.stage/'usr/share/crystalhd-test/library').read_text(),
+                         'old')
+        self.assertFalse(self.pending.exists())
+
+    def test_first_install_version_failure_removes_new_receipt_and_payload(self):
+        original = INSTALLER.publish_file
+        def publish(source, target):
+            original(source, target)
+            if target == self.version:
+                raise OSError(28, 'injected VERSION publication failure')
+        with mock.patch.object(INSTALLER, 'publish_file', side_effect=publish):
+            with self.assertRaises(INSTALLER.InstallRestored):
+                self.direct_install()
+        self.assertFalse(self.version.exists())
+        self.assertFalse((self.stage/'usr/share/crystalhd/runtime-components-v1.json').exists())
+        self.assertFalse((self.stage/'usr/lib/libcrystalhd.so.3.6').exists())
+        self.assertFalse(self.pending.exists())
+
     def test_first_install_failure_removes_introduced_files(self):
         original = INSTALLER.publish_file
         def publish(source, target):
@@ -264,6 +408,7 @@ class RuntimeInstallTests(unittest.TestCase):
             with self.assertRaises(INSTALLER.InstallRestored):self.direct_install()
         self.assertFalse(self.pending.exists())
         self.assertFalse(self.version.exists())
+        self.assertFalse((self.stage/'usr/share/crystalhd/runtime-components-v1.json').exists())
         self.assertFalse(list(self.stage.glob('usr/share/crystalhd-test/*')))
         self.assertFalse(list(self.stage.rglob('.crystalhd-undo-*')))
 
@@ -475,6 +620,18 @@ class RuntimeInstallTests(unittest.TestCase):
         user.parent.mkdir(parents=True)
         user.write_text('must not overwrite defaults')
         with self.assertRaises(RuntimeError):INSTALLER.payload_files(prepared, self.stage)
+
+    def test_prepared_payload_cannot_supply_a_completion_receipt(self):
+        self.seed()
+        with self.assertRaisesRegex(ValueError, 'already contains'):
+            INSTALLER.create_receipt(self.stage, 'forged', '/usr/bin',
+                                     '/usr/share', self.source_id)
+
+    def test_receipt_rejects_a_malformed_player_source_identity(self):
+        self.seed()
+        with self.assertRaisesRegex(ValueError, 'source identity'):
+            INSTALLER.create_receipt(self.stage, 'forged', '/usr/bin',
+                                     '/usr/share', 'git:short')
 
     def test_preparation_failure_retains_an_existing_incomplete_record(self):
         self.seed()

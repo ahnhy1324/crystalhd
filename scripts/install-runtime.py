@@ -16,6 +16,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from crystalhd_provenance import RECEIPT_NAME, create_receipt, source_identity
+
 
 def dry_run():
     # Recursive recipes also run for make -n/-q/-t. None may publish state.
@@ -291,6 +294,7 @@ def install(args):
         marker = state / 'runtime-install.pending'
         earlier_recovery = previous_recovery(marker)
         bundle = (root / 'VERSION').read_text(encoding='utf-8').strip()
+        source_id = source_identity(root)
         common = ['PREFIX=' + args.prefix, 'DESTDIR=' + args.destdir,
                   'BINDIR=' + args.bindir, 'DATADIR=' + args.datadir]
         stages = [
@@ -314,12 +318,16 @@ def install(args):
                 ('firmware', ['-C', 'firmware', 'uninstall']),
                 ('udev', ['-C', 'driver/linux', '-f', 'Makefile.in', 'uninstall-udev']),
                 ('config', ['uninstall-config']),
+                ('provenance', ['uninstall-provenance']),
             ]
         def run(command, arguments):
             # Keep make's jobserver and the installation lock, as a recursive
             # make recipe would. No shell parses paths or configuration values.
+            environment = os.environ.copy()
+            environment['CRYSTALHD_SOURCE_ID'] = source_id
             subprocess.run(shlex.split(args.make) + command + arguments,
-                           cwd=str(root), close_fds=False, check=True)
+                           cwd=str(root), env=environment,
+                           close_fds=False, check=True)
 
         if args.uninstall:
             for phase, command in stages:
@@ -337,11 +345,18 @@ def install(args):
                         run(command, staged_args)
                     except subprocess.CalledProcessError:
                         raise RuntimeError('preparing ' + phase + ' failed; installed payload was not replaced')
+                create_receipt(prepared, bundle, args.bindir, args.datadir,
+                               source_id)
                 files = payload_files(prepared, destination)
                 version_relative = Path(os.path.normpath(args.datadir).lstrip('/')) / 'crystalhd/VERSION'
+                receipt_relative = (Path(os.path.normpath(args.datadir).lstrip('/')) /
+                                    ('crystalhd/' + RECEIPT_NAME))
                 versions = [source for relative, source in files if relative == version_relative]
+                receipts = [source for relative, source in files if relative == receipt_relative]
                 if len(versions) != 1 or versions[0].is_symlink():
                     raise RuntimeError('prepared runtime has no regular VERSION record')
+                if len(receipts) != 1 or receipts[0].is_symlink():
+                    raise RuntimeError('prepared runtime has no regular component receipt')
                 bundle = versions[0].read_text(encoding='utf-8').strip()
                 targets = [destination / relative for relative, _ in files]
                 undo = InstallUndo(targets + [marker])
@@ -353,7 +368,7 @@ def install(args):
                     undo.touch(marker)
                     write_marker(marker, bundle, 'publish', recovery=recovery)
                     for relative, source in files:
-                        if relative != version_relative:
+                        if relative not in (version_relative, receipt_relative):
                             target = destination / relative
                             undo.touch(target)
                             publish_file(source, target)
@@ -361,6 +376,9 @@ def install(args):
                     activation_attempted = True
                     run(['install-runtime-activate'], common)
                     write_marker(marker, bundle, 'record', recovery=recovery)
+                    target = destination / receipt_relative
+                    undo.touch(target)
+                    publish_file(receipts[0], target)
                     target = destination / version_relative
                     undo.touch(target)
                     publish_file(versions[0], target)

@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
+# CrystalHD source identity: @PLAYER_SOURCE_ID@
 """Small file/HTTP(S) controller; GStreamer owns decoding, audio and the window."""
 # CrystalHD managed defaults v1:player
 

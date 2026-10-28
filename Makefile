@@ -12,7 +12,7 @@ CONFIG_PRESET_MANIFEST := share/crystalhd/config-presets-v1.json
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: settings-ui-check install-settings uninstall-settings all driver library library-check raw-frame-check library-drain-test gstreamer vaapi vaapi-cpu-check examples browser configuration-check uapi-check dma-check l0s-check command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check tx-release-check h264-stream-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check install-config uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check uninstall-config clean
+.PHONY: settings-ui-check install-settings uninstall-settings install-provenance uninstall-provenance all driver library library-check raw-frame-check library-drain-test gstreamer vaapi vaapi-cpu-check examples browser configuration-check uapi-check dma-check l0s-check command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check tx-release-check h264-stream-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check install-config uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check uninstall-config clean
 
 all: driver library gstreamer vaapi examples
 
@@ -300,6 +300,7 @@ install-runtime-record:
 
 uninstall-runtime-record:
 	rm -f -- "$(DESTDIR)$(DATADIR)/crystalhd/VERSION"
+	rm -f -- "$(DESTDIR)$(DATADIR)/crystalhd/runtime-components-v1.json"
 
 # Staging does not reload udev or the host linker cache. Activate only after
 # the prepared payload has been copied to its final destinations.
@@ -315,10 +316,23 @@ install-runtime-activate:
 install-browser: browser
 	$(MAKE) -C browser $(USER_ARGS) install
 
-install-check:
-	install -D -m 0755 scripts/crystalhd-check "$(DESTDIR)$(BINDIR)/crystalhd-check"
+install-provenance:
+	@umask 022; install -D -m 0644 scripts/crystalhd_provenance.py \
+		"$(DESTDIR)$(DATADIR)/crystalhd/provenance.py"
 
-install-config:
+install-check: install-provenance
+	@set -eu; umask 022; \
+		install -D -m 0755 scripts/crystalhd-check \
+			"$(DESTDIR)$(BINDIR)/crystalhd-check"; \
+		helper_relative=$$($(PYTHON3) -c \
+			'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' \
+			"$(DATADIR)/crystalhd/provenance.py" "$(BINDIR)"); \
+		$(PYTHON3) -c \
+			'import shlex,sys; p=sys.argv[1]; s=open(p,encoding="utf-8").read(); replacements=(("\047@PROVENANCE_HELPER_RELATIVE@\047",shlex.quote(sys.argv[2])),("\047@PROVENANCE_DATA_DIR@\047",shlex.quote(sys.argv[3]))); all(s.count(token)==1 for token,value in replacements) or sys.exit("unexpected provenance path token count"); open(p,"w",encoding="utf-8",newline="\n").write(__import__("functools").reduce(lambda text,pair:text.replace(*pair),replacements,s))' \
+			"$(DESTDIR)$(BINDIR)/crystalhd-check" "$$helper_relative" \
+			"$(DATADIR)/crystalhd"
+
+install-config: install-provenance
 	@set -eu; umask 022; \
 		install -D -m 0644 "$(CONFIG_PRESET_MANIFEST)" \
 			"$(DESTDIR)$(DATADIR)/crystalhd/config-presets-v1.json"; \
@@ -327,9 +341,13 @@ install-config:
 		preset_relative=$$($(PYTHON3) -c \
 			'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' \
 			"$(DATADIR)/crystalhd/config-presets-v1.json" "$(BINDIR)"); \
+		helper_relative=$$($(PYTHON3) -c \
+			'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' \
+			"$(DATADIR)/crystalhd/provenance.py" "$(BINDIR)"); \
 		$(PYTHON3) -c \
-			'import json,sys; path=sys.argv[1]; data=open(path, encoding="utf-8").read(); needle="\"@PRESET_MANIFEST_RELATIVE@\""; data.count(needle) == 1 or sys.exit("unexpected preset manifest token count"); open(path, "w", encoding="utf-8", newline="\n").write(data.replace(needle, json.dumps(sys.argv[2], ensure_ascii=False)))' \
-			"$(DESTDIR)$(BINDIR)/crystalhd-config" "$$preset_relative"
+			'import json,os,sys; path=sys.argv[1]; data=open(path, encoding="utf-8").read(); replacements=(("\"@PRESET_MANIFEST_RELATIVE@\"",json.dumps(sys.argv[2],ensure_ascii=False)),("\"@PROVENANCE_HELPER_RELATIVE@\"",json.dumps(sys.argv[3],ensure_ascii=False))); all(data.count(token)==1 for token,value in replacements) or sys.exit("unexpected configuration path token count"); open(path,"w",encoding="utf-8",newline="\n").write(__import__("functools").reduce(lambda text,pair:text.replace(*pair),replacements,data))' \
+			"$(DESTDIR)$(BINDIR)/crystalhd-config" "$$preset_relative" \
+			"$$helper_relative"
 
 # Optional desktop frontend; native runtime/CLI installation stays headless.
 install-settings: install-config
@@ -388,6 +406,9 @@ uninstall-check:
 uninstall-config:
 	rm -f -- "$(DESTDIR)$(BINDIR)/crystalhd-config"
 	rm -f -- "$(DESTDIR)$(DATADIR)/crystalhd/config-presets-v1.json"
+
+uninstall-provenance:
+	rm -f -- "$(DESTDIR)$(DATADIR)/crystalhd/provenance.py"
 
 clean:
 	rm -f tests/library-drain-test

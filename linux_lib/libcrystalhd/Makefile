@@ -18,7 +18,7 @@ CPPFLAGS += -D__LINUX_USER__ -I. -I$(ROOTDIR)/include -I$(ROOTDIR)/include/link
 CXXFLAGS ?= -O2
 override CXXFLAGS += -Wall -Werror -fPIC -fstrict-aliasing
 CRYSTALHD_NORMAL_CPU_FLAGS := -msse2
-LDFLAGS += -shared -Wl,-soname,$(BCLIB_SONAME)
+LDFLAGS += -shared -Wl,-soname,$(BCLIB_SONAME) -Wl,--build-id=sha1
 LDLIBS += -pthread -lrt
 
 SRCFILES := libcrystalhd_if.cpp \

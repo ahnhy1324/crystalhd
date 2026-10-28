@@ -21,10 +21,15 @@ crystalhd-config bug-report > crystalhd-config-report.json
 
 `installation` (also `--format json`) and the settings window's **Installation**
 page inspect reader declarations in the PATH-selected Player and the inspector
-ABI's default linker-cache DIL/VA candidates. They do not execute these files,
-load a decoder or read saved configuration. `declared-v1` identifies the supported
-keys; absent declarations mean a legacy or unknown build. Refresh after updating
-components. In the settings window, inspection runs in the background so editing
+ABI's default linker-cache DIL/VA candidates. Separately, a completed-install
+receipt checks the on-disk DIL, GStreamer and VA-API GNU Build IDs plus both
+Player files' source markers and recorded sizes; pre-receipt installations
+report provenance `unknown`. The inspectors do not execute components, load a
+decoder, inspect mappings already
+held by running applications, or read saved configuration. `declared-v1`
+identifies the supported keys; absent declarations mean a legacy or unknown
+build. Refresh after updating components. In the settings window, inspection
+runs in the background so editing
 and closing remain available. Repeated refreshes keep only the latest request;
 closing the window without a tray discards pending results.
 Loader overrides and another application's ABI can select different

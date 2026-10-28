@@ -17,9 +17,10 @@ DOCUMENT = ROOT / "CONFIGURATION.md"
 #
 # * tests/ and tools/fw-research/ controls are test/research inputs;
 # * CRYSTALHD_CHECK_ROOT is an alternate-root seam for crystalhd-check tests;
+# * CRYSTALHD_SOURCE_ID is an installer/archive identity input, not runtime policy;
 # * CRYSTALHD_FW_RESEARCH and CRYSTALHD_V4L2 are build-time feature switches;
 # * LEGACY_CPU is a build choice, documented with the build instructions.
-EXCLUDED_SCRIPT_ENVIRONMENTS = {"CRYSTALHD_CHECK_ROOT"}
+EXCLUDED_SCRIPT_ENVIRONMENTS = {"CRYSTALHD_CHECK_ROOT", "CRYSTALHD_SOURCE_ID"}
 EXCLUDED_BUILD_CONTROLS = {
     "CRYSTALHD_FW_RESEARCH",
     "CRYSTALHD_V4L2",

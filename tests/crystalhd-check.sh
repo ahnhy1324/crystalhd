@@ -128,7 +128,8 @@ case "$name" in
 		if [ "${MOCK_LDD_NOT_FOUND:-0}" -eq 1 ]; then
 			printf '%s\n' 'libcrystalhd.so.3 => not found'
 		else
-			printf 'libcrystalhd.so.3 => %s/usr/lib/libcrystalhd.so.3 (0x0000)\n' "$MOCK_ROOT"
+			printf 'libcrystalhd.so.3 => %s (0x0000)\n' \
+				"${MOCK_LDD_LIBRARY:-$MOCK_ROOT/usr/lib/libcrystalhd.so.3}"
 		fi
 		;;
 	vainfo)
@@ -183,7 +184,7 @@ make_root()
 			"$root/lib/modules/6.6-test/updates" \
 			"$root/lib/modules/6.6-test/weak-updates" "$root/lib/firmware" \
 		"$root/dev/dri" "$root/usr/lib/gstreamer-1.0" \
-		"$root/usr/lib/dri"
+		"$root/usr/lib/dri" "$root/usr/bin" "$root/usr/share/crystalhd"
 	printf '%s\n' 0x14e4 >"$pci/vendor"
 	printf '%s\n' 0x1615 >"$pci/device"
 	ln -s "$root/sys/bus/pci/drivers/crystalhd" "$pci/driver"
@@ -198,7 +199,16 @@ make_root()
 	: >"$root/lib/firmware/bcm70015fw.bin"
 	cp /bin/true "$root/usr/lib/libcrystalhd.so.3"
 	cp /bin/true "$root/usr/lib/gstreamer-1.0/libgstcrystalhd.so"
-	: >"$root/usr/lib/dri/crystalhd_drv_video.so"
+	cp /bin/true "$root/usr/lib/dri/crystalhd_drv_video.so"
+	printf '%s\n' '# CrystalHD source identity: git:0000000000000000000000000000000000000000' \
+		>"$root/usr/bin/crystalhd-play"
+	printf '%s\n' '# CrystalHD source identity: git:0000000000000000000000000000000000000000' \
+		>"$root/usr/share/crystalhd/player.py"
+	printf '%s\n' 1.0.0-rc.1 >"$root/usr/share/crystalhd/VERSION"
+	python3 -B "$repo_dir/scripts/crystalhd_provenance.py" create \
+		--prepared "$root" --bundle 1.0.0-rc.1 \
+		--bindir /usr/bin --datadir /usr/share \
+		--source-id git:0000000000000000000000000000000000000000 >/dev/null
 	ln -s /dev/null "$root/dev/crystalhd"
 	ln -s /dev/null "$root/dev/dri/renderD128"
 }
@@ -218,6 +228,7 @@ run_check()
 		MOCK_DKMS_STATUS=${MOCK_DKMS_STATUS:-} \
 		MOCK_GST_PLUGIN=${MOCK_GST_PLUGIN:-} \
 		MOCK_LDD_NOT_FOUND=${MOCK_LDD_NOT_FOUND:-0} \
+		MOCK_LDD_LIBRARY=${MOCK_LDD_LIBRARY:-} \
 		MOCK_NO_LIBVA_PC=${MOCK_NO_LIBVA_PC:-0} \
 		MOCK_VA_STATUS=${MOCK_VA_STATUS:-0} \
 		MOCK_VA_FIRST_ATTEMPT=${MOCK_VA_FIRST_ATTEMPT:-} \
@@ -259,6 +270,11 @@ assert_contains 'OK: Library: staged ABI-compatible libcrystalhd.so.3 found'
 assert_contains 'OK: GStreamer: crystalhddec discovered'
 assert_contains 'OK: VA-API: libva initialized CrystalHD on /dev/dri/renderD128'
 assert_contains "OK: VA-API runtime driver file: $root/usr/lib/dri/crystalhd_drv_video.so"
+assert_contains 'OK: DIL provenance:'
+assert_contains 'OK: GStreamer provenance:'
+assert_contains 'OK: VA-API provenance:'
+assert_contains 'OK: Player provenance:'
+assert_contains 'mappings in already-running applications were not inspected'
 assert_contains 'SUMMARY:'
 assert_contains '0 WARN, 0 FAIL'
 [ "$before" = "$after" ] || fail 'the checker changed the inspected tree'
@@ -288,10 +304,13 @@ assert_contains 'FAIL: Module package identity: loaded 3.10.0 differs from selec
 # The installation observer reports both limits without pretending that the
 # separate configuration model was applied by the loaded module.
 make_root
-rm -f -- "$root/sys/module/crystalhd/parameters/session_l0s_off"
+rm -f -- "$root/sys/module/crystalhd/parameters/session_l0s_off" \
+	"$root/usr/share/crystalhd/VERSION" \
+	"$root/usr/share/crystalhd/runtime-components-v1.json"
 run_check "$root"
 assert_status 0
 assert_contains 'INFO: Runtime install record: unavailable (older or partial installation)'
+assert_contains 'WARN: Runtime component provenance: UNKNOWN'
 assert_contains 'INFO: BCM70015 session_l0s_off is unavailable in the loaded module'
 
 # A previous VERSION is not proof that an interrupted runtime update finished.
@@ -304,6 +323,7 @@ assert_status 1
 assert_contains 'FAIL: Runtime installation is incomplete or in progress'
 assert_contains 'INFO: Runtime version record: previous; not evidence of a completed installation'
 assert_not_contains 'INFO: Runtime install record: bundle previous'
+assert_not_contains 'OK: DIL provenance:'
 rm -- "$root/var/lib/crystalhd/runtime-install.pending"
 ln -s missing "$root/var/lib/crystalhd/runtime-install.pending"
 run_check "$root"
@@ -389,9 +409,10 @@ make_root
 rm -f -- "$root/usr/lib/gstreamer-1.0/libgstcrystalhd.so"
 MOCK_GST_PLUGIN=/opt/stale/libgstcrystalhd.so
 run_check "$root"
-assert_status 0
+assert_status 1
 assert_contains 'WARN: GStreamer: expected installed plugin is missing'
 assert_contains 'discovered /opt/stale/libgstcrystalhd.so'
+assert_contains 'FAIL: GStreamer provenance: missing'
 unset MOCK_GST_PLUGIN
 
 # A missing plugin dependency is a required failure, not a path named "not".
@@ -401,6 +422,18 @@ run_check "$root"
 assert_status 1
 assert_contains 'FAIL: GStreamer: libcrystalhd.so.3 is not resolved'
 unset MOCK_LDD_NOT_FOUND
+
+# A plugin resolving DIL outside the completed cohort is a mixed installation,
+# even when the normal loader candidate and every receipt file still match.
+make_root
+mkdir -p "$root/opt/stale"
+cp /bin/true "$root/opt/stale/libcrystalhd.so.3"
+MOCK_LDD_LIBRARY=$root/opt/stale/libcrystalhd.so.3
+run_check "$root"
+assert_status 1
+assert_contains 'WARN: GStreamer resolves a different libcrystalhd.so.3'
+assert_contains 'FAIL: DIL selection: /opt/stale/libcrystalhd.so.3 is outside'
+unset MOCK_LDD_LIBRARY
 
 # An obvious owner and an inconclusive fuser error are reported distinctly.
 make_root
@@ -422,8 +455,9 @@ unset MOCK_FUSER_STATUS
 make_root
 MOCK_VA_OPENED=/opt/stale/crystalhd_drv_video.so
 run_check "$root"
-assert_status 0
+assert_status 1
 assert_contains 'WARN: VA-API: libva opened /opt/stale/crystalhd_drv_video.so instead of installed'
+assert_contains 'FAIL: VA-API selection:'
 unset MOCK_VA_OPENED
 
 # Runtime packages need not include pkg-config's libva development metadata.
@@ -456,8 +490,9 @@ unset MOCK_VA_FIRST_ATTEMPT
 # A reported path alone is not proof of a readable runtime payload.
 MOCK_VA_OPENED=$root/absent/crystalhd_drv_video.so
 run_check "$root"
-assert_status 0
+assert_status 1
 assert_contains 'WARN: VA-API: runtime discovery succeeded but the reported driver file is not readable:'
+assert_contains 'FAIL: VA-API selection:'
 assert_not_contains 'OK: VA-API runtime driver file:'
 unset MOCK_NO_LIBVA_PC MOCK_VA_OPENED
 
@@ -466,9 +501,56 @@ make_root
 rm -f -- "$root/usr/lib/dri/crystalhd_drv_video.so"
 MOCK_VA_STATUS=1
 run_check "$root"
-assert_status 0
+assert_status 1
 assert_contains "WARN: VA-API: installed crystalhd_drv_video.so was not found in libva's driver directory"
+assert_contains 'FAIL: VA-API provenance: missing'
 unset MOCK_VA_STATUS
+
+# A same-VERSION component replacement is detected without a source tree.
+make_root
+cp /bin/false "$root/usr/lib/gstreamer-1.0/libgstcrystalhd.so"
+run_check "$root"
+assert_status 1
+assert_contains 'INFO: Runtime install record: bundle 1.0.0-rc.1'
+assert_contains 'FAIL: GStreamer provenance:'
+assert_contains 'different GNU Build ID'
+assert_contains 'OK: DIL provenance:'
+
+make_root
+cp /bin/false "$root/usr/lib/libcrystalhd.so.3"
+run_check "$root"
+assert_status 1
+assert_contains 'FAIL: DIL provenance:'
+assert_contains 'different GNU Build ID'
+
+make_root
+cp /bin/false "$root/usr/lib/dri/crystalhd_drv_video.so"
+run_check "$root"
+assert_status 1
+assert_contains 'FAIL: VA-API provenance:'
+assert_contains 'different GNU Build ID'
+
+make_root
+printf '%s\n' different-version >"$root/usr/share/crystalhd/VERSION"
+run_check "$root"
+assert_status 1
+assert_contains 'FAIL: Runtime component receipt bundle 1.0.0-rc.1 differs from VERSION different-version'
+
+# Both Player files retain the completed source identity and exact installed bytes.
+make_root
+printf '%s\n' '# CrystalHD source identity: git:1111111111111111111111111111111111111111' \
+	>"$root/usr/share/crystalhd/player.py"
+run_check "$root"
+assert_status 1
+assert_contains 'FAIL: Player provenance:'
+
+# Malformed completion state is never reported as provenance PASS.
+make_root
+printf '%s\n' '{"schema":99}' >"$root/usr/share/crystalhd/runtime-components-v1.json"
+run_check "$root"
+assert_status 1
+assert_contains 'FAIL: Runtime component provenance receipt is invalid:'
+assert_not_contains 'OK: DIL provenance:'
 
 # A model-required firmware blob is a required-component failure.
 make_root
