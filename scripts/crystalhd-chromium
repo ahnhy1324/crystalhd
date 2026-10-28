@@ -14,10 +14,16 @@ if [ "${CRYSTALHD_CHROMIUM_CONFIG_DISABLE:-0}" != 1 ] && [ -r "$config_file" ]; 
     . "$config_file"
 fi
 
-extension_dir="$script_dir/../share/crystalhd/h264-only"
+extension_relative='@CHROMIUM_EXTENSION_RELATIVE@'
+source_launcher=false
+case "$extension_relative" in
+    @*@) extension_relative=../share/crystalhd/h264-only; source_launcher=true;;
+esac
+extension_dir="$script_dir/$extension_relative"
 driver_dir=
 library_dir=
-if [ -n "$repo_dir" ] && [ -f "$repo_dir/browser/h264-only/manifest.json" ]; then
+if [ "$source_launcher" = true ] && [ -n "$repo_dir" ] &&
+    [ -f "$repo_dir/browser/h264-only/manifest.json" ]; then
     extension_dir="$repo_dir/browser/h264-only"
     if [ -f "$repo_dir/filters/vaapi/crystalhd_drv_video.so" ]; then
         driver_dir="$repo_dir/filters/vaapi"

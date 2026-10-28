@@ -5,6 +5,7 @@ DESTDIR ?=
 ROOTDIR := ..
 BINDIR ?= $(PREFIX)/bin
 DATADIR ?= $(PREFIX)/share
+PYTHON3 ?= python3
 
 .PHONY: all check install uninstall
 
@@ -33,16 +34,17 @@ check:
 	fi
 
 install:
-	install -D -m 0755 $(ROOTDIR)/scripts/crystalhd-chromium \
-		$(DESTDIR)$(BINDIR)/crystalhd-chromium
+	$(PYTHON3) -B "$(ROOTDIR)/scripts/render-browser-launcher.py" \
+		--bindir "$(BINDIR)" --datadir "$(DATADIR)" \
+		--output "$(DESTDIR)$(BINDIR)/crystalhd-chromium"
 	install -D -m 0644 h264-only/manifest.json \
-		$(DESTDIR)$(DATADIR)/crystalhd/h264-only/manifest.json
+		"$(DESTDIR)$(DATADIR)/crystalhd/h264-only/manifest.json"
 	install -D -m 0644 h264-only/prefer-h264.js \
-		$(DESTDIR)$(DATADIR)/crystalhd/h264-only/prefer-h264.js
+		"$(DESTDIR)$(DATADIR)/crystalhd/h264-only/prefer-h264.js"
 	install -D -m 0644 crystalhd-chromium.desktop \
-		$(DESTDIR)$(DATADIR)/applications/crystalhd-chromium.desktop
+		"$(DESTDIR)$(DATADIR)/applications/crystalhd-chromium.desktop"
 	@if [ -z "$(DESTDIR)" ] && command -v update-desktop-database >/dev/null 2>&1; then \
-		update-desktop-database $(DATADIR)/applications || \
+		update-desktop-database "$(DATADIR)/applications" || \
 			echo "WARN: browser files installed, but the desktop cache was not updated" >&2; \
 	fi
 
@@ -55,6 +57,6 @@ uninstall:
 	@rmdir -- "$(DESTDIR)$(DATADIR)/crystalhd/h264-only" 2>/dev/null || true
 	@rmdir -- "$(DESTDIR)$(DATADIR)/crystalhd" 2>/dev/null || true
 	@if [ -z "$(DESTDIR)" ] && command -v update-desktop-database >/dev/null 2>&1; then \
-		update-desktop-database $(DATADIR)/applications || \
+		update-desktop-database "$(DATADIR)/applications" || \
 			echo "WARN: browser files removed, but the desktop cache was not updated" >&2; \
 	fi
