@@ -710,16 +710,9 @@ DtsDeviceOpen(
 		return BC_STS_INV_ARG;
 	}
 
-	if(!glob_mode_valid) {
-		globMode = DtsGetOPMode();
-		if(globMode&4) {
-			globMode&=4;
-		}
-		DebugLog_Trace(LDIL_DBG,"DtsDeviceOpen: New globmode is %d \n",globMode);
-	}
-	else{
-		globMode = DtsGetOPMode();
-	}
+	/* An attached segment may legitimately contain several mode bits.  Keep
+	 * the complete bitmap while adding this handle's mode below. */
+	globMode = DtsGetOPMode();
 
 	drvHandle = open(CRYSTALHD_API_DEV_NAME, O_RDWR);
 	if(drvHandle < 0)
@@ -846,12 +839,10 @@ DtsDeviceOpen(
 		}
 		if(Sts != BC_STS_SUCCESS )
 			goto fail;
-		/* Setup can overlap a supported monitor open. Re-read the
-		 * shared bitmap so its newly published bit is not replaced by the
-		 * pre-setup snapshot. Keep the established stale-mode normalization. */
+		/* Setup can overlap a supported monitor open. Re-read the shared
+		 * bitmap so its newly published bit is not replaced by the pre-setup
+		 * snapshot. */
 		globMode = DtsGetOPMode();
-		if (!glob_mode_valid && (globMode & 4))
-			globMode &= 4;
 		globMode |= mode == DTS_PLAYBACK_MODE ? 0x1 : 0x8;
 		DtsSetOPMode(globMode);
 	}

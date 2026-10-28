@@ -69,6 +69,8 @@ static const char managed_defaults_reader[] __attribute__((used)) =
 */
 
 bc_dil_glob_s *bc_dil_glob_ptr=NULL;
+/* Retained for dynamic ABI compatibility; mode normalization no longer uses
+ * this legacy flag. */
 BOOL glob_mode_valid=TRUE;
 
 static pthread_mutex_t dil_shmem_lock=PTHREAD_MUTEX_INITIALIZER;
@@ -204,7 +206,6 @@ BC_STATUS DtsCreateShMem(int *shmem_id)
 	int shmid=-1;
 	key_t shmkey=BC_DIL_SHMEM_KEY;
 	shmid_ds buf;
-	uint32_t mode=0;
 
 
 	if(shmem_id==NULL) {
@@ -267,11 +268,6 @@ BC_STATUS DtsCreateShMem(int *shmem_id)
 
 					if (AttachDilShMemLocked(shmid, "existing") != BC_STS_SUCCESS)
 						return BC_STS_ERROR;
-					mode = DtsGetOPMode();
-					if(! ((mode==1)||(mode==2)||(mode==4))&&(buf.shm_nattch==1) ) {
-						glob_mode_valid=FALSE;
-						DebugLog_Trace(LDIL_DBG,"DtsCreateShMem:globmode %d is invalid\n",mode);
-					}
 
 			    }
 

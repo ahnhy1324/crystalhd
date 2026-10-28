@@ -43,6 +43,7 @@ static unsigned shared_attach_calls;
 static unsigned shared_detach_calls;
 static unsigned shared_nattch;
 static unsigned shared_remove_calls;
+static bool shared_exists;
 static pid_t initial_decoder_owner;
 static uint32_t initial_op_mode;
 static bool raw_close_expected;
@@ -466,8 +467,12 @@ extern "C" BC_STATUS __wrap__Z15DtsFWInitializePvj(HANDLE device, uint32_t reser
 	return firmware_init_status;
 }
 
-extern "C" int __wrap_shmget(key_t, size_t, int)
+extern "C" int __wrap_shmget(key_t, size_t, int flags)
 {
+	if (shared_exists && (flags & IPC_EXCL)) {
+		errno = EEXIST;
+		return -1;
+	}
 	return 17;
 }
 
@@ -526,6 +531,7 @@ static void BeginCase(int descriptor)
 	shared_detach_calls = 0;
 	shared_nattch = 0;
 	shared_remove_calls = 0;
+	shared_exists = false;
 	initial_decoder_owner = 0;
 	initial_op_mode = 0;
 	expected_mode = DTS_MONITOR_MODE;
@@ -807,6 +813,39 @@ static void CheckMonitorCloseOrder(bool decoder_active, unsigned release_failure
 		 BCM_IOC_RELEASE},
 		"monitor close preserves local open and release ordering");
 	EndCase("monitor close order releases every local allocation");
+}
+
+static void CheckCombinedModeSurvivesDiagnosticLifetime(bool legacy_invalid)
+{
+	BeginCase(64);
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	initial_op_mode = 0x1 | 0x4;
+	expected_mode = DTS_DIAG_MODE;
+	shared_nattch = 1;
+	shared_exists = true;
+	const BOOL initial_validity = legacy_invalid ? FALSE : TRUE;
+	glob_mode_valid = initial_validity;
+	HANDLE diagnostic = nullptr;
+	Check(DtsDeviceOpen(&diagnostic, DTS_DIAG_MODE) == BC_STS_SUCCESS && diagnostic,
+	      "diagnostic opens beside an existing combined playback/monitor mode");
+	Check(glob_mode_valid == initial_validity &&
+	      shared_state.gDilOpMode == (0x1u | 0x2u | 0x4u),
+	      "diagnostic open preserves the complete combined mode bitmap");
+	if (diagnostic)
+		Check(DtsDeviceClose(diagnostic) == BC_STS_SUCCESS,
+		      "diagnostic closes beside the independent combined modes");
+	Check(shared_state.gDilOpMode == (0x1u | 0x4u),
+	      "diagnostic close restores the complete preexisting mode bitmap");
+	Check(close_calls == 1 && closed_fd == 64 && shared_detach_calls == 1 &&
+	      shared_remove_calls == 0,
+	      "combined-mode diagnostic lifetime consumes only its local resources");
+	CheckIoctls(64,
+		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
+		 BCM_IOC_RELEASE},
+		"combined-mode diagnostic preserves local command ordering");
+	/* Keep both legacy-flag fixtures isolated from subsequent cases. */
+	glob_mode_valid = TRUE;
+	EndCase("combined-mode diagnostic releases every local allocation");
 }
 
 static void CheckInheritedMonitorCannotClose()
@@ -1569,22 +1608,26 @@ static void CheckPlaybackSetupFailureMode()
 	EndCase("failed playback setup releases every allocation");
 }
 
-static void CheckSetupPreservesConcurrentModePublication()
+static void CheckSetupPreservesConcurrentModePublication(bool legacy_invalid)
 {
 	BeginCase(0);
 	expected_mode = DTS_HWINIT_MODE;
 	initial_op_mode = 0x1;
 	mode_added_during_setup = 0x4;
+	const BOOL initial_validity = legacy_invalid ? FALSE : TRUE;
+	glob_mode_valid = initial_validity;
 	HANDLE device = nullptr;
 	Check(DtsDeviceOpen(&device, DTS_HWINIT_MODE) == BC_STS_SUCCESS && device,
 	      "hardware-init succeeds while another mode is published during setup");
-	Check(shared_state.gDilOpMode == (0x1u | 0x4u | 0x8u),
+	Check(glob_mode_valid == initial_validity &&
+	      shared_state.gDilOpMode == (0x1u | 0x4u | 0x8u),
 	      "successful setup preserves a mode bit published while firmware initialized");
 	if (device)
 		Check(DtsDeviceClose(device) == BC_STS_SUCCESS,
 		      "hardware-init closes after concurrent mode publication");
 	Check(shared_state.gDilOpMode == (0x1u | 0x4u),
 	      "hardware-init close removes only its own bit after concurrent publication");
+	glob_mode_valid = TRUE;
 	EndCase("hardware-init interleaving releases every allocation");
 }
 
@@ -1622,6 +1665,8 @@ int main()
 	for (bool decoder_active : {false, true})
 		for (unsigned release_failure : {0u, 1u, 2u, 3u})
 			CheckMonitorCloseOrder(decoder_active, release_failure);
+	for (bool legacy_invalid : {false, true})
+		CheckCombinedModeSurvivesDiagnosticLifetime(legacy_invalid);
 	CheckInheritedMonitorCannotClose();
 	CheckFailedMonitorOpenPreservesDecoder();
 	CheckCapabilitiesPreserveOpenMonitor();
@@ -1649,7 +1694,8 @@ int main()
 	CheckInheritedOperationalHandle(DTS_PLAYBACK_MODE);
 	CheckInheritedOperationalHandle(DTS_HWINIT_MODE);
 	CheckPlaybackSetupFailureMode();
-	CheckSetupPreservesConcurrentModePublication();
+	for (bool legacy_invalid : {false, true})
+		CheckSetupPreservesConcurrentModePublication(legacy_invalid);
 	std::printf("Library device handles: %u checks, %u failures\n",
 	            checks, failures);
 	return failures ? 1 : 0;
