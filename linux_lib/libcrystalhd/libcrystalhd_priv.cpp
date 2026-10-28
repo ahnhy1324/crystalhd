@@ -2710,7 +2710,10 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 	 * unmap was not confirmed, DtsReleaseMemPools quarantines that backing. */
 	DtsReleaseMemPools(Ctx);
 
-	DtsSetHwInitSts(BC_DIL_HWINIT_NOT_YET);
+	/* Monitor teardown releases only its local interface.  It must not make an
+	 * independently owned playback device appear uninitialized. */
+	if (Ctx->OpMode != DTS_MONITOR_MODE)
+		DtsSetHwInitSts(BC_DIL_HWINIT_NOT_YET);
 
 	DtsDelDilShMem();
 
