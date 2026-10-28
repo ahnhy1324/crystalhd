@@ -220,7 +220,7 @@ change another app's configuration, load a module, or modify PCIe/power policy.
 `make uninstall-settings` removes only the window/desktop/icon files, retaining
 shared `crystalhd-config` and user defaults; full runtime removal also removes the
 optional frontend. `PREFIX`/`BINDIR`/`DATADIR`/`DESTDIR` are supported; custom desktop
-locations must be on the desktop's normal PATH/XDG search paths.
+data locations must be on the desktop's normal XDG search paths.
 
 For the same profile operations without GTK:
 
