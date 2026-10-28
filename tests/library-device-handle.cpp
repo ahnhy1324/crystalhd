@@ -58,6 +58,13 @@ static unsigned firmware_init_calls;
 static BC_STATUS firmware_push_status;
 static BC_STATUS firmware_init_status;
 static uint32_t mode_added_during_setup;
+static uint32_t mode_set_during_open;
+static uint32_t mode_cleared_during_open;
+static bool open_mode_update_seen;
+static DTS_LIB_CONTEXT *mode_update_during_capture_flush;
+static uint32_t mode_set_during_capture_flush;
+static uint32_t mode_cleared_during_capture_flush;
+static bool capture_flush_mode_update_seen;
 
 struct IoctlRecord {
 	int fd;
@@ -269,6 +276,19 @@ extern "C" int __wrap_pthread_mutex_unlock(pthread_mutex_t *mutex)
 		++invalid_mutex_use;
 		return EINVAL;
 	}
+	/* DeviceClose holds TEARDOWN while its capture flush takes a nested
+	 * lifecycle lease. Model another handle's completed mode update at that
+	 * exact cleanup boundary, after close's old bitmap snapshot. */
+	DTS_LIB_CONTEXT *context = mode_update_during_capture_flush;
+	if (context && mutex == &context->thLock && context->stopInProgress &&
+	    context->controlOwner == DTS_CONTROL_TEARDOWN &&
+	    context->controlDepth == 2) {
+		shared_state.gDilOpMode =
+			(shared_state.gDilOpMode & ~mode_cleared_during_capture_flush) |
+			mode_set_during_capture_flush;
+		capture_flush_mode_update_seen = true;
+		mode_update_during_capture_flush = nullptr;
+	}
 	return __real_pthread_mutex_unlock(mutex);
 }
 
@@ -358,6 +378,14 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 	data->RetSts = BC_STS_SUCCESS;
 	switch (command) {
 	case BCM_IOC_GET_HWTYPE:
+		if (mode_set_during_open || mode_cleared_during_open) {
+			/* Another open/close can finish while this open is in ioctl. */
+			shared_state.gDilOpMode =
+				(shared_state.gDilOpMode & ~mode_cleared_during_open) |
+				mode_set_during_open;
+			mode_set_during_open = mode_cleared_during_open = 0;
+			open_mode_update_seen = true;
+		}
 		data->u.hwType.PciDevId = BC_PCI_DEVID_FLEA;
 		data->u.hwType.PciVenId = 0x14e4;
 		data->u.hwType.HwRev = 1;
@@ -540,6 +568,11 @@ static void BeginCase(int descriptor)
 	firmware_push_calls = firmware_link_calls = firmware_init_calls = 0;
 	firmware_push_status = firmware_init_status = BC_STS_SUCCESS;
 	mode_added_during_setup = 0;
+	mode_set_during_open = mode_cleared_during_open = 0;
+	open_mode_update_seen = false;
+	mode_update_during_capture_flush = nullptr;
+	mode_set_during_capture_flush = mode_cleared_during_capture_flush = 0;
+	capture_flush_mode_update_seen = false;
 	raw_close_expected = false;
 	ioctl_count = 0;
 	failed_command = 0;
@@ -848,6 +881,41 @@ static void CheckCombinedModeSurvivesDiagnosticLifetime(bool legacy_invalid)
 	EndCase("combined-mode diagnostic releases every local allocation");
 }
 
+static void CheckOpenPreservesCompletedModeUpdate(uint32_t mode, bool removing)
+{
+	BeginCase(65);
+	expected_mode = mode;
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	initial_op_mode = 0x1 | (removing ? 0x8 : 0);
+	shared_nattch = 1;
+	mode_set_during_open = removing ? 0 : 0x8;
+	mode_cleared_during_open = removing ? 0x8 : 0;
+	const uint32_t own_bit = mode == DTS_MONITOR_MODE ? 0x4 : 0x2;
+	const uint32_t other_modes = 0x1 | (removing ? 0 : 0x8);
+	HANDLE device = nullptr;
+	Check(DtsDeviceOpen(&device, mode) == BC_STS_SUCCESS && device,
+	      "monitor or diagnostic opens across another completed mode update");
+	Check(open_mode_update_seen,
+	      "mode update actually occurs inside the open hardware query");
+	Check(shared_state.gDilOpMode == (other_modes | own_bit),
+	      "open preserves another handle's completed mode addition or removal");
+	/* Keep the close control independent of an OLD-code open failure. */
+	DtsSetOPMode(other_modes | own_bit);
+	if (device)
+		Check(DtsDeviceClose(device) == BC_STS_SUCCESS,
+		      "mode-publication open fixture closes its own handle");
+	Check(shared_state.gDilOpMode == other_modes,
+	      "close removes only the mode owned by this open fixture");
+	Check(close_calls == 1 && shared_attach_calls == 1 &&
+	      shared_detach_calls == 1 && shared_remove_calls == 0,
+	      "open interleaving balances only its own descriptor and mapping");
+	CheckIoctls(65,
+		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
+		 BCM_IOC_RELEASE},
+		"open interleaving preserves public command ordering");
+	EndCase("open mode interleaving releases every local allocation");
+}
+
 static void CheckInheritedMonitorCannotClose()
 {
 	BeginCase(43);
@@ -1032,6 +1100,37 @@ static DTS_LIB_CONTEXT *AllocateTerminalContext(uint32_t mode, pid_t process_id)
 	Check(DtsAllocMemPools(context) == BC_STS_SUCCESS,
 	      "terminal fixture allocates its pools");
 	return context;
+}
+
+static void CheckClosePreservesCompletedModeUpdate(bool removing)
+{
+	BeginCase(0);
+	shared_nattch = 1;
+	initial_op_mode = 0x1 | 0x4 | (removing ? 0x2 : 0);
+	AcquireFixtureSharedState();
+	DTS_LIB_CONTEXT *context = AllocateTerminalContext(DTS_PLAYBACK_MODE, getpid());
+	if (context) {
+		context->State = BC_DEC_STATE_CLOSE;
+		mode_update_during_capture_flush = context;
+		mode_set_during_capture_flush = removing ? 0 : 0x2;
+		mode_cleared_during_capture_flush = removing ? 0x2 : 0;
+		Check(DtsDeviceClose(context) == BC_STS_SUCCESS,
+		      "playback close succeeds across another completed mode update");
+	}
+	const bool cleanup_update_finished = capture_flush_mode_update_seen &&
+		!mode_update_during_capture_flush;
+	/* A failed fixture must not leave a pointer to the consumed context. */
+	mode_update_during_capture_flush = nullptr;
+	Check(cleanup_update_finished,
+	      "mode update occurs inside DeviceClose's nested capture cleanup");
+	Check(shared_state.gDilOpMode == (0x4u | (removing ? 0u : 0x2u)),
+	      "playback close preserves another handle's completed mode addition or removal");
+	Check(close_calls == 1 && closed_fd == 0 && shared_attach_calls == 1 &&
+	      shared_detach_calls == 1 && shared_remove_calls == 0,
+	      "close interleaving consumes only its own descriptor and mapping");
+	CheckIoctls(0, {BCM_IOC_RELEASE},
+	      "already-closed playback teardown needs no firmware commands");
+	EndCase("close mode interleaving releases every local allocation");
 }
 
 static void CheckTerminalDecoderOwnership()
@@ -1667,6 +1766,11 @@ int main()
 			CheckMonitorCloseOrder(decoder_active, release_failure);
 	for (bool legacy_invalid : {false, true})
 		CheckCombinedModeSurvivesDiagnosticLifetime(legacy_invalid);
+	for (uint32_t mode : {DTS_MONITOR_MODE, DTS_DIAG_MODE})
+		for (bool removing : {false, true})
+			CheckOpenPreservesCompletedModeUpdate(mode, removing);
+	for (bool removing : {false, true})
+		CheckClosePreservesCompletedModeUpdate(removing);
 	CheckInheritedMonitorCannotClose();
 	CheckFailedMonitorOpenPreservesDecoder();
 	CheckCapabilitiesPreserveOpenMonitor();

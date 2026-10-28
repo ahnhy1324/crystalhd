@@ -546,6 +546,8 @@ BC_STATUS DtsCreateShMem(int *shmem_id);
 /* DTS Global Parameters Utility functions */
 uint32_t 		DtsGetOPMode(void);
 void 			DtsSetOPMode(uint32_t value);
+void DtsAddOPMode(uint32_t mask) __attribute__((visibility("hidden")));
+void DtsClearOPMode(uint32_t mask) __attribute__((visibility("hidden")));
 uint32_t 		DtsGetHwInitSts(void);
 void 			DtsSetHwInitSts(uint32_t value);
 void 			DtsRstStats(void);

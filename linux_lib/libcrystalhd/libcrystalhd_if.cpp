@@ -47,6 +47,26 @@
 static BC_STATUS DtsStopDecoderInternal(HANDLE hDevice, bool retryUnsubmitted,
 	bool *controlBusy = NULL);
 
+static uint32_t DtsModeBit(uint32_t mode)
+{
+	switch (mode) {
+	case DTS_PLAYBACK_MODE: return 0x1;
+	case DTS_DIAG_MODE: return 0x2;
+	case DTS_MONITOR_MODE: return 0x4;
+	case DTS_HWINIT_MODE: return 0x8;
+	default: return 0;
+	}
+}
+
+static void DtsClearDeviceMode(uint32_t mode)
+{
+	const uint32_t mode_bit = DtsModeBit(mode);
+	if (mode_bit)
+		DtsClearOPMode(mode_bit);
+	else
+		DtsSetOPMode(0);
+}
+
 /* Serialize the command/cleanup interval without holding thLock while
  * allocating, waiting for firmware, or retiring TX/output owners.
  */
@@ -145,18 +165,7 @@ static BC_STATUS DtsRetireFailedRecoveryDevice(DTS_LIB_CONTEXT *Ctx,
 		return BC_STS_BUSY;
 	}
 
-	uint32_t globMode = DtsGetOPMode();
-	if (Ctx->OpMode == DTS_PLAYBACK_MODE)
-		globMode &= (~0x1);
-	else if (Ctx->OpMode == DTS_DIAG_MODE)
-		globMode &= (~0x2);
-	else if (Ctx->OpMode == DTS_MONITOR_MODE)
-		globMode &= (~0x4);
-	else if (Ctx->OpMode == DTS_HWINIT_MODE)
-		globMode &= (~0x8);
-	else
-		globMode = 0;
-	DtsSetOPMode(globMode);
+	DtsClearDeviceMode(Ctx->OpMode);
 	if (Ctx->OpMode == DTS_PLAYBACK_MODE &&
 	    Ctx->State != BC_DEC_STATE_CLOSE && Ctx->ProcessID != 0)
 		DumpInputSampleToFile(NULL, 0);
@@ -670,7 +679,7 @@ DtsDeviceOpen(
 	int 		drvHandle=1;
 	BC_STATUS	Sts=BC_STS_SUCCESS;
 	HANDLE		localDevice = NULL;
-	uint32_t globMode = 0;
+	uint32_t mode_bit = 0;
 	uint8_t	nTry=1;
 	uint32_t		VendorID, DeviceID, RevID, FixFlags, drvMode;
 	uint32_t		drvVer, dilVer;
@@ -689,6 +698,7 @@ DtsDeviceOpen(
 
 	FixFlags = mode;
 	mode &= 0xFF;
+	mode_bit = DtsModeBit(mode);
 
 	Sts = DtsCreateShMem(&shmid);
 	if(BC_STS_SUCCESS !=Sts)
@@ -709,10 +719,6 @@ DtsDeviceOpen(
 		DtsDelDilShMem();
 		return BC_STS_INV_ARG;
 	}
-
-	/* An attached segment may legitimately contain several mode bits.  Keep
-	 * the complete bitmap while adding this handle's mode below. */
-	globMode = DtsGetOPMode();
 
 	drvHandle = open(CRYSTALHD_API_DEV_NAME, O_RDWR);
 	if(drvHandle < 0)
@@ -800,22 +806,14 @@ DtsDeviceOpen(
 		DtsGetContext(localDevice)->SingleThreadedAppMode = 1;
 	}
 
-	if(mode == DTS_PLAYBACK_MODE){
-		globMode |= 0x1;
-	} else if(mode == DTS_DIAG_MODE){
-		globMode |= 0x2;
-	} else if(mode == DTS_MONITOR_MODE) {
-		globMode |= 0x4;
-	} else if(mode == DTS_HWINIT_MODE) {
-		globMode |= 0x8;
-	} else {
-		globMode = 0;
-	}
-
 	/* Playback and hardware-init can still fail while setting up firmware.
 	 * Do not advertise either mode until that fallible setup has completed. */
-	if (mode != DTS_PLAYBACK_MODE && mode != DTS_HWINIT_MODE)
-		DtsSetOPMode(globMode);
+	if (mode != DTS_PLAYBACK_MODE && mode != DTS_HWINIT_MODE) {
+		if (mode_bit)
+			DtsAddOPMode(mode_bit);
+		else
+			DtsSetOPMode(0);
+	}
 
 	if (DeviceID == BC_PCI_DEVID_LINK || DeviceID == BC_PCI_DEVID_FLEA)
 		nTry = HARDWARE_INIT_RETRY_LINK_CNT;
@@ -839,12 +837,7 @@ DtsDeviceOpen(
 		}
 		if(Sts != BC_STS_SUCCESS )
 			goto fail;
-		/* Setup can overlap a supported monitor open. Re-read the shared
-		 * bitmap so its newly published bit is not replaced by the pre-setup
-		 * snapshot. */
-		globMode = DtsGetOPMode();
-		globMode |= mode == DTS_PLAYBACK_MODE ? 0x1 : 0x8;
-		DtsSetOPMode(globMode);
+		DtsAddOPMode(mode_bit);
 	}
 
 	if(mode == DTS_HWINIT_MODE){
@@ -878,7 +871,6 @@ DtsDeviceClose(
     )
 {
 	DTS_LIB_CONTEXT		*Ctx;
-	uint32_t globMode = 0;
 	BC_STATUS sts = BC_STS_SUCCESS;
 
 	if(hDevice == NULL)
@@ -1026,9 +1018,6 @@ DtsDeviceClose(
 	DtsUnLock(Ctx);
 	if (output_retained)
 		return BC_STS_BUSY;
-	/* Unmask the mode */
-	globMode = DtsGetOPMode( );
-
 	// Make sure we are in playback mode before freeing up playback resources
 	if(Ctx->OpMode == DTS_PLAYBACK_MODE)
 	{
@@ -1054,18 +1043,7 @@ DtsDeviceClose(
 	if (late_recovery)
 		return DtsRetireFailedRecoveryDevice(Ctx, control);
 
-	if(Ctx->OpMode == DTS_PLAYBACK_MODE){
-		globMode &= (~0x1);
-	} else if(Ctx->OpMode == DTS_DIAG_MODE){
-		globMode &= (~0x2);
-	} else if(Ctx->OpMode == DTS_MONITOR_MODE) {
-		globMode &= (~0x4);
-	} else if(Ctx->OpMode == DTS_HWINIT_MODE) {
-		globMode &= (~0x8);
-	} else {
-		globMode = 0;
-	}
-	DtsSetOPMode(globMode);
+	DtsClearDeviceMode(Ctx->OpMode);
 	if (Ctx->OpMode == DTS_PLAYBACK_MODE &&
 	    Ctx->State != BC_DEC_STATE_CLOSE && Ctx->ProcessID != 0)
 		DumpInputSampleToFile(NULL, 0);

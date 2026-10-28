@@ -367,12 +367,28 @@ void DtsSetgDevID(uint32_t DevID)
 
 uint32_t DtsGetOPMode( void )
 {
-	return  bc_dil_glob_ptr->gDilOpMode;
+	return __atomic_load_n(&bc_dil_glob_ptr->gDilOpMode, __ATOMIC_RELAXED);
 }
 
 void DtsSetOPMode( uint32_t value )
 {
-	bc_dil_glob_ptr->gDilOpMode = value;
+	__atomic_store_n(&bc_dil_glob_ptr->gDilOpMode, value, __ATOMIC_RELAXED);
+}
+
+/* The shared bitmap is bookkeeping, not a hardware/context lifetime fence.
+ * Change a mode bit while preserving unrelated bits, including changes made
+ * by another process on the same SHM segment. */
+static_assert(__atomic_always_lock_free(sizeof(uint32_t), 0),
+	"shared mode updates require lock-free 32-bit atomics");
+
+void DtsAddOPMode(uint32_t mask)
+{
+	(void)__atomic_fetch_or(&bc_dil_glob_ptr->gDilOpMode, mask, __ATOMIC_RELAXED);
+}
+
+void DtsClearOPMode(uint32_t mask)
+{
+	(void)__atomic_fetch_and(&bc_dil_glob_ptr->gDilOpMode, ~mask, __ATOMIC_RELAXED);
 }
 
 uint32_t DtsGetHwInitSts( void )
