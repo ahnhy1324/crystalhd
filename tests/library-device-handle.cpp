@@ -94,6 +94,7 @@ static bool context_mutex_live;
 static unsigned attribute_init_calls, attribute_type_calls, attribute_destroy_calls;
 static unsigned context_mutex_init_calls, context_mutex_destroy_calls;
 static unsigned invalid_attribute_use, invalid_mutex_use;
+static bool allow_multiple_context_locks;
 
 static bc_dil_glob_s shared_state;
 
@@ -158,6 +159,10 @@ extern "C" int __real_pthread_mutex_unlock(pthread_mutex_t *);
  * Invalid mutex operations are counted, never passed to pthreads. */
 extern "C" int __wrap_pthread_mutexattr_init(pthread_mutexattr_t *attribute)
 {
+	if (allow_multiple_context_locks && context_attribute_address) {
+		context_attribute_address = nullptr;
+		return __real_pthread_mutexattr_init(attribute);
+	}
 	if (!track_allocations || context_attribute_address)
 		return __real_pthread_mutexattr_init(attribute);
 	context_attribute_address = attribute;
@@ -547,8 +552,15 @@ static void BeginCase(int descriptor)
 	attribute_init_calls = attribute_type_calls = attribute_destroy_calls = 0;
 	context_mutex_init_calls = context_mutex_destroy_calls = 0;
 	invalid_attribute_use = invalid_mutex_use = 0;
+	allow_multiple_context_locks = false;
 	std::memset(tracked_allocations, 0, sizeof(tracked_allocations));
 	track_allocations = true;
+}
+
+static void AcquireFixtureSharedState()
+{
+	Check(DtsGetDilShMem(17) == BC_STS_SUCCESS,
+	      "fixture acquires a balanced process-local shared mapping");
 }
 
 static void EndCase(const char *message)
@@ -680,8 +692,7 @@ static void CheckInvalidDescriptorCleanup()
 	Check(DtsDrvCmd(context, BCM_IOC_GET_VERSION, 0, &envelope, FALSE) ==
 	          BC_STS_INV_ARG,
 	      "negative descriptors are rejected before ioctl");
-	std::memset(&shared_state, 0, sizeof(shared_state));
-	bc_dil_glob_ptr = &shared_state;
+	AcquireFixtureSharedState();
 	Check(DtsReleaseInterface(context) == BC_STS_SUCCESS,
 	      "negative-descriptor interface cleanup succeeds");
 	Check(ioctl_count == 0 && close_calls == 0,
@@ -774,7 +785,7 @@ static void CheckMonitorCloseOrder(bool decoder_active, unsigned release_failure
 	Check(shared_state.gHwInitSts ==
 	          (decoder_active ? BC_DIL_HWINIT_DONE : BC_DIL_HWINIT_NOT_YET),
 	      "monitor close preserves shared hardware initialization state");
-	Check(DtsGetOPMode() == (decoder_active ? 0x1u : 0u),
+	Check(shared_state.gDilOpMode == (decoder_active ? 0x1u : 0u),
 	      "monitor close removes only its own shared mode bit");
 	Check(shared_detach_calls == 1,
 	      "monitor close detaches its local shared-memory mapping once");
@@ -825,7 +836,7 @@ static void CheckInheritedMonitorCannotClose()
 	Check(shared_state.g_bDecOpened &&
 	      shared_state.g_nProcID == decoder_owner &&
 	      shared_state.gHwInitSts == BC_DIL_HWINIT_DONE &&
-	      DtsGetOPMode() == 0x1u,
+	      shared_state.gDilOpMode == 0x1u,
 	      "successful monitor close preserves the independent decoder owner");
 	CheckIoctls(43,
 		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
@@ -855,7 +866,7 @@ static void CheckFailedMonitorOpenPreservesDecoder()
 	Check(shared_state.g_bDecOpened &&
 	      shared_state.g_nProcID == decoder_owner &&
 	      shared_state.gHwInitSts == BC_DIL_HWINIT_DONE &&
-	      DtsGetOPMode() == 0x1u,
+	      shared_state.gDilOpMode == 0x1u,
 	      "failed monitor open preserves the independent decoder state");
 	Check(shared_remove_calls == 0,
 	      "failed monitor open preserves the decoder's shared segment");
@@ -863,6 +874,97 @@ static void CheckFailedMonitorOpenPreservesDecoder()
 		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_RELEASE},
 		"failed monitor open performs only local setup and retirement commands");
 	EndCase("failed monitor open releases every local allocation");
+}
+
+static void CheckCapabilitiesPreserveOpenMonitor()
+{
+	BeginCase(45);
+	HANDLE monitor = nullptr;
+	Check(DtsDeviceOpen(&monitor, DTS_MONITOR_MODE) == BC_STS_SUCCESS && monitor,
+	      "capability fixture opens its monitor handle");
+	if (!monitor) {
+		EndCase("failed capability fixture leaves no allocation");
+		return;
+	}
+
+	BC_HW_CAPS caps = {};
+	Check(DtsGetCapabilities(nullptr, &caps) == BC_STS_SUCCESS,
+	      "handle-free capabilities reuse an existing process mapping");
+	Check(shared_attach_calls == 1 && shared_detach_calls == 0 &&
+	      bc_dil_glob_ptr == &shared_state,
+	      "temporary capability ownership neither reattaches nor detaches the monitor mapping");
+	uint32_t driver=0, dil=0;
+	Check(DtsGetVersion(monitor, &driver, &dil) == BC_STS_SUCCESS,
+	      "the original monitor remains usable after capability inspection");
+	Check(DtsDeviceClose(monitor) == BC_STS_SUCCESS,
+	      "the original monitor closes after capability inspection");
+	Check(shared_attach_calls == 1 && shared_detach_calls == 1 &&
+	      bc_dil_glob_ptr == nullptr,
+	      "the final monitor owner performs the only detach");
+	EndCase("capability inspection preserves and releases every local allocation");
+}
+
+static void CheckTwoMonitorsShareMappingLifetime()
+{
+	BeginCase(47);
+	allow_multiple_context_locks = true;
+	HANDLE first = nullptr, second = nullptr;
+	Check(DtsDeviceOpen(&first, DTS_MONITOR_MODE) == BC_STS_SUCCESS && first,
+	      "two-monitor fixture opens its first handle");
+	Check(DtsDeviceOpen(&second, DTS_MONITOR_MODE) == BC_STS_SUCCESS && second,
+	      "two-monitor fixture opens its second handle");
+	if (!first || !second) {
+		if (second) DtsDeviceClose(second);
+		if (first) DtsDeviceClose(first);
+		EndCase("failed two-monitor fixture releases every allocation");
+		return;
+	}
+	Check(shared_attach_calls == 1 && shared_detach_calls == 0,
+	      "two successful handles use one process-local attachment");
+	Check(DtsDeviceClose(second) == BC_STS_SUCCESS,
+	      "closing the newer monitor releases only its local lifetime");
+	Check(shared_detach_calls == 0 && bc_dil_glob_ptr == &shared_state,
+	      "the first monitor retains the shared mapping after reverse-order close");
+	uint32_t driver=0, dil=0;
+	Check(DtsGetVersion(first, &driver, &dil) == BC_STS_SUCCESS,
+	      "the first monitor remains usable after the newer monitor closes");
+	Check(DtsDeviceClose(first) == BC_STS_SUCCESS,
+	      "the final monitor closes normally");
+	Check(shared_attach_calls == 1 && shared_detach_calls == 1 &&
+	      close_calls == 2 && bc_dil_glob_ptr == nullptr,
+	      "the final monitor performs the only shared detach");
+	EndCase("two-monitor reverse close releases every local allocation");
+}
+
+static void CheckPartialSecondOpenPreservesMonitor()
+{
+	BeginCase(46);
+	HANDLE first = nullptr;
+	Check(DtsDeviceOpen(&first, DTS_MONITOR_MODE) == BC_STS_SUCCESS && first,
+	      "partial-open fixture creates its first monitor");
+	if (!first) {
+		EndCase("failed partial-open fixture leaves no allocation");
+		return;
+	}
+
+	open_result = -1;
+	HANDLE second = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	Check(DtsDeviceOpen(&second, DTS_MONITOR_MODE) == BC_STS_ERROR && second == nullptr,
+	      "second monitor failure publishes no partial handle");
+	Check(shared_attach_calls == 1 && shared_detach_calls == 0 &&
+	      bc_dil_glob_ptr == &shared_state,
+	      "failed second open releases only its reference to the shared mapping");
+
+	open_result = 46;
+	uint32_t driver=0, dil=0;
+	Check(DtsGetVersion(first, &driver, &dil) == BC_STS_SUCCESS,
+	      "first monitor remains usable after second-open cleanup");
+	Check(DtsDeviceClose(first) == BC_STS_SUCCESS,
+	      "first monitor closes after second-open cleanup");
+	Check(shared_attach_calls == 1 && shared_detach_calls == 1 &&
+	      close_calls == 1 && bc_dil_glob_ptr == nullptr,
+	      "only the final live handle detaches the process mapping");
+	EndCase("failed second open preserves and releases every local allocation");
 }
 
 static DTS_LIB_CONTEXT *AllocateTerminalContext(uint32_t mode, pid_t process_id)
@@ -887,8 +989,7 @@ static void CheckTerminalDecoderOwnership()
 {
 	BeginCase(0);
 	shared_nattch = 1;
-	std::memset(&shared_state, 0, sizeof(shared_state));
-	bc_dil_glob_ptr = &shared_state;
+	AcquireFixtureSharedState();
 	const pid_t owner = 1234;
 	DTS_LIB_CONTEXT *context =
 		AllocateTerminalContext(DTS_PLAYBACK_MODE, owner);
@@ -913,8 +1014,7 @@ static void CheckTerminalDecoderOwnership()
 
 	BeginCase(-1);
 	shared_nattch = 1;
-	std::memset(&shared_state, 0, sizeof(shared_state));
-	bc_dil_glob_ptr = &shared_state;
+	AcquireFixtureSharedState();
 	DtsSetDecStat(true, owner);
 	context = AllocateTerminalContext(DTS_MONITOR_MODE, owner + 1);
 	if (context)
@@ -928,8 +1028,7 @@ static void CheckTerminalDecoderOwnership()
 
 	BeginCase(-1);
 	shared_nattch = 1;
-	std::memset(&shared_state, 0, sizeof(shared_state));
-	bc_dil_glob_ptr = &shared_state;
+	AcquireFixtureSharedState();
 	DtsSetDecStat(true, owner);
 	context = AllocateTerminalContext(DTS_PLAYBACK_MODE, owner + 1);
 	if (context) {
@@ -946,8 +1045,7 @@ static void CheckTerminalDecoderOwnership()
 
 	BeginCase(0);
 	shared_nattch = 1;
-	std::memset(&shared_state, 0, sizeof(shared_state));
-	bc_dil_glob_ptr = &shared_state;
+	AcquireFixtureSharedState();
 	DtsSetDecStat(true, owner);
 	context = AllocateTerminalContext(DTS_PLAYBACK_MODE, owner);
 	if (context) {
@@ -1062,9 +1160,7 @@ static void CheckContextLockFailure(LockFailure failure, bool internal)
 	raw_close_expected = true;
 	initial_hw_state = BC_DIL_HWINIT_DONE;
 	if (internal) {
-		std::memset(&shared_state, 0, sizeof(shared_state));
-		shared_state.gHwInitSts = initial_hw_state;
-		bc_dil_glob_ptr = &shared_state;
+		AcquireFixtureSharedState();
 	}
 	HANDLE context = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
 	const BC_STATUS status = internal ?
@@ -1096,11 +1192,14 @@ static void CheckContextLockFailure(LockFailure failure, bool internal)
 	Check(open_calls == (internal ? 0U : 1U) &&
 	      close_calls == (internal ? 0U : 1U) &&
 	      (internal || closed_fd == 0) &&
-	      shared_attach_calls == (internal ? 0U : 1U) &&
+	      shared_attach_calls == 1 &&
 	      shared_detach_calls == (internal ? 0U : 1U),
 	      "internal failure retains caller ownership; public failure closes and detaches once");
 	Check(tracked_count == 1 && tracked_frees == 1,
 	      "lock failure frees its unpublished context before any pool allocation");
+	if (internal)
+		Check(DtsDelDilShMem() == BC_STS_SUCCESS && shared_detach_calls == 1,
+		      "internal lock-failure fixture releases its caller-owned mapping");
 	EndCase("context lock failure leaves no allocation");
 }
 
@@ -1114,8 +1213,7 @@ static void CheckWorkerSetupFailure(size_t aligned_size, int create_error,
 	thread_create_id = static_cast<pthread_t>(0x1234);
 	if (internal) {
 		/* The internal caller already owns the shared-memory attachment. */
-		std::memset(&shared_state, 0, sizeof(shared_state));
-		bc_dil_glob_ptr = &shared_state;
+		AcquireFixtureSharedState();
 	}
 	HANDLE context = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
 	const BC_STATUS status = internal ?
@@ -1131,7 +1229,7 @@ static void CheckWorkerSetupFailure(size_t aligned_size, int create_error,
 		Check(context != nullptr,
 		      "internal setup failure returns its caller-owned partial context");
 		Check(open_calls == 0 && close_calls == 0 && ioctl_count == 0 &&
-		      shared_attach_calls == 0 && shared_detach_calls == 0,
+		      shared_attach_calls == 1 && shared_detach_calls == 0,
 		      "internal setup failure leaves cleanup to its caller");
 		if (context) {
 			Check(DtsGetContext(context)->htxThread == pthread_t(),
@@ -1155,7 +1253,7 @@ static void CheckWorkerSetupFailure(size_t aligned_size, int create_error,
 	Check(!thread_join_required && !allocation_freed_before_join,
 	      "failed setup has no live worker when backing is freed");
 	Check(open_calls == (internal ? 0U : 1U) && close_calls == 1 &&
-	      closed_fd == 0 && shared_attach_calls == (internal ? 0U : 1U) &&
+	      closed_fd == 0 && shared_attach_calls == 1 &&
 	      shared_detach_calls == 1,
 	      "setup failure consumes exactly the owned descriptor and attachment");
 	CheckIoctls(0, {BCM_IOC_RELEASE},
@@ -1307,6 +1405,9 @@ int main()
 			CheckMonitorCloseOrder(decoder_active, release_failure);
 	CheckInheritedMonitorCannotClose();
 	CheckFailedMonitorOpenPreservesDecoder();
+	CheckCapabilitiesPreserveOpenMonitor();
+	CheckTwoMonitorsShareMappingLifetime();
+	CheckPartialSecondOpenPreservesMonitor();
 	CheckTerminalDecoderOwnership();
 	CheckOpenFailure(BCM_IOC_GET_HWTYPE, false, true, BC_STS_BUSY,
 		{BCM_IOC_GET_HWTYPE, BCM_IOC_RELEASE});

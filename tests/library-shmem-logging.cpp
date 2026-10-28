@@ -19,7 +19,6 @@ namespace {
 enum Path { Direct, New, Existing, Stale };
 Path selected;
 bool fail_attach;
-bool preserve_mapping;
 unsigned get_calls, stats, removes, attaches;
 bc_dil_glob_s shared;
 unsigned checks, failures;
@@ -43,12 +42,11 @@ extern "C" int __wrap_shmctl(int id, int command, struct shmid_ds *buffer) {
 }
 extern "C" void *__wrap_shmat(int id, const void *address, int flags) {
  ++attaches;
- ChildCheck(id==17 && !address && !flags &&
-            attaches<=(preserve_mapping ? 2U : 1U));
+ ChildCheck(id==17 && !address && !flags && attaches==1);
  ChildCheck(get_calls==(selected==Direct ? 0U : selected==New ? 1U : selected==Stale ? 3U : 2U));
  ChildCheck(stats==(selected==Existing || selected==Stale ? 1U : 0U));
  ChildCheck(removes==(selected==Stale ? 1U : 0U));
- if (fail_attach && (!preserve_mapping || attaches==2)) {
+ if (fail_attach) {
   errno=ENOMEM; return reinterpret_cast<void *>(-1);
  }
  shared.gDilOpMode=1; return &shared;
@@ -61,7 +59,7 @@ extern "C" int __wrap_fprintf(FILE *stream, const char *format, ...) {
 }
 int main() {
  for (Path path : {Direct,New,Existing,Stale}) for (bool failure : {false,true}) {
-  selected=path; fail_attach=failure; preserve_mapping=false;
+  selected=path; fail_attach=failure;
   get_calls=stats=removes=attaches=0;
   int descriptors[2]; if (pipe(descriptors)!=0) return 2;
   const pid_t child=fork(); if (child<0) return 2;
@@ -98,10 +96,10 @@ int main() {
 #endif
  }
 
- // A failed DtsCreateShMem attachment must not destroy an already usable
- // direct mapping in the same process.  The first handle can still need the
- // shared state.
- selected=Direct; fail_attach=true; preserve_mapping=true;
+ // A second same-process user reuses the valid mapping rather than attempting
+ // another shmat.  A hypothetical second attachment failure is therefore not
+ // observable and the first user's state remains intact.
+ selected=Direct; fail_attach=false;
  get_calls=stats=removes=attaches=0;
  int descriptors[2]; if (pipe(descriptors)!=0) return 2;
  const pid_t child=fork(); if (child<0) return 2;
@@ -115,10 +113,10 @@ int main() {
   const bc_dil_glob_s before=shared;
   glob_mode_valid=TRUE;
   selected=Existing; int id=-2;
-  ChildCheck(DtsCreateShMem(&id)==BC_STS_ERROR);
-  ChildCheck(id==-1 && bc_dil_glob_ptr==&shared && attaches==2);
+  ChildCheck(DtsCreateShMem(&id)==BC_STS_SUCCESS);
+  ChildCheck(id==17 && bc_dil_glob_ptr==&shared && attaches==1);
   ChildCheck(memcmp(&shared,&before,sizeof(shared))==0 && glob_mode_valid==TRUE);
-  ChildCheck(errno==ENOMEM);
+  ChildCheck(errno==EALREADY);
   _exit(0);
  }
  close(descriptors[1]); std::string log; char bytes[512]; ssize_t size;
@@ -126,17 +124,13 @@ int main() {
  Check(size==0,"preserved-mapping diagnostic pipe reaches EOF"); close(descriptors[0]);
  int status; if (waitpid(child,&status,0)!=child) return 2;
  Check(WIFEXITED(status) && WEXITSTATUS(status)==0,
-       "failed DtsCreateShMem preserves prior mapping, contents and mode state");
+       "DtsCreateShMem reuses the prior mapping, contents and mode state");
 #ifdef CRYSTALHD_TEST_DIL_LOG_DISABLED
  Check(log.find("shared memory")==std::string::npos && log.find("Shared memory")==std::string::npos,
        "compiled-out reattach diagnostic emits no attachment message");
 #else
- const std::string attach="Unable to open shared memory: stage=shmat errno="+std::to_string(ENOMEM)+"\n";
- const std::string context="Shared memory attach failed: path=existing errno="+std::to_string(ENOMEM)+"\n";
- Check(log.find(attach)!=std::string::npos,
-       "failed reattach retains the saved errno diagnostic");
- Check(log.find(context)!=std::string::npos,
-       "failed DtsCreateShMem retains the existing-path context");
+ Check(log.find("shared memory")==std::string::npos && log.find("Shared memory")==std::string::npos,
+       "mapping reuse emits no attachment failure diagnostic");
 #endif
  printf("library shmem diagnostics: %u checks, %u failures\n",checks,failures);
  return failures ? 1 : 0;

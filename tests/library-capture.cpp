@@ -146,6 +146,7 @@ static bool release_pool_array_freed;
 static bool output_freed_too_early;
 static bool release_context_freed;
 static unsigned shared_detach_calls;
+static bc_dil_glob_s *release_shared_mapping;
 static size_t fail_resize_size;
 static int fail_resize_at;
 static unsigned resize_allocations;
@@ -538,6 +539,13 @@ extern "C" int __wrap_shmdt(const void *)
 {
 	++shared_detach_calls;
 	return 0;
+}
+
+extern "C" void *__wrap_shmat(int id, const void *address, int flags)
+{
+	Check(id == 17 && address == nullptr && flags == 0 && release_shared_mapping,
+	      "terminal fixture attaches its selected shared state");
+	return release_shared_mapping;
 }
 
 extern "C" int __wrap_shmget(key_t, size_t, int)
@@ -2498,7 +2506,9 @@ static void TestReleaseOrdering(bool device_close, BC_STATUS decoder_status)
 			release_ioctl_pool[index] = item;
 		}
 
-		bc_dil_glob_ptr = &globals;
+		release_shared_mapping = &globals;
+		Check(DtsGetDilShMem(17) == BC_STS_SUCCESS,
+		      "terminal release fixture acquires its shared mapping");
 		active_context = context;
 		active_pools = context->Mpools;
 		active_pool_count = BC_RX_LIST_CNT;
@@ -2586,7 +2596,9 @@ static void TestReleaseOrdering(bool device_close, BC_STATUS decoder_status)
 		active_context = nullptr;
 		active_pools = nullptr;
 		active_pool_count = 0;
-		bc_dil_glob_ptr = nullptr;
+		Check(bc_dil_glob_ptr == nullptr,
+		      "terminal release clears the final process-local mapping");
+		release_shared_mapping = nullptr;
 		if (quarantine) {
 			/* Production intentionally quarantines these addresses. Reclaim
 			 * them only after the context and mock driver are gone so sanitizer

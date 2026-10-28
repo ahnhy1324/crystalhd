@@ -30,6 +30,7 @@
 #include <stddef.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <semaphore.h>
@@ -70,9 +71,122 @@ static const char managed_defaults_reader[] __attribute__((used)) =
 bc_dil_glob_s *bc_dil_glob_ptr=NULL;
 BOOL glob_mode_valid=TRUE;
 
-static BC_STATUS AttachDilShMem(uint32_t shmid, const char *path)
+static pthread_mutex_t dil_shmem_lock=PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t dil_shmem_atfork_once=PTHREAD_ONCE_INIT;
+static int dil_shmem_atfork_status=0;
+static bool dil_shmem_atfork_registered=false;
+static int dil_shmem_id=-1;
+static unsigned int dil_shmem_refs=0;
+
+static void DtsDilShMemAtForkPrepare(void)
 {
-	BC_STATUS sts = DtsGetDilShMem(shmid);
+	(void)pthread_mutex_lock(&dil_shmem_lock);
+}
+
+static void DtsDilShMemAtForkParent(void)
+{
+	(void)pthread_mutex_unlock(&dil_shmem_lock);
+}
+
+static void DtsDilShMemAtForkChild(void)
+{
+	/* The child inherited both the mapping and its process-local references.
+	 * Keep that conservative pin, but never inherit a locked mutex. */
+	dil_shmem_atfork_registered=true;
+	(void)pthread_mutex_unlock(&dil_shmem_lock);
+}
+
+static void DtsRegisterDilShMemAtFork(void)
+{
+	/* A fork can copy pthread_once while this initializer is still returning.
+	 * The child handler marks the already installed callback set so a reset
+	 * once control does not install it a second time in that child. */
+	if(dil_shmem_atfork_registered) {
+		dil_shmem_atfork_status=0;
+		return;
+	}
+	dil_shmem_atfork_status=pthread_atfork(DtsDilShMemAtForkPrepare,
+		DtsDilShMemAtForkParent, DtsDilShMemAtForkChild);
+	if(dil_shmem_atfork_status == 0)
+		dil_shmem_atfork_registered=true;
+}
+
+class DtsDilShMemLock
+{
+public:
+	DtsDilShMemLock() : locked(false), error(0)
+	{
+		error=pthread_once(&dil_shmem_atfork_once, DtsRegisterDilShMemAtFork);
+		if(error == 0)
+			error=dil_shmem_atfork_status;
+		if(error == 0) {
+			error=pthread_mutex_lock(&dil_shmem_lock);
+			locked=(error == 0);
+		}
+		if(error != 0)
+			errno=error;
+	}
+
+	~DtsDilShMemLock()
+	{
+		if(locked)
+			(void)pthread_mutex_unlock(&dil_shmem_lock);
+	}
+
+	bool IsLocked(void) const { return locked; }
+
+private:
+	bool locked;
+	int error;
+};
+
+static BC_STATUS DtsGetDilShMemLocked(uint32_t shmid)
+{
+	if(shmid > INT_MAX) {
+		errno=EINVAL;
+		return BC_STS_ERROR;
+	}
+
+	if(bc_dil_glob_ptr != NULL) {
+		if(dil_shmem_refs == 0 || dil_shmem_id < 0) {
+			errno=EINVAL;
+			return BC_STS_ERROR;
+		}
+		if(dil_shmem_id != (int)shmid) {
+			errno=EBUSY;
+			return BC_STS_ERROR;
+		}
+		if(dil_shmem_refs == UINT_MAX) {
+			errno=EOVERFLOW;
+			return BC_STS_ERROR;
+		}
+		dil_shmem_refs++;
+		return BC_STS_SUCCESS;
+	}
+
+	if(dil_shmem_refs != 0 || dil_shmem_id != -1) {
+		errno=EINVAL;
+		return BC_STS_ERROR;
+	}
+
+	void *attached = shmat(shmid,(void *)0,0);
+	if(attached==(void *)-1) {
+		const int saved_errno = errno;
+		DebugLog_Trace(LDIL_DBG,
+			"Unable to open shared memory: stage=shmat errno=%d\n",
+			saved_errno);
+		errno = saved_errno;
+		return BC_STS_ERROR;
+	}
+	bc_dil_glob_ptr=(bc_dil_glob_s *)attached;
+	dil_shmem_id=(int)shmid;
+	dil_shmem_refs=1;
+	return BC_STS_SUCCESS;
+}
+
+static BC_STATUS AttachDilShMemLocked(uint32_t shmid, const char *path)
+{
+	BC_STATUS sts = DtsGetDilShMemLocked(shmid);
 
 	if (sts != BC_STS_SUCCESS) {
 		const int saved_errno = errno;
@@ -99,6 +213,21 @@ BC_STATUS DtsCreateShMem(int *shmem_id)
 	}
 
 	*shmem_id =shmid;
+	DtsDilShMemLock lock;
+	if(!lock.IsLocked())
+		return BC_STS_ERROR;
+
+	/* All users in one process share one mapping.  Reusing it before looking
+	 * up the fixed key also prevents a replacement segment from silently
+	 * displacing state still owned by an earlier handle. */
+	if(bc_dil_glob_ptr != NULL) {
+		if(dil_shmem_id < 0 ||
+		   DtsGetDilShMemLocked((uint32_t)dil_shmem_id) != BC_STS_SUCCESS)
+			return BC_STS_ERROR;
+		*shmem_id=dil_shmem_id;
+		return BC_STS_SUCCESS;
+	}
+
 	//First Try to create it.
 	if((shmid= shmget(shmkey, 1024, 0644|IPC_CREAT|IPC_EXCL))== -1 ) {
 		if(errno==EEXIST) {
@@ -129,14 +258,14 @@ BC_STATUS DtsCreateShMem(int *shmem_id)
 					return BC_STS_INSUFF_RES;
 			    }
 				//attach to it
-				if (AttachDilShMem(shmid, "stale-recreated") != BC_STS_SUCCESS)
+				if (AttachDilShMemLocked(shmid, "stale-recreated") != BC_STS_SUCCESS)
 					return BC_STS_ERROR;
 
 		   }
 
 			else{ //someone is attached to it
 
-					if (AttachDilShMem(shmid, "existing") != BC_STS_SUCCESS)
+					if (AttachDilShMemLocked(shmid, "existing") != BC_STS_SUCCESS)
 						return BC_STS_ERROR;
 					mode = DtsGetOPMode();
 					if(! ((mode==1)||(mode==2)||(mode==4))&&(buf.shm_nattch==1) ) {
@@ -153,7 +282,7 @@ BC_STATUS DtsCreateShMem(int *shmem_id)
 		   }
 	}else{
 		//we created just attach to it
-		if (AttachDilShMem(shmid, "new") != BC_STS_SUCCESS)
+		if (AttachDilShMemLocked(shmid, "new") != BC_STS_SUCCESS)
 			return BC_STS_ERROR;
 	}
 
@@ -164,51 +293,61 @@ BC_STATUS DtsCreateShMem(int *shmem_id)
 
 BC_STATUS DtsGetDilShMem(uint32_t shmid)
 {
-	void *attached = shmat(shmid,(void *)0,0);
-	if(attached==(void *)-1) {
-		const int saved_errno = errno;
-		DebugLog_Trace(LDIL_DBG,
-			"Unable to open shared memory: stage=shmat errno=%d\n",
-			saved_errno);
-		errno = saved_errno;
+	DtsDilShMemLock lock;
+	if(!lock.IsLocked())
 		return BC_STS_ERROR;
-	}
-	bc_dil_glob_ptr=(bc_dil_glob_s *)attached;
-	return BC_STS_SUCCESS;
+	return DtsGetDilShMemLocked(shmid);
 }
 
 BC_STATUS DtsDelDilShMem()
 {
-	int shmid =0;
+	DtsDilShMemLock lock;
+	if(!lock.IsLocked())
+		return BC_STS_ERROR;
+
+	if(bc_dil_glob_ptr == NULL || dil_shmem_refs == 0 || dil_shmem_id < 0) {
+		errno=EINVAL;
+		return BC_STS_ERROR;
+	}
+
+	if(dil_shmem_refs > 1) {
+		dil_shmem_refs--;
+		return BC_STS_SUCCESS;
+	}
+
+	const int shmid=dil_shmem_id;
 	shmid_ds buf;
-	//First dettach the shared mem segment
-
+	//First detach the shared mem segment.
 	if(shmdt(bc_dil_glob_ptr)==-1) {
-
+		const int saved_errno=errno;
 		DebugLog_Trace(LDIL_DBG,"Unable to detach from Dil shared memory ...\n");
-		//return BC_STS_ERROR;
+		errno=saved_errno;
+		return BC_STS_ERROR;
 	}
 
-	//delete the shared mem segment if there are no other attachments
-	if ((shmid =shmget((key_t)BC_DIL_SHMEM_KEY,0,0))==-1){
-			DebugLog_Trace(LDIL_DBG,"DtsDelDilShMem:Unable get shmid ...\n");
-			return BC_STS_ERROR;
-	}
+	bc_dil_glob_ptr=NULL;
+	dil_shmem_id=-1;
+	dil_shmem_refs=0;
 
 	if(shmctl(shmid,IPC_STAT,&buf)==-1){
+		if(errno == EINVAL || errno == EIDRM)
+			return BC_STS_SUCCESS;
+		const int saved_errno=errno;
 		DebugLog_Trace(LDIL_DBG,"DtsDelDilShMem:shmctl failed ...\n");
+		errno=saved_errno;
 		return BC_STS_ERROR;
 	}
 
 
 	if(buf.shm_nattch ==0) {
 		//No process is currently attached to the shmem seg. go ahead and delete it
-		if(-1!=shmctl(shmid,IPC_RMID,NULL)){
-				// DebugLog_Trace(LDIL_DBG,"DtsDelDilShMem:deleted shmem segment ...\n");
-				return BC_STS_ERROR;
-
-		} else{
+		if(shmctl(shmid,IPC_RMID,NULL)==-1){
+			if(errno == EINVAL || errno == EIDRM)
+				return BC_STS_SUCCESS;
+			const int saved_errno=errno;
 			DebugLog_Trace(LDIL_DBG,"DtsDelDilShMem:unable to delete shmem segment ...\n");
+			errno=saved_errno;
+			return BC_STS_ERROR;
 		}
 
 	}
