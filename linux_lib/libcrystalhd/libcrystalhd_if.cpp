@@ -819,7 +819,10 @@ DtsDeviceOpen(
 		globMode = 0;
 	}
 
-	DtsSetOPMode(globMode);
+	/* Playback and hardware-init can still fail while setting up firmware.
+	 * Do not advertise either mode until that fallible setup has completed. */
+	if (mode != DTS_PLAYBACK_MODE && mode != DTS_HWINIT_MODE)
+		DtsSetOPMode(globMode);
 
 	if (DeviceID == BC_PCI_DEVID_LINK || DeviceID == BC_PCI_DEVID_FLEA)
 		nTry = HARDWARE_INIT_RETRY_LINK_CNT;
@@ -843,6 +846,14 @@ DtsDeviceOpen(
 		}
 		if(Sts != BC_STS_SUCCESS )
 			goto fail;
+		/* Setup can overlap a supported monitor open. Re-read the
+		 * shared bitmap so its newly published bit is not replaced by the
+		 * pre-setup snapshot. Keep the established stale-mode normalization. */
+		globMode = DtsGetOPMode();
+		if (!glob_mode_valid && (globMode & 4))
+			globMode &= 4;
+		globMode |= mode == DTS_PLAYBACK_MODE ? 0x1 : 0x8;
+		DtsSetOPMode(globMode);
 	}
 
 	if(mode == DTS_HWINIT_MODE){

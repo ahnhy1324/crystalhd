@@ -56,6 +56,7 @@ static unsigned firmware_link_calls;
 static unsigned firmware_init_calls;
 static BC_STATUS firmware_push_status;
 static BC_STATUS firmware_init_status;
+static uint32_t mode_added_during_setup;
 
 struct IoctlRecord {
 	int fd;
@@ -441,6 +442,7 @@ extern "C" BC_STATUS __wrap__Z15DtsPushFwToFleaPvPc(HANDLE device, char *path)
 	Check(DtsGetHwInitSts() == BC_DIL_HWINIT_IN_PROGRESS &&
 	      firmware_init_calls == 0,
 	      "hardware-init claims progress before uploading, never after INIT");
+	shared_state.gDilOpMode |= mode_added_during_setup;
 	return firmware_push_status;
 }
 
@@ -531,6 +533,7 @@ static void BeginCase(int descriptor)
 	initial_device_id = BC_PCI_DEVID_INVALID;
 	firmware_push_calls = firmware_link_calls = firmware_init_calls = 0;
 	firmware_push_status = firmware_init_status = BC_STS_SUCCESS;
+	mode_added_during_setup = 0;
 	raw_close_expected = false;
 	ioctl_count = 0;
 	failed_command = 0;
@@ -1345,6 +1348,7 @@ static void CheckHardwareInitOpen(uint32_t initial_state, BC_STATUS push_status,
 	BeginCase(0);
 	expected_mode = DTS_HWINIT_MODE;
 	initial_hw_state = initial_state;
+	initial_op_mode = 0x1;
 	firmware_push_status = push_status;
 	firmware_init_status = init_status;
 	HANDLE device = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
@@ -1364,6 +1368,8 @@ static void CheckHardwareInitOpen(uint32_t initial_state, BC_STATUS push_status,
 	if (initial_state == BC_DIL_HWINIT_NOT_YET)
 		Check(shared_state.gHwInitSts == BC_DIL_HWINIT_NOT_YET,
 		      "failed owned setup or normal close leaves no stale initialization progress");
+	Check(shared_state.gDilOpMode == initial_op_mode,
+	      "hardware-init failure or close preserves the preexisting mode bits");
 	Check(open_calls == 1 && close_calls == 1 && closed_fd == 0 &&
 	      thread_create_calls == 1,
 	      "hardware-init balances its exact device/interface lifetime");
@@ -1536,6 +1542,52 @@ static void CheckInheritedOperationalHandle(uint32_t mode)
 	EndCase("fork fixture releases every parent allocation");
 }
 
+static void CheckPlaybackSetupFailureMode()
+{
+	BeginCase(0);
+	expected_mode = DTS_PLAYBACK_MODE;
+	initial_hw_state = BC_DIL_HWINIT_IN_PROGRESS;
+	initial_op_mode = 0x4;
+	HANDLE device = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	Check(DtsDeviceOpen(&device, DTS_PLAYBACK_MODE) == BC_STS_BUSY,
+	      "playback reports an initializer already in progress");
+	Check(device == nullptr,
+	      "failed playback setup publishes no handle");
+	Check(shared_state.gDilOpMode == initial_op_mode,
+	      "failed playback setup preserves the preexisting mode bits");
+	Check(firmware_push_calls == 0 && firmware_init_calls == 0 &&
+	      firmware_link_calls == 0,
+	      "busy playback setup never uploads or initializes firmware");
+	Check(open_calls == 1 && close_calls == 1 && closed_fd == 0 &&
+	      thread_create_calls == 1 &&
+	      shared_attach_calls == 1 && shared_detach_calls == 1,
+	      "failed playback setup balances its exact local lifetime");
+	CheckIoctls(0,
+		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
+		 BCM_IOC_RELEASE},
+		"failed playback setup preserves driver command ordering");
+	EndCase("failed playback setup releases every allocation");
+}
+
+static void CheckSetupPreservesConcurrentModePublication()
+{
+	BeginCase(0);
+	expected_mode = DTS_HWINIT_MODE;
+	initial_op_mode = 0x1;
+	mode_added_during_setup = 0x4;
+	HANDLE device = nullptr;
+	Check(DtsDeviceOpen(&device, DTS_HWINIT_MODE) == BC_STS_SUCCESS && device,
+	      "hardware-init succeeds while another mode is published during setup");
+	Check(shared_state.gDilOpMode == (0x1u | 0x4u | 0x8u),
+	      "successful setup preserves a mode bit published while firmware initialized");
+	if (device)
+		Check(DtsDeviceClose(device) == BC_STS_SUCCESS,
+		      "hardware-init closes after concurrent mode publication");
+	Check(shared_state.gDilOpMode == (0x1u | 0x4u),
+	      "hardware-init close removes only its own bit after concurrent publication");
+	EndCase("hardware-init interleaving releases every allocation");
+}
+
 int main()
 {
 	CheckCommandOwnership();
@@ -1596,6 +1648,8 @@ int main()
 		BC_STS_SUCCESS, BC_STS_BUSY, 0, 0);
 	CheckInheritedOperationalHandle(DTS_PLAYBACK_MODE);
 	CheckInheritedOperationalHandle(DTS_HWINIT_MODE);
+	CheckPlaybackSetupFailureMode();
+	CheckSetupPreservesConcurrentModePublication();
 	std::printf("Library device handles: %u checks, %u failures\n",
 	            checks, failures);
 	return failures ? 1 : 0;
