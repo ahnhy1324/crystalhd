@@ -1091,6 +1091,8 @@ DtsDupOutputPollFd(
 	Ctx = DtsGetContext(hDevice);
 	if (!Ctx || Ctx->DevHandle < 0)
 		return BC_STS_INV_ARG;
+	if (!DtsContextIsCurrentProcess(Ctx))
+		return BC_STS_ERROR;
 
 	memset(&query, 0, sizeof(query));
 	query.IoctlDataSz = sizeof(query);
@@ -2192,12 +2194,14 @@ DtsFlushRxCapture(
 	BC_STATUS			Sts;
 	BC_IOCTL_DATA *pIocData = NULL;
 
-	DTS_GET_CTX(hDevice,Ctx);
+	Ctx = DtsGetContext(hDevice);
+	if (!Ctx)
+		return BC_STS_INV_ARG;
 
 	/* A mutex held by another parent thread is not recoverable after fork.
 	 * Preserve the historical clean no-op while rejecting inherited driver
 	 * ownership, and make that decision before touching the mutex. */
-	if ((Ctx->ProcessID && Ctx->ProcessID != getpid()) ||
+	if (!DtsContextIsCurrentProcess(Ctx) ||
 	    !DtsChkPID(Ctx->ProcessID))
 		return Ctx->bMapOutBufDirty ? BC_STS_ERROR : BC_STS_SUCCESS;
 	DtsLifecycleCall control(Ctx);

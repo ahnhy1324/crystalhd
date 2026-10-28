@@ -1898,6 +1898,8 @@ BOOL DtsDrvIoctl
 
 	if(Ctx->Sig != LIB_CTX_SIG)
 		return FALSE;
+	if(!DtsContextIsCurrentProcess(Ctx))
+		return FALSE;
 
 	// == FIX ME ==
 	// We need to take care of Async ioctl.
@@ -1939,6 +1941,8 @@ BC_STATUS DtsDrvCmd(DTS_LIB_CONTEXT	*Ctx,
 		DebugLog_Trace(LDIL_DBG,"Invalid arg..%p \n",Ctx);
 		return BC_STS_INV_ARG;
 	}
+	if(!DtsContextIsCurrentProcess(Ctx))
+		return BC_STS_ERROR;
 
 	if(!pIoData){
 		if(! (pIo = DtsAllocIoctlData(Ctx)) ){

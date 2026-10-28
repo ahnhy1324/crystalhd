@@ -12,6 +12,7 @@
 #include <pthread.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "7411d.h"
@@ -49,6 +50,7 @@ static bool expect_recovery_owner_during_close;
 static bool recovery_owner_seen_during_close;
 static uint32_t expected_mode;
 static uint32_t initial_hw_state;
+static uint32_t initial_device_id;
 static unsigned firmware_push_calls;
 static unsigned firmware_link_calls;
 static unsigned firmware_init_calls;
@@ -153,6 +155,9 @@ extern "C" int __real_pthread_mutex_init(pthread_mutex_t *, const pthread_mutexa
 extern "C" int __real_pthread_mutex_destroy(pthread_mutex_t *);
 extern "C" int __real_pthread_mutex_lock(pthread_mutex_t *);
 extern "C" int __real_pthread_mutex_unlock(pthread_mutex_t *);
+extern "C" int __real_pthread_create(pthread_t *, const pthread_attr_t *,
+				       void *(*)(void *), void *);
+extern "C" int __real_pthread_join(pthread_t, void **);
 
 /* Keep the attribute in fixture-owned storage so OLD-code failure cases can
  * be inspected and cleaned up even after DtsInitLock's stack frame returned.
@@ -469,6 +474,7 @@ extern "C" void *__wrap_shmat(int, const void *, int)
 	++shared_attach_calls;
 	std::memset(&shared_state, 0, sizeof(shared_state));
 	shared_state.gHwInitSts = initial_hw_state;
+	shared_state.DevID = initial_device_id;
 	shared_state.g_nProcID = initial_decoder_owner;
 	shared_state.g_bDecOpened = initial_decoder_owner != 0;
 	shared_state.gDilOpMode = initial_op_mode;
@@ -522,6 +528,7 @@ static void BeginCase(int descriptor)
 	initial_op_mode = 0;
 	expected_mode = DTS_MONITOR_MODE;
 	initial_hw_state = BC_DIL_HWINIT_NOT_YET;
+	initial_device_id = BC_PCI_DEVID_INVALID;
 	firmware_push_calls = firmware_link_calls = firmware_init_calls = 0;
 	firmware_push_status = firmware_init_status = BC_STS_SUCCESS;
 	raw_close_expected = false;
@@ -990,7 +997,7 @@ static void CheckTerminalDecoderOwnership()
 	BeginCase(0);
 	shared_nattch = 1;
 	AcquireFixtureSharedState();
-	const pid_t owner = 1234;
+	const pid_t owner = getpid();
 	DTS_LIB_CONTEXT *context =
 		AllocateTerminalContext(DTS_PLAYBACK_MODE, owner);
 	if (context) {
@@ -1369,6 +1376,166 @@ static void CheckHardwareInitOpen(uint32_t initial_state, BC_STATUS push_status,
 	EndCase("hardware-init success/failure releases every allocation");
 }
 
+struct InheritedLockGate {
+	DTS_LIB_CONTEXT *context;
+	pthread_mutex_t lock;
+	pthread_cond_t condition;
+	bool held;
+	bool release;
+};
+
+static void *HoldContextAcrossFork(void *opaque)
+{
+	InheritedLockGate *gate = static_cast<InheritedLockGate *>(opaque);
+	DtsLock(gate->context);
+	__real_pthread_mutex_lock(&gate->lock);
+	gate->held = true;
+	pthread_cond_broadcast(&gate->condition);
+	while (!gate->release)
+		pthread_cond_wait(&gate->condition, &gate->lock);
+	__real_pthread_mutex_unlock(&gate->lock);
+	DtsUnLock(gate->context);
+	return nullptr;
+}
+
+static void ChildRequire(bool condition, int code)
+{
+	if (!condition)
+		_exit(code);
+}
+
+static void CheckInheritedOperationalHandle(uint32_t mode)
+{
+	const int descriptor = mode == DTS_PLAYBACK_MODE ? 62 : 63;
+	const char *label = mode == DTS_PLAYBACK_MODE ? "playback" : "hardware-init";
+	BeginCase(descriptor);
+	initial_device_id = BC_PCI_DEVID_FLEA;
+	shared_nattch = 1;
+
+	HANDLE device = nullptr;
+	Check(DtsInitInterface(descriptor, &device, mode) == BC_STS_SUCCESS && device,
+	      "fork fixture initializes its operational context");
+	if (!device) {
+		EndCase("failed fork fixture leaves no allocation");
+		return;
+	}
+	DTS_LIB_CONTEXT *context = DtsGetContext(device);
+	context->ProcessID = getpid();
+	context->DevId = BC_PCI_DEVID_FLEA;
+	Check(DtsGetDilShMem(17) == BC_STS_SUCCESS,
+	      "fork fixture owns one process-local shared-memory reference");
+	DtsSetgDevID(BC_PCI_DEVID_FLEA);
+
+	InheritedLockGate gate = {context, PTHREAD_MUTEX_INITIALIZER,
+		PTHREAD_COND_INITIALIZER, false, false};
+	pthread_t holder;
+	const int holder_status =
+		__real_pthread_create(&holder, nullptr, HoldContextAcrossFork, &gate);
+	Check(holder_status == 0,
+	      "fork fixture starts its real lock holder");
+	if (holder_status != 0) {
+		Check(DtsReleaseInterface(context) == BC_STS_SUCCESS,
+		      "failed fork fixture releases its original interface");
+		pthread_cond_destroy(&gate.condition);
+		__real_pthread_mutex_destroy(&gate.lock);
+		EndCase("failed fork fixture leaves no allocation");
+		return;
+	}
+	__real_pthread_mutex_lock(&gate.lock);
+	while (!gate.held)
+		pthread_cond_wait(&gate.condition, &gate.lock);
+	__real_pthread_mutex_unlock(&gate.lock);
+
+	const pid_t child = fork();
+	Check(child >= 0, "fork fixture creates its child");
+	if (child == 0) {
+		alarm(5);
+		const size_t ioctls_before = ioctl_count;
+		const unsigned closes_before = close_calls;
+		const bc_dil_glob_s shared_before = shared_state;
+		const PES_CONVERT_PARAMS parser_before = context->PESConvParams;
+
+		/* Raw lookup remains an internal identity operation. Public and command
+		 * paths must reject the inherited owner before touching its locked state. */
+		ChildRequire(DtsGetContext(device) == context, 81);
+		uint32_t driver = 0x11111111, library = 0x22222222;
+		ChildRequire(DtsGetVersion(device, &driver, &library) == BC_STS_ERROR &&
+		             driver == 0x11111111 && library == 0x22222222, 82);
+
+		int poll_fd = 77;
+		ChildRequire(DtsDupOutputPollFd(device, &poll_fd) == BC_STS_ERROR &&
+		             poll_fd == -1, 83);
+		BC_IOCTL_DATA command = {};
+		command.RetSts = BC_STS_BUSY;
+		ChildRequire(DtsDrvCmd(context, BCM_IOC_GET_VERSION, 0, &command, FALSE) ==
+		                 BC_STS_ERROR && command.RetSts == BC_STS_BUSY, 84);
+		DWORD returned = 0;
+		ChildRequire(!DtsDrvIoctl(device, BCM_IOC_GET_VERSION, &command,
+		                          sizeof(command), &command, sizeof(command),
+		                          &returned, FALSE) && returned == 0 &&
+		             command.RetSts == BC_STS_BUSY, 85);
+
+		uint8_t annex_b[] = {0, 0, 0, 1, 0x65, 0x80};
+		NALU_t nalu;
+		std::memset(&nalu, 0x5a, sizeof(nalu));
+		const NALU_t nalu_before = nalu;
+		ChildRequire(DtsGetNaluType(device, annex_b, sizeof(annex_b), &nalu,
+		                            false) == -1 &&
+		             std::memcmp(&nalu, &nalu_before, sizeof(nalu)) == 0 &&
+		             std::memcmp(&context->PESConvParams, &parser_before,
+		                         sizeof(parser_before)) == 0, 86);
+		ChildRequire(DtsDeviceClose(device) == BC_STS_ERROR, 87);
+
+		DTS_LIB_CONTEXT invalid = {};
+		ChildRequire(DtsGetVersion(&invalid, &driver, &library) == BC_STS_INV_ARG,
+		             88);
+		ChildRequire(ioctl_count == ioctls_before && close_calls == closes_before &&
+		             std::memcmp(&shared_state, &shared_before,
+		                         sizeof(shared_before)) == 0, 89);
+
+		BC_HW_CAPS caps = {};
+		ChildRequire(DtsGetCapabilities(nullptr, &caps) == BC_STS_SUCCESS &&
+		             (caps.DecCaps & BC_DEC_FLAGS_H264), 90);
+		expected_mode = DTS_MONITOR_MODE;
+		HANDLE monitor = nullptr;
+		ChildRequire(DtsDeviceOpen(&monitor, DTS_MONITOR_MODE) == BC_STS_SUCCESS &&
+		             monitor && DtsGetContext(monitor)->ProcessID == getpid(), 91);
+		ChildRequire(DtsDeviceClose(monitor) == BC_STS_SUCCESS, 92);
+		_exit(0);
+	}
+
+	__real_pthread_mutex_lock(&gate.lock);
+	gate.release = true;
+	pthread_cond_broadcast(&gate.condition);
+	__real_pthread_mutex_unlock(&gate.lock);
+	Check(__real_pthread_join(holder, nullptr) == 0,
+	      "fork fixture releases its parent lock holder");
+	int child_status = 0;
+	if (child >= 0) {
+		const bool waited = waitpid(child, &child_status, 0) == child;
+		const bool child_ok = waited && WIFEXITED(child_status) &&
+			WEXITSTATUS(child_status) == 0;
+		if (!child_ok)
+			std::fprintf(stderr,
+				"inherited %s child: waited=%d exited=%d exit=%d signaled=%d signal=%d\n",
+				label, waited, waited && WIFEXITED(child_status),
+				waited && WIFEXITED(child_status) ? WEXITSTATUS(child_status) : -1,
+				waited && WIFSIGNALED(child_status),
+				waited && WIFSIGNALED(child_status) ? WTERMSIG(child_status) : -1);
+		Check(child_ok, label);
+	}
+
+	uint32_t driver = 0, library = 0;
+	Check(DtsGetVersion(device, &driver, &library) == BC_STS_SUCCESS &&
+	      driver != 0 && library != 0,
+	      "the parent remains usable after rejecting its inherited child handle");
+	Check(DtsReleaseInterface(context) == BC_STS_SUCCESS,
+	      "the parent consumes its original interface normally");
+	pthread_cond_destroy(&gate.condition);
+	__real_pthread_mutex_destroy(&gate.lock);
+	EndCase("fork fixture releases every parent allocation");
+}
+
 int main()
 {
 	CheckCommandOwnership();
@@ -1427,6 +1594,8 @@ int main()
 		BC_STS_SUCCESS, BC_STS_SUCCESS, 0, 0);
 	CheckHardwareInitOpen(BC_DIL_HWINIT_IN_PROGRESS, BC_STS_SUCCESS,
 		BC_STS_SUCCESS, BC_STS_BUSY, 0, 0);
+	CheckInheritedOperationalHandle(DTS_PLAYBACK_MODE);
+	CheckInheritedOperationalHandle(DTS_HWINIT_MODE);
 	std::printf("Library device handles: %u checks, %u failures\n",
 	            checks, failures);
 	return failures ? 1 : 0;
