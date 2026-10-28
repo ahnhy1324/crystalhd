@@ -7,7 +7,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <csignal>
 #include <string>
 #include <initializer_list>
 #include <sys/resource.h>
@@ -20,6 +19,7 @@ namespace {
 enum Path { Direct, New, Existing, Stale };
 Path selected;
 bool fail_attach;
+bool preserve_mapping;
 unsigned get_calls, stats, removes, attaches;
 bc_dil_glob_s shared;
 unsigned checks, failures;
@@ -28,7 +28,6 @@ void Check(bool ok, const char *message) {
  if (!ok) { ++failures; fprintf(stderr,"FAIL: %s\n",message); }
 }
 void ChildCheck(bool ok) { if (!ok) _exit(80); }
-void ExpectedFault(int signal) { _exit(signal==SIGSEGV ? 87 : 88); }
 }
 extern "C" int __wrap_shmget(key_t key, size_t size, int flags) {
  ChildCheck(key==static_cast<key_t>(BC_DIL_SHMEM_KEY) && size==1024);
@@ -43,11 +42,15 @@ extern "C" int __wrap_shmctl(int id, int command, struct shmid_ds *buffer) {
  ChildCheck(command==IPC_RMID && selected==Stale); ++removes; return 0;
 }
 extern "C" void *__wrap_shmat(int id, const void *address, int flags) {
- ChildCheck(id==17 && !address && !flags && ++attaches==1);
+ ++attaches;
+ ChildCheck(id==17 && !address && !flags &&
+            attaches<=(preserve_mapping ? 2U : 1U));
  ChildCheck(get_calls==(selected==Direct ? 0U : selected==New ? 1U : selected==Stale ? 3U : 2U));
  ChildCheck(stats==(selected==Existing || selected==Stale ? 1U : 0U));
  ChildCheck(removes==(selected==Stale ? 1U : 0U));
- if (fail_attach) { errno=ENOMEM; return reinterpret_cast<void *>(-1); }
+ if (fail_attach && (!preserve_mapping || attaches==2)) {
+  errno=ENOMEM; return reinterpret_cast<void *>(-1);
+ }
  shared.gDilOpMode=1; return &shared;
 }
 extern "C" int __wrap_fprintf(FILE *stream, const char *format, ...) {
@@ -58,24 +61,19 @@ extern "C" int __wrap_fprintf(FILE *stream, const char *format, ...) {
 }
 int main() {
  for (Path path : {Direct,New,Existing,Stale}) for (bool failure : {false,true}) {
-  selected=path; fail_attach=failure;
+  selected=path; fail_attach=failure; preserve_mapping=false;
+  get_calls=stats=removes=attaches=0;
   int descriptors[2]; if (pipe(descriptors)!=0) return 2;
   const pid_t child=fork(); if (child<0) return 2;
   if (child==0) {
    close(descriptors[0]); if (dup2(descriptors[1],STDERR_FILENO)<0) _exit(81); close(descriptors[1]);
    const rlimit limit={0,0}; if (setrlimit(RLIMIT_CORE,&limit)!=0) _exit(81);
    alarm(3);
-   if (path==Existing && failure) {
-    struct sigaction action={}; action.sa_handler=ExpectedFault; sigemptyset(&action.sa_mask);
-    if (sigaction(SIGSEGV,&action,nullptr)!=0) _exit(81);
-   }
    errno=EALREADY; int id=-2;
    const BC_STATUS status=path==Direct ? DtsGetDilShMem(17) : DtsCreateShMem(&id);
-   // The existing-segment caller still dereferences the failure sentinel.
-   ChildCheck(!(path==Existing && failure));
-   ChildCheck(status==(path==Direct && failure ? BC_STS_ERROR : BC_STS_SUCCESS));
-   ChildCheck(path==Direct || id==17);
-   ChildCheck(bc_dil_glob_ptr==(failure ? reinterpret_cast<bc_dil_glob_s *>(-1) : &shared));
+   ChildCheck(status==(failure ? BC_STS_ERROR : BC_STS_SUCCESS));
+   ChildCheck(path==Direct || id==(failure ? -1 : 17));
+   ChildCheck(bc_dil_glob_ptr==(failure ? nullptr : &shared));
    ChildCheck(errno==(failure ? ENOMEM : path==Direct || path==New ? EALREADY : EEXIST));
    _exit(0);
   }
@@ -83,8 +81,8 @@ int main() {
   while ((size=read(descriptors[0],bytes,sizeof(bytes)))>0) log.append(bytes,size);
   Check(size==0,"diagnostic pipe reaches EOF"); close(descriptors[0]);
   int status; if (waitpid(child,&status,0)!=child) return 2;
-  Check(WIFEXITED(status) && WEXITSTATUS(status)==(path==Existing && failure ? 87 : 0),
-        "legacy status/sentinel/errno/syscall count and existing-segment fault are preserved");
+  Check(WIFEXITED(status) && WEXITSTATUS(status)==0,
+        "attach failure returns without a signal, sentinel or successful shmid");
 #ifdef CRYSTALHD_TEST_DIL_LOG_DISABLED
   Check(log.find("shared memory")==std::string::npos && log.find("Shared memory")==std::string::npos,
         "compiled-out diagnostic sink emits no attachment message");
@@ -94,11 +92,52 @@ int main() {
   const std::string context="Shared memory attach failed: path="+std::string(paths[path])+" errno="+std::to_string(ENOMEM)+"\n";
   Check((log.find(attach)!=std::string::npos)==failure,"attachment stage and saved errno are retained");
   Check((log.find(context)!=std::string::npos)==(failure && path!=Direct),
-        "new/existing/recreated context is retained, including before the child fault");
+        "new/existing/recreated attachment context is retained");
   Check(log.find("0x")==std::string::npos && log.find("shmid")==std::string::npos,
         "diagnostics omit addresses, segment identifiers and content");
 #endif
  }
+
+ // A failed DtsCreateShMem attachment must not destroy an already usable
+ // direct mapping in the same process.  The first handle can still need the
+ // shared state.
+ selected=Direct; fail_attach=true; preserve_mapping=true;
+ get_calls=stats=removes=attaches=0;
+ int descriptors[2]; if (pipe(descriptors)!=0) return 2;
+ const pid_t child=fork(); if (child<0) return 2;
+ if (child==0) {
+  close(descriptors[0]); if (dup2(descriptors[1],STDERR_FILENO)<0) _exit(81); close(descriptors[1]);
+  const rlimit limit={0,0}; if (setrlimit(RLIMIT_CORE,&limit)!=0) _exit(81);
+  alarm(3); errno=EALREADY;
+  ChildCheck(DtsGetDilShMem(17)==BC_STS_SUCCESS);
+  ChildCheck(bc_dil_glob_ptr==&shared);
+  memset(&shared,0x5a,sizeof(shared));
+  const bc_dil_glob_s before=shared;
+  glob_mode_valid=TRUE;
+  selected=Existing; int id=-2;
+  ChildCheck(DtsCreateShMem(&id)==BC_STS_ERROR);
+  ChildCheck(id==-1 && bc_dil_glob_ptr==&shared && attaches==2);
+  ChildCheck(memcmp(&shared,&before,sizeof(shared))==0 && glob_mode_valid==TRUE);
+  ChildCheck(errno==ENOMEM);
+  _exit(0);
+ }
+ close(descriptors[1]); std::string log; char bytes[512]; ssize_t size;
+ while ((size=read(descriptors[0],bytes,sizeof(bytes)))>0) log.append(bytes,size);
+ Check(size==0,"preserved-mapping diagnostic pipe reaches EOF"); close(descriptors[0]);
+ int status; if (waitpid(child,&status,0)!=child) return 2;
+ Check(WIFEXITED(status) && WEXITSTATUS(status)==0,
+       "failed DtsCreateShMem preserves prior mapping, contents and mode state");
+#ifdef CRYSTALHD_TEST_DIL_LOG_DISABLED
+ Check(log.find("shared memory")==std::string::npos && log.find("Shared memory")==std::string::npos,
+       "compiled-out reattach diagnostic emits no attachment message");
+#else
+ const std::string attach="Unable to open shared memory: stage=shmat errno="+std::to_string(ENOMEM)+"\n";
+ const std::string context="Shared memory attach failed: path=existing errno="+std::to_string(ENOMEM)+"\n";
+ Check(log.find(attach)!=std::string::npos,
+       "failed reattach retains the saved errno diagnostic");
+ Check(log.find(context)!=std::string::npos,
+       "failed DtsCreateShMem retains the existing-path context");
+#endif
  printf("library shmem diagnostics: %u checks, %u failures\n",checks,failures);
  return failures ? 1 : 0;
 }
