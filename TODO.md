@@ -26,10 +26,13 @@ the end of a related change set, rather than repeating unrelated experiments.
 
 1. **Open/close state and resource ownership (#510).** Failed-open publication
    is prepared in [#552](https://github.com/ahnhy1324/crystalhd/pull/552); combined
-   mode preservation and atomic updates are locally fixed and review-ready.
+   mode preservation and atomic updates are prepared as follow-ups. Rejected
+   opens now preserve hardware initialization state, and LINK clock setup waits
+   for successful non-monitor session admission.
    Complete integration while preserving failure cleanup and the legacy ABI.
    Same-mode reference counts and same-handle concurrent close/use are separate
-   questions, not implied fixes.
+   questions, not implied fixes. Next reproduce terminal decoder-owner handoff
+   across RELEASE/close before changing its recovery reservation.
 2. **Ordinary Kodi EOF, Stop, seek and reopen (#445/#429).** Address reproducible
    user-operation failures. The observed zero-counter two-second EOF wait is
    in Kodi's drain loop; keep that upstream compatibility boundary distinct
