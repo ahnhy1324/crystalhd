@@ -101,6 +101,21 @@ for bits in $build_bits; do
         -Wall -Wextra -Werror "$repo_dir/tests/vaapi-centered-output.cpp" \
         $cpu_flags -o "$build_dir/vaapi-centered-output"
     run_test "$build_dir/vaapi-centered-output"
+    # Apply one EOS/restart contract to all three replay implementations.
+    # shellcheck disable=SC2086
+    $cxx ${CPPFLAGS:-} ${CXXFLAGS:-} -m"$bits" -std=c++17 -O2 \
+        -Wall -Wextra -Werror "$repo_dir/tests/vaapi-replay-contract.cpp" \
+        $cpu_flags -o "$build_dir/vaapi-replay-contract"
+    run_test "$build_dir/vaapi-replay-contract"
+    if [ "$legacy" -eq 1 ]; then
+        objdump -d "$build_dir/vaapi-replay-contract" > \
+            "$build_dir/vaapi-replay-contract.disassembly"
+        if grep -Eq '%([xyz]mm[0-9]+|mm[0-7])|[[:space:]](emms|femms|clflush|[lms]fence|[ls]dmxcsr)([[:space:]]|$)' \
+            "$build_dir/vaapi-replay-contract.disassembly"; then
+            echo "legacy replay contract contains SIMD/cache instructions" >&2
+            exit 1
+        fi
+    fi
     # Exercise the real NV12 ProcessVpp kernel, not only its row mapper.
     # Abort stubs keep this mode independent of 32-bit graphics libraries.
     # shellcheck disable=SC2086
