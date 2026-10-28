@@ -28,7 +28,7 @@ library-check: export CRYSTALHD_CONFIG_DISABLE = 1
 library-check:
 	@set -eu; lib_test_dir=$$(mktemp -d /tmp/crystalhd-library-check.XXXXXX); \
 	trap 'rm -f "$$lib_test_dir/check"; rmdir "$$lib_test_dir"' EXIT HUP INT TERM; \
-	for lib_test in logging shmem-logging shmem-logging-disabled tx-ring flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem device-handle poll-fd capture capture-scaled fwload fw-version fwcmds raw-frame; do \
+	for lib_test in logging shmem-logging shmem-logging-disabled shmem-lifetime tx-ring flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem device-handle poll-fd capture capture-scaled fwload fw-version fwcmds raw-frame; do \
 		test_extra=; \
 		test_flags=; \
 		test_file=$$lib_test; \
@@ -41,6 +41,8 @@ library-check:
 				if [ "$$lib_test" = shmem-logging-disabled ]; then \
 					test_flags="-include tests/library-logging-disabled.h"; \
 				fi ;; \
+			shmem-lifetime) test_sources=linux_lib/libcrystalhd/libcrystalhd_priv.cpp; \
+				test_wrap=-Wl,--wrap=shmget,--wrap=shmat,--wrap=shmdt,--wrap=shmctl,--wrap=pthread_atfork,--wrap=fprintf ;; \
 			raw-frame) test_wrap=-Wl,--wrap=calloc; test_sources=linux_lib/libcrystalhd/libcrystalhd_raw_frame.cpp ;; \
 			copy|planar) test_wrap=; test_sources=linux_lib/libcrystalhd/libcrystalhd_int_if.cpp ;; \
 			format) test_wrap=; test_sources="linux_lib/libcrystalhd/libcrystalhd_int_if.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp linux_lib/libcrystalhd/libcrystalhd_if.cpp" ;; \
@@ -59,10 +61,10 @@ library-check:
 				test_sources="$$test_sources linux_lib/libcrystalhd/libcrystalhd_fwdiag_if.cpp linux_lib/libcrystalhd/libcrystalhd_fwload_if.cpp linux_lib/libcrystalhd/libcrystalhd_parser.cpp" ;; \
 			poll-fd) test_wrap=-Wl,--wrap=ioctl,--wrap=fcntl ;; \
 			capture) test_wrap=-Wl,--wrap=ioctl,--wrap=close,--wrap=malloc,--wrap=free,--wrap=madvise,--wrap=pthread_mutex_lock; \
-				test_wrap="$$test_wrap -Wl,--wrap=shmget,--wrap=shmdt,--wrap=shmctl" ;; \
+				test_wrap="$$test_wrap -Wl,--wrap=shmget,--wrap=shmat,--wrap=shmdt,--wrap=shmctl" ;; \
 			capture-scaled) test_flags=-DCRYSTALHD_EXPERIMENTAL_SCALED_RX; test_file=capture; \
 				test_wrap=-Wl,--wrap=ioctl,--wrap=close,--wrap=malloc,--wrap=free,--wrap=madvise,--wrap=pthread_mutex_lock; \
-				test_wrap="$$test_wrap -Wl,--wrap=shmget,--wrap=shmdt,--wrap=shmctl" ;; \
+				test_wrap="$$test_wrap -Wl,--wrap=shmget,--wrap=shmat,--wrap=shmdt,--wrap=shmctl" ;; \
 			fwload) test_wrap=-Wl,--wrap=fopen,--wrap=fseek,--wrap=ftell,--wrap=fread,--wrap=__fread_chk,--wrap=fclose; \
 				test_wrap="$$test_wrap -Wl,--wrap=malloc,--wrap=free,--wrap=perror"; \
 				test_sources=linux_lib/libcrystalhd/libcrystalhd_fwload_if.cpp ;; \
