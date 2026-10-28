@@ -884,7 +884,11 @@ DtsDeviceClose(
 
 	DTS_GET_CTX(hDevice,Ctx);
 
-	if (!DtsChkPID(Ctx->ProcessID))
+	/* A monitor owns only its local driver/interface handle.  Its process ID
+	 * intentionally differs from an active playback owner in another process,
+	 * so validate that local identity instead of the shared decoder owner. */
+	if ((Ctx->OpMode == DTS_MONITOR_MODE && Ctx->ProcessID != getpid()) ||
+	    (Ctx->OpMode != DTS_MONITOR_MODE && !DtsChkPID(Ctx->ProcessID)))
 		return BC_STS_ERROR;
 	/* If the sole TX/recovery worker has already retired, a pending PM epoch
 	 * can never make progress. Convert it atomically to terminal quarantine

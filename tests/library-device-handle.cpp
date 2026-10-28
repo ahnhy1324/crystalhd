@@ -12,6 +12,7 @@
 #include <pthread.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <unistd.h>
 
 #include "7411d.h"
 #include "libcrystalhd_if.h"
@@ -40,6 +41,9 @@ static bool allocation_freed_before_join;
 static unsigned shared_attach_calls;
 static unsigned shared_detach_calls;
 static unsigned shared_nattch;
+static unsigned shared_remove_calls;
+static pid_t initial_decoder_owner;
+static uint32_t initial_op_mode;
 static bool raw_close_expected;
 static bool expect_recovery_owner_during_close;
 static bool recovery_owner_seen_during_close;
@@ -62,6 +66,7 @@ static unsigned long failed_command;
 static bool fail_with_status;
 static bool fail_with_syscall;
 static bool fail_cleanup;
+static bool fail_close;
 static bool unexpected_ioctl;
 
 static bool track_allocations;
@@ -315,6 +320,10 @@ extern "C" int __wrap_close(int fd)
 		      ioctl_count <= sizeof(ioctl_log) / sizeof(ioctl_log[0]) &&
 		      ioctl_log[ioctl_count - 1].command == BCM_IOC_RELEASE,
 		      "device close follows the driver release command");
+	if (fail_close) {
+		errno = EIO;
+		return -1;
+	}
 	return 0;
 }
 
@@ -455,6 +464,9 @@ extern "C" void *__wrap_shmat(int, const void *, int)
 	++shared_attach_calls;
 	std::memset(&shared_state, 0, sizeof(shared_state));
 	shared_state.gHwInitSts = initial_hw_state;
+	shared_state.g_nProcID = initial_decoder_owner;
+	shared_state.g_bDecOpened = initial_decoder_owner != 0;
+	shared_state.gDilOpMode = initial_op_mode;
 	return &shared_state;
 }
 
@@ -473,8 +485,10 @@ extern "C" int __wrap_shmctl(int, int command, struct shmid_ds *buffer)
 		buffer->shm_nattch = shared_nattch;
 		return 0;
 	}
-	if (command == IPC_RMID)
+	if (command == IPC_RMID) {
+		++shared_remove_calls;
 		return 0;
+	}
 	return -1;
 }
 
@@ -498,6 +512,9 @@ static void BeginCase(int descriptor)
 	shared_attach_calls = 0;
 	shared_detach_calls = 0;
 	shared_nattch = 0;
+	shared_remove_calls = 0;
+	initial_decoder_owner = 0;
+	initial_op_mode = 0;
 	expected_mode = DTS_MONITOR_MODE;
 	initial_hw_state = BC_DIL_HWINIT_NOT_YET;
 	firmware_push_calls = firmware_link_calls = firmware_init_calls = 0;
@@ -508,6 +525,7 @@ static void BeginCase(int descriptor)
 	fail_with_status = false;
 	fail_with_syscall = false;
 	fail_cleanup = false;
+	fail_close = false;
 	unexpected_ioctl = false;
 	allocation_overflow = false;
 	tracked_count = 0;
@@ -705,6 +723,146 @@ static void CheckOpenSuccess(int descriptor)
 		 BCM_IOC_RELEASE},
 		"successful lifetime preserves command and teardown ordering");
 	EndCase("successful device lifetime releases every allocation");
+}
+
+static void CheckMonitorCloseOrder(bool decoder_active, unsigned release_failure)
+{
+	const int descriptor = decoder_active ? 41 : 42;
+	const pid_t decoder_owner = getpid() + 1000;
+
+	BeginCase(descriptor);
+	initial_hw_state = decoder_active ? BC_DIL_HWINIT_DONE :
+	                                      BC_DIL_HWINIT_NOT_YET;
+	HANDLE monitor = nullptr;
+	Check(DtsDeviceOpen(&monitor, DTS_MONITOR_MODE) == BC_STS_SUCCESS && monitor,
+	      "monitor opens independently of decoder close order");
+	if (!monitor) {
+		EndCase("failed monitor fixture leaves no allocation");
+		return;
+	}
+
+	/* Model the state shared with an independently attached playback process.
+	 * The monitor owns only its local context and descriptor. */
+	if (decoder_active) {
+		shared_nattch = 1;
+		DtsSetDecStat(true, decoder_owner);
+		DtsSetHwInitSts(BC_DIL_HWINIT_DONE);
+		DtsSetOPMode(0x1 | 0x4);
+	} else {
+		DtsSetDecStat(false, 0);
+		DtsSetHwInitSts(BC_DIL_HWINIT_NOT_YET);
+		DtsSetOPMode(0x4);
+	}
+	if (release_failure) {
+		if (release_failure < 3) {
+			failed_command = BCM_IOC_RELEASE;
+			fail_with_status = release_failure == 1;
+			fail_with_syscall = release_failure == 2;
+		} else {
+			fail_close = true;
+		}
+	}
+
+	const BC_STATUS status = DtsDeviceClose(monitor);
+	Check(status == (release_failure ? BC_STS_ERROR : BC_STS_SUCCESS),
+	      "monitor close reports its local release result");
+	Check(close_calls == 1 && closed_fd == descriptor,
+	      "monitor close consumes its local descriptor exactly once");
+	Check(shared_state.g_bDecOpened == decoder_active &&
+	      shared_state.g_nProcID == (decoder_active ? decoder_owner : 0),
+	      "monitor close never retires another process decoder ownership");
+	Check(shared_state.gHwInitSts ==
+	          (decoder_active ? BC_DIL_HWINIT_DONE : BC_DIL_HWINIT_NOT_YET),
+	      "monitor close preserves shared hardware initialization state");
+	Check(DtsGetOPMode() == (decoder_active ? 0x1u : 0u),
+	      "monitor close removes only its own shared mode bit");
+	Check(shared_detach_calls == 1,
+	      "monitor close detaches its local shared-memory mapping once");
+	if (decoder_active)
+		Check(shared_remove_calls == 0,
+		      "monitor close never removes a decoder's surviving shared segment");
+	CheckIoctls(descriptor,
+		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
+		 BCM_IOC_RELEASE},
+		"monitor close preserves local open and release ordering");
+	EndCase("monitor close order releases every local allocation");
+}
+
+static void CheckInheritedMonitorCannotClose()
+{
+	BeginCase(43);
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	HANDLE monitor = nullptr;
+	Check(DtsDeviceOpen(&monitor, DTS_MONITOR_MODE) == BC_STS_SUCCESS && monitor,
+	      "monitor inheritance fixture opens its local handle");
+	if (!monitor) {
+		EndCase("failed monitor inheritance fixture leaves no allocation");
+		return;
+	}
+
+	DTS_LIB_CONTEXT *context = DtsGetContext(monitor);
+	const pid_t local_owner = context->ProcessID;
+	const pid_t decoder_owner = local_owner + 1000;
+	DtsSetDecStat(true, decoder_owner);
+	DtsSetHwInitSts(BC_DIL_HWINIT_DONE);
+	DtsSetOPMode(0x1 | 0x4);
+	context->ProcessID = local_owner + 1;
+	Check(DtsDeviceClose(monitor) == BC_STS_ERROR,
+	      "an inherited monitor handle cannot be closed by a foreign process");
+	Check(ioctl_count == 3 && close_calls == 0 && shared_detach_calls == 0,
+	      "foreign monitor close performs no release or local retirement");
+	Check(shared_state.g_bDecOpened &&
+	      shared_state.g_nProcID == decoder_owner &&
+	      shared_state.gHwInitSts == BC_DIL_HWINIT_DONE &&
+	      DtsGetOPMode() == (0x1u | 0x4u),
+	      "foreign monitor close leaves all shared state unchanged");
+
+	context->ProcessID = local_owner;
+	Check(DtsDeviceClose(monitor) == BC_STS_SUCCESS,
+	      "the original monitor process can still close after rejection");
+	Check(close_calls == 1 && closed_fd == 43 && shared_detach_calls == 1,
+	      "the original monitor process consumes its local lifetime once");
+	Check(shared_state.g_bDecOpened &&
+	      shared_state.g_nProcID == decoder_owner &&
+	      shared_state.gHwInitSts == BC_DIL_HWINIT_DONE &&
+	      DtsGetOPMode() == 0x1u,
+	      "successful monitor close preserves the independent decoder owner");
+	CheckIoctls(43,
+		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
+		 BCM_IOC_RELEASE},
+		"rejected inheritance adds no driver command before local close");
+	EndCase("monitor inheritance check releases every local allocation");
+}
+
+static void CheckFailedMonitorOpenPreservesDecoder()
+{
+	const pid_t decoder_owner = getpid() + 1000;
+	BeginCase(44);
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	initial_decoder_owner = decoder_owner;
+	initial_op_mode = 0x1;
+	shared_nattch = 1;
+	failed_command = BCM_IOC_GET_VERSION;
+	fail_with_status = true;
+
+	HANDLE monitor = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	Check(DtsDeviceOpen(&monitor, DTS_MONITOR_MODE) == BC_STS_BUSY,
+	      "failed monitor open preserves its exact local setup error");
+	Check(monitor == nullptr,
+	      "failed monitor open publishes no partial handle");
+	Check(close_calls == 1 && closed_fd == 44 && shared_detach_calls == 1,
+	      "failed monitor open consumes only its local descriptor and mapping");
+	Check(shared_state.g_bDecOpened &&
+	      shared_state.g_nProcID == decoder_owner &&
+	      shared_state.gHwInitSts == BC_DIL_HWINIT_DONE &&
+	      DtsGetOPMode() == 0x1u,
+	      "failed monitor open preserves the independent decoder state");
+	Check(shared_remove_calls == 0,
+	      "failed monitor open preserves the decoder's shared segment");
+	CheckIoctls(44,
+		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_RELEASE},
+		"failed monitor open performs only local setup and retirement commands");
+	EndCase("failed monitor open releases every local allocation");
 }
 
 static DTS_LIB_CONTEXT *AllocateTerminalContext(uint32_t mode, pid_t process_id)
@@ -1144,6 +1302,11 @@ int main()
 	CheckWorkerJoinOrdering();
 	CheckOpenSuccess(0);
 	CheckOpenSuccess(99);
+	for (bool decoder_active : {false, true})
+		for (unsigned release_failure : {0u, 1u, 2u, 3u})
+			CheckMonitorCloseOrder(decoder_active, release_failure);
+	CheckInheritedMonitorCannotClose();
+	CheckFailedMonitorOpenPreservesDecoder();
 	CheckTerminalDecoderOwnership();
 	CheckOpenFailure(BCM_IOC_GET_HWTYPE, false, true, BC_STS_BUSY,
 		{BCM_IOC_GET_HWTYPE, BCM_IOC_RELEASE});
