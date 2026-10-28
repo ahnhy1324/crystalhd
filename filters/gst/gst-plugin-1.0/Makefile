@@ -51,7 +51,8 @@ endif
 
 $(PLUGIN): gstcrystalhd.c gstcrystalhd-codecs.h gstcrystalhd-timing.h gstcrystalhd-input.h \
 		gstcrystalhd-diqos.c gstcrystalhd-diqos.h \
-		$(ROOTDIR)/filters/crystalhd-h264-output.h
+		$(ROOTDIR)/filters/crystalhd-h264-output.h \
+		$(ROOTDIR)/filters/crystalhd-mpeg2-inspect.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< gstcrystalhd-diqos.c -o $@ $(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 
 $(PLAYBACK_TEST): $(ROOTDIR)/tests/gstreamer-playback.c \
@@ -71,7 +72,8 @@ $(LIFECYCLE_LEGACY_TEST): CPPFLAGS += -DGST_CRYSTALHD_TEST_NO_POLL_API
 $(LIFECYCLE_TEST) $(LIFECYCLE_LEGACY_TEST): $(ROOTDIR)/tests/gst-lifecycle.c gstcrystalhd.c \
 		gstcrystalhd-codecs.h gstcrystalhd-timing.h gstcrystalhd-input.h \
 		gstcrystalhd-diqos.c gstcrystalhd-diqos.h \
-		$(ROOTDIR)/filters/crystalhd-h264-output.h
+		$(ROOTDIR)/filters/crystalhd-h264-output.h \
+		$(ROOTDIR)/filters/crystalhd-mpeg2-inspect.h
 	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror $(CPPFLAGS) $< gstcrystalhd-diqos.c -o $@ \
 		$(shell $(PKG_CONFIG) --cflags --libs gstreamer-check-1.0 gstreamer-video-1.0) $(CRYSTALHD_CPU_FLAGS)
 
@@ -89,7 +91,8 @@ check-player: $(PLUGIN)
 	LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd):$(LD_LIBRARY_PATH) \
 		$(PYTHON) -B $(ROOTDIR)/tests/gstreamer-player.test.py
 
-$(CODECS_TEST): $(ROOTDIR)/tests/gst-codecs.c gstcrystalhd-codecs.h gstcrystalhd-timing.h
+$(CODECS_TEST): $(ROOTDIR)/tests/gst-codecs.c gstcrystalhd-codecs.h gstcrystalhd-timing.h \
+		$(ROOTDIR)/filters/crystalhd-mpeg2-inspect.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I. $< -o $@ \
 		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES)) $(CRYSTALHD_CPU_FLAGS)
 

@@ -1892,8 +1892,8 @@ gst_crystalhd_reopen_format(GstVideoDecoder *decoder, GstVideoCodecState *state,
   if (subtype == BC_MSUBTYPE_MPEG2VIDEO) {
     CrystalHdMpeg2Picture metadata;
     self->codec.mpeg2_height = input_format.height;
-    gst_crystalhd_mpeg2_picture_headers(input_format.pMetaData,
-                                        input_format.metaDataSz, &metadata);
+    crystalhd_mpeg2_picture_headers(input_format.pMetaData,
+                                    input_format.metaDataSz, &metadata);
     if (metadata.have_sequence)
       self->codec.mpeg2_height = metadata.height;
     if (metadata.have_sequence_extension) {
@@ -2189,7 +2189,7 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
       self->mpeg2_reference_pictures = 0;
       self->mpeg2_frame_reference_tracking = TRUE;
     }
-    gst_crystalhd_mpeg2_picture_headers(data, size, &mpeg2_picture);
+    crystalhd_mpeg2_picture_headers(data, size, &mpeg2_picture);
     if (mpeg2_picture.have_sequence) {
       self->codec.mpeg2_height = mpeg2_picture.height;
       self->codec.mpeg2_profile = 0;
