@@ -101,11 +101,19 @@ scope to general full-rate FHD or hardware deinterlacing.
 - [ ] [#510: Reliability and maintenance review](https://github.com/ahnhy1324/crystalhd/issues/510)
   — [cross-process RX metadata correction](HARDWARE-2026-09-13.md#rx-monitor-pages-2026-10-25)
   has a native reproduction, pinned-page fix and exact oracle follow-up.
-  Monitor close still returns an error and retains its FD until process exit;
   [legacy BUSY/RELEASE ordering](HARDWARE-2026-09-13.md#legacy-release-busy-2026-10-25)
-  has an injected real-lock reproduction and per-file cancellation fix. Keep DIL
-  attachment work within the agreed logging-only scope; CI/provenance and
-  admission-timing follow-ups remain separate.
+  has an injected real-lock reproduction and per-file cancellation fix.
+  Monitor close, fail-closed shared-memory attachment, balanced process-local
+  mapping lifetime and inherited-handle rejection are integrated through
+  [#548](https://github.com/ahnhy1324/crystalhd/pull/548),
+  [#549](https://github.com/ahnhy1324/crystalhd/pull/549),
+  [#550](https://github.com/ahnhy1324/crystalhd/pull/550) and
+  [#551](https://github.com/ahnhy1324/crystalhd/pull/551). These separately scoped
+  functional repairs supersede the original logging-only attachment task;
+  retain its historical failure evidence. Mode-bit reference semantics,
+  cross-process mode updates and same-handle close/use lifetime remain separate
+  follow-ups; the shared-mapping fix alone does not qualify them. CI/provenance
+  and admission-timing acceptance remain separately tracked.
 - [ ] [#91: Deferred hardware and application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91)
   — alternate hardware, the LTS item executed through #371, bounded BCM70015
   deep-S3 coverage completed through #395/#397, remaining fault/removal work,
