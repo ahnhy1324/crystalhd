@@ -345,7 +345,8 @@ while not pathlib.Path(record).exists() and time.monotonic()<end:
     time.sleep(.01)
 actual=json.loads(pathlib.Path(record).read_text())
 assert actual==[expected,'--tray'],repr(actual)
-assert app.get_string('TryExec')==expected,app.get_string('TryExec')
+actual_tryexec=DesktopAppInfo.get_string(app,'TryExec')
+assert actual_tryexec==expected,actual_tryexec
 '''
         available=subprocess.run([sys.executable,'-B','-c','import gi; from gi.repository import Gio'],
                                  stdout=subprocess.PIPE,stderr=subprocess.PIPE)
@@ -364,7 +365,7 @@ assert app.get_string('TryExec')==expected,app.get_string('TryExec')
                                           stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
                                           universal_newlines=True)
                     self.assertEqual(result.returncode,0,result.stdout)
-                    gui=prefix/'bin/crystalhd-settings';record=root/'argv.json'
+                    gui=prefix/'bin/crystalhd-settings';record=prefix/'argv.json'
                     program=('#!'+sys.executable+'\nimport json,os,sys\n'
                              'with open('+repr(str(record)+'.new')+',"w") as stream:json.dump(sys.argv,stream)\n'
                              'os.replace('+repr(str(record)+'.new')+','+repr(str(record))+')\n')
