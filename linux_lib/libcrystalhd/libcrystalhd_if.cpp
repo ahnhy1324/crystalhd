@@ -744,13 +744,6 @@ DtsDeviceOpen(
 	DtsSetgDevID(DeviceID);
 
 	/*
-	 * Old layout link cards have issues w/a core clock of 200, so we use
-	 * 180 for all link cards, as we have no way to tell old layout from
-	 * new layout cards.
-	 */
-	DtsSetCoreClock(localDevice, 180);
-
-	/*
 	 * We have to specify the mode to the driver.
 	 * So the driver can cleanup only in case of
 	 * playback/Diag mode application close.
@@ -796,6 +789,12 @@ DtsDeviceOpen(
 		DebugLog_Trace(LDIL_DBG,"Notify Operating Mode Failed\n");
 		goto fail;
 	}
+
+	/* Old LINK layouts need 180 MHz rather than 200 MHz. Program the shared
+	 * clock only after the driver admits this session; monitor handles must
+	 * leave an active decoder's clock and SDRAM refresh settings unchanged. */
+	if (mode != DTS_MONITOR_MODE)
+		DtsSetCoreClock(localDevice, 180);
 
 	/* Setup Hardware Specific Configuration */
 	DtsSetupConfig(DtsGetContext(localDevice), DeviceID, RevID, FixFlags);

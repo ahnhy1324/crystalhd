@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "7411d.h"
+#include "bc_decoder_regs.h"
 #include "libcrystalhd_if.h"
 #include "libcrystalhd_priv.h"
 
@@ -52,6 +53,13 @@ static bool recovery_owner_seen_during_close;
 static uint32_t expected_mode;
 static uint32_t initial_hw_state;
 static uint32_t initial_device_id;
+static uint32_t reported_device_id;
+static bool notify_succeeded;
+static uint32_t notified_mode;
+static unsigned register_reads;
+static unsigned register_writes;
+static uint32_t pll_control;
+static uint32_t sdram_refresh;
 static unsigned firmware_push_calls;
 static unsigned firmware_link_calls;
 static unsigned firmware_init_calls;
@@ -395,7 +403,7 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 			mode_set_during_open = mode_cleared_during_open = 0;
 			open_mode_update_seen = true;
 		}
-		data->u.hwType.PciDevId = BC_PCI_DEVID_FLEA;
+		data->u.hwType.PciDevId = reported_device_id;
 		data->u.hwType.PciVenId = 0x14e4;
 		data->u.hwType.HwRev = 1;
 		break;
@@ -407,6 +415,29 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 	case BCM_IOC_NOTIFY_MODE:
 		Check(data->u.NotifyMode.Mode == expected_mode,
 		      "open notifies the selected mode");
+		break;
+	case BCM_IOC_REG_RD:
+		++register_reads;
+		Check(notify_succeeded && (notified_mode & 0xff) != DTS_MONITOR_MODE,
+		      "core-clock register reads require an admitted non-monitor session");
+		Check(data->u.regAcc.Offset == DecHt_PllACtl && data->u.regAcc.Value == 0,
+		      "core-clock reads target only PLL control with a cleared result");
+		/* Keep PLL lock asserted so the production poll never needs to sleep. */
+		data->u.regAcc.Value = pll_control;
+		break;
+	case BCM_IOC_REG_WR:
+		++register_writes;
+		Check(notify_succeeded && (notified_mode & 0xff) != DTS_MONITOR_MODE,
+		      "core-clock register writes require an admitted non-monitor session");
+		if (register_writes == 1) {
+			Check(data->u.regAcc.Offset == SDRAM_REF_PARAM,
+			      "core-clock first writes the SDRAM refresh register");
+			sdram_refresh = data->u.regAcc.Value;
+		} else {
+			Check(register_writes == 2 && data->u.regAcc.Offset == DecHt_PllACtl,
+			      "core-clock next writes only PLL control");
+			pll_control = data->u.regAcc.Value;
+		}
 		break;
 	case BCM_IOC_RELEASE:
 		if (expect_hw_reset_before_release)
@@ -436,6 +467,10 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 		}
 		if (fail_with_status)
 			data->RetSts = BC_STS_BUSY;
+	}
+	if (command == BCM_IOC_NOTIFY_MODE && data->RetSts == BC_STS_SUCCESS) {
+		notify_succeeded = true;
+		notified_mode = data->u.NotifyMode.Mode;
 	}
 	return 0;
 }
@@ -582,6 +617,12 @@ static void BeginCase(int descriptor)
 	expected_mode = DTS_MONITOR_MODE;
 	initial_hw_state = BC_DIL_HWINIT_NOT_YET;
 	initial_device_id = BC_PCI_DEVID_INVALID;
+	reported_device_id = BC_PCI_DEVID_FLEA;
+	notify_succeeded = false;
+	notified_mode = 0;
+	register_reads = register_writes = 0;
+	pll_control = 0x00c20080;
+	sdram_refresh = 0;
 	firmware_push_calls = firmware_link_calls = firmware_init_calls = 0;
 	firmware_push_status = firmware_init_status = BC_STS_SUCCESS;
 	mode_added_during_setup = 0;
@@ -1676,6 +1717,64 @@ static void CheckHardwareInitOpen(uint32_t initial_state, BC_STATUS push_status,
 	EndCase("hardware-init success/failure releases every allocation");
 }
 
+static void CheckLinkClockAdmission(uint32_t mode, unsigned long failed_query,
+		bool syscall_failure)
+{
+	BeginCase(70);
+	expected_mode = mode;
+	reported_device_id = BC_PCI_DEVID_LINK;
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	initial_op_mode = mode == DTS_MONITOR_MODE ? 0x1 : 0x4;
+	initial_decoder_owner = mode == DTS_MONITOR_MODE ? getpid() + 1000 : 0;
+	shared_exists = true;
+	shared_nattch = 1;
+	failed_command = failed_query;
+	fail_with_syscall = syscall_failure;
+	fail_with_status = failed_query && !syscall_failure;
+	const bool clock_owned = !failed_query && mode != DTS_MONITOR_MODE;
+	const BC_STATUS expected_status = !failed_query ? BC_STS_SUCCESS :
+		(syscall_failure ? BC_STS_ERROR : BC_STS_BUSY);
+	HANDLE device = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	Check(DtsDeviceOpen(&device, mode) == expected_status,
+	      "LINK open preserves admission success or the exact setup error");
+	Check((device != nullptr) == !failed_query,
+	      "only a successfully admitted LINK open publishes its handle");
+	Check(notify_succeeded == !failed_query,
+	      "LINK clock fixture observes mode admission before register access");
+	Check(register_reads == (clock_owned ? 2u : 0u) &&
+	      register_writes == (clock_owned ? 2u : 0u),
+	      "only an admitted non-monitor LINK open programs the core clock");
+	if (clock_owned)
+		Check(pll_control == 0x00c220a4 && sdram_refresh == 0x104e,
+		      "admitted LINK open preserves 180 MHz PLL and refresh programming");
+	if (device)
+		Check(DtsDeviceClose(device) == BC_STS_SUCCESS,
+		      "admitted LINK handle closes normally");
+	Check(shared_state.gHwInitSts ==
+	          (clock_owned ? BC_DIL_HWINIT_NOT_YET : BC_DIL_HWINIT_DONE),
+	      "non-owner LINK inspection or failure preserves shared hardware state");
+	Check(shared_state.gDilOpMode == initial_op_mode &&
+	      shared_state.g_nProcID == initial_decoder_owner,
+	      "LINK clock fixture preserves independent mode and decoder owners");
+	Check(open_calls == 1 && close_calls == 1 && closed_fd == 70 &&
+	      shared_attach_calls == 1 && shared_detach_calls == 1 &&
+	      shared_remove_calls == 0,
+	      "LINK clock fixture consumes only its own descriptor and mapping");
+	if (clock_owned)
+		CheckIoctls(70, {BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION,
+		      BCM_IOC_NOTIFY_MODE, BCM_IOC_REG_RD, BCM_IOC_REG_WR,
+		      BCM_IOC_REG_WR, BCM_IOC_REG_RD, BCM_IOC_RELEASE},
+		      "LINK core-clock programming follows successful mode notification");
+	else if (failed_query == BCM_IOC_GET_VERSION)
+		CheckIoctls(70, {BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_RELEASE},
+		      "failed LINK version query performs no register access");
+	else
+		CheckIoctls(70, {BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION,
+		      BCM_IOC_NOTIFY_MODE, BCM_IOC_RELEASE},
+		      "LINK monitor or rejected notification performs no register access");
+	EndCase("LINK clock admission releases every local allocation");
+}
+
 struct InheritedLockGate {
 	DTS_LIB_CONTEXT *context;
 	pthread_mutex_t lock;
@@ -1957,6 +2056,11 @@ int main()
 	for (bool notify : {false, true})
 		CheckUnnotifiedInterfacePreservesHardware(notify);
 	CheckPartialNonMonitorOpenPreservesHardware();
+	CheckLinkClockAdmission(DTS_MONITOR_MODE, 0, false);
+	CheckLinkClockAdmission(DTS_DIAG_MODE, 0, false);
+	for (unsigned long failed_query : {BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE})
+		for (bool syscall_failure : {false, true})
+			CheckLinkClockAdmission(DTS_DIAG_MODE, failed_query, syscall_failure);
 	CheckHardwareInitOpen(BC_DIL_HWINIT_NOT_YET, BC_STS_SUCCESS,
 		BC_STS_SUCCESS, BC_STS_SUCCESS, 1, 1);
 	CheckHardwareInitOpen(BC_DIL_HWINIT_NOT_YET, BC_STS_IO_XFR_ERROR,
