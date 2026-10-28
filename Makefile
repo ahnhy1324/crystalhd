@@ -12,7 +12,7 @@ CONFIG_PRESET_MANIFEST := share/crystalhd/config-presets-v1.json
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: settings-ui-check install-settings uninstall-settings install-provenance uninstall-provenance all driver library library-check raw-frame-check library-drain-test gstreamer vaapi vaapi-cpu-check examples browser configuration-check uapi-check dma-check l0s-check command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check tx-release-check h264-stream-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check install-config uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check uninstall-config clean
+.PHONY: settings-ui-check install-settings uninstall-settings install-provenance uninstall-provenance all driver library library-check raw-frame-check library-drain-test gstreamer vaapi vaapi-cpu-check examples browser configuration-check uapi-check dma-check l0s-check command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check tx-release-check h264-stream-check mpeg2-inspect-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check install-config uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check uninstall-config clean
 
 all: driver library gstreamer vaapi examples
 
@@ -112,7 +112,12 @@ raw-frame-check:
 
 # Optional direct-library hardware probe. Building never opens the device;
 # running requires explicit --hardware (or device-free --preflight).
-library-drain-test: library tests/phase1-progress.h tests/issue204-active-context.h tests/issue204-generation-observer.h tests/issue399-firmware-drop.h tests/flea-power-observer.h tests/rx-output-receipts.h tests/rx-output-receipts.cpp
+library-drain-test: library tests/library-drain.cpp \
+		filters/gst/gst-plugin-1.0/gstcrystalhd-codecs.h \
+		filters/crystalhd-mpeg2-inspect.h tests/phase1-progress.h \
+		tests/issue204-active-context.h tests/issue204-generation-observer.h \
+		tests/issue399-firmware-drop.h tests/flea-power-observer.h \
+		tests/rx-output-receipts.h tests/rx-output-receipts.cpp
 	$(CXX) -std=c++11 -O2 -g -Wall -Wextra -Werror -D__LINUX_USER__ \
 		-Iinclude -Ilinux_lib/libcrystalhd tests/library-drain.cpp \
 		tests/rx-output-receipts.cpp \
@@ -254,6 +259,9 @@ pib-check:
 userspace32-check: vaapi-cpu-check
 	CXX="$(CXX)" sh ./tests/userspace32.sh
 
+mpeg2-inspect-check:
+	CC="$(CC)" CXX="$(CXX)" sh ./tests/mpeg2-inspect.sh
+
 legacy-cpu-check:
 	CXX="$(CXX)" sh ./tests/userspace32.sh --legacy
 
@@ -268,7 +276,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv tests/maintenance-oracl
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
 	sh tests/phase1-release-gate.sh manifest-check tests/maintenance-oracle.tsv
 
-check: runtime-install-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check vc1-seek-oracle-check fw-research-check all
+check: runtime-install-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check
