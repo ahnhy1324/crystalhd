@@ -325,7 +325,7 @@ NATIVE = {
     "vaapi.trace": False,
     "chromium.executable": ABSENT,
     "chromium.drm_device": "/dev/dri/renderD128",
-    "chromium.password_store": "basic",
+    "chromium.password_store": "",
     "chromium.profile_dir": ABSENT,
     "chromium.native_gl": False,
     "chromium.experimental_hw_decode": False,

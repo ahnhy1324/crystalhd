@@ -43,6 +43,19 @@ if (process.argv[2] === '--version') {
   }
 }
 
+test('password store preserves the browser default unless explicitly selected', () => {
+  for (const overrides of [{}, {CRYSTALHD_CHROMIUM_PASSWORD_STORE: ''}]) {
+    const result = launch(overrides);
+    assert.equal(result.status, 0, result.stderr);
+    const invocation = JSON.parse(result.stdout);
+    assert.ok(!invocation.args.some((argument) =>
+      argument.startsWith('--password-store=')));
+  }
+  const selected = launch({CRYSTALHD_CHROMIUM_PASSWORD_STORE: 'basic'});
+  assert.equal(selected.status, 0, selected.stderr);
+  assert.ok(JSON.parse(selected.stdout).args.includes('--password-store=basic'));
+});
+
 test('legacy readable shell config overrides an inherited launcher value', () => {
   const result = launch({
     CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE: '1',

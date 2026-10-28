@@ -27,7 +27,7 @@ fi
 
 browser=${CRYSTALHD_CHROMIUM:-}
 drm_device=${CRYSTALHD_DRM_DEVICE:-/dev/dri/renderD128}
-password_store=${CRYSTALHD_CHROMIUM_PASSWORD_STORE-basic}
+password_store=${CRYSTALHD_CHROMIUM_PASSWORD_STORE:-}
 if [ -z "$browser" ]; then
     for candidate in google-chrome-stable google-chrome chromium chromium-browser; do
         if command -v "$candidate" >/dev/null 2>&1; then

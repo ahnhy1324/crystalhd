@@ -8,7 +8,7 @@ static Rules MakeRules() {
   rules.emplace("chromium.experimental_hw_decode", Rule{Kind::Boolean, {}, Value(false)});
   rules.emplace("chromium.h264_policy_ack", Rule{Kind::Boolean, {}, Value(false)});
   rules.emplace("chromium.native_gl", Rule{Kind::Boolean, {}, Value(false)});
-  rules.emplace("chromium.password_store", Rule{Kind::String, {}, Value("basic")});
+  rules.emplace("chromium.password_store", Rule{Kind::String, {}, Value("")});
   rules.emplace("chromium.profile_dir", Rule{Kind::NonemptyString, {}, Value()});
   rules.emplace("gstreamer.crystalhddec.scale_width", Rule{Kind::ScaleWidth, {}, Value(uint64_t(0))});
   rules.emplace("libcrystalhd.rx_pool_count", Rule{Kind::IntegerEnum, {Value(uint64_t(8)), Value(uint64_t(16))}, Value(uint64_t(16))});

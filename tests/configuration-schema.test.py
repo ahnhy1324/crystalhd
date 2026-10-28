@@ -231,7 +231,7 @@ class SchemaOracleTest(unittest.TestCase):
         self.assertEqual(
             result.origins["chromium.native_gl"], "user-profile:moonlight"
         )
-        self.assertEqual(result.requested["chromium.password_store"], "basic")
+        self.assertEqual(result.requested["chromium.password_store"], "")
         self.assertEqual(result.origins["chromium.password_store"], "user:unset")
 
     def test_profile_never_matches_an_application_implicitly(self):
