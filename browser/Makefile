@@ -41,8 +41,8 @@ install:
 		"$(DESTDIR)$(DATADIR)/crystalhd/h264-only/manifest.json"
 	install -D -m 0644 h264-only/prefer-h264.js \
 		"$(DESTDIR)$(DATADIR)/crystalhd/h264-only/prefer-h264.js"
-	install -D -m 0644 crystalhd-chromium.desktop \
-		"$(DESTDIR)$(DATADIR)/applications/crystalhd-chromium.desktop"
+	$(PYTHON3) -B "$(ROOTDIR)/scripts/render-settings-desktop.py" --application browser \
+		--bindir "$(BINDIR)" --output "$(DESTDIR)$(DATADIR)/applications/crystalhd-chromium.desktop"
 	@if [ -z "$(DESTDIR)" ] && command -v update-desktop-database >/dev/null 2>&1; then \
 		update-desktop-database "$(DATADIR)/applications" || \
 			echo "WARN: browser files installed, but the desktop cache was not updated" >&2; \
