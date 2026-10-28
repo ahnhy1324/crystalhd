@@ -16,6 +16,8 @@ static void TestTerminalPromotionTurn(std::unique_lock<std::mutex> &lock);
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <sys/resource.h>
+#include <sys/wait.h>
 
 static std::function<void(Driver *, std::unique_lock<std::mutex> &)> decode_worker_turn;
 static void TestDecodeWorkerTurn(Driver *driver, std::unique_lock<std::mutex> &lock) {
@@ -35,7 +37,14 @@ static void TestTerminalPromotionTurn(std::unique_lock<std::mutex> &lock) {
 namespace allocation_fault {
 thread_local bool fail_next = false;
 thread_local size_t fail_size = 0;
+thread_local unsigned fail_after = 0;
+static std::atomic<size_t> worker_failed_bytes{0};
 void *Allocate(size_t bytes) {
+  if (fail_after != 0 && --fail_after == 0) {
+    worker_failed_bytes.store(bytes);
+    std::fprintf(stderr, "worker poll allocation injected: %zu bytes\n", bytes);
+    throw std::bad_alloc();
+  }
   if (fail_next) {
     fail_next = false;
     throw std::bad_alloc();
@@ -11257,6 +11266,144 @@ static void OutputBacklogWorkerReleasesDriverMutex() {
          outputs_seen, kPictures, handoffs.load());
 }
 
+static void WorkerPollAllocationFailure(unsigned allocation) {
+  TeardownFixture f(8);
+  const int descriptor = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  Require(descriptor >= 0, "allocate worker-failure output event");
+  f.io.readiness_event = descriptor;
+  f.decoder->output_poll = std::make_shared<OutputPollLease>(descriptor);
+  bool armed = false;
+  struct WorkerCleanup {
+    Driver &driver;
+    ~WorkerCleanup() { driver.StopWorkers(); decode_worker_turn = {}; }
+  } cleanup{f.driver};
+  decode_worker_turn = [&](Driver *driver, std::unique_lock<std::mutex> &) {
+    if (driver == &f.driver && !armed) {
+      armed = true;
+      // The input-budget handoff precedes all three poll preparation
+      // allocations. Fail in this worker, never in the frontend or fixture.
+      allocation_fault::fail_after = allocation;
+    }
+  };
+  f.driver.StartDecodeWorker();
+  const std::thread::id worker = f.driver.decode_worker.get_id();
+  {
+    std::unique_lock<std::mutex> lock(f.driver.mutex);
+    Require(f.driver.condition.wait_for(lock, std::chrono::seconds(2), [&] {
+      return f.decoder->ReplayFailed();
+    }), "allocation failure wakes pending-picture waiters with a decoder error");
+    Require(armed && allocation_fault::worker_failed_bytes.load() != 0 &&
+                f.decoder->output_poll_inflight == 0 &&
+                f.decoder->armed_output_poll.expired() &&
+                f.decoder->output_poll && f.decoder->device == f.io.handle() &&
+                f.io.device_close_calls == 0 && f.io.inputs.size() == 4 &&
+                std::all_of(f.held.begin(), f.held.end(), [](const auto &picture) {
+                  return !picture->ready && picture->failed;
+                }),
+            "failed preparation publishes no poll borrower, success or premature close");
+    const unsigned polls = f.io.output_polls;
+    const bool progressed = f.driver.condition.wait_for(
+        lock, std::chrono::milliseconds(20), [&] {
+          return f.io.output_polls != polls;
+        });
+    Require(!progressed && !HasAutonomousDecodeWork(f.decoder),
+            "failed decoder is not polled or retried in a busy loop");
+  }
+  VASurfaceStatus state = VASurfaceReady;
+  Require(QuerySurfaceStatus(&f.context, 1, &state) == VA_STATUS_ERROR_DECODING_ERROR &&
+              SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_DECODING_ERROR &&
+              fcntl(descriptor, F_GETFD) >= 0,
+          "VA queries expose failure while the context still owns its output fd");
+  Require(DestroyContext(&f.context, 1) == VA_STATUS_ERROR_DECODING_ERROR &&
+              f.decoder->device == nullptr && !f.decoder->output_poll &&
+              f.driver.contexts.empty() && f.io.device_close_calls == 1 &&
+              fcntl(descriptor, F_GETFD) == -1 && errno == EBADF,
+          "consuming close reports the failed decode and retires the fd once");
+
+  // Reopen through the actual VA admission path, then retain one accepted
+  // picture as in TeardownFixture. The same worker must complete its pixels.
+  f.io.allow_device_open = true;
+  f.driver.next_context = 2;
+  VAConfigID config = VA_INVALID_ID;
+  VAContextID context = VA_INVALID_ID;
+  Require(CreateConfig(&f.context, VAProfileH264Main, VAEntrypointVLD,
+                       nullptr, 0, &config) == VA_STATUS_SUCCESS &&
+              CreateContext(&f.context, config, 16, 16, 0, nullptr, 0, &context) ==
+                  VA_STATUS_SUCCESS,
+          "a new VA context reacquires the mock device after the failed session");
+  const uint64_t token = 9 * kTimestampStep;
+  const auto replacement = f.driver.contexts.at(context);
+  auto surface = std::make_shared<Surface>();
+  auto picture = std::make_shared<Surface>();
+  for (const auto &frame : {surface, picture}) {
+    Require(frame->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
+            "allocate replacement decoder picture");
+    memset(frame->storage.data(), 99, frame->storage.size());
+    frame->expected_timestamp = token;
+  }
+  const int replacement_fd = eventfd(1, EFD_CLOEXEC | EFD_NONBLOCK);
+  Require(replacement_fd >= 0, "allocate replacement output event");
+  {
+    std::lock_guard<std::mutex> lock(f.driver.mutex);
+    Require(OpenDecoder(replacement.get()) == VA_STATUS_SUCCESS,
+            "the reopened VA context starts its normal decoder and capture");
+    f.io.readiness_event = replacement_fd;
+    replacement->output_poll = std::make_shared<OutputPollLease>(replacement_fd);
+    f.driver.surfaces[9] = surface;
+    replacement->decoded_frames[token] = picture;
+    replacement->surface_timestamps[surface.get()] = token;
+    replacement->pending[token] = 9;
+    Require(replacement->replay.Append(token, true, {0, 0, 1, 0x65}) &&
+                PumpDecodeInput(&f.driver, replacement.get()) == VA_STATUS_SUCCESS,
+            "submit the replacement session's real compressed input");
+    f.io.outputs.push_back(token);
+    f.driver.NotifyDecodeWorker();
+  }
+  {
+    std::unique_lock<std::mutex> lock(f.driver.mutex);
+    Require(f.driver.condition.wait_for(lock, std::chrono::seconds(2), [&] {
+      return surface->ready || surface->failed;
+    }) && surface->ready && !surface->failed &&
+                surface->frame_timestamp == token &&
+                surface->planes[0][0] == DecodeIoMock::Luma(token) &&
+                replacement->pending.empty() && f.io.outputs.empty() &&
+                f.io.output_thread == worker &&
+                f.driver.decode_worker.get_id() == worker,
+            "the same worker resumes fresh-context decoding with exact pixels");
+  }
+  Require(DestroyContext(&f.context, context) == VA_STATUS_SUCCESS &&
+              f.io.device_close_calls == 2 && f.io.open_attempts == 1 &&
+              !f.io.invalid && replacement->output_poll_inflight == 0,
+          "the replacement session drains and closes without leaked ownership");
+}
+
+static void WorkerPollAllocationFailuresAreContained() {
+  bool passed = true;
+  for (unsigned allocation = 1; allocation != 4; ++allocation) {
+    std::fflush(nullptr);
+    const pid_t child = fork();
+    Require(child >= 0, "fork allocation-failure worker child");
+    if (child == 0) {
+      const rlimit no_core = {0, 0};
+      setrlimit(RLIMIT_CORE, &no_core);
+      alarm(8);
+      WorkerPollAllocationFailure(allocation);
+      _exit(0);
+    }
+    int status = 0;
+    pid_t waited;
+    do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+    Require(waited == child, "collect allocation-failure worker child");
+    const bool success = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    std::printf("Worker poll allocation %u: exit=%d signal=%d %s\n", allocation,
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1,
+                WIFSIGNALED(status) ? WTERMSIG(status) : 0,
+                success ? "PASS" : "FAIL");
+    passed = passed && success;
+  }
+  Require(passed, "every failed poll allocation remains a recoverable decoder error");
+}
+
 static void Mpeg4StateOnlyEosStillWakesEventWorker() {
   TeardownFixture fixture(1);
   fixture.decoder->profile = VAProfileMPEG4AdvancedSimple;
@@ -12106,6 +12253,10 @@ static void NeutralAuxiliaryContracts() {
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::strcmp(argv[1], "--worker-allocation-failure") == 0) {
+      WorkerPollAllocationFailuresAreContained();
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--output-worker-handoff") == 0) {
       OutputBacklogWorkerReleasesDriverMutex();
       BudgetedWorkerReleasesDriverMutex();
@@ -12294,6 +12445,7 @@ int main(int argc, char **argv) {
     TerminateJoinsAnUnlockedTerminalDestroy();
     OutputBacklogWorkerReleasesDriverMutex();
     BudgetedWorkerReleasesDriverMutex();
+    WorkerPollAllocationFailuresAreContained();
     Mpeg4StateOnlyEosStillWakesEventWorker();
     OutputPollHangupFailsWithoutSpinning();
     AutonomousWorkerFinishesOnlyAnExistingSealedBatch();
