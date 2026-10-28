@@ -2822,13 +2822,15 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 	if(!Ctx)
 		return BC_STS_INV_ARG;
 
+	DtsJoinTxThread(Ctx);
+	/* The worker can finish recovery by publishing another decoder open.
+	 * Observe its final ownership only after that publisher has retired. */
 	terminal_decoder_owner = Ctx->OpMode == DTS_PLAYBACK_MODE &&
 		(Ctx->State != BC_DEC_STATE_CLOSE ||
 		 Ctx->recoveryRetireDecoderOwner) && Ctx->ProcessID != 0 &&
 		bc_dil_glob_ptr && bc_dil_glob_ptr->g_bDecOpened &&
 		bc_dil_glob_ptr->g_nProcID == Ctx->ProcessID;
 
-	DtsJoinTxThread(Ctx);
 	DtsReleasePESConverter((HANDLE)Ctx);
 	// de-Allocate circular buffer
 	txBufFree(&Ctx->circBuf);
@@ -2845,6 +2847,18 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 			DebugLog_Trace(LDIL_DBG,
 				"DtsReleaseInterface: capture cleanup failed: %d\n",
 				cleanup_sts);
+	}
+
+	/* Finish this decoder's shared-state writes before the kernel can hand
+	 * its session to another opener. Recovery remains protected by kernel
+	 * owner/state admission until retirement; a retained owner still rejects
+	 * a replacement even when legacy RELEASE reports accounting success. */
+	if (terminal_decoder_owner) {
+		DtsSetDecStat(false, Ctx->ProcessID);
+		Ctx->recoveryRetireDecoderOwner = false;
+	}
+
+	if (Ctx->DevHandle >= 0) {
 		/* Retire only initialization state owned by this admitted session.
 		 * RELEASE can hand hardware to a new opener before returning, so the
 		 * old owner must finish this update while it still owns the session. */
@@ -2864,14 +2878,6 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 		/* Linux consumes the descriptor even when close reports a late error.
 		 * A retry could close a descriptor reused by another thread. */
 		Ctx->DevHandle = -1;
-	}
-
-	/* A failed firmware close remains retryable while its handle is live.
-	 * This path consumes that handle after releasing the driver session, so
-	 * retire only the decoder ownership represented by this context. */
-	if (terminal_decoder_owner) {
-		DtsSetDecStat(false, Ctx->ProcessID);
-		Ctx->recoveryRetireDecoderOwner = false;
 	}
 
 	/* Normal ownership is retired before userspace backing is freed. If an
