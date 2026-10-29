@@ -320,5 +320,6 @@
     "No public archive, package upload, upstream submission or remote write.",
     "No system-library replacement, module/firmware/PM or installed-profile/default change.",
     "#538 remains OPEN; only its excluded heap subtask stays excluded."
-  ]
+  ],
+  "implementation_snapshot": "a6a604be7e8573664c684a848082de1098f4a1b9"
 }

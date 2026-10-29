@@ -473,7 +473,7 @@ python3 -B tools/kodi-route-probe/runtime-package-namespace.py \
 ```
 
 This requires bubblewrap namespace support and Python in the selected Platform.
-It mounts only that Platform and the package, clears inherited environment
+In its default metadata mode it mounts only that Platform and the package, clears inherited environment
 controls and exposes no network, sysfs, decoder/GPU devices, app/GL images or
 DIL/GStreamer/probe dependency overlay. It calls library version/configuration
 and codec metadata APIs, checks seven exact mappings and tests that the original
@@ -497,3 +497,45 @@ for deterministic archives, relocation, omitted/mismatched payload/providers,
 required symbol versions and actual symbols, hashes/modes, source drift,
 RPATH and the allowlist. Fixture binaries are compiled for inspection and never
 executed; compiler requirements belong to development tests, not the target.
+
+### Actual packaged CLI and software-media validation
+
+The optional software mode additionally mounts one frozen synthetic input,
+independent reference files read-only and a new output directory. It actually
+executes the packaged `ffmpeg -version`, `ffprobe -version`, decoder inventory,
+software H.264 decode and `ffprobe` frame inspection. FFmpeg explicitly uses
+`-hwaccel none -c:v h264`, preserves source PTS and writes NV12 plus framemd5;
+ffprobe restricts its decoder whitelist to H.264. No decoder/GPU device, sysfs,
+Kodi/GL/DIL/GStreamer image or network is introduced.
+
+```sh
+python3 -B tools/kodi-route-probe/runtime-package-namespace.py \
+  --package "/path/to/freshly-extracted-private-package" \
+  --platform-root "/path/to/pinned-Platform/files" \
+  --mount-prefix "/opt/relocated private runtime" \
+  --software-media "/path/to/frozen-input.ts" \
+  --software-oracle "/path/to/frozen-reference.json" \
+  --software-clock-reference "/path/to/independent-ffprobe8.json" \
+  --software-nv12-reference "/path/to/retained-software-reference.nv12" \
+  --output-dir "/new/private/CLI-output"
+```
+
+The [actual CLI result](../../tests/fixtures/issue539/runtime-cli-20261029.json)
+records both relocated prefixes: all five CLI cases exit 0; each decode returns
+50 pictures with 69,120,000 exact Y/UV bytes, full-frame hashes and PTS
+133200–309600 at 1/90000, matching the retained independent software reference.
+The separate ffprobe decoder agrees on every source PTS, geometry and TFF flag.
+Long media processes have complete live seven-DSO mapping snapshots; fast
+version commands additionally use loader initialization records. A missing
+libavcodec copy is rejected by preflight, and direct CLI `-version` controls
+also fail at the loader with exit 127 instead of using a host fallback.
+
+The first combined collector attempt remains FAIL before media decoding: its
+mapping check rejected startup before a complete census; its actual mapping
+set was not retained. The corrected collector permits startup subsets only
+within the exact package and still requires a complete census for media work.
+Its separate successful runs do not rewrite the original failure. Input,
+retained pixel reference and independent clock records are hashed; no golden
+pixels, tolerance, geometry or payload binary is changed. The software result
+does not qualify native V4L2/Kodi playback or an independently clean OS, and
+all private-build/public-distribution limits above remain.
