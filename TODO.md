@@ -47,8 +47,14 @@ the end of a related change set, rather than repeating unrelated experiments.
    the baseline times out while the patch reaches EOF with all 750 originals
    and 1,500 outputs when the receiver takes the last picture before the
    producer's send returns. The candidate also
-   completes normal EOF and two reopens. Qualification of the full installed
-   feature set, Stop and seek remains separate.
+   completes normal EOF and two reopens. Separately retained
+   [bounded controls](tests/fixtures/issue445/publish-order-controls-20261029.json)
+   at VA/DIL `663c3a7` observe pause/resume, forward/backward seek, user Stop
+   and a same-process natural reopen with 750 originals / 1,500 Bob outputs
+   and returns. The interrupted controls have no full frame or per-object
+   return census; three buffer-wait warnings remain unassigned. Full installed
+   feature coverage, post-seek pixel/PTS identity and broader playback
+   acceptance remain open.
    The patch is not installed or activated by CrystalHD. Other historical
    warnings remain unassigned. Zero application counters, natural EOF and
    clean DMA retirement alone do not establish correct VA behavior.
