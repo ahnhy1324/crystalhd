@@ -65,12 +65,12 @@ clean:
 	rm -f $(BCLIB) $(BCLIB_SONAME) $(BCLIB_NAME) $(OBJFILES) $(DEPFILES) libcrystalhd.pc libcrystalhd.pc.tmp $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
 
 install: all
-	install -D -m 0755 $(BCLIB) $(DESTDIR)$(LIBDIR)/$(BCLIB)
-	ln -sfn $(BCLIB) $(DESTDIR)$(LIBDIR)/$(BCLIB_SONAME)
-	ln -sfn $(BCLIB_SONAME) $(DESTDIR)$(LIBDIR)/$(BCLIB_NAME)
-	install -d $(DESTDIR)$(INCLUDEDIR)/libcrystalhd
-	install -m 0644 $(PUBLIC_HEADERS) $(DESTDIR)$(INCLUDEDIR)/libcrystalhd
-	install -D -m 0644 libcrystalhd.pc $(DESTDIR)$(PKGCONFIGDIR)/libcrystalhd.pc
+	install -D -m 0755 $(BCLIB) "$(DESTDIR)$(LIBDIR)/$(BCLIB)"
+	ln -sfn $(BCLIB) "$(DESTDIR)$(LIBDIR)/$(BCLIB_SONAME)"
+	ln -sfn $(BCLIB_SONAME) "$(DESTDIR)$(LIBDIR)/$(BCLIB_NAME)"
+	install -d "$(DESTDIR)$(INCLUDEDIR)/libcrystalhd"
+	install -m 0644 $(PUBLIC_HEADERS) "$(DESTDIR)$(INCLUDEDIR)/libcrystalhd"
+	install -D -m 0644 libcrystalhd.pc "$(DESTDIR)$(PKGCONFIGDIR)/libcrystalhd.pc"
 	@if [ -z "$(DESTDIR)" ]; then \
 		if command -v ldconfig >/dev/null 2>&1; then ldconfig; \
 		elif [ -x /sbin/ldconfig ]; then /sbin/ldconfig; fi; \
