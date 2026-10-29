@@ -10903,7 +10903,13 @@ static std::shared_ptr<ImageExportBacking> AllocateImageExportBacking(
       static_cast<size_t>(kMaxWidth) * kMaxHeight * 3 / 2;
   if (driver->gbm == nullptr || bytes == 0 || bytes > maximum_image_bytes)
     return {};
-  std::shared_ptr<ImageExportBacking> backing(new (std::nothrow) ImageExportBacking);
+  std::shared_ptr<ImageExportBacking> backing;
+  try {
+    // The shared_ptr control block can throw despite the object's nothrow new.
+    backing.reset(new (std::nothrow) ImageExportBacking);
+  } catch (const std::bad_alloc &) {
+    return {};
+  }
   if (!backing)
     return {};
   // Treat this allocation as a linear byte store, not as NV12 GBM planes.
