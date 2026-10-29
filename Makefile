@@ -158,6 +158,10 @@ runtime-install-check:
 kodi-compat-check:
 	CXX="$(CXX)" $(PYTHON3) -B tests/kodi-vaapi-publish-order.py
 
+.PHONY: ffmpeg-compat-check
+ffmpeg-compat-check:
+	CC="$(CC)" $(PYTHON3) -B tests/ffmpeg-vaapi-loop.py
+
 uapi-check:
 	sh ./tests/uapi-abi.sh
 
@@ -282,7 +286,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv tests/maintenance-oracl
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
 	sh tests/phase1-release-gate.sh manifest-check tests/maintenance-oracle.tsv
 
-check: runtime-install-check kodi-compat-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
+check: runtime-install-check kodi-compat-check ffmpeg-compat-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check

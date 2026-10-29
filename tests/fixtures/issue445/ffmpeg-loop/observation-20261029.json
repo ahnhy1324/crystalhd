@@ -1,0 +1,277 @@
+{
+  "schema": 1,
+  "issue": 445,
+  "native_observation_date": "2026-10-19",
+  "offline_reconciliation_date": "2026-10-29",
+  "disposition": "Retained native loop remains FAIL 296/300. Independent raw replay and exact-source queue test establish a matching EOF-versus-teardown mechanism; no CrystalHD production repair or direct observation of the native internal call order.",
+  "native_runtime": {
+    "CrystalHD_VA_DIL_code": "49e2b7b4632bc4d1acddf9aec58a261fb4af6d04",
+    "stable_module": "3.10.9",
+    "reported_FFmpeg": "8.0.1",
+    "full_native_binary_to_upstream_source_rebuild_equivalence": "NOT_ESTABLISHED",
+    "physical_presentation": "NOT_MEASURED",
+    "new_hardware_or_tracing_runs": 0
+  },
+  "input": {
+    "description": "1280x720 TFF H.264 MBAFF, visible720/coded736, 50 pictures/2s, source time base1/90000",
+    "retained_media_stat_identity_matches_original_capture": true,
+    "sha256_computed_on_retained_media_during_offline_reconciliation": "847249796f3ff572a82421b0573aa3c5aaa4856b2a6901bb874204466b1409f3",
+    "bytes": 1357134,
+    "demux_packet_count": 50,
+    "missing_picture_source_boundary": {
+      "zero_based_coded_packet": 48,
+      "zero_based_display_picture": 49,
+      "packet": {
+        "pts": 176400,
+        "dts": 165600,
+        "duration": 3600,
+        "size": "24821",
+        "flags": "___"
+      },
+      "source_pts_time_base": [
+        1,
+        90000
+      ],
+      "source_pts_seconds": 1.96,
+      "following_coded_packet_pts": 172800,
+      "driver_original_owner": 4900000,
+      "driver_owner_scope": "Opaque sequential coded-input owner, not source media PTS. Starts100000, step100000 in pinned49e2b7b; association independently agrees with the absent field hashes.",
+      "global_missing_field_pts_time_base": [
+        1,
+        50
+      ],
+      "global_missing_field_pts": [
+        98,
+        99,
+        198,
+        199
+      ]
+    }
+  },
+  "cases": [
+    {
+      "case": "loop-diagnostic",
+      "original_overall_status": "FAIL",
+      "original_bob_stage_status": "INCOMPLETE",
+      "runtime_code_sha": "49e2b7b4632bc4d1acddf9aec58a261fb4af6d04",
+      "original_bob_exit": 0,
+      "expected_fields": 300,
+      "actual_fields": 296,
+      "missing_output_ordinals_and_pts_at_1_50": [
+        98,
+        99,
+        198,
+        199
+      ],
+      "remaining_full_NV12_hash_size_duration_and_pts_vs_same_run_oracle": "MATCH",
+      "per_epoch": [
+        {
+          "epoch": 0,
+          "VLD_successful_Ends": 50,
+          "DIL_successful_outputs": 50,
+          "VPP_successful_Ends": 98,
+          "VPP_distinct_original_owners": 49,
+          "VPP_calls_per_requested_original": 2,
+          "unrequested_DIL_original_owners": [
+            4900000
+          ]
+        },
+        {
+          "epoch": 1,
+          "VLD_successful_Ends": 50,
+          "DIL_successful_outputs": 50,
+          "VPP_successful_Ends": 98,
+          "VPP_distinct_original_owners": 49,
+          "VPP_calls_per_requested_original": 2,
+          "unrequested_DIL_original_owners": [
+            4900000
+          ]
+        },
+        {
+          "epoch": 2,
+          "VLD_successful_Ends": 50,
+          "DIL_successful_outputs": 50,
+          "VPP_successful_Ends": 100,
+          "VPP_distinct_original_owners": 50,
+          "VPP_calls_per_requested_original": 2,
+          "unrequested_DIL_original_owners": []
+        }
+      ],
+      "hardware_context_reconfiguration_log_messages": 2,
+      "successful_CreateContext_and_DestroyContext_return_totals": [
+        6,
+        6
+      ],
+      "matched_CreateContext_Begin_Render_End_return_errors": [],
+      "later_Weave_reopen": "NOT_RUN after failed count gate",
+      "raw_integrity": [
+        {
+          "artifact": "original-result.json",
+          "bytes": 11228,
+          "sha256": "bc098778506ec1c168006235a0f0628e93b861ecacc4af96295eb0cd94a1fb9c"
+        },
+        {
+          "artifact": "input-metadata.json",
+          "bytes": 4433,
+          "sha256": "9ae2f802175a282ebacb7b1d0b49dcf7a46db177427b20a3300bc57dfded3226"
+        },
+        {
+          "artifact": "oracle-fields.framemd5",
+          "bytes": 8215,
+          "sha256": "6f418bc75482c622db574647fc90e9e3a3a889543672f9e4315f55d4abfed815"
+        },
+        {
+          "artifact": "output-fields.framemd5",
+          "bytes": 23895,
+          "sha256": "5d5251b254c41044f4290727afeaf84515b888efcfe52f7d31e360287cf38a8f"
+        },
+        {
+          "artifact": "ffmpeg.log",
+          "bytes": 82162,
+          "sha256": "6b6dc47876288b3323286808e36bf9d19bf282bcf74d28ca4b343157c93ce54e"
+        },
+        {
+          "artifact": "va-trace-0",
+          "bytes": 4292,
+          "sha256": "f8b20847542f030de12fff88f8ea2ef277edfa5b845700108d601783c2ca0b35"
+        },
+        {
+          "artifact": "va-trace-1",
+          "bytes": 499654,
+          "sha256": "a548d3699d35a281fb2ea5ae80af31617b5f70b12f56bf93402cdc5f4075013f"
+        },
+        {
+          "artifact": "va-trace-2",
+          "bytes": 477744,
+          "sha256": "f44f5a52d105c25d194111ab8e9e45d4134e61486162eab42f96e53b38b82241"
+        },
+        {
+          "artifact": "va-trace-3",
+          "bytes": 448470,
+          "sha256": "ef366bda24a04dd58c4e1c4949bca856b53f22879cb2d7eb5bb18a4ce5e12017"
+        },
+        {
+          "artifact": "va-trace-4",
+          "bytes": 1579458,
+          "sha256": "dc2f2ef1f5d8e6d5f9dd566cdd5b3761d45f95def8b23e89e31e393affff4912"
+        }
+      ]
+    },
+    {
+      "case": "concat-control",
+      "original_overall_status": "PASS",
+      "original_bob_stage_status": "PASS",
+      "runtime_code_sha": "49e2b7b4632bc4d1acddf9aec58a261fb4af6d04",
+      "original_bob_exit": 0,
+      "expected_fields": 300,
+      "actual_fields": 300,
+      "missing_output_ordinals_and_pts_at_1_50": [],
+      "remaining_full_NV12_hash_size_duration_and_pts_vs_same_run_oracle": "MATCH",
+      "per_epoch": [
+        {
+          "epoch": 0,
+          "VLD_successful_Ends": 150,
+          "DIL_successful_outputs": 150,
+          "VPP_successful_Ends": 300,
+          "VPP_distinct_original_owners": 150,
+          "VPP_calls_per_requested_original": 2,
+          "unrequested_DIL_original_owners": []
+        }
+      ],
+      "hardware_context_reconfiguration_log_messages": 0,
+      "successful_CreateContext_and_DestroyContext_return_totals": [
+        2,
+        2
+      ],
+      "matched_CreateContext_Begin_Render_End_return_errors": [],
+      "later_Weave_reopen": "PASS 50/50",
+      "raw_integrity": [
+        {
+          "artifact": "original-result.json",
+          "bytes": 16129,
+          "sha256": "3befa094defd93b28ba7dfbdffde516ee6ce54d72e1c298e8c3f49008c0543f9"
+        },
+        {
+          "artifact": "input-metadata.json",
+          "bytes": 4433,
+          "sha256": "9ae2f802175a282ebacb7b1d0b49dcf7a46db177427b20a3300bc57dfded3226"
+        },
+        {
+          "artifact": "oracle-fields.framemd5",
+          "bytes": 8215,
+          "sha256": "6f418bc75482c622db574647fc90e9e3a3a889543672f9e4315f55d4abfed815"
+        },
+        {
+          "artifact": "output-fields.framemd5",
+          "bytes": 24215,
+          "sha256": "4d5d4f1e9fb80b48bb901dfb951bc8e093f3df164603eb1f0f0b360dd7c2f5ad"
+        },
+        {
+          "artifact": "ffmpeg.log",
+          "bytes": 80985,
+          "sha256": "124861d10ecfd6cab75a12266ecd4a2f75d8c239ba9aa424e1d59656feed2d39"
+        },
+        {
+          "artifact": "va-trace-0",
+          "bytes": 4069,
+          "sha256": "0494cde019e67e1c4c43fb8e3b1df323cd02e090872979d77c5940660b579287"
+        },
+        {
+          "artifact": "va-trace-1",
+          "bytes": 466077,
+          "sha256": "a5d51d134049ce78c37e4bc8d8fa57ff51331a26cc24a04bc674ee302c4dfdf9"
+        },
+        {
+          "artifact": "va-trace-2",
+          "bytes": 456600,
+          "sha256": "a9d13b2c6f1d82a84d9c6268aa6ab44d5ef19b490f32a2a396d8b77805ea0ec5"
+        },
+        {
+          "artifact": "va-trace-3",
+          "bytes": 458361,
+          "sha256": "10a1882c8b48eb8e5aee96cd8e05f8fdd7660fb00d2c7dd69728d424a38fbe29"
+        },
+        {
+          "artifact": "va-trace-4",
+          "bytes": 1579440,
+          "sha256": "52260364e9d0eaad496017de72ad0045296f18acddc17b607c0d6433a7b94333"
+        },
+        {
+          "artifact": "weave-reopen.framemd5",
+          "bytes": 4215,
+          "sha256": "bb5a219a26d6346f1747df3707bf78fabea747cbaf21cc8080bcc3d759d7a848"
+        }
+      ]
+    }
+  ],
+  "raw_scope_notes": [
+    "Private native artifact paths, process/thread IDs, addresses and card identifiers are omitted; raw bytes stay unchanged.",
+    "Per-context VA entry/return counts were independently paired within each thread trace. DestroyContext records contain no context identity; only their successful total is reported.",
+    "VPP owner multiplicities use complete unique production sequence records1..296/300 and the independently observed per-epoch VPP call counts; they are not calibrated media timestamps.",
+    "The native FFmpeg log observes two hardware-context reconfiguration messages, not the complete internal teardown/request order.",
+    "The decoded last-display picture is not the final coded packet: packet48 has PTS176400, followed in coded order by packet49 PTS172800.",
+    "A native caller may legitimately recreate its hardware frames context; no stable-context substitution or fabricated reference/output is proposed."
+  ],
+  "exact_source_test": {
+    "upstream_revision": "894da5ca7d742e4429ffb2af534fcda0103ef593",
+    "source_metadata": "source.json",
+    "command": "make ffmpeg-compat-check",
+    "functions": "deint parameter setup, filter_frame, request_frame, pipeline_uninit, cleanup_filtergraph; hardware-context identity comparison",
+    "independent_oracle": "Input ID, requested field parity, normalized and irregular PTS, and every input/output reference release. VA and graph calls are shims.",
+    "controls": {
+      "one_150_picture_queue_final_EOF": 300,
+      "three_50_picture_queues_two_undrained_teardowns_final_EOF": 296,
+      "three_queues_explicit_EOF_each_counterfactual": 300,
+      "frame_rate_three_undrained_queues": 150,
+      "upstream_EAGAIN_and_error": "No synthetic EOF or extra fields",
+      "repeated_EOF": "No duplicate output"
+    },
+    "semantic_negatives": 5
+  },
+  "remaining_discriminators": [
+    "Direct native internal filter EOF/request/reconfigure/uninit ordering is unobserved; source behavior is a matching mechanism rather than an observed native call trace.",
+    "A full native source/binary identity and current-candidate acceptance would be needed before promoting a general upstream cause or fix.",
+    "No CrystalHD defect is isolated by these records; retain the driver output/lifetime protections and the separate Kodi lifecycle work."
+  ],
+  "public_history": "https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6257714172"
+}
