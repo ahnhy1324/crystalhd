@@ -165,6 +165,8 @@ def main():
     parser.add_argument('--height', type=int, required=True)
     parser.add_argument('--frames', type=int, required=True)
     parser.add_argument('--step', type=int, default=32)
+    parser.add_argument('--minimum-source-y', type=int, default=0,
+                        help='predeclared source-only top mask, frozen before capture')
     parser.add_argument('--minimum-samples', type=int, default=16)
     parser.add_argument('--stride', type=int)
     parser.add_argument('--matrix', choices=('bt709', 'bt601'), required=True)
@@ -172,6 +174,7 @@ def main():
     parser.add_argument('--capture-sha256')
     args = parser.parse_args()
     geometry(args.width, args.height)
+    require(0 <= args.minimum_source_y < args.height, 'invalid source-only top mask')
     stream = sys.stdin.buffer if args.reference == '-' else open(args.reference, 'rb')
     try:
         samples, digest = reference_samples(read_frames(stream, args.width * args.height * 3 // 2),
@@ -180,6 +183,7 @@ def main():
         if args.reference != '-':
             stream.close()
     require(args.reference_sha256 in (None, digest), 'reference SHA256 mismatch')
+    samples = {point: value for point, value in samples.items() if point[1] >= args.minimum_source_y}
     stride = args.width * 4 if args.stride is None else args.stride
     require(isinstance(stride, int) and args.width * 4 <= stride <= args.width * 4 + 4096,
             'invalid BGRA stride')
@@ -190,6 +194,7 @@ def main():
     report = compare(samples, captured, args.width, args.height, stride=args.stride,
                      matrix=args.matrix, minimum_samples=args.minimum_samples)
     report.update(reference_frames=args.frames, reference_sha256=digest, sample_grid_step=args.step,
+                  source_minimum_y=args.minimum_source_y,
                   sample_selection='flat 3x3 Y/U/V neighbourhoods identical in EVERY source frame')
     print(json.dumps(report, indent=2))
     return 0 if report['result'] == 'PASS' else 1
