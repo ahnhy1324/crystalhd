@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -70,6 +71,153 @@ if os.environ.get('HOLD_STAGE')==phase:
   time.sleep(.01)
 if os.environ.get('FAIL_STAGE')==phase:sys.exit(23)
 '''
+
+
+class LibraryPkgConfigTests(unittest.TestCase):
+    """Exercise the real library makefile without compiling or host installs."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='crystalhd-pkgconfig-')
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.library = self.root / 'linux_lib/libcrystalhd'
+        self.library.mkdir(parents=True)
+        for name in ('Makefile', 'libcrystalhd.pc.in'):
+            shutil.copyfile(ROOT / 'linux_lib/libcrystalhd' / name,
+                            self.library / name)
+        shutil.copyfile(ROOT / 'cpu.mk', self.root / 'cpu.mk')
+        self.pkgconfig = self.library / 'libcrystalhd.pc'
+
+    def run_make(self, *assignments, target='libcrystalhd.pc', options=(),
+                 expected_status=0):
+        result = subprocess.run(
+            ['make', '--no-print-directory', '-s', '-C', str(self.library),
+             *options, *assignments, target],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True, timeout=15)
+        self.assertEqual(result.returncode, expected_status, result.stdout)
+        return result
+
+    def assert_directories(self, path, prefix, libdir=None, includedir=None):
+        values = dict(line.split('=', 1) for line in path.read_text().splitlines()
+                      if '=' in line)
+        self.assertEqual(values['prefix'], prefix)
+        self.assertEqual(values['libdir'], libdir or prefix + '/lib')
+        self.assertEqual(values['includedir'], includedir or prefix + '/include')
+
+    def test_prefix_and_directory_changes_refresh_in_same_tree(self):
+        self.run_make('PREFIX=/usr')
+        self.assert_directories(self.pkgconfig, '/usr')
+        self.run_make('PREFIX=/opt/crystalhd')
+        self.assert_directories(self.pkgconfig, '/opt/crystalhd')
+        self.run_make('PREFIX=/opt/crystalhd', 'LIBDIR=/opt/crystalhd/lib64')
+        self.assert_directories(self.pkgconfig, '/opt/crystalhd',
+                                '/opt/crystalhd/lib64')
+        self.run_make('PREFIX=/opt/crystalhd', 'LIBDIR=/opt/crystalhd/lib64',
+                      'INCLUDEDIR=/opt/crystalhd/headers')
+        self.assert_directories(self.pkgconfig, '/opt/crystalhd',
+                                '/opt/crystalhd/lib64', '/opt/crystalhd/headers')
+
+    def test_custom_prefix_keeps_spaces_and_literal_punctuation(self):
+        prefix = "/opt/Crystal HD's & SDK"
+        self.run_make('PREFIX=' + prefix)
+        self.assert_directories(self.pkgconfig, prefix)
+
+    def test_template_changes_refresh_and_identical_output_keeps_timestamp(self):
+        self.run_make('PREFIX=/usr')
+        template = self.library / 'libcrystalhd.pc.in'
+        with template.open('a') as stream:
+            stream.write('# template update\n')
+        # Make the ordering unambiguous even on coarse timestamp filesystems.
+        os.utime(self.pkgconfig, (1, 1))
+        self.run_make('PREFIX=/usr')
+        self.assertTrue(self.pkgconfig.read_text().endswith('# template update\n'))
+        before = self.pkgconfig.stat()
+        self.run_make('PREFIX=/usr')
+        after = self.pkgconfig.stat()
+        self.assertEqual((after.st_ino, after.st_mtime_ns),
+                         (before.st_ino, before.st_mtime_ns))
+
+    def test_failed_render_preserves_metadata_and_cleans_temporary_output(self):
+        self.run_make('PREFIX=/usr')
+        contents = self.pkgconfig.read_bytes()
+        before = self.pkgconfig.stat()
+        mock_bin = self.root / 'bin'
+        mock_bin.mkdir()
+        sed = mock_bin / 'sed'
+        sed.write_text("#!/bin/sh\nprintf '%s\\n' 'partial metadata'\nexit 23\n")
+        sed.chmod(0o755)
+        path = str(mock_bin) + os.pathsep + os.environ.get('PATH', os.defpath)
+        with mock.patch.dict(os.environ, {'PATH': path}):
+            result = self.run_make('PREFIX=/opt/crystalhd', expected_status=2)
+        self.assertIn('Error 23', result.stdout)
+        self.assertEqual(self.pkgconfig.read_bytes(), contents)
+        after = self.pkgconfig.stat()
+        self.assertEqual((after.st_ino, after.st_mtime_ns),
+                         (before.st_ino, before.st_mtime_ns))
+        self.assertFalse((self.library / 'libcrystalhd.pc.tmp').exists())
+        self.run_make('PREFIX=/opt/crystalhd')
+        self.assert_directories(self.pkgconfig, '/opt/crystalhd')
+
+    def test_staged_install_refreshes_metadata_after_prefix_change(self):
+        self.run_make('PREFIX=/usr')
+        # Skip compilation and use private placeholder payloads. Only install's
+        # real metadata prerequisites and copy operations are under test.
+        (self.library / 'libcrystalhd.so.3.6').write_bytes(b'library fixture\n')
+        (self.library / 'public.h').write_text('/* header fixture */\n')
+        stage = self.root / 'stage'
+        self.run_make('PREFIX=/opt/crystalhd', 'DESTDIR=' + str(stage),
+                      'PUBLIC_HEADERS=public.h', target='install',
+                      options=('-o', 'libcrystalhd.so.3.6'))
+        installed = stage / 'opt/crystalhd/lib/pkgconfig/libcrystalhd.pc'
+        self.assert_directories(installed, '/opt/crystalhd')
+        self.assertEqual(installed.read_bytes(), self.pkgconfig.read_bytes())
+
+    def test_staged_install_and_uninstall_preserve_complete_directory_paths(self):
+        payload = b'library fixture\n'
+        header = b'/* header fixture */\n'
+        (self.library / 'libcrystalhd.so.3.6').write_bytes(payload)
+        (self.library / 'public.h').write_bytes(header)
+        cases = (
+            ('default', '/usr', {}),
+            ('prefix', "/opt/Crystal HD's & SDK", {}),
+            ('overrides', '/usr', {
+                'LIBDIR': '/opt/library files',
+                'INCLUDEDIR': '/opt/header files',
+                'PKGCONFIGDIR': '/opt/package metadata',
+            }),
+        )
+        for name, prefix, overrides in cases:
+            with self.subTest(name=name):
+                stage = self.root / ('stage with spaces ' + name)
+                libdir = overrides.get('LIBDIR', prefix + '/lib')
+                includedir = overrides.get('INCLUDEDIR', prefix + '/include')
+                pcdir = overrides.get('PKGCONFIGDIR', libdir + '/pkgconfig')
+                installed_library = stage / libdir.lstrip('/')
+                installed_headers = stage / includedir.lstrip('/') / 'libcrystalhd'
+                installed_pc = stage / pcdir.lstrip('/') / 'libcrystalhd.pc'
+                installed_headers.mkdir(parents=True)
+                unrelated = installed_headers / 'unrelated.h'
+                unrelated.write_bytes(b'preserve unrelated header\n')
+                assignments = ('PREFIX=' + prefix, 'DESTDIR=' + str(stage),
+                               'PUBLIC_HEADERS=public.h',
+                               *(key + '=' + value for key, value in overrides.items()))
+                self.run_make(*assignments, target='install',
+                              options=('-o', 'libcrystalhd.so.3.6'))
+                self.assertEqual((installed_library / 'libcrystalhd.so.3.6').read_bytes(),
+                                 payload)
+                self.assertEqual(os.readlink(installed_library / 'libcrystalhd.so.3'),
+                                 'libcrystalhd.so.3.6')
+                self.assertEqual(os.readlink(installed_library / 'libcrystalhd.so'),
+                                 'libcrystalhd.so.3')
+                self.assertEqual((installed_headers / 'public.h').read_bytes(), header)
+                self.assert_directories(installed_pc, prefix, libdir, includedir)
+                self.assertEqual(installed_pc.read_bytes(), self.pkgconfig.read_bytes())
+                self.run_make(*assignments, target='uninstall')
+                remaining = {path.relative_to(stage) for path in stage.rglob('*')
+                             if path.is_file() or path.is_symlink()}
+                self.assertEqual(remaining, {unrelated.relative_to(stage)})
+                self.assertEqual(unrelated.read_bytes(), b'preserve unrelated header\n')
 
 
 class RuntimeInstallTests(unittest.TestCase):

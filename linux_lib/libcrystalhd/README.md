@@ -20,6 +20,12 @@ make -C linux_lib/libcrystalhd DESTDIR=/tmp/crystalhd-library install
 The install target provides the shared library, public headers, and
 `libcrystalhd.pc` for `pkg-config`.
 
+Successful sessions in one process retain their shared diagnostic mode bit
+until the last local session of that mode closes. Failed opens do not acquire
+that ownership. The counters are process-local; the legacy shared-memory
+layout and bitmap behavior between distinct processes remain unchanged.
+This bookkeeping does not make concurrent close/use of one handle safe.
+
 ## Optional output readiness and RX pool
 
 `DtsDupOutputPollFd()` is an additive API that returns a caller-owned,

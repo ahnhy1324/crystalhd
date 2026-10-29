@@ -58,15 +58,6 @@ static uint32_t DtsModeBit(uint32_t mode)
 	}
 }
 
-static void DtsClearDeviceMode(uint32_t mode)
-{
-	const uint32_t mode_bit = DtsModeBit(mode);
-	if (mode_bit)
-		DtsClearOPMode(mode_bit);
-	else
-		DtsSetOPMode(0);
-}
-
 /* Serialize the command/cleanup interval without holding thLock while
  * allocating, waiting for firmware, or retiring TX/output owners.
  */
@@ -165,7 +156,6 @@ static BC_STATUS DtsRetireFailedRecoveryDevice(DTS_LIB_CONTEXT *Ctx,
 		return BC_STS_BUSY;
 	}
 
-	DtsClearDeviceMode(Ctx->OpMode);
 	if (Ctx->OpMode == DTS_PLAYBACK_MODE &&
 	    Ctx->State != BC_DEC_STATE_CLOSE && Ctx->ProcessID != 0)
 		DumpInputSampleToFile(NULL, 0);
@@ -805,15 +795,6 @@ DtsDeviceOpen(
 		DtsGetContext(localDevice)->SingleThreadedAppMode = 1;
 	}
 
-	/* Playback and hardware-init can still fail while setting up firmware.
-	 * Do not advertise either mode until that fallible setup has completed. */
-	if (mode != DTS_PLAYBACK_MODE && mode != DTS_HWINIT_MODE) {
-		if (mode_bit)
-			DtsAddOPMode(mode_bit);
-		else
-			DtsSetOPMode(0);
-	}
-
 	if (DeviceID == BC_PCI_DEVID_LINK || DeviceID == BC_PCI_DEVID_FLEA)
 		nTry = HARDWARE_INIT_RETRY_LINK_CNT;
 	else
@@ -836,7 +817,6 @@ DtsDeviceOpen(
 		}
 		if(Sts != BC_STS_SUCCESS )
 			goto fail;
-		DtsAddOPMode(mode_bit);
 	}
 
 	if(mode == DTS_HWINIT_MODE){
@@ -848,6 +828,15 @@ DtsDeviceOpen(
 		DtsRstDrvStat(localDevice);
 	}
 
+	/* Publish mode ownership only after every fallible device setup step.
+	 * A failed open must never release a different handle's same-mode bit. */
+	if (mode_bit) {
+		Sts = DtsRetainSessionMode(DtsGetContext(localDevice), mode_bit);
+		if (Sts != BC_STS_SUCCESS)
+			goto fail;
+	} else {
+		DtsSetOPMode(0);
+	}
 	DtsGetContext(localDevice)->ProcessID = processID;
 	*hDevice = localDevice;
 
@@ -1042,7 +1031,6 @@ DtsDeviceClose(
 	if (late_recovery)
 		return DtsRetireFailedRecoveryDevice(Ctx, control);
 
-	DtsClearDeviceMode(Ctx->OpMode);
 	if (Ctx->OpMode == DTS_PLAYBACK_MODE &&
 	    Ctx->State != BC_DEC_STATE_CLOSE && Ctx->ProcessID != 0)
 		DumpInputSampleToFile(NULL, 0);

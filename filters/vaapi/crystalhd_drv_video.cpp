@@ -1329,7 +1329,7 @@ static uint8_t ClampRgb(int value) {
 }
 
 static void StoreArgb(uint8_t *destination, uint8_t y, uint8_t u, uint8_t v) {
-  const int c = std::max(0, static_cast<int>(y) - 16);
+  const int c = static_cast<int>(y) - 16;
   const int d = static_cast<int>(u) - 128;
   const int e = static_cast<int>(v) - 128;
   destination[0] = ClampRgb((298 * c + 516 * d + 128) >> 8);

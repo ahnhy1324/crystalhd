@@ -79,6 +79,9 @@ static int dil_shmem_atfork_status=0;
 static bool dil_shmem_atfork_registered=false;
 static int dil_shmem_id=-1;
 static unsigned int dil_shmem_refs=0;
+/* Keep the legacy shared bitmap/layout; these references describe only this
+ * process. Distinct processes still have the historical bitmap semantics. */
+static unsigned int dil_session_mode_refs[4]={0, 0, 0, 0};
 
 static void DtsDilShMemAtForkPrepare(void)
 {
@@ -95,6 +98,9 @@ static void DtsDilShMemAtForkChild(void)
 	/* The child inherited both the mapping and its process-local references.
 	 * Keep that conservative pin, but never inherit a locked mutex. */
 	dil_shmem_atfork_registered=true;
+	/* Inherited handles remain owned by the parent. New child sessions start
+	 * independent local bookkeeping, without changing the shared bitmap. */
+	memset(dil_session_mode_refs, 0, sizeof(dil_session_mode_refs));
 	(void)pthread_mutex_unlock(&dil_shmem_lock);
 }
 
@@ -389,6 +395,44 @@ void DtsAddOPMode(uint32_t mask)
 void DtsClearOPMode(uint32_t mask)
 {
 	(void)__atomic_fetch_and(&bc_dil_glob_ptr->gDilOpMode, ~mask, __ATOMIC_RELAXED);
+}
+
+/* Successful handle ownership is separate from the generic bitmap helpers.
+ * Each context pins the mapping while owning its process-local reference. */
+BC_STATUS DtsRetainSessionMode(DTS_LIB_CONTEXT *Ctx, uint32_t mode_bit)
+{
+	if (!Ctx || (mode_bit != 1 && mode_bit != 2 && mode_bit != 4 && mode_bit != 8))
+		return BC_STS_INV_ARG;
+	DtsDilShMemLock lock;
+	if (!lock.IsLocked() || !bc_dil_glob_ptr || Ctx->publishedModeBit)
+		return BC_STS_ERROR;
+	unsigned int index=0;
+	while ((1u << index) != mode_bit)
+		++index;
+	if (dil_session_mode_refs[index] == UINT_MAX)
+		return BC_STS_INSUFF_RES;
+	++dil_session_mode_refs[index];
+	DtsAddOPMode(mode_bit);
+	Ctx->publishedModeBit=mode_bit;
+	return BC_STS_SUCCESS;
+}
+
+BC_STATUS DtsReleaseSessionMode(DTS_LIB_CONTEXT *Ctx)
+{
+	if (!Ctx->publishedModeBit)
+		return BC_STS_SUCCESS;
+	DtsDilShMemLock lock;
+	if (!lock.IsLocked() || !bc_dil_glob_ptr)
+		return BC_STS_ERROR;
+	unsigned int index=0;
+	while (index < 4 && (1u << index) != Ctx->publishedModeBit)
+		++index;
+	if (index == 4 || !dil_session_mode_refs[index])
+		return BC_STS_ERROR;
+	if (--dil_session_mode_refs[index] == 0)
+		DtsClearOPMode(Ctx->publishedModeBit);
+	Ctx->publishedModeBit=0;
+	return BC_STS_SUCCESS;
 }
 
 uint32_t DtsGetHwInitSts( void )
@@ -2848,6 +2892,10 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 				"DtsReleaseInterface: capture cleanup failed: %d\n",
 				cleanup_sts);
 	}
+
+	const BC_STATUS mode_sts = DtsReleaseSessionMode(Ctx);
+	if (cleanup_sts == BC_STS_SUCCESS)
+		cleanup_sts = mode_sts;
 
 	/* Finish this decoder's shared-state writes before the kernel can hand
 	 * its session to another opener. Recovery remains protected by kernel

@@ -19,21 +19,26 @@ scope to general full-rate FHD or hardware deinterlacing.
 
 ## Current bug-fix order
 
-2026-10-28: prioritize failures in ordinary use before optional performance or
+2026-10-29: prioritize failures in ordinary use before optional performance or
 new-backend research. For each item, reproduce the failure, make the smallest
 fix and recheck the affected user operation. Run wider regression checks at
 the end of a related change set, rather than repeating unrelated experiments.
 
-1. **Open/close state and resource ownership (#510).** Failed-open publication
-   is prepared in [#552](https://github.com/ahnhy1324/crystalhd/pull/552); combined
-   mode preservation and atomic updates are prepared as follow-ups. Rejected
-   opens now preserve hardware initialization state, and LINK clock setup waits
-   for successful non-monitor session admission.
-   Complete integration while preserving failure cleanup and the legacy ABI.
+1. **Open/close state and resource ownership (#510).** Failed-open publication,
+   combined-mode preservation and atomic updates are integrated, including
+   [#552](https://github.com/ahnhy1324/crystalhd/pull/552). Rejected opens preserve
+   hardware initialization state through
+   [#553](https://github.com/ahnhy1324/crystalhd/pull/553), and LINK clock setup
+   waits for successful non-monitor session admission.
    Terminal decoder state now retires before RELEASE can admit a replacement;
-   tests with a mocked driver and public open APIs cover failed firmware close,
-   failed recovery, close errors and retained kernel ownership. Same-mode reference counts and
-   same-handle concurrent close/use remain separate questions.
+   [#556](https://github.com/ahnhy1324/crystalhd/pull/556) tests with a mocked
+   driver and public open APIs cover failed firmware close,
+   failed recovery, close errors and retained kernel ownership. Same-process
+   mode references from
+   [#566](https://github.com/ahnhy1324/crystalhd/pull/566) keep the diagnostic
+   bitmap set until the final local handle closes.
+   Cross-process same-mode accounting and same-handle concurrent
+   close/use remain separate questions.
 2. **Ordinary Kodi EOF, Stop, seek and reopen (#445/#429).** Address reproducible
    user-operation failures. A controlled last-picture handoff now reproduces
    the two-second drain timeout with complete per-picture return observations;
@@ -44,25 +49,79 @@ the end of a related change set, rather than repeating unrelated experiments.
    the baseline times out while the patch reaches EOF with all 750 originals
    and 1,500 outputs when the receiver takes the last picture before the
    producer's send returns. The candidate also
-   completes normal EOF and two reopens. Qualification of the full installed
-   feature set, Stop and seek remains separate.
+   completes normal EOF and two reopens. Separately retained
+   [bounded controls](tests/fixtures/issue445/publish-order-controls-20261029.json)
+   at VA/DIL `663c3a7` observe pause/resume, forward/backward seek, user Stop
+   and a same-process natural reopen with 750 originals / 1,500 Bob outputs
+   and returns. The interrupted controls have no full frame or per-object
+   return census; three earlier buffer-wait warnings remain unassigned. A
+   [separate guarded observation](tests/fixtures/issue445/wait-condition-observation-20261029.json)
+   identifies two newly observed warnings as evaluated cancellation exits
+   before their deadlines. Its original collector FAIL and unrun natural
+   reopen remain recorded. Full installed
+   feature coverage, post-seek pixel/PTS identity and broader playback
+   acceptance remain open.
    The patch is not installed or activated by CrystalHD. Other historical
    warnings remain unassigned. Zero application counters, natural EOF and
    clean DMA retirement alone do not establish correct VA behavior.
-3. **Shutdown heap abort (#538).** Capture the fault stack or first corruption
-   in the affected private-FFmpeg VA combination, then verify a fix against
-   that condition. Clean exits alone do not resolve the original abort.
-4. **Installation, recovery and settings (#510/#400, then #539).** Fix concrete
+   [#571](https://github.com/ahnhy1324/crystalhd/pull/571) separately
+   corrects colored below-black packed RGB conversion while preserving nominal
+   limited-range BT.601 output.
+3. **Installation, recovery and settings (#510/#400, then #539).** Fix concrete
    update/rollback and saved-versus-applied setting failures before extending
-   adapters. The experimental Kodi no-build path still needs a distribution
-   decision; existing private activation is not a public installer.
-5. **Optional research.** Defer #533 STOP/START, #513 Xv, #530 EGL Bob and
+   adapters. [#569](https://github.com/ahnhy1324/crystalhd/pull/569)
+   preserves driver staging arguments and
+   [#570](https://github.com/ahnhy1324/crystalhd/pull/570) refreshes pkg-config
+   paths. [#572](https://github.com/ahnhy1324/crystalhd/pull/572) also fixes actual
+   library installation into spaced staging/prefix/directory paths; all 39
+   runtime-install tests pass locally. These three fixes are included in this
+   source; their individual PR CI matrices passed before integration. The
+   experimental Kodi no-build path still needs a distribution decision;
+   existing private activation is not a public installer.
+4. **Optional research.** Defer #533 STOP/START, #513 Xv, #530 EGL Bob and
    #92/#204 hardware exploration until the correctness work above is handled,
    unless new evidence establishes an ordinary-use fault needing priority.
+
+**Shutdown heap abort subtask only: ignored / wontfix (2026-10-29). #538 stays
+open.** Per maintainer direction, stop investigation/reproduction of this
+subtask and remove it from the active bug-fix queue. **Reason (maintainer
+report): agent cybersecurity filtering prevents the work from proceeding.**
+Retain the historical aborts and diagnostics; this does not establish that the
+bug is invalid, fixed or disproved. Other Kodi work remains open. See the
+[scoped disposition](https://github.com/ahnhy1324/crystalhd/issues/538#issuecomment-6486735751).
 
 Keep merged, locally fixed/review-ready and unresolved items distinct. Locating
 a wait in external code does not establish an external defect or show that our
 API behavior was correct. A child fix does not close its broader acceptance issue.
+
+## Completed milestones and remaining acceptance
+
+The issue checklists now separate delivered work from broad acceptance. A
+checked investigation records its scoped outcome, including a negative result;
+it does not turn a playback FAIL or NOT RUN into PASS. Each milestone retains
+its exact-source and acceptance scope in the owning issue.
+
+- [x] [#528: issue triage and known-issue policy](https://github.com/ahnhy1324/crystalhd/issues/528)
+  — all six documentation tasks are complete through merged #536; the issue
+  is closed. Release gates and historical results are unchanged.
+- [x] [#531: disposable Kodi InputStream/VideoCodec measurement](https://github.com/ahnhy1324/crystalhd/issues/531)
+  — all seven investigation tasks are complete and the issue is closed. The
+  copied 360p prototype shows no CPU benefit; #534 is closed/unmerged and no
+  maintained addon is promoted. #538 remains a separate open experiment.
+- [x] [#510: first-stage CI selection](https://github.com/ahnhy1324/crystalhd/issues/510)
+  — all seven original CI acceptance rows are complete through #525/#526.
+  The umbrella remains open for its remaining implementation/acceptance work.
+- [x] [#400: shared settings, GTK/tray and production icons](https://github.com/ahnhy1324/crystalhd/issues/400)
+  — the merged deliverables are recorded separately from translations,
+  additional adapters and broader desktop/native-i386 GUI acceptance.
+- [x] [#539: bounded compilerless private-runtime proof](https://github.com/ahnhy1324/crystalhd/issues/539)
+  — fresh-prefix activation/removal/re-extraction on the compatible existing
+  host is complete. Clean-target acceptance, minimum upstream changes, full
+  user-effort accounting and public distribution remain open.
+- [x] [#530: opt-in EGL field-view prototype and measured discriminators](https://github.com/ahnhy1324/crystalhd/issues/530)
+  — bounded synthetic/native/window/retirement work is recorded on its
+  unmerged research branch. The approximately 53 ms swap tail, field expiry
+  and broader presentation/host acceptance remain unresolved.
 
 ## Tracked work
 
@@ -109,12 +168,12 @@ API behavior was correct. A child fix does not close its broader acceptance issu
   hardware failure permits a clean reopen of supported input. Internal reclamation
   remains research, not a closure prerequisite. Ordinary assembled inputs
   at/below 2 MiB are unchanged.
-- [ ] [#436: planned v1.2 deinterlacing and presentation work](https://github.com/ahnhy1324/crystalhd/issues/436)
-  — qualify the development CPU VA-VPP Bob path for
-  the existing Kodi Auto problem in [#445](https://github.com/ahnhy1324/crystalhd/issues/445):
-  actual filter execution, field order/timing, ownership, seek/EOS and
-  i686/scalar behavior. The 1.2 branch has bounded native TFF/BFF pixel/clock and
-  short Kodi Auto/Off controls as well as device-free coverage. One headless
+- [ ] [#436: CPU Bob and remaining presentation acceptance](https://github.com/ahnhy1324/crystalhd/issues/436)
+  — selected CPU VA-VPP Bob is published in v1.2.0 for
+  the Kodi Auto problem in [#445](https://github.com/ahnhy1324/crystalhd/issues/445).
+  Broader field timing, ownership, seek/EOS and native-i386 presentation
+  acceptance remain open. The published scope has bounded native TFF/BFF
+  pixel/clock and short Kodi Auto/Off controls as well as device-free coverage. One headless
   FHD Bob batch reaches 49.759 outputs/s, not demonstrated real-time 50p headroom.
   A separate three-hour 720i25 headless concat run passes 540,000 exact Bob outputs,
   EOF and fresh Weave reopen; default FFmpeg stream-loop remains 296/300 FAIL
@@ -130,6 +189,15 @@ API behavior was correct. A child fix does not close its broader acceptance issu
   LIVE+LL; presentation and current Atom acceptance remain open.
   Keep existing Weave playback intact. Hardware Bob remains separate research,
   not a prerequisite for this software integration.
+- [ ] [#538: experimental Kodi native playback acceptance](https://github.com/ahnhy1324/crystalhd/issues/538)
+  — bounded selection, original-PTS, input-only pause and cost studies are
+  recorded. Broader native pixels/color, displayed cadence, physical A/V,
+  other hardware and endurance remain open. Only the shutdown heap-abort
+  investigation is excluded for the reason above; the issue remains open.
+- [ ] [#539: public no-build Kodi runtime](https://github.com/ahnhy1324/crystalhd/issues/539)
+  — the private same-host compilerless proof is complete; clean-target
+  acceptance, minimum upstream delta, full setup-cost measurement and a
+  public distribution/maintenance decision remain open.
 - [ ] Player HTTP(S) acceptance — implementation is included in RC4, with
   bounded errors and explicit hardware/software selection. Selected native
   loopback HTTP decoding/EOS/reopen passed; HTTPS, physical A/V, network
@@ -160,8 +228,10 @@ API behavior was correct. A child fix does not close its broader acceptance issu
   [#551](https://github.com/ahnhy1324/crystalhd/pull/551). These separately scoped
   functional repairs supersede the original logging-only attachment task;
   retain its historical failure evidence. Local atomic mode updates now preserve
-  unrelated bits through open and consuming close. Same-mode reference counts
-  and same-handle close/use lifetime remain separate follow-ups; the
+  unrelated bits through open and consuming close. Same-process mode references
+  now preserve the diagnostic bit until the final local handle closes.
+  Cross-process same-mode accounting and same-handle close/use lifetime remain
+  separate follow-ups; the
   shared-mapping fix alone does not qualify them. CI/provenance
   and admission-timing acceptance remain separately tracked.
 - [ ] [#91: Deferred hardware and application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91)

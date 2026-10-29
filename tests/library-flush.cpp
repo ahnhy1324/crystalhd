@@ -120,9 +120,9 @@ extern "C" BC_STATUS __wrap_DtsReleaseInterface(DTS_LIB_CONTEXT *context)
         std::abort();
     ++interface_calls;
     pending_at_interface = DtsIsPend(context);
-    /* Never consume/free a live stack fixture. Only record the production
-     * DeviceClose's interface-release call boundary. */
-    return BC_STS_SUCCESS;
+    /* Keep the stack fixture alive, but retire the successfully published
+     * mode as the production interface-release path does before RELEASE. */
+    return DtsReleaseSessionMode(context);
 }
 struct FetchReply {
     BC_STATUS status;
@@ -511,6 +511,9 @@ struct OutputContext {
     }
     ~OutputContext()
     {
+        if (context.publishedModeBit)
+            check(DtsReleaseSessionMode(&context) == BC_STS_SUCCESS,
+                  "fixture retires unconsumed successful session ownership");
         txBufFree(&context.circBuf);
         pthread_mutex_destroy(&context.thLock);
         observed = nullptr;
@@ -1182,7 +1185,8 @@ static void test_returned_nocopy_held(unsigned operation, bool release_first)
     fixture.context.bMapOutBufDone = true;
     fixture.context.bMapOutBufDirty = true;
     DtsSetDecStat(true, fixture.context.ProcessID);
-    DtsSetOPMode(1);
+    check(DtsRetainSessionMode(&fixture.context, 1) == BC_STS_SUCCESS,
+          "fixture publishes successful playback-mode ownership");
     fetch_replies.push_back(make_frame(0, 7, 1));
     BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
     const BC_STATUS fetched = DtsProcOutputNoCopy(&fixture.context, 0, &output);
@@ -1412,7 +1416,8 @@ static void test_failed_internal_repost_teardown(bool packing, bool no_copy,
     fixture.context.OpMode = DTS_PLAYBACK_MODE;
     fixture.context.bMapOutBufDone = fixture.context.bMapOutBufDirty = true;
     DtsSetDecStat(true, fixture.context.ProcessID);
-    DtsSetOPMode(1);
+    check(DtsRetainSessionMode(&fixture.context, 1) == BC_STS_SUCCESS,
+          "fixture publishes successful playback-mode ownership");
     fetch_replies.push_back(make_frame(0, 7, 1));
     add_replies.push_back(make_add_reply(outcome));
     if (packing) {
@@ -1477,7 +1482,8 @@ static void initialize_phase_capture(OutputContext &fixture, BC_IOCTL_DATA &cont
     fixture.context.OpMode = DTS_PLAYBACK_MODE;
     fixture.context.bMapOutBufDone = fixture.context.bMapOutBufDirty = true;
     DtsSetDecStat(true, fixture.context.ProcessID);
-    DtsSetOPMode(1);
+    check(DtsRetainSessionMode(&fixture.context, 1) == BC_STS_SUCCESS,
+          "fixture publishes successful playback-mode ownership");
     unmap_calls = activate_calls = start_calls = interface_calls = 0;
     pending_at_unmap = pending_at_interface = pending_at_stop = false;
 }
@@ -1965,7 +1971,8 @@ static void test_device_close_returned_error_dominance()
     fixture.context.OpMode = DTS_PLAYBACK_MODE;
     fixture.context.bMapOutBufDone = fixture.context.bMapOutBufDirty = true;
     DtsSetDecStat(true, fixture.context.ProcessID);
-    DtsSetOPMode(1);
+    check(DtsRetainSessionMode(&fixture.context, 1) == BC_STS_SUCCESS,
+          "fixture publishes successful playback-mode ownership");
     fetch_replies.push_back(make_frame(0, 7, 1));
     BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
     check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_SUCCESS &&

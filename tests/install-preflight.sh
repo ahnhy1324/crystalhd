@@ -76,4 +76,19 @@ make -s -C "$repo_dir/driver/linux" -f Makefile.in \
     DESTDIR="$test_dir/stage" install-preflight
 test ! -e "$test_dir/stage"
 
+# Recursive make still runs under -n. Top-level forwarding must preserve
+# each complete staging/header path without turning its words into targets.
+spaced_stage="$test_dir/stage with spaces"
+spaced_headers="$test_dir/headers with spaces"
+if ! make --no-print-directory -s -n -C "$repo_dir" \
+    KVER=test-kernel KDIR="$spaced_headers" DESTDIR="$spaced_stage" \
+    install-preflight >"$test_dir/output" 2>&1; then
+    cat "$test_dir/output" >&2
+    echo 'Top-level dry-run preflight split a forwarded driver path' >&2
+    exit 1
+fi
+test ! -e "$spaced_stage"
+test ! -e "$spaced_headers"
+test ! -e "$TEST_ACTION_LOG"
+
 printf '%s\n' 'direct-install ownership preflight: PASS'

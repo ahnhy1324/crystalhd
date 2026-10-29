@@ -36,7 +36,7 @@ PUBLIC_HEADERS := libcrystalhd_if.h \
 	$(ROOTDIR)/include/bc_dts_defs.h \
 	$(ROOTDIR)/include/bc_dts_types.h \
 	$(ROOTDIR)/include/libcrystalhd_version.h
-.PHONY: all clean install uninstall
+.PHONY: all clean install uninstall crystalhd-pc-force
 
 all: $(BCLIB) $(BCLIB_NAME) $(BCLIB_SONAME) libcrystalhd.pc
 
@@ -51,21 +51,26 @@ $(OBJFILES): Makefile
 $(BCLIB_NAME) $(BCLIB_SONAME): $(BCLIB)
 	ln -sfn $(BCLIB) $@
 
-libcrystalhd.pc: libcrystalhd.pc.in
-	sed -e 's|@prefix@|$(PREFIX)|g' \
-		-e 's|@libdir@|$(LIBDIR)|g' \
-		-e 's|@includedir@|$(INCLUDEDIR)|g' $< > $@
+# Check configurable directories on every invocation, but retain unchanged
+# output timestamps. Escape replacement text separately from shell quoting.
+crystalhd_pc_escape = $(subst |,\|,$(subst &,\&,$(subst \,\\,$(1))))
+libcrystalhd.pc: libcrystalhd.pc.in crystalhd-pc-force
+	@set -e; trap 'rm -f "$@.tmp"' EXIT; trap 'exit 1' HUP INT TERM; \
+	sed -e $(call crystalhd_quote,s|@prefix@|$(call crystalhd_pc_escape,$(PREFIX))|g) \
+		-e $(call crystalhd_quote,s|@libdir@|$(call crystalhd_pc_escape,$(LIBDIR))|g) \
+		-e $(call crystalhd_quote,s|@includedir@|$(call crystalhd_pc_escape,$(INCLUDEDIR))|g) "$<" > "$@.tmp"; \
+	if cmp -s "$@.tmp" "$@"; then rm -f "$@.tmp"; else mv -f "$@.tmp" "$@"; fi
 
 clean:
-	rm -f $(BCLIB) $(BCLIB_SONAME) $(BCLIB_NAME) $(OBJFILES) $(DEPFILES) libcrystalhd.pc $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
+	rm -f $(BCLIB) $(BCLIB_SONAME) $(BCLIB_NAME) $(OBJFILES) $(DEPFILES) libcrystalhd.pc libcrystalhd.pc.tmp $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
 
 install: all
-	install -D -m 0755 $(BCLIB) $(DESTDIR)$(LIBDIR)/$(BCLIB)
-	ln -sfn $(BCLIB) $(DESTDIR)$(LIBDIR)/$(BCLIB_SONAME)
-	ln -sfn $(BCLIB_SONAME) $(DESTDIR)$(LIBDIR)/$(BCLIB_NAME)
-	install -d $(DESTDIR)$(INCLUDEDIR)/libcrystalhd
-	install -m 0644 $(PUBLIC_HEADERS) $(DESTDIR)$(INCLUDEDIR)/libcrystalhd
-	install -D -m 0644 libcrystalhd.pc $(DESTDIR)$(PKGCONFIGDIR)/libcrystalhd.pc
+	install -D -m 0755 $(BCLIB) "$(DESTDIR)$(LIBDIR)/$(BCLIB)"
+	ln -sfn $(BCLIB) "$(DESTDIR)$(LIBDIR)/$(BCLIB_SONAME)"
+	ln -sfn $(BCLIB_SONAME) "$(DESTDIR)$(LIBDIR)/$(BCLIB_NAME)"
+	install -d "$(DESTDIR)$(INCLUDEDIR)/libcrystalhd"
+	install -m 0644 $(PUBLIC_HEADERS) "$(DESTDIR)$(INCLUDEDIR)/libcrystalhd"
+	install -D -m 0644 libcrystalhd.pc "$(DESTDIR)$(PKGCONFIGDIR)/libcrystalhd.pc"
 	@if [ -z "$(DESTDIR)" ]; then \
 		if command -v ldconfig >/dev/null 2>&1; then ldconfig; \
 		elif [ -x /sbin/ldconfig ]; then /sbin/ldconfig; fi; \

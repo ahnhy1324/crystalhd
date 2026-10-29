@@ -1,0 +1,295 @@
+{
+  "schema": 1,
+  "issue": 445,
+  "observation_date": "2026-10-29",
+  "summary": "One private candidate Kodi process completed pause/resume, forward/backward seek, user Stop and one natural reopen. The complete natural reopen has 750 original pictures and 1,500 Bob outputs with observed returns. Three earlier OutputPicture warnings remain unassigned.",
+  "disposition": {
+    "controls": "PASS",
+    "natural_reopen": "PASS",
+    "coverage": "COMPLETE_FOR_NATURAL_REOPEN_ONLY",
+    "warnings": "RETAINED_UNASSIGNED",
+    "full_installed_application": "NOT_QUALIFIED"
+  },
+  "client": {
+    "reference": "publish-order-playback-20261029.json#build",
+    "package": "kodi",
+    "version": "2:21.3+dfsg-1ubuntu1",
+    "variant": "candidate",
+    "runtime_sha256": "52f8a35d1ec4046105bc1a8b1a74a2a2429ffa2cf6e4f32a062a6719a371d8da",
+    "build_id": "29f01443f1607fd360490e6cb17c0b819d7eab57",
+    "vaapi_source_sha256": "f7b33e384aa4de57191ee73b61852fbe63f952e4dc0fd6223e2b37ccfdf32ad9",
+    "cmake_cache_sha256": "c69b0c9ee4da645e496b7c9035e21b9deec53e5e608ca415c810eb91b35a874d",
+    "compile_commands_sha256": "5852e00ee26e2911a2732ce0f3f701dde1d9ed07d7e6f0e4c789b92a47b06eca",
+    "scope": "Same private reduced-feature Ubuntu 21.3 build recorded in the referenced playback receipt; this is not the full installed application.",
+    "system_install": false
+  },
+  "runtime": {
+    "va_dil_source_commit": "663c3a7959835a152e2ec9dbd36c11b277f9acc3",
+    "build_options": "-O2 -g; CRYSTALHD_EXPERIMENTAL_SCALED_RX; centered1280/sized16",
+    "kernel_module": "3.10.13",
+    "schedule": "normal",
+    "va_driver": {
+      "bytes": 7176128,
+      "sha256": "6df74bd46bef5c0f0e6a4c030fdc9e97f47867420d040737245430dcf7aa1072"
+    },
+    "dil": {
+      "bytes": 2317576,
+      "sha256": "b96fc5336c37d8da06fa11b34b519667c1d0475db2d0281f80646aabefff77c9"
+    },
+    "fixture": {
+      "label": "1080-bff-30s-v2.mkv",
+      "duration_seconds": 30,
+      "bytes": 38512377,
+      "sha256": "9c5f05910dc4802fc92004b1b2e3418c7c928cd97be9939b8030a6991d6a130a"
+    },
+    "inputs_unchanged": true
+  },
+  "controls": {
+    "same_application_incarnation": true,
+    "source_and_loaded_va_dil_checked_at_control_checkpoints": true,
+    "pause": {
+      "status": "PASS",
+      "speed": 0,
+      "held_wall_seconds": 1.022005,
+      "media_before_seconds": 2.167,
+      "media_after_seconds": 2.363,
+      "media_drift_seconds": 0.196,
+      "allowed_drift_seconds": 0.25
+    },
+    "resume": {
+      "status": "PASS",
+      "speed": 1,
+      "progressed_media_seconds": 3.587
+    },
+    "seeks": [
+      {
+        "direction": "forward",
+        "target_seconds": 15,
+        "status": "PASS",
+        "immediate_reply_media_seconds": 3.587,
+        "settled_media_seconds": 15.0,
+        "later_media_seconds": 17.165,
+        "speed": 1,
+        "fresh_target_player_OnSeek": true,
+        "request_to_settled_ms": 1037.154379,
+        "reply_to_settled_ms": 532.066985
+      },
+      {
+        "direction": "backward",
+        "target_seconds": 5,
+        "status": "PASS",
+        "immediate_reply_media_seconds": 17.165,
+        "settled_media_seconds": 5.0,
+        "later_media_seconds": 7.167,
+        "speed": 1,
+        "fresh_target_player_OnSeek": true,
+        "request_to_settled_ms": 1046.069985,
+        "reply_to_settled_ms": 541.479426
+      }
+    ],
+    "seek_acceptance": {
+      "settlement_bound_seconds": 5,
+      "media_window": "target - 1 through target + 6 seconds",
+      "requires": "Fresh target/player-matched OnSeek, actual target-window readback and subsequent media progression.",
+      "notification_scope": "Owned persistent connection and fresh notification index; Kodi supplies no request-unique notification ID.",
+      "immediate_reply": "Retained as returned; not treated as the settled playback clock."
+    },
+    "stop": {
+      "status": "PASS",
+      "fresh_OnStop_end": false,
+      "active_video_players_after_stop": 0,
+      "same_application_alive": true,
+      "module_refcount": 0,
+      "pinned_page_delta": 0,
+      "driver_session": "N",
+      "request_to_retirement_ms": 2087.689081
+    },
+    "complete_frame_census": "NOT RUN: deliberate seek and Stop interrupt the controls stream.",
+    "per_object_return_ownership": "NOT OBSERVED: the guarded return observer starts only after controls retire.",
+    "timing_scope": "Collector monotonic observations include RPC/readback/retirement overhead; not GPU completion, physical presentation or performance acceptance."
+  },
+  "natural_reopen": {
+    "same_process": true,
+    "fresh_OnStop_end": true,
+    "coverage_status": "COMPLETE",
+    "condition_status": "VALID",
+    "native_originals": 750,
+    "bob_outputs": 1500,
+    "taken": 1500,
+    "render_returned": 1500,
+    "processed_refs_cleared": 1500,
+    "ffmpeg_refs_released": 750,
+    "taken_before_retirement": 0,
+    "eof_render_outstanding": 0,
+    "terminal_render_outstanding": 0,
+    "final_drain": {
+      "result": 8,
+      "status": "VC_EOF",
+      "counters": {
+        "decoded": 0,
+        "processed": 0,
+        "render": 0
+      }
+    },
+    "drain_timeouts": 0,
+    "native_nonzero_outcomes": {},
+    "ownership_errors": [],
+    "application_exit": 0,
+    "final_device_boundary_equal": true,
+    "kernel_check_exit": 0,
+    "scope": "Software publication and callback/return ownership; GPU completion and physical presentation are not established."
+  },
+  "raw_split": {
+    "native_stdout_boundary_bytes": 3673184,
+    "boundary": "Recorded after user Stop retirement; observer attached afterward and before natural reopen.",
+    "control_native_prefix": {
+      "label": "control-native-prefix.log",
+      "bytes": 3673184,
+      "sha256": "1ab1db6c9b058930f7cb3d08f4862897446ba01e47912684c996ba6dc296cf92"
+    },
+    "natural_native_suffix": {
+      "label": "kodi-stdout.log",
+      "bytes": 11780740,
+      "sha256": "f661748e044845d1a32542a4ccb543b9ad6d58454ba23caa26006e00b47770db"
+    },
+    "controls_native_records": 6543,
+    "natural_native_records": 20867,
+    "distinct_control_instances": 3,
+    "distinct_natural_instances": 1,
+    "identity_overlap": false,
+    "isolation_errors": [],
+    "policy": "No sequence renumbering, discarded OWNER events, or expected-population reduction.",
+    "analysis_input_receipt": {
+      "label": "natural-inputs/result.json",
+      "bytes": 236507,
+      "sha256": "9dd5ac9e031fc9b088b242c455f17e7e5db5029dde17e130f932fc2e4f42beab"
+    },
+    "analysis_input_receipt_note": "Frozen pre-analysis receipt differs from final controls-v2/result.json, which subsequently adds the analysis link."
+  },
+  "earlier_controller_failure": {
+    "label": "controls-v1/result.json",
+    "status": "FAIL",
+    "errors": [
+      "RuntimeError: seek landed outside requested window: 3.569"
+    ],
+    "bytes": 60785,
+    "sha256": "a7b38973ad881dbcb49035e7de610e7322103445f3fa44e7ff84c74335766d0e",
+    "disposition": "Retained FAIL. Controller v1 judged the immediate seek reply; v2 separately observes asynchronous settlement with the same target window. This does not establish a Kodi seek defect or repair."
+  },
+  "unassigned_warnings": {
+    "message": "OutputPicture - timeout waiting for buffer",
+    "count": 3,
+    "kodi_log_byte_offsets": [
+      41787,
+      42320,
+      43177
+    ],
+    "natural_reopen_openfile_kodi_log_byte_offset": 44007,
+    "location": "All three warnings precede the natural reopen OpenFile boundary; Stop retirement is independently recorded by the controller.",
+    "cause": "NOT ESTABLISHED: no guarded WaitForBuffer branch observer covered controls.",
+    "raw_coarse_phase_label": "reopen-playback-or-unfinished-natural",
+    "raw_label_note": "Retained raw classifier label is coarse; byte offsets locate these warnings before natural reopen. Raw files were not rewritten."
+  },
+  "analysis": {
+    "collector_label": "run_v2.py",
+    "splitter_label": "analyze.py",
+    "frozen_parser": {
+      "label": "analyze_pair.py",
+      "bytes": 46311,
+      "sha256": "d557189594e7a328c8cd2e6b83b37d789514e93d890d33e8204ef30028d27b88"
+    },
+    "negative_controls_status": "PASS",
+    "negative_controls": [
+      "remove_all_returns",
+      "remove_one_return",
+      "duplicate_one_return",
+      "unknown_return_identity",
+      "remove_one_render_counted",
+      "remove_one_send_enter",
+      "retire_wrong_side_of_send",
+      "take_before_send_enter",
+      "zero_prepublication_render_counted",
+      "zero_prepublication_retired"
+    ],
+    "offline_checks": {
+      "label": "offline_check_v2.py",
+      "bytes": 10173,
+      "sha256": "9588ba2be5e620593ba101bf228509bbde6bc8eb70052f02d77cbfb5ffb9b524"
+    },
+    "offline_check_log": {
+      "label": "offline-checks-v2.log",
+      "bytes": 437,
+      "sha256": "5b983c9b4977476649cd80a162ca720d065b12a49661ef5b58706d5cf22af31c"
+    },
+    "offline_check_scope": "Device-free synthetic controls, isolation and natural-EOF negative checks; not hardware evidence."
+  },
+  "raw_integrity": {
+    "method": "Read-only verification of each retained file against its frozen SHA256 and byte size. Portable labels identify private artifacts; raw logs are not bundled.",
+    "files_checked": 11,
+    "all_matched": true,
+    "files": [
+      {
+        "label": "controls-v2/result.json",
+        "bytes": 236810,
+        "sha256": "89ffac970426c2b14580afcf17559be9a07f0e6d8199979e6e3130c67fc588c9"
+      },
+      {
+        "label": "controls-v2/controls-progress.json",
+        "bytes": 43910,
+        "sha256": "6bc96a738afed7baf1178f674ddeaf0c819ba56da42d3b01be1cc9f5dd9ced24"
+      },
+      {
+        "label": "controls-v2/kodi-stdout.log",
+        "bytes": 15453924,
+        "sha256": "efe06f7e2ed28fbc7504ed3980ff1515f164e5adbab1d60420b6ddc19c3475d0"
+      },
+      {
+        "label": "controls-v2/temp/kodi.log",
+        "bytes": 48692,
+        "sha256": "92016c23bd40179e83fe84b6ff165dd24fe38e3c363325348fb1bf194eee0568"
+      },
+      {
+        "label": "controls-v2/drain-publication-return.log",
+        "bytes": 2611605,
+        "sha256": "c906e8a9d324e64f5642bb4ed537af1029c7de8a63f4d800911b3b39050c969c"
+      },
+      {
+        "label": "controls-v2/observer.json",
+        "bytes": 462,
+        "sha256": "1bb59f515e7f2f3c4a2a5139291e39350950f8255959c8d71785a4a3bd67972d"
+      },
+      {
+        "label": "controls-v2/running-abi.json",
+        "bytes": 27317,
+        "sha256": "8a5f84f060fef00610cc3a0fb8218bdbdb764a7829b2e90d1c70828764decaf0"
+      },
+      {
+        "label": "controls-v2/natural-analysis.json",
+        "bytes": 7834,
+        "sha256": "1e1ed1543541ea47154c7197711f25e69a10d4fa66d7d341c97bbad416c1a719"
+      },
+      {
+        "label": "controls-v2/natural-inputs/provenance.json",
+        "bytes": 2251,
+        "sha256": "d16b1d8d62e7432d2bf9016e1dfa8a9175eda4cb2a03fb3d32bb014e8083c17d"
+      },
+      {
+        "label": "run_v2.py",
+        "bytes": 35808,
+        "sha256": "969279b076e605faa90f6b23837ce764faa222ed60197744cea532fdee725235"
+      },
+      {
+        "label": "analyze.py",
+        "bytes": 6823,
+        "sha256": "a493570fbd738fee23a2afa5e55195ab85ac0d96b730ab33e63937fe2140dddc"
+      }
+    ]
+  },
+  "limits": [
+    "Interrupted controls have no complete frame census or per-object ownership observation.",
+    "No pixel comparison, PTS/cadence, GPU completion, displayed-frame, physical A/V or performance qualification.",
+    "No full installed Kodi feature-set acceptance or automatic installation/activation of the candidate patch.",
+    "No exact-latest-source qualification: this receipt identifies the retained 663c3a7 VA/DIL build.",
+    "Three OutputPicture warnings and the earlier controller FAIL remain preserved; warning-free acceptance is open."
+  ]
+}
