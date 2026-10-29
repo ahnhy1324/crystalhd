@@ -6,9 +6,70 @@
 #endif
 #include CRYSTALHD_VAAPI_SOURCE
 
+#include <cstdlib>
+#include <new>
 #include <poll.h>
 #include <stdexcept>
 #include <string>
+
+namespace acquire_allocation_fault {
+// Observe only the calling thread's acquisition, starting at its nothrow
+// object allocation. The next throwing allocation is the shared_ptr control
+// block; neither point requires a GBM object, descriptor or mapping.
+thread_local bool observing = false, raw_seen = false, injected = false;
+thread_local bool failed_nothrow = false, raw_deleted = false;
+thread_local unsigned fail_on = 0, attempts = 0;
+thread_local size_t raw_bytes = 0, failed_bytes = 0;
+thread_local void *raw_object = nullptr;
+
+void *Allocate(size_t bytes, bool nothrow) {
+  if (observing && (raw_seen || nothrow)) {
+    if (!raw_seen) {
+      raw_seen = true;
+      raw_bytes = bytes;
+    }
+    ++attempts;
+    if (fail_on != 0 && attempts == fail_on) {
+      fail_on = 0;
+      injected = true;
+      failed_nothrow = nothrow;
+      failed_bytes = bytes;
+      throw std::bad_alloc();
+    }
+  }
+  void *result = std::malloc(bytes == 0 ? 1 : bytes);
+  if (result == nullptr) throw std::bad_alloc();
+  if (observing && nothrow && raw_object == nullptr) raw_object = result;
+  return result;
+}
+
+void Free(void *pointer) noexcept {
+  if (observing && raw_object != nullptr && pointer == raw_object)
+    raw_deleted = true;
+  std::free(pointer);
+}
+} // namespace acquire_allocation_fault
+
+void *operator new(size_t bytes) { return acquire_allocation_fault::Allocate(bytes, false); }
+void *operator new[](size_t bytes) { return acquire_allocation_fault::Allocate(bytes, false); }
+void *operator new(size_t bytes, const std::nothrow_t &) noexcept {
+  try { return acquire_allocation_fault::Allocate(bytes, true); } catch (...) { return nullptr; }
+}
+void *operator new[](size_t bytes, const std::nothrow_t &) noexcept {
+  try { return acquire_allocation_fault::Allocate(bytes, true); } catch (...) { return nullptr; }
+}
+#if defined(__GNUC__) || defined(__clang__)
+#define CRYSTALHD_TEST_NOINLINE __attribute__((noinline))
+#else
+#define CRYSTALHD_TEST_NOINLINE
+#endif
+CRYSTALHD_TEST_NOINLINE void operator delete(void *p) noexcept { acquire_allocation_fault::Free(p); }
+CRYSTALHD_TEST_NOINLINE void operator delete[](void *p) noexcept { acquire_allocation_fault::Free(p); }
+CRYSTALHD_TEST_NOINLINE void operator delete(void *p, size_t) noexcept { acquire_allocation_fault::Free(p); }
+CRYSTALHD_TEST_NOINLINE void operator delete[](void *p, size_t) noexcept { acquire_allocation_fault::Free(p); }
+CRYSTALHD_TEST_NOINLINE void operator delete(void *p, const std::nothrow_t &) noexcept { acquire_allocation_fault::Free(p); }
+CRYSTALHD_TEST_NOINLINE void operator delete[](void *p, const std::nothrow_t &) noexcept { acquire_allocation_fault::Free(p); }
+#undef CRYSTALHD_TEST_NOINLINE
 
 namespace {
 struct MockBo { int fd; uint32_t pitch; size_t size; };
@@ -390,6 +451,85 @@ static void ColdDerivedHandleWriteThrough() {
   }
 }
 
+static void AcquireAllocationFailure(unsigned allocation) {
+  Fixture f;
+  const VAImage image = f.Image();
+  const auto original = f.driver->buffers.at(image.buf).data;
+  const size_t buffers = f.driver->buffers.size(), images = f.driver->images.size();
+  const VABufferID next_buffer = f.driver->next_buffer;
+  const VAImageID next_image = f.driver->next_image;
+  VABufferInfo info;
+  std::memset(&info, 0, sizeof(info));
+  std::array<uint8_t, sizeof(info)> original_info;
+  std::memcpy(original_info.data(), &info, sizeof(info));
+  struct ResetFault {
+    ~ResetFault() {
+      acquire_allocation_fault::observing = false;
+      acquire_allocation_fault::fail_on = 0;
+    }
+  } reset;
+  using namespace acquire_allocation_fault;
+  observing = true;
+  raw_seen = injected = failed_nothrow = raw_deleted = false;
+  raw_object = nullptr;
+  raw_bytes = failed_bytes = attempts = 0;
+  fail_on = allocation;
+  bool escaped = false;
+  VAStatus status = VA_STATUS_SUCCESS;
+  try {
+    status = f.Acquire(image.buf, &info);
+  } catch (const std::bad_alloc &) {
+    escaped = true;
+  }
+  observing = false;
+  fail_on = 0;
+  std::printf("AcquireBufferHandle allocation=%s injected=%d escaped=%d status=%#x "
+              "failed_nothrow=%d raw_deleted=%d creates=%u "
+              "info_unchanged=%d next_buffer=%#x expected_buffer=%#x "
+              "next_image=%#x expected_image=%#x\n",
+              allocation == 1 ? "raw" : "control", injected, escaped, status,
+              failed_nothrow, raw_deleted, io.creates,
+              std::memcmp(&info, original_info.data(), sizeof(info)) == 0,
+              f.driver->next_buffer, next_buffer, f.driver->next_image, next_image);
+  Require(injected && raw_seen && raw_bytes == sizeof(ImageExportBacking) &&
+              failed_bytes != 0 && failed_nothrow == (allocation == 1) &&
+              (allocation == 1 ? raw_object == nullptr : raw_deleted),
+          "fault selects the raw object or its separate shared_ptr control block");
+  Check(!escaped && status == VA_STATUS_ERROR_ALLOCATION_FAILED,
+        "backing allocation failure returns a VA error without escaping the callback");
+  Check(io.creates == 0 && io.destroys == 0 && io.sync_calls == 0 && io.polls == 0 &&
+            io.bos.empty() && io.export_fds.empty() && io.mappings.empty() && !io.invalid,
+        "both C++ allocation failures occur before GBM, descriptor or mapping acquisition");
+  const Buffer &buffer = f.driver->buffers.at(image.buf);
+  Check(std::memcmp(&info, original_info.data(), sizeof(info)) == 0 &&
+            buffer.data == original && !BufferBorrowed(buffer) &&
+            buffer.map_count == 0 && !buffer.derived_write_active &&
+            f.driver->buffers.size() == buffers && f.driver->images.size() == images &&
+            f.driver->images.at(image.image_id).va.buf == image.buf &&
+            f.driver->next_buffer == next_buffer && f.driver->next_image == next_image,
+        "failed acquisition preserves caller info, image pixels, borrow state and IDs");
+  Require(f.Acquire(image.buf, &info) == VA_STATUS_SUCCESS,
+          "the same image acquires normally after allocation failure");
+  Check(io.creates == 1 && io.bos.size() == 1 && io.export_fds.size() == 1 &&
+            io.mappings.size() == 1 && BufferBorrowed(buffer),
+        "only the successful retry publishes its normal backing and borrow");
+  Require(f.Release(image.buf) == VA_STATUS_SUCCESS,
+          "the successful retry releases through the actual public callback");
+  Check(buffer.data == original && !BufferBorrowed(buffer) &&
+            io.creates == io.destroys && io.bos.empty() && io.export_fds.empty() &&
+            io.mappings.empty() && !io.invalid,
+        "retry release preserves pixels and retires its acquired resources");
+  Require(f.table.vaDestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS,
+          "the same image remains destroyable after failed and successful acquisition");
+  Check(f.driver->buffers.empty() && f.driver->images.empty(),
+        "image destruction retires its original image and buffer IDs");
+}
+
+static void AcquireAllocationFailures() {
+  AcquireAllocationFailure(1);
+  AcquireAllocationFailure(2);
+}
+
 static void AcquireRollback() {
   for (unsigned failure = 0; failure < 10; ++failure) {
     Fixture f;
@@ -637,10 +777,24 @@ static void ExportLayouts() {
 }
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc == 3 && std::strcmp(argv[1], "--acquire-allocation") == 0) {
+    const unsigned allocation = std::strcmp(argv[2], "raw") == 0 ? 1U :
+        std::strcmp(argv[2], "control") == 0 ? 2U : 0U;
+    if (allocation == 0) return 2;
+    try { AcquireAllocationFailure(allocation); }
+    catch (const std::exception &error) { Check(false, error.what()); }
+    std::printf("VAAPI buffer allocation: %s (%u failed checks)\n",
+                failures ? "FAIL" : "PASS", failures);
+    return failures ? 1 : 0;
+  }
+  if (argc != 1) {
+    std::fprintf(stderr, "usage: %s [--acquire-allocation raw|control]\n", argv[0]);
+    return 2;
+  }
   for (auto test : {Registration, ExportLayouts, BorrowRoundTrip, InvalidAndMapped,
                     SnapshotIsolation, ColdDerivedHandleWriteThrough,
-                    AcquireRollback, ReleaseFailureInvalidates,
+                    AcquireAllocationFailures, AcquireRollback, ReleaseFailureInvalidates,
                     DeriveFailureRollback, TerminateInvalidatesBorrow,
                     ReleaseWaitRehash, PendingReadIdentity}) {
     try { test(); }
