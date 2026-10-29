@@ -889,9 +889,13 @@ struct Surface {
                               rows, row_bytes))
         return false;
     }
-    object_maps.resize(desc.num_objects, MAP_FAILED);
-    object_sizes.resize(desc.num_objects);
-    object_fds.resize(desc.num_objects, -1);
+    try {
+      object_maps.resize(desc.num_objects, MAP_FAILED);
+      object_sizes.resize(desc.num_objects);
+      object_fds.resize(desc.num_objects, -1);
+    } catch (const std::bad_alloc &) {
+      return false;
+    }
     for (uint32_t object = 0; object < desc.num_objects; ++object) {
       object_fds[object] = dup(desc.objects[object].fd);
       object_sizes[object] = desc.objects[object].size;
@@ -931,6 +935,15 @@ struct Surface {
       if (!ImportedPlaneFits(desc.data_size, desc.offsets[plane], desc.pitches[plane],
                               rows, row_bytes))
         return false;
+    }
+    // Allocate all bookkeeping before acquiring an fd or mapping. In
+    // particular, mmap must not run before a throwing push_back allocation.
+    try {
+      object_fds.reserve(object_fds.size() + 1);
+      object_sizes.reserve(object_sizes.size() + 1);
+      object_maps.reserve(object_maps.size() + 1);
+    } catch (const std::bad_alloc &) {
+      return false;
     }
     const int fd = dup(static_cast<int>(desc.buffers[0]));
     if (fd < 0)
