@@ -27,12 +27,18 @@ void VppTestDestroyWait();
 #define drmGetDevice2 __wrap_drmGetDevice2
 #define drmFreeDevice __wrap_drmFreeDevice
 #define drmPrimeHandleToFD __wrap_drmPrimeHandleToFD
+#define gbm_bo_get_fd_for_plane __wrap_gbm_bo_get_fd_for_plane
+#define gbm_bo_get_offset __wrap_gbm_bo_get_offset
+#define gbm_bo_get_modifier __wrap_gbm_bo_get_modifier
 #endif
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
 #ifdef CRYSTALHD_VPP_CPU_ONLY
 #undef drmGetDevice2
 #undef drmFreeDevice
 #undef drmPrimeHandleToFD
+#undef gbm_bo_get_fd_for_plane
+#undef gbm_bo_get_offset
+#undef gbm_bo_get_modifier
 #endif
 #undef DtsGetDriverStatus
 #undef DtsStopDecoder
@@ -539,8 +545,19 @@ extern "C" int __real_drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags
 extern "C" void *__real_mmap(void *, size_t, int, int, int, off_t);
 extern "C" void *__real_mmap64(void *, size_t, int, int, int, off64_t);
 extern "C" int __real_munmap(void *, size_t);
+extern "C" int __real_gbm_bo_get_fd_for_plane(gbm_bo *, int);
+extern "C" uint32_t __real_gbm_bo_get_offset(gbm_bo *, int);
+extern "C" uint64_t __real_gbm_bo_get_modifier(gbm_bo *);
 
 namespace {
+struct ExportGbmProbe {
+  int files[2] = {-1, -1};
+  unsigned count = 0, invalid = 0;
+  int fail_plane = -1;
+  gbm_bo *Bo() { return reinterpret_cast<gbm_bo *>(this); }
+};
+thread_local ExportGbmProbe *export_gbm_probe = nullptr;
+
 // Real private memfds exercise the importer. Fixed-size bookkeeping must not
 // allocate while the selected production vector allocation is being failed.
 struct ImportIoProbe {
@@ -713,6 +730,31 @@ extern "C" int __wrap_munmap(void *address, size_t size) {
       ? native_node_mock->Unmap(address, size) : __real_munmap(address, size);
   if (import_io_probe != nullptr) import_io_probe->Unmap(address, size, result);
   return result;
+}
+extern "C" int __wrap_gbm_bo_get_fd_for_plane(gbm_bo *bo, int plane) {
+  if (export_gbm_probe == nullptr || bo != export_gbm_probe->Bo())
+    return __real_gbm_bo_get_fd_for_plane(bo, plane);
+  if (plane < 0 || static_cast<unsigned>(plane) >= export_gbm_probe->count) {
+    ++export_gbm_probe->invalid;
+    errno = EINVAL;
+    return -1;
+  }
+  if (plane == export_gbm_probe->fail_plane) {
+    errno = EIO;
+    return -1;
+  }
+  return dup(export_gbm_probe->files[plane]);
+}
+extern "C" uint32_t __wrap_gbm_bo_get_offset(gbm_bo *bo, int plane) {
+  if (export_gbm_probe == nullptr || bo != export_gbm_probe->Bo())
+    return __real_gbm_bo_get_offset(bo, plane);
+  if (plane < 0 || static_cast<unsigned>(plane) >= export_gbm_probe->count)
+    ++export_gbm_probe->invalid;
+  return 0;
+}
+extern "C" uint64_t __wrap_gbm_bo_get_modifier(gbm_bo *bo) {
+  return export_gbm_probe != nullptr && bo == export_gbm_probe->Bo()
+      ? DRM_FORMAT_MOD_LINEAR : __real_gbm_bo_get_modifier(bo);
 }
 
 extern "C" int __wrap_eventfd(unsigned int initial_value, int flags) {
@@ -1785,6 +1827,212 @@ void ImportedBookkeepingFailures() {
     for (unsigned allocation = 1; allocation <= 3; ++allocation)
       for (bool public_api : {false, true})
         ImportedBookkeepingFailure(prime, allocation, public_api);
+}
+
+bool SurfaceExportAllocationFailure(unsigned representation, unsigned skip,
+                                    bool fd_failure = false) {
+  const bool bgra = representation == 1 || representation == 3 || representation == 5;
+  const bool gbm = representation == 2 || representation == 3;
+  const bool imported = representation == 4 || representation == 5;
+  const bool alias = representation == 6;
+  const bool split = representation == 2 || representation == 4;
+  ImportIoProbe probe;
+  for (unsigned index = 0; index < 2; ++index) {
+    probe.sources[index] = memfd_create("crystalhd-private-export-oom", MFD_CLOEXEC);
+    Require(probe.sources[index] >= 0 && ftruncate(probe.sources[index], 2048) == 0 &&
+                __real_fstat(probe.sources[index], &probe.identities[index]) == 0,
+            "allocate private caller-owned export backing");
+    const uint8_t pixel = static_cast<uint8_t>(40 + index * 30);
+    Require(pwrite(probe.sources[index], &pixel, 1, 0) == 1,
+            "initialize private export backing pixels");
+  }
+  ImportIoScope scope(probe);
+  Driver driver{-1};
+  driver.StopWorkers();
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  VADRMPRIMESurfaceDescriptor input = {};
+  input.fourcc = bgra ? VA_FOURCC_BGRA : VA_FOURCC_NV12;
+  input.width = input.height = 16;
+  input.num_objects = split ? 2 : 1;
+  input.num_layers = 1;
+  input.layers[0].drm_format = bgra ? DRM_FORMAT_ARGB8888 : DRM_FORMAT_NV12;
+  input.layers[0].num_planes = bgra ? 1 : 2;
+  for (unsigned object = 0; object < input.num_objects; ++object) {
+    input.objects[object].fd = probe.sources[object];
+    input.objects[object].size = 2048;
+    input.objects[object].drm_format_modifier = DRM_FORMAT_MOD_LINEAR;
+  }
+  input.layers[0].pitch[0] = bgra ? 64 : 16;
+  input.layers[0].pitch[1] = 16;
+  input.layers[0].object_index[1] = split ? 1 : 0;
+  input.layers[0].offset[1] = split ? 0 : 256;
+  auto surface = std::make_shared<Surface>();
+  surface->width = surface->height = 16;
+  surface->rt_format = bgra ? VA_RT_FORMAT_RGB32 : VA_RT_FORMAT_YUV420;
+  Require(surface->ImportPrime(nullptr, input), "map real private export backing");
+  surface->ready = true;
+  surface->id = alias ? 2 : 1;
+  driver.surfaces.emplace(surface->id, surface);
+  std::shared_ptr<Surface> owner = surface;
+  if (alias) {
+    owner = std::make_shared<Surface>();
+    owner->width = owner->height = 16;
+    Require(owner->ImportPrime(nullptr, input), "map the preexisting canonical owner");
+    owner->id = 1;
+    owner->ready = true;
+    surface->backing_owner = owner->id;
+    driver.surfaces.emplace(owner->id, owner);
+    Require(GetPrimeLayout(input, &owner->layout), "retain the canonical owner's layout");
+  } else if (imported) {
+    Require(GetPrimeLayout(input, &surface->layout), "retain an imported plane layout");
+  }
+  if (owner->layout.valid)
+    for (const auto &identity : owner->layout.objects)
+      driver.backing_owners.emplace(identity, owner->id);
+  const SurfaceLayout old_surface_layout = surface->layout;
+  const SurfaceLayout old_owner_layout = owner->layout;
+  const auto old_owners = driver.backing_owners;
+  const auto same_layout = [](const SurfaceLayout &left, const SurfaceLayout &right) {
+    return left.valid == right.valid && left.fourcc == right.fourcc &&
+        left.width == right.width && left.height == right.height &&
+        left.num_planes == right.num_planes && left.objects == right.objects &&
+        left.planes == right.planes;
+  };
+  ExportGbmProbe gbm_probe;
+  gbm_probe.count = input.num_objects;
+  gbm_probe.fail_plane = fd_failure ? 1 : -1;
+  for (unsigned object = 0; object < input.num_objects; ++object)
+    gbm_probe.files[object] = probe.sources[object];
+  const auto export_once = [&](VADRMPRIMESurfaceDescriptor *output) {
+    struct GbmScope {
+      Surface &surface;
+      GbmScope(Surface &value, ExportGbmProbe *mock) : surface(value) {
+        export_gbm_probe = mock;
+        if (mock != nullptr) surface.bo = mock->Bo();
+      }
+      ~GbmScope() { surface.bo = nullptr; export_gbm_probe = nullptr; }
+    } fake_bo(*surface, gbm ? &gbm_probe : nullptr);
+    return ExportSurfaceHandle(&context, surface->id,
+        VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+        VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_COMPOSED_LAYERS, output);
+  };
+  VADRMPRIMESurfaceDescriptor output = {};
+  output.fourcc = VA_FOURCC_YUY2;
+  output.width = 37;
+  output.num_objects = 1;
+  output.objects[0].fd = probe.sources[1];  // An already-owned caller handle.
+  std::array<uint8_t, sizeof(output)> old_output;
+  memcpy(old_output.data(), &output, sizeof(output));
+  const int copies = probe.Copies();
+  const unsigned maps = probe.maps, unmaps = probe.unmaps;
+  allocation_fault::only_size = 0;
+  allocation_fault::failed_size = 0;
+  allocation_fault::skip_matches = skip;
+  allocation_fault::fail_next = !fd_failure;
+  VAStatus status = VA_STATUS_SUCCESS;
+  bool escaped = false;
+  try { status = export_once(&output); }
+  catch (const std::bad_alloc &) { escaped = true; }
+  const bool injected = !fd_failure && !allocation_fault::fail_next;
+  const bool failed = injected || fd_failure;
+  allocation_fault::fail_next = false;
+  allocation_fault::only_size = 0;
+  allocation_fault::skip_matches = 0;
+  struct ExportedFiles {
+    int files[4] = {-1, -1, -1, -1};
+    ~ExportedFiles() { for (int fd : files) if (fd >= 0) close(fd); }
+  } exported;
+  if (!escaped && status == VA_STATUS_SUCCESS)
+    for (unsigned object = 0; object < output.num_objects; ++object)
+      exported.files[object] = output.objects[object].fd;
+  bool inputs_usable = true;
+  for (unsigned index = 0; index < 2; ++index) {
+    uint8_t pixel = 0;
+    const uint8_t marker = static_cast<uint8_t>(90 + index);
+    struct stat identity = {};
+    const bool usable = __real_fstat(probe.sources[index], &identity) == 0 &&
+        identity.st_dev == probe.identities[index].st_dev &&
+        identity.st_ino == probe.identities[index].st_ino &&
+        pread(probe.sources[index], &pixel, 1, 0) == 1 && pixel == 40 + index * 30 &&
+        pwrite(probe.sources[index], &marker, 1, 1) == 1;
+    inputs_usable = inputs_usable && usable;
+  }
+  const bool descriptor_same = memcmp(&output, old_output.data(), sizeof(output)) == 0;
+  const bool state_same = driver.backing_owners == old_owners &&
+      same_layout(surface->layout, old_surface_layout) &&
+      same_layout(owner->layout, old_owner_layout);
+  if (escaped || (failed && (probe.Copies() != copies || !state_same || !descriptor_same)))
+    fprintf(stderr, "export OOM representation=%u skip=%u injected=%u escaped=%u "
+                    "status=%#x copies_before=%d after=%d descriptor_same=%u "
+                    "state_same=%u inputs_usable=%u\n", representation, skip,
+            injected, escaped, status, copies, probe.Copies(), descriptor_same,
+            state_same, inputs_usable);
+  Require(inputs_usable && probe.maps == maps && probe.unmaps == unmaps &&
+              probe.invalid == 0 && gbm_probe.invalid == 0,
+          "export failure preserves caller handles, pixels and existing mappings");
+  Require(!escaped && (!failed || status == (fd_failure ? VA_STATUS_ERROR_OPERATION_FAILED
+                                                       : VA_STATUS_ERROR_ALLOCATION_FAILED)),
+          "export metadata OOM returns an allocation error without escaping");
+  if (failed) {
+    Require(descriptor_same && state_same && probe.Copies() == copies &&
+                !owner->external_accessed && !owner->vpp_external_write_exposed,
+            "failed export preserves the caller descriptor and layouts and rolls back new keys and fds");
+    gbm_probe.fail_plane = -1;
+    Require(export_once(&output) == VA_STATUS_SUCCESS,
+            "export recovers from OOM using the same live surface");
+    for (unsigned object = 0; object < output.num_objects; ++object)
+      exported.files[object] = output.objects[object].fd;
+  } else {
+    Require(status == VA_STATUS_SUCCESS, "export allocation sweep reaches a successful call");
+  }
+  SurfaceLayout actual;
+  Require(GetPrimeLayout(output, &actual) && surface->layout == actual &&
+              owner->layout == actual && output.num_objects == input.num_objects &&
+              output.fourcc == input.fourcc && output.num_layers == 1 &&
+              output.layers[0].num_planes == (bgra ? 1U : 2U),
+          "successful export commits the exact NV12 or BGRA object and plane layout");
+  allocation_fault::failed_size = 0;
+  allocation_fault::fail_next = true;
+  bool repeated = false, repeated_escaped = false;
+  try {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    repeated = RegisterExportedLayout(&driver, surface.get(), surface->id, actual);
+  } catch (const std::bad_alloc &) {
+    repeated_escaped = true;
+  }
+  const bool no_allocation = allocation_fault::fail_next;
+  allocation_fault::fail_next = false;
+  Require(repeated && !repeated_escaped && no_allocation &&
+              surface->layout == actual && owner->layout == actual,
+          "re-registering the same exported owner and surface layout does not allocate");
+  for (unsigned object = 0; object < output.num_objects; ++object) {
+    Require(output.objects[object].fd != probe.sources[0] &&
+                output.objects[object].fd != probe.sources[1] &&
+                fcntl(output.objects[object].fd, F_GETFD) >= 0,
+            "successful export transfers independent caller-owned handles");
+    close(exported.files[object]);
+    exported.files[object] = -1;
+  }
+  Require(probe.Copies() == copies && probe.maps == maps && probe.unmaps == unmaps &&
+              surface->planes[0][0] == 40 && owner->external_accessed &&
+              !owner->vpp_external_write_exposed,
+          "successful retry leaves only the original live mappings and handles");
+  return injected;
+}
+
+void SurfaceExportAllocationFailures() {
+  for (unsigned representation = 0; representation < 7; ++representation) {
+    bool complete = false;
+    for (unsigned skip = 0; skip < 32; ++skip) {
+      if (!SurfaceExportAllocationFailure(representation, skip)) {
+        complete = true;
+        break;
+      }
+    }
+    Require(complete, "each export allocation sweep reaches its finite end");
+  }
+  SurfaceExportAllocationFailure(2, 0, true);
 }
 
 struct SurfaceCreationFailure {
@@ -8266,6 +8514,7 @@ int VppFullTestEntry(int argc, char **argv) {
           {"zero-timeout sync does not block on driver admission", SyncTimeoutAdmissionDoesNotBlockZeroQueries},
           {"VPP backlog turn preserves cancellation and ownership", VppBacklogTurnPreservesCancellationAndOwnership}};
       const std::pair<const char *, void (*)()> imports[] = {
+          {"export allocation failures preserve descriptors and ownership", SurfaceExportAllocationFailures},
           {"import bookkeeping failure returns errors and releases resources", ImportedBookkeepingFailures},
           {"PRIME export preserves imported plane layout", ImportedPrimeExportsPreservePlaneLayouts},
           {"legacy PRIME batch uses one descriptor", LegacyPrimeBatchUsesOneDescriptorAndRollsBack}};
@@ -8338,6 +8587,7 @@ int VppFullTestEntry(int argc, char **argv) {
     NativeDumbBookkeepingFailures();
     SurfaceCreationAllocationFailures();
     ImportedBookkeepingFailures();
+    SurfaceExportAllocationFailures();
     NativeDumbMappingPreserves64BitOffsets();
     I915WcMappingRequiresExactOffsetIdentity();
     AbortPathsPublishErrorFences();
@@ -8423,7 +8673,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 114 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 115 hardware-free regressions passed");
   return 0;
 }
 
@@ -8445,6 +8695,35 @@ int main(int argc, char **argv) {
       return 0;
     } catch (const std::exception &error) {
       fprintf(stderr, "VA-API image allocation rollback failed: %s\n", error.what());
+      return 1;
+    }
+  }
+  if (argc == 2 && strcmp(argv[1], "--surface-export-fd-failure") == 0) {
+    try {
+      SurfaceExportAllocationFailure(2, 0, true);
+      puts("VA-API partial export fd failure cleanup PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API partial export fd failure cleanup failed: %s\n", error.what());
+      return 1;
+    }
+  }
+  if ((argc == 2 || argc == 4) && strcmp(argv[1], "--surface-export-allocation") == 0) {
+    try {
+      if (argc == 2) {
+        SurfaceExportAllocationFailures();
+      } else {
+        const unsigned representation = static_cast<unsigned>(strtoul(argv[2], nullptr, 10));
+        const unsigned skip = static_cast<unsigned>(strtoul(argv[3], nullptr, 10));
+        if (representation >= 7 || skip >= 32) return 2;
+        const bool injected = SurfaceExportAllocationFailure(representation, skip);
+        printf("export allocation representation=%u skip=%u injected=%u\n",
+               representation, skip, injected);
+      }
+      puts("VA-API export allocation rollback PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API export allocation rollback failed: %s\n", error.what());
       return 1;
     }
   }
@@ -8544,6 +8823,8 @@ int main(int argc, char **argv) {
   const std::pair<const char *, void (*)()> groups[] = {
       {"native DUMB bookkeeping failure cleanup", NativeDumbBookkeepingFailures},
       {"import bookkeeping failure returns errors and releases resources", ImportedBookkeepingFailures},
+      {"export allocation failures preserve descriptors and ownership", SurfaceExportAllocationFailures},
+      {"image allocation failures preserve publication", ImageAllocationFailuresAreTransactional},
       {"native DUMB 64-bit offsets preserve pixels and cleanup", NativeDumbMappingPreserves64BitOffsets},
       {"configuration matches advertised support", ConfigAttributesMatchAdvertisedSupport},
       {"card scaling captures explicit additional output", DecodeProcessingAdmissionIsExplicitAndCaptured},

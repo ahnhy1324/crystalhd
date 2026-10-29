@@ -143,6 +143,7 @@ for bits in $build_bits; do
         -Wl,--gc-sections,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=eventfd \
         -Wl,--wrap=fstat,--wrap=drmGetDevice2,--wrap=drmFreeDevice \
         -Wl,--wrap=drmPrimeHandleToFD,--wrap=mmap,--wrap=mmap64,--wrap=munmap \
+        -Wl,--wrap=gbm_bo_get_fd_for_plane,--wrap=gbm_bo_get_offset,--wrap=gbm_bo_get_modifier \
         -pthread $cpu_flags -o "$build_dir/vaapi-vpp-cpu"
     LC_ALL=C readelf -h "$build_dir/vaapi-vpp-cpu" > "$build_dir/vaapi-vpp-cpu.elf"
     grep -Eq "Class:[[:space:]]+ELF$bits" "$build_dir/vaapi-vpp-cpu.elf"
