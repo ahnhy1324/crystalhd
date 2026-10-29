@@ -60,12 +60,12 @@ the end of a related change set, rather than repeating unrelated experiments.
    #92/#204 hardware exploration until the correctness work above is handled,
    unless new evidence establishes an ordinary-use fault needing priority.
 
-**Shutdown heap abort (#538): wontfix / not planned (2026-10-29).** Per
-maintainer direction, stop further reproduction work and remove this follow-up
-from the active bug-fix queue. No reproducible failing condition or fault stack
-is available. Retain the historical aborts and diagnostics; this is a triage
-decision, not a fix or disproval. Reconsider only with a concrete reproducible
-report or diagnostic stack. See the
+**Shutdown heap abort subtask only: ignored / wontfix (2026-10-29). #538 stays
+open.** Per maintainer direction, stop investigation/reproduction of this
+subtask and remove it from the active bug-fix queue. **Reason (maintainer
+report): agent cybersecurity filtering prevents the work from proceeding.**
+Retain the historical aborts and diagnostics; this does not establish that the
+bug is invalid, fixed or disproved. Other Kodi work remains open. See the
 [scoped disposition](https://github.com/ahnhy1324/crystalhd/issues/538#issuecomment-6486735751).
 
 Keep merged, locally fixed/review-ready and unresolved items distinct. Locating
