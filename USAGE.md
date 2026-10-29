@@ -228,6 +228,20 @@ use [GStreamer's filter](#gstreamer-deinterlacing),
 output cadence; successful decoding alone does not certify smooth display or
 A/V synchronization on every host.
 
+### Experimental GPU field output
+
+The development research player also accepts `--video-output field-gpu` to
+select the explicitly built `crystalhdfieldsink`. It performs GPU nearest Bob
+and display fitting for limited-range YUY2 with BT.601/709 colorimetry, and
+disables playbin's automatic deinterlacing. This requires the research plugin
+and its XCB/EGL/GLES2/GBM/DRM dependencies; it is not part of an ordinary install.
+See the [field-output build, invocation and qualification limits](tests/fixtures/issue530/README.md#experimental-window-consumer).
+
+The default `--video-output auto` keeps the normal output path. The selector is
+per invocation and is not saved by the configuration manager. With `field-gpu`,
+omit `--weave` and use `--software-output-size native` to clear any saved
+software resize; either conflicting request is rejected before playback.
+
 ## Optional BCM70015 output scaling
 
 Use this option when Full-HD output is bandwidth-limited and a smaller image
