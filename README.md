@@ -205,3 +205,5 @@ tests. See [RELEASING.md](RELEASING.md) for the release gates and
 
 Existing file notices remain authoritative in this mixed-license codebase; see
 [LICENSES.md](LICENSES.md).
+
+<!-- Temporary prose-only CI matrix validation; intentionally not merged. -->
