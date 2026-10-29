@@ -173,6 +173,52 @@ class LibraryPkgConfigTests(unittest.TestCase):
         self.assert_directories(installed, '/opt/crystalhd')
         self.assertEqual(installed.read_bytes(), self.pkgconfig.read_bytes())
 
+    def test_staged_install_and_uninstall_preserve_complete_directory_paths(self):
+        payload = b'library fixture\n'
+        header = b'/* header fixture */\n'
+        (self.library / 'libcrystalhd.so.3.6').write_bytes(payload)
+        (self.library / 'public.h').write_bytes(header)
+        cases = (
+            ('default', '/usr', {}),
+            ('prefix', "/opt/Crystal HD's & SDK", {}),
+            ('overrides', '/usr', {
+                'LIBDIR': '/opt/library files',
+                'INCLUDEDIR': '/opt/header files',
+                'PKGCONFIGDIR': '/opt/package metadata',
+            }),
+        )
+        for name, prefix, overrides in cases:
+            with self.subTest(name=name):
+                stage = self.root / ('stage with spaces ' + name)
+                libdir = overrides.get('LIBDIR', prefix + '/lib')
+                includedir = overrides.get('INCLUDEDIR', prefix + '/include')
+                pcdir = overrides.get('PKGCONFIGDIR', libdir + '/pkgconfig')
+                installed_library = stage / libdir.lstrip('/')
+                installed_headers = stage / includedir.lstrip('/') / 'libcrystalhd'
+                installed_pc = stage / pcdir.lstrip('/') / 'libcrystalhd.pc'
+                installed_headers.mkdir(parents=True)
+                unrelated = installed_headers / 'unrelated.h'
+                unrelated.write_bytes(b'preserve unrelated header\n')
+                assignments = ('PREFIX=' + prefix, 'DESTDIR=' + str(stage),
+                               'PUBLIC_HEADERS=public.h',
+                               *(key + '=' + value for key, value in overrides.items()))
+                self.run_make(*assignments, target='install',
+                              options=('-o', 'libcrystalhd.so.3.6'))
+                self.assertEqual((installed_library / 'libcrystalhd.so.3.6').read_bytes(),
+                                 payload)
+                self.assertEqual(os.readlink(installed_library / 'libcrystalhd.so.3'),
+                                 'libcrystalhd.so.3.6')
+                self.assertEqual(os.readlink(installed_library / 'libcrystalhd.so'),
+                                 'libcrystalhd.so.3')
+                self.assertEqual((installed_headers / 'public.h').read_bytes(), header)
+                self.assert_directories(installed_pc, prefix, libdir, includedir)
+                self.assertEqual(installed_pc.read_bytes(), self.pkgconfig.read_bytes())
+                self.run_make(*assignments, target='uninstall')
+                remaining = {path.relative_to(stage) for path in stage.rglob('*')
+                             if path.is_file() or path.is_symlink()}
+                self.assertEqual(remaining, {unrelated.relative_to(stage)})
+                self.assertEqual(unrelated.read_bytes(), b'preserve unrelated header\n')
+
 
 class RuntimeInstallTests(unittest.TestCase):
     def setUp(self):
