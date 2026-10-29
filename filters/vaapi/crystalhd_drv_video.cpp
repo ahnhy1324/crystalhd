@@ -10484,12 +10484,10 @@ static VAStatus CreateImageLocked(Driver *driver, const VAImageFormat &format,
   buffer.type = VAImageBufferType;
   buffer.element_size = 1;
   buffer.elements = data_size;
-  buffer.data.resize(buffer.elements);
-  VABufferID buffer_id = driver->next_buffer++;
-  driver->buffers[buffer_id] = std::move(buffer);
+  const VABufferID buffer_id = driver->next_buffer;
 
   Image image;
-  image.va.image_id = driver->next_image++;
+  image.va.image_id = driver->next_image;
   image.va.format = bgra ? ImageFormatFor(VA_FOURCC_BGRA) : format;
   image.va.buf = buffer_id;
   image.va.width = width;
@@ -10500,8 +10498,26 @@ static VAStatus CreateImageLocked(Driver *driver, const VAImageFormat &format,
   image.va.pitches[1] = uv_pitch;
   image.va.offsets[0] = 0;
   image.va.offsets[1] = bgra ? 0 : uv_offset;
+  bool buffer_created = false;
+  try {
+    buffer.data.resize(buffer.elements);
+    if (!driver->buffers.emplace(buffer_id, std::move(buffer)).second)
+      return VA_STATUS_ERROR_MAX_NUM_EXCEEDED;
+    buffer_created = true;
+    if (!driver->images.emplace(image.va.image_id, image).second) {
+      driver->buffers.erase(buffer_id);
+      return VA_STATUS_ERROR_MAX_NUM_EXCEEDED;
+    }
+  } catch (const std::bad_alloc &) {
+    if (buffer_created)
+      driver->buffers.erase(buffer_id);
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
+  // Publish only after both registry entries own the complete image. DeriveImage
+  // uses the same helper and must not retain an orphan buffer on snapshot OOM.
   *va_image = image.va;
-  driver->images[image.va.image_id] = image;
+  ++driver->next_buffer;
+  ++driver->next_image;
   return VA_STATUS_SUCCESS;
 }
 
