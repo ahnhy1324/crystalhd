@@ -489,6 +489,9 @@ These current surfaces deliberately do not become ordinary merged keys:
 | `CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12` <!-- schema-boundary:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12=experimental-centered-nv12 --> | Native-only centered NV12 experiment; no canonical key, profile value, preset or manager translation. The VA driver alone validates its exact syntax and context/media eligibility |
 | `crystalhd-play --subtitles` <!-- schema-boundary:player-flag:--subtitles=invocation-only --> | Per-media invocation input, never a saved preset/profile value |
 | `crystalhd-play --weave` <!-- schema-boundary:player-flag:--weave=invocation-only --> | Per-invocation interlaced passthrough selection, never a saved preset/profile value |
+| `crystalhd-play --trace-frames` <!-- schema-boundary:player-flag:--trace-frames=invocation-only --> | Explicit new diagnostic output file for one playback; never a saved preset/profile value |
+| `crystalhd-play --trace-limit` <!-- schema-boundary:player-flag:--trace-limit=invocation-only --> | One playback's bounded record retention; requires explicit trace output |
+| `crystalhdstagetrace capacity` <!-- schema-boundary:gst-property:capacity=invocation-only --> | Player-owned diagnostic controller capacity, set before attachment; no managed frontend setting |
 
 External loader selectors such as `LIBVA_DRIVER_NAME`, `VAAPI_FORCE_INDIRECT`,
 `GST_PLUGIN_PATH` and `LD_LIBRARY_PATH` remain owned by their respective

@@ -125,6 +125,56 @@ or state changes can reset sink counters. They are a snapshot before teardown,
 not physical display counts or a new playback pass criterion. A renderer
 without these statistics reports `Video sink statistics: unavailable`.
 
+### Optional video-stage trace (development)
+
+To investigate a missing frame or field, request a new JSON output file:
+
+```sh
+crystalhd-play --trace-frames /tmp/playback-trace.json "/path/to/video.mp4"
+crystalhd-play --software --trace-frames /tmp/software-trace.json "/path/to/video.mp4"
+```
+
+This needs the matching native GStreamer helper even in software mode. The
+file must not exist; it is created with mode `0600`. The normal Player does
+not enable these probes. While tracing, native callbacks record the decoder
+source, deinterlacer source when present, and leaf video-sink input. There is
+no additional per-buffer Python callback, pixel readback or file writing in
+the streaming thread. The JSON is written after playback teardown.
+
+The default capacity is 4,096 records across all observed stages, events and
+controls. `--trace-limit 16384` raises it to the maximum. Retention keeps the
+first records; `dropped` declares truncation while attachment counters continue.
+This top-level `dropped` counts omitted trace records; it is separate from
+the nested video-sink statistics' dropped-buffer count.
+Attachment history is also limited to 64 entries. Rejected attachments and
+unobserved stages mean incomplete coverage. Truncation, missing PTS, drops and
+an absent deinterlacer do not become new playback failure gates. An unavailable
+helper or output-file error fails the explicitly requested trace operation.
+
+Each attachment has independent buffer ordinals, raw video-buffer flags,
+PTS/DTS/duration and stream/segment/flush generations. Timestamp zero is valid;
+unknown times are JSON `null`. Running time is recorded only for a valid TIME
+segment. Pause/resume and seek requests are annotations; observed native
+events determine media generations. Compare the separate stage records without
+assuming PTS uniquely identifies a source picture or a deinterlacer's fields.
+
+`buffers` counts individual BUFFER callbacks. Buffer lists have separate
+`buffer_lists`, `list_items` and `list_missing_pts` counters, with member records
+named `buffer-list-item`. GStreamer's list fallback can expose both a list and
+individual buffers at the same pad. `buffer_list_ambiguity` declares this case;
+it marks possible overlap whenever any list is observed, not proof that a
+particular list was duplicated. Do not add the two counters into a frame
+census. List positions use `list_ordinal` and `list_index`; ordinary `ordinal`
+continues to count individual BUFFER callbacks. The trace observes stream
+start, CAPS, segment, flush, EOS and QoS events as well as attach/detach/stop
+administration. All retained record types share the capacity limit.
+
+Sink input records mean delivery to that pad. Sink statistics remain snapshots
+since their last reset. Neither establishes actual screen presentation,
+cadence, unique displayed pictures or physical A/V synchronization. Attached
+candidates without buffers are not confirmed active renderers. The report
+does not contain the media path or URL and does not select a different decoder.
+
 ### HTTP(S) input
 
 HTTP(S) input is included in 1.1.0 and RC4/RC5; the earlier 1.0.0 and

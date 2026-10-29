@@ -24,6 +24,7 @@
 #include "gstcrystalhd-input.h"
 #include "gstcrystalhd-timing.h"
 #include "gstcrystalhd-diqos.h"
+#include "gstcrystalhd-stage-trace.h"
 
 /* Older libcrystalhd.so.3 installations need not provide this additive API. */
 extern BC_STATUS DtsDupOutputPollFd(HANDLE, int *) __attribute__((weak));
@@ -2749,7 +2750,9 @@ plugin_init(GstPlugin *plugin)
   return gst_element_register(plugin, "crystalhddec", GST_RANK_PRIMARY + 1,
                               GST_TYPE_CRYSTALHD_DEC) &&
       gst_element_register(plugin, "crystalhddiqos", GST_RANK_NONE,
-                            GST_TYPE_CRYSTALHD_DI_QOS);
+                            GST_TYPE_CRYSTALHD_DI_QOS) &&
+      gst_element_register(plugin, "crystalhdstagetrace", GST_RANK_NONE,
+                            GST_TYPE_CRYSTALHD_STAGE_TRACE);
 }
 
 #ifndef PACKAGE
