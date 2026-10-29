@@ -1,0 +1,249 @@
+{
+  "schema": 1,
+  "issue": 445,
+  "observation_date": "2026-10-29",
+  "summary": "A bounded private Kodi controls run observed two OutputPicture warnings. Both negative waits executed a false deadline comparison followed by a true abort load. The original overall run remains FAIL; a separate strict offline replay of its unchanged wait trace is COMPLETE.",
+  "disposition": {
+    "original_run": "FAIL",
+    "normal_control_steps": "5_PASS",
+    "strict_offline_wait_observation": "COMPLETE",
+    "natural_reopen": "NOT_RUN",
+    "warning_cause_scope": "Executed branch conditions in this capture only"
+  },
+  "original_run": {
+    "status": "FAIL",
+    "errors": [
+      "InvalidLog: Unexpected output: timeout/loss/helper diagnostics are failures"
+    ],
+    "observer_status": "FAIL",
+    "startup_line": "Attached 22 probes",
+    "original_parser_expected": "Attaching ... probes...",
+    "application_exit": 0,
+    "device_boundary_equal": true,
+    "kernel_check_exit": 0,
+    "natural_reopen": "NOT_RUN: collector stopped on parser failure before that phase.",
+    "retention": "Original result and raw trace remain unchanged. Offline replay is a separate artifact."
+  },
+  "provenance": {
+    "client_reference": "publish-order-playback-20261029.json#build",
+    "configuration_reference": "publish-order-controls-20261029.json#runtime",
+    "package": "kodi",
+    "package_version": "2:21.3+dfsg-1ubuntu1",
+    "client_variant": "candidate",
+    "runtime_sha256": "52f8a35d1ec4046105bc1a8b1a74a2a2429ffa2cf6e4f32a062a6719a371d8da",
+    "build_id": "29f01443f1607fd360490e6cb17c0b819d7eab57",
+    "va_dil_source_commit": "663c3a7959835a152e2ec9dbd36c11b277f9acc3",
+    "build_options": "-O2 -g; CRYSTALHD_EXPERIMENTAL_SCALED_RX; centered1280/sized16",
+    "kernel_module": "3.10.13",
+    "va_driver": {
+      "bytes": 7176128,
+      "sha256": "6df74bd46bef5c0f0e6a4c030fdc9e97f47867420d040737245430dcf7aa1072"
+    },
+    "dil": {
+      "bytes": 2317576,
+      "sha256": "b96fc5336c37d8da06fa11b34b519667c1d0475db2d0281f80646aabefff77c9"
+    },
+    "fixture": {
+      "label": "1080-bff-30s-v2.mkv",
+      "bytes": 38512377,
+      "sha256": "9c5f05910dc4802fc92004b1b2e3418c7c928cd97be9939b8030a6991d6a130a"
+    },
+    "system_install": false
+  },
+  "controls": {
+    "steps": [
+      {
+        "action": "pause",
+        "status": "PASS"
+      },
+      {
+        "action": "resume",
+        "status": "PASS"
+      },
+      {
+        "action": "seek-forward",
+        "status": "PASS"
+      },
+      {
+        "action": "seek-backward",
+        "status": "PASS"
+      },
+      {
+        "action": "stop",
+        "status": "PASS"
+      }
+    ],
+    "scope": "Normal pause/resume, forward/backward seek and user Stop in one owned private process. Interrupted playback has no complete picture/output census or per-picture return-ownership qualification."
+  },
+  "observer": {
+    "instruction_sites": 19,
+    "attached_probes_including_begin_end_interval": 22,
+    "bounds": {
+      "seconds": 100,
+      "events": 40000
+    },
+    "tracer_exit": 0,
+    "forced_termination": false,
+    "scope": "Owned-process, guarded read-only instruction probes; no source changes."
+  },
+  "offline_replay": {
+    "status": "COMPLETE",
+    "records": 5192,
+    "wait_invocations": 456,
+    "nonnegative_waits": 454,
+    "negative_waits": 2,
+    "deadline_selected_exits": 0,
+    "abort_after_false_deadline_exits": 2,
+    "warning_blocks_selected": 2,
+    "actual_warning_lines": 2,
+    "warning_message": "OutputPicture - timeout waiting for buffer",
+    "warning_kodi_log_byte_offsets": [
+      41782,
+      43077
+    ],
+    "negative_waits_observed": [
+      {
+        "cause": "abort_load_executed_true_after_false_deadline",
+        "executed_elapsed_ns": 18164472,
+        "elapsed_ms": 18.164472,
+        "effective_deadline_ms": 500.0,
+        "executed_deadline_condition": false,
+        "executed_abort_load": true,
+        "warning_block_selected": true,
+        "free_empty_at_negative_edge": 0,
+        "diagnostic_abort_sample": 1
+      },
+      {
+        "cause": "abort_load_executed_true_after_false_deadline",
+        "executed_elapsed_ns": 52275475,
+        "elapsed_ms": 52.275475,
+        "effective_deadline_ms": 500.0,
+        "executed_deadline_condition": false,
+        "executed_abort_load": true,
+        "warning_block_selected": true,
+        "free_empty_at_negative_edge": 1,
+        "diagnostic_abort_sample": 1
+      }
+    ],
+    "executed_abort_load_counts": {
+      "0": 609,
+      "1": 2
+    },
+    "control_store_counts": {
+      "flush": 2,
+      "close": 1
+    },
+    "end": {
+      "records": 5192,
+      "active": 0,
+      "loop_active": 0,
+      "store_active": 0,
+      "pending": 0,
+      "error": 0,
+      "limit": 0,
+      "timeout": 0
+    },
+    "validation": "One target-matched READY/END, exact event count, per-thread sequence continuity, per-call/per-loop cause and warning-gate balance; no accepted loss/helper-error/limit/timeout flags.",
+    "parser_corrections": [
+      "Validate actual bpftrace 0.25 Attached 22 probes startup line/count",
+      "Preserve production-discarded prior xchg byte as an uninterpreted signed/unsigned byte diagnostic; evaluated source truth remains strict Boolean"
+    ]
+  },
+  "discarded_previous_exchange_byte": {
+    "scope": "Return byte of an atomic exchange whose previous value is discarded by production code; not an evaluated abort condition.",
+    "first_observed_value": -120,
+    "value_counts": {
+      "-120": 1,
+      "0": 456,
+      "1": 2
+    },
+    "representation": "Preserved exactly as observed, without normalization or Boolean interpretation.",
+    "source_fact": "The frozen constructor does not initialize this flag before the first OutputPicture clear.",
+    "causal": false,
+    "truth_checks": "Actual executed abort loads and contemporaneous current-flag samples remain strictly 0 or 1."
+  },
+  "interpretation_limits": [
+    "The two observed negative exits selected evaluated cancellation rather than elapsed-deadline expiry; this does not identify the writer responsible for either abort value.",
+    "Sampled abort flags do not establish causal overlap. Free-queue snapshots do not establish starvation.",
+    "This capture does not attribute the earlier three warnings, investigate heap behavior or qualify latest-master behavior.",
+    "No natural-reopen, pixel, PTS/cadence, GPU completion, physical A/V, performance or full installed-Kodi qualification is inferred."
+  ],
+  "integrity": {
+    "method": "Read-only fingerprints of preserved private raw artifacts and exact offline tooling; portable labels only.",
+    "raw_artifacts": [
+      {
+        "label": "control-wait-1/result.json",
+        "bytes": 137695,
+        "sha256": "29fac3bd8a27ebdee7d4811cfecd7e7d20e88c2227b83ab18b3af78c495e84bf"
+      },
+      {
+        "label": "control-wait-1/control-wait.log",
+        "bytes": 1109920,
+        "sha256": "7371f3a69794430d7593a6fe525e4c86fe92a4a9219f1c96dc86781eb08de753"
+      },
+      {
+        "label": "control-wait-1/control-wait.bt",
+        "bytes": 19310,
+        "sha256": "21d2a30393ba7ac218b14581d85dda8a7460747590b724389606958616775eff"
+      },
+      {
+        "label": "control-wait-1/control-wait-offline-analysis.json",
+        "bytes": 3036632,
+        "sha256": "6fc68bfe1ac7c1e13b6af76e4fc9e1f07a260543a82d68eb7606b9e6d7141a9c"
+      },
+      {
+        "label": "control-wait-1/controls-progress.json",
+        "bytes": 43913,
+        "sha256": "8d0861498a4672599a121f2413a046dc955d6fda84d2a441b985ddd8fe6c3f15"
+      },
+      {
+        "label": "control-wait-1/kodi-stdout.log",
+        "bytes": 3736796,
+        "sha256": "18f220d636408928200e946b71322a0cddfed5a5616a135cde42b66afb35de32"
+      },
+      {
+        "label": "control-wait-1/temp/kodi.log",
+        "bytes": 44849,
+        "sha256": "7d6817120d12ca8c24cad53629ccfb9e4ece0a8f6eecfb3c966ffe8cf38ec952"
+      },
+      {
+        "label": "control-wait-1.kernel.log",
+        "bytes": 65,
+        "sha256": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da"
+      }
+    ],
+    "tooling": [
+      {
+        "label": "generate.py",
+        "bytes": 11027,
+        "sha256": "dc6e18c9b9d7ba44c62d47a1349c14a73f6fd816cfa4d50cd813bfdd227188ec"
+      },
+      {
+        "label": "analyze.py",
+        "bytes": 19549,
+        "sha256": "e72a538036d9d29de38fe79b7bdc7158d143eca0933e864050d16ffe44b9a8fa"
+      },
+      {
+        "label": "plan.json",
+        "bytes": 17290,
+        "sha256": "4dd159c21b5248e533c5d90c8093a0760e2d5b6e5a519fb6c2863cb159082b3f"
+      },
+      {
+        "label": "dwarf-proof.json",
+        "bytes": 2998,
+        "sha256": "5a1a72f7bb2ef5bd92b43f11af8f9fffdfac182713d408ad7d15e02f47ee614a"
+      },
+      {
+        "label": "collector/run.py",
+        "bytes": 36273,
+        "sha256": "d0e678eae126a211982e28b019aa042d76afcf6630b6c610243998d5d266e48c"
+      },
+      {
+        "label": "collector/wait_probe.py",
+        "bytes": 4951,
+        "sha256": "7aa561967f1ecbc6590017fb7a93cf7ca5a7a87699db4af3ca8d93864153b14e"
+      }
+    ],
+    "raw_and_original_result_unchanged": true
+  }
+}

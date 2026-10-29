@@ -52,7 +52,11 @@ the end of a related change set, rather than repeating unrelated experiments.
    at VA/DIL `663c3a7` observe pause/resume, forward/backward seek, user Stop
    and a same-process natural reopen with 750 originals / 1,500 Bob outputs
    and returns. The interrupted controls have no full frame or per-object
-   return census; three buffer-wait warnings remain unassigned. Full installed
+   return census; three earlier buffer-wait warnings remain unassigned. A
+   [separate guarded observation](tests/fixtures/issue445/wait-condition-observation-20261029.json)
+   identifies two newly observed warnings as evaluated cancellation exits
+   before their deadlines. Its original collector FAIL and unrun natural
+   reopen remain recorded. Full installed
    feature coverage, post-seek pixel/PTS identity and broader playback
    acceptance remain open.
    The patch is not installed or activated by CrystalHD. Other historical
