@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "scope": "Pinned metadata functions only; ioctl routing, queues, locks and buffer sizing are model boundaries. Not a kernel/device or historical runtime replay.",
+  "sources": {
+    "node": {
+      "revision": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "path": "driver/linux/crystalhd_v4l2_node.c",
+      "sha256": "a504bcab1fb1132ab329ede09832266ab539a6751220912fe0e28fa68a65a69f",
+      "license": "GPL-2.0-or-later",
+      "url": "https://github.com/ahnhy1324/crystalhd/blob/830170b28ad58ad77ff196ef14e039cae2797e4f/driver/linux/crystalhd_v4l2_node.c"
+    },
+    "ffmpeg_context": {
+      "revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+      "path": "libavcodec/v4l2_context.c",
+      "sha256": "7bb47a129e69ed56dac483ad7f0ec114932bdd5f16068fb5ae7ee41720404916",
+      "license": "LGPL-2.1-or-later",
+      "url": "https://github.com/jc-kynesim/rpi-ffmpeg/blob/12cc1f42f06ff0e85633c2602c96786fbd280b70/libavcodec/v4l2_context.c"
+    },
+    "ffmpeg_decoder": {
+      "revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+      "path": "libavcodec/v4l2_m2m_dec.c",
+      "sha256": "a111a5036505828ede461a3b1460afe4b3816e689b2588db0a6dc7b03e8106e7",
+      "license": "LGPL-2.1-or-later",
+      "url": "https://github.com/jc-kynesim/rpi-ffmpeg/blob/12cc1f42f06ff0e85633c2602c96786fbd280b70/libavcodec/v4l2_m2m_dec.c"
+    },
+    "kernel": {
+      "revision": "Ubuntu linux-headers-7.0.0-38",
+      "path": "include/media/v4l2-common.h",
+      "sha256": "1e175f17ea2d348ac7f26391f469c0c549cc00b99b9fe615bf9b7921a0895c25",
+      "license": "GPL-2.0-or-later"
+    }
+  },
+  "fixtures": {
+    "node-colors.inc": {
+      "source": "node",
+      "start": "static void chd_copy_colors(",
+      "end": "\nstatic void chd_discovery_cpu(",
+      "sha256": "af8829240f589fa97e2e2718f3924662dbffdeb3a3b3fe671894a745a87bd4ac",
+      "body_sha256": "c623965d97c184332b17dacab0d61726ce6274d558807284ed5c93bc9a7ed976",
+      "notice": "// SPDX-License-Identifier: GPL-2.0-or-later\n"
+    },
+    "node-initial-format.inc": {
+      "source": "node",
+      "start": "\tf->output.pixelformat = V4L2_PIX_FMT_H264;",
+      "end": "\tv4l2_fh_init(",
+      "sha256": "8d1f5578b0ab15efa01b353c0b90c1c6f37e3d1fcaf5cb119f6aca726ba4885e",
+      "body_sha256": "0a6a212c5d1cd2eede523034747c14d79bbfd91404189a9a186ec25160261ee4",
+      "notice": "// SPDX-License-Identifier: GPL-2.0-or-later\n"
+    },
+    "node-formats.inc": {
+      "source": "node",
+      "start": "static int chd_try_fmt_locked(",
+      "end": "\nstatic int chd_reqbufs(",
+      "sha256": "59fe0bed7ad3d6e3d07784db57db012881cef2937632dbb286e9e495c44a4df9",
+      "body_sha256": "e45e0b630ab69893bd0b7f3b004e99554f89189d644b29d20a6ab847074fff70",
+      "notice": "// SPDX-License-Identifier: GPL-2.0-or-later\n"
+    },
+    "kernel-validation.inc": {
+      "source": "kernel",
+      "start": "static inline bool v4l2_is_colorspace_valid(",
+      "end": "\n#endif /* V4L2_COMMON_H_ */",
+      "sha256": "059a9f7805b6ebd654cea10da1c6dfc55305da415a16715fc964cf23757c62c8",
+      "body_sha256": "cf8ee6b7b2bd18dd0097d9ae8c56fc8818a426f7c855cd1fbb5a31a615a6340e",
+      "notice": "/* SPDX-License-Identifier: GPL-2.0-or-later */\n/*\n    v4l2 common internal API header\n\n    This header contains internal shared ioctl definitions for use by the\n    internal low-level v4l2 drivers.\n    Each ioctl begins with VIDIOC_INT_ to clearly mark that it is an internal\n    define,\n\n    Copyright (C) 2005  Hans Verkuil <hverkuil@kernel.org>\n\n */\n\n"
+    },
+    "ffmpeg-zero-dimensions.inc": {
+      "source": "ffmpeg_decoder",
+      "start": "    /* if these dimensions are invalid",
+      "end": "\n    output->av_codec_id = ",
+      "sha256": "6e72cd8f1a194a0412bc75fdda0c68db8d57ad2570f62811e547aa6caa04226b",
+      "body_sha256": "10ac66ae80eb5a0d4f6d683636144e99d338d25375ede62b1ca9d350a41966ff",
+      "notice": "/*\n * V4L2 mem2mem decoders\n *\n * Copyright (C) 2017 Alexis Ballier <aballier@gentoo.org>\n * Copyright (C) 2017 Jorge Ramirez <jorge.ramirez-ortiz@linaro.org>\n *\n * This file is part of FFmpeg.\n *\n * FFmpeg is free software; you can redistribute it and/or\n * modify it under the terms of the GNU Lesser General Public\n * License as published by the Free Software Foundation; either\n * version 2.1 of the License, or (at your option) any later version.\n *\n * FFmpeg is distributed in the hope that it will be useful,\n * but WITHOUT ANY WARRANTY; without even the implied warranty of\n * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU\n * Lesser General Public License for more details.\n *\n * You should have received a copy of the GNU Lesser General Public\n * License along with FFmpeg; if not, write to the Free Software\n * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA\n */\n"
+    },
+    "ffmpeg-save-format.inc": {
+      "source": "ffmpeg_context",
+      "start": "static inline void v4l2_save_to_context(",
+      "end": "\nstatic int get_default_selection(",
+      "sha256": "5e8babeb60852b14fd31f713c0e9fbab79ed6a0b242b81cdd9ada6987fd3b430",
+      "body_sha256": "5d08a1de368721d2c1e02ccdd1b6a81396f12fed9adbd6af5f94c9cf593beca9",
+      "notice": "/*\n * V4L2 context helper functions.\n *\n * Copyright (C) 2017 Alexis Ballier <aballier@gentoo.org>\n * Copyright (C) 2017 Jorge Ramirez <jorge.ramirez-ortiz@linaro.org>\n *\n * This file is part of FFmpeg.\n *\n * FFmpeg is free software; you can redistribute it and/or\n * modify it under the terms of the GNU Lesser General Public\n * License as published by the Free Software Foundation; either\n * version 2.1 of the License, or (at your option) any later version.\n *\n * FFmpeg is distributed in the hope that it will be useful,\n * but WITHOUT ANY WARRANTY; without even the implied warranty of\n * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU\n * Lesser General Public License for more details.\n *\n * You should have received a copy of the GNU Lesser General Public\n * License along with FFmpeg; if not, write to the Free Software\n * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA\n */\n"
+    },
+    "ffmpeg-get-format.inc": {
+      "source": "ffmpeg_context",
+      "start": "int ff_v4l2_context_get_format(",
+      "end": "\nint ff_v4l2_context_set_format(",
+      "sha256": "e568a43e9e8104d6704bbd1a42b263fbc01b96b3f38487b00a2898240402c89c",
+      "body_sha256": "95f43b009507f1a6305f4b5088622104671e6b3cd70f5aad19ad9059a60d1a73",
+      "notice": "/*\n * V4L2 context helper functions.\n *\n * Copyright (C) 2017 Alexis Ballier <aballier@gentoo.org>\n * Copyright (C) 2017 Jorge Ramirez <jorge.ramirez-ortiz@linaro.org>\n *\n * This file is part of FFmpeg.\n *\n * FFmpeg is free software; you can redistribute it and/or\n * modify it under the terms of the GNU Lesser General Public\n * License as published by the Free Software Foundation; either\n * version 2.1 of the License, or (at your option) any later version.\n *\n * FFmpeg is distributed in the hope that it will be useful,\n * but WITHOUT ANY WARRANTY; without even the implied warranty of\n * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU\n * Lesser General Public License for more details.\n *\n * You should have received a copy of the GNU Lesser General Public\n * License along with FFmpeg; if not, write to the Free Software\n * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA\n */\n"
+    },
+    "ffmpeg-set-format.inc": {
+      "source": "ffmpeg_context",
+      "start": "int ff_v4l2_context_set_format(",
+      "end": "\nvoid ff_v4l2_context_release(",
+      "sha256": "6d45d2698b7dfffa4a1c118ce03edc99bb5336982bb6ff852bc01a79fb34e84b",
+      "body_sha256": "3095bcca7d904a193827e98b327e426bf597b2c5fcc6d26d50c5f152ea66216a",
+      "notice": "/*\n * V4L2 context helper functions.\n *\n * Copyright (C) 2017 Alexis Ballier <aballier@gentoo.org>\n * Copyright (C) 2017 Jorge Ramirez <jorge.ramirez-ortiz@linaro.org>\n *\n * This file is part of FFmpeg.\n *\n * FFmpeg is free software; you can redistribute it and/or\n * modify it under the terms of the GNU Lesser General Public\n * License as published by the Free Software Foundation; either\n * version 2.1 of the License, or (at your option) any later version.\n *\n * FFmpeg is distributed in the hope that it will be useful,\n * but WITHOUT ANY WARRANTY; without even the implied warranty of\n * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU\n * Lesser General Public License for more details.\n *\n * You should have received a copy of the GNU Lesser General Public\n * License along with FFmpeg; if not, write to the Free Software\n * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA\n */\n"
+    }
+  },
+  "kernel_only_validation_sentinels": {
+    "source": "include/uapi/linux/videodev2.h, same Ubuntu7.0.0-38 headers",
+    "sha256": "16b1588ab8509434d77cc9839c36e83bb8d64a74b886271edab3694edb067fad",
+    "V4L2_COLORSPACE_LAST": 13,
+    "V4L2_XFER_FUNC_LAST": 8,
+    "V4L2_YCBCR_ENC_LAST": 9,
+    "scope": "Kernel-only enum sentinels expressed via stable preceding UAPI enum values in the C scaffold; no new public ABI or capability"
+  }
+}

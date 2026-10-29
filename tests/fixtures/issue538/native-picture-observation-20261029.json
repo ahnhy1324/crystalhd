@@ -1,0 +1,260 @@
+{
+  "schema": 1,
+  "issue": 538,
+  "analysis_date": "2026-10-29",
+  "capture_date": "2026-10-27",
+  "decision": "FHD sampled colour counterexample retained; 720p NOT_VERIFIED under strict source-only invariant selection. No native pixel/PTS acceptance promotion or issue closure.",
+  "scope": "Offline replay of existing native BGRA bytes against independently software-decoded frozen H264 sources. No hardware/tracing/module/installed/external-app changes.",
+  "source_roles": {
+    "native_driver": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+    "FFmpeg_native": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "Kodi_published": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "source_media": "Original six-second H264/AAC 1280x720 and 1920x1080 captures, not the later 30-second timing arms",
+    "new_verifier_base": "27de7a2; test tooling only, not a rebuilt native playback payload"
+  },
+  "independent_reference": {
+    "decoder": "Explicit software h264; hwaccel none; one decode/output thread; no resize, colour conversion or deinterlacing filter",
+    "version": "ffmpeg version 8.0.1-3ubuntu2 Copyright (c) 2000-2025 the FFmpeg developers",
+    "binary_sha256": "bdf6aabffdba7411edff8d36c389d695257fcdf823d196020176e117612862f6",
+    "command": [
+      "ffmpeg",
+      "-nostdin",
+      "-v",
+      "error",
+      "-hwaccel",
+      "none",
+      "-c:v",
+      "h264",
+      "-threads",
+      "1",
+      "-noautorotate",
+      "-i",
+      "SOURCE.mp4",
+      "-map",
+      "0:v:0",
+      "-an",
+      "-sn",
+      "-dn",
+      "-pix_fmt",
+      "yuv420p",
+      "-threads",
+      "1",
+      "-f",
+      "rawvideo",
+      "pipe:1"
+    ],
+    "declared_source_metadata": {
+      "matrix": "bt709",
+      "primaries": "bt709",
+      "transfer": "bt709",
+      "range": "tv",
+      "pixel_format": "yuv420p",
+      "sample_aspect_ratio": "1:1"
+    },
+    "selection": "Fixed grid step 32 plus edges. Y/U/V centre bytes and each plane 3x3 neighbourhood must be flat and identical in EVERY one of 180 independently decoded frames. Capture is never used to select points or guess frame identity.",
+    "model": "Real-valued limited BT709 YCbCr equation, clip after matrix; fixed 2/255 channel rounding allowance. BT601 is a separately reported diagnostic only.",
+    "minimum_samples_for_PASS": 100,
+    "strict_policy_preserved": "No threshold/neighbourhood/temporal variation was relaxed after observing zero 720p or three FHD eligible points."
+  },
+  "cases": [
+    {
+      "schema": 1,
+      "result": "NOT_VERIFIED",
+      "scope": "sampled source-invariant colour/spatial points only",
+      "width": 1280,
+      "height": 720,
+      "capture_stride": 5120,
+      "declared_matrix": "bt709",
+      "declared_range": "limited",
+      "permitted_channel_error": 2,
+      "invariant_samples": 0,
+      "minimum_samples": 100,
+      "maximum_channel_error": 0,
+      "channels_over_tolerance": 0,
+      "mean_absolute_channel_error": null,
+      "nonopaque_active_pixels": 0,
+      "diagnostic_alternate_matrix": {
+        "matrix": "bt601",
+        "maximum_channel_error": 0,
+        "channels_over_tolerance": 0,
+        "changes_primary_verdict": false
+      },
+      "capture_sha256": "db1a78ee7a31ec3f8e24ca9aacede3ae13455dcc6a38c82bae1b7a795ac72ed5",
+      "decoded_yuyv": "NOT_OBSERVED",
+      "capture_source_pts": "NOT_VERIFIED",
+      "complete_crop_and_pixels": "NOT_VERIFIED",
+      "physical_presentation": "NOT_VERIFIED",
+      "reference_frames": 180,
+      "reference_sha256": "15cf458876a61924b4e28ada04ca0ffd4b748c91961e0110a34c860a7e7e286b",
+      "sample_grid_step": 32,
+      "source_media_sha256": "9f9d0d5809ea2182efcc95176b0af5e7880d90b033d54475701a1b691759a23b",
+      "source_media_bytes": 1127026,
+      "capture_metadata": {
+        "status": "CAPTURED",
+        "bytes": 3686400,
+        "format": "BGRA",
+        "width": 1280,
+        "height": 720,
+        "before_time": 0.0,
+        "after_time": 0.0
+      },
+      "reference_coverage": "INSUFFICIENT",
+      "frozen_counterexample_points": [],
+      "historical_route_qualification": "PASS in original retained native route receipt; this new colour check is separate"
+    },
+    {
+      "schema": 1,
+      "result": "FAIL",
+      "scope": "sampled source-invariant colour/spatial points only",
+      "width": 1920,
+      "height": 1080,
+      "capture_stride": 7680,
+      "declared_matrix": "bt709",
+      "declared_range": "limited",
+      "permitted_channel_error": 2,
+      "invariant_samples": 3,
+      "minimum_samples": 100,
+      "maximum_channel_error": 15,
+      "channels_over_tolerance": 3,
+      "mean_absolute_channel_error": 5.0,
+      "nonopaque_active_pixels": 0,
+      "diagnostic_alternate_matrix": {
+        "matrix": "bt601",
+        "maximum_channel_error": 0,
+        "channels_over_tolerance": 0,
+        "changes_primary_verdict": false
+      },
+      "capture_sha256": "0da3b06f3a39a3785c89ba1b72983350a4e84c96584a2683a6b464bb42e2aab2",
+      "decoded_yuyv": "NOT_OBSERVED",
+      "capture_source_pts": "NOT_VERIFIED",
+      "complete_crop_and_pixels": "NOT_VERIFIED",
+      "physical_presentation": "NOT_VERIFIED",
+      "reference_frames": 180,
+      "reference_sha256": "fda29c1e1ea7ad7f3d3c57c4eef88c81334b8ce699ae88d5d7983508382eea35",
+      "sample_grid_step": 32,
+      "source_media_sha256": "19989ccfb99318907147fa8ea55ad1ea9776844f7999daf7d6ba3d44a7d8ae96",
+      "source_media_bytes": 6338697,
+      "capture_metadata": {
+        "status": "CAPTURED",
+        "bytes": 8294400,
+        "format": "BGRA",
+        "width": 1920,
+        "height": 1080,
+        "before_time": 0.0,
+        "after_time": 0.0
+      },
+      "reference_coverage": "INSUFFICIENT",
+      "frozen_counterexample_points": [
+        {
+          "x": 912,
+          "y": 0,
+          "source_yuv": [
+            210,
+            16,
+            146
+          ],
+          "expected_rgb": [
+            255,
+            240,
+            0
+          ],
+          "captured_rgb": [
+            255,
+            255,
+            0
+          ],
+          "errors": [
+            0,
+            15,
+            0
+          ]
+        },
+        {
+          "x": 1040,
+          "y": 0,
+          "source_yuv": [
+            41,
+            240,
+            110
+          ],
+          "expected_rgb": [
+            0,
+            15,
+            255
+          ],
+          "captured_rgb": [
+            0,
+            0,
+            255
+          ],
+          "errors": [
+            0,
+            15,
+            0
+          ]
+        },
+        {
+          "x": 1104,
+          "y": 1079,
+          "source_yuv": [
+            41,
+            240,
+            110
+          ],
+          "expected_rgb": [
+            0,
+            15,
+            255
+          ],
+          "captured_rgb": [
+            0,
+            0,
+            255
+          ],
+          "errors": [
+            0,
+            15,
+            0
+          ]
+        }
+      ],
+      "historical_route_qualification": "PASS in original retained native route receipt; this new colour check is separate"
+    }
+  ],
+  "matched_VA_capture": "NOT_AVAILABLE among retained native9 ordinary capture BGRA files; the earlier 360p copied-GLES oracle is a different route/fixture and is not substituted",
+  "metadata_mechanism": {
+    "result": "REPRODUCED_OFFLINE_SOURCE_PATTERN_ONLY",
+    "description": "Pinned FFmpeg starts coded dimensions at 0. Actual node TRY_FMT normalizes that unspecified small request to SMPTE170M; committing the returned format is an explicit SMPTE170M request. Automatic HD colour follows source discovery only if committed colour_default remains true. Direct DEFAULT commit and normalized TRY-return commit therefore differ.",
+    "contract_limit": "TRY_FMT must be state-pure and return S_FMT-equivalent normalization. The normalized explicit SMPTE170M input is indistinguishable from a deliberate explicit 601 request. No query-history/equality heuristic, explicit override or driver/runtime fix is implemented.",
+    "remaining_fix_question": "Which caller/bitstream authority should retain unspecified colour intent through negotiation while preserving deliberate full explicit tuples?",
+    "primary_contracts": [
+      "https://docs.kernel.org/userspace-api/media/v4l/vidioc-g-fmt.html",
+      "https://docs.kernel.org/userspace-api/media/v4l/pixfmt-v4l2.html"
+    ],
+    "historical_G_S_FMT_colour_trace": "NOT_AVAILABLE",
+    "raw_native_YUYV_for_matched_GPU_capture": "NOT_AVAILABLE",
+    "historical_native_fault_attribution": "NOT_PROVEN"
+  },
+  "interpretation_limits": [
+    "FHD FAIL concerns only three source-invariant colour/spatial samples, not full-frame or crop qualification; broad reference coverage is insufficient.",
+    "720p has no eligible strict invariants; first-frame-only larger colour differences are diagnostic and are not promoted to a source-bound counterexample.",
+    "Capture script pauses onAVStarted and records clock 0.0 before/after RenderCapture; this does not bind the image to a particular source PTS or returned DRM object.",
+    "Direct decoded YUYV, complete crop/pixels, per-picture GPU PTS/control identity, physical scanout/A/V and performance remain unverified.",
+    "A BT601 diagnostic fit does not identify the decoder, G_FMT/S_FMT, frame-metadata, EGL, GPU or renderer stage as the historical cause.",
+    "Original native route/PTS/lifecycle receipts and their historical FAIL/NOT_RUN remain unchanged. #538 stays OPEN; heap-only follow-up remains excluded."
+  ],
+  "validation": {
+    "unit_tests": "13 standard-library tests PASS; synthetic image/guard checks plus frozen-point arithmetic only",
+    "metadata_model": "Three scenario groups and three source-semantic negatives PASS",
+    "builds": [
+      "Native C11 Werror PASS",
+      "Actual ELF32 -mno-sse -mno-sse2 -mfpmath=387 C model PASS; Python tests use the host interpreter",
+      "ASan/UBSan C model PASS"
+    ],
+    "source_guards": "Eight licensed fixture/excerpt hashes and complete retained node/FFmpeg/kernel sources PASS, inputs unchanged",
+    "retained_pixel_CLI_replay": "Both 180-frame software reference hashes and exact capture hashes match; native720 NOT_VERIFIED / FHD three-point FAIL independently replayed through CLI; source/capture inputs unchanged",
+    "CI": "NOT_RUN for this new change",
+    "new_hardware_runs": 0
+  },
+  "capture_date_timezone": "UTC runtime-log date; original public native study recorded2026-10-28 in Asia/Seoul"
+}
