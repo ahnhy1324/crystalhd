@@ -34,9 +34,9 @@ the end of a related change set, rather than repeating unrelated experiments.
    [#556](https://github.com/ahnhy1324/crystalhd/pull/556) tests with a mocked
    driver and public open APIs cover failed firmware close,
    failed recovery, close errors and retained kernel ownership. Same-process
-   mode references in review-ready
+   mode references from
    [#566](https://github.com/ahnhy1324/crystalhd/pull/566) keep the diagnostic
-   bitmap set until the final local handle closes; that PR is not merged yet.
+   bitmap set until the final local handle closes.
    Cross-process same-mode accounting and same-handle concurrent
    close/use remain separate questions.
 2. **Ordinary Kodi EOF, Stop, seek and reopen (#445/#429).** Address reproducible
@@ -64,20 +64,20 @@ the end of a related change set, rather than repeating unrelated experiments.
    The patch is not installed or activated by CrystalHD. Other historical
    warnings remain unassigned. Zero application counters, natural EOF and
    clean DMA retirement alone do not establish correct VA behavior.
-   Review-ready [#571](https://github.com/ahnhy1324/crystalhd/pull/571) separately
+   [#571](https://github.com/ahnhy1324/crystalhd/pull/571) separately
    corrects colored below-black packed RGB conversion while preserving nominal
-   limited-range BT.601 output; it also awaits merge.
+   limited-range BT.601 output.
 3. **Installation, recovery and settings (#510/#400, then #539).** Fix concrete
    update/rollback and saved-versus-applied setting failures before extending
-   adapters. Review-ready [#569](https://github.com/ahnhy1324/crystalhd/pull/569)
+   adapters. [#569](https://github.com/ahnhy1324/crystalhd/pull/569)
    preserves driver staging arguments and
    [#570](https://github.com/ahnhy1324/crystalhd/pull/570) refreshes pkg-config
    paths. [#572](https://github.com/ahnhy1324/crystalhd/pull/572) also fixes actual
    library installation into spaced staging/prefix/directory paths; all 39
-   runtime-install tests pass locally. These three fixes await merge, with
-   #572 CI still pending at this reconciliation. The experimental Kodi no-build
-   path still needs a distribution decision; existing private activation is
-   not a public installer.
+   runtime-install tests pass locally. These three fixes are included in this
+   source; their individual PR CI matrices passed before integration. The
+   experimental Kodi no-build path still needs a distribution decision;
+   existing private activation is not a public installer.
 4. **Optional research.** Defer #533 STOP/START, #513 Xv, #530 EGL Bob and
    #92/#204 hardware exploration until the correctness work above is handled,
    unless new evidence establishes an ordinary-use fault needing priority.
@@ -98,8 +98,8 @@ API behavior was correct. A child fix does not close its broader acceptance issu
 
 The issue checklists now separate delivered work from broad acceptance. A
 checked investigation records its scoped outcome, including a negative result;
-it does not turn a playback FAIL or NOT RUN into PASS. PRs awaiting merge are
-identified separately above and in their owning issues.
+it does not turn a playback FAIL or NOT RUN into PASS. Each milestone retains
+its exact-source and acceptance scope in the owning issue.
 
 - [x] [#528: issue triage and known-issue policy](https://github.com/ahnhy1324/crystalhd/issues/528)
   — all six documentation tasks are complete through merged #536; the issue
