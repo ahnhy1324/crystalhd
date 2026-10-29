@@ -54,3 +54,7 @@ The full C++ file may differ elsewhere from the recorded upstream file, but all
 tested excerpts must match. The optional patch must apply forward/reverse and
 must leave every lifecycle excerpt unchanged. The header's actual statistics
 class must match; no other header declarations are compiled by this test.
+
+The separate [FFmpeg loop-boundary record](ffmpeg-loop/README.md) reconciles
+the retained 296/300 failure and executes that client's EOF/teardown functions.
+It preserves the native failure and does not extend this Kodi test's scope.
