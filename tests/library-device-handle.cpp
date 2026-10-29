@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "7411d.h"
+#include "bc_decoder_regs.h"
 #include "libcrystalhd_if.h"
 #include "libcrystalhd_priv.h"
 
@@ -43,6 +44,7 @@ static unsigned shared_attach_calls;
 static unsigned shared_detach_calls;
 static unsigned shared_nattch;
 static unsigned shared_remove_calls;
+static bool shared_exists;
 static pid_t initial_decoder_owner;
 static uint32_t initial_op_mode;
 static bool raw_close_expected;
@@ -51,12 +53,31 @@ static bool recovery_owner_seen_during_close;
 static uint32_t expected_mode;
 static uint32_t initial_hw_state;
 static uint32_t initial_device_id;
+static uint32_t reported_device_id;
+static bool notify_succeeded;
+static uint32_t notified_mode;
+static unsigned register_reads;
+static unsigned register_writes;
+static uint32_t pll_control;
+static uint32_t sdram_refresh;
 static unsigned firmware_push_calls;
 static unsigned firmware_link_calls;
 static unsigned firmware_init_calls;
 static BC_STATUS firmware_push_status;
 static BC_STATUS firmware_init_status;
 static uint32_t mode_added_during_setup;
+static uint32_t mode_set_during_open;
+static uint32_t mode_cleared_during_open;
+static bool open_mode_update_seen;
+static DTS_LIB_CONTEXT *mode_update_during_capture_flush;
+static uint32_t mode_set_during_capture_flush;
+static uint32_t mode_cleared_during_capture_flush;
+static bool capture_flush_mode_update_seen;
+static bool expect_hw_reset_before_release;
+static uint32_t hw_state_during_release;
+static uint32_t hw_state_during_close;
+static bool hw_release_handoff_seen;
+static bool hw_close_handoff_seen;
 
 struct IoctlRecord {
 	int fd;
@@ -268,6 +289,19 @@ extern "C" int __wrap_pthread_mutex_unlock(pthread_mutex_t *mutex)
 		++invalid_mutex_use;
 		return EINVAL;
 	}
+	/* DeviceClose holds TEARDOWN while its capture flush takes a nested
+	 * lifecycle lease. Model another handle's completed mode update at that
+	 * exact cleanup boundary, after close's old bitmap snapshot. */
+	DTS_LIB_CONTEXT *context = mode_update_during_capture_flush;
+	if (context && mutex == &context->thLock && context->stopInProgress &&
+	    context->controlOwner == DTS_CONTROL_TEARDOWN &&
+	    context->controlDepth == 2) {
+		shared_state.gDilOpMode =
+			(shared_state.gDilOpMode & ~mode_cleared_during_capture_flush) |
+			mode_set_during_capture_flush;
+		capture_flush_mode_update_seen = true;
+		mode_update_during_capture_flush = nullptr;
+	}
 	return __real_pthread_mutex_unlock(mutex);
 }
 
@@ -331,6 +365,10 @@ extern "C" int __wrap_close(int fd)
 		      ioctl_count <= sizeof(ioctl_log) / sizeof(ioctl_log[0]) &&
 		      ioctl_log[ioctl_count - 1].command == BCM_IOC_RELEASE,
 		      "device close follows the driver release command");
+	if (hw_state_during_close) {
+		shared_state.gHwInitSts = hw_state_during_close;
+		hw_close_handoff_seen = true;
+	}
 	if (fail_close) {
 		errno = EIO;
 		return -1;
@@ -357,7 +395,15 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 	data->RetSts = BC_STS_SUCCESS;
 	switch (command) {
 	case BCM_IOC_GET_HWTYPE:
-		data->u.hwType.PciDevId = BC_PCI_DEVID_FLEA;
+		if (mode_set_during_open || mode_cleared_during_open) {
+			/* Another open/close can finish while this open is in ioctl. */
+			shared_state.gDilOpMode =
+				(shared_state.gDilOpMode & ~mode_cleared_during_open) |
+				mode_set_during_open;
+			mode_set_during_open = mode_cleared_during_open = 0;
+			open_mode_update_seen = true;
+		}
+		data->u.hwType.PciDevId = reported_device_id;
 		data->u.hwType.PciVenId = 0x14e4;
 		data->u.hwType.HwRev = 1;
 		break;
@@ -370,7 +416,38 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 		Check(data->u.NotifyMode.Mode == expected_mode,
 		      "open notifies the selected mode");
 		break;
+	case BCM_IOC_REG_RD:
+		++register_reads;
+		Check(notify_succeeded && (notified_mode & 0xff) != DTS_MONITOR_MODE,
+		      "core-clock register reads require an admitted non-monitor session");
+		Check(data->u.regAcc.Offset == DecHt_PllACtl && data->u.regAcc.Value == 0,
+		      "core-clock reads target only PLL control with a cleared result");
+		/* Keep PLL lock asserted so the production poll never needs to sleep. */
+		data->u.regAcc.Value = pll_control;
+		break;
+	case BCM_IOC_REG_WR:
+		++register_writes;
+		Check(notify_succeeded && (notified_mode & 0xff) != DTS_MONITOR_MODE,
+		      "core-clock register writes require an admitted non-monitor session");
+		if (register_writes == 1) {
+			Check(data->u.regAcc.Offset == SDRAM_REF_PARAM,
+			      "core-clock first writes the SDRAM refresh register");
+			sdram_refresh = data->u.regAcc.Value;
+		} else {
+			Check(register_writes == 2 && data->u.regAcc.Offset == DecHt_PllACtl,
+			      "core-clock next writes only PLL control");
+			pll_control = data->u.regAcc.Value;
+		}
+		break;
 	case BCM_IOC_RELEASE:
+		if (expect_hw_reset_before_release)
+			Check(shared_state.gHwInitSts == BC_DIL_HWINIT_NOT_YET,
+			      "hardware owner retires initialization state before driver release");
+		if (hw_state_during_release) {
+			shared_state.gHwInitSts = hw_state_during_release;
+			hw_release_handoff_seen = true;
+		}
+		break;
 	case BCM_IOC_FW_CMD:
 		break;
 	default:
@@ -390,6 +467,10 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 		}
 		if (fail_with_status)
 			data->RetSts = BC_STS_BUSY;
+	}
+	if (command == BCM_IOC_NOTIFY_MODE && data->RetSts == BC_STS_SUCCESS) {
+		notify_succeeded = true;
+		notified_mode = data->u.NotifyMode.Mode;
 	}
 	return 0;
 }
@@ -466,8 +547,12 @@ extern "C" BC_STATUS __wrap__Z15DtsFWInitializePvj(HANDLE device, uint32_t reser
 	return firmware_init_status;
 }
 
-extern "C" int __wrap_shmget(key_t, size_t, int)
+extern "C" int __wrap_shmget(key_t, size_t, int flags)
 {
+	if (shared_exists && (flags & IPC_EXCL)) {
+		errno = EEXIST;
+		return -1;
+	}
 	return 17;
 }
 
@@ -526,14 +611,29 @@ static void BeginCase(int descriptor)
 	shared_detach_calls = 0;
 	shared_nattch = 0;
 	shared_remove_calls = 0;
+	shared_exists = false;
 	initial_decoder_owner = 0;
 	initial_op_mode = 0;
 	expected_mode = DTS_MONITOR_MODE;
 	initial_hw_state = BC_DIL_HWINIT_NOT_YET;
 	initial_device_id = BC_PCI_DEVID_INVALID;
+	reported_device_id = BC_PCI_DEVID_FLEA;
+	notify_succeeded = false;
+	notified_mode = 0;
+	register_reads = register_writes = 0;
+	pll_control = 0x00c20080;
+	sdram_refresh = 0;
 	firmware_push_calls = firmware_link_calls = firmware_init_calls = 0;
 	firmware_push_status = firmware_init_status = BC_STS_SUCCESS;
 	mode_added_during_setup = 0;
+	mode_set_during_open = mode_cleared_during_open = 0;
+	open_mode_update_seen = false;
+	mode_update_during_capture_flush = nullptr;
+	mode_set_during_capture_flush = mode_cleared_during_capture_flush = 0;
+	capture_flush_mode_update_seen = false;
+	expect_hw_reset_before_release = false;
+	hw_state_during_release = hw_state_during_close = 0;
+	hw_release_handoff_seen = hw_close_handoff_seen = false;
 	raw_close_expected = false;
 	ioctl_count = 0;
 	failed_command = 0;
@@ -809,6 +909,74 @@ static void CheckMonitorCloseOrder(bool decoder_active, unsigned release_failure
 	EndCase("monitor close order releases every local allocation");
 }
 
+static void CheckCombinedModeSurvivesDiagnosticLifetime(bool legacy_invalid)
+{
+	BeginCase(64);
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	initial_op_mode = 0x1 | 0x4;
+	expected_mode = DTS_DIAG_MODE;
+	shared_nattch = 1;
+	shared_exists = true;
+	const BOOL initial_validity = legacy_invalid ? FALSE : TRUE;
+	glob_mode_valid = initial_validity;
+	HANDLE diagnostic = nullptr;
+	Check(DtsDeviceOpen(&diagnostic, DTS_DIAG_MODE) == BC_STS_SUCCESS && diagnostic,
+	      "diagnostic opens beside an existing combined playback/monitor mode");
+	Check(glob_mode_valid == initial_validity &&
+	      shared_state.gDilOpMode == (0x1u | 0x2u | 0x4u),
+	      "diagnostic open preserves the complete combined mode bitmap");
+	if (diagnostic)
+		Check(DtsDeviceClose(diagnostic) == BC_STS_SUCCESS,
+		      "diagnostic closes beside the independent combined modes");
+	Check(shared_state.gDilOpMode == (0x1u | 0x4u),
+	      "diagnostic close restores the complete preexisting mode bitmap");
+	Check(close_calls == 1 && closed_fd == 64 && shared_detach_calls == 1 &&
+	      shared_remove_calls == 0,
+	      "combined-mode diagnostic lifetime consumes only its local resources");
+	CheckIoctls(64,
+		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
+		 BCM_IOC_RELEASE},
+		"combined-mode diagnostic preserves local command ordering");
+	/* Keep both legacy-flag fixtures isolated from subsequent cases. */
+	glob_mode_valid = TRUE;
+	EndCase("combined-mode diagnostic releases every local allocation");
+}
+
+static void CheckOpenPreservesCompletedModeUpdate(uint32_t mode, bool removing)
+{
+	BeginCase(65);
+	expected_mode = mode;
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	initial_op_mode = 0x1 | (removing ? 0x8 : 0);
+	shared_nattch = 1;
+	mode_set_during_open = removing ? 0 : 0x8;
+	mode_cleared_during_open = removing ? 0x8 : 0;
+	const uint32_t own_bit = mode == DTS_MONITOR_MODE ? 0x4 : 0x2;
+	const uint32_t other_modes = 0x1 | (removing ? 0 : 0x8);
+	HANDLE device = nullptr;
+	Check(DtsDeviceOpen(&device, mode) == BC_STS_SUCCESS && device,
+	      "monitor or diagnostic opens across another completed mode update");
+	Check(open_mode_update_seen,
+	      "mode update actually occurs inside the open hardware query");
+	Check(shared_state.gDilOpMode == (other_modes | own_bit),
+	      "open preserves another handle's completed mode addition or removal");
+	/* Keep the close control independent of an OLD-code open failure. */
+	DtsSetOPMode(other_modes | own_bit);
+	if (device)
+		Check(DtsDeviceClose(device) == BC_STS_SUCCESS,
+		      "mode-publication open fixture closes its own handle");
+	Check(shared_state.gDilOpMode == other_modes,
+	      "close removes only the mode owned by this open fixture");
+	Check(close_calls == 1 && shared_attach_calls == 1 &&
+	      shared_detach_calls == 1 && shared_remove_calls == 0,
+	      "open interleaving balances only its own descriptor and mapping");
+	CheckIoctls(65,
+		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
+		 BCM_IOC_RELEASE},
+		"open interleaving preserves public command ordering");
+	EndCase("open mode interleaving releases every local allocation");
+}
+
 static void CheckInheritedMonitorCannotClose()
 {
 	BeginCase(43);
@@ -993,6 +1161,37 @@ static DTS_LIB_CONTEXT *AllocateTerminalContext(uint32_t mode, pid_t process_id)
 	Check(DtsAllocMemPools(context) == BC_STS_SUCCESS,
 	      "terminal fixture allocates its pools");
 	return context;
+}
+
+static void CheckClosePreservesCompletedModeUpdate(bool removing)
+{
+	BeginCase(0);
+	shared_nattch = 1;
+	initial_op_mode = 0x1 | 0x4 | (removing ? 0x2 : 0);
+	AcquireFixtureSharedState();
+	DTS_LIB_CONTEXT *context = AllocateTerminalContext(DTS_PLAYBACK_MODE, getpid());
+	if (context) {
+		context->State = BC_DEC_STATE_CLOSE;
+		mode_update_during_capture_flush = context;
+		mode_set_during_capture_flush = removing ? 0 : 0x2;
+		mode_cleared_during_capture_flush = removing ? 0x2 : 0;
+		Check(DtsDeviceClose(context) == BC_STS_SUCCESS,
+		      "playback close succeeds across another completed mode update");
+	}
+	const bool cleanup_update_finished = capture_flush_mode_update_seen &&
+		!mode_update_during_capture_flush;
+	/* A failed fixture must not leave a pointer to the consumed context. */
+	mode_update_during_capture_flush = nullptr;
+	Check(cleanup_update_finished,
+	      "mode update occurs inside DeviceClose's nested capture cleanup");
+	Check(shared_state.gDilOpMode == (0x4u | (removing ? 0u : 0x2u)),
+	      "playback close preserves another handle's completed mode addition or removal");
+	Check(close_calls == 1 && closed_fd == 0 && shared_attach_calls == 1 &&
+	      shared_detach_calls == 1 && shared_remove_calls == 0,
+	      "close interleaving consumes only its own descriptor and mapping");
+	CheckIoctls(0, {BCM_IOC_RELEASE},
+	      "already-closed playback teardown needs no firmware commands");
+	EndCase("close mode interleaving releases every local allocation");
 }
 
 static void CheckTerminalDecoderOwnership()
@@ -1341,6 +1540,142 @@ static void CheckSystemOpenFailure()
 	EndCase("system open failure leaves no allocation");
 }
 
+static void CheckFailedNonMonitorOpenPreservesHardware(uint32_t mode,
+		uint32_t hw_state, unsigned long command, bool syscall_failure)
+{
+	BeginCase(66);
+	expected_mode = mode;
+	initial_hw_state = hw_state;
+	initial_decoder_owner = getpid();
+	initial_op_mode = 0x1 | 0x4;
+	shared_exists = true;
+	shared_nattch = 1;
+	failed_command = command;
+	fail_with_syscall = syscall_failure;
+	fail_with_status = !syscall_failure;
+	HANDLE device = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	Check(DtsDeviceOpen(&device, mode) ==
+	          (syscall_failure ? BC_STS_ERROR : BC_STS_BUSY),
+	      "failed non-monitor open preserves the setup error");
+	Check(device == nullptr,
+	      "failed non-monitor open publishes no partial handle");
+	Check(shared_state.gHwInitSts == hw_state,
+	      "failed non-monitor open preserves another session's hardware state");
+	Check(shared_state.g_bDecOpened && shared_state.g_nProcID == getpid() &&
+	      shared_state.gDilOpMode == initial_op_mode,
+	      "failed non-monitor open preserves the existing decoder and mode owners");
+	Check(open_calls == 1 && close_calls == 1 && closed_fd == 66 &&
+	      shared_attach_calls == 1 && shared_detach_calls == 1 &&
+	      shared_remove_calls == 0,
+	      "failed non-monitor open releases only its local descriptor and mapping");
+	if (command == BCM_IOC_GET_HWTYPE)
+		CheckIoctls(66, {BCM_IOC_GET_HWTYPE, BCM_IOC_RELEASE},
+		      "failed hardware query performs only local retirement commands");
+	else if (command == BCM_IOC_GET_VERSION)
+		CheckIoctls(66,
+		      {BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_RELEASE},
+		      "failed version query performs only local retirement commands");
+	else
+		CheckIoctls(66, {BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION,
+		      BCM_IOC_NOTIFY_MODE, BCM_IOC_RELEASE},
+		      "rejected mode notification performs only local retirement commands");
+	EndCase("failed non-monitor open releases every local allocation");
+}
+
+static void CheckHardwareStateHandoff(uint32_t peer_state, bool during_release,
+		bool close_failure)
+{
+	BeginCase(67);
+	expected_mode = DTS_DIAG_MODE;
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	initial_op_mode = 0x4;
+	shared_exists = true;
+	shared_nattch = 1;
+	HANDLE device = nullptr;
+	Check(DtsDeviceOpen(&device, DTS_DIAG_MODE) == BC_STS_SUCCESS && device,
+	      "hardware handoff fixture acquires its driver session");
+	if (!device) {
+		EndCase("failed hardware handoff fixture releases every allocation");
+		return;
+	}
+	expect_hw_reset_before_release = true;
+	if (during_release)
+		hw_state_during_release = peer_state;
+	else
+		hw_state_during_close = peer_state;
+	fail_close = close_failure;
+	Check(DtsDeviceClose(device) ==
+	          (close_failure ? BC_STS_ERROR : BC_STS_SUCCESS),
+	      "hardware handoff reports the exact consuming close result");
+	Check(shared_state.gHwInitSts == peer_state,
+	      "retired session preserves initialization published after driver release");
+	if (peer_state)
+		Check(during_release ? hw_release_handoff_seen : hw_close_handoff_seen,
+		      "peer initialization is published at the selected handoff boundary");
+	Check(shared_state.gDilOpMode == 0x4 && close_calls == 1 &&
+	      shared_detach_calls == 1 && shared_remove_calls == 0,
+	      "hardware handoff retires only its local mode, descriptor and mapping");
+	CheckIoctls(67, {BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION,
+	      BCM_IOC_NOTIFY_MODE, BCM_IOC_RELEASE},
+	      "hardware handoff preserves public open and release ordering");
+	EndCase("hardware handoff releases every local allocation");
+}
+
+static void CheckPartialNonMonitorOpenPreservesHardware()
+{
+	BeginCase(69);
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	initial_decoder_owner = getpid();
+	initial_op_mode = 0x1 | 0x4;
+	shared_exists = true;
+	shared_nattch = 1;
+	/* txScratch is allocated after the context, pools, ring and alignBuf. */
+	failed_aligned_size = CIRC_TX_BUF_SIZE;
+	failed_aligned_occurrence = 2;
+	HANDLE device = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	Check(DtsDeviceOpen(&device, DTS_HWINIT_MODE) == BC_STS_INSUFF_RES &&
+	      device == nullptr && aligned_failure_fired,
+	      "partial non-monitor allocation failure publishes only its resource error");
+	Check(shared_state.gHwInitSts == BC_DIL_HWINIT_DONE &&
+	      shared_state.g_bDecOpened && shared_state.g_nProcID == getpid() &&
+	      shared_state.gDilOpMode == initial_op_mode,
+	      "unnotified partial context preserves every existing hardware owner");
+	Check(thread_create_calls == 0 && open_calls == 1 && close_calls == 1 &&
+	      closed_fd == 69 && shared_attach_calls == 1 && shared_detach_calls == 1 &&
+	      shared_remove_calls == 0,
+	      "partial non-monitor failure retires its local resources before worker creation");
+	CheckIoctls(69, {BCM_IOC_RELEASE},
+	      "partial context retirement performs no hardware query or notification");
+	EndCase("partial non-monitor allocation failure releases every allocation");
+}
+
+static void CheckUnnotifiedInterfacePreservesHardware(bool notify)
+{
+	BeginCase(68);
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	shared_nattch = 1;
+	expected_mode = DTS_DIAG_MODE;
+	AcquireFixtureSharedState();
+	HANDLE device = nullptr;
+	Check(DtsInitInterface(68, &device, DTS_DIAG_MODE) == BC_STS_SUCCESS && device,
+	      "internal interface fixture allocates its local context");
+	if (device) {
+		if (notify)
+			Check(DtsNotifyOperatingMode(device, DTS_DIAG_MODE) == BC_STS_SUCCESS,
+			      "internal interface explicitly acquires a driver session");
+		expect_hw_reset_before_release = notify;
+		Check(DtsReleaseInterface(DtsGetContext(device)) == BC_STS_SUCCESS,
+		      "internal interface retires its local resources");
+	}
+	Check(shared_state.gHwInitSts ==
+	          (notify ? BC_DIL_HWINIT_NOT_YET : BC_DIL_HWINIT_DONE),
+	      "only a notified hardware owner may reset shared initialization state");
+	Check(close_calls == 1 && shared_attach_calls == 1 &&
+	      shared_detach_calls == 1 && shared_remove_calls == 0,
+	      "internal interface balances its descriptor and shared reference");
+	EndCase("internal interface releases every local allocation");
+}
+
 static void CheckHardwareInitOpen(uint32_t initial_state, BC_STATUS push_status,
 				 BC_STATUS init_status, BC_STATUS expected,
 				 unsigned pushes, unsigned initializations)
@@ -1380,6 +1715,64 @@ static void CheckHardwareInitOpen(uint32_t initial_state, BC_STATUS push_status,
 		 BCM_IOC_RELEASE},
 		"mocked setup adds no real firmware I/O and preserves terminal release ordering");
 	EndCase("hardware-init success/failure releases every allocation");
+}
+
+static void CheckLinkClockAdmission(uint32_t mode, unsigned long failed_query,
+		bool syscall_failure)
+{
+	BeginCase(70);
+	expected_mode = mode;
+	reported_device_id = BC_PCI_DEVID_LINK;
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	initial_op_mode = mode == DTS_MONITOR_MODE ? 0x1 : 0x4;
+	initial_decoder_owner = mode == DTS_MONITOR_MODE ? getpid() + 1000 : 0;
+	shared_exists = true;
+	shared_nattch = 1;
+	failed_command = failed_query;
+	fail_with_syscall = syscall_failure;
+	fail_with_status = failed_query && !syscall_failure;
+	const bool clock_owned = !failed_query && mode != DTS_MONITOR_MODE;
+	const BC_STATUS expected_status = !failed_query ? BC_STS_SUCCESS :
+		(syscall_failure ? BC_STS_ERROR : BC_STS_BUSY);
+	HANDLE device = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	Check(DtsDeviceOpen(&device, mode) == expected_status,
+	      "LINK open preserves admission success or the exact setup error");
+	Check((device != nullptr) == !failed_query,
+	      "only a successfully admitted LINK open publishes its handle");
+	Check(notify_succeeded == !failed_query,
+	      "LINK clock fixture observes mode admission before register access");
+	Check(register_reads == (clock_owned ? 2u : 0u) &&
+	      register_writes == (clock_owned ? 2u : 0u),
+	      "only an admitted non-monitor LINK open programs the core clock");
+	if (clock_owned)
+		Check(pll_control == 0x00c220a4 && sdram_refresh == 0x104e,
+		      "admitted LINK open preserves 180 MHz PLL and refresh programming");
+	if (device)
+		Check(DtsDeviceClose(device) == BC_STS_SUCCESS,
+		      "admitted LINK handle closes normally");
+	Check(shared_state.gHwInitSts ==
+	          (clock_owned ? BC_DIL_HWINIT_NOT_YET : BC_DIL_HWINIT_DONE),
+	      "non-owner LINK inspection or failure preserves shared hardware state");
+	Check(shared_state.gDilOpMode == initial_op_mode &&
+	      shared_state.g_nProcID == initial_decoder_owner,
+	      "LINK clock fixture preserves independent mode and decoder owners");
+	Check(open_calls == 1 && close_calls == 1 && closed_fd == 70 &&
+	      shared_attach_calls == 1 && shared_detach_calls == 1 &&
+	      shared_remove_calls == 0,
+	      "LINK clock fixture consumes only its own descriptor and mapping");
+	if (clock_owned)
+		CheckIoctls(70, {BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION,
+		      BCM_IOC_NOTIFY_MODE, BCM_IOC_REG_RD, BCM_IOC_REG_WR,
+		      BCM_IOC_REG_WR, BCM_IOC_REG_RD, BCM_IOC_RELEASE},
+		      "LINK core-clock programming follows successful mode notification");
+	else if (failed_query == BCM_IOC_GET_VERSION)
+		CheckIoctls(70, {BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_RELEASE},
+		      "failed LINK version query performs no register access");
+	else
+		CheckIoctls(70, {BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION,
+		      BCM_IOC_NOTIFY_MODE, BCM_IOC_RELEASE},
+		      "LINK monitor or rejected notification performs no register access");
+	EndCase("LINK clock admission releases every local allocation");
 }
 
 struct InheritedLockGate {
@@ -1569,22 +1962,26 @@ static void CheckPlaybackSetupFailureMode()
 	EndCase("failed playback setup releases every allocation");
 }
 
-static void CheckSetupPreservesConcurrentModePublication()
+static void CheckSetupPreservesConcurrentModePublication(bool legacy_invalid)
 {
 	BeginCase(0);
 	expected_mode = DTS_HWINIT_MODE;
 	initial_op_mode = 0x1;
 	mode_added_during_setup = 0x4;
+	const BOOL initial_validity = legacy_invalid ? FALSE : TRUE;
+	glob_mode_valid = initial_validity;
 	HANDLE device = nullptr;
 	Check(DtsDeviceOpen(&device, DTS_HWINIT_MODE) == BC_STS_SUCCESS && device,
 	      "hardware-init succeeds while another mode is published during setup");
-	Check(shared_state.gDilOpMode == (0x1u | 0x4u | 0x8u),
+	Check(glob_mode_valid == initial_validity &&
+	      shared_state.gDilOpMode == (0x1u | 0x4u | 0x8u),
 	      "successful setup preserves a mode bit published while firmware initialized");
 	if (device)
 		Check(DtsDeviceClose(device) == BC_STS_SUCCESS,
 		      "hardware-init closes after concurrent mode publication");
 	Check(shared_state.gDilOpMode == (0x1u | 0x4u),
 	      "hardware-init close removes only its own bit after concurrent publication");
+	glob_mode_valid = TRUE;
 	EndCase("hardware-init interleaving releases every allocation");
 }
 
@@ -1622,6 +2019,13 @@ int main()
 	for (bool decoder_active : {false, true})
 		for (unsigned release_failure : {0u, 1u, 2u, 3u})
 			CheckMonitorCloseOrder(decoder_active, release_failure);
+	for (bool legacy_invalid : {false, true})
+		CheckCombinedModeSurvivesDiagnosticLifetime(legacy_invalid);
+	for (uint32_t mode : {DTS_MONITOR_MODE, DTS_DIAG_MODE})
+		for (bool removing : {false, true})
+			CheckOpenPreservesCompletedModeUpdate(mode, removing);
+	for (bool removing : {false, true})
+		CheckClosePreservesCompletedModeUpdate(removing);
 	CheckInheritedMonitorCannotClose();
 	CheckFailedMonitorOpenPreservesDecoder();
 	CheckCapabilitiesPreserveOpenMonitor();
@@ -1636,6 +2040,27 @@ int main()
 		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
 		 BCM_IOC_RELEASE});
 	CheckSystemOpenFailure();
+	for (uint32_t mode : {DTS_PLAYBACK_MODE, DTS_DIAG_MODE, DTS_HWINIT_MODE})
+		for (uint32_t hw_state : {BC_DIL_HWINIT_IN_PROGRESS, BC_DIL_HWINIT_DONE})
+			for (unsigned long command : {BCM_IOC_GET_HWTYPE,
+			                             BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE})
+				for (bool syscall_failure : {false, true})
+					CheckFailedNonMonitorOpenPreservesHardware(
+						mode, hw_state, command, syscall_failure);
+	for (bool close_failure : {false, true}) {
+		CheckHardwareStateHandoff(BC_DIL_HWINIT_NOT_YET, false, close_failure);
+		for (uint32_t peer_state : {BC_DIL_HWINIT_IN_PROGRESS, BC_DIL_HWINIT_DONE})
+			for (bool during_release : {false, true})
+				CheckHardwareStateHandoff(peer_state, during_release, close_failure);
+	}
+	for (bool notify : {false, true})
+		CheckUnnotifiedInterfacePreservesHardware(notify);
+	CheckPartialNonMonitorOpenPreservesHardware();
+	CheckLinkClockAdmission(DTS_MONITOR_MODE, 0, false);
+	CheckLinkClockAdmission(DTS_DIAG_MODE, 0, false);
+	for (unsigned long failed_query : {BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE})
+		for (bool syscall_failure : {false, true})
+			CheckLinkClockAdmission(DTS_DIAG_MODE, failed_query, syscall_failure);
 	CheckHardwareInitOpen(BC_DIL_HWINIT_NOT_YET, BC_STS_SUCCESS,
 		BC_STS_SUCCESS, BC_STS_SUCCESS, 1, 1);
 	CheckHardwareInitOpen(BC_DIL_HWINIT_NOT_YET, BC_STS_IO_XFR_ERROR,
@@ -1649,7 +2074,8 @@ int main()
 	CheckInheritedOperationalHandle(DTS_PLAYBACK_MODE);
 	CheckInheritedOperationalHandle(DTS_HWINIT_MODE);
 	CheckPlaybackSetupFailureMode();
-	CheckSetupPreservesConcurrentModePublication();
+	for (bool legacy_invalid : {false, true})
+		CheckSetupPreservesConcurrentModePublication(legacy_invalid);
 	std::printf("Library device handles: %u checks, %u failures\n",
 	            checks, failures);
 	return failures ? 1 : 0;

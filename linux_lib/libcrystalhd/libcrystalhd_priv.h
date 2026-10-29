@@ -252,6 +252,8 @@ typedef struct _DTS_LIB_CONTEXT{
 	uint32_t				MpoolCnt;		/* Number of entries */
 	uint32_t				CfgFlags;		/* Application specifi flags */
 	uint32_t				OpMode;			/* Mode of operation playback etc..*/
+	/* Only a successful non-monitor NOTIFY owns shared hardware state. */
+	bool driverSessionOwned;
 	uint32_t				DevId;			/* HW Device ID */
 	uint32_t				hwRevId;		/* HW revision ID */
 	uint32_t				VendorId;		/* HW vendor ID - should always be Broadcom 0x14e4 */
@@ -546,6 +548,8 @@ BC_STATUS DtsCreateShMem(int *shmem_id);
 /* DTS Global Parameters Utility functions */
 uint32_t 		DtsGetOPMode(void);
 void 			DtsSetOPMode(uint32_t value);
+void DtsAddOPMode(uint32_t mask) __attribute__((visibility("hidden")));
+void DtsClearOPMode(uint32_t mask) __attribute__((visibility("hidden")));
 uint32_t 		DtsGetHwInitSts(void);
 void 			DtsSetHwInitSts(uint32_t value);
 void 			DtsRstStats(void);

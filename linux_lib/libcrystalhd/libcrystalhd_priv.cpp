@@ -69,6 +69,8 @@ static const char managed_defaults_reader[] __attribute__((used)) =
 */
 
 bc_dil_glob_s *bc_dil_glob_ptr=NULL;
+/* Retained for dynamic ABI compatibility; mode normalization no longer uses
+ * this legacy flag. */
 BOOL glob_mode_valid=TRUE;
 
 static pthread_mutex_t dil_shmem_lock=PTHREAD_MUTEX_INITIALIZER;
@@ -204,7 +206,6 @@ BC_STATUS DtsCreateShMem(int *shmem_id)
 	int shmid=-1;
 	key_t shmkey=BC_DIL_SHMEM_KEY;
 	shmid_ds buf;
-	uint32_t mode=0;
 
 
 	if(shmem_id==NULL) {
@@ -267,11 +268,6 @@ BC_STATUS DtsCreateShMem(int *shmem_id)
 
 					if (AttachDilShMemLocked(shmid, "existing") != BC_STS_SUCCESS)
 						return BC_STS_ERROR;
-					mode = DtsGetOPMode();
-					if(! ((mode==1)||(mode==2)||(mode==4))&&(buf.shm_nattch==1) ) {
-						glob_mode_valid=FALSE;
-						DebugLog_Trace(LDIL_DBG,"DtsCreateShMem:globmode %d is invalid\n",mode);
-					}
 
 			    }
 
@@ -371,12 +367,28 @@ void DtsSetgDevID(uint32_t DevID)
 
 uint32_t DtsGetOPMode( void )
 {
-	return  bc_dil_glob_ptr->gDilOpMode;
+	return __atomic_load_n(&bc_dil_glob_ptr->gDilOpMode, __ATOMIC_RELAXED);
 }
 
 void DtsSetOPMode( uint32_t value )
 {
-	bc_dil_glob_ptr->gDilOpMode = value;
+	__atomic_store_n(&bc_dil_glob_ptr->gDilOpMode, value, __ATOMIC_RELAXED);
+}
+
+/* The shared bitmap is bookkeeping, not a hardware/context lifetime fence.
+ * Change a mode bit while preserving unrelated bits, including changes made
+ * by another process on the same SHM segment. */
+static_assert(__atomic_always_lock_free(sizeof(uint32_t), 0),
+	"shared mode updates require lock-free 32-bit atomics");
+
+void DtsAddOPMode(uint32_t mask)
+{
+	(void)__atomic_fetch_or(&bc_dil_glob_ptr->gDilOpMode, mask, __ATOMIC_RELAXED);
+}
+
+void DtsClearOPMode(uint32_t mask)
+{
+	(void)__atomic_fetch_and(&bc_dil_glob_ptr->gDilOpMode, ~mask, __ATOMIC_RELAXED);
 }
 
 uint32_t DtsGetHwInitSts( void )
@@ -2833,6 +2845,13 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 			DebugLog_Trace(LDIL_DBG,
 				"DtsReleaseInterface: capture cleanup failed: %d\n",
 				cleanup_sts);
+		/* Retire only initialization state owned by this admitted session.
+		 * RELEASE can hand hardware to a new opener before returning, so the
+		 * old owner must finish this update while it still owns the session. */
+		if (Ctx->driverSessionOwned) {
+			DtsSetHwInitSts(BC_DIL_HWINIT_NOT_YET);
+			Ctx->driverSessionOwned = false;
+		}
 		const BC_STATUS release_sts = DtsReleaseUserHandle(Ctx);
 		if (cleanup_sts == BC_STS_SUCCESS)
 			cleanup_sts = release_sts;
@@ -2858,11 +2877,6 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 	/* Normal ownership is retired before userspace backing is freed. If an
 	 * unmap was not confirmed, DtsReleaseMemPools quarantines that backing. */
 	DtsReleaseMemPools(Ctx);
-
-	/* Monitor teardown releases only its local interface.  It must not make an
-	 * independently owned playback device appear uninitialized. */
-	if (Ctx->OpMode != DTS_MONITOR_MODE)
-		DtsSetHwInitSts(BC_DIL_HWINIT_NOT_YET);
 
 	DtsDelDilShMem();
 
@@ -2915,6 +2929,7 @@ BC_STATUS DtsNotifyOperatingMode(HANDLE hDevice,uint32_t Mode)
 		return sts;
 	}
 
+	Ctx->driverSessionOwned = (Mode & 0xFF) != DTS_MONITOR_MODE;
 	DtsRelIoctlData(Ctx,pIocData);
 	return sts;
 }
