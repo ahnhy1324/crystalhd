@@ -540,6 +540,102 @@ extern "C" void *__real_mmap(void *, size_t, int, int, int, off_t);
 extern "C" void *__real_mmap64(void *, size_t, int, int, int, off64_t);
 extern "C" int __real_munmap(void *, size_t);
 
+namespace {
+// Real private memfds exercise the importer. Fixed-size bookkeeping must not
+// allocate while the selected production vector allocation is being failed.
+struct ImportIoProbe {
+  int sources[2] = {-1, -1};
+  struct stat identities[2] = {};
+  struct Mapping { void *address = nullptr; size_t size = 0; } mappings[4];
+  unsigned maps = 0, unmaps = 0, invalid = 0;
+  int arm_fd = -1;
+  unsigned stat_calls = 0, fail_allocation = 0;
+  bool armed = false;
+
+  void Arm() {
+    allocation_fault::only_size = 0;
+    allocation_fault::failed_size = 0;
+    allocation_fault::skip_matches = fail_allocation - 1;
+    allocation_fault::fail_next = true;
+    armed = true;
+  }
+  void Stat(int fd) {
+    // One pending-backing preflight, then the NV12 layout's object and two
+    // plane identities. The last stat follows layout-vector allocation and
+    // immediately precedes the second surface's ImportLegacy/Prime metadata.
+    if (fd == arm_fd && ++stat_calls == 4)
+      Arm();
+  }
+  void Map(void *address, size_t size) {
+    if (address == MAP_FAILED) return;
+    ++maps;
+    for (auto &mapping : mappings) {
+      if (mapping.address == nullptr) {
+        mapping = {address, size};
+        return;
+      }
+    }
+    ++invalid;
+  }
+  void Unmap(void *address, size_t size, int result) {
+    for (auto &mapping : mappings) {
+      if (mapping.address == address) {
+        if (result == 0 && mapping.size == size) {
+          mapping = {};
+          ++unmaps;
+        } else {
+          ++invalid;
+        }
+        return;
+      }
+    }
+    ++invalid;
+  }
+  int Copies(bool cleanup = false) const {
+    DIR *directory = opendir("/proc/self/fd");
+    if (directory == nullptr) return -1;
+    int count = 0;
+    while (const dirent *entry = readdir(directory)) {
+      if (entry->d_name[0] == '.') continue;
+      const int fd = static_cast<int>(strtol(entry->d_name, nullptr, 10));
+      if (fd == sources[0] || fd == sources[1]) continue;
+      struct stat info = {};
+      if (__real_fstat(fd, &info) != 0) continue;
+      for (unsigned source = 0; source < 2; ++source) {
+        if (sources[source] >= 0 && info.st_dev == identities[source].st_dev &&
+            info.st_ino == identities[source].st_ino) {
+          ++count;
+          if (cleanup) __real_close(fd);
+          break;
+        }
+      }
+    }
+    closedir(directory);
+    return count;
+  }
+  ~ImportIoProbe() {
+    // Failed baseline controls may have orphaned a duplicate or mmap. Record
+    // their imbalance before assertions; clean them only when leaving the test.
+    for (const auto &mapping : mappings)
+      if (mapping.address != nullptr)
+        __real_munmap(mapping.address, mapping.size);
+    Copies(true);
+    for (int fd : sources)
+      if (fd >= 0) __real_close(fd);
+  }
+};
+thread_local ImportIoProbe *import_io_probe = nullptr;
+struct ImportIoScope {
+  explicit ImportIoScope(ImportIoProbe &probe) { import_io_probe = &probe; }
+  ~ImportIoScope() {
+    allocation_fault::fail_next = false;
+    allocation_fault::only_size = 0;
+    allocation_fault::skip_matches = 0;
+    import_io_probe = nullptr;
+  }
+};
+}  // namespace
+
 extern "C" int __wrap_open(const char *path, int flags, ...) {
   if (native_node_mock != nullptr)
     return native_node_mock->Open(path, flags);
@@ -575,8 +671,10 @@ extern "C" int __wrap_close(int fd) {
 }
 
 extern "C" int __wrap_fstat(int fd, struct stat *info) {
-  return native_node_mock != nullptr ? native_node_mock->Stat(fd, info)
-                                     : __real_fstat(fd, info);
+  const int result = native_node_mock != nullptr
+      ? native_node_mock->Stat(fd, info) : __real_fstat(fd, info);
+  if (result == 0 && import_io_probe != nullptr) import_io_probe->Stat(fd);
+  return result;
 }
 extern "C" int __wrap_drmGetDevice2(int fd, uint32_t flags, drmDevicePtr *device) {
   return native_node_mock != nullptr ? native_node_mock->Query(fd, flags, device)
@@ -596,19 +694,25 @@ extern "C" int __wrap_drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags
 }
 extern "C" void *__wrap_mmap(void *address, size_t size, int prot, int flags,
                               int fd, off_t offset) {
-  return native_node_mock != nullptr
+  void *result = native_node_mock != nullptr
       ? native_node_mock->Map(size, prot, flags, fd, offset)
       : __real_mmap(address, size, prot, flags, fd, offset);
+  if (import_io_probe != nullptr) import_io_probe->Map(result, size);
+  return result;
 }
 extern "C" void *__wrap_mmap64(void *address, size_t size, int prot, int flags,
                                 int fd, off64_t offset) {
-  return native_node_mock != nullptr
+  void *result = native_node_mock != nullptr
       ? native_node_mock->Map(size, prot, flags, fd, offset)
       : __real_mmap64(address, size, prot, flags, fd, offset);
+  if (import_io_probe != nullptr) import_io_probe->Map(result, size);
+  return result;
 }
 extern "C" int __wrap_munmap(void *address, size_t size) {
-  return native_node_mock != nullptr ? native_node_mock->Unmap(address, size)
-                                     : __real_munmap(address, size);
+  const int result = native_node_mock != nullptr
+      ? native_node_mock->Unmap(address, size) : __real_munmap(address, size);
+  if (import_io_probe != nullptr) import_io_probe->Unmap(address, size, result);
+  return result;
 }
 
 extern "C" int __wrap_eventfd(unsigned int initial_value, int flags) {
@@ -1547,6 +1651,140 @@ void NativeDumbBookkeepingFailure(unsigned allocation) {
 void NativeDumbBookkeepingFailures() {
   for (unsigned allocation = 1; allocation <= 3; ++allocation)
     NativeDumbBookkeepingFailure(allocation);
+}
+
+void ImportedBookkeepingFailure(bool prime, unsigned allocation, bool public_api) {
+  ImportIoProbe probe;
+  uintptr_t handles[2] = {};
+  VADRMPRIMESurfaceDescriptor descriptors[2] = {};
+  for (unsigned index = 0; index < 2; ++index) {
+    probe.sources[index] = memfd_create("crystalhd-private-import-oom", MFD_CLOEXEC);
+    Require(probe.sources[index] >= 0 &&
+                ftruncate(probe.sources[index], 512) == 0 &&
+                __real_fstat(probe.sources[index], &probe.identities[index]) == 0,
+            "allocate caller-owned private import backing");
+    const uint8_t pixel = static_cast<uint8_t>(40 + index * 30);
+    Require(pwrite(probe.sources[index], &pixel, 1, 0) == 1,
+            "initialize distinct caller-owned import bytes");
+    handles[index] = probe.sources[index];
+    auto &desc = descriptors[index];
+    desc.fourcc = VA_FOURCC_NV12;
+    desc.width = desc.height = 16;
+    desc.num_objects = desc.num_layers = 1;
+    desc.objects[0].fd = probe.sources[index];
+    desc.objects[0].size = 512;
+    desc.objects[0].drm_format_modifier = DRM_FORMAT_MOD_LINEAR;
+    desc.layers[0].drm_format = DRM_FORMAT_NV12;
+    desc.layers[0].num_planes = 2;
+    desc.layers[0].pitch[0] = desc.layers[0].pitch[1] = 16;
+    desc.layers[0].offset[1] = 256;
+  }
+  VASurfaceAttribExternalBuffers legacy = {};
+  legacy.pixel_format = VA_FOURCC_NV12;
+  legacy.width = legacy.height = 16;
+  legacy.data_size = 512;
+  legacy.num_planes = 2;
+  legacy.pitches[0] = legacy.pitches[1] = 16;
+  legacy.offsets[1] = 256;
+  legacy.buffers = handles;
+  legacy.num_buffers = public_api ? 2 : 1;
+  VASurfaceAttrib attributes[2] = {};
+  attributes[0].type = VASurfaceAttribMemoryType;
+  attributes[0].value.type = VAGenericValueTypeInteger;
+  attributes[0].value.value.i = prime ? VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2
+                                      : VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+  attributes[1].type = VASurfaceAttribExternalBufferDescriptor;
+  attributes[1].value.type = VAGenericValueTypePointer;
+  attributes[1].value.value.p = prime ? static_cast<void *>(descriptors)
+                                      : static_cast<void *>(&legacy);
+
+  ImportIoScope scope(probe);
+  Driver driver{-1};
+  driver.StopWorkers();
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  VASurfaceID surfaces[2] = {VA_INVALID_SURFACE, VA_INVALID_SURFACE};
+  probe.fail_allocation = allocation;
+  if (public_api) probe.arm_fd = probe.sources[1];
+  VAStatus status = VA_STATUS_SUCCESS;
+  bool imported = true, escaped = false;
+  try {
+    if (public_api) {
+      status = CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 16, 16,
+                              surfaces, 2, attributes, 2);
+    } else {
+      Surface surface;
+      surface.width = surface.height = 16;
+      probe.Arm();
+      imported = prime ? surface.ImportPrime(nullptr, descriptors[0])
+                       : surface.ImportLegacy(legacy);
+    }
+  } catch (const std::bad_alloc &) {
+    escaped = true;
+  }
+  const bool failed = probe.armed && !allocation_fault::fail_next;
+  const size_t failed_size = allocation_fault::failed_size;
+  allocation_fault::fail_next = false;
+  allocation_fault::only_size = 0;
+  allocation_fault::skip_matches = 0;
+  probe.arm_fd = -1;
+  const int copies = probe.Copies();
+  const bool rolled_back = driver.surfaces.empty() && driver.backing_owners.empty();
+  bool sources_usable = true;
+  for (unsigned index = 0; index < 2; ++index) {
+    uint8_t pixel = 0;
+    const uint8_t marker = static_cast<uint8_t>(90 + index);
+    const bool usable = fcntl(probe.sources[index], F_GETFD) >= 0 &&
+        pread(probe.sources[index], &pixel, 1, 0) == 1 &&
+        pixel == 40 + index * 30 &&
+        pwrite(probe.sources[index], &marker, 1, 1) == 1;
+    sources_usable = sources_usable && usable;
+  }
+  if (escaped || !rolled_back || copies != 0 || probe.maps != probe.unmaps) {
+    fprintf(stderr, "import OOM prime=%u allocation=%u api=%u escaped=%u "
+                    "status=%#x copies=%d maps=%u unmaps=%u rollback=%u inputs_usable=%u\n",
+            prime, allocation, public_api, escaped, status, copies,
+            probe.maps, probe.unmaps, rolled_back, sources_usable);
+  }
+  const size_t expected_size = prime
+      ? (allocation == 3 ? sizeof(int) : sizeof(void *))
+      : (allocation == 1 ? sizeof(int) : sizeof(void *));
+  Require(failed && failed_size == expected_size,
+          "the selected import metadata allocation actually fails");
+  Require(sources_usable,
+          "failed import preserves usable caller-owned descriptors and bytes");
+  Require(!escaped && (public_api ? status == VA_STATUS_ERROR_ALLOCATION_FAILED
+                                  : !imported),
+          "import bookkeeping OOM returns false or VA allocation error without escaping");
+  Require(rolled_back && (!public_api || surfaces[1] == VA_INVALID_SURFACE),
+          "import bookkeeping OOM publishes no failed surface and rolls back earlier surfaces");
+  Require(copies == 0 && probe.maps == (public_api ? 1U : 0U) &&
+              probe.maps == probe.unmaps && probe.invalid == 0,
+          "import bookkeeping OOM leaves no duplicated descriptors or mappings");
+  if (public_api) {
+    Require(CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 16, 16,
+                            surfaces, 2, attributes, 2) == VA_STATUS_SUCCESS &&
+                driver.surfaces.at(surfaces[0])->planes[0][0] == 40 &&
+                driver.surfaces.at(surfaces[1])->planes[0][0] == 70 &&
+                DestroySurfaces(&context, surfaces, 2) == VA_STATUS_SUCCESS &&
+                driver.surfaces.empty() && driver.backing_owners.empty(),
+            "the same caller buffers import and destroy correctly after API OOM");
+  } else {
+    Surface surface;
+    surface.width = surface.height = 16;
+    Require((prime ? surface.ImportPrime(nullptr, descriptors[0])
+                    : surface.ImportLegacy(legacy)) && surface.planes[0][0] == 40,
+            "the same caller buffer imports correctly after importer OOM");
+  }
+  Require(probe.Copies() == 0 && probe.maps == probe.unmaps && probe.invalid == 0,
+          "successful retry also retires every imported descriptor and mapping");
+}
+
+void ImportedBookkeepingFailures() {
+  for (bool prime : {false, true})
+    for (unsigned allocation = 1; allocation <= 3; ++allocation)
+      for (bool public_api : {false, true})
+        ImportedBookkeepingFailure(prime, allocation, public_api);
 }
 
 void NativeDumbMappingPreserves64BitOffsets() {
@@ -7663,6 +7901,7 @@ int VppFullTestEntry(int argc, char **argv) {
           {"zero-timeout sync does not block on driver admission", SyncTimeoutAdmissionDoesNotBlockZeroQueries},
           {"VPP backlog turn preserves cancellation and ownership", VppBacklogTurnPreservesCancellationAndOwnership}};
       const std::pair<const char *, void (*)()> imports[] = {
+          {"import bookkeeping failure returns errors and releases resources", ImportedBookkeepingFailures},
           {"PRIME export preserves imported plane layout", ImportedPrimeExportsPreservePlaneLayouts},
           {"legacy PRIME batch uses one descriptor", LegacyPrimeBatchUsesOneDescriptorAndRollsBack}};
       const std::pair<const char *, void (*)()> completed[] = {
@@ -7732,6 +7971,7 @@ int VppFullTestEntry(int argc, char **argv) {
     NativeNodeCacheFailuresRetryWithoutLeases();
     NativeSurfaceFilesRetainOriginalLifetime();
     NativeDumbBookkeepingFailures();
+    ImportedBookkeepingFailures();
     NativeDumbMappingPreserves64BitOffsets();
     I915WcMappingRequiresExactOffsetIdentity();
     AbortPathsPublishErrorFences();
@@ -7816,11 +8056,27 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 111 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 112 hardware-free regressions passed");
   return 0;
 }
 
 int main(int argc, char **argv) {
+  if (argc == 5 && strcmp(argv[1], "--import-allocation") == 0) {
+    const bool prime = strcmp(argv[2], "prime") == 0;
+    const bool public_api = strcmp(argv[4], "api") == 0;
+    const unsigned allocation = static_cast<unsigned>(strtoul(argv[3], nullptr, 10));
+    if ((!prime && strcmp(argv[2], "legacy") != 0) ||
+        (!public_api && strcmp(argv[4], "direct") != 0) ||
+        allocation < 1 || allocation > 3) return 2;
+    try {
+      ImportedBookkeepingFailure(prime, allocation, public_api);
+      puts("VA-API import allocation failure cleanup PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API import allocation failure cleanup failed: %s\n", error.what());
+      return 1;
+    }
+  }
   if (argc == 3 && strcmp(argv[1], "--native-dumb-allocation") == 0) {
     const unsigned allocation = static_cast<unsigned>(strtoul(argv[2], nullptr, 10));
     if (allocation < 1 || allocation > 3) return 2;
@@ -7880,6 +8136,7 @@ int main(int argc, char **argv) {
   if (argc != 1 && !processing_only) return 2;
   const std::pair<const char *, void (*)()> groups[] = {
       {"native DUMB bookkeeping failure cleanup", NativeDumbBookkeepingFailures},
+      {"import bookkeeping failure returns errors and releases resources", ImportedBookkeepingFailures},
       {"native DUMB 64-bit offsets preserve pixels and cleanup", NativeDumbMappingPreserves64BitOffsets},
       {"configuration matches advertised support", ConfigAttributesMatchAdvertisedSupport},
       {"card scaling captures explicit additional output", DecodeProcessingAdmissionIsExplicitAndCaptured},
