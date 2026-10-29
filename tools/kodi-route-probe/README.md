@@ -427,3 +427,73 @@ and receipt retain this diagnostic FAIL and its probe overhead. This establishes
 this run's cause; the earlier untraced 1,798-frame results remain unassigned.
 
 ![Built-in Kodi CPU and process RSS](../../tests/fixtures/issue538/kodi-native-v4l2-20261028.svg)
+
+## Private runtime packaging and dependency audit
+
+`runtime-package.py` prepares a **private research artifact** from an already
+qualified prefix. It never builds FFmpeg, installs libraries, launches Kodi or
+publishes binaries. This work is based directly on #545's research merge
+`1dd2126`; it does not promote the experimental decoder or driver into master.
+
+```sh
+python3 -B tools/kodi-route-probe/runtime-package.py pack \
+  --prefix "/path/to/qualified-ffmpeg-prefix" \
+  --platform-root "/path/to/pinned-Platform/files" \
+  --source-checkout "/path/to/unchanged-12cc1f42-source" \
+  --output "/new/private/package" --epoch 1793145600
+
+python3 -B tools/kodi-route-probe/runtime-package.py verify \
+  --package "/new/private/package/stage" \
+  --platform-root "/path/to/pinned-Platform/files"
+```
+
+The allowlist is seven matching FFmpeg DSOs, relative SONAME links, ffmpeg and
+ffprobe. Read-only ELF inspection records exact hashes, architecture,
+dependencies, required versions and strong dynamic symbols against providers
+in the pinned Platform. It rejects missing/mismatched libraries and unsupported
+RPATH/RUNPATH; it does not search host libraries. Source revision, unchanged
+tracked source, build-configuration hashes/options and original FFmpeg/IJG
+notice inventory are retained. External libraries, Kodi, GL, the driver and a
+corresponding-source archive are not included. These checks do not establish
+late `dlopen`, complete ABI behavior or licence/redistribution compliance.
+
+The USTAR archive uses relative member names, fixed owner/modes and the supplied
+epoch. Its byte reproducibility is a packaging result, **not a reproducible
+FFmpeg build**. `verify` checks an extracted tree against its manifest and the
+same exact target inventory; the manifest is an inventory, not a signature.
+
+After extracting only the generated private archive into a new directory,
+`runtime-package-namespace.py` can run the bounded metadata helper:
+
+```sh
+python3 -B tools/kodi-route-probe/runtime-package-namespace.py \
+  --package "/path/to/freshly-extracted-private-package" \
+  --platform-root "/path/to/pinned-Platform/files" \
+  --mount-prefix "/opt/relocated private runtime"
+```
+
+This requires bubblewrap namespace support and Python in the selected Platform.
+It mounts only that Platform and the package, clears inherited environment
+controls and exposes no network, sysfs, decoder/GPU devices, app/GL images or
+DIL/GStreamer/probe dependency overlay. It calls library version/configuration
+and codec metadata APIs, checks seven exact mappings and tests that the original
+build prefix is absent. It does not open a codec/device or launch the CLI tools.
+The host kernel is shared: this is **not an independently clean OS or Kodi
+playback acceptance**.
+
+The [2026-10-29 software-only result](../../tests/fixtures/issue539/runtime-package-20261029.json)
+records two byte-identical 8,028,160-byte archives and two successful relocated
+metadata namespaces, including a real missing-DSO rejection. The existing
+Core2/x86_64 binaries still embed private configure paths and require
+`atan2f@GLIBC_2.43`; all artifacts remain **PUBLIC_NOT_READY**. Neutral-path
+rebuild reproducibility, clean-target Kodi/control/pixel acceptance,
+corresponding-source/component/dependency review, public distribution approval
+and an update/maintenance owner remain outstanding. No earlier playback/CPU PASS
+is transferred to this reduced environment. #538 stays open and its excluded
+heap follow-up is not resumed.
+
+`make -C tools/kodi-route-probe check-package` runs twelve real-ELF fixture tests
+for deterministic archives, relocation, omitted/mismatched payload/providers,
+required symbol versions and actual symbols, hashes/modes, source drift,
+RPATH and the allowlist. Fixture binaries are compiled for inspection and never
+executed; compiler requirements belong to development tests, not the target.

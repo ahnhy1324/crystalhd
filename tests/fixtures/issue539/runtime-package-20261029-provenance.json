@@ -1,0 +1,75 @@
+{
+  "clean_OS_and_Kodi_playback_qualification": "NOT_RUN",
+  "configuration_sha256": [
+    "acfbbf5395aa9aff4910a694d8d08520b00c7f49bb7d5d669841240f803eec4c"
+  ],
+  "configured_feature_and_CPU_options": [
+    "--cpu=core2",
+    "--disable-autodetect",
+    "--disable-debug",
+    "--disable-doc",
+    "--disable-everything",
+    "--disable-ffplay",
+    "--disable-static",
+    "--enable-bsf=h264_mp4toannexb,extract_extradata",
+    "--enable-decoder=h264,h264_v4l2m2m,aac,pcm_s16le,pcm_s16be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,pcm_u8,png,mjpeg",
+    "--enable-demuxer=mov,matroska,mpegts,h264,rawvideo,wav,image2,image2pipe,image_png_pipe,image_jpeg_pipe",
+    "--enable-encoder=rawvideo,wrapped_avframe,pcm_s16le",
+    "--enable-ffmpeg",
+    "--enable-ffprobe",
+    "--enable-filter=scale,format,aformat,aresample,hwdownload,hwupload,null,anull",
+    "--enable-hwaccel=h264_vaapi",
+    "--enable-libdrm",
+    "--enable-muxer=null,rawvideo,framecrc,framemd5",
+    "--enable-parser=h264,aac,aac_latm,png,mjpeg",
+    "--enable-protocol=file,pipe",
+    "--enable-runtime-cpudetect",
+    "--enable-shared",
+    "--enable-v4l2-m2m",
+    "--enable-vaapi",
+    "--enable-zlib"
+  ],
+  "corresponding_source_archive_included": false,
+  "disposition": "PUBLIC_NOT_READY",
+  "embedded_configure_prefix_sha256": [
+    "682ec32ed6a52460193320b8f5523be76098209fa4abb411657d78931dbbc595"
+  ],
+  "neutral_build_verified": false,
+  "notices": [
+    {
+      "sha256": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af",
+      "source": "LICENSE.md",
+      "url": "https://github.com/jc-kynesim/rpi-ffmpeg/blob/12cc1f42f06ff0e85633c2602c96786fbd280b70/LICENSE.md"
+    },
+    {
+      "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30",
+      "source": "COPYING.LGPLv2.1",
+      "url": "https://github.com/jc-kynesim/rpi-ffmpeg/blob/12cc1f42f06ff0e85633c2602c96786fbd280b70/COPYING.LGPLv2.1"
+    },
+    {
+      "notice_sha256": "9608a1781393c906ac6254ee965f19a599608428eaf84efdd8c7ba198f14e877",
+      "source": "libavcodec/jfdctfst.c",
+      "source_sha256": "ead72c605ae80a82034ed59f84f41c7b501968798c9f0b4b39161c31a0c01deb",
+      "url": "https://github.com/jc-kynesim/rpi-ffmpeg/blob/12cc1f42f06ff0e85633c2602c96786fbd280b70/libavcodec/jfdctfst.c"
+    },
+    {
+      "notice_sha256": "7469382cb23a47a033113c2c00d8e02e5071d76cb420d804f078527a906da679",
+      "source": "libavcodec/jfdctint_template.c",
+      "source_sha256": "09920f49711889af8d0ae166c57b22b9451985e619ae887c72fae22df105bd99",
+      "url": "https://github.com/jc-kynesim/rpi-ffmpeg/blob/12cc1f42f06ff0e85633c2602c96786fbd280b70/libavcodec/jfdctint_template.c"
+    },
+    {
+      "notice_sha256": "c5d96aa8ff9e78b9214a1bec3d2dd5d65e3196eae08fa7c6ba7466a5a793ba0f",
+      "source": "libavcodec/jrevdct.c",
+      "source_sha256": "7e8d6215664de8f620e94a7d6304f19675bc5174a9db4cb86611749e188c35bc",
+      "url": "https://github.com/jc-kynesim/rpi-ffmpeg/blob/12cc1f42f06ff0e85633c2602c96786fbd280b70/libavcodec/jrevdct.c"
+    }
+  ],
+  "private_build_prefixes_detected": true,
+  "redistribution_review": "NOT_COMPLETED",
+  "schema": 1,
+  "source_revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+  "source_tracked_changes": false,
+  "source_url": "https://github.com/jc-kynesim/rpi-ffmpeg/tree/12cc1f42f06ff0e85633c2602c96786fbd280b70",
+  "update_maintenance_owner": "UNASSIGNED"
+}

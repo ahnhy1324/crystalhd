@@ -1,0 +1,743 @@
+{
+  "architecture": [
+    "ELF64",
+    "Advanced Micro Devices X86-64"
+  ],
+  "nodes": {
+    "payload:bin/ffmpeg": {
+      "bytes": 461104,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "4bc0a465a24f74ee797ca1460055b4d2ab12c8bb20606fc595dfa0f6897291bb",
+      "file": "bin/ffmpeg",
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "libavdevice.so.63",
+        "libavfilter.so.12",
+        "libavformat.so.63",
+        "libavcodec.so.63",
+        "libswresample.so.7",
+        "libswscale.so.10",
+        "libavutil.so.61",
+        "libm.so.6",
+        "libz.so.1",
+        "libc.so.6"
+      ],
+      "origin": "payload",
+      "required_strong_symbols": 458,
+      "rpath": [],
+      "sha256": "557b7b282a751507695994b94c16ab9c90f834f28fb6c3cd3851b28574c1a204",
+      "soname": [],
+      "version_definitions": [],
+      "version_needs": {
+        "libavcodec.so.63": [
+          "LIBAVCODEC_63"
+        ],
+        "libavdevice.so.63": [
+          "LIBAVDEVICE_63"
+        ],
+        "libavfilter.so.12": [
+          "LIBAVFILTER_12"
+        ],
+        "libavformat.so.63": [
+          "LIBAVFORMAT_63"
+        ],
+        "libavutil.so.61": [
+          "LIBAVUTIL_61"
+        ],
+        "libc.so.6": [
+          "GLIBC_2.14",
+          "GLIBC_2.2.5",
+          "GLIBC_2.3.2",
+          "GLIBC_2.3.4",
+          "GLIBC_2.34",
+          "GLIBC_2.4",
+          "GLIBC_2.7"
+        ],
+        "libm.so.6": [
+          "GLIBC_2.2.5",
+          "GLIBC_2.29"
+        ],
+        "libswresample.so.7": [
+          "LIBSWRESAMPLE_7"
+        ],
+        "libswscale.so.10": [
+          "LIBSWSCALE_10"
+        ]
+      }
+    },
+    "payload:bin/ffprobe": {
+      "bytes": 219368,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "2c3c460cb6bd82ca7887df645599f45c4dfba33a8dc4a73273e0db98314ba384",
+      "file": "bin/ffprobe",
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "libavdevice.so.63",
+        "libavfilter.so.12",
+        "libavformat.so.63",
+        "libavcodec.so.63",
+        "libswresample.so.7",
+        "libswscale.so.10",
+        "libavutil.so.61",
+        "libm.so.6",
+        "libc.so.6"
+      ],
+      "origin": "payload",
+      "required_strong_symbols": 242,
+      "rpath": [],
+      "sha256": "a6f69e8fe967791ffb687648e000a80a91d2c716c04f79a8e69173f370caeac1",
+      "soname": [],
+      "version_definitions": [],
+      "version_needs": {
+        "libavcodec.so.63": [
+          "LIBAVCODEC_63"
+        ],
+        "libavdevice.so.63": [
+          "LIBAVDEVICE_63"
+        ],
+        "libavfilter.so.12": [
+          "LIBAVFILTER_12"
+        ],
+        "libavformat.so.63": [
+          "LIBAVFORMAT_63"
+        ],
+        "libavutil.so.61": [
+          "LIBAVUTIL_61"
+        ],
+        "libc.so.6": [
+          "GLIBC_2.14",
+          "GLIBC_2.2.5",
+          "GLIBC_2.3.4",
+          "GLIBC_2.34",
+          "GLIBC_2.4"
+        ],
+        "libm.so.6": [
+          "GLIBC_2.2.5",
+          "GLIBC_2.29"
+        ],
+        "libswresample.so.7": [
+          "LIBSWRESAMPLE_7"
+        ],
+        "libswscale.so.10": [
+          "LIBSWSCALE_10"
+        ]
+      }
+    },
+    "payload:lib/libavcodec.so.63.1.102": {
+      "bytes": 2525272,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "4da7198c71a594f95db36d7b155b49a42b143c2f6ce3d069538aacf2622a47fd",
+      "file": "lib/libavcodec.so.63.1.102",
+      "interpreter": null,
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "libavutil.so.61",
+        "libm.so.6",
+        "libva.so.2",
+        "libz.so.1",
+        "libc.so.6"
+      ],
+      "origin": "payload",
+      "required_strong_symbols": 267,
+      "rpath": [],
+      "sha256": "c92a041da4f924cbf73668b9de633e593b9f17eb92fef2da73d6febcf075c8c6",
+      "soname": [
+        "libavcodec.so.63"
+      ],
+      "version_definitions": [
+        "LIBAVCODEC_63",
+        "libavcodec.so.63"
+      ],
+      "version_needs": {
+        "libavutil.so.61": [
+          "LIBAVUTIL_61"
+        ],
+        "libc.so.6": [
+          "GLIBC_2.14",
+          "GLIBC_2.2.5",
+          "GLIBC_2.27",
+          "GLIBC_2.28",
+          "GLIBC_2.3.2",
+          "GLIBC_2.3.4",
+          "GLIBC_2.34",
+          "GLIBC_2.4",
+          "GLIBC_2.7"
+        ],
+        "libm.so.6": [
+          "GLIBC_2.2.5",
+          "GLIBC_2.27",
+          "GLIBC_2.35",
+          "GLIBC_2.43"
+        ]
+      }
+    },
+    "payload:lib/libavdevice.so.63.1.102": {
+      "bytes": 14584,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "a973322c0972760f2e357677686f974193edfca032d07259069063c17813fcc7",
+      "file": "lib/libavdevice.so.63.1.102",
+      "interpreter": null,
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "libavformat.so.63",
+        "libavutil.so.61",
+        "libc.so.6"
+      ],
+      "origin": "payload",
+      "required_strong_symbols": 15,
+      "rpath": [],
+      "sha256": "6f5414a992f92deb9a9a69482cceb2af45c01d8df0803fe94220a9568b3e8547",
+      "soname": [
+        "libavdevice.so.63"
+      ],
+      "version_definitions": [
+        "LIBAVDEVICE_63",
+        "libavdevice.so.63"
+      ],
+      "version_needs": {
+        "libavformat.so.63": [
+          "LIBAVFORMAT_63"
+        ],
+        "libavutil.so.61": [
+          "LIBAVUTIL_61"
+        ],
+        "libc.so.6": [
+          "GLIBC_2.2.5",
+          "GLIBC_2.4"
+        ]
+      }
+    },
+    "payload:lib/libavfilter.so.12.1.102": {
+      "bytes": 265688,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "3bc47dc86a5564178ac2e7fbed832e2e9901ca70385793e4fe33214e4c755937",
+      "file": "lib/libavfilter.so.12.1.102",
+      "interpreter": null,
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "libswscale.so.10",
+        "libswresample.so.7",
+        "libavutil.so.61",
+        "libm.so.6",
+        "libc.so.6"
+      ],
+      "origin": "payload",
+      "required_strong_symbols": 173,
+      "rpath": [],
+      "sha256": "5e5d1bbb82ffbf171f08a419ed3c8bda7a426f759670df1f691e393667ce9b0a",
+      "soname": [
+        "libavfilter.so.12"
+      ],
+      "version_definitions": [
+        "LIBAVFILTER_12",
+        "libavfilter.so.12"
+      ],
+      "version_needs": {
+        "libavutil.so.61": [
+          "LIBAVUTIL_61"
+        ],
+        "libc.so.6": [
+          "GLIBC_2.14",
+          "GLIBC_2.2.5",
+          "GLIBC_2.3.4",
+          "GLIBC_2.4"
+        ],
+        "libm.so.6": [
+          "GLIBC_2.2.5"
+        ],
+        "libswresample.so.7": [
+          "LIBSWRESAMPLE_7"
+        ],
+        "libswscale.so.10": [
+          "LIBSWSCALE_10"
+        ]
+      }
+    },
+    "payload:lib/libavformat.so.63.1.102": {
+      "bytes": 668640,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "4c012670fe1db9115091dbe81114b94dc790361f1d1c556b9301ddc124306576",
+      "file": "lib/libavformat.so.63.1.102",
+      "interpreter": null,
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "libavcodec.so.63",
+        "libavutil.so.61",
+        "libm.so.6",
+        "libz.so.1",
+        "libc.so.6"
+      ],
+      "origin": "payload",
+      "required_strong_symbols": 321,
+      "rpath": [],
+      "sha256": "f26fc0d099394f72ec31ae69d3928fe6efeed5ea87201b047cf4b304705acd2f",
+      "soname": [
+        "libavformat.so.63"
+      ],
+      "version_definitions": [
+        "LIBAVFORMAT_63",
+        "libavformat.so.63"
+      ],
+      "version_needs": {
+        "libavcodec.so.63": [
+          "LIBAVCODEC_63"
+        ],
+        "libavutil.so.61": [
+          "LIBAVUTIL_61"
+        ],
+        "libc.so.6": [
+          "GLIBC_2.14",
+          "GLIBC_2.2.5",
+          "GLIBC_2.27",
+          "GLIBC_2.28",
+          "GLIBC_2.3.4",
+          "GLIBC_2.33",
+          "GLIBC_2.4",
+          "GLIBC_2.7"
+        ],
+        "libm.so.6": [
+          "GLIBC_2.2.5",
+          "GLIBC_2.35"
+        ]
+      }
+    },
+    "payload:lib/libavutil.so.61.1.102": {
+      "bytes": 1072168,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "408aac2ce11a8e709b0886ac285307d02d93418492c67d6c010db115e049ef4e",
+      "file": "lib/libavutil.so.61.1.102",
+      "interpreter": null,
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "libva-drm.so.2",
+        "libva.so.2",
+        "libm.so.6",
+        "libdrm.so.2",
+        "libc.so.6"
+      ],
+      "origin": "payload",
+      "required_strong_symbols": 125,
+      "rpath": [],
+      "sha256": "4ba4f5b9058a6bc3d186ea46814c2d9e1c00db0ba04979f01df5df454c48c384",
+      "soname": [
+        "libavutil.so.61"
+      ],
+      "version_definitions": [
+        "LIBAVUTIL_61",
+        "libavutil.so.61"
+      ],
+      "version_needs": {
+        "libc.so.6": [
+          "GLIBC_2.14",
+          "GLIBC_2.17",
+          "GLIBC_2.2.5",
+          "GLIBC_2.28",
+          "GLIBC_2.3.2",
+          "GLIBC_2.3.4",
+          "GLIBC_2.33",
+          "GLIBC_2.34",
+          "GLIBC_2.4",
+          "GLIBC_2.6",
+          "GLIBC_2.7"
+        ],
+        "libm.so.6": [
+          "GLIBC_2.2.5",
+          "GLIBC_2.29",
+          "GLIBC_2.35"
+        ],
+        "libva.so.2": [
+          "VA_API_0.33.0"
+        ]
+      }
+    },
+    "payload:lib/libswresample.so.7.1.102": {
+      "bytes": 178616,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "051c608ebeaa868fb2707410fd08670d28d601aa86070c31f058152756caff57",
+      "file": "lib/libswresample.so.7.1.102",
+      "interpreter": null,
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "libavutil.so.61",
+        "libm.so.6",
+        "libc.so.6"
+      ],
+      "origin": "payload",
+      "required_strong_symbols": 39,
+      "rpath": [],
+      "sha256": "daed68f97a4fc2a555649cc3c9e4916bcb49437e8c7f52e80e95f6903a937b2c",
+      "soname": [
+        "libswresample.so.7"
+      ],
+      "version_definitions": [
+        "LIBSWRESAMPLE_7",
+        "libswresample.so.7"
+      ],
+      "version_needs": {
+        "libavutil.so.61": [
+          "LIBAVUTIL_61"
+        ],
+        "libc.so.6": [
+          "GLIBC_2.14",
+          "GLIBC_2.2.5",
+          "GLIBC_2.3.4",
+          "GLIBC_2.4"
+        ],
+        "libm.so.6": [
+          "GLIBC_2.2.5",
+          "GLIBC_2.29"
+        ]
+      }
+    },
+    "payload:lib/libswscale.so.10.1.102": {
+      "bytes": 2526120,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "199b6b945b3f99bc8159341f0eabd51e247291a4b8c725080724b5a47b15764b",
+      "file": "lib/libswscale.so.10.1.102",
+      "interpreter": null,
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "libavutil.so.61",
+        "libm.so.6",
+        "libc.so.6"
+      ],
+      "origin": "payload",
+      "required_strong_symbols": 103,
+      "rpath": [],
+      "sha256": "832481dc5636b6439e36531dcc1088c4af5f037adb956a6106c901979887300b",
+      "soname": [
+        "libswscale.so.10"
+      ],
+      "version_definitions": [
+        "LIBSWSCALE_10",
+        "libswscale.so.10"
+      ],
+      "version_needs": {
+        "libavutil.so.61": [
+          "LIBAVUTIL_61"
+        ],
+        "libc.so.6": [
+          "GLIBC_2.14",
+          "GLIBC_2.2.5",
+          "GLIBC_2.3.4",
+          "GLIBC_2.34",
+          "GLIBC_2.4"
+        ],
+        "libm.so.6": [
+          "GLIBC_2.2.5",
+          "GLIBC_2.27",
+          "GLIBC_2.29",
+          "GLIBC_2.43"
+        ]
+      }
+    },
+    "platform:lib/x86_64-linux-gnu/ld-linux-x86-64.so.2": {
+      "bytes": 253264,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "376078183b0d560257c5a66dd3e33f5f7741cf8cdb6bb93922e5c9fbdbd4bbf5",
+      "file": "lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+      "interpreter": null,
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [],
+      "origin": "platform",
+      "required_strong_symbols": 0,
+      "rpath": [],
+      "sha256": "6b887f408400b77f99a5c0e99f380c84264eef29156c191713b3343189cb0391",
+      "soname": [
+        "ld-linux-x86-64.so.2"
+      ],
+      "version_definitions": [
+        "GLIBC_2.2.5",
+        "GLIBC_2.3",
+        "GLIBC_2.34",
+        "GLIBC_2.35",
+        "GLIBC_2.4",
+        "GLIBC_PRIVATE",
+        "ld-linux-x86-64.so.2"
+      ],
+      "version_needs": {}
+    },
+    "platform:lib/x86_64-linux-gnu/libc.so.6": {
+      "bytes": 2177968,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "9d65f62c3478f5e30693c02eb98cfcbde5c53f657a6292b0375787b133750a1c",
+      "file": "lib/x86_64-linux-gnu/libc.so.6",
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "ld-linux-x86-64.so.2"
+      ],
+      "origin": "platform",
+      "required_strong_symbols": 21,
+      "rpath": [],
+      "sha256": "f38d0ec29b1ebfe7bb923b73b68b07b73c395e0cf5a0f291fbce495c3f1c3555",
+      "soname": [
+        "libc.so.6"
+      ],
+      "version_definitions": [
+        "GLIBC_2.10",
+        "GLIBC_2.11",
+        "GLIBC_2.12",
+        "GLIBC_2.13",
+        "GLIBC_2.14",
+        "GLIBC_2.15",
+        "GLIBC_2.16",
+        "GLIBC_2.17",
+        "GLIBC_2.18",
+        "GLIBC_2.2.5",
+        "GLIBC_2.2.6",
+        "GLIBC_2.22",
+        "GLIBC_2.23",
+        "GLIBC_2.24",
+        "GLIBC_2.25",
+        "GLIBC_2.26",
+        "GLIBC_2.27",
+        "GLIBC_2.28",
+        "GLIBC_2.29",
+        "GLIBC_2.3",
+        "GLIBC_2.3.2",
+        "GLIBC_2.3.3",
+        "GLIBC_2.3.4",
+        "GLIBC_2.30",
+        "GLIBC_2.31",
+        "GLIBC_2.32",
+        "GLIBC_2.33",
+        "GLIBC_2.34",
+        "GLIBC_2.35",
+        "GLIBC_2.36",
+        "GLIBC_2.38",
+        "GLIBC_2.39",
+        "GLIBC_2.4",
+        "GLIBC_2.41",
+        "GLIBC_2.42",
+        "GLIBC_2.43",
+        "GLIBC_2.44",
+        "GLIBC_2.5",
+        "GLIBC_2.6",
+        "GLIBC_2.7",
+        "GLIBC_2.8",
+        "GLIBC_2.9",
+        "GLIBC_ABI_DT_RELR",
+        "GLIBC_ABI_DT_X86_64_PLT",
+        "GLIBC_ABI_GNU2_TLS",
+        "GLIBC_PRIVATE",
+        "libc.so.6"
+      ],
+      "version_needs": {
+        "ld-linux-x86-64.so.2": [
+          "GLIBC_2.2.5",
+          "GLIBC_2.3",
+          "GLIBC_2.35",
+          "GLIBC_PRIVATE"
+        ]
+      }
+    },
+    "platform:lib/x86_64-linux-gnu/libdrm.so.2.134.0": {
+      "bytes": 100360,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "3c1e954d78fcc9ddb02fe191466df22f3e3371cd50e0ee8d1f2c1787dd5c258e",
+      "file": "lib/x86_64-linux-gnu/libdrm.so.2.134.0",
+      "interpreter": null,
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "libc.so.6"
+      ],
+      "origin": "platform",
+      "required_strong_symbols": 65,
+      "rpath": [],
+      "sha256": "eb9eaddd93b1c2b7c47cf15d52a640b31f295149196509472f79fe7dac734cd4",
+      "soname": [
+        "libdrm.so.2"
+      ],
+      "version_definitions": [],
+      "version_needs": {
+        "libc.so.6": [
+          "GLIBC_2.14",
+          "GLIBC_2.17",
+          "GLIBC_2.2.5",
+          "GLIBC_2.3",
+          "GLIBC_2.3.4",
+          "GLIBC_2.33",
+          "GLIBC_2.38",
+          "GLIBC_2.4",
+          "GLIBC_2.8"
+        ]
+      }
+    },
+    "platform:lib/x86_64-linux-gnu/libm.so.6": {
+      "bytes": 1227608,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "d13ca4d3ae766e492a6919ace47225564c5bbae9788b00e26c3e5dd1387c34a2",
+      "file": "lib/x86_64-linux-gnu/libm.so.6",
+      "interpreter": null,
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "origin": "platform",
+      "required_strong_symbols": 18,
+      "rpath": [],
+      "sha256": "d82b9ae8b26fa4f54c35313d94d28133fa88186a96227ee6d9422a5c85be33b8",
+      "soname": [
+        "libm.so.6"
+      ],
+      "version_definitions": [
+        "GLIBC_2.15",
+        "GLIBC_2.18",
+        "GLIBC_2.2.5",
+        "GLIBC_2.23",
+        "GLIBC_2.24",
+        "GLIBC_2.25",
+        "GLIBC_2.26",
+        "GLIBC_2.27",
+        "GLIBC_2.28",
+        "GLIBC_2.29",
+        "GLIBC_2.31",
+        "GLIBC_2.32",
+        "GLIBC_2.35",
+        "GLIBC_2.38",
+        "GLIBC_2.39",
+        "GLIBC_2.4",
+        "GLIBC_2.40",
+        "GLIBC_2.41",
+        "GLIBC_2.42",
+        "GLIBC_2.43",
+        "GLIBC_2.44",
+        "libm.so.6"
+      ],
+      "version_needs": {
+        "ld-linux-x86-64.so.2": [
+          "GLIBC_PRIVATE"
+        ],
+        "libc.so.6": [
+          "GLIBC_2.14",
+          "GLIBC_2.2.5",
+          "GLIBC_2.4",
+          "GLIBC_ABI_DT_RELR",
+          "GLIBC_ABI_DT_X86_64_PLT",
+          "GLIBC_PRIVATE"
+        ]
+      }
+    },
+    "platform:lib/x86_64-linux-gnu/libva-drm.so.2.2400.0": {
+      "bytes": 15600,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "db41b1e3f553676f610ed796f0b90bb447d0b3f040b7725d24ba611afd79e70b",
+      "file": "lib/x86_64-linux-gnu/libva-drm.so.2.2400.0",
+      "interpreter": null,
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "libva.so.2",
+        "libdrm.so.2",
+        "libc.so.6"
+      ],
+      "origin": "platform",
+      "required_strong_symbols": 24,
+      "rpath": [],
+      "sha256": "7aebc8fb6919e24d6a1f4c324402e3de702c5501bb6370b1a4b0cd28ffd08a6a",
+      "soname": [
+        "libva-drm.so.2"
+      ],
+      "version_definitions": [],
+      "version_needs": {
+        "libc.so.6": [
+          "GLIBC_2.2.5",
+          "GLIBC_2.3.4",
+          "GLIBC_2.34",
+          "GLIBC_2.4"
+        ]
+      }
+    },
+    "platform:lib/x86_64-linux-gnu/libva.so.2.2400.0": {
+      "bytes": 239536,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "daa44a0ed1b1011715aa13be74d0e3413abef180b0c5059a9b62af761a1ccf1b",
+      "file": "lib/x86_64-linux-gnu/libva.so.2.2400.0",
+      "interpreter": null,
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "libc.so.6"
+      ],
+      "origin": "platform",
+      "required_strong_symbols": 49,
+      "rpath": [],
+      "sha256": "8d9210f6575e752eb5cfec9f168c058c45ca98adf6005600ae913d2593894487",
+      "soname": [
+        "libva.so.2"
+      ],
+      "version_definitions": [
+        "VA_API_0.32.0",
+        "VA_API_0.33.0",
+        "libva.so.2"
+      ],
+      "version_needs": {
+        "libc.so.6": [
+          "GLIBC_2.17",
+          "GLIBC_2.2.5",
+          "GLIBC_2.3.4",
+          "GLIBC_2.34",
+          "GLIBC_2.38",
+          "GLIBC_2.4"
+        ]
+      }
+    },
+    "platform:lib/x86_64-linux-gnu/libz.so.1.3.1.zlib-ng": {
+      "bytes": 190976,
+      "class": "ELF64",
+      "dynamic_symbol_inventory_sha256": "3fa70292250231b7b4d5029bdc7ad9acb62272a62f823ad1b7842f2a92c65d67",
+      "file": "lib/x86_64-linux-gnu/libz.so.1.3.1.zlib-ng",
+      "interpreter": null,
+      "machine": "Advanced Micro Devices X86-64",
+      "needed": [
+        "libc.so.6"
+      ],
+      "origin": "platform",
+      "required_strong_symbols": 21,
+      "rpath": [],
+      "sha256": "627c5fa735ff7557e14c595871010c09d6b6b7eaa470c9b70b695c5e82adf00c",
+      "soname": [
+        "libz.so.1"
+      ],
+      "version_definitions": [
+        "ZLIB_1.2.0",
+        "ZLIB_1.2.0.2",
+        "ZLIB_1.2.0.8",
+        "ZLIB_1.2.12",
+        "ZLIB_1.2.2",
+        "ZLIB_1.2.2.3",
+        "ZLIB_1.2.2.4",
+        "ZLIB_1.2.3.3",
+        "ZLIB_1.2.3.4",
+        "ZLIB_1.2.3.5",
+        "ZLIB_1.2.5.1",
+        "ZLIB_1.2.5.2",
+        "ZLIB_1.2.7.1",
+        "ZLIB_1.2.9",
+        "libz.so.1"
+      ],
+      "version_needs": {
+        "libc.so.6": [
+          "GLIBC_2.14",
+          "GLIBC_2.2.5",
+          "GLIBC_2.3.4",
+          "GLIBC_2.4"
+        ]
+      }
+    }
+  },
+  "schema": 1,
+  "scope": "Declared ELF dependency closure and strong dynamic symbols only; not late dlopen, graphics, media, hardware or clean-OS acceptance.",
+  "sonames": {
+    "avcodec": "libavcodec.so.63",
+    "avdevice": "libavdevice.so.63",
+    "avfilter": "libavfilter.so.12",
+    "avformat": "libavformat.so.63",
+    "avutil": "libavutil.so.61",
+    "swresample": "libswresample.so.7",
+    "swscale": "libswscale.so.10"
+  },
+  "strong_symbol_requirements_checked": 1941
+}
