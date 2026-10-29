@@ -1,0 +1,126 @@
+{
+  "schema": 1,
+  "upstream": "FFmpeg n8.0.1",
+  "license": "LGPL-2.1-or-later",
+  "scope": "Exact retained source functions and hardware-context comparison; VA, buffer allocation, output delivery and graph destruction are instrumented shims. No full FFmpeg, VA driver, pixels, hardware or native call-order reproduction.",
+  "sources": {
+    "libavfilter/vf_deinterlace_vaapi.c": {
+      "url": "https://raw.githubusercontent.com/FFmpeg/FFmpeg/894da5ca7d742e4429ffb2af534fcda0103ef593/libavfilter/vf_deinterlace_vaapi.c",
+      "sha256": "6a36f754731a60ea04d85246e0b3408c264527442bdb59ba4b21cfee6f3bf31e",
+      "tag_url": "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n8.0.1/libavfilter/vf_deinterlace_vaapi.c"
+    },
+    "fftools/ffmpeg_filter.c": {
+      "url": "https://raw.githubusercontent.com/FFmpeg/FFmpeg/894da5ca7d742e4429ffb2af534fcda0103ef593/fftools/ffmpeg_filter.c",
+      "sha256": "2dce443cca7a87013524f2a499716f779ee1285b6d9da4fa39a9060efc2353d3",
+      "tag_url": "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n8.0.1/fftools/ffmpeg_filter.c"
+    },
+    "fftools/ffmpeg_dec.c": {
+      "url": "https://raw.githubusercontent.com/FFmpeg/FFmpeg/894da5ca7d742e4429ffb2af534fcda0103ef593/fftools/ffmpeg_dec.c",
+      "sha256": "94b375ec0d10193099ae6f96d570147249a510716925513040a5397784ae01e6",
+      "tag_url": "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n8.0.1/fftools/ffmpeg_dec.c"
+    },
+    "fftools/ffmpeg_demux.c": {
+      "url": "https://raw.githubusercontent.com/FFmpeg/FFmpeg/894da5ca7d742e4429ffb2af534fcda0103ef593/fftools/ffmpeg_demux.c",
+      "sha256": "40e2bd280f3b8ad75068a749f858e6d9e8c10741fa7a4dc5545d30c17b3aec8b",
+      "tag_url": "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n8.0.1/fftools/ffmpeg_demux.c"
+    }
+  },
+  "fixtures": {
+    "deint-context.inc": {
+      "source": "libavfilter/vf_deinterlace_vaapi.c",
+      "start": "typedef struct DeintVAAPIContext {",
+      "end": "\nstatic const char *deint_vaapi_mode_name",
+      "sha256": "55e157d7a11ca37f6280f23c70290db717b824e87eb80131a38330e3facd147a",
+      "body_sha256": "5c3b950d466722d29e38b7a75d2b8aaaab458954fab5557ddb2578c4d85deca4",
+      "source_lines": [
+        32,
+        52
+      ]
+    },
+    "deint-mode-name.inc": {
+      "source": "libavfilter/vf_deinterlace_vaapi.c",
+      "start": "static const char *deint_vaapi_mode_name",
+      "end": "\nstatic void deint_vaapi_pipeline_uninit",
+      "sha256": "e18751bfc98bf1019ce2778024228cf8605e01097735688ec4e648aa652b525a",
+      "body_sha256": "852e029366fb2782bbac3b7881da798e8ec2e988753de4b7a5146cb65f29f03b",
+      "source_lines": [
+        53,
+        66
+      ]
+    },
+    "deint-uninit.inc": {
+      "source": "libavfilter/vf_deinterlace_vaapi.c",
+      "start": "static void deint_vaapi_pipeline_uninit",
+      "end": "\nstatic int deint_vaapi_build_filter_params",
+      "sha256": "ae99e50ace56e5244afe37dd7082794d0f68cf25ad5a724a37120d2d97b4b17f",
+      "body_sha256": "9296173bc0d1c2ffe1fe095dda59c4c223f0d1fb2533ccb15d0eee77d5fa8051",
+      "source_lines": [
+        67,
+        78
+      ]
+    },
+    "deint-build.inc": {
+      "source": "libavfilter/vf_deinterlace_vaapi.c",
+      "start": "static int deint_vaapi_build_filter_params",
+      "end": "\nstatic int deint_vaapi_config_output",
+      "sha256": "ab71b91dc3bdf43fb65a70f670bc80fbf42b56ad3f42acbe8ed1798f87269597",
+      "body_sha256": "f1f9fca87c8654b842af361233dec0c5b48df45d7d7aa6443f20009e54d4b118",
+      "source_lines": [
+        79,
+        158
+      ]
+    },
+    "deint-filter-frame.inc": {
+      "source": "libavfilter/vf_deinterlace_vaapi.c",
+      "start": "static int deint_vaapi_filter_frame",
+      "end": "\nstatic int deint_vaapi_request_frame",
+      "sha256": "7b0fda60cf38977d0ad51900dd97ba18e3ff2982d86a0e593c8f43b4129e6091",
+      "body_sha256": "beaf2891033411812b86c618c3cbe2ed7573da06398aa3c7cb675dc1e4bb24d5",
+      "source_lines": [
+        179,
+        328
+      ]
+    },
+    "deint-request-frame.inc": {
+      "source": "libavfilter/vf_deinterlace_vaapi.c",
+      "start": "static int deint_vaapi_request_frame",
+      "end": "\nstatic av_cold int deint_vaapi_init",
+      "sha256": "dc01c73777a75e5a0f3436ba198f3ca8d8386c03d567340ed0b50c6f60137610",
+      "body_sha256": "2c62ed670b1dbcc5dd5eb82839204c7ee9330d519c7f0186da1ef96509997bcf",
+      "source_lines": [
+        329,
+        347
+      ]
+    },
+    "filter-cleanup.inc": {
+      "source": "fftools/ffmpeg_filter.c",
+      "start": "static void cleanup_filtergraph",
+      "end": "\nstatic int filter_is_buffersrc",
+      "sha256": "1fb710dd752eb6350a05ffb4f121547ab2a8a5abaea6305ea2cbc27c85be08f9",
+      "body_sha256": "2d2ecd36bee7ba0b01b5f7f2493ff6e085c7d0f0006711f942648e1f36203b96",
+      "source_lines": [
+        1870,
+        1878
+      ]
+    },
+    "filter-hwcontext-reinit.inc": {
+      "source": "fftools/ffmpeg_filter.c",
+      "start": "    if (!!ifp->hw_frames_ctx != !!frame->hw_frames_ctx ||",
+      "end": "\n\n    if (need_reinit)",
+      "sha256": "cce2e4ea0b9ad5b0d140823b6d8c82d2b7731ea18a487dcbca741c3448b97d0f",
+      "body_sha256": "22b87d34b7793650a23dd9a5b4c0d94bb0446cbed4907a6c4737da2be0e2b390",
+      "source_lines": [
+        2909,
+        2911
+      ]
+    }
+  },
+  "upstream_revision": "894da5ca7d742e4429ffb2af534fcda0103ef593",
+  "upstream_tag_object": "d22ecc4f6f3fca77b3e71b18641ceddb25973e97",
+  "license_notices": {
+    "libavfilter/vf_deinterlace_vaapi.c": "/*\n * This file is part of FFmpeg.\n *\n * FFmpeg is free software; you can redistribute it and/or\n * modify it under the terms of the GNU Lesser General Public\n * License as published by the Free Software Foundation; either\n * version 2.1 of the License, or (at your option) any later version.\n *\n * FFmpeg is distributed in the hope that it will be useful,\n * but WITHOUT ANY WARRANTY; without even the implied warranty of\n * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU\n * Lesser General Public License for more details.\n *\n * You should have received a copy of the GNU Lesser General Public\n * License along with FFmpeg; if not, write to the Free Software\n * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA\n */\n\n",
+    "fftools/ffmpeg_filter.c": "/*\n * ffmpeg filter configuration\n *\n * This file is part of FFmpeg.\n *\n * FFmpeg is free software; you can redistribute it and/or\n * modify it under the terms of the GNU Lesser General Public\n * License as published by the Free Software Foundation; either\n * version 2.1 of the License, or (at your option) any later version.\n *\n * FFmpeg is distributed in the hope that it will be useful,\n * but WITHOUT ANY WARRANTY; without even the implied warranty of\n * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU\n * Lesser General Public License for more details.\n *\n * You should have received a copy of the GNU Lesser General Public\n * License along with FFmpeg; if not, write to the Free Software\n * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA\n */\n\n",
+    "fftools/ffmpeg_dec.c": "/*\n * This file is part of FFmpeg.\n *\n * FFmpeg is free software; you can redistribute it and/or\n * modify it under the terms of the GNU Lesser General Public\n * License as published by the Free Software Foundation; either\n * version 2.1 of the License, or (at your option) any later version.\n *\n * FFmpeg is distributed in the hope that it will be useful,\n * but WITHOUT ANY WARRANTY; without even the implied warranty of\n * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU\n * Lesser General Public License for more details.\n *\n * You should have received a copy of the GNU Lesser General Public\n * License along with FFmpeg; if not, write to the Free Software\n * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA\n */\n\n",
+    "fftools/ffmpeg_demux.c": "/*\n * This file is part of FFmpeg.\n *\n * FFmpeg is free software; you can redistribute it and/or\n * modify it under the terms of the GNU Lesser General Public\n * License as published by the Free Software Foundation; either\n * version 2.1 of the License, or (at your option) any later version.\n *\n * FFmpeg is distributed in the hope that it will be useful,\n * but WITHOUT ANY WARRANTY; without even the implied warranty of\n * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU\n * Lesser General Public License for more details.\n *\n * You should have received a copy of the GNU Lesser General Public\n * License along with FFmpeg; if not, write to the Free Software\n * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA\n */\n\n"
+  }
+}

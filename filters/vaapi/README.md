@@ -196,6 +196,9 @@ Field-rate Bob with FFmpeg 8.0.1 `-stream_loop` is not lossless: hardware-contex
 reconfiguration can discard one buffered picture at each boundary. Continuous
 concat-demuxer input passes a separate bounded control; this does not qualify
 that looping mode. See [the compatibility result in #445](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6257714172).
+The [retained boundary analysis and offline source test](../../tests/fixtures/issue445/ffmpeg-loop/README.md)
+locate the missing output requests after complete DIL returns and distinguish
+EOF draining from graph teardown; the native 296/300 failure remains unresolved.
 
 For supported interlaced input with this VA driver selected, Kodi's
 per-video deinterlace method **Auto** requests CPU Bob; **Off** retains Weave.
