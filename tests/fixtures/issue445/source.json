@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "upstream_url": "https://github.com/xbmc/xbmc/blob/a3a448d26b8d560a65655dab2cd122994dc4e146/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp",
   "upstream_revision": "a3a448d26b8d560a65655dab2cd122994dc4e146",
   "source_path": "xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp",
@@ -8,7 +8,7 @@
   "test_spdx": "GPL-2.0-or-later",
   "copyright": "Copyright (C) 2005-2018 Team Kodi",
   "license_notice": "/*\n *  Copyright (C) 2005-2018 Team Kodi\n *  This file is part of Kodi - https://kodi.tv\n *\n *  SPDX-License-Identifier: LGPL-2.1-or-later\n *  See LICENSES/README.md for more information.\n */",
-  "scope": "Exact OUTPUT StateMachine branch and initial Decode drain condition; no full Kodi source is vendored.",
+  "scope": "Exact OUTPUT/FLUSH StateMachine branches and parent dispatch, COutput Flush/return methods, CDecoder Reset/PICTURE take/initial drain, and complete buffer-statistics class; no full Kodi source is vendored. Actor delivery, surface storage and GPU readiness are scaffold boundaries.",
   "extract": {
     "output": {
       "start": "    case O_TOP_CONFIGURED_OUTPUT:\n",
@@ -19,6 +19,54 @@
       "start": "  bool drain = (m_codecControl & DVD_CODEC_CTRL_DRAIN);",
       "end": "\n  while (true)",
       "sha256": "edba4dd0153a74155afa9704ea6fcb6e31eb82e3dd457ee3ace4116bf1bc9875"
+    },
+    "states": {
+      "start": "enum OUTPUT_STATES\n",
+      "end": "\nvoid COutput::StateMachine(",
+      "source": "cpp",
+      "sha256": "88eae5c7a24489ab5951272dc4d2c578042cd36a213a503893aa072ef41671c7"
+    },
+    "dispatch": {
+      "start": "void COutput::StateMachine(int signal, Protocol *port, Message *msg)\n",
+      "end": "    case O_TOP: // TOP",
+      "source": "cpp",
+      "sha256": "e23d87bf69daaba3ff96e6312e50b3cd13bcdd1e0fc0aa66ad5713c5fe4e6416"
+    },
+    "configured": {
+      "start": "    case O_TOP_CONFIGURED:\n",
+      "end": "\n    case O_TOP_CONFIGURED_IDLE:",
+      "source": "cpp",
+      "sha256": "92730736cfa5c82cd62918b8a22adc3fc1d03f6979a4c15ab052c19916833680"
+    },
+    "flush": {
+      "start": "void COutput::Flush()\n",
+      "end": "\nbool COutput::HasWork()",
+      "source": "cpp",
+      "sha256": "e803a8ae1e20c5097877da4392c6b15bcbc9c0e54de9251abe261be1c382d5e4"
+    },
+    "returns": {
+      "start": "void COutput::ReleaseProcessedPicture(CVaapiProcessedPicture &pic)\n",
+      "end": "\nvoid COutput::EnsureBufferPool()",
+      "source": "cpp",
+      "sha256": "3fcd6b7e261314282e0eaecd5862947fbceac1b84be9a0ab29df135ad9177778"
+    },
+    "reset": {
+      "start": "void CDecoder::Reset()\n",
+      "end": "\nbool CDecoder::CanSkipDeint()",
+      "source": "cpp",
+      "sha256": "171785d7df43d51bee60faee97fd52523ee1901e456ed2fc30ac19fbb751c219"
+    },
+    "picture": {
+      "start": "      if (msg->signal == COutputDataProtocol::PICTURE)\n",
+      "end": "\n      msg->Release();\n    }\n    else if (m_vaapiOutput.m_controlPort",
+      "source": "cpp",
+      "sha256": "a31ac5381efe99c5543232d20b8e2d1e99c4a1aad84ffc317d7e38bf5be2ea99"
+    },
+    "stats": {
+      "start": "class CVaapiBufferStats\n",
+      "end": "\n/**\n *  CVaapiConfig holds",
+      "source": "header",
+      "sha256": "97420dc40a79d1bf63f0f6feac356cfcfd88528863f471ffa4b536a4d2cbcf36"
     }
   },
   "fixtures": {
@@ -29,6 +77,43 @@
     "drain-initial.inc": {
       "sha256": "045e03dcc3cd5cdb6f9945f1841342b3dcdb0aea20c76ca8dc41ca702843301e",
       "extract": "drain"
+    },
+    "output-states.inc": {
+      "extract": "states",
+      "sha256": "fa3c908cd2a128e81e43a852a0a45f866b6898255613d168e9fd607bc4f633b3"
+    },
+    "output-dispatch.inc": {
+      "extract": "dispatch",
+      "sha256": "6d7d18b4d33a4c92da16997690cf188a158ec69a0a67f039c3fc1c0795811ec6"
+    },
+    "output-configured.inc": {
+      "extract": "configured",
+      "sha256": "2a4dd5ccae72a86999a8c9c8b613ad2af4d2441103c113b088cfe74184d5f6cf"
+    },
+    "output-flush.inc": {
+      "extract": "flush",
+      "sha256": "6774970a19f6411ca93e0ae3fce1ade21675975f35bfab28b166317a52324413"
+    },
+    "output-returns.inc": {
+      "extract": "returns",
+      "sha256": "46f68f2cc4f0c40ed93e2a0012e973854119d355079586f586ef9e40ac2b3d42"
+    },
+    "decoder-reset.inc": {
+      "extract": "reset",
+      "sha256": "9f79a4485bd228469a1c32baca9cf934ee9de4927a21bf3a930aaa55dcc4d59a"
+    },
+    "decoder-picture.inc": {
+      "extract": "picture",
+      "sha256": "fc9fdb4a6053c289c68732a4479ba661e3abe5fa31b0940e9ffc555824688a3c"
+    },
+    "buffer-stats.inc": {
+      "extract": "stats",
+      "sha256": "b88a21cac4593e8de968f1e8e4fea5be23f495e60e82b41ca7beaf9329190b5b"
     }
+  },
+  "header": {
+    "upstream_url": "https://github.com/xbmc/xbmc/blob/a3a448d26b8d560a65655dab2cd122994dc4e146/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.h",
+    "source_path": "xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.h",
+    "sha256": "b3d52fa8ad4e312ebf6c715fa8fb69d8b3f2c92d045e30242f95546675a2f9a1"
   }
 }
