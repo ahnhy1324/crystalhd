@@ -33,8 +33,10 @@ the end of a related change set, rather than repeating unrelated experiments.
    Terminal decoder state now retires before RELEASE can admit a replacement;
    [#556](https://github.com/ahnhy1324/crystalhd/pull/556) tests with a mocked
    driver and public open APIs cover failed firmware close,
-   failed recovery, close errors and retained kernel ownership. Same-mode reference counts and
-   same-handle concurrent close/use remain separate questions.
+   failed recovery, close errors and retained kernel ownership. Same-process
+   mode references keep the diagnostic bitmap set until the final local handle
+   closes. Cross-process same-mode accounting and same-handle concurrent
+   close/use remain separate questions.
 2. **Ordinary Kodi EOF, Stop, seek and reopen (#445/#429).** Address reproducible
    user-operation failures. A controlled last-picture handoff now reproduces
    the two-second drain timeout with complete per-picture return observations;
@@ -166,8 +168,10 @@ API behavior was correct. A child fix does not close its broader acceptance issu
   [#551](https://github.com/ahnhy1324/crystalhd/pull/551). These separately scoped
   functional repairs supersede the original logging-only attachment task;
   retain its historical failure evidence. Local atomic mode updates now preserve
-  unrelated bits through open and consuming close. Same-mode reference counts
-  and same-handle close/use lifetime remain separate follow-ups; the
+  unrelated bits through open and consuming close. Same-process mode references
+  now preserve the diagnostic bit until the final local handle closes.
+  Cross-process same-mode accounting and same-handle close/use lifetime remain
+  separate follow-ups; the
   shared-mapping fix alone does not qualify them. CI/provenance
   and admission-timing acceptance remain separately tracked.
 - [ ] [#91: Deferred hardware and application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91)

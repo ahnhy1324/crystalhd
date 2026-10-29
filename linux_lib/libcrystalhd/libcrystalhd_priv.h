@@ -254,6 +254,8 @@ typedef struct _DTS_LIB_CONTEXT{
 	uint32_t				OpMode;			/* Mode of operation playback etc..*/
 	/* Only a successful non-monitor NOTIFY owns shared hardware state. */
 	bool driverSessionOwned;
+	/* Process-local ownership of one successfully published session mode. */
+	uint8_t publishedModeBit;
 	uint32_t				DevId;			/* HW Device ID */
 	uint32_t				hwRevId;		/* HW revision ID */
 	uint32_t				VendorId;		/* HW vendor ID - should always be Broadcom 0x14e4 */
@@ -550,6 +552,8 @@ uint32_t 		DtsGetOPMode(void);
 void 			DtsSetOPMode(uint32_t value);
 void DtsAddOPMode(uint32_t mask) __attribute__((visibility("hidden")));
 void DtsClearOPMode(uint32_t mask) __attribute__((visibility("hidden")));
+BC_STATUS DtsRetainSessionMode(DTS_LIB_CONTEXT *Ctx, uint32_t mode_bit) __attribute__((visibility("hidden")));
+BC_STATUS DtsReleaseSessionMode(DTS_LIB_CONTEXT *Ctx) __attribute__((visibility("hidden")));
 uint32_t 		DtsGetHwInitSts(void);
 void 			DtsSetHwInitSts(uint32_t value);
 void 			DtsRstStats(void);

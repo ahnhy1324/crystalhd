@@ -1139,7 +1139,7 @@ static void CheckCapabilitiesPreserveOpenMonitor()
 	EndCase("capability inspection preserves and releases every local allocation");
 }
 
-static void CheckTwoMonitorsShareMappingLifetime()
+static void CheckTwoMonitorsShareMappingLifetime(bool reverse_close)
 {
 	BeginCase(47);
 	allow_multiple_context_locks = true;
@@ -1156,24 +1156,55 @@ static void CheckTwoMonitorsShareMappingLifetime()
 	}
 	Check(shared_attach_calls == 1 && shared_detach_calls == 0,
 	      "two successful handles use one process-local attachment");
-	Check(DtsDeviceClose(second) == BC_STS_SUCCESS,
-	      "closing the newer monitor releases only its local lifetime");
+	/* The test mapping is private fixture storage in each process. The child
+	 * checks only its local counts, not cross-process bitmap coordination. */
+	const pid_t child = fork();
+	Check(child >= 0, "two-monitor fixture forks with published local owners");
+	if (child == 0) {
+		alarm(5);
+		if (DtsDeviceClose(first) != BC_STS_ERROR)
+			_exit(94);
+		HANDLE local = nullptr;
+		if (DtsDeviceOpen(&local, DTS_MONITOR_MODE) != BC_STS_SUCCESS || !local)
+			_exit(95);
+		if (DtsDeviceClose(local) != BC_STS_SUCCESS || shared_state.gDilOpMode != 0)
+			_exit(96);
+		_exit(0);
+	}
+	if (child > 0) {
+		int status=0;
+		Check(waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+		      WEXITSTATUS(status) == 0,
+		      "a child starts independent mode counts and rejects inherited owners");
+	}
+
+	HANDLE retiring = reverse_close ? second : first;
+	HANDLE remaining = reverse_close ? first : second;
+	Check(shared_state.gDilOpMode == 0x4,
+	      "two open monitors publish one shared monitor mode bit");
+	Check(DtsDeviceClose(retiring) == BC_STS_SUCCESS,
+	      "closing either monitor releases only its local lifetime");
+	Check(shared_state.gDilOpMode == 0x4,
+	      "the surviving monitor retains its shared mode bit");
 	Check(shared_detach_calls == 0 && bc_dil_glob_ptr == &shared_state,
 	      "the first monitor retains the shared mapping after reverse-order close");
 	uint32_t driver=0, dil=0;
-	Check(DtsGetVersion(first, &driver, &dil) == BC_STS_SUCCESS,
-	      "the first monitor remains usable after the newer monitor closes");
-	Check(DtsDeviceClose(first) == BC_STS_SUCCESS,
+	Check(DtsGetVersion(remaining, &driver, &dil) == BC_STS_SUCCESS,
+	      "the surviving monitor remains usable after either close order");
+	Check(DtsDeviceClose(remaining) == BC_STS_SUCCESS,
 	      "the final monitor closes normally");
+	Check(shared_state.gDilOpMode == 0,
+	      "the final monitor removes its shared mode bit");
 	Check(shared_attach_calls == 1 && shared_detach_calls == 1 &&
 	      close_calls == 2 && bc_dil_glob_ptr == nullptr,
 	      "the final monitor performs the only shared detach");
 	EndCase("two-monitor reverse close releases every local allocation");
 }
 
-static void CheckPartialSecondOpenPreservesMonitor()
+static void CheckPartialSecondOpenPreservesMonitor(unsigned long failure)
 {
 	BeginCase(46);
+	allow_multiple_context_locks = true;
 	HANDLE first = nullptr;
 	Check(DtsDeviceOpen(&first, DTS_MONITOR_MODE) == BC_STS_SUCCESS && first,
 	      "partial-open fixture creates its first monitor");
@@ -1182,23 +1213,34 @@ static void CheckPartialSecondOpenPreservesMonitor()
 		return;
 	}
 
-	open_result = -1;
+	if (failure) {
+		failed_command = failure;
+		fail_with_syscall = true;
+	} else {
+		open_result = -1;
+	}
 	HANDLE second = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
 	Check(DtsDeviceOpen(&second, DTS_MONITOR_MODE) == BC_STS_ERROR && second == nullptr,
 	      "second monitor failure publishes no partial handle");
 	Check(shared_attach_calls == 1 && shared_detach_calls == 0 &&
 	      bc_dil_glob_ptr == &shared_state,
 	      "failed second open releases only its reference to the shared mapping");
+	Check(shared_state.gDilOpMode == 0x4,
+	      "failed second open preserves the first monitor mode bit");
 
 	open_result = 46;
+	failed_command = 0;
+	fail_with_syscall = false;
 	uint32_t driver=0, dil=0;
 	Check(DtsGetVersion(first, &driver, &dil) == BC_STS_SUCCESS,
 	      "first monitor remains usable after second-open cleanup");
 	Check(DtsDeviceClose(first) == BC_STS_SUCCESS,
 	      "first monitor closes after second-open cleanup");
 	Check(shared_attach_calls == 1 && shared_detach_calls == 1 &&
-	      close_calls == 1 && bc_dil_glob_ptr == nullptr,
+	      close_calls == (failure ? 2u : 1u) && bc_dil_glob_ptr == nullptr,
 	      "only the final live handle detaches the process mapping");
+	Check(shared_state.gDilOpMode == 0,
+	      "the last successful monitor retires its mode after failed second-open cleanup");
 	EndCase("failed second open preserves and releases every local allocation");
 }
 
@@ -1215,6 +1257,9 @@ static DTS_LIB_CONTEXT *AllocateTerminalContext(uint32_t mode, pid_t process_id)
 	context->DevId = BC_PCI_DEVID_FLEA;
 	context->OpMode = mode;
 	context->ProcessID = process_id;
+	if (process_id == getpid())
+		Check(DtsRetainSessionMode(context, mode == DTS_PLAYBACK_MODE ? 1 : 4) == BC_STS_SUCCESS,
+		      "terminal fixture publishes its successful session mode");
 	Check(DtsAllocMemPools(context) == BC_STS_SUCCESS,
 	      "terminal fixture allocates its pools");
 	return context;
@@ -2202,8 +2247,11 @@ int main()
 	CheckInheritedMonitorCannotClose();
 	CheckFailedMonitorOpenPreservesDecoder();
 	CheckCapabilitiesPreserveOpenMonitor();
-	CheckTwoMonitorsShareMappingLifetime();
-	CheckPartialSecondOpenPreservesMonitor();
+	CheckTwoMonitorsShareMappingLifetime(false);
+	CheckTwoMonitorsShareMappingLifetime(true);
+	for (unsigned long failure : {0ul, static_cast<unsigned long>(BCM_IOC_GET_VERSION),
+	                             static_cast<unsigned long>(BCM_IOC_NOTIFY_MODE)})
+		CheckPartialSecondOpenPreservesMonitor(failure);
 	CheckTerminalDecoderOwnership();
 	for (bool close_failure : {false, true})
 		for (bool recovery : {false, true})
