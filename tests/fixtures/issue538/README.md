@@ -57,6 +57,27 @@ python3 -B tests/native-picture-fixture.test.py
 python3 -O -B tests/native-picture-fixture.test.py
 ```
 
+The node regression now also executes the extracted production `chd_format`
+and `crystalhd_rx_pause_format` functions together. Its 22 additional scenarios
+cover initial discovery and matching-allocation reuse, same-size BT709→BT601
+and absent/unspecified fallback announcements, changed geometry, boundary
+buffers in slots0/16/31, and invalid geometry, stale epoch, failed stop, DMA
+fault and still-owned retirement. Independent expected tuples are checked at
+SOURCE_CHANGE publication; LAST, payload, event ordering and preservation of
+OUTPUT hints are observed separately. Eight compiled mutations of temporary
+extracted code must each fail a runtime assertion. These include omitted or
+late colour publication, suppressed dynamic events, missing retirement/ownership
+guards/LAST, ignored pause failures and omitted general buffer return.
+
+This is direct format-handler coverage with one modeled active registration
+and modeled VB2/event, capture-retirement and `chd_return_active` edges. The
+latter only verifies that the separately handled boundary is absent before
+general return; this test does not execute its remaining-buffer loop.
+`chd_receive` does not supply the format flag in these tests. They do not
+establish that firmware emits all intra-stream colour-only notifications,
+real DMA/GPU retirement, or new hardware playback acceptance. Production code
+and the earlier runtime receipt are unchanged.
+
 The BT601 source table in `native-color-control601-20261029.json` was frozen
 from an independent software decode before native capture. Source selection
 uses only flat3×3 Y/U/V neighborhoods unchanged in every source frame, with the
