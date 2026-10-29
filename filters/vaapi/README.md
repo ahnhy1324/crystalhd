@@ -258,8 +258,8 @@ and an input gap is not treated as EOS. The earlier private precursor passed a
 bounded stock Kodi LIVE+LL control: all 750 originals and 1,500 Bob outputs
 completed before close-time EOS without decoder restart or application changes.
 That precursor run is not a stock-Kodi qualification of the final commit.
-The separate PTS/cadence and physical A/V limits, prior failures and unrelated
-Kodi environment errors remain recorded in [#445](https://github.com/ahnhy1324/crystalhd/issues/445).
+The separate PTS/cadence and physical A/V limits, prior failures and other
+reported Kodi errors remain recorded in [#445](https://github.com/ahnhy1324/crystalhd/issues/445).
 General FHD/Atom Bob playback is not qualified. **Off** retains Weave; the separate
 [FFmpeg BWDIF path](../../USAGE.md#interlaced-h264-weave-and-ffmpeg-bwdif)
 remains available.
