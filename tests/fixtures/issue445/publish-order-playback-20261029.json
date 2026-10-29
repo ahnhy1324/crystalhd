@@ -1,0 +1,204 @@
+{
+  "schema": 1,
+  "issue": 445,
+  "observation_date": "2026-10-29",
+  "summary": "Matched private Kodi builds observed the same consumer-before-send-return interleaving: baseline timed out at EOF; the accounting-before-publication candidate returned VC_EOF. Three additional candidate plays, including two same-process reopens, also returned EOF.",
+  "disposition": {
+    "matched_pair": "BASELINE_TIMEOUT_AND_CANDIDATE_EOF_OBSERVED",
+    "coverage": "COMPLETE",
+    "candidate_timeout_not_reproduced": true,
+    "historical_failure_cause": "NOT_ESTABLISHED"
+  },
+  "source": {
+    "package": "kodi",
+    "version": "2:21.3+dfsg-1ubuntu1",
+    "installed_package_version_matches": true,
+    "suite": "resolute",
+    "component": "universe",
+    "public_archive_base": "https://archive.ubuntu.com/ubuntu/pool/universe/k/kodi/",
+    "metadata_verification": "apt-get update exit0 with Signed-By and HTTPS peer/host verification enabled",
+    "archive_keyring": "ubuntu-archive-keyring.gpg",
+    "dsc_extraction": "dpkg-source -x exit 0; distribution quilt patches applied",
+    "artifacts": [{"name":"kodi_21.3+dfsg.orig-libdvdnav-embedded.tar.xz","size":98572,"sha256":"b35ef8b3f8ed78227ff98cf90003fc12d5f3452eda74c22405a30be043f53ce2"},{"name":"kodi_21.3+dfsg.orig-libdvdread-embedded.tar.xz","size":87000,"sha256":"cbdaae4af536654a0f3dab452cf66a58b08ceba69c3e26bf70a4d71de6811a8b"},{"name":"kodi_21.3+dfsg.orig-repo-resources-embedded.tar.xz","size":3367832,"sha256":"0c5c59568027ca93ffd70e79cb0637346905a7c3b4b1f5834b418cf493f87f7f"},{"name":"kodi_21.3+dfsg.orig.tar.xz","size":26905568,"sha256":"31028f49b2b1f2bfa509f4afbb97149841977479a06c6647dde967e5ddc22f79"},{"name":"kodi_21.3+dfsg-1ubuntu1.debian.tar.xz","size":2646872,"sha256":"c0f45cc91fcf4facaa7ba328e7ba704247503e990dd6e76f1affe41f638a659d"},{"name":"kodi_21.3+dfsg-1ubuntu1.dsc","size":5973,"sha256":"0045e39fcee4301f2bc1ce4db7b79c4df0df807b641b2cab72c696d1c5dc74de"}],
+    "publication_branch": {
+      "upstream_commit": "a3a448d26b8d560a65655dab2cd122994dc4e146",
+      "publication_branch_identical": true,
+      "publication_branch_sha256": "35373c6ab6fe5ea5a4a9372873de47ea5a6a21b8ddedad6af9ecdfa7853c0fda",
+      "whole_file_identical": false
+    }
+  },
+  "build": {
+    "configuration_same": true,
+    "build_type": "RelWithDebInfo",
+    "compiler_flags": "-O2 -g -DNDEBUG",
+    "platform": "X11/OpenGL",
+    "vaapi": true,
+    "jsonrpc": "raw TCP core",
+    "local_media": "H.264/AAC with VAAPI Auto/Bob",
+    "cmake_cache_sha256": "c69b0c9ee4da645e496b7c9035e21b9deec53e5e608ca415c810eb91b35a874d",
+    "compile_commands_sha256": "5852e00ee26e2911a2732ce0f3f701dde1d9ed07d7e6f0e4c789b92a47b06eca",
+    "vaapi_header_sha256": "b3d52fa8ad4e312ebf6c715fa8fb69d8b3f2c92d045e30242f95546675a2f9a1",
+    "candidate_recompiled_translation_units": ["VAAPI.cpp"],
+    "candidate_relinked": true,
+    "shared_packaging_macro": {
+      "translation_unit": "SystemInfo.cpp",
+      "define": "DEB_VERSION=\"2:21.3+dfsg-1ubuntu1\"",
+      "object_sha256": "1306a59eabdaa458d3d5848764bbdf4094e6a0d7fe043cc4b011ae4de25004ae",
+      "compile_receipt_sha256": "90fdffdf769881d4675d505d3c5d65bb2aba2f809c3d02ec2aaeb43616792228"
+    },
+    "variants": {
+      "baseline": {"runtime_sha256":"d22f5456562cad000ec9d3aebb8ebbf6f66c49462d21094baa841e68d47299a2","build_id":"e81bb9b4f4ccf5a83a2d87110150baf884fe4f9e","runtime_bytes":34001512,"vaapi_cpp_sha256":"cae395a5631fed563f133f5be508e10b2f1c9988ee982ee0658cb1931a7a04a6","vaapi_object_sha256":"1e7dfa961b549e6643726618fefb5a62ecc4cca6e800f7b1c17d74c3bca1f6bf"},
+      "candidate": {"runtime_sha256":"52f8a35d1ec4046105bc1a8b1a74a2a2429ffa2cf6e4f32a062a6719a371d8da","build_id":"29f01443f1607fd360490e6cb17c0b819d7eab57","runtime_bytes":34001512,"vaapi_cpp_sha256":"f7b33e384aa4de57191ee73b61852fbe63f952e4dc0fd6223e2b37ccfdf32ad9","vaapi_object_sha256":"49a4f95080e352dcdc847fb472045ad483ab4acae042a76113e7d2dc9de477b0"}
+    },
+    "applied_patch_sha256": "ba8eabeec5fb97a76cb47b93b66a8ae6fc6f09829b5cdc5743cd7ad26e942201",
+    "repository_patch": {
+      "path": "patches/kodi/0001-vaapi-account-before-publish.patch",
+      "input_source_sha256": "cae395a5631fed563f133f5be508e10b2f1c9988ee982ee0658cb1931a7a04a6",
+      "repository_patch_sha256": "d616a9fd17d5455e9ad19f1636200e3dd703d0f134c7e44809e7193d23cccf32",
+      "repository_patched_source_sha256": "f7b33e384aa4de57191ee73b61852fbe63f952e4dc0fd6223e2b37ccfdf32ad9",
+      "compiled_candidate_source_sha256": "f7b33e384aa4de57191ee73b61852fbe63f952e4dc0fd6223e2b37ccfdf32ad9",
+      "source_bytes_identical": true
+    },
+    "private_feature_differences": ["Wayland/GBM render platforms omitted","Python/addons interpreter disabled","AirTunes/UPnP/SMB/NFS/Bluetooth/CEC/optical discovery disabled","MicroHTTPD/webserver disabled; raw TCP JSONRPC remains core","LCMS2/VDPAU/AV1-specific native adapter disabled","No release/default-promotion qualification"],
+    "system_install": false
+  },
+  "runtime": {
+    "same_inputs_all_cases": true,
+    "fixture": "1080-bff-30s-v2.mkv",
+    "fixture_duration_seconds": 30,
+    "native_decode_parents_per_play": 750,
+    "bob_field_outputs_per_play": 1500,
+    "va_dil_source_commit": "45c3f11c03cde1d953bf41cca3b4337a7943ea0e",
+    "va_dil_build": "-O2 -g; CRYSTALHD_EXPERIMENTAL_SCALED_RX; centered1280/sized16",
+    "rx_pool_count": 16,
+    "inputs": {
+      "dil": {"bytes":2317712,"sha256":"a6f16b561a70e678b676b1c12f38fee5df62cafab2bf1e615c89aa55af393f03"},
+      "fixture": {"bytes":38512377,"sha256":"9c5f05910dc4802fc92004b1b2e3418c7c928cd97be9939b8030a6991d6a130a"},
+      "va_driver": {"bytes":7172568,"sha256":"2bae5f73015421af52273779b1c1588df6f3631715cf6da64bdb5b6f2c35784c"}
+    }
+  },
+  "paired_receiver_priority": {
+    "condition": "Both observed producer and receiver pinned to CPU 0; producer nice 19, receiver nice 0. Readback and actual publication TIDs matched; 116 publications after application in each case.",
+    "counter_order": ["decoded","processed","render"],
+    "time_unit": "monotonic nanoseconds; event ordering compares within each process only",
+    "baseline": {
+      "coverage_status": "COMPLETE",
+      "condition_status": "VALID",
+      "eof_bug_status": "FAIL",
+      "observer_clean": true,
+      "application_exit": 0,
+      "boundary_equal": true,
+      "decode_parents": 750,
+      "bob_field_outputs": 1500,
+      "native_nonzero_outcomes": 0,
+      "event_counts": {"begin":1500,"render_counted":1500,"retired":1500,"send_enter":1500,"sent":1500,"taken":1500,"render_returned":1500,"processed_ref_cleared":1500,"ffmpeg_ref_released":750,"drain_initial":5,"drain_return":5,"drain_timeout":1},
+      "phases": [{"label":"natural-30","decode_parents":750,"publications":1500,"taken":1500,"render_returned":1500,"processed_ref_cleared":1500,"ffmpeg_ref_released":750,"taken_before_retired":13,"eof_render_outstanding":0,"terminal_render_outstanding":0,"final_drain":{"counters":{"decoded":0,"processed":1,"render":0},"id":196083333924181,"initial_t":196083333924181,"result":1}}],
+      "negative_controls": {"status":"PASS","rejected_count":9,"rejected":{"duplicate_one_return":true,"remove_all_returns":true,"remove_one_render_counted":true,"remove_one_return":true,"remove_one_send_enter":true,"retire_wrong_side_of_send":true,"take_before_send_enter":true,"unknown_return_identity":true,"zero_prepublication_render_counted":true}},
+      "scheduling": {"cpu":[0],"producer_nice":19,"consumer_nice":0,"post_schedule_publications":116,"readback_matches_observed_publication_roles":true},
+      "producer_order": "begin/render_counted/send_enter/sent/retired",
+      "last_output_proc_id": 1499,
+      "final_output_and_drain": [{"event":"begin","t_ns":196083333793015},{"event":"render_counted","t_ns":196083333813060,"counters":[0,1,1]},{"event":"send_enter","t_ns":196083333819765},{"event":"taken","t_ns":196083333889888,"counters":[0,1,0]},{"event":"drain_initial","t_ns":196083333924181,"counters":[0,1,0]},{"event":"drain_wait_enter","t_ns":196083333930955,"timeout_ms":2000,"wait_start":196083333930955},{"event":"sent","t_ns":196083333947299},{"event":"retired","t_ns":196083333954562,"counters":[0,0,0]},{"event":"drain_wait_return","t_ns":196083336658538,"result":1,"elapsed_ns":2727583,"wait_start":196083333930955},{"event":"drain_stats","t_ns":196083336673415,"counters":[0,0,0]},{"event":"drain_wait_enter","t_ns":196083336680539,"timeout_ms":2000,"wait_start":196083336680539},{"event":"drain_wait_return","t_ns":196083336759112,"result":1,"elapsed_ns":78573,"wait_start":196083336680539},{"event":"drain_stats","t_ns":196083336767424,"counters":[0,0,0]},{"event":"drain_wait_enter","t_ns":196083336772662,"timeout_ms":2000,"wait_start":196083336772662},{"event":"drain_wait_return","t_ns":196085336929366,"result":0,"elapsed_ns":2000156704,"wait_start":196083336772662},{"event":"drain_timeout","t_ns":196085336972599},{"event":"drain_return","t_ns":196085337183386,"result":1,"elapsed_ns":2003259205}],
+      "last_false_wait_ms": 2000.156704,
+      "timeout_ownership": [{"t":196085336972599,"locked_counters":{"decoded":0,"processed":0,"render":0},"publications":1500,"taken":1500,"not_yet_taken":0,"render_return_outstanding":2,"processed_clear_outstanding":2,"ffmpeg_ref_outstanding":4}],
+      "consumer_took_before_send_returned": true
+    },
+    "candidate": {
+      "coverage_status": "COMPLETE",
+      "condition_status": "VALID",
+      "eof_bug_status": "NOT_REPRODUCED",
+      "observer_clean": true,
+      "application_exit": 0,
+      "boundary_equal": true,
+      "decode_parents": 750,
+      "bob_field_outputs": 1500,
+      "native_nonzero_outcomes": 0,
+      "event_counts": {"begin":1500,"render_counted":1500,"retired":1500,"send_enter":1500,"sent":1500,"taken":1500,"render_returned":1500,"processed_ref_cleared":1500,"ffmpeg_ref_released":750,"drain_initial":5,"drain_return":5,"drain_timeout":0},
+      "phases": [{"label":"natural-30","decode_parents":750,"publications":1500,"taken":1500,"render_returned":1500,"processed_ref_cleared":1500,"ffmpeg_ref_released":750,"taken_before_retired":0,"eof_render_outstanding":0,"terminal_render_outstanding":0,"final_drain":{"counters":{"decoded":0,"processed":0,"render":0},"id":196199819882292,"initial_t":196199819882292,"result":8}}],
+      "negative_controls": {"status":"PASS","rejected_count":10,"rejected":{"duplicate_one_return":true,"remove_all_returns":true,"remove_one_render_counted":true,"remove_one_return":true,"remove_one_send_enter":true,"retire_wrong_side_of_send":true,"take_before_send_enter":true,"unknown_return_identity":true,"zero_prepublication_render_counted":true,"zero_prepublication_retired":true}},
+      "scheduling": {"cpu":[0],"producer_nice":19,"consumer_nice":0,"post_schedule_publications":116,"readback_matches_observed_publication_roles":true},
+      "producer_order": "begin/render_counted/retired/send_enter/sent",
+      "last_output_proc_id": 1499,
+      "final_output_and_drain": [{"event":"begin","t_ns":196199819753012},{"event":"render_counted","t_ns":196199819773267,"counters":[0,1,1]},{"event":"retired","t_ns":196199819781508,"counters":[0,0,1]},{"event":"send_enter","t_ns":196199819789540},{"event":"taken","t_ns":196199819847859,"counters":[0,0,0]},{"event":"drain_initial","t_ns":196199819882292,"counters":[0,0,0]},{"event":"drain_return","t_ns":196199819889206,"result":8,"elapsed_ns":6914},{"event":"sent","t_ns":196199820223685}],
+      "consumer_took_before_send_returned": true
+    },
+    "interpretation": "In both cases take and final drain started before send returned. Baseline entered drain with 0/1/0 and later timed out despite observed zero counters. Candidate retired to 0/0/1 before send, then take left 0/0/0 and drain returned VC_EOF before send returned."
+  },
+  "candidate_normal_eof_and_reopen": {
+    "coverage_status": "COMPLETE",
+    "condition_status": "VALID",
+    "eof_bug_status": "NOT_REPRODUCED",
+    "observer_clean": true,
+    "application_exit": 0,
+    "boundary_equal": true,
+    "decode_parents": 2250,
+    "bob_field_outputs": 4500,
+    "native_nonzero_outcomes": 0,
+    "event_counts": {
+      "begin": 4500,
+      "render_counted": 4500,
+      "retired": 4500,
+      "send_enter": 4500,
+      "sent": 4500,
+      "taken": 4500,
+      "render_returned": 4500,
+      "processed_ref_cleared": 4500,
+      "ffmpeg_ref_released": 2250,
+      "drain_initial": 16,
+      "drain_return": 16,
+      "drain_timeout": 0
+    },
+    "phases": [{"label":"natural-30","decode_parents":750,"publications":1500,"taken":1500,"render_returned":1500,"processed_ref_cleared":1500,"ffmpeg_ref_released":750,"taken_before_retired":0,"eof_render_outstanding":0,"terminal_render_outstanding":0,"final_drain":{"counters":{"decoded":0,"processed":0,"render":0},"id":196401616332871,"initial_t":196401616332871,"result":8}},{"label":"reopen-01","decode_parents":750,"publications":1500,"taken":1500,"render_returned":1500,"processed_ref_cleared":1500,"ffmpeg_ref_released":750,"taken_before_retired":0,"eof_render_outstanding":0,"terminal_render_outstanding":0,"final_drain":{"counters":{"decoded":0,"processed":0,"render":0},"id":196434695142750,"initial_t":196434695142750,"result":8}},{"label":"reopen-02","decode_parents":750,"publications":1500,"taken":1500,"render_returned":1500,"processed_ref_cleared":1500,"ffmpeg_ref_released":750,"taken_before_retired":0,"eof_render_outstanding":0,"terminal_render_outstanding":0,"final_drain":{"counters":{"decoded":0,"processed":0,"render":0},"id":196467625641506,"initial_t":196467625641506,"result":8}}],
+    "negative_controls": {
+      "status": "PASS",
+      "rejected_count": 10,
+      "rejected": {"duplicate_one_return":true,"remove_all_returns":true,"remove_one_render_counted":true,"remove_one_return":true,"remove_one_send_enter":true,"retire_wrong_side_of_send":true,"take_before_send_enter":true,"unknown_return_identity":true,"zero_prepublication_render_counted":true,"zero_prepublication_retired":true}
+    },
+    "schedule": "normal",
+    "same_process": true,
+    "reopens": 2,
+    "natural_end_each_play": true
+  },
+  "candidate_observed_total": {
+    "plays": 4,
+    "same_process_reopens": 2,
+    "decode_parents": 3000,
+    "bob_field_outputs": 6000,
+    "ffmpeg_ref_released": 3000,
+    "drain_timeouts": 0
+  },
+  "raw_integrity": {
+    "method": "Before and after strict analysis and in-memory negative controls; both stored hash maps compare equal. Each identity below represents its equal before/after SHA256.",
+    "paired": {
+      "unchanged": true,
+      "files_checked": 12,
+      "before_and_after_equal": true,
+      "files": {"baseline-receiver-1x30/drain-publication-return.log":{"sha256":"f5c3d627363dfd9a5f219bf6d8acbc44f8b61f0ae2bf7d67ba7da98e08f43dab","bytes":2615056},"baseline-receiver-1x30/kodi-stdout.log":{"sha256":"7e80e2e64f4a54cbfdea5f310360c420eb615b30de42f8100d6ee63f9789db82","bytes":11781633},"baseline-receiver-1x30/result.json":{"sha256":"d27b670960d99127ca278908a2a1ad5e3c135eb0f3a9ceb9aeaeca2aa94a0a6b","bytes":103983},"baseline-receiver-1x30/observer.json":{"sha256":"7e71a6d601e1473650ace2eb5e1bd2fae64ec4bea9624f84164f1b4474993bd7","bytes":468},"baseline-receiver-1x30/running-abi.json":{"sha256":"e99a30b5ba5a203244e9e7e38855df488f4e240a888fcaed8384986ad72f8de4","bytes":27350},"baseline-receiver-1x30/temp/kodi.log":{"sha256":"05df281c7c0173832501bcb8fcf7a3d32606cbc0adacd54b412362fbd671a17c","bytes":44146},"candidate-receiver-1x30/drain-publication-return.log":{"sha256":"c5255e853dd051d8025aba3c7380ef34c1b3216463f8902f80f039a063a7da11","bytes":2614085},"candidate-receiver-1x30/kodi-stdout.log":{"sha256":"39f6492d717ca77da9ab788e8511c2800bc558795ea4213a21ee2d9cd5188bc9","bytes":11786468},"candidate-receiver-1x30/result.json":{"sha256":"22da3dcbeb3680f79ef4072b1f120d735f4b2f17b98448537ede2871e2fffe57","bytes":97767},"candidate-receiver-1x30/observer.json":{"sha256":"598c606609a58c616298f09934ccbcef0349bbb671af5ac81cab7eaa9827de5b","bytes":469},"candidate-receiver-1x30/running-abi.json":{"sha256":"7f9170d2b7321347adac561dc0a542f2ceecee0c716074b69971a79c43e44c0a","bytes":27317},"candidate-receiver-1x30/temp/kodi.log":{"sha256":"07e8d1622e10ed7cc5f2275b132664dd16cf43c492e861f694f86395a5229712","bytes":44461}}
+    },
+    "normal": {
+      "unchanged": true,
+      "files_checked": 6,
+      "before_and_after_equal": true,
+      "files": {"candidate-normal-3x30/drain-publication-return.log":{"sha256":"1ddbc581e73e849d93d2d4cde36ba382a62228e0dc57c8e53b9a2ffbc9864539","bytes":7835572},"candidate-normal-3x30/kodi-stdout.log":{"sha256":"4ccac4871f7495ad0b3d2569188b2da6116c5619d35f69bafa065d6f631a966f","bytes":35350178},"candidate-normal-3x30/result.json":{"sha256":"49cbec6cca3ddf00a2609da7c8518862fbcf2a29d5d1cbf70a39aec472e0300a","bytes":275333},"candidate-normal-3x30/observer.json":{"sha256":"edb6971f966955b77ff06b65a5b2ea0bb9070871b1fa46c545aa3f2e49e05a11","bytes":467},"candidate-normal-3x30/running-abi.json":{"sha256":"d3b9efd917af0b73fab407610b4a7071c2f1648ca39b66df18645b325203db4a","bytes":27317},"candidate-normal-3x30/temp/kodi.log":{"sha256":"8af0c5100efb1288209f7e3e2c2011b31f8e3f9123644d3c10e22ba0b767f3a1","bytes":51652}}
+    }
+  },
+  "evidence_tools": {
+    "controller_sha256": "5c730011a1fb304cee1f32e8e897ec73b780b30f3d70e4ee8a5324b908a04edd",
+    "analyzer_sha256": "d557189594e7a328c8cd2e6b83b37d789514e93d890d33e8204ef30028d27b88",
+    "probe_runtime_sha256": "8f38321d3088786778943df3290f45da41c31feb4d863c58dc25ee6a909b4afc",
+    "bind_profile_sha256": "47bf9d3c6ad4808dfc12b723fd02fbbdbbb9145e16afe33f59e25df504bafed6",
+    "inspect_profile_sha256": "98b82381d45d9f865c971ad59fa4c8ceb84a8428e16322dc73ae2b506d026a33",
+    "profiles": {
+      "baseline": {"sha256":"86b024925ddc84e905929e4018b377ad30c9caec8ff63eb2bcd9b752d8389738","relative_profile_sha256":"0875313c259ed4efc0ed87afa4f97085a035c1c5a0c0e569f070405c9ca959a9","offline_guard_sha256":"8d83741287a074881c4b550e707243fb56cdefb382c45ba5b4d73bfa5c2e2333","probe_program_sha256":"93ab426e436580c56bea2da27907441f08587abf93b2d8da52bad8fdddbd6c03","observer_template_sha256":"1d1472e2358be5ee735fa62461c38cef70ca6c88800be6e44399f9846965747c"},
+      "candidate": {"sha256":"b850c253e2b21cec86c15d5f3d191eac560786745ad8a17fc0df06f95a25e922","relative_profile_sha256":"cd6b04dad158db4fa12f5caf439d5fc14a505253162ef866e2673555ada6dac1","offline_guard_sha256":"a7ba932e42f85a1ecd3f714de7783ed0a9a53786d49e308c3c9b7edaa2d2d826","probe_program_sha256":"d0c9714f388ff0366e245e668536f50daa402cdfdcd03e2a523ba1851189cb5a","observer_template_sha256":"5623b55ccff6c9fdbfd76283a530e803cb3847a047dcffa3c9cc28f2beec19ee"}
+    },
+    "runtime_guard": "Both actual ELF identities and 31 instruction-byte guards validated; 12 inspected functions matched object/runtime outside relocations.",
+    "negative_control_method": "Only in-memory row copies mutated; original trace files unchanged."
+  },
+  "limits": ["This is a bounded comparison of two private feature configurations, not full installed-package or release/default-promotion qualification.","COMPLETE software lifecycle coverage is separate from EOF behavior; baseline remains eof_bug_status FAIL despite complete terminal returns.","Render return, processed-reference clear and FFmpeg-reference release establish observed software ownership only; no GPU completion, pixel correctness or physical A/V claim.","The final timeout still had two render callbacks, two processed clears and four FFmpeg releases outstanding; these all completed by terminal observation. EOF and terminal ownership are separate.","STATS messages have no unique message ID; no unsupported one-to-one send-to-drain causal pairing is claimed.","This result supports the accounting/publication ordering fix for the observed interleaving; other historical errors and issue #538 remain unassigned.","Four candidate plays are observations, not performance, long-run stability or universal EOF acceptance."],
+  "cleanup": {
+    "owned_kodi_processes_remaining": 0,
+    "device_owned": false,
+    "driver_module_refcount": 0,
+    "reported_by": "root controller final cleanup verification"
+  }
+}

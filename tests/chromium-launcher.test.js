@@ -43,6 +43,158 @@ if (process.argv[2] === '--version') {
   }
 }
 
+const python = process.env.PYTHON3 || 'python3';
+const gioAvailable = spawnSync(python, ['-B', '-c', 'import gi; from gi.repository import Gio'],
+  {encoding: 'utf8'}).status === 0;
+for (const name of ['ordinary', '공백 한글', 'percent%f%U%%', 'normal=1', 'percent%f=1']) {
+  test(`browser desktop uses installed launcher and URI argv: ${name}`, {skip: !gioAvailable}, () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'crystalhd-browser-menu-'));
+    const root = path.resolve(__dirname, '..');
+    try {
+      const bindir = path.join(directory, name, 'bin');
+      const datadir = path.join(directory, 'separate browser data', 'share');
+      const previousUmask = process.umask(0o077);
+      let installed;
+      try {
+        installed = spawnSync('make', ['install-browser', 'DESTDIR=',
+          `PREFIX=${path.join(directory, name)}`, `BINDIR=${bindir}`, `DATADIR=${datadir}`],
+        {cwd: root, encoding: 'utf8'});
+      } finally {
+        process.umask(previousUmask);
+      }
+      assert.equal(installed.status, 0, installed.stdout + installed.stderr);
+      assert.equal(fs.statSync(path.join(datadir, 'applications')).mode & 0o777, 0o755);
+      const record = path.join(directory, 'argv.json');
+      const browser = path.join(directory, 'fake-browser');
+      fs.writeFileSync(browser, `#!${process.execPath}
+const fs = require('node:fs');
+if (process.argv[2] === '--version') console.log('Chromium 999.0');
+else {
+  const args = process.argv.slice(2);
+  const extension = args.find(arg => arg.startsWith('--load-extension=')).slice(17);
+  fs.writeFileSync(${JSON.stringify(record + '.tmp')}, JSON.stringify({args,
+    extension: fs.realpathSync(extension)}));
+  fs.renameSync(${JSON.stringify(record + '.tmp')}, ${JSON.stringify(record)});
+}
+`, {mode: 0o700});
+      const oldbin = path.join(directory, 'old-bin');
+      fs.mkdirSync(oldbin);
+      fs.writeFileSync(path.join(oldbin, 'crystalhd-chromium'), `#!${process.execPath}
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(record + '.tmp')}, JSON.stringify({decoy: true}));
+fs.renameSync(${JSON.stringify(record + '.tmp')}, ${JSON.stringify(record)});
+`, {mode: 0o700});
+      const env = {...process.env};
+      for (const key of Object.keys(env))
+        if (key.startsWith('CRYSTALHD_') || key.startsWith('LIBVA_')) delete env[key];
+      Object.assign(env, {PATH: oldbin + path.delimiter + process.env.PATH,
+        CRYSTALHD_CHROMIUM: browser, CRYSTALHD_CHROMIUM_CONFIG_DISABLE: '1'});
+      const uris = ['https://example.invalid/watch?v=one%20two&literal=%2526',
+        'https://example.invalid/second?query=a%26b'];
+      const probe = `import json,pathlib,sys,time,gi
+try:
+ gi.require_version('GioUnix','2.0');from gi.repository import GioUnix;D=GioUnix.DesktopAppInfo
+except (ValueError,ImportError):
+ from gi.repository import Gio;D=Gio.DesktopAppInfo
+desktop,expected,record,*uris=sys.argv[1:]
+app=D.new_from_filename(desktop)
+app.launch_uris(uris,None)
+end=time.monotonic()+5
+while not pathlib.Path(record).exists() and time.monotonic()<end:time.sleep(.01)
+observed=json.loads(pathlib.Path(record).read_text())
+assert not observed.get('decoy'),'PATH decoy was launched'
+assert D.get_string(app,'TryExec')==expected,D.get_string(app,'TryExec')
+`;
+      const run = spawnSync(python, ['-B', '-c', probe,
+        path.join(datadir, 'applications/crystalhd-chromium.desktop'),
+        path.join(bindir, 'crystalhd-chromium'), record, ...uris], {env, encoding: 'utf8', timeout: 10000});
+      assert.equal(run.status, 0, run.stderr);
+      const invocation = JSON.parse(fs.readFileSync(record, 'utf8'));
+      assert.deepEqual(invocation.args.slice(-uris.length), uris);
+      assert.equal(invocation.extension, fs.realpathSync(path.join(datadir, 'crystalhd/h264-only')));
+      assert.ok(invocation.args.includes('--disable-accelerated-video-decode'));
+      assert.ok(!invocation.args.includes('--disable-gpu-sandbox'));
+    } finally {
+      fs.rmSync(directory, {recursive: true, force: true});
+    }
+  });
+}
+
+for (const layout of [
+  {name: 'split directories', bindir: '/opt/crystal/bin', datadir: '/opt/crystal-data/share'},
+  {name: 'spaces and Unicode', bindir: '/opt/설정 browser/bin', datadir: '/opt/CrystalHD data/공유'},
+  {name: 'default directories', bindir: '/usr/bin', datadir: '/usr/share'},
+]) {
+  test(`installed browser launcher uses selected data: ${layout.name}`, () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'crystalhd-browser-install-'));
+    const root = path.resolve(__dirname, '..');
+    try {
+      let stage = path.join(directory, 'stage');
+      const make = (target) => spawnSync('make', [target,
+        `DESTDIR=${stage}`, `BINDIR=${layout.bindir}`, `DATADIR=${layout.datadir}`],
+      {cwd: root, encoding: 'utf8'});
+      const installed = make('install-browser');
+      assert.equal(installed.status, 0, installed.stdout + installed.stderr);
+      const launcherRelative = path.join(layout.bindir.slice(1), 'crystalhd-chromium');
+      const contents = fs.readFileSync(path.join(stage, launcherRelative), 'utf8');
+      assert.ok(!contents.includes(stage), 'DESTDIR must not become a runtime location');
+      const desktop = fs.readFileSync(path.join(stage, layout.datadir.slice(1),
+        'applications/crystalhd-chromium.desktop'), 'utf8');
+      assert.ok(!desktop.includes(stage), 'desktop entry must not contain DESTDIR');
+      const relocated = path.join(directory, 'relocated stage');
+      fs.renameSync(stage, relocated);
+      stage = relocated;
+      // A rendered installation must not mistake an adjacent old checkout
+      // for its explicitly selected data directory.
+      const stale = path.join(stage, path.dirname(layout.bindir.slice(1)), 'browser/h264-only');
+      fs.mkdirSync(stale, {recursive: true});
+      fs.writeFileSync(path.join(stale, 'manifest.json'), JSON.stringify({name: 'stale checkout'}));
+      const browser = path.join(directory, 'fake-browser');
+      fs.writeFileSync(browser, `#!${process.execPath}
+const fs = require('node:fs');
+if (process.argv[2] === '--version') console.log('Chromium 999.0');
+else {
+  const args = process.argv.slice(2);
+  const extension = args.find(arg => arg.startsWith('--load-extension=')).slice(17);
+  console.log(JSON.stringify({args, extension: fs.realpathSync(extension),
+    manifest: JSON.parse(fs.readFileSync(extension + '/manifest.json', 'utf8'))}));
+}
+`, {mode: 0o700});
+      const env = {...process.env};
+      for (const key of Object.keys(env))
+        if (key.startsWith('CRYSTALHD_') || key.startsWith('LIBVA_')) delete env[key];
+      Object.assign(env, {CRYSTALHD_CHROMIUM: browser, CRYSTALHD_CHROMIUM_CONFIG_DISABLE: '1'});
+      const uri = 'https://example.invalid/video?value=one two&literal=%26';
+      const result = spawnSync(path.join(stage, launcherRelative), [uri], {env, encoding: 'utf8'});
+      assert.equal(result.status, 0, result.stderr);
+      const invocation = JSON.parse(result.stdout);
+      const extension = path.join(stage, layout.datadir.slice(1), 'crystalhd/h264-only');
+      assert.equal(invocation.extension, fs.realpathSync(extension));
+      assert.deepEqual(invocation.manifest,
+        JSON.parse(fs.readFileSync(path.join(root, 'browser/h264-only/manifest.json'), 'utf8')));
+      assert.equal(fs.readFileSync(path.join(extension, 'prefer-h264.js'), 'utf8'),
+        fs.readFileSync(path.join(root, 'browser/h264-only/prefer-h264.js'), 'utf8'));
+      assert.equal(invocation.args.at(-1), uri);
+      assert.ok(invocation.args.includes('--disable-accelerated-video-decode'));
+      assert.ok(!invocation.args.includes('--disable-gpu-sandbox'));
+      const sentinel = path.join(stage, layout.datadir.slice(1), 'crystalhd/other-user-file');
+      fs.writeFileSync(sentinel, 'retained');
+      for (let attempt = 0; attempt < 2; ++attempt) {
+        const removed = make('uninstall-browser');
+        assert.equal(removed.status, 0, removed.stdout + removed.stderr);
+      }
+      assert.ok(!fs.existsSync(path.join(stage, launcherRelative)));
+      assert.ok(!fs.existsSync(path.join(extension, 'manifest.json')));
+      assert.ok(!fs.existsSync(path.join(extension, 'prefer-h264.js')));
+      assert.ok(!fs.existsSync(path.join(stage, layout.datadir.slice(1),
+        'applications/crystalhd-chromium.desktop')));
+      assert.equal(fs.readFileSync(sentinel, 'utf8'), 'retained');
+    } finally {
+      fs.rmSync(directory, {recursive: true, force: true});
+    }
+  });
+}
+
 test('password store preserves the browser default unless explicitly selected', () => {
   for (const overrides of [{}, {CRYSTALHD_CHROMIUM_PASSWORD_STORE: ''}]) {
     const result = launch(overrides);

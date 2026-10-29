@@ -10,7 +10,7 @@ PYTHON3 ?= python3
 CONFIG_PRESET_MANIFEST := share/crystalhd/config-presets-v1.json
 
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
-USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
+USER_ARGS := PREFIX="$(PREFIX)" DESTDIR="$(DESTDIR)"
 
 .PHONY: settings-ui-check install-settings uninstall-settings install-provenance uninstall-provenance all driver library library-check raw-frame-check library-drain-test gstreamer vaapi vaapi-cpu-check examples browser configuration-check uapi-check dma-check l0s-check command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check tx-release-check h264-stream-check mpeg2-inspect-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check install-config uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check uninstall-config clean
 
@@ -154,6 +154,10 @@ settings-ui-check:
 runtime-install-check:
 	$(PYTHON3) -B tests/runtime-install.test.py
 
+.PHONY: kodi-compat-check
+kodi-compat-check:
+	CXX="$(CXX)" $(PYTHON3) -B tests/kodi-vaapi-publish-order.py
+
 uapi-check:
 	sh ./tests/uapi-abi.sh
 
@@ -278,7 +282,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv tests/maintenance-oracl
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
 	sh tests/phase1-release-gate.sh manifest-check tests/maintenance-oracle.tsv
 
-check: runtime-install-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
+check: runtime-install-check kodi-compat-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check
@@ -370,8 +374,8 @@ install-settings: install-config
 		$(PYTHON3) -c \
 			'import json,sys; p=sys.argv[1]; s=open(p,encoding="utf-8").read(); token="\"@SETTINGS_DATA_RELATIVE@\""; s.count(token)==1 or sys.exit("unexpected settings data token count"); open(p,"w",encoding="utf-8",newline="\n").write(s.replace(token,json.dumps(sys.argv[2],ensure_ascii=False)))' \
 			"$(DESTDIR)$(BINDIR)/crystalhd-settings" "$$data_relative"; \
-		install -D -m 0644 share/applications/crystalhd-settings.desktop \
-			"$(DESTDIR)$(DATADIR)/applications/crystalhd-settings.desktop"; \
+		$(PYTHON3) -B scripts/render-settings-desktop.py --bindir "$(BINDIR)" \
+			--output "$(DESTDIR)$(DATADIR)/applications/crystalhd-settings.desktop"; \
 		for size in scalable symbolic 16x16 22x22 24x24 32x32 64x64 128x128; do \
 			for icon in share/icons/hicolor/$$size/apps/crystalhd-settings*; do \
 				install -D -m 0644 "$$icon" \

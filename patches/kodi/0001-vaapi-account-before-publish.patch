@@ -1,0 +1,31 @@
+Subject: [PATCH] VAAPI: retire processed accounting before publishing PICTURE
+
+The decoder may consume PICTURE and start its next drain before the output
+thread returns from SendInMessage. Transfer the processed count first while
+the render count still covers the picture, including the publication boundary.
+
+Upstream-Source: https://github.com/xbmc/xbmc/blob/a3a448d26b8d560a65655dab2cd122994dc4e146/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp
+Base-Revision: a3a448d26b8d560a65655dab2cd122994dc4e146
+Source-SHA256: 6239d286046bbc0b8c724f78cce5409278cbb56c0a4d8ee306f6738f3353de38
+Copyright: Copyright (C) 2005-2018 Team Kodi
+SPDX-License-Identifier: LGPL-2.1-or-later
+
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp
+@@ -1808,12 +1808,13 @@
+             procPic = m_bufferPool->processedPics.front();
+             m_bufferPool->processedPics.pop_front();
+             outPic = ProcessPicture(procPic);
++            // Transfer accounting before publication: the decoder may consume
++            // PICTURE and start its next drain before SendInMessage returns.
+             if (outPic)
+-            {
+               m_config.stats->IncRender();
++            m_config.stats->DecProcessed();
++            if (outPic)
+               m_dataPort.SendInMessage(COutputDataProtocol::PICTURE, &outPic, sizeof(outPic));
+-            }
+-            m_config.stats->DecProcessed();
+           }
+           m_state = O_TOP_CONFIGURED_IDLE;
+           m_extTimeout = 0ms;

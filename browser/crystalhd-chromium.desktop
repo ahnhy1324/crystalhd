@@ -6,6 +6,7 @@ Name=Google Chrome with CrystalHD
 GenericName=Web Browser
 Comment=H.264 playback with optional experimental CrystalHD acceleration
 Exec=crystalhd-chromium %U
+TryExec=crystalhd-chromium
 Icon=google-chrome
 Terminal=false
 Categories=Network;WebBrowser;

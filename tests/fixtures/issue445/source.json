@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "upstream_url": "https://github.com/xbmc/xbmc/blob/a3a448d26b8d560a65655dab2cd122994dc4e146/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp",
+  "upstream_revision": "a3a448d26b8d560a65655dab2cd122994dc4e146",
+  "source_path": "xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp",
+  "source_sha256": "6239d286046bbc0b8c724f78cce5409278cbb56c0a4d8ee306f6738f3353de38",
+  "source_spdx": "LGPL-2.1-or-later",
+  "test_spdx": "GPL-2.0-or-later",
+  "copyright": "Copyright (C) 2005-2018 Team Kodi",
+  "license_notice": "/*\n *  Copyright (C) 2005-2018 Team Kodi\n *  This file is part of Kodi - https://kodi.tv\n *\n *  SPDX-License-Identifier: LGPL-2.1-or-later\n *  See LICENSES/README.md for more information.\n */",
+  "scope": "Exact OUTPUT StateMachine branch and initial Decode drain condition; no full Kodi source is vendored.",
+  "extract": {
+    "output": {
+      "start": "    case O_TOP_CONFIGURED_OUTPUT:\n",
+      "end": "\n    default: // we are in no state, should not happen",
+      "sha256": "88f584f88e96ceec2f149c319112857662e60345ebbcd8020cfc4c6c654a5726"
+    },
+    "drain": {
+      "start": "  bool drain = (m_codecControl & DVD_CODEC_CTRL_DRAIN);",
+      "end": "\n  while (true)",
+      "sha256": "edba4dd0153a74155afa9704ea6fcb6e31eb82e3dd457ee3ace4116bf1bc9875"
+    }
+  },
+  "fixtures": {
+    "output-original.inc": {
+      "sha256": "3a9fa5cf4834f247d284a48ce8289f5c65c56117812616ac5afdda5efd0e33c8",
+      "extract": "output"
+    },
+    "drain-initial.inc": {
+      "sha256": "045e03dcc3cd5cdb6f9945f1841342b3dcdb0aea20c76ca8dc41ca702843301e",
+      "extract": "drain"
+    }
+  }
+}
