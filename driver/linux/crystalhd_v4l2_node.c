@@ -168,14 +168,56 @@ static void chd_normalize_colors(struct v4l2_pix_format *p)
 
 static void chd_source_colors(struct crystalhd_v4l2_file *f)
 {
-	/* PIB colour_primaries alone does not specify matrix/transfer/range.
-	 * Keep explicit client colorimetry; only the unspecified SD/HD default
-	 * follows newly discovered dimensions. No color conversion is advertised.
+	/* Before a qualified source description, preserve the normalized hint.
+	 * This is also the fallback for firmware's absent/unspecified colour word.
 	 */
 	if (f->color_default)
 		f->output.colorspace = f->output.width <= 720 && f->output.height <= 576 ?
 			V4L2_COLORSPACE_SMPTE170M : V4L2_COLORSPACE_REC709;
 	chd_copy_colors(&f->capture, &f->output);
+}
+
+static void chd_flea_source_colors(struct crystalhd_v4l2_file *f, u32 word)
+{
+	u32 colorspace, xfer, matrix;
+
+	chd_source_colors(f);
+	/* The stock BCM70015 H.264 publisher copies the complete packed word,
+	 * despite the compact PIB field's historical colour_primaries name:
+	 * matrix[31:24], primaries[23:16], transfer[15:8], zero[7:0].
+	 * See tests/fixtures/issue538/flea-color-word-20261029.json. Accept only
+	 * a complete, representable tuple; zero/unspecified/reserved components
+	 * cannot establish source colorimetry. The word does NOT carry range.
+	 */
+	if (word & 0xff)
+		return;
+	switch ((word >> 16) & 0xff) {
+	case 1: colorspace = V4L2_COLORSPACE_REC709; break;
+	case 5: colorspace = V4L2_COLORSPACE_470_SYSTEM_BG; break;
+	case 6: colorspace = V4L2_COLORSPACE_SMPTE170M; break;
+	case 7: colorspace = V4L2_COLORSPACE_SMPTE240M; break;
+	default: return;
+	}
+	switch ((word >> 8) & 0xff) {
+	case 1:
+	case 6: xfer = V4L2_XFER_FUNC_709; break;
+	case 7: xfer = V4L2_XFER_FUNC_SMPTE240M; break;
+	default: return;
+	}
+	switch (word >> 24) {
+	case 1: matrix = V4L2_YCBCR_ENC_709; break;
+	case 5:
+	case 6: matrix = V4L2_YCBCR_ENC_601; break;
+	case 7: matrix = V4L2_YCBCR_ENC_SMPTE240M; break;
+	default: return;
+	}
+	/* CAPTURE describes the parsed source, not a requested conversion.
+	 * Leave OUTPUT and its compatibility range hint intact. No range claim
+	 * can be recovered from the firmware's discarded video_full_range_flag.
+	 */
+	f->capture.colorspace = colorspace;
+	f->capture.xfer_func = xfer;
+	f->capture.ycbcr_enc = matrix;
 }
 
 static void chd_discovery_cpu(struct crystalhd_adp *adp,
@@ -481,7 +523,7 @@ static int chd_format(struct crystalhd_v4l2_file *f,
 	f->capture.sizeimage = size;
 	f->output.width = width;
 	f->output.height = height;
-	chd_source_colors(f);
+	chd_flea_source_colors(f, result->pib.ppb.colour_primaries);
 	f->format_known = true;
 	f->format_pending = true;
 	event.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION;
@@ -1763,7 +1805,8 @@ int crystalhd_v4l2_node_register(struct crystalhd_v4l2 *parent,
 	node->video.release = chd_video_release;
 	node->video.lock = &node->ioctl_lock;
 	node->video.vfl_dir = VFL_DIR_M2M;
-	node->video.device_caps = V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING;
+	node->video.device_caps = V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING |
+		V4L2_CAP_EXT_PIX_FORMAT;
 	strscpy(node->video.name, "crystalhd-decoder", sizeof(node->video.name));
 	video_set_drvdata(&node->video, node);
 	crystalhd_v4l2_parent_get(parent);

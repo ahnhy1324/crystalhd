@@ -55,12 +55,19 @@ enum { CHD_V4L2_OFF, CHD_V4L2_RUNNING, CHD_V4L2_DRAINING, CHD_V4L2_DRAINED, CHD_
 #define V4L2_PIX_FMT_YUYV 2
 #define V4L2_COLORSPACE_REC709 3
 #define V4L2_COLORSPACE_SMPTE170M 1
+#define V4L2_COLORSPACE_SMPTE240M 2
 #define V4L2_COLORSPACE_BT878 4
+#define V4L2_COLORSPACE_470_SYSTEM_BG 6
 #define V4L2_PIX_FMT_PRIV_MAGIC 0xfeedcafeU
 #define U8_MAX 255U
 #define V4L2_YCBCR_ENC_DEFAULT 0
 #define V4L2_QUANTIZATION_DEFAULT 0
 #define V4L2_XFER_FUNC_DEFAULT 0
+#define V4L2_XFER_FUNC_709 1
+#define V4L2_XFER_FUNC_SMPTE240M 4
+#define V4L2_YCBCR_ENC_601 1
+#define V4L2_YCBCR_ENC_709 2
+#define V4L2_YCBCR_ENC_SMPTE240M 8
 static bool v4l2_is_colorspace_valid(u32 v) { return v > 0 && v <= 12; }
 static bool v4l2_is_xfer_func_valid(u32 v) { return v > 0 && v <= 7; }
 static bool v4l2_is_ycbcr_enc_valid(uint8_t v) { return v > 0 && v <= 8; }
@@ -549,6 +556,7 @@ static void kfree(void *p)
 #define VFL_TYPE_VIDEO 3U
 #define V4L2_CAP_VIDEO_M2M 0x10U
 #define V4L2_CAP_STREAMING 0x20U
+#define V4L2_CAP_EXT_PIX_FORMAT 0x40U
 #define WQ_MEM_RECLAIM 1U
 #define ERR_PTR(e) ((void *)(intptr_t)(e))
 #define PTR_ERR(p) ((int)(intptr_t)(p))
@@ -1471,6 +1479,107 @@ static void colorimetry_cases(void)
           !fmt.fmt.pix.ycbcr_enc && !fmt.fmt.pix.quantization && fixture.color_default);
 }
 
+static void source_colorimetry_cases(void)
+{
+    struct v4l2_format fmt = { .type = V4L2_BUF_TYPE_VIDEO_OUTPUT };
+    struct v4l2_pix_format hint, source;
+    static const u32 invalid[] = { 0, 0x02020200, 0x01010101, 0x01010200,
+        0x01020100, 0x02010100, 0xff010100, 0x01ff0100, 0x0101ff00 };
+    reset(false);
+
+    /* An ordinary TRY/S_FMT round trip commits the initial 16x16 SD default.
+     * It must not override a later, explicit HD source description.
+     */
+    CHECK(!chd_try_fmt_locked(&handle, NULL, &fmt));
+    CHECK(fmt.fmt.pix.width == 16 && fmt.fmt.pix.height == 16 &&
+          fmt.fmt.pix.colorspace == V4L2_COLORSPACE_SMPTE170M);
+    CHECK(!chd_set_fmt(&handle, NULL, &fmt) && !fixture.color_default);
+    hint = fixture.output;
+    fixture.capture.width = fixture.output.width = 1920;
+    fixture.capture.height = fixture.output.height = 1080;
+    fixture.capture.bytesperline = 1920 * 2;
+    CHECK(!crystalhd_v4l2_capture_size(1920, 1080, &fixture.capture.sizeimage));
+    fixture.capture.pixelformat = V4L2_PIX_FMT_YUYV;
+    fixture.capture.priv = V4L2_PIX_FMT_PRIV_MAGIC;
+    hint.width = 1920; hint.height = 1080;
+    chd_flea_source_colors(&fixture, 0x01010100);
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_REC709 &&
+          fixture.capture.xfer_func == V4L2_XFER_FUNC_709 &&
+          fixture.capture.ycbcr_enc == V4L2_YCBCR_ENC_709 &&
+          fixture.capture.quantization == V4L2_QUANTIZATION_DEFAULT);
+    CHECK(!memcmp(&fixture.output, &hint, sizeof(hint)));
+    fixture.format_known = true;
+    source = fixture.capture;
+
+    /* Queries and a CAPTURE conversion request cannot mutate parsed colors. */
+    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    fmt.fmt.pix = (struct v4l2_pix_format){ .width = 640, .height = 480,
+        .priv = V4L2_PIX_FMT_PRIV_MAGIC, .colorspace = V4L2_COLORSPACE_SMPTE170M,
+        .xfer_func = V4L2_XFER_FUNC_SMPTE240M, .ycbcr_enc = V4L2_YCBCR_ENC_601 };
+    CHECK(!chd_try_fmt_locked(&handle, NULL, &fmt));
+    CHECK(!memcmp(&fixture.capture, &source, sizeof(source)) &&
+          fmt.fmt.pix.colorspace == V4L2_COLORSPACE_REC709 &&
+          fmt.fmt.pix.ycbcr_enc == V4L2_YCBCR_ENC_709);
+    CHECK(!chd_set_fmt(&handle, NULL, &fmt));
+    CHECK(!memcmp(&fixture.capture, &source, sizeof(source)));
+    CHECK(!chd_get_fmt(&handle, NULL, &fmt));
+    CHECK(!memcmp(&fmt.fmt.pix, &source, sizeof(source)) &&
+          !memcmp(&fixture.output, &hint, sizeof(hint)));
+
+    /* Source components are independent, including same-resolution changes. */
+    chd_flea_source_colors(&fixture, 0x06010100);
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_REC709 &&
+          fixture.capture.xfer_func == V4L2_XFER_FUNC_709 &&
+          fixture.capture.ycbcr_enc == V4L2_YCBCR_ENC_601);
+    chd_flea_source_colors(&fixture, 0x01060100);
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_SMPTE170M &&
+          fixture.capture.ycbcr_enc == V4L2_YCBCR_ENC_709);
+    chd_flea_source_colors(&fixture, 0x06010700);
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_REC709 &&
+          fixture.capture.xfer_func == V4L2_XFER_FUNC_SMPTE240M &&
+          fixture.capture.ycbcr_enc == V4L2_YCBCR_ENC_601);
+    chd_flea_source_colors(&fixture, 0x06060600);
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_SMPTE170M &&
+          fixture.capture.xfer_func == V4L2_XFER_FUNC_709 &&
+          fixture.capture.ycbcr_enc == V4L2_YCBCR_ENC_601);
+    chd_flea_source_colors(&fixture, 0x05050600);
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_470_SYSTEM_BG &&
+          fixture.capture.ycbcr_enc == V4L2_YCBCR_ENC_601);
+    chd_flea_source_colors(&fixture, 0x07070700);
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_SMPTE240M &&
+          fixture.capture.xfer_func == V4L2_XFER_FUNC_SMPTE240M &&
+          fixture.capture.ycbcr_enc == V4L2_YCBCR_ENC_SMPTE240M);
+
+    /* Unqualified words atomically fall back to this stream's original hint;
+     * no component or previous source tuple may leak into the next result.
+     */
+    for (unsigned i = 0; i < ARRAY_SIZE(invalid); ++i) {
+        chd_flea_source_colors(&fixture, 0x01010100);
+        chd_flea_source_colors(&fixture, invalid[i]);
+        CHECK(fixture.capture.colorspace == hint.colorspace &&
+              fixture.capture.xfer_func == hint.xfer_func &&
+              fixture.capture.ycbcr_enc == hint.ycbcr_enc &&
+              fixture.capture.quantization == hint.quantization);
+    }
+
+    /* Firmware omits range: do not manufacture it from any packed byte. */
+    fixture.output.quantization = 1;
+    chd_flea_source_colors(&fixture, 0x01010100);
+    CHECK(fixture.capture.quantization == 1);
+    fixture.output.quantization = 2;
+    chd_flea_source_colors(&fixture, 0x06060600);
+    CHECK(fixture.capture.quantization == 2);
+
+    /* A new OUTPUT format resets source colorimetry to its own hint. */
+    fixture.format_known = false;
+    fmt = (struct v4l2_format){ .type = V4L2_BUF_TYPE_VIDEO_OUTPUT,
+        .fmt.pix = { .width = 640, .height = 480 } };
+    CHECK(!chd_set_fmt(&handle, NULL, &fmt));
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_SMPTE170M &&
+          !fixture.capture.xfer_func && !fixture.capture.ycbcr_enc &&
+          !fixture.capture.quantization);
+}
+
 static void native_error_completion(void)
 {
     static const unsigned slots[] = { 0, 16, 31 };
@@ -1831,7 +1940,8 @@ static void constructor_cases(void)
         CHECK(node.generation == 123 && node.parent == &ctor_parent && node.dma_dev == &ctor_device);
         CHECK(node.video.v4l2_dev == &ctor_v4l2 && node.video.ctrl_handler == &node.ctrls &&
               node.video.lock == &node.ioctl_lock && node.video.fops == &chd_fops && node.video.ioctl_ops == &chd_ioctl_ops);
-        CHECK(node.video.vfl_dir == VFL_DIR_M2M && node.video.device_caps == (V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING));
+        CHECK(node.video.vfl_dir == VFL_DIR_M2M && node.video.device_caps ==
+              (V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING | V4L2_CAP_EXT_PIX_FORMAT));
         CHECK(ctor_minimum.flags == V4L2_CTRL_FLAG_READ_ONLY && ctor_wq_live == 2 && ctor_m2m_live);
         crystalhd_v4l2_node_unregister(out);
         CHECK(!ctor_video_live && !ctor_parent_refs && ctor_video_releases == 1 && ctor_node_live);
@@ -1959,6 +2069,7 @@ int main(void)
     async_tx_cases();
     stateful_lifecycle_cases();
     colorimetry_cases();
+    source_colorimetry_cases();
     printf("V4L2 node: %u scenarios, %u checks, 0 failures\n", scenarios, checks);
     return 0;
 }
