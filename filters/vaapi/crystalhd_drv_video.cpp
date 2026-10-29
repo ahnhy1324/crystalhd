@@ -3315,10 +3315,34 @@ static bool RegisterExportedLayout(Driver *driver, Surface *surface,
     if (known != driver->backing_owners.end() && known->second != owner_id)
       return false;
   }
-  for (const BackingIdentity &identity : layout.objects)
-    driver->backing_owners[identity] = owner_id;
-  surface->layout = layout;
-  owner->layout = layout;
+  if (layout.objects.size() > 4)
+    return false;
+  // Stage only changed layouts before touching either layout or the registry.
+  // Re-registering an unchanged exported view must not allocate new vectors.
+  const bool update_surface = !(surface->layout == layout);
+  const bool update_owner = owner != surface && !(owner->layout == layout);
+  SurfaceLayout surface_layout;
+  SurfaceLayout owner_layout;
+  if (update_surface)
+    surface_layout = layout;
+  if (update_owner)
+    owner_layout = layout;
+  BackingIdentity inserted[4];
+  unsigned inserted_count = 0;
+  try {
+    for (const BackingIdentity &identity : layout.objects)
+      if (driver->backing_owners.find(identity) == driver->backing_owners.end() &&
+          driver->backing_owners.emplace(identity, owner_id).second)
+        inserted[inserted_count++] = identity;
+  } catch (...) {
+    for (unsigned i = 0; i < inserted_count; ++i)
+      driver->backing_owners.erase(inserted[i]);
+    throw;
+  }
+  if (update_surface)
+    surface->layout = std::move(surface_layout);
+  if (update_owner)
+    owner->layout = std::move(owner_layout);
   return true;
 }
 
@@ -11176,10 +11200,35 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
     }
   }
 
-  auto *prime = static_cast<VADRMPRIMESurfaceDescriptor *>(descriptor);
-  memset(prime, 0, sizeof(*prime));
-  for (auto &object : prime->objects)
-    object.fd = -1;
+  struct PendingExport {
+    VADRMPRIMESurfaceDescriptor value = {};
+    PendingExport() {
+      for (auto &object : value.objects) object.fd = -1;
+    }
+    ~PendingExport() {
+      for (const auto &object : value.objects)
+        if (object.fd >= 0) close(object.fd);
+    }
+  } pending;
+  auto *prime = &pending.value;
+  const auto publish = [&] {
+    *static_cast<VADRMPRIMESurfaceDescriptor *>(descriptor) = *prime;
+    for (auto &object : prime->objects) object.fd = -1;
+    return finish(VA_STATUS_SUCCESS);
+  };
+  const auto register_layout = [&]() -> VAStatus {
+    try {
+      SurfaceLayout layout;
+      if (!GetPrimeLayout(*prime, &layout) ||
+          !RegisterExportedLayout(driver, surface->second.get(), surface_id, layout))
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+      return VA_STATUS_SUCCESS;
+    } catch (const std::bad_alloc &) {
+      return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    } catch (const std::length_error &) {
+      return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    }
+  };
   prime->fourcc = surface->second->fourcc;
   prime->width = surface->second->width;
   prime->height = surface->second->height;
@@ -11251,13 +11300,12 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
       prime->layers[layer].offset[index] = view.offset;
       prime->layers[layer].pitch[index] = view.pitch;
     }
-    SurfaceLayout layout;
-    if (!GetPrimeLayout(*prime, &layout) ||
-        !RegisterExportedLayout(driver, surface->second.get(), surface_id, layout))
-      return failed_export();
+    const VAStatus registered = register_layout();
+    if (registered != VA_STATUS_SUCCESS)
+      return finish(registered);
     if (surface->second.get() == owner && explicit_read_only)
       ArmTraceReadExport(driver, surface->second.get(), owner, trace_fields.operation);
-    return finish(VA_STATUS_SUCCESS);
+    return publish();
   }
   if (IsBgraStorageFormat(surface->second->fourcc)) {
     const int fd = surface->second->bo != nullptr
@@ -11283,19 +11331,15 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
                                      ? gbm_bo_get_offset(surface->second->bo, 0)
                                      : 0;
     prime->layers[0].pitch[0] = surface->second->pitch[0];
-    SurfaceLayout layout;
-    if (!GetPrimeLayout(*prime, &layout) ||
-        !RegisterExportedLayout(driver, surface->second.get(), surface_id, layout)) {
-      close(fd);
-      prime->num_objects = 0;
-      return finish(VA_STATUS_ERROR_OPERATION_FAILED);
-    }
+    const VAStatus registered = register_layout();
+    if (registered != VA_STATUS_SUCCESS)
+      return finish(registered);
     if (surface->second.get() == owner) {
       if (explicit_read_only)
         ArmTraceReadExport(driver, surface->second.get(), owner,
                            trace_fields.operation);
     }
-    return finish(VA_STATUS_SUCCESS);
+    return publish();
   }
   if (surface->second->fourcc != VA_FOURCC_NV12)
     return finish(VA_STATUS_ERROR_UNIMPLEMENTED);
@@ -11306,8 +11350,6 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
         gbm_backed ? gbm_bo_get_fd_for_plane(surface->second->bo, object)
                    : dup(surface->second->object_fds[0]);
     if (prime->objects[object].fd < 0) {
-      for (unsigned int created = 0; created < object; ++created)
-        close(prime->objects[created].fd);
       prime->num_objects = 0;
       return finish(VA_STATUS_ERROR_OPERATION_FAILED);
     }
@@ -11348,20 +11390,15 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
       prime->layers[0].pitch[plane] = surface->second->pitch[plane];
     }
   }
-  SurfaceLayout layout;
-  if (!GetPrimeLayout(*prime, &layout) ||
-      !RegisterExportedLayout(driver, surface->second.get(), surface_id, layout)) {
-    for (unsigned int object = 0; object < prime->num_objects; ++object)
-      close(prime->objects[object].fd);
-    prime->num_objects = 0;
-    return finish(VA_STATUS_ERROR_OPERATION_FAILED);
-  }
+  const VAStatus registered = register_layout();
+  if (registered != VA_STATUS_SUCCESS)
+    return finish(registered);
   if (surface->second.get() == owner) {
     if (explicit_read_only)
       ArmTraceReadExport(driver, surface->second.get(), owner,
                          trace_fields.operation);
   }
-  return finish(VA_STATUS_SUCCESS);
+  return publish();
 }
 
 static VAStatus QuerySurfaceError(VADriverContextP, VASurfaceID, VAStatus,
