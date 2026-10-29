@@ -19,19 +19,20 @@ scope to general full-rate FHD or hardware deinterlacing.
 
 ## Current bug-fix order
 
-2026-10-28: prioritize failures in ordinary use before optional performance or
+2026-10-29: prioritize failures in ordinary use before optional performance or
 new-backend research. For each item, reproduce the failure, make the smallest
 fix and recheck the affected user operation. Run wider regression checks at
 the end of a related change set, rather than repeating unrelated experiments.
 
-1. **Open/close state and resource ownership (#510).** Failed-open publication
-   is prepared in [#552](https://github.com/ahnhy1324/crystalhd/pull/552); combined
-   mode preservation and atomic updates are prepared as follow-ups. Rejected
-   opens now preserve hardware initialization state, and LINK clock setup waits
-   for successful non-monitor session admission.
-   Complete integration while preserving failure cleanup and the legacy ABI.
+1. **Open/close state and resource ownership (#510).** Failed-open publication,
+   combined-mode preservation and atomic updates are integrated, including
+   [#552](https://github.com/ahnhy1324/crystalhd/pull/552). Rejected opens preserve
+   hardware initialization state through
+   [#553](https://github.com/ahnhy1324/crystalhd/pull/553), and LINK clock setup
+   waits for successful non-monitor session admission.
    Terminal decoder state now retires before RELEASE can admit a replacement;
-   tests with a mocked driver and public open APIs cover failed firmware close,
+   [#556](https://github.com/ahnhy1324/crystalhd/pull/556) tests with a mocked
+   driver and public open APIs cover failed firmware close,
    failed recovery, close errors and retained kernel ownership. Same-mode reference counts and
    same-handle concurrent close/use remain separate questions.
 2. **Ordinary Kodi EOF, Stop, seek and reopen (#445/#429).** Address reproducible
@@ -49,16 +50,21 @@ the end of a related change set, rather than repeating unrelated experiments.
    The patch is not installed or activated by CrystalHD. Other historical
    warnings remain unassigned. Zero application counters, natural EOF and
    clean DMA retirement alone do not establish correct VA behavior.
-3. **Shutdown heap abort (#538).** Capture the fault stack or first corruption
-   in the affected private-FFmpeg VA combination, then verify a fix against
-   that condition. Clean exits alone do not resolve the original abort.
-4. **Installation, recovery and settings (#510/#400, then #539).** Fix concrete
+3. **Installation, recovery and settings (#510/#400, then #539).** Fix concrete
    update/rollback and saved-versus-applied setting failures before extending
    adapters. The experimental Kodi no-build path still needs a distribution
    decision; existing private activation is not a public installer.
-5. **Optional research.** Defer #533 STOP/START, #513 Xv, #530 EGL Bob and
+4. **Optional research.** Defer #533 STOP/START, #513 Xv, #530 EGL Bob and
    #92/#204 hardware exploration until the correctness work above is handled,
    unless new evidence establishes an ordinary-use fault needing priority.
+
+**Shutdown heap abort (#538): wontfix / not planned (2026-10-29).** Per
+maintainer direction, stop further reproduction work and remove this follow-up
+from the active bug-fix queue. No reproducible failing condition or fault stack
+is available. Retain the historical aborts and diagnostics; this is a triage
+decision, not a fix or disproval. Reconsider only with a concrete reproducible
+report or diagnostic stack. See the
+[scoped disposition](https://github.com/ahnhy1324/crystalhd/issues/538#issuecomment-6486735751).
 
 Keep merged, locally fixed/review-ready and unresolved items distinct. Locating
 a wait in external code does not establish an external defect or show that our
