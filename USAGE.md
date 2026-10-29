@@ -161,8 +161,8 @@ assuming PTS uniquely identifies a source picture or a deinterlacer's fields.
 `buffers` counts individual BUFFER callbacks. Buffer lists have separate
 `buffer_lists`, `list_items` and `list_missing_pts` counters, with member records
 named `buffer-list-item`. GStreamer's list fallback can expose both a list and
-individual buffers at the same pad. `buffer_list_ambiguity` declares this case;
-it marks possible overlap whenever any list is observed, not proof that a
+individual buffers at the same pad. `buffer_list_ambiguity` marks possible
+overlap whenever any list is observed, not proof that a
 particular list was duplicated. Do not add the two counters into a frame
 census. List positions use `list_ordinal` and `list_index`; ordinary `ordinal`
 continues to count individual BUFFER callbacks. The trace observes stream
