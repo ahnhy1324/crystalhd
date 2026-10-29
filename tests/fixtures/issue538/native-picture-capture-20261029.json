@@ -48,8 +48,8 @@
       },
       "reference_table": {
         "file": "native-picture-fixture-1280-20261029.json",
-        "bytes": 58606,
-        "sha256": "f6dfc438be92ac1a1c68b6485f268a204b637680c35c18e30e6b5f3472bce317"
+        "bytes": 26846,
+        "sha256": "e4c4ae5c85e80b8629e418eb1f9bef53f80493dc301a6ef6a7682bd9bb1d34e1"
       },
       "capture": {
         "format": "BGRA",
@@ -584,7 +584,7 @@
       "colour_ioctls": [
         {
           "event": "COLOR_PRE",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 1,
           "fd": 39,
           "req": 3234879040,
@@ -601,7 +601,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 1,
           "fd": 39,
           "req": 3234879040,
@@ -618,7 +618,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 2,
           "fd": 39,
           "req": 3234879040,
@@ -635,7 +635,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 2,
           "fd": 39,
           "req": 3234879040,
@@ -652,7 +652,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 3,
           "fd": 37,
           "req": 3234878981,
@@ -669,7 +669,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 3,
           "fd": 37,
           "req": 3234878981,
@@ -686,7 +686,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 4,
           "fd": 37,
           "req": 3234878981,
@@ -703,7 +703,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 4,
           "fd": 37,
           "req": 3234878981,
@@ -720,7 +720,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 5,
           "fd": 37,
           "req": 3234878980,
@@ -737,7 +737,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 5,
           "fd": 37,
           "req": 3234878980,
@@ -754,7 +754,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 6,
           "fd": 37,
           "req": 3234879040,
@@ -771,7 +771,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 6,
           "fd": 37,
           "req": 3234879040,
@@ -788,7 +788,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 7,
           "fd": 37,
           "req": 3234879040,
@@ -805,7 +805,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 7,
           "fd": 37,
           "req": 3234879040,
@@ -822,7 +822,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 8,
           "fd": 37,
           "req": 3234878981,
@@ -839,7 +839,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965012,
+          "tid": "thread-1",
           "seq": 8,
           "fd": 37,
           "req": 3234878981,
@@ -856,7 +856,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965013,
+          "tid": "thread-2",
           "seq": 1,
           "fd": 37,
           "req": 3234878980,
@@ -873,7 +873,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965013,
+          "tid": "thread-2",
           "seq": 1,
           "fd": 37,
           "req": 3234878980,
@@ -890,7 +890,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965013,
+          "tid": "thread-2",
           "seq": 2,
           "fd": 37,
           "req": 3234878980,
@@ -907,7 +907,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965013,
+          "tid": "thread-2",
           "seq": 2,
           "fd": 37,
           "req": 3234878980,
@@ -1012,8 +1012,8 @@
       },
       "reference_table": {
         "file": "native-picture-fixture-1920-20261029.json",
-        "bytes": 125722,
-        "sha256": "c8eb8915f652898184b8a07121b809b6fcd7e18be03852cbb76bd443fbf4f8f4"
+        "bytes": 53802,
+        "sha256": "f8be69a949442281034f12672349869efc15b0e88c7983eac65017cb23dd8b76"
       },
       "capture": {
         "format": "BGRA",
@@ -1548,7 +1548,7 @@
       "colour_ioctls": [
         {
           "event": "COLOR_PRE",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 1,
           "fd": 38,
           "req": 3234879040,
@@ -1565,7 +1565,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 1,
           "fd": 38,
           "req": 3234879040,
@@ -1582,7 +1582,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 2,
           "fd": 38,
           "req": 3234879040,
@@ -1599,7 +1599,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 2,
           "fd": 38,
           "req": 3234879040,
@@ -1616,7 +1616,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 3,
           "fd": 37,
           "req": 3234878981,
@@ -1633,7 +1633,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 3,
           "fd": 37,
           "req": 3234878981,
@@ -1650,7 +1650,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 4,
           "fd": 37,
           "req": 3234878981,
@@ -1667,7 +1667,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 4,
           "fd": 37,
           "req": 3234878981,
@@ -1684,7 +1684,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 5,
           "fd": 37,
           "req": 3234878980,
@@ -1701,7 +1701,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 5,
           "fd": 37,
           "req": 3234878980,
@@ -1718,7 +1718,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 6,
           "fd": 37,
           "req": 3234879040,
@@ -1735,7 +1735,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 6,
           "fd": 37,
           "req": 3234879040,
@@ -1752,7 +1752,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 7,
           "fd": 37,
           "req": 3234879040,
@@ -1769,7 +1769,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 7,
           "fd": 37,
           "req": 3234879040,
@@ -1786,7 +1786,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 8,
           "fd": 37,
           "req": 3234878981,
@@ -1803,7 +1803,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965329,
+          "tid": "thread-1",
           "seq": 8,
           "fd": 37,
           "req": 3234878981,
@@ -1820,7 +1820,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965330,
+          "tid": "thread-2",
           "seq": 1,
           "fd": 37,
           "req": 3234878980,
@@ -1837,7 +1837,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965330,
+          "tid": "thread-2",
           "seq": 1,
           "fd": 37,
           "req": 3234878980,
@@ -1854,7 +1854,7 @@
         },
         {
           "event": "COLOR_PRE",
-          "tid": 965330,
+          "tid": "thread-2",
           "seq": 2,
           "fd": 37,
           "req": 3234878980,
@@ -1871,7 +1871,7 @@
         },
         {
           "event": "COLOR_POST",
-          "tid": 965330,
+          "tid": "thread-2",
           "seq": 2,
           "fd": 37,
           "req": 3234878980,
@@ -2034,7 +2034,8 @@
     "maximum_case_seconds": 160,
     "maximum_batch_seconds": 480,
     "start_temperature_max_mC": 75000,
-    "stop_temperature_mC": 85000
+    "stop_temperature_mC": 85000,
+    "maximum_batch_seconds_scope": "480s scheduling guard per batch invocation checked before each case; bounded child waits and cleanup are separate, not a cleanup-inclusive hard walltime guarantee"
   },
   "private_producer_fingerprints": [
     {
@@ -2195,7 +2196,7 @@
         "original_harness_errors": [
           {
             "step": "raw-trial",
-            "error": "PermissionError: [Errno 13] Permission denied: '/proc/969378/fd'"
+            "error": "PermissionError scanning exited owned child fd directory; complete original preserved in hashed raw route receipt"
           }
         ],
         "app_exit_code": 0,
@@ -3473,7 +3474,7 @@
           "pairs": [
             {
               "pre": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 1,
                 "fd": 5,
                 "req": 3234879040,
@@ -3489,7 +3490,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 1,
                 "fd": 5,
                 "req": 3234879040,
@@ -3507,7 +3508,7 @@
             },
             {
               "pre": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 2,
                 "fd": 5,
                 "req": 3234879040,
@@ -3523,7 +3524,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 2,
                 "fd": 5,
                 "req": 3234879040,
@@ -3541,7 +3542,7 @@
             },
             {
               "pre": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 3,
                 "fd": 4,
                 "req": 3234878981,
@@ -3557,7 +3558,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 3,
                 "fd": 4,
                 "req": 3234878981,
@@ -3575,7 +3576,7 @@
             },
             {
               "pre": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 4,
                 "fd": 4,
                 "req": 3234878981,
@@ -3591,7 +3592,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 4,
                 "fd": 4,
                 "req": 3234878981,
@@ -3609,7 +3610,7 @@
             },
             {
               "pre": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 5,
                 "fd": 4,
                 "req": 3234878980,
@@ -3625,7 +3626,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 5,
                 "fd": 4,
                 "req": 3234878980,
@@ -3643,7 +3644,7 @@
             },
             {
               "pre": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 6,
                 "fd": 4,
                 "req": 3234879040,
@@ -3659,7 +3660,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 6,
                 "fd": 4,
                 "req": 3234879040,
@@ -3677,7 +3678,7 @@
             },
             {
               "pre": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 7,
                 "fd": 4,
                 "req": 3234879040,
@@ -3693,7 +3694,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 7,
                 "fd": 4,
                 "req": 3234879040,
@@ -3711,7 +3712,7 @@
             },
             {
               "pre": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 8,
                 "fd": 4,
                 "req": 3234878981,
@@ -3727,7 +3728,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 969378,
+                "tid": "thread-1",
                 "seq": 8,
                 "fd": 4,
                 "req": 3234878981,
@@ -3745,7 +3746,7 @@
             },
             {
               "pre": {
-                "tid": 969394,
+                "tid": "thread-2",
                 "seq": 1,
                 "fd": 4,
                 "req": 3234878980,
@@ -3761,7 +3762,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 969394,
+                "tid": "thread-2",
                 "seq": 1,
                 "fd": 4,
                 "req": 3234878980,
@@ -3779,7 +3780,7 @@
             },
             {
               "pre": {
-                "tid": 969394,
+                "tid": "thread-2",
                 "seq": 2,
                 "fd": 4,
                 "req": 3234878980,
@@ -3795,7 +3796,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 969394,
+                "tid": "thread-2",
                 "seq": 2,
                 "fd": 4,
                 "req": 3234878980,
@@ -3813,8 +3814,8 @@
             }
           ],
           "per_tid_sequences": {
-            "969378": 8,
-            "969394": 2
+            "thread-1": 8,
+            "thread-2": 2
           },
           "accepted_input_pts": [
             0,
@@ -5348,7 +5349,7 @@
           "pairs": [
             {
               "pre": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 1,
                 "fd": 5,
                 "req": 3234879040,
@@ -5364,7 +5365,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 1,
                 "fd": 5,
                 "req": 3234879040,
@@ -5382,7 +5383,7 @@
             },
             {
               "pre": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 2,
                 "fd": 5,
                 "req": 3234879040,
@@ -5398,7 +5399,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 2,
                 "fd": 5,
                 "req": 3234879040,
@@ -5416,7 +5417,7 @@
             },
             {
               "pre": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 3,
                 "fd": 4,
                 "req": 3234878981,
@@ -5432,7 +5433,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 3,
                 "fd": 4,
                 "req": 3234878981,
@@ -5450,7 +5451,7 @@
             },
             {
               "pre": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 4,
                 "fd": 4,
                 "req": 3234878981,
@@ -5466,7 +5467,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 4,
                 "fd": 4,
                 "req": 3234878981,
@@ -5484,7 +5485,7 @@
             },
             {
               "pre": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 5,
                 "fd": 4,
                 "req": 3234878980,
@@ -5500,7 +5501,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 5,
                 "fd": 4,
                 "req": 3234878980,
@@ -5518,7 +5519,7 @@
             },
             {
               "pre": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 6,
                 "fd": 4,
                 "req": 3234879040,
@@ -5534,7 +5535,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 6,
                 "fd": 4,
                 "req": 3234879040,
@@ -5552,7 +5553,7 @@
             },
             {
               "pre": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 7,
                 "fd": 4,
                 "req": 3234879040,
@@ -5568,7 +5569,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 7,
                 "fd": 4,
                 "req": 3234879040,
@@ -5586,7 +5587,7 @@
             },
             {
               "pre": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 8,
                 "fd": 4,
                 "req": 3234878981,
@@ -5602,7 +5603,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 970105,
+                "tid": "thread-1",
                 "seq": 8,
                 "fd": 4,
                 "req": 3234878981,
@@ -5620,7 +5621,7 @@
             },
             {
               "pre": {
-                "tid": 970120,
+                "tid": "thread-2",
                 "seq": 1,
                 "fd": 4,
                 "req": 3234878980,
@@ -5636,7 +5637,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 970120,
+                "tid": "thread-2",
                 "seq": 1,
                 "fd": 4,
                 "req": 3234878980,
@@ -5654,7 +5655,7 @@
             },
             {
               "pre": {
-                "tid": 970120,
+                "tid": "thread-2",
                 "seq": 2,
                 "fd": 4,
                 "req": 3234878980,
@@ -5670,7 +5671,7 @@
                 "xfer": 0
               },
               "post": {
-                "tid": 970120,
+                "tid": "thread-2",
                 "seq": 2,
                 "fd": 4,
                 "req": 3234878980,
@@ -5688,8 +5689,8 @@
             }
           ],
           "per_tid_sequences": {
-            "970105": 8,
-            "970120": 2
+            "thread-1": 8,
+            "thread-2": 2
           },
           "accepted_input_pts": [
             0,
@@ -5977,5 +5978,6 @@
       "bytes": 4921,
       "sha256": "40dd056ace28c8666b61f419272626d21594ea7eb94666df32a0d600221e8189"
     }
-  }
+  },
+  "public_trace_projection": "TIDs are stable per-epoch thread labels and the exited-child error is anonymized; original raw trace/route receipt fingerprints remain unchanged."
 }
