@@ -6722,6 +6722,106 @@ struct DerivedFixture : Fixture {
   DerivedFixture() { source->id = 1; target->id = 2; }
 };
 
+void ImageAllocationFailure(bool derive, bool bgra, unsigned allocation) {
+  Driver driver{-1};
+  driver.StopWorkers();
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  const uint32_t fourcc = bgra ? VA_FOURCC_BGRA : VA_FOURCC_NV12;
+  auto source = bgra ? PrivateArgbOutput() : Picture(0, 71);
+  source->fourcc = fourcc;
+  source->id = 1;
+  driver.surfaces[source->id] = source;
+  const auto source_pixels = source->storage;
+  VAImageFormat format = ImageFormatFor(fourcc);
+  VAImage retained = {};
+  Require(CreateImage(&context, &format, 8, 8, &retained) == VA_STATUS_SUCCESS,
+          "create an existing image before image allocation failure");
+  auto &retained_bytes = driver.buffers.at(retained.buf).data;
+  std::fill(retained_bytes.begin(), retained_bytes.end(), 109);
+  const auto retained_pixels = retained_bytes;
+  // Keep bucket growth out of this narrow three-allocation sequence:
+  // image bytes, the buffer registry node, then the image registry node.
+  driver.buffers.reserve(4);
+  driver.images.reserve(4);
+  const VABufferID next_buffer = driver.next_buffer;
+  const VAImageID next_image = driver.next_image;
+  VAImage output;
+  memset(&output, 0xa5, sizeof(output));
+  VAImage untouched;
+  memcpy(&untouched, &output, sizeof(output));
+  struct ResetFault {
+    ~ResetFault() {
+      allocation_fault::fail_next = false;
+      allocation_fault::only_size = 0;
+      allocation_fault::skip_matches = 0;
+    }
+  } reset;
+  allocation_fault::failed_size = 0;
+  allocation_fault::only_size = 0;
+  allocation_fault::skip_matches = allocation - 1;
+  allocation_fault::fail_next = true;
+  bool escaped = false;
+  VAStatus status = VA_STATUS_SUCCESS;
+  try {
+    status = derive ? DeriveImage(&context, source->id, &output)
+                    : CreateImage(&context, &format, 16, 16, &output);
+  } catch (const std::bad_alloc &) {
+    escaped = true;
+  }
+  const bool injected = !allocation_fault::fail_next;
+  const size_t failed_bytes = allocation_fault::failed_size;
+  allocation_fault::fail_next = false;
+  allocation_fault::only_size = 0;
+  allocation_fault::skip_matches = 0;
+  printf("%s %s allocation %u: injected=%d escaped=%d status=%#x "
+         "buffers=%zu images=%zu output_unchanged=%d "
+         "next_buffer=%#x expected_buffer=%#x next_image=%#x expected_image=%#x\n",
+         derive ? "DeriveImage" : "CreateImage", bgra ? "BGRA" : "NV12",
+         allocation, injected, escaped, status, driver.buffers.size(),
+         driver.images.size(), memcmp(&output, &untouched, sizeof(output)) == 0,
+         driver.next_buffer, next_buffer, driver.next_image, next_image);
+  Require(injected && (allocation != 1 || failed_bytes == (bgra ? 1024U : 384U)),
+          "inject the requested image bytes or publication-node allocation");
+  Require(!escaped && status == VA_STATUS_ERROR_ALLOCATION_FAILED,
+          "image allocation failure returns a VA error without escaping the callback");
+  Require(memcmp(&output, &untouched, sizeof(output)) == 0 &&
+              driver.buffers.size() == 1 && driver.images.size() == 1 &&
+              driver.next_buffer == next_buffer && driver.next_image == next_image &&
+              driver.images.at(retained.image_id).va.buf == retained.buf &&
+              driver.buffers.at(retained.buf).data == retained_pixels,
+          "failed image publication preserves caller output, prior images and IDs");
+  Require(source->storage == source_pixels && source->ready && !source->failed &&
+              !source->image_write_locked && source->vpp_writers == 0 &&
+              source->export_waiters == 0 && !source->external_accessed,
+          "failed derived-image allocation changes no source pixels or ownership");
+  status = derive ? DeriveImage(&context, source->id, &output)
+                  : CreateImage(&context, &format, 16, 16, &output);
+  Require(status == VA_STATUS_SUCCESS && output.buf == next_buffer &&
+              output.image_id == next_image && output.format.fourcc == fourcc &&
+              driver.buffers.size() == 2 && driver.images.size() == 2,
+          "image creation recovers after every allocation failure");
+  if (derive)
+    Require(driver.buffers.at(output.buf).derived_source == source &&
+                driver.buffers.at(output.buf).derived_owner == source &&
+                source->external_accessed && !source->image_write_locked &&
+                source->vpp_writers == 0,
+            "successful derived image retains its exact source without a write borrow");
+  Require(DestroyImage(&context, output.image_id) == VA_STATUS_SUCCESS &&
+              driver.buffers.size() == 1 && driver.images.size() == 1 &&
+              source->storage == source_pixels &&
+              DestroyImage(&context, retained.image_id) == VA_STATUS_SUCCESS &&
+              driver.buffers.empty() && driver.images.empty(),
+          "recovered image and retained image both retire without orphan buffers");
+}
+
+void ImageAllocationFailuresAreTransactional() {
+  for (bool derive : {false, true})
+    for (bool bgra : {false, true})
+      for (unsigned allocation = 1; allocation <= 3; ++allocation)
+        ImageAllocationFailure(derive, bgra, allocation);
+}
+
 VAStatus MapImageIntent(Fixture *fixture, VABufferID buffer, void **data,
                         uint32_t flags) {
   if (flags == UINT32_MAX) return MapBuffer(&fixture->context, buffer, data);
@@ -8300,6 +8400,7 @@ int VppFullTestEntry(int argc, char **argv) {
     CpuReadStartUnwindsAcquiredPrefix();
     CpuSyncRetriesInterruptedAccess();
     CpuReadFailuresCannotCompleteCopies();
+    ImageAllocationFailuresAreTransactional();
     ImageReadFailuresAndDerivedRollback();
     DerivedWritesCommitActualSurfacePixels();
     DerivedWriteLeaseBlocksReuseAndSurvivesDestruction();
@@ -8322,11 +8423,31 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 113 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 114 hardware-free regressions passed");
   return 0;
 }
 
 int main(int argc, char **argv) {
+  if ((argc == 2 || argc == 5) && strcmp(argv[1], "--image-allocation") == 0) {
+    try {
+      if (argc == 2) {
+        ImageAllocationFailuresAreTransactional();
+      } else {
+        const bool derive = strcmp(argv[2], "derive") == 0;
+        const bool bgra = strcmp(argv[3], "bgra") == 0;
+        if ((!derive && strcmp(argv[2], "create") != 0) ||
+            (!bgra && strcmp(argv[3], "nv12") != 0) ||
+            argv[4][0] < '1' || argv[4][0] > '3' || argv[4][1] != '\0')
+          return 2;
+        ImageAllocationFailure(derive, bgra, static_cast<unsigned>(argv[4][0] - '0'));
+      }
+      puts("VA-API image allocation rollback PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API image allocation rollback failed: %s\n", error.what());
+      return 1;
+    }
+  }
   const std::pair<const char *, void (*)()> surface_cases[] = {
       {"--surface-create-storage", CpuSurfaceCreationStorageFailureRollsBack},
       {"--surface-create-id-log", CpuSurfaceCreationIdLogFailureRollsBack},
