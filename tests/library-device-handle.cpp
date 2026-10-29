@@ -48,8 +48,6 @@ static bool shared_exists;
 static pid_t initial_decoder_owner;
 static uint32_t initial_op_mode;
 static bool raw_close_expected;
-static bool expect_recovery_owner_during_close;
-static bool recovery_owner_seen_during_close;
 static uint32_t expected_mode;
 static uint32_t initial_hw_state;
 static uint32_t initial_device_id;
@@ -78,6 +76,19 @@ static uint32_t hw_state_during_release;
 static uint32_t hw_state_during_close;
 static bool hw_release_handoff_seen;
 static bool hw_close_handoff_seen;
+static bool terminal_handoff_enabled;
+static bool terminal_handoff_armed;
+static bool terminal_handoff_seen;
+static int terminal_session_fd;
+static int terminal_retiring_fd;
+static HANDLE terminal_peer;
+static bool terminal_probe_before_release;
+static bool terminal_probe_during_close;
+static bool terminal_retain_session;
+static unsigned terminal_admission_rejections;
+static unsigned terminal_firmware_commands;
+static void AdmitTerminalPeer();
+static void CheckTerminalAdmissionBlocked();
 
 struct IoctlRecord {
 	int fd;
@@ -95,7 +106,7 @@ static bool unexpected_ioctl;
 
 static bool track_allocations;
 static bool allocation_overflow;
-static void *tracked_allocations[64];
+static void *tracked_allocations[128];
 static size_t tracked_count;
 static size_t tracked_frees;
 static size_t failed_malloc_size;
@@ -352,16 +363,23 @@ extern "C" int __wrap_close(int fd)
 {
 	++close_calls;
 	closed_fd = fd;
-	if (expect_recovery_owner_during_close) {
-		recovery_owner_seen_during_close = shared_state.g_bDecOpened;
-		Check(shared_state.g_bDecOpened,
-		      "recovery-owned decoder remains reserved through driver close");
+	if (terminal_handoff_enabled && terminal_probe_during_close &&
+	    fd == terminal_retiring_fd) {
+		terminal_probe_during_close = false;
+		CheckTerminalAdmissionBlocked();
 	}
 	if (raw_close_expected)
 		Check(ioctl_count == 0,
 		      "context-allocation failure closes without driver commands");
-	else
-		Check(ioctl_count > 0 &&
+	else if (terminal_handoff_enabled) {
+		unsigned long last_command = 0;
+		for (size_t index = 0; index < ioctl_count &&
+		     index < sizeof(ioctl_log) / sizeof(ioctl_log[0]); ++index)
+			if (ioctl_log[index].fd == fd)
+				last_command = ioctl_log[index].command;
+		Check(last_command == BCM_IOC_RELEASE,
+		      "each interleaved descriptor closes after its own RELEASE");
+	} else Check(ioctl_count > 0 &&
 		      ioctl_count <= sizeof(ioctl_log) / sizeof(ioctl_log[0]) &&
 		      ioctl_log[ioctl_count - 1].command == BCM_IOC_RELEASE,
 		      "device close follows the driver release command");
@@ -415,6 +433,10 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 	case BCM_IOC_NOTIFY_MODE:
 		Check(data->u.NotifyMode.Mode == expected_mode,
 		      "open notifies the selected mode");
+		if (terminal_handoff_enabled &&
+		    (data->u.NotifyMode.Mode & 0xff) != DTS_MONITOR_MODE &&
+		    terminal_session_fd >= 0)
+			data->RetSts = BC_STS_ERR_USAGE;
 		break;
 	case BCM_IOC_REG_RD:
 		++register_reads;
@@ -440,6 +462,13 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 		}
 		break;
 	case BCM_IOC_RELEASE:
+		if (terminal_handoff_enabled && terminal_probe_before_release &&
+		    fd == terminal_retiring_fd) {
+			terminal_probe_before_release = false;
+			CheckTerminalAdmissionBlocked();
+		}
+		if (terminal_handoff_enabled && terminal_session_fd != fd)
+			data->RetSts = BC_STS_ERR_USAGE;
 		if (expect_hw_reset_before_release)
 			Check(shared_state.gHwInitSts == BC_DIL_HWINIT_NOT_YET,
 			      "hardware owner retires initialization state before driver release");
@@ -449,6 +478,12 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 		}
 		break;
 	case BCM_IOC_FW_CMD:
+		if (terminal_handoff_enabled)
+			++terminal_firmware_commands;
+		break;
+	case BCM_IOC_RST_DRV_STAT:
+		if (!terminal_handoff_enabled)
+			unexpected_ioctl = true;
 		break;
 	default:
 		unexpected_ioctl = true;
@@ -471,6 +506,21 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 	if (command == BCM_IOC_NOTIFY_MODE && data->RetSts == BC_STS_SUCCESS) {
 		notify_succeeded = true;
 		notified_mode = data->u.NotifyMode.Mode;
+		if (terminal_handoff_enabled &&
+		    (notified_mode & 0xff) != DTS_MONITOR_MODE)
+			terminal_session_fd = fd;
+	}
+	if (terminal_handoff_enabled && command == BCM_IOC_RELEASE &&
+	    data->RetSts == BC_STS_SUCCESS && terminal_session_fd == fd) {
+		/* The real driver retires session_owner and detaches the old file
+		 * binding before dropping user_lock and returning RELEASE. close of
+		 * that detached file cannot retain this reservation for its caller. */
+		if (!terminal_retain_session)
+			terminal_session_fd = -1;
+		if (!terminal_retain_session && terminal_handoff_armed && fd == terminal_retiring_fd) {
+			terminal_handoff_armed = false;
+			AdmitTerminalPeer();
+		}
 	}
 	return 0;
 }
@@ -516,8 +566,9 @@ extern "C" BC_STATUS __wrap__Z15DtsPushFwToFleaPvPc(HANDLE device, char *path)
 {
 	++firmware_push_calls;
 	const DTS_LIB_CONTEXT *context = DtsGetContext(device);
-	Check(expected_mode == DTS_HWINIT_MODE && context &&
-	      context->OpMode == DTS_HWINIT_MODE &&
+	Check((expected_mode == DTS_HWINIT_MODE ||
+	       (terminal_handoff_enabled && expected_mode == DTS_PLAYBACK_MODE)) && context &&
+	      context->OpMode == expected_mode &&
 	      context->DevId == BC_PCI_DEVID_FLEA && path == nullptr,
 	      "hardware-init uploads firmware for its exact Flea context");
 	Check(DtsGetHwInitSts() == BC_DIL_HWINIT_IN_PROGRESS &&
@@ -538,8 +589,9 @@ extern "C" BC_STATUS __wrap__Z15DtsFWInitializePvj(HANDLE device, uint32_t reser
 {
 	++firmware_init_calls;
 	const DTS_LIB_CONTEXT *context = DtsGetContext(device);
-	Check(expected_mode == DTS_HWINIT_MODE && context &&
-	      context->OpMode == DTS_HWINIT_MODE && reserved == 0,
+	Check((expected_mode == DTS_HWINIT_MODE ||
+	       (terminal_handoff_enabled && expected_mode == DTS_PLAYBACK_MODE)) && context &&
+	      context->OpMode == expected_mode && reserved == 0,
 	      "hardware-init initializes its exact context");
 	Check(DtsGetHwInitSts() == BC_DIL_HWINIT_IN_PROGRESS &&
 	      firmware_push_calls == 1 && firmware_push_status == BC_STS_SUCCESS,
@@ -634,6 +686,11 @@ static void BeginCase(int descriptor)
 	expect_hw_reset_before_release = false;
 	hw_state_during_release = hw_state_during_close = 0;
 	hw_release_handoff_seen = hw_close_handoff_seen = false;
+	terminal_handoff_enabled = terminal_handoff_armed = terminal_handoff_seen = false;
+	terminal_session_fd = terminal_retiring_fd = -1;
+	terminal_peer = nullptr;
+	terminal_probe_before_release = terminal_probe_during_close = terminal_retain_session = false;
+	terminal_admission_rejections = terminal_firmware_commands = 0;
 	raw_close_expected = false;
 	ioctl_count = 0;
 	failed_command = 0;
@@ -1252,27 +1309,143 @@ static void CheckTerminalDecoderOwnership()
 	      "foreign-owner control performs only local terminal cleanup");
 	EndCase("foreign decoder-context release frees every allocation");
 
+}
+
+static void CheckTerminalAdmissionBlocked()
+{
+	const int owner = terminal_session_fd;
+	const unsigned firmware = terminal_firmware_commands;
+	const unsigned uploads = firmware_push_calls;
+	const unsigned initializations = firmware_init_calls;
+	const uint32_t hw_state = shared_state.gHwInitSts;
+	const uint32_t mode = shared_state.gDilOpMode;
+	Check(owner == terminal_retiring_fd,
+	      "admission control starts with the retiring kernel session still owned");
+	open_result = 1;
+	HANDLE rejected = nullptr;
+	Check(DtsDeviceOpen(&rejected, DTS_PLAYBACK_MODE) == BC_STS_ERR_USAGE && !rejected,
+	      "actual new DeviceOpen reaches Notify and is rejected while kernel ownership remains");
+	++terminal_admission_rejections;
+	Check(terminal_session_fd == owner && terminal_firmware_commands == firmware &&
+	      firmware_push_calls == uploads && firmware_init_calls == initializations,
+	      "rejected decoder admission preserves the old owner and issues no DIL firmware setup or command");
+	Check(shared_state.gHwInitSts == hw_state && shared_state.gDilOpMode == mode,
+	      "rejected contender cleanup preserves the current shared hardware and mode state");
+}
+
+static void AdmitTerminalPeer()
+{
+	Check(terminal_session_fd == -1,
+	      "confirmed session retirement permits replacement before old descriptor close");
+	terminal_handoff_seen = true;
+	/* Let the new session's real firmware wrappers succeed independently of
+	 * the retiring channel's injected CLOSE failure. */
+	failed_command = 0;
+	open_result = 1;
+	Check(DtsDeviceOpen(&terminal_peer, DTS_PLAYBACK_MODE) == BC_STS_SUCCESS && terminal_peer,
+	      "same-process replacement device is admitted after successful RELEASE");
+	if (!terminal_peer)
+		return;
+	Check(DtsOpenDecoder(terminal_peer, BC_STREAM_TYPE_PES) == BC_STS_SUCCESS,
+	      "replacement completes the real decoder-open path before old close returns");
+	const DTS_LIB_CONTEXT *peer = DtsGetContext(terminal_peer);
+	Check(peer && peer->driverSessionOwned && peer->State == BC_DEC_STATE_STOP &&
+	      shared_state.g_bDecOpened && shared_state.g_nProcID == getpid(),
+	      "replacement publishes its exact admitted decoder owner");
+}
+
+static void CheckTerminalDecoderHandoff(bool recovery, bool close_failure)
+{
 	BeginCase(0);
+	terminal_handoff_enabled = true;
+	allow_multiple_context_locks = true;
 	shared_nattch = 1;
-	AcquireFixtureSharedState();
-	DtsSetDecStat(true, owner);
-	context = AllocateTerminalContext(DTS_PLAYBACK_MODE, owner);
-	if (context) {
+	expected_mode = DTS_PLAYBACK_MODE;
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	HANDLE retiring = nullptr;
+	Check(DtsDeviceOpen(&retiring, DTS_PLAYBACK_MODE) == BC_STS_SUCCESS && retiring,
+	      "terminal handoff fixture acquires its real device session");
+	if (!retiring) {
+		EndCase("failed terminal handoff fixture releases every allocation");
+		return;
+	}
+	Check(DtsOpenDecoder(retiring, BC_STREAM_TYPE_PES) == BC_STS_SUCCESS,
+	      "terminal handoff fixture publishes a real decoder open");
+	DTS_LIB_CONTEXT *context = DtsGetContext(retiring);
+	terminal_retiring_fd = context->DevHandle;
+	terminal_probe_before_release = true;
+	if (recovery) {
+		/* A failed replacement OPEN leaves the old shared owner reserved even
+		 * though firmware reset has already made the context logically CLOSE. */
 		context->State = BC_DEC_STATE_CLOSE;
 		context->recoveryRetireDecoderOwner = true;
-		expect_recovery_owner_during_close = true;
-		Check(DtsReleaseInterface(context) == BC_STS_SUCCESS,
-		      "failed-recovery logical CLOSE consumes its interface");
-		expect_recovery_owner_during_close = false;
+		context->recoveryStatus = BC_STS_IO_ERROR;
+	} else {
+		failed_command = BCM_IOC_FW_CMD;
+		fail_with_status = true;
 	}
-	Check(recovery_owner_seen_during_close &&
-	      !shared_state.g_bDecOpened && shared_state.g_nProcID == 0,
-	      "failed-recovery ownership retires only after driver close");
-	Check(close_calls == 1 && shared_detach_calls == 1,
-	      "failed-recovery release closes and detaches exactly once");
-	CheckIoctls(0, {BCM_IOC_RELEASE},
-	      "failed-recovery release preserves terminal driver ordering");
-	EndCase("failed-recovery decoder owner releases every allocation");
+	terminal_handoff_armed = true;
+	fail_close = close_failure;
+	Check(DtsDeviceClose(retiring) == (recovery && !close_failure ? BC_STS_SUCCESS : BC_STS_ERROR),
+	      "terminal handoff preserves the consuming close result");
+	Check(terminal_handoff_seen && terminal_peer && terminal_session_fd == 1,
+	      "old descriptor close leaves the newly admitted driver session owned");
+	Check(shared_state.g_bDecOpened && shared_state.g_nProcID == getpid(),
+	      "old terminal cleanup must not erase the replacement decoder publication");
+	Check(DtsIsDecOpened(getpid() + 1),
+	      "replacement still excludes another process after old cleanup");
+	Check(shared_state.gHwInitSts == BC_DIL_HWINIT_DONE && shared_state.gDilOpMode == 1,
+	      "replacement retains its completed initialization and playback mode");
+	Check(shared_detach_calls == 0 && bc_dil_glob_ptr == &shared_state,
+	      "replacement keeps the shared mapping attached after old cleanup");
+	failed_command = 0;
+	fail_close = false;
+	if (terminal_peer) {
+		Check(DtsDeviceClose(terminal_peer) == BC_STS_SUCCESS,
+		      "replacement decoder remains independently closeable");
+		terminal_peer = nullptr;
+	}
+	Check(!shared_state.g_bDecOpened && shared_state.g_nProcID == 0 &&
+	      terminal_session_fd == -1 && close_calls == 3 && shared_detach_calls == 1 &&
+	      terminal_admission_rejections == 1,
+	      "only the replacement's own close retires its decoder and final mapping");
+	EndCase("terminal handoff releases both contexts without leaking allocations");
+}
+
+static void CheckRecoveryDecoderAdmissionReservation(bool retain_owner)
+{
+	BeginCase(0);
+	terminal_handoff_enabled = true;
+	allow_multiple_context_locks = true;
+	shared_nattch = 1;
+	expected_mode = DTS_PLAYBACK_MODE;
+	initial_hw_state = BC_DIL_HWINIT_DONE;
+	HANDLE retiring = nullptr;
+	Check(DtsDeviceOpen(&retiring, DTS_PLAYBACK_MODE) == BC_STS_SUCCESS && retiring,
+	      "recovery reservation fixture acquires its real session");
+	if (!retiring) {
+		EndCase("failed recovery reservation fixture releases every allocation");
+		return;
+	}
+	Check(DtsOpenDecoder(retiring, BC_STREAM_TYPE_PES) == BC_STS_SUCCESS,
+	      "recovery reservation fixture opens its decoder");
+	DTS_LIB_CONTEXT *context = DtsGetContext(retiring);
+	context->State = BC_DEC_STATE_CLOSE;
+	context->recoveryRetireDecoderOwner = true;
+	context->recoveryStatus = BC_STS_IO_ERROR;
+	terminal_retiring_fd = context->DevHandle;
+	terminal_probe_before_release = true;
+	terminal_probe_during_close = retain_owner;
+	terminal_retain_session = retain_owner;
+	Check(DtsDeviceClose(retiring) == BC_STS_SUCCESS,
+	      "terminal recovery consumes its interface without replaying decoder commands");
+	Check(terminal_admission_rejections == (retain_owner ? 2u : 1u) &&
+	      terminal_session_fd == (retain_owner ? terminal_retiring_fd : -1),
+	      "kernel owner admission stays blocked before commit and through retained-owner close");
+	Check(!shared_state.g_bDecOpened && shared_state.g_nProcID == 0 &&
+	      shared_detach_calls == 1 && close_calls == (retain_owner ? 3u : 2u),
+	      "consumed recovery bookkeeping does not stand in for kernel admission or leak the mapping");
+	EndCase("recovery admission controls release every userspace allocation");
 }
 
 static void CheckNullOpenOutput()
@@ -2032,6 +2205,11 @@ int main()
 	CheckTwoMonitorsShareMappingLifetime();
 	CheckPartialSecondOpenPreservesMonitor();
 	CheckTerminalDecoderOwnership();
+	for (bool close_failure : {false, true})
+		for (bool recovery : {false, true})
+			CheckTerminalDecoderHandoff(recovery, close_failure);
+	CheckRecoveryDecoderAdmissionReservation(false);
+	CheckRecoveryDecoderAdmissionReservation(true);
 	CheckOpenFailure(BCM_IOC_GET_HWTYPE, false, true, BC_STS_BUSY,
 		{BCM_IOC_GET_HWTYPE, BCM_IOC_RELEASE});
 	CheckOpenFailure(BCM_IOC_GET_VERSION, true, false, BC_STS_ERROR,

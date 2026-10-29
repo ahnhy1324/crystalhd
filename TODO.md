@@ -30,9 +30,10 @@ the end of a related change set, rather than repeating unrelated experiments.
    opens now preserve hardware initialization state, and LINK clock setup waits
    for successful non-monitor session admission.
    Complete integration while preserving failure cleanup and the legacy ABI.
-   Same-mode reference counts and same-handle concurrent close/use are separate
-   questions, not implied fixes. Next reproduce terminal decoder-owner handoff
-   across RELEASE/close before changing its recovery reservation.
+   Terminal decoder state now retires before RELEASE can admit a replacement;
+   tests with a mocked driver and public open APIs cover failed firmware close,
+   failed recovery, close errors and retained kernel ownership. Same-mode reference counts and
+   same-handle concurrent close/use remain separate questions.
 2. **Ordinary Kodi EOF, Stop, seek and reopen (#445/#429).** Address reproducible
    user-operation failures. A controlled last-picture handoff now reproduces
    the two-second drain timeout with complete per-picture return observations;
