@@ -9,7 +9,7 @@ KDIR ?= /lib/modules/$(KVER)/build
 PYTHON3 ?= python3
 CONFIG_PRESET_MANIFEST := share/crystalhd/config-presets-v1.json
 
-DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
+DRIVER_ARGS := KVER="$(KVER)" KDIR="$(KDIR)" DESTDIR="$(DESTDIR)"
 USER_ARGS := PREFIX="$(PREFIX)" DESTDIR="$(DESTDIR)"
 
 .PHONY: settings-ui-check install-settings uninstall-settings install-provenance uninstall-provenance all driver library library-check raw-frame-check library-drain-test gstreamer vaapi vaapi-cpu-check examples browser configuration-check uapi-check dma-check l0s-check command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check tx-release-check h264-stream-check mpeg2-inspect-check rx-ownership-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check install-config uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check uninstall-config clean
