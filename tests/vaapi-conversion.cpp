@@ -6,6 +6,7 @@
 // Allocations, independent reference, warmup and full checksum are not timed.
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
 
+#include <cmath>
 #include <stdexcept>
 #include <sys/resource.h>
 
@@ -141,6 +142,154 @@ struct Fixture {
             "actual production converter must publish the supplied timestamp");
   }
 };
+
+struct YuvSample {
+  uint8_t y, u, v;
+};
+
+std::array<uint8_t, 4> ReferenceLimited601(YuvSample sample) {
+  // Independent normalized BT.601 equations, without the production integer
+  // coefficients. Preserve signed luma until clipping the final RGB channels.
+  const double kr = 0.299, kb = 0.114;
+  const double luma = (static_cast<double>(sample.y) - 16) / 219;
+  const double cb = (static_cast<double>(sample.u) - 128) / 224;
+  const double cr = (static_cast<double>(sample.v) - 128) / 224;
+  const double red = luma + 2 * (1 - kr) * cr;
+  const double blue = luma + 2 * (1 - kb) * cb;
+  const double green = (luma - kr * red - kb * blue) / (1 - kr - kb);
+  const auto level = [](double value) {
+    return static_cast<uint8_t>(std::clamp<long>(std::lround(value * 255), 0, 255));
+  };
+  return {level(blue), level(green), level(red), 255};
+}
+
+YuvSample PackedRgbSample(unsigned row, unsigned column) {
+  static constexpr uint8_t chroma[][2] = {
+      {128, 128}, {128, 160}, {160, 128}, {80, 192}, {90, 160},
+      {180, 210}, {16, 128}, {240, 16}, {16, 240}};
+  const unsigned index = row * 32 + column;
+  // Swap column bit 0 with spatial row-parity bit 5. Each chroma block still
+  // contains every luma byte once, including colored footroom in both fields.
+  const unsigned luma = (index & 0xdeU) | ((index & 1U) << 5) |
+                        ((index & 0x20U) >> 5);
+  return {static_cast<uint8_t>(luma), chroma[index / 256][0],
+          chroma[index / 256][1]};
+}
+
+enum class PackedRgbLayout { kProgressive, kLink, kSeparateFields, kInterleavedFields };
+
+void PackedRgbCopy(uint32_t fourcc, PackedRgbLayout layout) {
+  constexpr unsigned width = 32, height = 72;
+  constexpr size_t source_prefix = 7, source_suffix = 19;
+  const bool interlaced = layout == PackedRgbLayout::kSeparateFields ||
+                          layout == PackedRgbLayout::kInterleavedFields;
+  const size_t row_pitch = layout == PackedRgbLayout::kLink ? 720 * 2 :
+                           interlaced ? width * 2 + 11 : width * 2;
+  std::vector<uint8_t> input(source_prefix + row_pitch * height + source_suffix, 0x5b);
+  for (unsigned row = 0; row < height; ++row) {
+    const unsigned stored_row = layout == PackedRgbLayout::kSeparateFields
+        ? (row % 2) * (height / 2) + row / 2 : row;
+    uint8_t *line = input.data() + source_prefix + stored_row * row_pitch;
+    for (unsigned column = 0; column < width; column += 2) {
+      const YuvSample first = PackedRgbSample(row, column);
+      const YuvSample second = PackedRgbSample(row, column + 1);
+      line[column * 2] = first.y;
+      line[column * 2 + 1] = first.u;
+      line[column * 2 + 2] = second.y;
+      line[column * 2 + 3] = first.v;
+    }
+  }
+  const auto original_input = input;
+  Surface actual;
+  actual.width = width + 4;
+  actual.height = height + 4;
+  actual.fourcc = fourcc;
+  actual.rt_format = VA_RT_FORMAT_RGB32;
+  actual.pitch[0] = actual.width * 4 + 13;
+  constexpr size_t output_prefix = 31, output_suffix = 29;
+  actual.storage.assign(output_prefix + actual.pitch[0] * actual.height + output_suffix, 0xa5);
+  actual.planes[0] = actual.storage.data() + output_prefix;
+  constexpr uint64_t timestamp = 23456;
+  const uint8_t *const source = input.data() + source_prefix;
+  if (interlaced) {
+    const bool interleaved = layout == PackedRgbLayout::kInterleavedFields;
+    const uint8_t *fields[2] = {source, source + (interleaved ? row_pitch : row_pitch * height / 2)};
+    Require(CopyH264InterlacedToSurface(&actual, fields, width, height,
+                                       row_pitch * (interleaved ? 2 : 1), timestamp),
+            "actual interlaced packed-RGB conversion succeeds");
+  } else {
+    BC_DTS_PROC_OUT output = {};
+    output.Ybuff = const_cast<uint8_t *>(source);
+    output.PicInfo.width = width;
+    output.PicInfo.height = height;
+    output.PicInfo.timeStamp = timestamp;
+    Require(CopyYuy2ToSurface(&actual, output, layout == PackedRgbLayout::kLink),
+            "actual progressive/Link packed-RGB conversion succeeds");
+  }
+  Require(actual.ready && actual.frame_timestamp == timestamp && input == original_input,
+          "packed-RGB conversion publishes the exact timestamp and preserves its source");
+
+  // Frozen pre-fix bytes for every Y=16..255 across all nine chroma pairs.
+  // This exact-byte control is distinct from the independent color oracle.
+  uint32_t nominal_checksum = 2166136261U;
+  for (unsigned row = 0; row < height; ++row)
+    for (unsigned column = 0; column < width; ++column)
+      if (PackedRgbSample(row, column).y >= 16)
+        for (unsigned channel = 0; channel < 4; ++channel)
+          nominal_checksum = (nominal_checksum ^ actual.planes[0][row * actual.pitch[0] + column * 4 + channel]) * 16777619U;
+  Require(nominal_checksum == 0xd2e5b6a6U,
+          "Y>=16 retains the exact historical packed-RGB bytes");
+
+  unsigned colored_footroom[2] = {};
+  for (unsigned row = 0; row < actual.height; ++row) {
+    for (unsigned column = 0; column < actual.width; ++column) {
+      const uint8_t *pixel = actual.planes[0] + row * actual.pitch[0] + column * 4;
+      if (row >= height || column >= width) {
+        Require(pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 255,
+                "larger RGB surfaces retain exact opaque black padding");
+        continue;
+      }
+      const YuvSample sample = PackedRgbSample(row, column);
+      if (sample.y < 16 && (sample.u != 128 || sample.v != 128))
+        ++colored_footroom[row % 2];
+      const auto expected = ReferenceLimited601(sample);
+      for (unsigned channel = 0; channel < 3; ++channel) {
+        if (std::abs(static_cast<int>(pixel[channel]) - expected[channel]) > 1)
+          fprintf(stderr, "packed RGB mismatch format=%08x layout=%u row=%u column=%u YUV=%u,%u,%u channel=%u actual=%u expected=%u\n",
+                  fourcc, static_cast<unsigned>(layout), row, column,
+                  sample.y, sample.u, sample.v, channel, pixel[channel], expected[channel]);
+        Require(std::abs(static_cast<int>(pixel[channel]) - expected[channel]) <= 1,
+                "actual packed-RGB pixels agree with independent signed-luma BT.601");
+      }
+      Require(pixel[3] == 255, "packed-RGB conversion keeps opaque alpha");
+    }
+    for (unsigned byte = actual.width * 4; byte < actual.pitch[0]; ++byte)
+      Require(actual.planes[0][row * actual.pitch[0] + byte] == 0xa5,
+              "RGB conversion preserves row-pitch guards");
+  }
+  for (size_t byte = 0; byte < output_prefix; ++byte)
+    Require(actual.storage[byte] == 0xa5, "RGB conversion preserves prefix guards");
+  for (size_t byte = actual.storage.size() - output_suffix; byte < actual.storage.size(); ++byte)
+    Require(actual.storage[byte] == 0xa5, "RGB conversion preserves suffix guards");
+  Require(colored_footroom[0] != 0 && colored_footroom[1] != 0,
+          "colored below-black samples exercise both spatial field parities");
+}
+
+void PackedRgbCorrectness() {
+  struct HandSample { YuvSample yuv; std::array<uint8_t, 4> bgra; };
+  const HandSample samples[] = {
+      {{0, 128, 160}, {0, 0, 32, 255}}, {{8, 128, 160}, {0, 0, 42, 255}},
+      {{15, 128, 160}, {0, 0, 50, 255}}, {{16, 128, 160}, {0, 0, 51, 255}},
+      {{0, 160, 128}, {46, 0, 0, 255}}, {{16, 128, 128}, {0, 0, 0, 255}},
+      {{235, 128, 128}, {255, 255, 255, 255}}};
+  for (const auto &sample : samples)
+    Require(ReferenceLimited601(sample.yuv) == sample.bgra,
+            "independent normalized equations reproduce known color samples");
+  for (uint32_t fourcc : {VA_FOURCC_BGRA, VA_FOURCC_ARGB})
+    for (auto layout : {PackedRgbLayout::kProgressive, PackedRgbLayout::kLink,
+                       PackedRgbLayout::kSeparateFields, PackedRgbLayout::kInterleavedFields})
+      PackedRgbCopy(fourcc, layout);
+}
 
 void Correctness() {
   for (unsigned int width : {1U, 2U, 3U, 7U, 15U, 16U, 17U, 31U, 32U, 33U,
@@ -279,6 +428,7 @@ int main(int argc, char **argv) {
     } else {
       Require(argc == 1, "usage: --benchmark progressive|interlaced WIDTH HEIGHT RUNS WARMUP");
       Correctness();
+      PackedRgbCorrectness();
       printf("VA-API actual conversion: %u checks PASS\n", checks);
     }
     return 0;
