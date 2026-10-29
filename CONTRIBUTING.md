@@ -116,6 +116,13 @@ Code, fixtures, generated files, unknown paths, renames, deletions and file-mode
 changes keep the full userspace/kernel checks. The final **CI gate** requires
 every selected job to succeed.
 
+The userspace build runs on explicitly selected `ubuntu-24.04` and
+`ubuntu-26.04` runners, preserving the older supported API check alongside
+the newer stack. Both results are required by the final gate. These labels
+select Ubuntu releases; hosted images and installed packages receive updates,
+so each job records its actual OS, image and toolchain/library versions in the
+step summary. This is compatibility coverage, not an immutable build environment.
+
 Feature branches run CI through their PR, without a duplicate push build.
 Master/tag pushes always run the full suite. To request full CI for another
 branch before opening a PR, select that branch under **Actions → CrystalHD CI →
