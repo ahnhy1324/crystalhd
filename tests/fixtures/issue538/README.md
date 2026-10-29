@@ -1,6 +1,6 @@
 # Native picture verification
 
-`make native-picture-check` runs standard-library Python oracle tests and a
+`make native-picture-check` runs standard-library Python oracle/barcode tests and a
 small C11 metadata source model. It does not open a device, start Kodi, attach a
 tracer or change a module, installed file or external application.
 
@@ -64,3 +64,52 @@ heuristics cannot safely distinguish normalized defaults from deliberate caller
 values. No driver or third-party fix is applied. The historical ioctl colour
 tuple and raw YUYV are unavailable, so this source mechanism remains separate
 from historical attribution. #538 stays open; the heap-only follow-up is excluded.
+
+## Fresh controlled captures on 2026-10-29
+
+The [fresh hardware receipt](native-picture-capture-20261029.json) records new
+clips, actual unmodified Kodi DRM/EXPBUF captures and stable-module restoration.
+Historical evidence above is unchanged.
+
+| Fresh capture | Invariant points | Points above tolerance2 | BT709 result |
+| --- | ---: | ---: | --- |
+| 1280×720 | 794 | 585 | FAIL; maximum channel error25 |
+| 1920×1080 | 1,798 | 1,329 | FAIL; maximum channel error25 |
+
+Both exceed the frozen minimum100 points. A source-only mask excludes y<128
+before capture, where two48-bit barcode replicas change with each frame. Magic,
+source case, ordinal, complement and CRC8 bind720p content to ordinal0/PTS0 and
+FHD content to ordinal1/PTS512, at1/15360. These identify content, not a DRM
+object or physical display time. BT601 is diagnostic (error0) and changes no FAIL.
+
+Each actual colour trace has10 matched PRE/POST pairs and END0/0/10/0. Initial
+DEFAULT0x0 becomes16x16/SMPTE170M; final HD CAPTURE still reports SMPTE170M.
+Source-address warnings and15,688/14,314 null-map diagnostics remain recorded.
+The pixel/barcode verdict reads independent captured files. Each route returns
+180 originals and true LAST, exits0, and restores stable3.10.13 identity/ref,
+PM/link/AER with kernel-check0.
+
+The inert public fixture helper generates bytes matching every frozen producer
+frame at both resolutions. Twelve corruption controls also run under `python -O`.
+Source tables retain all source PTS and eligible YUV points. Replays require
+the exact media/reference/capture hashes; source encoding metadata is recorded.
+
+```sh
+python3 -B tests/native-picture-fixture.py --width 1280 --decode CAPTURE.bgra
+python3 -B tests/native-picture-fixture.py --width 1280 --generate-yuv420p -
+```
+
+The generation command writes all180 packed YUV420p frames to stdout for a
+separate software encoder. Add `--minimum-source-y 128` to the oracle replay
+with180 frames, step32, minimum100, declared BT709 and exact hashes. This mask
+is frozen from source properties. Full pixels/crop and physical presentation
+remain separate requirements.
+
+A separate normal FFmpeg YUYV/MMAP epoch retains all180 frames per resolution
+(331,776,000/746,496,000 bytes). Independent offline checks verify every barcode,
+frame hash and rational source PTS;142,920/323,640 pre-frozen point-frame YUV
+triplets match with component error0. The first720p collector remains FAIL due
+to an exited-child `/proc/fd` race, although its complete corpus is valid.
+The later FHD collector is PASS. Both batches restore stable/kernel boundaries.
+These are separate decoder opens, not the Kodi EXPBUF buffers; complete raw
+retention and sampled YUV equality do not claim full-frame reference equality.

@@ -165,6 +165,7 @@ ffmpeg-compat-check:
 .PHONY: native-picture-check
 native-picture-check:
 	$(PYTHON3) -B tests/native-picture-oracle.test.py
+	$(PYTHON3) -B tests/native-picture-fixture.test.py
 	CC="$(CC)" $(PYTHON3) -B tests/native-color-negotiation.py
 
 uapi-check:
