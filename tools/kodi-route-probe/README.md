@@ -427,3 +427,115 @@ and receipt retain this diagnostic FAIL and its probe overhead. This establishes
 this run's cause; the earlier untraced 1,798-frame results remain unassigned.
 
 ![Built-in Kodi CPU and process RSS](../../tests/fixtures/issue538/kodi-native-v4l2-20261028.svg)
+
+## Private runtime packaging and dependency audit
+
+`runtime-package.py` prepares a **private research artifact** from an already
+qualified prefix. It never builds FFmpeg, installs libraries, launches Kodi or
+publishes binaries. This work is based directly on #545's research merge
+`1dd2126`; it does not promote the experimental decoder or driver into master.
+
+```sh
+python3 -B tools/kodi-route-probe/runtime-package.py pack \
+  --prefix "/path/to/qualified-ffmpeg-prefix" \
+  --platform-root "/path/to/pinned-Platform/files" \
+  --source-checkout "/path/to/unchanged-12cc1f42-source" \
+  --output "/new/private/package" --epoch 1793145600
+
+python3 -B tools/kodi-route-probe/runtime-package.py verify \
+  --package "/new/private/package/stage" \
+  --platform-root "/path/to/pinned-Platform/files"
+```
+
+The allowlist is seven matching FFmpeg DSOs, relative SONAME links, ffmpeg and
+ffprobe. Read-only ELF inspection records exact hashes, architecture,
+dependencies, required versions and strong dynamic symbols against providers
+in the pinned Platform. It rejects missing/mismatched libraries and unsupported
+RPATH/RUNPATH; it does not search host libraries. Source revision, unchanged
+tracked source, build-configuration hashes/options and original FFmpeg/IJG
+notice inventory are retained. External libraries, Kodi, GL, the driver and a
+corresponding-source archive are not included. These checks do not establish
+late `dlopen`, complete ABI behavior or licence/redistribution compliance.
+
+The USTAR archive uses relative member names, fixed owner/modes and the supplied
+epoch. Its byte reproducibility is a packaging result, **not a reproducible
+FFmpeg build**. `verify` checks an extracted tree against its manifest and the
+same exact target inventory; the manifest is an inventory, not a signature.
+
+After extracting only the generated private archive into a new directory,
+`runtime-package-namespace.py` can run the bounded metadata helper:
+
+```sh
+python3 -B tools/kodi-route-probe/runtime-package-namespace.py \
+  --package "/path/to/freshly-extracted-private-package" \
+  --platform-root "/path/to/pinned-Platform/files" \
+  --mount-prefix "/opt/relocated private runtime"
+```
+
+This requires bubblewrap namespace support and Python in the selected Platform.
+In its default metadata mode it mounts only that Platform and the package, clears inherited environment
+controls and exposes no network, sysfs, decoder/GPU devices, app/GL images or
+DIL/GStreamer/probe dependency overlay. It calls library version/configuration
+and codec metadata APIs, checks seven exact mappings and tests that the original
+build prefix is absent. It does not open a codec/device or launch the CLI tools.
+The host kernel is shared: this is **not an independently clean OS or Kodi
+playback acceptance**.
+
+The [2026-10-29 software-only result](../../tests/fixtures/issue539/runtime-package-20261029.json)
+records two byte-identical 8,028,160-byte archives and two successful relocated
+metadata namespaces, including a real missing-DSO rejection. The existing
+Core2/x86_64 binaries still embed private configure paths and require
+`atan2f@GLIBC_2.43`; all artifacts remain **PUBLIC_NOT_READY**. Neutral-path
+rebuild reproducibility, clean-target Kodi/control/pixel acceptance,
+corresponding-source/component/dependency review, public distribution approval
+and an update/maintenance owner remain outstanding. No earlier playback/CPU PASS
+is transferred to this reduced environment. #538 stays open and its excluded
+heap follow-up is not resumed.
+
+`make -C tools/kodi-route-probe check-package` runs twelve real-ELF fixture tests
+for deterministic archives, relocation, omitted/mismatched payload/providers,
+required symbol versions and actual symbols, hashes/modes, source drift,
+RPATH and the allowlist. Fixture binaries are compiled for inspection and never
+executed; compiler requirements belong to development tests, not the target.
+
+### Actual packaged CLI and software-media validation
+
+The optional software mode additionally mounts one frozen synthetic input,
+independent reference files read-only and a new output directory. It actually
+executes the packaged `ffmpeg -version`, `ffprobe -version`, decoder inventory,
+software H.264 decode and `ffprobe` frame inspection. FFmpeg explicitly uses
+`-hwaccel none -c:v h264`, preserves source PTS and writes NV12 plus framemd5;
+ffprobe restricts its decoder whitelist to H.264. No decoder/GPU device, sysfs,
+Kodi/GL/DIL/GStreamer image or network is introduced.
+
+```sh
+python3 -B tools/kodi-route-probe/runtime-package-namespace.py \
+  --package "/path/to/freshly-extracted-private-package" \
+  --platform-root "/path/to/pinned-Platform/files" \
+  --mount-prefix "/opt/relocated private runtime" \
+  --software-media "/path/to/frozen-input.ts" \
+  --software-oracle "/path/to/frozen-reference.json" \
+  --software-clock-reference "/path/to/independent-ffprobe8.json" \
+  --software-nv12-reference "/path/to/retained-software-reference.nv12" \
+  --output-dir "/new/private/CLI-output"
+```
+
+The [actual CLI result](../../tests/fixtures/issue539/runtime-cli-20261029.json)
+records both relocated prefixes: all five CLI cases exit 0; each decode returns
+50 pictures with 69,120,000 exact Y/UV bytes, full-frame hashes and PTS
+133200–309600 at 1/90000, matching the retained independent software reference.
+The separate ffprobe decoder agrees on every source PTS, geometry and TFF flag.
+Long media processes have complete live seven-DSO mapping snapshots; fast
+version commands additionally use loader initialization records. A missing
+libavcodec copy is rejected by preflight, and direct CLI `-version` controls
+also fail at the loader with exit 127 instead of using a host fallback.
+
+The first combined collector attempt remains FAIL before media decoding: its
+mapping check rejected startup before a complete census; its actual mapping
+set was not retained. The corrected collector permits startup subsets only
+within the exact package and still requires a complete census for media work.
+Its separate successful runs do not rewrite the original failure. Input,
+retained pixel reference and independent clock records are hashed; no golden
+pixels, tolerance, geometry or payload binary is changed. The software result
+does not qualify native V4L2/Kodi playback or an independently clean OS, and
+all private-build/public-distribution limits above remain.

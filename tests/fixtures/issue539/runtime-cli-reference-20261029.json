@@ -1,0 +1,364 @@
+{
+  "scope": "Retained independent software NV12 bytes associated with the frozen TS by the retained conversion receipt; fresh independently executed FFprobe8 source clock/geometry. Tested packaged FFmpeg is not used to create the oracle.",
+  "media": {
+    "name": "h264-tff-1280x720-2s.ts",
+    "bytes": 1398720,
+    "sha256": "fbfe72e9246453d3900887d4a1444fb801fb388d7fa4ee8f58990305271001a6"
+  },
+  "retained_software_reference": {
+    "name": "tff720-software-reference.nv12",
+    "bytes": 69120000,
+    "sha256": "82dcc068cff510d6086e15df0ff243c7d18e607d3244c4218289f2127029db91"
+  },
+  "retained_source_association": {
+    "name": "field-aware-nv12-offline-reference.json",
+    "bytes": 1641,
+    "sha256": "ce59b17a9a757beffd11ca63b6ae4602302c80a50c5b3fda3a54b936e8254519"
+  },
+  "independent_ffprobe": {
+    "version": "ffprobe version 8.0.1-3ubuntu2 Copyright (c) 2007-2025 the FFmpeg developers",
+    "binary": {
+      "bytes": 216864,
+      "sha256": "a6dac1e9e8631e04075d06854cc4069308aec279bb04683b4a0bca5e4f54b2fe"
+    },
+    "clock_and_geometry_raw": {
+      "bytes": 13168,
+      "sha256": "9d35e0ec6ca17b4678a5a38493ad7637afc26d34fa3bc45623c3ceb5c9823479"
+    }
+  },
+  "stream": {
+    "codec_name": "h264",
+    "width": 1280,
+    "height": 720,
+    "pix_fmt": "yuv420p",
+    "time_base": "1/90000",
+    "disposition": {
+      "default": 0,
+      "dub": 0,
+      "original": 0,
+      "comment": 0,
+      "lyrics": 0,
+      "karaoke": 0,
+      "forced": 0,
+      "hearing_impaired": 0,
+      "visual_impaired": 0,
+      "clean_effects": 0,
+      "attached_pic": 0,
+      "timed_thumbnails": 0,
+      "non_diegetic": 0,
+      "captions": 0,
+      "descriptions": 0,
+      "metadata": 0,
+      "dependent": 0,
+      "still_image": 0,
+      "multilayer": 0
+    }
+  },
+  "frames": [
+    {
+      "pts": 133200,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "0d50bda77c2a2768c01f736b62b451af"
+    },
+    {
+      "pts": 136800,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "b56e5f34700531ea62d093e1cad663fb"
+    },
+    {
+      "pts": 140400,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "3a078eee21a12c7fb219860ce55209c1"
+    },
+    {
+      "pts": 144000,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "2c6b22fbddbff38a95a24c5087694f93"
+    },
+    {
+      "pts": 147600,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "cdb12b006971a0e0cf97cea92531fe1f"
+    },
+    {
+      "pts": 151200,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "704ec937632bf9788139d1f6289cf3b3"
+    },
+    {
+      "pts": 154800,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "6d3ffbfb82287267eae4f8c597c7b127"
+    },
+    {
+      "pts": 158400,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "b43c5d117e25536105d3583b52e7019b"
+    },
+    {
+      "pts": 162000,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "34479b14691bf06b388b71419393d91c"
+    },
+    {
+      "pts": 165600,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "cccbdafc42f84f7c4eaaf874884ea8ab"
+    },
+    {
+      "pts": 169200,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "e533ced5646dafca759838ad5a105aee"
+    },
+    {
+      "pts": 172800,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "cd0e4b2cadbbac2059da94faf091dd22"
+    },
+    {
+      "pts": 176400,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "1b4594bfd02c9222034d98083ae3f3be"
+    },
+    {
+      "pts": 180000,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "bb07a5835ad6b44e752f2bd698164a61"
+    },
+    {
+      "pts": 183600,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "fe9d5cc025b567c9269660bfee429b41"
+    },
+    {
+      "pts": 187200,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "49e4328cbe0a8262ba9faa48b9676a2c"
+    },
+    {
+      "pts": 190800,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "ed17ccd3a4e2eb13bf476154c609bf89"
+    },
+    {
+      "pts": 194400,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "20cdf7f9f95f49a9db3020795462c235"
+    },
+    {
+      "pts": 198000,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "51c62286e521c6d8b1c46c1924795351"
+    },
+    {
+      "pts": 201600,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "10e5f510973f60790dc351fd097e2d54"
+    },
+    {
+      "pts": 205200,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "e18d6600fe9f972aaddd5851d07dede5"
+    },
+    {
+      "pts": 208800,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "5f6e020fa3037166563583b32ccbb93a"
+    },
+    {
+      "pts": 212400,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "9dbd95f554a72a5eb3bb52e7cc6fba7e"
+    },
+    {
+      "pts": 216000,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "dfd0a93ae8aee98b793714b67e97568b"
+    },
+    {
+      "pts": 219600,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "e63ae3c4358f458355232eb95384c944"
+    },
+    {
+      "pts": 223200,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "b05b6189edd660a5f24495056ce933e2"
+    },
+    {
+      "pts": 226800,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "76cc980340e056d611ea4270ac00d750"
+    },
+    {
+      "pts": 230400,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "0974629ee0e9d040f2cb5eff1f5e658a"
+    },
+    {
+      "pts": 234000,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "f587a7077bbe320f4e3936207e984194"
+    },
+    {
+      "pts": 237600,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "4d1884b42a733181452d1b6d56d90ab2"
+    },
+    {
+      "pts": 241200,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "1867eebbeaafeb10448985369eef18e1"
+    },
+    {
+      "pts": 244800,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "38f308d7009d38b97e0432b78bf471a0"
+    },
+    {
+      "pts": 248400,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "f674c99356e30d6200f69db468f61d74"
+    },
+    {
+      "pts": 252000,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "834f8cc31c828059fdad07832a59632e"
+    },
+    {
+      "pts": 255600,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "8fdddd2d989ca1335b89e2a6f630b7da"
+    },
+    {
+      "pts": 259200,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "a23fbd9cea0774ad7f33d6193b2c1c44"
+    },
+    {
+      "pts": 262800,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "7b9b5e3cf82672a1930af6022da493fd"
+    },
+    {
+      "pts": 266400,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "326befe641b07008fb43978fd1e3c06c"
+    },
+    {
+      "pts": 270000,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "5311c8168313d75d879c71772ed25f29"
+    },
+    {
+      "pts": 273600,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "7a286d7f148c45779f7ac3eef7353305"
+    },
+    {
+      "pts": 277200,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "3e3c11a4552b51f474fa8725f2fbd949"
+    },
+    {
+      "pts": 280800,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "4952e1035c55fcfdeb751af46b43dda9"
+    },
+    {
+      "pts": 284400,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "feaf9c068635953763453bc12181c9b6"
+    },
+    {
+      "pts": 288000,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "204ccc787b3b0bd7fc699fe4aad23629"
+    },
+    {
+      "pts": 291600,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "499e143ccd318d0b108e9f5969a1c3eb"
+    },
+    {
+      "pts": 295200,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "9b1ec581e27e3c70443b96aaf2381cd3"
+    },
+    {
+      "pts": 298800,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "952e8876ffa6e60b76cda308e9e159ff"
+    },
+    {
+      "pts": 302400,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "35f285c70749c1450c54b7dce016aa69"
+    },
+    {
+      "pts": 306000,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "327eb31c19a9c3c192c87e637b24fe29"
+    },
+    {
+      "pts": 309600,
+      "duration": 3600,
+      "bytes": 1382400,
+      "md5": "7d6eec61e6dca1e4bc80aeee17fa0ea7"
+    }
+  ],
+  "historical_pixel_reference_producer_binary_identity": "NOT_RECORDED; only the retained bytes/source association are asserted. The separately captured current independent FFprobe8 binary is identified below.",
+  "actual_run_reference_manifest": {
+    "bytes": 8248,
+    "sha256": "8b2a1097fed435b8e05c21a573c5536ed2f7642444fb89d65a4165b95ce424b8"
+  }
+}

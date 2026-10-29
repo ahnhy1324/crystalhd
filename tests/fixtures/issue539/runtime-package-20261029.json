@@ -1,0 +1,325 @@
+{
+  "schema": 1,
+  "issue": 539,
+  "date": "2026-10-29",
+  "status": "PASS_PRIVATE_REPRODUCIBLE_PACKAGE_AND_RELOCATED_METADATA_ONLY",
+  "public_distribution_status": "PUBLIC_NOT_READY",
+  "research_base": "1dd212615b29abbae74864777dfada48ead1ef84",
+  "base_scope": "Directly on research-only #545 merge, not master integration or experimental-driver promotion; later ce05b26/16bee49 followups excluded.",
+  "payload_source": {
+    "revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "source_url": "https://github.com/jc-kynesim/rpi-ffmpeg/tree/12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "tracked_source_changes": false,
+    "new_FFmpeg_or_Kodi_builds": 0,
+    "configuration_sha256": [
+      "acfbbf5395aa9aff4910a694d8d08520b00c7f49bb7d5d669841240f803eec4c"
+    ],
+    "CPU_options": [
+      "--cpu=core2",
+      "--enable-runtime-cpudetect"
+    ],
+    "private_build_prefixes_detected": true,
+    "neutral_build_verified": false,
+    "payload": [
+      {
+        "path": "bin/ffmpeg",
+        "sha256": "557b7b282a751507695994b94c16ab9c90f834f28fb6c3cd3851b28574c1a204",
+        "bytes": 461104,
+        "soname": []
+      },
+      {
+        "path": "bin/ffprobe",
+        "sha256": "a6f69e8fe967791ffb687648e000a80a91d2c716c04f79a8e69173f370caeac1",
+        "bytes": 219368,
+        "soname": []
+      },
+      {
+        "path": "lib/libavcodec.so.63.1.102",
+        "sha256": "c92a041da4f924cbf73668b9de633e593b9f17eb92fef2da73d6febcf075c8c6",
+        "bytes": 2525272,
+        "soname": [
+          "libavcodec.so.63"
+        ]
+      },
+      {
+        "path": "lib/libavdevice.so.63.1.102",
+        "sha256": "6f5414a992f92deb9a9a69482cceb2af45c01d8df0803fe94220a9568b3e8547",
+        "bytes": 14584,
+        "soname": [
+          "libavdevice.so.63"
+        ]
+      },
+      {
+        "path": "lib/libavfilter.so.12.1.102",
+        "sha256": "5e5d1bbb82ffbf171f08a419ed3c8bda7a426f759670df1f691e393667ce9b0a",
+        "bytes": 265688,
+        "soname": [
+          "libavfilter.so.12"
+        ]
+      },
+      {
+        "path": "lib/libavformat.so.63.1.102",
+        "sha256": "f26fc0d099394f72ec31ae69d3928fe6efeed5ea87201b047cf4b304705acd2f",
+        "bytes": 668640,
+        "soname": [
+          "libavformat.so.63"
+        ]
+      },
+      {
+        "path": "lib/libavutil.so.61.1.102",
+        "sha256": "4ba4f5b9058a6bc3d186ea46814c2d9e1c00db0ba04979f01df5df454c48c384",
+        "bytes": 1072168,
+        "soname": [
+          "libavutil.so.61"
+        ]
+      },
+      {
+        "path": "lib/libswresample.so.7.1.102",
+        "sha256": "daed68f97a4fc2a555649cc3c9e4916bcb49437e8c7f52e80e95f6903a937b2c",
+        "bytes": 178616,
+        "soname": [
+          "libswresample.so.7"
+        ]
+      },
+      {
+        "path": "lib/libswscale.so.10.1.102",
+        "sha256": "832481dc5636b6439e36531dcc1088c4af5f037adb956a6106c901979887300b",
+        "bytes": 2526120,
+        "soname": [
+          "libswscale.so.10"
+        ]
+      }
+    ]
+  },
+  "target": {
+    "Platform_ref": "org.freedesktop.Platform/x86_64/26.08",
+    "retained_Platform_OSTree_identifier": "e7f7b0fb20662fe92e4eac65d58a57019cefae45a39559c4b50440a88acc0491",
+    "kernel_scope": "Existing development host kernel shared through new namespaces; not an independent clean OS.",
+    "architecture": "x86_64 ELF64 only; inherited Core2 build qualification, not a generic CPU or i386 artifact.",
+    "external_providers_not_bundled": [
+      {
+        "path_in_Platform": "lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        "soname": "ld-linux-x86-64.so.2",
+        "sha256": "6b887f408400b77f99a5c0e99f380c84264eef29156c191713b3343189cb0391",
+        "bytes": 253264
+      },
+      {
+        "path_in_Platform": "lib/x86_64-linux-gnu/libc.so.6",
+        "soname": "libc.so.6",
+        "sha256": "f38d0ec29b1ebfe7bb923b73b68b07b73c395e0cf5a0f291fbce495c3f1c3555",
+        "bytes": 2177968
+      },
+      {
+        "path_in_Platform": "lib/x86_64-linux-gnu/libdrm.so.2.134.0",
+        "soname": "libdrm.so.2",
+        "sha256": "eb9eaddd93b1c2b7c47cf15d52a640b31f295149196509472f79fe7dac734cd4",
+        "bytes": 100360
+      },
+      {
+        "path_in_Platform": "lib/x86_64-linux-gnu/libm.so.6",
+        "soname": "libm.so.6",
+        "sha256": "d82b9ae8b26fa4f54c35313d94d28133fa88186a96227ee6d9422a5c85be33b8",
+        "bytes": 1227608
+      },
+      {
+        "path_in_Platform": "lib/x86_64-linux-gnu/libva-drm.so.2.2400.0",
+        "soname": "libva-drm.so.2",
+        "sha256": "7aebc8fb6919e24d6a1f4c324402e3de702c5501bb6370b1a4b0cd28ffd08a6a",
+        "bytes": 15600
+      },
+      {
+        "path_in_Platform": "lib/x86_64-linux-gnu/libva.so.2.2400.0",
+        "soname": "libva.so.2",
+        "sha256": "8d9210f6575e752eb5cfec9f168c058c45ca98adf6005600ae913d2593894487",
+        "bytes": 239536
+      },
+      {
+        "path_in_Platform": "lib/x86_64-linux-gnu/libz.so.1.3.1.zlib-ng",
+        "soname": "libz.so.1",
+        "sha256": "627c5fa735ff7557e14c595871010c09d6b6b7eaa470c9b70b695c5e82adf00c",
+        "bytes": 190976
+      }
+    ],
+    "strong_dynamic_symbol_requirements_checked": 1941,
+    "GLIBC_2_43_requirement": "atan2f@GLIBC_2.43 remains required by the existing libavcodec63/libswscale10; arbitrary older hosts remain incompatible."
+  },
+  "archive": {
+    "format": "USTAR, uncompressed",
+    "bytes": 8028160,
+    "sha256": "832dbfc64a1e0fef3e9db2061bde28f267a22a293159552416dff3b3ae3d8053",
+    "independent_package_generations": 2,
+    "byte_identical": true,
+    "epoch": 1793145600,
+    "relative_member_names": true,
+    "relative_SONAME_links": 7,
+    "real_FFmpeg_DSOs": 7,
+    "CLI_tools": 2,
+    "manifest_entries_excluding_manifest_itself": 24,
+    "fixed_owner_modes_and_epoch_verified": true,
+    "scope": "Exact retained binary inputs and fixed metadata; not binary build reproducibility. No archive is published."
+  },
+  "relocated_metadata": {
+    "cases": [
+      {
+        "mount_prefix": "/opt/crystalhd native one",
+        "status": "PASS_COMPILERLESS_RELOCATED_METADATA_ONLY",
+        "file_and_target_inventory_audit": "PASS_PRIVATE_PACKAGE_AUDIT"
+      },
+      {
+        "mount_prefix": "/opt/relocated runtime two",
+        "status": "PASS_COMPILERLESS_RELOCATED_METADATA_ONLY",
+        "file_and_target_inventory_audit": "PASS_PRIVATE_PACKAGE_AUDIT"
+      }
+    ],
+    "all_seven_mappings_match_exact_package": true,
+    "eleven_inspected_compiler_build_tools_absent": true,
+    "old_app_GL_DIL_Gst_probe_dependency_mounts_absent": true,
+    "decoder_GPU_sysfs_mounts_absent": true,
+    "original_build_prefix_visible": false,
+    "hardware_configs": [
+      {
+        "format": "drm_prime",
+        "methods": 4,
+        "device_type": 0
+      }
+    ],
+    "configuration_sha256": {
+      "avutil": "acfbbf5395aa9aff4910a694d8d08520b00c7f49bb7d5d669841240f803eec4c",
+      "swresample": "acfbbf5395aa9aff4910a694d8d08520b00c7f49bb7d5d669841240f803eec4c",
+      "swscale": "acfbbf5395aa9aff4910a694d8d08520b00c7f49bb7d5d669841240f803eec4c",
+      "avcodec": "acfbbf5395aa9aff4910a694d8d08520b00c7f49bb7d5d669841240f803eec4c",
+      "avformat": "acfbbf5395aa9aff4910a694d8d08520b00c7f49bb7d5d669841240f803eec4c",
+      "avfilter": "acfbbf5395aa9aff4910a694d8d08520b00c7f49bb7d5d669841240f803eec4c",
+      "avdevice": "acfbbf5395aa9aff4910a694d8d08520b00c7f49bb7d5d669841240f803eec4c"
+    },
+    "versions": {
+      "libavutil.so.61": [
+        61,
+        1,
+        102
+      ],
+      "libswresample.so.7": [
+        7,
+        1,
+        102
+      ],
+      "libswscale.so.10": [
+        10,
+        1,
+        102
+      ],
+      "libavcodec.so.63": [
+        63,
+        1,
+        102
+      ],
+      "libavformat.so.63": [
+        63,
+        1,
+        102
+      ],
+      "libavfilter.so.12": [
+        12,
+        1,
+        102
+      ],
+      "libavdevice.so.63": [
+        63,
+        1,
+        102
+      ]
+    },
+    "scope": "Only version/configuration and codec hardware-metadata APIs; no codec/device open, CLI execution, Kodi launch, media, graphics or hardware."
+  },
+  "negative": {
+    "status": "EXPECTED_REJECTION",
+    "exit": 2,
+    "reason": "required real libavcodec DSO absent; rejected by package hash manifest before metadata loading",
+    "scope": "Device-free namespace; no fallback to target/host FFmpeg."
+  },
+  "development_validation": {
+    "real_ELF_fixture_tests": 12,
+    "fixture_ELFs_executed": false,
+    "cases": [
+      "reproducible bytes after source-prefix relocation/mtime changes and fresh extraction",
+      "missing required payload without fallback",
+      "wrong SONAME link",
+      "missing external provider without host fallback",
+      "same SONAME with wrong version definition",
+      "same version definition missing the actual strong symbol",
+      "payload hash drift",
+      "executable mode drift",
+      "changed pinned-target hash inventory",
+      "changed source notice",
+      "payload RPATH",
+      "nonallowlisted files excluded"
+    ],
+    "existing_package_capability_tests": "10 groups PASS; no new package/device selection run"
+  },
+  "inventories": {
+    "dependencies": {
+      "file": "runtime-package-20261029-dependencies.json",
+      "bytes": 20052,
+      "sha256": "bca5916dfc36b91315343b5987caf5cd71bd0c4fe837eae203bc2666d75742c5"
+    },
+    "source_and_notices": {
+      "file": "runtime-package-20261029-provenance.json",
+      "bytes": 3377,
+      "sha256": "6266b9d0a8bfe6624c236d871f9a16e00feb7c6dc19cd1160e69099d6bd51213"
+    },
+    "tools": {
+      "runtime-package.py": {
+        "bytes": 19119,
+        "sha256": "6c05f55ea8ecbf903085c0bfa98740559559d7a3481c1f9686fb521ddbf82272"
+      },
+      "runtime-package-metadata.py": {
+        "bytes": 6532,
+        "sha256": "42f6f90ebd9fe2d40974df689e674d47a02d9c8aff199a079cd9059d2523f55e"
+      },
+      "runtime-package-namespace.py": {
+        "bytes": 2792,
+        "sha256": "598e2ccfc2c01a60c6451e972b6a69d05e313d59e52ac75e98d748bb6b0bf972"
+      }
+    }
+  },
+  "retained_private_evidence_integrity": {
+    "first_package_result": {
+      "bytes": 236,
+      "sha256": "0aa58c2dac2fd3e2a0717d37fe523c6e8ed971441a32760764152506224b440c"
+    },
+    "second_package_result": {
+      "bytes": 236,
+      "sha256": "0aa58c2dac2fd3e2a0717d37fe523c6e8ed971441a32760764152506224b440c"
+    },
+    "relocation_1": {
+      "bytes": 2460,
+      "sha256": "26f4b434663cd994e071fee3d7875dca144180c2f694f34caac754bc1fb19b9a"
+    },
+    "relocation_2": {
+      "bytes": 2461,
+      "sha256": "d976d53988290191f71281d6e02b6b04e38618aadd9360cf7fe86d9deceb8918"
+    },
+    "omitted_DSO_result": {
+      "bytes": 232,
+      "sha256": "3075d9bdd7dc7272cb56803c0901d8eacc72e98a49622add81bcd008ca834b1a"
+    },
+    "omitted_DSO_stderr": {
+      "bytes": 152,
+      "sha256": "8cf005a524b61b06a1dcf701b9e7c98062d7103a8005d372a36e975a4281ffb8"
+    }
+  },
+  "outstanding": [
+    "Neutral-prefix FFmpeg rebuild and bit-reproducible binary verification; no binary strings are rewritten.",
+    "Independently clean target with actual Kodi native selection, pixels/PTS/controls/cleanup; old playback PASS is not transferred to this namespace.",
+    "Complete first-user download/disk/RAM/setup/update burden and missing earlier peak build RAM.",
+    "Exactly corresponding-source archive and per-component/dependency redistribution review; copied notices are an inventory, not a compatibility conclusion.",
+    "Separately approved public installer/binary distribution and assigned ABI/security-update maintenance owner.",
+    "Native i386/Atom, other GPUs, physical A/V/display cadence and broader media acceptance remain unqualified."
+  ],
+  "invariants": [
+    "No public archive, package upload, upstream submission or remote write.",
+    "No system-library replacement, module/firmware/PM or installed-profile/default change.",
+    "#538 remains OPEN; only its excluded heap subtask stays excluded."
+  ],
+  "implementation_snapshot": "a6a604be7e8573664c684a848082de1098f4a1b9"
+}

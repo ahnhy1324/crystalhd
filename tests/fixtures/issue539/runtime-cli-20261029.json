@@ -1,0 +1,840 @@
+{
+  "schema": 1,
+  "issue": 539,
+  "date": "2026-10-29",
+  "status": "PASS_PRIVATE_COMPILERLESS_RELOCATED_SOFTWARE_CLI",
+  "research_base": "1dd212615b29abbae74864777dfada48ead1ef84",
+  "package_implementation_baseline": "a6a604be7e8573664c684a848082de1098f4a1b9",
+  "package_archive_unchanged": {
+    "bytes": 8028160,
+    "sha256": "832dbfc64a1e0fef3e9db2061bde28f267a22a293159552416dff3b3ae3d8053"
+  },
+  "payload_source_revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+  "public_distribution_status": "PUBLIC_NOT_READY",
+  "target": {
+    "Platform_ref": "org.freedesktop.Platform/x86_64/26.08",
+    "retained_Platform_OSTree_identifier": "e7f7b0fb20662fe92e4eac65d58a57019cefae45a39559c4b50440a88acc0491",
+    "kernel_scope": "Existing development host kernel shared through new namespaces; not an independent clean OS.",
+    "architecture": "x86_64 ELF64 only; inherited Core2 build qualification, not a generic CPU or i386 artifact.",
+    "external_providers_not_bundled": [
+      {
+        "path_in_Platform": "lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        "soname": "ld-linux-x86-64.so.2",
+        "sha256": "6b887f408400b77f99a5c0e99f380c84264eef29156c191713b3343189cb0391",
+        "bytes": 253264
+      },
+      {
+        "path_in_Platform": "lib/x86_64-linux-gnu/libc.so.6",
+        "soname": "libc.so.6",
+        "sha256": "f38d0ec29b1ebfe7bb923b73b68b07b73c395e0cf5a0f291fbce495c3f1c3555",
+        "bytes": 2177968
+      },
+      {
+        "path_in_Platform": "lib/x86_64-linux-gnu/libdrm.so.2.134.0",
+        "soname": "libdrm.so.2",
+        "sha256": "eb9eaddd93b1c2b7c47cf15d52a640b31f295149196509472f79fe7dac734cd4",
+        "bytes": 100360
+      },
+      {
+        "path_in_Platform": "lib/x86_64-linux-gnu/libm.so.6",
+        "soname": "libm.so.6",
+        "sha256": "d82b9ae8b26fa4f54c35313d94d28133fa88186a96227ee6d9422a5c85be33b8",
+        "bytes": 1227608
+      },
+      {
+        "path_in_Platform": "lib/x86_64-linux-gnu/libva-drm.so.2.2400.0",
+        "soname": "libva-drm.so.2",
+        "sha256": "7aebc8fb6919e24d6a1f4c324402e3de702c5501bb6370b1a4b0cd28ffd08a6a",
+        "bytes": 15600
+      },
+      {
+        "path_in_Platform": "lib/x86_64-linux-gnu/libva.so.2.2400.0",
+        "soname": "libva.so.2",
+        "sha256": "8d9210f6575e752eb5cfec9f168c058c45ca98adf6005600ae913d2593894487",
+        "bytes": 239536
+      },
+      {
+        "path_in_Platform": "lib/x86_64-linux-gnu/libz.so.1.3.1.zlib-ng",
+        "soname": "libz.so.1",
+        "sha256": "627c5fa735ff7557e14c595871010c09d6b6b7eaa470c9b70b695c5e82adf00c",
+        "bytes": 190976
+      }
+    ],
+    "strong_dynamic_symbol_requirements_checked": 1941,
+    "GLIBC_2_43_requirement": "atan2f@GLIBC_2.43 remains required by the existing libavcodec63/libswscale10; arbitrary older hosts remain incompatible."
+  },
+  "oracle": {
+    "public_reference_projection": {
+      "file": "runtime-cli-reference-20261029.json",
+      "bytes": 8654,
+      "sha256": "00d504487747c9a1f35a59d2e92c356b6e881192306c800d78c7a8cc2fbb1d14"
+    },
+    "actual_run_reference_manifest": {
+      "bytes": 8248,
+      "sha256": "8b2a1097fed435b8e05c21a573c5536ed2f7642444fb89d65a4165b95ce424b8"
+    },
+    "public_independent_clock": {
+      "file": "runtime-cli-independent-ffprobe8-20261029.json",
+      "bytes": 13168,
+      "sha256": "9d35e0ec6ca17b4678a5a38493ad7637afc26d34fa3bc45623c3ceb5c9823479"
+    },
+    "method": "Pixel bytes are the pre-existing independent software NV12 reference; source/association hashes are preserved. Source clock/geometry comes from separately executed installed FFprobe8, not tested package. Public projection only clarifies descriptor/provenance; all original frame/hash/clock/stream fields are unchanged.",
+    "historical_pixel_decoder_binary_identity": "NOT_RECORDED; no exact historical binary equivalence or independent algorithm verification claimed.",
+    "input_sha256": "fbfe72e9246453d3900887d4a1444fb801fb388d7fa4ee8f58990305271001a6",
+    "retained_pixel_bytes_sha256": "82dcc068cff510d6086e15df0ff243c7d18e607d3244c4218289f2127029db91"
+  },
+  "relocations": [
+    {
+      "prefix": "/opt/crystalhd native one",
+      "status": "PASS_COMPILERLESS_RELOCATED_SOFTWARE_CLI",
+      "metadata_preflight_status": "PASS_COMPILERLESS_RELOCATED_METADATA_ONLY",
+      "eleven_inspected_compilers_build_tools_absent": true,
+      "no_decoder_GPU_sysfs_or_legacy_overlays": true,
+      "version_lines": {
+        "ffmpeg": "ffmpeg version 12cc1f4 Copyright (c) 2000-2026 the FFmpeg developers",
+        "ffprobe": "ffprobe version 12cc1f4 Copyright (c) 2007-2026 the FFmpeg developers"
+      },
+      "frames": 50,
+      "time_base": "1/90000",
+      "pts_first_last": [
+        133200,
+        309600
+      ],
+      "full_NV12_Y_and_UV_bytes_compared": 69120000,
+      "raw_output_sha256": "82dcc068cff510d6086e15df0ff243c7d18e607d3244c4218289f2127029db91",
+      "all_raw_bytes_equal_retained_independent_software_reference": true,
+      "all_frame_hashes_counts_and_PTS_match": true,
+      "ffprobe_all_decoded_clock_geometry_and_field_metadata_match": true,
+      "CLI_cases": [
+        {
+          "case": "ffmpeg-version",
+          "argv": [
+            "/opt/crystalhd native one/bin/ffmpeg",
+            "-version"
+          ],
+          "exit": 0,
+          "loader_FFmpeg_files": [
+            "/opt/crystalhd native one/lib/libavcodec.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavdevice.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavfilter.so.12.1.102",
+            "/opt/crystalhd native one/lib/libavformat.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavutil.so.61.1.102",
+            "/opt/crystalhd native one/lib/libswresample.so.7.1.102",
+            "/opt/crystalhd native one/lib/libswscale.so.10.1.102"
+          ],
+          "live_process_FFmpeg_files": [
+            "/opt/crystalhd native one/lib/libavdevice.so.63.1.102"
+          ],
+          "live_map_snapshots": 1,
+          "complete_live_map_snapshots": 0,
+          "stdout_sha256": "05dc1c0ef289fd9b535ac81761161500e2c2283c0d5566b1a0469850a58f5886",
+          "stderr_sha256": "38ee2317e9aa955408e0dd2bfe735e0e70d402fc315bb7c7a13178c4cf76dc68"
+        },
+        {
+          "case": "ffprobe-version",
+          "argv": [
+            "/opt/crystalhd native one/bin/ffprobe",
+            "-version"
+          ],
+          "exit": 0,
+          "loader_FFmpeg_files": [
+            "/opt/crystalhd native one/lib/libavcodec.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavdevice.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavfilter.so.12.1.102",
+            "/opt/crystalhd native one/lib/libavformat.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavutil.so.61.1.102",
+            "/opt/crystalhd native one/lib/libswresample.so.7.1.102",
+            "/opt/crystalhd native one/lib/libswscale.so.10.1.102"
+          ],
+          "live_process_FFmpeg_files": [
+            "/opt/crystalhd native one/lib/libavdevice.so.63.1.102"
+          ],
+          "live_map_snapshots": 1,
+          "complete_live_map_snapshots": 0,
+          "stdout_sha256": "485241496523cfede87fc194b9456806677daac834a05ab474e48768760b4e59",
+          "stderr_sha256": "6d20ddd697a7acbc46058236fad175cd6dfadd905e52fc517644bb4c16775bec"
+        },
+        {
+          "case": "decoders",
+          "argv": [
+            "/opt/crystalhd native one/bin/ffmpeg",
+            "-hide_banner",
+            "-decoders"
+          ],
+          "exit": 0,
+          "loader_FFmpeg_files": [
+            "/opt/crystalhd native one/lib/libavcodec.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavdevice.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavfilter.so.12.1.102",
+            "/opt/crystalhd native one/lib/libavformat.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavutil.so.61.1.102",
+            "/opt/crystalhd native one/lib/libswresample.so.7.1.102",
+            "/opt/crystalhd native one/lib/libswscale.so.10.1.102"
+          ],
+          "live_process_FFmpeg_files": [
+            "/opt/crystalhd native one/lib/libavcodec.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavfilter.so.12.1.102",
+            "/opt/crystalhd native one/lib/libavformat.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavutil.so.61.1.102",
+            "/opt/crystalhd native one/lib/libswresample.so.7.1.102",
+            "/opt/crystalhd native one/lib/libswscale.so.10.1.102"
+          ],
+          "live_map_snapshots": 1,
+          "complete_live_map_snapshots": 0,
+          "stdout_sha256": "22517a29629eb73bc3251833f33fb9ac96a0b0b424a9d120bf579b7636f1aab9",
+          "stderr_sha256": "4b6782af55cee956b3b70d4c27a170a7da0c8369504a3083596d2389ac732ac8"
+        },
+        {
+          "case": "software-decode",
+          "argv": [
+            "/opt/crystalhd native one/bin/ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-xerror",
+            "-n",
+            "-copyts",
+            "-readrate",
+            "1",
+            "-readrate_initial_burst",
+            "0",
+            "-hwaccel",
+            "none",
+            "-threads",
+            "1",
+            "-c:v",
+            "h264",
+            "-i",
+            "/media/input.ts",
+            "-map",
+            "0:v:0",
+            "-an",
+            "-sn",
+            "-dn",
+            "-vf",
+            "format=nv12",
+            "-c:v",
+            "rawvideo",
+            "-threads:v",
+            "1",
+            "-pix_fmt",
+            "nv12",
+            "-fps_mode",
+            "passthrough",
+            "-enc_time_base",
+            "1/90000",
+            "-f",
+            "rawvideo",
+            "/work/decoded.nv12",
+            "-map",
+            "0:v:0",
+            "-an",
+            "-sn",
+            "-dn",
+            "-vf",
+            "format=nv12",
+            "-c:v",
+            "rawvideo",
+            "-threads:v",
+            "1",
+            "-pix_fmt",
+            "nv12",
+            "-fps_mode",
+            "passthrough",
+            "-enc_time_base",
+            "1/90000",
+            "-f",
+            "framemd5",
+            "/work/decoded.framemd5"
+          ],
+          "exit": 0,
+          "loader_FFmpeg_files": [
+            "/opt/crystalhd native one/lib/libavcodec.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavdevice.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavfilter.so.12.1.102",
+            "/opt/crystalhd native one/lib/libavformat.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavutil.so.61.1.102",
+            "/opt/crystalhd native one/lib/libswresample.so.7.1.102",
+            "/opt/crystalhd native one/lib/libswscale.so.10.1.102"
+          ],
+          "live_process_FFmpeg_files": [
+            "/opt/crystalhd native one/lib/libavcodec.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavdevice.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavfilter.so.12.1.102",
+            "/opt/crystalhd native one/lib/libavformat.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavutil.so.61.1.102",
+            "/opt/crystalhd native one/lib/libswresample.so.7.1.102",
+            "/opt/crystalhd native one/lib/libswscale.so.10.1.102"
+          ],
+          "live_map_snapshots": 97,
+          "complete_live_map_snapshots": 96,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7a1de78757aea6701a889ceb35bdb67d2275ff5124d5441ec0f202479d3e031e"
+        },
+        {
+          "case": "software-ffprobe",
+          "argv": [
+            "/opt/crystalhd native one/bin/ffprobe",
+            "-v",
+            "error",
+            "-threads",
+            "1",
+            "-codec_whitelist",
+            "h264",
+            "-select_streams",
+            "v:0",
+            "-show_frames",
+            "-show_streams",
+            "-show_entries",
+            "frame=pts,duration,width,height,pix_fmt,interlaced_frame,top_field_first:stream=codec_name,width,height,pix_fmt,time_base",
+            "-of",
+            "json",
+            "/media/input.ts"
+          ],
+          "exit": 0,
+          "loader_FFmpeg_files": [
+            "/opt/crystalhd native one/lib/libavcodec.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavdevice.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavfilter.so.12.1.102",
+            "/opt/crystalhd native one/lib/libavformat.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavutil.so.61.1.102",
+            "/opt/crystalhd native one/lib/libswresample.so.7.1.102",
+            "/opt/crystalhd native one/lib/libswscale.so.10.1.102"
+          ],
+          "live_process_FFmpeg_files": [
+            "/opt/crystalhd native one/lib/libavcodec.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavdevice.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavfilter.so.12.1.102",
+            "/opt/crystalhd native one/lib/libavformat.so.63.1.102",
+            "/opt/crystalhd native one/lib/libavutil.so.61.1.102",
+            "/opt/crystalhd native one/lib/libswresample.so.7.1.102",
+            "/opt/crystalhd native one/lib/libswscale.so.10.1.102"
+          ],
+          "live_map_snapshots": 33,
+          "complete_live_map_snapshots": 33,
+          "stdout_sha256": "9d35e0ec6ca17b4678a5a38493ad7637afc26d34fa3bc45623c3ceb5c9823479",
+          "stderr_sha256": "72d128a2bb6509667081b22b365a8991429f640452d2c4b551421e431f739997"
+        }
+      ]
+    },
+    {
+      "prefix": "/opt/relocated runtime two",
+      "status": "PASS_COMPILERLESS_RELOCATED_SOFTWARE_CLI",
+      "metadata_preflight_status": "PASS_COMPILERLESS_RELOCATED_METADATA_ONLY",
+      "eleven_inspected_compilers_build_tools_absent": true,
+      "no_decoder_GPU_sysfs_or_legacy_overlays": true,
+      "version_lines": {
+        "ffmpeg": "ffmpeg version 12cc1f4 Copyright (c) 2000-2026 the FFmpeg developers",
+        "ffprobe": "ffprobe version 12cc1f4 Copyright (c) 2007-2026 the FFmpeg developers"
+      },
+      "frames": 50,
+      "time_base": "1/90000",
+      "pts_first_last": [
+        133200,
+        309600
+      ],
+      "full_NV12_Y_and_UV_bytes_compared": 69120000,
+      "raw_output_sha256": "82dcc068cff510d6086e15df0ff243c7d18e607d3244c4218289f2127029db91",
+      "all_raw_bytes_equal_retained_independent_software_reference": true,
+      "all_frame_hashes_counts_and_PTS_match": true,
+      "ffprobe_all_decoded_clock_geometry_and_field_metadata_match": true,
+      "CLI_cases": [
+        {
+          "case": "ffmpeg-version",
+          "argv": [
+            "/opt/relocated runtime two/bin/ffmpeg",
+            "-version"
+          ],
+          "exit": 0,
+          "loader_FFmpeg_files": [
+            "/opt/relocated runtime two/lib/libavcodec.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavdevice.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavfilter.so.12.1.102",
+            "/opt/relocated runtime two/lib/libavformat.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavutil.so.61.1.102",
+            "/opt/relocated runtime two/lib/libswresample.so.7.1.102",
+            "/opt/relocated runtime two/lib/libswscale.so.10.1.102"
+          ],
+          "live_process_FFmpeg_files": [],
+          "live_map_snapshots": 0,
+          "complete_live_map_snapshots": 0,
+          "stdout_sha256": "05dc1c0ef289fd9b535ac81761161500e2c2283c0d5566b1a0469850a58f5886",
+          "stderr_sha256": "8b8c2c755d7c4a848107d01d22919a70f004f42f6eeb1df783d4367489a218e5"
+        },
+        {
+          "case": "ffprobe-version",
+          "argv": [
+            "/opt/relocated runtime two/bin/ffprobe",
+            "-version"
+          ],
+          "exit": 0,
+          "loader_FFmpeg_files": [
+            "/opt/relocated runtime two/lib/libavcodec.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavdevice.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavfilter.so.12.1.102",
+            "/opt/relocated runtime two/lib/libavformat.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavutil.so.61.1.102",
+            "/opt/relocated runtime two/lib/libswresample.so.7.1.102",
+            "/opt/relocated runtime two/lib/libswscale.so.10.1.102"
+          ],
+          "live_process_FFmpeg_files": [
+            "/opt/relocated runtime two/lib/libavcodec.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavdevice.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavfilter.so.12.1.102",
+            "/opt/relocated runtime two/lib/libavformat.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavutil.so.61.1.102",
+            "/opt/relocated runtime two/lib/libswresample.so.7.1.102",
+            "/opt/relocated runtime two/lib/libswscale.so.10.1.102"
+          ],
+          "live_map_snapshots": 1,
+          "complete_live_map_snapshots": 1,
+          "stdout_sha256": "485241496523cfede87fc194b9456806677daac834a05ab474e48768760b4e59",
+          "stderr_sha256": "f581cde1b79426129569b6b1cfa55118facf2fcf58131c70c7ec528b7d3173ed"
+        },
+        {
+          "case": "decoders",
+          "argv": [
+            "/opt/relocated runtime two/bin/ffmpeg",
+            "-hide_banner",
+            "-decoders"
+          ],
+          "exit": 0,
+          "loader_FFmpeg_files": [
+            "/opt/relocated runtime two/lib/libavcodec.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavdevice.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavfilter.so.12.1.102",
+            "/opt/relocated runtime two/lib/libavformat.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavutil.so.61.1.102",
+            "/opt/relocated runtime two/lib/libswresample.so.7.1.102",
+            "/opt/relocated runtime two/lib/libswscale.so.10.1.102"
+          ],
+          "live_process_FFmpeg_files": [
+            "/opt/relocated runtime two/lib/libavcodec.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavdevice.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavfilter.so.12.1.102",
+            "/opt/relocated runtime two/lib/libavformat.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavutil.so.61.1.102",
+            "/opt/relocated runtime two/lib/libswresample.so.7.1.102",
+            "/opt/relocated runtime two/lib/libswscale.so.10.1.102"
+          ],
+          "live_map_snapshots": 1,
+          "complete_live_map_snapshots": 1,
+          "stdout_sha256": "22517a29629eb73bc3251833f33fb9ac96a0b0b424a9d120bf579b7636f1aab9",
+          "stderr_sha256": "553e8035e583dac34cfeb4a0b898cf1401b5e972209c8d8fc2ebeace3b3e61ca"
+        },
+        {
+          "case": "software-decode",
+          "argv": [
+            "/opt/relocated runtime two/bin/ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-xerror",
+            "-n",
+            "-copyts",
+            "-readrate",
+            "1",
+            "-readrate_initial_burst",
+            "0",
+            "-hwaccel",
+            "none",
+            "-threads",
+            "1",
+            "-c:v",
+            "h264",
+            "-i",
+            "/media/input.ts",
+            "-map",
+            "0:v:0",
+            "-an",
+            "-sn",
+            "-dn",
+            "-vf",
+            "format=nv12",
+            "-c:v",
+            "rawvideo",
+            "-threads:v",
+            "1",
+            "-pix_fmt",
+            "nv12",
+            "-fps_mode",
+            "passthrough",
+            "-enc_time_base",
+            "1/90000",
+            "-f",
+            "rawvideo",
+            "/work/decoded.nv12",
+            "-map",
+            "0:v:0",
+            "-an",
+            "-sn",
+            "-dn",
+            "-vf",
+            "format=nv12",
+            "-c:v",
+            "rawvideo",
+            "-threads:v",
+            "1",
+            "-pix_fmt",
+            "nv12",
+            "-fps_mode",
+            "passthrough",
+            "-enc_time_base",
+            "1/90000",
+            "-f",
+            "framemd5",
+            "/work/decoded.framemd5"
+          ],
+          "exit": 0,
+          "loader_FFmpeg_files": [
+            "/opt/relocated runtime two/lib/libavcodec.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavdevice.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavfilter.so.12.1.102",
+            "/opt/relocated runtime two/lib/libavformat.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavutil.so.61.1.102",
+            "/opt/relocated runtime two/lib/libswresample.so.7.1.102",
+            "/opt/relocated runtime two/lib/libswscale.so.10.1.102"
+          ],
+          "live_process_FFmpeg_files": [
+            "/opt/relocated runtime two/lib/libavcodec.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavdevice.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavfilter.so.12.1.102",
+            "/opt/relocated runtime two/lib/libavformat.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavutil.so.61.1.102",
+            "/opt/relocated runtime two/lib/libswresample.so.7.1.102",
+            "/opt/relocated runtime two/lib/libswscale.so.10.1.102"
+          ],
+          "live_map_snapshots": 71,
+          "complete_live_map_snapshots": 71,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "ac55e9e3ac47d558e4d1439f4067c436f9a02ed2938e77a65a698d3557df84d1"
+        },
+        {
+          "case": "software-ffprobe",
+          "argv": [
+            "/opt/relocated runtime two/bin/ffprobe",
+            "-v",
+            "error",
+            "-threads",
+            "1",
+            "-codec_whitelist",
+            "h264",
+            "-select_streams",
+            "v:0",
+            "-show_frames",
+            "-show_streams",
+            "-show_entries",
+            "frame=pts,duration,width,height,pix_fmt,interlaced_frame,top_field_first:stream=codec_name,width,height,pix_fmt,time_base",
+            "-of",
+            "json",
+            "/media/input.ts"
+          ],
+          "exit": 0,
+          "loader_FFmpeg_files": [
+            "/opt/relocated runtime two/lib/libavcodec.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavdevice.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavfilter.so.12.1.102",
+            "/opt/relocated runtime two/lib/libavformat.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavutil.so.61.1.102",
+            "/opt/relocated runtime two/lib/libswresample.so.7.1.102",
+            "/opt/relocated runtime two/lib/libswscale.so.10.1.102"
+          ],
+          "live_process_FFmpeg_files": [
+            "/opt/relocated runtime two/lib/libavcodec.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavdevice.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavfilter.so.12.1.102",
+            "/opt/relocated runtime two/lib/libavformat.so.63.1.102",
+            "/opt/relocated runtime two/lib/libavutil.so.61.1.102",
+            "/opt/relocated runtime two/lib/libswresample.so.7.1.102",
+            "/opt/relocated runtime two/lib/libswscale.so.10.1.102"
+          ],
+          "live_map_snapshots": 34,
+          "complete_live_map_snapshots": 34,
+          "stdout_sha256": "9d35e0ec6ca17b4678a5a38493ad7637afc26d34fa3bc45623c3ceb5c9823479",
+          "stderr_sha256": "0d4606af66f00486cc0cd0e504e515e7b56b66945608fee847d00fccd3b9c17d"
+        }
+      ]
+    }
+  ],
+  "missing_DSO_controls": {
+    "guarded_software_helper": {
+      "status": "EXPECTED_PREFLIGHT_REJECTION",
+      "exit": 2,
+      "actual_CLI_started": false,
+      "reason": "Missing exact required DSO rejected before CLI by manifest preflight"
+    },
+    "actual_direct_CLI_loader": [
+      {
+        "case": "ffmpeg-version-with-missing-libavcodec",
+        "exit": 127,
+        "status": "EXPECTED_LOADER_REJECTION",
+        "reason": "libavcodec.so.63 unavailable; no target/host library fallback"
+      },
+      {
+        "case": "ffprobe-version-with-missing-libavcodec",
+        "exit": 127,
+        "status": "EXPECTED_LOADER_REJECTION",
+        "reason": "libavcodec.so.63 unavailable; no target/host library fallback"
+      }
+    ]
+  },
+  "preserved_initial_collector_failure": {
+    "status": "FAIL_COLLECTOR",
+    "worker_exit": 2,
+    "media_stage": "NOT_RUN in this original attempt",
+    "failed_case": "ffmpeg-version mapping observer, despite CLI exit0 and all seven final loader initializers matching the selected package",
+    "failed_observed_mapping_set": "NOT_RECORDED",
+    "correction": "Permit observed startup subsets only within the exact set; require full final loader census for every CLI and at least one full live seven-map snapshot for both media processes.",
+    "no_source_payload_or_oracle_data_change": true,
+    "producer_source": {
+      "bytes": 10383,
+      "sha256": "7ff3a5fc58868c8c70d442d1781bbf08d01a826018d6f1273b69b6aac8d52683"
+    }
+  },
+  "producer_sources": {
+    "runtime-package-cli.py": {
+      "bytes": 11053,
+      "sha256": "a87df291c1de66198607928cbad7698fd7b4c4c7a9bd68a4e7c06ed347c7a021"
+    },
+    "runtime-package-namespace.py": {
+      "bytes": 4975,
+      "sha256": "1765e95b5c742e7d724134d711082e33a34377d46d62b12aa14496d9db1afcc8"
+    },
+    "runtime-package-metadata.py": {
+      "bytes": 6532,
+      "sha256": "42f6f90ebd9fe2d40974df689e674d47a02d9c8aff199a079cd9059d2523f55e"
+    }
+  },
+  "raw_integrity": [
+    {
+      "artifact": "relocation-1/result.json",
+      "bytes": 10783,
+      "sha256": "55ee1cd6708f532a79693f53e2d42b6d066fe34309ffde6bfe42f4c3436ba2b9"
+    },
+    {
+      "artifact": "relocation-1/decoded.nv12",
+      "bytes": 69120000,
+      "sha256": "82dcc068cff510d6086e15df0ff243c7d18e607d3244c4218289f2127029db91"
+    },
+    {
+      "artifact": "relocation-1/decoded.framemd5",
+      "bytes": 4218,
+      "sha256": "30f82d796af746e668fe7f6aacdcb3a423550f9fbbe6115de0813deb11cb7d85"
+    },
+    {
+      "artifact": "relocation-1/worker.stdout",
+      "bytes": 10783,
+      "sha256": "55ee1cd6708f532a79693f53e2d42b6d066fe34309ffde6bfe42f4c3436ba2b9"
+    },
+    {
+      "artifact": "relocation-1/worker.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "relocation-1/ffmpeg-version.stdout",
+      "bytes": 1346,
+      "sha256": "05dc1c0ef289fd9b535ac81761161500e2c2283c0d5566b1a0469850a58f5886"
+    },
+    {
+      "artifact": "relocation-1/ffmpeg-version.stderr",
+      "bytes": 11435,
+      "sha256": "38ee2317e9aa955408e0dd2bfe735e0e70d402fc315bb7c7a13178c4cf76dc68"
+    },
+    {
+      "artifact": "relocation-1/ffprobe-version.stdout",
+      "bytes": 1321,
+      "sha256": "485241496523cfede87fc194b9456806677daac834a05ab474e48768760b4e59"
+    },
+    {
+      "artifact": "relocation-1/ffprobe-version.stderr",
+      "bytes": 11457,
+      "sha256": "6d20ddd697a7acbc46058236fad175cd6dfadd905e52fc517644bb4c16775bec"
+    },
+    {
+      "artifact": "relocation-1/decoders.stdout",
+      "bytes": 997,
+      "sha256": "22517a29629eb73bc3251833f33fb9ac96a0b0b424a9d120bf579b7636f1aab9"
+    },
+    {
+      "artifact": "relocation-1/decoders.stderr",
+      "bytes": 11435,
+      "sha256": "4b6782af55cee956b3b70d4c27a170a7da0c8369504a3083596d2389ac732ac8"
+    },
+    {
+      "artifact": "relocation-1/software-decode.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "relocation-1/software-decode.stderr",
+      "bytes": 12290,
+      "sha256": "7a1de78757aea6701a889ceb35bdb67d2275ff5124d5441ec0f202479d3e031e"
+    },
+    {
+      "artifact": "relocation-1/software-ffprobe.stdout",
+      "bytes": 13168,
+      "sha256": "9d35e0ec6ca17b4678a5a38493ad7637afc26d34fa3bc45623c3ceb5c9823479"
+    },
+    {
+      "artifact": "relocation-1/software-ffprobe.stderr",
+      "bytes": 12312,
+      "sha256": "72d128a2bb6509667081b22b365a8991429f640452d2c4b551421e431f739997"
+    },
+    {
+      "artifact": "relocation-2/result.json",
+      "bytes": 11233,
+      "sha256": "e4a7948a09bd3c5ef4b1e8c8ce106b488bb7e21d7e0615e02513d5b8f8f7cc7d"
+    },
+    {
+      "artifact": "relocation-2/decoded.nv12",
+      "bytes": 69120000,
+      "sha256": "82dcc068cff510d6086e15df0ff243c7d18e607d3244c4218289f2127029db91"
+    },
+    {
+      "artifact": "relocation-2/decoded.framemd5",
+      "bytes": 4218,
+      "sha256": "30f82d796af746e668fe7f6aacdcb3a423550f9fbbe6115de0813deb11cb7d85"
+    },
+    {
+      "artifact": "relocation-2/worker.stdout",
+      "bytes": 11233,
+      "sha256": "e4a7948a09bd3c5ef4b1e8c8ce106b488bb7e21d7e0615e02513d5b8f8f7cc7d"
+    },
+    {
+      "artifact": "relocation-2/worker.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "relocation-2/ffmpeg-version.stdout",
+      "bytes": 1346,
+      "sha256": "05dc1c0ef289fd9b535ac81761161500e2c2283c0d5566b1a0469850a58f5886"
+    },
+    {
+      "artifact": "relocation-2/ffmpeg-version.stderr",
+      "bytes": 11490,
+      "sha256": "8b8c2c755d7c4a848107d01d22919a70f004f42f6eeb1df783d4367489a218e5"
+    },
+    {
+      "artifact": "relocation-2/ffprobe-version.stdout",
+      "bytes": 1321,
+      "sha256": "485241496523cfede87fc194b9456806677daac834a05ab474e48768760b4e59"
+    },
+    {
+      "artifact": "relocation-2/ffprobe-version.stderr",
+      "bytes": 11512,
+      "sha256": "f581cde1b79426129569b6b1cfa55118facf2fcf58131c70c7ec528b7d3173ed"
+    },
+    {
+      "artifact": "relocation-2/decoders.stdout",
+      "bytes": 997,
+      "sha256": "22517a29629eb73bc3251833f33fb9ac96a0b0b424a9d120bf579b7636f1aab9"
+    },
+    {
+      "artifact": "relocation-2/decoders.stderr",
+      "bytes": 11490,
+      "sha256": "553e8035e583dac34cfeb4a0b898cf1401b5e972209c8d8fc2ebeace3b3e61ca"
+    },
+    {
+      "artifact": "relocation-2/software-decode.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "relocation-2/software-decode.stderr",
+      "bytes": 12345,
+      "sha256": "ac55e9e3ac47d558e4d1439f4067c436f9a02ed2938e77a65a698d3557df84d1"
+    },
+    {
+      "artifact": "relocation-2/software-ffprobe.stdout",
+      "bytes": 13168,
+      "sha256": "9d35e0ec6ca17b4678a5a38493ad7637afc26d34fa3bc45623c3ceb5c9823479"
+    },
+    {
+      "artifact": "relocation-2/software-ffprobe.stderr",
+      "bytes": 12367,
+      "sha256": "0d4606af66f00486cc0cd0e504e515e7b56b66945608fee847d00fccd3b9c17d"
+    },
+    {
+      "artifact": "cli-loader-negative/result.json",
+      "bytes": 406,
+      "sha256": "19d203574af9c225d13588a1d355fa749b6f009ebb6bd4ce27d58c6778553224"
+    },
+    {
+      "artifact": "cli-loader-negative/ffmpeg.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "cli-loader-negative/ffmpeg.stderr",
+      "bytes": 151,
+      "sha256": "3a5acc3f1986fe95a38e90a5ab3e59a022cd7e2dea5596c3d3060e6ec222ba7f"
+    },
+    {
+      "artifact": "cli-loader-negative/ffprobe.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "cli-loader-negative/ffprobe.stderr",
+      "bytes": 152,
+      "sha256": "18eb4fc59283435875a24bf9f678425f8373af81e45a36d8a408a73f0fee7a58"
+    },
+    {
+      "artifact": "cli-final-missing-guard/expected-rejection.json",
+      "bytes": 175,
+      "sha256": "9ed175eece0e3d963f906f4159e749605ff8492c7523a6de40b64ca7c019bc59"
+    },
+    {
+      "artifact": "cli-final-missing-guard/worker.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "cli-final-missing-guard/worker.stderr",
+      "bytes": 171,
+      "sha256": "76a2746df6e7afc9c8ad017f69ea67f3297efadedbe6ee4e07c0228918b74f94"
+    },
+    {
+      "artifact": "cli-final-missing-guard/wrapper.stderr",
+      "bytes": 224,
+      "sha256": "8a23bc623bfcf6898d7a13f363e684c7e4d064692d40f3562c18bf4d1542e400"
+    },
+    {
+      "artifact": "cli-case-1/failure.json",
+      "bytes": 202,
+      "sha256": "bc8b911b380b6bab6ee3d42d20f5213c247955da51e6b737a66777aea733c41e"
+    },
+    {
+      "artifact": "cli-case-1/worker.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "cli-case-1/worker.stderr",
+      "bytes": 74,
+      "sha256": "c889a9afd4ddcf1dc39f82ae948e4868c71550e5af32349273662cbe801fd0b4"
+    },
+    {
+      "artifact": "cli-case-1/ffmpeg-version.stdout",
+      "bytes": 1346,
+      "sha256": "05dc1c0ef289fd9b535ac81761161500e2c2283c0d5566b1a0469850a58f5886"
+    },
+    {
+      "artifact": "cli-case-1/ffmpeg-version.stderr",
+      "bytes": 11435,
+      "sha256": "325874210c59509120e139841a2725e812f49784dcf06d5d97cfd63786b1d194"
+    }
+  ],
+  "limits": [
+    "All executions use the retained Platform on the existing host kernel; no independently clean OS or generic host qualification.",
+    "Software H264 is explicitly selected with -hwaccel none -c:v h264; ffprobe uses an H264 decoder whitelist and no hardware devices exist in the namespace. No native V4L2, Kodi, GPU, driver/module/PM or physical display/audio test occurs.",
+    "CLI versions, software decode and source-clock inspection are actual executions. Live map snapshots and libc loader diagnostics establish selected DSO files, not throughput or timing results.",
+    "Existing Core2/x86_64 and GLIBC2.43 requirements, private embedded configure paths, missing neutral rebuild/corresponding source/redistribution review and unassigned update owner remain.",
+    "Original FAIL/NOT_RUN is preserved; later complete software runs are separate results. No golden pixels, tolerance or format resampling was substituted.",
+    "#538 remains OPEN and its excluded heap subtask stays excluded."
+  ]
+}
