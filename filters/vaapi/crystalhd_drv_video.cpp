@@ -30,6 +30,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -7934,6 +7935,12 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
       width == 0 || height == 0 ||
       width > kMaxWidth || height > kMaxHeight || surface_ids == nullptr)
     return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
+  std::vector<VASurfaceID> created;
+  if (surface_count > created.max_size())
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  // Publish IDs only after the entire batch succeeds. Rolled-back surfaces
+  // must not leave the caller holding IDs that no longer name a VA object.
+  std::fill_n(surface_ids, surface_count, VA_INVALID_SURFACE);
   if (attribute_count != 0 && attributes == nullptr)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
 
@@ -8008,7 +8015,6 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
         return VA_STATUS_ERROR_SURFACE_BUSY;
     }
   }
-  std::vector<VASurfaceID> created;
   std::vector<BackingIdentity> registered;
   std::unordered_set<VASurfaceID> write_exposed_owners;
   const auto rollback = [&](VAStatus status) {
@@ -8018,111 +8024,128 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
       driver->surfaces.erase(id);
     return status;
   };
-  for (unsigned int i = 0; i < surface_count; ++i) {
-    auto surface = std::make_shared<Surface>();
-    surface->width = width;
-    surface->height = height;
-    surface->rt_format = format;
-    surface->fourcc = pixel_format;
-    SurfaceLayout layout;
-    VASurfaceAttribExternalBuffers legacy_surface = {};
-    if (legacy_descriptor != nullptr) {
-      legacy_surface = *legacy_descriptor;
-      legacy_surface.num_buffers = 1;
-      legacy_surface.buffers = legacy_descriptor->buffers + i;
-    }
-    if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 && descriptor != nullptr) {
-      const auto &desc = static_cast<const VADRMPRIMESurfaceDescriptor *>(descriptor)[i];
-      if (!GetPrimeLayout(desc, &layout))
+  try {
+    for (unsigned int i = 0; i < surface_count; ++i) {
+      auto surface = std::make_shared<Surface>();
+      surface->width = width;
+      surface->height = height;
+      surface->rt_format = format;
+      surface->fourcc = pixel_format;
+      SurfaceLayout layout;
+      VASurfaceAttribExternalBuffers legacy_surface = {};
+      if (legacy_descriptor != nullptr) {
+        legacy_surface = *legacy_descriptor;
+        legacy_surface.num_buffers = 1;
+        legacy_surface.buffers = legacy_descriptor->buffers + i;
+      }
+      if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 && descriptor != nullptr) {
+        const auto &desc = static_cast<const VADRMPRIMESurfaceDescriptor *>(descriptor)[i];
+        if (!GetPrimeLayout(desc, &layout))
+          return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
+      } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME && descriptor != nullptr) {
+        if (!GetLegacyLayout(legacy_surface, &layout))
+          return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
+      }
+      for (const BackingIdentity &identity : layout.objects) {
+        const auto known = driver->backing_owners.find(identity);
+        if (known != driver->backing_owners.end()) {
+          const auto owner = driver->surfaces.find(known->second);
+          if (owner == driver->surfaces.end() || !HasLiveBackingOwner(driver, owner->second.get()))
+            return rollback(VA_STATUS_ERROR_INVALID_SURFACE);
+          if (owner->second->opaque_reference ||
+              ExperimentalPresentationBinding(driver, owner->second.get()) ||
+              owner->second->experimental_write_lease ||
+              owner->second->experimental_read_export_armed ||
+              owner->second->experimental_presentation)
+            return rollback(VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT);
+          // Same backing does not necessarily mean the same pixels. Refuse
+          // nonidentical views before mapping instead of selecting another
+          // surface's immutable decoded picture for different plane geometry.
+          if (!(owner->second->layout == layout))
+            return rollback(VA_STATUS_ERROR_INVALID_PARAMETER);
+          if (surface->backing_owner != VA_INVALID_SURFACE &&
+              surface->backing_owner != known->second)
+            return rollback(VA_STATUS_ERROR_INVALID_PARAMETER);
+          surface->backing_owner = known->second;
+          surface->ready = owner->second->ready;
+          surface->failed = owner->second->failed;
+          surface->expected_timestamp = owner->second->expected_timestamp;
+          surface->frame_timestamp = owner->second->frame_timestamp;
+          surface->trace_context = owner->second->trace_context;
+          surface->trace_generation = owner->second->trace_generation;
+          surface->trace_submission_ordinal =
+              owner->second->trace_submission_ordinal;
+          surface->trace_decode_identity =
+              owner->second->trace_decode_identity;
+        }
+      }
+      if (surface->backing_owner != VA_INVALID_SURFACE)
+        write_exposed_owners.insert(surface->backing_owner);
+      bool ok = false;
+      if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_VA) {
+        ok = surface->AllocateInternal(driver->gbm, driver->drm_fd, width, height,
+                                       pixel_format,
+                                       driver->experimental_i915_wc,
+                                       &driver->primary_node_cache);
+      } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 &&
+                 descriptor != nullptr) {
+        const auto *descriptors =
+            static_cast<const VADRMPRIMESurfaceDescriptor *>(descriptor);
+        ok = surface->ImportPrime(driver->gbm, descriptors[i]);
+      } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME &&
+                 descriptor != nullptr) {
+        ok = surface->ImportLegacy(legacy_surface);
+      }
+      if (!ok)
         return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
-    } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME && descriptor != nullptr) {
-      if (!GetLegacyLayout(legacy_surface, &layout))
+      surface->direct_decode_eligible =
+          memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_VA;
+      surface->vpp_external_write_exposed =
+          surface->backing_owner == VA_INVALID_SURFACE &&
+          memory_type != VA_SURFACE_ATTRIB_MEM_TYPE_VA;
+      surface->layout = layout;
+      if (surface->backing_owner == VA_INVALID_SURFACE)
+        surface->ready = true;
+      VASurfaceID id = driver->next_surface++;
+      surface->id = id;
+      if (driver->surfaces.find(id) != driver->surfaces.end())
         return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
-    }
-    for (const BackingIdentity &identity : layout.objects) {
-      const auto known = driver->backing_owners.find(identity);
-      if (known != driver->backing_owners.end()) {
-        const auto owner = driver->surfaces.find(known->second);
-        if (owner == driver->surfaces.end() || !HasLiveBackingOwner(driver, owner->second.get()))
-          return rollback(VA_STATUS_ERROR_INVALID_SURFACE);
-        if (owner->second->opaque_reference ||
-            ExperimentalPresentationBinding(driver, owner->second.get()) ||
-            owner->second->experimental_write_lease ||
-            owner->second->experimental_read_export_armed ||
-            owner->second->experimental_presentation)
-          return rollback(VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT);
-        // Same backing does not necessarily mean the same pixels. Refuse
-        // nonidentical views before mapping instead of selecting another
-        // surface's immutable decoded picture for different plane geometry.
-        if (!(owner->second->layout == layout))
-          return rollback(VA_STATUS_ERROR_INVALID_PARAMETER);
-        if (surface->backing_owner != VA_INVALID_SURFACE &&
-            surface->backing_owner != known->second)
-          return rollback(VA_STATUS_ERROR_INVALID_PARAMETER);
-        surface->backing_owner = known->second;
-        surface->ready = owner->second->ready;
-        surface->failed = owner->second->failed;
-        surface->expected_timestamp = owner->second->expected_timestamp;
-        surface->frame_timestamp = owner->second->frame_timestamp;
-        surface->trace_context = owner->second->trace_context;
-        surface->trace_generation = owner->second->trace_generation;
-        surface->trace_submission_ordinal =
-            owner->second->trace_submission_ordinal;
-        surface->trace_decode_identity =
-            owner->second->trace_decode_identity;
+      for (const BackingIdentity &identity : layout.objects) {
+        const VASurfaceID owner = surface->backing_owner == VA_INVALID_SURFACE
+                                     ? id : surface->backing_owner;
+        if (driver->backing_owners.find(identity) == driver->backing_owners.end()) {
+          // Log before insertion: allocation failure in either container leaves
+          // every new owner visible to the allocation-free rollback below.
+          if (registered.size() == registered.max_size())
+            return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
+          registered.push_back(identity);
+          driver->backing_owners.emplace(identity, owner);
+        }
+      }
+      created.push_back(id);
+      if (!driver->surfaces.emplace(id, std::move(surface)).second) {
+        created.pop_back();
+        return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
       }
     }
-    if (surface->backing_owner != VA_INVALID_SURFACE)
-      write_exposed_owners.insert(surface->backing_owner);
-    bool ok = false;
-    if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_VA) {
-      ok = surface->AllocateInternal(driver->gbm, driver->drm_fd, width, height,
-                                     pixel_format,
-                                     driver->experimental_i915_wc,
-                                     &driver->primary_node_cache);
-    } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 &&
-               descriptor != nullptr) {
-      const auto *descriptors =
-          static_cast<const VADRMPRIMESurfaceDescriptor *>(descriptor);
-      ok = surface->ImportPrime(driver->gbm, descriptors[i]);
-    } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME &&
-               descriptor != nullptr) {
-      ok = surface->ImportLegacy(legacy_surface);
+    // Importing an exported backing introduces another VA object that can be
+    // used as a writer. Keep future decode output private on its canonical
+    // owner even if the original export was declared read-only.
+    for (VASurfaceID owner_id : write_exposed_owners) {
+      const auto owner = driver->surfaces.find(owner_id);
+      if (owner != driver->surfaces.end()) {
+        if (!PromoteDecodedPicture(owner->second->decode_picture.lock()))
+          return rollback(VA_STATUS_ERROR_OPERATION_FAILED);
+        ClearTraceReadExport(owner->second.get());
+        owner->second->direct_decode_eligible = false;
+      }
     }
-    if (!ok)
-      return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
-    surface->direct_decode_eligible =
-        memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_VA;
-    surface->vpp_external_write_exposed =
-        surface->backing_owner == VA_INVALID_SURFACE &&
-        memory_type != VA_SURFACE_ATTRIB_MEM_TYPE_VA;
-    surface->layout = layout;
-    if (surface->backing_owner == VA_INVALID_SURFACE)
-      surface->ready = true;
-    VASurfaceID id = driver->next_surface++;
-    surface->id = id;
-    for (const BackingIdentity &identity : layout.objects) {
-      const VASurfaceID owner = surface->backing_owner == VA_INVALID_SURFACE
-                                   ? id : surface->backing_owner;
-      if (driver->backing_owners.emplace(identity, owner).second)
-        registered.push_back(identity);
-    }
-    driver->surfaces[id] = std::move(surface);
-    surface_ids[i] = id;
-    created.push_back(id);
+  } catch (const std::bad_alloc &) {
+    return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
+  } catch (const std::length_error &) {
+    return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
   }
-  // Importing an exported backing introduces another VA object that can be
-  // used as a writer. Keep future decode output private on its canonical
-  // owner even if the original export was declared read-only.
-  for (VASurfaceID owner_id : write_exposed_owners) {
-    const auto owner = driver->surfaces.find(owner_id);
-    if (owner != driver->surfaces.end()) {
-      if (!PromoteDecodedPicture(owner->second->decode_picture.lock()))
-        return rollback(VA_STATUS_ERROR_OPERATION_FAILED);
-      ClearTraceReadExport(owner->second.get());
-      owner->second->direct_decode_eligible = false;
-    }
-  }
+  std::copy(created.begin(), created.end(), surface_ids);
   return VA_STATUS_SUCCESS;
 }
 

@@ -1787,6 +1787,270 @@ void ImportedBookkeepingFailures() {
         ImportedBookkeepingFailure(prime, allocation, public_api);
 }
 
+struct SurfaceCreationFailure {
+  VAStatus status = VA_STATUS_SUCCESS;
+  bool escaped = false;
+  bool injected = false;
+  size_t bytes = 0;
+};
+
+SurfaceCreationFailure FailSurfaceCreation(VADriverContextP context,
+    VASurfaceID *surfaces, unsigned count, VASurfaceAttrib *attributes,
+    unsigned attribute_count, unsigned skip, size_t only_size = 0) {
+  struct ResetFault {
+    ~ResetFault() {
+      allocation_fault::fail_next = false;
+      allocation_fault::only_size = 0;
+      allocation_fault::skip_matches = 0;
+    }
+  } reset;
+  allocation_fault::failed_size = 0;
+  allocation_fault::only_size = only_size;
+  allocation_fault::skip_matches = skip;
+  allocation_fault::fail_next = true;
+  SurfaceCreationFailure result;
+  try {
+    result.status = CreateSurfaces2(context, VA_RT_FORMAT_YUV420, 64, 32,
+                                    surfaces, count, attributes, attribute_count);
+  } catch (const std::bad_alloc &) {
+    result.escaped = true;
+  }
+  result.injected = !allocation_fault::fail_next;
+  result.bytes = allocation_fault::failed_size;
+  return result;
+}
+
+void CpuSurfaceCreationStorageFailureRollsBack() {
+  Driver driver{-1};
+  driver.StopWorkers();
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  VASurfaceID retained_id = VA_INVALID_SURFACE;
+  Require(CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 64, 32,
+                          &retained_id, 1, nullptr, 0) == VA_STATUS_SUCCESS,
+          "create an existing surface before CPU storage OOM");
+  const auto retained = driver.surfaces.at(retained_id);
+  retained->planes[0][0] = 73;
+  const size_t max_ids = std::vector<VASurfaceID>().max_size();
+  if (max_ids < UINT_MAX) {
+    VASurfaceID impossible = retained_id;
+    Require(CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 64, 32, &impossible,
+                            static_cast<unsigned>(max_ids + 1), nullptr, 0) ==
+                    VA_STATUS_ERROR_ALLOCATION_FAILED && impossible == retained_id &&
+                driver.surfaces.size() == 1,
+            "32-bit surface counts exceeding journal capacity fail before output access");
+  }
+  VASurfaceID surfaces[2] = {retained_id, retained_id};
+  const auto failure = FailSurfaceCreation(&context, surfaces, 2, nullptr, 0,
+                                          1, 64 * (32 + 16));
+  printf("CPU storage OOM: injected=%d escaped=%d status=%#x live=%zu expected=1 "
+         "outputs=%#x,%#x retained_pixel=%u\n", failure.injected, failure.escaped,
+         failure.status, driver.surfaces.size(), surfaces[0], surfaces[1],
+         retained->planes[0][0]);
+  Require(failure.injected && failure.bytes == 64 * (32 + 16) &&
+              !failure.escaped && failure.status == VA_STATUS_ERROR_ALLOCATION_FAILED,
+          "second CPU storage OOM returns allocation failure through the VA API");
+  Require(surfaces[0] == VA_INVALID_SURFACE && surfaces[1] == VA_INVALID_SURFACE &&
+              driver.surfaces.size() == 1 && driver.backing_owners.empty() &&
+              driver.surfaces.at(retained_id) == retained && retained->planes[0][0] == 73,
+          "CPU storage OOM removes the successful batch prefix and preserves existing pixels");
+  Require(CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 64, 32,
+                          surfaces, 2, nullptr, 0) == VA_STATUS_SUCCESS &&
+              surfaces[0] != VA_INVALID_SURFACE && surfaces[1] != VA_INVALID_SURFACE &&
+              surfaces[0] != surfaces[1] && surfaces[0] != retained_id &&
+              surfaces[1] != retained_id &&
+              DestroySurfaces(&context, surfaces, 2) == VA_STATUS_SUCCESS &&
+              driver.surfaces.size() == 1,
+          "CPU surface creation recovers with distinct live IDs after storage OOM");
+}
+
+void CpuSurfaceCreationIdLogFailureRollsBack() {
+  Driver driver{-1};
+  driver.StopWorkers();
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  VASurfaceID retained_id = VA_INVALID_SURFACE;
+  Require(CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 64, 32,
+                          &retained_id, 1, nullptr, 0) == VA_STATUS_SUCCESS,
+          "create an existing surface before ID-log allocation failure");
+  const auto retained = driver.surfaces.at(retained_id);
+  retained->planes[0][0] = 83;
+  VASurfaceID surface = retained_id;
+  // The first ID-log element is the only sizeof(VASurfaceID) allocation on
+  // this CPU path. Select it independently of earlier storage allocations.
+  const auto failure = FailSurfaceCreation(&context, &surface, 1, nullptr, 0,
+                                          0, sizeof(VASurfaceID));
+  printf("CPU ID-log OOM: injected=%d escaped=%d status=%#x live=%zu expected=1 "
+         "output=%#x retained_pixel=%u\n", failure.injected, failure.escaped,
+         failure.status, driver.surfaces.size(), surface, retained->planes[0][0]);
+  Require(failure.injected && failure.bytes == sizeof(VASurfaceID) &&
+              !failure.escaped && failure.status == VA_STATUS_ERROR_ALLOCATION_FAILED,
+          "ID-log OOM returns allocation failure through the VA callback");
+  Require(surface == VA_INVALID_SURFACE && driver.surfaces.size() == 1 &&
+              driver.backing_owners.empty() && driver.surfaces.at(retained_id) == retained &&
+              retained->planes[0][0] == 83,
+          "ID-log OOM publishes no surface and preserves the existing live pixels");
+}
+
+void CpuSurfaceCreationAllocationFailuresRollBack() {
+  bool completed = false;
+  bool failed_id_log = false;
+  for (unsigned skip = 0; skip != 64; ++skip) {
+    Driver driver{-1};
+    driver.StopWorkers();
+    VADriverContext context = {};
+    context.pDriverData = &driver;
+    VASurfaceID retained_id = VA_INVALID_SURFACE;
+    Require(CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 64, 32,
+                            &retained_id, 1, nullptr, 0) == VA_STATUS_SUCCESS,
+            "create a live surface before sweeping CPU publication allocations");
+    const auto retained = driver.surfaces.at(retained_id);
+    retained->planes[0][0] = 91;
+    VASurfaceID surfaces[2] = {retained_id, retained_id};
+    // Sweep every allocation, including registry nodes and rollback-log
+    // growth, without depending on a standard library's hash-node sizes.
+    const auto failure = FailSurfaceCreation(&context, surfaces, 2, nullptr, 0, skip);
+    Require(!failure.escaped, "CPU surface creation never leaks an allocation exception");
+    if (!failure.injected) {
+      Require(failure.status == VA_STATUS_SUCCESS &&
+                  surfaces[0] != VA_INVALID_SURFACE && surfaces[1] != VA_INVALID_SURFACE &&
+                  surfaces[0] != surfaces[1] &&
+                  DestroySurfaces(&context, surfaces, 2) == VA_STATUS_SUCCESS,
+              "allocation sweep reaches successful CPU batch publication");
+      completed = true;
+    } else {
+      failed_id_log |= failure.bytes == sizeof(VASurfaceID);
+      Require(failure.status == VA_STATUS_ERROR_ALLOCATION_FAILED &&
+                  surfaces[0] == VA_INVALID_SURFACE && surfaces[1] == VA_INVALID_SURFACE,
+              "CPU registry and ID-log OOM returns no published IDs");
+    }
+    Require(driver.surfaces.size() == 1 && driver.backing_owners.empty() &&
+                driver.surfaces.at(retained_id) == retained && retained->planes[0][0] == 91,
+            "CPU registry and log failures preserve all previously live resources");
+    if (completed) break;
+  }
+  Require(completed && failed_id_log,
+          "CPU allocation sweep covers ID-log growth and reaches its finite end");
+}
+
+void ImportedSurfaceCreationAllocationFailuresRollBack() {
+  const auto fd_count = [] {
+    DIR *directory = opendir("/proc/self/fd");
+    Require(directory != nullptr, "inspect imported surface descriptor lifetime");
+    size_t count = 0;
+    while (const dirent *entry = readdir(directory))
+      if (entry->d_name[0] != '.') ++count;
+    closedir(directory);
+    return count;
+  };
+  for (bool legacy : {false, true}) {
+    bool completed = false;
+    bool failed_backing_log = false;
+    for (unsigned skip = 0; skip != 96; ++skip) {
+      Driver driver{-1};
+      driver.StopWorkers();
+      VADriverContext context = {};
+      context.pDriverData = &driver;
+      Surface files;
+      for (unsigned index = 0; index != 2; ++index) {
+        const int fd = memfd_create("crystalhd-create-transaction", MFD_CLOEXEC);
+        Require(fd >= 0, "allocate private surface transaction backing");
+        files.object_fds.push_back(fd);
+        Require(ftruncate(fd, 3072) == 0, "size private surface transaction backing");
+      }
+      VADRMPRIMESurfaceDescriptor prime[3] = {};
+      for (auto &desc : prime) {
+        desc.fourcc = VA_FOURCC_NV12;
+        desc.width = 64;
+        desc.height = 32;
+        desc.num_objects = 1;
+        desc.objects[0].fd = files.object_fds[0];
+        desc.objects[0].size = 3072;
+        desc.objects[0].drm_format_modifier = DRM_FORMAT_MOD_LINEAR;
+        desc.num_layers = 1;
+        desc.layers[0].drm_format = DRM_FORMAT_NV12;
+        desc.layers[0].num_planes = 2;
+        desc.layers[0].pitch[0] = desc.layers[0].pitch[1] = 64;
+        desc.layers[0].offset[1] = 2048;
+      }
+      uintptr_t handles[3] = {static_cast<uintptr_t>(files.object_fds[0]),
+                              static_cast<uintptr_t>(files.object_fds[0]),
+                              static_cast<uintptr_t>(files.object_fds[0])};
+      VASurfaceAttribExternalBuffers external = {};
+      external.pixel_format = VA_FOURCC_NV12;
+      external.width = 64;
+      external.height = 32;
+      external.data_size = 3072;
+      external.num_planes = 2;
+      external.pitches[0] = external.pitches[1] = 64;
+      external.offsets[1] = 2048;
+      external.num_buffers = 3;
+      external.buffers = handles;
+      VASurfaceAttrib attributes[2] = {};
+      attributes[0].type = VASurfaceAttribMemoryType;
+      attributes[0].value.type = VAGenericValueTypeInteger;
+      attributes[0].value.value.i = legacy ? VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME
+                                         : VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
+      attributes[1].type = VASurfaceAttribExternalBufferDescriptor;
+      attributes[1].value.type = VAGenericValueTypePointer;
+      attributes[1].value.value.p = legacy ? static_cast<void *>(&external)
+                                         : static_cast<void *>(prime);
+      VASurfaceID retained_id = VA_INVALID_SURFACE;
+      Require(CreateSurfaces2(&context, VA_RT_FORMAT_YUV420, 64, 32,
+                              &retained_id, 1, attributes, 2) == VA_STATUS_SUCCESS,
+              "retain an unrelated imported backing before allocation failures");
+      const auto retained = driver.surfaces.at(retained_id);
+      retained->planes[0][0] = 117;
+      const auto owners = driver.backing_owners;
+      const size_t descriptors = fd_count();
+      // The batch first aliases the live canonical owner, then introduces
+      // another backing and aliases that new owner. Rollback must distinguish
+      // the preexisting registry key from keys introduced by this batch.
+      for (unsigned index = 0; index != 3; ++index) {
+        const int fd = files.object_fds[index == 0 ? 0 : 1];
+        prime[index].objects[0].fd = fd;
+        handles[index] = fd;
+      }
+      VASurfaceID surfaces[3] = {retained_id, retained_id, retained_id};
+      const auto failure = FailSurfaceCreation(&context, surfaces, 3, attributes, 2, skip);
+      Require(!failure.escaped, "imported batch OOM never escapes the public VA callback");
+      if (!failure.injected) {
+        Require(failure.status == VA_STATUS_SUCCESS &&
+                    surfaces[0] != VA_INVALID_SURFACE && surfaces[1] != VA_INVALID_SURFACE &&
+                    surfaces[2] != VA_INVALID_SURFACE && surfaces[0] != surfaces[1] &&
+                    surfaces[1] != surfaces[2] && surfaces[0] != surfaces[2] &&
+                    surfaces[0] != retained_id && surfaces[1] != retained_id &&
+                    surfaces[2] != retained_id &&
+                    driver.surfaces.at(surfaces[0])->backing_owner == retained_id &&
+                    driver.surfaces.at(surfaces[2])->backing_owner == surfaces[1] &&
+                    DestroySurfaces(&context, surfaces, 3) == VA_STATUS_SUCCESS,
+                "import allocation sweep reaches valid aliases of existing and new owners");
+        completed = true;
+      } else {
+        failed_backing_log |= failure.bytes == sizeof(BackingIdentity);
+        Require(failure.status == VA_STATUS_ERROR_ALLOCATION_FAILED &&
+                    surfaces[0] == VA_INVALID_SURFACE && surfaces[1] == VA_INVALID_SURFACE &&
+                    surfaces[2] == VA_INVALID_SURFACE,
+                "import registry, layout and rollback-log OOM publishes no IDs");
+      }
+      Require(driver.surfaces.size() == 1 && driver.surfaces.at(retained_id) == retained &&
+                  driver.backing_owners == owners && retained->planes[0][0] == 117 &&
+                  fcntl(retained->object_fds[0], F_GETFD) >= 0 && fd_count() == descriptors,
+              "failed imported batches retire new backing and retain prior mappings and fds");
+      if (completed) break;
+    }
+    Require(completed && failed_backing_log,
+            "both PRIME import allocation sweeps cover backing bookkeeping and finish");
+  }
+}
+
+void SurfaceCreationAllocationFailures() {
+  CpuSurfaceCreationStorageFailureRollsBack();
+  CpuSurfaceCreationIdLogFailureRollsBack();
+  CpuSurfaceCreationAllocationFailuresRollBack();
+  ImportedSurfaceCreationAllocationFailuresRollBack();
+}
+
 void NativeDumbMappingPreserves64BitOffsets() {
   constexpr uint64_t offset = UINT64_C(0x100971000);
   {
@@ -5370,6 +5634,7 @@ void ReadOnlyExportedBobCancellationReleasesOwners() {
 
 int ReadOnlyCpuPendingTests() {
   const std::pair<const char *, void (*)()> groups[] = {
+      {"surface creation allocation failures roll back CPU and imported batches", SurfaceCreationAllocationFailures},
       {"read-only exported Bob pending pixels", ReadOnlyExportedBobPendingPixels},
       {"writable exposure retains old admission", ReadOnlyExportedBobWritableExposureKeepsOldAdmission},
       {"read-only Bob cancellation releases owners", ReadOnlyExportedBobCancellationReleasesOwners}};
@@ -7971,6 +8236,7 @@ int VppFullTestEntry(int argc, char **argv) {
     NativeNodeCacheFailuresRetryWithoutLeases();
     NativeSurfaceFilesRetainOriginalLifetime();
     NativeDumbBookkeepingFailures();
+    SurfaceCreationAllocationFailures();
     ImportedBookkeepingFailures();
     NativeDumbMappingPreserves64BitOffsets();
     I915WcMappingRequiresExactOffsetIdentity();
@@ -8056,11 +8322,31 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 112 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 113 hardware-free regressions passed");
   return 0;
 }
 
 int main(int argc, char **argv) {
+  const std::pair<const char *, void (*)()> surface_cases[] = {
+      {"--surface-create-storage", CpuSurfaceCreationStorageFailureRollsBack},
+      {"--surface-create-id-log", CpuSurfaceCreationIdLogFailureRollsBack},
+      {"--surface-create-cpu-sweep", CpuSurfaceCreationAllocationFailuresRollBack},
+      {"--surface-create-import-sweep", ImportedSurfaceCreationAllocationFailuresRollBack},
+      {"--surface-create-transaction", SurfaceCreationAllocationFailures}};
+  if (argc == 2) {
+    for (const auto &selected : surface_cases) {
+      if (strcmp(argv[1], selected.first) != 0) continue;
+      try {
+        selected.second();
+        printf("VA-API surface creation allocation rollback %s PASS\n", selected.first);
+        return 0;
+      } catch (const std::exception &error) {
+        fprintf(stderr, "VA-API surface creation allocation rollback %s failed: %s\n",
+                selected.first, error.what());
+        return 1;
+      }
+    }
+  }
   if (argc == 5 && strcmp(argv[1], "--import-allocation") == 0) {
     const bool prime = strcmp(argv[2], "prime") == 0;
     const bool public_api = strcmp(argv[4], "api") == 0;
