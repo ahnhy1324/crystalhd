@@ -107,6 +107,8 @@ jobs:
         shell: bash
         run: |
           make v4l2-node-check
+          python3 -B tests/native-picture-fixture.test.py
+          python3 -O -B tests/native-picture-fixture.test.py
           v4l2_imports=$(nm -u driver/linux/crystalhd.ko)
           if grep -q 'v4l2_device_' <<< "$v4l2_imports"; then
             echo 'unexpected V4L2 import in the default module' >&2

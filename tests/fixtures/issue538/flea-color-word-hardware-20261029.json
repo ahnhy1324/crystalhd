@@ -1,0 +1,201 @@
+{
+  "schema": "crystalhd.flea-color-word.hardware-evidence.v1",
+  "date": "2026-10-29",
+  "status": "PASS",
+  "producer_prediction_status": "PASS",
+  "scope": "Original BCM70015 module and unchanged FFmpeg; six independently software-qualified 30-frame controls. This tests metadata packing and raw decoder output, not the new driver fix or GPU presentation.",
+  "module": {
+    "source_commit": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+    "sha256": "3bf7c789f2e6d90b37d03e63f24d7e2e0ec0c7ec3855b71160f4f56eb5a644cf",
+    "srcversion": "E3D1535AB4C470BC21D6E32"
+  },
+  "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+  "original_client_source": "jc-kynesim/rpi-ffmpeg@12cc1f42f06ff0e85633c2602c96786fbd280b70",
+  "input_plan_sha256": "147097add44ae8348344db780dd7e75517c076de9150e51c176f50603c2f0383",
+  "control_manifest_sha256": "764ce01b13bcfec88712936d4171c09f81571bd41922e3271a5a00dfd2f74794",
+  "original_result_sha256": "052a1479bf8d5a69742e5c41b84546e93da326f62e831b6562d56af41072870d",
+  "source_frame_identity": "two matching CRC barcodes; all30 ordinal and rational framemd5/sourcePTS matches required",
+  "sample_selection": "Existing source-only invariant YUV points, selected before capture, independent of native output.",
+  "observer": "Exactly one existing flea_get_picture_info FMT CH dynamic-debug site; per-case kernel journal cursor. Full catalog restored.",
+  "cases": [
+    {
+      "id": "709",
+      "source_cicp": {
+        "primaries": 1,
+        "transfer": 1,
+        "matrix": 1,
+        "full_range": 0
+      },
+      "source_media_sha256": "44e6307393637bba3ea73185e0bb4da3e4cfc9707984cac14a1d5b0a4a0f38d5",
+      "source_vcl_identical": true,
+      "source_decoded_yuv_identical": true,
+      "expected_word": "0x01010100",
+      "observed_words": [
+        "0x1010100"
+      ],
+      "producer_prediction": "PASS",
+      "native_result": "PASS",
+      "frames": 30,
+      "raw_yuv_result": "PASS",
+      "maximum_yuv_component_error": 0,
+      "raw_yuyv_sha256": "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+      "raw_bytes": 55296000,
+      "framemd5_pts_match": true,
+      "raw_result_sha256": "0a2574edd3cfa3c033c79f4d7b0ca2006fc5d989a6a9b19e2f0251ad40ca866a",
+      "source_decoded_yuv_sha256": "ff22f11c98142c49ab17c350592e329a14016c77d6900c88739204d95b06992d"
+    },
+    {
+      "id": "601",
+      "source_cicp": {
+        "primaries": 6,
+        "transfer": 6,
+        "matrix": 6,
+        "full_range": 0
+      },
+      "source_media_sha256": "7b2a10edbc76f43c43b93bf5e8863196c2d58068ded92d31037cc1499de1c0f8",
+      "source_vcl_identical": true,
+      "source_decoded_yuv_identical": true,
+      "expected_word": "0x06060600",
+      "observed_words": [
+        "0x6060600"
+      ],
+      "producer_prediction": "PASS",
+      "native_result": "PASS",
+      "frames": 30,
+      "raw_yuv_result": "PASS",
+      "maximum_yuv_component_error": 0,
+      "raw_yuyv_sha256": "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+      "raw_bytes": 55296000,
+      "framemd5_pts_match": true,
+      "raw_result_sha256": "cb59c298c82221e76263b99fa1b7c9fa570962ab861e16812146a6bb9e9fb622",
+      "source_decoded_yuv_sha256": "ff22f11c98142c49ab17c350592e329a14016c77d6900c88739204d95b06992d"
+    },
+    {
+      "id": "prim6",
+      "source_cicp": {
+        "primaries": 6,
+        "transfer": 1,
+        "matrix": 1,
+        "full_range": 0
+      },
+      "source_media_sha256": "e0a3c1f48dd97cb29ee12b050bb0adc94cd9ff04b72fd93ad1e16ae366349cdf",
+      "source_vcl_identical": true,
+      "source_decoded_yuv_identical": true,
+      "expected_word": "0x01060100",
+      "observed_words": [
+        "0x1060100"
+      ],
+      "producer_prediction": "PASS",
+      "native_result": "PASS",
+      "frames": 30,
+      "raw_yuv_result": "PASS",
+      "maximum_yuv_component_error": 0,
+      "raw_yuyv_sha256": "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+      "raw_bytes": 55296000,
+      "framemd5_pts_match": true,
+      "raw_result_sha256": "b2fef468f20f9f1eccac2ca7adf94ae566866ffc595a3e1446a7a4f2ae2c3d3b",
+      "source_decoded_yuv_sha256": "ff22f11c98142c49ab17c350592e329a14016c77d6900c88739204d95b06992d"
+    },
+    {
+      "id": "matrix6",
+      "source_cicp": {
+        "primaries": 1,
+        "transfer": 1,
+        "matrix": 6,
+        "full_range": 0
+      },
+      "source_media_sha256": "3c53bacf978615bef61f42a804b8c4222186b1869e5602a37d1484f7b371bc0b",
+      "source_vcl_identical": true,
+      "source_decoded_yuv_identical": true,
+      "expected_word": "0x06010100",
+      "observed_words": [
+        "0x6010100"
+      ],
+      "producer_prediction": "PASS",
+      "native_result": "PASS",
+      "frames": 30,
+      "raw_yuv_result": "PASS",
+      "maximum_yuv_component_error": 0,
+      "raw_yuyv_sha256": "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+      "raw_bytes": 55296000,
+      "framemd5_pts_match": true,
+      "raw_result_sha256": "7cf33f9b674f3c6b0d9279181268eb3a74f9733df236462234424384c25436c8",
+      "source_decoded_yuv_sha256": "ff22f11c98142c49ab17c350592e329a14016c77d6900c88739204d95b06992d"
+    },
+    {
+      "id": "transfer7",
+      "source_cicp": {
+        "primaries": 1,
+        "transfer": 7,
+        "matrix": 1,
+        "full_range": 0
+      },
+      "source_media_sha256": "7218c6af13dfbbf3eb687ca361b8b30096f05a0d28927634cd941f6e6d4971cf",
+      "source_vcl_identical": true,
+      "source_decoded_yuv_identical": true,
+      "expected_word": "0x01010700",
+      "observed_words": [
+        "0x1010700"
+      ],
+      "producer_prediction": "PASS",
+      "native_result": "PASS",
+      "frames": 30,
+      "raw_yuv_result": "PASS",
+      "maximum_yuv_component_error": 0,
+      "raw_yuyv_sha256": "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+      "raw_bytes": 55296000,
+      "framemd5_pts_match": true,
+      "raw_result_sha256": "9752e0285885e5431616c9253b65f4297a4ba3c846d721b6bac37d9e73968862",
+      "source_decoded_yuv_sha256": "ff22f11c98142c49ab17c350592e329a14016c77d6900c88739204d95b06992d"
+    },
+    {
+      "id": "full",
+      "source_cicp": {
+        "primaries": 1,
+        "transfer": 1,
+        "matrix": 1,
+        "full_range": 1
+      },
+      "source_media_sha256": "3d4ca289acccecf415f932efbeb6824d8ab5b8cff55f96a184f954af3b8a6621",
+      "source_vcl_identical": true,
+      "source_decoded_yuv_identical": true,
+      "expected_word": "0x01010100",
+      "observed_words": [
+        "0x1010100"
+      ],
+      "producer_prediction": "PASS",
+      "native_result": "PASS",
+      "frames": 30,
+      "raw_yuv_result": "PASS",
+      "maximum_yuv_component_error": 0,
+      "raw_yuyv_sha256": "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+      "raw_bytes": 55296000,
+      "framemd5_pts_match": true,
+      "raw_result_sha256": "9582826efd4a54834193399034dfa2c216cf8330c5dbe04ecd4fc05f8f4fa319",
+      "source_decoded_yuv_sha256": "ff22f11c98142c49ab17c350592e329a14016c77d6900c88739204d95b06992d"
+    }
+  ],
+  "restoration": {
+    "stable_version": "3.10.13",
+    "stable_srcversion": "F76E163690F147B91495DDD",
+    "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+    "module_refcount": 0,
+    "pin_net": 0,
+    "power": "on",
+    "links": {
+      "0000:02:00.0": 66,
+      "0000:00:1c.0": 66
+    },
+    "aer_totals": 0,
+    "stable_boundary_equal": true,
+    "dynamic_debug_restored": true,
+    "kernel_check_exit": 0,
+    "errors": []
+  },
+  "limits": [
+    "Interpretation is specific to the hash-pinned original BCM70015 ordinary H264 path.",
+    "Full-range and limited-range controls produce the same word and identical raw YUV; the low byte is not a range or presence flag.",
+    "Mixed-tuple metadata reporting, client rendering and all intra-stream color-change notification coverage are separate claims.",
+    "No new driver fix, GPU pixel, DRM-object identity, physical scanout/A/V, heap or broader backend acceptance is claimed by this original-module experiment."
+  ]
+}

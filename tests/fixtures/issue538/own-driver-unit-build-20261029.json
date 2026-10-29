@@ -1,0 +1,54 @@
+{
+  "schema": "crystalhd.own-driver-color.build-tests.v1",
+  "status": "PASS",
+  "code_fix": "34bc33a79452006195790e9e71cd681686c19ec2",
+  "ci_wiring": "1cce4060cb15c1f5c213cd7596e4325702c53d31",
+  "kernel_builds": [
+    {
+      "kernel": "7.0.0-38-generic",
+      "sha256": "35fcda6c642342a779f0c2e6c81ef4007c06f392fd817e40e8b82ea8f192e0a2",
+      "size_bytes": 6370040,
+      "srcversion": "DF1416C32049D4DADE81EB2",
+      "vermagic": "7.0.0-38-generic SMP preempt mod_unload modversions",
+      "result": "PASS",
+      "loaded_by_this_receipt": false
+    },
+    {
+      "kernel": "6.17.0-41-generic",
+      "sha256": "9fd75d9c64b2004f4979ae2019c36454b1f5b0c03f6bd57a9bfcfcfd8cb0600f",
+      "size_bytes": 6239328,
+      "srcversion": "DF1416C32049D4DADE81EB2",
+      "vermagic": "6.17.0-41-generic SMP preempt mod_unload modversions",
+      "result": "PASS",
+      "loaded_by_this_receipt": false
+    }
+  ],
+  "node_tests": {
+    "command": "sh tests/v4l2-node.sh",
+    "api_versions": [
+      "5.15.0",
+      "6.17.0",
+      "6.18.0",
+      "6.18.54",
+      "6.19.0",
+      "7.0.0",
+      "7.2.8"
+    ],
+    "modes": [
+      "ordinary",
+      "ASan+UBSan"
+    ],
+    "variants": 14,
+    "scenarios_per_variant": 703,
+    "checks_per_variant": 5754,
+    "failures": 0
+  },
+  "initial_test_fixture_failures": {
+    "count": 2,
+    "cause": "Manually constructed new CAPTURE fixture omitted canonical fields and metadata capacity. Corrected test fixture to actual init semantics and production capture_size; no production workaround."
+  },
+  "hardware_result": "SEPARATE_RECEIPT_REQUIRED",
+  "external_source_or_binary_modification": false,
+  "pr": "https://github.com/ahnhy1324/crystalhd/pull/579",
+  "pr_base": "2399430992a81aa16344aab3630999f874c5c853"
+}
