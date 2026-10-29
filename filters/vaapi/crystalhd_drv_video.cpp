@@ -7442,16 +7442,34 @@ static void RunDecodeWorker(Driver *driver) {
     // only afterwards, so no unaccounted descriptor survives an earlier wait.
     std::vector<std::shared_ptr<DecodeContext>> output_poll_contexts;
     std::vector<std::shared_ptr<OutputPollLease>> output_poll_leases;
-    for (const auto &entry : driver->contexts) {
-      const auto &decode = entry.second;
-      if (!HasAutonomousDecodeWork(decode))
-        continue;
-      if (!decode->output_poll) {
-        needs_timer_fallback = true;
-        break;
+    std::vector<pollfd> descriptors;
+    try {
+      for (const auto &entry : driver->contexts) {
+        const auto &decode = entry.second;
+        if (!HasAutonomousDecodeWork(decode))
+          continue;
+        if (!decode->output_poll) {
+          needs_timer_fallback = true;
+          break;
+        }
+        output_poll_contexts.push_back(decode);
+        output_poll_leases.push_back(decode->output_poll);
       }
-      output_poll_contexts.push_back(decode);
-      output_poll_leases.push_back(decode->output_poll);
+      if (!needs_timer_fallback) {
+        descriptors.reserve(output_poll_leases.size() + 1);
+        descriptors.push_back({driver->decode_control_fd, POLLIN, 0});
+        for (const auto &lease : output_poll_leases)
+          descriptors.push_back({lease->fd, POLLIN, 0});
+      }
+    } catch (const std::bad_alloc &) {
+      // No descriptor borrower has been published yet. Fail the affected
+      // sessions without terminating the application or abandoning an armed
+      // lease; keep this worker available for a later fresh context.
+      for (const auto &entry : driver->contexts) {
+        if (HasAutonomousDecodeWork(entry.second))
+          FailDecode(driver, entry.second.get(), "decoder output poll allocation failed");
+      }
+      continue;
     }
     if (needs_timer_fallback) {
       output_poll_leases.clear();
@@ -7459,12 +7477,6 @@ static void RunDecodeWorker(Driver *driver) {
       driver->condition.wait_for(lock, std::chrono::milliseconds(1));
       continue;
     }
-
-    std::vector<pollfd> descriptors;
-    descriptors.reserve(output_poll_leases.size() + 1);
-    descriptors.push_back({driver->decode_control_fd, POLLIN, 0});
-    for (const auto &lease : output_poll_leases)
-      descriptors.push_back({lease->fd, POLLIN, 0});
 
     // A latched control event wakes new input and teardown. RX readiness is
     // level-triggered by the kernel, so output that arrives before poll() is
