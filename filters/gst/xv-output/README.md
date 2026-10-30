@@ -126,3 +126,25 @@ calibrated offset,
 E2E and native i386 acceptance remain unverified. Short CPU measurements do
 not establish a speedup. [#513](https://github.com/ahnhy1324/crystalhd/issues/513)
 remains open and this component is experimental.
+
+### Current Player integration, 2026-10-30
+
+The optional output is integrated with the current rolling stage trace and
+paired decoder finish collector. Player checks pass 125 tests; configuration
+checks classify 39 surfaces with 21 managed keys. The four device-free and
+14 real-X11 component groups pass. Default output selection remains `auto`.
+
+One pre-frozen original-profile PCM/FHD invocation reuses the exact current
+decoder/DIL images and selects `--video-output xv-async`. Actual negotiation
+confirms early 1280x720 packing, method-4/two-thread 1920x1080 scaling and the
+original QoS, 5ms lateness and 15ms processing deadline. The first counted
+sink drop is at PTS 147.36s. The 75°C guard stops playback normally after
+247.619s wall time, before the planned 300s natural EOS. FHD acceptance fails;
+this run does not establish a repair or a matched performance improvement.
+
+After NULL, all 12,236 own Xv requests are acknowledged, pending requests and
+images are zero, and all six allocations are freed without quarantine. The
+sink row-copy counter is zero and all requests use its negotiated pool;
+these are local ownership/copy observations, not scanout or end-to-end
+zero-copy qualification. The exact driver/resource boundary and kernel
+checks pass. See the [source-pinned result](../../../tests/fixtures/issue513/xv-current-integration-20261030.json).
