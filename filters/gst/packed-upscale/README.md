@@ -1,0 +1,68 @@
+# Optional packed enlargement
+
+`crystalhdpackedscale` fuses YUY2 packing and method4 enlargement for the explicit
+progressive1280x720/PAR1/50Hz to UYVY1920x1080/PAR1/50Hz path. It is rank NONE
+and requires GStreamer1.28.2. The normal Player path remains independently
+selectable. Unsupported formats, rates, geometry, color conversion, multiview,
+interlacing and spatial metadata are rejected; there is no automatic fallback.
+Input and output must have the same resolved colorimetry and chroma site.
+
+Build and check from the repository root:
+
+```sh
+make -C filters/gst/packed-upscale check
+make -C filters/gst/xv-output
+```
+
+After building the normal decoder/library, explicitly select both components:
+
+```sh
+GST_PLUGIN_PATH="$PWD/filters/gst/packed-upscale:$PWD/filters/gst/xv-output:$PWD/filters/gst/gst-plugin-1.0" \
+LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
+  scripts/crystalhd-play --hardware --video-output xv-async --packed-upscale \
+  --scale-width 1280 --software-output-size 1920x1080 "/path/to/video.mkv"
+```
+
+The switch is invocation-only. It does not alter saved settings, PTS, audio
+clock, QoS, lateness, processing deadline, priorities, queues, Xv ring depth or
+pool size. Method4 and the two compute threads are fixed: the calling thread
+and one persistent worker compute disjoint output stripes. Other GStreamer
+versions pass only the CPU check of version rejection; they do not receive a
+pixel or runtime qualification.
+
+The engine uses public GstVideoScaler coefficients and the same Q6 horizontal
+rounding as the qualified stock path. Setup rejects coefficients that cannot
+prove exact integer normalization. A table-verified3:2 periodic kernel uses
+SSSE3 only after runtime CPU admission; other CPUs use the same scalar math.
+Vertical interpolation uses the public scaler. Each stripe caches two
+horizontal rows, so no full720p packed intermediate is written or read.
+No private GStreamer structures or third-party implementation edits are used.
+
+The normal GstVideoFilter/BaseTransform path allocates the output from the
+negotiated downstream pool. The engine writes only active bytes through actual
+mapped plane offsets/positive strides; it retains no buffer references after
+return. The wrapper serializes run/reconfiguration/free and joins its worker
+before releasing its scalers/cache. Memory-specific input metadata is not
+copied onto the output pool layout. Unqualified spatial metadata is an error;
+ordinary nonspatial metadata uses its normal COPY transform.
+
+The Player records four actual stages: decoder, deinterlace, output-scale and
+sink. The output-scale factory is crystalhdpackedscale. There is no separate
+output-pack buffer or fabricated measurement. Read-only properties `method`,
+`n-threads`, `simd-active` and `frames` describe the fixed method, current or
+last negotiated dispatch and successful lifetime transforms. These are not
+physical display counters.
+
+CPU checks compare36 stock/candidate frames over three restart cycles, exact
+pixels/timing/offsets/flags, flush/new segment/EOS, padded offsets/strides with
+sentinels and unsupported-caps/crop rejection. Discovery is limited to the
+plugins required by the test. The separate X11 allocation control can be
+built with `make -C filters/gst/packed-upscale packed-scale-x11-contract` and
+explicitly invoked with `--execute-x11`; it opens one temporary window. Its
+sync=false control proves only pool/ACK/teardown behavior, never clocked media
+performance. The natural300s qualification keeps sync/QoS and original5ms
+lateness/15ms deadline unchanged, requires the75C guard, original source grid,
+15000 field counts, EOS, zero counted loss and complete own image retirement.
+
+Finite CPU/ownership checks do not establish physical scanout, calibrated A/V,
+repeatability, arbitrary inputs or sustained thermal endurance.

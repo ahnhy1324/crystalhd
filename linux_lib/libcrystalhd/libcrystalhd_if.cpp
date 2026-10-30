@@ -4271,7 +4271,7 @@ DtsGetDriverStatus( HANDLE  hDevice,
 	}
 
 	if(!realHWCPBSize)
-		pStatus->cpbEmptySize = Ctx->circBuf.freeSize;
+		pStatus->cpbEmptySize = DtsTxFreeSize(hDevice);
 
 	if(!readTXinfoOnly && statusCurrent)
 	{

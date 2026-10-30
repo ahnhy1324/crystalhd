@@ -69,12 +69,12 @@ class SchemaOracleTest(unittest.TestCase):
         mapped = {(kind, name) for kind, name, _key in map_matches}
         bounded = {(kind, name) for kind, name, _reason in boundary_matches}
 
-        self.assertEqual(len(inventory_matches), 39)
-        self.assertEqual(len(surfaces), 39)
+        self.assertEqual(len(inventory_matches), 40)
+        self.assertEqual(len(surfaces), 40)
         self.assertEqual(len(map_matches), 23)
         self.assertEqual(len(mapped), 23)
-        self.assertEqual(len(boundary_matches), 16)
-        self.assertEqual(len(bounded), 16)
+        self.assertEqual(len(boundary_matches), 17)
+        self.assertEqual(len(bounded), 17)
         self.assertFalse(mapped & bounded)
         self.assertEqual(mapped | bounded, surfaces)
         self.assertEqual(
@@ -83,6 +83,7 @@ class SchemaOracleTest(unittest.TestCase):
              "experimental-centered-nv12", "native-config-bootstrap", "external-gst-output"},
         )
         self.assertIn(("player-flag", "--video-output", "invocation-only"), boundary_matches)
+        self.assertIn(("player-flag", "--packed-upscale", "invocation-only"), boundary_matches)
         self.assertIn(("gst-property", "display", "external-gst-output"), boundary_matches)
         self.assertEqual(
             {(kind, name) for kind, name, reason in boundary_matches

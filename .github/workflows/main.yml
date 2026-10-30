@@ -108,6 +108,9 @@ jobs:
       - name: Build optional Xv output and check device-free contracts
         run: make -C filters/gst/xv-output check
 
+      - name: Build optional packed scaler and check CPU contracts
+        run: make -C filters/gst/packed-upscale check
+
       - name: Select packaged kernel headers
         run: |
           KDIR=$(find /usr/src -maxdepth 1 -type d \

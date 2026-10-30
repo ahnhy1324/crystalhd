@@ -28,7 +28,7 @@ library-check: export CRYSTALHD_CONFIG_DISABLE = 1
 library-check:
 	@set -eu; lib_test_dir=$$(mktemp -d /tmp/crystalhd-library-check.XXXXXX); \
 	trap 'rm -f "$$lib_test_dir/check"; rmdir "$$lib_test_dir"' EXIT HUP INT TERM; \
-	for lib_test in logging shmem-logging shmem-logging-disabled shmem-lifetime tx-ring flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem device-handle poll-fd capture capture-scaled fwload fw-version fwcmds raw-frame; do \
+	for lib_test in logging shmem-logging shmem-logging-disabled shmem-lifetime tx-ring tx-concurrency flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem device-handle poll-fd capture capture-scaled fwload fw-version fwcmds raw-frame; do \
 		test_extra=; \
 		test_flags=; \
 		test_file=$$lib_test; \
@@ -81,10 +81,12 @@ library-check:
 			input-format) test_wrap=-Wl,--wrap=ioctl,--wrap=malloc,--wrap=free,--wrap=posix_memalign; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_parser.cpp ;; \
 			tx-ring) test_wrap=-Wl,--wrap=pthread_mutex_lock ;; \
+			tx-concurrency) test_wrap=-Wl,--wrap=pthread_mutex_lock,--wrap=open,--wrap=openat,--wrap=ioctl; \
+				test_extra=linux_lib/libcrystalhd/libcrystalhd_int_if.cpp ;; \
 			flush) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=pthread_mutex_lock; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsReleaseInterface,--wrap=DtsFinishOutputCall,--wrap=DtsPublishOutput"; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsCommitFetchedOutput,--wrap=DtsPublishCopiedOutput" ;; \
-			tx-flush) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=pthread_mutex_unlock; \
+			tx-flush) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=pthread_mutex_lock,--wrap=pthread_mutex_unlock; \
 				test_wrap="$$test_wrap -Wl,--wrap=_Z14DtsCacheSpsPpsPvPKhj"; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsSetupHardware,--wrap=DtsOpenDecoder"; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsFlushRxCapture"; \
