@@ -1,0 +1,166 @@
+{
+  "schema": 1,
+  "status": "PASS_OWN_DIL_TX_COUNTER_SYNCHRONIZATION",
+  "date": "2026-10-30",
+  "source_base": "4862dd1891f21f02f158126a96b01db2abbded76",
+  "scope": "Hardware-free qualification of actual own DIL TX counter synchronization, not a Player loss-cause or playback qualification.",
+  "toolchain": {
+    "compiler": "g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+    "language": "c++11",
+    "tsan": "GCC -fsanitize=thread; clean atomic-thread initialization control exited0",
+    "tsan_options": "halt_on_error=1:exitcode=66"
+  },
+  "supported_roles": [
+    "One real txBufPush producer follows public input thLock -> DtsTxFreeSize -> enqueue order.",
+    "One real txBufPop consumer; one concurrent real public DtsGetDriverStatus caller using actual ioctl marshalling and only final GET_DRV_STAT memory mock.",
+    "Reset stays serialized with the producer as the existing ring contract requires; real worker/flush/stop regressions remain separate."
+  ],
+  "red": {
+    "production_source_sha256": {
+      "linux_lib/libcrystalhd/libcrystalhd_priv.cpp": "2cf5f1c68ef7d42a01d489d706f817055b8bd00cd46739d381369beaed5da278",
+      "linux_lib/libcrystalhd/libcrystalhd_if.cpp": "5c152e8cb2fc0029782d28d821e561b9e9e5eb0c6ba961be0e0cd2e3dd505b4a",
+      "linux_lib/libcrystalhd/libcrystalhd_int_if.cpp": "ace01287b120c6553db761972d0ae0febb27536b5c60a4af26c877993494fc21",
+      "linux_lib/libcrystalhd/libcrystalhd_priv.h": "5baeaf2791998abedc36c2a55e3071fadeedd21a5961595d0b7d089a85c3f5cb"
+    },
+    "tsan_spsc_exit": 66,
+    "tsan_public_status_exit": 66,
+    "serial_control_exit": 0,
+    "deterministic_control_exit": 1,
+    "proven_conflicts": [
+      "txBufPush freeSize check vs actual txBufPop freeSize publication",
+      "txBufPop busySize check vs actual txBufPush busySize publication",
+      "DtsGetDriverStatus software-free response at base if.cpp4274 vs actual pop publication"
+    ],
+    "deterministic_negatives": [
+      "full push returns without attempting counter mutex",
+      "empty pop returns without attempting counter mutex",
+      "public status returns software free size without attempting counter mutex"
+    ],
+    "retained_initial_ring_harness": {
+      "path": "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/library-tx-concurrency-spsc-red.cpp",
+      "sha256": "212f8e9c5fe9c9cb83f212139f830192309d502b0626a9e2cea617a9a9945cf8"
+    },
+    "note": "TSan conflicts use actual linked DIL functions, not a replacement counter model; optimized write-side debug lines are imperfect, so function/read-site plus actual source is the attribution boundary."
+  },
+  "green": {
+    "source_sha256": {
+      "linux_lib/libcrystalhd/libcrystalhd_priv.cpp": "24edafc953c1b94e3388f71f676db8725e41283d4da63ffe412a22d949025424",
+      "linux_lib/libcrystalhd/libcrystalhd_if.cpp": "2d8cbd69ab86ba85ea843b4e06fa69a13a99b9985e620c880afa0a8406307a93",
+      "linux_lib/libcrystalhd/libcrystalhd_int_if.cpp": "ace01287b120c6553db761972d0ae0febb27536b5c60a4af26c877993494fc21",
+      "linux_lib/libcrystalhd/libcrystalhd_priv.h": "5baeaf2791998abedc36c2a55e3071fadeedd21a5961595d0b7d089a85c3f5cb"
+    },
+    "test_sha256": {
+      "tests/library-tx-concurrency.cpp": "76cbba1fac5ed8d8036b84c2f40221d2d71968148400a0bfc7fe94b59e658321",
+      "tests/library-tx-flush.cpp": "04c61893b7fe2c7e4a6a6fb05db40c6a11306062778ea6ed18b7938921ea4615",
+      "Makefile": "e0575df01efaf191fc593c169d4656221f71cdf9684e5492fc4e15f04fa54989"
+    },
+    "deterministic_and_SPSC_public_status_exit": 0,
+    "tsan_deterministic_SPSC_public_status_exit": 0,
+    "fifo_bytes_per_execution": 1048576,
+    "tsan_stderr_bytes": 0,
+    "library_build_exit": 0,
+    "full_library_check_exit": 0,
+    "worker_flush_check": "TX flush ordering: PASS (0 failed checks)",
+    "existing_ring_order_wake_join": "PASS",
+    "public_status_checks": 139
+  },
+  "lock_order_audit": [
+    "Existing public enqueue order remains thLock -> flushLock -> pushpopLock; push checks/publishes under pushpopLock and releases it before wakeLock.",
+    "DtsGetDriverStatus drops its internal thLock levels before the getter; an outer recursive caller still follows the pre-existing context -> flush -> counter order. DtsGetContext adds no mutex.",
+    "Worker busy snapshots take flushLock -> pushpopLock outside admission thLock; both are released before pop/DMA, context reacquisition, or clearing txPending on an empty refreshed snapshot.",
+    "Pop takes flushLock -> pushpopLock and never context/wake locks while either is held. Reset takes flushLock and remains serialized with its input producer.",
+    "No flush -> counter -> context cycle is added; TX50ms latched wake and EOS/recovery timings are unchanged.",
+    "Unused wrapped-copy readPointer/writePointer reads are removed; no copy offset/length changes."
+  ],
+  "worker_flush_fixture": "The first full-suite attempt mistook the new snapshot flush-unlock for completed pop. Updated wrapper observes cursor under actual flush lock and pauses only after the fixture packet advances it; all old DMA/retirement assertions are retained. Failed first log remains available.",
+  "commands": {
+    "green_build": "g++ -std=c++11 -O1 -g -Wall -Werror -ffunction-sections -fdata-sections -D__LINUX_USER__ -Ilinux_lib/libcrystalhd -Iinclude -Iinclude/link tests/library-tx-concurrency.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp linux_lib/libcrystalhd/libcrystalhd_if.cpp linux_lib/libcrystalhd/libcrystalhd_int_if.cpp -Wl,--gc-sections,--wrap=pthread_mutex_lock,--wrap=open,--wrap=openat,--wrap=ioctl -pthread -lrt -o /home/mache/.cache/crystalhd-tx-counter-runtime-20261030/tx-deterministic-green",
+    "green_run": "timeout 25 /home/mache/.cache/crystalhd-tx-counter-runtime-20261030/tx-deterministic-green status",
+    "tsan_build": "g++ -std=c++11 -O1 -g -Wall -Werror -ffunction-sections -fdata-sections -D__LINUX_USER__ -Ilinux_lib/libcrystalhd -Iinclude -Iinclude/link -fsanitize=thread -fno-omit-frame-pointer tests/library-tx-concurrency.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp linux_lib/libcrystalhd/libcrystalhd_if.cpp linux_lib/libcrystalhd/libcrystalhd_int_if.cpp -Wl,--gc-sections,--wrap=pthread_mutex_lock,--wrap=open,--wrap=openat,--wrap=ioctl -pthread -lrt -o /home/mache/.cache/crystalhd-tx-counter-runtime-20261030/tx-final-green-tsan",
+    "tsan_run": "TSAN_OPTIONS=halt_on_error=1:exitcode=66 timeout 25 /home/mache/.cache/crystalhd-tx-counter-runtime-20261030/tx-final-green-tsan status",
+    "red_tsan_observed_runs": [
+      "TSAN_OPTIONS=halt_on_error=1:exitcode=66 timeout 25 /home/mache/.cache/crystalhd-tx-counter-runtime-20261030/tx-ring-red-tsan",
+      "TSAN_OPTIONS=halt_on_error=0:exitcode=66 timeout 25 /home/mache/.cache/crystalhd-tx-counter-runtime-20261030/tx-status-red-tsan status"
+    ],
+    "red_deterministic_run": "timeout 25 /home/mache/.cache/crystalhd-tx-counter-runtime-20261030/tx-deterministic-red serial",
+    "full_library_check": "make library-check",
+    "library_build": "make -j2 library"
+  },
+  "real_device_calls": 0,
+  "hardware_guard": "open/openat abort; ioctl permits only fake fd99 GET_DRV_STAT in memory and aborts every other request; no device/firmware/shared-memory setup.",
+  "logs": {
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/tsan-smoke.stdout": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/tsan-smoke.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/red-serial.stdout": {
+      "sha256": "52f5df1f29f3fc22b9c8c05d442c2357284a90fedd513556d48e5f8d64131b75",
+      "bytes": 73
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/red-serial.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/red-spsc.stdout": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/red-spsc.stderr": {
+      "sha256": "fb48d27f00a66231c8aa2a72f9440a580d61a47ffbdc015c73c7eb72b1844e6d",
+      "bytes": 4412
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/red-status.stdout": {
+      "sha256": "1a864fe3702e6d2a1b814d360158552e79f0f3ea5d8886bd3988828e72cfd572",
+      "bytes": 89
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/red-status.stderr": {
+      "sha256": "527c8e5a08974faccb0366b0732b7a40c8c7f3f143d6f2b23e019d19be616b99",
+      "bytes": 8662
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/deterministic-red.stdout": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/deterministic-red.stderr": {
+      "sha256": "960f6306e11134a1370837fbdf27386a23bb9848fb03b81d75b84ec6e001f081",
+      "bytes": 163
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/deterministic-green.stdout": {
+      "sha256": "1a864fe3702e6d2a1b814d360158552e79f0f3ea5d8886bd3988828e72cfd572",
+      "bytes": 89
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/deterministic-green.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/final-green-tsan.stdout": {
+      "sha256": "1a864fe3702e6d2a1b814d360158552e79f0f3ea5d8886bd3988828e72cfd572",
+      "bytes": 89
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/final-green-tsan.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/library-build.log": {
+      "sha256": "383e6a64ef8dd0a1443acba74f8c934a665d0f4a1b5075579c52660c4194d746",
+      "bytes": 2019
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/full-library-check.log": {
+      "sha256": "28613f23cc31cf4b6757c61e5d49a1c042e7c96c6258c9552e32364bb369df69",
+      "bytes": 36136
+    },
+    "/home/mache/.cache/crystalhd-tx-counter-runtime-20261030/full-library-check-final.log": {
+      "sha256": "9c2a56b01f0396b2c6f8987012facf7b51959f78f177951bd9b69b26cdf7b155",
+      "bytes": 129104
+    }
+  },
+  "limits": [
+    "No claim that these races caused the retained FHD/720 losses or that the fix changes playback timing.",
+    "No hardware, device, module, proc/sys operations, external-source edits, QoS/quality/thread/priority pilots, or excluded heap investigation.",
+    "SPSC/ring/status sanitizer coverage and existing worker/flush controls are not a new hardware run."
+  ]
+}
