@@ -4,6 +4,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
@@ -355,6 +356,20 @@ class PolicyAndControlTests(unittest.TestCase):
             self.assertEqual(control.pipeline.seek.call_count, 2)
             self.assertEqual(control.rate, 0.5)
             self.assertIsNone(control.queued_seek)
+
+    def test_trace_rejected_seek_records_a_request_without_changing_playback(self):
+        control = self.controller()
+        control.stage_trace = mock.Mock()
+        control.pipeline.seek.return_value = False
+        old_health = vars(control.health).copy()
+        with contextlib.redirect_stderr(io.StringIO()):
+            control.submit_seek(1234, 2.0)
+        self.assertEqual(control.stage_trace.control.call_args_list,
+                         [mock.call("seek-request", 1234), mock.call("seek-failed", 1234)])
+        self.assertEqual(control.rate, 1.0)
+        self.assertIsNone(control.seek_target)
+        self.assertEqual(vars(control.health), old_health)
+        control.stop.assert_not_called()
 
     def test_pause_resume_and_zero_output_quit(self):
         control = self.controller()
@@ -894,6 +909,214 @@ class ArgumentTests(unittest.TestCase):
             result = subprocess.run(["sh", str(script), "--software", "file with spaces"],
                                     env=environment, text=True, capture_output=True, check=True)
             self.assertIn("/share/crystalhd/player.py --software file with spaces", result.stdout)
+
+
+class StageTraceTests(unittest.TestCase):
+    """Metadata-only native collection and exclusive diagnostic export."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="crystalhd-stage-report-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.media = self.root / "video.mp4"
+        self.media.touch()
+        self.path = self.root / "trace.json"
+
+    def args(self, *flags):
+        return player.arguments(list(flags) + [str(self.media)],
+                                environment={"CRYSTALHD_CONFIG_DISABLE": "1"})
+
+    def fixture(self, *, present=True):
+        native = {"schema": 1, "capacity": 4096, "observed": 0, "retained": 0,
+                  "dropped": 0, "truncated": False, "closed": True,
+                  "attachments": [], "records": []}
+        controller = mock.Mock()
+        controller.emit.side_effect = lambda action, *_args: (
+            json.dumps(native) if action == "snapshot" else
+            1 if action == "attach" else True if action == "control" else None)
+        controller.set_property.side_effect = lambda name, value: native.__setitem__(name, value)
+        Gst = SimpleNamespace(ElementFactory=SimpleNamespace(
+            make=mock.Mock(return_value=controller if present else None)))
+        return Gst, controller, native
+
+    def element(self):
+        element = mock.Mock()
+        element.get_name.return_value = "trace-test-decoder"
+        element.get_factory.return_value = Factory("theoradec", SOFTWARE)
+        pads = {"src": mock.Mock(), "sink": mock.Mock()}
+        element.get_static_pad.side_effect = pads.get
+        return element, pads
+
+    def test_trace_is_cli_only_disabled_by_default_and_has_bounded_capacity(self):
+        default = self.args("--software")
+        self.assertIsNone(default.trace_frames)
+        self.assertEqual(default.trace_limit, 4096)
+        traced = self.args("--software", "--trace-frames", str(self.path))
+        self.assertEqual(Path(traced.trace_frames), self.path)
+        self.assertEqual(traced.trace_limit, 4096)
+        for capacity in (1, 16384):
+            with self.subTest(capacity=capacity):
+                self.assertEqual(self.args("--trace-frames", str(self.path),
+                                          "--trace-limit", str(capacity)).trace_limit,
+                                 capacity)
+        invalid = [("--trace-limit", "4")]
+        invalid.extend(("--trace-frames", str(self.path), "--trace-limit", value)
+                       for value in ("0", "-1", "16385", "1.5"))
+        for flags in invalid:
+            with self.subTest(flags=flags), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as failure:
+                    self.args(*flags)
+                self.assertEqual(failure.exception.code, 2)
+        self.assertFalse(self.path.exists(), "argument parsing must not create reports")
+
+    def test_requested_trace_requires_native_helper_before_report_creation(self):
+        Gst, _controller, _native = self.fixture(present=False)
+        with self.assertRaisesRegex(RuntimeError, "[Tt]rac"):
+            player.NativeStageTrace(Gst, self.path)
+        self.assertFalse(self.path.exists())
+
+    def test_existing_report_and_symlink_are_never_replaced(self):
+        target = self.root / "original.json"
+        target.write_bytes(b"retained previous evidence\n")
+        for symlink in (False, True):
+            with self.subTest(symlink=symlink):
+                if self.path.exists() or self.path.is_symlink():
+                    self.path.unlink()
+                if symlink:
+                    self.path.symlink_to(target)
+                else:
+                    self.path.write_bytes(b"retained previous evidence\n")
+                Gst, _controller, _native = self.fixture()
+                with self.assertRaises(OSError):
+                    player.NativeStageTrace(Gst, self.path)
+                self.assertEqual(target.read_bytes(), b"retained previous evidence\n")
+                self.assertEqual(self.path.read_bytes(), b"retained previous evidence\n")
+                self.assertEqual(self.path.is_symlink(), symlink)
+
+    def test_report_is_private_and_native_collection_has_one_explicit_owner(self):
+        Gst, controller, native = self.fixture()
+        trace = player.NativeStageTrace(Gst, self.path, 17)
+        self.addCleanup(trace.cancel)
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        controller.set_property.assert_called_once_with("capacity", 17)
+        element, pads = self.element()
+        self.assertTrue(trace.attach(element, "decoder", 9))
+        trace.attach(element, "decoder", 9)
+        self.assertEqual([call for call in controller.emit.call_args_list
+                          if call.args[0] == "attach"],
+                         [mock.call("attach", pads["src"], "decoder", 9)])
+        for pad in pads.values():
+            pad.add_probe.assert_not_called()
+        trace.detach(element)
+        trace.detach(element)
+        self.assertEqual([call for call in controller.emit.call_args_list
+                          if call.args[0] == "detach-pad"],
+                         [mock.call("detach-pad", pads["src"])])
+        stats = [{"sink": "fakesink", "rendered": 3, "dropped": 1}]
+        report = trace.finish(stats, 0)
+        for key, value in native.items():
+            self.assertEqual(report[key], value)
+        self.assertEqual(report["player"]["sink_statistics_before_null"], stats)
+        self.assertEqual(report["player"]["exit_code"], 0)
+        self.assertTrue(report["player"]["controls_are_requests"])
+        self.assertTrue(report["player"]["pts_is_not_unique_picture_identity"])
+        self.assertEqual(json.loads(self.path.read_text()), report)
+        before_calls, before_bytes = controller.emit.call_args_list[:], self.path.read_bytes()
+        self.assertIsNone(trace.finish([], 99))
+        trace.cancel()
+        self.assertEqual(self.path.read_bytes(), before_bytes)
+        self.assertEqual(controller.emit.call_args_list, before_calls)
+        self.assertEqual([call.args[0] for call in before_calls][-2:], ["stop", "snapshot"])
+
+    def test_controls_annotate_requests_without_claiming_completed_seek(self):
+        Gst, controller, _native = self.fixture()
+        trace = player.NativeStageTrace(Gst, self.path)
+        self.addCleanup(trace.cancel)
+        for kind, value in (("pause", 0), ("resume", 0),
+                            ("seek-request", 0), ("seek-failed", 1234)):
+            trace.control(kind, value)
+        self.assertEqual([call for call in controller.emit.call_args_list
+                          if call.args[0] == "control"],
+                         [mock.call("control", "pause", 0), mock.call("control", "resume", 0),
+                          mock.call("control", "seek-request", 0),
+                          mock.call("control", "seek-failed", 1234)])
+        trace.finish([], 1)
+
+    def test_rejected_attachments_declare_incomplete_coverage_and_warn_once(self):
+        Gst, controller, _native = self.fixture()
+        trace = player.NativeStageTrace(Gst, self.path)
+        self.addCleanup(trace.cancel)
+        original_emit = controller.emit.side_effect
+        controller.emit.side_effect = lambda action, *args: (
+            -1 if action == "attach" else original_emit(action, *args))
+        first, _pads = self.element()
+        second, _pads = self.element()
+        error = io.StringIO()
+        with contextlib.redirect_stderr(error):
+            self.assertFalse(trace.attach(first, "decoder", 1))
+            self.assertFalse(trace.attach(second, "sink", 2))
+        report = trace.finish([], 0)
+        self.assertEqual(error.getvalue().count("attachment rejected"), 1)
+        self.assertEqual(report["player"]["attachment_errors"], 2)
+        self.assertEqual(report["player"]["attachments"], [])
+        self.assertEqual(report["attachments"], [])
+        self.assertEqual(report["player"]["exit_code"], 0)
+
+    def test_report_io_failure_closes_file_and_does_not_repeat_native_finish(self):
+        Gst, controller, _native = self.fixture()
+        trace = player.NativeStageTrace(Gst, self.path)
+        self.addCleanup(lambda: trace.finish([], 1))
+        opened = trace.file
+        failing = mock.Mock(wraps=opened)
+        failing.write.side_effect = OSError("injected report write failure")
+        trace.file = failing
+        with self.assertRaisesRegex(OSError, "injected report write failure"):
+            trace.finish([], 0)
+        self.assertTrue(opened.closed)
+        self.assertIsNone(trace.finish([], 0))
+        self.assertEqual([call.args[0] for call in controller.emit.call_args_list],
+                         ["stop", "snapshot"])
+
+    def test_trace_export_failure_cannot_skip_player_teardown(self):
+        control = player.Player.__new__(player.Player)
+        control.closed = False
+        control.terminal_state = None
+        control.sources = []
+        control.exit_code = 0
+        control.deinterlace_qos = {}
+        control.Gst = SimpleNamespace(State=SimpleNamespace(NULL=0),
+            StateChangeReturn=SimpleNamespace(FAILURE=-1))
+        control.bus = mock.Mock()
+        control.pipeline = mock.Mock()
+        order = []
+        control.pipeline.set_state.side_effect = lambda _state: order.append("null") or 1
+        control.snapshot_video_output = lambda: []
+        control.stage_trace = mock.Mock()
+        control.args = SimpleNamespace(file=self.media)
+        def fail_report(*_args):
+            order.append("trace")
+            raise OSError("injected report write failure")
+        control.stage_trace.finish.side_effect = fail_report
+        with contextlib.redirect_stderr(io.StringIO()):
+            control.close()
+            control.close()
+        self.assertEqual(order, ["null", "trace"])
+        self.assertEqual(control.exit_code, 1)
+        self.assertTrue(control.closed)
+        control.bus.remove_signal_watch.assert_called_once_with()
+        control.stage_trace.finish.assert_called_once_with([], 0)
+
+    def test_controller_stop_precedes_snapshot_even_when_snapshot_is_invalid(self):
+        Gst, controller, _native = self.fixture()
+        trace = player.NativeStageTrace(Gst, self.path)
+        self.addCleanup(trace.cancel)
+        controller.emit.side_effect = lambda action, *_args: "{" if action == "snapshot" else None
+        with self.assertRaises((ValueError, RuntimeError)):
+            trace.finish([], 1)
+        actions = [call.args[0] for call in controller.emit.call_args_list]
+        self.assertEqual(actions[:2], ["stop", "snapshot"])
+        trace.cancel()
+        self.assertEqual([call.args[0] for call in controller.emit.call_args_list], actions)
 
 
 class ManagedDefaultsTests(unittest.TestCase):
@@ -2110,6 +2333,119 @@ class GStreamerApiTests(unittest.TestCase):
         code, result = self.run_pipeline("fakesrc num-buffers=1 ! identity error-after=1 ! fakesink")
         self.assertEqual(code, 1)
         self.assertIsNotNone(result.health.error)
+
+
+    def make_traced_player(self, *, name, capacity=4096, indexed=False, video_sink=None):
+        self.assertIsNotNone(self.Gst.ElementFactory.find("crystalhdstagetrace"),
+                             "build the matching native tracing helper before these checks")
+        self.http_fixture(indexed=indexed)
+        media = Path(self.temp.name) / ("http-video.mkv" if indexed else "http-video.ogg")
+        output = Path(self.temp.name) / (name + ".json")
+        args = SimpleNamespace(mode="software", weave=False, file=media,
+                               subtitles=None, scale_width=0, software_output_size=None,
+                               trace_frames=output, trace_limit=capacity)
+        result = player.Player(args, self.Gst, self.GLib, {
+            "video-sink": video_sink or self.Gst.ElementFactory.make("fakesink"),
+            "audio-sink": self.Gst.ElementFactory.make("fakesink")})
+        self.addCleanup(result.close)
+        return result, output
+
+    def test_stage_trace_disabled_does_not_construct_an_observer(self):
+        self.http_fixture()
+        source = Path(self.temp.name) / "http-video.ogg"
+        with mock.patch.object(player, "NativeStageTrace",
+                               side_effect=AssertionError("disabled trace constructed")):
+            result = self.make_player(source=source)
+            result.pipeline.set_property("suburi", None)
+            code, _output, error = self.run_player(result)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(result.health.frames, 12)
+        self.assertIsNone(result.stage_trace)
+
+    def test_stage_trace_actual_eos_counts_survive_record_truncation(self):
+        for capacity in (4096, 4):
+            with self.subTest(capacity=capacity):
+                result, output = self.make_traced_player(
+                    name="trace-eos-" + str(capacity), capacity=capacity)
+                code, _text, error = self.run_player(result)
+                self.assertEqual(code, 0, error)
+                report = json.loads(output.read_text())
+                self.assertTrue(report["closed"])
+                self.assertLessEqual(len(report["records"]), capacity)
+                self.assertEqual(report["retained"], len(report["records"]))
+                self.assertEqual(report["truncated"], capacity == 4)
+                self.assertEqual(report["observed"] - report["retained"], report["dropped"])
+                for stage in ("decoder", "sink"):
+                    rows = [a for a in report["attachments"] if a["stage"] == stage]
+                    self.assertEqual(len(rows), 1, (stage, rows))
+                    self.assertEqual(rows[0]["buffers"], 12)
+                    self.assertFalse(rows[0]["active"])
+                self.assertEqual(result.health.frames, 12)
+                self.assertEqual(report["player"]["attachment_errors"], 0)
+                self.assertEqual(report["player"]["exit_code"], 0)
+                if capacity == 4096:
+                    decoded = [r for r in report["records"]
+                               if r["kind"] == "buffer" and r["stage"] == "decoder"]
+                    self.assertEqual(len(decoded), 12)
+                    self.assertEqual(decoded[0]["pts"], 0)
+                    self.assertEqual(decoded[0]["running_time"], 0)
+                self.assertNotIn(str(result.args.file), output.read_text())
+
+    def test_stage_trace_video_wrapper_observes_leaf_once_and_excludes_audio(self):
+        wrapper = self.Gst.Bin.new("explicit-video-wrapper")
+        leaf = self.Gst.ElementFactory.make("fakesink", "video-leaf")
+        wrapper.add(leaf)
+        wrapper.add_pad(self.Gst.GhostPad.new("sink", leaf.get_static_pad("sink")))
+        result, output = self.make_traced_player(name="trace-wrapper", video_sink=wrapper)
+        code, _text, error = self.run_player(result)
+        self.assertEqual(code, 0, error)
+        report = json.loads(output.read_text())
+        native = [a for a in report["attachments"] if a["stage"] == "sink"]
+        metadata = [a for a in report["player"]["attachments"] if a["stage"] == "sink"]
+        self.assertEqual(len(native), 1, native)
+        self.assertEqual(native[0]["buffers"], 12)
+        self.assertEqual(len(metadata), 1, metadata)
+        self.assertEqual(metadata[0]["factory"], "fakesink")
+
+    def test_stage_trace_pause_seek_and_repeated_pts_keep_observed_generations(self):
+        result, output = self.make_traced_player(name="trace-controls", indexed=True)
+        result.pipeline.get_property("video-sink").set_property("sync", True)
+        actions = []
+        deadline = time.monotonic() + 3
+
+        def resume_and_seek():
+            result.control("pause")
+            actions.append("resume")
+            result.submit_seek(0, 1.0)
+            actions.append("seek" if result.seek_target is not None else "seek-rejected")
+            return False
+
+        def pause_when_playing():
+            if time.monotonic() > deadline:
+                result.fail("stage trace control fixture timed out")
+                return False
+            state, _current, _pending = result.pipeline.get_state(0)
+            if not result.health.frames or state == self.Gst.StateChangeReturn.ASYNC:
+                return True
+            result.control("pause")
+            actions.append("pause")
+            result.sources.append(self.GLib.timeout_add(30, resume_and_seek))
+            return False
+
+        result.sources.append(self.GLib.timeout_add(10, pause_when_playing))
+        code, _text, error = self.run_player(result)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(actions, ["pause", "resume", "seek"])
+        report = json.loads(output.read_text())
+        controls = [r["control"] for r in report["records"] if r["kind"] == "control"]
+        self.assertEqual(controls, ["pause", "resume", "seek-request"])
+        decoded = [r for r in report["records"]
+                   if r["kind"] == "buffer" and r["stage"] == "decoder"]
+        zero_generations = {r["segment_generation"] for r in decoded if r["pts"] == 0}
+        self.assertGreaterEqual(len(zero_generations), 2, decoded)
+        self.assertTrue(any(r["kind"] == "flush-start" for r in report["records"]))
+        self.assertTrue(report["player"]["controls_are_requests"])
+        self.assertTrue(report["player"]["pts_is_not_unique_picture_identity"])
 
 
 if __name__ == "__main__":

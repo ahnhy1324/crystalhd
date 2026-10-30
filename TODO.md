@@ -118,6 +118,15 @@ its exact-source and acceptance scope in the owning issue.
 - [x] [#510: first-stage CI selection](https://github.com/ahnhy1324/crystalhd/issues/510)
   — all seven original CI acceptance rows are complete through #525/#526.
   The umbrella remains open for its remaining implementation/acceptance work.
+- [x] [#510: bounded native Player stage/PTS observations](https://github.com/ahnhy1324/crystalhd/issues/510)
+  — development `--trace-frames` records decoder/deinterlacer/sink metadata
+  without adding per-buffer Python. Controlled TFF/BFF drop attribution,
+  lifetime, record bounds and actual software controls pass. Selected native
+  180-picture progressive and 50-picture/100-field interlaced EOF runs match
+  the pre-frozen software PTS/duration vectors exactly and retire cleanly.
+  [Receipt](tests/fixtures/issue510/player-stage-trace-20261030.json).
+  BUFFER and LIST observations remain distinct; this does not resolve the
+  historical Player losses or qualify physical presentation/A/V.
 - [x] [#400: shared settings, GTK/tray and production icons](https://github.com/ahnhy1324/crystalhd/issues/400)
   — the merged deliverables are recorded separately from translations,
   additional adapters and broader desktop/native-i386 GUI acceptance.
