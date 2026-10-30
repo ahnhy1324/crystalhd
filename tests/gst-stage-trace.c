@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* Temporary CI routing probe: reviewed existing userspace test file. */
 /* Real CPU-only pad/pipeline controls. No decoder, DIL, device or display. */
 #include <gst/check/gstharness.h>
 #include <gst/video/video.h>
