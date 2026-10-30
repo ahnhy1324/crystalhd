@@ -1,8 +1,27 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 /* Real CPU-only pad/pipeline controls. No decoder, DIL, device or display. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <gst/check/gstharness.h>
 #include <gst/video/video.h>
 #include <string.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
+static gint thread_id_calls;
+#if defined(__linux__) && defined(SYS_gettid)
+static long
+trace_test_syscall(long number, ...)
+{
+  g_assert_cmpint(number, ==, SYS_gettid);
+  g_atomic_int_inc(&thread_id_calls);
+  return syscall(number);
+}
+#define syscall trace_test_syscall
+#endif
 
 /* Unit-only scheduling barriers around the production clock and mutex calls.
  * Pause a real probe while it owns state, then observe a real stop attempting
@@ -49,6 +68,9 @@ trace_test_mutex_lock(GMutex *mutex)
 #include "../filters/gst/gst-plugin-1.0/gstcrystalhd-stage-trace.c"
 #undef g_mutex_lock
 #undef gst_util_get_timestamp
+#if defined(__linux__) && defined(SYS_gettid)
+#undef syscall
+#endif
 
 #define INPUT_CAPS "video/x-raw,format=YUY2,width=16,height=8," \
   "interlace-mode=mixed,framerate=25/1,pixel-aspect-ratio=1/1"
@@ -149,6 +171,27 @@ receive_event(GstPad *pad, GstObject *parent, GstEvent *event)
   return TRUE;
 }
 
+static gboolean
+receive_query(GstPad *pad, GstObject *parent, GstQuery *query)
+{
+  /* This unit sink consumes opaque bytes under all supplied test CAPS. Bare
+   * GstPad's default query otherwise fixes negotiation to the previous CAPS,
+   * preventing the explicit renegotiation/window-context control. */
+  if (GST_QUERY_TYPE(query) == GST_QUERY_ACCEPT_CAPS) {
+    gst_query_set_accept_caps_result(query, TRUE);
+    return TRUE;
+  }
+  if (GST_QUERY_TYPE(query) == GST_QUERY_CAPS) {
+    GstCaps *filter, *caps;
+    gst_query_parse_caps(query, &filter);
+    caps = filter ? gst_caps_ref(filter) : gst_caps_new_any();
+    gst_query_set_caps_result(query, caps);
+    gst_caps_unref(caps);
+    return TRUE;
+  }
+  return gst_pad_query_default(pad, parent, query);
+}
+
 static GstFlowReturn
 receive_list(GstPad *pad, GstObject *parent, GstBufferList *list)
 {
@@ -173,6 +216,7 @@ fixture_init(PadFixture *f, guint capacity)
   g_object_set_data(G_OBJECT(f->sink), "fixture", f);
   gst_pad_set_chain_function(f->sink, receive_buffer);
   gst_pad_set_event_function(f->sink, receive_event);
+  gst_pad_set_query_function(f->sink, receive_query);
   gst_pad_set_event_function(f->src, receive_event);
   g_assert_true(gst_pad_set_active(f->src, TRUE));
   g_assert_true(gst_pad_set_active(f->sink, TRUE));
@@ -260,6 +304,7 @@ static void
 test_metadata(void)
 {
   PadFixture f;
+  gint calls_before = g_atomic_int_get(&thread_id_calls);
   fixture_init(&f, 128);
   g_assert_null(GST_ELEMENT_PADS(f.helper));
   g_assert_null(GST_OBJECT_PARENT(f.helper));
@@ -294,6 +339,7 @@ test_metadata(void)
   g_assert_cmpstr(before, ==, after);
   g_free(before); g_free(after);
   fixture_clear(&f);
+  g_assert_cmpint(g_atomic_int_get(&thread_id_calls), ==, calls_before);
 }
 
 static void
@@ -402,8 +448,9 @@ static void
 test_buffer_list_and_attachment_limit(void)
 {
   PadFixture f;
-  for (guint path = 0; path < 3; path++) {
-    fixture_init(&f, path == 2 ? 3 : 128);
+  for (guint path = 0; path < 4; path++) {
+    fixture_init(&f, path >= 2 ? 3 : 128);
+    if (path == 3) g_object_set(f.helper, "window", TRUE, NULL);
     if (path == 1) gst_pad_set_chain_list_function(f.sink, receive_list);
     g_assert_cmpint(attach(f.helper, f.src, "decoder", 54), ==, 1);
     g_assert_cmpint(attach(f.helper, f.sink, "sink", 55), ==, 1);
@@ -424,8 +471,9 @@ test_buffer_list_and_attachment_limit(void)
     }
     g_assert_cmpint(gst_pad_push_list(f.src, list), ==, GST_FLOW_OK);
     g_assert_cmpuint(f.received, ==, 3);
-    finish(&f, path == 2 ? "truncated_buffer_list" :
-        (path == 1 ? "custom_buffer_list" : "buffer_list"));
+    finish(&f, path == 3 ? "window_buffer_list" :
+        (path == 2 ? "truncated_buffer_list" :
+        (path == 1 ? "custom_buffer_list" : "buffer_list")));
     fixture_clear(&f);
   }
 
@@ -497,6 +545,7 @@ test_inflight_stop(void)
     PadFixture f;
     gboolean freed = FALSE;
     fixture_init(&f, 16);
+    g_object_set(f.helper, "window", (gboolean) (repeat % 2), NULL);
     g_assert_cmpint(attach(f.helper, f.src, "decoder", 62), ==, 1);
     push_headers(&f);
     g_object_weak_ref(G_OBJECT(f.helper), object_destroyed, &freed);
@@ -701,6 +750,239 @@ test_output_stages(void)
   g_ptr_array_unref(reference); g_ptr_array_unref(observed); g_ptr_array_unref(dropped);
 }
 
+static gboolean
+trigger(GstElement *helper, guint64 seqnum)
+{
+  gboolean accepted = FALSE;
+  g_signal_emit_by_name(helper, "trigger", seqnum, &accepted);
+  return accepted;
+}
+
+static void
+set_changed_caps(PadFixture *f)
+{
+  GstCaps *caps = gst_caps_from_string(
+      "video/x-raw,format=UYVY,width=16,height=8,interlace-mode=progressive,"
+      "framerate=50/1,pixel-aspect-ratio=1/1");
+  g_assert_true(gst_pad_push_event(f->src, gst_event_new_caps(caps)));
+  gst_caps_unref(caps);
+}
+
+static void
+test_window_context(void)
+{
+  PadFixture f;
+  gboolean enabled = FALSE, accepted = FALSE;
+  fixture_init(&f, 8);
+  g_assert_false(trigger(f.helper, 0)); /* First-N does not silently turn into a ring. */
+  g_object_set(f.helper, "window", TRUE, NULL);
+  g_assert_cmpint(attach(f.helper, f.src, "decoder", 91), ==, 1);
+  g_object_set(f.helper, "window", FALSE, NULL); /* Locked after first attachment. */
+  g_object_get(f.helper, "window", &enabled, NULL);
+  g_assert_true(enabled);
+  push_headers(&f);
+  for (guint n = 0; n < 20; n++)
+    push_buffer(&f, n * 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  finish(&f, "window_tail");
+  fixture_clear(&f);
+
+  fixture_init(&f, 8);
+  g_object_set(f.helper, "window", TRUE, NULL);
+  g_assert_cmpint(attach(f.helper, f.src, "decoder", 92), ==, 1);
+  push_headers(&f);
+  for (guint n = 0; n < 20; n++)
+    push_buffer(&f, n * 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  g_assert_true(gst_pad_push_event(f.src, gst_event_new_stream_start("trace-second")));
+  set_changed_caps(&f);
+  push_segment(&f, GST_FORMAT_TIME, 0, 0, 5 * GST_SECOND, 0x905);
+  for (guint n = 0; n < 20; n++)
+    push_buffer(&f, n * 20 * GST_MSECOND, GST_CLOCK_TIME_NONE, 20 * GST_MSECOND, 0);
+  finish(&f, "window_epoch");
+  fixture_clear(&f);
+
+  fixture_init(&f, 4);
+  g_object_set(f.helper, "window", TRUE, NULL);
+  g_assert_cmpint(attach(f.helper, f.src, "decoder", 93), ==, 1);
+  push_headers(&f);
+  for (guint n = 0; n < 10; n++)
+    push_buffer(&f, n * 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  g_assert_true(gst_pad_push_event(f.src, gst_event_new_flush_start()));
+  g_assert_true(gst_pad_push_event(f.src, gst_event_new_flush_stop(TRUE)));
+  g_test_expect_message("GStreamer", G_LOG_LEVEL_WARNING,
+      "*Got data flow before segment event*");
+  g_test_expect_message("GStreamer", G_LOG_LEVEL_WARNING,
+      "*Got data flow before segment event*");
+  push_buffer(&f, 0, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  g_test_assert_expected_messages();
+  for (guint n = 0; n < 9; n++) {
+    g_signal_emit_by_name(f.helper, "control", "pause", (guint64) n, &accepted);
+    g_assert_true(accepted);
+  }
+  finish(&f, "window_flush");
+  fixture_clear(&f);
+
+  fixture_init(&f, 128);
+  g_object_set(f.helper, "window", TRUE, NULL);
+  g_assert_cmpint(attach(f.helper, f.src, "decoder", 94), ==, 1);
+  push_headers(&f);
+  push_buffer(&f, 0, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  g_assert_true(trigger(f.helper, 0xabcd));
+  g_assert_false(trigger(f.helper, 0xbcde));
+  push_buffer(&f, 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  finish(&f, "window_post_incomplete");
+  gchar *before = snapshot(f.helper);
+  g_assert_false(trigger(f.helper, 0xcdef));
+  g_object_set(f.helper, "window", FALSE, NULL);
+  gchar *after = snapshot(f.helper);
+  g_assert_cmpstr(before, ==, after);
+  g_free(before); g_free(after);
+  fixture_clear(&f);
+
+  fixture_init(&f, 1);
+  g_object_set(f.helper, "window", TRUE, NULL);
+  g_assert_cmpint(attach(f.helper, f.src, "decoder", 95), ==, 1);
+  push_headers(&f);
+  push_buffer(&f, 0, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  g_assert_true(trigger(f.helper, 0x99));
+  push_buffer(&f, 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  /* Frozen window context must remain at the old mixed/YUY2 TIME segment,
+   * even though terminal CAPS/segment and live counters continue changing. */
+  set_changed_caps(&f);
+  push_segment(&f, GST_FORMAT_TIME, 0, 0, 9 * GST_SECOND, 0x906);
+  push_buffer(&f, 0, GST_CLOCK_TIME_NONE, 20 * GST_MSECOND, 0);
+  finish(&f, "window_tiny");
+  fixture_clear(&f);
+
+  fixture_init(&f, 4);
+  g_object_set(f.helper, "window", TRUE, NULL);
+  g_assert_cmpint(attach(f.helper, f.src, "decoder", 96), ==, 1);
+  for (guint n = 0; n < 16; n++) {
+    g_signal_emit_by_name(f.helper, "control", "pause", (guint64) n, &accepted);
+    g_assert_true(accepted);
+  }
+  finish(&f, "window_unknown");
+  fixture_clear(&f);
+
+  fixture_init(&f, 4);
+  g_object_set(f.helper, "window", TRUE, NULL);
+  g_assert_cmpint(attach(f.helper, f.src, "decoder", 97), ==, 1);
+  push_headers(&f);
+  push_buffer(&f, 0, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  g_assert_true(gst_pad_push_event(f.src, gst_event_new_stream_start("trace-unqualified")));
+  for (guint n = 0; n < 16; n++) {
+    g_signal_emit_by_name(f.helper, "control", "pause", (guint64) n, &accepted);
+    g_assert_true(accepted);
+  }
+  finish(&f, "window_stream_unknown");
+  fixture_clear(&f);
+}
+
+typedef struct { GstElement *helper; guint observed; gboolean window; } PointDropControl;
+
+static GstPadProbeReturn
+drop_late_picture(GstPad *pad, GstPadProbeInfo *info, gpointer data)
+{
+  PointDropControl *control = data;
+  (void) pad;
+  g_assert_nonnull(GST_PAD_PROBE_INFO_BUFFER(info));
+  if (++control->observed != 150) return GST_PAD_PROBE_OK;
+  if (control->helper)
+    g_assert_cmpint(trigger(control->helper, 0xd01), ==, control->window);
+  return GST_PAD_PROBE_DROP;
+}
+
+static GPtrArray *
+window_output_run(guint mode, gboolean drop, const gchar *name)
+{
+  GstHarness *h = gst_harness_new_parse(
+      "videoconvert name=pack ! capsfilter caps=\"video/x-raw,format=UYVY\" ! "
+      "videoscale name=scale method=4 ! "
+      "capsfilter caps=\"video/x-raw,format=UYVY,width=32,height=16\"");
+  GstElement *pack = gst_bin_get_by_name(GST_BIN(h->element), "pack");
+  GstElement *scale = gst_bin_get_by_name(GST_BIN(h->element), "scale");
+  GstPad *pack_src = gst_element_get_static_pad(pack, "src");
+  GstPad *scale_src = gst_element_get_static_pad(scale, "src");
+  GstElement *helper = mode ? helper_new(64) : NULL;
+  PointDropControl control = {helper, 0, mode == 2};
+  gulong drop_id = 0;
+  GPtrArray *outputs = g_ptr_array_new_with_free_func((GDestroyNotify) gst_buffer_unref);
+  if (helper) {
+    g_object_set(helper, "window", mode == 2, NULL);
+    g_assert_cmpint(attach(helper, pack_src, "output-pack", 101), ==, 1);
+    g_assert_cmpint(attach(helper, scale_src, "output-scale", 102), ==, 1);
+    g_assert_cmpint(attach(helper, h->sinkpad, "sink", 103), ==, 1);
+  }
+  if (drop)
+    drop_id = gst_pad_add_probe(pack_src, GST_PAD_PROBE_TYPE_BUFFER,
+        drop_late_picture, &control, NULL);
+  gst_harness_set_caps_str(h, OUTPUT_CAPS,
+      "video/x-raw,format=UYVY,width=32,height=16,"
+      "interlace-mode=progressive,framerate=50/1,pixel-aspect-ratio=1/1");
+  for (guint n = 0; n < 200; n++) {
+    GstBuffer *buffer = gst_buffer_new_allocate(NULL, 256, NULL);
+    GstMapInfo map;
+    g_assert_true(gst_buffer_map(buffer, &map, GST_MAP_WRITE));
+    for (guint row = 0; row < 8; row++)
+      for (guint col = 0; col < 32; col++)
+        map.data[row * 32 + col] = (guint8) (n * 37 + row * 19 + col * 3);
+    gst_buffer_unmap(buffer, &map);
+    GST_BUFFER_PTS(buffer) = n * 20 * GST_MSECOND;
+    GST_BUFFER_DURATION(buffer) = 20 * GST_MSECOND;
+    g_assert_cmpint(gst_harness_push(h, buffer), ==, GST_FLOW_OK);
+  }
+  g_assert_true(gst_harness_push_event(h, gst_event_new_eos()));
+  while (gst_harness_buffers_in_queue(h))
+    g_ptr_array_add(outputs, gst_harness_pull(h));
+  g_assert_cmpuint(outputs->len, ==, drop ? 199 : 200);
+  if (drop) g_assert_cmpuint(control.observed, ==, 200);
+  if (helper) {
+    g_signal_emit_by_name(helper, "stop");
+    emit_case(helper, name);
+    gst_object_unref(helper);
+  }
+  if (drop_id) gst_pad_remove_probe(pack_src, drop_id);
+  gst_object_unref(pack_src); gst_object_unref(scale_src);
+  gst_object_unref(pack); gst_object_unref(scale);
+  gst_harness_teardown(h);
+  return outputs;
+}
+
+static void
+compare_point_drop(GPtrArray *reference, GPtrArray *actual)
+{
+  guint matched = 0;
+  for (guint n = 0; n < reference->len; n++) {
+    if (n == 149) continue;
+    GstBuffer *expected = g_ptr_array_index(reference, n);
+    GstBuffer *observed = g_ptr_array_index(actual, matched++);
+    GstMapInfo a, b;
+    g_assert_cmpuint(GST_BUFFER_PTS(observed), ==, n * 20 * GST_MSECOND);
+    g_assert_cmpuint(GST_BUFFER_PTS(observed), ==, GST_BUFFER_PTS(expected));
+    g_assert_cmpuint(GST_BUFFER_DURATION(observed), ==, GST_BUFFER_DURATION(expected));
+    g_assert_cmpuint(GST_BUFFER_FLAGS(observed), ==, GST_BUFFER_FLAGS(expected));
+    g_assert_true(gst_buffer_map(expected, &a, GST_MAP_READ));
+    g_assert_true(gst_buffer_map(observed, &b, GST_MAP_READ));
+    g_assert_cmpuint(a.size, ==, b.size);
+    g_assert_cmpint(memcmp(a.data, b.data, a.size), ==, 0);
+    gst_buffer_unmap(observed, &b); gst_buffer_unmap(expected, &a);
+  }
+  g_assert_cmpuint(matched, ==, actual->len);
+}
+
+static void
+test_window_output_loss(void)
+{
+  GPtrArray *reference = window_output_run(0, FALSE, NULL);
+  GPtrArray *observed = window_output_run(2, FALSE, "window_output");
+  GPtrArray *window_drop = window_output_run(2, TRUE, "window_output_drop");
+  GPtrArray *first_drop = window_output_run(1, TRUE, "first_output_drop");
+  compare_output(reference, observed, FALSE);
+  compare_point_drop(reference, window_drop);
+  compare_point_drop(reference, first_drop);
+  g_ptr_array_unref(reference); g_ptr_array_unref(observed);
+  g_ptr_array_unref(window_drop); g_ptr_array_unref(first_drop);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -708,10 +990,15 @@ main(int argc, char **argv)
   g_test_init(&argc, &argv, NULL);
   g_mutex_init(&clock_gate.lock);
   g_cond_init(&clock_gate.cond);
-  g_print("TRACE_EXPECT {\"flags\":%u,\"mixed_mode\":%u,\"progressive_mode\":%u}\n",
+  guint64 expected_tid = 0;
+#if defined(__linux__) && defined(SYS_gettid)
+  long observed_tid = syscall(SYS_gettid);
+  if (observed_tid > 0) expected_tid = (guint64) observed_tid;
+#endif
+  g_print("TRACE_EXPECT {\"flags\":%u,\"mixed_mode\":%u,\"progressive_mode\":%u,\"linux_tid\":%" G_GUINT64_FORMAT "}\n",
       GST_VIDEO_BUFFER_FLAG_INTERLACED | GST_VIDEO_BUFFER_FLAG_TFF |
       GST_VIDEO_BUFFER_FLAG_RFF | GST_VIDEO_BUFFER_FLAG_ONEFIELD,
-      GST_VIDEO_INTERLACE_MODE_MIXED, GST_VIDEO_INTERLACE_MODE_PROGRESSIVE);
+      GST_VIDEO_INTERLACE_MODE_MIXED, GST_VIDEO_INTERLACE_MODE_PROGRESSIVE, expected_tid);
   g_test_add_func("/stage-trace/metadata", test_metadata);
   g_test_add_func("/stage-trace/flush-segment", test_flush);
   g_test_add_func("/stage-trace/capacity-controls", test_capacity_and_controls);
@@ -721,6 +1008,8 @@ main(int argc, char **argv)
   g_test_add_func("/stage-trace/inflight-stop", test_inflight_stop);
   g_test_add_func("/stage-trace/50-picture-fields", test_pipeline_fields);
   g_test_add_func("/stage-trace/output-pack-scale", test_output_stages);
+  g_test_add_func("/stage-trace/window-context", test_window_context);
+  g_test_add_func("/stage-trace/window-output-loss", test_window_output_loss);
   gint result = g_test_run();
   g_cond_clear(&clock_gate.cond);
   g_mutex_clear(&clock_gate.lock);

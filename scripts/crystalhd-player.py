@@ -248,10 +248,14 @@ def arguments(argv=None, environment=None):
                         help="write a bounded native video-stage PTS trace to a new JSON file")
     parser.add_argument("--trace-limit", type=trace_record_limit, default=None, metavar="RECORDS",
                         help="maximum retained trace records, 1 to 16384 (default: 4096)")
+    parser.add_argument("--trace-window", action="store_true",
+                        help="retain a rolling window around the first timed QoS report of late video")
     parser.add_argument("file", type=playback_input, metavar="FILE_OR_HTTP_URL")
     args = parser.parse_args(argv)
     if args.trace_limit is not None and args.trace_frames is None:
         parser.error("--trace-limit requires --trace-frames")
+    if args.trace_window and args.trace_frames is None:
+        parser.error("--trace-window requires --trace-frames")
     if args.trace_limit is None:
         args.trace_limit = 4096
     apply_player_defaults(args, parser, os.environ if environment is None else environment)
@@ -615,12 +619,18 @@ class NativeStageTrace:
     """One bounded native observer; Python runs only at setup and close."""
     MAX_ATTACHMENTS = 64
 
-    def __init__(self, Gst, path, capacity=4096):
+    def __init__(self, Gst, path, capacity=4096, *, window=False):
         if type(capacity) is not int or not 1 <= capacity <= 16384:
             raise ValueError("frame trace capacity must be an integer from 1 to 16384")
+        if type(window) is not bool:
+            raise ValueError("frame trace window must be a boolean")
         self.lock = threading.RLock()
         self.finished = False
         self.capacity = capacity
+        self.window = window
+        self.trigger_attempted = False
+        self.loss_trigger = None
+        self.trigger_errors = 0
         self.path = Path(path)
         self.pads = {}
         self.metadata = []
@@ -633,6 +643,10 @@ class NativeStageTrace:
         self.file = None
         try:
             self.controller.set_property("capacity", capacity)
+            if window:
+                if self.controller.find_property("window") is None:
+                    raise RuntimeError("native trace window unavailable; build/install the matching GStreamer plugin")
+                self.controller.set_property("window", True)
             # Never replace existing diagnostics, including a dangling symlink.
             fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
@@ -692,6 +706,30 @@ class NativeStageTrace:
             with self.lock:
                 self.control_errors += 1
 
+    def trigger(self, seqnum, factory, processed, dropped, *, timing=None):
+        """Annotate one observed bus counter; never infer unique lost pictures."""
+        with self.lock:
+            if self.finished or not self.window or self.trigger_attempted:
+                return False
+            self.trigger_attempted = True
+            controller = self.controller
+            # This action updates collector metadata only. Serialize it with
+            # export so the native trigger and bus annotation stay together.
+            try:
+                accepted = bool(controller.emit("trigger", seqnum))
+            except (TypeError, ValueError, RuntimeError):
+                accepted = False
+            if self.finished:
+                return False
+            self.loss_trigger = {"seqnum": seqnum, "factory": factory,
+                                 "processed": processed, "dropped": dropped,
+                                 "accepted": accepted,
+                                 "timing": timing,
+                                 "scope": "first timed video QoS snapshot with positive jitter; counters may reset"}
+            if not accepted:
+                self.trigger_errors += 1
+            return accepted
+
     def finish(self, sink_stats, exit_code):
         with self.lock:
             if self.finished:
@@ -710,11 +748,16 @@ class NativeStageTrace:
                     len(report["records"]) > self.capacity or
                     len(report["attachments"]) > self.MAX_ATTACHMENTS):
                 raise RuntimeError("invalid native frame trace snapshot")
+            if self.window and (report.get("retention") != "window" or
+                                not isinstance(report.get("window"), dict)):
+                raise RuntimeError("invalid native trace window snapshot")
             with self.lock:
                 report["player"] = {
                     "attachments": list(self.metadata),
                     "attachment_errors": self.attachment_errors,
                     "control_errors": self.control_errors,
+                    "trigger_errors": self.trigger_errors,
+                    "loss_trigger": self.loss_trigger,
                     "exit_code": exit_code,
                     "sink_statistics_before_null": sink_stats,
                     "scope": "independent pad observations; sink input is not display",
@@ -810,7 +853,8 @@ class Player:
         if getattr(args, "trace_frames", None) is not None:
             try:
                 self.stage_trace = NativeStageTrace(
-                    Gst, args.trace_frames, getattr(args, "trace_limit", 4096))
+                    Gst, args.trace_frames, getattr(args, "trace_limit", 4096),
+                    window=getattr(args, "trace_window", False))
                 self.trace_software_output()
                 self.trace_selected_video_sink()
             except BaseException:
@@ -1039,7 +1083,36 @@ class Player:
         elif message.type == Gst.MessageType.BUFFERING:
             self.buffering_changed(message.parse_buffering())
         elif message.type == Gst.MessageType.QOS:
+            trace = getattr(self, "stage_trace", None)
+            if trace is not None and trace.window:
+                self.trace_qos_drop(message)
             self.qos_message(message)
+
+    def trace_qos_drop(self, message):
+        trace = getattr(self, "stage_trace", None)
+        if trace is None or not trace.window or trace.trigger_attempted:
+            return
+        fmt, processed, dropped = message.parse_qos_stats()
+        Gst = self.Gst
+        if fmt != Gst.Format.BUFFERS or dropped in (0, Gst.CLOCK_TIME_NONE):
+            return
+        factory = (message.src.get_factory()
+                   if isinstance(message.src, Gst.Element) else None)
+        if factory is None or "Video" not in (factory.get_metadata("klass") or ""):
+            return
+        live, running, stream, timestamp, duration = message.parse_qos()
+        # Header/decode-only drops may have no picture times. Zero is valid.
+        if running == Gst.CLOCK_TIME_NONE or timestamp == Gst.CLOCK_TIME_NONE:
+            return
+        jitter, _proportion, _quality = message.parse_qos_values()
+        if jitter <= 0:
+            return
+        timing = {"live": live, "running_time": running, "timestamp": timestamp,
+                  "jitter": jitter,
+                  "stream_time": None if stream == Gst.CLOCK_TIME_NONE else stream,
+                  "duration": None if duration == Gst.CLOCK_TIME_NONE else duration}
+        trace.trigger(message.get_seqnum(), factory.get_name(), processed, dropped,
+                      timing=timing)
 
     def qos_message(self, message):
         if self.qos_warned:
@@ -1052,11 +1125,17 @@ class Player:
                    if isinstance(message.src, Gst.Element) else None)
         if factory is None or "Video" not in (factory.get_metadata("klass") or ""):
             return
+        _live, running, _stream, timestamp, _duration = message.parse_qos()
+        if running == Gst.CLOCK_TIME_NONE or timestamp == Gst.CLOCK_TIME_NONE:
+            return
+        jitter, _proportion, _quality = message.parse_qos_values()
+        if jitter <= 0:
+            return
         self.qos_warned = True
         # QoS counters can reset on seeks and state changes. Do not add their
         # snapshots, or turn the decoded-pad count into a presentation count.
-        print("crystalhd-play: warning: late video buffers were dropped to keep up "
-              "with playback; the decoded-frame counter is not a displayed-frame count.",
+        print("crystalhd-play: warning: video buffers were dropped; "
+              "the decoded-frame counter is not a displayed-frame count.",
               file=sys.stderr, flush=True)
         if self.args.software_output_size:
             print("For lower-cost display fitting, keep --scale-width and omit "

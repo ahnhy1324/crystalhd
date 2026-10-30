@@ -159,6 +159,30 @@ unobserved stages mean incomplete coverage. Truncation, missing PTS, drops and
 an absent deinterlacer do not become new playback failure gates. An unavailable
 helper or output-file error fails the explicitly requested trace operation.
 
+Add `--trace-window` to keep recent records in the same fixed capacity, then
+freeze after the first timed video QoS bus message with positive jitter and a
+known positive buffer-drop counter, then a quarter-capacity of following records
+(at least one).
+Propagated QoS events, untimed decoder headers and audio/time/unknown counters
+do not trigger capture. Timestamp and running-time zero remain valid.
+Window records include the emitting Linux `thread_id` in the caller's PID
+namespace (`null` when unavailable), not internal scaler-worker identity.
+First-N mode performs no additional thread-ID lookup.
+Without a trigger, final recent records are exported. Playback and cumulative
+counters continue after the window freezes. An older helper without window
+support fails this explicit request before creating a report.
+
+`retention: "window"` declares this mode. `window.complete` means the following
+record budget was collected, not a complete picture census. EOS/stop before
+that budget leaves it false. `window_context` preserves known CAPS/segment/flush
+state before the earliest retained record; unknown context stays explicit.
+Original order, ordinals and generations are preserved. Global `dropped` and
+`truncated` include intentionally overwritten/omitted history, not lost video.
+Do not count records outside the retained window as missing frames or subtract
+window counts from cumulative attachment/sink counters. `player.loss_trigger`
+retains the original bus counter snapshot and sequence number, not a unique
+lost-picture identity. Rejected triggers declare incomplete capture.
+
 Each attachment has independent buffer ordinals, raw video-buffer flags,
 PTS/DTS/duration and stream/segment/flush generations. Timestamp zero is valid;
 unknown times are JSON `null`. Running time is recorded only for a valid TIME

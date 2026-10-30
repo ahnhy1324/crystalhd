@@ -332,9 +332,10 @@ Chromium options rather than CrystalHD settings.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `crystalhddec scale-width` <!-- config-surface:gst-property:scale-width --> | GStreamer `crystalhddec` | BCM70015 decode; progressive and selected H.264 MBAFF with complementary card-field output | `0` means native; otherwise an even width `128..1918`, not wider than coded input; interlaced H.264 requires a multiple of 16 | Hardware scaling support; output height/aspect is derived from the source | Writable only in NULL or READY; snapshotted for one decoder run and reapplied after flush/reopen | **Opt-in** — less PCIe traffic and less detail | Yes — GObject element property |
 | `crystalhdstagetrace capacity` <!-- config-surface:gst-property:capacity --> | Player-owned native diagnostic controller | Hardware or software video-stage observation | `4096`; `1..16384` total retained records, including events and controls | Matching GStreamer plugin; controller has no pipeline pads | Set before first attachment/control; bounded counters continue after record truncation | **Opt-in** — additional observation cost; no decoding or presentation capability | Yes — GObject controller property; invocation-only |
+| `crystalhdstagetrace window` <!-- config-surface:gst-property:window --> | Player-owned native diagnostic controller | Hardware or software video-stage observation | `false`; Boolean | Matching GStreamer plugin; same bounded capacity | Set before attachment/control; one explicit trigger freezes a bounded pre/post history | **Opt-in** — partial history and unknown context remain explicit | Yes — GObject controller property; invocation-only |
 
-The GObject type is an unsigned integer, but values outside the effective
-range above fail validation. BCM70012, unsupported interlaced codecs/layouts
+Decoder width and trace capacity use unsigned integer properties; values
+outside their effective ranges fail validation. Trace window is Boolean. BCM70012, unsupported interlaced codecs/layouts
 and non-multiple-of-16 widths for H.264 interlaced scaling are
 rejected.
 
@@ -356,6 +357,7 @@ It does not change the supported GStreamer version or QoS admission rules.
 | `--subtitles FILE` <!-- config-surface:player-flag:--subtitles --> | `crystalhd-player.py` | Local playback | Unset; readable local regular file | GStreamer subtitle support for the file | Parsed before pipeline construction | **Standard** | Yes — CLI |
 | `--trace-frames FILE` <!-- config-surface:player-flag:--trace-frames --> | `crystalhd-player.py` | Hardware or software playback diagnostics | Off; new output JSON file, never overwrite an existing path | Matching native `crystalhdstagetrace` helper; no Python per-buffer tracing fallback | Create private file at startup; stop native probes and write after decoder teardown | **Opt-in** — independent pad observations, not physical display counts | Yes — CLI; invocation-only |
 | `--trace-limit RECORDS` <!-- config-surface:player-flag:--trace-limit --> | `crystalhd-player.py` | Bounded frame-trace retention | `4096`; integer `1..16384` | Requires `--trace-frames` | Set collector capacity before attachment; includes event/control records | **Opt-in** — overflow is declared while counters continue | Yes — CLI; invocation-only |
+| `--trace-window` <!-- config-surface:player-flag:--trace-window --> | `crystalhd-player.py` | Rolling capture around a reported video-buffer drop | Off; first-N retention remains the default | Requires `--trace-frames` and matching native window helper | Keep bounded recent records, then freeze after the first timed video-drop bus snapshot with positive jitter and a quarter-capacity of following records | **Opt-in** — overwritten history and incomplete capture are explicit; no playback-policy change | Yes — CLI; invocation-only |
 
 The required positional media `FILE`, automatically supplied `-h/--help`, and
 interactive playback keys are command grammar/actions, not saved settings, so
