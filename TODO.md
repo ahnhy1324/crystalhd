@@ -19,9 +19,9 @@ scope to general full-rate FHD or hardware deinterlacing.
 
 ## Current priorities — 2026-10-30
 
-The initial review covered 18 open issues and six open PRs. Four additional PRs
-remain open; temporary route probe #588 is closed unmerged, giving ten open PRs.
-No issue was closed and master remains `04fb465`. Separate implementation,
+Prepared baseline and follow-up changes remain separate review-ready PRs;
+temporary route probe #588 is closed unmerged. No issue is closed and master
+remains `04fb465`. Separate implementation,
 review-ready changes and remaining acceptance. Only CrystalHD-owned code is an
 implementation target; unchanged external clients supply qualification evidence.
 
@@ -43,6 +43,13 @@ implementation target; unchanged external clients supply qualification evidence.
    repair open, preserve every prior FAIL and do not repeat rejected queue/
    thread-count/priority pilots. See the
    [scoped receipt](tests/fixtures/issue510/player-window-trace-20261030.json).
+   The new paired-call diagnostic binds missing PTS 46.60 s to a completed
+   `finish_frame` call, matching decoder QoS and no decoder-src output; the
+   preceding calls contain 17.5–26.1 ms runnable wait. Why the frame was late
+   remains open. [Exact evidence](tests/fixtures/issue510/player-finish-observation-20261030.json)
+   separates this baseline run from the new CPU-qualified optional collector.
+   [#591](https://github.com/ahnhy1324/crystalhd/pull/591) fixes an independently
+   reproduced own TX counter race; no playback-cause or zero-drop claim follows.
 3. **Finish unmodified-client acceptance — #445/#429/#436.**
    Original Kodi22RC1/App FFmpeg with current own VA/DIL now passes bounded
    progressive pause/resume, forward/backward seek, Stop and same-process natural
@@ -56,10 +63,11 @@ implementation target; unchanged external clients supply qualification evidence.
    This does not fix the historical Player loss or the excluded heap subtask.
 4. **Complete native picture/ownership evidence — #538.**
    #579 → #581 stay separate on frozen experimental `2399430`, outside the master
-   integration. Full crop/YUV, original source PTS and consumption/return must
-   refer to the same actual CAPTURE/EXPBUF object. Separate decoder-open corpora,
-   selected colour samples and retirement do not establish that acceptance,
-   scanout, physical A/V or a supported native backend.
+   integration. [#590](https://github.com/ahnhy1324/crystalhd/pull/590) qualifies
+   one actual EXPBUF neutral image: all 1,843,200 active YUYV bytes match, with
+   independent content-derived source PTS and queue lease/return; 14/14 CI passes,
+   ready/unmerged. Broader colour/cadence, all-picture pixel/PTS, exact GPU/render
+   ownership, scanout, physical A/V and supported-backend acceptance remain open.
 5. **Extend conservative CI lanes after the delivered first split — #510.**
    [#586](https://github.com/ahnhy1324/crystalhd/pull/586) adds a conservative
    independent kernel selector, retaining complete Ubuntu 24.04/26.04 userspaces.
@@ -93,6 +101,15 @@ Scoped progress completed in this review (review-ready does not mean merged):
   evidence (#589); cause/zero-drop repair remains open.
 - [x] Original-stock-Kodi progressive controls and three source-content/PTS
   checkpoints; full pixel/object-return/interlaced acceptance remains open.
+
+- [x] Confirmed own TX counter synchronization fix: actual-function TSan and
+  deterministic RED/GREEN, FIFO/wrap and full library checks (#591, unmerged).
+- [x] Optional paired finish-call collector: default OFF, CPU ownership/lifecycle/
+  sanitizer/configuration checks; hardware qualification remains separate.
+- [x] Baseline FHD paired-call/wait/clock observation and independent 161-check
+  replay; lateness cause and zero-drop repair remain open.
+- [x] One same actual native EXPBUF full active neutral image, source PTS and
+  client queue lease/return (#590, ready/unmerged); broader #538 stays open.
 
 The [new hardware summary](HARDWARE-2026-09-13.md#rolling-player-observation-and-stock-client-controls--2026-10-30)
 retains all failures and separates reader validation from media acceptance.
