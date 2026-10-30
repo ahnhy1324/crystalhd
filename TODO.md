@@ -17,77 +17,87 @@ broader performance and research remain in
 [#472](https://github.com/ahnhy1324/crystalhd/issues/472) and do not expand the
 scope to general full-rate FHD or hardware deinterlacing.
 
-## Current bug-fix order
+## Current priorities — 2026-10-30
 
-2026-10-29: prioritize failures in ordinary use before optional performance or
-new-backend research. For each item, reproduce the failure, make the smallest
-fix and recheck the affected user operation. Run wider regression checks at
-the end of a related change set, rather than repeating unrelated experiments.
+The current review covers 18 open issues and six open PRs. Treat overlapping
+acceptance trackers as shared work, not independent implementations. Separate
+merged changes, review-ready changes and remaining acceptance. Prioritize
+confirmed user-operation failures before optional performance/backend research.
+Only CrystalHD-owned code is an implementation target; use unchanged external
+clients for new qualification and preserve prior failures and exact-source scopes.
 
-2026-10-30 maintainer scope: modify CrystalHD-owned code only. Existing external
-Kodi/FFmpeg patches and experiments below are historical; no further external
-source or binary modifications are authorized. The own-driver source-colour fix
-in [#579](https://github.com/ahnhy1324/crystalhd/pull/579) passes four frozen
-original-client colour cases on its isolated research branch and remains
-unmerged. Broader native playback and physical-presentation acceptance stay open.
+1. **Prepare the reviewed integration baseline — [#580](https://github.com/ahnhy1324/crystalhd/pull/580) → [#583](https://github.com/ahnhy1324/crystalhd/pull/583) → [#584](https://github.com/ahnhy1324/crystalhd/pull/584).**
+   All three PRs are open and review-ready with successful exact-head CI:
+   #580 has 15 jobs, #583/#584 have 14 each. They have no submitted reviews yet.
+   Review #580's Ubuntu 24.04/26.04 userspace matrix first, then the native Player
+   observer and its packing/scaling extension. #584 depends on #583. Prepare a
+   combined candidate and require its own complete CI on both userspaces;
+   individual PR passes do not qualify their combination. This is integration
+   preparation, not a recorded merge, deployment or new hardware qualification.
+2. **Find and repair the remaining natural Player loss — #510/#91/#471.**
+   Same-policy FHD failures remain 1483/1500 and 1305/1500 rendered buffers,
+   alongside successful controls. The original three-tap failure accounts for
+   four field equivalents before decoder-src and one between DI and sink;
+   these sites do not identify the cause of lateness. First add optional bounded
+   rolling capture around an actual video QoS drop. The existing first-N mode
+   remains the default: the five-tap input uses 14,276 records in 30 seconds,
+   close to the 16,384-record limit. Test a known loss after the limit, preserving
+   window context, PTS/order/epochs, counters and pixels. Then capture a natural
+   failure with thread execution, runnable-wait and I/O evidence on the same
+   timeline. Fix only a demonstrated owned-code defect/cost and repeat with
+   unchanged quality, QoS/deadlines, input, clock and output conditions. Do not
+   repeat the rejected queue/thread-count/priority pilots as a presumed fix.
+3. **Qualify ordinary unmodified-client controls — #445/#429/#436.**
+   Use current CrystalHD VA code and original stock Kodi to check seek, Stop,
+   finite EOF and same-process reopen with source-bound pixels/PTS and
+   per-object surface/borrow returns. Treat the three issues as one coordinated
+   acceptance effort while retaining each platform's separate result. Old
+   private patched-client results are historical controls, not qualification of
+   an unchanged client. Locate any violation of our API contract before changing
+   our implementation or attributing a fault elsewhere; retain tail/count FAILs.
+4. **Complete native picture and ownership evidence — #538.**
+   The sampled source-colour correction in [#579](https://github.com/ahnhy1324/crystalhd/pull/579) is qualified; broader native
+   acceptance is not. Bind full crop/YUV, original source PTS and consumption/
+   return to the same actual CAPTURE/EXPBUF object. Keep #579 → #581 on their
+   separate experimental lineage, preserving frozen baseline `2399430`;
+   neither is part of the master integration above. Selected colour samples,
+   render accepts and resource retirement do not establish full pixel identity,
+   scanout, physical A/V or a supported native backend.
+5. **Shorten the development cycle conservatively — #510, parallel work.**
+   The first CI selector and newer-userspace matrix are implemented. Remaining
+   work is component-specific lanes and selected sanitizer promotion. Require
+   both userspace versions where relevant; shared-header, workflow, unknown or
+   incomplete diffs must select complete checks. Master/tag/manual validation
+   stays full, and the final gate must account explicitly for selected/skipped
+   lanes. This work can proceed alongside the hardware investigation.
+6. **Extend accepted optional features after correctness work.**
+   #470 output-aware RX allocation and #477 centered output already have
+   integrated implementations; remaining paced A/B, format/codec/PM, ROI and
+   lifecycle checks are acceptance work, not reasons to reimplement them or
+   promote defaults. #400's core settings/GTK/tray/adapters are delivered;
+   translations, accessibility, additional adapters and broader desktop/i386
+   acceptance follow. #539's private compilerless proof is complete; clean-target
+   ABI/dependencies, user burden and a public maintenance/distribution decision
+   remain. New external FFmpeg changes are outside the current implementation
+   scope, and no public package is approved by this priority list.
+7. **Keep optional backend/hardware research deferred.**
+   #513/#532 async Xv and #530 EGL Bob retain CPU/endurance/swap-tail limits;
+   use their existing observations only when relevant to the ordinary loss
+   investigation. #532 is still draft, with no PR CI on its current head.
+   #533's failed G2 gates G3–G5, so these are dependent follow-ups. #529 MPEG-1
+   and #92/#204 hardware/ownership research follow correctness work. #472 records
+   experimental policy rather than three independent implementation tasks.
 
-1. **Open/close state and resource ownership (#510).** Failed-open publication,
-   combined-mode preservation and atomic updates are integrated, including
-   [#552](https://github.com/ahnhy1324/crystalhd/pull/552). Rejected opens preserve
-   hardware initialization state through
-   [#553](https://github.com/ahnhy1324/crystalhd/pull/553), and LINK clock setup
-   waits for successful non-monitor session admission.
-   Terminal decoder state now retires before RELEASE can admit a replacement;
-   [#556](https://github.com/ahnhy1324/crystalhd/pull/556) tests with a mocked
-   driver and public open APIs cover failed firmware close,
-   failed recovery, close errors and retained kernel ownership. Same-process
-   mode references from
-   [#566](https://github.com/ahnhy1324/crystalhd/pull/566) keep the diagnostic
-   bitmap set until the final local handle closes.
-   Cross-process same-mode accounting and same-handle concurrent
-   close/use remain separate questions.
-2. **Ordinary Kodi EOF, Stop, seek and reopen (#445/#429).** Address reproducible
-   user-operation failures. A controlled last-picture handoff now reproduces
-   the two-second drain timeout with complete per-picture return observations;
-   see the [scoped evidence](tests/fixtures/issue445/publish-order-observation-20261029.json).
-   The [candidate compatibility patch](patches/kodi/0001-vaapi-account-before-publish.patch)
-   retires processed accounting before publishing PICTURE. Its source-unit
-   regression passes. In [matched private Ubuntu 21.3 playback](tests/fixtures/issue445/publish-order-playback-20261029.json),
-   the baseline times out while the patch reaches EOF with all 750 originals
-   and 1,500 outputs when the receiver takes the last picture before the
-   producer's send returns. The candidate also
-   completes normal EOF and two reopens. Separately retained
-   [bounded controls](tests/fixtures/issue445/publish-order-controls-20261029.json)
-   at VA/DIL `663c3a7` observe pause/resume, forward/backward seek, user Stop
-   and a same-process natural reopen with 750 originals / 1,500 Bob outputs
-   and returns. The interrupted controls have no full frame or per-object
-   return census; three earlier buffer-wait warnings remain unassigned. A
-   [separate guarded observation](tests/fixtures/issue445/wait-condition-observation-20261029.json)
-   identifies two newly observed warnings as evaluated cancellation exits
-   before their deadlines. Its original collector FAIL and unrun natural
-   reopen remain recorded. Full installed
-   feature coverage, post-seek pixel/PTS identity and broader playback
-   acceptance remain open.
-   The patch is not installed or activated by CrystalHD. Other historical
-   warnings remain unassigned. Zero application counters, natural EOF and
-   clean DMA retirement alone do not establish correct VA behavior.
-   [#571](https://github.com/ahnhy1324/crystalhd/pull/571) separately
-   corrects colored below-black packed RGB conversion while preserving nominal
-   limited-range BT.601 output.
-3. **Installation, recovery and settings (#510/#400, then #539).** Fix concrete
-   update/rollback and saved-versus-applied setting failures before extending
-   adapters. [#569](https://github.com/ahnhy1324/crystalhd/pull/569)
-   preserves driver staging arguments and
-   [#570](https://github.com/ahnhy1324/crystalhd/pull/570) refreshes pkg-config
-   paths. [#572](https://github.com/ahnhy1324/crystalhd/pull/572) also fixes actual
-   library installation into spaced staging/prefix/directory paths; all 39
-   runtime-install tests pass locally. These three fixes are included in this
-   source; their individual PR CI matrices passed before integration. The
-   experimental Kodi no-build path still needs a distribution decision;
-   existing private activation is not a public installer.
-4. **Optional research.** Defer #533 STOP/START, #513 Xv, #530 EGL Bob and
-   #92/#204 hardware exploration until the correctness work above is handled,
-   unless new evidence establishes an ordinary-use fault needing priority.
+BCM70012, reporter Atom/native-i386 and physical FHD/A/V acceptance require their
+actual target environments. Build/emulator/headless or render-counter evidence
+cannot replace them. Keep unavailable targets NOT RUN rather than repeatedly
+running the current host as a substitute.
+
+Already integrated: #510 shared-memory/open-close/ownership/RX-readiness fixes,
+#470's scoped allocation implementation and #400's settings frontend/core.
+Cross-process mode accuracy and concurrent close/use of one handle retain their
+recorded diagnostic/caller-contract dispositions; no fresh ordinary failure
+has established a new implementation requirement.
 
 **Shutdown heap abort subtask only: ignored / wontfix (2026-10-29). #538 stays
 open.** Per maintainer direction, stop investigation/reproduction of this
