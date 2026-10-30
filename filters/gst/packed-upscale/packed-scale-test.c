@@ -261,6 +261,13 @@ int main(int argc, char **argv)
     return 0;
   }
   argc = 1; argv[1] = NULL; gst_init(&argc, &argv);
+  GstElement *registered = gst_element_factory_make("crystalhdpackedscale", NULL);
+  if (!registered) {
+    g_printerr("own packed-scale plugin did not load\n");
+    gst_deinit();
+    return 1;
+  }
+  gst_object_unref(registered);
   Pipeline stock = {0}, candidate = {0};
   GstVideoInfo input_info, output_info;
   GstCaps *input_caps = gst_caps_from_string(INPUT_CAPS),
