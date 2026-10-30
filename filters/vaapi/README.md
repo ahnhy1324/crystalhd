@@ -524,7 +524,10 @@ linear snapshot with the image's original pitches and offsets, not a zero-copy
 alias of a decoded surface. Mapping, resizing, copying or destroying the image
 or buffer is rejected while it is externally borrowed. Release waits for
 external DMA-BUF work and copies external writes back into the image; a sync
-failure invalidates that image's contents. Export allocation requires a
+failure invalidates that image's contents. If allocating the release copy fails
+before synchronization starts, release returns `VA_STATUS_ERROR_ALLOCATION_FAILED`
+and keeps the same borrowed handle and any cold-source write lease intact;
+the caller can retry release. Export allocation requires a
 compatible linear GBM byte buffer, while CPU-only image access remains usable
 without one.
 

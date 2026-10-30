@@ -11045,7 +11045,14 @@ static VAStatus ReleaseBufferHandle(VADriverContextP context,
   if (found->second.export_busy)
     return VA_STATUS_ERROR_SURFACE_BUSY;
   const std::shared_ptr<ImageExportBacking> backing = found->second.exported;
-  std::vector<uint8_t> updated(found->second.data.size());
+  std::vector<uint8_t> updated;
+  try {
+    updated.resize(found->second.data.size());
+  } catch (const std::bad_alloc &) {
+    // No synchronization or ownership change has started. Keep the same
+    // borrowed handle and any derived-write lease intact for a later retry.
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
   found->second.export_busy = true;
   // External graphics work must not hold up the decode worker's global lock.
   // Busy guards keep this buffer intact while other maps may be rehashed.
