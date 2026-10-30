@@ -24,6 +24,13 @@ new-backend research. For each item, reproduce the failure, make the smallest
 fix and recheck the affected user operation. Run wider regression checks at
 the end of a related change set, rather than repeating unrelated experiments.
 
+2026-10-30 maintainer scope: modify CrystalHD-owned code only. Existing external
+Kodi/FFmpeg patches and experiments below are historical; no further external
+source or binary modifications are authorized. The own-driver source-colour fix
+in [#579](https://github.com/ahnhy1324/crystalhd/pull/579) passes four frozen
+original-client colour cases on its isolated research branch and remains
+unmerged. Broader native playback and physical-presentation acceptance stay open.
+
 1. **Open/close state and resource ownership (#510).** Failed-open publication,
    combined-mode preservation and atomic updates are integrated, including
    [#552](https://github.com/ahnhy1324/crystalhd/pull/552). Rejected opens preserve
@@ -233,7 +240,10 @@ its exact-source and acceptance scope in the owning issue.
   Cross-process same-mode accounting and same-handle close/use lifetime remain
   separate follow-ups; the
   shared-mapping fix alone does not qualify them. CI/provenance
-  and admission-timing acceptance remain separately tracked.
+  and admission-timing acceptance remain separately tracked. The userspace CI
+  matrix selects Ubuntu 24.04 and 26.04 and records actual image/toolchain
+  versions; component-specific lanes and selected sanitizer promotion remain
+  follow-ups. This does not qualify hardware or frontend playback.
 - [ ] [#91: Deferred hardware and application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91)
   — alternate hardware, the LTS item executed through #371, bounded BCM70015
   deep-S3 coverage completed through #395/#397, remaining fault/removal work,
