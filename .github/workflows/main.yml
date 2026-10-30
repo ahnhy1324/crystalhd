@@ -112,6 +112,11 @@ jobs:
       - name: Build optional packed scaler and check CPU contracts
         run: make -C filters/gst/packed-upscale check
 
+      - name: Sanitize optional packed scaler CPU contracts
+        run: |
+          python3 -B tests/packed-sanitizer-loader.test.py
+          make -C filters/gst/packed-upscale check-sanitized
+
       - name: Select packaged kernel headers
         run: |
           KDIR=$(find /usr/src -maxdepth 1 -type d \
