@@ -238,6 +238,8 @@ def arguments(argv=None, environment=None):
                        help="disable hardware video decoders; no automatic fallback")
     parser.add_argument("--weave", action="store_true",
                         help="preserve interlaced frames without deinterlacing; works with either decoder mode")
+    parser.add_argument("--video-output", choices=("auto", "xv-async"), default="auto",
+                        help="video output (default: auto); xv-async selects the optional experimental X11 plugin")
     parser.add_argument("--scale-width", type=hardware_scale_width, default=argparse.SUPPRESS, metavar="PIXELS",
                         help="request an even BCM70015 output width from 128 to 1918 (interlaced H.264: multiple of 16; 0: native)")
     parser.add_argument("--software-output-size", type=requested_output_size,
@@ -263,6 +265,8 @@ def arguments(argv=None, environment=None):
         parser.error("--scale-width and --software-output-size require --hardware")
     if args.software_output_size and not args.scale_width:
         parser.error("--software-output-size requires a nonzero --scale-width")
+    if args.video_output == "xv-async" and args.weave:
+        parser.error("--video-output xv-async needs progressive/deinterlaced output; use auto with --weave")
     return args
 
 
@@ -375,6 +379,20 @@ def configure_decoders(Gst, mode):
         raise RuntimeError("crystalhddec is unavailable; build/install the GStreamer plugin")
 
 
+def select_video_output(Gst, choice, sinks=None):
+    result = dict(sinks or {})
+    if choice == "auto":
+        return result
+    if choice != "xv-async" or "video-sink" in result:
+        raise RuntimeError("conflicting or unsupported explicit video output")
+    sink = Gst.ElementFactory.make("crystalhdxvsink", "crystalhd-video-output")
+    if sink is None:
+        raise RuntimeError("experimental Xv output is unavailable; build filters/gst/xv-output "
+                           "and select its GST_PLUGIN_PATH, or use --video-output auto")
+    result["video-sink"] = sink
+    return result
+
+
 def make_software_output_filter(Gst, size, *, prepare_native_packing=False):
     """Build an explicit raw-video resize bin for playbin's video-filter."""
     width, height = size
@@ -433,7 +451,7 @@ class XvOutputPacking:
         Gst = self.Gst
         try:
             factory = element.get_factory()
-            if factory is None or factory.get_name() != "xvimagesink":
+            if factory is None or factory.get_name() not in ("xvimagesink", "crystalhdxvsink"):
                 return False
             chain = self.video_filter.get_parent()
             playsink = chain.get_parent() if chain is not None else None
@@ -811,6 +829,8 @@ class Player:
         self.terminal_state = None
         self.sources = []
         configure_decoders(Gst, args.mode)
+        selected_output = getattr(args, "video_output", "auto")
+        selected_sinks = select_video_output(Gst, selected_output, sinks)
         self.pipeline = Gst.ElementFactory.make("playbin", "crystalhd-player")
         if self.pipeline is None:
             raise RuntimeError("playbin is unavailable; install gstreamer1.0-plugins-base")
@@ -843,8 +863,10 @@ class Player:
             if prepare_packing:
                 self.output_packing = XvOutputPacking(Gst, self.video_filter)
             self.pipeline.set_property("video-filter", self.video_filter)
-        for prop, sink in (sinks or {}).items():
+        for prop, sink in selected_sinks.items():
             self.pipeline.set_property(prop, sink)
+        if selected_output == "xv-async":
+            print("Video output: experimental Xv completion path (X11)", flush=True)
         self.pipeline.connect("element-setup", self.element_setup)
         self.pipeline.connect("deep-element-removed", self.element_removed)
         self.bus = self.pipeline.get_bus()
@@ -936,7 +958,7 @@ class Player:
             # Generic fakesinks qualify only in the selected video branch.
             if "Sink" in klass.split("/"):
                 self.trace_selected_video_sink()
-        if name == "xvimagesink" and self.output_packing is not None and not self.closed:
+        if name in ("xvimagesink", "crystalhdxvsink") and self.output_packing is not None and not self.closed:
             self.output_packing.select(element, self.pipeline)
         if (name == "deinterlace" and self.args.mode == "hardware" and
                 self.args.scale_width and not self.args.weave and

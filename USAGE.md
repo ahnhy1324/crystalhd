@@ -118,6 +118,12 @@ fallback:
 crystalhd-play --software "/path/to/video.mp4"
 ```
 
+Unreleased development builds also offer the optional
+[X11 completion-controlled output](filters/gst/xv-output/README.md) through
+`--video-output xv-async`. Build its separate plugin first; `auto` remains the
+default. This is an experimental output choice, not a general speedup or
+physical A/V qualification.
+
 The development Player also reports available video-sink rendered/dropped
 buffer counts before closing. These counters are separate from decoded
 pictures: deinterlacing can produce two output buffers per picture, and seeks

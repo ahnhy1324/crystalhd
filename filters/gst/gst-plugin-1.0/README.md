@@ -337,6 +337,11 @@ for optional probes without changing external libraries.
 playback; see the [user guide](../../../USAGE.md#play-a-local-file). Hardware
 mode never silently falls back to software.
 
+Development builds can additionally select the separate
+[completion-controlled Xv output](../xv-output/README.md) with
+`--video-output xv-async`. Its plugin is built separately; ordinary output
+selection and published 1.2 remain unchanged.
+
 The separate controls probe verifies barcode pixels and timestamps while
 pausing, resuming, seeking forward/backward and changing rate to 0.5x/2x/1x:
 

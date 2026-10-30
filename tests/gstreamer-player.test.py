@@ -107,6 +107,25 @@ class Factory:
 
 
 class PolicyAndControlTests(unittest.TestCase):
+    def test_explicit_output_preserves_auto_and_audio_without_fallback(self):
+        Gst = SimpleNamespace(ElementFactory=mock.Mock())
+        audio = object()
+        original = {"audio-sink": audio}
+        self.assertEqual(player.select_video_output(Gst, "auto", original), original)
+        Gst.ElementFactory.make.assert_not_called()
+        video = object()
+        Gst.ElementFactory.make.return_value = video
+        self.assertEqual(player.select_video_output(Gst, "xv-async", original),
+                         {"audio-sink": audio, "video-sink": video})
+        self.assertEqual(original, {"audio-sink": audio})
+        Gst.ElementFactory.make.assert_called_once_with("crystalhdxvsink", "crystalhd-video-output")
+        Gst.ElementFactory.make.return_value = None
+        with self.assertRaisesRegex(RuntimeError, "unavailable"):
+            player.select_video_output(Gst, "xv-async")
+        for choice, sinks in (("other", None), ("xv-async", {"video-sink": object()})):
+            with self.assertRaisesRegex(RuntimeError, "conflicting"):
+                player.select_video_output(Gst, choice, sinks)
+
     def test_rank_filter_preserves_parsers_and_audio(self):
         factories = [Factory("crystalhddec", HARDWARE), Factory("avdec_h264", SOFTWARE),
                      Factory("h264parse", "Codec/Parser/Video"),
@@ -782,6 +801,18 @@ class CleanupTests(unittest.TestCase):
 
 
 class ArgumentTests(unittest.TestCase):
+    def test_xv_output_is_explicit_and_rejects_interlaced_weave(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "video.ts"
+            path.touch()
+            self.assertEqual(player.arguments([str(path)], environment={}).video_output, "auto")
+            for mode in ("hardware", "software"):
+                args = player.arguments(["--" + mode, "--video-output", "xv-async", str(path)],
+                                        environment={})
+                self.assertEqual(args.video_output, "xv-async")
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                player.arguments(["--video-output", "xv-async", "--weave", str(path)], environment={})
+
     def test_local_paths_and_subtitles_are_safely_encoded(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "video #?.mp4"
@@ -2020,6 +2051,14 @@ class GStreamerApiTests(unittest.TestCase):
         self.assertFalse(helper.select(sink, fixture.pipeline))
         sink.get_state.assert_not_called()
         sink.get_static_pad.assert_not_called()
+
+    def test_explicit_xv_output_uses_existing_small_picture_packing(self):
+        fixture = self.packing_fixture()
+        fixture.sink.get_factory.return_value = Factory("crystalhdxvsink", "Sink/Video")
+        self.assertTrue(fixture.helper.select(fixture.sink, fixture.pipeline))
+        self.assertEqual(fixture.helper.output.get_property("caps").get_structure(0).get_string("format"), "UYVY")
+        self.assertEqual(fixture.video_filter.get_by_name("crystalhd-early-yuy2")
+                         .get_property("caps").get_structure(0).get_string("format"), "YUY2")
 
     def test_native_packing_requires_real_exclusive_native_caps(self):
         for text in (None, "ANY", "EMPTY", "video/x-raw,format=YUY2",

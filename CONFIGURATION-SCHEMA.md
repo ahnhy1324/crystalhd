@@ -495,6 +495,8 @@ These current surfaces deliberately do not become ordinary merged keys:
 | `crystalhdstagetrace capacity` <!-- schema-boundary:gst-property:capacity=invocation-only --> | Player-owned diagnostic controller capacity, set before attachment; no managed frontend setting |
 | `crystalhdstagetrace window` <!-- schema-boundary:gst-property:window=invocation-only --> | Player-owned rolling retention, set before attachment; no managed frontend setting |
 | `crystalhddec finish-trace-limit` <!-- schema-boundary:gst-property:finish-trace-limit=invocation-only --> | Explicit own finish-frame diagnostic capacity for one collector; set in NULL/READY, never saved as a managed setting |
+| `crystalhd-play --video-output` <!-- schema-boundary:player-flag:--video-output=invocation-only --> | Explicit optional output for this invocation; no saved profile/preset key or default promotion |
+| `crystalhdxvsink display` <!-- schema-boundary:gst-property:display=external-gst-output --> | Optional renderer's own GStreamer property; the manager does not set it or replace the X11 session's `DISPLAY` |
 
 External loader selectors such as `LIBVA_DRIVER_NAME`, `VAAPI_FORCE_INDIRECT`,
 `GST_PLUGIN_PATH` and `LD_LIBRARY_PATH` remain owned by their respective
