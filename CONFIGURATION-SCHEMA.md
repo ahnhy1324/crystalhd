@@ -494,6 +494,7 @@ These current surfaces deliberately do not become ordinary merged keys:
 | `crystalhd-play --trace-window` <!-- schema-boundary:player-flag:--trace-window=invocation-only --> | One playback's optional rolling capture; requires explicit trace output and is never saved in a preset |
 | `crystalhdstagetrace capacity` <!-- schema-boundary:gst-property:capacity=invocation-only --> | Player-owned diagnostic controller capacity, set before attachment; no managed frontend setting |
 | `crystalhdstagetrace window` <!-- schema-boundary:gst-property:window=invocation-only --> | Player-owned rolling retention, set before attachment; no managed frontend setting |
+| `crystalhddec finish-trace-limit` <!-- schema-boundary:gst-property:finish-trace-limit=invocation-only --> | Explicit own finish-frame diagnostic capacity for one collector; set in NULL/READY, never saved as a managed setting |
 
 External loader selectors such as `LIBVA_DRIVER_NAME`, `VAAPI_FORCE_INDIRECT`,
 `GST_PLUGIN_PATH` and `LD_LIBRARY_PATH` remain owned by their respective

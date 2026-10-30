@@ -38,6 +38,7 @@ static GstHarness *seek_during_wait;
 static GstHarness *flush_during_quiesce;
 static GstCrystalHdDec *iteration_decoder;
 static gboolean real_workers;
+static guint finish_trace_setup;
 static guint8 fake_thread;
 static gboolean readiness_enabled;
 static gint readiness_rx = -1, readiness_tx = -1;
@@ -806,7 +807,8 @@ new_decoder_with_caps_device_scale(const gchar *caps, guint device_version,
   mock.free_bytes = 1024 * 1024;
   mock.device_version = device_version;
   element = g_object_new(GST_TYPE_CRYSTALHD_DEC,
-                         "scale-width", scale_width, NULL);
+                         "scale-width", scale_width,
+                         "finish-trace-limit", finish_trace_setup, NULL);
   harness = gst_harness_new_with_element(element, "sink", "src");
   gst_object_unref(element); /* the harness takes its own reference */
   gst_harness_set_src_caps_str(harness, caps);
@@ -3995,6 +3997,70 @@ test_interlaced_picture_types(void)
   }
 }
 
+static void
+test_finish_trace_lifecycle(void)
+{
+  GstHarness *harness;
+  GstCrystalHdDec *self;
+  gchar *before, *after;
+  guint limit;
+  finish_trace_setup = 2;
+  harness = new_decoder();
+  finish_trace_setup = 0;
+  self = GST_CRYSTALHD_DEC(harness->element);
+  g_assert_nonnull(self->active_finish_trace);
+  mock.auto_output = FALSE;
+  for (guint n = 0; n < 3; n++) {
+    GstBuffer *output;
+    g_assert_cmpint(gst_harness_push(harness, new_input(n * 40 * GST_MSECOND)),
+                    ==, GST_FLOW_OK);
+    queue_picture(mock.accepted[n], 0x40 + n);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    output = gst_harness_try_pull(harness);
+    g_assert_nonnull(output);
+    check_output(output, n * 40 * GST_MSECOND, 0x40 + n);
+    gst_buffer_unref(output);
+  }
+  /* The mutable-READY guard rejects replacement while the worker owns it. */
+  g_object_set(self, "finish-trace-limit", 1U, NULL);
+  g_object_get(self, "finish-trace-limit", &limit, NULL);
+  g_assert_cmpuint(limit, ==, 2);
+  g_signal_emit_by_name(self, "finish-trace-snapshot", &before);
+  g_assert_nonnull(strstr(before, "\"observed\":3"));
+  g_assert_nonnull(strstr(before, "\"retained\":2"));
+  g_assert_nonnull(strstr(before, "\"omitted\":1"));
+  g_assert_nonnull(strstr(before, "\"pts\":0"));
+  g_assert_nonnull(strstr(before, "\"pts\":40000000"));
+  g_assert_nonnull(strstr(before, "\"flow\":0"));
+  gst_element_set_state(harness->element, GST_STATE_NULL);
+  g_assert_null(self->active_finish_trace);
+  g_signal_emit_by_name(self, "finish-trace-snapshot", &after);
+  g_assert_cmpstr(after, ==, before);
+  g_free(after); g_free(before);
+  g_object_set(self, "finish-trace-limit", 0U, NULL);
+  g_signal_emit_by_name(self, "finish-trace-snapshot", &after);
+  g_assert_cmpstr(after, ==, "{\"schema\":1,\"enabled\":false,\"records\":[]}");
+  g_free(after);
+  lifecycle_teardown(harness);
+}
+
+static void
+test_finish_trace_default(void)
+{
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  gchar *snapshot;
+  guint limit = G_MAXUINT;
+  g_object_get(self, "finish-trace-limit", &limit, NULL);
+  g_assert_cmpuint(limit, ==, 0);
+  g_assert_null(self->finish_trace);
+  g_assert_null(self->active_finish_trace);
+  g_signal_emit_by_name(self, "finish-trace-snapshot", &snapshot);
+  g_assert_cmpstr(snapshot, ==, "{\"schema\":1,\"enabled\":false,\"records\":[]}");
+  g_free(snapshot);
+  lifecycle_teardown(harness);
+}
+
 static GstBuffer *
 wait_for_output(GstHarness *harness)
 {
@@ -4443,7 +4509,9 @@ test_blocked_delivery(gconstpointer data)
   gate.caps = GPOINTER_TO_INT(data) == 3;
   g_mutex_init(&gate.lock);
   g_cond_init(&gate.changed);
+  finish_trace_setup = GPOINTER_TO_INT(data) == 4 ? 4 : 0;
   gate.harness = new_decoder();
+  finish_trace_setup = 0;
   mock.auto_output = FALSE;
   probe = gst_pad_add_probe(gate.harness->sinkpad, GST_PAD_PROBE_TYPE_BUFFER |
                             GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM |
@@ -4458,6 +4526,14 @@ test_blocked_delivery(gconstpointer data)
   g_assert_true(gate.entered);
   g_assert_true(gate.lease_released);
   g_mutex_unlock(&gate.lock);
+  if (GPOINTER_TO_INT(data) == 4) {
+    gchar *snapshot;
+    g_signal_emit_by_name(gate.harness->element, "finish-trace-snapshot", &snapshot);
+    g_assert_nonnull(strstr(snapshot, "\"inflight\":1"));
+    g_assert_nonnull(strstr(snapshot, "\"complete\":false"));
+    g_assert_nonnull(strstr(snapshot, "\"flow\":null"));
+    g_free(snapshot);
+  }
 
   operation = g_thread_new("lifecycle-operation", delivery_operation, &gate);
   g_mutex_lock(&gate.lock);
@@ -5550,6 +5626,10 @@ main(int argc, char **argv)
   g_test_add_data_func("/crystalhd/lifecycle/blocked-delivery-flush", GINT_TO_POINTER(2),
                        test_blocked_delivery);
   g_test_add_data_func("/crystalhd/lifecycle/blocked-delivery-caps", GINT_TO_POINTER(3),
+                       test_blocked_delivery);
+  g_test_add_func("/crystalhd/finish-trace/default-off", test_finish_trace_default);
+  g_test_add_func("/crystalhd/finish-trace/lifecycle", test_finish_trace_lifecycle);
+  g_test_add_data_func("/crystalhd/finish-trace/blocked-delivery", GINT_TO_POINTER(4),
                        test_blocked_delivery);
   result = g_test_run();
   gst_deinit();

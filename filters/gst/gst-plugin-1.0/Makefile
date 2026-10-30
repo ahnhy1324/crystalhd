@@ -28,7 +28,7 @@ CFLAGS += -Wall -Wextra -Werror -fPIC $(shell $(PKG_CONFIG) --cflags $(GST_PACKA
 LDFLAGS += -shared -Wl,--build-id=sha1 -L$(ROOTDIR)/linux_lib/libcrystalhd
 LDLIBS += $(shell $(PKG_CONFIG) --libs $(GST_PACKAGES)) -lcrystalhd
 
-.PHONY: all clean install install-player uninstall check codec-playback-test check-codec-playback check-player check-diqos check-stage-trace
+.PHONY: all clean install install-player uninstall check codec-playback-test check-codec-playback check-player check-diqos check-stage-trace check-finish-trace
 
 all: $(PLUGIN)
 
@@ -52,9 +52,10 @@ endif
 $(PLUGIN): gstcrystalhd.c gstcrystalhd-codecs.h gstcrystalhd-timing.h gstcrystalhd-input.h \
 		gstcrystalhd-diqos.c gstcrystalhd-diqos.h \
 		gstcrystalhd-stage-trace.c gstcrystalhd-stage-trace.h \
+		gstcrystalhd-finish-trace.c gstcrystalhd-finish-trace.h \
 		$(ROOTDIR)/filters/crystalhd-h264-output.h \
 		$(ROOTDIR)/filters/crystalhd-mpeg2-inspect.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< gstcrystalhd-diqos.c gstcrystalhd-stage-trace.c -o $@ $(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< gstcrystalhd-diqos.c gstcrystalhd-stage-trace.c gstcrystalhd-finish-trace.c -o $@ $(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 
 $(PLAYBACK_TEST): $(ROOTDIR)/tests/gstreamer-playback.c \
 		$(ROOTDIR)/tests/phase1-progress.h
@@ -74,9 +75,10 @@ $(LIFECYCLE_TEST) $(LIFECYCLE_LEGACY_TEST): $(ROOTDIR)/tests/gst-lifecycle.c gst
 		gstcrystalhd-codecs.h gstcrystalhd-timing.h gstcrystalhd-input.h \
 		gstcrystalhd-diqos.c gstcrystalhd-diqos.h \
 		gstcrystalhd-stage-trace.c gstcrystalhd-stage-trace.h \
+		gstcrystalhd-finish-trace.c gstcrystalhd-finish-trace.h \
 		$(ROOTDIR)/filters/crystalhd-h264-output.h \
 		$(ROOTDIR)/filters/crystalhd-mpeg2-inspect.h
-	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror $(CPPFLAGS) $< gstcrystalhd-diqos.c gstcrystalhd-stage-trace.c -o $@ \
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror $(CPPFLAGS) $< gstcrystalhd-diqos.c gstcrystalhd-stage-trace.c gstcrystalhd-finish-trace.c -o $@ \
 		$(shell $(PKG_CONFIG) --cflags --libs gstreamer-check-1.0 gstreamer-video-1.0) $(CRYSTALHD_CPU_FLAGS)
 
 # Includes only the production helper and CPU fixtures, never libcrystalhd.
@@ -90,6 +92,9 @@ check-diqos: $(DI_QOS_TEST)
 check-stage-trace:
 	CC="$(CC)" CFLAGS="$(CFLAGS) $(CRYSTALHD_CPU_FLAGS)" sh $(ROOTDIR)/tests/gst-stage-trace.sh
 
+check-finish-trace:
+	CC="$(CC)" CFLAGS="$(CFLAGS) $(CRYSTALHD_CPU_FLAGS)" sh $(ROOTDIR)/tests/gst-finish-trace.sh
+
 check-player: $(PLUGIN)
 	sh -n $(ROOTDIR)/scripts/crystalhd-play
 	GST_PLUGIN_PATH_1_0=$(CURDIR) GST_PLUGIN_PATH=$(CURDIR) \
@@ -102,7 +107,7 @@ $(CODECS_TEST): $(ROOTDIR)/tests/gst-codecs.c gstcrystalhd-codecs.h gstcrystalhd
 		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES)) $(CRYSTALHD_CPU_FLAGS)
 
 check: $(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(LIFECYCLE_LEGACY_TEST) $(CODECS_TEST) \
-		check-codec-playback check-player check-diqos check-stage-trace
+		check-codec-playback check-player check-diqos check-stage-trace check-finish-trace
 	@registry=$$(mktemp); \
 	trap 'rm -f "$$registry"' EXIT HUP INT TERM; \
 	GST_REGISTRY="$$registry" GST_PLUGIN_PATH=$(CURDIR) \
