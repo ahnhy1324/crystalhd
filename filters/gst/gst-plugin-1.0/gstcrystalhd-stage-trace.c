@@ -17,7 +17,9 @@ static const gchar *const kind_names[] = {
   "buffer", "buffer-list-item", "stream-start", "segment", "flush-start", "flush-stop", "eos",
   "qos", "caps", "attach", "detach", "control", "stop"
 };
-static const gchar *const stage_names[] = {"decoder", "deinterlace", "sink"};
+static const gchar *const stage_names[] = {
+  "decoder", "deinterlace", "sink", "output-pack", "output-scale"
+};
 static const gchar *const control_names[] = {"pause", "resume", "seek-request", "seek-failed"};
 typedef struct {
   RecordKind kind;

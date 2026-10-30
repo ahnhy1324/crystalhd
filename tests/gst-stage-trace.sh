@@ -63,7 +63,8 @@ for line in Path(log).read_text().splitlines():
 assert expected is not None
 required = {"metadata", "flush", "capacity", "controls", "detach",
             "detached_snapshot", "buffer_list", "custom_buffer_list", "truncated_buffer_list", "attachment_limit", "concurrent_stop", "pipeline_tff",
-            "pipeline_bff", "pipeline_tff_drop", "pipeline_bff_drop"}
+            "pipeline_bff", "pipeline_tff_drop", "pipeline_bff_drop",
+            "output_stages", "output_stages_drop"}
 assert set(cases) == required, (set(cases), required)
 assert not Path(errors).read_text().strip(), Path(errors).read_text()[:8000]
 
@@ -211,7 +212,34 @@ for parity in ("tff", "bff"):
                 assert (row["fps_n"], row["fps_d"]) == (25 if stage == "decoder" else 50, 1)
                 assert row["interlace_mode"] == expected["mixed_mode" if stage == "decoder" else "progressive_mode"]
 
-print("Stage trace %s: eight native groups, 15 structured snapshots, "
-      "PTS/segment/cap/lifetime and 50→100 / 50→100→90 TFF+BFF controls PASS" % variant)
+for dropped in (False, True):
+    case = cases["output_stages" + ("_drop" if dropped else "")]
+    assert case["dropped"] == 0 and case["buffer_list_ambiguity"] is False
+    assert case["rejected_attachments"] == 2
+    assert [item["stage"] for item in case["attachments"]] == ["output-pack", "output-scale", "sink"]
+    for stage, count, size in (("output-pack", 50, (16, 8)),
+                               ("output-scale", 45 if dropped else 50, (32, 16)),
+                               ("sink", 45 if dropped else 50, (32, 16))):
+        owner = attachment(case, stage)
+        rows = buffers(case, stage)
+        assert owner["buffers"] == count and len(rows) == count
+        assert owner["eos_count"] == 1
+        assert owner["buffer_lists"] == owner["list_items"] == 0
+        wanted = [i * 20_000_000 for i in range(50)
+                  if stage == "output-pack" or not dropped or (i + 1) % 10]
+        assert [row["pts"] for row in rows] == wanted
+        assert [row["running_time"] for row in rows] == wanted
+        assert [row["duration"] for row in rows] == [20_000_000] * count
+        assert [row["ordinal"] for row in rows] == list(range(1, count + 1))
+        caps = [row for row in case["records"] if row["kind"] == "caps" and row["stage"] == stage]
+        assert caps, stage
+        for row in caps:
+            assert row["raw_video"] is True and row["video_info_valid"] is True
+            assert (row["width"], row["height"]) == size
+            assert (row["fps_n"], row["fps_d"]) == (50, 1)
+            assert row["interlace_mode"] == expected["progressive_mode"]
+
+print("Stage trace %s: nine native groups, 17 structured snapshots, "
+      "PTS/segment/cap/lifetime, TFF+BFF fields and output pack/scale controls PASS" % variant)
 PY
 done

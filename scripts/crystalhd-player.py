@@ -646,7 +646,7 @@ class NativeStageTrace:
             raise
 
     def attach(self, element, stage, token):
-        if stage not in ("decoder", "deinterlace", "sink"):
+        if stage not in ("decoder", "deinterlace", "output-pack", "output-scale", "sink"):
             raise ValueError("invalid video trace stage")
         pad = element.get_static_pad("sink" if stage == "sink" else "src")
         if pad is None:
@@ -811,6 +811,7 @@ class Player:
             try:
                 self.stage_trace = NativeStageTrace(
                     Gst, args.trace_frames, getattr(args, "trace_limit", 4096))
+                self.trace_software_output()
                 self.trace_selected_video_sink()
             except BaseException:
                 self.bus.remove_signal_watch()
@@ -825,6 +826,19 @@ class Player:
             return
         self.next_trace_token += 1
         trace.attach(element, stage, self.next_trace_token)
+
+    def trace_software_output(self):
+        """Observe only the Player-owned packing and enlargement outputs."""
+        if (getattr(self, "stage_trace", None) is None or self.closed or
+                self.video_filter is None):
+            return
+        # These elements exist before playbin's element-setup connection and
+        # the observer. Enumerate our filter explicitly before streaming.
+        for name, stage in (("crystalhd-early-pack", "output-pack"),
+                            ("crystalhd-upscale", "output-scale")):
+            element = self.video_filter.get_by_name(name)
+            if element is not None:
+                self.trace_element(element, stage)
 
     def trace_selected_video_sink(self):
         """Attach only leaf sinks in the explicitly selected video branch."""

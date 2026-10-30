@@ -127,6 +127,15 @@ its exact-source and acceptance scope in the owning issue.
   [Receipt](tests/fixtures/issue510/player-stage-trace-20261030.json).
   BUFFER and LIST observations remain distinct; this does not resolve the
   historical Player losses or qualify physical presentation/A/V.
+- [x] [#510: clocked Player loss replay and owned-output observations](https://github.com/ahnhy1324/crystalhd/issues/510)
+  — reproduce the retained 30-second FHD enlargement loss with unchanged QoS,
+  then add native source taps at our early packing converter and scaler.
+  All ten completed arms and the harness preflight failure are retained in the
+  [receipt](tests/fixtures/issue91/player-output-stage-trace-20261030.json).
+  The original three-tap FHD gap is exactly four field equivalents before
+  decoder-src plus one between DI and sink. Three subsequent five-tap runs
+  have no loss; trace-free FHD still fails. Cause attribution and a same-policy
+  zero-drop repair remain open, with no external-code changes.
 - [x] [#400: shared settings, GTK/tray and production icons](https://github.com/ahnhy1324/crystalhd/issues/400)
   — the merged deliverables are recorded separately from translations,
   additional adapters and broader desktop/native-i386 GUI acceptance.

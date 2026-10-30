@@ -632,6 +632,75 @@ test_pipeline_fields(void)
   }
 }
 
+static GPtrArray *
+output_pipeline_run(gboolean monitored, gboolean drop, const gchar *name)
+{
+  GstHarness *h = gst_harness_new_parse(
+      "videoconvert name=pack ! capsfilter caps=\"video/x-raw,format=UYVY\" ! "
+      "videoscale name=scale method=4 ! "
+      "capsfilter caps=\"video/x-raw,format=UYVY,width=32,height=16\"");
+  GstElement *pack = gst_bin_get_by_name(GST_BIN(h->element), "pack");
+  GstElement *scale = gst_bin_get_by_name(GST_BIN(h->element), "scale");
+  GstPad *pack_src = gst_element_get_static_pad(pack, "src");
+  GstPad *scale_src = gst_element_get_static_pad(scale, "src");
+  GstElement *helper = monitored ? helper_new(4096) : NULL;
+  DropControl control = {0};
+  gulong drop_id = 0;
+  GPtrArray *outputs = g_ptr_array_new_with_free_func((GDestroyNotify) gst_buffer_unref);
+  if (helper) {
+    g_assert_cmpint(attach(helper, h->sinkpad, "output-pack", 81), ==, -1);
+    g_assert_cmpint(attach(helper, h->sinkpad, "output-scale", 82), ==, -1);
+    g_assert_cmpint(attach(helper, pack_src, "output-pack", 81), ==, 1);
+    g_assert_cmpint(attach(helper, scale_src, "output-scale", 82), ==, 1);
+    g_assert_cmpint(attach(helper, h->sinkpad, "sink", 83), ==, 1);
+  }
+  /* A known loss between the two output observations must stay visible. */
+  if (drop)
+    drop_id = gst_pad_add_probe(pack_src, GST_PAD_PROBE_TYPE_BUFFER,
+        drop_every_tenth, &control, NULL);
+  gst_harness_set_caps_str(h, OUTPUT_CAPS,
+      "video/x-raw,format=UYVY,width=32,height=16,"
+      "interlace-mode=progressive,framerate=50/1,pixel-aspect-ratio=1/1");
+  for (guint n = 0; n < 50; n++) {
+    GstBuffer *buffer = gst_buffer_new_allocate(NULL, 256, NULL);
+    GstMapInfo map;
+    g_assert_true(gst_buffer_map(buffer, &map, GST_MAP_WRITE));
+    for (guint row = 0; row < 8; row++)
+      for (guint col = 0; col < 32; col++)
+        map.data[row * 32 + col] = (guint8) (n * 37 + row * 19 + col * 3);
+    gst_buffer_unmap(buffer, &map);
+    GST_BUFFER_PTS(buffer) = n * 20 * GST_MSECOND;
+    GST_BUFFER_DURATION(buffer) = 20 * GST_MSECOND;
+    g_assert_cmpint(gst_harness_push(h, buffer), ==, GST_FLOW_OK);
+  }
+  g_assert_true(gst_harness_push_event(h, gst_event_new_eos()));
+  while (gst_harness_buffers_in_queue(h))
+    g_ptr_array_add(outputs, gst_harness_pull(h));
+  g_assert_cmpuint(outputs->len, ==, drop ? 45 : 50);
+  if (drop) g_assert_cmpuint(control.observed, ==, 50);
+  if (helper) {
+    g_signal_emit_by_name(helper, "stop");
+    emit_case(helper, name);
+    gst_object_unref(helper);
+  }
+  if (drop_id) gst_pad_remove_probe(pack_src, drop_id);
+  gst_object_unref(pack_src); gst_object_unref(scale_src);
+  gst_object_unref(pack); gst_object_unref(scale);
+  gst_harness_teardown(h);
+  return outputs;
+}
+
+static void
+test_output_stages(void)
+{
+  GPtrArray *reference = output_pipeline_run(FALSE, FALSE, NULL);
+  GPtrArray *observed = output_pipeline_run(TRUE, FALSE, "output_stages");
+  GPtrArray *dropped = output_pipeline_run(TRUE, TRUE, "output_stages_drop");
+  compare_output(reference, observed, FALSE);
+  compare_output(reference, dropped, TRUE);
+  g_ptr_array_unref(reference); g_ptr_array_unref(observed); g_ptr_array_unref(dropped);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -651,6 +720,7 @@ main(int argc, char **argv)
   g_test_add_func("/stage-trace/concurrent-stop", test_concurrent_stop);
   g_test_add_func("/stage-trace/inflight-stop", test_inflight_stop);
   g_test_add_func("/stage-trace/50-picture-fields", test_pipeline_fields);
+  g_test_add_func("/stage-trace/output-pack-scale", test_output_stages);
   gint result = g_test_run();
   g_cond_clear(&clock_gate.cond);
   g_mutex_clear(&clock_gate.lock);

@@ -137,13 +137,21 @@ crystalhd-play --software --trace-frames /tmp/software-trace.json "/path/to/vide
 This needs the matching native GStreamer helper even in software mode. The
 file must not exist; it is created with mode `0600`. The normal Player does
 not enable these probes. While tracing, native callbacks record the decoder
-source, deinterlacer source when present, and leaf video-sink input. There is
-no additional per-buffer Python callback, pixel readback or file writing in
+source, deinterlacer source when present, and leaf video-sink input. With
+`--software-output-size`, it also records the Player's `output-scale` source
+and, when prepared, its `output-pack` source. These identify the Player's
+own scaler and early packing converter; other intervening transforms are
+not individually observed. There is no additional per-buffer Python callback,
+pixel readback or file writing in
 the streaming thread. The JSON is written after playback teardown.
 
 The default capacity is 4,096 records across all observed stages, events and
 controls. `--trace-limit 16384` raises it to the maximum. Retention keeps the
 first records; `dropped` declares truncation while attachment counters continue.
+Every observed pad also records propagated QoS events. A 30-second 25i/50p
+five-stage trace can use about 14,250 records; use the maximum and check that
+`truncated` is false before comparing complete PTS sets. This is an example,
+not a guarantee that every 30-second input fits.
 This top-level `dropped` counts omitted trace records; it is separate from
 the nested video-sink statistics' dropped-buffer count.
 Attachment history is also limited to 64 entries. Rejected attachments and

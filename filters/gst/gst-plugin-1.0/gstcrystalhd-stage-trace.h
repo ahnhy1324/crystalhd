@@ -8,7 +8,8 @@ GType gst_crystalhd_stage_trace_get_type(void);
 G_END_DECLS
 /* Rank-NONE padless controller, never inserted in a playback pipeline.
  * capacity (1..16384, default4096) is fixed before attach/control.
- * Signals: attach(GstPad*, decoder|deinterlace|sink, guint64 token) -> gint
+ * Signals: attach(GstPad*, stage, guint64 token) -> gint
+ *   stage: decoder|deinterlace|output-pack|output-scale (source), sink (input).
  *   1 attached, 0 duplicate pad here, -1 invalid/closed/resource limit.
  * detach-pad(GstPad*) -> void; stop() -> void (both idempotent).
  * control(pause|resume|seek-request|seek-failed, guint64) -> gboolean

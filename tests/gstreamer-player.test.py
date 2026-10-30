@@ -1042,6 +1042,21 @@ class StageTraceTests(unittest.TestCase):
                           mock.call("control", "seek-failed", 1234)])
         trace.finish([], 1)
 
+    def test_owned_output_stages_use_native_source_pad_observation(self):
+        Gst, controller, _native = self.fixture()
+        trace = player.NativeStageTrace(Gst, self.path)
+        self.addCleanup(trace.cancel)
+        for token, stage in enumerate(("output-pack", "output-scale"), 1):
+            element, pads = self.element()
+            self.assertTrue(trace.attach(element, stage, token))
+            self.assertEqual(controller.emit.call_args,
+                             mock.call("attach", pads["src"], stage, token))
+            for pad in pads.values():
+                pad.add_probe.assert_not_called()
+        element, _pads = self.element()
+        with self.assertRaisesRegex(ValueError, "stage"):
+            trace.attach(element, "unowned-transform", 3)
+
     def test_rejected_attachments_declare_incomplete_coverage_and_warn_once(self):
         Gst, controller, _native = self.fixture()
         trace = player.NativeStageTrace(Gst, self.path)
@@ -1369,11 +1384,12 @@ class GStreamerApiTests(unittest.TestCase):
         # Disable every hardware decoder before any test pipeline can start.
         player.configure_decoders(Gst, "software")
 
-    def make_player(self, mode="software", weave=False, source=None):
+    def make_player(self, mode="software", weave=False, source=None,
+                    software_output_size=None):
         args = SimpleNamespace(mode=mode, weave=weave,
                                file=source or Path(self.temp.name) / "unused.ogg",
                                subtitles=Path(self.temp.name) / "sub titles.srt",
-                               scale_width=0, software_output_size=None)
+                               scale_width=0, software_output_size=software_output_size)
         result = player.Player(args, self.Gst, self.GLib, {
             "video-sink": self.Gst.ElementFactory.make("fakesink"),
             "audio-sink": self.Gst.ElementFactory.make("fakesink")})
@@ -2335,14 +2351,16 @@ class GStreamerApiTests(unittest.TestCase):
         self.assertIsNotNone(result.health.error)
 
 
-    def make_traced_player(self, *, name, capacity=4096, indexed=False, video_sink=None):
+    def make_traced_player(self, *, name, capacity=4096, indexed=False, video_sink=None,
+                           software_output_size=None):
         self.assertIsNotNone(self.Gst.ElementFactory.find("crystalhdstagetrace"),
                              "build the matching native tracing helper before these checks")
         self.http_fixture(indexed=indexed)
         media = Path(self.temp.name) / ("http-video.mkv" if indexed else "http-video.ogg")
         output = Path(self.temp.name) / (name + ".json")
         args = SimpleNamespace(mode="software", weave=False, file=media,
-                               subtitles=None, scale_width=0, software_output_size=None,
+                               subtitles=None, scale_width=0,
+                               software_output_size=software_output_size,
                                trace_frames=output, trace_limit=capacity)
         result = player.Player(args, self.Gst, self.GLib, {
             "video-sink": video_sink or self.Gst.ElementFactory.make("fakesink"),
@@ -2353,14 +2371,66 @@ class GStreamerApiTests(unittest.TestCase):
     def test_stage_trace_disabled_does_not_construct_an_observer(self):
         self.http_fixture()
         source = Path(self.temp.name) / "http-video.ogg"
-        with mock.patch.object(player, "NativeStageTrace",
-                               side_effect=AssertionError("disabled trace constructed")):
-            result = self.make_player(source=source)
-            result.pipeline.set_property("suburi", None)
-            code, _output, error = self.run_player(result)
-        self.assertEqual(code, 0, error)
-        self.assertEqual(result.health.frames, 12)
-        self.assertIsNone(result.stage_trace)
+        for output_size in (None, (64, 48)):
+            with self.subTest(output_size=output_size), mock.patch.object(
+                    player, "NativeStageTrace",
+                    side_effect=AssertionError("disabled trace constructed")):
+                result = self.make_player(source=source,
+                                          software_output_size=output_size)
+                result.pipeline.set_property("suburi", None)
+                code, _output, error = self.run_player(result)
+            self.assertEqual(code, 0, error)
+            self.assertEqual(result.health.frames, 12)
+            self.assertIsNone(result.stage_trace)
+
+    def test_stage_trace_owned_output_counts_and_timestamps_survive_enlargement(self):
+        build_filter = player.make_software_output_filter
+        for early_pack in (False, True):
+            # Exercise the real optional packing bin with a software decoder
+            # and fakesinks, without qualifying a hardware or display path.
+            def make_filter(Gst, size, *, prepare_native_packing=False):
+                return build_filter(Gst, size, prepare_native_packing=early_pack)
+
+            with self.subTest(early_pack=early_pack), mock.patch.object(
+                    player, "make_software_output_filter", side_effect=make_filter):
+                result, output = self.make_traced_player(
+                    name="trace-enlarged-" + str(early_pack),
+                    software_output_size=(64, 48))
+                code, _text, error = self.run_player(result)
+                self.assertEqual(code, 0, error)
+                report = json.loads(output.read_text())
+                self.assertFalse(report["truncated"])
+                self.assertEqual(report["player"]["attachment_errors"], 0)
+                decoded = [(r["pts"], r["duration"]) for r in report["records"]
+                           if r["kind"] == "buffer" and r["stage"] == "decoder"]
+                self.assertEqual(len(decoded), 12)
+                self.assertEqual(decoded[0][0], 0)
+                self.assertTrue(all(pts is not None and duration > 0
+                                    for pts, duration in decoded))
+                stages = ("output-pack", "output-scale") if early_pack else ("output-scale",)
+                for stage in stages:
+                    attachments = [a for a in report["attachments"] if a["stage"] == stage]
+                    self.assertEqual(len(attachments), 1, (stage, attachments))
+                    self.assertEqual(attachments[0]["buffers"], 12)
+                    self.assertEqual(attachments[0]["eos_count"], 1)
+                    self.assertFalse(attachments[0]["active"])
+                    observed = [(r["pts"], r["duration"]) for r in report["records"]
+                                if r["kind"] == "buffer" and r["stage"] == stage]
+                    self.assertEqual(observed, decoded)
+                    caps = [r for r in report["records"]
+                            if r["kind"] == "caps" and r["stage"] == stage]
+                    expected = (32, 32) if stage == "output-pack" else (64, 48)
+                    self.assertEqual([(r["width"], r["height"]) for r in caps], [expected])
+                metadata = {a["stage"]: a["factory"]
+                            for a in report["player"]["attachments"]}
+                self.assertEqual(metadata["output-scale"], "videoscale")
+                if early_pack:
+                    self.assertEqual(metadata["output-pack"], "videoconvert")
+                else:
+                    self.assertNotIn("output-pack", metadata)
+                    self.assertFalse(any(a["stage"] == "output-pack"
+                                         for a in report["attachments"]))
+                self.assertEqual(result.health.frames, 12)
 
     def test_stage_trace_actual_eos_counts_survive_record_truncation(self):
         for capacity in (4096, 4):
