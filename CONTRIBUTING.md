@@ -112,9 +112,17 @@ Maintainer release gates and support claims are tracked in [RELEASING.md](RELEAS
 PR CI examines the complete change from its merge base. Modifications of the
 explicit prose files in [the CI selector](tests/ci-plan.py) use lightweight
 checks; configuration documentation also runs its inventory/schema validators.
-Code, fixtures, generated files, unknown paths, renames, deletions and file-mode
-changes keep the full userspace/kernel checks. The final **CI gate** requires
-every selected job to succeed.
+Ordinary modifications of the selector's explicit userspace source/test list
+run both complete userspace builds while skipping the ten upstream kernel-API
+jobs. These userspace builds still compile/test the driver against each
+runner's packaged headers; this is not a userspace-only build recipe. The
+initial list covers the GStreamer/VA/DIL implementation files, Player and
+selected associated tests, not every userspace path. Headers, build inputs,
+fixtures, generated files, workflow/selector changes, new or unknown paths,
+renames, deletions and file-mode changes keep all checks. The final **CI gate**
+requires every selected job to succeed and every unselected lane to be skipped;
+missing or inconsistent selections fail. This does not introduce narrower
+userspace or sanitizer lanes.
 
 The userspace build runs on explicitly selected `ubuntu-24.04` and
 `ubuntu-26.04` runners, preserving the older supported API check alongside

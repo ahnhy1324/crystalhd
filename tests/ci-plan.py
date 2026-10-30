@@ -17,6 +17,29 @@ PROSE = frozenset({
     "MOONLIGHT.md", "HARDWARE-2026-09-13.md", "LICENSES.md",
 })
 CONTRACT = frozenset({"CONFIGURATION.md", "CONFIGURATION-SCHEMA.md"})
+# Reviewed userspace-only files, not broad directories or suffix rules. Only
+# ordinary modifications qualify: new/deleted/renamed files, headers, build
+# inputs and the selector/workflow itself still require the kernel matrix.
+# Both complete userspace arms continue to build the packaged-header driver.
+USERSPACE = frozenset({
+    "filters/gst/gst-plugin-1.0/gstcrystalhd.c",
+    "filters/gst/gst-plugin-1.0/gstcrystalhd-diqos.c",
+    "filters/gst/gst-plugin-1.0/gstcrystalhd-stage-trace.c",
+    "filters/vaapi/crystalhd_drv_video.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_fwdiag_if.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_fwload_if.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_if.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_int_if.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_parser.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_priv.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_raw_frame.cpp",
+    "scripts/crystalhd-player.py",
+    "tests/gstreamer-player.test.py",
+    "tests/gst-diqos.c",
+    "tests/gst-stage-trace.c", "tests/gst-stage-trace.sh",
+    "tests/vaapi-seek.test.py", "tests/vaapi-trace.test.py",
+})
 
 
 def git(root, *args):
@@ -36,6 +59,7 @@ def classify(root, base, head):
     if chunks.pop() != b"" or len(chunks) % 2:
         raise ValueError("incomplete raw Git diff")
     heavy = not chunks
+    kernel = not chunks
     contracts = False
     files = []
     for record, path in zip(chunks[::2], chunks[1::2]):
@@ -52,13 +76,25 @@ def classify(root, base, head):
         elif plain and name in CONTRACT:
             lane = "contract"
             contracts = True
+        elif plain and name in USERSPACE:
+            lane = "userspace"
+            heavy = True
         else:
             heavy = True
+            kernel = True
         files.append({"path": name, "status": status, "lane": lane,
                       "old_mode": old_mode[1:], "new_mode": new_mode})
-    return {"heavy": heavy, "contracts": contracts,
-            "reason": "full required" if heavy else "reviewed documentation only",
+    return {"heavy": heavy, "kernel": kernel, "contracts": contracts,
+            "reason": ("full required" if kernel else "reviewed userspace only"
+                       if heavy else "reviewed documentation only"),
             "base": base, "head": head, "files": files}
+
+
+def select(root, event, base, head):
+    if event == "pull_request":
+        return classify(root, base, head)
+    return {"heavy": True, "kernel": True, "contracts": True, "files": [],
+            "reason": "full master/tag/manual route", "base": base, "head": head}
 
 
 def gate(needs):
@@ -68,12 +104,15 @@ def gate(needs):
     if needs["classify"].get("result") != "success":
         raise ValueError("classifier did not succeed")
     outputs = needs["classify"].get("outputs", {})
-    if outputs.get("heavy") not in {"true", "false"}:
-        raise ValueError("missing/invalid lane selection")
-    if outputs.get("contracts") not in {"true", "false"}:
-        raise ValueError("missing/invalid contract selection")
+    for name in ("heavy", "kernel", "contracts"):
+        if outputs.get(name) not in {"true", "false"}:
+            raise ValueError("missing/invalid " + name + " selection")
+    if outputs["kernel"] == "true" and outputs["heavy"] != "true":
+        raise ValueError("kernel matrix requires the complete userspace lane")
     for name in ("docs", "build", "upstream-kernel-api"):
-        required = "success" if name == "docs" or outputs["heavy"] == "true" else "skipped"
+        selected = (name == "docs" or
+                    outputs["kernel" if name == "upstream-kernel-api" else "heavy"] == "true")
+        required = "success" if selected else "skipped"
         if needs[name].get("result") != required:
             raise ValueError(name + " must be " + required)
 
@@ -101,14 +140,10 @@ def main():
         # Full push/manual/tag runs need no PR base, but still run contracts.
         docs(root, base or head, head, os.environ["CI_CONTRACTS"] == "true")
         return
-    if os.environ["CI_EVENT"] == "pull_request":
-        plan = classify(root, base, head)
-    else:
-        plan = {"heavy": True, "contracts": True, "files": [],
-                "reason": "full master/tag/manual route", "base": base, "head": head}
+    plan = select(root, os.environ["CI_EVENT"], base, head)
     print(json.dumps(plan, indent=2))
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-        for name in ("heavy", "contracts"):
+        for name in ("heavy", "kernel", "contracts"):
             output.write(name + "=" + str(plan[name]).lower() + "\n")
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
         summary.write("### Selected CI plan\n\n```json\n" +

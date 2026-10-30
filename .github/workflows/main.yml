@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       heavy: ${{ steps.plan.outputs.heavy }}
+      kernel: ${{ steps.plan.outputs.kernel }}
       contracts: ${{ steps.plan.outputs.contracts }}
     steps:
       - uses: actions/checkout@v7
@@ -345,7 +346,7 @@ jobs:
 
   upstream-kernel-api:
     needs: classify
-    if: needs.classify.outputs.heavy == 'true'
+    if: needs.classify.outputs.kernel == 'true'
     name: Kernel API (${{ matrix.track }}, ${{ matrix.arch }})
     runs-on: ubuntu-latest
     strategy:
