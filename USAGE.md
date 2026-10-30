@@ -124,6 +124,17 @@ Unreleased development builds also offer the optional
 default. This is an experimental output choice, not a general speedup or
 physical A/V qualification.
 
+An additional experimental `--packed-upscale` option fuses packing with the
+method4, two-thread resize for progressive1280x720YUY2 to1920x1080UYVY50Hz.
+It requires `--hardware --video-output xv-async --scale-width 1280
+--software-output-size 1920x1080` and the separately built
+[packed upscale plugin](filters/gst/packed-upscale/README.md).
+Unsupported input, color conversion, spatial metadata or GStreamer versions
+are rejected. It is an invocation-only option; it does not change the default
+output or saved settings. Its frame trace has four measured stages
+(decoder/deinterlace/output-scale/sink), with packing included in output-scale.
+
+
 The development Player also reports available video-sink rendered/dropped
 buffer counts before closing. These counters are separate from decoded
 pictures: deinterlacing can produce two output buffers per picture, and seeks

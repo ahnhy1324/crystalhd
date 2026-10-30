@@ -87,9 +87,18 @@ def gst_properties() -> set[str]:
     names: set[str] = set()
     paths = list((ROOT / "filters/gst/gst-plugin-1.0").glob("*.c"))
     paths += list((ROOT / "filters/gst/xv-output").glob("*.c"))
+    paths += list((ROOT / "filters/gst/packed-upscale").glob("*.c"))
     for path in paths:
         source = read(path)
         properties = set(GST_PROPERTY.findall(source))
+        if path.name == "gstcrystalhdpackedscale.c":
+            observations = {"method", "n-threads", "simd-active", "frames"}
+            specs = re.findall(r'g_param_spec_[a-z0-9_]+\s*\(.*?\)\);', source, re.DOTALL)
+            if (properties != observations or len(specs) != len(observations) or
+                    not all(re.search(r'G_PARAM_READABLE\s*\|\s*G_PARAM_STATIC_STRINGS\s*\)\);$', spec) for spec in specs) or
+                    re.search(r"G_PARAM_(?:WRITABLE|READWRITE)|\bset_property\b", source)):
+                raise ValueError("packed upscale observations must remain read-only")
+            continue
         if path.name == "gstcrystalhdxv.c":
             # This renderer mixes the public display selector with one
             # strictly read-only observation; retain the existing all-readonly

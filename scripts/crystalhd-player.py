@@ -240,6 +240,8 @@ def arguments(argv=None, environment=None):
                         help="preserve interlaced frames without deinterlacing; works with either decoder mode")
     parser.add_argument("--video-output", choices=("auto", "xv-async"), default="auto",
                         help="video output (default: auto); xv-async selects the optional experimental X11 plugin")
+    parser.add_argument("--packed-upscale", action="store_true",
+                        help="experimental packed 1280x720 to1920x1080 resize; requires --video-output xv-async")
     parser.add_argument("--scale-width", type=hardware_scale_width, default=argparse.SUPPRESS, metavar="PIXELS",
                         help="request an even BCM70015 output width from 128 to 1918 (interlaced H.264: multiple of 16; 0: native)")
     parser.add_argument("--software-output-size", type=requested_output_size,
@@ -267,6 +269,13 @@ def arguments(argv=None, environment=None):
         parser.error("--software-output-size requires a nonzero --scale-width")
     if args.video_output == "xv-async" and args.weave:
         parser.error("--video-output xv-async needs progressive/deinterlaced output; use auto with --weave")
+    if args.packed_upscale and (args.mode != "hardware" or args.weave or
+                                args.video_output != "xv-async" or
+                                args.scale_width != 1280 or
+                                args.software_output_size != (1920, 1080)):
+        parser.error("--packed-upscale requires --hardware --video-output xv-async "
+                     "--scale-width 1280 --software-output-size 1920x1080; "
+                     "only progressive 1280x720 input is supported")
     return args
 
 
@@ -434,6 +443,28 @@ def make_software_output_filter(Gst, size, *, prepare_native_packing=False):
     if not result.add_pad(Gst.GhostPad.new("sink", sink_pad)) or not result.add_pad(
             Gst.GhostPad.new("src", source_pad)):
         raise RuntimeError("could not expose the software output sizing pads")
+    return result
+
+
+def make_packed_output_filter(Gst):
+    """Build only the explicitly selected experimental packed 720p resize."""
+    result = Gst.Bin.new("crystalhd-packed-software-upscale")
+    scale = Gst.ElementFactory.make("crystalhdpackedscale", "crystalhd-packed-upscale")
+    capsfilter = Gst.ElementFactory.make("capsfilter", "crystalhd-upscale-caps")
+    if result is None or scale is None or capsfilter is None:
+        raise RuntimeError("experimental packed resize is unavailable; build "
+                           "filters/gst/packed-upscale and select its GST_PLUGIN_PATH")
+    capsfilter.set_property("caps", Gst.Caps.from_string(
+        "video/x-raw,format=UYVY,width=1920,height=1080,pixel-aspect-ratio=1/1"))
+    result.add(scale)
+    result.add(capsfilter)
+    if not scale.link(capsfilter):
+        raise RuntimeError("could not link the experimental packed resize")
+    sink_pad, source_pad = scale.get_static_pad("sink"), capsfilter.get_static_pad("src")
+    if (sink_pad is None or source_pad is None or
+            not result.add_pad(Gst.GhostPad.new("sink", sink_pad)) or
+            not result.add_pad(Gst.GhostPad.new("src", source_pad))):
+        raise RuntimeError("could not expose the experimental packed resize pads")
     return result
 
 
@@ -858,10 +889,13 @@ class Player:
             prepare_packing = (args.mode == "hardware" and args.scale_width and
                                args.software_output_size[0] > args.scale_width and
                                not args.weave and "video-sink" not in (sinks or {}))
-            self.video_filter = make_software_output_filter(
-                Gst, args.software_output_size, prepare_native_packing=prepare_packing)
-            if prepare_packing:
-                self.output_packing = XvOutputPacking(Gst, self.video_filter)
+            if getattr(args, "packed_upscale", False):
+                self.video_filter = make_packed_output_filter(Gst)
+            else:
+                self.video_filter = make_software_output_filter(
+                    Gst, args.software_output_size, prepare_native_packing=prepare_packing)
+                if prepare_packing:
+                    self.output_packing = XvOutputPacking(Gst, self.video_filter)
             self.pipeline.set_property("video-filter", self.video_filter)
         for prop, sink in selected_sinks.items():
             self.pipeline.set_property(prop, sink)
@@ -901,7 +935,8 @@ class Player:
         # These elements exist before playbin's element-setup connection and
         # the observer. Enumerate our filter explicitly before streaming.
         for name, stage in (("crystalhd-early-pack", "output-pack"),
-                            ("crystalhd-upscale", "output-scale")):
+                            ("crystalhd-upscale", "output-scale"),
+                            ("crystalhd-packed-upscale", "output-scale")):
             element = self.video_filter.get_by_name(name)
             if element is not None:
                 self.trace_element(element, stage)

@@ -801,6 +801,20 @@ class CleanupTests(unittest.TestCase):
 
 
 class ArgumentTests(unittest.TestCase):
+    def test_packed_upscale_requires_the_exact_explicit_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "video.ts"
+            path.touch()
+            profile = ["--hardware", "--video-output", "xv-async", "--scale-width", "1280",
+                       "--software-output-size", "1920x1080", "--packed-upscale", str(path)]
+            self.assertTrue(player.arguments(profile, environment={}).packed_upscale)
+            self.assertFalse(player.arguments([str(path)], environment={}).packed_upscale)
+            for old, new in (("--hardware", "--software"), ("xv-async", "auto"),
+                             ("1280", "960"), ("1920x1080", "1280x720")):
+                wrong = [new if arg == old else arg for arg in profile]
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    player.arguments(wrong, environment={})
+
     def test_xv_output_is_explicit_and_rejects_interlaced_weave(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "video.ts"
