@@ -369,9 +369,10 @@
       "last_count": 1,
       "scope": "180-packet/picture internal tracking census; only copied content has independent originalPTS proof"
     },
-    "tracking_census": "Input/output internal tracking ordered exactly1..180; a single empty LAST and only expected post-LAST EPIPE terminal response. This is not independent originalPTS proof for all180 images.",
+    "tracking_census": "Input/output internal tracking ordered exactly1..180 with one empty LAST. Actual observerB records zero EPIPE returns; the conditional post-LAST EPIPE branch is synthetic coverage only, not observed here. This is not independent originalPTS proof for all180 images.",
     "source_and_renderer_limit": "Same actual allocation and queue lease are qualified for this copied image; matching RGB/raw content alone does not prove exact GPU import/render fd, physical scanout or a complete external GPU return graph.",
-    "expected_post_LAST_EPIPE_count": 0
+    "observed_EPIPE_count": 0,
+    "EPIPE_path": "NOT_OBSERVED; actual client completed after the empty LAST. Earlier prose mixed the synthetic/old protocol expectation with this run; raw observations unchanged."
   },
   "termination_and_restoration": {
     "controller_status": "PASS_SCOPED_NATIVE_ONE_IMAGE",
@@ -553,5 +554,14 @@
         "native-cpu-03.validation.json": "ae184bb97ddcb272dc98b122e55acf89d78faac5769dbb80a98bc41de673e8d8"
       }
     }
-  ]
+  ],
+  "independent_offline_audit": {
+    "status": "PASS_SCOPED",
+    "checks": 72,
+    "artifact_hashes": 93,
+    "path": "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/native-raw/privateindependent-native-expbuf-audit-20261030.json",
+    "sha256": "11f6e2aa603fd29a1bfd34cb8c8b488f549acbfbb253576a075bc1c54b28238c",
+    "actual_EPIPE_count": 0,
+    "scope": "Independent full byte/CRC/lease/census/restoration replay; first erroneous expected-one-EPIPE assertion retained, no runtime retry."
+  }
 }

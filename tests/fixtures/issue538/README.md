@@ -139,7 +139,12 @@ output follow CONT; helper hashing/base64 stays bounded RAM during the stop.
 | Raw SHA256 | `930b38df951f591e5e81599b19c60d72391e083ec4a8e46329de02dca4cacb56` |
 | Observed stop/copy | STOP→CONT724.713014ms; copy span10.233606ms |
 | Continuous ownership | same export/DQBUF syscall IDs and epochs; no requeue/reset/close/fd replacement through copy end; selected QBUF and fd close after copy |
-| Natural tail | 180 nonempty input QBUFs /180 nonempty capture DQBUFs, one empty LAST and qualified expected post-LAST EPIPE |
+| Natural tail | 180 nonempty input QBUFs /180 nonempty capture DQBUFs, one empty LAST; zero observed EPIPE returns (NOT_OBSERVED) |
+
+The earlier prose mixed an expected/synthetic EPIPE branch with actual capture.
+All833 actual observer-B POSTs return0; EPIPE is NOT_OBSERVED. Independent replay
+passes72 checks/93 artifact hashes, including full bytes/CRC/lease/restoration;
+its first wrong one-EPIPE assertion remains retained without a runtime retry.
 
 The declared 2,852 extra bytes and page-allocation padding are outside the active
 image comparison. The copied allocation is the actual EXPBUF object from this
