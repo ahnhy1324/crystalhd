@@ -115,7 +115,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential autoconf gcc-multilib g++-multilib qemu-user \
+            build-essential autoconf gettext gcc-multilib g++-multilib qemu-user \
             linux-headers-generic \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             libxcb-shm0-dev libxcb-xv0-dev \
@@ -150,6 +150,7 @@ jobs:
 
       - name: Validate optional settings window without hardware
         run: |
+          make settings-l10n-check
           xvfb-run -a make settings-ui-check
           desktop-file-validate share/applications/crystalhd-settings.desktop
 

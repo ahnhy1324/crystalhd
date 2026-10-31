@@ -376,7 +376,50 @@ install-config: install-provenance
 			"$$helper_relative"
 
 # Optional desktop frontend; native runtime/CLI installation stays headless.
-install-settings: install-config
+# The static UTF-8 header keeps extraction reproducible without generated dates.
+XGETTEXT ?= xgettext
+MSGFMT ?= msgfmt
+SETTINGS_LOCALES := $(shell sed '/^\#/d' po/LINGUAS)
+SETTINGS_POT_EXTRACT = $(XGETTEXT) --language=Python --from-code=UTF-8 \
+	--keyword=_ --no-location \
+	--add-comments=Translators:
+
+.PHONY: settings-pot settings-l10n-check install-settings-locales uninstall-settings-locales
+settings-pot:
+	@set -eu; settings_messages=$$(mktemp); \
+		trap 'rm -f "$$settings_messages"' EXIT HUP INT TERM; \
+		$(SETTINGS_POT_EXTRACT) --output="$$settings_messages" scripts/crystalhd-settings.py; \
+		{ cat po/settings-header.pot; printf '\n'; sed '1,/^$$/d' "$$settings_messages"; } > po/crystalhd-settings.pot
+
+settings-l10n-check:
+	@set -eu; settings_check=$$(mktemp -d); \
+		trap 'rm -rf "$$settings_check"' EXIT HUP INT TERM; \
+		$(SETTINGS_POT_EXTRACT) --output="$$settings_check/messages" scripts/crystalhd-settings.py; \
+		{ cat po/settings-header.pot; printf '\n'; sed '1,/^$$/d' "$$settings_check/messages"; } > "$$settings_check/template"; \
+		cmp po/crystalhd-settings.pot "$$settings_check/template" || \
+			{ printf '%s\n' 'Settings catalogue template is stale; run make settings-pot.' >&2; exit 1; }; \
+		$(PYTHON3) -B scripts/check-settings-messages.py; \
+		for locale in $(SETTINGS_LOCALES); do \
+			$(MSGFMT) --check --check-accelerators=_ --use-fuzzy \
+				--output-file=/dev/null "po/$$locale.po"; \
+		done
+
+install-settings-locales:
+	@set -eu; umask 022; settings_mo=$$(mktemp); \
+		trap 'rm -f "$$settings_mo"' EXIT HUP INT TERM; \
+		for locale in $(SETTINGS_LOCALES); do \
+			$(MSGFMT) --check --check-accelerators=_ --output-file="$$settings_mo" "po/$$locale.po"; \
+			install -D -m 0644 "$$settings_mo" \
+				"$(DESTDIR)$(DATADIR)/locale/$$locale/LC_MESSAGES/crystalhd-settings.mo"; \
+		done
+
+uninstall-settings-locales:
+	@set -eu; for locale in $(SETTINGS_LOCALES); do \
+		file="$(DESTDIR)$(DATADIR)/locale/$$locale/LC_MESSAGES/crystalhd-settings.mo"; \
+		if [ -e "$$file" ] || [ -L "$$file" ]; then rm -- "$$file"; fi; \
+		done
+
+install-settings: install-config install-settings-locales
 	@set -eu; umask 022; \
 		install -D -m 0755 scripts/crystalhd-settings.py \
 			"$(DESTDIR)$(BINDIR)/crystalhd-settings"; \
@@ -395,7 +438,7 @@ install-settings: install-config
 			done; \
 		done
 
-uninstall-settings:
+uninstall-settings: uninstall-settings-locales
 	@set -eu; for file in \
 		"$(DESTDIR)$(BINDIR)/crystalhd-settings" \
 		"$(DESTDIR)$(DATADIR)/applications/crystalhd-settings.desktop"; do \
