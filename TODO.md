@@ -36,9 +36,27 @@ not automatically mandatory v1.3 features.
 - [x] #611 shared CLI editor-state/safe transactional writes, optional native
   Kodi dialogs and reproducible ZIP; actual stock21.3 ZIP/D-pad save/cancel/reset
   and normal exit. [Evidence](tests/fixtures/issue611/kodi-settings-ui-20261031.json).
-- [ ] Qualify saved defaults in a new Kodi process with the updated own VA/DIL,
+- [x] Qualify saved defaults in a new Kodi process with the updated own VA/DIL,
   preserve ordinary playback and archive-specific build/staging/rollback receipts.
-- [ ] Record exact combined-head hosted CI and final private package hashes.
+- [x] Record exact combined-head hosted CI and final private package hashes.
+
+The post-build completion is recorded in #612/#611: source `ce4cab1`,
+CI41209840603 (15 successful jobs and the intended packed-only skip),
+actual new Kodi360 hardware outputs/two natural EOS cycles, and exact archive
+build/staging/removal/recovery. The original four package files remain frozen;
+their packaging-time manifest is supplemented by a separate qualification
+receipt rather than rewritten after validation.
+
+### Stability follow-up — 2026-11-01
+
+- [x] Reject a ready replacement surface after a waiting VA sync releases the
+  driver mutex. The original exact/live replacement case fails; all twelve
+  exact/remap, live/retired and completion/cancellation combinations pass after
+  full-binding revalidation. Ordinary and ASan/UBSan/leak replay suites pass. Same-binding
+  completed pixels remain valid after context retirement.
+- [ ] Complete current-source ordinary finite-EOS/control hardware follow-up.
+  The retained FFmpeg296/300 graph-boundary loss and Kodi EOF-tail failures
+  remain separate; the sync-binding fix does not claim to repair them.
 
 Earlier checkpoint (preserved with its original qualification):
 
