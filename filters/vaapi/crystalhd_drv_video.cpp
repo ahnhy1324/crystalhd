@@ -86,6 +86,15 @@ static const char managed_defaults_reader[] __attribute__((used)) =
 #include "crystalhd-wmv3.h"
 #include "crystalhd-vpp-bob.h"
 
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+#include "../../tests/vaapi-vpp-payload-observer.h"
+#define CRYSTALHD_TEST_STORAGE_INSTALLED(surface) \
+  (surface)->payload_observer_stamp.Installed()
+#else
+// Test diagnostics have no runtime knob, state, arguments or copies here.
+#define CRYSTALHD_TEST_STORAGE_INSTALLED(surface) do {} while (false)
+#endif
+
 #if defined(__GNUC__)
 // Keep the plugin loadable with an older libcrystalhd.so.3. The optional
 // output-event API is negotiated only when the symbol is present.
@@ -538,6 +547,11 @@ static bool IsBgraStorageFormat(uint32_t fourcc) {
 }
 
 struct Surface {
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+  crystalhd_test_vpp_payload::Stamp payload_observer_stamp;
+  bool payload_observer_is_view = false;
+  crystalhd_test_vpp_payload::Geometry payload_observer_view_geometry;
+#endif
   VASurfaceID id = VA_INVALID_SURFACE;
   unsigned int width = 0;
   unsigned int height = 0;
@@ -673,6 +687,7 @@ struct Surface {
     pitch[0] = pitch[1] = static_cast<unsigned int>(stride);
     planes[0] = storage.data();
     planes[1] = bytes == 0 ? nullptr : planes[0] + stride * luma_rows;
+    CRYSTALHD_TEST_STORAGE_INSTALLED(this);
     return true;
   }
 
@@ -703,6 +718,7 @@ struct Surface {
       if (planes[0] == MAP_FAILED || planes[0] == nullptr)
         return false;
       pitch[0] = mapped_pitch;
+      CRYSTALHD_TEST_STORAGE_INSTALLED(this);
       return true;
     }
     if (fourcc != VA_FOURCC_NV12)
@@ -723,6 +739,7 @@ struct Surface {
           pitch[0] = mapped_pitch;
           pitch[1] = gbm_bo_get_stride_for_plane(bo, 1);
           planes[1] = planes[0] + gbm_bo_get_offset(bo, 1);
+          CRYSTALHD_TEST_STORAGE_INSTALLED(this);
           return true;
         }
         planes[0] = nullptr;
@@ -797,6 +814,7 @@ struct Surface {
                         ? "experimental i915 WC/GTT domains enabled"
                         : "experimental i915 WC mapping unconfirmed; using DMA-BUF sync");
             }
+            CRYSTALHD_TEST_STORAGE_INSTALLED(this);
             return true;
           }
           close(prime_fd);
@@ -874,6 +892,7 @@ struct Surface {
           pitch[1] = gbm_bo_get_stride_for_plane(bo, 1);
           planes[1] = planes[0] + gbm_bo_get_offset(bo, 1);
         }
+        CRYSTALHD_TEST_STORAGE_INSTALLED(this);
         return true;
       }
     }
@@ -914,6 +933,7 @@ struct Surface {
                       plane_desc[plane].offset;
       pitch[plane] = plane_desc[plane].pitch;
     }
+    CRYSTALHD_TEST_STORAGE_INSTALLED(this);
     return true;
   }
 
@@ -962,6 +982,7 @@ struct Surface {
       planes[plane] = static_cast<uint8_t *>(object_maps[0]) +
                       desc.offsets[plane];
     }
+    CRYSTALHD_TEST_STORAGE_INSTALLED(this);
     return true;
   }
 
@@ -1995,6 +2016,12 @@ static VAStatus ProcessVpp(SwsContext **scaler,
         }
       }
     }
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+    // Tentative copy only: both existing CPU access windows still own pixels.
+    // No new access/wait or filesystem output occurs at this test hook.
+    crystalhd_test_vpp_payload::Copy(*source, *destination, source_region,
+                                    output_region, deinterlace, source_is_field);
+#endif
     if (!destination_write_started && !destination->EndCpuWrite()) {
       source->EndCpuRead();
       Debug("VPP operation failed stage=nv12-target-cpu-end");
@@ -2009,6 +2036,9 @@ static VAStatus ProcessVpp(SwsContext **scaler,
   destination->failed = false;
   destination->expected_timestamp = source->expected_timestamp;
   destination->frame_timestamp = source->frame_timestamp;
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+  crystalhd_test_vpp_payload::ProcessSuccess();
+#endif
   return VA_STATUS_SUCCESS;
 }
 
@@ -2644,6 +2674,12 @@ struct VppPixelView : Surface {
   ~VppPixelView() { object_fds.clear(); }
   void Capture(const std::shared_ptr<Surface> &surface) {
     allocation = surface;
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+    // A borrowed snapshot identifies its pinned allocation, not the view.
+    payload_observer_stamp = surface->payload_observer_stamp;
+    payload_observer_is_view = true;
+    payload_observer_view_geometry = crystalhd_test_vpp_payload::Describe(*surface);
+#endif
     width = surface->width;
     height = surface->height;
     fourcc = surface->fourcc;
@@ -2728,6 +2764,9 @@ static void RunDecodeWorker(Driver *driver);
 static void RunVppWorker(Driver *driver);
 
 struct Driver {
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+  std::shared_ptr<crystalhd_test_vpp_payload::State> payload_observer;
+#endif
   std::mutex mutex;
   std::condition_variable condition;
   uint32_t next_config = 1;
@@ -2768,6 +2807,15 @@ struct Driver {
       : trace(trace_output_fd), drm_fd(requested_drm_fd),
         experimental_i915_wc(ExperimentalI915WcRequested(
             crystalhd_config::Environment("CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC"))) {
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+    if (trace.enabled()) {
+      try {
+        payload_observer.reset(new (std::nothrow) crystalhd_test_vpp_payload::State(trace.session()));
+      } catch (const std::bad_alloc &) {
+        // The private observer is unavailable; normal VA initialization proceeds.
+      }
+    }
+#endif
     decode_control_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (requested_drm_fd >= 0)
       gbm = gbm_create_device(requested_drm_fd);
@@ -5920,6 +5968,7 @@ static VAStatus RejectH264Target(Driver *driver, DecodeContext *decode,
         picture->planes[plane] = preserved.planes[plane];
       }
       picture->direct_backing.reset();
+      CRYSTALHD_TEST_STORAGE_INSTALLED(picture.get());
     }
   } catch (const std::bad_alloc &) {
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
@@ -6677,12 +6726,14 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     std::vector<uint8_t> unused;
     unused.swap(retirement_candidate->storage);
     retirement_candidate->planes[0] = retirement_candidate->planes[1] = nullptr;
+    CRYSTALHD_TEST_STORAGE_INSTALLED(retirement_candidate.get());
     decode->private_backing_pool->Recycle(std::move(unused));
     if (retirement_candidate->centered_pixels) {
       const auto &small = retirement_candidate->centered_pixels;
       std::vector<uint8_t> small_unused;
       small_unused.swap(small->storage);
       small->planes[0] = small->planes[1] = nullptr;
+      CRYSTALHD_TEST_STORAGE_INSTALLED(small.get());
       decode->private_backing_pool->Recycle(std::move(small_unused));
     }
   }
@@ -6821,6 +6872,12 @@ static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
       return VA_STATUS_ERROR_OPERATION_FAILED;
     if (source->centered_geometry.enabled && !ComposeCenteredCanvas(prepared.get(), true))
       return VA_STATUS_ERROR_OPERATION_FAILED;
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+    prepared->payload_observer_stamp.first = {
+        true, first.bottom, first.bottom_first, first.generation,
+        first.decode_identity, first.timestamp, first.picture_number,
+        first.sess_num, first.picture_meta_payload};
+#endif
     *view = std::move(prepared);
   } catch (const std::bad_alloc &) {
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
@@ -7327,6 +7384,13 @@ static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
     --operation.target_owner->vpp_writers;
   const bool successful_commit =
       committed && status == VA_STATUS_SUCCESS && released;
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+  if (driver->payload_observer)
+    driver->payload_observer->Commit(sequence, status, successful_commit,
+        !driver->stopping && !PendingVppCanceled(driver, operation) &&
+        !operation.source->failed &&
+        operation.source->expected_timestamp == operation.source_timestamp);
+#endif
   if (successful_commit) {
     InheritTraceIdentity(operation.target.get(), *operation.source);
     if (operation.target_owner != operation.target)
@@ -7663,6 +7727,15 @@ static void RunVppWorker(Driver *driver) {
       driver->trace.Emit(crystalhd_vaapi_trace::Event::VppRun, operation.trace_binding);
       VppPixelView input, output;
       const auto &source = first_field_view ? first_field_view : operation.source;
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+      const auto observer_owner = operation.source_owner.lock();
+      crystalhd_test_vpp_payload::Scope observer_scope(
+          observer_owner ? driver->payload_observer.get() : nullptr,
+          operation.trace_binding, *operation.source,
+          observer_owner ? *observer_owner : *operation.source, *operation.target,
+          operation.source_region, operation.output_region,
+          operation.deinterlace, operation.sequence);
+#endif
       if (CaptureVppPixels(operation, source, first_field_view != nullptr,
                            &input, &output)) {
         completed->pixels_active = true;
@@ -8297,6 +8370,7 @@ static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
       promotion.picture->planes[plane] = promotion.pixels->planes[plane];
     }
     promotion.picture->direct_backing.reset();
+    CRYSTALHD_TEST_STORAGE_INSTALLED(promotion.picture.get());
   }
   std::unordered_set<DecodeContext *> reset_decoders;
   // Fresh VPP probe surfaces have no decoder or queued conversion to wake.
@@ -8854,6 +8928,11 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
                                           VAContextID context_id,
                                           uint64_t close_timeout_ns) {
   Driver *driver = GetDriver(context);
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+  // Declared before lock: normal DestroyCall cleanup and unlock precede I/O.
+  // It pins only independent diagnostic arrays, never the Driver or surfaces.
+  crystalhd_test_vpp_payload::PublishOnReturn payload_publication;
+#endif
   std::unique_lock<std::mutex> lock(driver->mutex);
   auto found = driver->contexts.find(context_id);
   if (found == driver->contexts.end())
@@ -8955,6 +9034,22 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
   // Their disposal must not interrupt an unrelated decoder's RX poll.
   if (!decode->video_process || !driver->pending_vpp.empty())
     driver->NotifyDecodeWorker();
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+  if (!decode->video_process) {
+    payload_publication.has_status = true;
+    if (driver->payload_observer) {
+      if (driver->payload_observer->Retire(fields.context, fields.generation, status))
+        payload_publication.state = driver->payload_observer;
+      payload_publication.status = driver->payload_observer->Snapshot(
+          fields.context, fields.generation, status);
+    } else {
+      payload_publication.status.session = driver->trace.session();
+      payload_publication.status.context = fields.context;
+      payload_publication.status.generation = fields.generation;
+      payload_publication.status.retirement_status = status;
+    }
+  }
+#endif
   return status;
 }
 
@@ -9993,6 +10088,12 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
         if (!decoded_source->failed)
           driver->trace.Emit(crystalhd_vaapi_trace::Event::VppRun, fields);
       }
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+      crystalhd_test_vpp_payload::Scope observer_scope(driver->payload_observer.get(),
+          fields, *decoded_source, *source_owner, *target_surface,
+          decode_context->vpp_source_region, decode_context->vpp_output_region,
+          decode_context->vpp_deinterlace, sequence);
+#endif
       VAStatus status = decoded_source->failed
                             ? VA_STATUS_ERROR_DECODING_ERROR
                             : ProcessVpp(&driver->vpp_scaler,
@@ -10015,6 +10116,16 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
                       status != VA_STATUS_SUCCESS);
       if (status == VA_STATUS_SUCCESS)
         RetainCompletedVppPicture(target_owner.get());
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+      if (driver->payload_observer)
+        driver->payload_observer->Commit(sequence, status, status == VA_STATUS_SUCCESS,
+            !driver->stopping && !decoded_source->destroyed && !decoded_source->failed &&
+            !target_surface->destroyed && !target_owner->destroyed &&
+            target_owner->latest_vpp_sequence == sequence &&
+            decoded_source->expected_timestamp == timestamp &&
+            CapturedDecodePictureMatchesLifetime(driver, source_owner, decoded_source,
+                source_decoder, decode_context->vpp_generation));
+#endif
       fields.outcome = status;
       driver->trace.Emit(status == VA_STATUS_SUCCESS
                              ? crystalhd_vaapi_trace::Event::VppCommit
@@ -10148,6 +10259,15 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       }
       if (status == VA_STATUS_SUCCESS) {
         driver->trace.Emit(crystalhd_vaapi_trace::Event::VppRun, operation.trace_binding);
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+        const auto observer_owner = operation.source_owner.lock();
+        crystalhd_test_vpp_payload::Scope observer_scope(
+            observer_owner ? driver->payload_observer.get() : nullptr,
+            operation.trace_binding, *operation.source,
+            observer_owner ? *observer_owner : *operation.source, *operation.target,
+            operation.source_region, operation.output_region,
+            operation.deinterlace, operation.sequence);
+#endif
         status = ProcessVpp(&driver->vpp_scaler, &driver->vpp_argb_staging,
                             first_field_view ? first_field_view.get() : operation.source.get(),
                             operation.target.get(),
