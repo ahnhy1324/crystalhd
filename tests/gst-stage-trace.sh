@@ -42,12 +42,17 @@ print(pathlib.Path(sys.argv[2]).read_text()[-8000:], file=sys.stderr)
 PY
         exit "$status"
     fi
-    python3 - "$variant" "$test_dir/$variant.log" "$test_dir/$variant.stderr" <<'PY'
+    python3 -B - "$variant" "$test_dir/$variant.log" "$test_dir/$variant.stderr" \
+        "$repo_dir/tests/stage-pts-audit.py" <<'PY'
+import importlib.util
 import json
 from pathlib import Path
 import sys
 
-variant, log, errors = sys.argv[1:]
+variant, log, errors, audit_path = sys.argv[1:]
+audit_spec = importlib.util.spec_from_file_location("stage_pts_audit", audit_path)
+auditor = importlib.util.module_from_spec(audit_spec)
+audit_spec.loader.exec_module(auditor)
 cases = {}
 expected = None
 for line in Path(log).read_text().splitlines():
@@ -69,6 +74,17 @@ required = {"metadata", "flush", "capacity", "controls", "detach",
             "window_flush", "window_post_incomplete", "window_tiny", "window_unknown",
             "window_stream_unknown", "window_output", "window_output_drop", "first_output_drop",
             "window_buffer_list"}
+summary_clean = {"summary_first_25", "summary_first_50", "window_summary_25",
+                 "window_summary_50", "window_summary_frozen_25", "window_summary_frozen_50"}
+summary_defects = {"gap", "duplicate", "reverse", "off_grid", "unknown_pts", "unknown_duration",
+                   "duration", "changed_caps", "unknown_caps", "vfr_caps", "segment", "rate",
+                   "applied_rate", "bytes_segment", "stream", "flush", "seek", "buffer_gap", "discont"}
+required |= summary_clean | {"window_summary_" + name for name in summary_defects}
+required |= {"window_summary_frozen_caps", "window_summary_overflow", "window_summary_saturation",
+             "window_summary_initial_unknown_caps", "window_summary_initial_vfr",
+             "window_summary_initial_rate", "window_summary_initial_applied_rate",
+             "window_summary_initial_bytes", "window_summary_negative_running_time", "window_summary_initial_vfr_max",
+             "summary_missing_eos", "summary_empty"}
 assert set(cases) == required, (set(cases), required)
 assert not Path(errors).read_text().strip(), Path(errors).read_text()[:8000]
 
@@ -95,6 +111,30 @@ for name, case in cases.items():
     owners = {item["id"]: item for item in case["attachments"]}
     assert len(owners) == len(case["attachments"]), name
     assert all(item["active"] is False for item in owners.values()), name
+    for owner in owners.values():
+        summary = owner["pts_summary"]
+        assert summary["version"] == 1 and summary["scope"] == "whole-attachment-observation", name
+        assert summary["buffers"] == owner["buffers"], name
+        if not summary["counters_saturated"]:
+            assert summary["covered"] + summary["unqualified_buffers"] == owner["buffers"], name
+        assert summary["unknown_pts"] == owner["missing_pts"], name
+        if summary["first_violation"] is not None:
+            first = summary["first_violation"]
+            assert set(first) == {"reason", "order", "ordinal", "pts", "expected_pts"}, name
+            assert first["reason"] and 0 < first["order"] <= case["observed"], name
+            assert 0 <= first["ordinal"] <= owner["buffers"], name
+        if summary["qualified"]:
+            assert summary["covered"] == owner["buffers"] > 0 and summary["unqualified_buffers"] == 0, name
+            assert type(summary["first_pts"]) is int and type(summary["last_pts"]) is int, name
+            assert summary["period_ns"] in (20_000_000, 40_000_000), name
+            assert summary["first_violation"] is None and not summary["arithmetic_overflow"], name
+            assert not summary["counters_saturated"] and not case["counters_saturated"], name
+            assert summary["epochs"] == summary["segment_events"] == owner["stream_generation"] == 1, name
+            assert owner["eos_count"] == 1 and owner["buffer_lists"] == 0, name
+            for field in ("unknown_pts", "unknown_duration", "invalid_duration", "duplicate_events",
+                          "reverse_events", "off_grid_events", "gap_events", "gap_steps", "caps_changes",
+                          "flush_events", "seek_requests"):
+                assert summary[field] == 0, (name, field, summary)
     assert case["retention"] == ("window" if name.startswith("window_") else "first"), name
     if case["retention"] == "window":
         window = case["window"]
@@ -194,6 +234,8 @@ for name in ("buffer_list", "custom_buffer_list", "truncated_buffer_list"):
         assert case["dropped"] > 0
     for stage in ("decoder", "sink"):
         owner = attachment(case, stage)
+        assert not owner["pts_summary"]["qualified"]
+        assert owner["pts_summary"]["first_violation"]["reason"] == "buffer-list"
         individual = 3 if name != "custom_buffer_list" and stage == "sink" else 0
         assert owner["buffers"] == individual
         assert owner["buffer_lists"] == 1 and owner["list_items"] == 3
@@ -330,6 +372,17 @@ for name, dropped in (("window_output", False), ("window_output_drop", True), ("
     assert attachment(case, "output-scale")["buffers"] == attachment(case, "sink")["buffers"] == (199 if dropped else 200)
     assert all(a["eos_count"] == 1 for a in case["attachments"])
     assert case["retained"] == case["capacity"] == 64 and case["truncated"]
+    for stage in ("output-pack", "output-scale", "sink"):
+        summary = attachment(case, stage)["pts_summary"]
+        affected = dropped and stage != "output-pack"
+        assert summary["qualified"] == (not affected), (name, stage, summary)
+        assert summary["buffers"] == summary["covered"] == (199 if affected else 200)
+        assert (summary["first_pts"], summary["last_pts"], summary["period_ns"]) == (0, 3_980_000_000, 20_000_000)
+        assert summary["gap_events"] == summary["gap_steps"] == int(affected)
+        if affected:
+            first = summary["first_violation"]
+            assert first["reason"] == "gap" and first["ordinal"] == 150
+            assert (first["pts"], first["expected_pts"]) == (3_000_000_000, 2_980_000_000)
     if name == "first_output_drop":
         assert all(r["pts"] < 2_980_000_000 for r in buffers(case))
         continue
@@ -363,8 +416,140 @@ assert not any(r["kind"] == "buffer-list-item" for r in listed["records"])
 for stage in ("decoder", "sink"):
     owner = attachment(listed, stage)
     assert owner["buffer_lists"] == 1 and owner["list_items"] == 3 and owner["buffer_list_ambiguity"]
+    assert not owner["pts_summary"]["qualified"]
 
-print("Stage trace %s: eleven native groups, 28 structured snapshots, "
-      "PTS/segment/cap/lifetime, fields, pack/scale and late-loss window controls PASS" % variant)
+def pts_summary(name):
+    return attachment(cases[name], "output-scale")["pts_summary"]
+
+for name in summary_clean:
+    case = cases[name]
+    summary = pts_summary(name)
+    period = 20_000_000 if name.endswith("_50") else 40_000_000
+    assert case["capacity"] == case["retained"] == 4 and case["truncated"], name
+    assert summary["qualified"] and summary["buffers"] == summary["covered"] == 20, name
+    assert summary["period_ns"] == period and summary["first_pts"] == 0, name
+    assert summary["last_pts"] == 19 * period and summary["caps_changes"] == 0, name
+    if name.startswith("summary_first_"):
+        # CAPS and SEGMENT arrived after every detail slot was consumed.
+        assert all(r["kind"] in ("attach", "control") for r in case["records"]), name
+    elif "frozen" in name:
+        assert case["window"]["complete"] and case["window"]["unretained_after_window"] > 10, name
+        assert max(r["pts"] for r in buffers(case)) == 4 * period < summary["last_pts"], name
+    else:
+        assert case["window"]["overwritten"] > 20 and not case["window"]["triggered"], name
+
+# Each sequence contains one early defect and a long otherwise regular suffix.
+# Inspect the independently chosen stimulus, not a replay of summary arithmetic.
+defect_expectations = {
+    "gap": ("gap", "gap_events", 1),
+    "duplicate": ("duplicate", "duplicate_events", 1),
+    "reverse": ("reverse", "reverse_events", 1),
+    "off_grid": ("off-grid", "off_grid_events", 17),
+    "unknown_pts": ("unknown-pts", "unknown_pts", 1),
+    "unknown_duration": ("unknown-duration", "unknown_duration", 1),
+    "duration": ("invalid-duration", "invalid_duration", 1),
+    "changed_caps": ("caps-changed", "caps_changes", 1),
+    "unknown_caps": ("caps-changed", "caps_changes", 1),
+    "vfr_caps": ("caps-changed", "caps_changes", 1),
+    "segment": ("segment-changed", "segment_events", 2),
+    "rate": ("segment-changed", "segment_events", 2),
+    "applied_rate": ("segment-changed", "segment_events", 2),
+    "bytes_segment": ("segment-changed", "segment_events", 2),
+    "stream": ("stream-changed", "epochs", 3),
+    "flush": ("flush", "flush_events", 2),
+    "seek": ("seek-request", "seek_requests", 1),
+    "buffer_gap": ("buffer-gap", "epochs", 1),
+    "discont": ("buffer-discont", "epochs", 2),
+}
+assert set(defect_expectations) == summary_defects
+for defect, (reason, field, value) in defect_expectations.items():
+    name = "window_summary_" + defect
+    case, summary = cases[name], pts_summary(name)
+    assert not summary["qualified"] and summary["buffers"] == 20, name
+    assert summary[field] == value and summary["first_violation"]["reason"] == reason, (name, summary)
+    assert summary["first_violation"]["order"] < case["records"][0]["order"], name
+    assert summary["first_pts"] == 0, name
+    if defect in ("unknown_pts", "unknown_duration", "duration"):
+        assert summary["covered"] == 19 and summary["unqualified_buffers"] == 1, name
+assert pts_summary("window_summary_gap")["gap_steps"] == 1
+assert pts_summary("window_summary_duplicate")["gap_events"] == 0
+assert pts_summary("window_summary_reverse")["gap_events"] == 0
+assert pts_summary("window_summary_off_grid")["gap_steps"] == 0
+
+case = cases["window_summary_frozen_caps"]
+summary = pts_summary("window_summary_frozen_caps")
+assert case["window"]["complete"] and not summary["qualified"]
+assert summary["caps_changes"] == 1 and summary["period_ns"] == 20_000_000
+assert summary["buffers"] == summary["covered"] == 22 and summary["last_pts"] == 460_000_000
+assert summary["first_violation"]["reason"] == "caps-changed"
+assert summary["first_violation"]["order"] > case["records"][-1]["order"]
+assert not any(r["kind"] == "caps" for r in case["records"])
+
+summary = pts_summary("window_summary_overflow")
+assert not summary["qualified"] and summary["arithmetic_overflow"]
+assert summary["first_violation"]["reason"] == "arithmetic-overflow"
+assert summary["first_pts"] == 2**64 - 1 - 80_000_000
+assert summary["last_pts"] == 2**64 - 1 - 40_000_000
+assert summary["gap_events"] == summary["reverse_events"] == 0
+summary = pts_summary("window_summary_saturation")
+assert not summary["qualified"] and summary["counters_saturated"]
+assert cases["window_summary_saturation"]["counters_saturated"]
+assert summary["gap_steps"] == 2**64 - 1 and summary["gap_events"] == 1
+assert summary["first_violation"]["reason"] == "counter-saturation"
+
+for suffix in ("unknown_caps", "vfr", "vfr_max", "rate", "applied_rate", "bytes"):
+    name = "window_summary_initial_" + suffix
+    summary = pts_summary(name)
+    assert not summary["qualified"] and summary["buffers"] == summary["unqualified_buffers"] == 20, name
+    assert summary["covered"] == 0 and summary["epochs"] == summary["segment_events"] == 1, name
+    reason = "caps-unsupported" if suffix in ("unknown_caps", "vfr", "vfr_max") else "segment-unsupported"
+    assert summary["first_violation"]["reason"] == reason, name
+    assert summary["first_violation"]["order"] < cases[name]["records"][0]["order"], name
+summary = pts_summary("summary_missing_eos")
+assert not summary["qualified"] and summary["buffers"] == summary["covered"] == 1
+assert summary["first_violation"] is None
+summary = pts_summary("summary_empty")
+assert not summary["qualified"] and summary["buffers"] == summary["covered"] == 0
+assert summary["first_pts"] is summary["last_pts"] is None
+summary = pts_summary("window_summary_negative_running_time")
+assert not summary["qualified"] and summary["covered"] == 0 and summary["unqualified_buffers"] == 20
+assert summary["first_violation"]["reason"] == "context-unknown"
+
+# Feed the real native snapshots to the standalone reader. Every expectation
+# below comes from the chosen test stimulus, independently of retained records
+# and summary fields. Native-only explicitly omits Player completion evidence.
+def audit_native(name, goals, status):
+    report = auditor.audit(cases[name], {"schema": 1, "attachments": goals}, require_player=False)
+    assert report["status"] == status, (name, report)
+
+def goal(token, count=20, period=40_000_000, first=0, stage="output-scale"):
+    return {"stage": stage, "token": token, "buffers": count,
+            "first_pts": first, "period_ns": period}
+
+for name, period in (("summary_first_25", 40_000_000), ("summary_first_50", 20_000_000),
+                     ("window_summary_25", 40_000_000), ("window_summary_50", 20_000_000),
+                     ("window_summary_frozen_25", 40_000_000), ("window_summary_frozen_50", 20_000_000)):
+    audit_native(name, [goal(120, period=period)], "PASS")
+for defect in summary_defects:
+    audit_native("window_summary_" + defect, [goal(121)], "FAIL")
+audit_native("window_summary_frozen_caps", [goal(122, count=22)], "FAIL")
+audit_native("window_summary_overflow", [goal(123, count=2, first=2**64 - 1 - 80_000_000)], "FAIL")
+audit_native("window_summary_saturation", [goal(124, count=2)], "FAIL")
+for suffix in ("unknown_caps", "vfr", "vfr_max", "rate", "applied_rate", "bytes"):
+    audit_native("window_summary_initial_" + suffix, [goal(125)], "FAIL")
+audit_native("window_summary_negative_running_time", [goal(125)], "FAIL")
+audit_native("summary_missing_eos", [goal(126, count=1)], "FAIL")
+audit_native("summary_empty", [goal(127, count=1)], "FAIL")
+for name in ("buffer_list", "custom_buffer_list", "truncated_buffer_list", "window_buffer_list"):
+    audit_native(name, [goal(54, count=3, stage="decoder"), goal(55, count=3, stage="sink")], "FAIL")
+output_goals = [goal(token, count=200, period=20_000_000, stage=stage)
+                for token, stage in ((101, "output-pack"), (102, "output-scale"), (103, "sink"))]
+audit_native("window_output", output_goals, "PASS")
+audit_native("window_output_drop", output_goals, "FAIL")
+audit_native("first_output_drop", output_goals, "FAIL")
+
+print("Stage trace %s: fourteen native groups, %d structured snapshots, "
+      "PTS/segment/cap/lifetime, fields, pack/scale, window and whole-run summary controls PASS" % (variant, len(cases)))
 PY
 done
+python3 -B "$repo_dir/tests/stage-pts-audit.test.py"

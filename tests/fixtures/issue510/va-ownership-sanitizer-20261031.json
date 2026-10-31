@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "cases": [
+    {
+      "case": "compiler-failure",
+      "exit": 2,
+      "scratch_empty": true,
+      "normal_files_unchanged": true
+    },
+    {
+      "case": "pkg-config-failure",
+      "exit": 2,
+      "scratch_empty": true,
+      "normal_files_unchanged": true
+    },
+    {
+      "case": "legacy-rejection",
+      "exit": 2,
+      "scratch_empty": true,
+      "normal_files_unchanged": true
+    },
+    {
+      "case": "test-exit37",
+      "exit": 2,
+      "scratch_empty": true,
+      "normal_files_unchanged": true
+    }
+  ],
+  "before": {
+    "/home/mache/.cache/crystalhd-va-ownership-sanitizer-20261031/filters/vaapi/.crystalhd-cpu-config": {
+      "sha256": "eadf2a322211ddf34da0553880d5282815cd21d5ba12912b08228183d8b83c7d",
+      "mtime_ns": 1793417406322921636
+    },
+    "/home/mache/.cache/crystalhd-va-ownership-sanitizer-20261031/filters/vaapi/crystalhd_drv_video.so": {
+      "sha256": "147c142e1bb6a527fcd5826651f8bfcee6e6d9667b01bf3fa9f548493e630c48",
+      "mtime_ns": 1793417448231243475
+    },
+    "/home/mache/.cache/crystalhd-va-ownership-sanitizer-20261031/filters/vaapi/vaapi-buffer-handles-test": null,
+    "/home/mache/.cache/crystalhd-va-ownership-sanitizer-20261031/linux_lib/libcrystalhd/libcrystalhd.so.3.6": {
+      "sha256": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+      "mtime_ns": 1793416308670816618
+    }
+  },
+  "after": {
+    "/home/mache/.cache/crystalhd-va-ownership-sanitizer-20261031/filters/vaapi/.crystalhd-cpu-config": {
+      "sha256": "eadf2a322211ddf34da0553880d5282815cd21d5ba12912b08228183d8b83c7d",
+      "mtime_ns": 1793417406322921636
+    },
+    "/home/mache/.cache/crystalhd-va-ownership-sanitizer-20261031/filters/vaapi/crystalhd_drv_video.so": {
+      "sha256": "147c142e1bb6a527fcd5826651f8bfcee6e6d9667b01bf3fa9f548493e630c48",
+      "mtime_ns": 1793417448231243475
+    },
+    "/home/mache/.cache/crystalhd-va-ownership-sanitizer-20261031/filters/vaapi/vaapi-buffer-handles-test": null,
+    "/home/mache/.cache/crystalhd-va-ownership-sanitizer-20261031/linux_lib/libcrystalhd/libcrystalhd.so.3.6": {
+      "sha256": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+      "mtime_ns": 1793416308670816618
+    }
+  },
+  "result": "PASS",
+  "positive_sanitizer_result": "PASS0failed_checks",
+  "positive_normal_outputs_unchanged": true,
+  "date": "2026-10-31",
+  "selected_source_revision": "6171192",
+  "scope": "Real VA handles regression and included callbacks; ASan/UBSan/LSan. No DIL decode or wholeVA sanitizer claim.",
+  "positive_log_sha256": "2d07e72688bc4688ea87b4eb4bc653b71df3a7bb159a46890ab41f7346add7bc"
+}

@@ -983,6 +983,204 @@ test_window_output_loss(void)
   g_ptr_array_unref(window_drop); g_ptr_array_unref(first_drop);
 }
 
+/* Ring4 deliberately discards all headers in first-N mode and all early
+ * defects in rolling mode. These drive real pad probes, not summary helpers. */
+static void
+summary_headers(PadFixture *f, gboolean fifty)
+{
+  GstCaps *caps = gst_caps_from_string(fifty ? OUTPUT_CAPS : INPUT_CAPS);
+  g_assert_true(gst_pad_push_event(f->src, gst_event_new_stream_start("summary-test")));
+  g_assert_true(gst_pad_push_event(f->src, gst_event_new_caps(caps)));
+  push_segment(f, GST_FORMAT_TIME, 0, 0, 0, 0xa01);
+  gst_caps_unref(caps);
+}
+
+static void
+test_pts_summary_retention(void)
+{
+  const gchar *names[3][2] = {
+    {"summary_first_25", "summary_first_50"},
+    {"window_summary_25", "window_summary_50"},
+    {"window_summary_frozen_25", "window_summary_frozen_50"}
+  };
+  for (guint mode = 0; mode < 3; mode++) {
+    for (guint fifty = 0; fifty < 2; fifty++) {
+      PadFixture f;
+      gboolean accepted = FALSE;
+      GstClockTime period = (fifty ? 20 : 40) * GST_MSECOND;
+      fixture_init(&f, 4);
+      g_object_set(f.helper, "window", mode != 0, NULL);
+      g_assert_cmpint(attach(f.helper, f.src, "output-scale", 120), ==, 1);
+      for (guint n = 0; n < 6; n++) {
+        g_signal_emit_by_name(f.helper, "control", "pause", (guint64) n, &accepted);
+        g_assert_true(accepted);
+      }
+      summary_headers(&f, fifty);
+      for (guint n = 0; n < 20; n++) {
+        push_buffer(&f, n * period, GST_CLOCK_TIME_NONE, period, 0);
+        if (mode == 2 && n == 3) g_assert_true(trigger(f.helper, 0xa02));
+        if (n == 5) {
+          GstCaps *caps = gst_caps_from_string(fifty ? OUTPUT_CAPS : INPUT_CAPS);
+          g_assert_true(gst_pad_push_event(f.src, gst_event_new_caps(caps)));
+          gst_caps_unref(caps);
+        }
+      }
+      finish(&f, names[mode][fifty]);
+      fixture_clear(&f);
+    }
+  }
+}
+
+static void
+test_pts_summary_defects(void)
+{
+  const gchar *defects[] = {
+    "gap", "duplicate", "reverse", "off_grid", "unknown_pts", "unknown_duration",
+    "duration", "changed_caps", "unknown_caps", "vfr_caps", "segment", "rate",
+    "applied_rate", "bytes_segment", "stream", "flush", "seek", "buffer_gap", "discont"
+  };
+  for (guint defect = 0; defect < G_N_ELEMENTS(defects); defect++) {
+    PadFixture f;
+    const GstClockTime period = 40 * GST_MSECOND;
+    gchar *name = g_strconcat("window_summary_", defects[defect], NULL);
+    fixture_init(&f, 4);
+    g_object_set(f.helper, "window", TRUE, NULL);
+    g_assert_cmpint(attach(f.helper, f.src, "output-scale", 121), ==, 1);
+    summary_headers(&f, FALSE);
+    for (guint n = 0; n < 20; n++) {
+      GstClockTime pts = n * period, duration = period;
+      guint flags = 0;
+      if (defect == 0 && n >= 3) pts += period;
+      if (defect == 1 && n >= 3) pts -= period;
+      if (defect == 2 && n >= 3) pts -= 2 * period;
+      if (defect == 3 && n >= 3) pts += 1;
+      if (n == 3) {
+        if (defect == 4) pts = GST_CLOCK_TIME_NONE;
+        if (defect == 5) duration = GST_CLOCK_TIME_NONE;
+        if (defect == 6) duration = period / 2;
+        if (defect == 7) set_changed_caps(&f);
+        if (defect == 8 || defect == 9) {
+          GstCaps *caps = gst_caps_from_string(defect == 8 ? "application/x-summary-test" :
+              "video/x-raw,format=YUY2,width=16,height=8,framerate=0/1");
+          g_assert_true(gst_pad_push_event(f.src, gst_event_new_caps(caps)));
+          gst_caps_unref(caps);
+        }
+        if (defect >= 10 && defect <= 13) {
+          GstSegment segment;
+          gst_segment_init(&segment, defect == 13 ? GST_FORMAT_BYTES : GST_FORMAT_TIME);
+          if (defect == 11) segment.rate = 2.0;
+          if (defect == 12) segment.applied_rate = 0.5;
+          g_assert_true(gst_pad_push_event(f.src, gst_event_new_segment(&segment)));
+        }
+        if (defect == 14) summary_headers(&f, FALSE);
+        if (defect == 15) {
+          g_assert_true(gst_pad_push_event(f.src, gst_event_new_flush_start()));
+          g_assert_true(gst_pad_push_event(f.src, gst_event_new_flush_stop(TRUE)));
+          push_segment(&f, GST_FORMAT_TIME, 0, 0, 0, 0xa03);
+        }
+        if (defect == 16) {
+          gboolean accepted = FALSE;
+          g_signal_emit_by_name(f.helper, "control", "seek-request", (guint64) 0, &accepted);
+          g_assert_true(accepted);
+        }
+        if (defect == 17) flags = GST_BUFFER_FLAG_GAP;
+        if (defect == 18) flags = GST_BUFFER_FLAG_DISCONT;
+      }
+      push_buffer(&f, pts, GST_CLOCK_TIME_NONE, duration, flags);
+    }
+    finish(&f, name);
+    fixture_clear(&f);
+    g_free(name);
+  }
+
+  /* Changed CAPS must invalidate the summary after post-trigger storage has
+   * frozen; the retained details deliberately still show only the old CAPS. */
+  PadFixture f;
+  fixture_init(&f, 4);
+  g_object_set(f.helper, "window", TRUE, NULL);
+  g_assert_cmpint(attach(f.helper, f.src, "output-scale", 122), ==, 1);
+  summary_headers(&f, FALSE);
+  push_buffer(&f, 0, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  g_assert_true(trigger(f.helper, 0xa04));
+  push_buffer(&f, 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  set_changed_caps(&f);
+  for (guint n = 4; n < 24; n++)
+    push_buffer(&f, n * 20 * GST_MSECOND, GST_CLOCK_TIME_NONE, 20 * GST_MSECOND, 0);
+  finish(&f, "window_summary_frozen_caps");
+  fixture_clear(&f);
+}
+
+static void
+test_pts_summary_limits(void)
+{
+  PadFixture f;
+  fixture_init(&f, 4);
+  g_object_set(f.helper, "window", TRUE, NULL);
+  g_assert_cmpint(attach(f.helper, f.src, "output-scale", 123), ==, 1);
+  summary_headers(&f, FALSE);
+  push_buffer(&f, GST_CLOCK_TIME_NONE - 80 * GST_MSECOND,
+      GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  push_buffer(&f, GST_CLOCK_TIME_NONE - 40 * GST_MSECOND,
+      GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  finish(&f, "window_summary_overflow");
+  fixture_clear(&f);
+
+  fixture_init(&f, 4);
+  g_object_set(f.helper, "window", TRUE, NULL);
+  g_assert_cmpint(attach(f.helper, f.src, "output-scale", 124), ==, 1);
+  summary_headers(&f, FALSE);
+  push_buffer(&f, 0, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  /* Seed only a counter near its limit; the real next probe must saturate it.
+   * Production gets no counter override API or special compilation path. */
+  TraceState *state = ((GstCrystalHdStageTrace *) f.helper)->state;
+  g_mutex_lock(&state->lock);
+  state->attachments[0].pts_summary.gap_steps = G_MAXUINT64;
+  g_mutex_unlock(&state->lock);
+  push_buffer(&f, 80 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  finish(&f, "window_summary_saturation");
+  fixture_clear(&f);
+
+  const gchar *initial_names[] = {"window_summary_initial_unknown_caps",
+    "window_summary_initial_vfr", "window_summary_initial_rate",
+    "window_summary_initial_applied_rate", "window_summary_initial_bytes",
+    "window_summary_negative_running_time", "window_summary_initial_vfr_max"};
+  for (guint n = 0; n < G_N_ELEMENTS(initial_names); n++) {
+    GstSegment segment;
+    GstCaps *caps = gst_caps_from_string(n == 0 ? "application/x-summary-test" : n == 1 ?
+        "video/x-raw,format=YUY2,width=16,height=8,framerate=0/1" : n == 6 ?
+        "video/x-raw,format=YUY2,width=16,height=8,framerate=0/1,max-framerate=50/1" : INPUT_CAPS);
+    fixture_init(&f, 4);
+    g_object_set(f.helper, "window", TRUE, NULL);
+    g_assert_cmpint(attach(f.helper, f.src, "output-scale", 125), ==, 1);
+    g_assert_true(gst_pad_push_event(f.src, gst_event_new_stream_start("summary-initial")));
+    g_assert_true(gst_pad_push_event(f.src, gst_event_new_caps(caps)));
+    gst_caps_unref(caps);
+    gst_segment_init(&segment, n == 4 ? GST_FORMAT_BYTES : GST_FORMAT_TIME);
+    if (n == 2) segment.rate = 2.0;
+    if (n == 3) segment.applied_rate = 0.5;
+    if (n == 5) segment.start = GST_SECOND;
+    g_assert_true(gst_pad_push_event(f.src, gst_event_new_segment(&segment)));
+    for (guint k = 0; k < 20; k++)
+      push_buffer(&f, k * 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+    finish(&f, initial_names[n]);
+    fixture_clear(&f);
+  }
+
+  fixture_init(&f, 4);
+  g_assert_cmpint(attach(f.helper, f.src, "output-scale", 126), ==, 1);
+  summary_headers(&f, FALSE);
+  push_buffer(&f, 0, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  g_signal_emit_by_name(f.helper, "stop");
+  emit_case(f.helper, "summary_missing_eos");
+  fixture_clear(&f);
+
+  fixture_init(&f, 4);
+  g_assert_cmpint(attach(f.helper, f.src, "output-scale", 127), ==, 1);
+  summary_headers(&f, FALSE);
+  finish(&f, "summary_empty");
+  fixture_clear(&f);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1010,6 +1208,9 @@ main(int argc, char **argv)
   g_test_add_func("/stage-trace/output-pack-scale", test_output_stages);
   g_test_add_func("/stage-trace/window-context", test_window_context);
   g_test_add_func("/stage-trace/window-output-loss", test_window_output_loss);
+  g_test_add_func("/stage-trace/whole-run-pts-retention", test_pts_summary_retention);
+  g_test_add_func("/stage-trace/whole-run-pts-defects", test_pts_summary_defects);
+  g_test_add_func("/stage-trace/whole-run-pts-limits", test_pts_summary_limits);
   gint result = g_test_run();
   g_cond_clear(&clock_gate.cond);
   g_mutex_clear(&clock_gate.lock);

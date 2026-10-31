@@ -34,11 +34,17 @@ the adaptor's supported color-space attribute.
 Unspecified colorimetry keeps GStreamer's ordinary interpretation rather than
 forcing a BT.601 conversion during format negotiation. Explicit unsupported
 matrix/range requests fail during caps admission, before image allocation.
-A caller can supply a window through `GstVideoOverlay` **before** starting.
+A caller can supply a window through `GstVideoOverlay` before starting.
 Exposure events, resize and `GstVideoOverlay.expose()` redraw the retained
 last picture while paused, including after EOS. This preserves its pixels
-and PTS and does not count as a new video frame. Replacing a live window is
-not implemented.
+and PTS and does not count as a new video frame. A live handle change accepts
+a mapped InputOutput window with the current window's screen, depth and visual. It
+validates the target, waits for old-window SHM completion within the existing
+deadline, then retains the pool, GC, source epoch and monotonic image
+generations while repainting the retained source on the new window. The caller
+continues owning its external windows. An invalid target posts a GStreamer
+warning and keeps the current window; changing an external live window to
+handle zero is rejected. A repeated current handle is idempotent.
 
 The renderer holds one last source buffer independently of BaseSink's
 `enable-last-sample` setting. For negotiated pool memory, both SHM completion
@@ -80,6 +86,14 @@ stop-time snapshot; later quarantine cleanup is not a live snapshot.
 make -C filters/gst/xv-output check
 make -C filters/gst/xv-output check-x11
 ```
+
+`/xv/x11/live-window-replacement` owns two mapped windows and delays a real
+SHM completion while replacement waits. It checks the old request identity,
+source IDs/PTS/pixels, new-window pixels, later pool submissions and balanced
+image/context ownership, including rejection of missing and unmapped targets.
+This decoder-free window control requires at least a 640x240 local screen.
+Port contention and system X-server interruption remain separate acceptance
+cases.
 
 The [current qualification](../../../HARDWARE-2026-09-13.md#development-per-instance-xv-output--2026-10-26)
 records complete bounded Player controls and a timestamped MP4 error/reopen

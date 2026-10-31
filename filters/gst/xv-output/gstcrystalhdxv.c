@@ -53,10 +53,11 @@ struct XvContext {
   GMutex lock;
   GCond changed;
   xcb_connection_t *connection;
-  xcb_window_t window;
+  xcb_window_t window, root;
+  xcb_visualid_t visual;
   xcb_gcontext_t gc;
   xcb_xv_port_t port;
-  guint width, height, opcode, completion_type;
+  guint width, height, depth, opcode, completion_type;
   xcb_atom_t delete_atom, protocols_atom, colorspace_atom;
   gint original_colorspace, active_colorspace;
   gboolean own_window, failed, closed, detached, quarantined;
@@ -70,7 +71,7 @@ struct XvContext {
   GstVideoInfo last_info;
   guint64 last_epoch, video_submitted, redraw_submitted;
   guint redraw_suspended;
-  gboolean redraw_pending, borders_dirty;
+  gboolean redraw_pending, borders_dirty, window_changing;
   guint image_count, image_bytes, pending;
   guint64 submitted, acknowledged, terminal, copied_bytes, generation, epoch;
   guint64 allocated, freed, stale, pool_submitted;
@@ -121,7 +122,7 @@ static gboolean context_error(XvContext *c, const char *reason)
   wake_context(c);
   return FALSE;
 }
-static gpointer reply_locked(XvContext *c, guint sequence)
+static gpointer checked_reply_locked(XvContext *c, guint sequence, gboolean target_probe)
 {
   gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US;
   if (!c->connection || xcb_flush(c->connection) <= 0) {
@@ -132,8 +133,12 @@ static gpointer reply_locked(XvContext *c, guint sequence)
     xcb_generic_error_t *error = NULL;
     if (xcb_poll_for_reply(c->connection, sequence, &reply, &error)) {
       if (error || !reply) {
+        gboolean rejected = error != NULL;
         free(error); free(reply);
-        context_error(c, "X11 request was rejected"); return NULL;
+        /* A bad caller-supplied replacement drawable must not poison the
+         * healthy old output. Transport/timeouts still use normal teardown. */
+        if (!target_probe || !rejected) context_error(c, "X11 request was rejected");
+        return NULL;
       }
       return reply;
     }
@@ -155,6 +160,10 @@ static gpointer reply_locked(XvContext *c, guint sequence)
       ssize_t ignored = read(c->wake_fd, &value, sizeof(value)); (void)ignored;
     }
   }
+}
+static gpointer reply_locked(XvContext *c, guint sequence)
+{
+  return checked_reply_locked(c, sequence, FALSE);
 }
 static xcb_atom_t atom_locked(XvContext *c, const char *name)
 {
@@ -179,6 +188,7 @@ static gboolean open_locked(XvContext *c, const char *name, xcb_window_t window)
   for (int n = 0; n < screen_number && screens.rem; n++) xcb_screen_next(&screens);
   if (!screens.rem) return context_error(c, "X11 screen is unavailable");
   xcb_screen_t *screen = screens.data;
+  c->root = screen->root; c->visual = screen->root_visual; c->depth = screen->root_depth;
   xcb_query_extension_reply_t *extension = reply_locked(c,
       xcb_query_extension(c->connection, 7, "MIT-SHM").sequence);
   if (!extension) return FALSE;
@@ -263,7 +273,12 @@ static gboolean open_locked(XvContext *c, const char *name, xcb_window_t window)
     xcb_get_geometry_reply_t *geometry = reply_locked(c,
         xcb_get_geometry(c->connection, c->window).sequence);
     if (!geometry) return FALSE;
-    c->width = geometry->width; c->height = geometry->height; free(geometry);
+    c->width = geometry->width; c->height = geometry->height;
+    c->root = geometry->root; c->depth = geometry->depth; free(geometry);
+    xcb_get_window_attributes_reply_t *attributes = reply_locked(c,
+        xcb_get_window_attributes(c->connection, c->window).sequence);
+    if (!attributes) return FALSE;
+    c->visual = attributes->visual; free(attributes);
   }
   c->gc = xcb_generate_id(c->connection);
   xcb_create_gc(c->connection, c->gc, c->window, 0, NULL);
@@ -589,6 +604,13 @@ static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
   gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US;
   XvFlight *f = NULL; guint index = 0;
   while (!c->failed && !g_atomic_int_get(&c->flushing) && !g_atomic_int_get(&c->stopping)) {
+    if (c->window_changing) {
+      if (redraw) break;
+      if (!g_cond_wait_until(&c->changed, &c->lock, end)) {
+        context_error(c, "Window replacement exceeded its completion deadline"); break;
+      }
+      continue;
+    }
     for (index = 0; index < XV_DEPTH; index++) {
       XvMemory *copy = c->copies[index];
       if (!c->flights[index].memory && (!redraw || direct ||
@@ -920,13 +942,92 @@ static gboolean sink_event(GstBaseSink *base, GstEvent *event)
   }
   return GST_BASE_SINK_CLASS(gst_crystalhd_xv_parent_class)->event(base, event);
 }
+static gboolean target_geometry_locked(XvContext *c, xcb_window_t window,
+                                        guint *width, guint *height)
+{
+  xcb_get_geometry_reply_t *geometry = checked_reply_locked(c,
+      xcb_get_geometry(c->connection, window).sequence, TRUE);
+  if (!geometry) return FALSE;
+  gboolean valid = geometry->root == c->root && geometry->depth == c->depth &&
+      geometry->width && geometry->height;
+  *width = geometry->width; *height = geometry->height; free(geometry);
+  if (!valid) return FALSE;
+  xcb_get_window_attributes_reply_t *attributes = checked_reply_locked(c,
+      xcb_get_window_attributes(c->connection, window).sequence, TRUE);
+  if (!attributes) return FALSE;
+  valid = attributes->_class == XCB_WINDOW_CLASS_INPUT_OUTPUT &&
+      attributes->map_state == XCB_MAP_STATE_VIEWABLE && attributes->visual == c->visual;
+  free(attributes); return valid;
+}
+/* Checked void errors stay out of the event reader's fatal protocol-error lane.
+ * The preceding bounded reply proves the server processed each cookie, so
+ * request_check cannot introduce another unbounded server wait here. */
+static gboolean checked_void_result_locked(XvContext *c, xcb_void_cookie_t cookie)
+{
+  xcb_generic_error_t *error = xcb_request_check(c->connection, cookie);
+  gboolean ok = error == NULL; free(error); return ok;
+}
+static gboolean replace_window_locked(XvContext *c, xcb_window_t window)
+{
+  guint width = 0, height = 0;
+  if (c->failed || c->closed || !c->connection || g_atomic_int_get(&c->stopping) ||
+      g_atomic_int_get(&c->flushing) || !target_geometry_locked(c, window, &width, &height))
+    return FALSE;
+  c->window_changing = TRUE; c->redraw_suspended++;
+  g_cond_broadcast(&c->changed);
+  /* The completion matcher still sees the old drawable until pending==0.
+   * Normal video submissions wait without changing their source epoch. */
+  gboolean ok = drain_locked(c) && target_geometry_locked(c, window, &width, &height);
+  if (ok) {
+    guint32 mask = XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_EXPOSURE;
+    xcb_void_cookie_t selection = xcb_change_window_attributes_checked(
+        c->connection, window, XCB_CW_EVENT_MASK, &mask);
+    ok = barrier_locked(c);
+    if (ok) ok = checked_void_result_locked(c, selection);
+  }
+  if (ok) {
+    xcb_window_t previous = c->window;
+    gboolean owned = c->own_window;
+    /* Same screen/depth makes the existing GC compatible with the new
+     * drawable; no SHM image, pool or graphics-context identity is replaced. */
+    c->window = window; c->own_window = FALSE;
+    c->width = width; c->height = height;
+    c->redraw_pending = c->borders_dirty = TRUE;
+    xcb_void_cookie_t retire;
+    if (owned) retire = xcb_destroy_window_checked(c->connection, previous);
+    else {
+      guint32 mask = 0;
+      retire = xcb_change_window_attributes_checked(c->connection, previous, XCB_CW_EVENT_MASK, &mask);
+    }
+    /* A caller may independently destroy its former window after handoff. */
+    if (barrier_locked(c)) checked_void_result_locked(c, retire);
+    else ok = FALSE;
+  }
+  c->redraw_suspended--; c->window_changing = FALSE;
+  g_cond_broadcast(&c->changed); wake_context(c);
+  return ok;
+}
 static void sink_set_window(GstVideoOverlay *overlay, guintptr window)
 {
   GstCrystalHdXv *s = XV_SINK(overlay);
   g_mutex_lock(&s->lock);
-  if (!s->context && window <= G_MAXUINT32) s->window = window;
-  else GST_WARNING_OBJECT(s, "Set the window handle before starting Xv output");
+  XvContext *c = s->context ? context_ref(s->context) : NULL;
+  gboolean ok = window <= G_MAXUINT32;
+  if (!c) {
+    if (ok) s->window = window;
+  } else if (ok && (window == c->window || (!window && c->own_window))) {
+    /* Repeated handles leave in-flight generations and completions alone. */
+  } else if (ok && window) {
+    g_mutex_lock(&c->lock);
+    ok = replace_window_locked(c, (xcb_window_t)window);
+    if (ok) s->window = window;
+    g_mutex_unlock(&c->lock);
+  } else ok = FALSE;
   g_mutex_unlock(&s->lock);
+  if (!ok)
+    GST_ELEMENT_WARNING(s, RESOURCE, SETTINGS,
+        ("Xv window replacement was rejected; a mapped same-screen window is required"), (NULL));
+  if (c) context_unref(c);
 }
 static void sink_expose(GstVideoOverlay *overlay)
 {

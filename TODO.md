@@ -19,77 +19,60 @@ scope to general full-rate FHD or hardware deinterlacing.
 
 ## Current priorities — 2026-10-31
 
-The optional FHD repair [#593](https://github.com/ahnhy1324/crystalhd/pull/593)
-is merged into the existing research branch `feat/gst-xv-output` at `7d1f589`.
-Its tree is identical to final source `6f7a514`, whose15/15 CI checks pass.
-[#532](https://github.com/ahnhy1324/crystalhd/pull/532) remains a draft research
-PR, with fresh CI for its new head tracked separately. Master remains `04fb465`;
-release support and the ordinary output policy are unchanged.
+#594 is merged into the experimental `feat/gst-xv-output` base at `9b85e41`.
+Its fresh parent CI passes15/15 on tested merge `6259ce9`, tree `6f3b605`.
+Master remains `04fb465`; releases/default output are unchanged. The current
+integration candidate combines the own-code work below. Its final combined
+hosted result must be recorded separately from earlier individual runs.
 
-1. **Validate a combined maintenance baseline.**
-   The separate integration candidate combines the research baseline with
-   [#586](https://github.com/ahnhy1324/crystalhd/pull/586)'s conservative kernel
-   selection and [#587](https://github.com/ahnhy1324/crystalhd/pull/587)'s own VA
-   handle-release allocation repair. Preserve their original RED/GREEN evidence
-   and require classifier/VA regression checks plus CI on this final combination.
-   Their previous individual green runs do not qualify a new combined head.
-2. **Keep packed-scaler sanitizers in hosted CI — #510.**
-   The isolated `check-sanitized` target builds both the optional shared plugin
-   and its CPU test. It requires ASan/UBSan and leak detection with no suppressions,
-   a loader limited to required plugins and no scanner subprocess. Preserve
-   ordinary build outputs and the shared CPU policy. The final integration PR
-   records the hosted result, separate from earlier individual runs. GStreamer1.28.2 must run
-   all36 stock pixel/metadata/stride/flush/EOS/restart comparisons;1.24 qualifies
-   explicit unsupported-version rejection only. Broader userspace lane splitting
-   remains a separate task after this bounded promotion.
-3. **Close the whole-output PTS diagnostic gap.**
-   The current actual run has the complete7500 native-picture PTS grid and
-   whole-stage counts, but output-pad PTS-set equality covers retained
-   [256.4,300)s only. Add epoch-aware constant-space PTS summaries independent
-   of ring eviction before claiming a whole-output census. CPU controls must
-   expose missing, duplicate, reversed and unknown PTS, including flush/segment
-   changes with a deliberately small ring. This is the next code candidate
-   after the sanitizer CI work; it is not yet implemented or qualified.
-4. **Continue unmodified-client acceptance — #445/#429/#436.**
-   Existing original-stock-Kodi progressive controls and source-content/PTS
-   checkpoints remain bounded evidence. Interlaced Bob, full crop and exact
-   per-object client/GPU returns remain open. Fix only demonstrated own-code
-   faults; a wait in an external library does not establish an external defect.
-5. **Keep broader hardware and experiment acceptance separate.**
-   #538 retains native picture/ownership follow-up except for its excluded heap
-   subtask below. #513 repeatability/endurance/window replacement/physical A/V,
-   #470/#477 paced and lifecycle checks, #539 clean-target packaging and public
-   distribution, and BCM70012/reporter Atom/native-i386 acceptance still require
-   their own evidence. Broader component CI lanes, extra frontend acceptance
-   and #92/#204/#529/#530 research follow the bounded correctness tasks above.
+- [x] Whole-attachment fixed25/50Hz PTS summaries and an independent expectation
+  reader:14 native groups/65 snapshots pass ordinary and ASan/UBSan/leaks,
+  reader9 and Player126 pass. The new actual300s original PCM/FHD run has7500
+  native originals and15000 DI/fused/sink observations covering the full PTS
+  grid,15000 renders/drop0, natural EOS, maximum68C, and all6 SHM images freed.
+  [Receipt](tests/fixtures/issue510/whole-pts-summary-20261031.json).
+- [x] Conservative first packed-only two-Ubuntu lane and fail-closed gate:
+  classifier30 and loader7 controls pass; #599 exercises both selected packed
+  jobs and final gate successfully with full userspace/kernel correctly skipped.
+  Other components retain conservative full validation.
+- [x] Selected real VA handle-ownership ASan/UBSan/leak target passes0failed
+  checks; four failure/cleanup controls pass and ordinary hashes/mtimes stay
+  unchanged. Broader VA/DIL sanitizers remain separate.
+- [x] Live mapped-window handoff in the opt-in own Xv sink: drain old SHM before
+  changing drawable, retain source/pool/GC identities, reject invalid targets.
+  All15 actual X11 groups pass ordinary and sanitizers. This does not qualify
+  Xv port replacement or restarting the user's X server.
+- [x] Original published Kodi progressive full-image checkpoints: all921600
+  pixels match at initial pause and seeks3s/1s (source ordinals9/90/30), RGB
+  error0, original App FFmpeg images unchanged, normal exit and retirement.
+  [Receipt](tests/fixtures/issue445/stock-full-gray-checkpoints-20261031.json).
+- [x] Original-stock TFF/BFF Bob EOF/reopen:each50 source bindings/100 distinct
+  VPP operations, vaapi-bob, natural end and clean close. Field pixels/parity/
+  chroma/outputPTS and per-object GPU return remain unqualified.
+- [x] Runtime manifest/provider/SONAME/interpreter preflight:17 controls and
+  actual retained package/Platform file inspection pass. This existing-host
+  files-only proof does not qualify a clean OS or public installer (#539).
+- [x] GUI catalogue extraction/check/install and accessible editable-label
+  relations:20 model/install tests,28 real GTK controls, private-bus recovery
+  and single-instance checks pass. Partial Korean translations remain fuzzy
+  and excluded from installation pending review (#400).
 
-Completed progress on this line of work:
-
-- [x] Optional current-Player Xv integration and independently qualified image
-  ownership/retirement, preserving default output and timing policy (#532).
-- [x] Original300s PCM/FHD50 repair on the explicit packed path (#593):7500
-  native pictures,15000 DI/fused/sink buffers and renders, zero BaseSink drops,
-  natural EOS and maximum69C under the original75C guard. All15001 requests
-  acknowledge through the six-image pool; normal close frees all six images.
-- [x] Independent actual-artifact replay82/82 and fresh final-source CI15/15.
-  [Receipt](tests/fixtures/issue513/packed-upscale-20261031.json) preserves old
-  failures and separates full native counts from retained output PTS records.
-- [x] Merge #593 into the experimental research base after user GO; its source
-  content is unchanged. This is not a master merge or support promotion.
-- [x] Prepare a clean local merge of #586 and #587 without reimplementing either
-  reviewed change; classifier20 and the VA release callback regression pass.
-- [x] Implement the isolated packed sanitizer target and loader fix. Local ASan/
-  UBSan/leaks pass36 comparisons; seven failure/isolation controls pass, including
-  compiler failure and test exit37. Normal image/stamp hashes and timestamps are
-  unchanged. A relative selected-plugin path with spaces fails before the loader
-  correction and passes36 comparisons afterward. Hosted combined-head validation
-  remains a distinct result recorded on the integration PR.
-
-The observed300s success establishes that this permitted profile is possible.
-It does not assign every historical loss to the scaler or the independent TX
-race, establish physical scanout/A/V, or complete repeatability/endurance.
-Initial temperatures differ from older thermal failures; do not claim a matched
-thermal speedup. Preserve all exact-source receipts and original failures.
+1. Qualify the exact combined source and integrate only into the existing
+   experimental base; record child/final CI independently and tidy contained
+   PRs. No master/release/default promotion is implied.
+2. Continue original-client interlaced/Bob natural-EOF/field-content and actual
+   per-object return work (#445/#429/#436/#477/#538). Current progressive RGB
+   checkpoints do not prove those cases. Fix demonstrated own faults only.
+3. Continue matched repeatability, sustained/endurance, port/X-server lifecycle
+   and calibrated physical display/A/V work (#513). Preserve earlier failures;
+   different initial thermals or metadata do not establish causal speedup.
+4. Complete genuinely clean-target packaging/user burden and reviewed language/
+   assistive-technology/other-desktop acceptance when those targets exist.
+   Maintainer confirms current equipment only: no new Atom/native-i386/BCM70012
+   acceptance is inferred from this T8100/BCM70015 host.
+5. Retained MPEG1 native/planar bytes and old runtime DSOs allow an off-hardware
+   siting/conversion comparison (#529). Hardware ownership/firmware/UART/DMA
+   research (#92/#204/#533) retains its prerequisite gates and negative results.
 
 **Shutdown heap abort subtask only: ignored / wontfix (2026-10-29). #538 stays
 open.** Per maintainer direction, stop investigation/reproduction of this

@@ -16,6 +16,7 @@ UI=importlib.util.module_from_spec(spec);spec.loader.exec_module(UI)
 CORE=UI.load_core()
 MODULES=UI.load_gtk()
 Gtk,Gdk,Gio,GLib=MODULES
+from gi.repository import Atk
 if not Gtk.init_check([])[0]:raise RuntimeError('GTK tests require a graphical display (use xvfb-run -a)')
 HEADER='[crystalhd]\nschema = 1\n'
 
@@ -40,6 +41,50 @@ def select(combo,token):
 
 
 class GtkSettingsTests(unittest.TestCase):
+    def assert_label_relation(self, widget, mnemonic):
+        labels = widget.list_mnemonic_labels()
+        self.assertEqual(len(labels), 1)
+        label = labels[0]
+        self.assertIs(label.get_mnemonic_widget(), widget)
+        self.assertEqual(label.get_mnemonic_keyval(), mnemonic)
+        relation = widget.get_accessible().ref_relation_set().get_relation_by_type(Atk.RelationType.LABELLED_BY)
+        self.assertIsNotNone(relation)
+        self.assertIn(label.get_accessible(), relation.get_target())
+        self.assertEqual(widget.get_accessible().get_name(), label.get_text())
+        return label
+
+    def test_custom_player_values_have_visible_labels_and_keyboard_targets(self):
+        app = self.app()
+        for key, mnemonic in (('gstreamer.crystalhddec.scale_width', Gdk.KEY_a),
+                              ('player.software_output_size', Gdk.KEY_e)):
+            select(app.player_controls[key], 'custom')
+            entry = app.player_entries[key]
+            label = self.assert_label_relation(entry, mnemonic)
+            self.assertTrue(label.get_visible())
+            app.player_controls[key].grab_focus();drain()
+            self.assertTrue(label.mnemonic_activate(False));drain()
+            self.assertTrue(entry.has_focus())
+        self.assertFalse(self.path.exists())
+
+    def test_profile_name_dialog_has_visible_label_and_keyboard_target(self):
+        app = self.app()
+        observed = []
+        def inspect_dialog():
+            dialog = next(w for w in Gtk.Window.list_toplevels() if isinstance(w, Gtk.Dialog))
+            try:
+                entry = next(w for w in dialog.get_content_area().get_children() if isinstance(w, Gtk.Entry))
+                label = self.assert_label_relation(entry, Gdk.KEY_p)
+                self.assertTrue(label.get_visible())
+                observed.append(True)
+            finally:
+                dialog.response(Gtk.ResponseType.CANCEL)
+            return False
+        GLib.idle_add(inspect_dialog)
+        self.assertIsNone(app.prompt_profile_name())
+        self.assertEqual(observed, [True])
+        self.assertFalse(app.editor.dirty)
+        self.assertFalse(self.path.exists())
+
     def test_installation_refresh_does_not_save_or_discard_drafts(self):
         with mock.patch.object(CORE, 'inspect_installation', return_value={'scope': 'test', 'readers': [{'state': 'unknown'}]}), \
                 mock.patch.object(CORE, 'installation_text', return_value='File declaration only'):
@@ -292,6 +337,7 @@ class GtkSettingsTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
         self.assertFalse(app.save_button.get_sensitive())
         combo=app.controls['vaapi.debug']
+        self.assert_label_relation(combo, Gdk.KEY_d)
         self.assertIn('debug',combo.get_accessible().get_name().lower())
         for token,expected in [('true',True),('false',False),('unset',CORE.UNSET),('',None)]:
             select(combo,token)
