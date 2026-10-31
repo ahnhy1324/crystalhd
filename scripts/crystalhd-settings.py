@@ -258,20 +258,6 @@ def validation_entry(Gtk):
                 return states
 
         class ValidationEntry(Gtk.Entry):
-            def __init__(self):
-                Gtk.Entry.__init__(self)
-                self.connect("destroy", self._retire_accessible)
-
-            def do_get_accessible(self):
-                accessible = getattr(self, "_validation_accessible", None)
-                if accessible is None:
-                    accessible = self._validation_accessible = ValidationAccessible()
-                    accessible.set_widget(self)
-                    # Atk.initialize accepts a gpointer, exposed by PyGObject
-                    # as a capsule. Preserve EntryAccessible's initialization.
-                    accessible.initialize(self.__gpointer__)
-                return accessible
-
             def set_validation_error(self, error):
                 previous = getattr(self, "_validation_invalid", False)
                 self._validation_invalid = bool(error)
@@ -282,11 +268,10 @@ def validation_entry(Gtk):
                     accessible.notify_state_change(Atk.StateType.INVALID_ENTRY,
                                                    self._validation_invalid)
 
-            def _retire_accessible(self, _widget):
-                accessible = getattr(self, "_validation_accessible", None)
-                if accessible is not None:
-                    accessible.set_widget(None)
-
+        # Configure our type before its first instance, as for a Gtk.Template.
+        # GTK creates, initializes, retains and retires the accessible through
+        # its ordinary widget lifecycle; Python does not own a parallel cache.
+        ValidationEntry.set_accessible_type(ValidationAccessible.__gtype__)
         _validation_entry_type = ValidationEntry
     return _validation_entry_type()
 

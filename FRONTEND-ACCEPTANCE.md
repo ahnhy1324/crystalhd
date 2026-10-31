@@ -180,11 +180,19 @@ provides queried persistent INVALID_ENTRY, transition-only state events,
 profile-scope restoration and destruction retirement. The direct-PID/private-bus
 AT-SPI observer includes a fresh client connected after invalid input, alongside
 the retained old-source negative control. Spoken Orca is a separate observation.
-The [persistent-state receipt](tests/fixtures/issue400/validation-invalid-state-20261031.json)
+The [persistent-state receipt](tests/fixtures/issue400/validation-native-owned-20261031.json)
 records source English and installed Korean actual cross-process checks, fresh
 observer PID/name/state and normal retirement. The older description-only
 receipt remains accurate historical evidence. Current GTK31 checks include a
 held accessible after destruction; no invalid state survives retirement.
+An initial Python-owned accessible cache passed local assertions but the
+Ubuntu24 CI interpreter crashed after all31 checks. That candidate remains
+unqualified. The current own Entry type configures its accessible before the
+first instance and uses GTK's ordinary creation/initialization/ownership/disposal,
+with no manual accessible cache or destroy hook. The retained regression and
+new source-English/installed-Korean observers are in the linked receipt;
+the exact native finalizer stack was not observed, so no upstream defect is
+attributed. Final hosted compatibility belongs to the source pinned in PR612.
 
 The optional #611 [Kodi frontend](addons/script.crystalhd.settings/README.md)
 uses native dialogs and shared CLI metadata/writes. Device-free dialog tests

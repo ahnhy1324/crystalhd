@@ -32,7 +32,7 @@ not automatically mandatory v1.3 features.
 
 - [x] #400 persistent queried validation state and fresh AT-SPI observers in
   source English/installed Korean; GTK31 includes accessible retirement.
-  [Evidence](tests/fixtures/issue400/validation-invalid-state-20261031.json).
+  [Evidence](tests/fixtures/issue400/validation-native-owned-20261031.json).
 - [x] #611 shared CLI editor-state/safe transactional writes, optional native
   Kodi dialogs and reproducible ZIP; actual stock21.3 ZIP/D-pad save/cancel/reset
   and normal exit. [Evidence](tests/fixtures/issue611/kodi-settings-ui-20261031.json).
