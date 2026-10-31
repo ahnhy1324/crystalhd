@@ -297,8 +297,11 @@ overwrite or post-trigger detail freeze. CAPS and segment state also continue
 updating. Qualification covers fixed 25/50 Hz PTS metadata in one TIME segment
 with rate/applied-rate 1, known canonical durations, complete timing and EOS.
 Unknown/VFR timing, buffer-list overlap, changed CAPS, further segments, flush,
-seek, cadence violations and arithmetic/counter overflow prevent qualification;
-identical CAPS repeats are idempotent. Gap counters describe observed timestamp
+helper-annotated seek requests, cadence violations and arithmetic/counter
+overflow prevent qualification;
+identical CAPS repeats are idempotent. The Player annotates its own seek
+requests; raw upstream SEEK events from an unrelated client are not a separate
+seek observer. Gap counters describe observed timestamp
 discontinuities and do not establish physical frame loss.
 
 Audit a completed Player receipt against independently frozen source counts and
