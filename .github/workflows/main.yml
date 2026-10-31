@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       heavy: ${{ steps.plan.outputs.heavy }}
+      packed: ${{ steps.plan.outputs.packed }}
       kernel: ${{ steps.plan.outputs.kernel }}
       contracts: ${{ steps.plan.outputs.contracts }}
     steps:
@@ -48,6 +49,52 @@ jobs:
           CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           CI_CONTRACTS: ${{ needs.classify.outputs.contracts }}
         run: python3 -B tests/ci-plan.py docs
+
+  packed:
+    needs: classify
+    if: needs.classify.outputs.packed == 'true'
+    name: Packed scaler (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install packed scaler dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config python3 \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base
+
+      - name: Record packed scaler toolchain versions
+        shell: bash
+        run: |
+          {
+            printf '### Packed scaler toolchain\n\n```text\n'
+            . /etc/os-release
+            printf 'OS: %s\n' "$PRETTY_NAME"
+            printf 'Runner image: %s (%s)\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+            printf 'C compiler: '
+            gcc -dumpfullversion
+            python3 --version
+            for library in gstreamer-1.0 gstreamer-video-1.0 gstreamer-app-1.0; do
+              library_version=$(pkg-config --modversion "$library")
+              printf '%s: %s\n' "$library" "$library_version"
+            done
+            printf '```\n'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Build optional packed scaler and check CPU contracts
+        run: make -C filters/gst/packed-upscale check
+
+      - name: Sanitize optional packed scaler CPU contracts
+        run: |
+          python3 -B tests/packed-sanitizer-loader.test.py
+          make -C filters/gst/packed-upscale check-sanitized
 
   build:
     needs: classify
@@ -110,6 +157,7 @@ jobs:
         run: make -C filters/gst/xv-output check
 
       - name: Build optional packed scaler and check CPU contracts
+        # Full userspace selection skips the standalone packed matrix.
         run: make -C filters/gst/packed-upscale check
 
       - name: Sanitize optional packed scaler CPU contracts
@@ -435,7 +483,7 @@ jobs:
   ci:
     name: CI gate
     if: always()
-    needs: [classify, docs, build, upstream-kernel-api]
+    needs: [classify, docs, build, packed, upstream-kernel-api]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
