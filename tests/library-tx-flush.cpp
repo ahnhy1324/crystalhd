@@ -30,6 +30,7 @@ static DTS_LIB_CONTEXT *observed;
 static std::mutex gate;
 static std::condition_variable changed;
 static thread_local bool worker_thread, cancelling_thread;
+static thread_local uint32_t flush_read_pointer;
 static unsigned failures;
 static bool stop_at_packet_length;
 static thread_local bool packetizer_stopper;
@@ -237,9 +238,24 @@ static void pause_worker()
     await(lock, [] { return run.release; });
 }
 
+extern "C" int __real_pthread_mutex_lock(pthread_mutex_t *mutex);
+extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t *mutex)
+{
+    const int result = __real_pthread_mutex_lock(mutex);
+    if (result == 0 && worker_thread && observed &&
+        mutex == &observed->circBuf.flushLock)
+        flush_read_pointer = observed->circBuf.readPointer;
+    return result;
+}
+
 extern "C" int __real_pthread_mutex_unlock(pthread_mutex_t *mutex);
 extern "C" int __wrap_pthread_mutex_unlock(pthread_mutex_t *mutex)
 {
+    /* A busy-size snapshot also takes flushLock. The fixture's short packet
+     * must advance the read cursor before this represents a completed pop. */
+    const bool popped = worker_thread && observed &&
+        mutex == &observed->circBuf.flushLock &&
+        observed->circBuf.readPointer != flush_read_pointer;
     const int result = __real_pthread_mutex_unlock(mutex);
     if (claim_control_after_close_check && observed && mutex == &observed->thLock) {
         claim_control_after_close_check = false;
@@ -248,9 +264,7 @@ extern "C" int __wrap_pthread_mutex_unlock(pthread_mutex_t *mutex)
         observed->stopInProgress = true;
         DtsUnLock(observed);
     }
-    if (!recovery.active && worker_thread && observed &&
-        mutex == &observed->circBuf.flushLock &&
-        run.point == Point::Popped && !run.blocked)
+    if (!recovery.active && popped && run.point == Point::Popped && !run.blocked)
         pause_worker(); // The production pop really completed before this hook.
     return result;
 }

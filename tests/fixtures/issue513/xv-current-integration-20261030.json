@@ -1,0 +1,3033 @@
+{
+  "schema": 1,
+  "status": "FAIL_FHD_ACCEPTANCE_THERMAL_INCOMPLETE",
+  "scope": "Current Player/optional own Xv integration and one original-profile actual card invocation; no stock-default fix or speedup qualification.",
+  "runtime_revision": "f4e3827500a9e1974106517a948bff7c637a14dc",
+  "decoder_revision": "1ee0f9fba18aac7e22c346f3d1f9ac4c9cb51f94",
+  "integration_parents": [
+    "1ee0f9fba18aac7e22c346f3d1f9ac4c9cb51f94",
+    "de4e9e6a99b4adba8bde54a58ef976ed1863cf04"
+  ],
+  "local_checks": {
+    "schema": 1,
+    "revision": "f4e3827500a9e1974106517a948bff7c637a14dc",
+    "checks": [
+      {
+        "command": "make -C filters/gst/xv-output check",
+        "exit": 0,
+        "groups": 4,
+        "scope": "build + device-free contracts"
+      },
+      {
+        "command": "root controlled make -C filters/gst/xv-output check-x11",
+        "exit": 0,
+        "groups": 14,
+        "receipt": "/home/mache/.cache/crystalhd-fhd-cause-20261030/integration-xv-check-x11.json",
+        "receipt_sha256": "9b723746f14ac0e1a89410f5c6a7e7e89cbe706dec5b163daf84b967a24699c2"
+      },
+      {
+        "command": "make library && make -C filters/gst/gst-plugin-1.0 check-player",
+        "exit": 0,
+        "tests": 125,
+        "scope": "own library/plugin build, device-free Player suite"
+      },
+      {
+        "command": "make configuration-check",
+        "exit": 0,
+        "settings_tests": 20,
+        "native_tests": 13,
+        "differential_documents": 1230,
+        "schema_tests": 16,
+        "cli_tests": 82,
+        "managed_keys": 21,
+        "classified_surfaces": 39
+      }
+    ],
+    "preserved_initial_failure": {
+      "command": "python3 -B tests/gstreamer-player.test.py",
+      "tests": 125,
+      "failures": 8,
+      "reason": "new worktree native stage tracing plugin had not been built; all8 factory lookup assertions. Correct defined Makefile build/check passes125. No test code change or skip."
+    },
+    "actual_constructed_sink_properties": {
+      "xvimagesink": {
+        "qos": true,
+        "sync": true,
+        "max-lateness": 5000000,
+        "processing-deadline": 15000000,
+        "render-delay": 0,
+        "ts-offset": 0
+      },
+      "crystalhdxvsink": {
+        "qos": true,
+        "sync": true,
+        "max-lateness": 5000000,
+        "processing-deadline": 15000000,
+        "render-delay": 0,
+        "ts-offset": 0
+      }
+    },
+    "pins": {
+      "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/scripts/crystalhd-player.py": "a2c0d983c357651153f1f54eeeea88f13e486d767b94cd4bc8a39cacdcb0688a",
+      "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/gstcrystalhdxv.c": "bef6e6a9b72d6572698f4c071b6ba22251c1625181cf04c40857d7d1c8b56d2c",
+      "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/libgstcrystalhdxv.so": "f8c73d090cb601f5a7fa2433fa81ad497b23baf7b14c452ecd8c7fae9067c215",
+      "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/tests/gst-xv-output.c": "dbedac616f42246cbbca38de3dc64372952c19fed4ff0da65d339de58df52199"
+    },
+    "limits": [
+      "Local scoped qualification only; no fresh hosted CI claim yet.",
+      "No physical presentation, endurance or FHD lossless claim.",
+      "No external source or installed binary changes."
+    ]
+  },
+  "frozen_plan": {
+    "status": "FROZEN_ROOT_APPROVED",
+    "worktree": "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030",
+    "revision": "f4e3827500a9e1974106517a948bff7c637a14dc",
+    "cases": [
+      {
+        "case": "pcm-fhd-xvasync-01",
+        "fhd": true
+      }
+    ],
+    "pins": {
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-cause.py": "692ad7a429f94348ee884c389c967622d765a24b71bc2e04bfba73bba457a3d2",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/run-minimal.py": "114499e98222cc99757be0287900ce132452a977d0f9b24ff776c5ce95fcb1fc",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/sample-cause.py": "331a33ebeb5e507724d6eb39c6e02978dc73538899c891856b6e734a2f3b353e",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/owned-budget.py": "fdb2fcc6787cdf8b972f82333aa7f2fbd3cc47c5aa098a96f4c9dde4868b45f8",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/scripts/crystalhd-player.py": "ef38e563c80ee3c2c19f53bfe661ab3744fe80523b8149ae76e559fcaf765b43",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd.c": "eaaa44539bc193b26651849368f0b252f4e890f5ec59dccf1572bfba7952de9a",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd-stage-trace.c": "fb9c44d96521e0656043b42b25eee4c78348d35283ea0754cace6e1fdb4b02dd",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd-stage-trace.h": "1f84e8883a7d37d1d3f797d24f9700254ad46400021de5d9413e59d65c3cf4be",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd-finish-trace.c": "d65c23033ede3736394f1ed5a83230e5da9e32b1c18be51e10e36e72b7ac08ef",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd-finish-trace.h": "08abd91a2ba8758ef4540d5e173ca3d1940bd35e7db25962def6cd34797019ad",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/libgstcrystalhd.so": "7f7fe47cb32ec42e4b0eda282064e483a093255bdef8c260dfbc97f22997dcf0",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/linux_lib/libcrystalhd/libcrystalhd.so.3.6": "9e2b788390e4811082881cdabce2be270282b9c43ec28affa3b328a25f5c7097",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/tests/kernel-log-check.sh": "fea4913e157870869a0572c6c43e426a86900c5cc59c8bca388dcadece85c4e7",
+      "/home/mache/.cache/crystalhd-window-runtime-20261030/dialogue-continuous-5min.mkv": "823861ecc5d7782dcfca733f7fed7903a3d76be5b9c7d8a35ba0c5e164f07b2c",
+      "/home/mache/.cache/crystalhd-window-runtime-20261030/dialogue5-preparation.json": "2987e7cecef1235e9a0227a8d3a9c823c3a6280c02d47e45b396517dba1c1522",
+      "/home/mache/.cache/crystalhd-player-fhd-runtime-20261030/boundary.py": "f326729eefa31afc823752e2c9cb73b25e4ffa727ce926fcaa1f843081d9206e",
+      "/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.8800.0": "3cc1aeae827f436a296ec488b80e6c45c150dccfb4525e7db275cc08772d322f",
+      "/usr/lib/x86_64-linux-gnu/libgstvideo-1.0.so.0.2802.0": "3961ca8c22e53125d29f14420f412a005317d518fd8395a4c7999d5d97f9c335",
+      "/usr/lib/x86_64-linux-gnu/libgstreamer-1.0.so.0.2802.0": "908ea355fb43fa1c6474f720de5e070650db6cbab4267bd5b11312290d6ebb2f",
+      "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstvideoconvertscale.so": "e8c1d305183306595f5b83d46e398b3dc365349c8b03b200deefb57a9069d185",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-integration.py": "c76555f2a6f7804fd175b8b3cbedceb8d21ed07a2caa4bc5b58c14b14f3ad168",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/run-integration.py": "baf77f433ff54144bd31715e30a29552008b34fb9dafa80f87e162bb4c88f974",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-detailed.py": "9770f8f2ef04c5f75be4f69b45b226266568f836f086b25f60d9191978cfaa18",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/integration-source-test-qualification.json": "4413dc1def2269fd008b95c67218ebbb194e7332c134d012e09c9a32402597fa",
+      "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/scripts/crystalhd-player.py": "a2c0d983c357651153f1f54eeeea88f13e486d767b94cd4bc8a39cacdcb0688a",
+      "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/gstcrystalhdxv.c": "bef6e6a9b72d6572698f4c071b6ba22251c1625181cf04c40857d7d1c8b56d2c",
+      "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/libgstcrystalhdxv.so": "f8c73d090cb601f5a7fa2433fa81ad497b23baf7b14c452ecd8c7fae9067c215",
+      "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/Makefile": "3a5c89f22754b51ec99ffaf19851abc1735265d3197c45cbc055f469da9d2e95",
+      "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/tests/gst-xv-output.c": "dbedac616f42246cbbca38de3dc64372952c19fed4ff0da65d339de58df52199"
+    },
+    "probe_libraries": [
+      "/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.8800.0",
+      "/usr/lib/x86_64-linux-gnu/libgstvideo-1.0.so.0.2802.0",
+      "/usr/lib/x86_64-linux-gnu/libgstreamer-1.0.so.0.2802.0",
+      "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstvideoconvertscale.so"
+    ],
+    "finish_property": "finish-trace-limit",
+    "finish_limit": 8192,
+    "finish_snapshot_signal": "finish-trace-snapshot",
+    "stop_after_s": null,
+    "protocol": "One natural300s original PCM/FHD invocation,335s deadline; explicit existing own completion-controlled output with fixed ring3/pool6. Exact same baseline1ee decoder and DIL ELF reused, new integrated Player/own Xv module. Native padwindow16384 + firstN finish8192 +500ms ownedproc and budget. NoBPF/perf/Xorg sampler. Original quality/threads/clock/QoS/lateness5ms/deadline15ms/priorities/PTS unchanged. AC/<75C/exact stable boundary guards and normal teardown only. Failure preserved; no rerun until PASS.",
+    "rationale": "Directly qualify existing own opt-in async route after observed stock XSync57.617ms sleep tail. This is an alternate route, not an external defect claim or stock-default fix. Historical captures have different thermal histories; no controlled throughput ranking or physical scanout claim.",
+    "frozen_utc": "2026-10-30T13:17:05.871100+00:00",
+    "decoder_worktree": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030",
+    "decoder_revision": "1ee0f9fba18aac7e22c346f3d1f9ac4c9cb51f94",
+    "video_output": "xv-async",
+    "natural_eos_required": true,
+    "playback_deadline_s": 335
+  },
+  "run": {
+    "case": "pcm-fhd-xvasync-01",
+    "wall_seconds": 247.6191201839829,
+    "cpu_seconds": 225.69790500000002,
+    "exit": 143,
+    "closed": true,
+    "natural_eos": false,
+    "stop_reason": {
+      "type": "AssertionError",
+      "message": "('AC/thermal guard', True, [75000, 64000])",
+      "traceback": "Traceback (most recent call last):\n  File \"/home/mache/.cache/crystalhd-fhd-cause-20261030/run-integration.py\", line 207, in main\n    health();budget.poll()\n    ~~~~~~^^\n  File \"/home/mache/.cache/crystalhd-fhd-cause-20261030/run-integration.py\", line 163, in health\n    assert ac and temperatures and max(temperatures)<75000,('AC/thermal guard',ac,temperatures)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: ('AC/thermal guard', True, [75000, 64000])\n"
+    },
+    "max_temperature_mC": 75000,
+    "boundary_equal": true,
+    "kernel_exit": 0,
+    "final_pins_equal": true,
+    "observer_errors": [],
+    "health_frames": 6120,
+    "device_fds_after_close": []
+  },
+  "native_finish": {
+    "schema": 1,
+    "enabled": true,
+    "clock": "CLOCK_MONOTONIC",
+    "retention": "first",
+    "inflight_scope": "retained_records_only",
+    "capacity": 8192,
+    "observed": 6122,
+    "retained": 6122,
+    "omitted": 0,
+    "inflight": 0,
+    "counters_saturated": false
+  },
+  "native_flow_counts": {
+    "0": 6121,
+    "-2": 1
+  },
+  "whole_stage_counters": [
+    {
+      "id": 0,
+      "stage": "output-pack",
+      "token": 1,
+      "active": false,
+      "buffers": 12240,
+      "events": 12237,
+      "buffer_lists": 0,
+      "list_items": 0,
+      "list_missing_pts": 0,
+      "buffer_list_ambiguity": false,
+      "missing_pts": 0,
+      "eos_count": 0,
+      "qos_count": 12234,
+      "stream_generation": 1,
+      "segment_generation": 1,
+      "flush_generation": 0,
+      "segment_valid": true,
+      "flushing": false
+    },
+    {
+      "id": 1,
+      "stage": "output-scale",
+      "token": 2,
+      "active": false,
+      "buffers": 12239,
+      "events": 12237,
+      "buffer_lists": 0,
+      "list_items": 0,
+      "list_missing_pts": 0,
+      "buffer_list_ambiguity": false,
+      "missing_pts": 0,
+      "eos_count": 0,
+      "qos_count": 12234,
+      "stream_generation": 1,
+      "segment_generation": 1,
+      "flush_generation": 0,
+      "segment_valid": true,
+      "flushing": false
+    },
+    {
+      "id": 2,
+      "stage": "sink",
+      "token": 3,
+      "active": false,
+      "buffers": 12236,
+      "events": 12237,
+      "buffer_lists": 0,
+      "list_items": 0,
+      "list_missing_pts": 0,
+      "buffer_list_ambiguity": false,
+      "missing_pts": 0,
+      "eos_count": 0,
+      "qos_count": 12234,
+      "stream_generation": 1,
+      "segment_generation": 1,
+      "flush_generation": 0,
+      "segment_valid": true,
+      "flushing": false
+    },
+    {
+      "id": 3,
+      "stage": "decoder",
+      "token": 4,
+      "active": false,
+      "buffers": 6121,
+      "events": 12237,
+      "buffer_lists": 0,
+      "list_items": 0,
+      "list_missing_pts": 0,
+      "buffer_list_ambiguity": false,
+      "missing_pts": 0,
+      "eos_count": 0,
+      "qos_count": 12234,
+      "stream_generation": 1,
+      "segment_generation": 1,
+      "flush_generation": 0,
+      "segment_valid": true,
+      "flushing": false
+    },
+    {
+      "id": 4,
+      "stage": "deinterlace",
+      "token": 5,
+      "active": false,
+      "buffers": 12241,
+      "events": 12237,
+      "buffer_lists": 0,
+      "list_items": 0,
+      "list_missing_pts": 0,
+      "buffer_list_ambiguity": false,
+      "missing_pts": 0,
+      "eos_count": 0,
+      "qos_count": 12234,
+      "stream_generation": 1,
+      "segment_generation": 1,
+      "flush_generation": 0,
+      "segment_valid": true,
+      "flushing": false
+    }
+  ],
+  "first_counted_loss": {
+    "seqnum": 26458,
+    "factory": "crystalhdxvsink",
+    "processed": 7368,
+    "dropped": 1,
+    "accepted": true,
+    "timing": {
+      "live": true,
+      "running_time": 147360000000,
+      "timestamp": 147360000000,
+      "jitter": 28663000,
+      "stream_time": 147360000000,
+      "duration": 20000000
+    },
+    "scope": "first timed video QoS snapshot with positive jitter; counters may reset"
+  },
+  "native_calls_near_first_loss": [
+    {
+      "call_id": 3681,
+      "instance": 134333759254448,
+      "generation": 2,
+      "recovery_epoch": 0,
+      "frame_number": 3680,
+      "pts": 147200000000,
+      "duration": 40000000,
+      "enter_ns": 353310344485087,
+      "return_ns": 353310380028715,
+      "enter_tid": 1118368,
+      "return_tid": 1118368,
+      "complete": true,
+      "flow": 0,
+      "elapsed_ns": 35543628,
+      "monotonic_order_valid": true
+    },
+    {
+      "call_id": 3682,
+      "instance": 134333759254448,
+      "generation": 2,
+      "recovery_epoch": 0,
+      "frame_number": 3681,
+      "pts": 147240000000,
+      "duration": 40000000,
+      "enter_ns": 353310383796973,
+      "return_ns": 353310424148268,
+      "enter_tid": 1118368,
+      "return_tid": 1118368,
+      "complete": true,
+      "flow": 0,
+      "elapsed_ns": 40351295,
+      "monotonic_order_valid": true
+    },
+    {
+      "call_id": 3683,
+      "instance": 134333759254448,
+      "generation": 2,
+      "recovery_epoch": 0,
+      "frame_number": 3682,
+      "pts": 147280000000,
+      "duration": 40000000,
+      "enter_ns": 353310428019615,
+      "return_ns": 353310461849916,
+      "enter_tid": 1118368,
+      "return_tid": 1118368,
+      "complete": true,
+      "flow": 0,
+      "elapsed_ns": 33830301,
+      "monotonic_order_valid": true
+    },
+    {
+      "call_id": 3684,
+      "instance": 134333759254448,
+      "generation": 2,
+      "recovery_epoch": 0,
+      "frame_number": 3683,
+      "pts": 147320000000,
+      "duration": 40000000,
+      "enter_ns": 353310465418353,
+      "return_ns": 353310569732882,
+      "enter_tid": 1118368,
+      "return_tid": 1118368,
+      "complete": true,
+      "flow": 0,
+      "elapsed_ns": 104314529,
+      "monotonic_order_valid": true
+    },
+    {
+      "call_id": 3685,
+      "instance": 134333759254448,
+      "generation": 2,
+      "recovery_epoch": 0,
+      "frame_number": 3684,
+      "pts": 147360000000,
+      "duration": 40000000,
+      "enter_ns": 353310571894394,
+      "return_ns": 353310590901842,
+      "enter_tid": 1118368,
+      "return_tid": 1118368,
+      "complete": true,
+      "flow": 0,
+      "elapsed_ns": 19007448,
+      "monotonic_order_valid": true
+    },
+    {
+      "call_id": 3686,
+      "instance": 134333759254448,
+      "generation": 2,
+      "recovery_epoch": 0,
+      "frame_number": 3685,
+      "pts": 147400000000,
+      "duration": 40000000,
+      "enter_ns": 353310593296142,
+      "return_ns": 353310593375763,
+      "enter_tid": 1118368,
+      "return_tid": 1118368,
+      "complete": true,
+      "flow": 0,
+      "elapsed_ns": 79621,
+      "monotonic_order_valid": true
+    },
+    {
+      "call_id": 3687,
+      "instance": 134333759254448,
+      "generation": 2,
+      "recovery_epoch": 0,
+      "frame_number": 3686,
+      "pts": 147440000000,
+      "duration": 40000000,
+      "enter_ns": 353310595783473,
+      "return_ns": 353310617823379,
+      "enter_tid": 1118368,
+      "return_tid": 1118368,
+      "complete": true,
+      "flow": 0,
+      "elapsed_ns": 22039906,
+      "monotonic_order_valid": true
+    },
+    {
+      "call_id": 3688,
+      "instance": 134333759254448,
+      "generation": 2,
+      "recovery_epoch": 0,
+      "frame_number": 3687,
+      "pts": 147480000000,
+      "duration": 40000000,
+      "enter_ns": 353310620145600,
+      "return_ns": 353310653979254,
+      "enter_tid": 1118368,
+      "return_tid": 1118368,
+      "complete": true,
+      "flow": 0,
+      "elapsed_ns": 33833654,
+      "monotonic_order_valid": true
+    },
+    {
+      "call_id": 3689,
+      "instance": 134333759254448,
+      "generation": 2,
+      "recovery_epoch": 0,
+      "frame_number": 3688,
+      "pts": 147520000000,
+      "duration": 40000000,
+      "enter_ns": 353310656968409,
+      "return_ns": 353310697737018,
+      "enter_tid": 1118368,
+      "return_tid": 1118368,
+      "complete": true,
+      "flow": 0,
+      "elapsed_ns": 40768609,
+      "monotonic_order_valid": true
+    },
+    {
+      "call_id": 3690,
+      "instance": 134333759254448,
+      "generation": 2,
+      "recovery_epoch": 0,
+      "frame_number": 3689,
+      "pts": 147560000000,
+      "duration": 40000000,
+      "enter_ns": 353310700682941,
+      "return_ns": 353310733942831,
+      "enter_tid": 1118368,
+      "return_tid": 1118368,
+      "complete": true,
+      "flow": 0,
+      "elapsed_ns": 33259890,
+      "monotonic_order_valid": true
+    }
+  ],
+  "retained_trace_window": {
+    "triggered": true,
+    "trigger_seqnum": 26458,
+    "trigger_order": 70023,
+    "post_target": 4096,
+    "post_retained": 4096,
+    "complete": true,
+    "overwritten": 57735,
+    "unretained_after_window": 42155,
+    "context_before_order": 57736
+  },
+  "snapshots": [
+    {
+      "why": "first-playing",
+      "monotonic_ns": 353163198421190,
+      "base_time_ns": 0,
+      "clock_time_ns": 6602000,
+      "clock_name": "GstPulseSinkClock",
+      "clock_type": "GstAudioClock",
+      "elements": [
+        {
+          "factory": "capsfilter",
+          "name": "capsfilter0",
+          "path": "/GstPlayBin:crystalhd-player/GstURIDecodeBin:uridecodebin0/GstDecodeBin:decodebin0/GstCapsFilter:capsfilter0",
+          "properties": {
+            "qos": "False"
+          },
+          "caps": {
+            "sink": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false",
+            "src": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false"
+          }
+        },
+        {
+          "factory": "crystalhddec",
+          "name": "crystalhddec0",
+          "path": "/GstPlayBin:crystalhd-player/GstURIDecodeBin:uridecodebin0/GstDecodeBin:decodebin0/GstCrystalHdDec:crystalhddec0",
+          "properties": {
+            "qos": "True"
+          },
+          "caps": {
+            "sink": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false",
+            "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1"
+          }
+        },
+        {
+          "factory": "deinterlace",
+          "name": "deinterlace",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vdbin/GstDeinterlace:deinterlace",
+          "properties": {
+            "method": "4"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1",
+            "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "vdconv",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vdbin/GstVideoConvert:vdconv",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1",
+            "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "conv2",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoConvert:conv2",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "videoscale",
+          "name": "scale",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoScale:scale",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "conv",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoConvert:conv",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "capsfilter",
+          "name": "crystalhd-upscale-caps",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstCapsFilter:crystalhd-upscale-caps",
+          "properties": {
+            "qos": "False"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "videoscale",
+          "name": "crystalhd-upscale",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoScale:crystalhd-upscale",
+          "properties": {
+            "qos": "True",
+            "n-threads": "2",
+            "method": "4"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "crystalhd-early-pack",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoConvert:crystalhd-early-pack",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+            "src": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "capsfilter",
+          "name": "crystalhd-early-yuy2",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstCapsFilter:crystalhd-early-yuy2",
+          "properties": {
+            "qos": "False"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+            "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "filter-convert",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstVideoConvert:filter-convert",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+            "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+          }
+        },
+        {
+          "factory": "crystalhdxvsink",
+          "name": "crystalhd-video-output",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstCrystalHdXv:crystalhd-video-output",
+          "properties": {
+            "qos": "True",
+            "sync": "True",
+            "max-lateness": "5000000",
+            "processing-deadline": "15000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "enable-last-sample": "True"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "pulsesink",
+          "name": "audiosink-actual-sink-pulse",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstAutoAudioSink:audiosink/GstPulseSink:audiosink-actual-sink-pulse",
+          "properties": {
+            "qos": "False",
+            "sync": "True",
+            "max-lateness": "-1",
+            "processing-deadline": "20000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "buffer-time": "200000",
+            "latency-time": "10000",
+            "enable-last-sample": "False"
+          },
+          "caps": {
+            "sink": "audio/x-raw, format=(string)F32LE, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003, channels=(int)2, rate=(int)48000"
+          }
+        }
+      ],
+      "output_packing_selected": true
+    },
+    {
+      "why": "close-before-null",
+      "monotonic_ns": 353407944838843,
+      "base_time_ns": 0,
+      "clock_time_ns": 244739749000,
+      "clock_name": "GstPulseSinkClock",
+      "clock_type": "GstAudioClock",
+      "elements": [
+        {
+          "factory": "capsfilter",
+          "name": "capsfilter0",
+          "path": "/GstPlayBin:crystalhd-player/GstURIDecodeBin:uridecodebin0/GstDecodeBin:decodebin0/GstCapsFilter:capsfilter0",
+          "properties": {
+            "qos": "False"
+          },
+          "caps": {
+            "sink": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false",
+            "src": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false"
+          }
+        },
+        {
+          "factory": "crystalhddec",
+          "name": "crystalhddec0",
+          "path": "/GstPlayBin:crystalhd-player/GstURIDecodeBin:uridecodebin0/GstDecodeBin:decodebin0/GstCrystalHdDec:crystalhddec0",
+          "properties": {
+            "qos": "True"
+          },
+          "caps": {
+            "sink": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false",
+            "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1"
+          }
+        },
+        {
+          "factory": "deinterlace",
+          "name": "deinterlace",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vdbin/GstDeinterlace:deinterlace",
+          "properties": {
+            "method": "4"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1",
+            "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "vdconv",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vdbin/GstVideoConvert:vdconv",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1",
+            "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "conv2",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoConvert:conv2",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "videoscale",
+          "name": "scale",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoScale:scale",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "conv",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoConvert:conv",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "capsfilter",
+          "name": "crystalhd-upscale-caps",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstCapsFilter:crystalhd-upscale-caps",
+          "properties": {
+            "qos": "False"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "videoscale",
+          "name": "crystalhd-upscale",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoScale:crystalhd-upscale",
+          "properties": {
+            "qos": "True",
+            "n-threads": "2",
+            "method": "4"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "crystalhd-early-pack",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoConvert:crystalhd-early-pack",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+            "src": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "capsfilter",
+          "name": "crystalhd-early-yuy2",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstCapsFilter:crystalhd-early-yuy2",
+          "properties": {
+            "qos": "False"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+            "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "filter-convert",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstVideoConvert:filter-convert",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+            "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+          }
+        },
+        {
+          "factory": "crystalhdxvsink",
+          "name": "crystalhd-video-output",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstCrystalHdXv:crystalhd-video-output",
+          "properties": {
+            "qos": "True",
+            "sync": "True",
+            "max-lateness": "5000000",
+            "processing-deadline": "15000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "enable-last-sample": "True"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "pulsesink",
+          "name": "audiosink-actual-sink-pulse",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstAutoAudioSink:audiosink/GstPulseSink:audiosink-actual-sink-pulse",
+          "properties": {
+            "qos": "False",
+            "sync": "True",
+            "max-lateness": "-1",
+            "processing-deadline": "20000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "buffer-time": "200000",
+            "latency-time": "10000",
+            "enable-last-sample": "False"
+          },
+          "caps": {
+            "sink": "audio/x-raw, format=(string)F32LE, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003, channels=(int)2, rate=(int)48000"
+          }
+        }
+      ],
+      "output_packing_selected": true
+    }
+  ],
+  "preNULL_sink_stats": [
+    {
+      "sink": "crystalhdxvsink",
+      "rendered": 12234,
+      "dropped": 1
+    }
+  ],
+  "own_xv_stats": [
+    {
+      "phase": "BEFORE_PIPELINE_NULL",
+      "monotonic_ns": 353407944932643,
+      "factory": "crystalhdxvsink",
+      "name": "crystalhd-video-output",
+      "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstCrystalHdXv:crystalhd-video-output",
+      "available": true,
+      "scope": "own SHM/submission counters, not physical presentation or end-to-end zero-copy",
+      "pipeline_state": [
+        "1",
+        "PLAYING",
+        "VOID_PENDING"
+      ],
+      "stats": {
+        "submitted": 12234,
+        "acknowledged": 12234,
+        "video-submitted": 12234,
+        "redraw-submitted": 0,
+        "retained-picture": true,
+        "terminal-retired": 0,
+        "copied-bytes": 0,
+        "pool-submitted": 12234,
+        "pending": 0,
+        "images": 6,
+        "bytes": 24883200,
+        "allocated": 6,
+        "freed": 0,
+        "failed": false,
+        "closed": false,
+        "quarantined": false
+      }
+    },
+    {
+      "phase": "AFTER_PIPELINE_NULL",
+      "monotonic_ns": 353409071030444,
+      "factory": "crystalhdxvsink",
+      "name": "crystalhd-video-output",
+      "path": "/GstCrystalHdXv:crystalhd-video-output",
+      "available": true,
+      "scope": "own SHM/submission counters, not physical presentation or end-to-end zero-copy",
+      "pipeline_state": [
+        "1",
+        "NULL",
+        "VOID_PENDING"
+      ],
+      "stats": {
+        "submitted": 12236,
+        "acknowledged": 12236,
+        "video-submitted": 12236,
+        "redraw-submitted": 0,
+        "retained-picture": false,
+        "terminal-retired": 0,
+        "copied-bytes": 0,
+        "pool-submitted": 12236,
+        "pending": 0,
+        "images": 0,
+        "bytes": 0,
+        "allocated": 6,
+        "freed": 6,
+        "failed": false,
+        "closed": true,
+        "quarantined": false
+      }
+    }
+  ],
+  "artifact_sha256": {
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.result.json": "9e7a1fe720afea75630af87da71a38ebd2b2d3898c211be54c77626006c1b77b",
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.trace.json": "55373ff98e84a2ac8fd8824f3e96bf4a2dca6deae7370b2f355e28b81db63b28",
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.boundary.json": "922bb7dcff101144352c868916c6994361f7f81ba52441a0bba64845b4011cb8",
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.proc.json": "a9be6294a8eb518d2f311f72f1f29412552d7fc6cf7d507a4f548af57ea7e397",
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.log": "9baf456b681281269087661e6116403349f32078d30544fc96795143e31ae47d",
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da",
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/independent-integration-firstloss-audit.json": "69a569e273bbf3ceb9a9061118bff3f0003aa53da0cd7726fc3e91741ba79fb7",
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.independent-audit.json": "4efa3f82226caa52767d4ec34657ab9f223e2ef697432d1091834f287b4d5081",
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.independent-audit-v2.json": "cb2863a6e7d036c59bf7d3574bdedccdf41d35317dbb5099ebe97b8cf8e4984a",
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/audit-integration-native.py": "a44b0e9788baa4bd5a5c3f6d6259000b1ce8990808706d60a3ff401efb4ee49f",
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/audit-integration-native-v2.py": "7ab333716e978b156a40905f253df0688b37891eff0fc7916292579fed38c6fb"
+  },
+  "limits": [
+    "The planned300s natural EOS requirement failed. Thermal guard stopped playback normally at75C; no rerun or raised threshold.",
+    "The first counted sink drop is PTS147.36s/jitter28.663ms. Later retained stage omissions and terminal in-flight residuals are separately audited.",
+    "Pre-NULL health/native/pad/BaseSink and post-NULL Xv snapshots differ in phase; do not silently subtract them into new media losses.",
+    "Sink-local copied-bytes0 and direct pool submission do not establish end-to-end zero-copy or source/display pixel identity.",
+    "SHM ACK is request retirement, not physical scanout or calibrated A/V.",
+    "The historical stock and this alternate route have unequal thermal history; no controlled speedup ranking.",
+    "No external source/binary, quality, QoS/lateness/deadline/thread/priority/PTS or installed driver/firmware changes. Experimental opt-in remains draft; FHD and broader513/471 acceptance open."
+  ],
+  "independent_firstloss_audit": {
+    "schema": 1,
+    "audit_status": "PASS_SCOPED_ARTIFACT_AUDIT",
+    "run_status": "FAIL_THERMAL_GUARD_NOT_EOS",
+    "case": "pcm-fhd-xvasync-01",
+    "input_sha256": {
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.result.json": "9e7a1fe720afea75630af87da71a38ebd2b2d3898c211be54c77626006c1b77b",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.trace.json": "55373ff98e84a2ac8fd8824f3e96bf4a2dca6deae7370b2f355e28b81db63b28",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.boundary.json": "922bb7dcff101144352c868916c6994361f7f81ba52441a0bba64845b4011cb8"
+    },
+    "runtime_revision": "f4e3827500a9e1974106517a948bff7c637a14dc",
+    "decoder_revision": "1ee0f9fba18aac7e22c346f3d1f9ac4c9cb51f94",
+    "plan_sha256": "5d987de23b76ca30a8513f314b59bc3f3b86522819ea97bdefc0c2a2c8bf23fa",
+    "frozen_source_identity_from_result": {
+      "path": "/home/mache/.cache/crystalhd-window-runtime-20261030/dialogue-continuous-5min.mkv",
+      "sha256": "823861ecc5d7782dcfca733f7fed7903a3d76be5b9c7d8a35ba0c5e164f07b2c",
+      "size": 633788375,
+      "device": "8:1",
+      "inode": 9204718
+    },
+    "checks": [
+      {
+        "name": "thermal failure preserved, normal closed143",
+        "passed": true
+      },
+      {
+        "name": "boundary kernel and frozen pins unchanged",
+        "passed": true
+      },
+      {
+        "name": "complete postNULL native prefix",
+        "passed": true
+      },
+      {
+        "name": "native exact source grid and identity",
+        "passed": true
+      },
+      {
+        "name": "native complete paired times and flows",
+        "passed": true
+      },
+      {
+        "name": "native pad collector clean",
+        "passed": true
+      },
+      {
+        "name": "complete triggered bounded window",
+        "passed": true
+      },
+      {
+        "name": "exact stage contexts bound to this window",
+        "passed": true
+      },
+      {
+        "name": "no epoch/list/missingPTS/control mutation",
+        "passed": true
+      },
+      {
+        "name": "decoder unique ordered buffer identity",
+        "passed": true
+      },
+      {
+        "name": "deinterlace unique ordered buffer identity",
+        "passed": true
+      },
+      {
+        "name": "output-pack unique ordered buffer identity",
+        "passed": true
+      },
+      {
+        "name": "output-scale unique ordered buffer identity",
+        "passed": true
+      },
+      {
+        "name": "sink unique ordered buffer identity",
+        "passed": true
+      },
+      {
+        "name": "deinterlace monotone exact set partition",
+        "passed": true
+      },
+      {
+        "name": "output-pack monotone exact set partition",
+        "passed": true
+      },
+      {
+        "name": "output-scale monotone exact set partition",
+        "passed": true
+      },
+      {
+        "name": "sink monotone exact set partition",
+        "passed": true
+      },
+      {
+        "name": "expected complete common interval and exact omissions",
+        "passed": true
+      },
+      {
+        "name": "decoder inside exact native picture call",
+        "passed": true
+      },
+      {
+        "name": "deinterlace inside exact native picture call",
+        "passed": true
+      },
+      {
+        "name": "output-pack inside exact native picture call",
+        "passed": true
+      },
+      {
+        "name": "output-scale inside exact native picture call",
+        "passed": true
+      },
+      {
+        "name": "first counted loss and unchanged five-stage QoS",
+        "passed": true
+      },
+      {
+        "name": "loss input and source picture present; next source picture suppressed",
+        "passed": true
+      },
+      {
+        "name": "first-playing original clock/QoS settings and packing",
+        "passed": true
+      },
+      {
+        "name": "first-playing negotiated lowres repack then exact FHD",
+        "passed": true
+      },
+      {
+        "name": "close-before-null original clock/QoS settings and packing",
+        "passed": true
+      },
+      {
+        "name": "close-before-null negotiated lowres repack then exact FHD",
+        "passed": true
+      },
+      {
+        "name": "start/end element properties and caps unchanged",
+        "passed": true
+      },
+      {
+        "name": "postNULL completion ownership closed and reclaimed",
+        "passed": true
+      }
+    ],
+    "first_counted_loss": {
+      "seqnum": 26458,
+      "factory": "crystalhdxvsink",
+      "processed": 7368,
+      "dropped": 1,
+      "accepted": true,
+      "timing": {
+        "live": true,
+        "running_time": 147360000000,
+        "timestamp": 147360000000,
+        "jitter": 28663000,
+        "stream_time": 147360000000,
+        "duration": 20000000
+      },
+      "scope": "first timed video QoS snapshot with positive jitter; counters may reset"
+    },
+    "first_retained_positive_sink_qos": {
+      "order": 70007,
+      "kind": "qos",
+      "monotonic_ns": 353310569114769,
+      "attachment": 2,
+      "stage": "sink",
+      "token": 3,
+      "ordinal": 7368,
+      "stream_generation": 1,
+      "segment_generation": 1,
+      "flush_generation": 0,
+      "thread_id": 1118373,
+      "seqnum": 26454,
+      "qos_type": 1,
+      "proportion": 0.10555029039788771,
+      "diff": 6402000,
+      "timestamp": 147340000000
+    },
+    "same_loss_propagated_qos": [
+      {
+        "order": 70017,
+        "kind": "qos",
+        "monotonic_ns": 353310589097649,
+        "attachment": 2,
+        "stage": "sink",
+        "token": 3,
+        "ordinal": 7369,
+        "stream_generation": 1,
+        "segment_generation": 1,
+        "flush_generation": 0,
+        "thread_id": 1118373,
+        "seqnum": 26459,
+        "qos_type": 1,
+        "proportion": 0.52379365,
+        "diff": 28663000,
+        "timestamp": 147360000000
+      },
+      {
+        "order": 70018,
+        "kind": "qos",
+        "monotonic_ns": 353310589146050,
+        "attachment": 1,
+        "stage": "output-scale",
+        "token": 2,
+        "ordinal": 7369,
+        "stream_generation": 1,
+        "segment_generation": 1,
+        "flush_generation": 0,
+        "thread_id": 1118373,
+        "seqnum": 26459,
+        "qos_type": 1,
+        "proportion": 0.52379365,
+        "diff": 28663000,
+        "timestamp": 147360000000
+      },
+      {
+        "order": 70019,
+        "kind": "qos",
+        "monotonic_ns": 353310589153523,
+        "attachment": 0,
+        "stage": "output-pack",
+        "token": 1,
+        "ordinal": 7369,
+        "stream_generation": 1,
+        "segment_generation": 1,
+        "flush_generation": 0,
+        "thread_id": 1118373,
+        "seqnum": 26459,
+        "qos_type": 1,
+        "proportion": 0.52379365,
+        "diff": 28663000,
+        "timestamp": 147360000000
+      },
+      {
+        "order": 70020,
+        "kind": "qos",
+        "monotonic_ns": 353310589172800,
+        "attachment": 4,
+        "stage": "deinterlace",
+        "token": 5,
+        "ordinal": 7369,
+        "stream_generation": 1,
+        "segment_generation": 1,
+        "flush_generation": 0,
+        "thread_id": 1118373,
+        "seqnum": 26459,
+        "qos_type": 1,
+        "proportion": 0.52379365,
+        "diff": 28663000,
+        "timestamp": 147360000000
+      },
+      {
+        "order": 70021,
+        "kind": "qos",
+        "monotonic_ns": 353310589230141,
+        "attachment": 3,
+        "stage": "decoder",
+        "token": 4,
+        "ordinal": 3685,
+        "stream_generation": 1,
+        "segment_generation": 1,
+        "flush_generation": 0,
+        "thread_id": 1118373,
+        "seqnum": 26459,
+        "qos_type": 1,
+        "proportion": 0.52379365,
+        "diff": 28663000,
+        "timestamp": 147360000000
+      }
+    ],
+    "first_loss_native_call": {
+      "call_id": 3685,
+      "instance": 134333759254448,
+      "generation": 2,
+      "recovery_epoch": 0,
+      "frame_number": 3684,
+      "pts": 147360000000,
+      "duration": 40000000,
+      "enter_ns": 353310571894394,
+      "return_ns": 353310590901842,
+      "enter_tid": 1118368,
+      "return_tid": 1118368,
+      "complete": true,
+      "flow": 0,
+      "elapsed_ns": 19007448,
+      "monotonic_order_valid": true
+    },
+    "prior_picture_native_call": {
+      "call_id": 3684,
+      "instance": 134333759254448,
+      "generation": 2,
+      "recovery_epoch": 0,
+      "frame_number": 3683,
+      "pts": 147320000000,
+      "duration": 40000000,
+      "enter_ns": 353310465418353,
+      "return_ns": 353310569732882,
+      "enter_tid": 1118368,
+      "return_tid": 1118368,
+      "complete": true,
+      "flow": 0,
+      "elapsed_ns": 104314529,
+      "monotonic_order_valid": true
+    },
+    "next_suppressed_picture_native_call": {
+      "call_id": 3686,
+      "instance": 134333759254448,
+      "generation": 2,
+      "recovery_epoch": 0,
+      "frame_number": 3685,
+      "pts": 147400000000,
+      "duration": 40000000,
+      "enter_ns": 353310593296142,
+      "return_ns": 353310593375763,
+      "enter_tid": 1118368,
+      "return_tid": 1118368,
+      "complete": true,
+      "flow": 0,
+      "elapsed_ns": 79621,
+      "monotonic_order_valid": true
+    },
+    "nearby_stage_points": {
+      "decoder": [
+        {
+          "pts": 147320000000,
+          "monotonic_ns": 353310465473249,
+          "thread_id": 1118368,
+          "order": 69982,
+          "ordinal": 3684,
+          "flags": 3145728
+        },
+        {
+          "pts": 147360000000,
+          "monotonic_ns": 353310571955996,
+          "thread_id": 1118368,
+          "order": 70012,
+          "ordinal": 3685,
+          "flags": 3145728
+        }
+      ],
+      "deinterlace": [
+        {
+          "pts": 147320000000,
+          "monotonic_ns": 353310468095797,
+          "thread_id": 1118368,
+          "order": 69983,
+          "ordinal": 7367,
+          "flags": 0
+        },
+        {
+          "pts": 147340000000,
+          "monotonic_ns": 353310508826272,
+          "thread_id": 1118368,
+          "order": 69998,
+          "ordinal": 7368,
+          "flags": 0
+        },
+        {
+          "pts": 147360000000,
+          "monotonic_ns": 353310573936474,
+          "thread_id": 1118368,
+          "order": 70013,
+          "ordinal": 7369,
+          "flags": 0
+        },
+        {
+          "pts": 147380000000,
+          "monotonic_ns": 353310590797566,
+          "thread_id": 1118368,
+          "order": 70022,
+          "ordinal": 7370,
+          "flags": 0
+        }
+      ],
+      "output-pack": [
+        {
+          "pts": 147320000000,
+          "monotonic_ns": 353310470399091,
+          "thread_id": 1118368,
+          "order": 69984,
+          "ordinal": 7367,
+          "flags": 0
+        },
+        {
+          "pts": 147340000000,
+          "monotonic_ns": 353310515614486,
+          "thread_id": 1118368,
+          "order": 69999,
+          "ordinal": 7368,
+          "flags": 0
+        },
+        {
+          "pts": 147360000000,
+          "monotonic_ns": 353310576301440,
+          "thread_id": 1118368,
+          "order": 70014,
+          "ordinal": 7369,
+          "flags": 0
+        }
+      ],
+      "output-scale": [
+        {
+          "pts": 147320000000,
+          "monotonic_ns": 353310502860463,
+          "thread_id": 1118368,
+          "order": 69996,
+          "ordinal": 7367,
+          "flags": 0
+        },
+        {
+          "pts": 147340000000,
+          "monotonic_ns": 353310545593485,
+          "thread_id": 1118368,
+          "order": 70005,
+          "ordinal": 7368,
+          "flags": 0
+        },
+        {
+          "pts": 147360000000,
+          "monotonic_ns": 353310587847592,
+          "thread_id": 1118368,
+          "order": 70015,
+          "ordinal": 7369,
+          "flags": 0
+        }
+      ],
+      "sink": [
+        {
+          "pts": 147320000000,
+          "monotonic_ns": 353310507051832,
+          "thread_id": 1118373,
+          "order": 69997,
+          "ordinal": 7367,
+          "flags": 0
+        },
+        {
+          "pts": 147340000000,
+          "monotonic_ns": 353310545674224,
+          "thread_id": 1118373,
+          "order": 70006,
+          "ordinal": 7368,
+          "flags": 0
+        },
+        {
+          "pts": 147360000000,
+          "monotonic_ns": 353310587915829,
+          "thread_id": 1118373,
+          "order": 70016,
+          "ordinal": 7369,
+          "flags": 0
+        }
+      ]
+    },
+    "nearby_sink_intervals": [
+      {
+        "from_pts_ns": 147300000000,
+        "to_pts_ns": 147320000000,
+        "begin_ns": 353310484697840,
+        "end_ns": 353310507051832,
+        "elapsed_ns": 22353992,
+        "tid": 1118373,
+        "to_tid": 1118373
+      },
+      {
+        "from_pts_ns": 147320000000,
+        "to_pts_ns": 147340000000,
+        "begin_ns": 353310507051832,
+        "end_ns": 353310545674224,
+        "elapsed_ns": 38622392,
+        "tid": 1118373,
+        "to_tid": 1118373
+      },
+      {
+        "from_pts_ns": 147340000000,
+        "to_pts_ns": 147360000000,
+        "begin_ns": 353310545674224,
+        "end_ns": 353310587915829,
+        "elapsed_ns": 42241605,
+        "tid": 1118373,
+        "to_tid": 1118373
+      },
+      {
+        "from_pts_ns": 147360000000,
+        "to_pts_ns": 147440000000,
+        "begin_ns": 353310587915829,
+        "end_ns": 353310606258438,
+        "elapsed_ns": 18342609,
+        "tid": 1118373,
+        "to_tid": 1118373
+      },
+      {
+        "from_pts_ns": 147440000000,
+        "to_pts_ns": 147460000000,
+        "begin_ns": 353310606258438,
+        "end_ns": 353310644100192,
+        "elapsed_ns": 37841754,
+        "tid": 1118373,
+        "to_tid": 1118373
+      }
+    ],
+    "common_interval_ns": [
+      121600000000,
+      156040000000
+    ],
+    "common_stage_counts": {
+      "decoder": 860,
+      "deinterlace": 1720,
+      "output-pack": 1719,
+      "output-scale": 1719,
+      "sink": 1719
+    },
+    "missing_decoder_picture_pts_ns": [
+      147400000000
+    ],
+    "inherited_missing_fields_pts_ns": [
+      147400000000,
+      147420000000
+    ],
+    "stage_partition": {
+      "deinterlace": {
+        "missing_from_previous_pts_ns": [],
+        "extra_vs_previous_pts_ns": []
+      },
+      "output-pack": {
+        "missing_from_previous_pts_ns": [
+          147380000000
+        ],
+        "extra_vs_previous_pts_ns": []
+      },
+      "output-scale": {
+        "missing_from_previous_pts_ns": [],
+        "extra_vs_previous_pts_ns": []
+      },
+      "sink": {
+        "missing_from_previous_pts_ns": [],
+        "extra_vs_previous_pts_ns": []
+      }
+    },
+    "sink_only_omissions_pts_ns": [],
+    "excluded_edge_counts": {
+      "decoder": 2,
+      "deinterlace": 5,
+      "output-pack": 6,
+      "output-scale": 6,
+      "sink": 5
+    },
+    "negotiated_snapshots": [
+      {
+        "phase": "first-playing",
+        "packing_selected": true,
+        "sink_properties": {
+          "qos": "True",
+          "sync": "True",
+          "max-lateness": "5000000",
+          "processing-deadline": "15000000",
+          "render-delay": "0",
+          "ts-offset": "0",
+          "enable-last-sample": "True"
+        },
+        "negotiated": {
+          "pack": {
+            "sink": {
+              "format": "YUY2",
+              "width": "1280",
+              "height": "720",
+              "framerate": "50/1",
+              "interlace-mode": "progressive",
+              "pixel-aspect-ratio": "1/1",
+              "colorimetry": "2:0:0:0"
+            },
+            "src": {
+              "format": "UYVY",
+              "width": "1280",
+              "height": "720",
+              "framerate": "50/1",
+              "interlace-mode": "progressive",
+              "pixel-aspect-ratio": "1/1",
+              "colorimetry": "2:0:0:0"
+            }
+          },
+          "scale": {
+            "sink": {
+              "format": "UYVY",
+              "width": "1280",
+              "height": "720",
+              "framerate": "50/1",
+              "interlace-mode": "progressive",
+              "pixel-aspect-ratio": "1/1",
+              "colorimetry": "2:0:0:0"
+            },
+            "src": {
+              "format": "UYVY",
+              "width": "1920",
+              "height": "1080",
+              "framerate": "50/1",
+              "interlace-mode": "progressive",
+              "pixel-aspect-ratio": "1/1",
+              "colorimetry": "2:0:0:0"
+            }
+          },
+          "sink": {
+            "sink": {
+              "format": "UYVY",
+              "width": "1920",
+              "height": "1080",
+              "framerate": "50/1",
+              "interlace-mode": "progressive",
+              "pixel-aspect-ratio": "1/1",
+              "colorimetry": "2:0:0:0"
+            }
+          }
+        }
+      },
+      {
+        "phase": "close-before-null",
+        "packing_selected": true,
+        "sink_properties": {
+          "qos": "True",
+          "sync": "True",
+          "max-lateness": "5000000",
+          "processing-deadline": "15000000",
+          "render-delay": "0",
+          "ts-offset": "0",
+          "enable-last-sample": "True"
+        },
+        "negotiated": {
+          "pack": {
+            "sink": {
+              "format": "YUY2",
+              "width": "1280",
+              "height": "720",
+              "framerate": "50/1",
+              "interlace-mode": "progressive",
+              "pixel-aspect-ratio": "1/1",
+              "colorimetry": "2:0:0:0"
+            },
+            "src": {
+              "format": "UYVY",
+              "width": "1280",
+              "height": "720",
+              "framerate": "50/1",
+              "interlace-mode": "progressive",
+              "pixel-aspect-ratio": "1/1",
+              "colorimetry": "2:0:0:0"
+            }
+          },
+          "scale": {
+            "sink": {
+              "format": "UYVY",
+              "width": "1280",
+              "height": "720",
+              "framerate": "50/1",
+              "interlace-mode": "progressive",
+              "pixel-aspect-ratio": "1/1",
+              "colorimetry": "2:0:0:0"
+            },
+            "src": {
+              "format": "UYVY",
+              "width": "1920",
+              "height": "1080",
+              "framerate": "50/1",
+              "interlace-mode": "progressive",
+              "pixel-aspect-ratio": "1/1",
+              "colorimetry": "2:0:0:0"
+            }
+          },
+          "sink": {
+            "sink": {
+              "format": "UYVY",
+              "width": "1920",
+              "height": "1080",
+              "framerate": "50/1",
+              "interlace-mode": "progressive",
+              "pixel-aspect-ratio": "1/1",
+              "colorimetry": "2:0:0:0"
+            }
+          }
+        }
+      }
+    ],
+    "whole_final_stage_counters": {
+      "decoder": 6121,
+      "deinterlace": 12241,
+      "output-pack": 12240,
+      "output-scale": 12239,
+      "sink": 12236
+    },
+    "health_frames": 6120,
+    "sink_stats_beforeNULL": [
+      {
+        "sink": "crystalhdxvsink",
+        "rendered": 12234,
+        "dropped": 1
+      }
+    ],
+    "native_prefix_summary": {
+      "schema": 1,
+      "enabled": true,
+      "clock": "CLOCK_MONOTONIC",
+      "retention": "first",
+      "inflight_scope": "retained_records_only",
+      "capacity": 8192,
+      "observed": 6122,
+      "retained": 6122,
+      "omitted": 0,
+      "inflight": 0,
+      "counters_saturated": false
+    },
+    "native_flow_counts": {
+      "0": 6121,
+      "-2": 1
+    },
+    "native_last_call": {
+      "call_id": 6122,
+      "instance": 134333759254448,
+      "generation": 2,
+      "recovery_epoch": 0,
+      "frame_number": 6121,
+      "pts": 244840000000,
+      "duration": 40000000,
+      "enter_ns": 353407949568562,
+      "return_ns": 353407970842974,
+      "enter_tid": 1118368,
+      "return_tid": 1118368,
+      "complete": true,
+      "flow": -2,
+      "elapsed_ns": 21274412,
+      "monotonic_order_valid": true
+    },
+    "xv_stats_by_phase": [
+      {
+        "phase": "BEFORE_PIPELINE_NULL",
+        "monotonic_ns": 353407944932643,
+        "factory": "crystalhdxvsink",
+        "name": "crystalhd-video-output",
+        "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstCrystalHdXv:crystalhd-video-output",
+        "available": true,
+        "scope": "own SHM/submission counters, not physical presentation or end-to-end zero-copy",
+        "pipeline_state": [
+          "1",
+          "PLAYING",
+          "VOID_PENDING"
+        ],
+        "stats": {
+          "submitted": 12234,
+          "acknowledged": 12234,
+          "video-submitted": 12234,
+          "redraw-submitted": 0,
+          "retained-picture": true,
+          "terminal-retired": 0,
+          "copied-bytes": 0,
+          "pool-submitted": 12234,
+          "pending": 0,
+          "images": 6,
+          "bytes": 24883200,
+          "allocated": 6,
+          "freed": 0,
+          "failed": false,
+          "closed": false,
+          "quarantined": false
+        }
+      },
+      {
+        "phase": "AFTER_PIPELINE_NULL",
+        "monotonic_ns": 353409071030444,
+        "factory": "crystalhdxvsink",
+        "name": "crystalhd-video-output",
+        "path": "/GstCrystalHdXv:crystalhd-video-output",
+        "available": true,
+        "scope": "own SHM/submission counters, not physical presentation or end-to-end zero-copy",
+        "pipeline_state": [
+          "1",
+          "NULL",
+          "VOID_PENDING"
+        ],
+        "stats": {
+          "submitted": 12236,
+          "acknowledged": 12236,
+          "video-submitted": 12236,
+          "redraw-submitted": 0,
+          "retained-picture": false,
+          "terminal-retired": 0,
+          "copied-bytes": 0,
+          "pool-submitted": 12236,
+          "pending": 0,
+          "images": 0,
+          "bytes": 0,
+          "allocated": 6,
+          "freed": 6,
+          "failed": false,
+          "closed": true,
+          "quarantined": false
+        }
+      }
+    ],
+    "thermal_outcome": {
+      "exception": {
+        "type": "AssertionError",
+        "message": "('AC/thermal guard', True, [75000, 64000])"
+      },
+      "final_guard_error": {
+        "type": "AssertionError",
+        "message": "('temperature guard', [75000, 62000])"
+      },
+      "last_thermal_observation": {
+        "monotonic_ns": 353407939148709,
+        "temperatures_mC": [
+          75000,
+          64000
+        ],
+        "ac_present": true
+      },
+      "entry_exit": 143,
+      "closed": true,
+      "natural_eos": false,
+      "boundary_equal": true,
+      "kernel_exit": 0,
+      "pins_equal": true
+    },
+    "limits": [
+      "No retry, live/proc/sys access, build, test, media/source-file read or production modification by auditor.",
+      "Window freezes early; neither final counts nor completion counts reconstruct all PTS/display outcomes.",
+      "Pad omissions locate observation boundaries only: decoder147.40; inherited147.40/147.42; additional early-pack omission147.38. No sink-only omission in complete common interval.",
+      "PostNULL SHM acknowledgements prove the recorded ownership retirement; not physical scanout or end-to-end zero-copy.",
+      "copied-bytes0 is sink-specific; decoder/software conversion/scaling are not thereby copy-free.",
+      "Thermal stop75C and failed final thermal guard are preserved despite equal module/device boundary. No EOS, full300s, repair or performance acceptance.",
+      "First positive sink QoS147.34/+6.402ms precedes first counted loss147.36/+28.663ms; per-event QoS contains no dropped counter."
+    ]
+  },
+  "independent_native_completion_audit": {
+    "native_finish": {
+      "collector": {
+        "schema": 1,
+        "enabled": true,
+        "clock": "CLOCK_MONOTONIC",
+        "retention": "first",
+        "inflight_scope": "retained_records_only",
+        "capacity": 8192,
+        "observed": 6122,
+        "retained": 6122,
+        "omitted": 0,
+        "inflight": 0,
+        "counters_saturated": false
+      },
+      "records": 6122,
+      "complete": 6122,
+      "first_system_frame_number": 0,
+      "first_pts_ns": 0,
+      "last_pts_ns": 244840000000,
+      "identities": [
+        [
+          134333759254448,
+          2,
+          0
+        ]
+      ],
+      "emitter_tids": [
+        1118368
+      ],
+      "flow_counts": {
+        "0": 6121,
+        "-2": 1
+      },
+      "last_call": {
+        "call_id": 6122,
+        "instance": 134333759254448,
+        "generation": 2,
+        "recovery_epoch": 0,
+        "frame_number": 6121,
+        "pts": 244840000000,
+        "duration": 40000000,
+        "enter_ns": 353407949568562,
+        "return_ns": 353407970842974,
+        "enter_tid": 1118368,
+        "return_tid": 1118368,
+        "complete": true,
+        "flow": -2,
+        "elapsed_ns": 21274412,
+        "monotonic_order_valid": true
+      }
+    },
+    "whole_stage_counters": {
+      "counts": {
+        "output-pack": 12240,
+        "output-scale": 12239,
+        "sink": 12236,
+        "decoder": 6121,
+        "deinterlace": 12241
+      },
+      "expected": {
+        "decoder": 7500,
+        "deinterlace": 15000,
+        "output-pack": 15000,
+        "output-scale": 15000,
+        "sink": 15000
+      },
+      "EOS_counts": {
+        "output-pack": 0,
+        "output-scale": 0,
+        "sink": 0,
+        "decoder": 0,
+        "deinterlace": 0
+      },
+      "attachments": [
+        {
+          "id": 0,
+          "stage": "output-pack",
+          "token": 1,
+          "active": false,
+          "buffers": 12240,
+          "events": 12237,
+          "buffer_lists": 0,
+          "list_items": 0,
+          "list_missing_pts": 0,
+          "buffer_list_ambiguity": false,
+          "missing_pts": 0,
+          "eos_count": 0,
+          "qos_count": 12234,
+          "stream_generation": 1,
+          "segment_generation": 1,
+          "flush_generation": 0,
+          "segment_valid": true,
+          "flushing": false
+        },
+        {
+          "id": 1,
+          "stage": "output-scale",
+          "token": 2,
+          "active": false,
+          "buffers": 12239,
+          "events": 12237,
+          "buffer_lists": 0,
+          "list_items": 0,
+          "list_missing_pts": 0,
+          "buffer_list_ambiguity": false,
+          "missing_pts": 0,
+          "eos_count": 0,
+          "qos_count": 12234,
+          "stream_generation": 1,
+          "segment_generation": 1,
+          "flush_generation": 0,
+          "segment_valid": true,
+          "flushing": false
+        },
+        {
+          "id": 2,
+          "stage": "sink",
+          "token": 3,
+          "active": false,
+          "buffers": 12236,
+          "events": 12237,
+          "buffer_lists": 0,
+          "list_items": 0,
+          "list_missing_pts": 0,
+          "buffer_list_ambiguity": false,
+          "missing_pts": 0,
+          "eos_count": 0,
+          "qos_count": 12234,
+          "stream_generation": 1,
+          "segment_generation": 1,
+          "flush_generation": 0,
+          "segment_valid": true,
+          "flushing": false
+        },
+        {
+          "id": 3,
+          "stage": "decoder",
+          "token": 4,
+          "active": false,
+          "buffers": 6121,
+          "events": 12237,
+          "buffer_lists": 0,
+          "list_items": 0,
+          "list_missing_pts": 0,
+          "buffer_list_ambiguity": false,
+          "missing_pts": 0,
+          "eos_count": 0,
+          "qos_count": 12234,
+          "stream_generation": 1,
+          "segment_generation": 1,
+          "flush_generation": 0,
+          "segment_valid": true,
+          "flushing": false
+        },
+        {
+          "id": 4,
+          "stage": "deinterlace",
+          "token": 5,
+          "active": false,
+          "buffers": 12241,
+          "events": 12237,
+          "buffer_lists": 0,
+          "list_items": 0,
+          "list_missing_pts": 0,
+          "buffer_list_ambiguity": false,
+          "missing_pts": 0,
+          "eos_count": 0,
+          "qos_count": 12234,
+          "stream_generation": 1,
+          "segment_generation": 1,
+          "flush_generation": 0,
+          "segment_valid": true,
+          "flushing": false
+        }
+      ],
+      "arithmetic": {
+        "two_decoder_minus_DI": 1,
+        "DI_minus_pack": 1,
+        "pack_minus_scale": 1,
+        "scale_minus_sink_input": 3
+      },
+      "scope": "Cumulative counters and actual EOS; this does not establish full pad PTS-set equality."
+    },
+    "retained_pad_interval": {
+      "census_qualified": true,
+      "no_loss_in_qualified_interval": false,
+      "interval_ns": [
+        121600000000,
+        156040000000
+      ],
+      "stage_counts": {
+        "decoder": 860,
+        "deinterlace": 1720,
+        "output-pack": 1719,
+        "output-scale": 1719,
+        "sink": 1719
+      },
+      "missing_expected_PTS": {
+        "decoder": {
+          "count": 1,
+          "first_100_ns": [
+            147400000000
+          ],
+          "values_truncated": false
+        },
+        "deinterlace": {
+          "count": 2,
+          "first_100_ns": [
+            147400000000,
+            147420000000
+          ],
+          "values_truncated": false
+        },
+        "output-pack": {
+          "count": 3,
+          "first_100_ns": [
+            147380000000,
+            147400000000,
+            147420000000
+          ],
+          "values_truncated": false
+        },
+        "output-scale": {
+          "count": 3,
+          "first_100_ns": [
+            147380000000,
+            147400000000,
+            147420000000
+          ],
+          "values_truncated": false
+        },
+        "sink": {
+          "count": 3,
+          "first_100_ns": [
+            147380000000,
+            147400000000,
+            147420000000
+          ],
+          "values_truncated": false
+        }
+      },
+      "extra_PTS": {
+        "decoder": {
+          "count": 0,
+          "first_100_ns": [],
+          "values_truncated": false
+        },
+        "deinterlace": {
+          "count": 0,
+          "first_100_ns": [],
+          "values_truncated": false
+        },
+        "output-pack": {
+          "count": 0,
+          "first_100_ns": [],
+          "values_truncated": false
+        },
+        "output-scale": {
+          "count": 0,
+          "first_100_ns": [],
+          "values_truncated": false
+        },
+        "sink": {
+          "count": 0,
+          "first_100_ns": [],
+          "values_truncated": false
+        }
+      },
+      "whole_source_pad_PTS_census_qualified": false,
+      "integrity": {
+        "PTS_known": true,
+        "unique": true,
+        "ordinals_contiguous": true,
+        "PTS_ordered": true,
+        "epochs_stable": true,
+        "boundary_context_known": true
+      },
+      "epochs": {
+        "decoder": [
+          [
+            1,
+            1,
+            0
+          ]
+        ],
+        "deinterlace": [
+          [
+            1,
+            1,
+            0
+          ]
+        ],
+        "output-pack": [
+          [
+            1,
+            1,
+            0
+          ]
+        ],
+        "output-scale": [
+          [
+            1,
+            1,
+            0
+          ]
+        ],
+        "sink": [
+          [
+            1,
+            1,
+            0
+          ]
+        ]
+      },
+      "retention": "window",
+      "truncated": true,
+      "omitted_or_overwritten_trace_records": 99890,
+      "window": {
+        "triggered": true,
+        "trigger_seqnum": 26458,
+        "trigger_order": 70023,
+        "post_target": 4096,
+        "post_retained": 4096,
+        "complete": true,
+        "overwritten": 57735,
+        "unretained_after_window": 42155,
+        "context_before_order": 57736
+      },
+      "scope": "Only the common retained interval is compared. No whole PTS inference from capped records."
+    },
+    "xv_output": {
+      "snapshots": [
+        {
+          "phase": "BEFORE_PIPELINE_NULL",
+          "monotonic_ns": 353407944932643,
+          "factory": "crystalhdxvsink",
+          "name": "crystalhd-video-output",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstCrystalHdXv:crystalhd-video-output",
+          "available": true,
+          "scope": "own SHM/submission counters, not physical presentation or end-to-end zero-copy",
+          "pipeline_state": [
+            "1",
+            "PLAYING",
+            "VOID_PENDING"
+          ],
+          "stats": {
+            "submitted": 12234,
+            "acknowledged": 12234,
+            "video-submitted": 12234,
+            "redraw-submitted": 0,
+            "retained-picture": true,
+            "terminal-retired": 0,
+            "copied-bytes": 0,
+            "pool-submitted": 12234,
+            "pending": 0,
+            "images": 6,
+            "bytes": 24883200,
+            "allocated": 6,
+            "freed": 0,
+            "failed": false,
+            "closed": false,
+            "quarantined": false
+          }
+        },
+        {
+          "phase": "AFTER_PIPELINE_NULL",
+          "monotonic_ns": 353409071030444,
+          "factory": "crystalhdxvsink",
+          "name": "crystalhd-video-output",
+          "path": "/GstCrystalHdXv:crystalhd-video-output",
+          "available": true,
+          "scope": "own SHM/submission counters, not physical presentation or end-to-end zero-copy",
+          "pipeline_state": [
+            "1",
+            "NULL",
+            "VOID_PENDING"
+          ],
+          "stats": {
+            "submitted": 12236,
+            "acknowledged": 12236,
+            "video-submitted": 12236,
+            "redraw-submitted": 0,
+            "retained-picture": false,
+            "terminal-retired": 0,
+            "copied-bytes": 0,
+            "pool-submitted": 12236,
+            "pending": 0,
+            "images": 0,
+            "bytes": 0,
+            "allocated": 6,
+            "freed": 6,
+            "failed": false,
+            "closed": true,
+            "quarantined": false
+          }
+        }
+      ],
+      "BaseSink_preNULL": [
+        {
+          "sink": "crystalhdxvsink",
+          "rendered": 12234,
+          "dropped": 1
+        }
+      ],
+      "sink_identity_scope": {
+        "factory": "crystalhdxvsink",
+        "name": "crystalhd-video-output",
+        "before_path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstCrystalHdXv:crystalhd-video-output",
+        "after_path": "/GstCrystalHdXv:crystalhd-video-output",
+        "compatible_leaf_paths": true,
+        "object_pointer_token_captured": false,
+        "source_fact": "Both frozen entry snapshots read the pipeline video-sink property. The frozen Player sets the explicit sink once during construction; the entry close path does not replace that property.",
+        "limit": "Factory/name and compatible leaf paths are source-consistent observations, not an independently captured stable object pointer/token. NULL may unparent the sink and remove its pipeline ancestry."
+      },
+      "own_requests_all_acknowledged": true,
+      "post_stop_resource_snapshot_retired": true,
+      "sink_row_copy_bytes_observed": 0,
+      "no_sink_row_copy_observed": true,
+      "video_submissions_minus_preNULL_rendered": 2,
+      "scope": "Request deltas may include preroll/redraw and differ in phase; never a unique displayed-picture count."
+    },
+    "schema": 1,
+    "case": "pcm-fhd-xvasync-01",
+    "status": "INCOMPLETE_THERMAL_GUARD_STOP",
+    "qualified": false,
+    "expected_source": {
+      "pictures": 7500,
+      "progressive_fields": 15000,
+      "picture_duration_ns": 40000000,
+      "field_duration_ns": 20000000,
+      "duration_ns": 300000000000
+    },
+    "artifact_integrity_qualified": true,
+    "natural_EOS_counts_and_native_grid_qualified": false,
+    "own_request_completion_qualified": true,
+    "own_resource_stop_snapshot_qualified": true,
+    "full_pad_PTS_census_qualified": false,
+    "checks": [
+      {
+        "name": "same exact invocation prefix",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "runtime source declaration matches expected source",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "source identity bound to frozen operator pin",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "explicit selected output",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "runtime revision identity agrees",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "normal exit0 with actual natural EOS",
+        "passed": false,
+        "kind": "natural_eos"
+      },
+      {
+        "name": "actual EOS bus event retained",
+        "passed": false,
+        "kind": "natural_eos"
+      },
+      {
+        "name": "bus event history complete",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "closed application and no remaining device FDs",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "no health/entry/observer errors",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "boundary/kernel/final source-pin guard clean",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "no operator stop/error or lingering owned tasks",
+        "passed": false,
+        "kind": "natural_eos"
+      },
+      {
+        "name": "one configured native finish collector",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native snapshot after NULL and worker join",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native enabled first-N monotonic collector",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "configured 8192 finish capacity",
+        "passed": true,
+        "kind": "integrity",
+        "observed": 8192,
+        "expected": 8192
+      },
+      {
+        "name": "native retained/observed accounting",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native no saturation or omitted calls",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native inflight scope and count",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native full expected source count",
+        "passed": false,
+        "kind": "native_census",
+        "observed": 6122,
+        "expected": 7500
+      },
+      {
+        "name": "native all expected calls returned",
+        "passed": true,
+        "kind": "native_census"
+      },
+      {
+        "name": "native entry sequence contiguous from one",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "one native instance/session/recovery epoch",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native system frame numbers contiguous",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native original PTS and picture-duration grid",
+        "passed": true,
+        "kind": "native_census"
+      },
+      {
+        "name": "native paired TID/timestamps/elapsed",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native all completed flows OK",
+        "passed": false,
+        "kind": "native_census",
+        "observed": {
+          "0": 6121,
+          "-2": 1
+        },
+        "expected": {
+          "0": 7500
+        }
+      },
+      {
+        "name": "native same-TID completed spans nonoverlapping",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native trace closed without structural loss/ambiguity",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "one attachment for each required stage",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "whole-invocation stage counts equal expected source picture/field counts",
+        "passed": false,
+        "kind": "stage_census",
+        "observed": {
+          "output-pack": 12240,
+          "output-scale": 12239,
+          "sink": 12236,
+          "decoder": 6121,
+          "deinterlace": 12241
+        },
+        "expected": {
+          "decoder": 7500,
+          "deinterlace": 15000,
+          "output-pack": 15000,
+          "output-scale": 15000,
+          "sink": 15000
+        }
+      },
+      {
+        "name": "one actual EOS per attachment",
+        "passed": false,
+        "kind": "stage_census",
+        "observed": {
+          "output-pack": 0,
+          "output-scale": 0,
+          "sink": 0,
+          "decoder": 0,
+          "deinterlace": 0
+        },
+        "expected": {
+          "decoder": 1,
+          "deinterlace": 1,
+          "output-pack": 1,
+          "output-scale": 1,
+          "sink": 1
+        }
+      },
+      {
+        "name": "no missing PTS/list ambiguity in full attachment counters",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "attachment counters nonnegative integers",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "retained record accounting",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "retained record order contiguous",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "retained observed buffer metadata unambiguous",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "exact separate pre/post NULL Xv snapshots",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "matching explicit sink factory/name and compatible pre/post NULL leaf paths",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "Xv phase timestamps ordered",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "actual post phase state is NULL",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "BEFORE_PIPELINE_NULL available exact typed statistics",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "BEFORE_PIPELINE_NULL submission decomposition",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "BEFORE_PIPELINE_NULL ACK/terminal/pending conservation",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "BEFORE_PIPELINE_NULL pool/free bounds",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "AFTER_PIPELINE_NULL available exact typed statistics",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "AFTER_PIPELINE_NULL submission decomposition",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "AFTER_PIPELINE_NULL ACK/terminal/pending conservation",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "AFTER_PIPELINE_NULL pool/free bounds",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "pre/post cumulative fields do not reset",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "all own submitted requests acknowledged without terminal/error",
+        "passed": true,
+        "kind": "request_completion"
+      },
+      {
+        "name": "post-stop own image snapshot completely retired",
+        "passed": true,
+        "kind": "resource_snapshot"
+      },
+      {
+        "name": "one pre-NULL BaseSink statistic snapshot",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "pre-NULL rendered/dropped source-field census",
+        "passed": false,
+        "kind": "stage_census",
+        "observed": {
+          "rendered": 12234,
+          "dropped": 1
+        },
+        "expected": {
+          "rendered": 15000,
+          "dropped": 0
+        }
+      },
+      {
+        "name": "no measured retained-interval loss",
+        "passed": false,
+        "kind": "stage_census"
+      }
+    ],
+    "section_errors": [],
+    "original_runtime": {
+      "entry_exit": 143,
+      "operator_entry_exit": 143,
+      "natural_eos": false,
+      "health_frames": 6120,
+      "operator_exception": {
+        "type": "AssertionError",
+        "message": "('AC/thermal guard', True, [75000, 64000])",
+        "traceback": "Traceback (most recent call last):\n  File \"/home/mache/.cache/crystalhd-fhd-cause-20261030/run-integration.py\", line 207, in main\n    health();budget.poll()\n    ~~~~~~^^\n  File \"/home/mache/.cache/crystalhd-fhd-cause-20261030/run-integration.py\", line 163, in health\n    assert ac and temperatures and max(temperatures)<75000,('AC/thermal guard',ac,temperatures)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: ('AC/thermal guard', True, [75000, 64000])\n"
+      },
+      "entry_exception": null,
+      "plan_sha256": "5d987de23b76ca30a8513f314b59bc3f3b86522819ea97bdefc0c2a2c8bf23fa",
+      "revision": "f4e3827500a9e1974106517a948bff7c637a14dc",
+      "thermal_observations": [
+        {
+          "monotonic_ns": 353156387187278,
+          "temperatures_mC": [
+            51000,
+            44000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353161418182222,
+          "temperatures_mC": [
+            56000,
+            45000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353166466276314,
+          "temperatures_mC": [
+            58000,
+            45000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353171503186464,
+          "temperatures_mC": [
+            59000,
+            45000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353176537529956,
+          "temperatures_mC": [
+            59000,
+            48000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353181559922980,
+          "temperatures_mC": [
+            60000,
+            47000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353186585157186,
+          "temperatures_mC": [
+            61000,
+            48000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353191624639189,
+          "temperatures_mC": [
+            61000,
+            49000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353196653252536,
+          "temperatures_mC": [
+            62000,
+            51000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353201690723868,
+          "temperatures_mC": [
+            63000,
+            52000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353206731573692,
+          "temperatures_mC": [
+            63000,
+            52000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353211759354660,
+          "temperatures_mC": [
+            64000,
+            53000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353216786808584,
+          "temperatures_mC": [
+            64000,
+            53000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353221814813745,
+          "temperatures_mC": [
+            65000,
+            54000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353226850370618,
+          "temperatures_mC": [
+            65000,
+            55000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353231877578659,
+          "temperatures_mC": [
+            66000,
+            55000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353236900986421,
+          "temperatures_mC": [
+            66000,
+            55000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353241928869229,
+          "temperatures_mC": [
+            66000,
+            55000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353246970264886,
+          "temperatures_mC": [
+            67000,
+            55000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353252001124574,
+          "temperatures_mC": [
+            67000,
+            55000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353257032346374,
+          "temperatures_mC": [
+            68000,
+            56000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353262054290928,
+          "temperatures_mC": [
+            68000,
+            57000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353267084894431,
+          "temperatures_mC": [
+            68000,
+            57000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353272118256588,
+          "temperatures_mC": [
+            69000,
+            57000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353277142464776,
+          "temperatures_mC": [
+            69000,
+            57000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353282168360782,
+          "temperatures_mC": [
+            69000,
+            58000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353287203060040,
+          "temperatures_mC": [
+            70000,
+            58000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353292233947582,
+          "temperatures_mC": [
+            70000,
+            59000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353297256348656,
+          "temperatures_mC": [
+            70000,
+            58000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353302287098655,
+          "temperatures_mC": [
+            70000,
+            58000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353307325736961,
+          "temperatures_mC": [
+            70000,
+            59000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353312381955807,
+          "temperatures_mC": [
+            71000,
+            60000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353317415374216,
+          "temperatures_mC": [
+            71000,
+            60000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353322438645011,
+          "temperatures_mC": [
+            71000,
+            60000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353327468372890,
+          "temperatures_mC": [
+            72000,
+            60000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353332504241462,
+          "temperatures_mC": [
+            72000,
+            60000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353337530928638,
+          "temperatures_mC": [
+            72000,
+            61000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353342560200577,
+          "temperatures_mC": [
+            72000,
+            61000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353347582206507,
+          "temperatures_mC": [
+            73000,
+            61000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353352616224655,
+          "temperatures_mC": [
+            73000,
+            61000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353357645287354,
+          "temperatures_mC": [
+            73000,
+            61000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353362669569563,
+          "temperatures_mC": [
+            73000,
+            61000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353367698472893,
+          "temperatures_mC": [
+            73000,
+            62000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353372736115658,
+          "temperatures_mC": [
+            73000,
+            62000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353377761969926,
+          "temperatures_mC": [
+            74000,
+            62000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353382786708809,
+          "temperatures_mC": [
+            74000,
+            63000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353387820114841,
+          "temperatures_mC": [
+            74000,
+            63000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353392854196061,
+          "temperatures_mC": [
+            74000,
+            63000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353397875502256,
+          "temperatures_mC": [
+            74000,
+            62000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353402905284163,
+          "temperatures_mC": [
+            74000,
+            63000
+          ],
+          "ac_present": true
+        },
+        {
+          "monotonic_ns": 353407939148709,
+          "temperatures_mC": [
+            75000,
+            64000
+          ],
+          "ac_present": true
+        }
+      ]
+    },
+    "limits": [
+      "No stable sink object pointer/token was captured. Factory/name and leaf-path compatibility permit normal NULL unparenting; they do not independently prove object identity.",
+      "This audits one finite source invocation. It is not physical scanout, calibrated A/V, endurance, universal zero-loss, repaired cause or speedup qualification.",
+      "Full native finish metadata and cumulative stage counters are distinct from capped pad PTS arrays. Missing unretained history is never counted as missing video.",
+      "PTS/source ordinal matching is a metadata-grid observation, not source-pixel or unique rendered-object identity.",
+      "BaseSink statistics are pre-NULL snapshots. Xv AFTER_PIPELINE_NULL is the renderer stop-time snapshot, not a continuously refreshed quarantine/reaper census.",
+      "Xv submitted/ACK counts include preroll and redraw requests. ACK is SHM request retirement, not a unique picture or physical presentation.",
+      "Copied-bytes measures this sink row-copy path only; zero does not establish end-to-end zero-copy or eliminate conversion/scaling/server work.",
+      "Thermal guard, forced Stop, errors and no-EOS runs remain incomplete/failed even when a retained interval has a valid census."
+    ],
+    "artifact_sha256": {
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.boundary.json": "922bb7dcff101144352c868916c6994361f7f81ba52441a0bba64845b4011cb8",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.result.json": "9e7a1fe720afea75630af87da71a38ebd2b2d3898c211be54c77626006c1b77b",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.trace.json": "55373ff98e84a2ac8fd8824f3e96bf4a2dca6deae7370b2f355e28b81db63b28",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.ready.json": "92d0a22fa9776b5abe400308acd3ad9b174902c7472d9d1281899fc22320a372",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.log": "9baf456b681281269087661e6116403349f32078d30544fc96795143e31ae47d",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/audit-integration-native-v2.py": "7ab333716e978b156a40905f253df0688b37891eff0fc7916292579fed38c6fb"
+    }
+  },
+  "preserved_initial_audit_failure": {
+    "source": "/home/mache/.cache/crystalhd-fhd-cause-20261030/audit-integration-native.py",
+    "source_sha256": "a44b0e9788baa4bd5a5c3f6d6259000b1ce8990808706d60a3ff401efb4ee49f",
+    "result": "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-xvasync-01.independent-audit.json",
+    "result_sha256": "4efa3f82226caa52767d4ec34657ab9f223e2ef697432d1091834f287b4d5081",
+    "incorrect_assumption": "Full Gst object path must remain equal across NULL. Sink is normally unparented, removing pipeline ancestry.",
+    "correction": "NEW v2 accepts factory/name and compatible leaf paths. Object pointer token was not captured; source-consistent identity limit explicitly retained. All EOS/count/drop/thermal checks unchanged. Original source/output preserved; offline audit replay only, no hardware retry."
+  }
+}

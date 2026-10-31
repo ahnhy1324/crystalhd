@@ -16,6 +16,7 @@ UI=importlib.util.module_from_spec(spec);spec.loader.exec_module(UI)
 CORE=UI.load_core()
 MODULES=UI.load_gtk()
 Gtk,Gdk,Gio,GLib=MODULES
+from gi.repository import Atk
 if not Gtk.init_check([])[0]:raise RuntimeError('GTK tests require a graphical display (use xvfb-run -a)')
 HEADER='[crystalhd]\nschema = 1\n'
 
@@ -40,6 +41,50 @@ def select(combo,token):
 
 
 class GtkSettingsTests(unittest.TestCase):
+    def assert_label_relation(self, widget, mnemonic):
+        labels = widget.list_mnemonic_labels()
+        self.assertEqual(len(labels), 1)
+        label = labels[0]
+        self.assertIs(label.get_mnemonic_widget(), widget)
+        self.assertEqual(label.get_mnemonic_keyval(), mnemonic)
+        relation = widget.get_accessible().ref_relation_set().get_relation_by_type(Atk.RelationType.LABELLED_BY)
+        self.assertIsNotNone(relation)
+        self.assertIn(label.get_accessible(), relation.get_target())
+        self.assertEqual(widget.get_accessible().get_name(), label.get_text())
+        return label
+
+    def test_custom_player_values_have_visible_labels_and_keyboard_targets(self):
+        app = self.app()
+        for key, mnemonic in (('gstreamer.crystalhddec.scale_width', Gdk.KEY_a),
+                              ('player.software_output_size', Gdk.KEY_e)):
+            select(app.player_controls[key], 'custom')
+            entry = app.player_entries[key]
+            label = self.assert_label_relation(entry, mnemonic)
+            self.assertTrue(label.get_visible())
+            app.player_controls[key].grab_focus();drain()
+            self.assertTrue(label.mnemonic_activate(False));drain()
+            self.assertTrue(entry.has_focus())
+        self.assertFalse(self.path.exists())
+
+    def test_profile_name_dialog_has_visible_label_and_keyboard_target(self):
+        app = self.app()
+        observed = []
+        def inspect_dialog():
+            dialog = next(w for w in Gtk.Window.list_toplevels() if isinstance(w, Gtk.Dialog))
+            try:
+                entry = next(w for w in dialog.get_content_area().get_children() if isinstance(w, Gtk.Entry))
+                label = self.assert_label_relation(entry, Gdk.KEY_p)
+                self.assertTrue(label.get_visible())
+                observed.append(True)
+            finally:
+                dialog.response(Gtk.ResponseType.CANCEL)
+            return False
+        GLib.idle_add(inspect_dialog)
+        self.assertIsNone(app.prompt_profile_name())
+        self.assertEqual(observed, [True])
+        self.assertFalse(app.editor.dirty)
+        self.assertFalse(self.path.exists())
+
     def test_installation_refresh_does_not_save_or_discard_drafts(self):
         with mock.patch.object(CORE, 'inspect_installation', return_value={'scope': 'test', 'readers': [{'state': 'unknown'}]}), \
                 mock.patch.object(CORE, 'installation_text', return_value='File declaration only'):
@@ -292,6 +337,7 @@ class GtkSettingsTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
         self.assertFalse(app.save_button.get_sensitive())
         combo=app.controls['vaapi.debug']
+        self.assert_label_relation(combo, Gdk.KEY_d)
         self.assertIn('debug',combo.get_accessible().get_name().lower())
         for token,expected in [('true',True),('false',False),('unset',CORE.UNSET),('',None)]:
             select(combo,token)
@@ -558,6 +604,73 @@ class GtkSettingsTests(unittest.TestCase):
         select(app.player_controls[key],'unset')
         self.assertFalse(app.pending_player)
         self.assertTrue(app.save_button.get_sensitive())
+
+    def test_player_validation_description_is_localized_and_changes_only_with_error(self):
+        translations = {
+            'Enter 0 for native width, or an even number from 128 to 1918.': 'Translated card-width validation',
+            'Enter WIDTHxHEIGHT: positive even dimensions, each at most 4096, total at most 4096×2160.': 'Translated output-size validation',
+        }
+        with mock.patch.object(UI, '_', side_effect=lambda text: translations.get(text, text)):
+            app = self.app()
+            for key, invalid, valid in (
+                    ('gstreamer.crystalhddec.scale_width', '127', '128'),
+                    ('player.software_output_size', '1921x1080', '1920x1080')):
+                with self.subTest(key=key):
+                    entry = app.player_entries[key]
+                    accessible = entry.get_accessible()
+                    changes = []
+                    handler = accessible.connect('notify::accessible-description',
+                                                 lambda obj, _spec: changes.append(obj.get_description()))
+                    try:
+                        self.assertEqual(accessible.get_description(), '')
+                        select(app.player_controls[key], 'custom')
+                        entry.set_text(invalid);drain()
+                        error = app.player_error_text(key)
+                        self.assertIn(error, translations.values())
+                        self.assertEqual(app.player_errors[key].get_text(), error)
+                        self.assertEqual(accessible.get_description(), error)
+                        self.assertEqual(changes, [error])
+                        self.assertFalse(app.save_button.get_sensitive())
+                        app.update_preview();drain()
+                        self.assertEqual(changes, [error])
+                        entry.set_text(valid);drain()
+                        self.assertEqual(app.player_errors[key].get_text(), '')
+                        self.assertEqual(accessible.get_description(), '')
+                        self.assertEqual(changes, [error, ''])
+                        self.assertTrue(app.save_button.get_sensitive())
+                    finally:
+                        accessible.disconnect(handler)
+        self.assertFalse(self.path.exists())
+
+    def test_player_validation_description_follows_editing_scope_and_cleared_override(self):
+        for key, invalid in (('gstreamer.crystalhddec.scale_width', '127'),
+                             ('player.software_output_size', '1921x1080')):
+            with self.subTest(key=key):
+                app = self.app()
+                app.prompt_profile_name = lambda: 'desk'
+                app.new_profile_button.clicked();drain()
+                select(app.player_controls[key], 'custom')
+                entry = app.player_entries[key]
+                entry.set_text(invalid);drain()
+                error = app.player_error_text(key)
+                self.assertEqual(entry.get_accessible().get_description(), error)
+                select(app.layer, '')
+                self.assertEqual(entry.get_accessible().get_description(), '')
+                self.assertEqual(app.player_errors[key].get_text(), '')
+                self.assertEqual(entry.get_text(), '')
+                self.assertFalse(entry.get_sensitive())
+                self.assertFalse(app.save_button.get_sensitive())
+                self.assertEqual(app.pending_player[('desk', key)], invalid)
+                select(app.layer, 'desk')
+                self.assertEqual(entry.get_accessible().get_description(), error)
+                self.assertEqual(app.player_errors[key].get_text(), error)
+                self.assertEqual(entry.get_text(), invalid)
+                select(app.player_controls[key], 'unset')
+                self.assertEqual(entry.get_accessible().get_description(), '')
+                self.assertEqual(app.player_errors[key].get_text(), '')
+                self.assertFalse(app.pending_player)
+                self.assertTrue(app.save_button.get_sensitive())
+                self.assertFalse(self.path.exists())
 
     def test_tray_startup_hides_only_after_connection_and_buttons_explain_actions(self):
         app=self.app()

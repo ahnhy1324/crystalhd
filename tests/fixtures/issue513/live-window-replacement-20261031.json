@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "source_revision": "a1006fedf87c31ad666bcd8dfda449d99593367c",
+  "status": "PASS_SCOPED_LIVE_WINDOW_HANDOFF",
+  "device_free_groups": 4,
+  "actual_x11_groups": 15,
+  "sanitized_actual_x11_groups": 15,
+  "sanitizers": "ASan/UBSan/leaks; no suppressions",
+  "display": ":0",
+  "scope": "Two owned mapped windows; held real SHM completion, invalid-target refusal, exact old-flight identity and drain, retained source metadata, visible pixel checks, later pool submissions and resource balance. No port theft/systemwide Xorg restart/physical AV/field census.",
+  "logs": {
+    "xv-window-cpu.log": "dec666cb82ca82ff5c4ae8db4bbe92ecef891486c865c412e8dc777127390d16",
+    "xv-window-x11.log": "e4ca4c81b1ad13bcdd9c786d1281a089126ee25fb4e14da08abc8ee51d253a01",
+    "xv-window-sanitized.log": "d977ac92bc321d44e34754f44789c3ebd79cd0a98e25df1cb07b28ea48a90b10"
+  },
+  "ordinary_plugin_sha256": "d3137ba9348df7e53bb1160b59c83076c7a34fd24acda1eb4b6943b05e7392f8",
+  "kernel_card_not_opened": true
+}

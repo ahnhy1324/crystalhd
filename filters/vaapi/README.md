@@ -524,7 +524,10 @@ linear snapshot with the image's original pitches and offsets, not a zero-copy
 alias of a decoded surface. Mapping, resizing, copying or destroying the image
 or buffer is rejected while it is externally borrowed. Release waits for
 external DMA-BUF work and copies external writes back into the image; a sync
-failure invalidates that image's contents. Export allocation requires a
+failure invalidates that image's contents. If allocating the release copy fails
+before synchronization starts, release returns `VA_STATUS_ERROR_ALLOCATION_FAILED`
+and keeps the same borrowed handle and any cold-source write lease intact;
+the caller can retry release. Export allocation requires a
 compatible linear GBM byte buffer, while CPU-only image access remains usable
 without one.
 
@@ -951,6 +954,22 @@ LIBVA_DRIVERS_PATH=$PWD/filters/vaapi \
 LD_LIBRARY_PATH=$PWD/linux_lib/libcrystalhd \
 vainfo --display drm --device "$drm_node"
 ```
+
+Run the selected device-free ownership sanitizer check from the repository root:
+
+```sh
+make -C filters/vaapi check-ownership-sanitized
+```
+
+This instruments the existing buffer-handle regression and included production
+VA callbacks with strict ASan/UBSan/leak checks, without suppressions. It covers
+original and derived-image borrows, allocation failures and retry release. The
+executable and configuration fingerprint use a fresh temporary directory that
+is removed on completion, failure or normal interruption; ordinary outputs and
+their CPU-mode stamp are untouched. DIL entry points abort if reached, and no
+libcrystalhd build or hardware decode is required. The target requires
+`LEGACY_CPU=0` and rejects `LEGACY_CPU=1` before compilation. Broader VA
+decode/replay/VPP and legacy sanitizer coverage remain unqualified.
 
 Hardware-decode a file with FFmpeg:
 

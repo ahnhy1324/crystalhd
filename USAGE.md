@@ -118,12 +118,111 @@ fallback:
 crystalhd-play --software "/path/to/video.mp4"
 ```
 
+Unreleased development builds also offer the optional
+[X11 completion-controlled output](filters/gst/xv-output/README.md) through
+`--video-output xv-async`. Build its separate plugin first; `auto` remains the
+default. This is an experimental output choice, not a general speedup or
+physical A/V qualification.
+
+An additional experimental `--packed-upscale` option fuses packing with the
+method4, two-thread resize for progressive1280x720YUY2 to1920x1080UYVY50Hz.
+It requires `--hardware --video-output xv-async --scale-width 1280
+--software-output-size 1920x1080` and the separately built
+[packed upscale plugin](filters/gst/packed-upscale/README.md).
+Unsupported input, color conversion, spatial metadata or GStreamer versions
+are rejected. It is an invocation-only option; it does not change the default
+output or saved settings. Its frame trace has four measured stages
+(decoder/deinterlace/output-scale/sink), with packing included in output-scale.
+
+
 The development Player also reports available video-sink rendered/dropped
 buffer counts before closing. These counters are separate from decoded
 pictures: deinterlacing can produce two output buffers per picture, and seeks
 or state changes can reset sink counters. They are a snapshot before teardown,
 not physical display counts or a new playback pass criterion. A renderer
 without these statistics reports `Video sink statistics: unavailable`.
+
+### Optional video-stage trace (development)
+
+To investigate a missing frame or field, request a new JSON output file:
+
+```sh
+crystalhd-play --trace-frames /tmp/playback-trace.json "/path/to/video.mp4"
+crystalhd-play --software --trace-frames /tmp/software-trace.json "/path/to/video.mp4"
+```
+
+This needs the matching native GStreamer helper even in software mode. The
+file must not exist; it is created with mode `0600`. The normal Player does
+not enable these probes. While tracing, native callbacks record the decoder
+source, deinterlacer source when present, and leaf video-sink input. With
+`--software-output-size`, it also records the Player's `output-scale` source
+and, when prepared, its `output-pack` source. These identify the Player's
+own scaler and early packing converter; other intervening transforms are
+not individually observed. There is no additional per-buffer Python callback,
+pixel readback or file writing in
+the streaming thread. The JSON is written after playback teardown.
+
+The default capacity is 4,096 records across all observed stages, events and
+controls. `--trace-limit 16384` raises it to the maximum. Retention keeps the
+first records; `dropped` declares truncation while attachment counters continue.
+Every observed pad also records propagated QoS events. A 30-second 25i/50p
+five-stage trace can use about 14,250 records; use the maximum and check that
+`truncated` is false before comparing complete PTS sets. This is an example,
+not a guarantee that every 30-second input fits.
+This top-level `dropped` counts omitted trace records; it is separate from
+the nested video-sink statistics' dropped-buffer count.
+Attachment history is also limited to 64 entries. Rejected attachments and
+unobserved stages mean incomplete coverage. Truncation, missing PTS, drops and
+an absent deinterlacer do not become new playback failure gates. An unavailable
+helper or output-file error fails the explicitly requested trace operation.
+
+Add `--trace-window` to keep recent records in the same fixed capacity, then
+freeze after the first timed video QoS bus message with positive jitter and a
+known positive buffer-drop counter, then a quarter-capacity of following records
+(at least one).
+Propagated QoS events, untimed decoder headers and audio/time/unknown counters
+do not trigger capture. Timestamp and running-time zero remain valid.
+Window records include the emitting Linux `thread_id` in the caller's PID
+namespace (`null` when unavailable), not internal scaler-worker identity.
+First-N mode performs no additional thread-ID lookup.
+Without a trigger, final recent records are exported. Playback and cumulative
+counters continue after the window freezes. An older helper without window
+support fails this explicit request before creating a report.
+
+`retention: "window"` declares this mode. `window.complete` means the following
+record budget was collected, not a complete picture census. EOS/stop before
+that budget leaves it false. `window_context` preserves known CAPS/segment/flush
+state before the earliest retained record; unknown context stays explicit.
+Original order, ordinals and generations are preserved. Global `dropped` and
+`truncated` include intentionally overwritten/omitted history, not lost video.
+Do not count records outside the retained window as missing frames or subtract
+window counts from cumulative attachment/sink counters. `player.loss_trigger`
+retains the original bus counter snapshot and sequence number, not a unique
+lost-picture identity. Rejected triggers declare incomplete capture.
+
+Each attachment has independent buffer ordinals, raw video-buffer flags,
+PTS/DTS/duration and stream/segment/flush generations. Timestamp zero is valid;
+unknown times are JSON `null`. Running time is recorded only for a valid TIME
+segment. Pause/resume and seek requests are annotations; observed native
+events determine media generations. Compare the separate stage records without
+assuming PTS uniquely identifies a source picture or a deinterlacer's fields.
+
+`buffers` counts individual BUFFER callbacks. Buffer lists have separate
+`buffer_lists`, `list_items` and `list_missing_pts` counters, with member records
+named `buffer-list-item`. GStreamer's list fallback can expose both a list and
+individual buffers at the same pad. `buffer_list_ambiguity` marks possible
+overlap whenever any list is observed, not proof that a
+particular list was duplicated. Do not add the two counters into a frame
+census. List positions use `list_ordinal` and `list_index`; ordinary `ordinal`
+continues to count individual BUFFER callbacks. The trace observes stream
+start, CAPS, segment, flush, EOS and QoS events as well as attach/detach/stop
+administration. All retained record types share the capacity limit.
+
+Sink input records mean delivery to that pad. Sink statistics remain snapshots
+since their last reset. Neither establishes actual screen presentation,
+cadence, unique displayed pictures or physical A/V synchronization. Attached
+candidates without buffers are not confirmed active renderers. The report
+does not contain the media path or URL and does not select a different decoder.
 
 ### HTTP(S) input
 

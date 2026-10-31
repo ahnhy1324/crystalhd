@@ -1,0 +1,1468 @@
+{
+  "schema": 1,
+  "issues": [
+    91,
+    471,
+    510
+  ],
+  "status": "DIAGNOSTIC_PASS_PLAYBACK_LOSS_UNRESOLVED",
+  "runtime_code_revision": "7efc00bdf81276d001e4cb08ffa4438c5f19047e",
+  "source": {
+    "path": "/home/mache/.cache/crystalhd-final-20261019.SX0Rh5/scaled-dialogue-av-20261021/dialogue-upsampled-coded-1080i25.mkv",
+    "sha256": "fd175446ca0f93517aa1e158ff8ceef0b9c9805c74c38346c5be1668d0ed926b",
+    "size": 52479910
+  },
+  "expected_source_pictures": 750,
+  "expected_progressive_fields": 1500,
+  "protocol_sha256": {
+    "frozen-plan-v2.json": "19ae4bbb17e6f05d5acd23a3d33775196ae9ab2237f28ee2efeb33e94a7564ea",
+    "followup-plan.json": "efa57a61587d645689cc864e0865e8c5320fa79101771904ea25b1ddd7dabec2",
+    "repeat-plan.json": "5201cf839a929f4759c2a689c99c9bb480060c29e4b7fafc0852b8893719814b",
+    "source-timing-manifest-v2.json": "0aa1d6cfbe1c475954f29d739f557327e8150239d87ad347fd76729d18e78d47",
+    "analyze.py": "298539e68023b2b63220c4566ad61e5aeba59a7d6bca85179ecddbae9484098b",
+    "analyzer-selftest-v2.json": "f12c3757bbff3bd4e8459840be407157c9dae5947a56405f7b6611cec43cbea6",
+    "display-state.json": "1f6a7a8f58dcc246a72ed61457d8905d503943cb8fa17c5a7de3403d6444f9e4"
+  },
+  "runs": [
+    {
+      "revision": "5505eb49b66f6748eb757f2c41ba37439083b82c",
+      "fhd": false,
+      "traced": false,
+      "natural_eos": true,
+      "exit": 0,
+      "health_frames": 750,
+      "sink_stats": [
+        {
+          "sink": "xvimagesink",
+          "rendered": 1500,
+          "dropped": 0
+        }
+      ],
+      "cpu_seconds": 12.152566000000002,
+      "wall_seconds": 31.877779119007755,
+      "case": "scale-only-off-02",
+      "clock_name": "GstPulseSinkClock",
+      "clock_type": "GstAudioClock",
+      "output_packing_selected": null,
+      "boundary_equal": true,
+      "kernel_check_exit": 0,
+      "output_elements": [
+        {
+          "factory": "xvimagesink",
+          "name": "xvimagesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstXvImageSink:xvimagesink0",
+          "properties": {
+            "qos": "True",
+            "sync": "True",
+            "max-lateness": "5000000",
+            "processing-deadline": "15000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "force-aspect-ratio": "True",
+            "handle-events": "True",
+            "enable-last-sample": "True"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "pulsesink",
+          "name": "pulsesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstPulseSink:pulsesink0",
+          "properties": {
+            "qos": "False",
+            "sync": "True",
+            "max-lateness": "-1",
+            "processing-deadline": "20000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "buffer-time": "200000",
+            "latency-time": "10000",
+            "enable-last-sample": "False"
+          },
+          "caps": {
+            "sink": "audio/x-raw, rate=(int)48000, format=(string)F32LE, channels=(int)2, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003"
+          }
+        }
+      ],
+      "mapped_own_images": {
+        "own-library": "9e2b788390e4811082881cdabce2be270282b9c43ec28affa3b328a25f5c7097",
+        "own-plugin": "45dc427b7f0ee3fa99f1b7cf469e88f8f106ffee72ef62e19f7357e5f9f60a04"
+      },
+      "artifacts": {
+        ".result.json": "4a53982aba11bd9257ea90077dc023b40a35aab5bf3ac534919b153a3d59c99b",
+        ".boundary.json": "f04ea98f183c7e350fc2ac8fcd52ff13b8eec228edbfdbe6fdf65b3803aacc6b",
+        ".log": "ed91efb8b3064c1dcd3e4cd2be52f133dc8f9e10e2ae5340e662fd7f445ae087",
+        ".kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da"
+      }
+    },
+    {
+      "revision": "5505eb49b66f6748eb757f2c41ba37439083b82c",
+      "fhd": true,
+      "traced": false,
+      "natural_eos": true,
+      "exit": 0,
+      "health_frames": 744,
+      "sink_stats": [
+        {
+          "sink": "xvimagesink",
+          "rendered": 1483,
+          "dropped": 1
+        }
+      ],
+      "cpu_seconds": 26.523954000000003,
+      "wall_seconds": 32.064193744037766,
+      "case": "fhd-off-01",
+      "clock_name": "GstPulseSinkClock",
+      "clock_type": "GstAudioClock",
+      "output_packing_selected": true,
+      "boundary_equal": true,
+      "kernel_check_exit": 0,
+      "output_elements": [
+        {
+          "factory": "videoscale",
+          "name": "crystalhd-upscale",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoScale:crystalhd-upscale",
+          "properties": {
+            "qos": "True",
+            "n-threads": "2",
+            "method": "4"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "crystalhd-early-pack",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoConvert:crystalhd-early-pack",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+            "src": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "xvimagesink",
+          "name": "xvimagesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstXvImageSink:xvimagesink0",
+          "properties": {
+            "qos": "True",
+            "sync": "True",
+            "max-lateness": "5000000",
+            "processing-deadline": "15000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "force-aspect-ratio": "True",
+            "handle-events": "True",
+            "enable-last-sample": "True"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "pulsesink",
+          "name": "pulsesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstPulseSink:pulsesink0",
+          "properties": {
+            "qos": "False",
+            "sync": "True",
+            "max-lateness": "-1",
+            "processing-deadline": "20000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "buffer-time": "200000",
+            "latency-time": "10000",
+            "enable-last-sample": "False"
+          },
+          "caps": {
+            "sink": "audio/x-raw, rate=(int)48000, format=(string)F32LE, channels=(int)2, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003"
+          }
+        }
+      ],
+      "mapped_own_images": {
+        "own-library": "9e2b788390e4811082881cdabce2be270282b9c43ec28affa3b328a25f5c7097",
+        "own-plugin": "45dc427b7f0ee3fa99f1b7cf469e88f8f106ffee72ef62e19f7357e5f9f60a04"
+      },
+      "artifacts": {
+        ".result.json": "d179706a565e1603bf2325fa3e4337627f9b4bb72c20357cf53240637909df97",
+        ".boundary.json": "d43d10249f7e2003128d39af7fd6c961a1e8446dee79b25502a8168740415f0d",
+        ".log": "53ad7be50d4d193badf4f85b3b1741a665f29eec2b875be03c89f7c4c3037156",
+        ".kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da"
+      }
+    },
+    {
+      "revision": "5505eb49b66f6748eb757f2c41ba37439083b82c",
+      "fhd": true,
+      "traced": true,
+      "natural_eos": true,
+      "exit": 0,
+      "health_frames": 748,
+      "sink_stats": [
+        {
+          "sink": "xvimagesink",
+          "rendered": 1495,
+          "dropped": 0
+        }
+      ],
+      "cpu_seconds": 27.285168,
+      "wall_seconds": 32.42667367501417,
+      "case": "fhd-trace-01",
+      "clock_name": "GstPulseSinkClock",
+      "clock_type": "GstAudioClock",
+      "output_packing_selected": true,
+      "boundary_equal": true,
+      "kernel_check_exit": 0,
+      "output_elements": [
+        {
+          "factory": "videoscale",
+          "name": "crystalhd-upscale",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoScale:crystalhd-upscale",
+          "properties": {
+            "qos": "True",
+            "n-threads": "2",
+            "method": "4"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "crystalhd-early-pack",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoConvert:crystalhd-early-pack",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+            "src": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "xvimagesink",
+          "name": "xvimagesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstXvImageSink:xvimagesink0",
+          "properties": {
+            "qos": "True",
+            "sync": "True",
+            "max-lateness": "5000000",
+            "processing-deadline": "15000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "force-aspect-ratio": "True",
+            "handle-events": "True",
+            "enable-last-sample": "True"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "pulsesink",
+          "name": "pulsesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstPulseSink:pulsesink0",
+          "properties": {
+            "qos": "False",
+            "sync": "True",
+            "max-lateness": "-1",
+            "processing-deadline": "20000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "buffer-time": "200000",
+            "latency-time": "10000",
+            "enable-last-sample": "False"
+          },
+          "caps": {
+            "sink": "audio/x-raw, rate=(int)48000, format=(string)F32LE, channels=(int)2, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003"
+          }
+        }
+      ],
+      "mapped_own_images": {
+        "own-library": "9e2b788390e4811082881cdabce2be270282b9c43ec28affa3b328a25f5c7097",
+        "own-plugin": "45dc427b7f0ee3fa99f1b7cf469e88f8f106ffee72ef62e19f7357e5f9f60a04"
+      },
+      "artifacts": {
+        ".result.json": "7ffb034a322a6fee2895e98ffcc60d6c731bf8758884a3d6a4cfb071ec54e636",
+        ".boundary.json": "3831e43899b9fc8256d11cd205c4ce06bc3893494441c6265ea0cf634c18d27e",
+        ".log": "7a43eaf5c9ddc6fc41ef318c9ab3f82605442668b4eafa8120f32f1fbcf0b976",
+        ".kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da",
+        "trace_sha256": "2019643ec124231f4368bc60b260c2ed9525073e2cfac6bbcbd6386f7beb56f5",
+        "analysis_sha256": "fb1c7778155880011a2fe0dc050591c5e163ad77a6001aaea54c5d4e6ca8c2b5"
+      },
+      "stage_counts": {
+        "decoder": 748,
+        "deinterlace": 1496,
+        "sink": 1495
+      },
+      "trace_completeness": {
+        "capacity": 16384,
+        "observed": 8240,
+        "retained": 8240,
+        "dropped": 0,
+        "truncated": false,
+        "buffer_list_ambiguity": false
+      },
+      "metadata_status": "LOSS_OBSERVED",
+      "partition": {
+        "qualified": true,
+        "expected_source_pictures": 750,
+        "expected_fields": 1500,
+        "missing_before_decoder_src_picture_pts_ns": [
+          11280000000,
+          14720000000
+        ],
+        "missing_before_decoder_src_field_equivalents": 4,
+        "missing_decoder_to_DI_field_pts_ns": [],
+        "decoder_to_DI_missing_halves_by_source": [],
+        "missing_DI_to_sink_field_pts_ns": [
+          14700000000
+        ],
+        "loss_terms_field_equivalents": [
+          4,
+          0,
+          1
+        ],
+        "sink_input_deficit": 5,
+        "conservation_residual": 0,
+        "first_pipeline_stage_with_gap": "before-decoder-src",
+        "extras": {
+          "decoder_outside_source": [],
+          "DI_outside_expected_from_decoder": [],
+          "sink_outside_DI": []
+        },
+        "detailed_output_partition": {
+          "qualified": false,
+          "reason": "both optional source taps are required; absence is not counted as loss",
+          "coverage": {
+            "output-pack": "not-attached-not-counted-as-loss",
+            "output-scale": "not-attached-not-counted-as-loss"
+          }
+        },
+        "rendered_deficit": 5,
+        "rendered_deficit_terms": [
+          4,
+          0,
+          1,
+          0
+        ],
+        "rendered_conservation_residual": 0
+      },
+      "sink_accounting": {
+        "raw": [
+          {
+            "sink": "xvimagesink",
+            "rendered": 1495,
+            "dropped": 0
+          }
+        ],
+        "qualified": true,
+        "reason": "exact reconciliation",
+        "rendered": 1495,
+        "dropped": 0,
+        "sum": 1495,
+        "sink_input": 1495,
+        "residual_sink_input_minus_counters": 0
+      }
+    },
+    {
+      "revision": "5505eb49b66f6748eb757f2c41ba37439083b82c",
+      "fhd": false,
+      "traced": true,
+      "natural_eos": true,
+      "exit": 0,
+      "health_frames": 750,
+      "sink_stats": [
+        {
+          "sink": "xvimagesink",
+          "rendered": 1500,
+          "dropped": 0
+        }
+      ],
+      "cpu_seconds": 12.882487,
+      "wall_seconds": 32.325262677972205,
+      "case": "scale-only-trace-01",
+      "clock_name": "GstPulseSinkClock",
+      "clock_type": "GstAudioClock",
+      "output_packing_selected": null,
+      "boundary_equal": true,
+      "kernel_check_exit": 0,
+      "output_elements": [
+        {
+          "factory": "xvimagesink",
+          "name": "xvimagesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstXvImageSink:xvimagesink0",
+          "properties": {
+            "qos": "True",
+            "sync": "True",
+            "max-lateness": "5000000",
+            "processing-deadline": "15000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "force-aspect-ratio": "True",
+            "handle-events": "True",
+            "enable-last-sample": "True"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "pulsesink",
+          "name": "pulsesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstPulseSink:pulsesink0",
+          "properties": {
+            "qos": "False",
+            "sync": "True",
+            "max-lateness": "-1",
+            "processing-deadline": "20000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "buffer-time": "200000",
+            "latency-time": "10000",
+            "enable-last-sample": "False"
+          },
+          "caps": {
+            "sink": "audio/x-raw, rate=(int)48000, format=(string)F32LE, channels=(int)2, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003"
+          }
+        }
+      ],
+      "mapped_own_images": {
+        "own-library": "9e2b788390e4811082881cdabce2be270282b9c43ec28affa3b328a25f5c7097",
+        "own-plugin": "45dc427b7f0ee3fa99f1b7cf469e88f8f106ffee72ef62e19f7357e5f9f60a04"
+      },
+      "artifacts": {
+        ".result.json": "c8b896449587bc14c62d509d88c4b8987ac0dae427ac8464827af3c7694d2a26",
+        ".boundary.json": "6b190790b048713c760a47968db031b48585eae68153317bb8072c52cd3c07cf",
+        ".log": "ed91efb8b3064c1dcd3e4cd2be52f133dc8f9e10e2ae5340e662fd7f445ae087",
+        ".kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da",
+        "trace_sha256": "367eeaec8f4cf7d80574d43c98710cbb1052b69c5d1e3617742118ecab312db6",
+        "analysis_sha256": "da5fc6a88c96b10f9f33cfbc6feba35c1107dae8bdeb1af072a3395ad8ce87b6"
+      },
+      "stage_counts": {
+        "decoder": 750,
+        "deinterlace": 1500,
+        "sink": 1500
+      },
+      "trace_completeness": {
+        "capacity": 16384,
+        "observed": 8266,
+        "retained": 8266,
+        "dropped": 0,
+        "truncated": false,
+        "buffer_list_ambiguity": false
+      },
+      "metadata_status": "NO_METADATA_LOSS_OBSERVED",
+      "partition": {
+        "qualified": true,
+        "expected_source_pictures": 750,
+        "expected_fields": 1500,
+        "missing_before_decoder_src_picture_pts_ns": [],
+        "missing_before_decoder_src_field_equivalents": 0,
+        "missing_decoder_to_DI_field_pts_ns": [],
+        "decoder_to_DI_missing_halves_by_source": [],
+        "missing_DI_to_sink_field_pts_ns": [],
+        "loss_terms_field_equivalents": [
+          0,
+          0,
+          0
+        ],
+        "sink_input_deficit": 0,
+        "conservation_residual": 0,
+        "first_pipeline_stage_with_gap": null,
+        "extras": {
+          "decoder_outside_source": [],
+          "DI_outside_expected_from_decoder": [],
+          "sink_outside_DI": []
+        },
+        "detailed_output_partition": {
+          "qualified": false,
+          "reason": "both optional source taps are required; absence is not counted as loss",
+          "coverage": {
+            "output-pack": "not-attached-not-counted-as-loss",
+            "output-scale": "not-attached-not-counted-as-loss"
+          }
+        },
+        "rendered_deficit": 0,
+        "rendered_deficit_terms": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "rendered_conservation_residual": 0
+      },
+      "sink_accounting": {
+        "raw": [
+          {
+            "sink": "xvimagesink",
+            "rendered": 1500,
+            "dropped": 0
+          }
+        ],
+        "qualified": true,
+        "reason": "exact reconciliation",
+        "rendered": 1500,
+        "dropped": 0,
+        "sum": 1500,
+        "sink_input": 1500,
+        "residual_sink_input_minus_counters": 0
+      }
+    },
+    {
+      "revision": "7efc00bdf81276d001e4cb08ffa4438c5f19047e",
+      "fhd": true,
+      "traced": true,
+      "natural_eos": true,
+      "exit": 0,
+      "health_frames": 750,
+      "sink_stats": [
+        {
+          "sink": "xvimagesink",
+          "rendered": 1500,
+          "dropped": 0
+        }
+      ],
+      "cpu_seconds": 27.298032,
+      "wall_seconds": 32.678314852004405,
+      "case": "fhd-five-stage-01",
+      "clock_name": "GstPulseSinkClock",
+      "clock_type": "GstAudioClock",
+      "output_packing_selected": true,
+      "boundary_equal": true,
+      "kernel_check_exit": 0,
+      "output_elements": [
+        {
+          "factory": "videoscale",
+          "name": "crystalhd-upscale",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoScale:crystalhd-upscale",
+          "properties": {
+            "qos": "True",
+            "n-threads": "2",
+            "method": "4"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "crystalhd-early-pack",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoConvert:crystalhd-early-pack",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+            "src": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "xvimagesink",
+          "name": "xvimagesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstXvImageSink:xvimagesink0",
+          "properties": {
+            "qos": "True",
+            "sync": "True",
+            "max-lateness": "5000000",
+            "processing-deadline": "15000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "force-aspect-ratio": "True",
+            "handle-events": "True",
+            "enable-last-sample": "True"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "pulsesink",
+          "name": "pulsesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstPulseSink:pulsesink0",
+          "properties": {
+            "qos": "False",
+            "sync": "True",
+            "max-lateness": "-1",
+            "processing-deadline": "20000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "buffer-time": "200000",
+            "latency-time": "10000",
+            "enable-last-sample": "False"
+          },
+          "caps": {
+            "sink": "audio/x-raw, rate=(int)48000, format=(string)F32LE, channels=(int)2, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003"
+          }
+        }
+      ],
+      "mapped_own_images": {
+        "own-library": "9e2b788390e4811082881cdabce2be270282b9c43ec28affa3b328a25f5c7097",
+        "own-plugin": "8ba1b2acc691da96a1a4d624e3be939a06935b7c933cb30efd7522b9d3c1f83b"
+      },
+      "artifacts": {
+        ".result.json": "7856e963325eacbf6a2d2e2d6ddd85481bc4a7ed6a14e75516c41c16f6591817",
+        ".boundary.json": "780ec7ca2c3272107459b17df3c79863f48774559a098648a62f28350f009581",
+        ".log": "ed91efb8b3064c1dcd3e4cd2be52f133dc8f9e10e2ae5340e662fd7f445ae087",
+        ".kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da",
+        "trace_sha256": "ab98ac516d759e3d554840e0ca89cf84cd69e1e31db7ee2b141ad3315218202a",
+        "analysis_sha256": "77a3e2486d0eb2a10bc0ab77d60525e870413c8c6495ac92c07f483d4ea58af9"
+      },
+      "host_iowait_percent": 0.0899415380002998,
+      "peak_polled_temperature_mC": 65000,
+      "stage_counts": {
+        "output-pack": 1500,
+        "output-scale": 1500,
+        "decoder": 750,
+        "deinterlace": 1500,
+        "sink": 1500
+      },
+      "trace_completeness": {
+        "capacity": 16384,
+        "observed": 14276,
+        "retained": 14276,
+        "dropped": 0,
+        "truncated": false,
+        "buffer_list_ambiguity": false
+      },
+      "metadata_status": "NO_METADATA_LOSS_OBSERVED",
+      "partition": {
+        "qualified": true,
+        "expected_source_pictures": 750,
+        "expected_fields": 1500,
+        "missing_before_decoder_src_picture_pts_ns": [],
+        "missing_before_decoder_src_field_equivalents": 0,
+        "missing_decoder_to_DI_field_pts_ns": [],
+        "decoder_to_DI_missing_halves_by_source": [],
+        "missing_DI_to_sink_field_pts_ns": [],
+        "loss_terms_field_equivalents": [
+          0,
+          0,
+          0
+        ],
+        "sink_input_deficit": 0,
+        "conservation_residual": 0,
+        "first_pipeline_stage_with_gap": null,
+        "extras": {
+          "decoder_outside_source": [],
+          "DI_outside_expected_from_decoder": [],
+          "sink_outside_DI": []
+        },
+        "detailed_output_partition": {
+          "qualified": true,
+          "missing_field_pts_ns": {
+            "DI_to_output_pack": [],
+            "output_pack_to_output_scale": [],
+            "output_scale_to_sink": []
+          },
+          "extras": {
+            "pack_outside_DI": [],
+            "scale_outside_pack": [],
+            "sink_outside_scale": []
+          },
+          "loss_terms": [
+            0,
+            0,
+            0
+          ],
+          "aggregate_DI_to_sink_deficit": 0,
+          "conservation_residual": 0,
+          "first_output_interval_with_gap": null,
+          "rendered_deficit_terms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        "rendered_deficit": 0,
+        "rendered_deficit_terms": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "rendered_conservation_residual": 0
+      },
+      "sink_accounting": {
+        "raw": [
+          {
+            "sink": "xvimagesink",
+            "rendered": 1500,
+            "dropped": 0
+          }
+        ],
+        "qualified": true,
+        "reason": "exact reconciliation",
+        "rendered": 1500,
+        "dropped": 0,
+        "sum": 1500,
+        "sink_input": 1500,
+        "residual_sink_input_minus_counters": 0
+      }
+    },
+    {
+      "revision": "7efc00bdf81276d001e4cb08ffa4438c5f19047e",
+      "fhd": false,
+      "traced": true,
+      "natural_eos": true,
+      "exit": 0,
+      "health_frames": 750,
+      "sink_stats": [
+        {
+          "sink": "xvimagesink",
+          "rendered": 1500,
+          "dropped": 0
+        }
+      ],
+      "cpu_seconds": 12.959583000000002,
+      "wall_seconds": 32.27781414001947,
+      "case": "scale-only-new-trace-01",
+      "clock_name": "GstPulseSinkClock",
+      "clock_type": "GstAudioClock",
+      "output_packing_selected": null,
+      "boundary_equal": true,
+      "kernel_check_exit": 0,
+      "output_elements": [
+        {
+          "factory": "xvimagesink",
+          "name": "xvimagesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstXvImageSink:xvimagesink0",
+          "properties": {
+            "qos": "True",
+            "sync": "True",
+            "max-lateness": "5000000",
+            "processing-deadline": "15000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "force-aspect-ratio": "True",
+            "handle-events": "True",
+            "enable-last-sample": "True"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "pulsesink",
+          "name": "pulsesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstPulseSink:pulsesink0",
+          "properties": {
+            "qos": "False",
+            "sync": "True",
+            "max-lateness": "-1",
+            "processing-deadline": "20000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "buffer-time": "200000",
+            "latency-time": "10000",
+            "enable-last-sample": "False"
+          },
+          "caps": {
+            "sink": "audio/x-raw, rate=(int)48000, format=(string)F32LE, channels=(int)2, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003"
+          }
+        }
+      ],
+      "mapped_own_images": {
+        "own-library": "9e2b788390e4811082881cdabce2be270282b9c43ec28affa3b328a25f5c7097",
+        "own-plugin": "8ba1b2acc691da96a1a4d624e3be939a06935b7c933cb30efd7522b9d3c1f83b"
+      },
+      "artifacts": {
+        ".result.json": "559d7d78d3fd33ec0d818433f11f9224de98f35f17fb74f72230cd34ba33b41a",
+        ".boundary.json": "eff1d93fa6ee21910209493b087c0199892b107773302c9ffe438ec2830d86c5",
+        ".log": "ed91efb8b3064c1dcd3e4cd2be52f133dc8f9e10e2ae5340e662fd7f445ae087",
+        ".kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da",
+        "trace_sha256": "f33849d674f9cb57b2d41fa79d2365c3a0f1c90e1da344febeaa8c6bdd3531b4",
+        "analysis_sha256": "285432569b9e64dee3694b7c82d1b02d13a539aa8d66fefbfba3acfbd81b7f8b"
+      },
+      "host_iowait_percent": 0.12224938875305623,
+      "peak_polled_temperature_mC": 61000,
+      "stage_counts": {
+        "decoder": 750,
+        "deinterlace": 1500,
+        "sink": 1500
+      },
+      "trace_completeness": {
+        "capacity": 16384,
+        "observed": 8266,
+        "retained": 8266,
+        "dropped": 0,
+        "truncated": false,
+        "buffer_list_ambiguity": false
+      },
+      "metadata_status": "NO_METADATA_LOSS_OBSERVED",
+      "partition": {
+        "qualified": true,
+        "expected_source_pictures": 750,
+        "expected_fields": 1500,
+        "missing_before_decoder_src_picture_pts_ns": [],
+        "missing_before_decoder_src_field_equivalents": 0,
+        "missing_decoder_to_DI_field_pts_ns": [],
+        "decoder_to_DI_missing_halves_by_source": [],
+        "missing_DI_to_sink_field_pts_ns": [],
+        "loss_terms_field_equivalents": [
+          0,
+          0,
+          0
+        ],
+        "sink_input_deficit": 0,
+        "conservation_residual": 0,
+        "first_pipeline_stage_with_gap": null,
+        "extras": {
+          "decoder_outside_source": [],
+          "DI_outside_expected_from_decoder": [],
+          "sink_outside_DI": []
+        },
+        "detailed_output_partition": {
+          "qualified": false,
+          "reason": "both optional source taps are required; absence is not counted as loss",
+          "coverage": {
+            "output-pack": "not-attached-not-counted-as-loss",
+            "output-scale": "not-attached-not-counted-as-loss"
+          }
+        },
+        "rendered_deficit": 0,
+        "rendered_deficit_terms": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "rendered_conservation_residual": 0
+      },
+      "sink_accounting": {
+        "raw": [
+          {
+            "sink": "xvimagesink",
+            "rendered": 1500,
+            "dropped": 0
+          }
+        ],
+        "qualified": true,
+        "reason": "exact reconciliation",
+        "rendered": 1500,
+        "dropped": 0,
+        "sum": 1500,
+        "sink_input": 1500,
+        "residual_sink_input_minus_counters": 0
+      }
+    },
+    {
+      "revision": "7efc00bdf81276d001e4cb08ffa4438c5f19047e",
+      "fhd": false,
+      "traced": false,
+      "natural_eos": true,
+      "exit": 0,
+      "health_frames": 750,
+      "sink_stats": [
+        {
+          "sink": "xvimagesink",
+          "rendered": 1500,
+          "dropped": 0
+        }
+      ],
+      "cpu_seconds": 12.64785,
+      "wall_seconds": 31.93256081000436,
+      "case": "scale-only-new-off-01",
+      "clock_name": "GstPulseSinkClock",
+      "clock_type": "GstAudioClock",
+      "output_packing_selected": null,
+      "boundary_equal": true,
+      "kernel_check_exit": 0,
+      "output_elements": [
+        {
+          "factory": "xvimagesink",
+          "name": "xvimagesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstXvImageSink:xvimagesink0",
+          "properties": {
+            "qos": "True",
+            "sync": "True",
+            "max-lateness": "5000000",
+            "processing-deadline": "15000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "force-aspect-ratio": "True",
+            "handle-events": "True",
+            "enable-last-sample": "True"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "pulsesink",
+          "name": "pulsesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstPulseSink:pulsesink0",
+          "properties": {
+            "qos": "False",
+            "sync": "True",
+            "max-lateness": "-1",
+            "processing-deadline": "20000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "buffer-time": "200000",
+            "latency-time": "10000",
+            "enable-last-sample": "False"
+          },
+          "caps": {
+            "sink": "audio/x-raw, rate=(int)48000, format=(string)F32LE, channels=(int)2, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003"
+          }
+        }
+      ],
+      "mapped_own_images": {
+        "own-library": "9e2b788390e4811082881cdabce2be270282b9c43ec28affa3b328a25f5c7097",
+        "own-plugin": "8ba1b2acc691da96a1a4d624e3be939a06935b7c933cb30efd7522b9d3c1f83b"
+      },
+      "artifacts": {
+        ".result.json": "a62988c39cee28ad84c2f66f59cddcf4c295ed990f7fb0c9374ef59e4ce18a3a",
+        ".boundary.json": "4860c9e770fd0f2a3c3c71144f9802e7fd1c8c87c08001bb9efbc4c0fe5c7808",
+        ".log": "ed91efb8b3064c1dcd3e4cd2be52f133dc8f9e10e2ae5340e662fd7f445ae087",
+        ".kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da"
+      },
+      "host_iowait_percent": 0.10851030847930554,
+      "peak_polled_temperature_mC": 61000
+    },
+    {
+      "revision": "7efc00bdf81276d001e4cb08ffa4438c5f19047e",
+      "fhd": true,
+      "traced": false,
+      "natural_eos": true,
+      "exit": 0,
+      "health_frames": 734,
+      "sink_stats": [
+        {
+          "sink": "xvimagesink",
+          "rendered": 1305,
+          "dropped": 66
+        }
+      ],
+      "cpu_seconds": 26.558151,
+      "wall_seconds": 31.954322421050165,
+      "case": "fhd-new-off-01",
+      "clock_name": "GstPulseSinkClock",
+      "clock_type": "GstAudioClock",
+      "output_packing_selected": true,
+      "boundary_equal": true,
+      "kernel_check_exit": 0,
+      "output_elements": [
+        {
+          "factory": "videoscale",
+          "name": "crystalhd-upscale",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoScale:crystalhd-upscale",
+          "properties": {
+            "qos": "True",
+            "n-threads": "2",
+            "method": "4"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "crystalhd-early-pack",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoConvert:crystalhd-early-pack",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+            "src": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "xvimagesink",
+          "name": "xvimagesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstXvImageSink:xvimagesink0",
+          "properties": {
+            "qos": "True",
+            "sync": "True",
+            "max-lateness": "5000000",
+            "processing-deadline": "15000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "force-aspect-ratio": "True",
+            "handle-events": "True",
+            "enable-last-sample": "True"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "pulsesink",
+          "name": "pulsesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstPulseSink:pulsesink0",
+          "properties": {
+            "qos": "False",
+            "sync": "True",
+            "max-lateness": "-1",
+            "processing-deadline": "20000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "buffer-time": "200000",
+            "latency-time": "10000",
+            "enable-last-sample": "False"
+          },
+          "caps": {
+            "sink": "audio/x-raw, rate=(int)48000, format=(string)F32LE, channels=(int)2, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003"
+          }
+        }
+      ],
+      "mapped_own_images": {
+        "own-library": "9e2b788390e4811082881cdabce2be270282b9c43ec28affa3b328a25f5c7097",
+        "own-plugin": "8ba1b2acc691da96a1a4d624e3be939a06935b7c933cb30efd7522b9d3c1f83b"
+      },
+      "artifacts": {
+        ".result.json": "f4dba32284fe0a36681ba2080acbf6b7905ccc46aacbf2e5ceaa660d6d439beb",
+        ".boundary.json": "64a80cf76dfbce617cf6724639848ce1257c3fa0db239ad74f79904423dcff4f",
+        ".log": "d2801952bfe910f969582423e7d518ea6008bf49860b83dc19aaa343b71225e3",
+        ".kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da"
+      },
+      "host_iowait_percent": 6.520405032218472,
+      "peak_polled_temperature_mC": 67000
+    },
+    {
+      "revision": "7efc00bdf81276d001e4cb08ffa4438c5f19047e",
+      "fhd": true,
+      "traced": true,
+      "natural_eos": true,
+      "exit": 0,
+      "health_frames": 750,
+      "sink_stats": [
+        {
+          "sink": "xvimagesink",
+          "rendered": 1500,
+          "dropped": 0
+        }
+      ],
+      "cpu_seconds": 27.556178,
+      "wall_seconds": 32.68957148800837,
+      "case": "fhd-five-stage-02",
+      "clock_name": "GstPulseSinkClock",
+      "clock_type": "GstAudioClock",
+      "output_packing_selected": true,
+      "boundary_equal": true,
+      "kernel_check_exit": 0,
+      "output_elements": [
+        {
+          "factory": "videoscale",
+          "name": "crystalhd-upscale",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoScale:crystalhd-upscale",
+          "properties": {
+            "qos": "True",
+            "n-threads": "2",
+            "method": "4"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "crystalhd-early-pack",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoConvert:crystalhd-early-pack",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+            "src": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "xvimagesink",
+          "name": "xvimagesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstXvImageSink:xvimagesink0",
+          "properties": {
+            "qos": "True",
+            "sync": "True",
+            "max-lateness": "5000000",
+            "processing-deadline": "15000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "force-aspect-ratio": "True",
+            "handle-events": "True",
+            "enable-last-sample": "True"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "pulsesink",
+          "name": "pulsesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstPulseSink:pulsesink0",
+          "properties": {
+            "qos": "False",
+            "sync": "True",
+            "max-lateness": "-1",
+            "processing-deadline": "20000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "buffer-time": "200000",
+            "latency-time": "10000",
+            "enable-last-sample": "False"
+          },
+          "caps": {
+            "sink": "audio/x-raw, rate=(int)48000, format=(string)F32LE, channels=(int)2, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003"
+          }
+        }
+      ],
+      "mapped_own_images": {
+        "own-library": "9e2b788390e4811082881cdabce2be270282b9c43ec28affa3b328a25f5c7097",
+        "own-plugin": "8ba1b2acc691da96a1a4d624e3be939a06935b7c933cb30efd7522b9d3c1f83b"
+      },
+      "artifacts": {
+        ".result.json": "4acac68e9be1ab70e611c87b9fb6e046af9bcf36f36b44139bb22ebd77a79da8",
+        ".boundary.json": "9629f853f43d0089b535fc7693edff3dc93d62d5257aa64a84ff41d14546c0b8",
+        ".log": "ed91efb8b3064c1dcd3e4cd2be52f133dc8f9e10e2ae5340e662fd7f445ae087",
+        ".kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da",
+        "trace_sha256": "f4f9552be9b445b6df79b095062e76abd082de7f7d9d526947c56d6f90335ee9",
+        "analysis_sha256": "5c02e595f717295f055e05bfa111382697d545c1ac4c3264ebbc6dc501636a51"
+      },
+      "host_iowait_percent": 0.04508566275924256,
+      "peak_polled_temperature_mC": 66000,
+      "stage_counts": {
+        "output-pack": 1500,
+        "output-scale": 1500,
+        "decoder": 750,
+        "deinterlace": 1500,
+        "sink": 1500
+      },
+      "trace_completeness": {
+        "capacity": 16384,
+        "observed": 14276,
+        "retained": 14276,
+        "dropped": 0,
+        "truncated": false,
+        "buffer_list_ambiguity": false
+      },
+      "metadata_status": "NO_METADATA_LOSS_OBSERVED",
+      "partition": {
+        "qualified": true,
+        "expected_source_pictures": 750,
+        "expected_fields": 1500,
+        "missing_before_decoder_src_picture_pts_ns": [],
+        "missing_before_decoder_src_field_equivalents": 0,
+        "missing_decoder_to_DI_field_pts_ns": [],
+        "decoder_to_DI_missing_halves_by_source": [],
+        "missing_DI_to_sink_field_pts_ns": [],
+        "loss_terms_field_equivalents": [
+          0,
+          0,
+          0
+        ],
+        "sink_input_deficit": 0,
+        "conservation_residual": 0,
+        "first_pipeline_stage_with_gap": null,
+        "extras": {
+          "decoder_outside_source": [],
+          "DI_outside_expected_from_decoder": [],
+          "sink_outside_DI": []
+        },
+        "detailed_output_partition": {
+          "qualified": true,
+          "missing_field_pts_ns": {
+            "DI_to_output_pack": [],
+            "output_pack_to_output_scale": [],
+            "output_scale_to_sink": []
+          },
+          "extras": {
+            "pack_outside_DI": [],
+            "scale_outside_pack": [],
+            "sink_outside_scale": []
+          },
+          "loss_terms": [
+            0,
+            0,
+            0
+          ],
+          "aggregate_DI_to_sink_deficit": 0,
+          "conservation_residual": 0,
+          "first_output_interval_with_gap": null,
+          "rendered_deficit_terms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        "rendered_deficit": 0,
+        "rendered_deficit_terms": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "rendered_conservation_residual": 0
+      },
+      "sink_accounting": {
+        "raw": [
+          {
+            "sink": "xvimagesink",
+            "rendered": 1500,
+            "dropped": 0
+          }
+        ],
+        "qualified": true,
+        "reason": "exact reconciliation",
+        "rendered": 1500,
+        "dropped": 0,
+        "sum": 1500,
+        "sink_input": 1500,
+        "residual_sink_input_minus_counters": 0
+      }
+    },
+    {
+      "revision": "7efc00bdf81276d001e4cb08ffa4438c5f19047e",
+      "fhd": true,
+      "traced": true,
+      "natural_eos": true,
+      "exit": 0,
+      "health_frames": 750,
+      "sink_stats": [
+        {
+          "sink": "xvimagesink",
+          "rendered": 1500,
+          "dropped": 0
+        }
+      ],
+      "cpu_seconds": 27.180646000000003,
+      "wall_seconds": 32.63537292502588,
+      "case": "fhd-five-stage-03",
+      "clock_name": "GstPulseSinkClock",
+      "clock_type": "GstAudioClock",
+      "output_packing_selected": true,
+      "boundary_equal": true,
+      "kernel_check_exit": 0,
+      "output_elements": [
+        {
+          "factory": "videoscale",
+          "name": "crystalhd-upscale",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoScale:crystalhd-upscale",
+          "properties": {
+            "qos": "True",
+            "n-threads": "2",
+            "method": "4"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0",
+            "src": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "videoconvert",
+          "name": "crystalhd-early-pack",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-software-upscale/GstVideoConvert:crystalhd-early-pack",
+          "properties": {
+            "qos": "True",
+            "n-threads": "1",
+            "method": "1"
+          },
+          "caps": {
+            "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+            "src": "video/x-raw, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "xvimagesink",
+          "name": "xvimagesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstXvImageSink:xvimagesink0",
+          "properties": {
+            "qos": "True",
+            "sync": "True",
+            "max-lateness": "5000000",
+            "processing-deadline": "15000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "force-aspect-ratio": "True",
+            "handle-events": "True",
+            "enable-last-sample": "True"
+          },
+          "caps": {
+            "sink": "video/x-raw, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)50/1, format=(string)UYVY, colorimetry=(string)2:0:0:0"
+          }
+        },
+        {
+          "factory": "pulsesink",
+          "name": "pulsesink0",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstPulseSink:pulsesink0",
+          "properties": {
+            "qos": "False",
+            "sync": "True",
+            "max-lateness": "-1",
+            "processing-deadline": "20000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "buffer-time": "200000",
+            "latency-time": "10000",
+            "enable-last-sample": "False"
+          },
+          "caps": {
+            "sink": "audio/x-raw, rate=(int)48000, format=(string)F32LE, channels=(int)2, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003"
+          }
+        }
+      ],
+      "mapped_own_images": {
+        "own-library": "9e2b788390e4811082881cdabce2be270282b9c43ec28affa3b328a25f5c7097",
+        "own-plugin": "8ba1b2acc691da96a1a4d624e3be939a06935b7c933cb30efd7522b9d3c1f83b"
+      },
+      "artifacts": {
+        ".result.json": "675afcfa765abd0a6d9c53bba856e9a779d9ca300eebcc1ad7f8cdc31bbf8841",
+        ".boundary.json": "c88e257cea5b35de3f592b937fcd06e8c094c70ff31a30e66f7489f4eed7f21a",
+        ".log": "ed91efb8b3064c1dcd3e4cd2be52f133dc8f9e10e2ae5340e662fd7f445ae087",
+        ".kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da",
+        "trace_sha256": "4e92381e460681c0bc609f3bf8a91083340bd5d797d81ec8adce590786d327fb",
+        "analysis_sha256": "4a0c7c80e7cfda2709bf85f171fcf35676d35ef833ff609e7f34f7eb9a8ac7f6"
+      },
+      "host_iowait_percent": 0.09048408988086261,
+      "peak_polled_temperature_mC": 69000,
+      "stage_counts": {
+        "output-pack": 1500,
+        "output-scale": 1500,
+        "decoder": 750,
+        "deinterlace": 1500,
+        "sink": 1500
+      },
+      "trace_completeness": {
+        "capacity": 16384,
+        "observed": 14276,
+        "retained": 14276,
+        "dropped": 0,
+        "truncated": false,
+        "buffer_list_ambiguity": false
+      },
+      "metadata_status": "NO_METADATA_LOSS_OBSERVED",
+      "partition": {
+        "qualified": true,
+        "expected_source_pictures": 750,
+        "expected_fields": 1500,
+        "missing_before_decoder_src_picture_pts_ns": [],
+        "missing_before_decoder_src_field_equivalents": 0,
+        "missing_decoder_to_DI_field_pts_ns": [],
+        "decoder_to_DI_missing_halves_by_source": [],
+        "missing_DI_to_sink_field_pts_ns": [],
+        "loss_terms_field_equivalents": [
+          0,
+          0,
+          0
+        ],
+        "sink_input_deficit": 0,
+        "conservation_residual": 0,
+        "first_pipeline_stage_with_gap": null,
+        "extras": {
+          "decoder_outside_source": [],
+          "DI_outside_expected_from_decoder": [],
+          "sink_outside_DI": []
+        },
+        "detailed_output_partition": {
+          "qualified": true,
+          "missing_field_pts_ns": {
+            "DI_to_output_pack": [],
+            "output_pack_to_output_scale": [],
+            "output_scale_to_sink": []
+          },
+          "extras": {
+            "pack_outside_DI": [],
+            "scale_outside_pack": [],
+            "sink_outside_scale": []
+          },
+          "loss_terms": [
+            0,
+            0,
+            0
+          ],
+          "aggregate_DI_to_sink_deficit": 0,
+          "conservation_residual": 0,
+          "first_output_interval_with_gap": null,
+          "rendered_deficit_terms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        "rendered_deficit": 0,
+        "rendered_deficit_terms": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "rendered_conservation_residual": 0
+      },
+      "sink_accounting": {
+        "raw": [
+          {
+            "sink": "xvimagesink",
+            "rendered": 1500,
+            "dropped": 0
+          }
+        ],
+        "qualified": true,
+        "reason": "exact reconciliation",
+        "rendered": 1500,
+        "dropped": 0,
+        "sum": 1500,
+        "sink_input": 1500,
+        "residual_sink_input_minus_counters": 0
+      }
+    }
+  ],
+  "local_checks": {
+    "player_passed": 116,
+    "player_skipped": 0,
+    "native_variants": [
+      "ordinary",
+      "ASan+UBSan+leak detection"
+    ],
+    "native_groups_each": 9,
+    "native_snapshots_each": 17,
+    "configuration": "PASS",
+    "private_analyzer_selftests_passed": 18
+  },
+  "check_logs_sha256": {
+    "/tmp/crystalhd-fhd-output-player-suite-20261030.log": "11d9813811ef9df1a0e373a58cbd7d229a38d2edd8c9afd953719f03fcb89eb1",
+    "/home/mache/.cache/crystalhd-player-fhd-output-native-check-20261030.log": "2fd3cbd1bb9453fb0ddffddc703ed919b617fc48a139504191993ae2dba9b003",
+    "/home/mache/.cache/crystalhd-player-fhd-output-configuration-20261030.log": "d6995f1ae471b9b3fc001ef8b98af45a4eb7baf1819ab631e1c9a2792ba0bb58"
+  },
+  "limits": [
+    "Native traces observe metadata delivery and software sink counters, not physical scanout/A/V or unique source picture ownership.",
+    "FHD here is1920x1080 output buffers on LVDS1024x76850Hz; automatic window geometry was not measured/matched.",
+    "Same quality/QoS/deadlines; no playback repair or statistical performance/observer-overhead claim.",
+    "Three new5tap runs have no loss and cannot localize the earlier3tap gap or establish lateness cause.",
+    "Aggregate host I/O wait correlation is not proof of cause.",
+    "All old and current FAILs retained; issues91/471/510/538 stay open; excluded heap investigation untouched.",
+    "No external client/library/kernel/firmware modifications."
+  ],
+  "setup_failures_preserved": {
+    "scale-only-off-01": "Pre-playback own-plugin map assertion; explicit pinned-plugin load corrected later harness. Original log and boundary retained; no source failure inferred.",
+    "initial_local_player_suite": "Global CRYSTALHD_CONFIG_DISABLE=1 incorrectly bypassed staged Unicode config test. Source unchanged; corrected test environment passes116/116."
+  }
+}

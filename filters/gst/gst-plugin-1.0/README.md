@@ -288,11 +288,87 @@ requires the same frame count and visible-YUY2 SHA-256 on replay. This covers
 replay after EOS, not arbitrary mid-playback seeks or resolution changes. The
 hash compares two hardware runs, not hardware against a software decoder.
 
+## Optional whole-run pad PTS summary
+
+The player's opt-in `--trace-frames FILE` helper includes a per-attachment
+`pts_summary` version 1 in its schema 1 JSON. The constant-space summary covers
+every observed ordinary buffer, including after first-N truncation, rolling
+overwrite or post-trigger detail freeze. CAPS and segment state also continue
+updating. Qualification covers fixed 25/50 Hz PTS metadata in one TIME segment
+with rate/applied-rate 1, known canonical durations, complete timing and EOS.
+Unknown/VFR timing, buffer-list overlap, changed CAPS, further segments, flush,
+helper-annotated seek requests, cadence violations and arithmetic/counter
+overflow prevent qualification;
+identical CAPS repeats are idempotent. The Player annotates its own seek
+requests; raw upstream SEEK events from an unrelated client are not a separate
+seek observer. Gap counters describe observed timestamp
+discontinuities and do not establish physical frame loss.
+
+Audit a completed Player receipt against independently frozen source counts and
+PTS anchors with `python3 -B tests/stage-pts-audit.py trace.json expected.json`
+from the repository root. The expectation has `schema: 1` and an `attachments`
+array containing every observed pad's `stage`, `token`, expected `buffers`,
+`first_pts` and `period_ns`. The reader requires matching attachment coverage,
+EOS, successful Player completion and all qualification fields; it does not
+derive expectations from the retained detail ring or summary. `--native-only`
+is for CPU controls without Player completion evidence. Older receipts without
+the optional summary remain readable JSON and cannot establish this whole-run
+claim. The summary and auditor measure no pixels, physical presentation or A/V
+timing, and do not prove unique picture identity or source provenance.
+
+## Optional finish-frame diagnostic
+
+Set `crystalhddec`'s `finish-trace-limit` before PLAYING, then request its
+`finish-trace-snapshot` action after EOS or normal Stop. For example, with an
+existing Python GObject decoder instance:
+
+```python
+decoder.set_property("finish-trace-limit", 8192)  # NULL or READY only
+# Run playback, then reach EOS or stop normally.
+snapshot = json.loads(decoder.emit("finish-trace-snapshot"))
+```
+
+The default limit `0` leaves the per-frame path with a pointer branch and no
+added diagnostic clock, TID, mutex or allocation calls. A nonzero limit
+preallocates at most 8192 spans. Each retained span samples CLOCK_MONOTONIC
+and the caller-namespace Linux TID twice and uses bounded collector locking.
+The return timestamp is sampled before the collector lock and the decoder's
+outer stream-lock reacquisition. This observation has overhead; no runtime
+timing qualification is implied by the CPU tests.
+
+Schema 1 retains the first admitted spans, with `observed`, `retained`,
+`omitted`, `inflight` and counter-saturation metadata. `inflight_scope` is
+`retained_records_only`: an omitted call can still be blocked when `inflight`
+is zero. The collector does not guarantee
+pretrigger or late-run coverage. The configured collector survives normal
+Stop; replace the property in NULL/READY to start a fresh collector. Snapshots
+allocate a capacity-sized copy before locking, copy records under the
+collector mutex and serialize after unlocking. A
+snapshot during playback can add contention; incomplete calls have null
+return/flow fields, and unavailable clocks, TIDs or PTS remain null.
+
+Records preserve call ID, process-local decoder instance, generation,
+recovery epoch, system frame number, PTS/duration passed to the real
+`gst_video_decoder_finish_frame()` call and its actual flow return. The frame
+is never read after that transfer-full call. PTS zero, repeated PTS and
+unknown PTS remain distinct. These values do not independently prove original
+source PTS, process/TID birth, GPU ownership or presentation. `GST_FLOW_OK`
+can include QoS, clipping or decode-only suppression and does not prove a
+decoder-src buffer. Pair timing with independently qualified stage/wait
+coverage; elapsed wall time does not identify exclusive CPU, I/O or a cause.
+Own noinline `gst_crystalhd_finish_trace_enter/leave` symbols are available
+for optional probes without changing external libraries.
+
 ## Local player and in-flight controls
 
 `scripts/crystalhd-play` provides explicit hardware/software local-file
 playback; see the [user guide](../../../USAGE.md#play-a-local-file). Hardware
 mode never silently falls back to software.
+
+Development builds can additionally select the separate
+[completion-controlled Xv output](../xv-output/README.md) with
+`--video-output xv-async`. Its plugin is built separately; ordinary output
+selection and published 1.2 remain unchanged.
 
 The separate controls probe verifies barcode pixels and timestamps while
 pausing, resuming, seeking forward/backward and changing rate to 0.5x/2x/1x:

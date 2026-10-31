@@ -107,14 +107,68 @@ evidence and scheduling remain in each problem's issue.
 
 Run relevant [developer checks](README.md#developer-checks). Hardware evidence should identify the installed components, device, test input, frame/PTS/pixel results, errors, and clean teardown. If hardware is unavailable, say **NOT RUN**; CI/build success does not prove physical playback.
 
+`make settings-ui-check` includes real GTK validation-description regressions.
+For an explicit cross-process accessibility check, with GTK3, the Atspi2 GI
+typelib and an X display available, run
+`timeout --signal=TERM 65 python3 -B tests/crystalhd-settings-atspi.test.py --source=. --report=NEW.json`.
+The helper creates its own private D-Bus session and configuration; an owned
+Xvfb is sufficient. A private installed prefix can replace `.`; use
+`LANGUAGE=ko` to test its installed Korean catalogue. The result checks remote
+entry descriptions and change events, correction and profile transitions,
+preserved drafts and normal cleanup. It does not establish spoken Orca,
+`INVALID_ENTRY` state, or general screen-reader acceptance.
+
 Maintainer release gates and support claims are tracked in [RELEASING.md](RELEASING.md).
 
 PR CI examines the complete change from its merge base. Modifications of the
 explicit prose files in [the CI selector](tests/ci-plan.py) use lightweight
 checks; configuration documentation also runs its inventory/schema validators.
-Code, fixtures, generated files, unknown paths, renames, deletions and file-mode
-changes keep the full userspace/kernel checks. The final **CI gate** requires
-every selected job to succeed.
+
+The first component lane covers ordinary modifications to five explicit packed
+scaler CPU inputs: the plugin, engine and CPU-test C files, `check.sh`, and
+`tests/packed-sanitizer-loader.test.py`. A PR confined to those inputs, with
+optional reviewed prose/configuration documentation, runs the ordinary packed
+CPU check, the isolated ASan/UBSan/leak check and the five loader contracts on
+both Ubuntu releases. It also runs the configuration inventory/schema validators,
+which check the plugin's read-only properties. GStreamer 1.28.2 executes the
+36 stock/candidate frame comparisons; other versions check factory loading and
+explicit version rejection only. This lane adds no X11 or hardware qualification.
+
+Other modifications of the selector's explicit userspace source/test list run
+both complete userspace builds while skipping the ten upstream kernel-API jobs.
+Mixed packed/other-component changes also keep both complete builds. These
+builds still compile/test the driver against each runner's packaged headers.
+They run the packed normal, sanitizer and loader checks inline; the standalone
+packed lane is then unselected, so each Ubuntu job runs these checks once.
+The userspace list covers selected GStreamer/VA/DIL implementation files,
+Player and associated tests, not every userspace path. Separate GStreamer
+decoder, VA, DIL, Player and Xv component lanes and broader sanitizer lanes
+remain unimplemented pending dependency and check-coverage review.
+
+Both full userspace jobs also run `make library-check-sanitized`: fresh isolated
+ASan/UBSan/leak builds of the actual DIL TX ring, concurrent status/FIFO, raw
+YUY2 copy, planar copy and format-conversion regressions. The concurrent case
+runs ordinary, status-observer and serial controls. Device opens and unexpected
+ioctls abort; normal binaries and CPU-mode stamps are not rebuilt. This selected
+CPU coverage does not qualify the complete DIL, hardware/DMA lifecycle, native
+i386 sanitizers or the excluded shutdown-heap follow-up. Raw-frame serialization
+already has separate sanitizer coverage in `raw-frame-check`.
+
+All headers, including packed-private headers, build inputs, fixtures, generated
+files, workflow/selector changes, new or unknown paths, renames, deletions and
+file-mode changes keep the full userspace and upstream kernel checks. There
+are no directory or extension exemptions. An empty diff also takes the full
+route; an incomplete diff or failed classifier fails CI. The final **CI gate**
+requires every selected job to succeed and every explicitly unselected lane to
+be skipped. Missing, invalid or inconsistent selections and failed, cancelled,
+timed-out or unexpectedly skipped jobs cannot pass the gate.
+
+The userspace build runs on explicitly selected `ubuntu-24.04` and
+`ubuntu-26.04` runners, preserving the older supported API check alongside
+the newer stack. Both results are required by the final gate. These labels
+select Ubuntu releases; hosted images and installed packages receive updates,
+so each job records its actual OS, image and toolchain/library versions in the
+step summary. This is compatibility coverage, not an immutable build environment.
 
 Feature branches run CI through their PR, without a duplicate push build.
 Master/tag pushes always run the full suite. To request full CI for another
