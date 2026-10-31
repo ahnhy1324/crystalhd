@@ -1,6 +1,6 @@
 # Releasing the maintained CrystalHD stack
 
-The current release tracker is
+The completed v1.2 release tracker is
 [#473](https://github.com/ahnhy1324/crystalhd/issues/473). It defines the
 bounded v1.2.0 scope and G0–G3 GO/HOLD rules. Optional performance and research
 work belongs to [#472](https://github.com/ahnhy1324/crystalhd/issues/472),
@@ -48,6 +48,59 @@ Atom real-time and the #470/#471 experiments are not candidate claims. Exact
 boundaries and current status are in
 [USAGE.md](USAGE.md#known-issues-and-deinterlacing-roadmap) and the
 [hardware report](HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22).
+
+## Private v1.3 candidate preparation
+
+Development remains `1.3.0-dev.1`; a local review candidate is not a published RC
+or stable release. Work continues through reproducible source/add-on packaging
+and actual installation/removal/rollback validation. Master merge, tags, public
+uploads and default-backend promotion are separate maintainer decisions.
+
+Use the experimental integration branch combining maintenance/Xv and MPEG-1.
+Do not substitute one child's CI for the combined source. Keep native-driver
+and compilerless FFmpeg-runtime research qualification separate. Existing
+registered module package identities must never be overwritten with new bytes;
+private staging does not install or register a host DKMS module.
+
+After committing and checking the exact source:
+
+```sh
+make configuration-check kodi-settings-check candidate-package-check
+make package-candidate PACKAGE_DIR=/absolute/new-private-candidate-directory
+```
+
+The packaging helpers require Python3.8+ and Git. Output is an exact-commit
+Git-free source tar.gz, the optional Kodi settings ZIP, `candidate-manifest.json`
+and `SHA256SUMS`. gzip/ZIP times and file order are fixed. The source's existing
+`SOURCE_REVISION export-subst` retains its full Git identity without `.git`.
+Untracked/ignored files are excluded; existing output directories/packages are
+never replaced. The manifest is deterministic and initially says
+`NOT_RUN_FOR_THESE_ARTIFACTS`. Record subsequent validation in a separate receipt
+bound to its hashes; do not mutate an already qualified package or manifest.
+
+Extract the final source into a fresh private directory. Verify checksums and
+source identity, then build/test there, stage runtime and optional settings,
+check the installed provenance receipt, exercise removal and reinstallation,
+and rebuild the ZIP to compare its bytes. `install-runtime` stays headless;
+`install-settings` additionally needs GTK/PyGObject and gettext `msgfmt`.
+The Kodi ZIP needs stock Kodi's Python3 API and matching installed
+`crystalhd-config editor-state` v1. Its selected real target is Kodi21.3.
+Native dialog tests do not replace actual D-pad, ZIP installation or a new Kodi
+process consuming the saved defaults. Source-qualified no-drift logs suffice
+for the tested playback route's A/V sync; pixels/cadence/ownership stay separate.
+
+Proposed candidate scope is the committed maintained stack, optional experimental
+features under their existing opt-ins, and optional Kodi configuration UI #611.
+Do not advertise general MPEG-1 conformance, selector5, hardware deinterlacing,
+full-rate FHD, Atom/i386/BCM70012 acceptance or every open research issue as done.
+Keep historical FAILs and unavailable-target boundaries. #538 remains open;
+only its explicitly excluded heap-abort follow-up stays ignored.
+
+#607 owns remaining clean-target/public native-runtime prerequisites. The old
+seven-DSO research artifact remains `PUBLIC_NOT_READY`, has distinct platform
+dependencies and is not bundled into this source/UI candidate. Source/notices,
+ABI/provider/rollback, clean-target availability, update ownership and public
+distribution decisions must retain their actual PASS/FAIL/NOT RUN scope.
 
 ## Versions and compatibility
 

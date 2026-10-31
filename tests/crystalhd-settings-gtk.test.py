@@ -619,10 +619,15 @@ class GtkSettingsTests(unittest.TestCase):
                     entry = app.player_entries[key]
                     accessible = entry.get_accessible()
                     changes = []
+                    states = []
                     handler = accessible.connect('notify::accessible-description',
                                                  lambda obj, _spec: changes.append(obj.get_description()))
+                    state_handler = accessible.connect('state-change',
+                        lambda _obj, state, enabled: states.append(bool(enabled))
+                        if state == 'invalid-entry' else None)
                     try:
                         self.assertEqual(accessible.get_description(), '')
+                        self.assertFalse(accessible.ref_state_set().contains_state(Atk.StateType.INVALID_ENTRY))
                         select(app.player_controls[key], 'custom')
                         entry.set_text(invalid);drain()
                         error = app.player_error_text(key)
@@ -630,16 +635,24 @@ class GtkSettingsTests(unittest.TestCase):
                         self.assertEqual(app.player_errors[key].get_text(), error)
                         self.assertEqual(accessible.get_description(), error)
                         self.assertEqual(changes, [error])
+                        self.assertTrue(accessible.ref_state_set().contains_state(Atk.StateType.INVALID_ENTRY))
+                        self.assertTrue(accessible.ref_state_set().contains_state(Atk.StateType.EDITABLE))
+                        self.assertEqual(states, [True])
                         self.assertFalse(app.save_button.get_sensitive())
                         app.update_preview();drain()
                         self.assertEqual(changes, [error])
+                        self.assertTrue(accessible.ref_state_set().contains_state(Atk.StateType.INVALID_ENTRY))
+                        self.assertEqual(states, [True])
                         entry.set_text(valid);drain()
                         self.assertEqual(app.player_errors[key].get_text(), '')
                         self.assertEqual(accessible.get_description(), '')
                         self.assertEqual(changes, [error, ''])
+                        self.assertFalse(accessible.ref_state_set().contains_state(Atk.StateType.INVALID_ENTRY))
+                        self.assertEqual(states, [True, False])
                         self.assertTrue(app.save_button.get_sensitive())
                     finally:
                         accessible.disconnect(handler)
+                        accessible.disconnect(state_handler)
         self.assertFalse(self.path.exists())
 
     def test_player_validation_description_follows_editing_scope_and_cleared_override(self):
@@ -654,8 +667,10 @@ class GtkSettingsTests(unittest.TestCase):
                 entry.set_text(invalid);drain()
                 error = app.player_error_text(key)
                 self.assertEqual(entry.get_accessible().get_description(), error)
+                self.assertTrue(entry.get_accessible().ref_state_set().contains_state(Atk.StateType.INVALID_ENTRY))
                 select(app.layer, '')
                 self.assertEqual(entry.get_accessible().get_description(), '')
+                self.assertFalse(entry.get_accessible().ref_state_set().contains_state(Atk.StateType.INVALID_ENTRY))
                 self.assertEqual(app.player_errors[key].get_text(), '')
                 self.assertEqual(entry.get_text(), '')
                 self.assertFalse(entry.get_sensitive())
@@ -663,14 +678,27 @@ class GtkSettingsTests(unittest.TestCase):
                 self.assertEqual(app.pending_player[('desk', key)], invalid)
                 select(app.layer, 'desk')
                 self.assertEqual(entry.get_accessible().get_description(), error)
+                self.assertTrue(entry.get_accessible().ref_state_set().contains_state(Atk.StateType.INVALID_ENTRY))
                 self.assertEqual(app.player_errors[key].get_text(), error)
                 self.assertEqual(entry.get_text(), invalid)
                 select(app.player_controls[key], 'unset')
                 self.assertEqual(entry.get_accessible().get_description(), '')
+                self.assertFalse(entry.get_accessible().ref_state_set().contains_state(Atk.StateType.INVALID_ENTRY))
                 self.assertEqual(app.player_errors[key].get_text(), '')
                 self.assertFalse(app.pending_player)
                 self.assertTrue(app.save_button.get_sensitive())
                 self.assertFalse(self.path.exists())
+
+    def test_destroyed_validation_entry_retires_held_accessible(self):
+        entry = UI.validation_entry(Gtk)
+        entry.set_validation_error('invalid value')
+        accessible = entry.get_accessible()
+        self.assertTrue(accessible.ref_state_set().contains_state(Atk.StateType.INVALID_ENTRY))
+        entry.destroy();drain()
+        self.assertIsNone(accessible.get_widget())
+        states = accessible.ref_state_set()
+        self.assertTrue(states.contains_state(Atk.StateType.DEFUNCT))
+        self.assertFalse(states.contains_state(Atk.StateType.INVALID_ENTRY))
 
     def test_tray_startup_hides_only_after_connection_and_buttons_explain_actions(self):
         app=self.app()

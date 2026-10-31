@@ -19,6 +19,29 @@ scope to general full-rate FHD or hardware deinterlacing.
 
 ## Current priorities — 2026-10-31
 
+Private v1.3 preparation now uses `integrate/v1.3-candidate-20261031`, combining
+remote Xv/maintenance `e94b392` and MPEG-1 `f7d9f5d` at merge `0ea0862`.
+The CI conflict retains all DIL sanitizer, VPP observer, MPEG-1 and Xv gates.
+Native Kodi-driver and compilerless FFmpeg-runtime research remain separate
+lineages; their old CI is not combined-source qualification. Follow
+[private candidate packaging](RELEASING.md#private-v13-candidate-preparation)
+for exact-commit source/ZIP artifacts and artifact-specific validation.
+The optional Kodi settings frontend is tracked in #611, sharing #400's core;
+runtime reload/IPC is separate. Remaining research issues are scoped limitations,
+not automatically mandatory v1.3 features.
+
+- [x] #400 persistent queried validation state and fresh AT-SPI observers in
+  source English/installed Korean; GTK31 includes accessible retirement.
+  [Evidence](tests/fixtures/issue400/validation-native-owned-20261031.json).
+- [x] #611 shared CLI editor-state/safe transactional writes, optional native
+  Kodi dialogs and reproducible ZIP; actual stock21.3 ZIP/D-pad save/cancel/reset
+  and normal exit. [Evidence](tests/fixtures/issue611/kodi-settings-ui-20261031.json).
+- [ ] Qualify saved defaults in a new Kodi process with the updated own VA/DIL,
+  preserve ordinary playback and archive-specific build/staging/rollback receipts.
+- [ ] Record exact combined-head hosted CI and final private package hashes.
+
+Earlier checkpoint (preserved with its original qualification):
+
 #594 is merged into the experimental `feat/gst-xv-output` base at `9b85e41`.
 Its fresh parent CI passes15/15 on tested merge `6259ce9`, tree `6f3b605`.
 Master remains `04fb465`; releases/default output are unchanged. The current
@@ -54,8 +77,9 @@ hosted result must be recorded separately from earlier individual runs.
   files-only proof does not qualify a clean OS or public installer (#539).
 - [x] GUI catalogue extraction/check/install and accessible editable-label
   relations:20 model/install tests,28 real GTK controls, private-bus recovery
-  and single-instance checks pass. Partial Korean translations remain fuzzy
-  and excluded from installation pending review (#400).
+  and single-instance checks pass. Korean #601 now has150 reviewed messages,
+  zero fuzzy entries, installed glyph/label/save/mnemonic/focus validation.
+  Actual spoken screen-reader use and additional desktops remain open (#400).
 
 1. Qualify the exact combined source and integrate only into the existing
    experimental base; record child/final CI independently and tidy contained
@@ -63,16 +87,21 @@ hosted result must be recorded separately from earlier individual runs.
 2. Continue original-client interlaced/Bob natural-EOF/field-content and actual
    per-object return work (#445/#429/#436/#477/#538). Current progressive RGB
    checkpoints do not prove those cases. Fix demonstrated own faults only.
-3. Continue matched repeatability, sustained/endurance, port/X-server lifecycle
-   and calibrated physical display/A/V work (#513). Preserve earlier failures;
+3. Continue matched repeatability, sustained/endurance, port/X-server lifecycle,
+   actual display and log-based A/V acceptance (#513). No-drift playback logs
+   satisfy A/V sync; calibrated physical lip-sync is not required. Preserve earlier failures;
    different initial thermals or metadata do not establish causal speedup.
 4. Complete genuinely clean-target packaging/user burden and reviewed language/
    assistive-technology/other-desktop acceptance when those targets exist.
    Maintainer confirms current equipment only: no new Atom/native-i386/BCM70012
    acceptance is inferred from this T8100/BCM70015 host.
-5. Retained MPEG1 native/planar bytes and old runtime DSOs allow an off-hardware
-   siting/conversion comparison (#529). Hardware ownership/firmware/UART/DMA
-   research (#92/#204/#533) retains its prerequisite gates and negative results.
+5. The bounded MPEG-1 reference isolation (#529), two-session natural-video
+   decode/PTS/pixel census and #606 optional experimental352x288/25 progressive
+   BCM70015 factory are delivered with staged installation, clocked playback,
+   actual sink pixels and rollback checks. Broader MPEG-1 conformance, other
+   sizes/rates/chips and physical scanout remain unqualified; ordinary caps/defaults stay unchanged.
+   Hardware ownership/firmware/UART/DMA research (#92/#204) retains its gates;
+   #533's completed safe negative STOP/START investigation remains preserved.
 
 **Shutdown heap abort subtask only: ignored / wontfix (2026-10-29). #538 stays
 open.** Per maintainer direction, stop investigation/reproduction of this

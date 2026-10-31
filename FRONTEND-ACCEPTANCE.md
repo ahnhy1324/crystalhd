@@ -174,8 +174,38 @@ xvfb-run -a make settings-ui-check
 requires GTK3/PyGObject, a usable display/Xvfb and `dbus-run-session`.
 `tests/crystalhd-settings.test.py` is the stdlib editor/storage model and staged
 install checker. Existing GTK coverage includes safe saves, responsive
-installation inspection, draft preservation and one accessible debug-combo
-name; this is not a screen-reader audit.
+installation inspection, draft preservation, editable Player names/label
+relations and localized error descriptions. Own Entry accessibility now also
+provides queried persistent INVALID_ENTRY, transition-only state events,
+profile-scope restoration and destruction retirement. The direct-PID/private-bus
+AT-SPI observer includes a fresh client connected after invalid input, alongside
+the retained old-source negative control. Spoken Orca is a separate observation.
+The [persistent-state receipt](tests/fixtures/issue400/validation-native-owned-20261031.json)
+records source English and installed Korean actual cross-process checks, fresh
+observer PID/name/state and normal retirement. The older description-only
+receipt remains accurate historical evidence. Current GTK31 checks include a
+held accessible after destruction; no invalid state survives retirement.
+An initial Python-owned accessible cache passed local assertions but the
+Ubuntu24 CI interpreter crashed after all31 checks. That candidate remains
+unqualified. The current own Entry type configures its accessible before the
+first instance and uses GTK's ordinary creation/initialization/ownership/disposal,
+with no manual accessible cache or destroy hook. The retained regression and
+new source-English/installed-Korean observers are in the linked receipt;
+the exact native finalizer stack was not observed, so no upstream defect is
+attributed. Final hosted compatibility belongs to the source pinned in PR612.
+
+The optional #611 [Kodi frontend](addons/script.crystalhd.settings/README.md)
+uses native dialogs and shared CLI metadata/writes. Device-free dialog tests
+cover Cancel/Back, save/reset, profile/unset, stale inputs and failures; they are
+not real Kodi/D-pad or new-process native-reader acceptance. Record those actual
+target runs and the ZIP installation separately with exact package/source pins.
+The [actual stock Kodi21.3 UI receipt](tests/fixtures/issue611/kodi-settings-ui-20261031.json)
+qualifies native ZIP installation, real directional/Select/Back RPC, preset save,
+Back/declined-save nonwrites, confirmed global reset, diagnostic save and
+file-only installation information. All9 installed ZIP members match, no
+independent settings.xml is written, and Kodi exits0 normally. Its actual
+English UI does not qualify spoken accessibility, other Kodi builds, or a new
+process's native settings consumption/playback.
 
 | Actual target | Required acceptance observation |
 | --- | --- |

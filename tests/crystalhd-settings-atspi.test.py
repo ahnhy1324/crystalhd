@@ -10,7 +10,8 @@ its own dbus-run-session and a direct GUI child using private configuration:
 --source accepts a checkout or a private installed prefix/root. Use the actual
 installed catalogue and LANGUAGE=ko for Korean. --expect-missing-description
 records the frozen-base defect as EXPECTED_DEFECT_REPRODUCED, not a UI PASS.
-This verifies remote descriptions/events, not spoken Orca or INVALID_ENTRY.
+This verifies remote descriptions and persistent INVALID_ENTRY queries/events,
+including a fresh observer after an error. It does not verify spoken Orca.
 """
 import argparse
 from collections import Counter
@@ -30,6 +31,7 @@ import time
 KEYS = ('gstreamer.crystalhddec.scale_width', 'player.software_output_size')
 VALUES = (('127', '128'), ('1921x1080', '1920x1080'))
 EVENT = 'object:property-change:accessible-description'
+INVALID_EVENT = 'object:state-changed:invalid-entry'
 SCRIPT = Path(__file__).resolve()
 sys.dont_write_bytecode = True
 
@@ -182,7 +184,8 @@ def parent(args):
               'source': str(args.source), 'private_session_bus': True,
               'observer_sha256': hashlib.sha256(SCRIPT.read_bytes()).hexdigest(),
               'expect_missing_description': args.expect_missing_description,
-              'scope': 'Cross-process descriptions/events only; no spoken Orca or INVALID_ENTRY claim',
+              'expect_missing_invalid_state': args.expect_missing_invalid_state,
+              'scope': 'Cross-process descriptions and queried INVALID_ENTRY states/events; no spoken Orca claim',
               'actions': [], 'cleanup': {}, 'first_failure': None}
     process = listener = None
     registered = False
@@ -297,10 +300,15 @@ def parent(args):
             paths = {str(node.path): key for key, node in entries.items()}
             report['entry_roles'] = {key: node.get_role_name() for key, node in entries.items()}
 
+            invalid_events = []
+
             def on_event(event, *_data):
                 try:
                     key = paths.get(str(event.source.path))
                     if key is None or event.source.get_process_id() != process.pid:
+                        return
+                    if event.type == INVALID_EVENT:
+                        invalid_events.append({'key': key, 'enabled': bool(event.detail1)})
                         return
                     value = event.any_data
                     if hasattr(value, 'get_value'):
@@ -312,10 +320,12 @@ def parent(args):
 
             listener = Atspi.EventListener.new(on_event)
             require(listener.register(EVENT), 'AT-SPI event subscription failed')
+            require(listener.register(INVALID_EVENT), 'AT-SPI invalid-state subscription failed')
             registered = True
             pump(.2)
             events.clear()
             previous = {key: '' for key in KEYS}
+            previous_invalid = {key: False for key in KEYS}
 
             def remote_descriptions():
                 result = {}
@@ -326,36 +336,79 @@ def parent(args):
 
             require(remote_descriptions() == previous, 'initial entry descriptions are not empty')
 
+            def remote_invalid_states():
+                result = {}
+                for key, node in entries.items():
+                    node.clear_cache()
+                    result[key] = node.get_state_set().contains(Atspi.StateType.INVALID_ENTRY)
+                return result
+
+            require(remote_invalid_states() == previous_invalid, 'initial entry invalid states are not clear')
+
             def step(action, **fields):
-                nonlocal previous
+                nonlocal previous, previous_invalid
                 pump(.1)
                 offset = len(events)
+                invalid_offset = len(invalid_events)
                 state = request(action, **fields)['state']
                 require(state['pid'] == process.pid and not state['config_exists'],
                         'GUI identity changed or private configuration was written')
                 expected = {key: ('' if args.expect_missing_description else state['entries'][key]['error'])
                             for key in KEYS}
+                expected_invalid = {key: bool(state['entries'][key]['error']) and not (
+                    args.expect_missing_description or args.expect_missing_invalid_state) for key in KEYS}
                 until = min(deadline, time.monotonic() + 3)
                 observed = remote_descriptions()
                 while observed != expected and time.monotonic() < until:
                     pump(.02)
                     observed = remote_descriptions()
                 require(observed == expected, 'remote description differs from visible validation')
+                observed_invalid = remote_invalid_states()
+                while observed_invalid != expected_invalid and time.monotonic() < until:
+                    pump(.02)
+                    observed_invalid = remote_invalid_states()
+                require(observed_invalid == expected_invalid, 'queried INVALID_ENTRY differs from validation')
                 pump(.25)
                 require(not event_errors, 'AT-SPI event decoding failed: ' + str(event_errors))
                 expected_events = Counter((key, text) for key, text in expected.items()
                                           if text != previous[key])
                 actual_events = Counter((event['key'], event['description']) for event in events[offset:])
                 require(actual_events == expected_events, 'missing, duplicate or stale description event')
+                expected_state_events = Counter((key, enabled) for key, enabled in expected_invalid.items()
+                                                if enabled != previous_invalid[key])
+                actual_state_events = Counter((event['key'], event['enabled'])
+                                              for event in invalid_events[invalid_offset:])
+                require(actual_state_events == expected_state_events,
+                        'missing, duplicate or stale invalid-state event')
                 report['actions'].append({'action': action, 'fields': fields, 'state': state,
-                                          'remote_descriptions': observed, 'events': events[offset:]})
+                                          'remote_descriptions': observed, 'events': events[offset:],
+                                          'queried_invalid_states': observed_invalid,
+                                          'invalid_events': invalid_events[invalid_offset:]})
                 previous = expected
+                previous_invalid = expected_invalid
                 return state
 
             for key, (invalid, valid) in zip(KEYS, VALUES):
                 state = step('edit', key=key, value=invalid)
                 require(state['entries'][key]['error'] and not state['save_sensitive'],
                         'invalid input did not produce visible validation and block Save')
+                if key == KEYS[0]:
+                    observer = subprocess.Popen([
+                        sys.executable, '-B', str(SCRIPT), '--source', str(args.source),
+                        '--_fresh-pid', str(process.pid), '--_fresh-name', state['entries'][key]['name']],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    try:
+                        fresh_output, fresh_errors = observer.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        observer.terminate()
+                        observer.communicate(timeout=5)
+                        raise AssertionError('fresh AT-SPI observer timed out')
+                    require(observer.returncode == 0, 'fresh observer failed: ' + fresh_errors[:512])
+                    fresh = json.loads(fresh_output)
+                    require(fresh['pid'] == process.pid and fresh['name'] == state['entries'][key]['name'],
+                            'fresh observer target identity differs')
+                    require(fresh['invalid'] == previous_invalid[key], 'fresh observer queried stale invalid state')
+                    report['fresh_observer'] = fresh
                 step('preview')
                 state = step('edit', key=key, value=valid)
                 require(not state['entries'][key]['error'] and state['save_sensitive'],
@@ -381,8 +434,9 @@ def parent(args):
                 require(not state['entries'][key]['error'] and not state['pending']
                         and state['save_sensitive'], 'clearing override left stale validation')
                 step('preview')
-            report['status'] = ('EXPECTED_DEFECT_REPRODUCED' if args.expect_missing_description
-                                else 'PASS_SCOPED_ATSPI_DESCRIPTIONS_AND_EVENTS')
+            report['status'] = ('EXPECTED_DEFECT_REPRODUCED' if args.expect_missing_description else
+                                'EXPECTED_INVALID_STATE_DEFECT_REPRODUCED' if args.expect_missing_invalid_state
+                                else 'PASS_SCOPED_ATSPI_VALIDATION')
         except Exception as error:
             report['first_failure'] = type(error).__name__ + ': ' + str(error)
         finally:
@@ -391,6 +445,7 @@ def parent(args):
             if registered:
                 try:
                     require(listener.deregister(EVENT), 'AT-SPI listener did not deregister')
+                    require(listener.deregister(INVALID_EVENT), 'AT-SPI invalid-state listener did not deregister')
                 except Exception as error:
                     report['cleanup']['listener_error'] = str(error)
             if process is not None:
@@ -435,12 +490,34 @@ def main():
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--report', type=Path)
     parser.add_argument('--expect-missing-description', action='store_true')
+    parser.add_argument('--expect-missing-invalid-state', action='store_true')
+    parser.add_argument('--_fresh-pid', type=int, help=argparse.SUPPRESS)
+    parser.add_argument('--_fresh-name', help=argparse.SUPPRESS)
     parser.add_argument('--_private-bus', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--_child', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--_config', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.source = args.source.resolve()
     require(args.source.is_dir(), '--source must be a directory')
+    if args._fresh_pid:
+        import gi
+        gi.require_version('Atspi', '2.0')
+        from gi.repository import Atspi
+        desktop = Atspi.get_desktop(0)
+        applications = [desktop.get_child_at_index(i) for i in range(desktop.get_child_count())]
+        queue = [app for app in applications if app.get_process_id() == args._fresh_pid]
+        visited = 0
+        while queue:
+            node = queue.pop(0)
+            visited += 1
+            require(visited <= 512, 'fresh observer tree exceeds bound')
+            if node.get_name() == args._fresh_name and node.get_role() in (Atspi.Role.ENTRY, Atspi.Role.TEXT):
+                node.clear_cache()
+                print(json.dumps({'pid': node.get_process_id(), 'name': node.get_name(),
+                                  'invalid': node.get_state_set().contains(Atspi.StateType.INVALID_ENTRY)}))
+                return 0
+            queue.extend(node.get_child_at_index(i) for i in range(node.get_child_count()))
+        raise AssertionError('fresh observer did not find target entry')
     if args._child:
         require(args._config is not None, 'GUI child requires private configuration')
         return child(args)
@@ -452,7 +529,8 @@ def main():
         os.execvp('dbus-run-session', ['dbus-run-session', '--', sys.executable, '-B',
                                      str(SCRIPT), '--source', str(args.source),
                                      '--report', str(args.report), '--_private-bus'] +
-                  (['--expect-missing-description'] if args.expect_missing_description else []))
+                  (['--expect-missing-description'] if args.expect_missing_description else []) +
+                  (['--expect-missing-invalid-state'] if args.expect_missing_invalid_state else []))
     return parent(args)
 
 
