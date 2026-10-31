@@ -15,15 +15,17 @@
 namespace acquire_allocation_fault {
 // Observe only the calling thread's acquisition, starting at its nothrow
 // object allocation. The next throwing allocation is the shared_ptr control
-// block; neither point requires a GBM object, descriptor or mapping.
+// block; neither point requires a GBM object, descriptor or mapping. Release
+// separately arms observe_any for its first throwing pixel-copy allocation.
 thread_local bool observing = false, raw_seen = false, injected = false;
+thread_local bool observe_any = false;
 thread_local bool failed_nothrow = false, raw_deleted = false;
 thread_local unsigned fail_on = 0, attempts = 0;
 thread_local size_t raw_bytes = 0, failed_bytes = 0;
 thread_local void *raw_object = nullptr;
 
 void *Allocate(size_t bytes, bool nothrow) {
-  if (observing && (raw_seen || nothrow)) {
+  if (observing && (raw_seen || nothrow || observe_any)) {
     if (!raw_seen) {
       raw_seen = true;
       raw_bytes = bytes;
@@ -530,6 +532,108 @@ static void AcquireAllocationFailures() {
   AcquireAllocationFailure(2);
 }
 
+static void ReleaseAllocationFailure(bool derived) {
+  Fixture f;
+  std::shared_ptr<Surface> picture;
+  VAImage image = {};
+  if (derived) {
+    picture = f.Picture();
+    picture->id = 1;
+    Require(f.table.vaDeriveImage(&f.context, 1, &image) == VA_STATUS_SUCCESS,
+            "derive a cold source for release allocation failure");
+  } else {
+    image = f.Image();
+  }
+  const auto original = f.driver->buffers.at(image.buf).data;
+  VABufferInfo info = {};
+  Require(f.Acquire(image.buf, &info) == VA_STATUS_SUCCESS,
+          "acquire before release allocation failure");
+  const int fd = static_cast<int>(info.handle);
+  Buffer &buffer = f.driver->buffers.at(image.buf);
+  const auto *backing = buffer.exported.get();
+  std::vector<uint8_t> pixels(image.data_size);
+  for (size_t index = 0; index < pixels.size(); ++index)
+    pixels[index] = static_cast<uint8_t>(index * 31U + 19U);
+  Require(pwrite(fd, pixels.data(), pixels.size(), 0) ==
+              static_cast<ssize_t>(pixels.size()),
+          "external writer fills the handle before allocation failure");
+  const unsigned sync_calls = io.sync_calls, polls = io.polls;
+  const size_t buffers = f.driver->buffers.size(), images = f.driver->images.size();
+  for (unsigned attempt = 0; attempt < 2; ++attempt) {
+    using namespace acquire_allocation_fault;
+    observing = observe_any = true;
+    raw_seen = injected = failed_nothrow = raw_deleted = false;
+    raw_object = nullptr;
+    raw_bytes = failed_bytes = attempts = 0;
+    fail_on = 1;
+    bool escaped = false;
+    VAStatus status = VA_STATUS_SUCCESS;
+    try { status = f.Release(image.buf); }
+    catch (const std::bad_alloc &) { escaped = true; }
+    observing = observe_any = false;
+    fail_on = 0;
+    std::printf("ReleaseBufferHandle allocation=%s attempt=%u injected=%d "
+                "escaped=%d status=%#x bytes=%zu\n",
+                derived ? "derived" : "image", attempt + 1, injected,
+                escaped, status, failed_bytes);
+    Require(injected && !failed_nothrow && failed_bytes == image.data_size &&
+                attempts == 1,
+            "fault selects only the release pixel-copy allocation");
+    Check(!escaped && status == VA_STATUS_ERROR_ALLOCATION_FAILED,
+          "release allocation failure returns a VA error without escaping the callback");
+    Check(buffer.exported.get() == backing && !buffer.export_busy &&
+              BufferBorrowed(buffer) && !buffer.data_failed &&
+              buffer.data == original && buffer.map_count == 0 &&
+              f.driver->buffers.size() == buffers && f.driver->images.size() == images &&
+              fcntl(fd, F_GETFD) >= 0 && io.bos.size() == 1 &&
+              io.export_fds.size() == 1 && io.mappings.size() == 1 &&
+              io.sync_calls == sync_calls && io.polls == polls,
+          "failed release preserves the exact borrow, bytes and resources before synchronization");
+    if (derived)
+      Check(buffer.derived_write_active && picture->image_write_locked &&
+                picture->vpp_writers == 1 && !picture->ready && !picture->failed &&
+                !std::memcmp(picture->planes[0], picture->storage.data(),
+                             picture->storage.size()),
+            "allocation failure preserves the cold-source write lease and original pixels");
+    void *mapped = nullptr;
+    VABufferInfo other = {};
+    Check(f.table.vaMapBuffer(&f.context, image.buf, &mapped) == VA_STATUS_ERROR_SURFACE_BUSY &&
+              f.Acquire(image.buf, &other) == VA_STATUS_ERROR_SURFACE_BUSY &&
+              f.table.vaDestroyImage(&f.context, image.image_id) == VA_STATUS_ERROR_SURFACE_BUSY,
+          "preserved release borrow still excludes map, reacquire and destruction");
+  }
+  Require(f.Release(image.buf) == VA_STATUS_SUCCESS,
+          "the same handle releases normally after repeated allocation failure");
+  Check(buffer.data == pixels && !BufferBorrowed(buffer) && !buffer.export_busy &&
+            !buffer.data_failed && fcntl(fd, F_GETFD) == -1 && errno == EBADF &&
+            io.bos.empty() && io.export_fds.empty() && io.mappings.empty() &&
+            io.creates == io.destroys,
+        "successful retry commits image pixels and retires the original export resources");
+  if (derived) {
+    bool equal = true;
+    for (unsigned plane = 0; plane != 2; ++plane) {
+      const unsigned rows = plane ? (image.height + 1U) / 2 : image.height;
+      const unsigned columns = plane ? (image.width + 1U) & ~1U : image.width;
+      for (unsigned row = 0; row < rows; ++row)
+        equal = std::memcmp(picture->planes[plane] + row * picture->pitch[plane],
+                            pixels.data() + image.offsets[plane] + row * image.pitches[plane],
+                            columns) == 0 && equal;
+    }
+    Check(equal && picture->ready && !picture->failed &&
+              !picture->image_write_locked && picture->vpp_writers == 0 &&
+              !buffer.derived_write_active,
+          "successful retry publishes every source pixel and retires its write lease");
+  }
+  Require(f.table.vaDestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS &&
+              f.driver->buffers.empty() && f.driver->images.empty(),
+          "the retried image and buffer remain normally destroyable");
+}
+
+static void ReleaseAllocationFailures() {
+  ReleaseAllocationFailure(false);
+  ReleaseAllocationFailure(true);
+}
+
 static void AcquireRollback() {
   for (unsigned failure = 0; failure < 10; ++failure) {
     Fixture f;
@@ -778,6 +882,15 @@ static void ExportLayouts() {
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc == 3 && std::strcmp(argv[1], "--release-allocation") == 0) {
+    if (std::strcmp(argv[2], "image") != 0 && std::strcmp(argv[2], "derived") != 0)
+      return 2;
+    try { ReleaseAllocationFailure(std::strcmp(argv[2], "derived") == 0); }
+    catch (const std::exception &error) { Check(false, error.what()); }
+    std::printf("VAAPI buffer release allocation: %s (%u failed checks)\n",
+                failures ? "FAIL" : "PASS", failures);
+    return failures ? 1 : 0;
+  }
   if (argc == 3 && std::strcmp(argv[1], "--acquire-allocation") == 0) {
     const unsigned allocation = std::strcmp(argv[2], "raw") == 0 ? 1U :
         std::strcmp(argv[2], "control") == 0 ? 2U : 0U;
@@ -789,12 +902,13 @@ int main(int argc, char **argv) {
     return failures ? 1 : 0;
   }
   if (argc != 1) {
-    std::fprintf(stderr, "usage: %s [--acquire-allocation raw|control]\n", argv[0]);
+    std::fprintf(stderr, "usage: %s [--acquire-allocation raw|control | --release-allocation image|derived]\n", argv[0]);
     return 2;
   }
   for (auto test : {Registration, ExportLayouts, BorrowRoundTrip, InvalidAndMapped,
                     SnapshotIsolation, ColdDerivedHandleWriteThrough,
-                    AcquireAllocationFailures, AcquireRollback, ReleaseFailureInvalidates,
+                    AcquireAllocationFailures, ReleaseAllocationFailures,
+                    AcquireRollback, ReleaseFailureInvalidates,
                     DeriveFailureRollback, TerminateInvalidatesBorrow,
                     ReleaseWaitRehash, PendingReadIdentity}) {
     try { test(); }

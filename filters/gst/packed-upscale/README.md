@@ -66,3 +66,37 @@ lateness/15ms deadline unchanged, requires the75C guard, original source grid,
 
 Finite CPU/ownership checks do not establish physical scanout, calibrated A/V,
 repeatability, arbitrary inputs or sustained thermal endurance.
+
+
+The selected CPU contract also has an isolated sanitizer target:
+
+```sh
+make -C filters/gst/packed-upscale check-sanitized
+```
+
+It recompiles both the plugin and test executable with ASan/UBSan, enables leak
+checking without suppressions and halts on sanitizer errors. The executable
+loads the instrumented plugin from a fresh required-plugin-only registry with
+in-process discovery; an uninstrumented external plugin scanner is not used.
+The temporary outputs are removed on success, compiler/test failure or normal
+interruption. Ordinary O2 outputs and their CPU-mode stamp are untouched;
+a private sanitizer config fingerprint records the effective toolchain, CPU,
+sanitizer, app-link and plugin-directory choices in the temporary build.
+`cpu.mk` still validates and supplies the selected CPU flags to both builds.
+Only the instrumented test executable uses non-PIE linking for a stable
+sanitizer address space. Make passes the plugin directory resolved by its
+selected `PKG_CONFIG` to the shared loader, preserving the selected metadata
+rather than discovering unrelated default plugins.
+
+Both Ubuntu CI userspaces run this explicit target after the ordinary component
+check. GStreamer1.28.2 executes the36 stock/candidate pixel, metadata, stride,
+flush/EOS/restart and rejection comparisons. Other versions load the plugin and
+verify explicit runtime-version rejection only; they receive no pixel or media
+qualification. The sanitizer target is CPU-only and adds no X11, decoder-device,
+media, physical-output or thermal test.
+
+The shared loader has separate filesystem-only contracts in
+`tests/packed-sanitizer-loader.test.py`. They check exact selected file identity
+for absolute/relative paths with spaces, reject ambient fallback, propagate a
+failing test status and remove temporary registries. Those stub-based checks
+do not replace the native pixel/sanitizer comparisons above.

@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       heavy: ${{ steps.plan.outputs.heavy }}
+      kernel: ${{ steps.plan.outputs.kernel }}
       contracts: ${{ steps.plan.outputs.contracts }}
     steps:
       - uses: actions/checkout@v7
@@ -110,6 +111,11 @@ jobs:
 
       - name: Build optional packed scaler and check CPU contracts
         run: make -C filters/gst/packed-upscale check
+
+      - name: Sanitize optional packed scaler CPU contracts
+        run: |
+          python3 -B tests/packed-sanitizer-loader.test.py
+          make -C filters/gst/packed-upscale check-sanitized
 
       - name: Select packaged kernel headers
         run: |
@@ -345,7 +351,7 @@ jobs:
 
   upstream-kernel-api:
     needs: classify
-    if: needs.classify.outputs.heavy == 'true'
+    if: needs.classify.outputs.kernel == 'true'
     name: Kernel API (${{ matrix.track }}, ${{ matrix.arch }})
     runs-on: ubuntu-latest
     strategy:

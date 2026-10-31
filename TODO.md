@@ -17,105 +17,79 @@ broader performance and research remain in
 [#472](https://github.com/ahnhy1324/crystalhd/issues/472) and do not expand the
 scope to general full-rate FHD or hardware deinterlacing.
 
-## Current priorities — 2026-10-30
+## Current priorities — 2026-10-31
 
-Prepared baseline and follow-up changes remain separate review-ready PRs;
-temporary route probe #588 is closed unmerged. No issue is closed and master
-remains `04fb465`. Separate implementation,
-review-ready changes and remaining acceptance. Only CrystalHD-owned code is an
-implementation target; unchanged external clients supply qualification evidence.
+The optional FHD repair [#593](https://github.com/ahnhy1324/crystalhd/pull/593)
+is merged into the existing research branch `feat/gst-xv-output` at `7d1f589`.
+Its tree is identical to final source `6f7a514`, whose15/15 CI checks pass.
+[#532](https://github.com/ahnhy1324/crystalhd/pull/532) remains a draft research
+PR, with fresh CI for its new head tracked separately. Master remains `04fb465`;
+release support and the ordinary output policy are unchanged.
 
-1. **Complete review/integration of the prepared baseline.**
-   [#585](https://github.com/ahnhy1324/crystalhd/pull/585) combines #580 → #583 →
-   #584 at `fbab5bc`. Its own 15/15 CI jobs pass, including complete Ubuntu
-   24.04/26.04 userspaces. It is ready/unmerged; the source PRs remain open.
-   Combined preparation is complete, not a master merge or deployment.
-2. **Find and repair remaining natural Player loss — #510/#91/#471.**
-   [#589](https://github.com/ahnhy1324/crystalhd/pull/589) implements the optional
-   bounded rolling observer with context/PTS/thread evidence. Implementation
-   head `b8a97c9` passes 15/15 CI, 122 Player checks, ordinary/sanitized native
-   checks and compiled negative controls. Playback still fails: FHD01 stops at
-   the unchanged 75°C guard; a complete 720 arm renders 14,994/15,000 fields.
-   A separately frozen 60-second FHD diagnostic records missing decoder picture
-   PTS 9.08 s with scheduler coverage. A pad-emitter span contains runnable wait;
-   exclusive function/worker cost and the cause of loss remain unproved. Both
-   partial FHD sink-counter residuals remain unresolved. Keep same-policy cause/
-   repair open, preserve every prior FAIL and do not repeat rejected queue/
-   thread-count/priority pilots. See the
-   [scoped receipt](tests/fixtures/issue510/player-window-trace-20261030.json).
-   The new paired-call diagnostic binds missing PTS 46.60 s to a completed
-   `finish_frame` call, matching decoder QoS and no decoder-src output; the
-   preceding calls contain 17.5–26.1 ms runnable wait. Why the frame was late
-   remains open. [Exact evidence](tests/fixtures/issue510/player-finish-observation-20261030.json)
-   separates this baseline run from the new CPU-qualified optional collector.
-   [#591](https://github.com/ahnhy1324/crystalhd/pull/591) fixes an independently
-   reproduced own TX counter race; no playback-cause or zero-drop claim follows.
-3. **Finish unmodified-client acceptance — #445/#429/#436.**
-   Original Kodi22RC1/App FFmpeg with current own VA/DIL now passes bounded
-   progressive pause/resume, forward/backward seek, Stop and same-process natural
-   reopen/EOF, with source-barcode PTS checkpoints and idle retirement. Application
-   exit, terminal boundary and kernel checks pass. This delivers a checkpoint/
-   control subset; interlaced Bob, full crop and per-object client/GPU returns
-   remain open. Old private patched-client results remain separate.
-   [#587](https://github.com/ahnhy1324/crystalhd/pull/587) fixes a confirmed own
-   `vaReleaseBufferHandle` allocation exception before ownership mutation.
-   Public-vtable RED/GREEN, sanitizers and 15/15 CI pass; it is ready/unmerged.
-   This does not fix the historical Player loss or the excluded heap subtask.
-4. **Complete native picture/ownership evidence — #538.**
-   #579 → #581 stay separate on frozen experimental `2399430`, outside the master
-   integration. [#590](https://github.com/ahnhy1324/crystalhd/pull/590) qualifies
-   one actual EXPBUF neutral image: all 1,843,200 active YUYV bytes match, with
-   independent content-derived source PTS and queue lease/return; 14/14 CI passes,
-   ready/unmerged. Broader colour/cadence, all-picture pixel/PTS, exact GPU/render
-   ownership, scanout, physical A/V and supported-backend acceptance remain open.
-5. **Extend conservative CI lanes after the delivered first split — #510.**
-   [#586](https://github.com/ahnhy1324/crystalhd/pull/586) adds a conservative
-   independent kernel selector, retaining complete Ubuntu 24.04/26.04 userspaces.
-   Its own 15/15 CI and 20 local checks pass. Real userspace-only probe #588 passes
-   both userspaces/docs/final gate, with one collapsed skipped kernel placeholder,
-   then closes unmerged. Shared/header/workflow/unknown/incomplete changes and
-   master/tag/manual checks stay full. #586 is ready/unmerged; broader component
-   splitting and selected sanitizer promotion remain follow-ups.
-6. **Keep optional acceptance behind correctness work.**
-   #470/#477 implementations are delivered; paced A/B, format/codec/PM, ROI and
-   lifecycle checks remain. #400's settings/GTK/tray/adapters are delivered;
-   translations, accessibility, extra adapters and desktop/i386 acceptance remain.
-   #539's private compilerless proof is complete; clean-target ABI/dependencies,
-   user burden and public distribution decisions remain. No external FFmpeg
-   change or public package is approved here.
-7. **Retain optional research and unavailable-target boundaries.**
-   #513/#532 async Xv and #530 EGL Bob retain CPU/endurance/swap-tail limits;
-   #532 stays draft without PR CI at its current head. #533's failed G2 gates
-   G3–G5. #529 MPEG-1 and #92/#204 ownership/hardware research follow correctness;
-   #472 records experimental policy. BCM70012, reporter Atom/native-i386 and
-   physical FHD/A/V require their actual environments; other-host, build/emulator,
-   headless or render-counter results cannot substitute for them.
+1. **Validate a combined maintenance baseline.**
+   The separate integration candidate combines the research baseline with
+   [#586](https://github.com/ahnhy1324/crystalhd/pull/586)'s conservative kernel
+   selection and [#587](https://github.com/ahnhy1324/crystalhd/pull/587)'s own VA
+   handle-release allocation repair. Preserve their original RED/GREEN evidence
+   and require classifier/VA regression checks plus CI on this final combination.
+   Their previous individual green runs do not qualify a new combined head.
+2. **Keep packed-scaler sanitizers in hosted CI — #510.**
+   The isolated `check-sanitized` target builds both the optional shared plugin
+   and its CPU test. It requires ASan/UBSan and leak detection with no suppressions,
+   a loader limited to required plugins and no scanner subprocess. Preserve
+   ordinary build outputs and the shared CPU policy. The final integration PR
+   records the hosted result, separate from earlier individual runs. GStreamer1.28.2 must run
+   all36 stock pixel/metadata/stride/flush/EOS/restart comparisons;1.24 qualifies
+   explicit unsupported-version rejection only. Broader userspace lane splitting
+   remains a separate task after this bounded promotion.
+3. **Close the whole-output PTS diagnostic gap.**
+   The current actual run has the complete7500 native-picture PTS grid and
+   whole-stage counts, but output-pad PTS-set equality covers retained
+   [256.4,300)s only. Add epoch-aware constant-space PTS summaries independent
+   of ring eviction before claiming a whole-output census. CPU controls must
+   expose missing, duplicate, reversed and unknown PTS, including flush/segment
+   changes with a deliberately small ring. This is the next code candidate
+   after the sanitizer CI work; it is not yet implemented or qualified.
+4. **Continue unmodified-client acceptance — #445/#429/#436.**
+   Existing original-stock-Kodi progressive controls and source-content/PTS
+   checkpoints remain bounded evidence. Interlaced Bob, full crop and exact
+   per-object client/GPU returns remain open. Fix only demonstrated own-code
+   faults; a wait in an external library does not establish an external defect.
+5. **Keep broader hardware and experiment acceptance separate.**
+   #538 retains native picture/ownership follow-up except for its excluded heap
+   subtask below. #513 repeatability/endurance/window replacement/physical A/V,
+   #470/#477 paced and lifecycle checks, #539 clean-target packaging and public
+   distribution, and BCM70012/reporter Atom/native-i386 acceptance still require
+   their own evidence. Broader component CI lanes, extra frontend acceptance
+   and #92/#204/#529/#530 research follow the bounded correctness tasks above.
 
-Scoped progress completed in this review (review-ready does not mean merged):
+Completed progress on this line of work:
 
-- [x] Combined #580 → #583 → #584 baseline and its own two-userspace CI (#585).
-- [x] Conservative kernel selection and actual hosted route proof (#586;
-  temporary #588 closed unmerged).
-- [x] Confirmed own VA allocation-exception fix with RED/GREEN and CI (#587).
-- [x] Rolling Player observer, context/PTS controls and scoped hardware/scheduler
-  evidence (#589); cause/zero-drop repair remains open.
-- [x] Original-stock-Kodi progressive controls and three source-content/PTS
-  checkpoints; full pixel/object-return/interlaced acceptance remains open.
+- [x] Optional current-Player Xv integration and independently qualified image
+  ownership/retirement, preserving default output and timing policy (#532).
+- [x] Original300s PCM/FHD50 repair on the explicit packed path (#593):7500
+  native pictures,15000 DI/fused/sink buffers and renders, zero BaseSink drops,
+  natural EOS and maximum69C under the original75C guard. All15001 requests
+  acknowledge through the six-image pool; normal close frees all six images.
+- [x] Independent actual-artifact replay82/82 and fresh final-source CI15/15.
+  [Receipt](tests/fixtures/issue513/packed-upscale-20261031.json) preserves old
+  failures and separates full native counts from retained output PTS records.
+- [x] Merge #593 into the experimental research base after user GO; its source
+  content is unchanged. This is not a master merge or support promotion.
+- [x] Prepare a clean local merge of #586 and #587 without reimplementing either
+  reviewed change; classifier20 and the VA release callback regression pass.
+- [x] Implement the isolated packed sanitizer target and loader fix. Local ASan/
+  UBSan/leaks pass36 comparisons; seven failure/isolation controls pass, including
+  compiler failure and test exit37. Normal image/stamp hashes and timestamps are
+  unchanged. A relative selected-plugin path with spaces fails before the loader
+  correction and passes36 comparisons afterward. Hosted combined-head validation
+  remains a distinct result recorded on the integration PR.
 
-- [x] Confirmed own TX counter synchronization fix: actual-function TSan and
-  deterministic RED/GREEN, FIFO/wrap and full library checks (#591, unmerged).
-- [x] Optional paired finish-call collector: default OFF, CPU ownership/lifecycle/
-  sanitizer/configuration checks; hardware qualification remains separate.
-- [x] Baseline FHD paired-call/wait/clock observation and independent 161-check
-  replay; lateness cause and zero-drop repair remain open.
-- [x] One same actual native EXPBUF full active neutral image, source PTS and
-  client queue lease/return (#590, ready/unmerged); broader #538 stays open.
-
-The [new hardware summary](HARDWARE-2026-09-13.md#rolling-player-observation-and-stock-client-controls--2026-10-30)
-retains all failures and separates reader validation from media acceptance.
-The implementation head's CI does not qualify a subsequent evidence-only commit;
-that head requires fresh checks. Stable releases, installed module/firmware and
-all external sources/binaries remain unchanged.
+The observed300s success establishes that this permitted profile is possible.
+It does not assign every historical loss to the scaler or the independent TX
+race, establish physical scanout/A/V, or complete repeatability/endurance.
+Initial temperatures differ from older thermal failures; do not claim a matched
+thermal speedup. Preserve all exact-source receipts and original failures.
 
 **Shutdown heap abort subtask only: ignored / wontfix (2026-10-29). #538 stays
 open.** Per maintainer direction, stop investigation/reproduction of this
