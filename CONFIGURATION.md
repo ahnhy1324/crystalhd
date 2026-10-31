@@ -318,6 +318,7 @@ It does not change the supported GStreamer version or QoS admission rules.
 | `--hardware` <!-- config-surface:player-flag:--hardware --> | `crystalhd-player.py` | GStreamer local playback | Default mode; flag has no value | Installed/discoverable `crystalhddec`, supported media and an idle card | Decoder ranks are selected for this process before pipeline creation; no software fallback | **Standard** | Yes — CLI |
 | `--software` <!-- config-surface:player-flag:--software --> | `crystalhd-player.py` | GStreamer local playback | Off; mutually exclusive with `--hardware` | Available software decoder | Decoder ranks and playbin software-decoder flag are selected before pipeline creation | **Standard** | Yes — CLI |
 | `--weave` <!-- config-surface:player-flag:--weave --> | `crystalhd-player.py` | Hardware or software local playback | Off; flag has no value | Available selected decoder and playbin | Clears only playbin's deinterlace flag before playback; fails if it remains enabled | **Opt-in** — interlaced frame pass-through, not deinterlacing or a sync guarantee | Yes — CLI |
+| `--video-output MODE` <!-- config-surface:player-flag:--video-output --> | `crystalhd-player.py` | GStreamer hardware or software playback | `auto`; accepts `auto` or `field-gpu` | `field-gpu` requires the explicitly built `crystalhdfieldsink`, XCB/EGL/GLES2/GBM/DRM and limited-range YUY2 with BT.601/709 colorimetry | Selected before pipeline creation; `field-gpu` disables playbin deinterlacing and fails if the sink is unavailable | **Experimental** — GPU nearest Bob and display fitting; `field-gpu` rejects `--weave` and software resizing | Yes — invocation-only CLI; research sink is not installed or selected automatically |
 | `--scale-width PIXELS` <!-- config-surface:player-flag:--scale-width --> | `crystalhd-player.py` | BCM70015 hardware playback; selected H.264 MBAFF in the bounded 1.2 scope | `0`; otherwise even `128..1918`; interlaced H.264 requires a multiple of 16 | Requires hardware mode; also subject to coded-width/property limits | Parsed at startup and applied to each CrystalHD decoder element | **Opt-in** — hardware downscale/quality trade-off | Yes — CLI |
 | `--software-output-size SIZE` <!-- config-surface:player-flag:--software-output-size --> | `crystalhd-player.py` | Host resize after scaled CrystalHD output | Unset; positive even dimensions, each at most `4096`, total at most `4096x2160` pixels; `native` clears a saved resize for this invocation | Resize requires hardware mode, nonzero `--scale-width`, GStreamer `videoscale`/`capsfilter` | Pipeline construction | **Opt-in** — additional CPU use; cannot restore source detail | Yes — CLI |
 | `--subtitles FILE` <!-- config-surface:player-flag:--subtitles --> | `crystalhd-player.py` | Local playback | Unset; readable local regular file | GStreamer subtitle support for the file | Parsed before pipeline construction | **Standard** | Yes — CLI |
@@ -358,7 +359,8 @@ literal library/VA environment reads, CrystalHD-named variables in installed
 scripts, production GStreamer properties and explicit `crystalhd-play` options.
 Missing and stale rows both fail.
 
-The schema conformance check also classifies all 28 surfaces: 23 userspace
+The schema conformance check also classifies all 31 surfaces: 23 userspace
 surfaces map to 21 canonical keys, the two module parameters retain a separate
-module-load lifetime, `CRYSTALHD_CHROMIUM_CONFIG` remains a legacy bootstrap,
-and `--subtitles` and `--weave` remain invocation-only.
+module-load lifetime, `CRYSTALHD_CHROMIUM_CONFIG` and `CRYSTALHD_CONFIG_DISABLE`
+retain their bootstrap roles, and centered NV12 remains a native-only experiment.
+The `--subtitles`, `--weave` and `--video-output` options remain invocation-only.

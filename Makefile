@@ -236,6 +236,10 @@ flea-power-check:
 device-lifetime-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/device-lifetime.sh
 
+.PHONY: v4l2-node-check
+v4l2-node-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-node.sh
+
 v4l2-parent-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-parent.sh
 

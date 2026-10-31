@@ -44,6 +44,8 @@ enum v4l2_buf_type { V4L2_BUF_TYPE_VIDEO_CAPTURE = 1,
 #define V4L2_TYPE_IS_OUTPUT(t) ((t) == V4L2_BUF_TYPE_VIDEO_OUTPUT)
 enum { CHD_V4L2_OFF, CHD_V4L2_RUNNING, CHD_V4L2_DRAINING, CHD_V4L2_DRAINED, CHD_V4L2_FAILED };
 #define V4L2_EVENT_EOS 1
+#define V4L2_EVENT_SOURCE_CHANGE 2
+#define V4L2_EVENT_SRC_CH_RESOLUTION 1
 #define V4L2_FIELD_NONE 0
 #define V4L2_BUF_FLAG_ERROR 1
 #define V4L2_BUF_FLAG_LAST 2
@@ -55,12 +57,19 @@ enum { CHD_V4L2_OFF, CHD_V4L2_RUNNING, CHD_V4L2_DRAINING, CHD_V4L2_DRAINED, CHD_
 #define V4L2_PIX_FMT_YUYV 2
 #define V4L2_COLORSPACE_REC709 3
 #define V4L2_COLORSPACE_SMPTE170M 1
+#define V4L2_COLORSPACE_SMPTE240M 2
 #define V4L2_COLORSPACE_BT878 4
+#define V4L2_COLORSPACE_470_SYSTEM_BG 6
 #define V4L2_PIX_FMT_PRIV_MAGIC 0xfeedcafeU
 #define U8_MAX 255U
 #define V4L2_YCBCR_ENC_DEFAULT 0
 #define V4L2_QUANTIZATION_DEFAULT 0
 #define V4L2_XFER_FUNC_DEFAULT 0
+#define V4L2_XFER_FUNC_709 1
+#define V4L2_XFER_FUNC_SMPTE240M 4
+#define V4L2_YCBCR_ENC_601 1
+#define V4L2_YCBCR_ENC_709 2
+#define V4L2_YCBCR_ENC_SMPTE240M 8
 static bool v4l2_is_colorspace_valid(u32 v) { return v > 0 && v <= 12; }
 static bool v4l2_is_xfer_func_valid(u32 v) { return v > 0 && v <= 7; }
 static bool v4l2_is_ycbcr_enc_valid(uint8_t v) { return v > 0 && v <= 8; }
@@ -72,7 +81,7 @@ struct v4l2_m2m_buffer { struct vb2_v4l2_buffer vb; struct v4l2_m2m_buffer *next
 struct crystalhd_v4l2_output_buffer { struct { struct vb2_v4l2_buffer vb; } m2m; bool owned; };
 struct crystalhd_rx_metadata { bool valid, eos_trailer; u32 picture_number, picture_flags; };
 struct crystalhd_rx_image { unsigned payload_bytes; };
-struct v4l2_event { unsigned type; };
+struct v4l2_event { unsigned type; union { struct { u32 changes; } src_change; } u; };
 enum { CRYSTALHD_DECODER_CHANNEL_CONFIGURED = 1,
     CRYSTALHD_DECODER_CHANNEL_STARTED = 2 };
 struct mutex { bool held; };
@@ -211,6 +220,7 @@ struct crystalhd_cmd {
 struct crystalhd_rx_completion {
     struct crystalhd_rx_buffer *buffer; void *cookie; unsigned flags; u64 capture_epoch;
     struct crystalhd_rx_metadata metadata;
+    struct { struct { u32 width, height, colour_primaries; } ppb; } pib;
 };
 struct pci_dev { unsigned device, irq; };
 struct crystalhd_adp { struct crystalhd_cmd cmds; struct pci_dev *pdev; struct mutex tx_lock; };
@@ -267,6 +277,16 @@ static unsigned pause_stops, pause_releases, irq_disables, irq_enables;
 static BC_STATUS pause_status;
 static bool detached_owned, irq_disabled;
 static void (*irq_drain_hook)(void);
+/* Observe the format notification at its public publication boundary, rather
+ * than recomputing expected colours from the implementation under test.
+ */
+static bool format_case, retire_stays_owned;
+static unsigned format_events, format_retires;
+static struct v4l2_pix_format announced_format;
+static bool announced_known, announced_pending, announced_started;
+static unsigned announced_changes, announced_returns;
+static struct crystalhd_v4l2_capture_buffer *retired_buffer;
+static unsigned format_call_events_before, format_call_retires_before;
 
 enum allocation_edge { NO_FAILURE, ARRAY_EDGE, PAGE_EDGE, SG_EDGE, MAP_EDGE,
                        VMAP_EDGE, NENTS_EDGE };
@@ -427,9 +447,32 @@ static unsigned vb2_plane_size(struct vb2_buffer *b, unsigned plane)
 static void vb2_set_plane_payload(struct vb2_buffer *b, unsigned plane, unsigned size)
 { assert(!plane); b->payload = size; }
 static void v4l2_m2m_buf_done(struct vb2_v4l2_buffer *b, unsigned state)
-{ assert(!b->done); b->done = state; }
+{
+    assert(!b->done);
+    if (format_case && b == &last_buffer) {
+        /* LAST must not release a still-owned DMA registration, and the
+         * updated format event must be visible before the boundary buffer.
+         */
+        assert(!hardware_owned && !last_capture.owned && !detached_owned &&
+               format_events == format_call_events_before + 1 &&
+               format_retires == format_call_retires_before + 1);
+    }
+    b->done = state;
+}
 static void v4l2_event_queue_fh(struct v4l2_fh *fh, struct v4l2_event *event)
-{ assert(fh == &fixture.fh && event->type == V4L2_EVENT_EOS); eos_events++; }
+{
+    assert(fh == &fixture.fh);
+    if (event->type == V4L2_EVENT_EOS) { eos_events++; return; }
+    assert(format_case && event->type == V4L2_EVENT_SOURCE_CHANGE &&
+           !hardware_owned && !detached_owned && !last_buffer.done);
+    format_events++;
+    announced_format = fixture.capture;
+    announced_known = fixture.format_known;
+    announced_pending = fixture.format_pending;
+    announced_started = fixture.capture_started;
+    announced_changes = event->u.src_change.changes;
+    announced_returns = returns;
+}
 /* 5.15 get_vq classifies all non-output types as capture: it is not validation. */
 static struct vb2_queue *v4l2_m2m_get_vq(struct v4l2_m2m_ctx *m, unsigned type)
 { return V4L2_TYPE_IS_OUTPUT(type) ? &m->src : &m->dst; }
@@ -482,7 +525,16 @@ static int crystalhd_v4l2_decoder_close_locked(struct crystalhd_v4l2_decoder *d,
 static bool crystalhd_v4l2_decoder_drained(struct crystalhd_v4l2_decoder *d)
 { return d->phase == CHD_V4L2_DRAINED; }
 static void chd_return_active(struct crystalhd_v4l2_file *f)
-{ assert(f == &fixture && !hardware_owned); returns++; }
+{
+    assert(f == &fixture && !hardware_owned);
+    if (format_case) {
+        assert(f->run_lock.held && !detached_owned && !f->capture_started &&
+               format_events == format_call_events_before);
+        /* The boundary must be detached from the general-error return path. */
+        for (unsigned i = 0; i < ARRAY_SIZE(f->active); i++) assert(!f->active[i]);
+    }
+    returns++;
+}
 static int crystalhd_v4l2_ctx_acquire(struct crystalhd_v4l2_ctx *l)
 {
     assert(l == &lease && node.ioctl_lock.held); acquires++;
@@ -549,6 +601,7 @@ static void kfree(void *p)
 #define VFL_TYPE_VIDEO 3U
 #define V4L2_CAP_VIDEO_M2M 0x10U
 #define V4L2_CAP_STREAMING 0x20U
+#define V4L2_CAP_EXT_PIX_FORMAT 0x40U
 #define WQ_MEM_RECLAIM 1U
 #define ERR_PTR(e) ((void *)(intptr_t)(e))
 #define PTR_ERR(p) ((int)(intptr_t)(p))
@@ -726,9 +779,18 @@ static BC_STATUS crystalhd_rx_try_dequeue(struct crystalhd_cmd *cmd,
     }
     return BC_STS_SUCCESS;
 }
-static int chd_format(struct crystalhd_v4l2_file *f, struct crystalhd_cmd *cmd,
-                      struct crystalhd_rx_completion *result)
-{ (void)f; (void)cmd; (void)result; assert(!"Unexpected format branch"); return -EIO; }
+static BC_STATUS crystalhd_rx_pause_format(struct crystalhd_cmd *,
+                                          struct crystalhd_rx_completion *);
+static struct vb2_v4l2_buffer *v4l2_m2m_next_dst_buf(struct v4l2_m2m_ctx *m)
+{ assert(m == &queues); return m->dst_ready ? &m->dst_ready->vb : NULL; }
+static void crystalhd_v4l2_capture_retire(struct crystalhd_v4l2_capture_buffer *b)
+{
+    assert(format_case && fixture.run_lock.held && b == &last_capture &&
+           !hardware_owned && !detached_owned &&
+           format_events == format_call_events_before);
+    format_retires++; retired_buffer = b;
+    if (!retire_stays_owned) b->owned = false;
+}
 static BC_STATUS crystalhd_v4l2_capture_complete(struct crystalhd_v4l2_capture_buffer *b,
         struct crystalhd_rx_completion *result, struct crystalhd_rx_image *image)
 { (void)image; assert(b == &last_capture && result->cookie == b); b->owned = false;
@@ -812,6 +874,12 @@ static void reset(bool running)
     transport_error = 0; transport_hook = NULL; tx_join_hook = NULL; source = source_next = NULL;
     eos_receive = false;
     error_receive = false; decode_error_result = -EILSEQ;
+    format_case = retire_stays_owned = false;
+    format_events = format_retires = 0; retired_buffer = NULL;
+    memset(&announced_format, 0, sizeof(announced_format));
+    announced_known = announced_pending = announced_started = false;
+    announced_changes = announced_returns = 0;
+    format_call_events_before = format_call_retires_before = 0;
     memset(&tx_buffer, 0, sizeof(tx_buffer)); memset(&last_capture, 0, sizeof(last_capture));
     hardware_owned = running;
     if (running) {
@@ -1057,6 +1125,180 @@ static void prepare_idle_snapshot(void)
     irq_disabled = false; irq_disables = irq_enables = pause_stops = pause_releases = 0;
     irq_drain_hook = NULL; pause_status = BC_STS_SUCCESS;
     detached_owned = true;
+}
+
+static void prepare_format_notification(void)
+{
+    struct v4l2_format hint = { .type = V4L2_BUF_TYPE_VIDEO_OUTPUT,
+        .fmt.pix = { .width = 640, .height = 480,
+            .priv = V4L2_PIX_FMT_PRIV_MAGIC,
+            .colorspace = V4L2_COLORSPACE_SMPTE170M,
+            .xfer_func = V4L2_XFER_FUNC_SMPTE240M,
+            .ycbcr_enc = V4L2_YCBCR_ENC_601, .quantization = 2 } };
+    reset(false);
+    CHECK(!chd_set_fmt(&handle, NULL, &hint));
+    prepare_idle_snapshot();
+    format_case = true;
+}
+
+static struct crystalhd_rx_completion format_result(struct crystalhd_rx_buffer *buffer,
+        u32 width, u32 height, u32 word)
+{
+    buffer->cookie = &fixture;
+    return (struct crystalhd_rx_completion){ .buffer = buffer, .cookie = &fixture,
+        .flags = COMP_FLAG_FMT_CHANGE, .capture_epoch = pause_hw.rx_cancel_epoch,
+        .pib.ppb = { .width = width, .height = height, .colour_primaries = word } };
+}
+
+static int apply_format(struct crystalhd_rx_completion *result)
+{
+    int rc;
+    detached_owned = true;
+    fixture.capture_started = true;
+    format_call_events_before = format_events;
+    format_call_retires_before = format_retires;
+    mutex_lock(&fixture.run_lock);
+    rc = chd_format(&fixture, &adapter.cmds, result);
+    mutex_unlock(&fixture.run_lock);
+    return rc;
+}
+
+static void check_format_announcement(unsigned count, u32 width, u32 height,
+        u32 colorspace, u32 transfer, u32 matrix)
+{
+    CHECK(format_events == count && !eos_events && announced_known &&
+          announced_pending && !announced_started &&
+          announced_changes == V4L2_EVENT_SRC_CH_RESOLUTION);
+    CHECK(announced_format.width == width && announced_format.height == height &&
+          announced_format.bytesperline == width * 2 &&
+          announced_format.sizeimage > width * height * 2);
+    CHECK(announced_format.colorspace == colorspace &&
+          announced_format.xfer_func == transfer &&
+          announced_format.ycbcr_enc == matrix && announced_format.quantization == 2);
+    CHECK(announced_returns == count && returns == count &&
+          !memcmp(&announced_format, &fixture.capture, sizeof(announced_format)));
+    CHECK(fixture.output.width == width && fixture.output.height == height &&
+          fixture.output.colorspace == V4L2_COLORSPACE_SMPTE170M &&
+          fixture.output.xfer_func == V4L2_XFER_FUNC_SMPTE240M &&
+          fixture.output.ycbcr_enc == V4L2_YCBCR_ENC_601 &&
+          fixture.output.quantization == 2);
+}
+
+static void format_notification_cases(void)
+{
+    /* Initial discovery can reuse a matching hinted allocation; an absent or
+     * differently sized queued CAPTURE must still negotiate. Observe the
+     * event before that optional reuse decision changes format_pending.
+     */
+    for (unsigned reuse = 0; reuse < 4; reuse++) {
+        struct crystalhd_rx_buffer buffer = {0};
+        prepare_format_notification();
+        if (reuse == 0) {
+            pause_hw.rx_list_sts[0] = rx_sts_waiting;
+            hardware_owned = true; /* Exercise real full-stop success too. */
+        }
+        fixture.capture_streaming = reuse != 0;
+        last_capture.width = reuse == 3 ? 640 : 1920;
+        last_capture.height = reuse == 3 ? 480 : 1080;
+        if (reuse != 1) queues.dst_ready = &last_capture.m2m;
+        struct crystalhd_rx_completion result = format_result(&buffer, 1920, 1080, 0x01010100);
+        CHECK(!apply_format(&result));
+        check_format_announcement(1, 1920, 1080, V4L2_COLORSPACE_REC709,
+                                 V4L2_XFER_FUNC_709, V4L2_YCBCR_ENC_709);
+        CHECK(fixture.format_known && fixture.format_pending == (reuse != 2) &&
+              !fixture.capture_started && !last_buffer.done && !format_retires);
+        CHECK(!result.buffer && !result.cookie && !detached_owned &&
+              pause_releases == 1 && pause_stops == (reuse == 0) &&
+              pause_hw.rx_cancel_epoch == 24);
+    }
+
+    static const struct {
+        u32 width, height, word, colorspace, transfer, matrix;
+    } changes[] = {
+        /* Independent explicit 601 and absent/unspecified fallback expectations. */
+        {1920, 1080, 0x06060600, V4L2_COLORSPACE_SMPTE170M, V4L2_XFER_FUNC_709, V4L2_YCBCR_ENC_601},
+        {1920, 1080, 0, V4L2_COLORSPACE_SMPTE170M, V4L2_XFER_FUNC_SMPTE240M, V4L2_YCBCR_ENC_601},
+        {1920, 1080, 0x02020200, V4L2_COLORSPACE_SMPTE170M, V4L2_XFER_FUNC_SMPTE240M, V4L2_YCBCR_ENC_601},
+        {1280, 720, 0x06010100, V4L2_COLORSPACE_REC709, V4L2_XFER_FUNC_709, V4L2_YCBCR_ENC_601},
+    };
+    static const unsigned slots[] = {0, 16, 31};
+    for (unsigned c = 0; c < ARRAY_SIZE(changes); c++)
+    for (unsigned s = 0; s < ARRAY_SIZE(slots); s++) {
+        struct crystalhd_rx_buffer buffer = {0};
+        prepare_format_notification();
+        struct crystalhd_rx_completion result = format_result(&buffer, 1920, 1080, 0x01010100);
+        CHECK(!apply_format(&result));
+        fixture.capture_streaming = true;
+        fixture.format_pending = false;
+        last_capture.width = 1920; last_capture.height = 1080;
+        last_capture.owned = true;
+        last_buffer.vb2_buf.index = slots[s];
+        last_buffer.vb2_buf.payload = 1920 * 1080 * 2;
+        last_buffer.flags = V4L2_BUF_FLAG_ERROR; /* Preserve unrelated flags. */
+        fixture.active[slots[s]] = &last_capture;
+        result = format_result(&buffer, changes[c].width, changes[c].height, changes[c].word);
+        CHECK(!apply_format(&result));
+        check_format_announcement(2, changes[c].width, changes[c].height,
+                changes[c].colorspace, changes[c].transfer, changes[c].matrix);
+        CHECK(fixture.format_known && fixture.format_pending && !fixture.capture_started &&
+              !fixture.active[slots[s]] && !last_capture.owned &&
+              retired_buffer == &last_capture && format_retires == 1);
+        CHECK(last_buffer.done == VB2_BUF_STATE_DONE && !last_buffer.vb2_buf.payload &&
+              last_buffer.flags == (V4L2_BUF_FLAG_ERROR | V4L2_BUF_FLAG_LAST));
+        CHECK(!result.buffer && !result.cookie && !detached_owned &&
+              pause_releases == 2 && pause_hw.rx_cancel_epoch == 25);
+    }
+
+    /* Dynamic format delivery without an active public boundary is still a
+     * real notification. A completed firmware result need not fabricate LAST.
+     */
+    {
+        struct crystalhd_rx_buffer buffer = {0};
+        prepare_format_notification();
+        fixture.format_known = true;
+        struct crystalhd_rx_completion result = format_result(&buffer, 1280, 720, 0x01010100);
+        CHECK(!apply_format(&result));
+        check_format_announcement(1, 1280, 720, V4L2_COLORSPACE_REC709,
+                                 V4L2_XFER_FUNC_709, V4L2_YCBCR_ENC_709);
+        CHECK(fixture.format_pending && !format_retires && !last_buffer.done);
+    }
+
+    /* Invalid geometry, stale epoch, stop failure and a still-owned retired
+     * boundary must not publish new geometry, colours, SOURCE_CHANGE or LAST.
+     */
+    for (unsigned failure = 0; failure < 5; failure++) {
+        struct crystalhd_rx_buffer buffer = {0};
+        struct v4l2_pix_format old_capture, old_output;
+        prepare_format_notification();
+        fixture.format_known = true;
+        fixture.format_pending = false;
+        old_capture = fixture.capture; old_output = fixture.output;
+        last_capture.owned = true; last_buffer.vb2_buf.payload = 1234;
+        fixture.active[31] = &last_capture;
+        struct crystalhd_rx_completion result = format_result(&buffer, 1920, 1080, 0x01010100);
+        int expected = -EIO;
+        if (failure == 0) { result.pib.ppb.width = 1919; expected = -EINVAL; }
+        if (failure == 1) { result.capture_epoch--; expected = BC_STS_IO_USER_ABORT; }
+        if (failure == 2) {
+            pause_hw.rx_list_sts[0] = rx_sts_waiting;
+            pause_status = BC_STS_IO_ERROR; hardware_owned = true;
+            expected = BC_STS_IO_ERROR;
+        }
+        if (failure == 3) { pause_hw.dma_fault = true; expected = BC_STS_IO_ERROR; }
+        if (failure == 4) retire_stays_owned = true;
+        CHECK(apply_format(&result) == expected);
+        CHECK(!memcmp(&fixture.capture, &old_capture, sizeof(old_capture)) &&
+              !memcmp(&fixture.output, &old_output, sizeof(old_output)) &&
+              fixture.format_known && !fixture.format_pending);
+        CHECK(!format_events && !eos_events && !returns && !last_buffer.done &&
+              last_buffer.vb2_buf.payload == 1234 && !last_buffer.flags &&
+              last_capture.owned && fixture.active[31] == &last_capture);
+        CHECK(!detached_owned && pause_releases == 1 &&
+              format_retires == (failure == 4) &&
+              fixture.capture_started == (failure != 4));
+        if (failure == 0) CHECK(result.buffer == &buffer && result.cookie == &fixture);
+        else CHECK(!result.buffer && !result.cookie);
+    }
 }
 
 static void format_pause_cases(void)
@@ -1471,6 +1713,107 @@ static void colorimetry_cases(void)
           !fmt.fmt.pix.ycbcr_enc && !fmt.fmt.pix.quantization && fixture.color_default);
 }
 
+static void source_colorimetry_cases(void)
+{
+    struct v4l2_format fmt = { .type = V4L2_BUF_TYPE_VIDEO_OUTPUT };
+    struct v4l2_pix_format hint, source;
+    static const u32 invalid[] = { 0, 0x02020200, 0x01010101, 0x01010200,
+        0x01020100, 0x02010100, 0xff010100, 0x01ff0100, 0x0101ff00 };
+    reset(false);
+
+    /* An ordinary TRY/S_FMT round trip commits the initial 16x16 SD default.
+     * It must not override a later, explicit HD source description.
+     */
+    CHECK(!chd_try_fmt_locked(&handle, NULL, &fmt));
+    CHECK(fmt.fmt.pix.width == 16 && fmt.fmt.pix.height == 16 &&
+          fmt.fmt.pix.colorspace == V4L2_COLORSPACE_SMPTE170M);
+    CHECK(!chd_set_fmt(&handle, NULL, &fmt) && !fixture.color_default);
+    hint = fixture.output;
+    fixture.capture.width = fixture.output.width = 1920;
+    fixture.capture.height = fixture.output.height = 1080;
+    fixture.capture.bytesperline = 1920 * 2;
+    CHECK(!crystalhd_v4l2_capture_size(1920, 1080, &fixture.capture.sizeimage));
+    fixture.capture.pixelformat = V4L2_PIX_FMT_YUYV;
+    fixture.capture.priv = V4L2_PIX_FMT_PRIV_MAGIC;
+    hint.width = 1920; hint.height = 1080;
+    chd_flea_source_colors(&fixture, 0x01010100);
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_REC709 &&
+          fixture.capture.xfer_func == V4L2_XFER_FUNC_709 &&
+          fixture.capture.ycbcr_enc == V4L2_YCBCR_ENC_709 &&
+          fixture.capture.quantization == V4L2_QUANTIZATION_DEFAULT);
+    CHECK(!memcmp(&fixture.output, &hint, sizeof(hint)));
+    fixture.format_known = true;
+    source = fixture.capture;
+
+    /* Queries and a CAPTURE conversion request cannot mutate parsed colors. */
+    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    fmt.fmt.pix = (struct v4l2_pix_format){ .width = 640, .height = 480,
+        .priv = V4L2_PIX_FMT_PRIV_MAGIC, .colorspace = V4L2_COLORSPACE_SMPTE170M,
+        .xfer_func = V4L2_XFER_FUNC_SMPTE240M, .ycbcr_enc = V4L2_YCBCR_ENC_601 };
+    CHECK(!chd_try_fmt_locked(&handle, NULL, &fmt));
+    CHECK(!memcmp(&fixture.capture, &source, sizeof(source)) &&
+          fmt.fmt.pix.colorspace == V4L2_COLORSPACE_REC709 &&
+          fmt.fmt.pix.ycbcr_enc == V4L2_YCBCR_ENC_709);
+    CHECK(!chd_set_fmt(&handle, NULL, &fmt));
+    CHECK(!memcmp(&fixture.capture, &source, sizeof(source)));
+    CHECK(!chd_get_fmt(&handle, NULL, &fmt));
+    CHECK(!memcmp(&fmt.fmt.pix, &source, sizeof(source)) &&
+          !memcmp(&fixture.output, &hint, sizeof(hint)));
+
+    /* Source components are independent, including same-resolution changes. */
+    chd_flea_source_colors(&fixture, 0x06010100);
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_REC709 &&
+          fixture.capture.xfer_func == V4L2_XFER_FUNC_709 &&
+          fixture.capture.ycbcr_enc == V4L2_YCBCR_ENC_601);
+    chd_flea_source_colors(&fixture, 0x01060100);
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_SMPTE170M &&
+          fixture.capture.ycbcr_enc == V4L2_YCBCR_ENC_709);
+    chd_flea_source_colors(&fixture, 0x06010700);
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_REC709 &&
+          fixture.capture.xfer_func == V4L2_XFER_FUNC_SMPTE240M &&
+          fixture.capture.ycbcr_enc == V4L2_YCBCR_ENC_601);
+    chd_flea_source_colors(&fixture, 0x06060600);
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_SMPTE170M &&
+          fixture.capture.xfer_func == V4L2_XFER_FUNC_709 &&
+          fixture.capture.ycbcr_enc == V4L2_YCBCR_ENC_601);
+    chd_flea_source_colors(&fixture, 0x05050600);
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_470_SYSTEM_BG &&
+          fixture.capture.ycbcr_enc == V4L2_YCBCR_ENC_601);
+    chd_flea_source_colors(&fixture, 0x07070700);
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_SMPTE240M &&
+          fixture.capture.xfer_func == V4L2_XFER_FUNC_SMPTE240M &&
+          fixture.capture.ycbcr_enc == V4L2_YCBCR_ENC_SMPTE240M);
+
+    /* Unqualified words atomically fall back to this stream's original hint;
+     * no component or previous source tuple may leak into the next result.
+     */
+    for (unsigned i = 0; i < ARRAY_SIZE(invalid); ++i) {
+        chd_flea_source_colors(&fixture, 0x01010100);
+        chd_flea_source_colors(&fixture, invalid[i]);
+        CHECK(fixture.capture.colorspace == hint.colorspace &&
+              fixture.capture.xfer_func == hint.xfer_func &&
+              fixture.capture.ycbcr_enc == hint.ycbcr_enc &&
+              fixture.capture.quantization == hint.quantization);
+    }
+
+    /* Firmware omits range: do not manufacture it from any packed byte. */
+    fixture.output.quantization = 1;
+    chd_flea_source_colors(&fixture, 0x01010100);
+    CHECK(fixture.capture.quantization == 1);
+    fixture.output.quantization = 2;
+    chd_flea_source_colors(&fixture, 0x06060600);
+    CHECK(fixture.capture.quantization == 2);
+
+    /* A new OUTPUT format resets source colorimetry to its own hint. */
+    fixture.format_known = false;
+    fmt = (struct v4l2_format){ .type = V4L2_BUF_TYPE_VIDEO_OUTPUT,
+        .fmt.pix = { .width = 640, .height = 480 } };
+    CHECK(!chd_set_fmt(&handle, NULL, &fmt));
+    CHECK(fixture.capture.colorspace == V4L2_COLORSPACE_SMPTE170M &&
+          !fixture.capture.xfer_func && !fixture.capture.ycbcr_enc &&
+          !fixture.capture.quantization);
+}
+
 static void native_error_completion(void)
 {
     static const unsigned slots[] = { 0, 16, 31 };
@@ -1831,7 +2174,8 @@ static void constructor_cases(void)
         CHECK(node.generation == 123 && node.parent == &ctor_parent && node.dma_dev == &ctor_device);
         CHECK(node.video.v4l2_dev == &ctor_v4l2 && node.video.ctrl_handler == &node.ctrls &&
               node.video.lock == &node.ioctl_lock && node.video.fops == &chd_fops && node.video.ioctl_ops == &chd_ioctl_ops);
-        CHECK(node.video.vfl_dir == VFL_DIR_M2M && node.video.device_caps == (V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING));
+        CHECK(node.video.vfl_dir == VFL_DIR_M2M && node.video.device_caps ==
+              (V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING | V4L2_CAP_EXT_PIX_FORMAT));
         CHECK(ctor_minimum.flags == V4L2_CTRL_FLAG_READ_ONLY && ctor_wq_live == 2 && ctor_m2m_live);
         crystalhd_v4l2_node_unregister(out);
         CHECK(!ctor_video_live && !ctor_parent_refs && ctor_video_releases == 1 && ctor_node_live);
@@ -1959,6 +2303,8 @@ int main(void)
     async_tx_cases();
     stateful_lifecycle_cases();
     colorimetry_cases();
+    source_colorimetry_cases();
+    format_notification_cases();
     printf("V4L2 node: %u scenarios, %u checks, 0 failures\n", scenarios, checks);
     return 0;
 }
