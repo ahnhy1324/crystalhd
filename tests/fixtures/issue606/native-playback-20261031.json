@@ -1,0 +1,129 @@
+{
+  "A_V_acceptance": {
+    "QoS_messages": 0,
+    "actual_PTS_census": 1250,
+    "audio_buffers": 2345,
+    "audio_nonzero": true,
+    "audio_pts_span_ns": [
+      0,
+      50026333333
+    ],
+    "buffer_arrival_gaps_are_rendered_AV_offset": false,
+    "dropped": 0,
+    "physical_lipsync_or_scanout_claim": false,
+    "policy": "User permits no-drift route logs, no calibratedphysical lip-sync prerequisite",
+    "rendered": 1250,
+    "selected_clock": "GstPulseSinkClock/GstAudioClock",
+    "status": "PASS_NO_DRIFT_DETECTED_IN_QUALIFIED_PLAYBACK_LOGS",
+    "video_pts_span_ns": [
+      0,
+      50000000000
+    ],
+    "warnings": 0
+  },
+  "actual_playback_stdout": "Research adapter: factory=crystalhdmpeg1researchdec rank=NONE source-mpegversion=1 transport-subtype=MPEG2VIDEO configured-algorithm=1 selector5-not-used public-support-unchanged=yes\nMPEG1_RESEARCH input=/home/mache/.cache/crystalhd-natural-mpeg1-20261031/encode-01/holdout.mkv expected=1250 factory=crystalhdmpeg1researchdec source-codec=mpeg1video internal-algorithm=1 external-caps-relabelled=no queues=defaults sink-policy=defaults\nelement name=decoder factory=crystalhdmpeg1researchdec type=GstCrystalHdMpeg1ResearchDec\nproperty element=decoder name=qos value=TRUE\nelement name=video factory=xvimagesink type=GstXvImageSink\nproperty element=video name=sync value=TRUE\nproperty element=video name=qos value=TRUE\nproperty element=video name=max-lateness value=5000000\nproperty element=video name=processing-deadline value=15000000\nproperty element=video name=render-delay value=0\nproperty element=video name=ts-offset value=0\nelement name=audio factory=pulsesink type=GstPulseSink\nproperty element=audio name=sync value=TRUE\nproperty element=audio name=qos value=FALSE\nproperty element=audio name=max-lateness value=-1\nproperty element=audio name=processing-deadline value=20000000\nproperty element=audio name=render-delay value=0\nproperty element=audio name=ts-offset value=0\nproperty element=audio name=buffer-time value=200000\nproperty element=audio name=latency-time value=10000\nproperty element=audio name=provide-clock value=TRUE\npipeline-state old=NULL current=READY pending=PLAYING\npipeline-state old=READY current=PAUSED pending=PLAYING\nbus-new-clock name=GstPulseSinkClock type=GstAudioClock\npipeline-state old=PAUSED current=PLAYING pending=VOID_PENDING\nprogress elapsed=5.057 input=135 decoded=107 video=107 audio=206\nprogress elapsed=10.064 input=260 decoded=232 video=232 audio=440\nprogress elapsed=15.070 input=385 decoded=357 video=357 audio=674\nprogress elapsed=20.076 input=510 decoded=482 video=482 audio=910\nprogress elapsed=25.082 input=635 decoded=608 video=608 audio=1144\nprogress elapsed=30.089 input=760 decoded=732 video=732 audio=1378\nprogress elapsed=35.095 input=886 decoded=858 video=858 audio=1614\nprogress elapsed=40.102 input=1011 decoded=983 video=983 audio=1848\nprogress elapsed=45.108 input=1135 decoded=1108 video=1108 audio=2082\nprogress elapsed=50.116 input=1250 decoded=1233 video=1233 audio=2318\nbus-eos source=pipeline0 natural=yes elapsed=50.859311\nterminal-clock name=GstPulseSinkClock type=GstAudioClock pulse-audio-clock=yes\nvideo-stats-before-null application/x-gst-base-sink-stats, average-rate=(double)0.066042180503844833, dropped=(guint64)0, rendered=(guint64)1250;\nstream name=decoder:sink-mpeg1-input buffers=1250 first-pts=0 last-pts=49960000000 last-end=50000000000 missing-pts=0 missing-duration=0 backwards-pts=416 segments=1 eos=1 clock-samples=1224 arrival-offset-first-ns=-1000000000 arrival-offset-last-ns=-1123735000 arrival-offset-min-ns=-1267804000 arrival-offset-max-ns=-1000000000 arrival-offset-change-ns=-123735000 nonzero-audio-payload-seen=no caps=video/mpeg, systemstream=(boolean)false, mpegversion=(int)1, width=(int)352, height=(int)288, framerate=(fraction)25/1, interlace-mode=(string)progressive, colorimetry=(string)2:4:0:0, parsed=(boolean)true, pixel-aspect-ratio=(fraction)1/1, codec_data=(buffer)000001b316012013ffffe018\nstream name=decoder:src buffers=1250 first-pts=0 last-pts=49960000000 last-end=50000000000 missing-pts=0 missing-duration=0 backwards-pts=0 segments=1 eos=1 clock-samples=1249 arrival-offset-first-ns=-40000000 arrival-offset-last-ns=-37803000 arrival-offset-min-ns=-40000000 arrival-offset-max-ns=-22747000 arrival-offset-change-ns=2197000 nonzero-audio-payload-seen=no caps=video/x-raw, format=(string)YUY2, width=(int)352, height=(int)288, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:4:0:0, framerate=(fraction)25/1\nstream name=video:sink buffers=1250 first-pts=0 last-pts=49960000000 last-end=50000000000 missing-pts=0 missing-duration=0 backwards-pts=0 segments=1 eos=1 clock-samples=1249 arrival-offset-first-ns=-40000000 arrival-offset-last-ns=-37650000 arrival-offset-min-ns=-40000000 arrival-offset-max-ns=-22535000 arrival-offset-change-ns=2350000 nonzero-audio-payload-seen=no caps=video/x-raw, width=(int)352, height=(int)288, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)25/1, format=(string)UYVY, colorimetry=(string)2:4:0:0\nstream name=audio:sink buffers=2345 first-pts=0 last-pts=50005000000 last-end=50026333333 missing-pts=0 missing-duration=0 backwards-pts=0 segments=1 eos=1 clock-samples=2344 arrival-offset-first-ns=-21000000 arrival-offset-last-ns=-139881000 arrival-offset-min-ns=-186996000 arrival-offset-max-ns=-21000000 arrival-offset-change-ns=-118881000 nonzero-audio-payload-seen=yes caps=audio/x-raw, rate=(int)48000, format=(string)F32LE, channels=(int)2, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003\naudio-video-observation pairs=1250 latest-audio-interval-gap-min-ns=-146000000 latest-audio-interval-gap-max-ns=0 audio-covers-video-pts=yes original-pts-set-join=yes\nMPEG1_RESEARCH_RESULT natural-eos=yes expected=1250 rendered=1250 dropped=0 warnings=0 qos-messages=0 result=PASS reason=metadata/count/clock/audio evidence only; no physical display or audible-output claim\ncleanup set=1 wait=1 state=NULL pending=VOID_PENDING complete=yes\nMPEG1_RESEARCH_EXIT status=0\n",
+  "date": "2026-10-31",
+  "input": {
+    "bytes": 8338464,
+    "path": "/home/mache/.cache/crystalhd-natural-mpeg1-20261031/encode-01/holdout.mkv",
+    "sha256": "cd5873c16ff3df4633a4a6da28fd94f4fadc30070006293ec97f27ed5493b8f7",
+    "stat": {
+      "st_ctime_ns": 1793438620316013537,
+      "st_dev": 2049,
+      "st_ino": 9451643,
+      "st_mtime_ns": 1793438620316013537,
+      "st_size": 8338464
+    }
+  },
+  "loader_diagnostics": {
+    "LD_DEBUG": "libs",
+    "observation": "Same actualPID continues through PLAYING/native1250/EOS/normalNULL/exit0. Retained lookup diagnostics are not omitted or called an executioncrash. ActualDILinit resolves pinnede5path.",
+    "other_warning_error_drift_matches": [],
+    "unresolved_lookup_messages_preserved": [
+      "1244886:\t/home/mache/.cache/crystalhd-natural-mpeg1-20261031/native-build-01/mpeg1-natural-playback: error: symbol lookup error: undefined symbol: gst_init_static_plugins (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstcoreelements.so: error: symbol lookup error: undefined symbol: g_module_check_init (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstcoreelements.so: error: symbol lookup error: undefined symbol: g_module_unload (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstmatroska.so: error: symbol lookup error: undefined symbol: g_module_check_init (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstmatroska.so: error: symbol lookup error: undefined symbol: g_module_unload (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstvideoparsersbad.so: error: symbol lookup error: undefined symbol: g_module_check_init (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstvideoparsersbad.so: error: symbol lookup error: undefined symbol: g_module_unload (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstvideoconvertscale.so: error: symbol lookup error: undefined symbol: g_module_check_init (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstvideoconvertscale.so: error: symbol lookup error: undefined symbol: g_module_unload (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstxvimagesink.so: error: symbol lookup error: undefined symbol: g_module_check_init (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstxvimagesink.so: error: symbol lookup error: undefined symbol: g_module_unload (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstaudioparsers.so: error: symbol lookup error: undefined symbol: g_module_check_init (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstaudioparsers.so: error: symbol lookup error: undefined symbol: g_module_unload (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstlibav.so: error: symbol lookup error: undefined symbol: g_module_check_init (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstlibav.so: error: symbol lookup error: undefined symbol: g_module_unload (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstaudioconvert.so: error: symbol lookup error: undefined symbol: g_module_check_init (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstaudioconvert.so: error: symbol lookup error: undefined symbol: g_module_unload (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstaudioresample.so: error: symbol lookup error: undefined symbol: g_module_check_init (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstaudioresample.so: error: symbol lookup error: undefined symbol: g_module_unload (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstpulseaudio.so: error: symbol lookup error: undefined symbol: g_module_check_init (fatal)",
+      "1244886:\t/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstpulseaudio.so: error: symbol lookup error: undefined symbol: g_module_unload (fatal)"
+    ]
+  },
+  "peak_temp_mC": 54000,
+  "process_retirement": {
+    "actual_device_owner_observed": true,
+    "all_media_and_children_closed": true,
+    "boundary_equal": true,
+    "final_pins_equal": true,
+    "kernel_exit": 0,
+    "live_resource_handoff": null
+  },
+  "retained_artifacts": [
+    {
+      "artifact": "native-playback-01/report.json",
+      "bytes": 132702,
+      "sha256": "0aab83c1d3655e2553e364458646f0a886e6702b0b512d37fea25230364f2b42"
+    },
+    {
+      "artifact": "native-playback-01/native-playback.stdout",
+      "bytes": 5782,
+      "sha256": "8bb433c7f8669e74116dafbdb2b370ccc9dc0e139f5c8f905d202489554a51ef"
+    },
+    {
+      "artifact": "native-playback-01/native-playback.stderr",
+      "bytes": 144641,
+      "sha256": "2e1779d90d54fd6c99b67c4b0e7b25bd97399a26bf467851e4b55889853612eb"
+    },
+    {
+      "artifact": "native-playback-01/frozen-pins-before.json",
+      "bytes": 10675,
+      "sha256": "562c003ef80a7fd8ad27824646747b8344432fa0f15c5ff1bfdce5c78b6604f6"
+    },
+    {
+      "artifact": "native-playback-01/native-playback.command.json",
+      "bytes": 307,
+      "sha256": "203dc3ef85dd0cfe8c03a50bd0140ba0057081d949b5c6992bf260025f50fbf6"
+    },
+    {
+      "artifact": "run-native-playback.py",
+      "bytes": 5976,
+      "sha256": "224fa1fc4d914ca5b3814e8b14548e84025c8bdaa330e8cbbca01586b57b36a7"
+    },
+    {
+      "artifact": "native-build-01/frontend-compile.json",
+      "bytes": 2059,
+      "sha256": "ddcead29b2d2dbc7c9165d7378cbe23363c786f6daf3be250c87254c39f86a8e"
+    },
+    {
+      "artifact": "native-build-01/adapter-compile.json",
+      "bytes": 1153,
+      "sha256": "32c0b792775d77a148a70739e2a81fce2d6db17f139930b61964f9a728d3fef2"
+    }
+  ],
+  "route": "namedprivate rankNONE research adapter, unchanged e5DIL internalMPEG2VIDEO/algorithm1",
+  "schema": "crystalhd.issue606.native-clocked-playback.v1",
+  "scope": "Privatefactory constructive normalcadence witness; optionalpublicplugin finalinstallation/playback check separate. No external edits, policy tuning, master/default/release promotion.",
+  "source_caps": "actualMPEG1 parsed352x288 progressive25, actualsequence codec_data",
+  "source_pins": {
+    "/home/mache/.cache/crystalhd-natural-mpeg1-research-20261031/filters/gst/gst-plugin-1.0/gstcrystalhd-finish-trace.c": "d65c23033ede3736394f1ed5a83230e5da9e32b1c18be51e10e36e72b7ac08ef",
+    "/home/mache/.cache/crystalhd-natural-mpeg1-research-20261031/filters/gst/gst-plugin-1.0/gstcrystalhd.c": "0719efeb7c6bfaf82b3bdcd45a6c721f96d912795dcbda1bf322dce46c7f7a10",
+    "/home/mache/.cache/crystalhd-natural-mpeg1-research-20261031/tests/mpeg1-natural-playback.c": "ee1d7fe4f47fb2ec8ae7d72d4ebdcb195beed83f582c67105494bc9b5453c0c6",
+    "/home/mache/.cache/crystalhd-natural-mpeg1-research-20261031/tests/mpeg1-research-decoder.c": "9ff1d6c18da2cf7a8c9d5ae81ae65679696ca55a2a891bf61c758cbf031882d5"
+  },
+  "source_snapshots": "native-build-01/source-snapshot retains first qualified source",
+  "status": "NATIVE_FRONTEND_SESSION_QUALIFIED"
+}

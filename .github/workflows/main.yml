@@ -121,7 +121,7 @@ jobs:
             libxcb-shm0-dev libxcb-xv0-dev \
             gstreamer1.0-tools gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav \
-            python3-gi gir1.2-gtk-3.0 xvfb xauth desktop-file-utils dbus-daemon \
+            python3-gi python3-numpy gir1.2-gtk-3.0 xvfb xauth desktop-file-utils dbus-daemon \
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
             libva-dev libdrm-dev libgbm-dev \
             libswscale-dev ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
@@ -176,6 +176,8 @@ jobs:
 
       - name: Check private VPP payload observer without hardware
         run: make -C filters/vaapi check-payload-observer
+      - name: Check MPEG-1 reference model synthetic controls without hardware
+        run: make mpeg1-reference-model-check
 
       - name: Select packaged kernel headers
         run: |
@@ -201,6 +203,9 @@ jobs:
         run: |
           node -e 'require("ws")'
           make -j2 W=1 check KDIR="$KDIR" KVER="$KVER"
+
+      - name: Check optional experimental MPEG-1 decoder without hardware
+        run: make -C filters/gst/gst-plugin-1.0 check-experimental-mpeg1
 
       - name: Verify optional V4L2 module integration
         shell: bash
@@ -312,6 +317,9 @@ jobs:
 
       - name: Verify MPEG-1 research admission without hardware
         run: |
+          cc -std=c11 -O2 -Wall -Wextra -Werror tests/mpeg1-chroma-convert.c \
+            -ldl -o "$RUNNER_TEMP/mpeg1-chroma-convert"
+          python3 -B tests/mpeg1-chroma-reference.py --help > /dev/null
           ffmpeg -nostdin -hide_banner -loglevel error -xerror -n \
             -f lavfi -i "nullsrc=size=352x288:rate=25,geq=lum='16+7*N':cb=128:cr=128" \
             -frames:v 30 -an -pix_fmt yuv420p -c:v mpeg1video \

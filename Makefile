@@ -180,6 +180,13 @@ native-picture-check:
 	$(PYTHON3) -B tests/native-picture-fixture.test.py
 	CC="$(CC)" $(PYTHON3) -B tests/native-color-negotiation.py
 
+# Optional developer check; NumPy is not an installed product dependency.
+# Runs fixed synthetic controls only, without media or reference manifests.
+.PHONY: mpeg1-reference-model-check
+mpeg1-reference-model-check:
+	$(PYTHON3) -B tests/mpeg1-reference-models.test.py
+	$(PYTHON3) -B tests/mpeg1-natural-audit.test.py
+
 uapi-check:
 	sh ./tests/uapi-abi.sh
 

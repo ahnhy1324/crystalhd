@@ -1,0 +1,57 @@
+{
+  "schema": "crystalhd.issue529.historical-reference-byte-replay.v1",
+  "status": "MEASURED",
+  "historical_commands_and_full_flags": "UNKNOWN; byte equality does not recover options",
+  "hardware": "NOT_RUN",
+  "quality_pass_claim": false,
+  "cases": [
+    {
+      "case": "horizontal-neighbor-first",
+      "historical_name": "horizontal-centered-to-left-neighbor.yuy2",
+      "historical_bytes": 202752,
+      "historical_sha256": "c0f441fb1d15b25ce9b6624b59274bb72ed1233adccfdd9eac7a5336bce89830",
+      "new_name": "point-post6507-horizontal30-center-to-left.yuyv",
+      "new_complete_bytes": 6082560,
+      "new_complete_sha256": "caa76bd4d8c5dfcbc1c4b4ec9b1a1350810e6dcfac6c7a6c4d4e4dff9389976d",
+      "new_compared_prefix_sha256": "c0f441fb1d15b25ce9b6624b59274bb72ed1233adccfdd9eac7a5336bce89830",
+      "byte_identical": true,
+      "scope": "single first frame"
+    },
+    {
+      "case": "horizontal-bicubic-first",
+      "historical_name": "horizontal-centered-to-left-bicubic.yuy2",
+      "historical_bytes": 202752,
+      "historical_sha256": "9ed1ccc8949569c8d7a8736c84d4bec3d914f6d9954a45990b9ea8d6b9b8f2bd",
+      "new_name": "conversion-post6507-horizontal30-center-to-left.yuyv",
+      "new_complete_bytes": 6082560,
+      "new_complete_sha256": "e216bddea1968b4b5a6a930a1d1456403d2e93b1dec61f6ae3f2b103d1c3c7aa",
+      "new_compared_prefix_sha256": "56faf14a2367552e07a394fcb6adf869ffb7193a2fc35c9e7b75d569070bf069",
+      "byte_identical": false,
+      "scope": "single first frame"
+    },
+    {
+      "case": "horizontal-lanczos-first",
+      "historical_name": "horizontal-centered-to-left-lanczos.yuy2",
+      "historical_bytes": 202752,
+      "historical_sha256": "ea9f7701892a2b98c0c5ddbf8c370676fa9cb7ec304aca46bde6a8f4e2a42217",
+      "new_name": "lanczos-post6507-horizontal30-center-to-left.yuyv",
+      "new_complete_bytes": 6082560,
+      "new_complete_sha256": "0a2777918d10f08e04b17c75bb45630be6301ca8e31e245709b6bb46289b7584",
+      "new_compared_prefix_sha256": "f849b6cbdcfb6307736d16228b724f03203d0041334ab7b2dc2ef353f4594c0d",
+      "byte_identical": false,
+      "scope": "single first frame"
+    },
+    {
+      "case": "checker-lanczos-90",
+      "historical_name": "checker-centered-to-left-lanczos.yuy2",
+      "historical_bytes": 18247680,
+      "historical_sha256": "dee2a7705c8e5250bcdd40f4737449d21dd2cff5c1babb6c51f6ff45ad67685b",
+      "new_name": "lanczos-post6507-checker90-center-to-left.yuyv",
+      "new_complete_bytes": 18247680,
+      "new_complete_sha256": "35cf6db3ed0e974aaae531e26bcf78060c105fe42a9dba2bad804458eaee48b3",
+      "new_compared_prefix_sha256": "35cf6db3ed0e974aaae531e26bcf78060c105fe42a9dba2bad804458eaee48b3",
+      "byte_identical": false,
+      "scope": "all90 frames"
+    }
+  ]
+}

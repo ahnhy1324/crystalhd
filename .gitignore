@@ -19,6 +19,9 @@
 *.mod
 *.so
 *.so.dbg
+/filters/gst/gst-plugin-1.0/libgstcrystalhdmpeg1experimental.so.config
+/filters/gst/gst-plugin-1.0/gst-mpeg1-experimental-test
+/filters/gst/gst-plugin-1.0/mpeg1-natural-playback-test
 *.mod.c
 *.i
 *.lst
