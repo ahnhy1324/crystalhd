@@ -6,9 +6,13 @@ diagnostic environment variable, state, payload reference, allocation or copy:
 `CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD` is defined only by the separate wrapper.
 `all`, `check`, and `install` do not build or install that wrapper.
 
-The implementation and protocol have source review only until the root operator
-records actual build/control/media results. A historical PASS for operation
-counts is not a PASS for these new payload captures.
+Case `stock-bob-payload-01` remains FAIL: its decoder stream supplied valid
+operation counts and clean normal exit/boundaries, but the destructor-only
+publisher never ran for its active driver instance. A probe instance wrote only
+an empty manifest. That case is preserved unchanged. Root's first CPU controls
+passed 57 checks and 21 independent-reader methods. These revised retirement
+publication controls and a new case require fresh root execution; earlier PASS
+counts do not establish the new payload evidence.
 
 ## Build and controls (root executor only)
 
@@ -33,7 +37,8 @@ also works from a clean source tree and creates the normal library/SONAME links.
 Command-line compiler and CPU settings propagate normally; no new library flags,
 library behavior or install action is introduced. Root should also run the
 relevant ordinary VA checks and verify that the
-ordinary backend lacks `CRYSTALHD_TEST_VPP_PAYLOAD_DIR` and the observer schema.
+ordinary backend lacks `CRYSTALHD_TEST_VPP_PAYLOAD_DIR` and the observer schema,
+and remains byte-identical to the ordinary artifact at OWN revision `147c142e`.
 
 The only diagnostic driver is
 `filters/vaapi/payload-observer/crystalhd_drv_video.so`. Never copy it over the
@@ -70,10 +75,22 @@ requires the existing final fence release, successful normal completion, current
 decoder lifetime/source token, live objects, current destination operation and
 nonstopping driver. The immediate path applies the corresponding current
 lifetime/operation checks. Canceled, superseded, failed or incomplete captures
-write no payload files. Their selected metadata remains a strict failure rather
-than disappearing from the census. `Driver` flushes only independent arrays
-after `StopWorkers` joins both workers and outside its mutex. Output creation is
-exclusive in a preopened fresh directory; partial/old files are never overwritten.
+prevent publication. The root case retains a strict failure with the raw
+receipts rather than substituting a later operation or source payload.
+
+The existing consuming `DestroyContextWithTimeout` path emits `context_destroy`
+after the selected decoder's ordinary drain and terminal close consume its
+device, with its final status. A diagnostic guard declared before the existing
+`unique_lock` claims publication only after both selected `(context,generation)`
+lifetimes retire successfully and all eight checkpoints have passed. Claiming
+seals all arrays under that mutex. Normal destroy-call cleanup and lock release
+then run before the guard writes independent arrays on the existing caller.
+No worker I/O, additional wait, thread, drain, close or scheduling decision is
+introduced. A shared diagnostic owner pins only independent bytes across this
+callback; the Driver may remain alive. Unrelated, first-only, partial or failed
+retirement cannot publish. Sealing blocks later selection/bookkeeping writes,
+and an atomic once flag plus exclusive file creation prevents repeated output.
+The destructor performs no publication. Partial/old files are never overwritten.
 
 Diagnostic `Surface` serials and advancing storage epochs identify OWN storage
 views, including CPU/GBM/dumb/import installation, moved-storage adoption and
@@ -99,14 +116,14 @@ accepted only during preparation, and an existing plan path is rejected:
 
 ```sh
 python3 -B tests/vaapi-vpp-payload-stock.py --prepare-plan \
-  --plan /home/mache/.cache/crystalhd-all-work-20261031/frozen-stock-bob-payload-plan.json \
-  --case stock-bob-payload-01 --own-source /ABSOLUTE/REVIEWED/OWN/TREE \
+  --plan /home/mache/.cache/crystalhd-all-work-20261031/frozen-stock-bob-payload-plan-02.json \
+  --case stock-bob-payload-02 --own-source /ABSOLUTE/REVIEWED/OWN/TREE \
   --own-revision FULL_40_HEX_OWN_COMMIT \
   --tff-probe /ABSOLUTE/FROZEN/TFF-FFPROBE.json \
   --bff-probe /ABSOLUTE/FROZEN/BFF-FFPROBE.json
 python3 -B tests/vaapi-vpp-payload-stock.py --execute \
-  --plan /home/mache/.cache/crystalhd-all-work-20261031/frozen-stock-bob-payload-plan.json \
-  --case stock-bob-payload-01
+  --plan /home/mache/.cache/crystalhd-all-work-20261031/frozen-stock-bob-payload-plan-02.json \
+  --case stock-bob-payload-02
 ```
 
 This is one play per frozen TFF/BFF source, with identity-only initial pause,
@@ -143,21 +160,26 @@ of arbitrary evidence. The reader independently computes plane-local field-row
 selection and compares every active output Y/U/V byte to actual captured source
 bytes; it does not call the production row helper or compare to guessed FFmpeg
 chroma. It requires source `submit_bind` and target successful `vpp_commit` joins,
-complete selected trace sequences and one final `session_destroy`.
+contiguous selected-session sequences through the supplied frozen raw prefix,
+and one successful `context_destroy` after the selected commits for each of the
+two decoder lifetimes. The manifest's explicit publication receipt must match
+those context/generation/status joins. This closes the selected context scope;
+it does not require or infer `session_destroy` or a complete Driver lifetime.
 
 Keep the existing boundary/AC/temperature guards and finite deadlines. If media
 survives normal Quit and verified pidfd TERM, retain compositor, private runtime,
 profile and payload directory and honor `live-resource-handoff.json`. Do not use
 SIGKILL, `--die-with-parent`, new playback, cleanup or teardown under a survivor.
 If only the compositor survives its normal TERM, retain its runtime and handoff.
-The diagnostic arrays flush only on orderly backend destruction; an unflushed
-survivor is incomplete evidence.
+The diagnostic arrays publish at the successful selected decoder retirement
+boundary even while their Driver remains alive. Missing retirement/publication
+is incomplete evidence and does not justify forcing backend destruction.
 
 ## Source anchors and proof limits
 
 The hook locations are `ProcessVpp`, `VppPixelView::Capture`,
 `PrepareFirstFieldBob`, `RunVppWorker`, `ReleasePendingVpp`, the immediate and
-synchronous VPP branches in `EndPicture`, and `Driver::~Driver` in
+synchronous VPP branches in `EndPicture`, and `DestroyContextWithTimeout` in
 `filters/vaapi/crystalhd_drv_video.cpp`. The production independent-plane row
 mapping remains `crystalhd-vpp-bob.h::SourcePlaneRow`; the new reader independently
 implements `floor(output_row * (logical_plane_rows / 2) / output_plane_rows)`.
@@ -178,8 +200,9 @@ a CPU download. This protocol requires enum22 and its actual reported route.
 A PASS establishes the selected OWN completed CPU payloads, both physical
 parities and full active chroma, plus natural EOF/count evidence in this finite
 diagnostic run. It establishes neither all one hundred output fields' pixels
-nor their chronological presentation. Source/output PTS, external fd/import
-release, GPU fence/scanout lifetime and displayed pixels remain NOT_RUN.
+nor their chronological presentation. Source/output PTS, Driver destruction,
+external fd/import release, GPU fence/scanout lifetime and displayed pixels
+remain NOT_RUN.
 Instrumentation overhead makes this unsuitable for a performance claim. Existing
 public `binding_end` and export call records retain their narrower meanings.
 No heap observer or investigation is included.

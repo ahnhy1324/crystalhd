@@ -108,7 +108,19 @@ def fixture():
                         "current": True, "status": 0}
                 doc["slots"].append(slot)
                 trace.append(trace_row(len(trace) + 1, "vpp_commit", binding, operation))
-    trace.append(trace_row(len(trace) + 1, "session_destroy"))
+    receipts = []
+    for stream in range(2):
+        context, generation = stream + 7, 1
+        trace.append(trace_row(len(trace) + 1, "context_destroy",
+                               {"context": context, "generation": generation}))
+        receipts.append({"stream_index": stream, "context": context,
+                         "generation": generation, "status": 0})
+    # Like the original stock client, finish with surface retirement while
+    # the Driver/display can remain alive. A session destructor is optional.
+    trace.append(trace_row(len(trace) + 1, "surface_destroy", {"surface": 99}))
+    doc["publication"] = {"kind": "selected-decoder-context-retirement",
+                          "after_driver_unlock": True, "all_slots_frozen": True,
+                          "retirements": receipts}
     return doc, blobs, trace
 
 
@@ -135,8 +147,56 @@ class PayloadReaderControls(unittest.TestCase):
         self.assertEqual(result["status"], "PASS_SCOPED_OWN_COMPLETED_VPP_PAYLOAD")
         self.assertEqual(result["compared_target_bytes"], 8 * W * H * 3 // 2)
         for key in ("source_pts", "chronological_field_presentation",
-                    "gpu_import_fence_lifetime", "displayed_pixels"):
+                    "gpu_import_fence_lifetime", "displayed_pixels", "driver_destruction"):
             self.assertEqual(result[key], "NOT_RUN")
+
+    def test_retired_decoder_contexts_allow_a_live_driver(self):
+        doc, blobs, trace = self.fresh()
+        self.assertFalse(any(row["event"] == "session_destroy" for row in trace))
+        result = reader.check_document(doc, blobs, trace)
+        self.assertEqual(result["publication"]["retired_decoder_lifetimes"], 2)
+        self.assertEqual(result["driver_destruction"], "NOT_RUN")
+        # An optional complete Driver teardown does not broaden the claim.
+        trace.append(trace_row(len(trace) + 1, "session_destroy"))
+        self.assertEqual(reader.check_document(doc, blobs, trace)["driver_destruction"], "NOT_RUN")
+
+    def test_publication_receipt_cannot_be_missing_partial_failed_or_unfrozen(self):
+        self.reject(lambda doc, blobs, trace: doc.pop("publication"), "publication")
+        self.reject(lambda doc, blobs, trace:
+                    doc["publication"].__setitem__("kind", "driver-destruction"), "publication")
+        for flag in ("after_driver_unlock", "all_slots_frozen"):
+            with self.subTest(flag=flag):
+                self.reject(lambda doc, blobs, trace, flag=flag:
+                            doc["publication"].__setitem__(flag, False), "publication")
+        self.reject(lambda doc, blobs, trace: doc["publication"]["retirements"].pop(), "two retirement")
+        self.reject(lambda doc, blobs, trace:
+                    doc["publication"]["retirements"][0].__setitem__("status", -1), "successful status")
+        for key, value in (("stream_index", 1), ("context", 999), ("generation", 2)):
+            with self.subTest(key=key):
+                self.reject(lambda doc, blobs, trace, key=key, value=value:
+                            doc["publication"]["retirements"][0].__setitem__(key, value))
+
+    def test_exact_successful_raw_context_retirement_is_required(self):
+        self.reject(lambda doc, blobs, trace: trace[-2].__setitem__("outcome", -1),
+                    "successful raw context_destroy")
+        self.reject(lambda doc, blobs, trace: trace[-2].__setitem__("context", 999),
+                    "successful raw context_destroy")
+        self.reject(lambda doc, blobs, trace: trace[-2].__setitem__("generation", 2),
+                    "successful raw context_destroy")
+        self.reject(lambda doc, blobs, trace: trace[-2].__setitem__("surface", 99),
+                    "non-context binding")
+        def duplicate(doc, blobs, trace):
+            trace.append(trace_row(len(trace) + 1, "context_destroy",
+                                   {"context": 8, "generation": 1}))
+        self.reject(duplicate, "successful raw context_destroy")
+
+    def test_retirement_must_follow_selected_commits(self):
+        def mutate(doc, blobs, trace):
+            retired = trace.pop(-2)
+            trace.insert(0, retired)
+            for number, row in enumerate(trace, 1):
+                row["seq"], row["ts_monotonic_ns"] = number, number * 100
+        self.reject(mutate, "retirement precedes")
 
     def test_individual_y_u_v_corruption_is_rejected(self):
         for offset, component in ((17, "Y"), (W * H + 20, "U"), (W * H + 21, "V")):
@@ -280,7 +340,13 @@ class PayloadReaderControls(unittest.TestCase):
         self.reject(lambda doc, blobs, trace: trace[1].__setitem__("session", 3), "session")
         self.reject(lambda doc, blobs, trace: doc.__setitem__("pid", 999), "no trace")
         self.reject(lambda doc, blobs, trace: trace[1].__setitem__("ts_monotonic_ns", 1), "regressed")
-        self.reject(lambda doc, blobs, trace: trace.pop(), "session_destroy")
+        self.reject(lambda doc, blobs, trace: trace.__delitem__(slice(-2, None)),
+                    "successful raw context_destroy")
+
+    def test_optional_session_destroy_still_has_to_be_unique_and_terminal(self):
+        def nonterminal(doc, blobs, trace):
+            trace[-2]["event"] = "session_destroy"
+        self.reject(nonterminal, "unique and terminal")
 
     def test_quota_missing_slot_boolean_integer_and_filename_controls(self):
         self.reject(lambda doc, blobs, trace: doc.__setitem__("quota", 9), "quota")
@@ -308,6 +374,8 @@ class PayloadReaderControls(unittest.TestCase):
             reader.parse_trace(b'{"schema":"crystalhd-vaapi-trace-v4",broken}\n')
         with self.assertRaises(ValueError):
             reader.parse_trace(b'{"schema":"crystalhd-vaapi-trace-v4","seq":1,"seq":2}\n')
+        with self.assertRaisesRegex(ValueError, "unterminated"):
+            reader.parse_trace(json.dumps(self.base_trace[-1]).encode())
 
     def test_link_and_nonregular_input_rejected_before_read(self):
         with tempfile.TemporaryDirectory() as directory:

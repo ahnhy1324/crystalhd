@@ -81,6 +81,8 @@ struct Slot {
 };
 struct Stream {
   bool used = false;
+  bool retired = false;
+  int retirement_status = -1;
   uint64_t context = 0, generation = 0;
   struct Parent {
     bool used = false;
@@ -90,6 +92,10 @@ struct Stream {
 struct State {
   uint64_t session;
   int directory = -1;
+  // All mutations below are protected by the existing Driver mutex. Once
+  // sealed, only the claimed caller-side publisher touches independent state.
+  bool sealed = false;
+  std::atomic<bool> publication_started{false};
   std::array<Stream, 2> streams{};
   std::array<Slot, kQuota> slots{};
   explicit State(uint64_t instance) : session(instance) {
@@ -104,6 +110,7 @@ struct State {
                const Rectangle &source_region, const Rectangle &output_region,
                const Deinterlace &deinterlace, uint64_t sequence);
   void Commit(uint64_t sequence, int status, bool successful, bool current) {
+    if (sealed) return;
     for (auto &slot : slots) {
       if (slot.selected && slot.operation == sequence) {
         slot.status = status; slot.current = current;
@@ -112,7 +119,39 @@ struct State {
       }
     }
   }
+  bool Retire(uint64_t context, uint64_t generation, int status) {
+    if (sealed) return false;
+    bool matched = false;
+    for (auto &stream : streams) {
+      if (stream.used && stream.context == context && stream.generation == generation) {
+        stream.retired = true;
+        stream.retirement_status = status;
+        matched = true;
+      }
+    }
+    if (!matched) return false;
+    for (const auto &stream : streams)
+      if (!stream.used || !stream.retired || stream.retirement_status != 0)
+        return false;
+    for (const auto &slot : slots)
+      // committed is protected by Driver::mutex and becomes true only after
+      // the existing unlocked leaf has retired and the mutex was reacquired.
+      // Short-circuit before reading fields an active leaf may still write.
+      if (!slot.selected || !slot.committed || !slot.copy_ok ||
+          !slot.process_success || !slot.current || slot.status != 0)
+        return false;
+    // Selected writes have already retired via their ordinary commit path.
+    // No producer can replace any of the eight fixed slots after this claim.
+    sealed = true;
+    return true;
+  }
   void Flush();
+};
+// Declare before the existing caller's unique_lock. C++ destruction order
+// releases that lock and performs its normal bookkeeping before this I/O.
+struct PublishOnReturn {
+  std::shared_ptr<State> state;
+  ~PublishOnReturn() { if (state) state->Flush(); }
 };
 inline thread_local Slot *active = nullptr;
 struct Scope {
@@ -131,7 +170,7 @@ Slot *State::Select(const Fields &fields, const Surface &canonical,
                     const Surface &source_owner, const Surface &target,
                     const Rectangle &source_region, const Rectangle &output_region,
                     const Deinterlace &deinterlace, uint64_t sequence) {
-  if (directory < 0 || !deinterlace.bob || canonical.destroyed || canonical.failed ||
+  if (sealed || directory < 0 || !deinterlace.bob || canonical.destroyed || canonical.failed ||
       target.destroyed || fields.operation != sequence || fields.surface != target.id ||
       canonical.fourcc != 0x3231564eU || target.fourcc != 0x3231564eU ||
       canonical.direct_backing || canonical.centered_geometry.enabled ||
@@ -296,9 +335,10 @@ inline void PrintGeometry(FILE *out, const Geometry &g) {
       static_cast<unsigned long long>(g.object_sizes[3]));
 }
 inline void State::Flush() {
-  if (directory < 0) return;
-  // Called after StopWorkers joins, without Driver::mutex. Arrays own all bytes
-  // and retain no Surface, allocation, fd, or external-client lifetime lease.
+  if (!sealed || directory < 0 || publication_started.exchange(true)) return;
+  // The existing successful selected decoder-context retirement caller has
+  // released Driver::mutex. All eight arrays were sealed under that lock;
+  // they retain no Surface, allocation, Driver, worker or external-client lease.
   char prefix[96], manifest_name[128];
   std::snprintf(prefix, sizeof(prefix), "vpp-payload-%lld-%llu",
       static_cast<long long>(getpid()), static_cast<unsigned long long>(session));
@@ -323,8 +363,17 @@ inline void State::Flush() {
   FILE *out = fdopen(fd, "w");
   if (!out) { close(fd); return; }
   std::fprintf(out, "{\"schema\":\"crystalhd-vpp-payload-v1\",\"pid\":%lld,"
-      "\"driver_instance\":%llu,\"quota\":%u,\"slots\":[",
+      "\"driver_instance\":%llu,\"quota\":%u,\"publication\":{"
+      "\"kind\":\"selected-decoder-context-retirement\",\"after_driver_unlock\":true,"
+      "\"all_slots_frozen\":true,\"retirements\":[",
       static_cast<long long>(getpid()), static_cast<unsigned long long>(session), kQuota);
+  for (unsigned i = 0; i != streams.size(); ++i) {
+    const auto &stream = streams[i];
+    std::fprintf(out, "%s{\"stream_index\":%u,\"context\":%llu,\"generation\":%llu,\"status\":%d}",
+        i ? "," : "", i, static_cast<unsigned long long>(stream.context),
+        static_cast<unsigned long long>(stream.generation), stream.retirement_status);
+  }
+  std::fputs("]},\"slots\":[", out);
   bool comma = false;
   for (unsigned i = 0; i != kQuota; ++i) {
     const Slot &s = slots[i];

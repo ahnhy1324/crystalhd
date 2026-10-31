@@ -4,7 +4,8 @@
 
 This reader accepts only eight full-canvas 1280x720 NV12 Bob checkpoints.  It
 compares CPU payloads with independent row arithmetic and joins OWN trace
-bindings.  It does not infer source PTS, presentation order, or GPU lifetime.
+bindings and successful retirement of both selected decoder contexts.  It does
+not infer source PTS, presentation order, Driver destruction, or GPU lifetime.
 Input artifacts must be frozen and trusted: this is an evidence consistency
 checker, not authentication of a diagnostic backend or an untrusted uploader.
 """
@@ -103,7 +104,7 @@ def trace_index(trace_rows, pid, instance):
             selected.append(row)
     require(selected, "manifest session has no trace rows")
     previous_ns = 0
-    commits, cancels, submits = {}, {}, {}
+    commits, cancels, submits, retirements = {}, {}, {}, {}
     for seq, row in enumerate(selected, 1):
         require(row.get("session") == instance, "trace session/instance mismatch")
         require(type(row.get("seq")) is int and row["seq"] == seq,
@@ -122,10 +123,54 @@ def trace_index(trace_rows, pid, instance):
         elif event == "submit_bind":
             key = tuple(row[key] for key in BINDING_KEYS)
             submits.setdefault(key, []).append(row)
-    require(selected[-1]["event"] == "session_destroy" and
-            sum(row["event"] == "session_destroy" for row in selected) == 1,
-            "selected trace session must end with one session_destroy")
-    return commits, cancels, submits
+        elif event == "context_destroy":
+            retirements.setdefault((row["context"], row["generation"]), []).append(row)
+    # The original stock client may retain its VA display after both decoder
+    # contexts close. In that case this is a contiguous frozen session prefix,
+    # with context-scoped closure proved below, not a complete Driver lifetime.
+    destroyed = [row for row in selected if row["event"] == "session_destroy"]
+    require(not destroyed or (len(destroyed) == 1 and destroyed[0] is selected[-1]),
+            "session_destroy must be unique and terminal when present")
+    return commits, cancels, submits, retirements, len(selected)
+
+
+def publication_receipt(value, lifetimes, slots, commits, raw_retirements):
+    value = object_value(value, "publication")
+    require(value.get("kind") == "selected-decoder-context-retirement",
+            "publication must name selected decoder-context retirement")
+    require(value.get("after_driver_unlock") is True and
+            value.get("all_slots_frozen") is True,
+            "publication requires unlocked caller and frozen slots")
+    records = value.get("retirements")
+    require(type(records) is list and len(records) == 2,
+            "publication requires two retirement receipts")
+    seen = set()
+    for record in records:
+        record = object_value(record, "publication retirement")
+        stream = integer(record.get("stream_index"), "retirement stream_index")
+        require(stream in (0, 1) and stream not in seen,
+                "duplicate or invalid retirement stream")
+        seen.add(stream)
+        context = integer(record.get("context"), "retirement context", 1)
+        generation = integer(record.get("generation"), "retirement generation", 1)
+        require((context, generation) == lifetimes[stream],
+                "retirement receipt does not match selected decoder lifetime")
+        require(type(record.get("status")) is int and record["status"] == 0,
+                "retirement receipt must report successful status")
+        matching = raw_retirements.get((context, generation), [])
+        require(len(matching) == 1 and matching[0]["outcome"] == 0,
+                "selected lifetime needs one successful raw context_destroy")
+        destroy = matching[0]
+        require(all(destroy[key] == 0 for key in
+                    ("surface", "owner", "token", "decode_identity",
+                     "submission_ordinal", "operation")),
+                "raw context_destroy has non-context binding fields")
+        last_commit = max(commits[slot["operation"]][0]["seq"] for slot in slots
+                          if slot["stream_index"] == stream)
+        require(destroy["seq"] > last_commit,
+                "decoder retirement precedes a selected VPP commit")
+    return {"kind": value["kind"], "retired_decoder_lifetimes": 2,
+            "after_driver_unlock": True, "all_slots_frozen": True}
 
 
 def compare_model(slot, source, target):
@@ -195,7 +240,7 @@ def check_document(doc, blobs, trace_rows):
     require(type(slots) is list and len(slots) == QUOTA,
             "exactly eight selected payload slots are required")
     require(type(blobs) is dict, "payload blobs must be a dictionary")
-    commits, cancels, submits = trace_index(trace_rows, pid, instance)
+    commits, cancels, submits, retirements, trace_count = trace_index(trace_rows, pid, instance)
     groups, operations, files, seen_slots = {}, set(), set(), set()
     for slot in slots:
         slot = object_value(slot, "slot")
@@ -298,14 +343,20 @@ def check_document(doc, blobs, trace_rows):
                 "parent indices must name distinct increasing source ordinals")
         lifetimes.append(stream_keys[0][:2])
     require(lifetimes[0] != lifetimes[1], "two stream lifetimes must be distinct")
+    publication = publication_receipt(doc.get("publication"), lifetimes, slots,
+                                      commits, retirements)
     return {
         "status": "PASS_SCOPED_OWN_COMPLETED_VPP_PAYLOAD",
         "schema": SCHEMA, "pid": pid, "driver_instance": instance,
         "slots": QUOTA, "source_parents": 4, "physical_parities_per_parent": 2,
         "compared_target_bytes": sum(slot["target_bytes"] for slot in slots),
-        "scope": "All active Y/U/V bytes match independently selected OWN source rows; successful raw OWN bindings joined.",
+        "scope": "All active Y/U/V bytes match independently selected OWN source rows; successful raw OWN bindings and selected decoder-context retirements joined.",
+        "publication": publication,
+        "trace_scope": "Contiguous frozen selected-session prefix through both selected decoder-context retirements.",
+        "trace_records_checked": trace_count,
         "allocation_identity": "Surface storage-view lifetime only; no global DMA-BUF alias identity.",
         "source_pts": "NOT_RUN", "chronological_field_presentation": "NOT_RUN",
+        "driver_destruction": "NOT_RUN",
         "gpu_import_fence_lifetime": "NOT_RUN", "displayed_pixels": "NOT_RUN",
     }
 
@@ -314,9 +365,10 @@ def parse_trace(raw):
     require(type(raw) is bytes and len(raw) <= MAX_TRACE_BYTES,
             "trace exceeds bounded size")
     rows = []
-    for line in raw.decode("utf-8", errors="strict").splitlines():
+    for line in raw.decode("utf-8", errors="strict").splitlines(keepends=True):
         if TRACE_SCHEMA not in line:
             continue
+        require(line.endswith("\n"), "unterminated OWN trace line")
         row = json.loads(line, object_pairs_hook=strict_object)
         require(type(row) is dict and row.get("schema") == TRACE_SCHEMA,
                 "malformed OWN trace line")

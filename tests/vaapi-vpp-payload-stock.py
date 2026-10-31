@@ -140,7 +140,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     modes=p.add_mutually_exclusive_group()
     modes.add_argument('--execute',action='store_true');modes.add_argument('--prepare-plan',action='store_true')
-    p.add_argument('--plan',type=Path,required=True);p.add_argument('--case',default='stock-bob-payload-01')
+    p.add_argument('--plan',type=Path,required=True);p.add_argument('--case',default='stock-bob-payload-02')
     p.add_argument('--own-source',type=Path);p.add_argument('--own-revision');p.add_argument('--tff-probe',type=Path);p.add_argument('--bff-probe',type=Path)
     a=p.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+',a.case):p.error('fresh simple case name required')
@@ -196,6 +196,7 @@ def main():
             'scope':SCOPE,'initial_pause':'Identity gate only, then normal-speed natural EOF; no cadence/performance claim',
             'payload_observer':{'schema':'crystalhd-vpp-payload-v1','quota':8,
                 'source_parents_per_stream':2,'physical_parities_per_parent':2,
+                'publication':'selected-decoder-context-retirement',
                 'normal_driver_replacement':False,'performance_claim':False},
             'missing_observer':'Source/output PTS,GPU lifetime,chronological presentation,scanout NOT_RUN'})
         print('FROZEN_FILE_AND_INDEPENDENT_SOURCE_METADATA '+str(a.plan));return 0
@@ -207,6 +208,7 @@ def main():
     for path,expected in plan['pins'].items():assert G.digest(path)==expected,('frozen file changed',path)
     assert plan['payload_observer']=={'schema':'crystalhd-vpp-payload-v1','quota':8,
         'source_parents_per_stream':2,'physical_parities_per_parent':2,
+        'publication':'selected-decoder-context-retirement',
         'normal_driver_replacement':False,'performance_claim':False}
     G.SOURCE=Path(plan['source_directory']);G.REVISION=plan['revision'];G.VA=G.SOURCE/'filters/vaapi/payload-observer/crystalhd_drv_video.so';G.DIL=G.SOURCE/'linux_lib/libcrystalhd/libcrystalhd.so.3.6'
     assert subprocess.check_output(['git','-C',str(G.SOURCE),'rev-parse','HEAD'],text=True).strip()==G.REVISION

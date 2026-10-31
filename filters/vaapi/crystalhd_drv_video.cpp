@@ -2765,7 +2765,7 @@ static void RunVppWorker(Driver *driver);
 
 struct Driver {
 #if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
-  std::unique_ptr<crystalhd_test_vpp_payload::State> payload_observer;
+  std::shared_ptr<crystalhd_test_vpp_payload::State> payload_observer;
 #endif
   std::mutex mutex;
   std::condition_variable condition;
@@ -2808,8 +2808,13 @@ struct Driver {
         experimental_i915_wc(ExperimentalI915WcRequested(
             crystalhd_config::Environment("CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC"))) {
 #if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
-    if (trace.enabled())
-      payload_observer.reset(new (std::nothrow) crystalhd_test_vpp_payload::State(trace.session()));
+    if (trace.enabled()) {
+      try {
+        payload_observer.reset(new (std::nothrow) crystalhd_test_vpp_payload::State(trace.session()));
+      } catch (const std::bad_alloc &) {
+        // The private observer is unavailable; normal VA initialization proceeds.
+      }
+    }
 #endif
     decode_control_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (requested_drm_fd >= 0)
@@ -2830,9 +2835,6 @@ struct Driver {
   }
   ~Driver() {
     StopWorkers();
-#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
-    if (payload_observer) payload_observer->Flush();
-#endif
     if (decode_control_fd >= 0) {
       close(decode_control_fd);
       decode_control_fd = -1;
@@ -8926,6 +8928,11 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
                                           VAContextID context_id,
                                           uint64_t close_timeout_ns) {
   Driver *driver = GetDriver(context);
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+  // Declared before lock: normal DestroyCall cleanup and unlock precede I/O.
+  // It pins only independent diagnostic arrays, never the Driver or surfaces.
+  crystalhd_test_vpp_payload::PublishOnReturn payload_publication;
+#endif
   std::unique_lock<std::mutex> lock(driver->mutex);
   auto found = driver->contexts.find(context_id);
   if (found == driver->contexts.end())
@@ -9027,6 +9034,11 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
   // Their disposal must not interrupt an unrelated decoder's RX poll.
   if (!decode->video_process || !driver->pending_vpp.empty())
     driver->NotifyDecodeWorker();
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+  if (!decode->video_process && driver->payload_observer &&
+      driver->payload_observer->Retire(fields.context, fields.generation, status))
+    payload_publication.state = driver->payload_observer;
+#endif
   return status;
 }
 
