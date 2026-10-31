@@ -24,14 +24,27 @@ keyboard mnemonic; keep one mnemonic in translations where the source has one,
 and review for collisions on the same page. Review complete messages in context,
 including warnings about application restarts and acknowledged experiments.
 
-Korean status: PARTIAL, UNREVIEWED DRAFT. Every Korean translation is fuzzy and
-requires maintainer/native-speaker review before its fuzzy flag may be removed.
-The check target validates fuzzy draft syntax and mnemonic counts, but install
-never uses --use-fuzzy. Consequently the shipped draft currently falls back to
-English. Do not enable fuzzy translations globally to expose this draft.
+Korean status: all 150 current supported POT messages have Korean translations.
+Review record (2026-10-31): a separate Codex agent independently reviewed every
+translation against the POT, GTK settings-editor source and configuration guide,
+and resolved its findings before removing the fuzzy flags. This is an agent
+source-context review, not a claim of human approval. Review covered Korean
+wording, setting precedence, save/reload warnings, experimental-launch
+acknowledgements, numeric limits, literal identifiers and formatting (including
+whitespace on joined prefixes/suffixes). Latin keyboard mnemonics use forms such
+as 저장(_S); 출력 크기 값 uses (_Z) from size to avoid the expanded profile
+section's 편집할 설정(_E) mnemonic on the same page. Profile-selection
+inheritance, installation-completion records and several status/help messages
+were clarified during review.
+
+The check target validates fuzzy entries as well as active translations. Normal
+installation never uses --use-fuzzy: reviewed entries are active once their
+fuzzy flags are removed, and fuzzy or missing entries fall back to English.
+Install tests exercise active Korean, an unknown locale and a separate fuzzy
+fixture without substituting the fixture for the actual Korean catalogue.
 
 Core diagnostics, installation report text, preset metadata and Desktop Entry
-translations are outside this catalogue's current scope. Catalogue validation
-does not establish translation quality, screen-reader usability, manual desktop
-acceptance or native i386 runtime acceptance; those remain separate review and
-validation work.
+translations are outside this catalogue's current scope. The review record above
+covers the Korean messages in this catalogue. Screen-reader usability, manual
+desktop acceptance and native i386 runtime acceptance have separate checks;
+catalogue review and validation do not replace those checks.

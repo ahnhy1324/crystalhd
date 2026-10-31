@@ -413,24 +413,37 @@ assert actual_tryexec==expected,actual_tryexec
             self.assertEqual(catalogue.stat().st_mode&0o777,0o644)
             with catalogue.open('rb') as stream:
                 translation=gettext.GNUTranslations(stream)
-            # The Korean draft remains unreviewed: ordinary installation must
-            # exclude fuzzy translations and preserve the English fallback.
-            self.assertEqual(translation.gettext('CrystalHD Settings'),'CrystalHD Settings')
+            self.assertEqual(translation.gettext('CrystalHD Settings'),'CrystalHD 설정')
+            self.assertEqual(translation.gettext('VA _debug logging'),'VA 디버그 로그 기록(_D)')
             other_catalogue=catalogue.with_name('other-app.mo')
             other_catalogue.write_bytes(b'untouched')
-            # A reviewed fixture exercises the actual installed domain/path
-            # and LANGUAGE handling without promoting the Korean draft.
-            reviewed=stage/'reviewed-fixture.po'
-            reviewed.write_text('msgid ""\nmsgstr ""\n'
-                                '"Content-Type: text/plain; charset=UTF-8\\n"\n\n'
-                                'msgid "CrystalHD Settings"\nmsgstr "번역 경로 확인"\n\n'
-                                'msgid "VA _debug logging"\nmsgstr "디버그 기록(_D)"\n',encoding='utf-8')
-            compiled=subprocess.run(['msgfmt','--output-file='+str(catalogue),str(reviewed)],
-                                    stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True)
-            self.assertEqual(compiled.returncode,0,compiled.stderr)
-            translated=program+"; assert m._('CrystalHD Settings')=='번역 경로 확인'; assert next(row for row in m.CONTROLS if row[0]=='vaapi.debug')[1]=='디버그 기록(_D)'"
+            # Exercise the actual installed Korean catalogue and preserve
+            # canonical setting keys while translating visible labels.
+            translated=program+"; assert m._('CrystalHD Settings')=='CrystalHD 설정'; assert next(row for row in m.CONTROLS if row[0]=='vaapi.debug')[1]=='VA 디버그 로그 기록(_D)'"
             run=subprocess.run([sys.executable,'-B','-c',translated,str(gui)],
                                env=dict(os.environ,LANGUAGE='ko'),stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE,universal_newlines=True)
+            self.assertEqual(run.returncode,0,run.stderr)
+            unknown=program+"; assert m._('CrystalHD Settings')=='CrystalHD Settings'; assert next(row for row in m.CONTROLS if row[0]=='vaapi.debug')[1]=='VA _debug logging'"
+            run=subprocess.run([sys.executable,'-B','-c',unknown,str(gui)],
+                               env=dict(os.environ,LANGUAGE='qzz'),stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE,universal_newlines=True)
+            self.assertEqual(run.returncode,0,run.stderr)
+            # A private test language loads a usable translated entry alongside
+            # a fuzzy entry. Only the fuzzy entry must fall back to English.
+            fuzzy_catalogue=catalogue.parents[2]/'qaa/LC_MESSAGES/crystalhd-settings.mo'
+            fuzzy_catalogue.parent.mkdir(parents=True,exist_ok=True)
+            fixture=stage/'fallback-fixture.po'
+            fixture.write_text('msgid ""\nmsgstr ""\n'
+                               '"Content-Type: text/plain; charset=UTF-8\\n"\n\n'
+                               '#, fuzzy\nmsgid "CrystalHD Settings"\nmsgstr "검토 전 테스트 번역"\n\n'
+                               'msgid "VA _debug logging"\nmsgstr "검증용 로그(_D)"\n',encoding='utf-8')
+            compiled=subprocess.run(['msgfmt','--output-file='+str(fuzzy_catalogue),str(fixture)],
+                                    stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True)
+            self.assertEqual(compiled.returncode,0,compiled.stderr)
+            fallback=program+"; assert m._('CrystalHD Settings')=='CrystalHD Settings'; assert next(row for row in m.CONTROLS if row[0]=='vaapi.debug')[1]=='검증용 로그(_D)'"
+            run=subprocess.run([sys.executable,'-B','-c',fallback,str(gui)],
+                               env=dict(os.environ,LANGUAGE='qaa'),stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE,universal_newlines=True)
             self.assertEqual(run.returncode,0,run.stderr)
             for name in ('install-settings','uninstall-settings','uninstall-settings'):
