@@ -1,0 +1,845 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "status": "PASS_SCOPED_ORIGINAL_STOCK_BOB_EOF",
+  "runtime_revision": "a7b41702ae6a9a6e0f6c3de3887af5d6f1bd87ca",
+  "scope": "Original-stock explicit VA Bob route,50 source bindings/100 VPP operations and natural EOF per TFF/BFF source; field content/PTS/chroma/scanout NOT_RUN",
+  "source_census": {
+    "tff": {
+      "status": "PASS",
+      "errors": [],
+      "event_counts": {
+        "sync_enter": 214,
+        "sync_exit": 214,
+        "context_destroy": 3,
+        "surface_destroy": 25,
+        "submit_bind": 50,
+        "input_sent": 50,
+        "prefeed_sent": 50,
+        "vpp_capture": 100,
+        "vpp_queued": 6,
+        "vpp_start": 6,
+        "output_dequeued": 50,
+        "materialized": 50,
+        "vpp_run": 100,
+        "vpp_commit": 100,
+        "export_enter": 107,
+        "export_exit": 107,
+        "binding_end": 150
+      },
+      "source_binding_stage_counts": {
+        "submit_bind": 50,
+        "input_sent": 50,
+        "output_dequeued": 50,
+        "materialized": 50
+      },
+      "VPP_completion_records": 100,
+      "distinct_VPP_operations": 100,
+      "VPP_completions_per_original": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "observer": "actual own crystalhd-vaapi-trace-v4; complete-file sequence guard, frozen per-play byte ranges",
+      "source_or_output_PTS": "NOT_RUN; binding tokens are synthetic identifiers",
+      "unique_field_content_parity_pixels_chroma_and_scanout": "NOT_RUN",
+      "scope": "50 original source bindings and100 completed VPP operations only; operation pairs do not prove two unique source-correct displayed fields."
+    },
+    "bff": {
+      "status": "PASS",
+      "errors": [],
+      "event_counts": {
+        "sync_enter": 214,
+        "sync_exit": 214,
+        "context_destroy": 3,
+        "surface_destroy": 25,
+        "submit_bind": 50,
+        "input_sent": 50,
+        "prefeed_sent": 50,
+        "vpp_capture": 100,
+        "vpp_queued": 4,
+        "vpp_start": 4,
+        "output_dequeued": 50,
+        "materialized": 50,
+        "vpp_run": 100,
+        "vpp_commit": 100,
+        "export_enter": 107,
+        "export_exit": 107,
+        "binding_end": 150
+      },
+      "source_binding_stage_counts": {
+        "submit_bind": 50,
+        "input_sent": 50,
+        "output_dequeued": 50,
+        "materialized": 50
+      },
+      "VPP_completion_records": 100,
+      "distinct_VPP_operations": 100,
+      "VPP_completions_per_original": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "observer": "actual own crystalhd-vaapi-trace-v4; complete-file sequence guard, frozen per-play byte ranges",
+      "source_or_output_PTS": "NOT_RUN; binding tokens are synthetic identifiers",
+      "unique_field_content_parity_pixels_chroma_and_scanout": "NOT_RUN",
+      "scope": "50 original source bindings and100 completed VPP operations only; operation pairs do not prove two unique source-correct displayed fields."
+    }
+  },
+  "controls_status": "PASS",
+  "application_exit": 0,
+  "boundary_equal": true,
+  "kernel_exit": 0,
+  "errors": [],
+  "identity_checks": [
+    {
+      "source_case": "tff",
+      "info": {
+        "Player.Filenameandpath": "/fixture-tff.mp4",
+        "Player.Process(deintmethod)": "vaapi-bob",
+        "Player.Process(pixformat)": "vaapi",
+        "Player.Process(videodecoder)": "ff-h264-vaapi",
+        "System.ScreenHeight": "720",
+        "System.ScreenWidth": "1280"
+      },
+      "mapped_images": [
+        {
+          "role": "own-va-runtime-dependency",
+          "path": "/usr/lib/x86_64-linux-gnu/libavutil.so.60.26.103",
+          "sha256": "fed22f93458f58ec928be86730b16b4e0469ab78e452059140809074ac3a6750",
+          "device": "08:01",
+          "inode": 11309252
+        },
+        {
+          "role": "own-dil",
+          "path": "/own-lib/libcrystalhd.so.3.6",
+          "sha256": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+          "device": "08:01",
+          "inode": 9311055
+        },
+        {
+          "role": "own-va-runtime-dependency",
+          "path": "/usr/lib/x86_64-linux-gnu/libswscale.so.9.5.103",
+          "sha256": "d6dda313ae03cc73600e73d3842dd48490f50390aaada00c793617370ca594ce",
+          "device": "08:01",
+          "inode": 11309255
+        },
+        {
+          "role": "own-va",
+          "path": "/own-va/crystalhd_drv_video.so",
+          "sha256": "147c142e1bb6a527fcd5826651f8bfcee6e6d9667b01bf3fa9f548493e630c48",
+          "device": "08:01",
+          "inode": 9312715
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libswscale.so.10.1.102",
+          "sha256": "91c0116cd1d5943099464dda1990e89e4190ea75d0dd39105120fe8efe8558fb",
+          "device": "08:01",
+          "inode": 11290757
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libavutil.so.61.1.102",
+          "sha256": "e7382c76a1d06f07fee721b5d1d29100ebacd29e3142ddd98f6826f2726d2bda",
+          "device": "08:01",
+          "inode": 11290762
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libavformat.so.63.1.102",
+          "sha256": "d9aea791e699c00e730ca959c6887795212232d82c58a3bd9be65692f9b52ac4",
+          "device": "08:01",
+          "inode": 11290760
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libavcodec.so.63.1.102",
+          "sha256": "33516c1fb77df3d7a2c05828b7bae61d66ce18e4e0d2da471f6f789a67b5ec7e",
+          "device": "08:01",
+          "inode": 11291646
+        }
+      ],
+      "owned_fds": [
+        {
+          "fd": 62,
+          "target": "/dev/crystalhd"
+        },
+        {
+          "fd": 63,
+          "target": "/dev/crystalhd"
+        }
+      ],
+      "same_app": {
+        "pid": 1187746,
+        "start_ticks": 40588368,
+        "uid": 1000,
+        "executable_device": 2049,
+        "executable_inode": 11290331
+      }
+    },
+    {
+      "source_case": "bff",
+      "info": {
+        "Player.Filenameandpath": "/fixture-bff.mp4",
+        "Player.Process(deintmethod)": "vaapi-bob",
+        "Player.Process(pixformat)": "vaapi",
+        "Player.Process(videodecoder)": "ff-h264-vaapi",
+        "System.ScreenHeight": "720",
+        "System.ScreenWidth": "1280"
+      },
+      "mapped_images": [
+        {
+          "role": "own-va-runtime-dependency",
+          "path": "/usr/lib/x86_64-linux-gnu/libavutil.so.60.26.103",
+          "sha256": "fed22f93458f58ec928be86730b16b4e0469ab78e452059140809074ac3a6750",
+          "device": "08:01",
+          "inode": 11309252
+        },
+        {
+          "role": "own-dil",
+          "path": "/own-lib/libcrystalhd.so.3.6",
+          "sha256": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+          "device": "08:01",
+          "inode": 9311055
+        },
+        {
+          "role": "own-va-runtime-dependency",
+          "path": "/usr/lib/x86_64-linux-gnu/libswscale.so.9.5.103",
+          "sha256": "d6dda313ae03cc73600e73d3842dd48490f50390aaada00c793617370ca594ce",
+          "device": "08:01",
+          "inode": 11309255
+        },
+        {
+          "role": "own-va",
+          "path": "/own-va/crystalhd_drv_video.so",
+          "sha256": "147c142e1bb6a527fcd5826651f8bfcee6e6d9667b01bf3fa9f548493e630c48",
+          "device": "08:01",
+          "inode": 9312715
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libswscale.so.10.1.102",
+          "sha256": "91c0116cd1d5943099464dda1990e89e4190ea75d0dd39105120fe8efe8558fb",
+          "device": "08:01",
+          "inode": 11290757
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libavutil.so.61.1.102",
+          "sha256": "e7382c76a1d06f07fee721b5d1d29100ebacd29e3142ddd98f6826f2726d2bda",
+          "device": "08:01",
+          "inode": 11290762
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libavformat.so.63.1.102",
+          "sha256": "d9aea791e699c00e730ca959c6887795212232d82c58a3bd9be65692f9b52ac4",
+          "device": "08:01",
+          "inode": 11290760
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libavcodec.so.63.1.102",
+          "sha256": "33516c1fb77df3d7a2c05828b7bae61d66ce18e4e0d2da471f6f789a67b5ec7e",
+          "device": "08:01",
+          "inode": 11291646
+        }
+      ],
+      "owned_fds": [
+        {
+          "fd": 62,
+          "target": "/dev/crystalhd"
+        },
+        {
+          "fd": 63,
+          "target": "/dev/crystalhd"
+        }
+      ],
+      "same_app": {
+        "pid": 1187746,
+        "start_ticks": 40588368,
+        "uid": 1000,
+        "executable_device": 2049,
+        "executable_inode": 11290331
+      }
+    }
+  ],
+  "retirements": [
+    {
+      "source_case": "tff",
+      "samples": [
+        {
+          "monotonic_ns": 405890075149328,
+          "boundary": {
+            "module": "3.10.13",
+            "srcversion": "F76E163690F147B91495DDD",
+            "ref": 0,
+            "pin_net": 0,
+            "force": "Y",
+            "session": "N",
+            "power": "on",
+            "aer": {
+              "0000:02:00.0": {
+                "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+                "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+                "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+              },
+              "0000:00:1c.0": {}
+            },
+            "links": {
+              "0000:02:00.0": 66,
+              "0000:00:1c.0": 66
+            },
+            "debug_rows": 85,
+            "debug_sha256": "4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4",
+            "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+            "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+            "video_nodes": []
+          },
+          "owned_decoder_fds": []
+        },
+        {
+          "monotonic_ns": 405890608596045,
+          "boundary": {
+            "module": "3.10.13",
+            "srcversion": "F76E163690F147B91495DDD",
+            "ref": 0,
+            "pin_net": 0,
+            "force": "Y",
+            "session": "N",
+            "power": "on",
+            "aer": {
+              "0000:02:00.0": {
+                "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+                "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+                "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+              },
+              "0000:00:1c.0": {}
+            },
+            "links": {
+              "0000:02:00.0": 66,
+              "0000:00:1c.0": 66
+            },
+            "debug_rows": 85,
+            "debug_sha256": "4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4",
+            "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+            "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+            "video_nodes": []
+          },
+          "owned_decoder_fds": []
+        }
+      ]
+    },
+    {
+      "source_case": "bff",
+      "samples": [
+        {
+          "monotonic_ns": 405894793472177,
+          "boundary": {
+            "module": "3.10.13",
+            "srcversion": "F76E163690F147B91495DDD",
+            "ref": 0,
+            "pin_net": 0,
+            "force": "Y",
+            "session": "N",
+            "power": "on",
+            "aer": {
+              "0000:02:00.0": {
+                "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+                "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+                "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+              },
+              "0000:00:1c.0": {}
+            },
+            "links": {
+              "0000:02:00.0": 66,
+              "0000:00:1c.0": 66
+            },
+            "debug_rows": 85,
+            "debug_sha256": "4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4",
+            "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+            "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+            "video_nodes": []
+          },
+          "owned_decoder_fds": []
+        },
+        {
+          "monotonic_ns": 405895216417376,
+          "boundary": {
+            "module": "3.10.13",
+            "srcversion": "F76E163690F147B91495DDD",
+            "ref": 0,
+            "pin_net": 0,
+            "force": "Y",
+            "session": "N",
+            "power": "on",
+            "aer": {
+              "0000:02:00.0": {
+                "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+                "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+                "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+              },
+              "0000:00:1c.0": {}
+            },
+            "links": {
+              "0000:02:00.0": 66,
+              "0000:00:1c.0": 66
+            },
+            "debug_rows": 85,
+            "debug_sha256": "4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4",
+            "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+            "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+            "video_nodes": []
+          },
+          "owned_decoder_fds": []
+        }
+      ]
+    }
+  ],
+  "source_fixtures": {
+    "tff": {
+      "path": "/home/mache/.cache/crystalhd-single-field-20261015.boremY/h264-tff-1280x720-2s.mp4",
+      "sha256": "847249796f3ff572a82421b0573aa3c5aaa4856b2a6901bb874204466b1409f3",
+      "bytes": 1357134,
+      "independent_probe": "/home/mache/.cache/crystalhd-all-work-20261031/bob-tff-source-ffprobe.json",
+      "probe_sha256": "867759a575d62465b5577571808fb92bb42a55c1eec3f0db8c50b116a802f596",
+      "source_metadata": {
+        "codec": "h264",
+        "geometry": [
+          1280,
+          720
+        ],
+        "packets": 50,
+        "pictures": 50,
+        "source_time_base": "1/90000",
+        "source_PTS_ticks": [
+          0,
+          3600,
+          7200,
+          10800,
+          14400,
+          18000,
+          21600,
+          25200,
+          28800,
+          32400,
+          36000,
+          39600,
+          43200,
+          46800,
+          50400,
+          54000,
+          57600,
+          61200,
+          64800,
+          68400,
+          72000,
+          75600,
+          79200,
+          82800,
+          86400,
+          90000,
+          93600,
+          97200,
+          100800,
+          104400,
+          108000,
+          111600,
+          115200,
+          118800,
+          122400,
+          126000,
+          129600,
+          133200,
+          136800,
+          140400,
+          144000,
+          147600,
+          151200,
+          154800,
+          158400,
+          162000,
+          165600,
+          169200,
+          172800,
+          176400
+        ],
+        "field_order": "tff",
+        "all_50_interlaced_flags_and_parity_verified": true,
+        "nominal_picture_duration": "1/25",
+        "nominal_field_duration": "1/50",
+        "native_or_renderer_PTS_census": "NOT_RUN; source metadata only"
+      }
+    },
+    "bff": {
+      "path": "/home/mache/.cache/crystalhd-single-field-20261015.boremY/h264-bff-1280x720-2s.mp4",
+      "sha256": "ea902de5e02fc530f18fc8597bd476e185fa94f84c4a8ff3d4f94a0789afc779",
+      "bytes": 1341481,
+      "independent_probe": "/home/mache/.cache/crystalhd-all-work-20261031/bob-bff-source-ffprobe.json",
+      "probe_sha256": "23942e4143f11d4e33f67057a8b8431123754cb5d0f9ebd4629a5c61c406ae94",
+      "source_metadata": {
+        "codec": "h264",
+        "geometry": [
+          1280,
+          720
+        ],
+        "packets": 50,
+        "pictures": 50,
+        "source_time_base": "1/90000",
+        "source_PTS_ticks": [
+          0,
+          3600,
+          7200,
+          10800,
+          14400,
+          18000,
+          21600,
+          25200,
+          28800,
+          32400,
+          36000,
+          39600,
+          43200,
+          46800,
+          50400,
+          54000,
+          57600,
+          61200,
+          64800,
+          68400,
+          72000,
+          75600,
+          79200,
+          82800,
+          86400,
+          90000,
+          93600,
+          97200,
+          100800,
+          104400,
+          108000,
+          111600,
+          115200,
+          118800,
+          122400,
+          126000,
+          129600,
+          133200,
+          136800,
+          140400,
+          144000,
+          147600,
+          151200,
+          154800,
+          158400,
+          162000,
+          165600,
+          169200,
+          172800,
+          176400
+        ],
+        "field_order": "bff",
+        "all_50_interlaced_flags_and_parity_verified": true,
+        "nominal_picture_duration": "1/25",
+        "nominal_field_duration": "1/50",
+        "native_or_renderer_PTS_census": "NOT_RUN; source metadata only"
+      }
+    }
+  },
+  "local_inert_observer_tests": 7,
+  "independent_audit": {
+    "schema": 1,
+    "status": "PASS_RETAINED_ORIGINAL_STOCK_BOB_EOF_OPERATION_CENSUS",
+    "runtime_revision": "a7b41702ae6a9a6e0f6c3de3887af5d6f1bd87ca",
+    "replay": {
+      "tff": {
+        "status": "PASS",
+        "errors": [],
+        "event_counts": {
+          "sync_enter": 214,
+          "sync_exit": 214,
+          "context_destroy": 3,
+          "surface_destroy": 25,
+          "submit_bind": 50,
+          "input_sent": 50,
+          "prefeed_sent": 50,
+          "vpp_capture": 100,
+          "vpp_queued": 6,
+          "vpp_start": 6,
+          "output_dequeued": 50,
+          "materialized": 50,
+          "vpp_run": 100,
+          "vpp_commit": 100,
+          "export_enter": 107,
+          "export_exit": 107,
+          "binding_end": 150
+        },
+        "source_binding_stage_counts": {
+          "submit_bind": 50,
+          "input_sent": 50,
+          "output_dequeued": 50,
+          "materialized": 50
+        },
+        "VPP_completion_records": 100,
+        "distinct_VPP_operations": 100,
+        "VPP_completions_per_original": [
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "observer": "actual own crystalhd-vaapi-trace-v4; complete-file sequence guard, frozen per-play byte ranges",
+        "source_or_output_PTS": "NOT_RUN; binding tokens are synthetic identifiers",
+        "unique_field_content_parity_pixels_chroma_and_scanout": "NOT_RUN",
+        "scope": "50 original source bindings and100 completed VPP operations only; operation pairs do not prove two unique source-correct displayed fields."
+      },
+      "bff": {
+        "status": "PASS",
+        "errors": [],
+        "event_counts": {
+          "sync_enter": 214,
+          "sync_exit": 214,
+          "context_destroy": 3,
+          "surface_destroy": 25,
+          "submit_bind": 50,
+          "input_sent": 50,
+          "prefeed_sent": 50,
+          "vpp_capture": 100,
+          "vpp_queued": 4,
+          "vpp_start": 4,
+          "output_dequeued": 50,
+          "materialized": 50,
+          "vpp_run": 100,
+          "vpp_commit": 100,
+          "export_enter": 107,
+          "export_exit": 107,
+          "binding_end": 150
+        },
+        "source_binding_stage_counts": {
+          "submit_bind": 50,
+          "input_sent": 50,
+          "output_dequeued": 50,
+          "materialized": 50
+        },
+        "VPP_completion_records": 100,
+        "distinct_VPP_operations": 100,
+        "VPP_completions_per_original": [
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "observer": "actual own crystalhd-vaapi-trace-v4; complete-file sequence guard, frozen per-play byte ranges",
+        "source_or_output_PTS": "NOT_RUN; binding tokens are synthetic identifiers",
+        "unique_field_content_parity_pixels_chroma_and_scanout": "NOT_RUN",
+        "scope": "50 original source bindings and100 completed VPP operations only; operation pairs do not prove two unique source-correct displayed fields."
+      }
+    },
+    "result_sha256": "5bcaf86fde1a2e7ea7e1cc8d37b25b4317f2391a10c7e21e43808cf017caec16",
+    "field_content_parity_pixels_chroma_outputPTS": "NOT_RUN",
+    "scope": "Two explicit VA Bob original-stock finite EOF plays; source bindings/VPP operations only."
+  },
+  "artifacts": {
+    "result.json": "5bcaf86fde1a2e7ea7e1cc8d37b25b4317f2391a10c7e21e43808cf017caec16",
+    "kodi.stdout": "3942382c763a39101eb54fa7fe330b1adeb2f098a716a0392e8b601500beaea7",
+    "stock-bob-eof.py": "74716c7db9d74bd7868438247957ed5f95ffacf06e38358563416baa34a91b75",
+    "stock-bob-eof-observer.py": "33a82d85aa0a193695446e595b0b63c4996c440ea4260ad5340941066d52c5b6",
+    "test-stock-bob-eof-observer.py": "b390868345b93334241672b5cae1cd61d0184a95469dad211c47ae63bb350c97",
+    "audit-stock-bob-eof.py": "fed9c63b00492c6855c281d61f1f5d757a66bb1f1da578984e58e1c30b896ec4",
+    "frozen-stock-bob-plan.json": "12b9e7c91abeb3b4e2412825c491caf8f1b55cf4e8ddcd98c76692741cd72c6d"
+  },
+  "not_claimed": [
+    "unique field pixels/parity/full chroma",
+    "native/render/output PTS",
+    "per-object GPU import/fence return",
+    "physical scanout/A/V, sustained real time or other hardware"
+  ],
+  "prior_failures": "Original FFmpeg296/300 loop and older Bob/tail/Atom FAILs remain. No external source or binaries modified. Excluded heap subtask not investigated."
+}
