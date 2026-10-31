@@ -14,6 +14,8 @@ The connected physical target is Core 2 Duo T8100 / BCM70015 / Intel 965GM.
 Historical reporter Atom/i386, native ELF32 on an x86_64 kernel, QEMU no-SSE
 and headless graphical sessions retain separate identities. No connected Atom
 or BCM70012 is available to qualify a new current-source hardware result.
+The maintainer selected current equipment only for this continuation; no
+additional physical target is assumed available.
 
 ## Device-free preparation already available
 
@@ -51,6 +53,14 @@ output and completed-source provenance. They are CPU controls. Exact selected
 source/build IDs and flags still belong in each eventual hardware receipt.
 
 ## Ordinary Kodi, VA and CPU Bob
+
+The [selected original-stock Bob receipt](tests/fixtures/issue445/stock-bob-payload-20261031.md)
+now verifies all active Y/U/V bytes of8 selected VPP outputs from4 originals,
+both physical parities across TFF/BFF natural EOF/reopen. Actual requested
+canvases/crops are1280x736; only the1280x720 active prefix is compared. Every
+runtime source was a completed full frame; compact first-field processing is
+covered by CPU controls only. This narrows the remaining pixel gap without
+claiming all-field, source/outputPTS, GPU retirement or displayed cadence.
 
 | Remaining claim | Existing fixture/harness to reuse | Evidence still required |
 | --- | --- | --- |
@@ -136,13 +146,22 @@ excluded subtask. Other source/pixel/lifetime/control work keeps its own scope.
 
 ## Settings translations and accessibility / #400
 
-The optional editor already uses gettext domain `crystalhd-settings` and looks
-under `data_directory()/locale`; English/keyboard labels and the shared CLI
-alternative are delivered. At the audited `9b85e41` baseline there are no
-catalogues or locale install rules. Concrete own-code preparation is catalogue
-extraction/checking, deterministic compilation/installation, locale fallback
-and expanded accessible-name/mnemonic relations. Reviewed language content and
-real assistive-technology use remain separate acceptance.
+The optional editor uses gettext domain `crystalhd-settings` and looks under
+`data_directory()/locale`. Catalogue extraction/checking, deterministic MO
+compilation/installation, locale fallback and accessible-name/mnemonic relations
+are delivered through #600. Reviewed Korean follows through #601: all150
+supported messages are active,0 fuzzy, after independent Codex source-context
+review and10 corrections. No human approval is claimed.
+
+Catalogue/model20 and existing GTK28 checks pass. The source-tree GTK run uses
+English fallback because that source path has no compiled MO. A separate staged
+installed-Korean run loads the actual MO and checks150 active strings,0 unknown
+Pango glyphs, Korean accessible label, true/false/unset/absent canonical save
+states, mnemonic relation/focus and normal worker retirement. Its own-window
+screenshot was visually reviewed for clipping/readability. Local retained
+artifacts are `crystalhd-all-work-20261031/installed-korean-gtk.json` and `.png`.
+Real screen-reader use, other languages/desktops and native-i386 GUI acceptance
+remain separate.
 
 Existing checks use private INI files and can run on the current host:
 
