@@ -9035,9 +9035,20 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
   if (!decode->video_process || !driver->pending_vpp.empty())
     driver->NotifyDecodeWorker();
 #if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
-  if (!decode->video_process && driver->payload_observer &&
-      driver->payload_observer->Retire(fields.context, fields.generation, status))
-    payload_publication.state = driver->payload_observer;
+  if (!decode->video_process) {
+    payload_publication.has_status = true;
+    if (driver->payload_observer) {
+      if (driver->payload_observer->Retire(fields.context, fields.generation, status))
+        payload_publication.state = driver->payload_observer;
+      payload_publication.status = driver->payload_observer->Snapshot(
+          fields.context, fields.generation, status);
+    } else {
+      payload_publication.status.session = driver->trace.session();
+      payload_publication.status.context = fields.context;
+      payload_publication.status.generation = fields.generation;
+      payload_publication.status.retirement_status = status;
+    }
+  }
 #endif
   return status;
 }

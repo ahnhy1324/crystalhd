@@ -14,6 +14,18 @@ passed 57 checks and 21 independent-reader methods. These revised retirement
 publication controls and a new case require fresh root execution; earlier PASS
 counts do not establish the new payload evidence.
 
+Case `stock-bob-payload-02` also remains FAIL and its plan/results are preserved:
+normal EOF, operation counts, exit and boundaries passed, but no payload file
+was published. The OWN observer incorrectly required both physical surfaces and
+requested rectangles to be exactly 720 rows. Production supports coded/VA
+padding with a smaller active prefix. The existing fixture receipt explicitly
+documents coded736/visible720; cached original Kodi21.3 `VAAPI.cpp` also derives
+surface and equal VPP rectangle heights from `coded_height`. That cached client
+version is supporting source evidence, not proof of case02's actual dimensions;
+the frozen raw trace has no geometry fields. This revision admits only bounded
+equal rectangles and adds caller-side rejection receipts, so missing publication
+can be diagnosed without another unchanged media retry.
+
 ## Build and controls (root executor only)
 
 From the assigned source tree, with the qualified compiler/dependency
@@ -53,10 +65,13 @@ same source/dependency ABI as the normal backend.
 `EndCpuWrite`/`EndCpuRead`. The target is under the already acquired write/fence
 lease and the source under its already acquired read lease. The hook adds no
 access acquisition, wait, firmware/API call, pixel mutation or new scheduling
-decision. Geometry is deliberately limited to origin-aligned 1280x720 NV12 Bob
-with equal input/output sizes and physical immutable canonical source planes.
-Borrowed direct pictures, centered sidecars, scaling, cropping, BGRA and other
-cases produce no qualifying checkpoint.
+decision. Geometry is deliberately limited to NV12 Bob with width1280, physical
+canonical/target heights720..768 divisible by four, and equal origin-aligned
+source/output rectangles within those physical bounds. Their requested height
+is retained exactly and must also be720..768 divisible by four. The observation
+is only the top active1280x720 output prefix and its source field rows. Borrowed
+direct pictures, centered sidecars, unequal rectangles, nonzero offsets,
+horizontal scaling, BGRA and other cases produce no qualifying checkpoint.
 
 Eight preallocated slots hold two source parents, both physical parities, in
 each of two `(context,generation)` decoder lifetimes. Their source/target byte
@@ -64,8 +79,13 @@ arrays reserve 22,118,400 bytes in total per diagnostic VA driver instance.
 Selection takes the first two supported canonical source bindings per lifetime;
 a failed selection is retained and is never replaced by a later retry. Source
 and target rows are packed independently; source pitches, physical dimensions,
-logical rectangles and original plane addresses remain in metadata. Pitch tails
-are excluded. Compact first fields retain half-height physical storage and the
+logical rectangles and original plane addresses remain in metadata. New
+`source_payload`/`target_payload` fields describe the separately packed active
+dimensions:1280x720 source/full and target,1280x360 source/compact. Coded bottom
+padding and pitch tails are excluded. At equal requested heights each plane's
+Bob mapping is `floor(row/2)`, so the first720 output Y rows and360 UV rows depend
+only on that captured active source prefix even when the requested canvas is736
+rows. Compact first fields retain half-height physical storage and the
 validated `H264FirstField` hardware flag provenance, separately from the original
 logical source binding. Their samples are additionally compared with the same
 parent's later completed full source by the independent reader.
@@ -92,6 +112,25 @@ retirement cannot publish. Sealing blocks later selection/bookkeeping writes,
 and an atomic once flag plus exclusive file creation prevents repeated output.
 The destructor performs no publication. Partial/old files are never overwritten.
 
+Each ordinary decoder retirement also snapshots a bounded
+`crystalhd-vpp-payload-status-v1` record under the existing mutex, then emits it
+from the same after-unlock caller guard. It records observer/directory status,
+the first candidate's actual physical dimensions and rectangles, selection
+rejections, and at most eight slot statuses. Worker-written fields are read only
+after the mutex-owned slot retirement flag; unknown fields appear as null.
+This slot flag describes OWN conversion bookkeeping, not external ownership.
+The operator preserves these records and includes their summary in a missing
+manifest failure. No status record authorizes a retry or substitutes for bytes.
+
+Selection rejection bits are:1 directory unavailable,2 non-Bob,4 unavailable
+surface,8 binding mismatch,16 format,32 borrowed/centered source,64 physical
+geometry,128 rectangles,256 storage identity/planes,512 parity,1024 fixed quota,
+2048 already selected. Quota rejection after the selected parents is expected;
+the first-candidate mask and failed slot statuses distinguish actual failure.
+Copy rejection reasons are1 geometry/target identity,2 compact provenance,
+3 full-source allocation identity,4 plane/pitch validation;0 means no recorded
+copy rejection only when the slot has retired. No worker performs diagnostic I/O.
+
 Diagnostic `Surface` serials and advancing storage epochs identify OWN storage
 views, including CPU/GBM/dumb/import installation, moved-storage adoption and
 revocation. Borrowed `VppPixelView` metadata carries the pinned allocation's
@@ -116,14 +155,14 @@ accepted only during preparation, and an existing plan path is rejected:
 
 ```sh
 python3 -B tests/vaapi-vpp-payload-stock.py --prepare-plan \
-  --plan /home/mache/.cache/crystalhd-all-work-20261031/frozen-stock-bob-payload-plan-02.json \
-  --case stock-bob-payload-02 --own-source /ABSOLUTE/REVIEWED/OWN/TREE \
+  --plan /home/mache/.cache/crystalhd-all-work-20261031/frozen-stock-bob-payload-plan-03.json \
+  --case stock-bob-payload-03 --own-source /ABSOLUTE/REVIEWED/OWN/TREE \
   --own-revision FULL_40_HEX_OWN_COMMIT \
   --tff-probe /ABSOLUTE/FROZEN/TFF-FFPROBE.json \
   --bff-probe /ABSOLUTE/FROZEN/BFF-FFPROBE.json
 python3 -B tests/vaapi-vpp-payload-stock.py --execute \
-  --plan /home/mache/.cache/crystalhd-all-work-20261031/frozen-stock-bob-payload-plan-02.json \
-  --case stock-bob-payload-02
+  --plan /home/mache/.cache/crystalhd-all-work-20261031/frozen-stock-bob-payload-plan-03.json \
+  --case stock-bob-payload-03
 ```
 
 This is one play per frozen TFF/BFF source, with identity-only initial pause,
@@ -200,7 +239,8 @@ a CPU download. This protocol requires enum22 and its actual reported route.
 A PASS establishes the selected OWN completed CPU payloads, both physical
 parities and full active chroma, plus natural EOF/count evidence in this finite
 diagnostic run. It establishes neither all one hundred output fields' pixels
-nor their chronological presentation. Source/output PTS, Driver destruction,
+nor their chronological presentation, coded bottom padding or pitch tails.
+Source/output PTS, Driver destruction,
 external fd/import release, GPU fence/scanout lifetime and displayed pixels
 remain NOT_RUN.
 Instrumentation overhead makes this unsuitable for a performance claim. Existing

@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Offline, source-row model for the private completed-VPP payload observer.
 
-This reader accepts only eight full-canvas 1280x720 NV12 Bob checkpoints.  It
+This reader accepts eight origin-aligned NV12 Bob checkpoints, comparing the
+1280x720 active prefix within bounded 720..768-row physical/crop canvases.  It
 compares CPU payloads with independent row arithmetic and joins OWN trace
 bindings and successful retirement of both selected decoder contexts.  It does
 not infer source PTS, presentation order, Driver destruction, or GPU lifetime.
@@ -60,15 +61,20 @@ def filename(value):
     return value
 
 
-def geometry(value, label, expected_height):
+def geometry(value, label, expected_height=None):
     value = object_value(value, label)
     require(all(key in value for key in GEOMETRY_KEYS),
             label + " is missing geometry fields")
     for key in ("surface_serial", "storage_epoch", "width", "height"):
         integer(value[key], label + "." + key, 1)
-    require(value["fourcc"] == "NV12" and value["width"] == WIDTH and
-            value["height"] == expected_height,
-            label + " must be physical 1280x" + str(expected_height) + " NV12")
+    require(value["fourcc"] == "NV12" and value["width"] == WIDTH,
+            label + " must be physical 1280-wide NV12")
+    if expected_height is None:
+        require(HEIGHT <= value["height"] <= 768 and value["height"] % 4 == 0,
+                label + " physical height must be divisible by four in 720..768")
+    else:
+        require(value["height"] == expected_height,
+                label + " must be physical 1280x" + str(expected_height) + " NV12")
     for key in ("pitch", "plane_address"):
         pair = value[key]
         require(type(pair) is list and len(pair) == 2,
@@ -76,7 +82,7 @@ def geometry(value, label, expected_height):
         for item in pair:
             integer(item, label + "." + key, WIDTH if key == "pitch" else 1)
     extents = []
-    for plane, rows in enumerate((expected_height, expected_height // 2)):
+    for plane, rows in enumerate((value["height"], value["height"] // 2)):
         extent = (rows - 1) * value["pitch"][plane] + WIDTH
         begin = value["plane_address"][plane]
         require(begin + extent < 2 ** 64,
@@ -90,8 +96,17 @@ def geometry(value, label, expected_height):
                  for key in GEOMETRY_KEYS)
 
 
-def packed_bytes(geom):
-    return geom["width"] * geom["height"] * 3 // 2
+def payload_geometry(value, label, expected_height, physical):
+    require(type(value) is list and len(value) == 2 and
+            all(type(item) is int for item in value) and
+            value == [WIDTH, expected_height] and
+            expected_height <= physical["height"],
+            label + " must describe the bounded active payload within physical storage")
+    return value
+
+
+def packed_bytes(payload):
+    return payload[0] * payload[1] * 3 // 2
 
 
 def trace_index(trace_rows, pid, instance):
@@ -177,17 +192,20 @@ def compare_model(slot, source, target):
     """Use physical source parity independently for Y and interleaved UV."""
     compact = slot["source_is_field"]
     parity = slot["requested_parity"]
-    physical_height = slot["source"]["height"]
+    packed_source_height = slot["source_payload"][1]
+    packed_target_height = slot["target_payload"][1]
     source_offset, target_offset = 0, 0
-    for plane, logical_rows in (("Y", HEIGHT), ("UV", HEIGHT // 2)):
-        physical_rows = physical_height if plane == "Y" else physical_height // 2
-        target_rows = logical_rows
+    for plane, divisor in (("Y", 1), ("UV", 2)):
+        logical_rows = slot["source_crop"][3] // divisor
+        logical_target_rows = slot["target_crop"][3] // divisor
+        captured_source_rows = packed_source_height // divisor
+        target_rows = packed_target_height // divisor
         for output_row in range(target_rows):
             # Select within this plane's physical field, then convert to the
             # compact storage row only when the captured source is a field.
-            field_row = output_row * (logical_rows // 2) // target_rows
+            field_row = output_row * (logical_rows // 2) // logical_target_rows
             selected_row = field_row if compact else field_row * 2 + parity
-            require(selected_row < physical_rows, "source row exceeds physical plane")
+            require(selected_row < captured_source_rows, "source row exceeds captured payload plane")
             expected = source[source_offset + selected_row * WIDTH:
                               source_offset + (selected_row + 1) * WIDTH]
             actual = target[target_offset + output_row * WIDTH:
@@ -198,7 +216,7 @@ def compare_model(slot, source, target):
                 component = plane if plane == "Y" else ("U" if column % 2 == 0 else "V")
                 raise ValueError("operation %d %s mismatch at row %d byte %d" %
                                  (slot["operation"], component, output_row, column))
-        source_offset += physical_rows * WIDTH
+        source_offset += captured_source_rows * WIDTH
         target_offset += target_rows * WIDTH
 
 
@@ -284,12 +302,23 @@ def check_document(doc, blobs, trace_rows):
             rectangle = slot.get(crop)
             require(type(rectangle) is list and len(rectangle) == 4 and
                     all(type(value) is int for value in rectangle) and
-                    rectangle == [0, 0, WIDTH, HEIGHT],
-                    "only full origin-aligned 1280x720 crops are supported")
-        effective = geometry(slot.get("source"), "source", HEIGHT // 2 if compact else HEIGHT)
-        canonical = geometry(slot.get("source_canonical"), "source_canonical", HEIGHT)
-        target = geometry(slot.get("target"), "target", HEIGHT)
-        target_canonical = geometry(slot.get("target_canonical"), "target_canonical", HEIGHT)
+                    rectangle[:3] == [0, 0, WIDTH] and
+                    HEIGHT <= rectangle[3] <= 768 and rectangle[3] % 4 == 0,
+                    "only origin-aligned 1280-wide crops with height divisible by four in 720..768 are supported")
+        require(slot["source_crop"] == slot["target_crop"],
+                "source and target crops must have equal heights")
+        canonical = geometry(slot.get("source_canonical"), "source_canonical")
+        target = geometry(slot.get("target"), "target")
+        effective = geometry(slot.get("source"), "source",
+                             slot["source_canonical"]["height"] // (2 if compact else 1))
+        target_canonical = geometry(slot.get("target_canonical"), "target_canonical",
+                                    slot["target"]["height"])
+        require(slot["source_crop"][3] <= slot["source_canonical"]["height"] and
+                slot["target_crop"][3] <= slot["target"]["height"],
+                "crop exceeds physical canonical storage")
+        payload_geometry(slot.get("source_payload"), "source_payload",
+                         HEIGHT // 2 if compact else HEIGHT, slot["source"])
+        payload_geometry(slot.get("target_payload"), "target_payload", HEIGHT, slot["target"])
         require(target == target_canonical, "target storage epoch/view changed")
         require(slot["target"]["surface_serial"] not in
                 (slot["source"]["surface_serial"], slot["source_canonical"]["surface_serial"]),
@@ -318,7 +347,7 @@ def check_document(doc, blobs, trace_rows):
             files.add(name)
             blob = blobs.get(name)
             require(type(blob) is bytes, "missing byte payload: " + name)
-            expected_size = packed_bytes(slot[kind])
+            expected_size = packed_bytes(slot[kind + "_payload"])
             declared = integer(slot.get(kind + "_bytes"), kind + "_bytes", 1)
             require(declared == expected_size and len(blob) == declared,
                     kind + " packed payload length mismatch")
@@ -350,7 +379,8 @@ def check_document(doc, blobs, trace_rows):
         "schema": SCHEMA, "pid": pid, "driver_instance": instance,
         "slots": QUOTA, "source_parents": 4, "physical_parities_per_parent": 2,
         "compared_target_bytes": sum(slot["target_bytes"] for slot in slots),
-        "scope": "All active Y/U/V bytes match independently selected OWN source rows; successful raw OWN bindings and selected decoder-context retirements joined.",
+        "scope": "All Y/U/V bytes of each 1280x720 active target prefix match independently selected OWN source rows within equal bounded crop canvases; successful raw OWN bindings and selected decoder-context retirements joined.",
+        "coded_padding_and_pitch_tails": "EXCLUDED_FROM_PAYLOAD_COMPARISON",
         "publication": publication,
         "trace_scope": "Contiguous frozen selected-session prefix through both selected decoder-context retirements.",
         "trace_records_checked": trace_count,

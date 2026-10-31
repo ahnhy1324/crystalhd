@@ -140,7 +140,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     modes=p.add_mutually_exclusive_group()
     modes.add_argument('--execute',action='store_true');modes.add_argument('--prepare-plan',action='store_true')
-    p.add_argument('--plan',type=Path,required=True);p.add_argument('--case',default='stock-bob-payload-02')
+    p.add_argument('--plan',type=Path,required=True);p.add_argument('--case',default='stock-bob-payload-03')
     p.add_argument('--own-source',type=Path);p.add_argument('--own-revision');p.add_argument('--tff-probe',type=Path);p.add_argument('--bff-probe',type=Path)
     a=p.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+',a.case):p.error('fresh simple case name required')
@@ -197,6 +197,7 @@ def main():
             'payload_observer':{'schema':'crystalhd-vpp-payload-v1','quota':8,
                 'source_parents_per_stream':2,'physical_parities_per_parent':2,
                 'publication':'selected-decoder-context-retirement',
+                'active_payload':[1280,720],'maximum_physical_height':768,'equal_origin_crops':True,
                 'normal_driver_replacement':False,'performance_claim':False},
             'missing_observer':'Source/output PTS,GPU lifetime,chronological presentation,scanout NOT_RUN'})
         print('FROZEN_FILE_AND_INDEPENDENT_SOURCE_METADATA '+str(a.plan));return 0
@@ -209,6 +210,7 @@ def main():
     assert plan['payload_observer']=={'schema':'crystalhd-vpp-payload-v1','quota':8,
         'source_parents_per_stream':2,'physical_parities_per_parent':2,
         'publication':'selected-decoder-context-retirement',
+        'active_payload':[1280,720],'maximum_physical_height':768,'equal_origin_crops':True,
         'normal_driver_replacement':False,'performance_claim':False}
     G.SOURCE=Path(plan['source_directory']);G.REVISION=plan['revision'];G.VA=G.SOURCE/'filters/vaapi/payload-observer/crystalhd_drv_video.so';G.DIL=G.SOURCE/'linux_lib/libcrystalhd/libcrystalhd.so.3.6'
     assert subprocess.check_output(['git','-C',str(G.SOURCE),'rev-parse','HEAD'],text=True).strip()==G.REVISION
@@ -223,6 +225,7 @@ def main():
         'pins':plan['pins'],'source_refs':plan['source_refs'],'fixtures':fixtures,'identity_checks':[],'retirements':[],
         'intervals':{},'source_census':{},'thermal_observations':[],'errors':[],'controls_status':'NOT_RUN',
         'application_exit':None,'live_resource_handoff':None,'completed_own_payload':'NOT_RUN',
+        'payload_status_receipts':[],
         'source_outputPTS_gpu_lifetime_chronological_presentation_scanout':'NOT_RUN'}
     boundary=G.load('bob_boundary',G.BOUNDARY);before=None;kodi=None;kid=None;pidfd=None;weston=None;runtime=None;endpoint=None;udp=None;files=[]
     since=time.strftime('%Y-%m-%d %H:%M:%S UTC',time.gmtime());due=0
@@ -374,6 +377,12 @@ def main():
         try:
             if live:raise RuntimeError('operation log incomplete while owned media lives')
             raw=(case/'kodi.stdout').read_bytes();report['raw_stdout_sha256']=R.sha(raw);report['raw_stdout_bytes']=len(raw)
+            for line in raw.splitlines():
+                if line.startswith(b'{"schema":"crystalhd-vpp-payload-status-v1"'):
+                    receipt=json.loads(line,object_pairs_hook=P.strict_object)
+                    assert receipt['pid']==kid['pid'] and receipt['after_driver_unlock'] is True
+                    report['payload_status_receipts'].append(receipt)
+            assert len(report['payload_status_receipts'])<=16,'bounded diagnostic retirement receipt count exceeded'
             rows=R.parse(raw,kid['pid'])
             if all('end' in report['intervals'].get(order,{}) for order in ('tff','bff')):
                 R.guard_intervals(rows,report['intervals'],len(raw))
@@ -385,7 +394,12 @@ def main():
                 document=json.loads(P.read_regular(path,256*1024),object_pairs_hook=P.strict_object)
                 assert document['schema']=='crystalhd-vpp-payload-v1' and document['pid']==kid['pid']
                 if document['slots']:manifests.append((path,document))
-            assert len(manifests)==1,'exactly one selected diagnostic VA session required'
+            summary=[{key:row[key] for key in ('driver_instance','context','generation',
+                'observer_available','directory_open','directory_errno','candidates','rejected',
+                'reject_mask','selected_slots','retired_slots','committed_slots','sealed','first_candidate')}
+                for row in report['payload_status_receipts']]
+            assert len(manifests)==1,('exactly one selected diagnostic VA session required; '
+                'caller-side diagnostic receipts='+json.dumps(summary,separators=(',',':')))
             manifest,document=manifests[0];blobs={};frozen_files={str(manifest):G.digest(manifest)}
             for slot in document['slots']:
                 for kind in ('source','target'):

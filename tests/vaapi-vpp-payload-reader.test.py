@@ -99,6 +99,8 @@ def fixture():
                         "source_surface": original["surface"], "source_owner": original["owner"],
                         "requested_parity": parity, "source_is_field": compact,
                         "source_crop": [0, 0, W, H], "target_crop": [0, 0, W, H],
+                        "source_payload": [W, H // 2 if compact else H],
+                        "target_payload": [W, H],
                         "source": source, "target": target,
                         "source_canonical": copy.deepcopy(canonical),
                         "target_canonical": copy.deepcopy(target), "compact_first_field": first,
@@ -159,6 +161,86 @@ class PayloadReaderControls(unittest.TestCase):
         # An optional complete Driver teardown does not broaden the claim.
         trace.append(trace_row(len(trace) + 1, "session_destroy"))
         self.assertEqual(reader.check_document(doc, blobs, trace)["driver_destruction"], "NOT_RUN")
+
+    def test_padded_736_backing_captures_only_active_prefix_for_both_crop_shapes(self):
+        def pack_poisoned_backing(active, physical, payload_height):
+            # Construct real pitched/coded buffers whose uncaptured bytes are
+            # poison. Pack active rows from those physical buffers independently
+            # of the reader. Neither padding bytes nor coded tail rows enter
+            # the source-row model or its declared payload lengths.
+            pitches, height = physical["pitch"], physical["height"]
+            uv_offset = pitches[0] * height
+            backing = bytearray(b"\xe5") * (uv_offset + pitches[1] * (height // 2))
+            packed_offset = 0
+            for plane, rows in ((0, payload_height), (1, payload_height // 2)):
+                base = 0 if plane == 0 else uv_offset
+                for row in range(rows):
+                    begin = base + row * pitches[plane]
+                    backing[begin:begin + W] = active[packed_offset:packed_offset + W]
+                    packed_offset += W
+            self.assertEqual(backing[W:pitches[0]], b"\xe5" * (pitches[0] - W))
+            self.assertEqual(backing[payload_height * pitches[0]:uv_offset],
+                             b"\xe5" * ((height - payload_height) * pitches[0]))
+            physical["storage_bytes"] = len(backing)
+            return b"".join(bytes(backing[(0 if plane == 0 else uv_offset) + row * pitches[plane]:
+                                         (0 if plane == 0 else uv_offset) + row * pitches[plane] + W])
+                            for plane, rows in ((0, payload_height), (1, payload_height // 2))
+                            for row in range(rows))
+        for crop_height in (720, 736):
+            doc, blobs, trace = self.fresh()
+            for slot in doc["slots"]:
+                for name in ("source_canonical", "target", "target_canonical"):
+                    old = slot[name]
+                    slot[name] = geom(old["surface_serial"], 736, old["storage_epoch"])
+                old = slot["source"]
+                slot["source"] = geom(old["surface_serial"],
+                                      368 if slot["source_is_field"] else 736,
+                                      old["storage_epoch"])
+                slot["source_crop"][3] = slot["target_crop"][3] = crop_height
+                for kind in ("source", "target"):
+                    name = slot[kind + "_file"]
+                    blobs[name] = pack_poisoned_backing(blobs[name], slot[kind],
+                                                        slot[kind + "_payload"][1])
+            with self.subTest(crop_height=crop_height):
+                result = reader.check_document(doc, blobs, trace)
+                self.assertEqual(result["compared_target_bytes"], 8 * W * H * 3 // 2)
+                self.assertEqual(result["coded_padding_and_pitch_tails"],
+                                 "EXCLUDED_FROM_PAYLOAD_COMPARISON")
+
+    def test_active_payload_and_coded_geometry_cannot_be_swapped(self):
+        for kind in ("source", "target"):
+            self.reject(lambda doc, blobs, trace, kind=kind:
+                        doc["slots"][0].__setitem__(kind + "_payload", [W, 736]), "payload")
+        self.reject(lambda doc, blobs, trace:
+                    doc["slots"][0].__setitem__("source_payload", [W, H]), "payload")
+        self.reject(lambda doc, blobs, trace:
+                    doc["slots"][0].__setitem__("source_payload", [W - 2, H // 2]), "payload")
+        self.reject(lambda doc, blobs, trace:
+                    doc["slots"][0].__setitem__("target_payload", [W, True]), "payload")
+        self.reject(lambda doc, blobs, trace:
+                    doc["slots"][0]["source_canonical"].__setitem__("height", 722), "physical height")
+        self.reject(lambda doc, blobs, trace:
+                    doc["slots"][0]["target"].__setitem__("height", 772), "physical height")
+        def physical_cannot_shrink_to_active(doc, blobs, trace):
+            slot = doc["slots"][0]
+            old = slot["source_canonical"]
+            slot["source_canonical"] = geom(old["surface_serial"], 736, old["storage_epoch"])
+            # The effective compact view is still physical360; a canonical736
+            # backing requires a physical368 compact allocation even though
+            # its copied active payload has only360 rows.
+        self.reject(physical_cannot_shrink_to_active, "physical 1280x368")
+
+    def test_crops_must_be_equal_and_fit_bounded_physical_storage(self):
+        self.reject(lambda doc, blobs, trace:
+                    doc["slots"][0].__setitem__("source_crop", [0, 0, W, 736]), "equal heights")
+        def both_too_tall(doc, blobs, trace):
+            doc["slots"][0]["source_crop"][3] = 736
+            doc["slots"][0]["target_crop"][3] = 736
+        self.reject(both_too_tall, "crop exceeds physical")
+        self.reject(lambda doc, blobs, trace:
+                    doc["slots"][0].__setitem__("source_crop", [0, 0, W, 722]), "divisible by four")
+        self.reject(lambda doc, blobs, trace:
+                    doc["slots"][0].__setitem__("target_crop", [0, 0, W, 772]), "720..768")
 
     def test_publication_receipt_cannot_be_missing_partial_failed_or_unfrozen(self):
         self.reject(lambda doc, blobs, trace: doc.pop("publication"), "publication")

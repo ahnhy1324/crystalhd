@@ -19,11 +19,13 @@ void FillPayloadSource(Surface *source) {
             static_cast<uint8_t>(row * 29 + column * 7 + plane * 83);
   }
 }
-void CheckPayload(bool compact, unsigned parity, bool current, bool fail_end) {
+void CheckPayload(bool compact, unsigned parity, bool current, bool fail_end,
+                    unsigned physical_height = 720, unsigned crop_height = 720) {
   using namespace crystalhd_test_vpp_payload;
   Surface source, target, field;
-  Require(source.AllocateCpuNv12(kWidth, kHeight) &&
-          target.AllocateCpuNv12(kWidth, kHeight), "payload CPU allocation");
+  Require(source.AllocateCpuNv12(kWidth, physical_height) &&
+          target.AllocateCpuNv12(kWidth, physical_height), "payload CPU allocation");
+  const VARectangle crop{0, 0, kWidth, static_cast<uint16_t>(crop_height)};
   source.id = 1; target.id = 2;
   source.ready = true;
   source.expected_timestamp = source.frame_timestamp = 100;
@@ -40,7 +42,7 @@ void CheckPayload(bool compact, unsigned parity, bool current, bool fail_end) {
   bob.field = static_cast<crystalhd_vpp_bob::FieldParity>(parity);
   Surface *input = &source;
   if (compact) {
-    Require(field.AllocateCpuNv12(kWidth, kHeight / 2), "compact CPU allocation");
+    Require(field.AllocateCpuNv12(kWidth, physical_height / 2), "compact CPU allocation");
     field.ready = true;
     field.expected_timestamp = field.frame_timestamp = 100;
     field.payload_observer_stamp.first = {true, parity == 1, parity == 1,
@@ -60,17 +62,28 @@ void CheckPayload(bool compact, unsigned parity, bool current, bool fail_end) {
   std::vector<uint8_t> staging;
   VAStatus status;
   {
-    Scope scope(state.get(), binding, source, source, target, Full(source),
-                Full(target), bob, uint64_t{6});
+    Scope scope(state.get(), binding, source, source, target, crop, crop, bob, uint64_t{6});
     status = ProcessVpp(&scaler.value, &staging, input, &target,
-                        Full(source), Full(target), false, bob, compact);
+                        crop, crop, false, bob, compact);
   }
   fail_payload_target_end = false;
   source.object_fds.clear(); target.object_fds.clear(); field.object_fds.clear();
   Slot &slot = state->slots[parity];
   Require(slot.selected && slot.copy_ok &&
-          slot.source_bytes == size_t{kWidth} * input->height * 3 / 2 &&
+          slot.source_bytes == size_t{kWidth} * (compact ? kHeight / 2 : kHeight) * 3 / 2 &&
           slot.target_bytes == kPlaneBytes, "bounded active-row snapshots captured");
+  const unsigned active_source_rows = compact ? kHeight / 2 : kHeight;
+  Require(slot.source.height == input->height && slot.target.height == physical_height &&
+          slot.source_crop[3] == static_cast<int>(crop_height) &&
+          slot.target_crop[3] == static_cast<int>(crop_height) &&
+          slot.source_payload[1] == active_source_rows && slot.target_payload[1] == kHeight,
+          "physical coded geometry, requested crop and active payload stay distinct");
+  Require(slot.source_pixels[size_t{kWidth} * active_source_rows - 1] ==
+              input->planes[0][size_t{active_source_rows - 1} * input->pitch[0] + kWidth - 1] &&
+          slot.source_pixels[size_t{kWidth} * active_source_rows] == input->planes[1][0] &&
+          slot.target_pixels[kPlaneBytes - 1] ==
+              target.planes[1][size_t{kHeight / 2 - 1} * target.pitch[1] + kWidth - 1],
+          "packed payload starts UV at active boundary and omits coded rows");
   Require(slot.source.serial == input->payload_observer_stamp.serial &&
           slot.target.serial == target.payload_observer_stamp.serial,
           "actual source/target storage views captured");
@@ -80,8 +93,8 @@ void CheckPayload(bool compact, unsigned parity, bool current, bool fail_end) {
           "only successful current completion publishes tentative snapshot");
   const uint64_t first_operation = slot.operation;
   {
-    Scope retry(state.get(), binding, source, source, target, Full(source),
-                Full(target), bob, uint64_t{8});
+    binding.operation = 8;
+    Scope retry(state.get(), binding, source, source, target, crop, crop, bob, uint64_t{8});
     Require(active == nullptr, "selected slot cannot be retried or overwritten");
   }
   Require(slot.operation == first_operation, "original selection preserved");
@@ -89,6 +102,34 @@ void CheckPayload(bool compact, unsigned parity, bool current, bool fail_end) {
   Require(source.AllocateCpuNv12(kWidth, kHeight) &&
           source.payload_observer_stamp.epoch == old_epoch + 1,
           "storage epoch advances even for identical replacement geometry");
+}
+
+void CheckRejectedPaddingScope() {
+  using namespace crystalhd_test_vpp_payload;
+  Surface source, target;
+  Require(source.AllocateCpuNv12(kWidth, 736) && target.AllocateCpuNv12(kWidth, 736),
+          "coded scope rejection allocations");
+  source.id = 1; target.id = 2;
+  crystalhd_vaapi_trace::Fields binding;
+  binding.context = 3; binding.generation = 4; binding.token = 5;
+  binding.decode_identity = 6; binding.submission_ordinal = 7;
+  binding.surface = 2; binding.owner = 2; binding.operation = 8;
+  VppDeinterlace bob; bob.bob = true;
+  const VARectangle full{0, 0, kWidth, 736};
+  for (const VARectangle output : {VARectangle{0, 0, kWidth, 720},
+                                  VARectangle{0, 0, kWidth, 740},
+                                  VARectangle{0, 4, kWidth, 736}}) {
+    std::unique_ptr<State> state(new State(7));
+    {
+      Scope scope(state.get(), binding, source, source, target, full, output, bob, uint64_t{8});
+      Require(active == nullptr, "unequal, overflowing or nonorigin crop is outside observer scope");
+    }
+    const Status status = state->Snapshot(3, 4, 0);
+    Require(status.candidates == 1 && status.rejected == 1 &&
+            (status.first.reject_mask & 128) != 0 &&
+            status.first.source.height == 736 && status.first.source_crop[3] == 736 &&
+            !status.sealed, "rejected scope retains bounded reason and physical geometry");
+  }
 }
 void CheckCallerRetirementPublication() {
   using namespace crystalhd_test_vpp_payload;
@@ -207,10 +248,15 @@ int main() {
     for (unsigned parity = 0; parity != 2; ++parity) {
       CheckPayload(false, parity, true, false);
       CheckPayload(true, parity, true, false);
+      CheckPayload(false, parity, true, false, 736, 736);
+      CheckPayload(true, parity, true, false, 736, 736);
+      CheckPayload(false, parity, true, false, 736, 720);
+      CheckPayload(true, parity, true, false, 736, 720);
     }
     CheckPayload(false, 0, false, false);
     CheckPayload(false, 0, true, true);
     CheckCallerRetirementPublication();
+    CheckRejectedPaddingScope();
     Require(crystalhd_test_vpp_payload::active == nullptr,
             "scope does not retain payload state after conversion");
     std::printf("VA private payload hook CPU controls: %u checks PASS\n", checks);
