@@ -40,6 +40,19 @@ USERSPACE = frozenset({
     "tests/gst-stage-trace.c", "tests/gst-stage-trace.sh",
     "tests/vaapi-seek.test.py", "tests/vaapi-trace.test.py",
 })
+# Reviewed inputs of the standalone CPU check and its isolated sanitizer build.
+# These have no decoder/DIL/Xv build dependency. Keep even private headers and
+# the component Makefile out of this first list: build/dependency changes, X11
+# integration, additions and every unknown path still take the full route.
+# This is an exact file list, never a directory or extension exemption.
+PACKED = frozenset({
+    "filters/gst/packed-upscale/gstcrystalhdpackedscale.c",
+    "filters/gst/packed-upscale/packed-scale-engine.c",
+    "filters/gst/packed-upscale/packed-scale-test.c",
+    "filters/gst/packed-upscale/check.sh",
+    "tests/packed-sanitizer-loader.test.py",
+})
+OUTPUTS = ("heavy", "packed", "kernel", "contracts")
 
 
 def git(root, *args):
@@ -60,6 +73,7 @@ def classify(root, base, head):
         raise ValueError("incomplete raw Git diff")
     heavy = not chunks
     kernel = not chunks
+    packed_changed = False
     contracts = False
     files = []
     for record, path in zip(chunks[::2], chunks[1::2]):
@@ -79,39 +93,57 @@ def classify(root, base, head):
         elif plain and name in USERSPACE:
             lane = "userspace"
             heavy = True
+        elif plain and name in PACKED:
+            lane = "packed"
+            packed_changed = True
+            # The inventory checks the wrapper's read-only observations too.
+            contracts = True
         else:
             heavy = True
             kernel = True
         files.append({"path": name, "status": status, "lane": lane,
                       "old_mode": old_mode[1:], "new_mode": new_mode})
-    return {"heavy": heavy, "kernel": kernel, "contracts": contracts,
+    # Full userspace jobs already run both packed checks. Select the standalone
+    # job only for packed changes with optional reviewed prose/contracts.
+    packed = packed_changed and not heavy
+    return {"heavy": heavy, "packed": packed, "kernel": kernel, "contracts": contracts,
             "reason": ("full required" if kernel else "reviewed userspace only"
-                       if heavy else "reviewed documentation only"),
+                       if heavy else "reviewed packed component only" if packed
+                       else "reviewed documentation only"),
             "base": base, "head": head, "files": files}
 
 
 def select(root, event, base, head):
     if event == "pull_request":
         return classify(root, base, head)
-    return {"heavy": True, "kernel": True, "contracts": True, "files": [],
+    return {"heavy": True, "packed": False, "kernel": True, "contracts": True, "files": [],
             "reason": "full master/tag/manual route", "base": base, "head": head}
 
 
 def gate(needs):
-    expected = {"classify", "docs", "build", "upstream-kernel-api"}
-    if set(needs) != expected:
+    expected = {"classify", "docs", "build", "packed", "upstream-kernel-api"}
+    if not isinstance(needs, dict) or set(needs) != expected:
         raise ValueError("missing or unknown final-gate dependency")
+    if not all(isinstance(needs[name], dict) for name in expected):
+        raise ValueError("invalid final-gate dependency")
     if needs["classify"].get("result") != "success":
         raise ValueError("classifier did not succeed")
     outputs = needs["classify"].get("outputs", {})
-    for name in ("heavy", "kernel", "contracts"):
-        if outputs.get(name) not in {"true", "false"}:
+    if not isinstance(outputs, dict):
+        raise ValueError("missing/invalid classifier outputs")
+    for name in OUTPUTS:
+        if outputs.get(name) not in ("true", "false"):
             raise ValueError("missing/invalid " + name + " selection")
     if outputs["kernel"] == "true" and outputs["heavy"] != "true":
         raise ValueError("kernel matrix requires the complete userspace lane")
-    for name in ("docs", "build", "upstream-kernel-api"):
-        selected = (name == "docs" or
-                    outputs["kernel" if name == "upstream-kernel-api" else "heavy"] == "true")
+    if outputs["packed"] == "true" and outputs["heavy"] == "true":
+        raise ValueError("packed checks must run in exactly one userspace lane")
+    if outputs["packed"] == "true" and outputs["contracts"] != "true":
+        raise ValueError("packed component requires configuration contracts")
+    selections = {"docs": True, "build": outputs["heavy"] == "true",
+                  "packed": outputs["packed"] == "true",
+                  "upstream-kernel-api": outputs["kernel"] == "true"}
+    for name, selected in selections.items():
         required = "success" if selected else "skipped"
         if needs[name].get("result") != required:
             raise ValueError(name + " must be " + required)
@@ -132,7 +164,7 @@ def main():
     args = parser.parse_args()
     if args.command == "gate":
         gate(json.loads(os.environ["CI_NEEDS"]))
-        print("All selected CI jobs succeeded; unselected heavy jobs were skipped.")
+        print("All selected CI jobs succeeded; unselected lanes were skipped.")
         return
     root = Path(__file__).resolve().parents[1]
     base, head = os.environ.get("CI_BASE", ""), os.environ["CI_HEAD"]
@@ -143,7 +175,7 @@ def main():
     plan = select(root, os.environ["CI_EVENT"], base, head)
     print(json.dumps(plan, indent=2))
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-        for name in ("heavy", "kernel", "contracts"):
+        for name in OUTPUTS:
             output.write(name + "=" + str(plan[name]).lower() + "\n")
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
         summary.write("### Selected CI plan\n\n```json\n" +
