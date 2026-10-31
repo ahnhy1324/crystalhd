@@ -1,0 +1,167 @@
+{
+  "conclusion": "Unchangeddecoder int/simple implementations differ by up to4Ycodes; simple exactly reproduces frozenauto. Native/frozenauto max3 remains unchanged. This characterizes reconstruction variation, not an externalcode defect or actualchipIDCT identification. Neither diagnosticreference replaces holdout.",
+  "frozen_profile": {
+    "commands": {
+      "int": [
+        "/usr/bin/ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-v",
+        "warning",
+        "-xerror",
+        "-err_detect",
+        "explode",
+        "-hwaccel",
+        "none",
+        "-threads",
+        "1",
+        "-idct",
+        "int",
+        "-c:v",
+        "mpeg1video",
+        "-i",
+        "/home/mache/.cache/crystalhd-natural-mpeg1-20261031/encode-01/holdout.m1v",
+        "-map",
+        "0:v:0",
+        "-an",
+        "-sn",
+        "-dn",
+        "-pix_fmt",
+        "yuv420p",
+        "-fps_mode",
+        "passthrough",
+        "-f",
+        "rawvideo",
+        "/home/mache/.cache/crystalhd-natural-mpeg1-20261031/idct-characterization-01/int.i420"
+      ],
+      "simple": [
+        "/usr/bin/ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-v",
+        "warning",
+        "-xerror",
+        "-err_detect",
+        "explode",
+        "-hwaccel",
+        "none",
+        "-threads",
+        "1",
+        "-idct",
+        "simple",
+        "-c:v",
+        "mpeg1video",
+        "-i",
+        "/home/mache/.cache/crystalhd-natural-mpeg1-20261031/encode-01/holdout.m1v",
+        "-map",
+        "0:v:0",
+        "-an",
+        "-sn",
+        "-dn",
+        "-pix_fmt",
+        "yuv420p",
+        "-fps_mode",
+        "passthrough",
+        "-f",
+        "rawvideo",
+        "/home/mache/.cache/crystalhd-natural-mpeg1-20261031/idct-characterization-01/simple.i420"
+      ]
+    },
+    "ffmpeg_sha256": "bdf6aabffdba7411edff8d36c389d695257fcdf823d196020176e117612862f6",
+    "modes_frozen_before_execution": [
+      "int",
+      "simple"
+    ],
+    "reference_replacement": false,
+    "schema": "crystalhd.issue606.post-holdout-IDCT-characterization.v1",
+    "scope": "Post-holdout interpretation only. Both modes retained; original auto-reference residual remains the acceptance receipt. This does not identify actual chip implementation.",
+    "source_sha256": "f5701684aa89117952c860cd97504696a7fba0c1c7c80627907582997c64f3bb",
+    "threshold_or_model_change": false
+  },
+  "interpretation": "Both predeclared diagnostic modes retained. Original auto-reference/Ymax3 receipt is unchanged. Agreement/difference does not identify the chip implementation.",
+  "luma_by_original_picture_type": {
+    "B": {
+      "absolute_sum": 936069,
+      "changed": 933086,
+      "frames": 832,
+      "max": 3,
+      "samples": 84344832
+    },
+    "I": {
+      "absolute_sum": 56479,
+      "changed": 56479,
+      "frames": 105,
+      "max": 1,
+      "samples": 10644480
+    },
+    "P": {
+      "absolute_sum": 331354,
+      "changed": 330309,
+      "frames": 313,
+      "max": 3,
+      "samples": 31730688
+    }
+  },
+  "model_or_threshold_change": false,
+  "reference_replacement": false,
+  "results": {
+    "int": {
+      "metrics": {
+        "vs_frozen_auto_Y": {
+          "exact": 123545366,
+          "histogram_nonzero": {
+            "0": 123545366,
+            "1": 3144942,
+            "2": 29583,
+            "3": 107,
+            "4": 2
+          },
+          "maximum_absolute_error": 4,
+          "mean_absolute_error": 0.025287539457070705,
+          "samples": 126720000
+        },
+        "vs_native_Y": {
+          "exact": 124135307,
+          "histogram_nonzero": {
+            "0": 124135307,
+            "1": 2565466,
+            "2": 19160,
+            "3": 65,
+            "4": 2
+          },
+          "maximum_absolute_error": 4,
+          "mean_absolute_error": 0.02054915561868687,
+          "samples": 126720000
+        }
+      },
+      "sha256": "74ee1005f88a96707fc6770a2d5547a3cae6963aea8c87f9836b215916ee665f"
+    },
+    "simple": {
+      "metrics": {
+        "vs_frozen_auto_Y": {
+          "exact": 126720000,
+          "histogram_nonzero": {
+            "0": 126720000
+          },
+          "maximum_absolute_error": 0,
+          "mean_absolute_error": 0.0,
+          "samples": 126720000
+        },
+        "vs_native_Y": {
+          "exact": 125400126,
+          "histogram_nonzero": {
+            "0": 125400126,
+            "1": 1315851,
+            "2": 4018,
+            "3": 5
+          },
+          "maximum_absolute_error": 3,
+          "mean_absolute_error": 0.010447458964646465,
+          "samples": 126720000
+        }
+      },
+      "sha256": "871224d437551c9f6ed58656fbdd5cb506f60f3929a258d154006c0eb5c88a2a"
+    }
+  },
+  "schema": "crystalhd.issue606.post-holdout-IDCT-metrics.v1"
+}

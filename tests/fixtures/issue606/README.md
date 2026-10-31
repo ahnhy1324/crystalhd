@@ -79,3 +79,5 @@ Normal frontend playback, audio-clock/no-drift logs and any conditional codec
 admission have their own gates in #606. Calibrated physical lip-sync is not
 required under the current acceptance policy. A still comparison or headless
 capture alone does not qualify cadence, scanout, A/V or a public frontend.
+
+The subsequent [optional-plugin receipt](experimental-codec-20261031.json) records scoped experimental support, staged default-policy playback, eight actual sink-buffer identities and removal/recovery. The original observation remains the historical pre-frontend HOLD, with every numerical residual unchanged.

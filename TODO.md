@@ -63,16 +63,21 @@ hosted result must be recorded separately from earlier individual runs.
 2. Continue original-client interlaced/Bob natural-EOF/field-content and actual
    per-object return work (#445/#429/#436/#477/#538). Current progressive RGB
    checkpoints do not prove those cases. Fix demonstrated own faults only.
-3. Continue matched repeatability, sustained/endurance, port/X-server lifecycle
-   and calibrated physical display/A/V work (#513). Preserve earlier failures;
+3. Continue matched repeatability, sustained/endurance, port/X-server lifecycle,
+   actual display and log-based A/V acceptance (#513). No-drift playback logs
+   satisfy A/V sync; calibrated physical lip-sync is not required. Preserve earlier failures;
    different initial thermals or metadata do not establish causal speedup.
 4. Complete genuinely clean-target packaging/user burden and reviewed language/
    assistive-technology/other-desktop acceptance when those targets exist.
    Maintainer confirms current equipment only: no new Atom/native-i386/BCM70012
    acceptance is inferred from this T8100/BCM70015 host.
-5. Retained MPEG1 native/planar bytes and old runtime DSOs allow an off-hardware
-   siting/conversion comparison (#529). Hardware ownership/firmware/UART/DMA
-   research (#92/#204/#533) retains its prerequisite gates and negative results.
+5. The bounded MPEG-1 reference isolation (#529), two-session natural-video
+   decode/PTS/pixel census and #606 optional experimental352x288/25 progressive
+   BCM70015 factory are delivered with staged installation, clocked playback,
+   actual sink pixels and rollback checks. Broader MPEG-1 conformance, other
+   sizes/rates/chips and physical scanout remain unqualified; ordinary caps/defaults stay unchanged.
+   Hardware ownership/firmware/UART/DMA research (#92/#204) retains its gates;
+   #533's completed safe negative STOP/START investigation remains preserved.
 
 **Shutdown heap abort subtask only: ignored / wontfix (2026-10-29). #538 stays
 open.** Per maintainer direction, stop investigation/reproduction of this
