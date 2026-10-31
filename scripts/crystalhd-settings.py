@@ -723,7 +723,6 @@ class SettingsWindow(object):
                     raw = self.pending_player[pending] if pending in self.pending_player else (str(value) if token == "custom" else "")
                     self.player_entries[key].set_text(raw)
                     self.player_entries[key].set_sensitive(editable and token == "custom")
-                    self.player_errors[key].set_text(self.player_error_text(key) if pending in self.pending_player else "")
                 self.set_choices(self.player_controls[key], choices, token)
                 self.player_controls[key].set_sensitive(editable)
                 help_text = {
@@ -785,7 +784,14 @@ class SettingsWindow(object):
             for badge in self.badges.values():
                 badge.set_text(_("Model unavailable"))
         for key, label in self.player_errors.items():
-            label.set_text(self.player_error_text(key) if (self.editing_profile, key) in self.pending_player else "")
+            error = self.player_error_text(key) if (self.editing_profile, key) in self.pending_player else ""
+            label.set_text(error)
+            accessible = self.player_entries[key].get_accessible()
+            description = error
+            # Keep focused-entry feedback available to accessibility clients.
+            # Repeated previews must not announce the same error again.
+            if accessible.get_description() != description:
+                accessible.set_description(description)
         status = self.notice or (_("Unsaved changes") if self.has_unsaved_changes() else _("Settings loaded; running applications have not been inspected"))
         if self.readers_unknown:
             status += "\n" + _("Some inspected components do not advertise settings support; see Installation.")

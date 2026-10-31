@@ -111,6 +111,16 @@ library-check:
 gstreamer: library
 	$(MAKE) -C filters/gst/gst-plugin-1.0
 
+# Fresh CPU-only production-function binaries. No normal library outputs or
+# CPU-mode stamp are dependencies; legacy sanitizer coverage is not claimed.
+.PHONY: library-check-sanitized
+library-check-sanitized:
+	CXX=$(call crystalhd_quote,$(CXX)) CPPFLAGS=$(call crystalhd_quote,$(CPPFLAGS)) \
+		CXXFLAGS=$(call crystalhd_quote,$(CXXFLAGS)) LDFLAGS=$(call crystalhd_quote,$(LDFLAGS)) \
+		CRYSTALHD_LIBRARY_SANITIZER_CPU_FLAGS=$(call crystalhd_quote,$(CRYSTALHD_CPU_FLAGS)) \
+		CRYSTALHD_LIBRARY_SANITIZER_LEGACY=$(call crystalhd_quote,$(LEGACY_CPU)) \
+		$(PYTHON3) -B tests/library-selected-sanitizer.py
+
 raw-frame-check:
 	CC="$(CC)" CXX="$(CXX)" sh ./tests/library-raw-frame.sh
 
