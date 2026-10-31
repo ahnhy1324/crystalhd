@@ -175,6 +175,7 @@ native-picture-check:
 .PHONY: mpeg1-reference-model-check
 mpeg1-reference-model-check:
 	$(PYTHON3) -B tests/mpeg1-reference-models.test.py
+	$(PYTHON3) -B tests/mpeg1-natural-audit.test.py
 
 uapi-check:
 	sh ./tests/uapi-abi.sh
