@@ -1,0 +1,37 @@
+CrystalHD Settings translation catalogues
+=======================================
+
+The optional GTK frontend loads the crystalhd-settings gettext domain from
+DATADIR/locale. GNU gettext tools are needed to update/check catalogues and
+msgfmt is needed by make install-settings. No gettext tools are needed at run
+time. Python's gettext honours LANGUAGE, LC_ALL, LC_MESSAGES and LANG; missing
+translations fall back to the English source strings. GTK's own stock controls
+also depend on the host's GTK translations.
+
+Run make settings-pot after changing a literal _("...") message in
+scripts/crystalhd-settings.py. This combines a static UTF-8 header with xgettext
+output in source order, without paths or generated timestamps. Update a catalogue with:
+
+    msgmerge --no-fuzzy-matching --update --backup=none po/ko.po po/crystalhd-settings.pot
+    make settings-l10n-check
+
+The check also compares all extracted msgids with Python's source literals,
+including Unicode punctuation and mathematical symbols, to catch encoding loss.
+
+Add new locale names to po/LINGUAS. Keep configuration keys, literal values,
+profile names and environment-variable names unchanged. An underscore marks a
+keyboard mnemonic; keep one mnemonic in translations where the source has one,
+and review for collisions on the same page. Review complete messages in context,
+including warnings about application restarts and acknowledged experiments.
+
+Korean status: PARTIAL, UNREVIEWED DRAFT. Every Korean translation is fuzzy and
+requires maintainer/native-speaker review before its fuzzy flag may be removed.
+The check target validates fuzzy draft syntax and mnemonic counts, but install
+never uses --use-fuzzy. Consequently the shipped draft currently falls back to
+English. Do not enable fuzzy translations globally to expose this draft.
+
+Core diagnostics, installation report text, preset metadata and Desktop Entry
+translations are outside this catalogue's current scope. Catalogue validation
+does not establish translation quality, screen-reader usability, manual desktop
+acceptance or native i386 runtime acceptance; those remain separate review and
+validation work.
