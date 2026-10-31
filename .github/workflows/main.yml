@@ -169,6 +169,9 @@ jobs:
       - name: Sanitize selected VA ownership and buffer handle contracts
         run: make -C filters/vaapi check-ownership-sanitized
 
+      - name: Check private VPP payload observer without hardware
+        run: make -C filters/vaapi check-payload-observer
+
       - name: Select packaged kernel headers
         run: |
           KDIR=$(find /usr/src -maxdepth 1 -type d \
