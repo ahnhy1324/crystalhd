@@ -1,0 +1,567 @@
+{
+  "schema": 1,
+  "date": "2026-10-30",
+  "status": "PASS_SCOPED_SAME_ACTUAL_EXPBUF_ACTIVE_IMAGE",
+  "scope": "One neutral-chroma1280x720 actual original-native-Kodi CAPTURE/EXPBUF image, exact active YUYV bytes and content-derived originalPTS, continuous lease/return metadata and natural180-picture EOF; not broad K2b/native-backend acceptance.",
+  "lineage": {
+    "frozen_research_baseline": "2399430992a81aa16344aab3630999f874c5c853",
+    "runtime_module_source": "fca6d9b75397e6c8fa0cb592cb33a0492f7aa214",
+    "runtime_module_sha256": "35fcda6c642342a779f0c2e6c81ef4007c06f392fd817e40e8b82ea8f192e0a2",
+    "runtime_module_version": "3.10.14",
+    "runtime_module_srcversion": "DF1416C32049D4DADE81EB2",
+    "runtime_module_vermagic": "7.0.0-38-generic",
+    "evidence_parent": "f759aae80611d00c979014b41b89fb6fc3cbbdfd",
+    "evidence_target": "#581 experimental format-notification branch, separate from master",
+    "production_code_or_workflow_changed": false,
+    "evidence_commit_ci": "PENDING; new evidence head requires its own CI",
+    "actual_native_attempts": 1,
+    "baseline_changed": false,
+    "master_or_release_promoted": false,
+    "issue538_closed": false,
+    "excluded_heap_disposition": "unchanged; no investigation/reproduction"
+  },
+  "original_client": {
+    "kodi_source": "28ea2eac original publishedKodi22RC1",
+    "kodi_sha256": "2862331a8a047f929d8019987a518527fcb45330082435bec7b7756141cf688f",
+    "native_ffmpeg_source": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "native_libavcodec_sha256": "c92a041da4f924cbf73668b9de633e593b9f17eb92fef2da73d6febcf075c8c6",
+    "native_mapped_images": [
+      {
+        "path": "/native-ffmpeg/libswscale.so.10.1.102",
+        "sha256": "832481dc5636b6439e36531dcc1088c4af5f037adb956a6106c901979887300b",
+        "inode": 11428934,
+        "device": "08:01"
+      },
+      {
+        "path": "/native-ffmpeg/libavutil.so.61.1.102",
+        "sha256": "4ba4f5b9058a6bc3d186ea46814c2d9e1c00db0ba04979f01df5df454c48c384",
+        "inode": 11428937,
+        "device": "08:01"
+      },
+      {
+        "path": "/native-ffmpeg/libavcodec.so.63.1.102",
+        "sha256": "c92a041da4f924cbf73668b9de633e593b9f17eb92fef2da73d6febcf075c8c6",
+        "inode": 11428928,
+        "device": "08:01"
+      },
+      {
+        "path": "/native-ffmpeg/libswresample.so.7.1.102",
+        "sha256": "daed68f97a4fc2a555649cc3c9e4916bcb49437e8c7f52e80e95f6903a937b2c",
+        "inode": 11428931,
+        "device": "08:01"
+      },
+      {
+        "path": "/native-ffmpeg/libavformat.so.63.1.102",
+        "sha256": "f26fc0d099394f72ec31ae69d3928fe6efeed5ea87201b047cf4b304705acd2f",
+        "inode": 11428925,
+        "device": "08:01"
+      },
+      {
+        "path": "/native-ffmpeg/libavfilter.so.12.1.102",
+        "sha256": "5e5d1bbb82ffbf171f08a419ed3c8bda7a426f759670df1f691e393667ce9b0a",
+        "inode": 11428922,
+        "device": "08:01"
+      }
+    ],
+    "actual_codec_info": {
+      "Player.Filenameandpath": "/fixture.mp4",
+      "Player.Process(pixformat)": "drm_prime",
+      "Player.Process(videodecoder)": "ff-h264_v4l2m2m-drm_prime",
+      "System.ScreenHeight": "720",
+      "System.ScreenWidth": "1280"
+    },
+    "external_source_or_binary_modified": false,
+    "route_limit": "This is the unchanged published nativeprefix FFmpeg route, not ordinary App-bundled VA FFmpeg. Earlier stock-controls-02 uses original App libavcodec33516.../ownVA and remains a separate result. No patched private client is substituted.",
+    "presentation": "private headless Weston1280x720, no physical display/AV claim"
+  },
+  "software_oracle": {
+    "status": "PASS_SOFTWARE_FIXTURE_ONLY",
+    "input_mp4": {
+      "path": "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/native-raw/frozen-v3-180/neutral-spatial-720p30-180.mp4",
+      "bytes": 3858821,
+      "sha256": "abf318715db3289a9e4c9b63df37e9ce08e4dcf69ce64bcf273120ace0071513"
+    },
+    "software_reference_yuyv": {
+      "path": "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/native-raw/frozen-v3-180/software-reference.yuyv",
+      "bytes": 331776000,
+      "sha256": "ca930e9b7f0c024e89f7bb93199df25ba6acee4cede6644fdce63adbfdc92403",
+      "row_stride_bytes": 2560,
+      "full_visible_bytes_tolerance": 0,
+      "second_pass_direct_Y_chroma_verified": true
+    },
+    "frames": 180,
+    "frame_bytes": 1843200,
+    "row_stride_bytes": 2560,
+    "crop": [
+      0,
+      0,
+      1280,
+      720
+    ],
+    "U": 128,
+    "V": 128,
+    "source_pts": "ordinal*512 at time_base1/15360; independently software-decoded and source-frozen before hardware",
+    "copied_frame_reference": {
+      "ordinal": 1,
+      "source_pts_ticks": 512,
+      "source_i420_sha256": "5d65ec408ce3c97c58c283463b4000f4e170568f7b98c80487b830541f5ee4fd",
+      "software_i420_offset": 1382400,
+      "software_i420_sha256": "73b2d16ef5382dfce385608613a1dfe3fed749627e3d36e7c97c4d32cdfdf6b5",
+      "reference_yuyv_offset": 1843200,
+      "reference_yuyv_sha256": "930b38df951f591e5e81599b19c60d72391e083ec4a8e46329de02dca4cacb56",
+      "reference_Y_sha256": "b1f87b1838bee1e40306232cd30ee818160f1d39f016c8d722be525ed7a5ea2b",
+      "U_constant": 128,
+      "V_constant": 128,
+      "barcode_ordinal": 1,
+      "source_pts_seconds": {
+        "numerator": 1,
+        "denominator": 30
+      },
+      "source_pts_time_base": "1/15360"
+    },
+    "source_pattern": "Y=16+((13*(x//8)+23*(y//8)+(x%8)+2*(y%8)+3*(x//64)*(y//64)+17*(x//320)+19*(y//180)+7*ordinal)%220), then unchanged public barcode cells; every U,V=128",
+    "tool_pins": {
+      "/home/mache/crystalhd/tests/native-picture-fixture.py": "f8923690dc19424f7dfd1eb28d03d0be10808166b7df3b2e2d199f7f07174744",
+      "/usr/bin/ffmpeg": "bdf6aabffdba7411edff8d36c389d695257fcdf823d196020176e117612862f6",
+      "/usr/bin/ffprobe": "a6dac1e9e8631e04075d06854cc4069308aec279bb04683b4a0bca5e4f54b2fe"
+    },
+    "preparation_revision": 3,
+    "encoder_semantics": "Explicit TV/BT709 raw input declarations precede -i; reject parse/conversion warnings, inspect first actual SPS, verify all180 barcodes/PTS/UV128 and a second direct Y/chroma reference pass. Full active comparison tolerance0 is unchanged.",
+    "preserved_failures": [
+      {
+        "schema": 1,
+        "status": "FAIL",
+        "error": "Invalid: encoded stream mismatch:color_transfer=None",
+        "output_dir": "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/native-raw/frozen-180",
+        "hardware_or_original_client_executed": false,
+        "failure_policy": "Keep partial outputs; no PTS repair/tolerance relaxation."
+      },
+      {
+        "schema": 1,
+        "status": "FAIL",
+        "error": "Invalid: software decoded U/V is not constant128; exact oracle unqualified",
+        "output_dir": "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/native-raw/frozen-v2-180",
+        "hardware_or_original_client_executed": false,
+        "failure_policy": "Keep partial outputs; no PTS repair/tolerance relaxation."
+      }
+    ],
+    "controlled_AB": "Two-frame frozen CPU-only A/B changes only missing raw input metadata; undeclared input caused matrix conversion through RGB. Correct input declaration establishes neutralUV128 before the final independent180-frame preparation. No external code modification or post-capture tolerance/PTS repair.",
+    "coverage_limit": "Neutral chroma avoids an unqualified420-to422 interpolation model; it does not validate arbitrary colourful chroma interpolation."
+  },
+  "object_identity": {
+    "pid": 1083423,
+    "pid_start_ticks": 32549883,
+    "group": 4653811813580804,
+    "queue": "4653811813580804:1",
+    "video_fd": 33,
+    "export_fd": 35,
+    "capture_type": 1,
+    "capture_index": 1,
+    "plane": 0,
+    "allocation_generation": 1,
+    "stream_generation": 1,
+    "export_syscall": {
+      "tid": 1083551,
+      "call_id": 38,
+      "success_ns": 325504786817952
+    },
+    "completed_DQBUF": {
+      "event": "NC_BUF",
+      "cpu": 0,
+      "seq": 3,
+      "ns": 325504819873525,
+      "tid": 1083551,
+      "id": 106,
+      "fd": 33,
+      "group": 4653811813580804,
+      "req": 3227014673,
+      "type": 1,
+      "index": 1,
+      "flags": 16385,
+      "sequence": 1,
+      "memory": 1,
+      "sec": 0,
+      "usec": 2,
+      "used": 1843200,
+      "length": 1846052,
+      "offset": 1073774592,
+      "planes": 1,
+      "enter_ns": 325504819814997,
+      "client_tracking_us": 2,
+      "allocation_generation": 1,
+      "stream_generation": 1
+    },
+    "format": {
+      "width": 1280,
+      "height": 720,
+      "fourcc": 1448695129,
+      "stride": 2560,
+      "image": 1846052,
+      "colorspace": 3,
+      "ycbcr": 2,
+      "quantization": 0,
+      "xfer": 1,
+      "planes": 1
+    },
+    "queried_allocation_length": 1846052,
+    "fd_identity": {
+      "device": 12,
+      "inode": 8846,
+      "stat_size": 1847296,
+      "queried_allocation_length": 1846052
+    },
+    "ownership_at_A_end": "DEQUEUED_HELD_AT_OBSERVER_END",
+    "source_identity_note": "Internal client_tracking_us2 selects a candidate; it is not sourcePTS. Independent raw and RGB replicated barcodes then bind content ordinal1 to originalPTS512/15360."
+  },
+  "bounded_copy": {
+    "method": "libc pidfd_getfd",
+    "cache_coherence": "DMA_BUF_SYNC START|READ, PROT_READ MAP_SHARED mapping, bounded active-row copy to RAM, END|READ, unmap/close duplicated descriptors; no lseek of shared exported fd",
+    "both_observers_ready_before_media_ns": 325503620963643,
+    "stop_ns": 325505275806100,
+    "all_T_ns": 325505284527884,
+    "all_T_elapsed_ns": 8721784,
+    "stopped_tid_count": 31,
+    "same_stopped_lifetimes_before_after_copy": true,
+    "A_drained_ns": 325505699923932,
+    "copy_begin_ns": 325505908117946,
+    "copy_end_ns": 325505918351552,
+    "copy_span_ns": 10233606,
+    "CONT_ns": 325506000519114,
+    "STOP_to_CONT_ns": 724713014,
+    "independent_watchdog_arm": {
+      "event": "ARMED",
+      "deadline_ns": 325507075530220,
+      "monotonic_ns": 325505275701755
+    },
+    "watchdog_terminal": [
+      {
+        "event": "CANCELLED",
+        "monotonic_ns": 325506001292346
+      }
+    ],
+    "bounds": {
+      "all_T_ns": 500000000,
+      "A_stop_drain_ns": 900000000,
+      "copy_deadline_max_ns": 600000000,
+      "watchdog_ns": 1800000000,
+      "STOP_to_CONT_max_ns": 2000000000
+    },
+    "ordering": "All owned threads T, stop/drainA, replay held allocation, copy only selected successful-DQBUF lease, unconditional CONT, cancel watchdog, independent reference comparison/file writes; B remains armed continuously.",
+    "copy_helper_exit": 0,
+    "copy_helper_stderr_empty": true,
+    "active_bytes": 1843200,
+    "actual_stride": 2560,
+    "declared_query_image_bytes": 1846052,
+    "declared_extra_bytes_excluded": 2852,
+    "fd_stat_size": 1847296,
+    "limit": "Compare all2560 active bytes in each of720 rows; declared extra payload/page allocation is not image content and is not claimed equal."
+  },
+  "actual_image_result": {
+    "raw_comparison": {
+      "ordinal": 1,
+      "bytes": 1843200,
+      "mismatched_bytes": 0,
+      "tolerance": 0,
+      "crop": [
+        0,
+        0,
+        1280,
+        720
+      ],
+      "stored_active_stride": 2560,
+      "actual_source_stride": 2560,
+      "source_pts_ticks": 512,
+      "source_time_base": "1/15360",
+      "source_binding": "independent raw and RGB replicated barcode; internal tracking number is not sourcePTS"
+    },
+    "raw_sha256": "930b38df951f591e5e81599b19c60d72391e083ec4a8e46329de02dca4cacb56",
+    "RGB_checkpoint": {
+      "source_ordinal": 1,
+      "sha256": "086e1b5f0d52209e1282bb31a42f08577e8807025a34bb74f1544ab77bacbcf3",
+      "metadata": {
+        "format": "BGRA",
+        "width": 1280,
+        "height": 720,
+        "bytes": 3686400,
+        "player_before": {
+          "speed": 0,
+          "time": {
+            "hours": 0,
+            "milliseconds": 0,
+            "minutes": 0,
+            "seconds": 0
+          }
+        },
+        "player_after": {
+          "speed": 0,
+          "time": {
+            "hours": 0,
+            "milliseconds": 0,
+            "minutes": 0,
+            "seconds": 0
+          }
+        },
+        "monotonic_ns": 325504948849167,
+        "file": "native-pause.bgra"
+      }
+    },
+    "content_binding": "Both independently decoded replicated barcodes identify ordinal1; original sourcePTS512 at TB1/15360 equals1/30s. Playback-clock readback0 is not substituted for this source identity.",
+    "same_exported_allocation": "The copied fd35 is the observed EXPBUF of the completed CAPTURE index1/allocation1/stream1. ObserverB matches exact export and DQBUF syscall IDs/epochs and proves no requeue/reset/close/selected-fd replacement from that DQBUF through copy end."
+  },
+  "continuous_lease_and_return": {
+    "status": "COPY_WINDOW_OWNERSHIP_VALID",
+    "A": {
+      "status": "VALID_OBSERVATION",
+      "observer_begin_ns": 325503405339940,
+      "observer_end_ns": 325505531212165,
+      "records": 451,
+      "calls": 150
+    },
+    "B": {
+      "status": "VALID_OBSERVATION",
+      "observer_begin_ns": 325503603212556,
+      "observer_end_ns": 325514595377172,
+      "records": 2521,
+      "calls": 833
+    },
+    "same_A_B_object_join": "group+allocation/stream generation+CAPTUREindex+export TID/callID+DQBUF TID/callID; not a timestamp-only join",
+    "first_selected_QBUF_after_copy": {
+      "event": "NC_BUF",
+      "cpu": 1,
+      "seq": 406,
+      "ns": 325506376409798,
+      "tid": 1083423,
+      "id": 2,
+      "fd": 33,
+      "group": 4653811813580804,
+      "req": 3227014671,
+      "type": 1,
+      "index": 1,
+      "flags": 16387,
+      "sequence": 0,
+      "memory": 1,
+      "sec": 0,
+      "usec": 2,
+      "used": 0,
+      "length": 1846052,
+      "offset": 1073774592,
+      "planes": 1,
+      "enter_ns": 325506376364190
+    },
+    "selected_export_close_after_copy": [
+      {
+        "event": "NC_CLOSE",
+        "cpu": 1,
+        "seq": 1437,
+        "ns": 325512263476629,
+        "tid": 1083550,
+        "fd": 35,
+        "enter_ns": 325512263474324,
+        "kind": 2,
+        "group": 4653811813580804,
+        "ret": 0
+      }
+    ],
+    "B_final_watched_descriptors": {},
+    "natural_census": {
+      "nonempty_input_qbuf": 180,
+      "nonempty_capture_dqbuf": 180,
+      "last_count": 1,
+      "scope": "180-packet/picture internal tracking census; only copied content has independent originalPTS proof"
+    },
+    "tracking_census": "Input/output internal tracking ordered exactly1..180 with one empty LAST. Actual observerB records zero EPIPE returns; the conditional post-LAST EPIPE branch is synthetic coverage only, not observed here. This is not independent originalPTS proof for all180 images.",
+    "source_and_renderer_limit": "Same actual allocation and queue lease are qualified for this copied image; matching RGB/raw content alone does not prove exact GPU import/render fd, physical scanout or a complete external GPU return graph.",
+    "observed_EPIPE_count": 0,
+    "EPIPE_path": "NOT_OBSERVED; actual client completed after the empty LAST. Earlier prose mixed the synthetic/old protocol expectation with this run; raw observations unchanged."
+  },
+  "termination_and_restoration": {
+    "controller_status": "PASS_SCOPED_NATIVE_ONE_IMAGE",
+    "application_exit": 0,
+    "candidate_boundary_equal": true,
+    "controller_kernel_exit": 0,
+    "maximum_controller_temperature_mC": 60000,
+    "controller_module_operations": false,
+    "outer_status": "PASS_RESTORED_SCOPED_NATIVE",
+    "outer_errors": [],
+    "exact_stable_boundary_equal": true,
+    "dependency_presence_equal": true,
+    "outer_kernel_exit": 0,
+    "owned_app_lifetime_guard": {
+      "qualified": true,
+      "recorded_identity": {
+        "pid": 1083423,
+        "start_ticks": 32549883,
+        "uid": 1000,
+        "exe_device": 2049,
+        "exe_inode": 11290331
+      },
+      "current_identity": null,
+      "app_signals_sent": false,
+      "state": "RECORDED_LIFETIME_GONE"
+    },
+    "stable_restored": {
+      "module": "3.10.13",
+      "srcversion": "F76E163690F147B91495DDD",
+      "ref": 0,
+      "pin_net": 0,
+      "force": "Y",
+      "session": "N",
+      "power": "on",
+      "links": {
+        "0000:02:00.0": 66,
+        "0000:00:1c.0": 66
+      },
+      "debug_rows": 85,
+      "debug_sha256": "4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4",
+      "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+      "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+      "video_nodes": []
+    },
+    "aer_scope": "Exposed device counters remain zero; parent aer_dev files empty/unexposed, not proof of all parent counters zero.",
+    "cleanup": "Root temporary activation/restoration only, no force unload; exact stable3.10.13/DD/dependencies/node absence/PCI links/FW restored. Historical failures remain."
+  },
+  "prerun_qualification": {
+    "observer_CPU01": "NOT_QUALIFIED signed-format output failure preserved",
+    "observer_CPU02_CPU03": "actualCABI and16probes compile/attach/normalownedmemfdQUERYCAP ENOTTY CPU negatives; no false videoFD registration; validated JSON, empty stderr. CPU-only, not native-object proof.",
+    "CPU02_stop_drain_wall_ns": 621099071,
+    "old_A_stop_budget": "0.3s source is preserved unqualified; actual621.099ms CPU witness leads to pre-hardware0.9s collector bound, with media quality/QoS/deadlines unchanged and absolute2s CONT unchanged.",
+    "watchdog": "four owned-CPU cases including actual1.8s timeout continuation, cancellation after CONT, parent-pipe EOF and invalid-arm error continuation; observed all-T and continued lifetimes",
+    "fdcopy_fake_API_checks": 12,
+    "lease_reader_semantic_controls": 23,
+    "scope": "CPU/synthetic source/API qualification is recorded separately from this later actual DMA-BUF success; no synthetic or memfd result alone qualifies a hardware image."
+  },
+  "not_claimed": [
+    "all180 original sourcePTS/fullpixels independently proven",
+    "exact GPU import/render-object/scanout identity",
+    "colourful chroma interpolation or generic full-range correctness",
+    "physical A/V or zero-drop cadence/performance",
+    "interlaced/native Bob or supported native backend promotion",
+    "complete K2b or issue538 closure"
+  ],
+  "frozen_runtime_source_image_pins": {
+    "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/native-raw/native-one-image.py": "4eb348457b9bbb254dcd84b3d6b2a7d611ff356434290cf2b5b3bf0dfa9f3c50",
+    "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/stock-controls-v2.py": "c0e20cb7e6451432aac0ce54163bfe61c78898800e9ccbafd8b30afb313ee4cb",
+    "/home/mache/.cache/crystalhd-own-driver-picture-20261029/run-plan.json": "0517ebb037513f6a02ed893e8967083cc4e0ea887c2aa8ef4834f0d54175dcbf",
+    "/home/mache/.cache/crystalhd-player-fhd-runtime-20261030/boundary.py": "f326729eefa31afc823752e2c9cb73b25e4ffa727ce926fcaa1f843081d9206e",
+    "/home/mache/.cache/crystalhd-driver-capture-color-20261029/driver/linux/crystalhd.ko": "35fcda6c642342a779f0c2e6c81ef4007c06f392fd817e40e8b82ea8f192e0a2",
+    "/home/mache/.cache/crystalhd-stock-contract-20261030/tests/kernel-log-check.sh": "fea4913e157870869a0572c6c43e426a86900c5cc59c8bca388dcadece85c4e7",
+    "/home/mache/crystalhd/tests/native-picture-fixture.py": "f8923690dc19424f7dfd1eb28d03d0be10808166b7df3b2e2d199f7f07174744",
+    "/home/mache/.cache/crystalhd-window-runtime-20261030/native-observer/abi.c": "a1fc2d342ca425ad35c8cf1fe8af1ec988831ce4990e3ea8b35aa1696bdd3014",
+    "/home/mache/.cache/crystalhd-window-runtime-20261030/native-observer/abi.json": "e285bd3625abdcee92dae2aa7618888f6f8e48f0116e0df175108bd96e36f133",
+    "/home/mache/.cache/crystalhd-window-runtime-20261030/native-observer/observer.py": "86bf2dc48a3d84fae85fdeb8f31ffe50e2d4b8d8657438363be252e179ef2b13",
+    "/home/mache/.cache/crystalhd-window-runtime-20261030/native-observer/analyze.py": "92e5513ff6141f8c2c48802fca82599c4369e4d7e74287ce091ad290f524a40e",
+    "/home/mache/.cache/crystalhd-window-runtime-20261030/native-observer/fdcopy.py": "20a85f6c5924b088f50b12ea4c74cacb21d2573ddf8476f8259e26c76b13a72c",
+    "/home/mache/.cache/crystalhd-window-runtime-20261030/qualify-owned-pidfd-map.py": "0ba0750b36ff4eef108e2ce5528c50f9738cbd1974a5a4a6548989deac8e63a1",
+    "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/native-raw/frozen-v3-180/manifest.json": "8508ffd6adbf6518affb110173d5d168795851ee92a39301ddeb71e8811dacf3",
+    "/usr/bin/kodi-send": "2effcb04ab462292f9d23d51334a7e7aef44aa48b0ce6ec8fd3c541b7de4aedc",
+    "/usr/bin/bpftrace": "1d6b5e1d4716d4f746c38d6e8e9c2b2bd4f97123c23435ad006ea639d974fc48",
+    "/home/mache/.cache/crystalhd-player-accounting-20261025-6o89Y6yE/issue531/portable-weston/root/usr/bin/weston": "c2e49d381dfa4b431d6a705494db32677e7edbd97051031d6337b08c9e19ce17",
+    "/home/mache/.cache/crystalhd-player-accounting-20261025-6o89Y6yE/issue531/portable-weston/root/usr/lib/x86_64-linux-gnu/libweston-14/gl-renderer.so": "e6a05070447b1d309c7035450a31a771cc80437ac9f77c61930254e0108bf8fe",
+    "/home/mache/.cache/crystalhd-player-accounting-20261025-6o89Y6yE/issue531/portable-weston/root/usr/lib/x86_64-linux-gnu/libweston-14/headless-backend.so": "50617c97e5d56325fc4332dd6799881c5ef2083b7d759e5a16d017b66aa51ba3",
+    "/home/mache/.cache/crystalhd-player-accounting-20261025-6o89Y6yE/issue531/portable-weston/root/usr/lib/x86_64-linux-gnu/weston/kiosk-shell.so": "409f9b793d42ccdeb9fa825bcb7db04e7e2dcdc0493b58edbcf645cbb1b7e22d",
+    "/home/mache/.cache/crystalhd-player-accounting-20261025-6o89Y6yE/issue531/flatpak-user/app/tv.kodi.Kodi/x86_64/beta/0a381e42781914ae76ed338d3aa11f9403c55c57f5c9c194e1f4fb437cf71630/files/lib/kodi/kodi.bin": "2862331a8a047f929d8019987a518527fcb45330082435bec7b7756141cf688f",
+    "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/native-raw/frozen-v3-180/neutral-spatial-720p30-180.mp4": "abf318715db3289a9e4c9b63df37e9ce08e4dcf69ce64bcf273120ace0071513",
+    "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/native-raw/frozen-v3-180/software-reference.yuyv": "ca930e9b7f0c024e89f7bb93199df25ba6acee4cede6644fdce63adbfdc92403",
+    "/home/mache/.cache/crystalhd-player-accounting-20261025-6o89Y6yE/issue538-native9/prefix-v2/lib/libavutil.so.61.1.102": "4ba4f5b9058a6bc3d186ea46814c2d9e1c00db0ba04979f01df5df454c48c384",
+    "/home/mache/.cache/crystalhd-player-accounting-20261025-6o89Y6yE/issue538-native9/prefix-v2/lib/libavdevice.so.63.1.102": "6f5414a992f92deb9a9a69482cceb2af45c01d8df0803fe94220a9568b3e8547",
+    "/home/mache/.cache/crystalhd-player-accounting-20261025-6o89Y6yE/issue538-native9/prefix-v2/lib/libavfilter.so.12.1.102": "5e5d1bbb82ffbf171f08a419ed3c8bda7a426f759670df1f691e393667ce9b0a",
+    "/home/mache/.cache/crystalhd-player-accounting-20261025-6o89Y6yE/issue538-native9/prefix-v2/lib/libswscale.so.10.1.102": "832481dc5636b6439e36531dcc1088c4af5f037adb956a6106c901979887300b",
+    "/home/mache/.cache/crystalhd-player-accounting-20261025-6o89Y6yE/issue538-native9/prefix-v2/lib/libswresample.so.7.1.102": "daed68f97a4fc2a555649cc3c9e4916bcb49437e8c7f52e80e95f6903a937b2c",
+    "/home/mache/.cache/crystalhd-player-accounting-20261025-6o89Y6yE/issue538-native9/prefix-v2/lib/libavformat.so.63.1.102": "f26fc0d099394f72ec31ae69d3928fe6efeed5ea87201b047cf4b304705acd2f",
+    "/home/mache/.cache/crystalhd-player-accounting-20261025-6o89Y6yE/issue538-native9/prefix-v2/lib/libavcodec.so.63.1.102": "c92a041da4f924cbf73668b9de633e593b9f17eb92fef2da73d6febcf075c8c6",
+    "/home/mache/.cache/crystalhd-window-runtime-20261030/native-observer/purpose-qualified-root-final/observers.json": "f4d42ddf88a2de378aa0e61612018f0e0b85da6deeda731acea463e1a3527706",
+    "/home/mache/.cache/crystalhd-window-runtime-20261030/native-observer/purpose-qualified-root-final/lease_reader.json": "6cbe988bfc1f2bba473b0be6b9a4f999973281d55c417f1200f50e2c53166f21",
+    "/home/mache/.cache/crystalhd-window-runtime-20261030/native-observer/purpose-qualified-root-final/fdcopy.json": "1d59c647e499abe612c121ad922972a1facc5f85185639c5844706e959537249",
+    "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/native-raw/watchdog-qualification-exact-02.json": "926dfdbb5940cdaedbb12c65209159a22fd5208ae59e8cd49358fb821f92cdad",
+    "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/native-raw/qualify-watchdog-exact.py": "cbbe1fdc40e1ecfe25aea1d7b5c5086a41e9f1ee1a601d5535935d2859fc63ab",
+    "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/native-raw/prepare-neutral-native-v3.py": "15e69dc20bdc1331f4e2f83064b372220e65c1c99b95e046da97bb5a8d5d0844"
+  },
+  "artifacts": [
+    {
+      "root": "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/native-raw",
+      "sha256": {
+        "native-one-image-01/result.json": "5ce426ba9f8b3c71f4b56acd86674a616cb1bbf69b89f12d9574125d40263e37",
+        "native-one-image-01/same-expbuf-active.yuyv": "930b38df951f591e5e81599b19c60d72391e083ec4a8e46329de02dca4cacb56",
+        "native-one-image-01/profile/native-pause.bgra": "086e1b5f0d52209e1282bb31a42f08577e8807025a34bb74f1544ab77bacbcf3",
+        "native-one-image-01/profile/native-result.json": "98c6ed851d36c084f932e69aba5da991232420d6903c5b49f0fd9050fc779268",
+        "native-one-image-01/observer-A.bt": "e798de6b7627fb6e90164793784f9e14ae1fdc1169029b82939b7a8f086d7271",
+        "native-one-image-01/observer-A.jsonl": "9d14ab93ff96ac63d529d8876692e006c33815efeafa38cdc5fe9d1015894d72",
+        "native-one-image-01/observer-A.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "native-one-image-01/observer-B.bt": "e798de6b7627fb6e90164793784f9e14ae1fdc1169029b82939b7a8f086d7271",
+        "native-one-image-01/observer-B.jsonl": "4cd6a848a4530bcf83a656a1127933e6af95281abbf44f8ecffe55c57c5189d8",
+        "native-one-image-01/observer-B.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "native-one-image-01/copy-helper-stdout.json": "af190cd44348cb4cfb395a8a7eae2a26432bc64fbc96b9664bf54df7cbb8f458",
+        "native-one-image-01/kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da",
+        "native-one-image-01-activation/result.json": "b08778caaf5dc2b0b5aaadc10f39685c7f56a3a1f2447d61b56ec9f4c406e6f1",
+        "native-one-image-01-activation/controller-plan.json": "e69fb8d3d4d3c88025b131f505de9cd6e5ac8ef0c2c480154236124be436ca39",
+        "native-one-image-01-activation/stable-debug-before.json": "bb422c617d01eee50ea58fcfc3c3390373b5a42a4dac410d330fd7659464b714",
+        "native-one-image-01-activation/candidate-debug-before.json": "b1351224bd47f6f60a11fe1c4a56e31fad31a2dbdc6a2a1f5dbf82ced9db487c",
+        "frozen-native-activation-plan.json": "0a5a1484de77b40750622a0ceefbb3c385747be4bfdb49d29232ee439516f410",
+        "frozen-native-controller-template.json": "c858e5dd497190f6c0edb6fac169f1f48215456ec2d8756c5cc637f1ac086a80",
+        "root-native-freeze.json": "b3389f21481d851ef8902e4be84717e5d4e2d2564902adac88380257e69e21d4",
+        "frozen-180/failure.json": "3ae10f503665d883695656b5220dfca4ed177180586232d7ddf0e232462da8fc",
+        "frozen-v2-180/failure.json": "4463d6e8748d7e55eae5fb21ff7c466a51c1f65d776117ab2be6e18286d44e1c",
+        "frozen-v3-180/manifest.json": "8508ffd6adbf6518affb110173d5d168795851ee92a39301ddeb71e8811dacf3",
+        "frozen-v3-180/plan.json": "2ae7927d67f49ee17bb4364c5b15671c59bffbc119fcbf55b2c01b00dda30da7",
+        "input-color-ab-first2-plan.json": "33080df7ab33b01736a16ab98a80f09f71cc4276164f31a508d0f7675f65deba",
+        "input-color-ab-first2/execution.json": "deb9a34f302cf416ee1962c0c963eb997a54819ad9298e115bf3886b194132d6",
+        "input-color-ab-first2/source-selection.json": "937f56b44bd30de26324939c94a7f120db5d8a33ebd73e2a40584b758fafc8e2",
+        "native-one-image-v1-unqualified.py": "26f7125f566afdd25dc032cddee9f0f4b3a1abe34757b8da961caaa4e4d96cdf",
+        "watchdog-qualification-01.json": "50239410ee35c728a3ad1e913727ab7f484fe2c3a0c382f7a3c4c719dc887fa5",
+        "watchdog-qualification-exact-02.json": "926dfdbb5940cdaedbb12c65209159a22fd5208ae59e8cd49358fb821f92cdad",
+        "native-activation-pure-controls.json": "b1b6c4e7e05296a47fc4acb491a18842171b054cbf628f5258cf6614cf0251fc"
+      }
+    },
+    {
+      "root": "/home/mache/.cache/crystalhd-window-runtime-20261030/native-observer",
+      "sha256": {
+        "abi.c": "a1fc2d342ca425ad35c8cf1fe8af1ec988831ce4990e3ea8b35aa1696bdd3014",
+        "abi.json": "e285bd3625abdcee92dae2aa7618888f6f8e48f0116e0df175108bd96e36f133",
+        "observer.py": "86bf2dc48a3d84fae85fdeb8f31ffe50e2d4b8d8657438363be252e179ef2b13",
+        "analyze.py": "92e5513ff6141f8c2c48802fca82599c4369e4d7e74287ce091ad290f524a40e",
+        "fdcopy.py": "20a85f6c5924b088f50b12ea4c74cacb21d2573ddf8476f8259e26c76b13a72c",
+        "native-cpu-01.validation.json": "3137d8bd3e22c653f022e6702bba8b2fedbb57f01b2d42c9838ead54c51bfa7c",
+        "native-cpu-01.jsonl": "8993e7b6555fc05795af61f879c94e071d12aeed24f86a181fff4470ca631395",
+        "native-cpu-01.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "native-cpu-02.validation.json": "681233d3b55c2ce2dbab6e246775f8e455c7641683a4178da1e76c2925878e0e",
+        "native-cpu-02.timing.json": "b98bd2452c799cb902e20f89a6510f4c65bb94d5e500758b687650e977e2c1dc",
+        "native-cpu-03.reader-final.json": "ae184bb97ddcb272dc98b122e55acf89d78faac5769dbb80a98bc41de673e8d8",
+        "native-cpu-03.timing.json": "bac5ab4a15c0bdf6ba567592fd198df7e786bd64a93541ace93185f509b07760",
+        "fdcopy-fakeapi-qualification-01.json": "703186c859a552f24bfc89d83b45d4311bda83c041085c35de5071a55659c0e6",
+        "synthetic-replay-controls-v1.json": "ef9984069fbc5ecdc5bd1b8d6639c8477b25b32da1feb7a519004f293880a990",
+        "synthetic-replay-controls-pre-epipe.json": "35e46182b424382bbb667015891e2b13cd7e702c73878ab9db7e0e9bb9dc3e99",
+        "synthetic-replay-controls-v3-epipe.json": "049ab4ddd6fec6b236ce277c3c20b1fb8bfdc469bb9af5fe07f77e6e0156589c",
+        "native-cpu-01.bt": "91b1428f53bead0e54ac1e976c0bf0f9fe472b9ed019ef0dcf8f5c9cfc4b5402",
+        "native-cpu-01.bt.json": "72de68588900b0370d5ad3ce7492bdf023c18097f1e00fce6f3f541d6b3445c1",
+        "native-cpu-01.ready.json": "eb9997ec2aabbde7382307956f450834254579c48abf22d9b693483c1854e4af",
+        "native-cpu-01.start": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "native-cpu-01.target.json": "baf727f9f16a03b6bfb32e8c1403c0c81e5830acddcfddca13e7c0958f3c4b1c",
+        "native-cpu-02.bt": "85fc4ed89eaf12f603b8d4d07298f6a3cc1f8f1b06eac8359362399563f3f621",
+        "native-cpu-02.bt.json": "f434feb3ab3bbdc95c26190294701bb415a5f6bfef11c4dc52ea6015de5b5a70",
+        "native-cpu-02.jsonl": "5ec4e98b98739d7053be46111b8df1a77e87e5f368530d1c0270ea98f4ea0d4e",
+        "native-cpu-02.ready.json": "d7692cf22344e3f9e882203464f4bac757d5fda61d25d6cbfd18c733864178fd",
+        "native-cpu-02.start": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "native-cpu-02.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "native-cpu-02.target.json": "9ab7540ccdecd8031ae52a476735e26ab889b3cbc22d3899ded9e7f48ab6abf1",
+        "native-cpu-02.validation-guarded.json": "681233d3b55c2ce2dbab6e246775f8e455c7641683a4178da1e76c2925878e0e",
+        "native-cpu-03.bt": "161e9dbad41784ec9f85ee29841df7dd8905c302b40482471e3775ddd553123f",
+        "native-cpu-03.bt.json": "5977c9c4e0b32cff14a4e8a6d98ba77eaf2286d86f49b07022356a0bf6ed1a7d",
+        "native-cpu-03.jsonl": "e5fe88b730c00a1a0f39fa52f115fa659d374dc533093695dcf4823d3abcc632",
+        "native-cpu-03.ready.json": "360a25d2811c68d3ec56b55f9764d2c9a78654690d22f93a91e0754e8c99bd6d",
+        "native-cpu-03.start": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "native-cpu-03.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "native-cpu-03.target.json": "2a9c5b31fe25e586c94502ea9306e62d442e62c6e02e1f4d3afb23c01b425e91",
+        "native-cpu-03.validation.json": "ae184bb97ddcb272dc98b122e55acf89d78faac5769dbb80a98bc41de673e8d8"
+      }
+    }
+  ],
+  "independent_offline_audit": {
+    "status": "PASS_SCOPED",
+    "checks": 72,
+    "artifact_hashes": 93,
+    "path": "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/native-raw/privateindependent-native-expbuf-audit-20261030.json",
+    "sha256": "11f6e2aa603fd29a1bfd34cb8c8b488f549acbfbb253576a075bc1c54b28238c",
+    "actual_EPIPE_count": 0,
+    "scope": "Independent full byte/CRC/lease/census/restoration replay; first erroneous expected-one-EPIPE assertion retained, no runtime retry."
+  }
+}
