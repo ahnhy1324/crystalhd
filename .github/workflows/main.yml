@@ -154,6 +154,9 @@ jobs:
           xvfb-run -a make settings-ui-check
           desktop-file-validate share/applications/crystalhd-settings.desktop
 
+      - name: Check Kodi settings adapter and private candidate packaging without hardware
+        run: make kodi-settings-check candidate-package-check
+
       - name: Build optional Xv output and check device-free contracts
         run: make -C filters/gst/xv-output check
 

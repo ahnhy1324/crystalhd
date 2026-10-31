@@ -10,6 +10,7 @@ application state, access hardware or reload modules. It uses only the Python st
 import argparse
 import errno
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -51,6 +52,18 @@ READER_KEYS = {
               "vaapi.i915_wc", "vaapi.debug", "vaapi.trace"),
     "player": ("player.decoder", "gstreamer.crystalhddec.scale_width",
                "player.software_output_size"),
+}
+
+# Presentation capabilities for an editor, not a replacement validator.
+# Launch-only experiments are never offered as ordinary saved activation.
+EDITOR_NATIVE_CHOICES = {
+    "libcrystalhd.rx_pool_count": (16,),
+    "vaapi.h264.mode": ("bounded", "strict"),
+    "vaapi.h264.low_latency": (False,),
+    "vaapi.h264.ready_remap": (False,),
+    "vaapi.i915_wc": (False,),
+    "vaapi.debug": (False, True),
+    "vaapi.trace": (False, True),
 }
 
 
@@ -1709,7 +1722,7 @@ def load_user_document_for_edit(path, reset=False):
 
 
 def save_user_document(path, document, expected_snapshot, system_path=None,
-                       acknowledgements=(), validate_profiles=()):
+                       acknowledgements=(), validate_profiles=(), expected_system=None):
     """Save an explicit overlay, rejecting stale cooperating local sessions.
 
     Before replacement, errors raise SchemaError and preserve existing bytes.
@@ -1723,6 +1736,8 @@ def save_user_document(path, document, expected_snapshot, system_path=None,
     data = serialize_document(document)
     candidate = parse_document(data)
     system = load_document(system_path, "system configuration", system=True)
+    if expected_system is not None and serialize_document(system) != expected_system:
+        raise SchemaError("system configuration changed; reload")
     catalog = load_preset_catalog()
     preset = _validated_preset(catalog, system, candidate, None, acknowledgements)
     resolve(system, candidate, catalog.selectable, explicit_preset=preset,
@@ -1736,6 +1751,10 @@ def save_user_document(path, document, expected_snapshot, system_path=None,
     replace_attempted, outcome_uncertain = False, False
 
     def check_current():
+        if expected_system is not None:
+            current_system = load_document(system_path, "system configuration", system=True)
+            if serialize_document(current_system) != expected_system:
+                raise SchemaError("system configuration changed; reload")
         current_directory = _directory_identity(os.fstat(directory_fd))
         if (expected_snapshot.directory_identity is not None and
                 current_directory != expected_snapshot.directory_identity):
@@ -2090,6 +2109,10 @@ def add_write_options(parser):
                         help="write only this absolute user overlay path")
     parser.add_argument("--acknowledge-risk", action="append", default=[], metavar="TOKEN",
                         help="acknowledge a selected experimental preset for this save only")
+    parser.add_argument("--expect-revision", action=SingleWriteOption, metavar="SHA256",
+                        help="reject edits if the editor's saved inputs changed")
+    parser.add_argument("--editor-safe", action="store_true",
+                        help="reject saved native requests which require an acknowledged launch")
 
 
 def make_argument_parser():
@@ -2107,6 +2130,9 @@ def make_argument_parser():
 
     installation = subparsers.add_parser("installation", help="inspect installed reader declarations without loading components")
     installation.add_argument("--format", choices=("text", "json"), default="text")
+
+    editor = subparsers.add_parser("editor-state", help="read versioned shared editor metadata as JSON; no live-state claim")
+    add_common_options(editor)
 
     run = subparsers.add_parser(
         "run", help="request supported settings for a new child; does not persist",
@@ -2318,6 +2344,12 @@ def write_arguments(arguments, environment):
                  else default_user_config(environment))
     path = _user_target_path(user_path, system_path)
     snapshot = load_user_document_for_edit(path, reset=arguments.command == "reset")
+    system = (load_document(system_path, "system configuration", system=True)
+              if arguments.expect_revision is not None or arguments.editor_safe else None)
+    if arguments.expect_revision is not None:
+        if (re.fullmatch(r"[0-9a-f]{64}", arguments.expect_revision) is None or
+                arguments.expect_revision != editor_revision(snapshot, system)):
+            raise SchemaError("saved configuration changed; reload before editing")
     profiles = ()
     if arguments.command == "reset":
         candidate = empty_document()
@@ -2330,9 +2362,93 @@ def write_arguments(arguments, environment):
         candidate = _patch_user_document(snapshot.document, arguments)
         if arguments.profile_section is not None:
             profiles = (arguments.profile_section,)
+    if arguments.editor_safe:
+        catalog = load_preset_catalog()
+        if arguments.command == "save":
+            for key, value in _parse_setting_assignments(arguments.assignments).items():
+                if key not in EDITOR_NATIVE_CHOICES or (value is not UNSET and value not in EDITOR_NATIVE_CHOICES[key]):
+                    raise SchemaError("setting is not a supported ordinary native editor choice")
+        preset = _validated_preset(catalog, system, candidate, None, ())
+        resolution = resolve(system, candidate, catalog.selectable,
+                             explicit_preset=preset, raw_environment={})
+        if editor_requires_launch(resolution, catalog):
+            raise SchemaError("saved native experiment requires an explicitly acknowledged launch")
+        for profile in profiles:
+            selected = resolve(system, candidate, catalog.selectable,
+                               explicit_preset=preset, explicit_profile=profile, raw_environment={})
+            if editor_requires_launch(selected, catalog):
+                raise SchemaError("edited profile requires an explicitly acknowledged launch")
     return save_user_document(path, candidate, snapshot, system_path=system_path,
                               acknowledgements=arguments.acknowledge_risk,
-                              validate_profiles=profiles)
+                              validate_profiles=profiles,
+                              expected_system=serialize_document(system) if system is not None else None)
+
+
+def editor_revision(snapshot, system):
+    identity = json.dumps([snapshot.path, snapshot.directory_identity,
+                           snapshot.file_identity], sort_keys=True).encode("utf-8")
+    digest = hashlib.sha256(identity + b"\0" + serialize_document(system) + b"\0")
+    digest.update(b"absent" if snapshot.original_bytes is None else b"present\0" + snapshot.original_bytes)
+    return digest.hexdigest()
+
+
+def editor_requires_launch(resolution, catalog):
+    values = resolution.requested
+    return bool(catalog.by_name[resolution.preset].required_acknowledgements or
+                values["libcrystalhd.rx_pool_count"] == 8 or
+                values["vaapi.h264.mode"] == "live" or
+                any(values[key] for key in ("vaapi.h264.low_latency", "vaapi.h264.ready_remap", "vaapi.i915_wc")))
+
+
+def editor_state(arguments, environment):
+    if arguments.no_user_config:
+        raise SchemaError("editor-state requires a user overlay target")
+    system_path = None if arguments.no_system_config else (
+        arguments.system_config if arguments.system_config is not None else SYSTEM_CONFIG)
+    path = _user_target_path(arguments.user_config if arguments.user_config is not None
+                             else default_user_config(environment), system_path)
+    system = load_document(system_path, "system configuration", system=True)
+    snapshot = load_user_document_for_edit(path)
+    user = snapshot.document
+    catalog = load_preset_catalog()
+    preset = _validated_preset(catalog, system, user, arguments.preset, arguments.acknowledge_risk)
+    raw = {} if arguments.ignore_environment else environment
+    resolution = resolve(system, user, catalog.selectable, explicit_preset=preset,
+                         explicit_profile=arguments.profile, raw_environment=raw)
+    profiles = []
+    for name in sorted(set(system.profiles) | set(user.profiles)):
+        try:
+            selected = resolve(system, user, catalog.selectable, explicit_preset=preset,
+                               explicit_profile=name, raw_environment={})
+            selectable = not editor_requires_launch(selected, catalog)
+        except SchemaError:
+            selectable = False
+        profiles.append({"name": name, "selectable": selectable,
+                         "system": name in system.profiles, "user": name in user.profiles})
+    settings = []
+    for key, choices in sorted(EDITOR_NATIVE_CHOICES.items()):
+        saved = user.settings.get(key)
+        settings.append({"key": key, "type": "boolean" if RULES[key] is boolean else
+                         getattr(RULES[key], "native_kind", "unknown"),
+                         "choices": [{"value": value, "literal": _format_value(value)} for value in choices],
+                         "saved_literal": None if saved is None else _format_value(saved),
+                         "advanced": key not in ("vaapi.h264.mode", "libcrystalhd.rx_pool_count")})
+    presets = []
+    for entry in catalog.entries:
+        native_only = entry.settings is not None and set(entry.settings) <= set(EDITOR_NATIVE_CHOICES)
+        selectable = entry.status == "SELECTABLE" and not entry.required_acknowledgements and native_only
+        presets.append({"name": entry.name, "display_name": entry.record["display_name"],
+                        "selectable": bool(selectable), "status": entry.status,
+                        "scope": "native defaults" if native_only else "other applications or unavailable"})
+    return {"format": "crystalhd-editor-state", "format_version": 1,
+            "configuration_schema": 1, "revision": editor_revision(snapshot, system),
+            "application_state": "unknown", "apply": "restart-required",
+            "saved_selectors": {key: user.metadata.get(key) for key in ("preset", "profile")},
+            "user_overlay_empty": not user.settings and not user.profiles and
+                                  not (set(user.metadata) - {"schema"}),
+            "profiles": profiles, "presets": presets, "settings": settings,
+            "configuration": make_report(resolution, not arguments.ignore_environment),
+            "scope": "Saved/requested defaults only; this process does not inspect running Kodi or seize the decoder"}
 
 
 def main(argv=None, environment=None):
@@ -2366,6 +2482,9 @@ def main(argv=None, environment=None):
         print_preset_catalog(catalog, arguments.format)
         return 0
     try:
+        if arguments.command == "editor-state":
+            print(json.dumps(editor_state(arguments, process_environment), sort_keys=True, indent=2))
+            return 0
         if arguments.command == "run":
             system, user = _argument_documents(arguments, process_environment)
             launch = prepare_launch(

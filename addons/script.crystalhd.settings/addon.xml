@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="script.crystalhd.settings" name="CrystalHD settings" version="0.1.0" provider-name="CrystalHD contributors">
+  <requires><import addon="xbmc.python" version="3.0.0"/></requires>
+  <extension point="xbmc.python.script" library="addon.py"><provides>executable</provides></extension>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Edit shared CrystalHD defaults with a remote</summary>
+    <summary lang="ko_KR">리모컨으로 CrystalHD 공통 기본 설정 편집</summary>
+    <description lang="en_GB">Optional settings editor. Saving requires a Kodi restart; running decoder state is unknown. Requires matching crystalhd-config with editor-state v1. No decoder or Kodi patches are included.</description>
+    <platform>linux</platform>
+    <license>LGPL-2.1-or-later</license>
+    <source>https://github.com/ahnhy1324/crystalhd</source>
+  </extension>
+</addon>

@@ -236,6 +236,61 @@ def load_gtk():
     return Gtk, Gdk, Gio, GLib
 
 
+_validation_entry_type = None
+
+
+def validation_entry(Gtk):
+    """Keep normal Entry accessibility while exposing a persistent error state."""
+    global _validation_entry_type
+    if _validation_entry_type is None:
+        from gi.repository import Atk
+
+        class ValidationAccessible(Gtk.EntryAccessible):
+            def do_ref_state_set(self):
+                widget = self.get_widget()
+                if widget is None:
+                    states = Atk.StateSet()
+                    states.add_state(Atk.StateType.DEFUNCT)
+                    return states
+                states = Gtk.EntryAccessible.do_ref_state_set(self)
+                if getattr(widget, "_validation_invalid", False):
+                    states.add_state(Atk.StateType.INVALID_ENTRY)
+                return states
+
+        class ValidationEntry(Gtk.Entry):
+            def __init__(self):
+                Gtk.Entry.__init__(self)
+                self.connect("destroy", self._retire_accessible)
+
+            def do_get_accessible(self):
+                accessible = getattr(self, "_validation_accessible", None)
+                if accessible is None:
+                    accessible = self._validation_accessible = ValidationAccessible()
+                    accessible.set_widget(self)
+                    # Atk.initialize accepts a gpointer, exposed by PyGObject
+                    # as a capsule. Preserve EntryAccessible's initialization.
+                    accessible.initialize(self.__gpointer__)
+                return accessible
+
+            def set_validation_error(self, error):
+                previous = getattr(self, "_validation_invalid", False)
+                self._validation_invalid = bool(error)
+                accessible = self.get_accessible()
+                if accessible.get_description() != error:
+                    accessible.set_description(error)
+                if previous != self._validation_invalid:
+                    accessible.notify_state_change(Atk.StateType.INVALID_ENTRY,
+                                                   self._validation_invalid)
+
+            def _retire_accessible(self, _widget):
+                accessible = getattr(self, "_validation_accessible", None)
+                if accessible is not None:
+                    accessible.set_widget(None)
+
+        _validation_entry_type = ValidationEntry
+    return _validation_entry_type()
+
+
 def tray_host_present(Gio, GLib):
     try:
         bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
@@ -365,7 +420,7 @@ class SettingsWindow(object):
                 ("player.software_output_size", 4, _("Software _output size"), _("Output size valu_e"), _("WIDTHxHEIGHT, for example 1920x1080"))):
             combo = self.choice(player_grid, row, label)
             self.player_controls[key] = combo
-            entry = Gtk.Entry()
+            entry = validation_entry(Gtk)
             entry.set_placeholder_text(placeholder)
             entry_label = Gtk.Label.new_with_mnemonic(value_label)
             entry_label.set_xalign(0)
@@ -786,12 +841,7 @@ class SettingsWindow(object):
         for key, label in self.player_errors.items():
             error = self.player_error_text(key) if (self.editing_profile, key) in self.pending_player else ""
             label.set_text(error)
-            accessible = self.player_entries[key].get_accessible()
-            description = error
-            # Keep focused-entry feedback available to accessibility clients.
-            # Repeated previews must not announce the same error again.
-            if accessible.get_description() != description:
-                accessible.set_description(description)
+            self.player_entries[key].set_validation_error(error)
         status = self.notice or (_("Unsaved changes") if self.has_unsaved_changes() else _("Settings loaded; running applications have not been inspected"))
         if self.readers_unknown:
             status += "\n" + _("Some inspected components do not advertise settings support; see Installation.")

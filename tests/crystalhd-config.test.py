@@ -38,6 +38,97 @@ PROVENANCE_SPEC.loader.exec_module(PROVENANCE)
 
 
 class ConfigCliTest(unittest.TestCase):
+    def editor_options(self):
+        return self.writer_options()
+
+    def test_editor_state_is_read_only_versioned_and_native_scoped(self):
+        result = self.run_cli('editor-state', *self.editor_options(), '--ignore-environment')
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        report = json.loads(result.stdout)
+        self.assertEqual((report['format'], report['format_version']), ('crystalhd-editor-state', 1))
+        self.assertEqual(report['apply'], 'restart-required')
+        self.assertEqual(report['application_state'], 'unknown')
+        self.assertFalse(self.user_file.exists())
+        self.assertRegex(report['revision'], r'^[0-9a-f]{64}$')
+        presets = {item['name']: item['selectable'] for item in report['presets']}
+        self.assertTrue(presets['default'])
+        self.assertFalse(presets['quality'])
+        self.assertFalse(presets['streaming'])
+        mode = next(item for item in report['settings'] if item['key'] == 'vaapi.h264.mode')
+        self.assertEqual([item['value'] for item in mode['choices']], ['bounded', 'strict'])
+
+    def test_editor_state_merges_profiles_and_preserves_unset(self):
+        system = CONFIG.parse_document(b'[crystalhd]\nschema = 1\n[profile.system]\nvaapi.debug = true\n')
+        self.write_user('[crystalhd]\nschema = 1\nprofile = "desk"\n[settings]\nvaapi.debug = unset\n[profile.desk]\nvaapi.trace = true\n[profile.risky]\nvaapi.h264.mode = "live"\n')
+        args = CONFIG.make_argument_parser().parse_args(['editor-state', *self.editor_options(), '--ignore-environment'])
+        with mock.patch.object(CONFIG, 'load_document', return_value=system):
+            report = CONFIG.editor_state(args, {'HOME': str(self.root)})
+        profiles = {item['name']: item for item in report['profiles']}
+        self.assertEqual(set(profiles), {'system', 'desk', 'risky'})
+        self.assertTrue(profiles['desk']['selectable'])
+        self.assertFalse(profiles['risky']['selectable'])
+        self.assertEqual(report['saved_selectors']['profile'], 'desk')
+        debug = next(item for item in report['settings'] if item['key'] == 'vaapi.debug')
+        self.assertEqual(debug['saved_literal'], 'unset')
+
+    def test_editor_revision_rejects_user_and_system_changes(self):
+        self.write_user('[crystalhd]\nschema = 1\n')
+        report = json.loads(self.run_cli('editor-state', *self.editor_options()).stdout)
+        self.write_user('[crystalhd]\nschema = 1\n[settings]\nvaapi.trace = true\n')
+        before = self.user_file.read_bytes()
+        result = self.run_cli('save', *self.editor_options(), '--expect-revision',
+                              report['revision'], 'vaapi.debug=true')
+        self.assertEqual(result.returncode, 3)
+        self.assertIn('reload', result.stderr)
+        self.assertEqual(self.user_file.read_bytes(), before)
+        old = CONFIG.empty_document()
+        new = CONFIG.parse_document(b'[crystalhd]\nschema = 1\n[settings]\nvaapi.trace = true\n')
+        args = CONFIG.make_argument_parser().parse_args(['editor-state', *self.editor_options()])
+        with mock.patch.object(CONFIG, 'load_document', return_value=old):
+            state = CONFIG.editor_state(args, {'HOME': str(self.root)})
+        with mock.patch.object(CONFIG, 'load_document', return_value=new), mock.patch('sys.stderr', io.StringIO()):
+            status = CONFIG.main(['save', *self.editor_options(), '--expect-revision',
+                                  state['revision'], 'vaapi.debug=true'], environment={'HOME': str(self.root)})
+        self.assertEqual(status, 3)
+        self.assertEqual(self.user_file.read_bytes(), before)
+
+    def test_safe_editor_save_uses_existing_validation_and_atomic_writer(self):
+        self.write_user('[crystalhd]\nschema = 1\n[settings]\nvaapi.debug = true\n')
+        report = json.loads(self.run_cli('editor-state', *self.editor_options()).stdout)
+        result = self.run_cli('save', *self.editor_options(), '--editor-safe',
+                              '--expect-revision', report['revision'],
+                              'vaapi.h264.mode="strict"', 'vaapi.debug=unset')
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        self.assertEqual(self.user_file.stat().st_mode & 0o777, 0o600)
+        self.assertIn(b'vaapi.debug = unset', self.user_file.read_bytes())
+        self.assertEqual(self.run_cli('validate', *self.editor_options()).returncode, 0)
+        before = self.user_file.read_bytes()
+        rejected = self.run_cli('save', *self.editor_options(), '--editor-safe', 'vaapi.h264.mode="live"')
+        self.assertEqual(rejected.returncode, 3)
+        self.assertEqual(self.user_file.read_bytes(), before)
+
+    def test_safe_editor_rejects_hidden_or_inactive_experiment_edits(self):
+        self.write_user('[crystalhd]\nschema = 1\nprofile = "safe"\n[profile.safe]\nvaapi.h264.mode = "strict"\n')
+        before = self.user_file.read_bytes()
+        for extra in ([], ['--profile-section', 'future']):
+            result = self.run_cli('save', *self.writer_options(), '--editor-safe', *extra,
+                                  'vaapi.h264.mode="live"')
+            self.assertEqual(result.returncode, 3)
+            self.assertEqual(self.user_file.read_bytes(), before)
+
+    def test_editor_writer_rechecks_system_snapshot_before_replacing_user_file(self):
+        self.write_user('[crystalhd]\nschema = 1\n')
+        snapshot = self.user_snapshot()
+        candidate = CONFIG.parse_document(b'[crystalhd]\nschema = 1\n[settings]\nvaapi.debug = true\n')
+        old = CONFIG.empty_document()
+        new = CONFIG.parse_document(b'[crystalhd]\nschema = 1\n[settings]\nvaapi.trace = true\n')
+        before = self.user_file.read_bytes()
+        with mock.patch.object(CONFIG, 'load_document', side_effect=[old, new]):
+            with self.assertRaisesRegex(CONFIG.SchemaError, 'system configuration changed'):
+                CONFIG.save_user_document(str(self.user_file), candidate, snapshot,
+                                          expected_system=CONFIG.serialize_document(old))
+        self.assertEqual(self.user_file.read_bytes(), before)
+
     def test_provenance_build_id_reader_does_not_block_on_fifo(self):
         fifo = self.root / 'provenance-fifo'
         os.mkfifo(str(fifo))
@@ -2259,7 +2350,7 @@ class ConfigCliTest(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom):
                 imports.add((node.module or "").split(".")[0])
         self.assertEqual(imports, {
-            "argparse", "errno", "fcntl", "json", "os", "re", "secrets", "signal", "stat", "sys",
+            "argparse", "errno", "fcntl", "hashlib", "json", "os", "re", "secrets", "signal", "stat", "sys",
             "shlex", "shutil", "struct", "subprocess",
         })
 

@@ -16,8 +16,32 @@ crystalhd-config show-effective
 crystalhd-config explain vaapi.h264.mode --format json
 crystalhd-config list-presets
 crystalhd-config installation
+crystalhd-config editor-state
 crystalhd-config bug-report > crystalhd-config-report.json
 ```
+
+`editor-state` is a read-only JSON interface (`crystalhd-editor-state`, version
+1) for optional frontends. It reuses the shared schema, profile resolution and
+reviewed preset catalogue. It exposes system/user profile names, native editor
+choices, saved selector/override literals, requested-value origins and an input
+revision. This models the inspector process's environment; it does not attest
+to the environment, mappings or active decoder of running Kodi.
+
+An editor passes that revision to `save` or `reset` with `--expect-revision`.
+Changed saved user/system inputs reject the edit and require reload. The token
+covers saved configuration inputs, not live state or the preset catalogue.
+`--editor-safe` limits explicit edits to ordinary native choices and rejects
+selected/edited native experiments requiring an acknowledged launch. Existing
+unrelated inactive profiles are preserved. These options reuse the same atomic
+writer and do not weaken its ownership, permissions or stale-write checks.
+Exit4 means the write outcome/durability is uncertain, never ordinary success.
+
+The optional [Kodi settings add-on](addons/script.crystalhd.settings/README.md)
+provides remote/D-pad preset/profile selection and native default editing.
+Managed files remain authoritative; no add-on settings.xml store is used.
+Saving requires **restarting Kodi** with current per-component snapshots.
+Reopening only a video/context does not guarantee re-reading defaults. The UI
+does not change Kodi's decoder selection or activate launch-only experiments.
 
 `installation` (also `--format json`) and the settings window's **Installation**
 page inspect reader declarations in the PATH-selected Player and the inspector
@@ -357,7 +381,7 @@ It does not change the supported GStreamer version or QoS admission rules.
 | `crystalhdxvsink display` <!-- config-surface:gst-property:display --> | Optional Xv output plugin | Local Unix X11 display | Unset inherits `DISPLAY`; explicit local Unix display name | Optional plugin and local X11 authorization | Snapshotted for each stopped-to-started output session | **Experimental** — per-element connection; no global X11 policy change | Yes — GStreamer property; not a managed key |
 | `--scale-width PIXELS` <!-- config-surface:player-flag:--scale-width --> | `crystalhd-player.py` | BCM70015 hardware playback; selected H.264 MBAFF in the bounded 1.2 scope | `0`; otherwise even `128..1918`; interlaced H.264 requires a multiple of 16 | Requires hardware mode; also subject to coded-width/property limits | Parsed at startup and applied to each CrystalHD decoder element | **Opt-in** — hardware downscale/quality trade-off | Yes — CLI |
 | `--packed-upscale` <!-- config-surface:player-flag:--packed-upscale --> | `crystalhd-player.py` | Fused host packing/enlargement | Off | Requires `--hardware --video-output xv-async --scale-width 1280 --software-output-size 1920x1080`, GStreamer 1.28.2 and the optional `crystalhdpackedscale` plugin; actual input must be progressive YUY2 1280x720/PAR1 at50Hz with matching color/chroma | This invocation, before pipeline construction | **Experimental** — unsupported caps/metadata reject; fixed method4/two compute threads, CPU-dispatched exact arithmetic | Yes — CLI; not a saved key |
-| `--software-output-size SIZE` <!-- config-surface:player-flag:--software-output-size --> | `crystalhd-player.py` | Host resize after scaled CrystalHD output | Unset; positive even dimensions, each at most `4096`, total at most `4096x2160` pixels; `native` clears a saved resize for this invocation | Resize requires hardware mode, nonzero `--scale-width`, GStreamer `videoscale`/`capsfilter` | Pipeline construction | **Opt-in** — additional CPU use; cannot restore source detail | Yes — CLI |
+| `--software-output-size SIZE` <!-- config-surface:player-flag:--software-output-size --> | `crystalhd-player.py` | Host resize after scaled CrystalHD output | Unset; positive even dimensions, each at most `4096`, total at most `4096x2160` pixels; `native` clears a saved resize for this invocation | Resize requires hardware mode, nonzero `--scale-width`, GStreamer `videoscale`/`capsfilter`; the separately selected packed path uses its own filter and stricter admission | Pipeline construction | **Opt-in** — additional CPU use; cannot restore source detail | Yes — CLI |
 | `--subtitles FILE` <!-- config-surface:player-flag:--subtitles --> | `crystalhd-player.py` | Local playback | Unset; readable local regular file | GStreamer subtitle support for the file | Parsed before pipeline construction | **Standard** | Yes — CLI |
 | `--trace-frames FILE` <!-- config-surface:player-flag:--trace-frames --> | `crystalhd-player.py` | Hardware or software playback diagnostics | Off; new output JSON file, never overwrite an existing path | Matching native `crystalhdstagetrace` helper; no Python per-buffer tracing fallback | Create private file at startup; stop native probes and write after decoder teardown | **Opt-in** — independent pad observations, not physical display counts | Yes — CLI; invocation-only |
 | `--trace-limit RECORDS` <!-- config-surface:player-flag:--trace-limit --> | `crystalhd-player.py` | Bounded frame-trace retention | `4096`; integer `1..16384` | Requires `--trace-frames` | Set collector capacity before attachment; includes event/control records | **Opt-in** — overflow is declared while counters continue | Yes — CLI; invocation-only |

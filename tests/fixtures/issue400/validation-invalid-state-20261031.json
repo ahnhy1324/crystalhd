@@ -1,0 +1,117 @@
+{
+  "schema": 1,
+  "scope": "queried persistent AT-SPI INVALID_ENTRY, descriptions, transition-only events and fresh observers; no spoken Orca claim",
+  "receipts": [
+    {
+      "name": "source-validation-final",
+      "retained_report": "/home/mache/.cache/crystalhd-v13-packaging-run-20261031/source-validation-final.json",
+      "sha256": "4437261d141b994e637aafbc10a1525b13ae73dcbe9c61767022a05744bb7c75",
+      "status": "PASS_SCOPED_ATSPI_VALIDATION",
+      "first_failure": null,
+      "actions": 19,
+      "fresh_observer": {
+        "pid": 1272317,
+        "name": "Card width value",
+        "invalid": true
+      },
+      "cleanup": {
+        "gui": {
+          "id": 20,
+          "closed": true,
+          "workers_retired": true,
+          "config_exists": false,
+          "errors": []
+        },
+        "child_exit": 0,
+        "config_absent": true
+      },
+      "providers": [
+        {
+          "path": "/home/mache/.cache/crystalhd-v13-candidate-20261031/scripts/crystalhd-settings.py",
+          "sha256": "1cdfe1e04a1a1c2d5e46576f0b4b19ead320c42cd1c460cb1ac28086087c428d"
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-v13-candidate-20261031/scripts/crystalhd-config.py",
+          "sha256": "cf9167a071d6ce33849143bb3cf800ce4114ba55a99339fae4203b987b176e5c"
+        }
+      ],
+      "observer_sha256": "787e487f177fb9b9e181a29bcb4ef3795fb2a693ae6ac9960d0090f8f1aff291"
+    },
+    {
+      "name": "installed-korean-validation-final",
+      "retained_report": "/home/mache/.cache/crystalhd-v13-packaging-run-20261031/installed-korean-validation-final.json",
+      "sha256": "7b2f16c28f9483ad55cebb0195508dca725dfdb5713630ffb0951c86a2778917",
+      "status": "PASS_SCOPED_ATSPI_VALIDATION",
+      "first_failure": null,
+      "actions": 19,
+      "fresh_observer": {
+        "pid": 1272459,
+        "name": "\uce74\ub4dc \ub108\ube44 \uac12(A)",
+        "invalid": true
+      },
+      "cleanup": {
+        "gui": {
+          "id": 20,
+          "closed": true,
+          "workers_retired": true,
+          "config_exists": false,
+          "errors": []
+        },
+        "child_exit": 0,
+        "config_absent": true
+      },
+      "providers": [
+        {
+          "path": "/home/mache/.cache/crystalhd-v13-packaging-run-20261031/settings-stage/usr/bin/crystalhd-settings",
+          "sha256": "56d9d55eaa01f55747a4a327eda4433791f91bd886b895cf8071974be4a2b69f"
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-v13-packaging-run-20261031/settings-stage/usr/bin/crystalhd-config",
+          "sha256": "4d368a4e9c75e351c1be370e1c65c1b3f78176b92be3253861e15499b45fc09b"
+        }
+      ],
+      "observer_sha256": "787e487f177fb9b9e181a29bcb4ef3795fb2a693ae6ac9960d0090f8f1aff291"
+    },
+    {
+      "name": "atspi-invalid-state-baseline",
+      "retained_report": "/home/mache/.cache/crystalhd-v13-packaging-run-20261031/atspi-invalid-state-baseline.json",
+      "sha256": "ef2891a925ca9e121855327b089d0ab416a9d35d38633c0b19dee30baaca660b",
+      "status": "EXPECTED_INVALID_STATE_DEFECT_REPRODUCED",
+      "first_failure": null,
+      "actions": 19,
+      "fresh_observer": {
+        "pid": 1265538,
+        "name": "Card width value",
+        "invalid": false
+      },
+      "cleanup": {
+        "gui": {
+          "id": 20,
+          "closed": true,
+          "workers_retired": true,
+          "config_exists": false,
+          "errors": []
+        },
+        "child_exit": 0,
+        "config_absent": true
+      },
+      "providers": [
+        {
+          "path": "/home/mache/.cache/crystalhd-xv-port-contention-20261031/scripts/crystalhd-settings.py",
+          "sha256": "2926b24f09f81c473e2bd2f20c647dc4e44dafd643595e7f211da7e8072000f2"
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-xv-port-contention-20261031/scripts/crystalhd-config.py",
+          "sha256": "aed07b6ec1bd22b7efa386718b02c85d923c2ac26311fca73f6b75e168f0d626"
+        }
+      ],
+      "observer_sha256": "bcca11c59f5ab3637f8a11c7096324e695b21100407d4235965f38f075ad7f9f"
+    }
+  ],
+  "current_source_files": {
+    "scripts/crystalhd-settings.py": "1cdfe1e04a1a1c2d5e46576f0b4b19ead320c42cd1c460cb1ac28086087c428d",
+    "scripts/crystalhd-config.py": "cf9167a071d6ce33849143bb3cf800ce4114ba55a99339fae4203b987b176e5c",
+    "tests/crystalhd-settings-atspi.test.py": "787e487f177fb9b9e181a29bcb4ef3795fb2a693ae6ac9960d0090f8f1aff291"
+  },
+  "historical_description_only_receipt_preserved": true
+}

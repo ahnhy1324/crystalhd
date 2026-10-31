@@ -162,6 +162,21 @@ settings-ui-check:
 	$(PYTHON3) -B tests/crystalhd-settings-gtk.test.py
 	dbus-run-session -- $(PYTHON3) -B tests/crystalhd-settings-tray.test.py
 
+.PHONY: kodi-settings-check kodi-settings-package candidate-package-check package-candidate
+kodi-settings-check:
+	$(PYTHON3) -B tests/kodi-settings.test.py
+
+candidate-package-check:
+	$(PYTHON3) -B tests/package-candidate.test.py
+
+kodi-settings-package:
+	$(PYTHON3) -B scripts/package-kodi-settings.py --output "$(KODI_PACKAGE)"
+
+# Local review artifacts only. The exact HEAD must be committed; no tag, upload,
+# installation, master merge or native-backend promotion is performed.
+package-candidate:
+	$(PYTHON3) -B scripts/package-candidate.py --output-dir "$(PACKAGE_DIR)"
+
 .PHONY: runtime-install-check
 runtime-install-check:
 	$(PYTHON3) -B tests/runtime-install.test.py
@@ -311,7 +326,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv tests/maintenance-oracl
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
 	sh tests/phase1-release-gate.sh manifest-check tests/maintenance-oracle.tsv
 
-check: runtime-preflight-check runtime-install-check kodi-compat-check ffmpeg-compat-check native-picture-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
+check: kodi-settings-check candidate-package-check runtime-preflight-check runtime-install-check kodi-compat-check ffmpeg-compat-check native-picture-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check

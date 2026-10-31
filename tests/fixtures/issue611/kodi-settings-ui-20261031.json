@@ -1,0 +1,105 @@
+{
+  "schema": 1,
+  "status": "PASS_SCOPED_KODI_SETTINGS_UI",
+  "scope": "stock Kodi21.3 UI only; no playback or native applied-state claim",
+  "application": {
+    "name": "Kodi",
+    "version": {
+      "major": 21,
+      "minor": 3,
+      "revision": "20260315-nogitfound",
+      "tag": "stable"
+    }
+  },
+  "binary": {
+    "path": "/usr/lib/x86_64-linux-gnu/kodi/kodi.bin",
+    "sha256": "4ea2a8cf9e639a9f46535cc8f62c61acf4a24c1f870cf75e94f3c8940447125e"
+  },
+  "zip_sha256": "1712f28d006a3e22a6c3601200a00b6912f720c262847605bc18e06f0be9001a",
+  "stock_installed_zip_files": [
+    {
+      "path": "LICENSE.txt",
+      "sha256": "32434afcc8666ba060e111d715bfdb6c2d5dd8a35fa4d3ab8ad67d8f850d2f2b"
+    },
+    {
+      "path": "README.md",
+      "sha256": "8e3594823ed5cfbc1079327714a98cc62e30bf0d7844ef8c32d57724f75024b8"
+    },
+    {
+      "path": "addon.py",
+      "sha256": "599c2c654ff0f1519c529178dd5b5476d07b2e78b72d9b1aa785d1b1677a993d"
+    },
+    {
+      "path": "addon.xml",
+      "sha256": "d13a1d4475cc2c7dbb5af0890cde58cbfef3d7c375fb449646466965ecb51439"
+    },
+    {
+      "path": "resources/__init__.py",
+      "sha256": "3bc130465c0865f955960f710315ca720a814be86093bfdd267fea6d870784a0"
+    },
+    {
+      "path": "resources/language/resource.language.en_gb/strings.po",
+      "sha256": "93f12bbe899e22d4db26b0b877a7f89de6e9d813209c5d0775d207d6a97a6262"
+    },
+    {
+      "path": "resources/language/resource.language.ko_kr/strings.po",
+      "sha256": "c190d19b69359fc62376f14ecae056ec24bfc094925e1fd10af368b7a0bacbb2"
+    },
+    {
+      "path": "resources/lib/__init__.py",
+      "sha256": "3bc130465c0865f955960f710315ca720a814be86093bfdd267fea6d870784a0"
+    },
+    {
+      "path": "resources/lib/controller.py",
+      "sha256": "9f5cd8f1104127111a390cced91591b8e2ed2caf4af545f860718b00b48df22e"
+    }
+  ],
+  "input": "actual Kodi directional/Select/Back RPC",
+  "checks": {
+    "native_zip_install": {
+      "addonid": "script.crystalhd.settings",
+      "enabled": true,
+      "path": "/home/mache/.cache/crystalhd-v13-packaging-run-20261031/kodi-ui-02/profile/addons/script.crystalhd.settings/",
+      "type": "xbmc.python.script",
+      "version": "0.1.0"
+    },
+    "back_discards_without_save": true,
+    "declined_save_does_not_write": true,
+    "default_saved": "614762e10dac4d69e3eec625779e1c51e54522d2c51f1f5dcbc1d4d0e0e3a41a",
+    "global_reset": "31e0b871bd942eef43a56f1efc706064d1b362aa85ca046ba7d31e2c3ea4b3b9",
+    "debug_saved_for_new_process": "235475923233b26bd1581d6fb24d0e15964c50e92cc054ca6850ed0b2827e96c",
+    "no_independent_settings_xml": true
+  },
+  "normal_exit": 0,
+  "seconds": 47.073193838994484,
+  "source_files": {
+    "addons/script.crystalhd.settings/README.md": "8e3594823ed5cfbc1079327714a98cc62e30bf0d7844ef8c32d57724f75024b8",
+    "addons/script.crystalhd.settings/addon.py": "599c2c654ff0f1519c529178dd5b5476d07b2e78b72d9b1aa785d1b1677a993d",
+    "addons/script.crystalhd.settings/addon.xml": "d13a1d4475cc2c7dbb5af0890cde58cbfef3d7c375fb449646466965ecb51439",
+    "addons/script.crystalhd.settings/resources/__init__.py": "3bc130465c0865f955960f710315ca720a814be86093bfdd267fea6d870784a0",
+    "addons/script.crystalhd.settings/resources/language/resource.language.en_gb/strings.po": "93f12bbe899e22d4db26b0b877a7f89de6e9d813209c5d0775d207d6a97a6262",
+    "addons/script.crystalhd.settings/resources/language/resource.language.ko_kr/strings.po": "c190d19b69359fc62376f14ecae056ec24bfc094925e1fd10af368b7a0bacbb2",
+    "addons/script.crystalhd.settings/resources/lib/__init__.py": "3bc130465c0865f955960f710315ca720a814be86093bfdd267fea6d870784a0",
+    "addons/script.crystalhd.settings/resources/lib/controller.py": "9f5cd8f1104127111a390cced91591b8e2ed2caf4af545f860718b00b48df22e"
+  },
+  "retained_session": {
+    "path": "/home/mache/.cache/crystalhd-v13-packaging-run-20261031/kodi-ui-02/session.json",
+    "sha256": "a8314e3047343118059504b9a4f3c063dd6cef038965a1cf2834c56bc31660cb"
+  },
+  "screenshots": [
+    {
+      "path": "kodi-settings-installation-20261031.png",
+      "sha256": "f4ef80f7285c7fb0ce9de843cd62eb443b1aba28e940a675c12ecf3383c456bd"
+    },
+    {
+      "path": "kodi-settings-main-20261031.png",
+      "sha256": "2c3217811fc5fa46c72fc5aa49fe3b5673e4886468192d17966714899e9087b3"
+    }
+  ],
+  "limits": [
+    "UI/configuration only; new-process native application and playback must be qualified separately",
+    "file declarations/node permissions are not live decoder state",
+    "English actual Kodi UI; Korean PO checked separately",
+    "Earlier manual harness timing/incomplete session retained, not qualified"
+  ]
+}

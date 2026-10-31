@@ -1,0 +1,148 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+msgid ""
+msgstr ""
+"Project-Id-Version: CrystalHD Kodi settings 0.1.0\n"
+"PO-Revision-Date: 2026-10-31 00:00+0000\n"
+"Last-Translator: CrystalHD contributors\n"
+"Language-Team: CrystalHD contributors\n"
+"MIME-Version: 1.0\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: en_gb\n"
+
+msgctxt "#30000"
+msgid "CrystalHD settings"
+msgstr ""
+
+msgctxt "#30001"
+msgid "Preset"
+msgstr ""
+
+msgctxt "#30002"
+msgid "Profile"
+msgstr ""
+
+msgctxt "#30003"
+msgid "Decoder defaults"
+msgstr ""
+
+msgctxt "#30004"
+msgid "Advanced / diagnostics"
+msgstr ""
+
+msgctxt "#30005"
+msgid "Saved values and origins"
+msgstr ""
+
+msgctxt "#30006"
+msgid "Installation / compatibility"
+msgstr ""
+
+msgctxt "#30007"
+msgid "Save changes — restart Kodi to apply"
+msgstr ""
+
+msgctxt "#30008"
+msgid "Restore ALL CrystalHD user defaults…"
+msgstr ""
+
+msgctxt "#30009"
+msgid "Reload saved values"
+msgstr ""
+
+msgctxt "#30010"
+msgid "Follow system selection"
+msgstr ""
+
+msgctxt "#30011"
+msgid "Follow preset/system defaults"
+msgstr ""
+
+msgctxt "#30012"
+msgid "Use built-in default"
+msgstr ""
+
+msgctxt "#30013"
+msgid "Discard unsaved changes?"
+msgstr ""
+
+msgctxt "#30014"
+msgid "Restart required; live state unknown"
+msgstr ""
+
+msgctxt "#30015"
+msgid "File declarations only. Missing/older readers may ignore saved defaults. This does not inspect the running decoder."
+msgstr ""
+
+msgctxt "#30016"
+msgid "Reload and inspect saved values before another write."
+msgstr ""
+
+msgctxt "#30017"
+msgid "Remove ALL CrystalHD user overrides and profiles, including settings for other applications? System defaults remain. Restart Kodi to apply."
+msgstr ""
+
+msgctxt "#30018"
+msgid "Save shared defaults? Restart Kodi to apply. Running playback will not be changed."
+msgstr ""
+
+msgctxt "#30019"
+msgid "Saved — restart Kodi to apply. Live decoder state is unknown."
+msgstr ""
+
+msgctxt "#30027"
+msgid "Automatic / bounded"
+msgstr ""
+
+msgctxt "#30028"
+msgid "Strict finite"
+msgstr ""
+
+msgctxt "#30029"
+msgid "On"
+msgstr ""
+
+msgctxt "#30030"
+msgid "Off"
+msgstr ""
+
+msgctxt "#30031"
+msgid "Unsaved changes"
+msgstr ""
+
+msgctxt "#30020"
+msgid "Receive buffers"
+msgstr ""
+
+msgctxt "#30021"
+msgid "H.264 input policy"
+msgstr ""
+
+msgctxt "#30022"
+msgid "Explicit prefeed request"
+msgstr ""
+
+msgctxt "#30023"
+msgid "READY remapping request"
+msgstr ""
+
+msgctxt "#30024"
+msgid "i915 write combining request"
+msgstr ""
+
+msgctxt "#30025"
+msgid "VA debug logging"
+msgstr ""
+
+msgctxt "#30026"
+msgid "VA timing trace"
+msgstr ""
+
+msgctxt "#30032"
+msgid "Device node visible and accessible; decoding has not been tested."
+msgstr ""
+
+msgctxt "#30033"
+msgid "Device node missing or inaccessible. Defaults can still be saved; usable hardware is not confirmed."
+msgstr ""

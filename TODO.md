@@ -19,6 +19,29 @@ scope to general full-rate FHD or hardware deinterlacing.
 
 ## Current priorities — 2026-10-31
 
+Private v1.3 preparation now uses `integrate/v1.3-candidate-20261031`, combining
+remote Xv/maintenance `e94b392` and MPEG-1 `f7d9f5d` at merge `0ea0862`.
+The CI conflict retains all DIL sanitizer, VPP observer, MPEG-1 and Xv gates.
+Native Kodi-driver and compilerless FFmpeg-runtime research remain separate
+lineages; their old CI is not combined-source qualification. Follow
+[private candidate packaging](RELEASING.md#private-v13-candidate-preparation)
+for exact-commit source/ZIP artifacts and artifact-specific validation.
+The optional Kodi settings frontend is tracked in #611, sharing #400's core;
+runtime reload/IPC is separate. Remaining research issues are scoped limitations,
+not automatically mandatory v1.3 features.
+
+- [x] #400 persistent queried validation state and fresh AT-SPI observers in
+  source English/installed Korean; GTK31 includes accessible retirement.
+  [Evidence](tests/fixtures/issue400/validation-invalid-state-20261031.json).
+- [x] #611 shared CLI editor-state/safe transactional writes, optional native
+  Kodi dialogs and reproducible ZIP; actual stock21.3 ZIP/D-pad save/cancel/reset
+  and normal exit. [Evidence](tests/fixtures/issue611/kodi-settings-ui-20261031.json).
+- [ ] Qualify saved defaults in a new Kodi process with the updated own VA/DIL,
+  preserve ordinary playback and archive-specific build/staging/rollback receipts.
+- [ ] Record exact combined-head hosted CI and final private package hashes.
+
+Earlier checkpoint (preserved with its original qualification):
+
 #594 is merged into the experimental `feat/gst-xv-output` base at `9b85e41`.
 Its fresh parent CI passes15/15 on tested merge `6259ce9`, tree `6f3b605`.
 Master remains `04fb465`; releases/default output are unchanged. The current
@@ -54,8 +77,9 @@ hosted result must be recorded separately from earlier individual runs.
   files-only proof does not qualify a clean OS or public installer (#539).
 - [x] GUI catalogue extraction/check/install and accessible editable-label
   relations:20 model/install tests,28 real GTK controls, private-bus recovery
-  and single-instance checks pass. Partial Korean translations remain fuzzy
-  and excluded from installation pending review (#400).
+  and single-instance checks pass. Korean #601 now has150 reviewed messages,
+  zero fuzzy entries, installed glyph/label/save/mnemonic/focus validation.
+  Actual spoken screen-reader use and additional desktops remain open (#400).
 
 1. Qualify the exact combined source and integrate only into the existing
    experimental base; record child/final CI independently and tidy contained
