@@ -288,6 +288,31 @@ requires the same frame count and visible-YUY2 SHA-256 on replay. This covers
 replay after EOS, not arbitrary mid-playback seeks or resolution changes. The
 hash compares two hardware runs, not hardware against a software decoder.
 
+## Optional whole-run pad PTS summary
+
+The player's opt-in `--trace-frames FILE` helper includes a per-attachment
+`pts_summary` version 1 in its schema 1 JSON. The constant-space summary covers
+every observed ordinary buffer, including after first-N truncation, rolling
+overwrite or post-trigger detail freeze. CAPS and segment state also continue
+updating. Qualification covers fixed 25/50 Hz PTS metadata in one TIME segment
+with rate/applied-rate 1, known canonical durations, complete timing and EOS.
+Unknown/VFR timing, buffer-list overlap, changed CAPS, further segments, flush,
+seek, cadence violations and arithmetic/counter overflow prevent qualification;
+identical CAPS repeats are idempotent. Gap counters describe observed timestamp
+discontinuities and do not establish physical frame loss.
+
+Audit a completed Player receipt against independently frozen source counts and
+PTS anchors with `python3 -B tests/stage-pts-audit.py trace.json expected.json`
+from the repository root. The expectation has `schema: 1` and an `attachments`
+array containing every observed pad's `stage`, `token`, expected `buffers`,
+`first_pts` and `period_ns`. The reader requires matching attachment coverage,
+EOS, successful Player completion and all qualification fields; it does not
+derive expectations from the retained detail ring or summary. `--native-only`
+is for CPU controls without Player completion evidence. Older receipts without
+the optional summary remain readable JSON and cannot establish this whole-run
+claim. The summary and auditor measure no pixels, physical presentation or A/V
+timing, and do not prove unique picture identity or source provenance.
+
 ## Optional finish-frame diagnostic
 
 Set `crystalhddec`'s `finish-trace-limit` before PLAYING, then request its
