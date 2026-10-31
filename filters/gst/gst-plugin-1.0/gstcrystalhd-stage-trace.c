@@ -40,7 +40,7 @@ typedef struct {
   gdouble proportion;
   GstClockTime qos_timestamp;
   GstClockTimeDiff diff;
-  gboolean raw_video, video_info_valid;
+  gboolean raw_video, video_info_valid, variable_fps;
   gint width, height, fps_n, fps_d, interlace_mode, field_order;
   GstVideoFormat video_format;
 } TraceRecord;
@@ -52,6 +52,36 @@ typedef struct {
   guint64 through_order, stream_generation, segment_generation, flush_generation;
   TraceRecord caps, segment;
 } TraceContext;
+typedef enum {
+  PTS_OK, PTS_CONTEXT_UNKNOWN, PTS_CAPS_UNSUPPORTED, PTS_CAPS_CHANGED,
+  PTS_STREAM_CHANGED, PTS_SEGMENT_UNSUPPORTED, PTS_SEGMENT_CHANGED,
+  PTS_FLUSH, PTS_SEEK, PTS_LIST, PTS_UNKNOWN, PTS_DURATION_UNKNOWN,
+  PTS_DURATION_INVALID, PTS_DUPLICATE, PTS_REVERSE, PTS_OFF_GRID,
+  PTS_GAP, PTS_OVERFLOW, PTS_SATURATED, PTS_AFTER_EOS, PTS_DETACHED,
+  PTS_BUFFER_GAP, PTS_BUFFER_DISCONT
+} PtsViolation;
+static const gchar *const pts_violation_names[] = {
+  "none", "context-unknown", "caps-unsupported", "caps-changed",
+  "stream-changed", "segment-unsupported", "segment-changed", "flush",
+  "seek-request", "buffer-list", "unknown-pts", "unknown-duration",
+  "invalid-duration", "duplicate", "reverse", "off-grid", "gap",
+  "arithmetic-overflow", "counter-saturation", "buffer-after-eos", "detached-before-eos",
+  "buffer-gap", "buffer-discont"
+};
+/* Independent of the detail ring: one bounded metadata accumulator per pad.
+ * "gap" describes a timestamp discontinuity, never a physical loss census. */
+typedef struct {
+  guint64 buffers, covered, unknown_pts, unknown_duration, invalid_duration;
+  guint64 unqualified_buffers, duplicate_events, reverse_events, off_grid_events;
+  guint64 gap_events, gap_steps, epochs, caps_changes, segment_events;
+  guint64 flush_events, seek_requests;
+  GstClockTime period, first_pts, last_pts, previous_pts, origin_pts;
+  gboolean have_pts, previous_valid, origin_valid, caps_supported, segment_supported;
+  gboolean arithmetic_overflow, counters_saturated;
+  PtsViolation violation;
+  guint64 violation_order, violation_ordinal;
+  GstClockTime violation_pts, violation_expected;
+} TracePtsSummary;
 typedef struct {
   GstPad *pad; /* Strong ref, moved out before probe removal. */
   gulong probe;
@@ -61,6 +91,8 @@ typedef struct {
   guint64 stream_generation, segment_generation, flush_generation;
   GstSegment segment;
   gboolean active, flushing, has_segment;
+  GstCaps *caps; /* One metadata ref; no buffer/payload references. */
+  TracePtsSummary pts_summary;
 } TraceAttachment;
 typedef struct {
   gint references;
@@ -71,6 +103,7 @@ typedef struct {
   guint capacity, retained, n_attachments, first;
   guint post_target, post_retained;
   guint64 observed, dropped, rejected_attachments, configuration_rejections;
+  guint64 seek_requests;
   guint64 overwritten, unretained_after_window, trigger_seqnum, trigger_order;
   gboolean configured, closed, saturated, attachment_limit_reached, allocation_failed;
   gboolean buffer_list_ambiguity, window, triggered, window_complete;
@@ -115,12 +148,117 @@ trace_state_ref(TraceState *state)
 static void
 trace_state_unref(TraceState *state)
 {
+  guint i;
   if (!g_atomic_int_dec_and_test(&state->references)) return;
   /* Hook destruction can run under a pad lock. It releases memory only:
    * pad refs were moved out before stop/detach removed the hooks. */
   g_free(state->records);
+  for (i = 0; i < state->n_attachments; i++)
+    if (state->attachments[i].caps) gst_caps_unref(state->attachments[i].caps);
   g_mutex_clear(&state->lock);
   g_free(state);
+}
+/* Called before next_record(): even a full/frozen ring cannot hide a violation.
+ * The upcoming order is checked rather than wrapping a saturated global count. */
+static void
+pts_violation(TraceState *state, TraceAttachment *entry, PtsViolation reason,
+              GstClockTime pts, GstClockTime expected)
+{
+  TracePtsSummary *summary = &entry->pts_summary;
+  if (summary->violation != PTS_OK) return;
+  summary->violation = reason;
+  summary->violation_order = state->observed == G_MAXUINT64 ? G_MAXUINT64 : state->observed + 1;
+  summary->violation_ordinal = entry->buffers;
+  summary->violation_pts = pts;
+  summary->violation_expected = expected;
+}
+static void
+pts_add(TraceState *state, TraceAttachment *entry, guint64 *counter, guint64 amount)
+{
+  if (amount > G_MAXUINT64 - *counter) {
+    *counter = G_MAXUINT64;
+    state->saturated = entry->pts_summary.counters_saturated = TRUE;
+    pts_violation(state, entry, PTS_SATURATED, GST_CLOCK_TIME_NONE, GST_CLOCK_TIME_NONE);
+  } else *counter += amount;
+}
+static void
+pts_boundary(TraceState *state, TraceAttachment *entry, PtsViolation reason)
+{
+  TracePtsSummary *summary = &entry->pts_summary;
+  pts_add(state, entry, &summary->epochs, 1);
+  summary->previous_valid = summary->origin_valid = FALSE;
+  pts_violation(state, entry, reason, GST_CLOCK_TIME_NONE, GST_CLOCK_TIME_NONE);
+}
+static void
+summarize_buffer(TraceState *state, TraceAttachment *entry, GstBuffer *buffer,
+                 gint running_sign, GstClockTime running_time)
+{
+  TracePtsSummary *summary = &entry->pts_summary;
+  GstClockTime pts = GST_BUFFER_PTS(buffer), duration = GST_BUFFER_DURATION(buffer);
+  gboolean context = entry->stream_generation == 1 && summary->caps_supported &&
+      summary->segment_supported && !entry->flushing && running_sign > 0;
+  pts_add(state, entry, &summary->buffers, 1);
+  if (state->saturated) {
+    summary->counters_saturated = TRUE;
+    pts_violation(state, entry, PTS_SATURATED, pts, GST_CLOCK_TIME_NONE);
+  }
+  if (entry->eos_count)
+    pts_violation(state, entry, PTS_AFTER_EOS, pts, GST_CLOCK_TIME_NONE);
+  if (GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_GAP))
+    pts_violation(state, entry, PTS_BUFFER_GAP, pts, GST_CLOCK_TIME_NONE);
+  if (summary->buffers > 1 && GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DISCONT))
+    pts_boundary(state, entry, PTS_BUFFER_DISCONT);
+  if (!GST_CLOCK_TIME_IS_VALID(pts)) {
+    pts_add(state, entry, &summary->unknown_pts, 1);
+    pts_violation(state, entry, PTS_UNKNOWN, pts, GST_CLOCK_TIME_NONE);
+  }
+  if (!GST_CLOCK_TIME_IS_VALID(duration)) {
+    pts_add(state, entry, &summary->unknown_duration, 1);
+    pts_violation(state, entry, PTS_DURATION_UNKNOWN, pts, GST_CLOCK_TIME_NONE);
+  } else if (summary->period && duration != summary->period) {
+    pts_add(state, entry, &summary->invalid_duration, 1);
+    pts_violation(state, entry, PTS_DURATION_INVALID, pts, GST_CLOCK_TIME_NONE);
+  }
+  if (!context)
+    pts_violation(state, entry, PTS_CONTEXT_UNKNOWN, pts, GST_CLOCK_TIME_NONE);
+  pts_add(state, entry, context && GST_CLOCK_TIME_IS_VALID(pts) &&
+      GST_CLOCK_TIME_IS_VALID(duration) && duration == summary->period ?
+      &summary->covered : &summary->unqualified_buffers, 1);
+  if (!GST_CLOCK_TIME_IS_VALID(pts)) { summary->previous_valid = FALSE; return; }
+  if (!summary->have_pts) summary->first_pts = pts;
+  summary->have_pts = TRUE; summary->last_pts = pts;
+  if (context) {
+    if (!summary->origin_valid) {
+      summary->origin_pts = pts; summary->origin_valid = TRUE;
+    } else if (pts >= summary->origin_pts && (pts - summary->origin_pts) % summary->period) {
+      pts_add(state, entry, &summary->off_grid_events, 1);
+      pts_violation(state, entry, PTS_OFF_GRID, pts, GST_CLOCK_TIME_NONE);
+    }
+    if (summary->previous_valid) {
+      GstClockTime previous = summary->previous_pts;
+      if (pts == previous) {
+        pts_add(state, entry, &summary->duplicate_events, 1);
+        pts_violation(state, entry, PTS_DUPLICATE, pts, GST_CLOCK_TIME_NONE);
+      } else if (pts < previous) {
+        pts_add(state, entry, &summary->reverse_events, 1);
+        pts_violation(state, entry, PTS_REVERSE, pts, GST_CLOCK_TIME_NONE);
+      } else if (pts - previous > summary->period) {
+        pts_add(state, entry, &summary->gap_events, 1);
+        /* Only count whole omitted cadence steps on an exact grid delta. */
+        if ((pts - previous) % summary->period == 0)
+          pts_add(state, entry, &summary->gap_steps, (pts - previous) / summary->period - 1);
+        pts_violation(state, entry, PTS_GAP, pts, previous + summary->period);
+      }
+    }
+    /* NONE is reserved, so a mathematically representable UINT64_MAX is
+     * already outside the timestamp domain. Check before any addition. */
+    if (summary->period >= GST_CLOCK_TIME_NONE - pts ||
+        summary->period >= GST_CLOCK_TIME_NONE - running_time) {
+      summary->arithmetic_overflow = TRUE;
+      pts_violation(state, entry, PTS_OVERFLOW, pts, GST_CLOCK_TIME_NONE);
+    }
+    summary->previous_pts = pts; summary->previous_valid = TRUE;
+  } else summary->previous_valid = summary->origin_valid = FALSE;
 }
 static gboolean
 ensure_records(TraceState *state)
@@ -209,9 +347,17 @@ record_buffer(TraceState *state, guint id, GstBuffer *buffer,
 {
   TraceAttachment *entry = &state->attachments[id];
   TraceRecord *record;
+  GstClockTime running_time = GST_CLOCK_TIME_NONE;
+  gint running_sign = 0;
   increment(state, list_item ? &entry->list_items : &entry->buffers);
   if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer)))
     increment(state, list_item ? &entry->list_missing_pts : &entry->missing_pts);
+  if (entry->has_segment && !entry->flushing && GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer))) {
+    running_sign = gst_segment_to_running_time_full(
+        &entry->segment, GST_FORMAT_TIME, GST_BUFFER_PTS(buffer), &running_time);
+    if (!GST_CLOCK_TIME_IS_VALID(running_time)) running_sign = 0;
+  }
+  if (!list_item) summarize_buffer(state, entry, buffer, running_sign, running_time);
   record = next_record(state, list_item ? RECORD_BUFFER_LIST_ITEM : RECORD_BUFFER, id);
   if (!record) return;
   record->pts = GST_BUFFER_PTS(buffer);
@@ -222,17 +368,39 @@ record_buffer(TraceState *state, guint id, GstBuffer *buffer,
     record->list_ordinal = entry->buffer_lists;
     record->list_index = list_index;
   }
-  if (entry->has_segment && !entry->flushing && GST_CLOCK_TIME_IS_VALID(record->pts)) {
-    record->running_sign = gst_segment_to_running_time_full(
-        &entry->segment, GST_FORMAT_TIME, record->pts, &record->running_time);
-    if (!GST_CLOCK_TIME_IS_VALID(record->running_time)) record->running_sign = 0;
+  record->running_sign = running_sign; record->running_time = running_time;
+}
+static void
+read_caps_fields(TraceRecord *record, GstCaps *caps)
+{
+  record->interlace_mode = record->field_order = -1;
+  if (gst_caps_get_size(caps) == 1) {
+    const GstStructure *structure = gst_caps_get_structure(caps, 0);
+    record->raw_video = gst_structure_has_name(structure, "video/x-raw");
+    if (record->raw_video) {
+      GstVideoInfo video;
+      gst_structure_get_int(structure, "width", &record->width);
+      gst_structure_get_int(structure, "height", &record->height);
+      gst_video_info_init(&video);
+      if (gst_video_info_from_caps(&video, caps)) {
+        record->video_info_valid = TRUE;
+        record->variable_fps = GST_VIDEO_INFO_FLAG_IS_SET(&video, GST_VIDEO_FLAG_VARIABLE_FPS);
+        record->video_format = GST_VIDEO_INFO_FORMAT(&video);
+        record->fps_n = GST_VIDEO_INFO_FPS_N(&video);
+        record->fps_d = GST_VIDEO_INFO_FPS_D(&video);
+        record->interlace_mode = GST_VIDEO_INFO_INTERLACE_MODE(&video);
+        record->field_order = GST_VIDEO_INFO_FIELD_ORDER(&video);
+      }
+    }
   }
 }
 static void
 record_event(TraceState *state, guint id, GstEvent *event)
 {
   TraceAttachment *entry = &state->attachments[id];
+  TracePtsSummary *summary = &entry->pts_summary;
   TraceRecord *record;
+  TraceRecord caps_record = {0};
   RecordKind kind;
   const GstSegment *segment = NULL;
   switch (GST_EVENT_TYPE(event)) {
@@ -240,6 +408,10 @@ record_event(TraceState *state, guint id, GstEvent *event)
       kind = RECORD_STREAM_START;
       increment(state, &entry->stream_generation);
       entry->has_segment = FALSE;
+      summary->caps_supported = summary->segment_supported = FALSE;
+      summary->previous_valid = summary->origin_valid = FALSE;
+      if (entry->stream_generation == 1) pts_add(state, entry, &summary->epochs, 1);
+      else pts_boundary(state, entry, PTS_STREAM_CHANGED);
       break;
     case GST_EVENT_SEGMENT:
       kind = RECORD_SEGMENT;
@@ -249,21 +421,55 @@ record_event(TraceState *state, guint id, GstEvent *event)
       entry->has_segment = !entry->flushing && segment->format == GST_FORMAT_TIME &&
           isfinite(segment->rate) && segment->rate != 0 &&
           isfinite(segment->applied_rate) && segment->applied_rate != 0;
+      pts_add(state, entry, &summary->segment_events, 1);
+      summary->segment_supported = !entry->flushing && segment->format == GST_FORMAT_TIME &&
+          segment->rate == 1.0 && segment->applied_rate == 1.0 &&
+          GST_CLOCK_TIME_IS_VALID(segment->start) && GST_CLOCK_TIME_IS_VALID(segment->time) &&
+          GST_CLOCK_TIME_IS_VALID(segment->base) && GST_CLOCK_TIME_IS_VALID(segment->offset);
+      if (summary->segment_events > 1) pts_boundary(state, entry, PTS_SEGMENT_CHANGED);
+      if (!summary->segment_supported)
+        pts_violation(state, entry, PTS_SEGMENT_UNSUPPORTED, GST_CLOCK_TIME_NONE, GST_CLOCK_TIME_NONE);
       break;
     case GST_EVENT_FLUSH_START:
       kind = RECORD_FLUSH_START;
       increment(state, &entry->flush_generation);
       entry->flushing = TRUE; entry->has_segment = FALSE;
+      summary->segment_supported = FALSE;
+      pts_add(state, entry, &summary->flush_events, 1);
+      pts_boundary(state, entry, PTS_FLUSH);
       break;
     case GST_EVENT_FLUSH_STOP:
       kind = RECORD_FLUSH_STOP;
       entry->flushing = FALSE; entry->has_segment = FALSE;
+      summary->segment_supported = FALSE;
+      pts_add(state, entry, &summary->flush_events, 1);
+      summary->previous_valid = summary->origin_valid = FALSE;
+      pts_violation(state, entry, PTS_FLUSH, GST_CLOCK_TIME_NONE, GST_CLOCK_TIME_NONE);
       break;
     case GST_EVENT_EOS:
       kind = RECORD_EOS; increment(state, &entry->eos_count); break;
     case GST_EVENT_QOS:
       kind = RECORD_QOS; increment(state, &entry->qos_count); break;
-    case GST_EVENT_CAPS: kind = RECORD_CAPS; break;
+    case GST_EVENT_CAPS: {
+      GstCaps *caps;
+      kind = RECORD_CAPS;
+      gst_event_parse_caps(event, &caps);
+      read_caps_fields(&caps_record, caps);
+      /* Advance live CAPS before the detail retention cutoff. */
+      if (entry->caps && !gst_caps_is_equal(entry->caps, caps)) {
+        pts_add(state, entry, &summary->caps_changes, 1);
+        pts_boundary(state, entry, PTS_CAPS_CHANGED);
+      }
+      if (entry->caps) gst_caps_unref(entry->caps);
+      entry->caps = gst_caps_ref(caps);
+      summary->caps_supported = gst_caps_is_fixed(caps) && caps_record.video_info_valid &&
+          !caps_record.variable_fps &&
+          caps_record.fps_d == 1 && (caps_record.fps_n == 25 || caps_record.fps_n == 50);
+      summary->period = summary->caps_supported ? GST_SECOND / caps_record.fps_n : 0;
+      if (!summary->caps_supported)
+        pts_violation(state, entry, PTS_CAPS_UNSUPPORTED, GST_CLOCK_TIME_NONE, GST_CLOCK_TIME_NONE);
+      break;
+    }
     default: return;
   }
   increment(state, &entry->events);
@@ -275,27 +481,14 @@ record_event(TraceState *state, guint id, GstEvent *event)
     gst_event_parse_qos(event, &record->qos_type, &record->proportion,
                         &record->diff, &record->qos_timestamp);
   if (kind == RECORD_CAPS) {
-    GstCaps *caps;
-    record->interlace_mode = record->field_order = -1;
-    gst_event_parse_caps(event, &caps);
-    if (gst_caps_get_size(caps) == 1) {
-      const GstStructure *structure = gst_caps_get_structure(caps, 0);
-      record->raw_video = gst_structure_has_name(structure, "video/x-raw");
-      if (record->raw_video) {
-        GstVideoInfo video;
-        gst_structure_get_int(structure, "width", &record->width);
-        gst_structure_get_int(structure, "height", &record->height);
-        gst_video_info_init(&video);
-        if (gst_video_info_from_caps(&video, caps)) {
-          record->video_info_valid = TRUE;
-          record->video_format = GST_VIDEO_INFO_FORMAT(&video);
-          record->fps_n = GST_VIDEO_INFO_FPS_N(&video);
-          record->fps_d = GST_VIDEO_INFO_FPS_D(&video);
-          record->interlace_mode = GST_VIDEO_INFO_INTERLACE_MODE(&video);
-          record->field_order = GST_VIDEO_INFO_FIELD_ORDER(&video);
-        }
-      }
-    }
+    record->raw_video = caps_record.raw_video;
+    record->video_info_valid = caps_record.video_info_valid;
+    record->variable_fps = caps_record.variable_fps;
+    record->video_format = caps_record.video_format;
+    record->width = caps_record.width; record->height = caps_record.height;
+    record->fps_n = caps_record.fps_n; record->fps_d = caps_record.fps_d;
+    record->interlace_mode = caps_record.interlace_mode;
+    record->field_order = caps_record.field_order;
   }
 }
 static GstPadProbeReturn
@@ -319,6 +512,8 @@ observe_pad(GstPad *pad, GstPadProbeInfo *info, gpointer data)
          * deduplicating by PTS/address would manufacture a picture census. */
         state->buffer_list_ambiguity = TRUE;
         increment(state, &state->attachments[hook->attachment].buffer_lists);
+        pts_violation(state, &state->attachments[hook->attachment], PTS_LIST,
+            GST_CLOCK_TIME_NONE, GST_CLOCK_TIME_NONE);
         for (i = 0; i < gst_buffer_list_length(list); i++)
           record_buffer(state, hook->attachment, gst_buffer_list_get(list, i), TRUE, i);
       }
@@ -382,6 +577,10 @@ trace_attach(GstCrystalHdStageTrace *self, GstPad *pad, const gchar *stage, guin
   entry = &state->attachments[id];
   entry->stage = stage_id; entry->token = token;
   entry->pad = gst_object_ref(pad); entry->active = TRUE;
+  if (state->seek_requests) {
+    entry->pts_summary.seek_requests = state->seek_requests;
+    pts_boundary(state, entry, PTS_SEEK);
+  }
   gst_segment_init(&entry->segment, GST_FORMAT_UNDEFINED);
   hook->state = trace_state_ref(state); hook->attachment = id;
   next_record(state, RECORD_ATTACH, id);
@@ -405,6 +604,8 @@ trace_detach_pad(GstCrystalHdStageTrace *self, GstPad *pad)
   for (i = 0; i < state->n_attachments; i++) {
     TraceAttachment *entry = &state->attachments[i];
     if (entry->active && entry->pad == pad) {
+      if (!entry->eos_count)
+        pts_violation(state, entry, PTS_DETACHED, GST_CLOCK_TIME_NONE, GST_CLOCK_TIME_NONE);
       next_record(state, RECORD_DETACH, i);
       entry->active = FALSE; owned = entry->pad; probe = entry->probe;
       entry->pad = NULL; entry->probe = 0;
@@ -455,6 +656,16 @@ trace_control(GstCrystalHdStageTrace *self, const gchar *name, guint64 value)
   if (state->closed || !ensure_records(state)) {
     g_mutex_unlock(&state->lock);
     return FALSE;
+  }
+  if (i == 2) {
+    guint id;
+    increment(state, &state->seek_requests);
+    for (id = 0; id < state->n_attachments; id++) {
+      TraceAttachment *entry = &state->attachments[id];
+      if (!entry->active) continue;
+      pts_add(state, entry, &entry->pts_summary.seek_requests, 1);
+      pts_boundary(state, entry, PTS_SEEK);
+    }
   }
   record = next_record(state, RECORD_CONTROL, G_MAXUINT);
   if (record) { record->control = i; record->value = value; }
@@ -545,6 +756,51 @@ append_checkpoint_record(GString *json, const TraceRecord *record)
   else append_segment_fields(json, record);
   g_string_append_c(json, '}');
 }
+static void
+append_pts_summary(GString *json, const TraceState *state, const TraceAttachment *entry)
+{
+  const TracePtsSummary *s = &entry->pts_summary;
+  gboolean qualified = state->closed && !state->saturated && !s->counters_saturated &&
+      !s->arithmetic_overflow && s->violation == PTS_OK && s->buffers &&
+      s->buffers == entry->buffers && s->covered == s->buffers && s->have_pts &&
+      s->epochs == 1 && entry->stream_generation == 1 && s->segment_events == 1 &&
+      s->caps_supported && s->segment_supported && !entry->flushing &&
+      !entry->buffer_lists && entry->eos_count == 1;
+  g_string_append_printf(json,
+      ",\"pts_summary\":{\"version\":1,\"scope\":\"whole-attachment-observation\",\"qualified\":%s,"
+      "\"buffers\":%" G_GUINT64_FORMAT ",\"covered\":%" G_GUINT64_FORMAT
+      ",\"unknown_pts\":%" G_GUINT64_FORMAT ",\"unknown_duration\":%" G_GUINT64_FORMAT
+      ",\"invalid_duration\":%" G_GUINT64_FORMAT ",\"unqualified_buffers\":%" G_GUINT64_FORMAT
+      ",\"duplicate_events\":%" G_GUINT64_FORMAT ",\"reverse_events\":%" G_GUINT64_FORMAT
+      ",\"off_grid_events\":%" G_GUINT64_FORMAT ",\"gap_events\":%" G_GUINT64_FORMAT
+      ",\"gap_steps\":%" G_GUINT64_FORMAT ",\"epochs\":%" G_GUINT64_FORMAT
+      ",\"caps_changes\":%" G_GUINT64_FORMAT ",\"segment_events\":%" G_GUINT64_FORMAT
+      ",\"flush_events\":%" G_GUINT64_FORMAT ",\"seek_requests\":%" G_GUINT64_FORMAT
+      ",\"arithmetic_overflow\":%s,\"counters_saturated\":%s,\"period_ns\":",
+      qualified ? "true" : "false", s->buffers, s->covered, s->unknown_pts, s->unknown_duration,
+      s->invalid_duration, s->unqualified_buffers, s->duplicate_events, s->reverse_events,
+      s->off_grid_events, s->gap_events, s->gap_steps, s->epochs, s->caps_changes,
+      s->segment_events, s->flush_events, s->seek_requests,
+      s->arithmetic_overflow ? "true" : "false",
+      (s->counters_saturated || state->saturated) ? "true" : "false");
+  if (s->period) append_time(json, s->period);
+  else g_string_append(json, "null");
+  g_string_append(json, ",\"first_pts\":");
+  append_time(json, s->have_pts ? s->first_pts : GST_CLOCK_TIME_NONE);
+  g_string_append(json, ",\"last_pts\":");
+  append_time(json, s->have_pts ? s->last_pts : GST_CLOCK_TIME_NONE);
+  g_string_append(json, ",\"first_violation\":");
+  if (s->violation == PTS_OK) g_string_append(json, "null");
+  else {
+    g_string_append_printf(json,
+        "{\"reason\":\"%s\",\"order\":%" G_GUINT64_FORMAT ",\"ordinal\":%" G_GUINT64_FORMAT ",\"pts\":",
+        pts_violation_names[s->violation], s->violation_order, s->violation_ordinal);
+    append_time(json, s->violation_pts);
+    g_string_append(json, ",\"expected_pts\":"); append_time(json, s->violation_expected);
+    g_string_append_c(json, '}');
+  }
+  g_string_append_c(json, '}');
+}
 static gchar *
 trace_snapshot(GstCrystalHdStageTrace *self)
 {
@@ -618,7 +874,7 @@ trace_snapshot(GstCrystalHdStageTrace *self)
         ",\"missing_pts\":%" G_GUINT64_FORMAT ",\"eos_count\":%" G_GUINT64_FORMAT
         ",\"qos_count\":%" G_GUINT64_FORMAT ",\"stream_generation\":%" G_GUINT64_FORMAT
         ",\"segment_generation\":%" G_GUINT64_FORMAT ",\"flush_generation\":%" G_GUINT64_FORMAT
-        ",\"segment_valid\":%s,\"flushing\":%s}",
+        ",\"segment_valid\":%s,\"flushing\":%s",
         i, stage_names[entry->stage], entry->token, entry->active ? "true" : "false",
         entry->buffers, entry->events, entry->buffer_lists, entry->list_items,
         entry->list_missing_pts, entry->buffer_lists ? "true" : "false",
@@ -626,6 +882,8 @@ trace_snapshot(GstCrystalHdStageTrace *self)
         entry->qos_count, entry->stream_generation, entry->segment_generation,
         entry->flush_generation, entry->has_segment ? "true" : "false",
         entry->flushing ? "true" : "false");
+    append_pts_summary(json, state, entry);
+    g_string_append_c(json, '}');
   }
   g_string_append(json, "],\"records\":[");
   for (i = 0; i < state->retained; i++) {
