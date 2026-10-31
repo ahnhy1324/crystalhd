@@ -389,13 +389,13 @@ settings-pot:
 	@set -eu; settings_messages=$$(mktemp); \
 		trap 'rm -f "$$settings_messages"' EXIT HUP INT TERM; \
 		$(SETTINGS_POT_EXTRACT) --output="$$settings_messages" scripts/crystalhd-settings.py; \
-		{ cat po/settings-header.pot; sed '1,/^$$/d' "$$settings_messages"; } > po/crystalhd-settings.pot
+		{ cat po/settings-header.pot; printf '\n'; sed '1,/^$$/d' "$$settings_messages"; } > po/crystalhd-settings.pot
 
 settings-l10n-check:
 	@set -eu; settings_check=$$(mktemp -d); \
 		trap 'rm -rf "$$settings_check"' EXIT HUP INT TERM; \
 		$(SETTINGS_POT_EXTRACT) --output="$$settings_check/messages" scripts/crystalhd-settings.py; \
-		{ cat po/settings-header.pot; sed '1,/^$$/d' "$$settings_check/messages"; } > "$$settings_check/template"; \
+		{ cat po/settings-header.pot; printf '\n'; sed '1,/^$$/d' "$$settings_check/messages"; } > "$$settings_check/template"; \
 		cmp po/crystalhd-settings.pot "$$settings_check/template" || \
 			{ printf '%s\n' 'Settings catalogue template is stale; run make settings-pot.' >&2; exit 1; }; \
 		$(PYTHON3) -B scripts/check-settings-messages.py; \
