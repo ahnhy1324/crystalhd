@@ -197,6 +197,9 @@ jobs:
           node -e 'require("ws")'
           make -j2 W=1 check KDIR="$KDIR" KVER="$KVER"
 
+      - name: Check optional experimental MPEG-1 decoder without hardware
+        run: make -C filters/gst/gst-plugin-1.0 check-experimental-mpeg1
+
       - name: Verify optional V4L2 module integration
         shell: bash
         run: |
