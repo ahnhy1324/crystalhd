@@ -955,6 +955,22 @@ LD_LIBRARY_PATH=$PWD/linux_lib/libcrystalhd \
 vainfo --display drm --device "$drm_node"
 ```
 
+Run the selected device-free ownership sanitizer check from the repository root:
+
+```sh
+make -C filters/vaapi check-ownership-sanitized
+```
+
+This instruments the existing buffer-handle regression and included production
+VA callbacks with strict ASan/UBSan/leak checks, without suppressions. It covers
+original and derived-image borrows, allocation failures and retry release. The
+executable and configuration fingerprint use a fresh temporary directory that
+is removed on completion, failure or normal interruption; ordinary outputs and
+their CPU-mode stamp are untouched. DIL entry points abort if reached, and no
+libcrystalhd build or hardware decode is required. The target requires
+`LEGACY_CPU=0` and rejects `LEGACY_CPU=1` before compilation. Broader VA
+decode/replay/VPP and legacy sanitizer coverage remain unqualified.
+
 Hardware-decode a file with FFmpeg:
 
 ```sh

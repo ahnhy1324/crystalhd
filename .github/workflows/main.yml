@@ -166,6 +166,9 @@ jobs:
           python3 -B tests/packed-sanitizer-loader.test.py
           make -C filters/gst/packed-upscale check-sanitized
 
+      - name: Sanitize selected VA ownership and buffer handle contracts
+        run: make -C filters/vaapi check-ownership-sanitized
+
       - name: Select packaged kernel headers
         run: |
           KDIR=$(find /usr/src -maxdepth 1 -type d \
