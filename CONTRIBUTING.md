@@ -107,6 +107,17 @@ evidence and scheduling remain in each problem's issue.
 
 Run relevant [developer checks](README.md#developer-checks). Hardware evidence should identify the installed components, device, test input, frame/PTS/pixel results, errors, and clean teardown. If hardware is unavailable, say **NOT RUN**; CI/build success does not prove physical playback.
 
+`make settings-ui-check` includes real GTK validation-description regressions.
+For an explicit cross-process accessibility check, with GTK3, the Atspi2 GI
+typelib and an X display available, run
+`timeout --signal=TERM 65 python3 -B tests/crystalhd-settings-atspi.test.py --source=. --report=NEW.json`.
+The helper creates its own private D-Bus session and configuration; an owned
+Xvfb is sufficient. A private installed prefix can replace `.`; use
+`LANGUAGE=ko` to test its installed Korean catalogue. The result checks remote
+entry descriptions and change events, correction and profile transitions,
+preserved drafts and normal cleanup. It does not establish spoken Orca,
+`INVALID_ENTRY` state, or general screen-reader acceptance.
+
 Maintainer release gates and support claims are tracked in [RELEASING.md](RELEASING.md).
 
 PR CI examines the complete change from its merge base. Modifications of the

@@ -1,0 +1,167 @@
+{
+  "schema": "crystalhd.issue400.validation-description.v1",
+  "base": "268984ec96e55a1b512a5e1490e1ac3edacc86a9",
+  "status": "PASS_SCOPED_GTK_AND_ATSPI_VALIDATION_FEEDBACK",
+  "defect": "Both custom Player inputs show validation errors but their focused entries expose no accessible description; Save is disabled without an associated entry description.",
+  "fix": "Publish the existing localized error as accessible description, clear to an empty string on correction/scope switch/unset, suppress repeated unchanged property updates. Validation/save/draft semantics are preserved.",
+  "controls": {
+    "baseline_real_GTK_failures": 2,
+    "fixed_GTK_tests": 30,
+    "existing_settings_model_and_schema": "configuration-check PASS; final config CLI82tests",
+    "existing_translations": "settings-l10n-check PASS; no new strings"
+  },
+  "cross_process_runs": [
+    {
+      "artifact": "a11y-atspi-red-03.json",
+      "status": "EXPECTED_DEFECT_REPRODUCED",
+      "title": "CrystalHD Settings",
+      "actions": 19,
+      "description_events": 0,
+      "direct_PID_bound": true,
+      "entry_roles": {
+        "player.software_output_size": "text",
+        "gstreamer.crystalhddec.scale_width": "text"
+      },
+      "child_exit": 0,
+      "workers_retired": true,
+      "private_configuration_written": false,
+      "providers": [
+        {
+          "path": "/home/mache/.cache/crystalhd-va-vpp-payload-observer-20261031/scripts/crystalhd-settings.py",
+          "sha256": "2bc54d101ed960c04ac8457dc200d1d3767ab3b624bbfec4d407d77f713fc59f"
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-va-vpp-payload-observer-20261031/scripts/crystalhd-config.py",
+          "sha256": "aed07b6ec1bd22b7efa386718b02c85d923c2ac26311fca73f6b75e168f0d626"
+        }
+      ],
+      "observer_sha256": "a9dce7d92afa7a099a8fc1bf3782758705ff11475931dd0d6a2c41c29eb139a2"
+    },
+    {
+      "artifact": "a11y-atspi-english-01.json",
+      "status": "PASS_SCOPED_ATSPI_DESCRIPTIONS_AND_EVENTS",
+      "title": "CrystalHD Settings",
+      "actions": 19,
+      "description_events": 12,
+      "direct_PID_bound": true,
+      "entry_roles": {
+        "player.software_output_size": "text",
+        "gstreamer.crystalhddec.scale_width": "text"
+      },
+      "child_exit": 0,
+      "workers_retired": true,
+      "private_configuration_written": false,
+      "providers": [
+        {
+          "path": "/home/mache/.cache/crystalhd-remaining-work-20261031/scripts/crystalhd-settings.py",
+          "sha256": "2926b24f09f81c473e2bd2f20c647dc4e44dafd643595e7f211da7e8072000f2"
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-remaining-work-20261031/scripts/crystalhd-config.py",
+          "sha256": "aed07b6ec1bd22b7efa386718b02c85d923c2ac26311fca73f6b75e168f0d626"
+        }
+      ],
+      "observer_sha256": "a9dce7d92afa7a099a8fc1bf3782758705ff11475931dd0d6a2c41c29eb139a2"
+    },
+    {
+      "artifact": "a11y-atspi-korean-01.json",
+      "status": "PASS_SCOPED_ATSPI_DESCRIPTIONS_AND_EVENTS",
+      "title": "CrystalHD 설정",
+      "actions": 19,
+      "description_events": 12,
+      "direct_PID_bound": true,
+      "entry_roles": {
+        "player.software_output_size": "text",
+        "gstreamer.crystalhddec.scale_width": "text"
+      },
+      "child_exit": 0,
+      "workers_retired": true,
+      "private_configuration_written": false,
+      "providers": [
+        {
+          "path": "/home/mache/.cache/crystalhd-remaining-run-20261031/korean-installed-root/usr/bin/crystalhd-settings",
+          "sha256": "e075685ee13cc60b4c8874c848c2a1b0093bf6c79f671d29d67af11f98b033e8"
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-remaining-run-20261031/korean-installed-root/usr/bin/crystalhd-config",
+          "sha256": "38a80e543f46499b2064c19e4af1d53739e05b1093f34c70796762864417454e"
+        }
+      ],
+      "observer_sha256": "a9dce7d92afa7a099a8fc1bf3782758705ff11475931dd0d6a2c41c29eb139a2"
+    }
+  ],
+  "helper_corrections_retained": [
+    "Reviewed fixture keeps nonzero card width while correcting dependent software size.",
+    "Attempt01 incorrectly applies cache-mask to entries and logs libatspi criticals despite reproducing defect.",
+    "Attempt02 application-wide cache-mask override stalls observer; own GUI expires its watchdog, verified own parent receives normal SIGTERM. Original empty report and separate failure record preserved.",
+    "Final helper uses ordinary cache policy plus per-object clear_cache and passes frozen-base RED and both fixed-language runs."
+  ],
+  "scope": {
+    "spoken_Orca_acceptance": false,
+    "INVALID_ENTRY_state_claim": false,
+    "new_runtime_dependency": false,
+    "system_configuration_or_device_change": false,
+    "external_source_or_binary_change": false
+  },
+  "sources": [
+    {
+      "path": "scripts/crystalhd-settings.py",
+      "sha256": "2926b24f09f81c473e2bd2f20c647dc4e44dafd643595e7f211da7e8072000f2"
+    },
+    {
+      "path": "tests/crystalhd-settings-gtk.test.py",
+      "sha256": "2b7918a70e3a0a1fdbce0a074a2e1bafd8331480be30399b112a60743b7987ce"
+    },
+    {
+      "path": "tests/crystalhd-settings-atspi.test.py",
+      "sha256": "a9dce7d92afa7a099a8fc1bf3782758705ff11475931dd0d6a2c41c29eb139a2"
+    }
+  ],
+  "artifacts": [
+    {
+      "name": "a11y-red.log",
+      "sha256": "3409a9c8cee01a506ee1da4e1368e0b7641cf3f739c4631eba1f8d96ee0c8883",
+      "bytes": 2613
+    },
+    {
+      "name": "settings-ui-green.log",
+      "sha256": "cb6c3e7490b924dc7658ce783fc967e779aad630727d4d46fbd341792dbbbded",
+      "bytes": 266653
+    },
+    {
+      "name": "settings-model-l10n.log",
+      "sha256": "bd4030348d25802c24f3583131f9e04cc667baff3e869a86aed3e6355543afa3",
+      "bytes": 16836
+    },
+    {
+      "name": "a11y-atspi-red-01.json",
+      "sha256": "ccd1e7d407be8823fe2fd11b59961eca9538961cc856c62178a646152be3096c",
+      "bytes": 19122
+    },
+    {
+      "name": "a11y-atspi-red-02-failure.json",
+      "sha256": "e30077073f9778a988d2265431996a9a3ceaa0395be57be958149a53c9c77165",
+      "bytes": 316
+    },
+    {
+      "name": "a11y-atspi-red-03.json",
+      "sha256": "ce208ce4c2920d6e56e2bdebc65fbb85115feafd4ea66c5b0de6ea375654670b",
+      "bytes": 19211
+    },
+    {
+      "name": "a11y-atspi-english-01.json",
+      "sha256": "dbdced3c6c62dbe1cff24bf4760d4a1cb25f31496700b0e26e25fe29d93e739e",
+      "bytes": 22339
+    },
+    {
+      "name": "a11y-atspi-korean-01.json",
+      "sha256": "aa88bacda6c31b8aac267cbbad84375c41aa5ce7de7048bc94d7e6ad554bc973",
+      "bytes": 23644
+    },
+    {
+      "name": "settings-private-install.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  ]
+}
