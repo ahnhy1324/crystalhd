@@ -7150,6 +7150,12 @@ static VAStatus SyncDecodeSurface(
         surface->trace_decode_identity == expected_decode_identity &&
         surface->trace_submission_ordinal == expected_submission_ordinal;
   };
+  const auto wait_binding_status = [&]() -> VAStatus {
+    if (canceled && canceled())
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    return same_wait_binding() ? VA_STATUS_SUCCESS
+                               : VA_STATUS_ERROR_INVALID_SURFACE;
+  };
   const auto presentation_ready = [&]() {
     return same_wait_binding() &&
         ExperimentalPresentationReadable(driver, surface.get());
@@ -7319,6 +7325,12 @@ static VAStatus SyncDecodeSurface(
       usleep(1000);
       driver_lock->lock();
     }
+    // A replacement can already be ready when the mutex is reacquired.
+    // Validate the complete captured binding before any ready fast return,
+    // including DecodeWaitState's completed-picture/context-retirement path.
+    const VAStatus binding_state = wait_binding_status();
+    if (binding_state != VA_STATUS_SUCCESS)
+      return binding_state;
     if (presentation_ready())
       return VA_STATUS_SUCCESS;
     const VAStatus resumed = DecodeWaitState(*decode, surface.get(), generation,
@@ -7335,6 +7347,9 @@ static VAStatus SyncDecodeSurface(
         return VA_STATUS_SUCCESS;
     }
   }
+  const VAStatus binding_state = wait_binding_status();
+  if (binding_state != VA_STATUS_SUCCESS)
+    return binding_state;
   return presentation_ready() ? VA_STATUS_SUCCESS
                               : DecodeSurfaceState(surface.get());
 }

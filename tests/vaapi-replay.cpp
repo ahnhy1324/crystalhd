@@ -6567,6 +6567,145 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
           "obsolete waiter cannot mutate an equal-token replacement binding");
 }
 
+static void ConcurrentSyncRejectsCompletedReplacement() {
+  for (bool remap : {false, true}) {
+    for (bool retire_old_context : {false, true}) {
+      // Rebind, unchanged-binding completion, and canceled rebind exercise
+      // distinct outcomes at the same unlocked wait boundary. In particular,
+      // a completed replacement must not bypass the captured binding checks.
+      for (unsigned int action : {0U, 1U, 2U}) {
+        const bool rebind = action != 1;
+        const bool cancel_on_resume = action == 2;
+        TeardownFixture fixture(2);
+        auto &old = *fixture.decoder;
+        old.id = 1;
+        old.generation = 1;
+        old.experimental_ready_remap = remap;
+        old.experimental_ready_delay_ns = kExperimentalDelay50Ns;
+        old.live_h264 = old.live_h264_gap_tolerant = remap;
+        old.live_h264_fast_path = old.low_latency_h264 = remap;
+
+        const auto bind = [](Surface &surface, uint64_t context,
+                             uint64_t identity, uint64_t ordinal) {
+          surface.decode_identity = surface.trace_decode_identity = identity;
+          surface.trace_context = context;
+          surface.trace_generation = 1;
+          surface.trace_submission_ordinal = ordinal;
+        };
+        const auto requested = fixture.held[1];
+        const auto old_picture = old.decoded_frames.at(2 * kTimestampStep);
+        bind(*old_picture, 1, 82, 2);
+        bind(*requested, 1, 82, 2);
+        requested->id = 2;
+        requested->decode_picture = old_picture;
+        requested->experimental_write_lease = remap;
+        requested->experimental_write_context = 1;
+        requested->experimental_write_generation = 1;
+        requested->experimental_write_submission_ordinal = 2;
+        requested->experimental_submitted_at_ns = MonotonicNowNs();
+
+        auto replacement = std::make_shared<DecodeContext>();
+        replacement->id = 2;
+        replacement->generation = 1;
+        replacement->experimental_ready_remap = remap;
+        auto candidate = std::make_shared<Surface>();
+        auto replacement_picture = std::make_shared<Surface>();
+        for (const auto &picture : {candidate, replacement_picture}) {
+          Require(picture->AllocateInternal(nullptr, -1, 16, 16,
+                                             VA_FOURCC_NV12),
+                  "allocate an independent completed replacement picture");
+          memset(picture->storage.data(), 55, picture->storage.size());
+          picture->ready = true;
+        }
+        bind(*candidate, 2, 91, 1);
+        candidate->expected_timestamp = candidate->frame_timestamp = kTimestampStep;
+        bind(*replacement_picture, 2, 92, 2);
+        replacement_picture->expected_timestamp =
+            replacement_picture->frame_timestamp = 2 * kTimestampStep;
+        replacement->decoded_frames[kTimestampStep] = candidate;
+        replacement->decoded_frames[2 * kTimestampStep] = replacement_picture;
+        if (rebind)
+          fixture.driver.contexts[2] = replacement;
+
+        bool resumed = false;
+        bool canceled = false;
+        size_t events_at_resume = 0;
+        fixture.io.on_sleep = [&] {
+          std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+          resumed = true;
+          old.retired = retire_old_context;
+          requested->ready = true;
+          requested->frame_timestamp = requested->expected_timestamp;
+          memset(requested->storage.data(), 55, requested->storage.size());
+          if (rebind) {
+            bind(*requested, 2, 92, 2);
+            requested->decode_picture = replacement_picture;
+            requested->experimental_write_context = 2;
+            QueueExperimentalReady(&fixture.driver, replacement.get(), candidate);
+          } else {
+            old_picture->ready = true;
+            old_picture->frame_timestamp = old_picture->expected_timestamp;
+            memset(old_picture->storage.data(), 55, old_picture->storage.size());
+          }
+          canceled = cancel_on_resume;
+          events_at_resume = fixture.io.events.size();
+        };
+
+        VAStatus status;
+        if (cancel_on_resume) {
+          std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+          status = SyncDecodeSurface(&fixture.driver, requested, &lock,
+                                    VA_TIMEOUT_INFINITE, [&] { return canceled; });
+        } else {
+          status = SyncSurface(&fixture.context, 2);
+        }
+        const VAStatus expected = cancel_on_resume
+            ? VA_STATUS_ERROR_OPERATION_FAILED
+            : rebind ? VA_STATUS_ERROR_INVALID_SURFACE : VA_STATUS_SUCCESS;
+        Require(resumed && status == expected,
+                cancel_on_resume
+                    ? "cancellation wins over a ready equal-token replacement"
+                    : rebind
+                    ? "obsolete sync rejects a ready equal-token replacement in a live or retired context"
+                    : "same-binding completed pixels remain valid after context retirement");
+        Require(requested->ready && !requested->failed &&
+                    requested->expected_timestamp == 2 * kTimestampStep &&
+                    requested->frame_timestamp == 2 * kTimestampStep &&
+                    std::all_of(requested->storage.begin(), requested->storage.end(),
+                                [](uint8_t value) { return value == 55; }) &&
+                    fixture.io.events.size() == events_at_resume && !fixture.io.invalid,
+                "returning waiter neither changes completed pixels nor performs later transport work");
+        if (rebind) {
+          Require(requested->decode_identity == 92 &&
+                      requested->trace_context == 2 &&
+                      requested->trace_decode_identity == 92 &&
+                      requested->decode_picture.lock() == replacement_picture &&
+                      !old_picture->ready && !old_picture->failed &&
+                      old_picture->planes[0][0] == 99 &&
+                      replacement->decoded_frames.size() == 2 &&
+                      replacement->decoded_frames.at(kTimestampStep) == candidate &&
+                      replacement->decoded_frames.at(2 * kTimestampStep) == replacement_picture &&
+                      candidate->ready && candidate->decode_identity == 91 &&
+                      candidate->frame_timestamp == kTimestampStep &&
+                      replacement_picture->ready &&
+                      replacement_picture->decode_identity == 92 &&
+                      replacement_picture->frame_timestamp == 2 * kTimestampStep &&
+                      std::all_of(candidate->storage.begin(), candidate->storage.end(),
+                                  [](uint8_t value) { return value == 55; }) &&
+                      std::all_of(replacement_picture->storage.begin(),
+                                  replacement_picture->storage.end(),
+                                  [](uint8_t value) { return value == 55; }) &&
+                      replacement->experimental_last_delivered_ordinal == 0 &&
+                      candidate->experimental_ready_queued == remap &&
+                      replacement->experimental_ready.size() == (remap ? 1U : 0U) &&
+                      (!remap || replacement->experimental_ready.front() == candidate),
+                  "obsolete waiter preserves replacement identity, picture owners and READY queue");
+        }
+      }
+    }
+  }
+}
+
 static void ExperimentalDelayedSyncThreshold() {
   {
     TeardownFixture fixture(3);
@@ -12270,6 +12409,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     if (argc == 2 && std::strcmp(argv[1], "--exact-sync-ready") == 0) {
+      ConcurrentSyncRejectsCompletedReplacement();
       ExactSyncLeavesLaterReadyOutputsQueued();
       ExperimentalReadyRetainsRxBacklogSelection();
       ExactReadySurfaceDoesNotWaitForBatchEos();
@@ -12381,6 +12521,7 @@ int main(int argc, char **argv) {
     ExperimentalLatestReadyCommitOrder();
     ExperimentalReadyRemapStateMachine();
     ConcurrentSyncObservesExperimentalPresentation();
+    ConcurrentSyncRejectsCompletedReplacement();
     ExperimentalDelayedSyncThreshold();
     DirectOutputOwnershipAndExport();
     RejectIncompleteGeometryAndInitializeAllocationPadding();
