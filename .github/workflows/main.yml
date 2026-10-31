@@ -304,6 +304,9 @@ jobs:
 
       - name: Verify MPEG-1 research admission without hardware
         run: |
+          cc -std=c11 -O2 -Wall -Wextra -Werror tests/mpeg1-chroma-convert.c \
+            -ldl -o "$RUNNER_TEMP/mpeg1-chroma-convert"
+          python3 -B tests/mpeg1-chroma-reference.py --help > /dev/null
           ffmpeg -nostdin -hide_banner -loglevel error -xerror -n \
             -f lavfi -i "nullsrc=size=352x288:rate=25,geq=lum='16+7*N':cb=128:cr=128" \
             -frames:v 30 -an -pix_fmt yuv420p -c:v mpeg1video \
