@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "status": "PASS_SCOPED_CORRECTED_PUBLIC_DRM_IMPORT_SMOKE",
+  "implementation_commit": "45847f4b0b821fe7532012dc68ed02bb848d1118",
+  "production_code_unchanged": true,
+  "production_source_sha256": "27eadb37b7ed16a58bdff06a5059ba3e601b180ac1267b88a3a709648f6e6ae3",
+  "VA_provider_sha256": "147c142e1bb6a527fcd5826651f8bfcee6e6d9667b01bf3fa9f548493e630c48",
+  "DIL_provider_sha256": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+  "test_source_sha256": "a1a77012c7eb38dfca9ed3e98a8b1c13788cad194618ee2e19d269a220e49bfb",
+  "test_binary_sha256": "8bcea3781086b07ef43c600a6b05932609f043d0b6dc546a4cc33f8814d83e9d",
+  "strict_contract": {
+    "input": [
+      "NV12"
+    ],
+    "output": [
+      "NV12",
+      "ARGB",
+      "BGRA"
+    ],
+    "exact_counts": [
+      1,
+      3
+    ]
+  },
+  "historical_expectation": {
+    "output_count": 2,
+    "result": "FAIL retained; implementation and existing CPU tests already require three formats",
+    "BGRA_implementation_origin": "32b79f2c (2026-10-24)"
+  },
+  "original_suite": {
+    "log": "/home/mache/.cache/crystalhd-v13-packaging-run-20261031/archive-vaapi-check.log",
+    "sha256": "f4e7974e04878773c2cc8918926ff8c3f51c1a317e00fa817158bb495b5a1902",
+    "overall": "FAIL at stale optional DRM smoke; preceding CPU suites pass"
+  },
+  "corrected_smoke": {
+    "log": "/home/mache/.cache/crystalhd-v13-packaging-run-20261031/vaapi-import-corrected.log",
+    "sha256": "203fefebf720df35ca3b05b689c4ef503c95898f4fec79e94ed3a8e8994221a7",
+    "exit": 0,
+    "observations": [
+      "real DRM-backed NV12 cold upload/writeback and lifetime at128x64/17x17",
+      "separate/composed PRIME2 plane pixels",
+      "all three required public output formats",
+      "actual NV12-to-ARGB video-processing path passes"
+    ]
+  },
+  "scope": "DRM import/export/readback and VPP; not CrystalHD decoding, A/V or physical presentation"
+}
