@@ -17,6 +17,42 @@ PROSE = frozenset({
     "MOONLIGHT.md", "HARDWARE-2026-09-13.md", "LICENSES.md",
 })
 CONTRACT = frozenset({"CONFIGURATION.md", "CONFIGURATION-SCHEMA.md"})
+# Reviewed userspace-only files, not broad directories or suffix rules. Only
+# ordinary modifications qualify: new/deleted/renamed files, headers, build
+# inputs and the selector/workflow itself still require the kernel matrix.
+# Both complete userspace arms continue to build the packaged-header driver.
+USERSPACE = frozenset({
+    "filters/gst/gst-plugin-1.0/gstcrystalhd.c",
+    "filters/gst/gst-plugin-1.0/gstcrystalhd-diqos.c",
+    "filters/gst/gst-plugin-1.0/gstcrystalhd-stage-trace.c",
+    "filters/vaapi/crystalhd_drv_video.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_fwdiag_if.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_fwload_if.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_if.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_int_if.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_parser.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_priv.cpp",
+    "linux_lib/libcrystalhd/libcrystalhd_raw_frame.cpp",
+    "scripts/crystalhd-player.py",
+    "tests/gstreamer-player.test.py",
+    "tests/gst-diqos.c",
+    "tests/gst-stage-trace.c", "tests/gst-stage-trace.sh",
+    "tests/vaapi-seek.test.py", "tests/vaapi-trace.test.py",
+})
+# Reviewed inputs of the standalone CPU check and its isolated sanitizer build.
+# These have no decoder/DIL/Xv build dependency. Keep even private headers and
+# the component Makefile out of this first list: build/dependency changes, X11
+# integration, additions and every unknown path still take the full route.
+# This is an exact file list, never a directory or extension exemption.
+PACKED = frozenset({
+    "filters/gst/packed-upscale/gstcrystalhdpackedscale.c",
+    "filters/gst/packed-upscale/packed-scale-engine.c",
+    "filters/gst/packed-upscale/packed-scale-test.c",
+    "filters/gst/packed-upscale/check.sh",
+    "tests/packed-sanitizer-loader.test.py",
+})
+OUTPUTS = ("heavy", "packed", "kernel", "contracts")
 
 
 def git(root, *args):
@@ -36,6 +72,8 @@ def classify(root, base, head):
     if chunks.pop() != b"" or len(chunks) % 2:
         raise ValueError("incomplete raw Git diff")
     heavy = not chunks
+    kernel = not chunks
+    packed_changed = False
     contracts = False
     files = []
     for record, path in zip(chunks[::2], chunks[1::2]):
@@ -52,28 +90,61 @@ def classify(root, base, head):
         elif plain and name in CONTRACT:
             lane = "contract"
             contracts = True
+        elif plain and name in USERSPACE:
+            lane = "userspace"
+            heavy = True
+        elif plain and name in PACKED:
+            lane = "packed"
+            packed_changed = True
+            # The inventory checks the wrapper's read-only observations too.
+            contracts = True
         else:
             heavy = True
+            kernel = True
         files.append({"path": name, "status": status, "lane": lane,
                       "old_mode": old_mode[1:], "new_mode": new_mode})
-    return {"heavy": heavy, "contracts": contracts,
-            "reason": "full required" if heavy else "reviewed documentation only",
+    # Full userspace jobs already run both packed checks. Select the standalone
+    # job only for packed changes with optional reviewed prose/contracts.
+    packed = packed_changed and not heavy
+    return {"heavy": heavy, "packed": packed, "kernel": kernel, "contracts": contracts,
+            "reason": ("full required" if kernel else "reviewed userspace only"
+                       if heavy else "reviewed packed component only" if packed
+                       else "reviewed documentation only"),
             "base": base, "head": head, "files": files}
 
 
+def select(root, event, base, head):
+    if event == "pull_request":
+        return classify(root, base, head)
+    return {"heavy": True, "packed": False, "kernel": True, "contracts": True, "files": [],
+            "reason": "full master/tag/manual route", "base": base, "head": head}
+
+
 def gate(needs):
-    expected = {"classify", "docs", "build", "upstream-kernel-api"}
-    if set(needs) != expected:
+    expected = {"classify", "docs", "build", "packed", "upstream-kernel-api"}
+    if not isinstance(needs, dict) or set(needs) != expected:
         raise ValueError("missing or unknown final-gate dependency")
+    if not all(isinstance(needs[name], dict) for name in expected):
+        raise ValueError("invalid final-gate dependency")
     if needs["classify"].get("result") != "success":
         raise ValueError("classifier did not succeed")
     outputs = needs["classify"].get("outputs", {})
-    if outputs.get("heavy") not in {"true", "false"}:
-        raise ValueError("missing/invalid lane selection")
-    if outputs.get("contracts") not in {"true", "false"}:
-        raise ValueError("missing/invalid contract selection")
-    for name in ("docs", "build", "upstream-kernel-api"):
-        required = "success" if name == "docs" or outputs["heavy"] == "true" else "skipped"
+    if not isinstance(outputs, dict):
+        raise ValueError("missing/invalid classifier outputs")
+    for name in OUTPUTS:
+        if outputs.get(name) not in ("true", "false"):
+            raise ValueError("missing/invalid " + name + " selection")
+    if outputs["kernel"] == "true" and outputs["heavy"] != "true":
+        raise ValueError("kernel matrix requires the complete userspace lane")
+    if outputs["packed"] == "true" and outputs["heavy"] == "true":
+        raise ValueError("packed checks must run in exactly one userspace lane")
+    if outputs["packed"] == "true" and outputs["contracts"] != "true":
+        raise ValueError("packed component requires configuration contracts")
+    selections = {"docs": True, "build": outputs["heavy"] == "true",
+                  "packed": outputs["packed"] == "true",
+                  "upstream-kernel-api": outputs["kernel"] == "true"}
+    for name, selected in selections.items():
+        required = "success" if selected else "skipped"
         if needs[name].get("result") != required:
             raise ValueError(name + " must be " + required)
 
@@ -93,7 +164,7 @@ def main():
     args = parser.parse_args()
     if args.command == "gate":
         gate(json.loads(os.environ["CI_NEEDS"]))
-        print("All selected CI jobs succeeded; unselected heavy jobs were skipped.")
+        print("All selected CI jobs succeeded; unselected lanes were skipped.")
         return
     root = Path(__file__).resolve().parents[1]
     base, head = os.environ.get("CI_BASE", ""), os.environ["CI_HEAD"]
@@ -101,14 +172,10 @@ def main():
         # Full push/manual/tag runs need no PR base, but still run contracts.
         docs(root, base or head, head, os.environ["CI_CONTRACTS"] == "true")
         return
-    if os.environ["CI_EVENT"] == "pull_request":
-        plan = classify(root, base, head)
-    else:
-        plan = {"heavy": True, "contracts": True, "files": [],
-                "reason": "full master/tag/manual route", "base": base, "head": head}
+    plan = select(root, os.environ["CI_EVENT"], base, head)
     print(json.dumps(plan, indent=2))
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-        for name in ("heavy", "contracts"):
+        for name in OUTPUTS:
             output.write(name + "=" + str(plan[name]).lower() + "\n")
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
         summary.write("### Selected CI plan\n\n```json\n" +

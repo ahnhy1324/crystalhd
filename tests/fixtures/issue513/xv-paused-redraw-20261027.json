@@ -1,0 +1,526 @@
+{
+  "schema": 1,
+  "issue": 513,
+  "pr": 532,
+  "date": "2026-10-27",
+  "runtime_source": "7aaec8370c0f13fba5a95557ac08d2fb7061feaa",
+  "red_test_source": "4459894abf84486c73173cb7b837e4658389fd26",
+  "scope": "Optional separately built GStreamer Xv sink only; no installed/default/shared-library/VA/kernel/firmware/PM/external-app change",
+  "root_causes": [
+    "No X11 Expose subscription, retained source or GstVideoOverlay.expose callback; original explicit expose remains1->1.",
+    "GStreamer1.28.2 BaseSink calls unlock/unlock_stop for ordinary PLAYING->PAUSED as well as flushing. Do not discard the retained picture at generic unlock."
+  ],
+  "contract": [
+    "Hold one exact last GstBuffer/info/epoch. Negotiated pool return requires the matching SHM completion AND final Gst ownership return; copied input retains the original source and uses an available completion-controlled copy.",
+    "Coalesce expose/configure/overlay requests. Reader never blocks for a ring slot or allocates a new redraw image. Source and epoch must still match at submission.",
+    "Temporary unlock suspends/cancels pending submissions but preserves the picture; FLUSH_START/CAPS/SEGMENT/error/stop invalidates it. All unrefs happen outside context lock.",
+    "video-submitted includes ordinary preroll/render calls; redraw-submitted counts repaint requests under the original PTS; their sum is submitted even on failed transport flush. Neither counts distinct source frames or scanout by itself."
+  ],
+  "red_reproduction": {
+    "source": "4459894abf84486c73173cb7b837e4658389fd26",
+    "test": "/xv/x11/paused-expose",
+    "before": 1,
+    "after": 1,
+    "outcome": "FAIL as expected; resources closed before assertion"
+  },
+  "sanitizers": {
+    "source": "7aaec8370c0f13fba5a95557ac08d2fb7061feaa",
+    "compile": "C11 O1 Wall Wextra Werror fsanitize=address,undefined fno-omit-frame-pointer",
+    "runtime": "ASan detect_leaks=1/abort_on_error=1; UBSan halt_on_error=1",
+    "exit_code": 0,
+    "passed": [
+      "/xv/identity",
+      "/xv/setup-failure",
+      "/xv/color-admission",
+      "/xv/unspecified-color-pixels",
+      "/xv/x11/reopen",
+      "/xv/x11/preroll",
+      "/xv/x11/padded-copy",
+      "/xv/x11/paused-expose",
+      "/xv/x11/paused-resize-pool",
+      "/xv/x11/paused-resize-copy",
+      "/xv/x11/partial-setup",
+      "/xv/x11/transport-reopen",
+      "/xv/x11/reentrant-error-stop",
+      "/xv/x11/two-instances",
+      "/xv/x11/caps-flush",
+      "/xv/x11/held-pool-caps",
+      "/xv/x11/submit-flush-failure",
+      "/xv/x11/quarantine"
+    ],
+    "skipped": [
+      {
+        "test": "/xv/card/error-reopen",
+        "reason": "Set CRYSTALHD_XV_TEST_FIXTURE to the qualified 50-picture interlaced H.264 fixture"
+      },
+      {
+        "test": "/xv/card/error-reopen-lifetime",
+        "reason": "Set CRYSTALHD_XV_TEST_FIXTURE to the qualified 50-picture interlaced H.264 fixture"
+      },
+      {
+        "test": "/xv/card/error-reopen-default",
+        "reason": "Set CRYSTALHD_XV_TEST_FIXTURE to the qualified 50-picture interlaced H.264 fixture"
+      },
+      {
+        "test": "/xv/card/error-reopen-mp4",
+        "reason": "Set CRYSTALHD_XV_TEST_MP4 to the qualified 180-picture high.mp4 fixture"
+      },
+      {
+        "test": "/xv/card/error-reopen-parser-policy",
+        "reason": "Set CRYSTALHD_XV_TEST_FIXTURE to the qualified 50-picture interlaced H.264 fixture"
+      }
+    ],
+    "notes": "18 device-free/X11 cases PASS, five optional card cases SKIP in this sanitizer run; actual MP4 card qualification is separate below."
+  },
+  "visible_checks": {
+    "paths": [
+      "negotiated pool",
+      "copied padded input"
+    ],
+    "actual_state": "PAUSED after real EOS, no more input; BaseSink enable-last-sample=false",
+    "checks": [
+      "Real GetImage white video/black borders; deliberately erased black -> restored white",
+      "Explicit GstVideoOverlay.expose; resize to640x360; actual X11 Expose event",
+      "Same retained GstBuffer pointer and PTS; video count unchanged during repaint",
+      "FLUSH_START/STOP suppresses stale redraw before any replacement input",
+      "Delayed matching SHM ACK prevents same-source repaint; CAPS clears that old pending repaint",
+      "Failed transport flush has one terminal retirement, no ACK, no retained picture, exact request-class sum"
+    ],
+    "scope": "Measured X-server drawable pixels on this24-bit X11/Xv adaptor; not camera/scanout or physical AV"
+  },
+  "native_mp4": {
+    "source": "7aaec8370c0f13fba5a95557ac08d2fb7061feaa",
+    "exit_code": 0,
+    "maps_verified": true,
+    "card_owned": true,
+    "before": {
+      "ref": 0,
+      "pin_net": 0,
+      "module": "3.10.13",
+      "force": "Y",
+      "session": "N",
+      "power": "on",
+      "aer": {
+        "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+        "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+        "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+      },
+      "links": {
+        "0000:02:00.0": 66,
+        "0000:00:1c.0": 66
+      }
+    },
+    "after": {
+      "ref": 0,
+      "pin_net": 0,
+      "module": "3.10.13",
+      "force": "Y",
+      "session": "N",
+      "power": "on",
+      "aer": {
+        "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+        "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+        "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+      },
+      "links": {
+        "0000:02:00.0": 66,
+        "0000:00:1c.0": 66
+      }
+    },
+    "test": "/xv/card/error-reopen-mp4",
+    "expected": "Induced output completion loss; same process/pipeline reopens three times,180 original pictures each, original monotonic PTS, EOS, live FD0 and no SHM/context left",
+    "outcome": "PASS"
+  },
+  "native_speech": {
+    "source": "7aaec8370c0f13fba5a95557ac08d2fb7061feaa",
+    "decoder_library_source": "54752a1af514eb673b563fb80b6df6600223a666",
+    "environment": "Ubuntu26.04.1LTS/kernel7.0.0-38; GStreamer1.28.2; Intel965GM X11; signed BCM70015 stablemodule3.10.13; card1280x720 -> ordinary CPU Bob50 -> UYVY Xv; real muted PulseSink audio clock",
+    "fixture": "30.037s H264/AAC speech with750 originals",
+    "runs": [
+      {
+        "name": "baseline-natural",
+        "exit_code": 0,
+        "maps_verified": true,
+        "card_owned": true,
+        "boundary_equal": true,
+        "result": {
+          "case": "baseline-natural",
+          "choice": "xv-async",
+          "source": "73c5fd546f0a21065766ef0291ea537d1458899e",
+          "fixture": "dialogue-upsampled-coded-1080i25.mkv",
+          "scale_width": 1280,
+          "software_output_size": "native",
+          "scope": "Automated native decode/output/lifetime test; Pulse stream muted; physical AV NOT RUN",
+          "viewport": [
+            960,
+            540
+          ],
+          "natural_eos": true,
+          "physical_av": "NOT RUN",
+          "stream_muted": true,
+          "control_events": [],
+          "start_mC": 61000,
+          "peak_mC": 65000,
+          "window_events": [],
+          "decorated": true,
+          "resizable": true,
+          "overlay_message_source": "crystalhdxvsink",
+          "window_sizes": [
+            [
+              960,
+              540
+            ],
+            [
+              960,
+              540
+            ],
+            [
+              960,
+              540
+            ]
+          ],
+          "clock": "GstPulseSinkClock",
+          "same_audio_clock": true,
+          "actual_sink": "crystalhdxvsink",
+          "gst_stats": {
+            "average-rate": 0.21810350749029786,
+            "dropped": 0,
+            "rendered": 1500
+          },
+          "sink_properties": {
+            "sync": true,
+            "qos": true,
+            "max-lateness": 5000000,
+            "processing-deadline": 15000000,
+            "show-preroll-frame": true
+          },
+          "xv_stats_eos": {
+            "submitted": 1501,
+            "acknowledged": 1501,
+            "terminal-retired": 0,
+            "copied-bytes": 0,
+            "pool-submitted": 1501,
+            "pending": 0,
+            "images": 6,
+            "bytes": 11059200,
+            "allocated": 6,
+            "freed": 0,
+            "failed": false,
+            "closed": false,
+            "quarantined": false
+          },
+          "early_packing": false,
+          "device_fds_after_null": 0,
+          "xv_stats_after_null": {
+            "submitted": 1501,
+            "acknowledged": 1501,
+            "terminal-retired": 0,
+            "copied-bytes": 0,
+            "pool-submitted": 1501,
+            "pending": 0,
+            "images": 0,
+            "bytes": 0,
+            "allocated": 6,
+            "freed": 6,
+            "failed": false,
+            "closed": true,
+            "quarantined": false
+          },
+          "decoded_originals": 750,
+          "health_error": null,
+          "exit_code": 0,
+          "wall_seconds": 31.616359252999246,
+          "cpu_seconds": 12.15493956,
+          "max_rss_kib": 219608
+        }
+      },
+      {
+        "name": "current-natural",
+        "exit_code": 0,
+        "maps_verified": true,
+        "card_owned": true,
+        "boundary_equal": true,
+        "result": {
+          "case": "current-natural",
+          "choice": "xv-async",
+          "source": "7aaec8370c0f13fba5a95557ac08d2fb7061feaa",
+          "fixture": "dialogue-upsampled-coded-1080i25.mkv",
+          "scale_width": 1280,
+          "software_output_size": "native",
+          "scope": "Automated native decode/output/lifetime test; Pulse stream muted; physical AV NOT RUN",
+          "viewport": [
+            960,
+            540
+          ],
+          "natural_eos": true,
+          "physical_av": "NOT RUN",
+          "stream_muted": true,
+          "control_events": [],
+          "start_mC": 65000,
+          "peak_mC": 67000,
+          "window_events": [],
+          "decorated": true,
+          "resizable": true,
+          "overlay_message_source": "crystalhdxvsink",
+          "window_sizes": [
+            [
+              960,
+              540
+            ],
+            [
+              960,
+              540
+            ],
+            [
+              960,
+              540
+            ]
+          ],
+          "clock": "GstPulseSinkClock",
+          "same_audio_clock": true,
+          "actual_sink": "crystalhdxvsink",
+          "gst_stats": {
+            "average-rate": 0.22046047997908955,
+            "dropped": 0,
+            "rendered": 1500
+          },
+          "sink_properties": {
+            "sync": true,
+            "qos": true,
+            "max-lateness": 5000000,
+            "processing-deadline": 15000000,
+            "show-preroll-frame": true
+          },
+          "xv_stats_eos": {
+            "submitted": 1501,
+            "acknowledged": 1501,
+            "video-submitted": 1501,
+            "redraw-submitted": 0,
+            "retained-picture": true,
+            "terminal-retired": 0,
+            "copied-bytes": 0,
+            "pool-submitted": 1501,
+            "pending": 0,
+            "images": 6,
+            "bytes": 11059200,
+            "allocated": 6,
+            "freed": 0,
+            "failed": false,
+            "closed": false,
+            "quarantined": false
+          },
+          "early_packing": false,
+          "device_fds_after_null": 0,
+          "xv_stats_after_null": {
+            "submitted": 1501,
+            "acknowledged": 1501,
+            "video-submitted": 1501,
+            "redraw-submitted": 0,
+            "retained-picture": false,
+            "terminal-retired": 0,
+            "copied-bytes": 0,
+            "pool-submitted": 1501,
+            "pending": 0,
+            "images": 0,
+            "bytes": 0,
+            "allocated": 6,
+            "freed": 6,
+            "failed": false,
+            "closed": true,
+            "quarantined": false
+          },
+          "decoded_originals": 750,
+          "health_error": null,
+          "exit_code": 0,
+          "wall_seconds": 31.65175979000196,
+          "cpu_seconds": 12.276130316,
+          "max_rss_kib": 219480
+        }
+      },
+      {
+        "name": "current-controls",
+        "exit_code": 0,
+        "maps_verified": true,
+        "card_owned": true,
+        "boundary_equal": true,
+        "result": {
+          "case": "current-controls",
+          "choice": "xv-async",
+          "source": "7aaec8370c0f13fba5a95557ac08d2fb7061feaa",
+          "fixture": "dialogue-upsampled-coded-1080i25.mkv",
+          "scale_width": 1280,
+          "software_output_size": "native",
+          "scope": "Automated native decode/output/lifetime test; Pulse stream muted; physical AV NOT RUN",
+          "viewport": [
+            960,
+            540
+          ],
+          "natural_eos": true,
+          "physical_av": "NOT RUN",
+          "stream_muted": true,
+          "control_events": [
+            "pause",
+            "paused-resize-expose",
+            "pause",
+            "forward",
+            "back"
+          ],
+          "start_mC": 67000,
+          "peak_mC": 69000,
+          "window_events": [],
+          "decorated": true,
+          "resizable": true,
+          "overlay_message_source": "crystalhdxvsink",
+          "window_sizes": [
+            [
+              960,
+              540
+            ],
+            [
+              960,
+              540
+            ],
+            [
+              960,
+              540
+            ],
+            [
+              800,
+              450
+            ]
+          ],
+          "paused_before": {
+            "submitted": 36,
+            "acknowledged": 36,
+            "video-submitted": 36,
+            "redraw-submitted": 0,
+            "retained-picture": true,
+            "terminal-retired": 0,
+            "copied-bytes": 0,
+            "pool-submitted": 36,
+            "pending": 0,
+            "images": 6,
+            "bytes": 11059200,
+            "allocated": 6,
+            "freed": 0,
+            "failed": false,
+            "closed": false,
+            "quarantined": false
+          },
+          "paused_after": {
+            "submitted": 38,
+            "acknowledged": 38,
+            "video-submitted": 36,
+            "redraw-submitted": 2,
+            "retained-picture": true,
+            "terminal-retired": 0,
+            "copied-bytes": 0,
+            "pool-submitted": 38,
+            "pending": 0,
+            "images": 6,
+            "bytes": 11059200,
+            "allocated": 6,
+            "freed": 0,
+            "failed": false,
+            "closed": false,
+            "quarantined": false
+          },
+          "paused_redraw_verified": true,
+          "clock": "GstPulseSinkClock",
+          "same_audio_clock": true,
+          "actual_sink": "crystalhdxvsink",
+          "gst_stats": {
+            "average-rate": 0.2311498298682494,
+            "dropped": 0,
+            "rendered": 1314
+          },
+          "sink_properties": {
+            "sync": true,
+            "qos": true,
+            "max-lateness": 5000000,
+            "processing-deadline": 15000000,
+            "show-preroll-frame": true
+          },
+          "xv_stats_eos": {
+            "submitted": 1492,
+            "acknowledged": 1492,
+            "video-submitted": 1490,
+            "redraw-submitted": 2,
+            "retained-picture": true,
+            "terminal-retired": 0,
+            "copied-bytes": 0,
+            "pool-submitted": 1492,
+            "pending": 0,
+            "images": 6,
+            "bytes": 11059200,
+            "allocated": 6,
+            "freed": 0,
+            "failed": false,
+            "closed": false,
+            "quarantined": false
+          },
+          "early_packing": false,
+          "device_fds_after_null": 0,
+          "xv_stats_after_null": {
+            "submitted": 1492,
+            "acknowledged": 1492,
+            "video-submitted": 1490,
+            "redraw-submitted": 2,
+            "retained-picture": false,
+            "terminal-retired": 0,
+            "copied-bytes": 0,
+            "pool-submitted": 1492,
+            "pending": 0,
+            "images": 6,
+            "bytes": 11059200,
+            "allocated": 6,
+            "freed": 0,
+            "failed": false,
+            "closed": true,
+            "quarantined": false
+          },
+          "decoded_originals": 754,
+          "health_error": null,
+          "exit_code": 0,
+          "wall_seconds": 35.53489817700029,
+          "cpu_seconds": 12.985219056,
+          "max_rss_kib": 226012
+        }
+      }
+    ],
+    "client_cpu_change_percent": 0.9970494332922852,
+    "interpretation": "One30-second run per version is only a bounded regression control; about1% CPU difference is not a speedup/regression certification. Controls decode754 including seek repeats;1490 cumulative ordinary calls+2 redraws are all acknowledged. The final1314 BaseSink renders are since its last reset, not a full-session/unique-frame census.",
+    "kernel_scan_exit": 0,
+    "negotiation_scope": "Identical Player/decoder settings, selected Xv plugin and SDK maps verified in each process. Complete private negotiated graphs are retained with original per-run JSON; this receipt keeps exact counts/properties/ownership results."
+  },
+  "moonlight_impact": {
+    "scope": "Recent optional GStreamer #513/#530 changes only",
+    "path": "Moonlight FFmpeg VA-API -> libcrystalhd -> kernel; neither optional GStreamer output is selected",
+    "shared_runtime_files_changed": false,
+    "installed_runtime_changed": false,
+    "actual_sunshine_retest": "NOT RUN",
+    "qualification": "Code-path isolation is verified; this is not blanket qualification of earlier shared VA/library changes."
+  },
+  "retained_non_results": [
+    {
+      "outcome": "NOT RUN",
+      "stage": "First native speech launch stopped before card open because an analysis result directory already existed; corrected distinct case names. Original private log kept."
+    }
+  ],
+  "remaining": [
+    "Continuous ten-minute acceptance remains incomplete from the earlier85C guarded stops; not repeated without changed cooling conditions.",
+    "Native i386, physical scanout, calibrated A/V offset and E2E remain unqualified. No new human AV claim for7aaec83.",
+    "Live window-handle replacement remains unimplemented. Prior raw-parser PTS failures remain unchanged.",
+    "#530 remaining swap tail and #533 nonempty STOP/START FAIL are separate."
+  ],
+  "references": [
+    {
+      "title": "GStreamer1.28.2 BaseSink PLAYING->PAUSED unlock calls",
+      "url": "https://github.com/GStreamer/gstreamer/blob/1.28.2/subprojects/gstreamer/libs/gst/base/gstbasesink.c#L5412-L5425"
+    },
+    {
+      "title": "Previous qualification and raw-parser failures",
+      "path": "xv-element-20261026.json"
+    }
+  ]
+}

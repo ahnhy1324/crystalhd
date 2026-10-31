@@ -17,87 +17,62 @@ broader performance and research remain in
 [#472](https://github.com/ahnhy1324/crystalhd/issues/472) and do not expand the
 scope to general full-rate FHD or hardware deinterlacing.
 
-## Current priorities — 2026-10-30
+## Current priorities — 2026-10-31
 
-The current review covers 18 open issues and six open PRs. Treat overlapping
-acceptance trackers as shared work, not independent implementations. Separate
-merged changes, review-ready changes and remaining acceptance. Prioritize
-confirmed user-operation failures before optional performance/backend research.
-Only CrystalHD-owned code is an implementation target; use unchanged external
-clients for new qualification and preserve prior failures and exact-source scopes.
+#594 is merged into the experimental `feat/gst-xv-output` base at `9b85e41`.
+Its fresh parent CI passes15/15 on tested merge `6259ce9`, tree `6f3b605`.
+Master remains `04fb465`; releases/default output are unchanged. The current
+integration candidate combines the own-code work below. Its final combined
+hosted result must be recorded separately from earlier individual runs.
 
-1. **Prepare the reviewed integration baseline — [#580](https://github.com/ahnhy1324/crystalhd/pull/580) → [#583](https://github.com/ahnhy1324/crystalhd/pull/583) → [#584](https://github.com/ahnhy1324/crystalhd/pull/584).**
-   All three PRs are open and review-ready with successful exact-head CI:
-   #580 has 15 jobs, #583/#584 have 14 each. They have no submitted reviews yet.
-   Review #580's Ubuntu 24.04/26.04 userspace matrix first, then the native Player
-   observer and its packing/scaling extension. #584 depends on #583. Prepare a
-   combined candidate and require its own complete CI on both userspaces;
-   individual PR passes do not qualify their combination. This is integration
-   preparation, not a recorded merge, deployment or new hardware qualification.
-2. **Find and repair the remaining natural Player loss — #510/#91/#471.**
-   Same-policy FHD failures remain 1483/1500 and 1305/1500 rendered buffers,
-   alongside successful controls. The original three-tap failure accounts for
-   four field equivalents before decoder-src and one between DI and sink;
-   these sites do not identify the cause of lateness. First add optional bounded
-   rolling capture around an actual video QoS drop. The existing first-N mode
-   remains the default: the five-tap input uses 14,276 records in 30 seconds,
-   close to the 16,384-record limit. Test a known loss after the limit, preserving
-   window context, PTS/order/epochs, counters and pixels. Then capture a natural
-   failure with thread execution, runnable-wait and I/O evidence on the same
-   timeline. Fix only a demonstrated owned-code defect/cost and repeat with
-   unchanged quality, QoS/deadlines, input, clock and output conditions. Do not
-   repeat the rejected queue/thread-count/priority pilots as a presumed fix.
-3. **Qualify ordinary unmodified-client controls — #445/#429/#436.**
-   Use current CrystalHD VA code and original stock Kodi to check seek, Stop,
-   finite EOF and same-process reopen with source-bound pixels/PTS and
-   per-object surface/borrow returns. Treat the three issues as one coordinated
-   acceptance effort while retaining each platform's separate result. Old
-   private patched-client results are historical controls, not qualification of
-   an unchanged client. Locate any violation of our API contract before changing
-   our implementation or attributing a fault elsewhere; retain tail/count FAILs.
-4. **Complete native picture and ownership evidence — #538.**
-   The sampled source-colour correction in [#579](https://github.com/ahnhy1324/crystalhd/pull/579) is qualified; broader native
-   acceptance is not. Bind full crop/YUV, original source PTS and consumption/
-   return to the same actual CAPTURE/EXPBUF object. Keep #579 → #581 on their
-   separate experimental lineage, preserving frozen baseline `2399430`;
-   neither is part of the master integration above. Selected colour samples,
-   render accepts and resource retirement do not establish full pixel identity,
-   scanout, physical A/V or a supported native backend.
-5. **Shorten the development cycle conservatively — #510, parallel work.**
-   The first CI selector and newer-userspace matrix are implemented. Remaining
-   work is component-specific lanes and selected sanitizer promotion. Require
-   both userspace versions where relevant; shared-header, workflow, unknown or
-   incomplete diffs must select complete checks. Master/tag/manual validation
-   stays full, and the final gate must account explicitly for selected/skipped
-   lanes. This work can proceed alongside the hardware investigation.
-6. **Extend accepted optional features after correctness work.**
-   #470 output-aware RX allocation and #477 centered output already have
-   integrated implementations; remaining paced A/B, format/codec/PM, ROI and
-   lifecycle checks are acceptance work, not reasons to reimplement them or
-   promote defaults. #400's core settings/GTK/tray/adapters are delivered;
-   translations, accessibility, additional adapters and broader desktop/i386
-   acceptance follow. #539's private compilerless proof is complete; clean-target
-   ABI/dependencies, user burden and a public maintenance/distribution decision
-   remain. New external FFmpeg changes are outside the current implementation
-   scope, and no public package is approved by this priority list.
-7. **Keep optional backend/hardware research deferred.**
-   #513/#532 async Xv and #530 EGL Bob retain CPU/endurance/swap-tail limits;
-   use their existing observations only when relevant to the ordinary loss
-   investigation. #532 is still draft, with no PR CI on its current head.
-   #533's failed G2 gates G3–G5, so these are dependent follow-ups. #529 MPEG-1
-   and #92/#204 hardware/ownership research follow correctness work. #472 records
-   experimental policy rather than three independent implementation tasks.
+- [x] Whole-attachment fixed25/50Hz PTS summaries and an independent expectation
+  reader:14 native groups/65 snapshots pass ordinary and ASan/UBSan/leaks,
+  reader9 and Player126 pass. The new actual300s original PCM/FHD run has7500
+  native originals and15000 DI/fused/sink observations covering the full PTS
+  grid,15000 renders/drop0, natural EOS, maximum68C, and all6 SHM images freed.
+  [Receipt](tests/fixtures/issue510/whole-pts-summary-20261031.json).
+- [x] Conservative first packed-only two-Ubuntu lane and fail-closed gate:
+  classifier30 and loader7 controls pass; #599 exercises both selected packed
+  jobs and final gate successfully with full userspace/kernel correctly skipped.
+  Other components retain conservative full validation.
+- [x] Selected real VA handle-ownership ASan/UBSan/leak target passes0failed
+  checks; four failure/cleanup controls pass and ordinary hashes/mtimes stay
+  unchanged. Broader VA/DIL sanitizers remain separate.
+- [x] Live mapped-window handoff in the opt-in own Xv sink: drain old SHM before
+  changing drawable, retain source/pool/GC identities, reject invalid targets.
+  All15 actual X11 groups pass ordinary and sanitizers. This does not qualify
+  Xv port replacement or restarting the user's X server.
+- [x] Original published Kodi progressive full-image checkpoints: all921600
+  pixels match at initial pause and seeks3s/1s (source ordinals9/90/30), RGB
+  error0, original App FFmpeg images unchanged, normal exit and retirement.
+  [Receipt](tests/fixtures/issue445/stock-full-gray-checkpoints-20261031.json).
+- [x] Original-stock TFF/BFF Bob EOF/reopen:each50 source bindings/100 distinct
+  VPP operations, vaapi-bob, natural end and clean close. Field pixels/parity/
+  chroma/outputPTS and per-object GPU return remain unqualified.
+- [x] Runtime manifest/provider/SONAME/interpreter preflight:17 controls and
+  actual retained package/Platform file inspection pass. This existing-host
+  files-only proof does not qualify a clean OS or public installer (#539).
+- [x] GUI catalogue extraction/check/install and accessible editable-label
+  relations:20 model/install tests,28 real GTK controls, private-bus recovery
+  and single-instance checks pass. Partial Korean translations remain fuzzy
+  and excluded from installation pending review (#400).
 
-BCM70012, reporter Atom/native-i386 and physical FHD/A/V acceptance require their
-actual target environments. Build/emulator/headless or render-counter evidence
-cannot replace them. Keep unavailable targets NOT RUN rather than repeatedly
-running the current host as a substitute.
-
-Already integrated: #510 shared-memory/open-close/ownership/RX-readiness fixes,
-#470's scoped allocation implementation and #400's settings frontend/core.
-Cross-process mode accuracy and concurrent close/use of one handle retain their
-recorded diagnostic/caller-contract dispositions; no fresh ordinary failure
-has established a new implementation requirement.
+1. Qualify the exact combined source and integrate only into the existing
+   experimental base; record child/final CI independently and tidy contained
+   PRs. No master/release/default promotion is implied.
+2. Continue original-client interlaced/Bob natural-EOF/field-content and actual
+   per-object return work (#445/#429/#436/#477/#538). Current progressive RGB
+   checkpoints do not prove those cases. Fix demonstrated own faults only.
+3. Continue matched repeatability, sustained/endurance, port/X-server lifecycle
+   and calibrated physical display/A/V work (#513). Preserve earlier failures;
+   different initial thermals or metadata do not establish causal speedup.
+4. Complete genuinely clean-target packaging/user burden and reviewed language/
+   assistive-technology/other-desktop acceptance when those targets exist.
+   Maintainer confirms current equipment only: no new Atom/native-i386/BCM70012
+   acceptance is inferred from this T8100/BCM70015 host.
+5. Retained MPEG1 native/planar bytes and old runtime DSOs allow an off-hardware
+   siting/conversion comparison (#529). Hardware ownership/firmware/UART/DMA
+   research (#92/#204/#533) retains its prerequisite gates and negative results.
 
 **Shutdown heap abort subtask only: ignored / wontfix (2026-10-29). #538 stays
 open.** Per maintainer direction, stop investigation/reproduction of this

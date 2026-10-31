@@ -28,7 +28,7 @@ library-check: export CRYSTALHD_CONFIG_DISABLE = 1
 library-check:
 	@set -eu; lib_test_dir=$$(mktemp -d /tmp/crystalhd-library-check.XXXXXX); \
 	trap 'rm -f "$$lib_test_dir/check"; rmdir "$$lib_test_dir"' EXIT HUP INT TERM; \
-	for lib_test in logging shmem-logging shmem-logging-disabled shmem-lifetime tx-ring flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem device-handle poll-fd capture capture-scaled fwload fw-version fwcmds raw-frame; do \
+	for lib_test in logging shmem-logging shmem-logging-disabled shmem-lifetime tx-ring tx-concurrency flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem device-handle poll-fd capture capture-scaled fwload fw-version fwcmds raw-frame; do \
 		test_extra=; \
 		test_flags=; \
 		test_file=$$lib_test; \
@@ -81,10 +81,12 @@ library-check:
 			input-format) test_wrap=-Wl,--wrap=ioctl,--wrap=malloc,--wrap=free,--wrap=posix_memalign; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_parser.cpp ;; \
 			tx-ring) test_wrap=-Wl,--wrap=pthread_mutex_lock ;; \
+			tx-concurrency) test_wrap=-Wl,--wrap=pthread_mutex_lock,--wrap=open,--wrap=openat,--wrap=ioctl; \
+				test_extra=linux_lib/libcrystalhd/libcrystalhd_int_if.cpp ;; \
 			flush) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=pthread_mutex_lock; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsReleaseInterface,--wrap=DtsFinishOutputCall,--wrap=DtsPublishOutput"; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsCommitFetchedOutput,--wrap=DtsPublishCopiedOutput" ;; \
-			tx-flush) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=pthread_mutex_unlock; \
+			tx-flush) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=pthread_mutex_lock,--wrap=pthread_mutex_unlock; \
 				test_wrap="$$test_wrap -Wl,--wrap=_Z14DtsCacheSpsPpsPvPKhj"; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsSetupHardware,--wrap=DtsOpenDecoder"; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsFlushRxCapture"; \
@@ -292,7 +294,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv tests/maintenance-oracl
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
 	sh tests/phase1-release-gate.sh manifest-check tests/maintenance-oracle.tsv
 
-check: runtime-install-check kodi-compat-check ffmpeg-compat-check native-picture-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
+check: runtime-preflight-check runtime-install-check kodi-compat-check ffmpeg-compat-check native-picture-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check
@@ -374,7 +376,50 @@ install-config: install-provenance
 			"$$helper_relative"
 
 # Optional desktop frontend; native runtime/CLI installation stays headless.
-install-settings: install-config
+# The static UTF-8 header keeps extraction reproducible without generated dates.
+XGETTEXT ?= xgettext
+MSGFMT ?= msgfmt
+SETTINGS_LOCALES := $(shell sed '/^\#/d' po/LINGUAS)
+SETTINGS_POT_EXTRACT = $(XGETTEXT) --language=Python --from-code=UTF-8 \
+	--keyword=_ --no-location \
+	--add-comments=Translators:
+
+.PHONY: settings-pot settings-l10n-check install-settings-locales uninstall-settings-locales
+settings-pot:
+	@set -eu; settings_messages=$$(mktemp); \
+		trap 'rm -f "$$settings_messages"' EXIT HUP INT TERM; \
+		$(SETTINGS_POT_EXTRACT) --output="$$settings_messages" scripts/crystalhd-settings.py; \
+		{ cat po/settings-header.pot; printf '\n'; sed '1,/^$$/d' "$$settings_messages"; } > po/crystalhd-settings.pot
+
+settings-l10n-check:
+	@set -eu; settings_check=$$(mktemp -d); \
+		trap 'rm -rf "$$settings_check"' EXIT HUP INT TERM; \
+		$(SETTINGS_POT_EXTRACT) --output="$$settings_check/messages" scripts/crystalhd-settings.py; \
+		{ cat po/settings-header.pot; printf '\n'; sed '1,/^$$/d' "$$settings_check/messages"; } > "$$settings_check/template"; \
+		cmp po/crystalhd-settings.pot "$$settings_check/template" || \
+			{ printf '%s\n' 'Settings catalogue template is stale; run make settings-pot.' >&2; exit 1; }; \
+		$(PYTHON3) -B scripts/check-settings-messages.py; \
+		for locale in $(SETTINGS_LOCALES); do \
+			$(MSGFMT) --check --check-accelerators=_ --use-fuzzy \
+				--output-file=/dev/null "po/$$locale.po"; \
+		done
+
+install-settings-locales:
+	@set -eu; umask 022; settings_mo=$$(mktemp); \
+		trap 'rm -f "$$settings_mo"' EXIT HUP INT TERM; \
+		for locale in $(SETTINGS_LOCALES); do \
+			$(MSGFMT) --check --check-accelerators=_ --output-file="$$settings_mo" "po/$$locale.po"; \
+			install -D -m 0644 "$$settings_mo" \
+				"$(DESTDIR)$(DATADIR)/locale/$$locale/LC_MESSAGES/crystalhd-settings.mo"; \
+		done
+
+uninstall-settings-locales:
+	@set -eu; for locale in $(SETTINGS_LOCALES); do \
+		file="$(DESTDIR)$(DATADIR)/locale/$$locale/LC_MESSAGES/crystalhd-settings.mo"; \
+		if [ -e "$$file" ] || [ -L "$$file" ]; then rm -- "$$file"; fi; \
+		done
+
+install-settings: install-config install-settings-locales
 	@set -eu; umask 022; \
 		install -D -m 0755 scripts/crystalhd-settings.py \
 			"$(DESTDIR)$(BINDIR)/crystalhd-settings"; \
@@ -393,7 +438,7 @@ install-settings: install-config
 			done; \
 		done
 
-uninstall-settings:
+uninstall-settings: uninstall-settings-locales
 	@set -eu; for file in \
 		"$(DESTDIR)$(BINDIR)/crystalhd-settings" \
 		"$(DESTDIR)$(DATADIR)/applications/crystalhd-settings.desktop"; do \
@@ -444,3 +489,8 @@ clean:
 	$(MAKE) -C examples clean
 
 include cpu.mk
+
+# Inspect immutable package/rootfs fixtures without loading target executables.
+.PHONY: runtime-preflight-check
+runtime-preflight-check:
+	$(PYTHON3) -B tests/native-runtime-preflight.test.py

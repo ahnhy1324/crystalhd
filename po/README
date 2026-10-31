@@ -1,0 +1,50 @@
+CrystalHD Settings translation catalogues
+=======================================
+
+The optional GTK frontend loads the crystalhd-settings gettext domain from
+DATADIR/locale. GNU gettext tools are needed to update/check catalogues and
+msgfmt is needed by make install-settings. No gettext tools are needed at run
+time. Python's gettext honours LANGUAGE, LC_ALL, LC_MESSAGES and LANG; missing
+translations fall back to the English source strings. GTK's own stock controls
+also depend on the host's GTK translations.
+
+Run make settings-pot after changing a literal _("...") message in
+scripts/crystalhd-settings.py. This combines a static UTF-8 header with xgettext
+output in source order, without paths or generated timestamps. Update a catalogue with:
+
+    msgmerge --no-fuzzy-matching --update --backup=none po/ko.po po/crystalhd-settings.pot
+    make settings-l10n-check
+
+The check also compares all extracted msgids with Python's source literals,
+including Unicode punctuation and mathematical symbols, to catch encoding loss.
+
+Add new locale names to po/LINGUAS. Keep configuration keys, literal values,
+profile names and environment-variable names unchanged. An underscore marks a
+keyboard mnemonic; keep one mnemonic in translations where the source has one,
+and review for collisions on the same page. Review complete messages in context,
+including warnings about application restarts and acknowledged experiments.
+
+Korean status: all 150 current supported POT messages have Korean translations.
+Review record (2026-10-31): a separate Codex agent independently reviewed every
+translation against the POT, GTK settings-editor source and configuration guide,
+and resolved its findings before removing the fuzzy flags. This is an agent
+source-context review, not a claim of human approval. Review covered Korean
+wording, setting precedence, save/reload warnings, experimental-launch
+acknowledgements, numeric limits, literal identifiers and formatting (including
+whitespace on joined prefixes/suffixes). Latin keyboard mnemonics use forms such
+as 저장(_S); 출력 크기 값 uses (_Z) from size to avoid the expanded profile
+section's 편집할 설정(_E) mnemonic on the same page. Profile-selection
+inheritance, installation-completion records and several status/help messages
+were clarified during review.
+
+The check target validates fuzzy entries as well as active translations. Normal
+installation never uses --use-fuzzy: reviewed entries are active once their
+fuzzy flags are removed, and fuzzy or missing entries fall back to English.
+Install tests exercise active Korean, an unknown locale and a separate fuzzy
+fixture without substituting the fixture for the actual Korean catalogue.
+
+Core diagnostics, installation report text, preset metadata and Desktop Entry
+translations are outside this catalogue's current scope. The review record above
+covers the Korean messages in this catalogue. Screen-reader usability, manual
+desktop acceptance and native i386 runtime acceptance have separate checks;
+catalogue review and validation do not replace those checks.

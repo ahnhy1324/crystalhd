@@ -107,6 +107,25 @@ class Factory:
 
 
 class PolicyAndControlTests(unittest.TestCase):
+    def test_explicit_output_preserves_auto_and_audio_without_fallback(self):
+        Gst = SimpleNamespace(ElementFactory=mock.Mock())
+        audio = object()
+        original = {"audio-sink": audio}
+        self.assertEqual(player.select_video_output(Gst, "auto", original), original)
+        Gst.ElementFactory.make.assert_not_called()
+        video = object()
+        Gst.ElementFactory.make.return_value = video
+        self.assertEqual(player.select_video_output(Gst, "xv-async", original),
+                         {"audio-sink": audio, "video-sink": video})
+        self.assertEqual(original, {"audio-sink": audio})
+        Gst.ElementFactory.make.assert_called_once_with("crystalhdxvsink", "crystalhd-video-output")
+        Gst.ElementFactory.make.return_value = None
+        with self.assertRaisesRegex(RuntimeError, "unavailable"):
+            player.select_video_output(Gst, "xv-async")
+        for choice, sinks in (("other", None), ("xv-async", {"video-sink": object()})):
+            with self.assertRaisesRegex(RuntimeError, "conflicting"):
+                player.select_video_output(Gst, choice, sinks)
+
     def test_rank_filter_preserves_parsers_and_audio(self):
         factories = [Factory("crystalhddec", HARDWARE), Factory("avdec_h264", SOFTWARE),
                      Factory("h264parse", "Codec/Parser/Video"),
@@ -782,6 +801,32 @@ class CleanupTests(unittest.TestCase):
 
 
 class ArgumentTests(unittest.TestCase):
+    def test_packed_upscale_requires_the_exact_explicit_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "video.ts"
+            path.touch()
+            profile = ["--hardware", "--video-output", "xv-async", "--scale-width", "1280",
+                       "--software-output-size", "1920x1080", "--packed-upscale", str(path)]
+            self.assertTrue(player.arguments(profile, environment={}).packed_upscale)
+            self.assertFalse(player.arguments([str(path)], environment={}).packed_upscale)
+            for old, new in (("--hardware", "--software"), ("xv-async", "auto"),
+                             ("1280", "960"), ("1920x1080", "1280x720")):
+                wrong = [new if arg == old else arg for arg in profile]
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    player.arguments(wrong, environment={})
+
+    def test_xv_output_is_explicit_and_rejects_interlaced_weave(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "video.ts"
+            path.touch()
+            self.assertEqual(player.arguments([str(path)], environment={}).video_output, "auto")
+            for mode in ("hardware", "software"):
+                args = player.arguments(["--" + mode, "--video-output", "xv-async", str(path)],
+                                        environment={})
+                self.assertEqual(args.video_output, "xv-async")
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                player.arguments(["--video-output", "xv-async", "--weave", str(path)], environment={})
+
     def test_local_paths_and_subtitles_are_safely_encoded(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "video #?.mp4"
@@ -931,10 +976,22 @@ class StageTraceTests(unittest.TestCase):
                   "dropped": 0, "truncated": False, "closed": True,
                   "attachments": [], "records": []}
         controller = mock.Mock()
-        controller.emit.side_effect = lambda action, *_args: (
-            json.dumps(native) if action == "snapshot" else
-            1 if action == "attach" else True if action == "control" else None)
-        controller.set_property.side_effect = lambda name, value: native.__setitem__(name, value)
+        def emit(action, *args):
+            if action == "snapshot":
+                return json.dumps(native)
+            if action == "trigger":
+                native["window"]["triggered"] = True
+                native["window"]["trigger_seqnum"] = args[0]
+                return True
+            return 1 if action == "attach" else True if action == "control" else None
+        def set_property(name, value):
+            if name == "window":
+                native["retention"] = "window"
+                native["window"] = {"triggered": False}
+            else:
+                native[name] = value
+        controller.emit.side_effect = emit
+        controller.set_property.side_effect = set_property
         Gst = SimpleNamespace(ElementFactory=SimpleNamespace(
             make=mock.Mock(return_value=controller if present else None)))
         return Gst, controller, native
@@ -951,6 +1008,7 @@ class StageTraceTests(unittest.TestCase):
         default = self.args("--software")
         self.assertIsNone(default.trace_frames)
         self.assertEqual(default.trace_limit, 4096)
+        self.assertFalse(default.trace_window)
         traced = self.args("--software", "--trace-frames", str(self.path))
         self.assertEqual(Path(traced.trace_frames), self.path)
         self.assertEqual(traced.trace_limit, 4096)
@@ -959,7 +1017,9 @@ class StageTraceTests(unittest.TestCase):
                 self.assertEqual(self.args("--trace-frames", str(self.path),
                                           "--trace-limit", str(capacity)).trace_limit,
                                  capacity)
-        invalid = [("--trace-limit", "4")]
+        self.assertTrue(self.args("--trace-frames", str(self.path),
+                                  "--trace-window").trace_window)
+        invalid = [("--trace-limit", "4"), ("--trace-window",)]
         invalid.extend(("--trace-frames", str(self.path), "--trace-limit", value)
                        for value in ("0", "-1", "16385", "1.5"))
         for flags in invalid:
@@ -968,6 +1028,52 @@ class StageTraceTests(unittest.TestCase):
                     self.args(*flags)
                 self.assertEqual(failure.exception.code, 2)
         self.assertFalse(self.path.exists(), "argument parsing must not create reports")
+
+    def test_window_requires_matching_helper_before_creating_a_file(self):
+        Gst, controller, _native = self.fixture()
+        controller.find_property.return_value = None
+        with self.assertRaisesRegex(RuntimeError, "window unavailable"):
+            player.NativeStageTrace(Gst, self.path, window=True)
+        self.assertFalse(self.path.exists())
+        self.assertEqual(controller.emit.call_args, mock.call("stop"))
+
+    def test_window_trigger_is_once_and_retains_the_original_counter_snapshot(self):
+        Gst, controller, _native = self.fixture()
+        trace = player.NativeStageTrace(Gst, self.path, 16, window=True)
+        self.addCleanup(trace.cancel)
+        self.assertEqual(controller.set_property.call_args_list,
+                         [mock.call("capacity", 16), mock.call("window", True)])
+        self.assertTrue(trace.trigger(123, "videoconvert", 20, 2))
+        self.assertFalse(trace.trigger(124, "videoconvert", 30, 1))
+        report = trace.finish([], 0)
+        self.assertEqual(report["retention"], "window")
+        self.assertEqual(report["player"]["loss_trigger"]["dropped"], 2)
+        self.assertEqual(report["player"]["loss_trigger"]["seqnum"], 123)
+        self.assertEqual(report["player"]["trigger_errors"], 0)
+        self.assertEqual([c for c in controller.emit.call_args_list
+                          if c.args[0] == "trigger"], [mock.call("trigger", 123)])
+        before = self.path.read_bytes()
+        self.assertFalse(trace.trigger(125, "videoconvert", 31, 3))
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_rejected_window_trigger_declares_incomplete_capture(self):
+        for raises in (False, True):
+            with self.subTest(raises=raises):
+                Gst, controller, _native = self.fixture()
+                path = self.root / ("rejected-" + str(raises) + ".json")
+                trace = player.NativeStageTrace(Gst, path, 16, window=True)
+                original = controller.emit.side_effect
+                def emit(action, *args):
+                    if action == "trigger":
+                        if raises:
+                            raise TypeError("unsupported trigger")
+                        return False
+                    return original(action, *args)
+                controller.emit.side_effect = emit
+                self.assertFalse(trace.trigger(5, "videoconvert", 8, 1))
+                report = trace.finish([], 0)
+                self.assertEqual(report["player"]["trigger_errors"], 1)
+                self.assertFalse(report["player"]["loss_trigger"]["accepted"])
 
     def test_requested_trace_requires_native_helper_before_report_creation(self):
         Gst, _controller, _native = self.fixture(present=False)
@@ -1308,6 +1414,7 @@ class GStreamerApiTests(unittest.TestCase):
         player.connect_bus_messages(control.bus, lambda _bus, message: messages.append(message))
         message = Gst.Message.new_qos(source, False, 0, 0, 0, 20000000)
         message.set_qos_stats(Gst.Format.BUFFERS, 20, 2)
+        message.set_qos_values(1, 1.0, 1000000)
         self.assertTrue(control.bus.post(message))
         context = self.GLib.MainContext.default()
         error = io.StringIO()
@@ -1340,11 +1447,64 @@ class GStreamerApiTests(unittest.TestCase):
             for source, fmt, dropped in ((video, Gst.Format.BUFFERS, 0),
                                          (video, Gst.Format.BUFFERS, Gst.CLOCK_TIME_NONE),
                                          (video, Gst.Format.TIME, 2),
-                                         (audio, Gst.Format.BUFFERS, 2)):
+                                         (audio, Gst.Format.BUFFERS, 2),
+                                         (video, Gst.Format.BUFFERS, 2)):
                 message = Gst.Message.new_qos(source, False, 0, 0, 0, 20000000)
                 message.set_qos_stats(fmt, 20, dropped)
                 control.message(control.bus, message)
+            untimed = Gst.Message.new_qos(video, False, Gst.CLOCK_TIME_NONE,
+                                         Gst.CLOCK_TIME_NONE, Gst.CLOCK_TIME_NONE,
+                                         Gst.CLOCK_TIME_NONE)
+            untimed.set_qos_stats(Gst.Format.BUFFERS, 0, 1)
+            control.message(control.bus, untimed)
+            header = Gst.Message.new_qos(video, False, 0, 0, 0, Gst.CLOCK_TIME_NONE)
+            header.set_qos_stats(Gst.Format.BUFFERS, 0, 3)
+            header.set_qos_values(-1, 0.5, 1000000)
+            control.message(control.bus, header)
         self.assertEqual(error.getvalue(), "")
+
+    def test_window_trigger_ignores_nonvideo_unknown_and_zero_drop_counters(self):
+        control = self.make_player()
+        Gst = self.Gst
+        video = Gst.ElementFactory.make("videoconvert")
+        audio = Gst.ElementFactory.make("audioconvert")
+        self.assertIsNotNone(video)
+        self.assertIsNotNone(audio)
+        trace = mock.Mock(window=True, trigger_attempted=False)
+        trace.trigger.side_effect = lambda *_args, **_kwargs: setattr(trace, "trigger_attempted", True)
+        control.stage_trace = trace
+        control.qos_warned = True
+        before = vars(control.health).copy()
+        for source, fmt, dropped in ((video, Gst.Format.BUFFERS, 0),
+                                     (video, Gst.Format.BUFFERS, Gst.CLOCK_TIME_NONE),
+                                     (video, Gst.Format.TIME, 2),
+                                     (audio, Gst.Format.BUFFERS, 2),
+                                     (video, Gst.Format.BUFFERS, 2)):
+            message = Gst.Message.new_qos(source, False, 0, 0, 0, 20000000)
+            message.set_qos_stats(fmt, 20, dropped)
+            control.message(control.bus, message)
+        trace.trigger.assert_not_called()
+        untimed = Gst.Message.new_qos(video, False, Gst.CLOCK_TIME_NONE,
+                                     Gst.CLOCK_TIME_NONE, Gst.CLOCK_TIME_NONE,
+                                     Gst.CLOCK_TIME_NONE)
+        untimed.set_qos_stats(Gst.Format.BUFFERS, 0, 1)
+        control.message(control.bus, untimed)
+        header = Gst.Message.new_qos(video, False, 0, 0, 0, Gst.CLOCK_TIME_NONE)
+        header.set_qos_stats(Gst.Format.BUFFERS, 0, 3)
+        header.set_qos_values(-1, 0.5, 1000000)
+        control.message(control.bus, header)
+        trace.trigger.assert_not_called()
+        message = Gst.Message.new_qos(video, False, 0, 0, 0, 20000000)
+        message.set_qos_stats(Gst.Format.BUFFERS, 20, 2)
+        message.set_qos_values(1, 1.0, 1000000)
+        message.set_seqnum(321)
+        control.message(control.bus, message)
+        control.message(control.bus, message.copy())
+        trace.trigger.assert_called_once_with(321, "videoconvert", 20, 2,
+            timing={"live": False, "running_time": 0, "timestamp": 0,
+                    "stream_time": 0, "duration": 20000000, "jitter": 1})
+        self.assertEqual(vars(control.health), before)
+        self.assertFalse(control.done)
 
     def test_saved_software_decoder_reaches_real_frames_and_eos(self):
         self.http_fixture()
@@ -1906,6 +2066,14 @@ class GStreamerApiTests(unittest.TestCase):
         sink.get_state.assert_not_called()
         sink.get_static_pad.assert_not_called()
 
+    def test_explicit_xv_output_uses_existing_small_picture_packing(self):
+        fixture = self.packing_fixture()
+        fixture.sink.get_factory.return_value = Factory("crystalhdxvsink", "Sink/Video")
+        self.assertTrue(fixture.helper.select(fixture.sink, fixture.pipeline))
+        self.assertEqual(fixture.helper.output.get_property("caps").get_structure(0).get_string("format"), "UYVY")
+        self.assertEqual(fixture.video_filter.get_by_name("crystalhd-early-yuy2")
+                         .get_property("caps").get_structure(0).get_string("format"), "YUY2")
+
     def test_native_packing_requires_real_exclusive_native_caps(self):
         for text in (None, "ANY", "EMPTY", "video/x-raw,format=YUY2",
                      "video/x-raw,format={YUY2,UYVY}", "video/x-raw,format=NV12",
@@ -2352,7 +2520,7 @@ class GStreamerApiTests(unittest.TestCase):
 
 
     def make_traced_player(self, *, name, capacity=4096, indexed=False, video_sink=None,
-                           software_output_size=None):
+                           software_output_size=None, window=False):
         self.assertIsNotNone(self.Gst.ElementFactory.find("crystalhdstagetrace"),
                              "build the matching native tracing helper before these checks")
         self.http_fixture(indexed=indexed)
@@ -2361,7 +2529,7 @@ class GStreamerApiTests(unittest.TestCase):
         args = SimpleNamespace(mode="software", weave=False, file=media,
                                subtitles=None, scale_width=0,
                                software_output_size=software_output_size,
-                               trace_frames=output, trace_limit=capacity)
+                               trace_frames=output, trace_limit=capacity, trace_window=window)
         result = player.Player(args, self.Gst, self.GLib, {
             "video-sink": video_sink or self.Gst.ElementFactory.make("fakesink"),
             "audio-sink": self.Gst.ElementFactory.make("fakesink")})
@@ -2460,6 +2628,61 @@ class GStreamerApiTests(unittest.TestCase):
                     self.assertEqual(decoded[0]["pts"], 0)
                     self.assertEqual(decoded[0]["running_time"], 0)
                 self.assertNotIn(str(result.args.file), output.read_text())
+
+    def test_trace_window_without_drop_keeps_recent_context_and_live_totals(self):
+        result, output = self.make_traced_player(name="window-no-drop", capacity=8, window=True)
+        code, _text, error = self.run_player(result)
+        self.assertEqual(code, 0, error)
+        report = json.loads(output.read_text())
+        self.assertEqual(report["retention"], "window")
+        self.assertFalse(report["window"]["triggered"], report["player"].get("loss_trigger"))
+        self.assertFalse(report["window"]["complete"])
+        self.assertGreater(report["dropped"], 0)
+        self.assertEqual(len(report["records"]), 8)
+        order = [r["order"] for r in report["records"]]
+        self.assertEqual(order, sorted(set(order)))
+        self.assertGreater(order[0], 1)
+        self.assertTrue(any(c["caps"] and c["segment"] for c in report["window_context"]))
+        self.assertEqual(result.health.frames, 12)
+        self.assertTrue(all(a["buffers"] == 12 for a in report["attachments"]))
+        self.assertIsNone(report["player"]["loss_trigger"])
+
+    def test_trace_window_actual_bus_annotation_after_wrap_freezes_without_losing_health(self):
+        result, output = self.make_traced_player(name="window-bus-trigger", capacity=16, window=True)
+        result.pipeline.get_property("video-sink").set_property("sync", True)
+        injected = []
+        deadline = time.monotonic() + 3
+        def inject_after_wrap():
+            if time.monotonic() > deadline:
+                result.fail("trace-window injection deadline")
+                return False
+            if result.health.frames < 8:
+                return True
+            snapshot = json.loads(result.stage_trace.controller.emit("snapshot"))
+            if snapshot["observed"] <= 16:
+                return True
+            decoder = next(iter(result.decoders))
+            message = self.Gst.Message.new_qos(decoder, False, 0, 0, 0, 20000000)
+            message.set_qos_stats(self.Gst.Format.BUFFERS, 8, 1)
+            message.set_qos_values(1, 1.0, 1000000)
+            message.set_seqnum(9876)
+            self.assertTrue(result.bus.post(message))
+            injected.append(9876)
+            return False
+        result.sources.append(self.GLib.timeout_add(10, inject_after_wrap))
+        code, _text, error = self.run_player(result)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(injected, [9876])
+        report = json.loads(output.read_text())
+        self.assertTrue(report["window"]["triggered"])
+        self.assertTrue(report["window"]["complete"])
+        self.assertGreater(report["window"]["trigger_order"], 16, report["player"].get("loss_trigger"))
+        triggers = [r for r in report["records"] if r["kind"] == "trigger"]
+        self.assertEqual([r["value"] for r in triggers], [9876])
+        self.assertEqual(report["player"]["loss_trigger"]["seqnum"], 9876)
+        self.assertEqual(report["player"]["trigger_errors"], 0)
+        self.assertEqual(result.health.frames, 12)
+        self.assertTrue(all(a["buffers"] == 12 for a in report["attachments"]))
 
     def test_stage_trace_video_wrapper_observes_leaf_once_and_excludes_audio(self):
         wrapper = self.Gst.Bin.new("explicit-video-wrapper")
