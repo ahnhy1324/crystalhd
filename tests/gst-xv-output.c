@@ -10,6 +10,7 @@
 #include <sys/wait.h>
 #include <xcb/xcb.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -868,6 +869,250 @@ static void test_two_instances(void)
   context_unref(ac); context_unref(bc); gst_object_unref(as); gst_object_unref(bs);
   gst_object_unref(a); gst_object_unref(b); clean_contexts();
 }
+/* Report failures only after retiring the pipeline and our private grabs. */
+static gboolean contention_check(gboolean ok, gchar **failure, const char *message)
+{
+  if (!ok && !*failure) *failure = g_strdup(message);
+  return ok;
+}
+static gint contention_fds(void)
+{
+  DIR *directory = opendir("/proc/self/fd");
+  if (!directory) return -1;
+  struct dirent *entry; gint count = 0;
+  while ((entry = readdir(directory)))
+    if (g_ascii_isdigit(entry->d_name[0]) && atoi(entry->d_name) != dirfd(directory)) count++;
+  closedir(directory); return count;
+}
+static gboolean contention_ungrab(XvContext *holder, xcb_xv_port_t port, gchar **failure)
+{
+  xcb_void_cookie_t cookie = xcb_xv_ungrab_port_checked(holder->connection, port, XCB_CURRENT_TIME);
+  /* The bounded later reply makes this checked void request's status available. */
+  if (!contention_check(barrier_locked(holder), failure, "owned-port ungrab barrier failed")) return FALSE;
+  xcb_generic_error_t *error = xcb_request_check(holder->connection, cookie);
+  gboolean ok = contention_check(error == NULL, failure, "owned-port ungrab was rejected");
+  free(error); return ok;
+}
+static gboolean contention_failed_bus(GstBus *bus, GstElement *sink, gchar **failure)
+{
+  guint messages = 0, fallback = 0;
+  GstMessage *message;
+  /* A failed NULL->READY need not perform READY->NULL's automatic flush.
+   * Record this attempt's BaseSink fallback before any new PLAYING request. */
+  while ((message = gst_bus_pop(bus))) {
+    gboolean bounded = ++messages <= 64;
+    if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+      GError *error = NULL; gchar *debug = NULL;
+      gst_message_parse_error(message, &error, &debug);
+      gboolean expected = GST_MESSAGE_SRC(message) == GST_OBJECT(sink) && error &&
+          error->domain == GST_CORE_ERROR && error->code == GST_CORE_ERROR_STATE_CHANGE &&
+          debug && strstr(debug, "gst_base_sink_change_state") && strstr(debug, "Failed to start");
+      g_test_message("failed-start queued error source=%s domain=%s code=%d message=%s debug=%s",
+          GST_OBJECT_NAME(GST_MESSAGE_SRC(message)), error ? g_quark_to_string(error->domain) : "none",
+          error ? error->code : 0, error ? error->message : "none", debug ? debug : "none");
+      if (expected) fallback++;
+      contention_check(expected && fallback <= 1, failure, "unexpected error after failed port admission");
+      g_clear_error(&error); g_free(debug);
+    }
+    gst_message_unref(message);
+    if (!contention_check(bounded, failure, "failed-attempt bus exceeded64 messages")) break;
+  }
+  contention_check(!gst_bus_have_pending(bus), failure, "failed-attempt bus is not empty before reopen");
+  g_test_message("failed-start bus: recorded-messages=%u expected-state-errors=%u empty=%s",
+      messages, fallback, gst_bus_have_pending(bus) ? "no" : "yes");
+  return *failure == NULL;
+}
+static gboolean contention_eos(GstElement *pipeline, GstElement *sink,
+                               xcb_xv_port_t port, gchar **failure)
+{
+  XvContext *c = NULL; int connection_fd = -1, wake_fd = -1;
+  GstBus *bus = gst_element_get_bus(pipeline);
+  gboolean started = gst_element_set_state(pipeline, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE;
+  contention_check(started, failure, "released port did not admit the same pipeline");
+  c = sink_context(XV_SINK(sink));
+  if (contention_check(c != NULL, failure, "reopened sink has no context")) {
+    g_mutex_lock(&c->lock);
+    contention_check(c->port == port, failure, "reopen selected a different port (environment changed)");
+    connection_fd = xcb_get_file_descriptor(c->connection); wake_fd = c->wake_fd;
+    g_mutex_unlock(&c->lock);
+  }
+  if (started && !*failure) {
+    GstMessage *message = gst_bus_timed_pop_filtered(bus, 8 * GST_SECOND, GST_MESSAGE_ERROR | GST_MESSAGE_EOS);
+    if (message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+      GError *error = NULL; gchar *debug = NULL;
+      gst_message_parse_error(message, &error, &debug);
+      g_test_message("reopen bus error source=%s domain=%s code=%d message=%s debug=%s",
+          GST_OBJECT_NAME(GST_MESSAGE_SRC(message)), error ? g_quark_to_string(error->domain) : "none",
+          error ? error->code : 0, error ? error->message : "none", debug ? debug : "none");
+      g_clear_error(&error); g_free(debug);
+    }
+    contention_check(message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS,
+        failure, "finite reopened pipeline did not reach natural EOS");
+    if (message) gst_message_unref(message);
+  }
+  contention_check(gst_element_set_state(pipeline, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE,
+      failure, "reopened pipeline refused NULL");
+  GstState state;
+  contention_check(gst_element_get_state(pipeline, &state, NULL, 3 * GST_SECOND) == GST_STATE_CHANGE_SUCCESS &&
+      state == GST_STATE_NULL, failure, "reopened pipeline did not settle at NULL");
+  if (c) {
+    gint64 end = g_get_monotonic_time() + 3 * G_USEC_PER_SEC;
+    while (g_atomic_int_get(&c->references) != 1 && g_get_monotonic_time() < end) g_usleep(1000);
+    contention_check(g_atomic_int_get(&c->references) == 1, failure, "reopened context still has another owner");
+    g_mutex_lock(&c->lock);
+    contention_check(c->closed && c->detached && !c->connection && !c->last_buffer &&
+        !c->failed && !c->quarantined && !c->pending && !c->image_count && !c->image_bytes &&
+        c->allocated == 6 && c->freed == c->allocated && c->video_submitted == 12 &&
+        c->submitted == c->video_submitted + c->redraw_submitted &&
+        c->submitted == c->acknowledged && c->submitted == c->pool_submitted &&
+        !c->terminal && !c->copied_bytes, failure, "terminal reopen counters/SHM retirement failed");
+    g_test_message("port=%u video=%" G_GUINT64_FORMAT " submit/ACK=%" G_GUINT64_FORMAT
+        "/%" G_GUINT64_FORMAT " allocated/freed=%" G_GUINT64_FORMAT "/%" G_GUINT64_FORMAT,
+        c->port, c->video_submitted, c->submitted, c->acknowledged, c->allocated, c->freed);
+    g_mutex_unlock(&c->lock); context_unref(c);
+    /* No descriptor-opening helper runs between retirement and these probes. */
+    contention_check(connection_fd >= 0 && fcntl(connection_fd, F_GETFD) == -1 && errno == EBADF,
+        failure, "reopened XCB descriptor did not close");
+    contention_check(wake_fd >= 0 && fcntl(wake_fd, F_GETFD) == -1 && errno == EBADF,
+        failure, "reopened event descriptor did not close");
+  }
+  gst_object_unref(bus); return *failure == NULL;
+}
+static void test_port_contention_reopen(void)
+{
+  if (!x11_enabled()) return;
+  gchar *failure = NULL, *skip = NULL;
+  GstElement *pipeline = NULL, *sink = NULL; GstBus *bus = NULL;
+  XvContext holder = {.wake_fd = -1};
+  GArray *owned = g_array_new(FALSE, FALSE, sizeof(xcb_xv_port_t));
+  GArray *seen = g_array_new(FALSE, FALSE, sizeof(xcb_xv_port_t));
+  xcb_xv_query_adaptors_reply_t *adaptors = NULL;
+  guint busy = 0; int holder_fd = -1;
+  g_mutex_init(&holder.lock); g_cond_init(&holder.changed); g_mutex_lock(&holder.lock);
+#define CONTENTION_REQUIRE(ok, message) do { if (!contention_check((ok), &failure, (message))) goto cleanup; } while (0)
+  CONTENTION_REQUIRE(!g_atomic_int_get(&live_contexts) && !own_segments(), "test requires an idle own-context/SHM baseline");
+  const char *display = g_getenv("DISPLAY");
+  if (!display || !g_regex_match_simple("^(:|unix/:)[0-9]+(\\.[0-9]+)?$", display, 0, 0)) {
+    skip = g_strdup("A local Unix DISPLAY is required"); goto cleanup;
+  }
+  int screen_number;
+  holder.connection = xcb_connect(display, &screen_number);
+  if (!holder.connection || xcb_connection_has_error(holder.connection)) {
+    skip = g_strdup("No authorized live local X11 connection"); goto cleanup;
+  }
+  holder_fd = xcb_get_file_descriptor(holder.connection);
+  xcb_screen_iterator_t screen = xcb_setup_roots_iterator(xcb_get_setup(holder.connection));
+  for (int n = 0; n < screen_number && screen.rem; n++) xcb_screen_next(&screen);
+  if (!screen.rem) { skip = g_strdup("Selected X11 screen is unavailable"); goto cleanup; }
+  for (guint n = 0; n < 2; n++) {
+    const char *name = n ? "XVideo" : "MIT-SHM";
+    xcb_query_extension_reply_t *extension = reply_locked(&holder,
+        xcb_query_extension(holder.connection, strlen(name), name).sequence);
+    CONTENTION_REQUIRE(extension != NULL, "extension query failed");
+    gboolean present = extension->present; free(extension);
+    if (!present) { skip = g_strdup_printf("%s is unavailable", name); goto cleanup; }
+  }
+  adaptors = reply_locked(&holder, xcb_xv_query_adaptors(holder.connection, screen.data->root).sequence);
+  CONTENTION_REQUIRE(adaptors != NULL, "Xv adaptor query failed");
+  gint64 end = g_get_monotonic_time() + 8 * G_USEC_PER_SEC;
+  xcb_xv_adaptor_info_iterator_t a = xcb_xv_query_adaptors_info_iterator(adaptors);
+  for (; a.rem; xcb_xv_adaptor_info_next(&a)) {
+    if (!(a.data->type & XCB_XV_TYPE_IMAGE_MASK)) continue;
+    for (guint j = 0; j < a.data->num_ports; j++) {
+      CONTENTION_REQUIRE(g_get_monotonic_time() < end, "bounded port enumeration exceeded8s");
+      xcb_xv_port_t port = a.data->base_id + j; gboolean duplicate = FALSE;
+      for (guint k = 0; k < seen->len; k++) if (g_array_index(seen, xcb_xv_port_t, k) == port) duplicate = TRUE;
+      if (duplicate) continue;
+      CONTENTION_REQUIRE(seen->len < 64, "bounded port enumeration exceeded64 candidates");
+      g_array_append_val(seen, port);
+      xcb_xv_list_image_formats_reply_t *formats = reply_locked(&holder,
+          xcb_xv_list_image_formats(holder.connection, port).sequence);
+      CONTENTION_REQUIRE(formats != NULL, "port format query failed");
+      gboolean compatible = FALSE;
+      xcb_xv_image_format_info_t *f = xcb_xv_list_image_formats_format(formats);
+      for (int k = 0; k < xcb_xv_list_image_formats_format_length(formats); k++)
+        if (f[k].id == XV_UYVY) compatible = TRUE;
+      free(formats); if (!compatible) continue;
+      xcb_xv_grab_port_reply_t *grab = reply_locked(&holder,
+          xcb_xv_grab_port(holder.connection, port, XCB_CURRENT_TIME).sequence);
+      CONTENTION_REQUIRE(grab != NULL, "port grab reply failed");
+      guint result = grab->result; free(grab);
+      if (result == XCB_GRAB_STATUS_SUCCESS) g_array_append_val(owned, port);
+      else if (result == XCB_GRAB_STATUS_ALREADY_GRABBED) busy++;
+      else CONTENTION_REQUIRE(FALSE, "unexpected Xv grab status");
+    }
+  }
+  if (!owned->len) { skip = g_strdup("No free compatible UYVY Xv port; other clients' grabs were untouched"); goto cleanup; }
+  g_test_message("private holder owns%u free UYVY ports; left%u already-grabbed ports untouched", owned->len, busy);
+  GError *parse_error = NULL;
+  pipeline = gst_parse_launch("videotestsrc num-buffers=12 is-live=false pattern=black ! "
+      "video/x-raw,format=UYVY,width=320,height=240,framerate=50/1,colorimetry=bt601 ! "
+      "crystalhdxvsink name=output sync=true qos=true show-preroll-frame=false "
+      "max-lateness=5000000 processing-deadline=15000000", &parse_error);
+  gboolean parsed = pipeline != NULL && parse_error == NULL;
+  g_clear_error(&parse_error); CONTENTION_REQUIRE(parsed, "cannot create the decoder-free finite pipeline");
+  sink = gst_bin_get_by_name(GST_BIN(pipeline), "output"); bus = gst_element_get_bus(pipeline);
+  CONTENTION_REQUIRE(sink != NULL && bus != NULL, "missing public sink/bus");
+  gint before_fds = contention_fds();
+  CONTENTION_REQUIRE(before_fds >= 0, "cannot count scoped admission descriptors");
+  CONTENTION_REQUIRE(gst_element_set_state(pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE,
+      "sink unexpectedly admitted while all observed free ports were held");
+  GstMessage *message = gst_bus_timed_pop_filtered(bus, GST_SECOND, GST_MESSAGE_ERROR);
+  gboolean expected = message && GST_MESSAGE_SRC(message) == GST_OBJECT(sink);
+  if (message) {
+    GError *error = NULL; gst_message_parse_error(message, &error, NULL);
+    expected = expected && error && error->domain == GST_RESOURCE_ERROR &&
+        error->code == GST_RESOURCE_ERROR_OPEN_READ_WRITE && !strcmp(error->message, "No free UYVY XVideo port");
+    g_clear_error(&error); gst_message_unref(message);
+  }
+  CONTENTION_REQUIRE(expected, "missing exact public-sink busy-port resource error");
+  CONTENTION_REQUIRE(gst_element_set_state(pipeline, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE,
+      "failed admission refused NULL");
+  GstState stopped;
+  CONTENTION_REQUIRE(gst_element_get_state(pipeline, &stopped, NULL, 3 * GST_SECOND) == GST_STATE_CHANGE_SUCCESS &&
+      stopped == GST_STATE_NULL, "failed admission did not settle at NULL");
+  CONTENTION_REQUIRE(contention_failed_bus(bus, sink, &failure), "failed-attempt bus cleanup failed");
+  XvContext *unexpected = sink_context(XV_SINK(sink)); gboolean has_context = unexpected != NULL;
+  if (unexpected) context_unref(unexpected);
+  CONTENTION_REQUIRE(!has_context && !g_atomic_int_get(&live_contexts) && !own_segments() &&
+      contention_fds() == before_fds, "failed admission leaked a context/SHM/descriptor");
+  xcb_xv_port_t released = g_array_index(owned, xcb_xv_port_t, 0);
+  CONTENTION_REQUIRE(contention_ungrab(&holder, released, &failure), "release barrier failed");
+  g_array_index(owned, xcb_xv_port_t, 0) = 0;
+  for (guint cycle = 0; cycle < 2; cycle++) {
+    CONTENTION_REQUIRE(contention_eos(pipeline, sink, released, &failure), "same-pipeline EOS/reopen failed");
+    xcb_xv_grab_port_reply_t *grab = reply_locked(&holder,
+        xcb_xv_grab_port(holder.connection, released, XCB_CURRENT_TIME).sequence);
+    CONTENTION_REQUIRE(grab != NULL, "retired exact-port grab reply failed");
+    guint result = grab->result; free(grab);
+    if (result == XCB_GRAB_STATUS_SUCCESS) g_array_index(owned, xcb_xv_port_t, 0) = released;
+    CONTENTION_REQUIRE(result == XCB_GRAB_STATUS_SUCCESS, "retired exact port was not available again");
+    CONTENTION_REQUIRE(contention_ungrab(&holder, released, &failure), "retired exact-port release failed");
+    g_array_index(owned, xcb_xv_port_t, 0) = 0;
+  }
+cleanup:
+  if (pipeline) { gst_element_set_state(pipeline, GST_STATE_NULL); gst_element_get_state(pipeline, NULL, NULL, 3 * GST_SECOND); }
+  if (bus) gst_object_unref(bus);
+  if (sink) gst_object_unref(sink);
+  if (pipeline) gst_object_unref(pipeline);
+  free(adaptors);
+  if (holder.connection) {
+    for (guint k = 0; k < owned->len; k++) {
+      xcb_xv_port_t port = g_array_index(owned, xcb_xv_port_t, k);
+      if (port) contention_ungrab(&holder, port, &failure);
+    }
+    xcb_disconnect(holder.connection);
+  }
+  if (holder_fd >= 0) contention_check(fcntl(holder_fd, F_GETFD) == -1 && errno == EBADF,
+      &failure, "private holder descriptor did not close");
+  g_array_unref(owned); g_array_unref(seen);
+  g_mutex_unlock(&holder.lock); g_cond_clear(&holder.changed); g_mutex_clear(&holder.lock);
+  contention_check(!g_atomic_int_get(&live_contexts) && !own_segments(), &failure, "final context/SHM baseline not restored");
+  if (failure) { g_test_message("port-contention failure: %s", failure); g_test_fail(); }
+  else if (skip) g_test_skip(skip);
+  g_free(skip); g_free(failure);
+#undef CONTENTION_REQUIRE
+}
 static void test_caps_and_flush(void)
 {
   if (!x11_enabled()) return;
@@ -1092,6 +1337,7 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/x11/transport-reopen", test_transport_reopen);
   g_test_add_func("/xv/x11/reentrant-error-stop", test_reentrant_error_stop);
   g_test_add_func("/xv/x11/two-instances", test_two_instances);
+  g_test_add_func("/xv/x11/port-contention-reopen", test_port_contention_reopen);
   g_test_add_func("/xv/x11/caps-flush", test_caps_and_flush);
   g_test_add_func("/xv/x11/held-pool-caps", test_held_pool_and_caps);
   g_test_add_func("/xv/x11/live-window-replacement", test_live_window_replacement);

@@ -92,8 +92,21 @@ SHM completion while replacement waits. It checks the old request identity,
 source IDs/PTS/pixels, new-window pixels, later pool submissions and balanced
 image/context ownership, including rejection of missing and unmapped targets.
 This decoder-free window control requires at least a 640x240 local screen.
-Port contention and system X-server interruption remain separate acceptance
-cases.
+The decoder-free `/xv/x11/port-contention-reopen` control temporarily grabs
+only currently free, compatible UYVY ports through its own local XCB connection
+(bounded64 candidates/8s). It verifies the exact busy-port error, settles NULL
+and records the same failed attempt's additional BaseSink state error before
+reopening. Unexpected errors fail; messages are not silently flushed.
+Releasing one owned port permits two same-pipeline12-frame natural-EOS cycles
+on that exact port. Each terminal context has12 submissions/ACKs,6 allocated/
+freed images, no pending/retained/quarantined resources and closed XCB/event
+FDs; exact-port re-grab and final own-context/SHM checks prove retirement.
+One live Intel965 host exercised16 free ports; already busy external ports
+were not present in that run. Other clients' grabs are never released.
+Without explicit X11 opt-in/local Xv availability the case truthfully skips.
+The [receipt](../../../tests/fixtures/issue513/xv-port-contention-20261031.json)
+retains the two original harness FAILs, diagnostic and corrected outcome.
+System X-server interruption and broader stress remain separate acceptance.
 
 The [current qualification](../../../HARDWARE-2026-09-13.md#development-per-instance-xv-output--2026-10-26)
 records complete bounded Player controls and a timestamped MP4 error/reopen
