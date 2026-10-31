@@ -134,6 +134,15 @@ Player and associated tests, not every userspace path. Separate GStreamer
 decoder, VA, DIL, Player and Xv component lanes and broader sanitizer lanes
 remain unimplemented pending dependency and check-coverage review.
 
+Both full userspace jobs also run `make library-check-sanitized`: fresh isolated
+ASan/UBSan/leak builds of the actual DIL TX ring, concurrent status/FIFO, raw
+YUY2 copy, planar copy and format-conversion regressions. The concurrent case
+runs ordinary, status-observer and serial controls. Device opens and unexpected
+ioctls abort; normal binaries and CPU-mode stamps are not rebuilt. This selected
+CPU coverage does not qualify the complete DIL, hardware/DMA lifecycle, native
+i386 sanitizers or the excluded shutdown-heap follow-up. Raw-frame serialization
+already has separate sanitizer coverage in `raw-frame-check`.
+
 All headers, including packed-private headers, build inputs, fixtures, generated
 files, workflow/selector changes, new or unknown paths, renames, deletions and
 file-mode changes keep the full userspace and upstream kernel checks. There

@@ -169,6 +169,11 @@ jobs:
       - name: Sanitize selected VA ownership and buffer handle contracts
         run: make -C filters/vaapi check-ownership-sanitized
 
+      - name: Sanitize selected DIL ring and pixel-copy contracts
+        run: |
+          python3 -B tests/library-selected-sanitizer.test.py
+          make library-check-sanitized
+
       - name: Check private VPP payload observer without hardware
         run: make -C filters/vaapi check-payload-observer
 
