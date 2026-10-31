@@ -95,6 +95,15 @@ class LoaderContract(unittest.TestCase):
         self.invoke([self.build, self.system], expected=1)
         self.assertFalse(self.proof.exists(), "test executable ran after missing dependency")
 
+    def test_missing_own_plugin_never_uses_ambient_fallback(self):
+        self.targets[OWN].unlink()
+        self.invoke([self.build, self.system], expected=1)
+        self.assertFalse(self.proof.exists(), "test ran without selected own plugin")
+
+    def test_explicit_empty_plugin_path_never_uses_ambient_fallback(self):
+        self.invoke([self.build, ""], expected=1)
+        self.assertFalse(self.proof.exists(), "empty selected path used ambient plugins")
+
     def test_bad_argument_count_rejects_before_execution(self):
         self.invoke([self.build, self.system, "extra"], expected=2)
         self.assertFalse(self.proof.exists())
