@@ -386,10 +386,11 @@ static void await_redraw(XvContext *c, guint64 before, guint width, guint height
   g_assert_cmpuint(c->submitted, ==, c->acknowledged);
   g_mutex_unlock(&c->lock);
 }
-static void window_pixel_locked(XvContext *c, guint x, guint y, gboolean white)
+static void window_pixel_for_locked(XvContext *c, xcb_window_t window,
+                                    guint x, guint y, gboolean white)
 {
   xcb_get_image_reply_t *reply = reply_locked(c,
-      xcb_get_image(c->connection, XCB_IMAGE_FORMAT_Z_PIXMAP, c->window,
+      xcb_get_image(c->connection, XCB_IMAGE_FORMAT_Z_PIXMAP, window,
           x, y, 1, 1, UINT32_MAX).sequence);
   g_assert_nonnull(reply); g_assert_cmpuint(reply->depth, ==, 24);
   g_assert_cmpint(xcb_get_image_data_length(reply), >=, 3);
@@ -399,6 +400,10 @@ static void window_pixel_locked(XvContext *c, guint x, guint y, gboolean white)
     else g_assert_cmpuint(rgb[i], <=, 2);
   }
   free(reply);
+}
+static void window_pixel_locked(XvContext *c, guint x, guint y, gboolean white)
+{
+  window_pixel_for_locked(c, c->window, x, y, white);
 }
 static void paused_resize(gboolean pooled)
 {
@@ -633,6 +638,197 @@ static void test_held_pool_and_caps(void)
   g_assert_true(gst_buffer_pool_set_active(pool, FALSE)); gst_object_unref(pool);
   g_assert_true(gst_buffer_pool_set_active(new_pool, FALSE)); gst_object_unref(new_pool);
   context_unref(c); gst_object_unref(sink); clean_contexts();
+}
+typedef struct { GstElement *sink; xcb_window_t window; gint finished; } WindowJob;
+static gpointer change_window(gpointer data)
+{
+  WindowJob *job = data;
+  gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(job->sink), job->window);
+  g_atomic_int_set(&job->finished, TRUE); return NULL;
+}
+static void window_warning(GstBus *bus)
+{
+  GstMessage *message = gst_bus_timed_pop_filtered(bus, GST_SECOND,
+      GST_MESSAGE_WARNING | GST_MESSAGE_ERROR);
+  g_assert_nonnull(message); g_assert_cmpuint(GST_MESSAGE_TYPE(message), ==, GST_MESSAGE_WARNING);
+  GError *error = NULL; gchar *debug = NULL;
+  gst_message_parse_warning(message, &error, &debug);
+  g_assert_error(error, GST_RESOURCE_ERROR, GST_RESOURCE_ERROR_SETTINGS);
+  g_error_free(error); g_free(debug); gst_message_unref(message);
+}
+static void solid_pool_buffer(GstBuffer *buffer, const GstVideoInfo *info,
+                              gboolean white, guint64 id)
+{
+  GstVideoFrame frame;
+  g_assert_true(gst_video_frame_map(&frame, info, buffer, GST_MAP_WRITE));
+  for (gint y = 0; y < info->height; y++) {
+    guint8 *row = (guint8 *)GST_VIDEO_FRAME_PLANE_DATA(&frame, 0) +
+        y * GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0);
+    for (gint x = 0; x < info->width * 2; x += 4) {
+      row[x] = row[x + 2] = 128; row[x + 1] = row[x + 3] = white ? 235 : 16;
+    }
+  }
+  gst_video_frame_unmap(&frame);
+  GST_BUFFER_OFFSET(buffer) = id; GST_BUFFER_OFFSET_END(buffer) = id + 1;
+  GST_BUFFER_PTS(buffer) = id * 20 * GST_MSECOND;
+  GST_BUFFER_DURATION(buffer) = 20 * GST_MSECOND;
+}
+static void solid_memory(XvMemory *memory, const GstVideoInfo *info, gboolean white)
+{
+  for (gint y = 0; y < info->height; y++) {
+    const guint8 *row = memory->data + memory->offset + y * memory->pitch;
+    for (gint x = 0; x < info->width * 2; x += 4) {
+      g_assert_cmpuint(row[x], ==, 128); g_assert_cmpuint(row[x + 2], ==, 128);
+      g_assert_cmpuint(row[x + 1], ==, white ? 235 : 16);
+      g_assert_cmpuint(row[x + 3], ==, white ? 235 : 16);
+    }
+  }
+}
+static void test_live_window_replacement(void)
+{
+  if (!x11_enabled()) return;
+  /* This connection owns only our two windows: it does not grab an Xv port,
+   * alter the display, or outlive this finite test. Reuse bounded XCB replies. */
+  XvContext owner = {.wake_fd = -1};
+  g_mutex_init(&owner.lock); g_cond_init(&owner.changed);
+  int screen_number;
+  owner.connection = xcb_connect(g_getenv("DISPLAY"), &screen_number);
+  g_assert_nonnull(owner.connection); g_assert_cmpint(xcb_connection_has_error(owner.connection), ==, 0);
+  xcb_screen_iterator_t screens = xcb_setup_roots_iterator(xcb_get_setup(owner.connection));
+  for (int n = 0; n < screen_number && screens.rem; n++) xcb_screen_next(&screens);
+  g_assert_cmpint(screens.rem, >, 0); xcb_screen_t *screen = screens.data;
+  if (screen->width_in_pixels < 640 || screen->height_in_pixels < 240) {
+    g_test_skip("The two-window pixel control needs a 640x240 local X11 screen");
+    xcb_disconnect(owner.connection); g_mutex_clear(&owner.lock); g_cond_clear(&owner.changed); return;
+  }
+  owner.root = screen->root; owner.visual = screen->root_visual; owner.depth = screen->root_depth;
+  xcb_window_t windows[2];
+  for (guint i = 0; i < 2; i++) {
+    windows[i] = xcb_generate_id(owner.connection);
+    guint32 values[] = {screen->black_pixel, TRUE};
+    xcb_create_window(owner.connection, XCB_COPY_FROM_PARENT, windows[i], screen->root,
+        i * 320, 0, 320, 240, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual,
+        XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT, values);
+    xcb_map_window(owner.connection, windows[i]);
+  }
+  g_assert_true(barrier_locked(&owner));
+  GstBus *bus = gst_bus_new();
+  GstElement *sink = g_object_new(gst_crystalhd_xv_get_type(), NULL);
+  gst_element_set_bus(sink, bus);
+  gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), windows[0]);
+  g_assert_true(sink_start(GST_BASE_SINK(sink)));
+  XvContext *c = sink_context(XV_SINK(sink)); g_assert_nonnull(c);
+  GstVideoInfo info = info_for(320, 240); GstCaps *caps = gst_video_info_to_caps(&info);
+  g_assert_true(sink_set_caps(GST_BASE_SINK(sink), caps)); gst_caps_unref(caps);
+  GstBufferPool *pool = make_pool(sink, &info); GstBuffer *first, *second;
+  g_assert_cmpint(gst_buffer_pool_acquire_buffer(pool, &first, NULL), ==, GST_FLOW_OK);
+  solid_pool_buffer(first, &info, TRUE, 2);
+  XvMemory *memory = buffer_memory(first); g_assert_nonnull(memory);
+  g_mutex_lock(&c->lock);
+  window_pixel_for_locked(c, windows[1], 160, 120, FALSE);
+  guint64 epoch = c->epoch; xcb_gcontext_t gc = c->gc;
+  g_mutex_unlock(&c->lock);
+  g_atomic_pointer_set(&delay_connection, c->connection);
+  g_atomic_int_set(&drop_type, c->completion_type); g_atomic_int_set(&release_delayed, FALSE);
+  g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), first), ==, GST_FLOW_OK);
+  gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US;
+  while (!g_atomic_pointer_get(&delayed_event) && g_get_monotonic_time() < end) g_usleep(1000);
+  g_assert_nonnull(g_atomic_pointer_get(&delayed_event));
+
+  /* Bad targets are rejected before the held request or its source is disturbed. */
+  gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), 0); window_warning(bus);
+  xcb_window_t missing = xcb_generate_id(owner.connection);
+  gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), missing); window_warning(bus);
+  xcb_unmap_window(owner.connection, windows[1]); g_assert_true(barrier_locked(&owner));
+  gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), windows[1]); window_warning(bus);
+  xcb_map_window(owner.connection, windows[1]); g_assert_true(barrier_locked(&owner));
+  gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), windows[0]);
+  g_mutex_lock(&c->lock);
+  XvFlight flight = {0};
+  for (guint i = 0; i < XV_DEPTH; i++) if (c->flights[i].memory) flight = c->flights[i];
+  g_assert_true(flight.memory == memory); g_assert_true(flight.buffer == first);
+  xcb_generic_event_t *held = g_atomic_pointer_get(&delayed_event);
+  g_assert_true(matches_locked(c, &flight, (const void *)held, held->full_sequence));
+  g_assert_true(c->last_buffer == first); g_assert_true(memory->server_owned);
+  g_assert_cmpuint(c->window, ==, windows[0]); g_assert_cmpuint(c->pending, ==, 1);
+  g_assert_cmpuint(c->submitted, ==, 1); g_assert_cmpuint(c->acknowledged, ==, 0);
+  g_assert_false(c->failed); g_mutex_unlock(&c->lock);
+
+  WindowJob job = {.sink = sink, .window = windows[1]};
+  GThread *thread = g_thread_new("xv-window-test", change_window, &job);
+  end = g_get_monotonic_time() + XV_TIMEOUT_US / 2;
+  g_mutex_lock(&c->lock);
+  while (!c->window_changing && !c->failed && !g_atomic_int_get(&job.finished))
+    if (!g_cond_wait_until(&c->changed, &c->lock, end)) break;
+  g_assert_true(c->window_changing); g_assert_false(g_atomic_int_get(&job.finished));
+  g_assert_cmpuint(c->window, ==, windows[0]); g_assert_cmpuint(c->pending, ==, 1);
+  g_assert_cmpuint(c->epoch, ==, epoch); g_assert_cmpuint(memory->generation, ==, flight.generation);
+  for (guint i = 0; i < XV_DEPTH; i++) if (c->flights[i].memory) {
+    g_assert_true(c->flights[i].memory == flight.memory); g_assert_true(c->flights[i].buffer == first);
+    g_assert_cmpuint(c->flights[i].sequence, ==, flight.sequence);
+    g_assert_cmpuint(c->flights[i].generation, ==, flight.generation);
+    g_assert_cmpuint(c->flights[i].epoch, ==, flight.epoch);
+    g_assert_cmpuint(c->flights[i].pts, ==, 40 * GST_MSECOND);
+  }
+  solid_memory(memory, &info, TRUE); g_mutex_unlock(&c->lock);
+  g_atomic_int_set(&release_delayed, TRUE); wake_context(c);
+  g_thread_join(thread); g_assert_true(g_atomic_int_get(&job.finished));
+  g_atomic_pointer_set(&delay_connection, NULL); g_assert_null(g_atomic_pointer_get(&delayed_event));
+  await_redraw(c, 0, 320, 240);
+  g_mutex_lock(&c->lock);
+  g_assert_cmpuint(c->window, ==, windows[1]); g_assert_false(c->own_window);
+  g_assert_cmpuint(c->gc, ==, gc); g_assert_cmpuint(c->epoch, ==, epoch);
+  g_assert_true(c->last_buffer == first); g_assert_false(memory->server_owned);
+  g_assert_cmpuint(memory->generation, >, flight.generation);
+  g_assert_cmpuint(GST_BUFFER_OFFSET(first), ==, 2); g_assert_cmpuint(GST_BUFFER_OFFSET_END(first), ==, 3);
+  g_assert_cmpuint(GST_BUFFER_PTS(first), ==, 40 * GST_MSECOND);
+  g_assert_cmpuint(GST_BUFFER_DURATION(first), ==, 20 * GST_MSECOND);
+  solid_memory(memory, &info, TRUE);
+  window_pixel_locked(c, 160, 120, TRUE);
+  guint64 first_generation = memory->generation; g_mutex_unlock(&c->lock);
+  /* A server may clear the previous Xv drawable during handoff. Establish
+   * an application-owned black old window before the next video request. */
+  xcb_clear_area(owner.connection, FALSE, windows[0], 0, 0, 320, 240);
+  g_assert_true(barrier_locked(&owner));
+  g_mutex_lock(&c->lock); window_pixel_for_locked(c, windows[0], 160, 120, FALSE);
+  g_mutex_unlock(&c->lock);
+
+  g_assert_cmpint(gst_buffer_pool_acquire_buffer(pool, &second, NULL), ==, GST_FLOW_OK);
+  solid_pool_buffer(second, &info, FALSE, 4);
+  XvMemory *next = buffer_memory(second); g_assert_nonnull(next); g_assert_true(next != memory);
+  g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), second), ==, GST_FLOW_OK);
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+  g_assert_cmpuint(memory->generation, ==, first_generation);
+  g_assert_cmpuint(next->generation, >, first_generation);
+  g_assert_true(c->last_buffer == second); g_assert_cmpuint(GST_BUFFER_PTS(second), ==, 80 * GST_MSECOND);
+  solid_memory(memory, &info, TRUE); solid_memory(next, &info, FALSE);
+  window_pixel_for_locked(c, windows[0], 160, 120, FALSE);
+  window_pixel_locked(c, 160, 120, FALSE);
+  g_assert_cmpuint(c->video_submitted, ==, 2); g_assert_cmpuint(c->redraw_submitted, >, 0);
+  g_assert_cmpuint(c->submitted, ==, c->acknowledged);
+  g_assert_cmpuint(c->submitted, ==, c->pool_submitted); g_assert_cmpuint(c->copied_bytes, ==, 0);
+  g_assert_cmpuint(c->terminal, ==, 0); g_assert_cmpuint(c->stale, ==, 0); g_mutex_unlock(&c->lock);
+
+  g_assert_true(sink_stop(GST_BASE_SINK(sink)));
+  gst_buffer_unref(first); gst_buffer_unref(second);
+  g_assert_true(gst_buffer_pool_set_active(pool, FALSE)); gst_object_unref(pool);
+  g_mutex_lock(&c->lock);
+  g_assert_cmpuint(c->image_count, ==, 0); g_assert_cmpuint(c->image_bytes, ==, 0);
+  g_assert_cmpuint(c->allocated, ==, c->freed); g_assert_cmpuint(c->pending, ==, 0);
+  g_assert_cmpuint(c->submitted, ==, c->acknowledged);
+  g_assert_cmpuint(c->terminal, ==, 0); g_assert_cmpuint(c->stale, ==, 0);
+  g_assert_true(c->closed); g_assert_true(c->detached); g_assert_null(c->connection);
+  g_assert_null(c->last_buffer); g_assert_false(c->failed); g_assert_false(c->quarantined);
+  g_mutex_unlock(&c->lock); context_unref(c); gst_object_unref(sink); gst_object_unref(bus);
+  guint width, height;
+  for (guint i = 0; i < 2; i++) {
+    g_assert_true(target_geometry_locked(&owner, windows[i], &width, &height));
+    xcb_destroy_window(owner.connection, windows[i]);
+  }
+  g_assert_true(barrier_locked(&owner)); xcb_disconnect(owner.connection);
+  g_mutex_clear(&owner.lock); g_cond_clear(&owner.changed); clean_contexts();
+  g_test_message("Live two-window replacement: held old SHM ACK, source IDs/pixels/PTS and generations preserved; "
+      "new window repainted, old target unchanged, invalid targets rejected, pool/GC retained, resources balanced");
 }
 static void test_submit_flush_failure(void)
 {
@@ -898,6 +1094,7 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/x11/two-instances", test_two_instances);
   g_test_add_func("/xv/x11/caps-flush", test_caps_and_flush);
   g_test_add_func("/xv/x11/held-pool-caps", test_held_pool_and_caps);
+  g_test_add_func("/xv/x11/live-window-replacement", test_live_window_replacement);
   g_test_add_func("/xv/x11/submit-flush-failure", test_submit_flush_failure);
   g_test_add_func("/xv/x11/quarantine", test_quarantine);
   g_test_add_func("/xv/card/error-reopen", test_native_error_reopen);
