@@ -117,7 +117,8 @@ general FFmpeg effect, broad MPEG1 equivalence or production support follows.
 The optional research reader/matrix needs Python 3 and NumPy. The converter needs
 a C11 compiler, public FFmpeg development headers and libdl; it dynamically opens
 the caller's exact libraries and links no FFmpeg implementation at build time.
-Nothing installs dependencies or runs in the core CI by default.
+The optional conversion/matrix replay does not install dependencies or run in
+core CI. The separate synthetic arithmetic checks below run on both CI hosts.
 
 ```sh
 python3 -B tests/mpeg1-chroma-pixels.py --self-test
@@ -166,9 +167,9 @@ receipt. Packaged helpers and later filter results retain their own source hashe
 they do not rewrite the earlier executed-source identities. Raw media, external
 DSOs and full per-frame logs are retained separately rather than committed here.
 NumPy may be provided through a private `PYTHONPATH`; it is not a mandatory global
-dependency. The known MPEG2 spatial control and additional independent-grid
-coverage remain separate open work. Missing original recipes, native PTS and
-residual chroma explanations keep #529 open.
+dependency. The separately source-qualified [fresh MPEG2 spatial control](https://github.com/ahnhy1324/crystalhd/issues/529#issuecomment-6540677844)
+is now complete:30 pictures, exactY and correctly sited Cb/Cr maxima1/1.
+Missing original recipes/nativePTS and actual hardware arithmetic remain open.
 
 Repository preparation removes trailing blank lines from the converter, pixel
 reader and example manifest. No program logic changes: the final compiled
@@ -177,3 +178,76 @@ converter is byte-identical to the measured filter-matrix executable
 The final repository reader independently passes all7 hand-computable controls;
 its AST equals the measured reader. Original run source hashes stay preserved
 in their receipts.
+
+## Fixed separable reference follow-up
+
+The [additional observation](separable/observation-20261031.json) uses the same
+retained planar/native bytes and raw order, without a decoder, converter or
+new hardware run. Fixed masks built only from decoded chroma gradients first
+partition the checker into interior, horizontal-edge, vertical-edge and crossing
+support. Their immutable radius3 is a descriptive neighbourhood, not a claim
+about hardware support. Against the earlier full-axis Lanczos reference, the
+checker Cb/Cr maxima are respectively0,2,20,22 in those four classes.
+
+The previously calibrated clamped half-up vertical rule
+`(3*current + adjacent + 2)//4`, with the previous row for even output rows and
+the next row for odd rows, matches every no-horizontal-edge sample exactly.
+For each component this includes1,105,920 vertical-edge and1,382,400 interior
+checker samples. The horizontal30 interior control also matches exactly.
+Independent scalar oracles and literal border/parity controls precede reads.
+
+Before any full-model result, two complete separable hypotheses were frozen:
+normalized float64 horizontal Lanczos3 at source coordinate `j-0.25`, clamped
+tap indices and half-up clipped8-bit output, combined with that fixed vertical
+rule in **both** quantized orders. Neither order is selected or discarded.
+
+| Complete raw population | H8 then V8 max Cb/Cr | V8 then H8 max Cb/Cr |
+| --- | --- | --- |
+| Horizontal30 |1 /1 |1 /1 |
+| Checker90 |2 /2 |2 /2 |
+
+All native Y bytes still match the same raw ordinal's planar Y. The minimum
+horizontal distance from a rounding half-boundary is0.02779 for horizontal30
+and0.08337 for checker90; no sample reaches the fixed1e-10 warning margin.
+The two orders have different signed/count distributions, preserved in the
+receipt, despite equal maxima. These observations demonstrate that a declared
+reference with a different vertical kernel accounts for the large numerical
+residual in these retained fixtures. They do not identify actual firmware
+coefficients/order, recover original PTS/commands or prove broad codec quality.
+The original full-axis Lanczos22 FAIL, local target3 and release oracles remain
+unchanged; this is no production MPEG1 PASS or external-code repair.
+
+Run all53 synthetic controls, without media or a frozen manifest:
+
+```sh
+make mpeg1-reference-model-check
+```
+
+NumPy is needed only for this optional developer check/research replay; CI
+installs its own test dependency. Four private semantic mutations of mask
+radius, vertical weights, horizontal phase and aliased operation orders are
+rejected by literal controls. Product dependencies are unchanged.
+
+The measured helpers are published byte-for-byte as
+`tests/mpeg1-axis-topology.py`, `tests/mpeg1-vertical31-reference.py` and
+`tests/mpeg1-separable-reference.py`. The three `separable/*inputs.json` files
+preserve original private paths as evidence. For a local replay, make new
+manifest copies and change input/helper paths to the locally retained exact
+bytes; preserve sizes, hashes, geometry, rules and both orders. Helper identity
+objects use an absolute resolved path, byte length and SHA256. A moved helper
+keeps the published/measured byte hash. New manifest hashes are recorded
+separately; historical manifests and raw captures must not be rewritten.
+
+```sh
+python3 -B tests/mpeg1-axis-topology.py --manifest LOCAL_AXIS.json \
+  --output /ABS/NEW_AXIS_RESULTS
+python3 -B tests/mpeg1-vertical31-reference.py --manifest LOCAL_VERTICAL.json \
+  --output /ABS/NEW_VERTICAL_RESULTS
+python3 -B tests/mpeg1-separable-reference.py --manifest LOCAL_SEPARABLE.json \
+  --output /ABS/NEW_BOTH_ORDER_RESULTS
+```
+
+These readers require all30/90 pictures, regular read-only input descriptors,
+pre/post hashes and metadata, exact Y, complete component census and exclusive
+result directories. Full per-picture reports remain privately retained; their
+hashes and complete component summaries are in the observation receipt.

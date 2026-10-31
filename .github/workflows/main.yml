@@ -121,7 +121,7 @@ jobs:
             libxcb-shm0-dev libxcb-xv0-dev \
             gstreamer1.0-tools gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav \
-            python3-gi gir1.2-gtk-3.0 xvfb xauth desktop-file-utils dbus-daemon \
+            python3-gi python3-numpy gir1.2-gtk-3.0 xvfb xauth desktop-file-utils dbus-daemon \
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
             libva-dev libdrm-dev libgbm-dev \
             libswscale-dev ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
@@ -168,6 +168,9 @@ jobs:
 
       - name: Sanitize selected VA ownership and buffer handle contracts
         run: make -C filters/vaapi check-ownership-sanitized
+
+      - name: Check MPEG-1 reference model synthetic controls without hardware
+        run: make mpeg1-reference-model-check
 
       - name: Select packaged kernel headers
         run: |
