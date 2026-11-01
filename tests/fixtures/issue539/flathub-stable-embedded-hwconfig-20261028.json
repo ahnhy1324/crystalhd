@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "issue": 539,
+  "date": "2026-10-28",
+  "decision": "PASS for exact-package embedded FFmpeg metadata classification; NEGATIVE for a Kodi-selectable DRM PRIME hardware configuration. This is not a media, device or playback run.",
+  "package": {
+    "remote": "https://dl.flathub.org/repo/",
+    "remote_signing_fingerprint": "6E5C05D979C76DAF93C081354184DD4D907A7CAE",
+    "ref": "app/tv.kodi.Kodi/x86_64/stable",
+    "ostree_commit": "9d26e51812802b2d687557c6bb28b9573936f3bfe6c2b181229341e53fa2c475",
+    "kodi_version": "21.3-Omega",
+    "kodi_source": "a3a448d26b8d560a65655dab2cd122994dc4e146",
+    "kodi_binary_bytes": 64941256,
+    "kodi_binary_build_id": "0b11c4c2fdbf023b13d036feba99ee02980da070",
+    "kodi_binary_sha256": "6754d32f8b6b6501b247a7fc817c2b6eb151c27ca5380abd4f2115163ed0a1d6",
+    "manifest_commit": "30f8c953d763802968b5e1b1fa7c84a9453308f2",
+    "installed_manifest_sha256": "f76a4b7d932d8159b0c7766199e9298364ab6e7ac8ab39d2ca1631cedf312020",
+    "ffmpeg_source": "n6.1.6",
+    "ffmpeg_source_archive_sha256": "7481306bddb81f4d4b42bfde4b39ea4fa097d7fa5b8cdba377142c88172b4af9",
+    "ffmpeg_linkage": "statically integrated in kodi.bin",
+    "direct_core_libav_dt_needed_count": 0,
+    "packaged_core_libav_dso_count": 0
+  },
+  "runtime": {
+    "name": "org.freedesktop.Platform/x86_64/24.08",
+    "ostree_commit_at_probe": "0ad7bef7a8e69b26b7e0d666a11b60dca10461c23cc0d2ee5391991c559c28c7",
+    "status_at_install": "EOL; Flatpak reported that 24.08 no longer receives fixes or security updates",
+    "dedicated_install_tree_apparent_bytes": 2637437483,
+    "existing_beta_install_modified": false
+  },
+  "probe": {
+    "json_schema": "crystalhd-kodi-embedded-ffmpeg-hwconfig-v1",
+    "python_probe_sha256": "db70591208ae4fb7ba87a856d33f4fed0944cf8443943b659441c2c806ca38ba",
+    "preload_source_sha256": "6016caa29c981536d3819ac4b57cad65b8fc6f145c87c9f54d7296ab6491297f",
+    "preload_binary_sha256": "5419bf7b112eedcbb0dba03e336fb64cbea7c57dd96519728b39a6273cc70c37",
+    "selection_policy": "kodi-21-omega-a3a448d",
+    "selection_policy_rule": "drm_prime and (internal or (hw_device_ctx and device_type drm))",
+    "identity_checks": {
+      "gnu_build_id_match": true,
+      "sha256_match": true,
+      "main_origin_kodi_version": "21.3",
+      "known_package_identity": true
+    },
+    "ffmpeg_abi": {
+      "avcodec_major": 60,
+      "source": "exact package identity plus pinned FFmpeg 6.1.6 manifest",
+      "avcodec_version_export": null,
+      "avformat_version_export": null,
+      "avutil_version_export": "58.29.100"
+    }
+  },
+  "isolation": {
+    "launcher": "bubblewrap",
+    "platform_files_mounted_read_only_as_usr": true,
+    "app_files_mounted_read_only_as_app": true,
+    "deployment_and_probe_files_mounted_read_only": true,
+    "temporary_directory": "tmpfs",
+    "host_video_or_crystalhd_device_bound": false,
+    "media_file_bound_or_opened": false,
+    "inherited_loader_controls_removed": true,
+    "explicit_library_search_scope": [
+      "exact app deployment lib",
+      "Platform /usr/lib/x86_64-linux-gnu",
+      "Platform /usr/lib"
+    ]
+  },
+  "result": {
+    "probe_completed": true,
+    "strict_exit_status": 1,
+    "decoder": "h264_v4l2m2m",
+    "decoder_present": true,
+    "hardware_config_count": 0,
+    "drm_prime_config_present": false,
+    "kodi_find_hw_config_candidate": false,
+    "verdict": "no-kodi-drm-prime-metadata-candidate",
+    "stdout_bytes_before_probe_exit": 0,
+    "stderr_bytes_before_probe_exit": 0
+  },
+  "execution_boundary": {
+    "target_mapped_and_relocated": true,
+    "target_preinit_present": false,
+    "dependency_initializers_may_run": true,
+    "kodi_executable_initializers_ran": false,
+    "kodi_main_ran": false,
+    "embedded_ffmpeg_metadata_functions_called": true
+  },
+  "conclusion": "The exact official Flathub stable x86_64 package cannot enter Kodi 21.3's native DRM PRIME route through its bundled h264_v4l2m2m decoder because the decoder publishes zero AVCodecHWConfig entries. Settings or device changes cannot add the missing user-space metadata. This does not test or alter the separate private FFmpeg path, VA fallback, driver, firmware or hardware support.",
+  "limitations": [
+    "No Kodi main, media, V4L2, CrystalHD, EXPBUF, renderer or playback path was run.",
+    "Dependency initializers are outside the preload constructor's no-main boundary.",
+    "Only the exact x86_64 stable app identity and recorded Platform 24.08 runtime were classified.",
+    "The EOL runtime warning is a maintenance risk and not evidence about decoder selection."
+  ]
+}

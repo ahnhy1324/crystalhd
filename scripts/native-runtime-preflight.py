@@ -141,6 +141,91 @@ def compiler_candidates(root):
     return sorted(set(result))
 
 
+def recorded_diagnostics(provenance, dependencies, payload):
+    """Explain pinned inventory facts without promoting review declarations.
+
+    Older reviewed manifests may omit these optional fields. Missing/null data
+    stays unknown; present values with the wrong type are not usable evidence.
+    Version requirements are recorded inventory, not a fresh symbol/CPU probe.
+    """
+    boolean_fields = ('private_build_prefixes_detected', 'neutral_build_verified',
+                      'corresponding_source_archive_included')
+    text_fields = ('source_revision', 'source_url', 'redistribution_review',
+                   'update_maintenance_owner', 'clean_OS_and_Kodi_playback_qualification')
+    recorded = {name: provenance.get(name) for name in boolean_fields + text_fields}
+    for name in boolean_fields:
+        require(recorded[name] is None or type(recorded[name]) is bool,
+                'invalid provenance boolean: ' + name)
+    for name in text_fields:
+        value = recorded[name]
+        require(value is None or isinstance(value, str) and bool(value.strip()),
+                'invalid provenance text: ' + name)
+    revision = recorded['source_revision']
+    require(revision is None or re.fullmatch(r'[0-9a-f]{40}', revision),
+            'invalid provenance source revision')
+    options = provenance.get('configured_feature_and_CPU_options')
+    require(options is None or isinstance(options, list) and all(
+        isinstance(option, str) and re.fullmatch(r'--(?:enable-|disable-|cpu=)\S+', option)
+        for option in options), 'invalid provenance configure options')
+    cpu_options = None if options is None else sorted(set(
+        option for option in options if option.startswith('--cpu=')))
+
+    versions, missing = set(), []
+    for name in sorted(payload):
+        node = dependencies['nodes']['payload:' + name]
+        needs = node.get('version_needs')
+        if needs is None:
+            missing.append(name)
+            continue
+        require(isinstance(needs, dict), 'invalid recorded version requirements: ' + name)
+        for provider, values in needs.items():
+            require(isinstance(provider, str) and provider and '/' not in provider and
+                    not any(character.isspace() for character in provider) and
+                    isinstance(values, list) and all(isinstance(value, str) and
+                    value and not any(character.isspace() for character in value)
+                    for value in values),
+                    'invalid recorded version requirements: ' + name)
+            versions.update(value for value in values if value.startswith('GLIBC_'))
+    numeric = {value: tuple(int(part) for part in value[6:].split('.'))
+               for value in versions if re.fullmatch(r'GLIBC_\d+(?:\.\d+)*', value)}
+    highest = max(numeric, key=lambda value: numeric[value]) if numeric else None
+    abi = {'architecture': dependencies['architecture'],
+           'ffmpeg_sonames': dict(dependencies['sonames']),
+           'payload_version_inventory': ('RECORDED' if not missing else
+                                        'UNKNOWN' if len(missing) == len(payload) else 'PARTIAL'),
+           'payloads_without_version_inventory': missing,
+           'recorded_glibc_versions': sorted(numeric, key=lambda value: numeric[value]),
+           'recorded_named_glibc_requirements': sorted(versions - numeric.keys()),
+           'highest_recorded_numeric_glibc_requirement': highest,
+           'recorded_configure_cpu_options': cpu_options,
+           'scope': 'Actual ELF64/x86_64 headers and exact pinned bytes checked; version '
+                    'requirements/configure CPU options are reused inventory, not a new '
+                    'symbol resolution or minimum-CPU execution qualification.'}
+
+    blockers = []
+    for field, unresolved in (
+            ('private_build_prefixes_detected', True),
+            ('neutral_build_verified', False),
+            ('corresponding_source_archive_included', False),
+            ('redistribution_review', 'NOT_COMPLETED'),
+            ('update_maintenance_owner', 'UNASSIGNED'),
+            ('clean_OS_and_Kodi_playback_qualification', 'NOT_RUN')):
+        value = recorded[field]
+        state = ('UNKNOWN' if value is None else 'DECLARED_UNRESOLVED'
+                 if value == unresolved else 'DECLARED_UNVERIFIED')
+        blockers.append({'field': field, 'recorded_value': value, 'state': state})
+    distribution = {'status': 'PUBLIC_NOT_READY', 'provenance_records': recorded,
+                    'unknown_provenance_fields': sorted(name for name, value in recorded.items()
+                                                        if value is None),
+                    'recorded_blockers': blockers,
+                    'review_declarations_verified_by_this_tool': False,
+                    'scope': 'Blockers explain recorded provenance declarations. Other values '
+                             'are not approved by this tool; source correspondence, neutral '
+                             'build reproducibility, licence review, maintenance ownership '
+                             'and clean OS/native playback remain independently unverified.'}
+    return abi, distribution
+
+
 def audit(package, rootfs, files_pin, dependencies_pin, provenance_pin,
           rootfs_identity, platform_relative='usr'):
     package, rootfs = Path(package).resolve(strict=True), Path(rootfs).resolve(strict=True)
@@ -251,6 +336,7 @@ def audit(package, rootfs, files_pin, dependencies_pin, provenance_pin,
         require('lib/' + soname in declared, 'missing FFmpeg SONAME link')
     candidates = compiler_candidates(rootfs)
     require(not candidates, 'compiler/build tools found at inspected target paths: ' + ', '.join(candidates))
+    abi, distribution = recorded_diagnostics(provenance, dependencies, payload)
     return {'schema': 1, 'status': 'PASS_PINNED_TARGET_FILES_ONLY',
             'public_distribution_status': 'PUBLIC_NOT_READY',
             'rootfs_identity_declared': rootfs_identity,
@@ -265,6 +351,8 @@ def audit(package, rootfs, files_pin, dependencies_pin, provenance_pin,
             'compiler_names_and_versioned_cross_compiler_variants': list(TOOLS),
             'compiler_candidates_found': candidates,
             'ELF_dependency_symbols': 'NOT_RECOMPUTED; exact bytes match pinned #576 inventory',
+            'recorded_ABI_diagnostics': abi,
+            'distribution_diagnostics': distribution,
             'clean_OS_Kodi_GPU_hardware_media_AV_acceptance': 'NOT_RUN',
             'scope': 'Offline immutable files only. No target code, loader, namespaces, devices, '
                      'installation or publication executed. Absence of inspected compiler names '

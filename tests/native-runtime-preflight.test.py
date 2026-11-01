@@ -240,6 +240,107 @@ class RuntimePreflightTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unsupported dependency ABI'):
             self.audit()
 
+    def test_minimal_older_manifest_keeps_distribution_and_abi_unknown(self):
+        report = self.audit()
+        abi = report['recorded_ABI_diagnostics']
+        self.assertEqual(report['status'], 'PASS_PINNED_TARGET_FILES_ONLY')
+        self.assertEqual(abi['payload_version_inventory'], 'UNKNOWN')
+        self.assertIsNone(abi['highest_recorded_numeric_glibc_requirement'])
+        self.assertIsNone(abi['recorded_configure_cpu_options'])
+        self.assertEqual(len(abi['payloads_without_version_inventory']), 9)
+        distribution = report['distribution_diagnostics']
+        self.assertFalse(distribution['review_declarations_verified_by_this_tool'])
+        self.assertEqual({x['state'] for x in distribution['recorded_blockers']}, {'UNKNOWN'})
+        self.assertIn('source_revision', distribution['unknown_provenance_fields'])
+        self.assertEqual(distribution['status'], 'PUBLIC_NOT_READY')
+
+    def test_records_cpu_and_glibc_inventory_without_claiming_target_acceptance(self):
+        self.provenance.update({
+            'source_revision': 'a' * 40, 'source_url': 'https://example.invalid/source',
+            'private_build_prefixes_detected': True, 'neutral_build_verified': False,
+            'corresponding_source_archive_included': False,
+            'redistribution_review': 'NOT_COMPLETED', 'update_maintenance_owner': 'UNASSIGNED',
+            'clean_OS_and_Kodi_playback_qualification': 'NOT_RUN',
+            'configured_feature_and_CPU_options': ['--enable-shared', '--cpu=core2']})
+        for name, node in self.dependencies['nodes'].items():
+            if name.startswith('payload:'):
+                node['version_needs'] = {}
+        self.dependencies['nodes']['payload:bin/ffmpeg']['version_needs'] = {
+            'libc.so.6': ['GLIBC_2.9', 'GLIBC_2.43', 'GLIBC_2.100', 'GLIBC_ABI_DT_RELR'],
+            'libavcodec.so.1': ['LIBAVCODEC_1']}
+        self.reseal()
+        report = self.audit()
+        abi = report['recorded_ABI_diagnostics']
+        self.assertEqual(abi['payload_version_inventory'], 'RECORDED')
+        self.assertEqual(abi['highest_recorded_numeric_glibc_requirement'], 'GLIBC_2.100')
+        self.assertEqual(abi['recorded_glibc_versions'], ['GLIBC_2.9', 'GLIBC_2.43', 'GLIBC_2.100'])
+        self.assertEqual(abi['recorded_named_glibc_requirements'], ['GLIBC_ABI_DT_RELR'])
+        self.assertEqual(abi['recorded_configure_cpu_options'], ['--cpu=core2'])
+        self.assertEqual(abi['ffmpeg_sonames']['avcodec'], 'libavcodec.so.1')
+        self.assertEqual({x['state'] for x in report['distribution_diagnostics']['recorded_blockers']},
+                         {'DECLARED_UNRESOLVED'})
+        self.assertEqual(report['clean_OS_Kodi_GPU_hardware_media_AV_acceptance'], 'NOT_RUN')
+
+    def test_partial_version_inventory_and_null_provenance_stay_unknown(self):
+        self.provenance['neutral_build_verified'] = None
+        self.dependencies['nodes']['payload:bin/ffmpeg']['version_needs'] = {
+            'libc.so.6': ['GLIBC_2.43']}
+        self.reseal()
+        report = self.audit()
+        abi = report['recorded_ABI_diagnostics']
+        self.assertEqual(abi['payload_version_inventory'], 'PARTIAL')
+        self.assertEqual(len(abi['payloads_without_version_inventory']), 8)
+        self.assertEqual(abi['highest_recorded_numeric_glibc_requirement'], 'GLIBC_2.43')
+        self.assertIn('neutral_build_verified',
+                      report['distribution_diagnostics']['unknown_provenance_fields'])
+        self.assertEqual(report['public_distribution_status'], 'PUBLIC_NOT_READY')
+
+    def test_positive_provenance_declarations_cannot_approve_distribution(self):
+        self.provenance.update({
+            'private_build_prefixes_detected': False, 'neutral_build_verified': True,
+            'corresponding_source_archive_included': True, 'redistribution_review': 'COMPLETED',
+            'update_maintenance_owner': 'declared-owner',
+            'clean_OS_and_Kodi_playback_qualification': 'PASS'})
+        self.reseal()
+        report = self.audit()
+        distribution = report['distribution_diagnostics']
+        self.assertEqual({x['state'] for x in distribution['recorded_blockers']},
+                         {'DECLARED_UNVERIFIED'})
+        self.assertFalse(distribution['review_declarations_verified_by_this_tool'])
+        self.assertEqual(distribution['provenance_records']['update_maintenance_owner'],
+                         'declared-owner')
+        self.assertEqual(distribution['status'], 'PUBLIC_NOT_READY')
+        self.assertEqual(report['clean_OS_Kodi_GPU_hardware_media_AV_acceptance'], 'NOT_RUN')
+
+    def test_malformed_optional_provenance_is_not_interpreted_as_clean(self):
+        original = dict(self.provenance)
+        for field, value in (
+                ('private_build_prefixes_detected', 'false'),
+                ('neutral_build_verified', 0),
+                ('corresponding_source_archive_included', []),
+                ('source_revision', 'not-a-commit'),
+                ('source_url', []), ('redistribution_review', True),
+                ('update_maintenance_owner', ''),
+                ('clean_OS_and_Kodi_playback_qualification', {}),
+                ('configured_feature_and_CPU_options', '--cpu=core2'),
+                ('configured_feature_and_CPU_options', ['--cpu='])):
+            with self.subTest(field=field, value=value):
+                self.provenance = dict(original)
+                self.provenance[field] = value
+                self.reseal()
+                with self.assertRaisesRegex(ValueError, 'invalid provenance'):
+                    self.audit()
+
+    def test_malformed_recorded_version_requirements_rejected(self):
+        for value in ([], {'libc.so.6': 'GLIBC_2.43'},
+                      {'libc.so.6': [43]}, {'libc.so.6': ['GLIBC_2.43 bogus']},
+                      {'../libc.so.6': ['GLIBC_2.43']}):
+            with self.subTest(value=value):
+                self.dependencies['nodes']['payload:bin/ffmpeg']['version_needs'] = value
+                self.reseal()
+                with self.assertRaisesRegex(ValueError, 'invalid recorded version requirements'):
+                    self.audit()
+
 
 if __name__ == '__main__':
     unittest.main()

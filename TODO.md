@@ -62,6 +62,23 @@ reinstall. [Scoped follow-up receipt](tests/fixtures/issue510/v13-private-admiss
 This completes source/UI private packaging; the separate public native FFmpeg
 runtime/clean-target work remains in #607. Earlier candidate files stay frozen.
 
+### Private native-runtime follow-up — 2026-11-01
+
+- [x] Restore the source-bound retained Flathub static metadata classification
+  and document the minimum compatibility/lifetime/whole-DSO plan for #607.
+- [x] Add private pinned file-slot install/update/rollback/removal with recovery
+  controls and measured cached-input cost records. Actual legacy-to-neutral
+  nine-ELF update, rejected incomplete update, rollback and repeated removal
+  preserve old selection/payloads and unrelated preferences.
+- [x] Fix the own namespace observer's neutral `/usr` prefix classification,
+  retaining exact seven-library mapping checks. Both packages pass device-free
+  metadata; the neutral package passes50 independent software frames, full NV12
+  and PTS. [Scoped receipt](tests/fixtures/issue607/package-acceptance-20261101.json).
+- [ ] #607 complete acquisition/build burden, independent clean OS, each new
+  package's native Kodi/A/V/EOS/reopen acceptance and public source/notices/
+  reproducible-build/maintenance decision. **PUBLIC_NOT_READY**; the new
+  files/software proof does not replace the frozen source/UI qualification.
+
 ### Stability follow-up — 2026-11-01
 
 - [x] Reject a ready replacement surface after a waiting VA sync releases the

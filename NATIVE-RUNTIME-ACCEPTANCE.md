@@ -15,14 +15,129 @@ source `c48fe3a12d4f0443dc444df27c0b6c35be2b3ced`; see the
 [exact receipt](tests/fixtures/issue510/v13-private-admission-qualification-20261101.json).
 Its optional stock-Kodi settings ZIP uses the existing VA route. This milestone
 does not bundle or qualify the seven-DSO native FFmpeg research runtime below,
-or complete any of #607's six remaining public/clean-target deliverables.
+or qualify the public native-runtime/clean-target deliverables in #607.
 
-This guide adds an offline file preflight over the existing #576 artifacts.
-It does not build/modify FFmpeg or Kodi, publish an archive, install a runtime,
-change the stable stack or execute target binaries. Runtime checks below are
-commands for a later operator run, not new PASS receipts.
+The files-only preflight below checks the existing #576 artifacts. The separate
+metadata/software observers execute trusted libraries in a device-free namespace;
+the private slot tool manages files and a selection JSON. None builds/modifies
+FFmpeg or Kodi, changes the stable stack or publishes binaries. Each recorded
+result below retains its exact source, target and execution scope.
+
+## Existing package selection
+
+The retained statically integrated Flathub stable package is already classified
+by the own embedded-metadata probe. Its signed app commit is `9d26e518`, Kodi
+21.3, ELF SHA256
+`6754d32f8b6b6501b247a7fc817c2b6eb151c27ca5380abd4f2115163ed0a1d6`.
+The [exact historical receipt](tests/fixtures/issue539/flathub-stable-embedded-hwconfig-20261028.json)
+records a present `h264_v4l2m2m` decoder with zero hardware configurations,
+strict exit1, and no Kodi executable initializers, main, media or device run.
+Dependency initializers may run. The earlier DSO-only exit2 remains a different
+unsupported-inspection result, not a decoder-negative measurement.
+
+The source-bound embedded probe, preload helper and DSO probe are available in
+`tools/kodi-route-probe/`. Their [guide](tools/kodi-route-probe/README.md) separates
+trusted mapped-target metadata execution from files-only preflight. Tests use
+synthetic executables/DSOs; no new real-package playback follows from them:
+
+```sh
+make kodi-package-check
+make runtime-preflight-check runtime-slots-check
+```
+
+The preflight report explains recorded ABI/GLIBC/configure-CPU requirements
+and the pinned provenance's distribution blockers. Missing fields remain
+unknown and positive declarations remain unverified; its status stays
+`PASS_PINNED_TARGET_FILES_ONLY` / `PUBLIC_NOT_READY`. These diagnostics do not
+recompute symbol resolution, infer a minimum CPU or approve redistribution.
+
+## Minimum compatibility plan
+
+1. Identify the selected executable and its integration before interpreting
+   metadata. Use direct FFmpeg SONAMEs for a DSO-linked Kodi, or the reviewed
+   main-image exports and exact ELF identity for an embedded build. Distinguish
+   an inspection error, a completed zero-config negative and a metadata
+   candidate; decoder names and device nodes alone do not establish selection.
+2. Apply the target Kodi's rule. The embedded helper pins the original Kodi21
+   and Kodi22 source policies separately: both require DRM PRIME, while the
+   HW_DEVICE_CTX device-type handling differs. The exact source commits/paths
+   are recorded in the probe and receipt.
+3. Require real delivery and lifetime semantics after selection. The unchanged
+   published [FFmpeg implementation at12cc1f42](https://github.com/jc-kynesim/rpi-ffmpeg/tree/12cc1f42f06ff0e85633c2602c96786fbd280b70)
+   supplies hardware-config/get-format, EXPBUF/AVDRM descriptors and
+   FD/context/consumer-buffer lifetime handling. An advertisement-only change
+   cannot supply those contracts. No external source/binary patch is part of
+   this plan, and a minimal upstream patch remains unproved.
+4. Keep the matching seven-DSO closure and target providers together. Exact
+   SONAMEs, ABI, versioned symbols, CPU options and provider bytes matter;
+   replacing only libavcodec is not a qualified compatibility route. Stage
+   only a pinned package before selecting its private prefix and keep the old
+   slot for file-level rollback.
+5. Separate file/provider validation and device-free metadata/software CLI
+   checks from each new package's actual Kodi selection, source-qualified
+   no-drift A/V logs, control/EOS/reopen and retirement acceptance. A new
+   package does not inherit the older private-prefix native playback result.
+   Independent clean-target and public source/notices/maintenance decisions
+   remain with #607.
+
+## Private slot selection and cost records
+
+`scripts/native-runtime-slots.py` stages an explicitly pinned uncompressed TAR,
+checks its files/providers, retains the previous slot and replaces one selection
+JSON under an operator-owned private store. `status` returns the selected prefix;
+it does not change a Kodi launcher, loader search path, application profile or
+already-running process. Use immutable inputs and offline consumers. This is a
+private files-only lifecycle tool, not a public native-runtime installer.
+
+The store must be new or empty for its first `install`. Subsequent `update`
+uses the same pins/options for the new archive. Expected pins must come from
+the reviewed producer/receipt, not be silently taken from a failing target:
+
+```sh
+python3 -B scripts/native-runtime-slots.py --store "$slot_store" install \
+  --archive "$runtime_archive" --archive-sha256 "$archive_pin" \
+  --rootfs "$platform_files" --rootfs-identity "$platform_identity" \
+  --platform-relative . --files-sha256 "$files_pin" \
+  --dependencies-sha256 "$dependencies_pin" --provenance-sha256 "$provenance_pin"
+python3 -B scripts/native-runtime-slots.py --store "$slot_store" status
+python3 -B scripts/native-runtime-slots.py --store "$slot_store" rollback
+python3 -B scripts/native-runtime-slots.py --store "$slot_store" remove
+```
+
+Bad candidates leave the previous selection intact. Rollback rechecks the old
+package and target providers. Removal checks the complete owned payload tree
+independently of provider availability, preserves unrelated store-top user files,
+and tracks/retries pending owned deletion after caught cleanup failure. Unknown
+or changed payload files are refused. Initialization and publication failure
+controls cover retry, interrupts and lock/store identity replacement. Atomic
+selection is not a power-loss, cross-filesystem or live-consumer update guarantee.
+
+Reports include total wall time, phase timing, logical/allocated store snapshots
+and own-Python-process RSS high-water. The enclosing serialized-operation timing
+overlaps child phases and must not be summed with them. Disk is an observed
+store-local maximum, and RSS is not unique physical RAM or whole process-tree
+peak. First-user network acquisition, full Kodi/Platform/GL setup and historical
+build RAM remain unmeasured. Cached local trial timings are not cold-install
+or generic-machine performance claims.
+
+The [current-host receipt](tests/fixtures/issue607/package-acceptance-20261101.json)
+records the old private-prefix package and a separately inventoried neutral
+package assembled from retained, unmodified `/usr`-prefix binaries. Nine ELF
+payload hashes differ. It covers rejected incomplete update, valid update,
+selected-prefix metadata, previous-slot rollback, repeated removal and user
+preferences preservation. The neutral package also passes independent software
+H.264/NV12/PTS checks for50 frames. Neither result supplies new native Kodi,
+hardware/A/V or independently booted clean-OS acceptance. `PUBLIC_NOT_READY`
+remains in force.
 
 ## Reuse the implemented package and runtime checks
+
+The current repository also carries the three metadata/software observer
+workers under `tools/kodi-route-probe/`; the packager itself remains the pinned
+#576 tool described below. The observer now distinguishes a visible declared
+neutral `/usr` prefix from a leaked private build prefix. All seven FFmpeg
+libraries must still map from the exact relocated package. A visible `/usr` is
+reported as visible, not hidden, and does not approve neutral/reproducible builds.
 
 The reviewed #576 source is `ec946ac6cc5a78ce552911510cf89a651cf19e5a`, merged
 only into `research/issue539-runtime-verified-20261029` at `c65af5e`. Its
@@ -166,12 +281,12 @@ FFmpeg binary.
 
 | Deliverable | Next concrete evidence | Current disposition |
 | --- | --- | --- |
-| D0 official package selection | Reuse #545's `ffmpeg-hwconfig-probe.py` for a directly linked Kodi ELF and its exact FFmpeg closure; require `--require-kodi-drm-prime`. Static-integrated Kodi needs a separately reviewed method. | Ubuntu/Debian sid tested metadata negatives are retained. Flathub stable DSO-probe exit2 is **UNCLASSIFIED**, not negative/PASS. Ubuntu has no supplied Kodi i386 package in the recorded inventory. |
-| D3 complete first-user burden | On the selected fresh target, record exact commands, network bytes, installed/temporary/peak disk, peak RSS, elapsed/user CPU, prerequisites, update and rollback work; separate observer tools from user dependencies. | Prior configure/build/stage 17.88 minutes excludes fetch/tool setup; peak build RAM is unknown. Archive bytes exclude Kodi/Platform/GL/driver/source. Report absent measurements as null/NOT_RUN. |
+| D0 official package selection | Reuse #545's `ffmpeg-hwconfig-probe.py` for a directly linked Kodi ELF and its exact FFmpeg closure; require `--require-kodi-drm-prime`. The embedded probe applies reviewed Kodi21/22 policies to exact main-image identities. | Ubuntu/Debian sid tested metadata negatives are retained. The source-bound Flathub stable21.3 embedded result is a completed zero-config metadata negative; its old DSO-probe exit2 remains an unsupported-inspection result. Ubuntu has no supplied Kodi i386 package in the recorded inventory. |
+| D3 complete first-user burden | On the selected fresh target, record exact commands, network bytes, installed/temporary/peak disk, peak RSS, elapsed/user CPU, prerequisites, update and rollback work; separate observer tools from user dependencies. | Cached current-host install/update/rollback/remove costs and process RSS are recorded separately above. Prior configure/build/stage17.88 minutes excludes fetch/tool setup; peak build RAM is unknown. Full acquisition and Kodi/Platform/GL/driver/source setup remain unmeasured. |
 | D4 independent clean-target acceptance | Run the pinned-manifest/ELF/provider helper against a genuinely independent clean target if one becomes available. Record any narrower clean-userspace proof under its actual scope. | Existing compatible-host, compilerless-namespace, software-CLI and FILES_ONLY results do not establish a clean OS or another native Kodi target. Current equipment remains T8100/BCM70015/Intel965 x86_64; no Atom/BCM70012 is connected. |
 | D4 each proposed new package | Pin original Kodi/App/Platform/GL/own-driver identities; qualify activation without a compiler, decoder selection, source-qualified no-drift A/V logs, pixels/PTS, EOS/reopen, pause/seek/Stop, ABI/provider behavior, removal/fallback/re-extraction and resource boundaries. | Existing same-host proof is complete only in its stated scope. A new binary/package cannot inherit those results; calibrated physical lip-sync is not an additional synchronization gate. |
-| D5 redistribution/maintenance | Neutral build paths and reproducible build recipe, corresponding-source/component/dependency notices, exact CPU/ABI support, update/security owner and explicit distribution decision. | Core2/x86_64 only; existing `atan2f@GLIBC_2.43` requirement; private prefixes embedded, corresponding native-runtime source archive absent, maintenance owner unassigned. **PUBLIC_NOT_READY**. |
-| Minimum credible compatibility plan | Document selection metadata, real EXPBUF/AVDRM descriptors and FD/context/consumer lifetime requirements from existing published implementations. | Advertisement-only own-driver/device changes cannot create missing FFmpeg selection metadata. No own-side alternative is proved. External Kodi/FFmpeg edits are outside scope; an upstreamable minimum patch remains unproved and is not required to record the package gap. |
+| D5 redistribution/maintenance | Neutral build paths and reproducible build recipe, corresponding-source/component/dependency notices, exact CPU/ABI support, update/security owner and explicit distribution decision. | Core2/x86_64 only; existing `atan2f@GLIBC_2.43` requirement; legacy private-prefix package and separate retained neutral-prefix build/software evidence; reproducible compilation and corresponding native-runtime source archive remain unverified, maintenance owner unassigned. **PUBLIC_NOT_READY**. |
+| Minimum credible compatibility plan | Document selection metadata, real EXPBUF/AVDRM descriptors and FD/context/consumer lifetime requirements from existing published implementations. | Advertisement-only own-driver/device changes cannot create missing FFmpeg selection metadata. The minimum compatibility plan above documents these published selection/delivery/lifetime requirements. External Kodi/FFmpeg edits are outside scope; an upstreamable minimum patch remains unproved and is not required to record the package gap. |
 
 The private runtime is a minimal configured subset, not a drop-in FFmpeg
 distribution. Replacing only `libavcodec` does not establish the matched ABI,
