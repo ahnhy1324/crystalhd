@@ -1,5 +1,29 @@
 # History
 
+## 1.3.0-rc.1 — prepared, unpublished
+
+Bundle `1.3.0-rc.1` / module-DKMS `3.10.15` freezes the maintained source/UI
+implementation at `c48fe3a12d4f`. Final release preparation changes version
+metadata and documentation; the library ABI, ioctl API, firmware and default
+playback policy are unchanged.
+
+- Preserve the exact VA surface binding after a waiting sync releases the
+  metadata mutex, rejecting a replacement picture rather than exposing it to
+  an obsolete waiter (#613).
+- Wait for bounded H.264 replay admission progress before accepting new input,
+  retaining the existing 512-AU/32MiB bounds (#615).
+- Include the configuration CLI, accessible Korean settings window and optional
+  stock-Kodi configuration dialogs with reproducible source/add-on packaging
+  and configuration-preserving installation/removal (#400/#611/#612).
+- Retain optional Xv output, packed scaling and the explicitly selected narrow
+  MPEG-1 experiment under their existing opt-ins and support limits.
+
+Previously accepted renderer/QoS loss remains a quantified known limitation,
+not a new zero-loss release condition. The separate public native-FFmpeg
+runtime, additional diagnostics/CI and broader hardware/performance research
+are outside this source/UI release. The following development history and
+published release records retain their original identities.
+
 ## 1.3.0-dev.1 — unreleased
 
 Development package `3.10.14` is separate from published `1.2.0` / `3.10.13`.

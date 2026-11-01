@@ -259,5 +259,5 @@ static gboolean plugin_init(GstPlugin *plugin)
 #define PACKAGE "crystalhd"
 #endif
 GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, crystalhdpackedscale,
-    "Optional narrow packed CrystalHD resize", plugin_init, "1.3.0-dev.1",
+    "Optional narrow packed CrystalHD resize", plugin_init, "1.3.0-rc.1",
     "MIT/X11", "CrystalHD", "https://github.com/ahnhy1324/crystalhd")

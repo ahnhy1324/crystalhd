@@ -49,12 +49,41 @@ boundaries and current status are in
 [USAGE.md](USAGE.md#known-issues-and-deinterlacing-roadmap) and the
 [hardware report](HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22).
 
+## 1.3 RC1 source/UI candidate
+
+This release branch prepares bundle `1.3.0-rc.1` with the previously unused
+module-DKMS package identity `3.10.15`. Its runtime implementation is frozen at
+qualified source `c48fe3a12d4f0443dc444df27c0b6c35be2b3ced`; release preparation
+changes version labels and documentation. The historical ioctl version,
+`libcrystalhd.so.3` ABI, firmware and default playback policy remain unchanged.
+The optional settings add-on keeps its independent `0.1.0` identity.
+
+The c48fe3a private source/UI checkpoint already completed reproducible
+packaging, a Git-free build, scoped runtime checks and configuration-preserving
+install/remove/reinstall qualification. Final RC artifacts receive their own
+exact source/hash receipt and the affected existing build/package checks;
+unchanged implementation retains its prior evidence. The old dev.1 files are
+preserved and are not renamed or overwritten as an RC.
+
+Accepted, quantified renderer/QoS losses remain nonblocking within their
+recorded display-performance scope; see
+[#91's accepted renderer-loss disposition](https://github.com/ahnhy1324/crystalhd/issues/91#issuecomment-6392485987).
+There is no new universal zero-renderer-loss release gate. Source-picture,
+memory/lifetime and ABI claims retain their existing separate evidence.
+#607's public native-FFmpeg runtime and other open research/additional CI are
+outside this source/UI release, not prerequisites for publishing it.
+
+Prepare exact source TAR, optional Kodi ZIP, manifest, checksums and release
+notes using the helpers below. Record final validation separately from those
+immutable artifacts. Present the exact commit, files and support limits for
+explicit maintainer GO before master integration, tag or public upload.
+
 ## Private v1.3 candidate preparation
 
-Development remains `1.3.0-dev.1`; a local review candidate is not a published RC
-or stable release. Work continues through reproducible source/add-on packaging
-and actual installation/removal/rollback validation. Master merge, tags, public
-uploads and default-backend promotion are separate maintainer decisions.
+The separate development line remains `1.3.0-dev.1`; a local review candidate
+is not a published RC or stable release. The RC1 release branch above supplies
+its own final version identity. Master merge, tags, public uploads and
+default-backend promotion are separate maintainer decisions.
 
 Use the experimental integration branch combining maintenance/Xv and MPEG-1.
 Do not substitute one child's CI for the combined source. Keep native-driver
@@ -113,6 +142,7 @@ checkout alone does not announce a published release.
 
 | Identity | Current value | Purpose |
 | --- | --- | --- |
+| Prepared RC1 bundle / module package | `1.3.0-rc.1` / `3.10.15` | Source/UI release branch; not yet published |
 | Development bundle / module package | `1.3.0-dev.1` / `3.10.14` | Unreleased follow-up; never replace registered stable payload |
 | Published stable bundle / module package | `1.2.0` / `3.10.13` | Immutable source `8132043`; qualified public source asset |
 | Published RC2 bundle / package | `1.2.0-rc.2` / `3.10.12` | Immutable qualified rollback source |

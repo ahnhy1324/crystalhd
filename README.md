@@ -10,8 +10,10 @@ display.
 with module-DKMS `3.10.13`. The quick start installs that stable release. See the
 [final-package qualification](HARDWARE-2026-09-13.md#120-final-package-qualification--2026-10-23)
 and [change summary](HISTORY.md#120).
-Current master is development `1.3.0-dev.1` / `3.10.14`, not a new qualified
-release; its follow-up experiments do not extend stable compatibility claims.
+This checkout prepares `1.3.0-rc.1` / module-DKMS `3.10.15` from the qualified
+source/UI candidate. It is not yet published. See the
+[candidate scope and release steps](RELEASING.md#13-rc1-sourceui-candidate).
+The separate development and native-FFmpeg research lines retain their own scope.
 For published [v1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0),
 use the instructions shipped with that tag. The
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29)
