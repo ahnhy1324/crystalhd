@@ -31,7 +31,28 @@ wait-probe/libcrystalhdhostwait.so: ../../../tests/gst-field-host-wait-probe.cpp
 libgstcrystalhdfield.so: gstcrystalhdfield.cpp ../../../tests/field-view-gpu.h ../../../tests/yuy2-gpu.h
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -shared $< $(LDLIBS) -o $@
 
-clean:
-	rm -f libgstcrystalhdfield.so wait-probe/libgstcrystalhdfield.so wait-probe/no-vsync/libgstcrystalhdfield.so wait-probe/libcrystalhdhostwait.so
+field-output-cpu-test: ../../../tests/gst-field-output-cpu.cpp gstcrystalhdfield.cpp ../../../tests/field-view-gpu.h ../../../tests/yuy2-gpu.h
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
-.PHONY: all clean
+field-output-cpu-test-asan: ../../../tests/gst-field-output-cpu.cpp gstcrystalhdfield.cpp ../../../tests/field-view-gpu.h ../../../tests/yuy2-gpu.h
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie $< $(LDFLAGS) $(LDLIBS) -o $@
+
+# NULL-only CPU contracts and plugin discovery; no display/device/worker starts.
+check: libgstcrystalhdfield.so field-output-cpu-test field-output-cpu-test-asan
+	@set -eu; check_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/crystalhd-field-check.XXXXXX"); \
+	trap 'rm -rf -- "$$check_dir"' EXIT HUP INT TERM; \
+	GST_PLUGIN_PATH= GST_PLUGIN_PATH_1_0= GST_PLUGIN_SYSTEM_PATH= GST_PLUGIN_SYSTEM_PATH_1_0= \
+	GST_REGISTRY="$$check_dir/cpu.bin" ./field-output-cpu-test; \
+	GST_PLUGIN_PATH= GST_PLUGIN_PATH_1_0= GST_PLUGIN_SYSTEM_PATH= GST_PLUGIN_SYSTEM_PATH_1_0= \
+	GST_REGISTRY="$$check_dir/asan.bin" ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+	UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ./field-output-cpu-test-asan; \
+	LC_ALL=C GST_PLUGIN_PATH="$(CURDIR)" GST_PLUGIN_PATH_1_0="$(CURDIR)" \
+	GST_PLUGIN_SYSTEM_PATH= GST_PLUGIN_SYSTEM_PATH_1_0= GST_REGISTRY="$$check_dir/inspect.bin" \
+	gst-inspect-1.0 crystalhdfieldsink > "$$check_dir/inspect.txt"; \
+	grep -Eq 'Rank[[:space:]]+none[[:space:]]+\(0\)' "$$check_dir/inspect.txt"; \
+	grep -q 'field-stats' "$$check_dir/inspect.txt"
+
+clean:
+	rm -f libgstcrystalhdfield.so field-output-cpu-test field-output-cpu-test-asan wait-probe/libgstcrystalhdfield.so wait-probe/no-vsync/libgstcrystalhdfield.so wait-probe/libcrystalhdhostwait.so
+
+.PHONY: all check clean

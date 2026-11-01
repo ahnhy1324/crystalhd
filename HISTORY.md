@@ -1,5 +1,16 @@
 # History
 
+## 1.3.0-rc.2 — integration candidate
+
+Bundle `1.3.0-rc.2` / module-DKMS `3.10.16` combines the maintained runtime,
+PTS-epoch diagnostics, native V4L2 colour/format/EXPBUF work and explicit
+field-GPU output. Runtime package production now exercises the current
+preflight and slot install/update/rollback/removal contracts. Previously omitted
+native adapter, TX-wrap and field-output build/contracts join automated checks.
+Qualification remains in progress; this entry does not announce publication
+or promote optional backends. External application code, firmware and the
+legacy ABI are unchanged.
+
 ## 1.3.0-dev.1 — unreleased
 
 Development package `3.10.14` is separate from published `1.2.0` / `3.10.13`.

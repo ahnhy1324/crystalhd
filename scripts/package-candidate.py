@@ -58,8 +58,10 @@ def package(source, destination, revision='HEAD'):
                 'bundle_version': version, 'source_commit': commit, 'source_tree': tree,
                 'source_date_epoch': epoch, 'publication': 'PRIVATE_CANDIDATE_NOT_RELEASED',
                 'qualification': 'NOT_RUN_FOR_THESE_ARTIFACTS',
-                'scope': ['exact committed source', 'optional Kodi configuration front end'],
-                'native_ffmpeg_research_runtime': 'SEPARATE_PUBLIC_NOT_READY',
+                'scope': ['exact committed source including native decoder and optional outputs',
+                          'native runtime producer, lifecycle and diagnostic tools source',
+                          'optional Kodi configuration front end'],
+                'native_ffmpeg_research_runtime': 'SEPARATE_BINARY_PAYLOAD_PUBLIC_NOT_READY',
                 'addon': addon, 'artifacts': artifacts}
     manifest_path = destination / 'candidate-manifest.json'
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2) + '\n')

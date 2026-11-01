@@ -8,7 +8,8 @@ with module-DKMS identity `3.10.13` and prereleases
 (`3.10.12`) are published and immutable. RC2 completed its bounded G0–G3
 qualification in [#473](https://github.com/ahnhy1324/crystalhd/issues/473).
 Fresh final-package checks, explicit maintainer GO and public-asset verification
-are complete. Master is now unreleased `1.3.0-dev.1` / `3.10.14`.
+are complete. The full integration candidate is `1.3.0-rc.2` / `3.10.16`,
+with acceptance and packaging still in progress.
 Previous stable releases and RCs remain unchanged.
 The [qualification summary](HARDWARE-2026-09-13.md#120-final-package-qualification--2026-10-23)
 distinguishes fresh final-package checks from scoped RC2 evidence reuse.
@@ -19,14 +20,32 @@ scope to general full-rate FHD or hardware deinterlacing.
 
 ## Current priorities — 2026-11-01
 
-The latest qualified private v1.3 runtime source is `c48fe3a12d4f`, merged only
+The complete 1.3 candidate is being assembled on
+`integrate/v1.3-complete-20261101`. RC1 is an incomplete historical cut;
+its source/UI checkpoint does not authorize excluding already-developed work.
+
+- [x] Integrate the maintained PTS-epoch diagnostics and runtime
+  slot/metadata/host/materials tools from #585.
+- [x] Integrate the native V4L2 decoder, colour/format/EXPBUF repairs and
+  explicit field-GPU output from #538/#581/#590, preserving existing opt-ins.
+- [x] Connect the runtime package producer to the current preflight/slot
+  consumers and exercise install/update/rejected update/rollback/removal.
+- [ ] Complete affected combined-source build, contract and actual-device tests.
+- [ ] Complete the current-equipment runtime distribution work in #607 and
+  package the complete candidate with its own qualification receipt.
+
+Withdrawn copy/performance prototypes remain withdrawn. The original #538 heap
+subtask alone remains excluded; #538 and its other work stay open. Accepted
+renderer/QoS losses and source-qualified no-drift A/V logs retain their recorded
+scope. External Kodi/FFmpeg/kernel-core/firmware code remains unchanged.
+
+The earlier qualified private v1.3 runtime source is `c48fe3a12d4f`, merged only
 into `research/issue513-xv-lifecycle-20261031` through #615 at checkpoint `1b17fd9`.
 Both share tree `32c5b891`; the earlier `0ea0862` combination and `ce4cab1`
 package qualification below remain historical checkpoints. The master proposal
 #585 and later documentation revisions retain separate source/CI identities;
-they do not change this frozen runtime/artifact qualification. Native Kodi-driver
-and compilerless FFmpeg-runtime research remain separate lineages; their old CI
-is not combined-source qualification. Follow
+they do not change this frozen runtime/artifact qualification. Native-driver and compilerless runtime evidence retains its original
+lineage; their old CI is not qualification of the new combined source. Follow
 [private candidate packaging](RELEASING.md#private-v13-candidate-preparation)
 for exact-commit source/ZIP artifacts and artifact-specific validation.
 The optional Kodi settings frontend is tracked in #611, sharing #400's core;

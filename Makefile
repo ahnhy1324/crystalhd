@@ -245,6 +245,10 @@ fw-probe-tool:
 tx-release-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/tx-release.sh
 
+.PHONY: tx-wrap-check
+tx-wrap-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/tx-wrap.sh
+
 tx-admission-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/tx-admission.sh
 
@@ -313,7 +317,7 @@ ioctl-dispatch-check:
 rx-output-receipts-check:
 	CXX="$(CXX)" sh ./tests/rx-output-receipts.sh
 
-architecture-check: command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-staging-check fw-probe-check tx-admission-check tx-release-check h264-stream-check rx-ownership-check rx-pages-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
+architecture-check: command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-staging-check fw-probe-check tx-admission-check tx-release-check tx-wrap-check h264-stream-check rx-ownership-check rx-pages-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
 
 pib-check:
 	CC="$(CC)" sh ./tests/flea-pib.sh

@@ -10,8 +10,9 @@ display.
 with module-DKMS `3.10.13`. The quick start installs that stable release. See the
 [final-package qualification](HARDWARE-2026-09-13.md#120-final-package-qualification--2026-10-23)
 and [change summary](HISTORY.md#120).
-Current master is development `1.3.0-dev.1` / `3.10.14`, not a new qualified
-release; its follow-up experiments do not extend stable compatibility claims.
+This integration candidate is `1.3.0-rc.2` / `3.10.16`; qualification is in
+progress. Its version does not extend stable compatibility claims. See the
+[complete 1.3 scope](RELEASING.md#private-v13-candidate-preparation).
 For published [v1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0),
 use the instructions shipped with that tag. The
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29)
@@ -66,7 +67,7 @@ sudo apt install git
 git clone --branch v1.2.0 https://github.com/ahnhy1324/crystalhd.git
 cd crystalhd
 
-sudo apt install build-essential pkg-config linux-headers-$(uname -r) \
+sudo apt install build-essential pkg-config gettext linux-headers-$(uname -r) \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-tools gstreamer1.0-plugins-base \
   gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
@@ -178,6 +179,7 @@ does not establish Moonlight support at that rate.
 | Current work | [TODO.md](TODO.md) |
 | GStreamer options and framing | [GStreamer component guide](filters/gst/gst-plugin-1.0/README.md) |
 | VA-API subset and experimental controls | [VA-API component guide](filters/vaapi/README.md) |
+| Explicit experimental field-GPU output | [Build, selection and retained limits](tests/fixtures/issue530/README.md#experimental-window-consumer) |
 | Legacy API and library options | [libcrystalhd guide](linux_lib/libcrystalhd/README.md) |
 | Configuration options, optional settings window/tray and schema | [CONFIGURATION.md](CONFIGURATION.md) |
 | Contributing and bug reports | [CONTRIBUTING.md](CONTRIBUTING.md) |
@@ -197,6 +199,11 @@ NODE_PATH=/usr/share/nodejs make -j2 W=1 check
 make userspace32-check
 make legacy-cpu-check
 ```
+
+The explicit field-GPU output additionally needs `libxcb1-dev`, `libegl-dev`,
+`libgles-dev`, `libgbm-dev` and `libdrm-dev` with the GStreamer video/app
+development headers. Build and run its device-free contracts with
+`make -C filters/gst/field-output check`; actual window tests require X11/EGL.
 
 Device-free checks and CI kernel API builds complement physical playback
 tests. See [RELEASING.md](RELEASING.md) for the release gates and

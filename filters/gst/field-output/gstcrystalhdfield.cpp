@@ -199,7 +199,7 @@ struct Worker {
         changed.wait(lock,[&]{return command->done||flushing||stopping||broken;});
         return command->done?command->result:broken?GST_FLOW_ERROR:GST_FLOW_FLUSHING;
     }
-    bool target_time(Command &command,GstClockTime running,GstClockTime &target) {
+    static bool target_time(Command &command,GstClockTime running,GstClockTime &target) {
         if(!GST_CLOCK_TIME_IS_VALID(running)||!GST_CLOCK_TIME_IS_VALID(command.base)||
            !GST_CLOCK_TIME_IS_VALID(command.latency)||command.latency>=GST_CLOCK_TIME_NONE-running)return false;
         // BaseSink applies latency and ts-offset in running time, then its

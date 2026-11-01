@@ -175,12 +175,14 @@ With the updated native reader, saved supported defaults are read on ordinary
 application startup. The optional `crystalhd-settings` window edits those defaults;
 `config run` is only needed for explicit invocation overrides/acknowledged launches.
 
-On Ubuntu, the window needs `python3-gi` and `gir1.2-gtk-3.0`; the optional
+On Ubuntu, building and installing the translated frontend needs `gettext`
+(`msgfmt`), and the window needs `python3-gi` and `gir1.2-gtk-3.0`; the optional
 tray additionally uses `gir1.2-ayatanaappindicator3-0.1` and a desktop StatusNotifier
 host. The command-line utility and native decoders have no GTK/tray dependency.
 Install the desktop frontend separately from the runtime:
 
 ```sh
+sudo apt install gettext python3-gi gir1.2-gtk-3.0
 sudo make install-settings
 crystalhd-settings
 # Start in the tray; show the window if no working tray is available:
@@ -232,7 +234,7 @@ for their supported invocation paths.
 and profiles; system defaults remain. Conflicting edits and uncertain write
 outcomes require review/reload, never a blind overwrite. Ctrl+S saves, Ctrl+R reloads,
 Ctrl+Q exits, and Escape closes/hides the window. Labels and keyboard mnemonics are
-provided; UI messages are prepared for gettext translation (English is supplied).
+provided; English and Korean UI messages are supplied through gettext.
 Reopening a long-running tray window checks the saved user and system files in the
 background. An external change preserves every draft but requires an explicit
 **Reload file** before Save or Clear, so the window never silently merges or overwrites it.

@@ -161,7 +161,7 @@ jobs:
             build-essential autoconf gettext gcc-multilib g++-multilib qemu-user \
             linux-headers-generic \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libxcb-shm0-dev libxcb-xv0-dev \
+            libxcb-shm0-dev libxcb-xv0-dev libxcb1-dev libegl-dev libgles-dev \
             gstreamer1.0-tools gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav \
             python3-gi python3-numpy gir1.2-gtk-3.0 xvfb xauth desktop-file-utils dbus-daemon \
@@ -252,6 +252,9 @@ jobs:
 
       - name: Check optional experimental MPEG-1 decoder without hardware
         run: make -C filters/gst/gst-plugin-1.0 check-experimental-mpeg1
+
+      - name: Build and check explicit field GPU output without hardware
+        run: make -C filters/gst/field-output check
 
       - name: Verify optional V4L2 module integration
         shell: bash
@@ -536,6 +539,16 @@ jobs:
           git clone --quiet --depth 1 --branch "v$KERNEL_VERSION" \
             "$KERNEL_REPOSITORY" "$KERNEL_DIR"
           make -s -C "$KERNEL_DIR" ARCH="${{ matrix.arch }}" defconfig
+          # Select the framework dependencies through ordinary Kconfig users;
+          # their drivers are not built or loaded by this header/API check.
+          "$KERNEL_DIR/scripts/config" --file "$KERNEL_DIR/.config" \
+            --enable MEDIA_SUPPORT --disable MEDIA_SUPPORT_FILTER \
+            --enable MEDIA_PCI_SUPPORT --enable SND --enable V4L_TEST_DRIVERS \
+            --module VIDEO_VIM2M --module VIDEO_TW686X
+          make -s -C "$KERNEL_DIR" ARCH="${{ matrix.arch }}" olddefconfig
+          for native_config in VIDEO_DEV V4L2_MEM2MEM_DEV VIDEOBUF2_DMA_SG; do
+            grep -Eq "^CONFIG_${native_config}=[ym]$" "$KERNEL_DIR/.config"
+          done
           make -s -j2 -C "$KERNEL_DIR" ARCH="${{ matrix.arch }}" modules_prepare
 
       - name: Compile CrystalHD kernel API
@@ -548,6 +561,10 @@ jobs:
             ARCH="${{ matrix.arch }}" \
             M="$GITHUB_WORKSPACE/driver/linux" \
             CRYSTALHD_FW_RESEARCH=1 W=1 crystalhd.o
+          make -C "$KERNEL_DIR" \
+            ARCH="${{ matrix.arch }}" \
+            M="$GITHUB_WORKSPACE/driver/linux" \
+            CRYSTALHD_FW_RESEARCH=0 CRYSTALHD_V4L2=1 W=1 crystalhd.o
 
   ci:
     name: CI gate

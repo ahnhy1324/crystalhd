@@ -9,7 +9,7 @@ PUBLIC_NOT_READY**. Independent clean-target acceptance and complete first-user
 burden retain their separate unqualified scopes. The current-host native cases
 below have their own package, module and media boundaries.
 
-The separate private `1.3.0-dev.1` source/UI candidate has completed deterministic
+The historical private `1.3.0-dev.1` source/UI checkpoint completed deterministic
 packaging, fresh Git-free build and compatible-host private-staging install/remove/reinstall at
 source `c48fe3a12d4f0443dc444df27c0b6c35be2b3ced`; see the
 [qualified checkpoint](RELEASING.md#private-v13-candidate-preparation) and

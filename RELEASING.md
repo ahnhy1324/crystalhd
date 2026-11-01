@@ -51,13 +51,26 @@ boundaries and current status are in
 
 ## Private v1.3 candidate preparation
 
-Development remains `1.3.0-dev.1`; a local review candidate is not a published RC
-or stable release. The private source/UI packaging checkpoint below has completed
-reproducible packaging and compatible-host private-staging install/remove/reinstall
-validation. Master merge, tags, public uploads and default-backend promotion are
-separate maintainer decisions.
+The complete integration candidate uses bundle `1.3.0-rc.2` and the previously
+unused module-DKMS identity `3.10.16`. RC1 is an incomplete historical cut,
+not the final scope of 1.3. Implemented PTS-epoch diagnostics, native V4L2
+decoding and its colour/format/EXPBUF repairs, explicit experimental field-GPU
+output, runtime producer/lifecycle and host/metadata/materials tools remain in
+the complete integration. A separate branch or unfinished qualification does
+not authorize excluding an implemented feature.
 
-The latest qualified private checkpoint is source
+Combined-source build, device and distribution qualification remains in
+progress. The private source/UI checkpoint below retains only its original
+qualified scope. Master merge, tags, public uploads and default-backend
+promotion remain separate maintainer decisions. Published RC1 tags/assets and
+registered module payloads remain immutable.
+
+Accepted renderer/QoS losses remain nonblocking within
+[#91's recorded display-performance scope](https://github.com/ahnhy1324/crystalhd/issues/91#issuecomment-6392485987).
+Source-qualified logs without detected A/V drift suffice for the tested route.
+These policies do not waive source-picture, lifetime or ABI correctness.
+
+The earlier qualified private checkpoint is source
 `c48fe3a12d4f0443dc444df27c0b6c35be2b3ced`, including the own VA sync-binding
 and bounded H.264 admission repairs in #613/#615. Experimental merge
 `1b17fd9ec1128c56bb55fef1dd79cf1865de3d10` has the same tree
@@ -83,8 +96,9 @@ acceptance. Earlier ce4cab1/c488f01 artifacts and their original results remain
 frozen.
 
 Use the experimental integration branch combining maintenance/Xv and MPEG-1.
-Do not substitute one child's CI for the combined source. Keep native-driver
-and compilerless FFmpeg-runtime research qualification separate. Existing
+Do not substitute one child's CI for the combined source. Integrate the
+developed native/runtime work while retaining evidence for each component and
+for the final combination. Existing
 registered module package identities must never be overwritten with new bytes;
 private staging does not install or register a host DKMS module.
 
@@ -123,8 +137,10 @@ Keep historical FAILs and unavailable-target boundaries. #538 remains open;
 only its explicitly excluded heap-abort follow-up stays ignored.
 
 #607 owns remaining clean-target/public native-runtime prerequisites. The old
-seven-DSO research artifact remains `PUBLIC_NOT_READY`, has distinct platform
-dependencies and is not bundled into this source/UI candidate. Source/notices,
+seven-DSO research artifact remains `PUBLIC_NOT_READY` and has distinct platform
+dependencies. Its absence from RC1 is a remaining integration/distribution task,
+not exclusion from the 1.3 plan. The source TAR includes native/runtime tools;
+those source files do not themselves supply the binary DSO payload. Source/notices,
 ABI/provider/rollback, clean-target availability, update ownership and public
 distribution decisions must retain their actual PASS/FAIL/NOT RUN scope.
 
@@ -139,7 +155,9 @@ checkout alone does not announce a published release.
 
 | Identity | Current value | Purpose |
 | --- | --- | --- |
-| Development bundle / module package | `1.3.0-dev.1` / `3.10.14` | Unreleased follow-up; never replace registered stable payload |
+| Complete integration candidate / module package | `1.3.0-rc.2` / `3.10.16` | Qualification in progress; never replace registered payloads |
+| Historical partial RC1 / module package | `1.3.0-rc.1` / `3.10.15` | Immutable tag/assets; incomplete 1.3 scope |
+| Earlier development bundle / module package | `1.3.0-dev.1` / `3.10.14` | Historical private checkpoints |
 | Published stable bundle / module package | `1.2.0` / `3.10.13` | Immutable source `8132043`; qualified public source asset |
 | Published RC2 bundle / package | `1.2.0-rc.2` / `3.10.12` | Immutable qualified rollback source |
 | Published RC1 bundle / package | `1.2.0-rc.1` / `3.10.11` | Immutable earlier candidate |

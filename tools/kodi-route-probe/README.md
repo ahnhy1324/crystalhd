@@ -152,6 +152,20 @@ qualifies physical presentation or the whole native runtime.
 The selected model and supplied digests identify inputs; they do not authenticate
 the Kodi binary or the FFprobe execution that produced source metadata.
 
+The private package producer is included alongside the current preflight and
+slot lifecycle tools. It copies the exact seven FFmpeg DSOs, their SONAME links,
+the two CLIs and source/dependency inventories; it never executes the selected
+payload or publishes a package. Run `runtime-package.py --help` for the explicit
+`pack`/`verify` inputs. `build-native-ffmpeg.sh` retains the pinned unmodified
+source recipe; it does not edit third-party code and is not run by these tests.
+
+`make -C tools/kodi-route-probe check-package` tests real generated ELF fixtures,
+reproducible packaging and relocation. It also passes producer output through
+the current pinned-target preflight and actual private slot install, rejected
+update, valid update, rollback and repeated removal. The fixture executables
+are never run. These checks retain `PUBLIC_NOT_READY` and do not establish
+native playback, source/binary correspondence or complete dependency notices.
+
 Public native-runtime distribution remains `PUBLIC_NOT_READY`. The VA fallback,
 system Kodi/FFmpeg and installed module/firmware files remain unchanged; temporary
 activation requires verified stable restoration. #538's excluded shutdown

@@ -124,8 +124,8 @@ def main():
     def tick():
         report["peak_mC"] = max(report["peak_mC"], max(
             int(p.read_text()) for p in Path("/sys/class/thermal").glob("thermal_zone*/temp")))
-        if report["peak_mC"] >= 85000:
-            player.fail("benchmark thermal guard85C")
+        if report["peak_mC"] >= 75000:
+            player.fail("benchmark thermal guard75C")
         clock, audio_clock = player.pipeline.get_clock(), audio.provide_clock()
         if clock and audio_clock:
             report.update(clock=clock.get_name(), audio_clock=audio_clock.get_name(),
