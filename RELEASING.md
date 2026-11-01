@@ -53,7 +53,8 @@ boundaries and current status are in
 
 RC1 is an incomplete historical cut, not the final scope of 1.3. The later
 implemented PTS-epoch diagnostics, native V4L2 decoder and its colour/format
-repairs, runtime package lifecycle and associated host/metadata/materials
+repairs, explicit experimental field-GPU output, runtime package lifecycle
+and associated host/metadata/materials
 tools remain part of the 1.3 integration work. A separate branch or incomplete
 qualification is not a maintainer decision to exclude a developed feature.
 Track integration and the remaining acceptance/distribution work explicitly;

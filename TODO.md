@@ -26,7 +26,8 @@ integration work; missing qualification remains acceptance work.
 - [ ] Integrate the implemented PTS-epoch diagnostics and native runtime
   slot/metadata/host/materials tools from #585.
 - [ ] Integrate the implemented native V4L2 decoder and qualified colour,
-  format-change and EXPBUF work from #538/#581/#590.
+  format-change and EXPBUF work from #538/#581/#590, plus its explicit
+  experimental field-GPU output without changing automatic selection.
 - [ ] Complete the existing legacy/neutral runtime package qualification and
   distribution work in #607 for the declared current-equipment scope.
 - [ ] Qualify the complete combined candidate and package it under a distinct
