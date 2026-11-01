@@ -307,6 +307,42 @@ archive is100,249,600 bytes. Independent Git-blob/mode and complete TAR/manifest
 checks cover every source/member. This is source/material packaging evidence,
 not new native playback or reproducible-compilation qualification.
 
+### Dependency sources and notices
+
+The [2026-11-02 inventory](tests/fixtures/issue607/dependency-materials-20261102.json)
+independently matches all seven external provider files to the existing pinned
+inventory. The retained Platform OSTree object
+`e7f7b0fb20662fe92e4eac65d58a57019cefae45a39559c4b50440a88acc0491`
+is SHA-verified before reading its SDK source commit
+`d0c0b597d58f8cc14ee26c427aec1be13c6a313e`. Its generated manifest is SHA-256
+`78db0b47f2c4e43a382105b2f1ce3e27de849f0b6397ed3d628d7b2ce667eac8`.
+It declares these exact components:
+
+| Component | Provider SONAMEs | Declared source commit |
+| --- | --- | --- |
+| glibc2.44 | loader, libc, libm | [`6b48c0b2`](https://sourceware.org/git/?p=glibc.git;a=commit;h=6b48c0b29c359dfa84c09c32373a48c8f663c304) |
+| libdrm2.4.134 | libdrm.so.2 | [`e984d448`](https://gitlab.freedesktop.org/mesa/libdrm/-/tree/e984d448b8b17aab853369e6c203e53719f46de1) |
+| libva2.24.1 | libva.so.2, libva-drm.so.2 | [`710eb465`](https://github.com/intel/libva/tree/710eb465c6277ee2cac3e6948767b01eebe7e77a) |
+| zlib-ng2.3.3 | libz.so.1 | [`12731092`](https://github.com/zlib-ng/zlib-ng/tree/12731092979c6d07f42da27da673a9f6c7b13586) |
+
+The actual provider's declared glibc2.44 version differs from the FFmpeg
+payload's recorded minimum symbol requirement `GLIBC_2.43`; these describe
+different properties. Exact byte matching supplies the selected-provider proof.
+
+Seven unchanged SDK recipe/configuration/include/patch files were acquired
+from that SDK commit, including `patches/glibc/fix-dl-dst-lib.patch`. Their
+original URLs, sizes and hashes are recorded separately from the generated
+manifest. Three retained Platform notices (`glibc/LICENSES`, `libva/COPYING`,
+`zlib-ng/LICENSE.md`) were copied byte-for-byte; the upstream glibc
+`COPYING.LESSERv2` text was also captured. The Platform has no libdrm notice
+directory, so the exact upstream Meson declaration and all five core C source
+files were captured with their individual notices intact. This covers the
+listed inventory subset; headers/helper files and complete corresponding-source
+coverage still require reconciliation. The existing FFmpeg source companion
+does not include the dependency source trees. No dependency was rebuilt,
+modified or added to the runtime payload, and this inventory does not attest
+historical binary/source correspondence or complete D5 distribution readiness.
+
 ## Reuse the implemented package and runtime checks
 
 The current repository carries the package producer, neutral-prefix build
@@ -465,7 +501,7 @@ FFmpeg binary.
 | D3 complete first-user burden | On the selected fresh target, record exact commands, network bytes, installed/temporary/peak disk, peak RSS, elapsed/user CPU, prerequisites, update and rollback work; separate observer tools from user dependencies. | Cached current-host install/update/rollback/remove costs and process RSS are recorded separately above. Prior configure/build/stage17.88 minutes excludes fetch/tool setup; peak build RAM is unknown. Full acquisition and Kodi/Platform/GL/driver/source setup remain unmeasured. |
 | D4 independent clean-target acceptance | Run the pinned-manifest/ELF/provider helper against a genuinely independent clean target if one becomes available. Record any narrower clean-userspace proof under its actual scope. | Existing compatible-host, compilerless-namespace, software-CLI and FILES_ONLY results do not establish a clean OS or another native Kodi target. Current equipment remains T8100/BCM70015/Intel965 x86_64; no Atom/BCM70012 is connected. |
 | D4 each proposed new package | Pin original Kodi/App/Platform/GL/own-driver identities; qualify activation without a compiler, decoder selection, source-qualified no-drift A/V logs, pixels/PTS, EOS/reopen, pause/seek/Stop, ABI/provider behavior, removal/fallback/re-extraction and resource boundaries. | Guarded temporary native activation and exact stable restoration now exercise the retained neutral archive. Both short EOS/reopen cases have complete renderer counts; three long pause/reopen pairs each return1800/1800 source frames but have1798/1799/1798 renderer acceptances. Linked diagnostics identify pending-picture replacement before renderer submission; verified resume progress alone does not repair it. AAC-clock drift/stall checks are clear; paused output timeouts remain separate diagnostics. Remaining acceptance is not inherited from those scoped results; calibrated physical lip-sync is not an additional synchronization gate. |
-| D5 redistribution/maintenance | Neutral build paths and reproducible build recipe, corresponding-source/component/dependency notices, exact CPU/ABI support, update/security owner and explicit distribution decision. | Private source/build-materials companion packaging is complete. Core2/x86_64 and recorded `atan2f@GLIBC_2.43` remain; reproducible compilation, historical binary/source attestation, dependency-source/notices sufficiency and maintenance ownership remain unverified/unassigned. **PUBLIC_NOT_READY**. |
+| D5 redistribution/maintenance | Neutral build paths and reproducible build recipe, corresponding-source/component/dependency notices, exact CPU/ABI support, update/security owner and explicit distribution decision. | Private FFmpeg source/build-materials companion and the exact seven-provider/four-component SDK recipe/patch/notice inventory above are complete within their stated subsets. Core2/x86_64 and recorded `atan2f@GLIBC_2.43` remain; reproducible compilation, historical binary/source attestation, complete dependency-source/notice coverage and maintenance ownership remain unverified/unassigned. **PUBLIC_NOT_READY**. |
 | Minimum credible compatibility plan | Document selection metadata, real EXPBUF/AVDRM descriptors and FD/context/consumer lifetime requirements from existing published implementations. | Advertisement-only own-driver/device changes cannot create missing FFmpeg selection metadata. The minimum compatibility plan above documents these published selection/delivery/lifetime requirements. External Kodi/FFmpeg edits are outside scope; an upstreamable minimum patch remains unproved and is not required to record the package gap. |
 
 The private runtime is a minimal configured subset, not a drop-in FFmpeg
