@@ -25,7 +25,7 @@ class PlanTest(unittest.TestCase):
         self.git("config", "user.email", "ci@example.invalid")
         for name in ("README.md", "HISTORY.md", "CONFIGURATION.md", "include/api.h"):
             self.write(name)
-        for name in PLAN.USERSPACE | PLAN.PACKED:
+        for name in PLAN.USERSPACE | PLAN.PACKED | PLAN.XV:
             self.write(name)
         self.base = self.commit()
 
@@ -45,9 +45,9 @@ class PlanTest(unittest.TestCase):
     def plan(self):
         return PLAN.classify(self.root, self.base, self.commit())
 
-    def assert_lanes(self, plan, *, heavy, packed, kernel):
-        self.assertEqual({name: plan[name] for name in ("heavy", "packed", "kernel")},
-                         {"heavy": heavy, "packed": packed, "kernel": kernel})
+    def assert_lanes(self, plan, *, heavy, packed, kernel, xv=False):
+        self.assertEqual({name: plan[name] for name in ("heavy", "packed", "xv", "kernel")},
+                         {"heavy": heavy, "packed": packed, "xv": xv, "kernel": kernel})
 
     def needs(self, plan):
         return {"classify": {"result": "success", "outputs": {
@@ -55,6 +55,7 @@ class PlanTest(unittest.TestCase):
                 "docs": {"result": "success"},
                 "build": {"result": "success" if plan["heavy"] else "skipped"},
                 "packed": {"result": "success" if plan["packed"] else "skipped"},
+                "xv": {"result": "success" if plan["xv"] else "skipped"},
                 "upstream-kernel-api": {"result": "success" if plan["kernel"] else "skipped"}}
 
     def test_prose_and_contract_selections(self):
@@ -92,6 +93,35 @@ class PlanTest(unittest.TestCase):
         plan = self.plan()
         self.assert_lanes(plan, heavy=False, packed=True, kernel=False)
         self.assertTrue(plan["contracts"])
+
+    def test_each_reviewed_xv_file_selects_only_component_and_contracts(self):
+        for name in PLAN.XV:
+            with self.subTest(name=name):
+                self.git("reset", "--hard", self.base)
+                self.write(name, "Xv change\n")
+                plan = self.plan()
+                self.assert_lanes(plan, heavy=False, packed=False, xv=True, kernel=False)
+                self.assertTrue(plan["contracts"])
+                self.assertEqual(plan["files"][0]["lane"], "xv")
+
+    def test_xv_with_reviewed_prose_and_contracts_stays_component_only(self):
+        for name in PLAN.XV:
+            self.write(name, "Xv change\n")
+        self.write("README.md", "explanation\n")
+        self.write("CONFIGURATION.md", "contract explanation\n")
+        plan = self.plan()
+        self.assert_lanes(plan, heavy=False, packed=False, xv=True, kernel=False)
+        self.assertTrue(plan["contracts"])
+
+    def test_xv_and_each_other_userspace_file_keep_complete_userspace_builds(self):
+        for name in PLAN.USERSPACE | PLAN.PACKED:
+            with self.subTest(name=name):
+                self.git("reset", "--hard", self.base)
+                self.write("filters/gst/xv-output/gstcrystalhdxv.c", "Xv change\n")
+                self.write(name, "other component change\n")
+                plan = self.plan()
+                self.assert_lanes(plan, heavy=True, packed=False, kernel=False)
+                self.assertTrue(plan["contracts"])
 
     def test_packed_and_each_other_userspace_file_keep_complete_userspace_builds(self):
         for name in PLAN.USERSPACE:
@@ -131,6 +161,23 @@ class PlanTest(unittest.TestCase):
         self.write("README.md", "documentation in final commit\n")
         self.assert_lanes(self.plan(), heavy=False, packed=True, kernel=False)
 
+    def test_complete_xv_pr_not_last_prose_commit(self):
+        self.write("filters/gst/xv-output/gstcrystalhdxv.c", "Xv change\n")
+        self.commit()
+        self.write("README.md", "documentation in final commit\n")
+        self.assert_lanes(self.plan(), heavy=False, packed=False, xv=True, kernel=False)
+
+    def test_complete_crosscomponent_pr_not_last_xv_commit(self):
+        for name, kernel in (("scripts/crystalhd-player.py", False),
+                             ("filters/gst/packed-upscale/packed-scale-engine.c", False),
+                             ("include/api.h", True)):
+            with self.subTest(name=name):
+                self.git("reset", "--hard", self.base)
+                self.write(name, "earlier change\n")
+                self.commit()
+                self.write("filters/gst/xv-output/gstcrystalhdxv.c", "final Xv change\n")
+                self.assert_lanes(self.plan(), heavy=True, packed=False, kernel=kernel)
+
     def test_complete_crosscomponent_pr_not_last_packed_commit(self):
         for name, kernel in (("scripts/crystalhd-player.py", False), ("include/api.h", True)):
             with self.subTest(name=name):
@@ -160,6 +207,16 @@ class PlanTest(unittest.TestCase):
         self.assert_lanes(PLAN.classify(self.root, base, head),
                           heavy=False, packed=True, kernel=False)
 
+    def test_xv_merge_base_excludes_unrelated_base_branch_changes(self):
+        self.git("checkout", "-qb", "feature")
+        self.write("filters/gst/xv-output/gstcrystalhdxv.c", "feature Xv change\n")
+        head = self.commit()
+        self.git("checkout", "-q", "--detach", self.base)
+        self.write("include/api.h", "base branch only\n")
+        base = self.commit()
+        self.assert_lanes(PLAN.classify(self.root, base, head),
+                          heavy=False, packed=False, xv=True, kernel=False)
+
     def test_unknown_fixtures_workflows_generated_are_full(self):
         for name in ("NEW.md", "tests/fixtures/evidence.json", "tests/fixtures/chart.svg",
                      "include/generated.h", "Makefile", "cpu.mk", ".github/workflows/main.yml",
@@ -186,6 +243,10 @@ class PlanTest(unittest.TestCase):
                      "filters/gst/packed-upscale/README.md",
                      "filters/gst/packed-upscale/new.test.py",
                      "filters/gst/packed-upscale/new.sh",
+                     "filters/gst/xv-output/Makefile",
+                     "filters/gst/xv-output/private.h",
+                     "filters/gst/xv-output/unreviewed.c",
+                     "filters/gst/xv-output/README.md",
                      "tests/unreviewed.test.py", "tests/unreviewed.sh"):
             with self.subTest(name=name):
                 self.git("reset", "--hard", self.base)
@@ -199,7 +260,7 @@ class PlanTest(unittest.TestCase):
         for name in ("include/api.h", "Makefile", "cpu.mk", ".github/workflows/main.yml",
                      "tests/ci-plan.py", "tests/ci-plan.test.py",
                      "filters/gst/packed-upscale/packed-scale-engine.h",
-                     "filters/gst/packed-upscale/Makefile", "filters/gst/xv-output/gstcrystalhdxv.c"):
+                     "filters/gst/packed-upscale/Makefile"):
             with self.subTest(name=name):
                 self.git("reset", "--hard", self.base)
                 self.write(name)
@@ -210,7 +271,7 @@ class PlanTest(unittest.TestCase):
                                   heavy=True, packed=False, kernel=True)
 
     def test_new_allowlisted_files_are_full(self):
-        for name in ("scripts/crystalhd-player.py", *PLAN.PACKED):
+        for name in ("scripts/crystalhd-player.py", *PLAN.PACKED, *PLAN.XV):
             with self.subTest(name=name):
                 self.git("reset", "--hard", self.base)
                 self.git("rm", name)
@@ -252,8 +313,8 @@ class PlanTest(unittest.TestCase):
                 plan = self.plan()
                 self.assert_lanes(plan, heavy=True, packed=False, kernel=True)
 
-    def test_packed_rename_delete_executable_symlink_are_full(self):
-        for name in PLAN.PACKED:
+    def test_component_rename_delete_executable_symlink_are_full(self):
+        for name in PLAN.PACKED | PLAN.XV:
             for mode in ("rename", "delete", "executable", "symlink"):
                 with self.subTest(name=name, mode=mode):
                     self.git("reset", "--hard", self.base)
@@ -283,6 +344,29 @@ class PlanTest(unittest.TestCase):
                 self.write(name)
                 self.assert_lanes(self.plan(), heavy=True, packed=False, kernel=True)
 
+    def test_xv_with_unknown_or_shared_input_is_full(self):
+        for name in ("include/api.h", "Makefile", "cpu.mk", ".github/workflows/main.yml",
+                     "tests/ci-plan.py", "tests/ci-plan.test.py",
+                     "filters/gst/xv-output/Makefile", "filters/gst/xv-output/private.h"):
+            with self.subTest(name=name):
+                self.git("reset", "--hard", self.base)
+                self.write(name)
+                base = self.commit() if name != "include/api.h" else self.base
+                self.write(name, "shared or unknown change\n")
+                self.write("filters/gst/xv-output/gstcrystalhdxv.c", "Xv change\n")
+                self.assert_lanes(PLAN.classify(self.root, base, self.commit()),
+                                  heavy=True, packed=False, kernel=True)
+
+    def test_xv_path_prefix_suffix_or_whitespace_cannot_hide_unknown_files(self):
+        for name in ("filters/gst/xv-output/gstcrystalhdxv.c.extra",
+                     "filters/gst/xv-output/gstcrystalhdxv.c\nREADME.md",
+                     "filters/gst/xv-output/../other.c",
+                     "other/gstcrystalhdxv.c", "tests/gst-xv-output.c.extra"):
+            with self.subTest(name=name):
+                self.git("reset", "--hard", self.base)
+                self.write(name)
+                self.assert_lanes(self.plan(), heavy=True, packed=False, kernel=True)
+
     def test_empty_diff_is_full(self):
         plan = PLAN.classify(self.root, self.base, self.base)
         self.assert_lanes(plan, heavy=True, packed=False, kernel=True)
@@ -305,7 +389,8 @@ class PlanTest(unittest.TestCase):
             with patch("builtins.print"):
                 PLAN.main()
         self.assertEqual(dict(line.split("=", 1) for line in output.read_text().splitlines()),
-                         {"heavy": "true", "packed": "false", "kernel": "true", "contracts": "true"})
+                         {"heavy": "true", "packed": "false", "xv": "false",
+                          "kernel": "true", "contracts": "true"})
         self.assertIn('"kernel": true', summary.read_text())
 
     def test_missing_or_invalid_commit_is_an_error(self):
@@ -323,6 +408,7 @@ class PlanTest(unittest.TestCase):
         # Exercise the gate from actual Git selections for every route.
         for filename in ("README.md", "CONFIGURATION.md",
                          "filters/gst/packed-upscale/packed-scale-engine.c",
+                         "filters/gst/xv-output/gstcrystalhdxv.c", "tests/gst-xv-output.c",
                          "scripts/crystalhd-player.py", "include/api.h"):
             self.git("reset", "--hard", self.base)
             self.write(filename, "route change\n")
@@ -341,7 +427,7 @@ class PlanTest(unittest.TestCase):
                 del bad[job]["result"]
                 with self.subTest(filename=filename, missing_result=job), self.assertRaises(ValueError):
                     PLAN.gate(bad)
-            for output in ("heavy", "packed", "kernel", "contracts"):
+            for output in PLAN.OUTPUTS:
                 for value in (None, "", "TRUE", True, False, "success", 1, [], {}):
                     bad = copy.deepcopy(needs)
                     if value is None:
@@ -373,19 +459,21 @@ class PlanTest(unittest.TestCase):
     def test_inconsistent_selection_combinations_are_rejected(self):
         for heavy in (False, True):
             for packed in (False, True):
-                for kernel in (False, True):
-                    for contracts in (False, True):
-                        plan = {"heavy": heavy, "packed": packed, "kernel": kernel,
-                                "contracts": contracts}
-                        needs = self.needs(plan)
-                        invalid = ((kernel and not heavy) or (packed and heavy) or
-                                   (packed and not contracts))
-                        with self.subTest(**plan):
-                            if invalid:
-                                with self.assertRaises(ValueError):
+                for xv in (False, True):
+                    for kernel in (False, True):
+                        for contracts in (False, True):
+                            plan = {"heavy": heavy, "packed": packed, "xv": xv,
+                                    "kernel": kernel, "contracts": contracts}
+                            needs = self.needs(plan)
+                            component = packed or xv
+                            invalid = ((kernel and not heavy) or (component and heavy) or
+                                       (packed and xv) or (component and not contracts))
+                            with self.subTest(**plan):
+                                if invalid:
+                                    with self.assertRaises(ValueError):
+                                        PLAN.gate(needs)
+                                else:
                                     PLAN.gate(needs)
-                            else:
-                                PLAN.gate(needs)
 
     def test_gate_rejects_missing_or_malformed_dependency_map(self):
         for needs in (None, {}, [], "", "success"):
@@ -402,7 +490,7 @@ class WorkflowContractTest(unittest.TestCase):
                               workflow, re.MULTILINE | re.DOTALL)
             self.assertIsNotNone(match, name)
             return match.group(1)
-        for output in ("heavy", "packed", "kernel", "contracts"):
+        for output in PLAN.OUTPUTS:
             self.assertIn(output + ": ${{ steps.plan.outputs." + output + " }}", job("classify"))
         for name, output in (("build", "heavy"), ("packed", "packed")):
             selected = job(name)
@@ -412,10 +500,22 @@ class WorkflowContractTest(unittest.TestCase):
             self.assertEqual(selected.count("run: make -C filters/gst/packed-upscale check\n"), 1)
             self.assertEqual(selected.count("make -C filters/gst/packed-upscale check-sanitized\n"), 1)
             self.assertEqual(selected.count("python3 -B tests/packed-sanitizer-loader.test.py\n"), 1)
+        xv = job("xv")
+        self.assertIn("if: needs.classify.outputs.xv == 'true'", xv)
+        self.assertIn("os: [ubuntu-24.04, ubuntu-26.04]", xv)
+        self.assertIn("fail-fast: false", xv)
+        self.assertEqual(xv.count("run: make -C filters/gst/xv-output check\n"), 1)
+        self.assertEqual(job("build").count("run: make -C filters/gst/xv-output check\n"), 1)
+        for dependency in ("libgstreamer1.0-dev", "libgstreamer-plugins-base1.0-dev",
+                           "libxcb-shm0-dev", "libxcb-xv0-dev", "gstreamer1.0-tools"):
+            self.assertIn(dependency, xv)
+        self.assertNotIn("check-x11", xv)
+        self.assertNotIn("check-sanitized", xv)
+        self.assertNotIn("linux-headers", xv)
         self.assertIn("if: needs.classify.outputs.kernel == 'true'", job("upstream-kernel-api"))
         self.assertIn("name: CI gate", job("ci"))
         self.assertIn("if: always()", job("ci"))
-        self.assertIn("needs: [classify, docs, build, packed, upstream-kernel-api]", job("ci"))
+        self.assertIn("needs: [classify, docs, build, packed, xv, upstream-kernel-api]", job("ci"))
         self.assertIn("CI_NEEDS: ${{ toJSON(needs) }}", job("ci"))
         self.assertIn("run: python3 -B tests/ci-plan.py gate", job("ci"))
         self.assertNotIn("paths-ignore:", workflow)

@@ -52,7 +52,13 @@ PACKED = frozenset({
     "filters/gst/packed-upscale/check.sh",
     "tests/packed-sanitizer-loader.test.py",
 })
-OUTPUTS = ("heavy", "packed", "kernel", "contracts")
+# The Xv plugin and its device-free test build without the decoder/DIL. Private
+# headers, build inputs and new paths remain full, as in the packed lane.
+XV = frozenset({
+    "filters/gst/xv-output/gstcrystalhdxv.c",
+    "tests/gst-xv-output.c",
+})
+OUTPUTS = ("heavy", "packed", "xv", "kernel", "contracts")
 
 
 def git(root, *args):
@@ -74,6 +80,7 @@ def classify(root, base, head):
     heavy = not chunks
     kernel = not chunks
     packed_changed = False
+    xv_changed = False
     contracts = False
     files = []
     for record, path in zip(chunks[::2], chunks[1::2]):
@@ -98,17 +105,26 @@ def classify(root, base, head):
             packed_changed = True
             # The inventory checks the wrapper's read-only observations too.
             contracts = True
+        elif plain and name in XV:
+            lane = "xv"
+            xv_changed = True
+            contracts = True
         else:
             heavy = True
             kernel = True
         files.append({"path": name, "status": status, "lane": lane,
                       "old_mode": old_mode[1:], "new_mode": new_mode})
-    # Full userspace jobs already run both packed checks. Select the standalone
-    # job only for packed changes with optional reviewed prose/contracts.
+    # Mixed components retain the complete userspace builds. Those builds run
+    # both components inline, so neither standalone matrix should also run.
+    if packed_changed and xv_changed:
+        heavy = True
     packed = packed_changed and not heavy
-    return {"heavy": heavy, "packed": packed, "kernel": kernel, "contracts": contracts,
+    xv = xv_changed and not heavy
+    return {"heavy": heavy, "packed": packed, "xv": xv,
+            "kernel": kernel, "contracts": contracts,
             "reason": ("full required" if kernel else "reviewed userspace only"
                        if heavy else "reviewed packed component only" if packed
+                       else "reviewed Xv component only" if xv
                        else "reviewed documentation only"),
             "base": base, "head": head, "files": files}
 
@@ -116,12 +132,13 @@ def classify(root, base, head):
 def select(root, event, base, head):
     if event == "pull_request":
         return classify(root, base, head)
-    return {"heavy": True, "packed": False, "kernel": True, "contracts": True, "files": [],
+    return {"heavy": True, "packed": False, "xv": False,
+            "kernel": True, "contracts": True, "files": [],
             "reason": "full master/tag/manual route", "base": base, "head": head}
 
 
 def gate(needs):
-    expected = {"classify", "docs", "build", "packed", "upstream-kernel-api"}
+    expected = {"classify", "docs", "build", "packed", "xv", "upstream-kernel-api"}
     if not isinstance(needs, dict) or set(needs) != expected:
         raise ValueError("missing or unknown final-gate dependency")
     if not all(isinstance(needs[name], dict) for name in expected):
@@ -136,12 +153,16 @@ def gate(needs):
             raise ValueError("missing/invalid " + name + " selection")
     if outputs["kernel"] == "true" and outputs["heavy"] != "true":
         raise ValueError("kernel matrix requires the complete userspace lane")
-    if outputs["packed"] == "true" and outputs["heavy"] == "true":
-        raise ValueError("packed checks must run in exactly one userspace lane")
-    if outputs["packed"] == "true" and outputs["contracts"] != "true":
-        raise ValueError("packed component requires configuration contracts")
+    component = outputs["packed"] == "true" or outputs["xv"] == "true"
+    if component and outputs["heavy"] == "true":
+        raise ValueError("component checks must run in exactly one userspace lane")
+    if outputs["packed"] == "true" and outputs["xv"] == "true":
+        raise ValueError("mixed components require the complete userspace lane")
+    if component and outputs["contracts"] != "true":
+        raise ValueError("component requires configuration contracts")
     selections = {"docs": True, "build": outputs["heavy"] == "true",
                   "packed": outputs["packed"] == "true",
+                  "xv": outputs["xv"] == "true",
                   "upstream-kernel-api": outputs["kernel"] == "true"}
     for name, selected in selections.items():
         required = "success" if selected else "skipped"

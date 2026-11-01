@@ -18,6 +18,7 @@ jobs:
     outputs:
       heavy: ${{ steps.plan.outputs.heavy }}
       packed: ${{ steps.plan.outputs.packed }}
+      xv: ${{ steps.plan.outputs.xv }}
       kernel: ${{ steps.plan.outputs.kernel }}
       contracts: ${{ steps.plan.outputs.contracts }}
     steps:
@@ -95,6 +96,48 @@ jobs:
         run: |
           python3 -B tests/packed-sanitizer-loader.test.py
           make -C filters/gst/packed-upscale check-sanitized
+
+  xv:
+    needs: classify
+    if: needs.classify.outputs.xv == 'true'
+    name: Xv output (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Xv output dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config python3 \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libxcb-shm0-dev libxcb-xv0-dev \
+            gstreamer1.0-tools gstreamer1.0-plugins-base
+
+      - name: Record Xv output toolchain versions
+        shell: bash
+        run: |
+          {
+            printf '### Xv output toolchain\n\n```text\n'
+            . /etc/os-release
+            printf 'OS: %s\n' "$PRETTY_NAME"
+            printf 'Runner image: %s (%s)\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+            printf 'C compiler: '
+            gcc -dumpfullversion
+            python3 --version
+            for library in gstreamer-1.0 gstreamer-video-1.0 gstreamer-app-1.0 xcb xcb-shm xcb-xv; do
+              library_version=$(pkg-config --modversion "$library")
+              printf '%s: %s\n' "$library" "$library_version"
+            done
+            printf '```\n'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Build optional Xv output and check device-free contracts
+        run: make -C filters/gst/xv-output check
 
   build:
     needs: classify
@@ -506,7 +549,7 @@ jobs:
   ci:
     name: CI gate
     if: always()
-    needs: [classify, docs, build, packed, upstream-kernel-api]
+    needs: [classify, docs, build, packed, xv, upstream-kernel-api]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

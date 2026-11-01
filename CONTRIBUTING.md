@@ -134,15 +134,23 @@ which check the plugin's read-only properties. GStreamer 1.28.2 executes the
 36 stock/candidate frame comparisons; other versions check factory loading and
 explicit version rejection only. This lane adds no X11 or hardware qualification.
 
+The Xv component lane covers ordinary modifications to
+`filters/gst/xv-output/gstcrystalhdxv.c` and `tests/gst-xv-output.c`, with the
+same optional reviewed documentation. Both Ubuntu releases build the plugin
+and run its existing device-free identity, setup-failure and color contracts,
+plus the configuration inventory/schema validators. This does not add X11,
+hardware or sanitizer qualification.
+
 Other modifications of the selector's explicit userspace source/test list run
 both complete userspace builds while skipping the ten upstream kernel-API jobs.
-Mixed packed/other-component changes also keep both complete builds. These
+Mixed packed/Xv/other-component changes also keep both complete builds. These
 builds still compile/test the driver against each runner's packaged headers.
-They run the packed normal, sanitizer and loader checks inline; the standalone
-packed lane is then unselected, so each Ubuntu job runs these checks once.
+They run the packed normal, sanitizer and loader checks and Xv device-free
+checks inline; the standalone component lanes are then unselected, so each
+Ubuntu job runs these checks once.
 The userspace list covers selected GStreamer/VA/DIL implementation files,
 Player and associated tests, not every userspace path. Separate GStreamer
-decoder, VA, DIL, Player and Xv component lanes and broader sanitizer lanes
+decoder, VA, DIL and Player component lanes and broader sanitizer lanes
 remain unimplemented pending dependency and check-coverage review.
 
 Both full userspace jobs also run `make library-check-sanitized`: fresh isolated
