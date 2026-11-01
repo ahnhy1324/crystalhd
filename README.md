@@ -68,7 +68,7 @@ sudo apt install git
 git clone --branch v1.2.0 https://github.com/ahnhy1324/crystalhd.git
 cd crystalhd
 
-sudo apt install build-essential pkg-config linux-headers-$(uname -r) \
+sudo apt install build-essential pkg-config gettext linux-headers-$(uname -r) \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-tools gstreamer1.0-plugins-base \
   gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \

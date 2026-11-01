@@ -49,7 +49,7 @@ boundaries and current status are in
 [USAGE.md](USAGE.md#known-issues-and-deinterlacing-roadmap) and the
 [hardware report](HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22).
 
-## 1.3 RC1 source/UI candidate
+## 1.3 RC1 candidate
 
 This release branch prepares bundle `1.3.0-rc.1` with the previously unused
 module-DKMS package identity `3.10.15`. Its runtime implementation is frozen at
@@ -58,12 +58,26 @@ changes version labels and documentation. The historical ioctl version,
 `libcrystalhd.so.3` ABI, firmware and default playback policy remain unchanged.
 The optional settings add-on keeps its independent `0.1.0` identity.
 
-The c48fe3a private source/UI checkpoint already completed reproducible
-packaging, a Git-free build, scoped runtime checks and configuration-preserving
-install/remove/reinstall qualification. Final RC artifacts receive their own
-exact source/hash receipt and the affected existing build/package checks;
-unchanged implementation retains its prior evidence. The old dev.1 files are
-preserved and are not renamed or overwritten as an RC.
+The c48fe3a private checkpoint completed reproducible packaging, a Git-free
+build, scoped runtime checks and configuration-preserving staged
+install/remove/reinstall qualification. Its hardware runs used module
+3.10.13. They do not qualify the changed 3.10.15 kernel or its sustained
+operation. The old dev.1 files remain preserved.
+
+Before RC admission, record the complete v1.2-to-candidate changes and a
+PASS / FAIL / NOT RUN / UNSUPPORTED matrix for every retained support claim.
+The c48fe3a-to-RC version-only diff does not replace that audit. G0/G1 include
+the selected interlaced Bob/Weave, scaling, MPEG-1 and client checks as well
+as the ordinary decoder oracle. Reuse unchanged CPU/UI evidence only with
+its original source and an impact explanation.
+
+Keep RC admission separate from the remaining G2/G3 client, sustained,
+ownership and installation qualification. The short native tests and live
+DKMS upgrade/rollback are individual results, not completion of the whole
+release matrix. This section grants no exemption from affected endurance
+or from the documented first-install and direct-install paths. Retain the
+existing accepted QoS and A/V policies below and record every outstanding
+row explicitly in #617. Published tags and artifacts remain immutable.
 
 Accepted, quantified renderer/QoS losses remain nonblocking within their
 recorded display-performance scope; see
