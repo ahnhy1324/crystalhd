@@ -19,6 +19,24 @@ scope to general full-rate FHD or hardware deinterlacing.
 
 ## Current priorities — 2026-10-31
 
+Scope correction — 2026-11-01: the partial RC1 source/UI cut is not the complete
+1.3 release plan. Already-developed features in separate branches remain
+integration work; missing qualification remains acceptance work.
+
+- [ ] Integrate the implemented PTS-epoch diagnostics and native runtime
+  slot/metadata/host/materials tools from #585.
+- [ ] Integrate the implemented native V4L2 decoder and qualified colour,
+  format-change and EXPBUF work from #538/#581/#590.
+- [ ] Complete the existing legacy/neutral runtime package qualification and
+  distribution work in #607 for the declared current-equipment scope.
+- [ ] Qualify the complete combined candidate and package it under a distinct
+  revision without replacing published tags, assets or registered payloads.
+
+Explicitly withdrawn copy/performance experiments remain withdrawn. The
+original #538 heap subtask stays excluded; the issue and other native work
+remain open. Existing defaults, external-code restrictions and accepted
+renderer/QoS/A/V policies still apply.
+
 Private v1.3 preparation now uses `integrate/v1.3-candidate-20261031`, combining
 remote Xv/maintenance `e94b392` and MPEG-1 `f7d9f5d` at merge `0ea0862`.
 The CI conflict retains all DIL sanitizer, VPP observer, MPEG-1 and Xv gates.

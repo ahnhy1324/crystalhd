@@ -51,6 +51,14 @@ boundaries and current status are in
 
 ## 1.3 RC1 candidate
 
+RC1 is an incomplete historical cut, not the final scope of 1.3. The later
+implemented PTS-epoch diagnostics, native V4L2 decoder and its colour/format
+repairs, runtime package lifecycle and associated host/metadata/materials
+tools remain part of the 1.3 integration work. A separate branch or incomplete
+qualification is not a maintainer decision to exclude a developed feature.
+Track integration and the remaining acceptance/distribution work explicitly;
+do not reduce the release to the already-qualified source/UI subset.
+
 This release branch prepares bundle `1.3.0-rc.1` with the previously unused
 module-DKMS package identity `3.10.15`. Its runtime implementation is frozen at
 qualified source `c48fe3a12d4f0443dc444df27c0b6c35be2b3ced`; release preparation
@@ -84,8 +92,11 @@ recorded display-performance scope; see
 [#91's accepted renderer-loss disposition](https://github.com/ahnhy1324/crystalhd/issues/91#issuecomment-6392485987).
 There is no new universal zero-renderer-loss release gate. Source-picture,
 memory/lifetime and ABI claims retain their existing separate evidence.
-#607's public native-FFmpeg runtime and other open research/additional CI are
-outside this source/UI release, not prerequisites for publishing it.
+The implemented native/runtime work tracked in #538/#581/#607 and the later
+diagnostic/tooling work in #585 must receive explicit integration and
+qualification dispositions for the complete 1.3 candidate. Preserve the
+separately recorded withdrawal of unsuccessful performance prototypes; this
+scope correction does not adopt every open research experiment.
 
 Prepare exact source TAR, optional Kodi ZIP, manifest, checksums and release
 notes using the helpers below. Record final validation separately from those
@@ -100,8 +111,9 @@ its own final version identity. Master merge, tags, public uploads and
 default-backend promotion are separate maintainer decisions.
 
 Use the experimental integration branch combining maintenance/Xv and MPEG-1.
-Do not substitute one child's CI for the combined source. Keep native-driver
-and compilerless FFmpeg-runtime research qualification separate. Existing
+Do not substitute one child's CI for the combined source. Integrate the
+developed native-driver and compilerless-runtime work while retaining the
+separate evidence for each component and the final combination. Existing
 registered module package identities must never be overwritten with new bytes;
 private staging does not install or register a host DKMS module.
 
@@ -140,8 +152,9 @@ Keep historical FAILs and unavailable-target boundaries. #538 remains open;
 only its explicitly excluded heap-abort follow-up stays ignored.
 
 #607 owns remaining clean-target/public native-runtime prerequisites. The old
-seven-DSO research artifact remains `PUBLIC_NOT_READY`, has distinct platform
-dependencies and is not bundled into this source/UI candidate. Source/notices,
+seven-DSO research artifact remains `PUBLIC_NOT_READY` and has distinct platform
+dependencies. Its absence from RC1 is a remaining integration/distribution
+task, not exclusion from the 1.3 plan. Source/notices,
 ABI/provider/rollback, clean-target availability, update ownership and public
 distribution decisions must retain their actual PASS/FAIL/NOT RUN scope.
 
