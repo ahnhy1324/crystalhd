@@ -45,6 +45,7 @@ PY
     python3 -B - "$variant" "$test_dir/$variant.log" "$test_dir/$variant.stderr" \
         "$repo_dir/tests/stage-pts-audit.py" <<'PY'
 import importlib.util
+import copy
 import json
 from pathlib import Path
 import sys
@@ -55,6 +56,7 @@ auditor = importlib.util.module_from_spec(audit_spec)
 audit_spec.loader.exec_module(auditor)
 cases = {}
 expected = None
+flush_repeat = None
 for line in Path(log).read_text().splitlines():
     # GLib's TAP printer prefixes application g_print output with a comment.
     if line.startswith("# "):
@@ -66,7 +68,13 @@ for line in Path(log).read_text().splitlines():
     elif line.startswith("TRACE_EXPECT "):
         assert expected is None
         expected = json.loads(line[len("TRACE_EXPECT "):])
+    elif line.startswith("TRACE_FLUSH_REPEAT "):
+        assert flush_repeat is None
+        flush_repeat = json.loads(line[len("TRACE_FLUSH_REPEAT "):])
 assert expected is not None
+assert flush_repeat is not None
+assert type(flush_repeat["second_push_accepted"]) is bool
+assert type(flush_repeat["observed_starts"]) is int and flush_repeat["observed_starts"] in (1, 2)
 required = {"metadata", "flush", "capacity", "controls", "detach",
             "detached_snapshot", "buffer_list", "custom_buffer_list", "truncated_buffer_list", "attachment_limit", "concurrent_stop", "pipeline_tff",
             "pipeline_bff", "pipeline_tff_drop", "pipeline_bff_drop",
@@ -85,6 +93,24 @@ required |= {"window_summary_frozen_caps", "window_summary_overflow", "window_su
              "window_summary_initial_rate", "window_summary_initial_applied_rate",
              "window_summary_initial_bytes", "window_summary_negative_running_time", "window_summary_initial_vfr_max",
              "summary_missing_eos", "summary_empty"}
+epoch_positive = {"epoch_segments_first", "window_epoch_segments_roll", "window_epoch_segments_frozen",
+                  "epoch_pipeline_replay", "window_epoch_seek_cancel", "window_epoch_stream_reset",
+                  "window_epoch_compensated_offset", "window_epoch_compensated_high_base", "window_epoch_combined_stream_flush",
+                  "window_epoch_combined_flush_stream"}
+epoch_defects = {"gap", "duplicate", "reverse", "off_grid", "unknown_pts", "unknown_duration",
+                 "duration", "buffer_gap", "discont", "caps_changed", "caps_metadata_changed"}
+epoch_barriers = {"seek_unresolved", "seek_overlap", "seek_fail_unmatched", "seek_fail_mismatch",
+                  "seek_fail_after_flush", "flush_stop_unpaired", "flush_start_repeat",
+                  "flush_unresolved", "flush_missing_segment", "tail_flush", "tail_stream",
+                  "stream_repeat", "flush_repeat_pair", "eos_without_flush"}
+epoch_limits = {"window_epoch_" + name for name in
+                ("bad_rate", "bad_applied", "bytes", "bounds", "offset", "overflow")}
+epoch_limits |= {"epoch_empty_segment", "epoch_detach_open", "epoch_stop_open", "epoch_seek_before_attach",
+                 "window_epoch_limit_overflow", "window_epoch_counter_saturation", "epoch_concurrent_stop"}
+epoch_cases = epoch_positive | {"window_epoch_defect_" + name for name in epoch_defects}
+epoch_cases |= {"window_epoch_" + name for name in epoch_barriers} | epoch_limits
+assert len(required) == 65 and len(epoch_cases) == 48
+required |= epoch_cases
 assert set(cases) == required, (set(cases), required)
 assert not Path(errors).read_text().strip(), Path(errors).read_text()[:8000]
 
@@ -112,6 +138,19 @@ for name, case in cases.items():
     assert len(owners) == len(case["attachments"]), name
     assert all(item["active"] is False for item in owners.values()), name
     for owner in owners.values():
+        ledger = owner["pts_epochs"]
+        assert (ledger["version"], ledger["scope"], ledger["limit"]) == (1, "bounded-segment-pts", 16), name
+        assert ledger["buffers"] == owner["buffers"] and len(ledger["rows"]) <= 16, name
+        assert [row["index"] for row in ledger["rows"]] == list(range(len(ledger["rows"]))), name
+        if not case["counters_saturated"]:
+            assert sum(row["buffers"] for row in ledger["rows"]) + ledger["unassigned_buffers"] == owner["buffers"], name
+        for row in ledger["rows"]:
+            assert row["covered"] + row["unqualified_buffers"] == row["buffers"], name
+            assert row["end_order"] is not None and row["end_order"] >= row["start_order"], name
+            if row["buffers"]:
+                assert 1 <= row["first_ordinal"] <= row["last_ordinal"] <= owner["buffers"], name
+            else:
+                assert row["first_ordinal"] is row["last_ordinal"] is None, name
         summary = owner["pts_summary"]
         assert summary["version"] == 1 and summary["scope"] == "whole-attachment-observation", name
         assert summary["buffers"] == owner["buffers"], name
@@ -548,8 +587,175 @@ audit_native("window_output", output_goals, "PASS")
 audit_native("window_output_drop", output_goals, "FAIL")
 audit_native("first_output_drop", output_goals, "FAIL")
 
-print("Stage trace %s: fourteen native groups, %d structured snapshots, "
-      "PTS/segment/cap/lifetime, fields, pack/scale, window and whole-run summary controls PASS" % (variant, len(cases)))
+# Schema2 goals below are frozen stimulus constants. Never project expected
+# epochs, counters, CAPS or anchors from observed rows or retained ring records.
+def epoch_caps(fifty=False):
+    return {"format": "YUY2", "width": 16, "height": 8, "fps_n": 50 if fifty else 25,
+            "fps_d": 1, "interlace_mode": expected["progressive_mode"] if fifty else expected["mixed_mode"],
+            "field_order": 0, "raw_video": True, "video_info_valid": True}
+
+def epoch_goal(count, first=0, *, stream=1, segment=1, flush=0, end="eos",
+               start=0, stop=None, time=0, base=0, offset=0, period=40_000_000, seqnum=None):
+    row = {"stream_generation": stream, "segment_generation": segment, "flush_generation": flush,
+           "buffers": count, "first_pts": first, "period_ns": period, "end_reason": end,
+           "segment": {"format": 3, "rate": 1, "applied_rate": 1, "start": start,
+                       "stop": stop, "time": time, "base": base, "offset": offset},
+           "caps": epoch_caps(period == 20_000_000)}
+    if seqnum is not None:
+        row["seqnum"] = seqnum
+    return row
+
+def epoch_attachment(token, rows, stage="output-scale", seeks=0, failed=0):
+    return {"stage": stage, "token": token, "epochs": rows,
+            "seek_requests": seeks, "seek_failures": failed}
+
+def audit_epochs(name, goals, status):
+    result = auditor.audit(cases[name], {"schema": 2, "attachments": goals}, require_player=False)
+    assert result["status"] == status, (name, result)
+
+def epoch_ledger(name, stage="output-scale", token=None):
+    return attachment(cases[name], stage, token)["pts_epochs"]
+
+sixteen = [epoch_goal(2, n * 1_000_000_000, segment=n+1,
+                     end="eos" if n == 15 else "segment", start=n*1_000_000_000,
+                     stop=n*1_000_000_000+80_000_000, time=n*1_000_000_000,
+                     base=(10+n*2)*1_000_000_000, seqnum=0xb00+n) for n in range(16)]
+sixteen_goal = epoch_attachment(201, sixteen)
+for name in ("epoch_segments_first", "window_epoch_segments_roll", "window_epoch_segments_frozen"):
+    ledger = epoch_ledger(name)
+    assert ledger["qualified"] and not ledger["overflow"] and ledger["unassigned_buffers"] == 0, name
+    assert ledger["buffers"] == 32 and len(ledger["rows"]) == ledger["segment_events"] == 16, name
+    assert ledger["stream_events"] == 1 and ledger["flush_starts"] == ledger["flush_stops"] == 0, name
+    assert [row["first_ordinal"] for row in ledger["rows"]] == list(range(1, 32, 2)), name
+    assert [row["last_ordinal"] for row in ledger["rows"]] == list(range(2, 33, 2)), name
+    assert cases[name]["truncated"] and cases[name]["retained"] == 4, name
+    audit_epochs(name, [sixteen_goal], "PASS")
+    # Valid-looking complete suffixes/subsets are not a whole-attachment proof.
+    projected = copy.deepcopy(sixteen_goal)
+    projected["epochs"].pop(7)
+    for n, row in enumerate(projected["epochs"]): row["segment_generation"] = n+1
+    audit_epochs(name, [projected], "FAIL")
+    suffix = copy.deepcopy(sixteen_goal)
+    suffix["epochs"] = suffix["epochs"][8:]
+    for n, row in enumerate(suffix["epochs"]): row["segment_generation"] = n+1
+    audit_epochs(name, [suffix], "FAIL")
+assert cases["window_epoch_segments_roll"]["window"]["overwritten"] > 32
+assert cases["window_epoch_segments_frozen"]["window"]["complete"]
+assert cases["window_epoch_segments_frozen"]["window"]["unretained_after_window"] > 32
+assert all(row["kind"] in ("attach", "control") for row in cases["epoch_segments_first"]["records"])
+
+pipeline_rows = [epoch_goal(4, end="flush-start", seqnum=0xc00),
+                 epoch_goal(3, 1_000_000_000, segment=2, flush=1, start=1_000_000_000,
+                            base=2_000_000_000, seqnum=0xc01),
+                 epoch_goal(2, 2_000_000_000, segment=3, flush=2, start=2_000_000_000,
+                            base=3_000_000_000, seqnum=0xc02)]
+pipeline_goals = [epoch_attachment(216, pipeline_rows, seeks=1),
+                  epoch_attachment(217, pipeline_rows, stage="sink", seeks=1)]
+audit_epochs("epoch_pipeline_replay", pipeline_goals, "PASS")
+audit_epochs("epoch_pipeline_replay", pipeline_goals[:1], "FAIL")
+for stage, token in (("output-scale", 216), ("sink", 217)):
+    owner = attachment(cases["epoch_pipeline_replay"], stage, token)
+    ledger = owner["pts_epochs"]
+    assert owner["buffers"] == 9 and owner["eos_count"] == 2
+    assert ledger["seek_requests"] == 1 and ledger["seek_failures"] == 0 and not ledger["pending_seek"]
+    assert ledger["flush_starts"] == ledger["flush_stops"] == 2
+    assert [row["buffers"] for row in ledger["rows"]] == [4, 3, 2]
+    assert [row["first_ordinal"] for row in ledger["rows"]] == [1, 5, 8]
+    assert [row["last_ordinal"] for row in ledger["rows"]] == [4, 7, 9]
+
+audit_epochs("window_epoch_seek_cancel", [epoch_attachment(202, [epoch_goal(4, seqnum=0xa01)], seeks=1, failed=1)], "PASS")
+for name, closing, flush in (("window_epoch_stream_reset", "stream-start", 0),
+                             ("window_epoch_combined_stream_flush", "stream-start", 1),
+                             ("window_epoch_combined_flush_stream", "flush-start", 1)):
+    rows = [epoch_goal(2, end=closing, seqnum=0xa01),
+            epoch_goal(2, 1_000_000_000, stream=2, segment=2, flush=flush,
+                       start=1_000_000_000, base=2_000_000_000, seqnum=0xc11)]
+    audit_epochs(name, [epoch_attachment(202, rows)], "PASS")
+audit_epochs("window_epoch_compensated_offset", [epoch_attachment(211,
+             [epoch_goal(3, base=1_000_000_000, offset=80_000_000)])], "PASS")
+offset_row = epoch_ledger("window_epoch_compensated_offset")["rows"][0]
+assert (offset_row["first_running_time"], offset_row["last_running_time"]) == (920_000_000, 1_000_000_000)
+audit_epochs("window_epoch_compensated_high_base", [epoch_attachment(211,
+             [epoch_goal(3, 2_000_000_000, start=2_000_000_000,
+                         base=2**64-1-1_000_000_000, offset=40_000_000)])], "PASS")
+high_row = epoch_ledger("window_epoch_compensated_high_base")["rows"][0]
+assert (high_row["first_running_time"], high_row["last_running_time"]) == (2**64-1-1_040_000_000, 2**64-1-960_000_000)
+
+# Earlier schema1 single-epoch 25/50Hz witnesses also have independently
+# specified schema2 expectations, without replacing their old reader checks.
+for name in summary_clean:
+    period = 20_000_000 if name.endswith("_50") else 40_000_000
+    audit_epochs(name, [epoch_attachment(120, [epoch_goal(20, period=period, seqnum=0xa01)])], "PASS")
+
+normal_two = [epoch_goal(2, end="segment", seqnum=0xa01),
+              epoch_goal(12, 1_000_000_000, segment=2, start=1_000_000_000,
+                         base=2_000_000_000, seqnum=0xc20)]
+for defect in epoch_defects:
+    name = "window_epoch_defect_" + defect
+    ledger = epoch_ledger(name)
+    assert not ledger["qualified"] and ledger["first_violation"] is not None, name
+    assert len(ledger["rows"]) == 2 and [row["buffers"] for row in ledger["rows"]] == [2, 12], name
+    assert ledger["rows"][0]["qualified"] and not ledger["rows"][1]["qualified"], name
+    assert ledger["rows"][1]["first_violation"]["order"] < cases[name]["records"][0]["order"], name
+    assert ledger["rows"][1]["caps"] == ledger["rows"][0]["caps"], name
+    audit_epochs(name, [epoch_attachment(203, normal_two)], "FAIL")
+for suffix, field, amount in (("gap", "gap_events", 1), ("duplicate", "duplicate_events", 1),
+                              ("reverse", "reverse_events", 1), ("off_grid", "off_grid_events", 10),
+                              ("unknown_pts", "unknown_pts", 1), ("unknown_duration", "unknown_duration", 1),
+                              ("duration", "invalid_duration", 1)):
+    row = epoch_ledger("window_epoch_defect_" + suffix)["rows"][1]
+    assert row[field] == amount, (suffix, row)
+
+for suffix in epoch_barriers:
+    name = "window_epoch_" + suffix
+    ledger = epoch_ledger(name)
+    if suffix == "flush_start_repeat":
+        assert ledger["flush_starts"] == flush_repeat["observed_starts"]
+        assert ledger["flush_stops"] == 1
+        if flush_repeat["observed_starts"] == 1:
+            # The ordinary redundant API attempt never reached either real
+            # pad probe. The remaining observed event sequence is one valid
+            # pair; its frozen expected rows do not come from the ledger.
+            rows = [epoch_goal(2, end="flush-start", seqnum=0xa01),
+                    epoch_goal(2, 1_000_000_000, segment=2, flush=1,
+                               start=1_000_000_000, base=2_000_000_000, seqnum=0xc30)]
+            audit_epochs(name, [epoch_attachment(204, rows)], "PASS")
+            continue
+    assert not ledger["qualified"], name
+    audit_epochs(name, [epoch_attachment(204, [epoch_goal(2, seqnum=0xa01)])], "FAIL")
+assert epoch_ledger("window_epoch_seek_unresolved")["pending_seek"]
+assert epoch_ledger("window_epoch_seek_overlap")["seek_requests"] == 2
+assert epoch_ledger("window_epoch_seek_fail_unmatched")["seek_failures"] == 1
+assert epoch_ledger("window_epoch_flush_unresolved")["flush_starts"] == 1
+assert epoch_ledger("window_epoch_flush_unresolved")["flush_stops"] == 0
+assert epoch_ledger("window_epoch_flush_missing_segment")["unassigned_buffers"] == 1
+
+for name in epoch_limits:
+    ledger = epoch_ledger(name)
+    assert not ledger["qualified"], name
+    token = (205 if name.startswith("window_epoch_") and name.rsplit("_", 1)[-1] in
+             {"rate", "applied", "bytes", "bounds", "offset", "overflow"} and name != "window_epoch_limit_overflow"
+             else 207 if name == "window_epoch_limit_overflow" else 208 if name == "window_epoch_counter_saturation"
+             else 209 if name == "epoch_seek_before_attach" else 210 if name == "epoch_concurrent_stop" else 206)
+    audit_epochs(name, [epoch_attachment(token, [epoch_goal(2)])], "FAIL")
+limited = epoch_ledger("window_epoch_limit_overflow")
+assert limited["overflow"] and len(limited["rows"]) == 16 and limited["segment_events"] == 17
+assert limited["buffers"] == 17 and limited["unassigned_buffers"] == 1
+assert [row["first_pts"] for row in limited["rows"]] == [n*1_000_000_000 for n in range(16)]
+assert [row["buffers"] for row in limited["rows"]] == [1]*16
+assert epoch_ledger("epoch_empty_segment")["rows"][0]["buffers"] == 0
+assert epoch_ledger("epoch_detach_open")["rows"][0]["end_reason"] == "detach"
+assert epoch_ledger("epoch_stop_open")["rows"][0]["end_reason"] == "stop"
+assert epoch_ledger("epoch_concurrent_stop")["buffers"] == 1
+assert epoch_ledger("epoch_concurrent_stop")["rows"][0]["end_reason"] == "stop"
+overflow_row = epoch_ledger("window_epoch_overflow")["rows"][0]
+assert overflow_row["arithmetic_overflow"]
+saturated = epoch_ledger("window_epoch_counter_saturation")["rows"][0]
+assert saturated["counters_saturated"] and saturated["gap_steps"] == 2**64-1
+assert cases["window_epoch_counter_saturation"]["counters_saturated"]
+
+print("Stage trace %s: fourteen legacy + seven epoch native groups, %d structured snapshots, "
+      "legacy summaries plus independent bounded epochs/real-pipeline/flush/seek/EOS/retention/defect controls PASS" % (variant, len(cases)))
 PY
 done
 python3 -B "$repo_dir/tests/stage-pts-audit.test.py"

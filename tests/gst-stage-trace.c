@@ -1181,6 +1181,413 @@ test_pts_summary_limits(void)
   fixture_clear(&f);
 }
 
+/* Additive epoch controls. All ordinary transitions pass through actual GstPad
+ * events/probes. Only the unreachable counter limit is seeded under the same
+ * production mutex, then crossed by a real buffer. */
+static void
+test_epoch_headers(PadFixture *f)
+{
+  static guint stream_number;
+  gchar stream_id[64];
+  GstCaps *caps = gst_caps_from_string(INPUT_CAPS);
+  g_snprintf(stream_id, sizeof(stream_id), "epoch-test-%u", ++stream_number);
+  g_assert_true(gst_pad_push_event(f->src, gst_event_new_stream_start(stream_id)));
+  g_assert_true(gst_pad_push_event(f->src, gst_event_new_caps(caps)));
+  gst_caps_unref(caps);
+}
+
+static void
+test_epoch_segment(PadFixture *f, guint n, gboolean bounded)
+{
+  GstSegment segment;
+  gst_segment_init(&segment, GST_FORMAT_TIME);
+  segment.start = n * GST_SECOND;
+  segment.time = n * GST_SECOND;
+  segment.base = (10 + n * 2) * GST_SECOND;
+  if (bounded) segment.stop = segment.start + 80 * GST_MSECOND;
+  GstEvent *event = gst_event_new_segment(&segment);
+  gst_event_set_seqnum(event, 0xb00 + n);
+  g_assert_true(gst_pad_push_event(f->src, event));
+}
+
+static void
+test_epoch_control(PadFixture *f, const gchar *name, guint64 value)
+{
+  gboolean accepted = FALSE;
+  g_signal_emit_by_name(f->helper, "control", name, value, &accepted);
+  g_assert_true(accepted);
+}
+
+static void
+test_epoch_flush(PadFixture *f)
+{
+  g_assert_true(gst_pad_push_event(f->src, gst_event_new_flush_start()));
+  g_assert_true(gst_pad_push_event(f->src, gst_event_new_flush_stop(TRUE)));
+}
+
+static GstPadProbeReturn
+test_epoch_count_flush_start(GstPad *pad, GstPadProbeInfo *info, gpointer data)
+{
+  guint *observed = data;
+  (void) pad;
+  GstEvent *event = GST_PAD_PROBE_INFO_EVENT(info);
+  if (event && GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_START) (*observed)++;
+  return GST_PAD_PROBE_OK;
+}
+
+static void
+test_pts_epochs_segments(void)
+{
+  const gchar *names[] = {"epoch_segments_first", "window_epoch_segments_roll",
+    "window_epoch_segments_frozen"};
+  for (guint mode = 0; mode < G_N_ELEMENTS(names); mode++) {
+    PadFixture f;
+    fixture_init(&f, 4);
+    g_object_set(f.helper, "window", mode != 0, NULL);
+    g_assert_cmpint(attach(f.helper, f.src, "output-scale", 201), ==, 1);
+    for (guint n = 0; n < 6; n++) test_epoch_control(&f, "pause", n);
+    test_epoch_headers(&f);
+    for (guint n = 0; n < 16; n++) {
+      test_epoch_segment(&f, n, TRUE);
+      push_buffer(&f, n * GST_SECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND,
+          GST_BUFFER_FLAG_DISCONT);
+      push_buffer(&f, n * GST_SECOND + 40 * GST_MSECOND, GST_CLOCK_TIME_NONE,
+          40 * GST_MSECOND, 0);
+      if (mode == 2 && n == 0) g_assert_true(trigger(f.helper, 0xb77));
+    }
+    finish(&f, names[mode]);
+    fixture_clear(&f);
+  }
+}
+
+static GPtrArray *
+test_epoch_pipeline_run(gboolean observed)
+{
+  GstHarness *h = gst_harness_new("identity");
+  GstPad *src = gst_element_get_static_pad(h->element, "src");
+  GstElement *helper = observed ? helper_new(128) : NULL;
+  GstCaps *caps = gst_caps_from_string(INPUT_CAPS);
+  GPtrArray *out = g_ptr_array_new_with_free_func((GDestroyNotify) gst_buffer_unref);
+  if (helper) {
+    g_assert_cmpint(attach(helper, src, "output-scale", 216), ==, 1);
+    g_assert_cmpint(attach(helper, h->sinkpad, "sink", 217), ==, 1);
+  }
+  g_assert_true(gst_harness_push_event(h, gst_event_new_stream_start("epoch-pipeline")));
+  g_assert_true(gst_harness_push_event(h, gst_event_new_caps(caps)));
+  gst_caps_unref(caps);
+  for (guint epoch = 0; epoch < 3; epoch++) {
+    GstSegment segment;
+    if (epoch) {
+      g_assert_true(gst_harness_push_event(h, gst_event_new_flush_start()));
+      g_assert_true(gst_harness_push_event(h, gst_event_new_flush_stop(TRUE)));
+    }
+    gst_segment_init(&segment, GST_FORMAT_TIME);
+    segment.start = epoch * GST_SECOND;
+    segment.base = epoch ? (epoch + 1) * GST_SECOND : 0;
+    GstEvent *event = gst_event_new_segment(&segment);
+    gst_event_set_seqnum(event, 0xc00 + epoch);
+    g_assert_true(gst_harness_push_event(h, event));
+    for (guint n = 0; n < 4 - epoch; n++) {
+      GstBuffer *buffer = gst_buffer_new_allocate(NULL, 256, NULL);
+      guint8 bytes[256];
+      for (guint b = 0; b < sizeof(bytes); b++) bytes[b] = (guint8) (epoch * 37 + n * 11 + b);
+      g_assert_cmpuint(gst_buffer_fill(buffer, 0, bytes, sizeof(bytes)), ==, sizeof(bytes));
+      GST_BUFFER_PTS(buffer) = epoch * GST_SECOND + n * 40 * GST_MSECOND;
+      GST_BUFFER_DURATION(buffer) = 40 * GST_MSECOND;
+      if (!n) GST_BUFFER_FLAG_SET(buffer, GST_BUFFER_FLAG_DISCONT);
+      g_assert_cmpint(gst_harness_push(h, buffer), ==, GST_FLOW_OK);
+      g_ptr_array_add(out, gst_harness_pull(h));
+      /* The request is not itself a barrier: the fourth old-row buffer must
+       * remain in epoch0 until the real paired flush above. */
+      if (!epoch && n == 2 && helper) {
+        gboolean accepted = FALSE;
+        g_signal_emit_by_name(helper, "control", "seek-request", GST_SECOND, &accepted);
+        g_assert_true(accepted);
+      }
+    }
+    if (epoch) g_assert_true(gst_harness_push_event(h, gst_event_new_eos()));
+  }
+  g_assert_cmpuint(out->len, ==, 9);
+  if (helper) {
+    g_signal_emit_by_name(helper, "stop");
+    emit_case(helper, "epoch_pipeline_replay");
+    gst_object_unref(helper);
+  }
+  gst_object_unref(src);
+  gst_harness_teardown(h);
+  return out;
+}
+
+static void
+test_pts_epochs_pipeline(void)
+{
+  GPtrArray *reference = test_epoch_pipeline_run(FALSE);
+  GPtrArray *observed = test_epoch_pipeline_run(TRUE);
+  g_assert_cmpuint(reference->len, ==, observed->len);
+  for (guint n = 0; n < reference->len; n++) {
+    GstBuffer *a = g_ptr_array_index(reference, n), *b = g_ptr_array_index(observed, n);
+    GstMapInfo am, bm;
+    g_assert_cmpuint(GST_BUFFER_PTS(a), ==, GST_BUFFER_PTS(b));
+    g_assert_cmpuint(GST_BUFFER_DURATION(a), ==, GST_BUFFER_DURATION(b));
+    g_assert_cmpuint(GST_BUFFER_FLAGS(a), ==, GST_BUFFER_FLAGS(b));
+    g_assert_true(gst_buffer_map(a, &am, GST_MAP_READ));
+    g_assert_true(gst_buffer_map(b, &bm, GST_MAP_READ));
+    g_assert_cmpuint(am.size, ==, bm.size);
+    g_assert_cmpint(memcmp(am.data, bm.data, am.size), ==, 0);
+    gst_buffer_unmap(a, &am); gst_buffer_unmap(b, &bm);
+  }
+  g_ptr_array_unref(reference); g_ptr_array_unref(observed);
+}
+
+static void
+test_pts_epochs_seek_stream(void)
+{
+  const gchar *names[] = {"window_epoch_seek_cancel", "window_epoch_stream_reset",
+    "window_epoch_combined_stream_flush", "window_epoch_combined_flush_stream"};
+  for (guint mode = 0; mode < G_N_ELEMENTS(names); mode++) {
+    PadFixture f;
+    fixture_init(&f, 4); g_object_set(f.helper, "window", TRUE, NULL);
+    g_assert_cmpint(attach(f.helper, f.src, "output-scale", 202), ==, 1);
+    summary_headers(&f, FALSE);
+    push_buffer(&f, 0, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, GST_BUFFER_FLAG_DISCONT);
+    push_buffer(&f, 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+    if (!mode) {
+      test_epoch_control(&f, "seek-request", 400 * GST_MSECOND);
+      test_epoch_control(&f, "seek-failed", 400 * GST_MSECOND);
+      push_buffer(&f, 80 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+      push_buffer(&f, 120 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+    } else {
+      if (mode == 3) test_epoch_flush(&f);
+      test_epoch_headers(&f);
+      if (mode == 2) test_epoch_flush(&f);
+      push_segment(&f, GST_FORMAT_TIME, GST_SECOND, 0, 2 * GST_SECOND, 0xc11);
+      push_buffer(&f, GST_SECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, GST_BUFFER_FLAG_DISCONT);
+      push_buffer(&f, GST_SECOND + 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+    }
+    finish(&f, names[mode]);
+    fixture_clear(&f);
+  }
+  for (guint high = 0; high < 2; high++) {
+    PadFixture f; GstSegment segment;
+    fixture_init(&f, 4); g_object_set(f.helper, "window", TRUE, NULL);
+    g_assert_cmpint(attach(f.helper, f.src, "output-scale", 211), ==, 1);
+    test_epoch_headers(&f);
+    gst_segment_init(&segment, GST_FORMAT_TIME);
+    segment.start = high ? 2 * GST_SECOND : 0;
+    segment.base = high ? GST_CLOCK_TIME_NONE - GST_SECOND : GST_SECOND;
+    segment.offset = (high ? 40 : 80) * GST_MSECOND;
+    g_assert_true(gst_pad_push_event(f.src, gst_event_new_segment(&segment)));
+    for (guint n = 0; n < 3; n++)
+      push_buffer(&f, segment.start + n * 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND,
+          n ? 0 : GST_BUFFER_FLAG_DISCONT);
+    finish(&f, high ? "window_epoch_compensated_high_base" : "window_epoch_compensated_offset");
+    fixture_clear(&f);
+  }
+}
+
+static void
+test_pts_epochs_defects(void)
+{
+  const gchar *defects[] = {"gap", "duplicate", "reverse", "off_grid", "unknown_pts",
+    "unknown_duration", "duration", "buffer_gap", "discont", "caps_changed", "caps_metadata_changed"};
+  for (guint d = 0; d < G_N_ELEMENTS(defects); d++) {
+    PadFixture f;
+    fixture_init(&f, 4); g_object_set(f.helper, "window", TRUE, NULL);
+    g_assert_cmpint(attach(f.helper, f.src, "output-scale", 203), ==, 1);
+    summary_headers(&f, FALSE);
+    for (guint n = 0; n < 2; n++)
+      push_buffer(&f, n * 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+    push_segment(&f, GST_FORMAT_TIME, GST_SECOND, 0, 2 * GST_SECOND, 0xc20);
+    for (guint n = 0; n < 12; n++) {
+      GstClockTime pts = GST_SECOND + n * 40 * GST_MSECOND, duration = 40 * GST_MSECOND;
+      guint flags = n ? 0 : GST_BUFFER_FLAG_DISCONT;
+      if (d == 0 && n >= 2) pts += 40 * GST_MSECOND;
+      if (d == 1 && n >= 2) pts -= 40 * GST_MSECOND;
+      if (d == 2 && n == 2) pts = GST_SECOND;
+      if (d == 3 && n >= 2) pts++;
+      if (n == 2) {
+        if (d == 4) pts = GST_CLOCK_TIME_NONE;
+        if (d == 5) duration = GST_CLOCK_TIME_NONE;
+        if (d == 6) duration = 20 * GST_MSECOND;
+        if (d == 7) flags |= GST_BUFFER_FLAG_GAP;
+        if (d == 8) flags |= GST_BUFFER_FLAG_DISCONT;
+        if (d == 9) set_changed_caps(&f);
+        if (d == 10) {
+          GstCaps *caps = gst_caps_from_string(INPUT_CAPS ",colorimetry=bt709");
+          g_assert_true(gst_pad_push_event(f.src, gst_event_new_caps(caps)));
+          gst_caps_unref(caps);
+        }
+      }
+      push_buffer(&f, pts, GST_CLOCK_TIME_NONE, duration, flags);
+    }
+    gchar *name = g_strconcat("window_epoch_defect_", defects[d], NULL);
+    finish(&f, name); g_free(name); fixture_clear(&f);
+  }
+}
+
+static void
+test_pts_epochs_barriers(void)
+{
+  const gchar *names[] = {"seek_unresolved", "seek_overlap", "seek_fail_unmatched",
+    "seek_fail_mismatch", "seek_fail_after_flush", "flush_stop_unpaired",
+    "flush_start_repeat", "flush_unresolved", "flush_missing_segment",
+    "tail_flush", "tail_stream", "stream_repeat", "flush_repeat_pair", "eos_without_flush"};
+  for (guint mode = 0; mode < G_N_ELEMENTS(names); mode++) {
+    PadFixture f;
+    guint repeat_flush_starts = 0;
+    gboolean repeat_flush_return = FALSE;
+    gulong repeat_flush_probe = 0;
+    fixture_init(&f, 4); g_object_set(f.helper, "window", TRUE, NULL);
+    g_assert_cmpint(attach(f.helper, f.src, "output-scale", 204), ==, 1);
+    summary_headers(&f, FALSE);
+    push_buffer(&f, 0, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, GST_BUFFER_FLAG_DISCONT);
+    push_buffer(&f, 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+    if (mode < 5 && mode != 2) test_epoch_control(&f, "seek-request", GST_SECOND);
+    if (mode == 1) test_epoch_control(&f, "seek-request", 2 * GST_SECOND);
+    if (mode == 2 || mode == 3) test_epoch_control(&f, "seek-failed", 2 * GST_SECOND);
+    if (mode == 4 || mode == 8) test_epoch_flush(&f);
+    if (mode == 4) test_epoch_control(&f, "seek-failed", GST_SECOND);
+    if (mode == 5) g_assert_true(gst_pad_push_event(f.src, gst_event_new_flush_stop(TRUE)));
+    if (mode == 6 || mode == 7) {
+      if (mode == 6) {
+        repeat_flush_probe = gst_pad_add_probe(f.src,
+            GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_EVENT_FLUSH,
+            test_epoch_count_flush_start, &repeat_flush_starts, NULL);
+        g_assert_cmpuint(repeat_flush_probe, !=, 0);
+      }
+      g_assert_true(gst_pad_push_event(f.src, gst_event_new_flush_start()));
+      if (mode == 6) {
+        /* GstPad may reject the redundant attempt before any probe sees it.
+         * Count actual events independently at the same source pad; never
+         * infer observability or expected qualification from the collector. */
+        repeat_flush_return = gst_pad_push_event(f.src, gst_event_new_flush_start());
+        g_assert_true(gst_pad_push_event(f.src, gst_event_new_flush_stop(TRUE)));
+        gst_pad_remove_probe(f.src, repeat_flush_probe);
+        g_assert_cmpuint(repeat_flush_starts, >=, 1);
+        g_assert_cmpuint(repeat_flush_starts, <=, 2);
+        g_print("TRACE_FLUSH_REPEAT {\"second_push_accepted\":%s,\"observed_starts\":%u}\n",
+            repeat_flush_return ? "true" : "false", repeat_flush_starts);
+      }
+    }
+    if (mode == 8) {
+      g_test_expect_message("GStreamer", G_LOG_LEVEL_WARNING, "*Got data flow before segment event*");
+      g_test_expect_message("GStreamer", G_LOG_LEVEL_WARNING, "*Got data flow before segment event*");
+      push_buffer(&f, 80 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+      g_test_assert_expected_messages();
+    }
+    if (mode == 9 || mode == 10 || mode == 13)
+      g_assert_true(gst_pad_push_event(f.src, gst_event_new_eos()));
+    if (mode == 9) test_epoch_flush(&f);
+    if (mode == 10 || mode == 13) test_epoch_headers(&f);
+    if (mode == 11) { test_epoch_headers(&f); test_epoch_headers(&f); }
+    if (mode == 12) { test_epoch_flush(&f); test_epoch_flush(&f); }
+    if (mode >= 4 && mode != 7 && mode != 9 && mode != 10) {
+      push_segment(&f, GST_FORMAT_TIME, GST_SECOND, 0, 2 * GST_SECOND, 0xc30);
+      push_buffer(&f, GST_SECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, GST_BUFFER_FLAG_DISCONT);
+      push_buffer(&f, GST_SECOND + 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+    }
+    gchar *name = g_strconcat("window_epoch_", names[mode], NULL);
+    if (mode == 7 || mode == 9 || mode == 10) { g_signal_emit_by_name(f.helper, "stop"); emit_case(f.helper, name); }
+    else finish(&f, name);
+    g_free(name); fixture_clear(&f);
+  }
+}
+
+static void
+test_pts_epochs_limits(void)
+{
+  const gchar *names[] = {"bad_rate", "bad_applied", "bytes", "bounds", "offset", "overflow"};
+  for (guint mode = 0; mode < G_N_ELEMENTS(names); mode++) {
+    PadFixture f; GstSegment segment;
+    fixture_init(&f, 4); g_object_set(f.helper, "window", TRUE, NULL);
+    g_assert_cmpint(attach(f.helper, f.src, "output-scale", 205), ==, 1);
+    test_epoch_headers(&f);
+    gst_segment_init(&segment, mode == 2 ? GST_FORMAT_BYTES : GST_FORMAT_TIME);
+    if (!mode) segment.rate = 2.0;
+    if (mode == 1) segment.applied_rate = 0.5;
+    if (mode == 3) segment.stop = 40 * GST_MSECOND;
+    if (mode == 4) segment.offset = 80 * GST_MSECOND;
+    if (mode == 5) segment.base = GST_CLOCK_TIME_NONE - 40 * GST_MSECOND;
+    g_assert_true(gst_pad_push_event(f.src, gst_event_new_segment(&segment)));
+    push_buffer(&f, 0, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, GST_BUFFER_FLAG_DISCONT);
+    push_buffer(&f, 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+    gchar *name = g_strconcat("window_epoch_", names[mode], NULL);
+    finish(&f, name); g_free(name); fixture_clear(&f);
+  }
+  for (guint mode = 0; mode < 3; mode++) {
+    PadFixture f;
+    fixture_init(&f, 16);
+    g_assert_cmpint(attach(f.helper, f.src, "output-scale", 206), ==, 1);
+    summary_headers(&f, FALSE);
+    if (!mode) push_segment(&f, GST_FORMAT_TIME, GST_SECOND, 0, 2 * GST_SECOND, 0xc40);
+    push_buffer(&f, mode ? 0 : GST_SECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, GST_BUFFER_FLAG_DISCONT);
+    if (mode == 1) g_signal_emit_by_name(f.helper, "detach-pad", f.src);
+    if (!mode) finish(&f, "epoch_empty_segment");
+    else { g_signal_emit_by_name(f.helper, "stop"); emit_case(f.helper, mode == 1 ? "epoch_detach_open" : "epoch_stop_open"); }
+    fixture_clear(&f);
+  }
+  PadFixture f;
+  fixture_init(&f, 4); g_object_set(f.helper, "window", TRUE, NULL);
+  g_assert_cmpint(attach(f.helper, f.src, "output-scale", 207), ==, 1);
+  test_epoch_headers(&f);
+  for (guint n = 0; n < 17; n++) {
+    test_epoch_segment(&f, n, TRUE);
+    push_buffer(&f, n * GST_SECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, GST_BUFFER_FLAG_DISCONT);
+  }
+  finish(&f, "window_epoch_limit_overflow"); fixture_clear(&f);
+
+  fixture_init(&f, 4); g_object_set(f.helper, "window", TRUE, NULL);
+  g_assert_cmpint(attach(f.helper, f.src, "output-scale", 208), ==, 1);
+  summary_headers(&f, FALSE);
+  push_buffer(&f, 0, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  TraceState *state = ((GstCrystalHdStageTrace *) f.helper)->state;
+  g_mutex_lock(&state->lock);
+  state->attachments[0].pts_epochs.rows[0].gap_steps = G_MAXUINT64;
+  g_mutex_unlock(&state->lock);
+  push_buffer(&f, 80 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  finish(&f, "window_epoch_counter_saturation"); fixture_clear(&f);
+
+  fixture_init(&f, 16);
+  test_epoch_control(&f, "seek-request", GST_SECOND);
+  g_assert_cmpint(attach(f.helper, f.src, "output-scale", 209), ==, 1);
+  summary_headers(&f, FALSE);
+  push_buffer(&f, 0, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  finish(&f, "epoch_seek_before_attach"); fixture_clear(&f);
+}
+
+static gpointer
+test_epoch_push_worker(gpointer data)
+{
+  PadFixture *f = data;
+  for (guint n = 0; n < 16; n++) {
+    test_epoch_segment(f, n, TRUE);
+    push_buffer(f, n * GST_SECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, GST_BUFFER_FLAG_DISCONT);
+    push_buffer(f, n * GST_SECOND + 40 * GST_MSECOND, GST_CLOCK_TIME_NONE, 40 * GST_MSECOND, 0);
+  }
+  return NULL;
+}
+
+static void
+test_pts_epochs_concurrent_stop(void)
+{
+  PadFixture f;
+  fixture_init(&f, 32);
+  g_assert_cmpint(attach(f.helper, f.src, "output-scale", 210), ==, 1);
+  test_epoch_headers(&f); f.block_first = TRUE;
+  GThread *worker = g_thread_new("epoch-push", test_epoch_push_worker, &f);
+  g_mutex_lock(&f.lock);
+  while (!f.first) g_cond_wait(&f.cond, &f.lock);
+  g_mutex_unlock(&f.lock);
+  g_signal_emit_by_name(f.helper, "stop");
+  gchar *before = snapshot(f.helper);
+  g_mutex_lock(&f.lock); f.release = TRUE; g_cond_broadcast(&f.cond); g_mutex_unlock(&f.lock);
+  g_thread_join(worker);
+  gchar *after = snapshot(f.helper);
+  g_assert_cmpstr(before, ==, after); g_free(before); g_free(after);
+  g_assert_cmpuint(f.received, ==, 32); g_assert_cmpuint(f.destroyed, ==, 32);
+  emit_case(f.helper, "epoch_concurrent_stop"); fixture_clear(&f);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1211,6 +1618,13 @@ main(int argc, char **argv)
   g_test_add_func("/stage-trace/whole-run-pts-retention", test_pts_summary_retention);
   g_test_add_func("/stage-trace/whole-run-pts-defects", test_pts_summary_defects);
   g_test_add_func("/stage-trace/whole-run-pts-limits", test_pts_summary_limits);
+  g_test_add_func("/stage-trace/epoch-segment-retention", test_pts_epochs_segments);
+  g_test_add_func("/stage-trace/epoch-real-pipeline", test_pts_epochs_pipeline);
+  g_test_add_func("/stage-trace/epoch-seek-stream", test_pts_epochs_seek_stream);
+  g_test_add_func("/stage-trace/epoch-mid-row-defects", test_pts_epochs_defects);
+  g_test_add_func("/stage-trace/epoch-malformed-barriers", test_pts_epochs_barriers);
+  g_test_add_func("/stage-trace/epoch-domain-limits", test_pts_epochs_limits);
+  g_test_add_func("/stage-trace/epoch-concurrent-stop", test_pts_epochs_concurrent_stop);
   gint result = g_test_run();
   g_cond_clear(&clock_gate.cond);
   g_mutex_clear(&clock_gate.lock);

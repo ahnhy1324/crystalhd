@@ -316,6 +316,66 @@ the optional summary remain readable JSON and cannot establish this whole-run
 claim. The summary and auditor measure no pixels, physical presentation or A/V
 timing, and do not prove unique picture identity or source provenance.
 
+### Bounded segment and flush epochs
+
+Each attachment also contains an additive `pts_epochs` version 1 ledger. The
+trace's schema 1 and the original `pts_summary` version 1 remain unchanged;
+the original single-segment audit still rejects seek/flush observations.
+The new ledger keeps at most 16 segment rows per attachment, independently of
+the detail ring. Each row freezes its stream/segment/flush generations, CAPS
+and TIME segment, first/last ordinary-buffer ordinals, PTS and running times,
+cadence counters and closing boundary. No video payload references are kept.
+
+Use expectation `schema: 2` with the existing `stage-pts-audit.py` command to
+audit all rows. Each expected attachment supplies `stage`, `token`,
+`seek_requests`, `seek_failures` and an ordered `epochs` array. Every expected
+epoch supplies its generations, source `buffers`, `first_pts`, `period_ns`,
+`end_reason`, `segment` and `caps`. Segment fields are `format`, `rate`,
+`applied_rate`, `start`, `stop`, `time`, `base`, `offset`; CAPS signature fields
+are `format`, `width`, `height`, `fps_n`, `fps_d`, `interlace_mode`, `field_order`,
+`raw_video`, `video_info_valid`. An expected segment `seqnum` is optional.
+Freeze these expectations from the producer/source and intended controls,
+before inspecting the observed ledger. The reader never constructs expected
+epochs or counts from trace rows or retained detail records.
+
+Qualification is deliberately bounded to unchanged fixed raw-video CAPS at
+25/50 Hz and forward TIME segments with rate/applied-rate 1. Positive cases
+include new segments, paired flushes and repeated EOS followed by a flush and
+new segment. The first DISCONT buffer in a fresh segment is permitted. A
+Player seek annotation alone does not establish a boundary: a successful
+flushing seek needs an observed flush pair and subsequent segment; a matching
+rejected seek cancels the pending annotation. This is boundary observation,
+not proof that a requested seek position was reached. Unrelated clients' raw
+upstream SEEK events are not a separate seek observer.
+
+The [GStreamer event model](https://gstreamer.freedesktop.org/documentation/additional/design/events.html)
+defines flush and segment boundaries. This ledger qualifies a narrower
+profile: after EOS, another row requires a flush pair even if a new stream
+starts. One stream change and one flush may occur together between segments;
+unmatched/repeated barriers and unresolved seeks fail qualification. Empty
+rows, buffers without context, mid-row DISCONT, GAP, unknown timing, cadence
+defects, changed CAPS/rates, arithmetic/counter overflow and more than 16 rows
+also fail. Earlier rows remain visible on overflow and cannot certify the
+whole attachment. A final EOS and complete Player completion are required;
+`--native-only` remains a CPU-control exception to the Player requirement.
+
+Counts and PTS endpoints are checked independently for every expected epoch,
+including backward seeks that repeat PTS from an earlier epoch. Whole-epoch
+omission, changed segment identity and compensating count errors cannot pass
+through an equal aggregate total. Helper seek/failure broadcasts are counted
+once, using the independent attachment expectations rather than summing pads.
+The auditor also checks that reserved boundaries and STOP leave enough global
+event slots for the required buffers and context events; this is necessary
+metadata consistency, not reconstruction of every unretained event. These are
+pad metadata observations; rendered
+pixels, physical presentation, A/V drift and buffer ownership need their own
+evidence.
+
+The [bounded CPU receipt](../../../tests/fixtures/issue513/pts-epochs-20261101.json)
+records 21 native groups/113 snapshots in ordinary and ASan/UBSan/leak runs,
+37 independent reader controls, unchanged projections of the older 65
+snapshots and the preserved initial harness failure.
+
 ## Optional finish-frame diagnostic
 
 Set `crystalhddec`'s `finish-trace-limit` before PLAYING, then request its
