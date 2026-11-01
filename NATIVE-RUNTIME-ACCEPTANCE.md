@@ -1,10 +1,21 @@
-# Compilerless native runtime: reproducible preparation for #539
+# Compilerless native runtime: retained preparation and #607 follow-up
 
-[#539](https://github.com/ahnhy1324/crystalhd/issues/539) remains **OPEN /
-PUBLIC_NOT_READY**. Private installation can activate the measured native Kodi
-route without compiling FFmpeg on the compatible existing host. That scoped
-result is complete. Independently clean OS/native Kodi acceptance, complete
-first-user burden and public distribution remain separate deliverables.
+The compatible-host private installation scope of
+[#539](https://github.com/ahnhy1324/crystalhd/issues/539) is complete: it can
+activate the measured native Kodi route without compiling FFmpeg at activation.
+[#607](https://github.com/ahnhy1324/crystalhd/issues/607) owns the remaining
+clean-target and public-distribution deliverables and remains **OPEN /
+PUBLIC_NOT_READY**. Independently clean OS/native Kodi acceptance and complete
+first-user burden retain their separate unqualified scopes.
+
+The separate private `1.3.0-dev.1` source/UI candidate has completed deterministic
+packaging, fresh Git-free build and compatible-host private-staging install/remove/reinstall at
+source `c48fe3a12d4f0443dc444df27c0b6c35be2b3ced`; see the
+[qualified checkpoint](RELEASING.md#private-v13-candidate-preparation) and
+[exact receipt](tests/fixtures/issue510/v13-private-admission-qualification-20261101.json).
+Its optional stock-Kodi settings ZIP uses the existing VA route. This milestone
+does not bundle or qualify the seven-DSO native FFmpeg research runtime below,
+or complete any of #607's six remaining public/clean-target deliverables.
 
 This guide adds an offline file preflight over the existing #576 artifacts.
 It does not build/modify FFmpeg or Kodi, publish an archive, install a runtime,
@@ -156,10 +167,11 @@ FFmpeg binary.
 | Deliverable | Next concrete evidence | Current disposition |
 | --- | --- | --- |
 | D0 official package selection | Reuse #545's `ffmpeg-hwconfig-probe.py` for a directly linked Kodi ELF and its exact FFmpeg closure; require `--require-kodi-drm-prime`. Static-integrated Kodi needs a separately reviewed method. | Ubuntu/Debian sid tested metadata negatives are retained. Flathub stable DSO-probe exit2 is **UNCLASSIFIED**, not negative/PASS. Ubuntu has no supplied Kodi i386 package in the recorded inventory. |
-| D1 smallest external implementation delta | Hardware config/get-format, real EXPBUF/AVDRM descriptors and FD/context/consumer lifetime semantics must all be supplied. | Advertisement-only own-driver/device changes cannot create missing FFmpeg selection metadata. Isolating/modifying a minimum FFmpeg/Kodi patch is outside the no-external-patch constraint. No own-side alternative is proved. |
 | D3 complete first-user burden | On the selected fresh target, record exact commands, network bytes, installed/temporary/peak disk, peak RSS, elapsed/user CPU, prerequisites, update and rollback work; separate observer tools from user dependencies. | Prior configure/build/stage 17.88 minutes excludes fetch/tool setup; peak build RAM is unknown. Archive bytes exclude Kodi/Platform/GL/driver/source. Report absent measurements as null/NOT_RUN. |
-| D4 clean-target native acceptance | Separately acquired/booted target or explicitly narrower clean-userspace scope; pinned original Kodi/App/Platform/GL/own-driver identities, no compiler at activation, 720p/FHD native selection, source-bound pixels/PTS, pause/seek/Stop/EOF/reopen, removal/fallback/re-extraction and resource boundaries. | Existing same-host proof is complete only in its stated scope. A new binary/target cannot inherit those results. No Atom/BCM70012 is connected. |
-| D5 redistribution/maintenance | Neutral build paths and reproducible build recipe, corresponding-source/component/dependency notices, exact CPU/ABI support, update/security owner and explicit distribution decision. | Core2/x86_64 only; existing `atan2f@GLIBC_2.43` requirement; private prefixes embedded, source archive absent, maintenance owner unassigned. **PUBLIC_NOT_READY**. |
+| D4 independent clean-target acceptance | Run the pinned-manifest/ELF/provider helper against a genuinely independent clean target if one becomes available. Record any narrower clean-userspace proof under its actual scope. | Existing compatible-host, compilerless-namespace, software-CLI and FILES_ONLY results do not establish a clean OS or another native Kodi target. Current equipment remains T8100/BCM70015/Intel965 x86_64; no Atom/BCM70012 is connected. |
+| D4 each proposed new package | Pin original Kodi/App/Platform/GL/own-driver identities; qualify activation without a compiler, decoder selection, source-qualified no-drift A/V logs, pixels/PTS, EOS/reopen, pause/seek/Stop, ABI/provider behavior, removal/fallback/re-extraction and resource boundaries. | Existing same-host proof is complete only in its stated scope. A new binary/package cannot inherit those results; calibrated physical lip-sync is not an additional synchronization gate. |
+| D5 redistribution/maintenance | Neutral build paths and reproducible build recipe, corresponding-source/component/dependency notices, exact CPU/ABI support, update/security owner and explicit distribution decision. | Core2/x86_64 only; existing `atan2f@GLIBC_2.43` requirement; private prefixes embedded, corresponding native-runtime source archive absent, maintenance owner unassigned. **PUBLIC_NOT_READY**. |
+| Minimum credible compatibility plan | Document selection metadata, real EXPBUF/AVDRM descriptors and FD/context/consumer lifetime requirements from existing published implementations. | Advertisement-only own-driver/device changes cannot create missing FFmpeg selection metadata. No own-side alternative is proved. External Kodi/FFmpeg edits are outside scope; an upstreamable minimum patch remains unproved and is not required to record the package gap. |
 
 The private runtime is a minimal configured subset, not a drop-in FFmpeg
 distribution. Replacing only `libavcodec` does not establish the matched ABI,

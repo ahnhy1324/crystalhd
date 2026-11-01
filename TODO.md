@@ -17,13 +17,16 @@ broader performance and research remain in
 [#472](https://github.com/ahnhy1324/crystalhd/issues/472) and do not expand the
 scope to general full-rate FHD or hardware deinterlacing.
 
-## Current priorities — 2026-10-31
+## Current priorities — 2026-11-01
 
-Private v1.3 preparation now uses `integrate/v1.3-candidate-20261031`, combining
-remote Xv/maintenance `e94b392` and MPEG-1 `f7d9f5d` at merge `0ea0862`.
-The CI conflict retains all DIL sanitizer, VPP observer, MPEG-1 and Xv gates.
-Native Kodi-driver and compilerless FFmpeg-runtime research remain separate
-lineages; their old CI is not combined-source qualification. Follow
+The latest qualified private v1.3 runtime source is `c48fe3a12d4f`, merged only
+into `research/issue513-xv-lifecycle-20261031` through #615 at checkpoint `1b17fd9`.
+Both share tree `32c5b891`; the earlier `0ea0862` combination and `ce4cab1`
+package qualification below remain historical checkpoints. The master proposal
+#585 and later documentation revisions retain separate source/CI identities;
+they do not change this frozen runtime/artifact qualification. Native Kodi-driver
+and compilerless FFmpeg-runtime research remain separate lineages; their old CI
+is not combined-source qualification. Follow
 [private candidate packaging](RELEASING.md#private-v13-candidate-preparation)
 for exact-commit source/ZIP artifacts and artifact-specific validation.
 The optional Kodi settings frontend is tracked in #611, sharing #400's core;
@@ -40,12 +43,24 @@ not automatically mandatory v1.3 features.
   preserve ordinary playback and archive-specific build/staging/rollback receipts.
 - [x] Record exact combined-head hosted CI and final private package hashes.
 
-The post-build completion is recorded in #612/#611: source `ce4cab1`,
+The first post-build completion is recorded in #612/#611: source `ce4cab1`,
 CI41209840603 (15 successful jobs and the intended packed-only skip),
 actual new Kodi360 hardware outputs/two natural EOS cycles, and exact archive
 build/staging/removal/recovery. The original four package files remain frozen;
 their packaging-time manifest is supplemented by a separate qualification
 receipt rather than rewritten after validation.
+
+The later #615 candidate source archive is
+`crystalhd-1.3.0-dev.1-c48fe3a12d4f.tar.gz` (6,812,906 bytes), SHA256
+`26ce5a6ec4fafa34b95ece71a9f2cc219c10c1cbb1c99e1d1d16f0ff9d9906cb`.
+Its optional settings ZIP is unchanged: SHA256
+`1712f28d006a3e22a6c3601200a00b6912f720c262847605bc18e06f0be9001a`.
+All four package files reproduce byte-for-byte. A fresh Git-free build produces
+the exact hardware-tested VA/DIL bytes and passes real DRM import, full replay,
+configuration-preserving install, removal, repeated removal and exact-payload
+reinstall. [Scoped follow-up receipt](tests/fixtures/issue510/v13-private-admission-qualification-20261101.json).
+This completes source/UI private packaging; the separate public native FFmpeg
+runtime/clean-target work remains in #607. Earlier candidate files stay frozen.
 
 ### Stability follow-up — 2026-11-01
 
@@ -53,10 +68,30 @@ receipt rather than rewritten after validation.
   driver mutex. The original exact/live replacement case fails; all twelve
   exact/remap, live/retired and completion/cancellation combinations pass after
   full-binding revalidation. Ordinary and ASan/UBSan/leak replay suites pass. Same-binding
-  completed pixels remain valid after context retirement.
-- [ ] Complete current-source ordinary finite-EOS/control hardware follow-up.
-  The retained FFmpeg296/300 graph-boundary loss and Kodi EOF-tail failures
-  remain separate; the sync-binding fix does not claim to repair them.
+  completed pixels remain valid after context retirement. #613 is merged
+  experimentally at `ab5b9e6`; [exact receipt](tests/fixtures/issue445/sync-binding-reuse-20261101.json).
+- [x] Complete the selected current-source ordinary finite-EOS/control hardware
+  follow-up: 180-frame PRIME2 PTS/SHA256, four seeks and retained-picture checks
+  pass at `c488f01`. All 150 originals materialize in the finite-loop comparison;
+  the first two caller graphs reach graph-free entry without source EOF/final
+  VPP requests. Field-rate `-stream_loop 2` remains **296/300 FAIL / unsupported for lossless
+  looping**. Continuous concat separately passes 300/300. This is a completed
+  scoped disposition, not repair of the loop or historical Kodi EOF-tail FAILs.
+  [Observed boundary and controls](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6545813841).
+- [x] Fix temporary H.264 replay admission saturation before accepting new input
+  (#614/#615), preserving the 512-AU/32MiB bounds and default policy. The local
+  analogue changes from 548/698 pictures plus 150 EndPicture errors to 698/698
+  with zero errors in two default and one single-thread null runs. All 698
+  readback luma/PTS rows match an independent software reference; full NV12
+  repeats across default/single-thread runs. Full replay, VPP115, ASan/UBSan/
+  leaks and normal/legacy i386 source parsing pass. Native seek/reopen preserves
+  eight retained frame PTS/SHA256 identities; owner/refcount/kernel boundaries
+  restore. [CI41259036128](https://github.com/ahnhy1324/crystalhd/actions/runs/41259036128)
+  passes 15 jobs with the unrelated packed-only job skipped. #614 is closed
+  completed. The tested local input SHA256 is
+  `e818103becb581d7022e4ffc1757e5e88a14d4054a3c29976ece46e61fef2158`;
+  exact reporter `72acf53d...` bytes and physical Atom/i386 were unavailable and
+  are not claimed.
 
 Earlier checkpoint (preserved with its original qualification):
 
@@ -92,16 +127,18 @@ hosted result must be recorded separately from earlier individual runs.
   chroma/outputPTS and per-object GPU return remain unqualified.
 - [x] Runtime manifest/provider/SONAME/interpreter preflight:17 controls and
   actual retained package/Platform file inspection pass. This existing-host
-  files-only proof does not qualify a clean OS or public installer (#539).
+  files-only proof retains completed #539 scope; clean OS/public distribution
+  remain with #607.
 - [x] GUI catalogue extraction/check/install and accessible editable-label
   relations:20 model/install tests,28 real GTK controls, private-bus recovery
   and single-instance checks pass. Korean #601 now has150 reviewed messages,
   zero fuzzy entries, installed glyph/label/save/mnemonic/focus validation.
   Actual spoken screen-reader use and additional desktops remain open (#400).
 
-1. Qualify the exact combined source and integrate only into the existing
-   experimental base; record child/final CI independently and tidy contained
-   PRs. No master/release/default promotion is implied.
+1. Keep source/package/issue checkpoints current and refresh the separate
+   master proposal #585 from the qualified experimental work. Record its final
+   proposal-head CI independently; existing experimental CI does not establish
+   that result. Master merge, tags and public release remain separate decisions.
 2. Continue original-client interlaced/Bob natural-EOF/field-content and actual
    per-object return work (#445/#429/#436/#477/#538). Current progressive RGB
    checkpoints do not prove those cases. Fix demonstrated own faults only.

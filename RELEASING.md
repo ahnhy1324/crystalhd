@@ -52,9 +52,35 @@ boundaries and current status are in
 ## Private v1.3 candidate preparation
 
 Development remains `1.3.0-dev.1`; a local review candidate is not a published RC
-or stable release. Work continues through reproducible source/add-on packaging
-and actual installation/removal/rollback validation. Master merge, tags, public
-uploads and default-backend promotion are separate maintainer decisions.
+or stable release. The private source/UI packaging checkpoint below has completed
+reproducible packaging and compatible-host private-staging install/remove/reinstall
+validation. Master merge, tags, public uploads and default-backend promotion are
+separate maintainer decisions.
+
+The latest qualified private checkpoint is source
+`c48fe3a12d4f0443dc444df27c0b6c35be2b3ced`, including the own VA sync-binding
+and bounded H.264 admission repairs in #613/#615. Experimental merge
+`1b17fd9ec1128c56bb55fef1dd79cf1865de3d10` has the same tree
+`32c5b89104fd7b9641c0039760894baa3b926ead`.
+[CI41259036128](https://github.com/ahnhy1324/crystalhd/actions/runs/41259036128)
+passes 15 jobs with the intended standalone packed-scaler job skipped. The
+[scoped package and runtime receipt](tests/fixtures/issue510/v13-private-admission-qualification-20261101.json)
+records the exact artifact identities and subsequent qualification:
+
+| Private artifact | SHA-256 |
+| --- | --- |
+| `crystalhd-1.3.0-dev.1-c48fe3a12d4f.tar.gz` | `26ce5a6ec4fafa34b95ece71a9f2cc219c10c1cbb1c99e1d1d16f0ff9d9906cb` |
+| `script.crystalhd.settings-0.1.0.zip` | `1712f28d006a3e22a6c3601200a00b6912f720c262847605bc18e06f0be9001a` |
+
+All four generated files reproduce byte-for-byte. The fresh Git-free source
+archive builds VA/DIL binaries identical to the hardware-tested checkout and
+passes full replay, real DRM import, provenance and user-configuration-preserving
+staged install/remove/repeated-remove/reinstall checks. Qualification is pinned to this
+source and these bytes; subsequent documentation does not rewrite the frozen
+packages or qualify another archive. Existing T8100/BCM70015/Intel965 x86_64
+evidence does not supply independently clean OS, physical Atom/i386 or BCM70012
+acceptance. Earlier ce4cab1/c488f01 artifacts and their original results remain
+frozen.
 
 Use the experimental integration branch combining maintenance/Xv and MPEG-1.
 Do not substitute one child's CI for the combined source. Keep native-driver
