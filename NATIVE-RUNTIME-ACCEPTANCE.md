@@ -130,6 +130,93 @@ H.264/NV12/PTS checks for50 frames. Neither result supplies new native Kodi,
 hardware/A/V or independently booted clean-OS acceptance. `PUBLIC_NOT_READY`
 remains in force.
 
+## Native host prerequisites
+
+`scripts/native-runtime-host-preflight.py` reads bounded sysfs identity fields
+and device filesystem metadata. It never opens a device, issues an ioctl or
+changes a module. A candidate needs a real character `videoN` node with the
+sysfs major/minor and a matching CrystalHD PCI driver/module association.
+Module version strings and node presence do not qualify QUERYCAP, M2M,
+STREAMING, EXPBUF, ABI, decoding or Kodi playback.
+
+The old native activation receipt used temporary module `3.10.14`, srcversion
+`E3D1535AB4C470BC21D6E32`. Check those explicit expectations with:
+
+```sh
+python3 -B scripts/native-runtime-host-preflight.py \
+  --expected-module-version 3.10.14 \
+  --expected-module-srcversion E3D1535AB4C470BC21D6E32
+make runtime-host-preflight-check
+```
+
+Exit2 means blocked prerequisites; exit0 means only
+`PREREQUISITES_PRESENT_UNVERIFIED`. `PUBLIC_NOT_READY` and native Kodi/ABI/A-V/
+hardware acceptance remain unqualified in either case. Alternate roots are
+declared offline/test inputs, not authentication of a live target.
+
+The current loaded stable module `3.10.13/F76E163690F147B91495DDD` exposes
+`/dev/crystalhd` but no native video node. The stable V4L2 frontend registers
+parent lifetime only; the separate native research implementation registers
+the decoding video node. The unchanged FFmpeg implementation requires the
+video-node file operations and V4L2 ioctls. A setting or filesystem node cannot
+supply missing kernel behavior. Native playback is therefore blocked under
+the preserved module configuration; this observation is not a new native
+decode failure or evidence that the neutral FFmpeg package is defective.
+
+## Private source and build-materials companion
+
+`scripts/native-runtime-materials.py` exports exact regular Git blobs and
+executable modes from an explicitly pinned clean commit. It combines these
+with pinned package metadata/notices and individually selected recipe,
+configuration, toolchain or acquisition files. It reads the selected inputs;
+it does not build external code, execute a recipe or change the checkout.
+The binary archive is SHA-pinned separately and is not embedded.
+
+The reviewed materials spec has schema1 and a `materials` array. Each entry
+contains an absolute input `path`, an `archive_path` under `materials/`, its
+`sha256` and a `role`. Recipe and configuration roles are required. Keep pins
+from the reviewed producer/input inventory rather than deriving replacements
+from a failed target. The output must be a new directory outside the source
+and binary package roots:
+
+```sh
+python3 -B scripts/native-runtime-materials.py \
+  --source-checkout "$source_checkout" --source-revision "$source_commit" \
+  --package-root "$package_stage" --package-archive "$runtime_archive" \
+  --expected-archive-sha256 "$archive_pin" \
+  --expected-files-sha256 "$files_pin" \
+  --expected-dependencies-sha256 "$dependencies_pin" \
+  --expected-provenance-sha256 "$provenance_pin" \
+  --materials-spec "$reviewed_spec" \
+  --expected-materials-spec-sha256 "$spec_pin" --output-dir "$new_output"
+make runtime-materials-check
+```
+
+Outputs are `source-materials.tar` (uncompressed USTAR),
+`materials-manifest.json` and `SHA256SUMS`. Local input paths and mtimes do not
+define archive member identity. Historical configuration/log bytes may still
+contain their original paths. No `.git`, untracked/ignored files or runtime
+binary archive is exported. The retained own recipe expects an exact Git
+checkout; the exported source snapshot has no Git metadata and is not a
+drop-in checkout for that helper.
+
+This is reproducible packaging of selected source/material bytes. It does not
+establish reproducible compilation, attestation that the old binaries came
+from those inputs, dependency-source completeness, redistribution review,
+maintenance ownership or runtime acceptance. Frozen package provenance is
+copied unchanged, including its original source-archive declaration. A separate
+companion does not silently rewrite that historical declaration.
+`PUBLIC_NOT_READY` remains in force.
+
+The [current execution receipt](tests/fixtures/issue607/source-materials-20261101.json)
+records14 host-observer controls and25 source/material controls. Actual default
+and explicitly pinned host observations both block the missing native video
+node. Two private exports contain all10,480 source blobs /91,065,090 source
+bytes; all three output files are byte-identical. The uncompressed companion
+archive is100,249,600 bytes. Independent Git-blob/mode and complete TAR/manifest
+checks cover every source/member. This is source/material packaging evidence,
+not new native playback or reproducible-compilation qualification.
+
 ## Reuse the implemented package and runtime checks
 
 The current repository also carries the three metadata/software observer
@@ -284,8 +371,8 @@ FFmpeg binary.
 | D0 official package selection | Reuse #545's `ffmpeg-hwconfig-probe.py` for a directly linked Kodi ELF and its exact FFmpeg closure; require `--require-kodi-drm-prime`. The embedded probe applies reviewed Kodi21/22 policies to exact main-image identities. | Ubuntu/Debian sid tested metadata negatives are retained. The source-bound Flathub stable21.3 embedded result is a completed zero-config metadata negative; its old DSO-probe exit2 remains an unsupported-inspection result. Ubuntu has no supplied Kodi i386 package in the recorded inventory. |
 | D3 complete first-user burden | On the selected fresh target, record exact commands, network bytes, installed/temporary/peak disk, peak RSS, elapsed/user CPU, prerequisites, update and rollback work; separate observer tools from user dependencies. | Cached current-host install/update/rollback/remove costs and process RSS are recorded separately above. Prior configure/build/stage17.88 minutes excludes fetch/tool setup; peak build RAM is unknown. Full acquisition and Kodi/Platform/GL/driver/source setup remain unmeasured. |
 | D4 independent clean-target acceptance | Run the pinned-manifest/ELF/provider helper against a genuinely independent clean target if one becomes available. Record any narrower clean-userspace proof under its actual scope. | Existing compatible-host, compilerless-namespace, software-CLI and FILES_ONLY results do not establish a clean OS or another native Kodi target. Current equipment remains T8100/BCM70015/Intel965 x86_64; no Atom/BCM70012 is connected. |
-| D4 each proposed new package | Pin original Kodi/App/Platform/GL/own-driver identities; qualify activation without a compiler, decoder selection, source-qualified no-drift A/V logs, pixels/PTS, EOS/reopen, pause/seek/Stop, ABI/provider behavior, removal/fallback/re-extraction and resource boundaries. | Existing same-host proof is complete only in its stated scope. A new binary/package cannot inherit those results; calibrated physical lip-sync is not an additional synchronization gate. |
-| D5 redistribution/maintenance | Neutral build paths and reproducible build recipe, corresponding-source/component/dependency notices, exact CPU/ABI support, update/security owner and explicit distribution decision. | Core2/x86_64 only; existing `atan2f@GLIBC_2.43` requirement; legacy private-prefix package and separate retained neutral-prefix build/software evidence; reproducible compilation and corresponding native-runtime source archive remain unverified, maintenance owner unassigned. **PUBLIC_NOT_READY**. |
+| D4 each proposed new package | Pin original Kodi/App/Platform/GL/own-driver identities; qualify activation without a compiler, decoder selection, source-qualified no-drift A/V logs, pixels/PTS, EOS/reopen, pause/seek/Stop, ABI/provider behavior, removal/fallback/re-extraction and resource boundaries. | Current stable module lacks the native decoding node; the read-only host observer records that blocked prerequisite. Existing same-host native proof used a separate temporary module and is not inherited by a new package. Calibrated physical lip-sync is not an additional synchronization gate. |
+| D5 redistribution/maintenance | Neutral build paths and reproducible build recipe, corresponding-source/component/dependency notices, exact CPU/ABI support, update/security owner and explicit distribution decision. | Private source/build-materials companion packaging is complete. Core2/x86_64 and recorded `atan2f@GLIBC_2.43` remain; reproducible compilation, historical binary/source attestation, dependency-source/notices sufficiency and maintenance ownership remain unverified/unassigned. **PUBLIC_NOT_READY**. |
 | Minimum credible compatibility plan | Document selection metadata, real EXPBUF/AVDRM descriptors and FD/context/consumer lifetime requirements from existing published implementations. | Advertisement-only own-driver/device changes cannot create missing FFmpeg selection metadata. The minimum compatibility plan above documents these published selection/delivery/lifetime requirements. External Kodi/FFmpeg edits are outside scope; an upstreamable minimum patch remains unproved and is not required to record the package gap. |
 
 The private runtime is a minimal configured subset, not a drop-in FFmpeg

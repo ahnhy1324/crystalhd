@@ -326,7 +326,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv tests/maintenance-oracl
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
 	sh tests/phase1-release-gate.sh manifest-check tests/maintenance-oracle.tsv
 
-check: kodi-settings-check candidate-package-check runtime-preflight-check runtime-slots-check kodi-package-check runtime-install-check kodi-compat-check ffmpeg-compat-check native-picture-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
+check: kodi-settings-check candidate-package-check runtime-preflight-check runtime-slots-check runtime-host-preflight-check runtime-materials-check kodi-package-check runtime-install-check kodi-compat-check ffmpeg-compat-check native-picture-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check
@@ -528,9 +528,15 @@ runtime-preflight-check:
 	$(PYTHON3) -B tests/native-runtime-preflight.test.py
 
 # Private package file transactions and trusted-package metadata, device-free.
-.PHONY: runtime-slots-check kodi-package-check
+.PHONY: runtime-slots-check runtime-host-preflight-check runtime-materials-check kodi-package-check
 runtime-slots-check:
 	$(PYTHON3) -B tests/native-runtime-slots.test.py
+
+runtime-host-preflight-check:
+	$(PYTHON3) -B tests/native-runtime-host-preflight.test.py
+
+runtime-materials-check:
+	$(PYTHON3) -B tests/native-runtime-materials.test.py
 
 kodi-package-check:
 	$(MAKE) -C tools/kodi-route-probe check CC="$(CC)" PYTHON3="$(PYTHON3)"

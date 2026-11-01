@@ -79,6 +79,16 @@ runtime/clean-target work remains in #607. Earlier candidate files stay frozen.
   reproducible-build/maintenance decision. **PUBLIC_NOT_READY**; the new
   files/software proof does not replace the frozen source/UI qualification.
 
+- [x] Add a read-only native host prerequisite observer: current loaded stable
+  module3.10.13 has no native decoding video node; explicit old-module identity
+  expectations also fail. Fourteen controls preserve device-lstat/sysfs-only
+  observation and positive results remain unverified.
+- [x] Package the exact12cc1f42 source and selected retained build materials as
+  a private companion bound to the neutral binary archive and metadata pins.
+  Two exports reproduce all three files; independent checks cover all10,480
+  Git blobs and complete TAR inventory. Twenty-five controls pass. No external
+  build/code edits or native hardware run. [Scoped receipt](tests/fixtures/issue607/source-materials-20261101.json).
+
 ### Stability follow-up — 2026-11-01
 
 - [x] Reject a ready replacement surface after a waiting VA sync releases the

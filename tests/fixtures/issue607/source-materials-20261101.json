@@ -1,0 +1,434 @@
+{
+  "schema": 1,
+  "date": "2026-11-01",
+  "issue": 607,
+  "status": "PASS_PRIVATE_SOURCE_MATERIAL_PACKAGING_NATIVE_PREREQUISITES_BLOCKED",
+  "parent_source": "3c6e148b9bd2b25e34e0d354d86263917e4e345e",
+  "own_source_sha256": {
+    "scripts/native-runtime-host-preflight.py": "247ddf2f9c99faab0c6251afedd869ec45b4c0f6ac04fda6dfeae029af554d5e",
+    "scripts/native-runtime-materials.py": "6adbdec9401e75a755b77d4e2e7c716d34d20d7369e2a666a531a6b8d014ef48",
+    "tests/native-runtime-host-preflight.test.py": "1a39e79da6b9c266fe0c24ac5016cc24e97bf5acdc7e5e3d6a060db6363fbe5a",
+    "tests/native-runtime-materials.test.py": "38a7da431e3670d717ccb5084c3c16b59385697c8dca5d5449d81fa2df1a6f55"
+  },
+  "local_controls": {
+    "native_host_observer": 14,
+    "source_material_exporter": 25,
+    "final_source_unchanged_during_controls_and_actual_runs": true,
+    "ci_plan": 30,
+    "configuration_inventory_surfaces": 40,
+    "configuration_schema": 16,
+    "configuration_canonical_keys": 21
+  },
+  "actual_host_observations": {
+    "default": {
+      "blocking_reasons": [
+        "[Errno 2] No such file or directory: '/sys/class/video4linux'",
+        "no structurally matching crystalhd PCI video node"
+      ],
+      "candidate_video_nodes": [],
+      "device_access": "Filesystem metadata only; no device open or ioctl.",
+      "expected_module": {
+        "srcversion": null,
+        "version": null
+      },
+      "loaded_module": {
+        "present": true,
+        "srcversion": "F76E163690F147B91495DDD",
+        "version": "3.10.13"
+      },
+      "module_identity_pin_state": "UNPINNED",
+      "module_strings_are_ABI_authentication": false,
+      "public_distribution_status": "PUBLIC_NOT_READY",
+      "roots": {
+        "dev": "/dev",
+        "sysfs": "/sys"
+      },
+      "runtime_acceptance": {
+        "ABI": "NOT_RUN",
+        "A_V": "NOT_RUN",
+        "hardware_decode": "NOT_RUN",
+        "native_Kodi": "NOT_RUN"
+      },
+      "schema": 1,
+      "scope": "Read-only structural prerequisites, not native-runtime, ABI, ownership, display, A/V or public-distribution acceptance.",
+      "selected_roots_are_authenticated": false,
+      "status": "BLOCKED_NATIVE_RUNTIME_PREREQUISITES",
+      "video_entries": []
+    },
+    "explicit_retained_module_expectations": {
+      "blocking_reasons": [
+        "observed module version differs from expected value",
+        "observed module srcversion differs from expected value",
+        "[Errno 2] No such file or directory: '/sys/class/video4linux'",
+        "no structurally matching crystalhd PCI video node"
+      ],
+      "candidate_video_nodes": [],
+      "device_access": "Filesystem metadata only; no device open or ioctl.",
+      "expected_module": {
+        "srcversion": "E3D1535AB4C470BC21D6E32",
+        "version": "3.10.14"
+      },
+      "loaded_module": {
+        "present": true,
+        "srcversion": "F76E163690F147B91495DDD",
+        "version": "3.10.13"
+      },
+      "module_identity_pin_state": "EXPLICIT_EXPECTATIONS",
+      "module_strings_are_ABI_authentication": false,
+      "public_distribution_status": "PUBLIC_NOT_READY",
+      "roots": {
+        "dev": "/dev",
+        "sysfs": "/sys"
+      },
+      "runtime_acceptance": {
+        "ABI": "NOT_RUN",
+        "A_V": "NOT_RUN",
+        "hardware_decode": "NOT_RUN",
+        "native_Kodi": "NOT_RUN"
+      },
+      "schema": 1,
+      "scope": "Read-only structural prerequisites, not native-runtime, ABI, ownership, display, A/V or public-distribution acceptance.",
+      "selected_roots_are_authenticated": false,
+      "status": "BLOCKED_NATIVE_RUNTIME_PREREQUISITES",
+      "video_entries": []
+    },
+    "scope": "sysfs regular text plus node filesystem metadata only; no device opens/ioctls or media execution"
+  },
+  "native_source_prerequisite_evidence": [
+    {
+      "source_revision": "3c6e148b9bd2b25e34e0d354d86263917e4e345e",
+      "path": "driver/linux/Kbuild",
+      "sha256": "238936ad7db28db7ad576662475905111eed698af23d7f8566228cb843784547",
+      "selected_lines": [
+        48
+      ]
+    },
+    {
+      "source_revision": "3c6e148b9bd2b25e34e0d354d86263917e4e345e",
+      "path": "driver/linux/crystalhd_v4l2.h",
+      "sha256": "3bf1c95b06875a040fedf85e62e2836b0e0c18043a60e9bfdb3061c1aeaaca98",
+      "selected_lines": [
+        12,
+        26
+      ]
+    },
+    {
+      "source_revision": "3c6e148b9bd2b25e34e0d354d86263917e4e345e",
+      "path": "driver/linux/crystalhd_v4l2.c",
+      "sha256": "af539e13d9a289f22e94c93e32fae8d39ff4d11db79a684cae85a20625f46818",
+      "selected_lines": [
+        318
+      ]
+    },
+    {
+      "source_revision": "3c6e148b9bd2b25e34e0d354d86263917e4e345e",
+      "path": "driver/linux/crystalhd_lnx.c",
+      "sha256": "75ab6321f3eeb8bfd537ac47751108dc1495f0af93a96064190246df301bb2b8",
+      "selected_lines": [
+        36,
+        42
+      ]
+    },
+    {
+      "source_revision": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+      "path": "driver/linux/crystalhd_v4l2_node.c",
+      "sha256": "a504bcab1fb1132ab329ede09832266ab539a6751220912fe0e28fa68a65a69f",
+      "selected_lines": [
+        1705,
+        1770
+      ]
+    },
+    {
+      "source_revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+      "path": "libavcodec/v4l2_m2m.c",
+      "sha256": "432ba09f9dcc96676dace8c8a24fb0572d676bad5dafbe9647ab264148e83607",
+      "selected_lines": [
+        52,
+        64,
+        88
+      ]
+    },
+    {
+      "source_revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+      "path": "libavcodec/v4l2_buffers.c",
+      "sha256": "751d97d714bb19c9b8ce2479c29f2ff8fd5b948512e166587af3af91cd94199f",
+      "selected_lines": [
+        602
+      ]
+    }
+  ],
+  "native_conclusion": "Current observed stable module has no decoding video node. Retained FFmpeg needs a real M2M/STREAMING/EXPBUF-capable node; filesystem nodes/settings cannot supply missing kernel file operations. Native Kodi EOS/reopen/A-V remains NOT_RUN under this configuration.",
+  "neutral_package_files_preflight": {
+    "status": "PASS_PINNED_TARGET_FILES_ONLY",
+    "public_distribution_status": "PUBLIC_NOT_READY"
+  },
+  "binary_package_archive": {
+    "bytes": 8017920,
+    "sha256": "dc3d88bdeac5dc45a4f52800e1c653dcb35fcd73c14c158460974083f872c020"
+  },
+  "package_metadata_sha256": {
+    "dependencies": "dfbff250c9cd61dfc83beba99bffab30e2d7c2a3af0e3785d021d964feed6b02",
+    "files": "aee1eba5bc5d54bf54b6499ad3ffdb94ee8bd89015953c800804ce44e889c11d",
+    "provenance": "7ffd06ad3b22fbf19ae5c4088f5c3d6418ed8dcaca1365957d4cd369d4ea781f"
+  },
+  "external_source": {
+    "revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "tree": "10bdcda36b5c1b96cce93bfe5571c97e2b2a7cef",
+    "files": 10480,
+    "bytes": 91065090,
+    "selection": "EXACT_COMMIT_REGULAR_BLOBS_ONLY",
+    "tracked_source_files_modified": false
+  },
+  "selected_materials": [
+    {
+      "bytes": 26517,
+      "path": "materials/notices/COPYING.LGPLv2.1",
+      "role": "notice",
+      "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30"
+    },
+    {
+      "bytes": 4346,
+      "path": "materials/notices/LICENSE.md",
+      "role": "notice",
+      "sha256": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af"
+    },
+    {
+      "bytes": 736,
+      "path": "materials/notices/NOTICE",
+      "role": "notice",
+      "sha256": "15557b235752aeb36eb32e82bfbce34dedf1d8697b0490b7386d7c8110ee7eb5"
+    },
+    {
+      "bytes": 3389,
+      "path": "materials/notices/jfdctfst.c.notice",
+      "role": "notice",
+      "sha256": "9608a1781393c906ac6254ee965f19a599608428eaf84efdd8c7ba198f14e877"
+    },
+    {
+      "bytes": 2937,
+      "path": "materials/notices/jfdctint_template.c.notice",
+      "role": "notice",
+      "sha256": "7469382cb23a47a033113c2c00d8e02e5071d76cb420d804f078527a906da679"
+    },
+    {
+      "bytes": 3035,
+      "path": "materials/notices/jrevdct.c.notice",
+      "role": "notice",
+      "sha256": "c5d96aa8ff9e78b9214a1bec3d2dd5d65e3196eae08fa7c6ba7466a5a793ba0f"
+    },
+    {
+      "bytes": 2224,
+      "path": "materials/recipe/COMPANION-SCOPE.txt",
+      "role": "acquisition",
+      "sha256": "e5057ceabeba06a7435da2c4c5e1649106ef3e1ccc5715faa868811f1a38718f"
+    },
+    {
+      "bytes": 3437,
+      "path": "materials/recipe/build-native-ffmpeg.sh",
+      "role": "recipe",
+      "sha256": "32db3e781ee4911a5b87c04af3c46d90d3e6d1ac62b31bed6d62fd7c73aa18df"
+    },
+    {
+      "bytes": 605,
+      "path": "materials/recipe/recipe-identity.json",
+      "role": "acquisition",
+      "sha256": "d3f372e97e55bea9ff5f9cf7b2dc58514a8696656d2aadb0336a5808081c1609"
+    },
+    {
+      "bytes": 58229,
+      "path": "materials/retained-neutral/build.log",
+      "role": "toolchain",
+      "sha256": "861cf70d6ed844c3ead5641fa1abb6c471db439bf65b7261e0b447d356e460d4"
+    },
+    {
+      "bytes": 25018,
+      "path": "materials/retained-neutral/build/config.h",
+      "role": "configuration",
+      "sha256": "025ba77c240aeffed1c51ffbd75d6944ddcfc96b45bbbc9c1eac483080406233"
+    },
+    {
+      "bytes": 534065,
+      "path": "materials/retained-neutral/build/ffbuild/config.log",
+      "role": "configuration",
+      "sha256": "c547d4fad0c1416151c81689d70e103c5e0fb57667b31fb333b49395ef8024dc"
+    },
+    {
+      "bytes": 89864,
+      "path": "materials/retained-neutral/build/ffbuild/config.mak",
+      "role": "configuration",
+      "sha256": "5146c5fe3e4bc34f3cdd0ead48a80886183683035c475bf723517fd266e8af4d"
+    },
+    {
+      "bytes": 782,
+      "path": "materials/retained-neutral/build/ffbuild/config.sh",
+      "role": "configuration",
+      "sha256": "dfb8dac8ac777f3b067a8fa5d2c5fe358fbcc8e54ed671e4b4803c0d7ccdb93d"
+    }
+  ],
+  "material_selection_sha256": "995af74607e647da2be7a49b7194f1289e6d62148033f54539be6f21b5a14309",
+  "private_artifacts": [
+    {
+      "name": "source-materials.tar",
+      "bytes": 100249600,
+      "sha256": "808f3c2dc43fd283bd342f16bf7006e81d44f771eec4c7ffe6900b8b87524c2a"
+    },
+    {
+      "name": "materials-manifest.json",
+      "bytes": 2248958,
+      "sha256": "6ad53ea948e976a6b7b0117424082ee306a6a98c5a4c7256a72e00b9233ad24b"
+    },
+    {
+      "name": "SHA256SUMS",
+      "bytes": 177,
+      "sha256": "4087c4ee97359230b16ea824f31d0cb34adaafbbb54d6a8ae955b7fc131e8a76"
+    }
+  ],
+  "all_three_output_files_byte_identical": true,
+  "independent_complete_verification": {
+    "status": "PASS_INDEPENDENT_FULL_GIT_BLOB_AND_TAR_INVENTORY",
+    "source_git_revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "source_tree": "10bdcda36b5c1b96cce93bfe5571c97e2b2a7cef",
+    "source_files": 10480,
+    "source_bytes": 91065090,
+    "all_members": 10503,
+    "member_roles": {
+      "source": 10480,
+      "notice": 6,
+      "acquisition": 2,
+      "recipe": 1,
+      "toolchain": 1,
+      "configuration": 4,
+      "package-metadata": 3,
+      "package-notice": 6
+    },
+    "every_source_blob_SHA1_and_mode_matches_Git": true,
+    "every_member_SHA256_size_mode_matches_companion_manifest": true,
+    "binary_archive_metadata_bytes_match_independent_pins": [
+      "metadata/files.json",
+      "metadata/dependencies.json",
+      "metadata/provenance.json"
+    ],
+    "source_checkout_remains_clean": true,
+    "device_or_media_execution": false,
+    "compiler_recipe_executed": false,
+    "reproducible_compilation": "NOT_VERIFIED",
+    "public_distribution_status": "PUBLIC_NOT_READY"
+  },
+  "cost_records": [
+    {
+      "name": "host-default",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "status": "BLOCKED_NATIVE_RUNTIME_PREREQUISITES",
+      "wall_seconds_including_time_wrapper": 0.11908438499085605,
+      "command_maxrss_KiB": 15972,
+      "user_seconds": 0.09,
+      "system_seconds": 0.02,
+      "RSS_scope": "GNU time command/child high-water; not summed process-tree or unique physical RAM."
+    },
+    {
+      "name": "host-pinned",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "status": "BLOCKED_NATIVE_RUNTIME_PREREQUISITES",
+      "wall_seconds_including_time_wrapper": 0.11836849100654945,
+      "command_maxrss_KiB": 16004,
+      "user_seconds": 0.08,
+      "system_seconds": 0.02,
+      "RSS_scope": "GNU time command/child high-water; not summed process-tree or unique physical RAM."
+    },
+    {
+      "name": "neutral-files-preflight",
+      "expected_exit": 0,
+      "actual_exit": 0,
+      "status": "PASS_PINNED_TARGET_FILES_ONLY",
+      "wall_seconds_including_time_wrapper": 0.2554225019994192,
+      "command_maxrss_KiB": 23288,
+      "user_seconds": 0.22,
+      "system_seconds": 0.03,
+      "RSS_scope": "GNU time command/child high-water; not summed process-tree or unique physical RAM."
+    },
+    {
+      "name": "materials-a",
+      "expected_exit": 0,
+      "actual_exit": 0,
+      "status": "PASS_PINNED_MATERIAL_EXPORT_ONLY",
+      "wall_seconds_including_time_wrapper": 8.164239106001332,
+      "command_maxrss_KiB": 41080,
+      "user_seconds": 7.18,
+      "system_seconds": 1.02,
+      "RSS_scope": "GNU time command/child high-water; not summed process-tree or unique physical RAM."
+    },
+    {
+      "name": "materials-b",
+      "expected_exit": 0,
+      "actual_exit": 0,
+      "status": "PASS_PINNED_MATERIAL_EXPORT_ONLY",
+      "wall_seconds_including_time_wrapper": 7.766133190016262,
+      "command_maxrss_KiB": 41000,
+      "user_seconds": 6.82,
+      "system_seconds": 1.01,
+      "RSS_scope": "GNU time command/child high-water; not summed process-tree or unique physical RAM."
+    }
+  ],
+  "cost_scope": "Cached source/material packaging commands. No acquisition/download, prior compilation/build RAM, target/Kodi/GL setup or unique physical-memory measurement.",
+  "qualifications": {
+    "source_correspondence_to_binary": "UNVERIFIED",
+    "redistribution_corresponding_source_sufficiency": "UNVERIFIED",
+    "reproducible_compilation": "NOT_VERIFIED",
+    "historical_recipe_execution": "NOT_RUN",
+    "original_package_declarations": "COPIED_UNCHANGED",
+    "binary_archive_metadata_binding": "REVIEWED_INPUT_PINS_NOT_ARCHIVE_CONTENT_INSPECTION",
+    "dependency_source_and_notice_coverage": "NOT_REVIEWED",
+    "minimum_CPU_and_general_ABI_qualification": "NOT_RUN",
+    "clean_OS_Kodi_hardware_media_qualification": "NOT_RUN",
+    "update_maintenance_owner": "UNASSIGNED"
+  },
+  "boundaries": {
+    "new_external_build": false,
+    "external_source_or_binary_edits": false,
+    "native_device_or_media_execution": false,
+    "module_unload_swap_reset_or_configuration_change": false,
+    "master_merge_tag_release_binary_upload": false,
+    "public_distribution_status": "PUBLIC_NOT_READY",
+    "frozen_source_UI_checkpoint": "c48fe3a12d4f0443dc444df27c0b6c35be2b3ced unchanged",
+    "excluded_issue538_heap_subtask": "Unchanged; not investigated or reproduced"
+  },
+  "private_evidence_root_label": "crystalhd-issue607-native-run-20261101",
+  "private_evidence_sha256": {
+    "acceptance.py": "f7204c09cbd52a446202f6f41007d0ad94aabb7e53d1fe680315a5a1c577cfd1",
+    "acceptance.json": "8bd229ec49de837a5ebb24fd82d12f3441c367646e82a6c98482ec12d2673f68",
+    "controls-initial.log": "814959cc1f3fe6328f2b9b2864fe5ac4084ec4229039c314345582ec87491e96",
+    "controls-initial.json": "9af919d3d3e9d597524aeec516c8d4032a1f215d26d0f0c26d6aa62ed251f1b4",
+    "controls-materials-final.log": "f876b87c78d3d8dbf028bc3eae107e60ceb2d310cb2e917cc1166a107a909f2c",
+    "controls-materials-final.json": "4719fd0bd2010b0056040ddfe49ee8a54b230194f0a669d4dbc8719818160871",
+    "host-default.json": "b13d9f868ccc8141249f2afa8e603733e768c1fe6b5a7fd3b910da342e126f94",
+    "host-pinned.json": "2ef85107dd4eda8627c8355805dcf1058fd26b0782f53f3e6599f4d5ac68dc1f",
+    "neutral-files-preflight.json": "a94bd361798c382c36e7f85887be3aca43d4a4da4c1092d6b1dfc78d04ecf185",
+    "native-initial-observation.json": "55cb9237795b271fb4b0b2820b6ddda4738d3e0e07304f50b2cab95f1831de11",
+    "native-prerequisite-source-proof.json": "947188b813776c5c484d55046ab5688d27d0c5e5f5ab929f0aee465aac620ce9",
+    "materials-spec.json": "1cc7e9ce273513327e904595e0585bcce52fc9eec2afddc45b908de442594898",
+    "materials-spec-review.json": "76d14436122e60c05d3dc5bed5d103ac8d7f2b6e7bd768054e0143c17fe8ef48",
+    "independent-source-verification.json": "8dd4385cc400d73ba0eb9bcc73220b385784d2b8bdf9e94d4bb3bf62f60acecb",
+    "materials-a.json": "e67999d94a3e3859eb051051bec8080ba505957ff63bea7b8eefc47ddfdc7e08",
+    "materials-a.time": "edc3f1bba073d56d530769b91a01554a47b0d002f9b724e15a4c3bf41e460b0d",
+    "materials-a-command.json": "e31b98a3e0f23e1a583017d5a29367d960353311d76d21872fe0f5a3e1792cb9",
+    "materials-b.json": "e67999d94a3e3859eb051051bec8080ba505957ff63bea7b8eefc47ddfdc7e08",
+    "materials-b.time": "b2ae032fa08211bd135678360cd32a89a3c4dfc6fc460df2cbbc0865a55aa538",
+    "materials-b-command.json": "99cf5b4a3f9aa6e145ca92ccda00973ccdfb3d75e3e4c7b859336504fca50357",
+    "export-a/materials-manifest.json": "6ad53ea948e976a6b7b0117424082ee306a6a98c5a4c7256a72e00b9233ad24b",
+    "export-a/SHA256SUMS": "4087c4ee97359230b16ea824f31d0cb34adaafbbb54d6a8ae955b7fc131e8a76",
+    "export-b/materials-manifest.json": "6ad53ea948e976a6b7b0117424082ee306a6a98c5a4c7256a72e00b9233ad24b",
+    "export-b/SHA256SUMS": "4087c4ee97359230b16ea824f31d0cb34adaafbbb54d6a8ae955b7fc131e8a76",
+    "contracts-final.json": "31bf780363ca862c420713a798f2bbce93751b595c545764ae2ad28a99c0ebfb",
+    "contracts-final.log": "b0ad2e3d72fe34f715943ae5b15932d0e8225e43663c7ee7a7dcc8b9bdf96c1f",
+    "preservation-before-commit.json": "47fe5c4cc137f8f73aed5edf4496f4cfdb2c1ff373467a62a3ea2b1c4a807654"
+  },
+  "remaining": [
+    "Complete first-user acquisition/setup and historical build peak RAM",
+    "Independent booted clean OS",
+    "New package native Kodi/ABI/A-V/EOS/reopen under a qualified native module",
+    "Historical binary/source attestation and reproducible external compilation",
+    "Dependency-source/notices review, update owner and public distribution decision"
+  ]
+}
