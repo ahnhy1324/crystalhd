@@ -5,8 +5,9 @@ The compatible-host private installation scope of
 activate the measured native Kodi route without compiling FFmpeg at activation.
 [#607](https://github.com/ahnhy1324/crystalhd/issues/607) owns the remaining
 clean-target and public-distribution deliverables and remains **OPEN /
-PUBLIC_NOT_READY**. Independently clean OS/native Kodi acceptance and complete
-first-user burden retain their separate unqualified scopes.
+PUBLIC_NOT_READY**. Independent clean-target acceptance and complete first-user
+burden retain their separate unqualified scopes. The current-host native cases
+below have their own package, module and media boundaries.
 
 The separate private `1.3.0-dev.1` source/UI candidate has completed deterministic
 packaging, fresh Git-free build and compatible-host private-staging install/remove/reinstall at
@@ -126,9 +127,9 @@ package assembled from retained, unmodified `/usr`-prefix binaries. Nine ELF
 payload hashes differ. It covers rejected incomplete update, valid update,
 selected-prefix metadata, previous-slot rollback, repeated removal and user
 preferences preservation. The neutral package also passes independent software
-H.264/NV12/PTS checks for50 frames. Neither result supplies new native Kodi,
-hardware/A/V or independently booted clean-OS acceptance. `PUBLIC_NOT_READY`
-remains in force.
+H.264/NV12/PTS checks for50 frames. That receipt covers files/software only;
+the later native activation results below are separate. Independently booted
+clean-OS acceptance and public distribution remain unqualified.
 
 ## Native host prerequisites
 
@@ -150,18 +151,106 @@ make runtime-host-preflight-check
 ```
 
 Exit2 means blocked prerequisites; exit0 means only
-`PREREQUISITES_PRESENT_UNVERIFIED`. `PUBLIC_NOT_READY` and native Kodi/ABI/A-V/
-hardware acceptance remain unqualified in either case. Alternate roots are
-declared offline/test inputs, not authentication of a live target.
+`PREREQUISITES_PRESENT_UNVERIFIED`. Neither exit code supplies native Kodi/ABI/
+A-V/hardware acceptance; actual trials are recorded separately below.
+`PUBLIC_NOT_READY` remains in force. Alternate roots are declared offline/test
+inputs, not authentication of a live target.
 
-The current loaded stable module `3.10.13/F76E163690F147B91495DDD` exposes
+The stable baseline module `3.10.13/F76E163690F147B91495DDD` exposes
 `/dev/crystalhd` but no native video node. The stable V4L2 frontend registers
 parent lifetime only; the separate native research implementation registers
 the decoding video node. The unchanged FFmpeg implementation requires the
 video-node file operations and V4L2 ioctls. A setting or filesystem node cannot
-supply missing kernel behavior. Native playback is therefore blocked under
-the preserved module configuration; this observation is not a new native
-decode failure or evidence that the neutral FFmpeg package is defective.
+supply missing kernel behavior. This baseline observation describes that loaded
+configuration; it does not establish that native verification is impossible.
+
+An ordinary guarded idle transition to the pinned temporary native `3.10.14`
+module is allowed under [BRINGUP's idle reload procedure](BRINGUP.md#reload-an-idle-device).
+Close players and diagnostics, verify no device owners and reference count 0,
+save the exact loaded/installed module identities and options, and use normal
+unload/load operations. The temporary module supplies the observed `/dev/video0`
+native decoding node. After each bounded trial, close clients normally and
+restore the exact stable module/options and baseline device state, checking
+the restoration separately. Temporary activation does not require replacing
+installed module, firmware, Kodi or FFmpeg files. Stop if normal unloading is
+busy or fails; forced unload and killing a stuck owner for recovery remain
+prohibited. Missing-node baseline observations do not prohibit this guarded
+activation and restoration.
+
+## Current-host neutral-package native observations
+
+The retained neutral archive
+`dc3d88bdeac5dc45a4f52800e1c653dcb35fcd73c14c158460974083f872c020`
+has now been used in native Kodi trials on T8100/BCM70015/Intel965 with the
+temporary native module and subsequent stable restoration. The observed
+renderer-return census is:
+
+| Pinned media case | Source frames per play | Plays | Renderer acceptances |
+| --- | --- | --- | --- |
+| 1280x720 short EOS/reopen | 180 | 2 | 360/360 |
+| 1920x1080 short EOS/reopen | 180 | 2 | 360/360 |
+| 1280x720 long pause/reopen, original observation | 900 | 2 | 1798/1800 (900 + 898) |
+| Same long case, linked read-only diagnostic | 900 | 2 | 1799/1800 (899 + 900) |
+| Same diagnostic with verified resume progress | 900 | 2 | 1798/1800 (899 + 899) |
+
+All five cases match source-derived caller and returned PTS exactly for all
+6120 decoded frames. Full rendering still fails in each long-case pair.
+The read-only diagnostic links three newly observed missing submissions to
+`WaitForBuffer=-1`, `OutputPicture=AGAIN`, then a fresh successful `GetPicture`
+replacing the pending native picture before `AddVideoPicture`. It identifies
+that consumer call path without assigning an exclusive external defect.
+
+The comparison harness also waited at least200ms and required actual renderer
+and media-clock progress after every resume; all six progress gates passed,
+but the 899+899 census still fails. Missing resume verification was corrected
+in the own harness; the hypothesis that spacing alone repaired rendering was
+rejected. The original failures and raw traces remain preserved.
+
+All five cases selected the AAC clock. Configured source-qualified drift/stall
+checks found no matches. Audio/video renderer timeouts are retained separately
+from that log-scoped A/V result and do not resolve the frame deficit. Saved live mappings identify all six
+actually mapped FFmpeg library families as exact neutral-package files, and all seven selected runtime
+providers match the pinned Platform files. The seven-DSO package file/metadata
+closure remains a separate check from the libraries mapped by a Kodi session.
+These observations do not complete #607, D3/D5, independent clean-OS or public
+distribution acceptance. The [portable receipt](tests/fixtures/issue607/neutral-native-activation-20261101.json)
+binds package/module inputs, individual axes, diagnostic controls and exact
+stable/dependency restoration for all three sessions (maximum60°C, kernel checks0).
+
+## Offline source/caller/returned PTS oracle
+
+`tools/kodi-route-probe/native-pts-oracle.py` computes expected values from
+separately pinned source packet ticks/time_base. Its model is pinned to Kodi
+`28ea2eac1eb7af8fdcbd2672d933ce87f594be79`, following the published
+[demux conversion](https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp#L986),
+[DRM PRIME caller conversion](https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp#L406)
+and [timing constants](https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/Interface/TimingConstants.h#L12).
+It preserves binary64 operation order, then truncates to the caller's int64:
+
+```text
+seconds = double(packet_pts) * time_base.num / time_base.den
+demux_pts = seconds * 1000000.0
+caller_pts = int64(demux_pts / 1000000.0 * 1000000.0)
+```
+
+The supported domain is one H.264 video stream with nonnegative packet ticks
+and zero-origin format/stream clocks. Comparison tolerance is zero. Expected
+values come from source metadata and this pinned model; returned observations
+cannot supply their own expected values. Exact rational conversion is reported
+only as a diagnostic because it can differ from the actual binary64 caller.
+
+The offline result checks complete accepted PTS in packet order and returned
+PTS in presentation order for every cycle. Its separate `renderer_census`
+reports full, deficit, excess or unknown counts. A PTS match can coexist with a
+failed native report or renderer deficit; it does not promote either result.
+With `--require-renderer-census`, an otherwise matching PTS result exits3 for
+renderer deficit, excess or unknown; a complete census exits0. Input/PTS failure
+remains exit2. This strict count gate still supplies no pixel/scanout or whole
+runtime qualification. Actual short reports exit0 and all three failed long
+case pairs exit3. All 21 CPU controls pass, including these cases, without opening a device or executing media. Use
+`make -C tools/kodi-route-probe check-native-pts` for those controls.
+This oracle qualifies PTS comparison only, not rendered pixels, scanout, A/V,
+hardware, independent OS or distribution readiness.
 
 ## Private source and build-materials companion
 
@@ -208,10 +297,11 @@ copied unchanged, including its original source-archive declaration. A separate
 companion does not silently rewrite that historical declaration.
 `PUBLIC_NOT_READY` remains in force.
 
-The [current execution receipt](tests/fixtures/issue607/source-materials-20261101.json)
-records14 host-observer controls and25 source/material controls. Actual default
-and explicitly pinned host observations both block the missing native video
-node. Two private exports contain all10,480 source blobs /91,065,090 source
+The [source/material execution receipt](tests/fixtures/issue607/source-materials-20261101.json)
+records14 host-observer controls and25 source/material controls. Its earlier
+default and explicitly pinned observations recorded the stable baseline's
+missing native video node, before the guarded temporary activation described
+above. Two private exports contain all10,480 source blobs /91,065,090 source
 bytes; all three output files are byte-identical. The uncompressed companion
 archive is100,249,600 bytes. Independent Git-blob/mode and complete TAR/manifest
 checks cover every source/member. This is source/material packaging evidence,
@@ -371,7 +461,7 @@ FFmpeg binary.
 | D0 official package selection | Reuse #545's `ffmpeg-hwconfig-probe.py` for a directly linked Kodi ELF and its exact FFmpeg closure; require `--require-kodi-drm-prime`. The embedded probe applies reviewed Kodi21/22 policies to exact main-image identities. | Ubuntu/Debian sid tested metadata negatives are retained. The source-bound Flathub stable21.3 embedded result is a completed zero-config metadata negative; its old DSO-probe exit2 remains an unsupported-inspection result. Ubuntu has no supplied Kodi i386 package in the recorded inventory. |
 | D3 complete first-user burden | On the selected fresh target, record exact commands, network bytes, installed/temporary/peak disk, peak RSS, elapsed/user CPU, prerequisites, update and rollback work; separate observer tools from user dependencies. | Cached current-host install/update/rollback/remove costs and process RSS are recorded separately above. Prior configure/build/stage17.88 minutes excludes fetch/tool setup; peak build RAM is unknown. Full acquisition and Kodi/Platform/GL/driver/source setup remain unmeasured. |
 | D4 independent clean-target acceptance | Run the pinned-manifest/ELF/provider helper against a genuinely independent clean target if one becomes available. Record any narrower clean-userspace proof under its actual scope. | Existing compatible-host, compilerless-namespace, software-CLI and FILES_ONLY results do not establish a clean OS or another native Kodi target. Current equipment remains T8100/BCM70015/Intel965 x86_64; no Atom/BCM70012 is connected. |
-| D4 each proposed new package | Pin original Kodi/App/Platform/GL/own-driver identities; qualify activation without a compiler, decoder selection, source-qualified no-drift A/V logs, pixels/PTS, EOS/reopen, pause/seek/Stop, ABI/provider behavior, removal/fallback/re-extraction and resource boundaries. | Current stable module lacks the native decoding node; the read-only host observer records that blocked prerequisite. Existing same-host native proof used a separate temporary module and is not inherited by a new package. Calibrated physical lip-sync is not an additional synchronization gate. |
+| D4 each proposed new package | Pin original Kodi/App/Platform/GL/own-driver identities; qualify activation without a compiler, decoder selection, source-qualified no-drift A/V logs, pixels/PTS, EOS/reopen, pause/seek/Stop, ABI/provider behavior, removal/fallback/re-extraction and resource boundaries. | Guarded temporary native activation and exact stable restoration now exercise the retained neutral archive. Both short EOS/reopen cases have complete renderer counts; three long pause/reopen pairs each return1800/1800 source frames but have1798/1799/1798 renderer acceptances. Linked diagnostics identify pending-picture replacement before renderer submission; verified resume progress alone does not repair it. AAC-clock drift/stall checks are clear; paused output timeouts remain separate diagnostics. Remaining acceptance is not inherited from those scoped results; calibrated physical lip-sync is not an additional synchronization gate. |
 | D5 redistribution/maintenance | Neutral build paths and reproducible build recipe, corresponding-source/component/dependency notices, exact CPU/ABI support, update/security owner and explicit distribution decision. | Private source/build-materials companion packaging is complete. Core2/x86_64 and recorded `atan2f@GLIBC_2.43` remain; reproducible compilation, historical binary/source attestation, dependency-source/notices sufficiency and maintenance ownership remain unverified/unassigned. **PUBLIC_NOT_READY**. |
 | Minimum credible compatibility plan | Document selection metadata, real EXPBUF/AVDRM descriptors and FD/context/consumer lifetime requirements from existing published implementations. | Advertisement-only own-driver/device changes cannot create missing FFmpeg selection metadata. The minimum compatibility plan above documents these published selection/delivery/lifetime requirements. External Kodi/FFmpeg edits are outside scope; an upstreamable minimum patch remains unproved and is not required to record the package gap. |
 

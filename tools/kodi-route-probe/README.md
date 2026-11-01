@@ -1,8 +1,9 @@
-# Kodi FFmpeg metadata inspection
+# Kodi FFmpeg metadata and native PTS inspection
 
 These own diagnostic tools inspect a trusted Kodi package's FFmpeg decoder
-metadata for #607. They do not install a decoder, change backend selection, or
-qualify the private native FFmpeg runtime for distribution.
+metadata and compare source/caller/returned PTS for #607. They do not install a
+decoder, change backend selection, or qualify the private native FFmpeg runtime
+for distribution.
 
 ## Device-free checks
 
@@ -82,6 +83,76 @@ The preserved namespace/CLI observers retain bounded subprocess timeout cleanup;
 the CLI also retains forceful cleanup of an unfinished software child. An actual
 operator run must keep its own execution and restoration evidence separate.
 
-Public native-runtime distribution remains `PUBLIC_NOT_READY`. Existing VA
-fallback, system Kodi/FFmpeg files, stable modules/firmware and #538's excluded
-shutdown heap-abort subtask are unchanged.
+## Guarded native activation and current observations
+
+The stable `3.10.13` baseline provides `/dev/crystalhd`; it lacks the native
+decoding video node required by the unchanged FFmpeg implementation. The pinned
+temporary native `3.10.14` module supplies the observed `/dev/video0`. The
+baseline missing-node observation does not prohibit an ordinary guarded idle
+transition. Follow [BRINGUP](../../BRINGUP.md#reload-an-idle-device): close
+clients, verify no device owners and reference count 0, save exact module/options
+identities, use normal unload/load, and restore the exact stable baseline after
+the bounded trial. Stop on a busy or failed normal unload. Forced unloading
+and killing a stuck owner for recovery remain prohibited.
+
+The retained neutral archive has now run native Kodi 720p and 1080p short
+EOS/reopen cases, each 180 frames played twice with 360 renderer acceptances.
+The 720p long pause/reopen case returns all 1800 source frames across two plays,
+but its renderer counts are 900+898; that deficit does not receive a full-render PASS. Linked diagnostic comparisons
+return899+900 and899+899 renderer acceptances. The latter verifies renderer and
+media-clock progress after each resume, so spacing alone does not repair it.
+Read-only call linkage observes buffer-wait failure, output retry and fresh
+GetPicture replacement before renderer submission; no external source is edited. All cases use the AAC clock with clear drift/stall checks; the long case's
+paused audio-output timeout is retained separately with its video-buffer timeout. Live mappings match the exact neutral package for all six mapped
+FFmpeg families and the pinned Platform for all seven selected providers.
+The [native acceptance record](../../NATIVE-RUNTIME-ACCEPTANCE.md#current-host-neutral-package-native-observations)
+keeps those case boundaries separate from complete #607/D3/D5, independent OS
+and public-distribution acceptance.
+
+## Offline source/caller/returned PTS
+
+`native-pts-oracle.py` compares pinned source packet metadata with complete
+accepted/returned PTS sequences. It follows the published demux and DRM PRIME
+caller conversions at Kodi `28ea2eac1eb7af8fdcbd2672d933ce87f594be79`, preserving
+binary64 operation order before int64 truncation. Its domain is one H.264
+video stream with nonnegative packet ticks and zero-origin source clocks;
+comparison tolerance is zero. Expected values come from source ticks/time_base
+and the pinned primary-source model. Exact rational conversion is a diagnostic,
+and observed native PTS cannot define the expected values.
+
+The PTS verdict is separate from the native report status and the diagnostic
+`renderer_census`. Thus all 900 returned PTS can match while only 898 frames are
+accepted by the renderer. Missing renderer counts remain unknown. This offline
+tool opens no device and qualifies no rendered pixels, scanout, A/V or runtime
+acceptance. Its [model and scope](../../NATIVE-RUNTIME-ACCEPTANCE.md#offline-sourcecallerreturned-pts-oracle)
+include primary source references. All 21 CPU controls pass, including renderer
+deficit, unknown and excess cases. They run with:
+
+```sh
+make -C tools/kodi-route-probe check-native-pts
+```
+
+For a retained report, supply both JSON digests independently of the report:
+
+```sh
+python3 -B tools/kodi-route-probe/native-pts-oracle.py \
+  --source-packets "$source_packets_json" \
+  --source-packets-sha256 "$source_packets_sha256" \
+  --native-report "$native_report_json" \
+  --native-report-sha256 "$native_report_sha256" \
+  --media-sha256 "$media_sha256" \
+  --kodi-source 28ea2eac1eb7af8fdcbd2672d933ce87f594be79
+```
+
+Add `--require-renderer-census` to require a complete renderer return count.
+It exits3 on deficit, excess or unknown while preserving the independent PTS
+verdict, and exits0 on a complete count. Input/PTS failure exits2. No count gate
+qualifies physical presentation or the whole native runtime.
+
+The selected model and supplied digests identify inputs; they do not authenticate
+the Kodi binary or the FFprobe execution that produced source metadata.
+
+Public native-runtime distribution remains `PUBLIC_NOT_READY`. The VA fallback,
+system Kodi/FFmpeg and installed module/firmware files remain unchanged; temporary
+activation requires verified stable restoration. #538's excluded shutdown
+heap-abort subtask remains outside these checks.
