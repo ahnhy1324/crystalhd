@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 /* Actual element/transport code; syscall faults affect only this test process. */
+/* Device-free groups run independently from the explicit check-x11 target. */
 #define _GNU_SOURCE
 #include <gst/gst.h>
 #include <gst/app/gstappsrc.h>
