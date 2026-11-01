@@ -13,6 +13,7 @@ static void TestTerminalPromotionTurn(std::unique_lock<std::mutex> &lock);
 #define CRYSTALHD_VAAPI_TEST_LIBRARY_CAPABILITIES 1
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
 #include <cstdlib>
+#include <exception>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -6119,6 +6120,339 @@ static void DrainExactReadyEos(TeardownFixture &fixture) {
               !fixture.decoder->ReplaySealed() && fixture.io.outputs.empty() &&
               std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1,
           "explicit receive drains the actual EOS marker before a later lifecycle transition");
+}
+
+struct H264AdmissionFixture : TeardownFixture {
+  explicit H264AdmissionFixture(size_t pictures = 2,
+                                size_t bytes = 1024 * 1024)
+      : TeardownFixture(0) {
+    driver.StopWorkers();
+    driver.stopping = false;
+    decoder->id = decoder->config = 1;
+    decoder->profile = VAProfileH264Main;
+    decoder->height = io.output_height = 32;
+    decoder->live_h264 = true;
+    decoder->live_h264_fast_path = decoder->live_h264_gap_tolerant = false;
+    decoder->auto_h264_prefeed = false;
+    CrystalHDDecodeReplay::Limits limits;
+    limits.pictures = pictures;
+    limits.cache_bytes = bytes;
+    decoder->replay = CrystalHDDecodeReplay(limits, true);
+    driver.configs[1] = {VAProfileH264Main, VAEntrypointVLD};
+  }
+
+  void Prepare(VASurfaceID target, VAContextID owner = 1) {
+    if (driver.surfaces.count(target) == 0) {
+      auto surface = std::make_shared<Surface>();
+      Require(surface->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+              "allocate a public no-consumer admission target");
+      surface->id = target;
+      memset(surface->storage.data(), 99, surface->storage.size());
+      driver.surfaces[target] = surface;
+      held.push_back(surface);
+    }
+    Require(BeginPicture(&context, owner, target) == VA_STATUS_SUCCESS,
+            "begin a valid no-consumer H.264 picture");
+    auto &decode = *driver.contexts.at(owner);
+    decode.have_picture = true;
+    decode.picture = {};
+    decode.picture.picture_height_in_mbs_minus1 = 1;
+    decode.picture.num_ref_frames = 1;
+    decode.picture.seq_fields.bits.chroma_format_idc = 1;
+    decode.picture.seq_fields.bits.frame_mbs_only_flag = 1;
+    decode.picture.seq_fields.bits.direct_8x8_inference_flag = 1;
+    decode.picture.pic_fields.bits.deblocking_filter_control_present_flag = 1;
+    VASliceParameterBufferH264 slice = {};
+    slice.slice_type = 2;
+    decode.slices.push_back(slice);
+    decode.slice_data.push_back({0x65, 0x88, 0x84});
+  }
+
+  void Fill(size_t count) {
+    for (size_t picture = 1; picture <= count; ++picture) {
+      Prepare(static_cast<VASurfaceID>(picture));
+      Require(EndPicture(&context, 1) == VA_STATUS_SUCCESS,
+              "fill bounded admission with valid inputs and no consumer sync");
+    }
+    Require(io.inputs.size() == count && io.outputs.empty() &&
+                decoder->replay.outstanding() == count &&
+                !decoder->replay.failed(),
+            "full cache contains exactly the genuinely submitted pending inputs");
+  }
+};
+
+static void H264AdmissionHarvestsBeforeRejecting() {
+  // The byte boundary uses actual valid assembled input lengths, while the
+  // independent oracle remains accepted-picture identity and transport count.
+  size_t pair_bytes = 0;
+  {
+    H264AdmissionFixture measure(8);
+    measure.Fill(2);
+    pair_bytes = measure.decoder->replay.cached_bytes();
+  }
+  struct Boundary { size_t pictures; size_t bytes; bool delayed; };
+  const Boundary boundaries[] = {
+      {2, 1024 * 1024, false}, {2, 1024 * 1024, true},
+      {512, pair_bytes, false}, {512, pair_bytes, true},
+      {512, 1024 * 1024, false},
+  };
+  for (const auto &boundary : boundaries) {
+    const size_t count = boundary.bytes == pair_bytes ? 2 : boundary.pictures;
+    H264AdmissionFixture fixture(boundary.pictures, boundary.bytes);
+    fixture.Fill(count);
+    fixture.Prepare(static_cast<VASurfaceID>(count + 1));
+    const auto pixels = fixture.held.back()->storage;
+    bool slept = false;
+    if (boundary.delayed) {
+      fixture.io.on_sleep = [&] {
+        std::unique_lock<std::mutex> available(fixture.driver.mutex,
+                                              std::try_to_lock);
+        Require(available.owns_lock(),
+                "admission wait releases the mutex for real output progress");
+        available.unlock();
+        slept = true;
+        const auto target = fixture.decoder->target;
+        const auto transaction = fixture.decoder->target_transaction;
+        const auto slices = fixture.decoder->slice_data;
+        Require(BeginPicture(&fixture.context, 1, target) == VA_STATUS_ERROR_HW_BUSY &&
+                    RenderPicture(&fixture.context, 1, nullptr, 0) == VA_STATUS_ERROR_HW_BUSY &&
+                    EndPicture(&fixture.context, 1) == VA_STATUS_ERROR_HW_BUSY &&
+                    fixture.decoder->target == target &&
+                    fixture.decoder->target_transaction == transaction &&
+                    fixture.decoder->have_picture && fixture.decoder->slice_data == slices,
+                "an admission lease rejects same-context mutation without consuming its parameters");
+        fixture.io.outputs.push_back(kTimestampStep);
+      };
+    } else {
+      fixture.io.outputs.push_back(kTimestampStep);
+    }
+    Require(EndPicture(&fixture.context, 1) == VA_STATUS_SUCCESS,
+            "cache-full EndPicture harvests ready output before rejecting valid input");
+    Require(slept == boundary.delayed && !fixture.decoder->replay.failed() &&
+                fixture.io.inputs.size() == count + 1 &&
+                fixture.decoder->replay.cached_pictures() <= boundary.pictures &&
+                fixture.decoder->replay.cached_bytes() <= boundary.bytes &&
+                fixture.decoder->replay.outstanding() == count &&
+                fixture.decoder->pending.size() == count &&
+                fixture.io.outputs.empty() &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "release") == 1 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 0 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 0 &&
+                fixture.io.open_attempts == 0 && !fixture.io.invalid &&
+                !fixture.held.back()->ready && fixture.held.back()->storage == pixels,
+            "admission keeps both bounds and pending pixels without synthetic EOS or references");
+    for (size_t picture = 1; picture <= count + 1; ++picture)
+      Require(fixture.io.inputs[picture - 1] == picture * kTimestampStep,
+              "accepted inputs keep exact original order and unique tokens");
+    fixture.CheckPicture(0);
+    fixture.io.early_eos = true;  // Queue each real remaining output only once.
+    Require(SealDecodeBatch(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS,
+            "explicit final drain follows successful bounded admission");
+    // ReadyListCount is an eight-bit hardware field. Supply bounded real RX
+    // batches before the already-issued EOS marker, rather than wrapping a
+    // fictitious 512-frame ready list to zero in the transport mock.
+    for (size_t first = 2; first <= count + 1; first += 128) {
+      Require(fixture.io.outputs == std::deque<uint64_t>{0},
+              "each RX batch leaves only the actual final EOS marker");
+      const size_t end = std::min(count + 2, first + 128);
+      for (size_t picture = first; picture < end; ++picture)
+        fixture.io.outputs.insert(fixture.io.outputs.end() - 1,
+                                  picture * kTimestampStep);
+      for (size_t picture = first; picture < end; ++picture) {
+        const size_t before = fixture.io.outputs.size();
+        Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get(), 1) ==
+                    VA_STATUS_SUCCESS && fixture.io.outputs.size() + 1 == before,
+                "each bounded receive retires one genuine output without stalling");
+      }
+    }
+    Require(fixture.io.outputs == std::deque<uint64_t>{0} &&
+                ReceiveAvailable(&fixture.driver, fixture.decoder.get(), 1) ==
+                    VA_STATUS_SUCCESS && fixture.io.outputs.empty(),
+            "all real pictures precede the explicitly issued final EOS");
+    Require(fixture.decoder->pending.empty() && fixture.decoder->replay.outstanding() == 0 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "release") ==
+                    static_cast<std::ptrdiff_t>(count + 2) && !fixture.io.invalid,
+            "complete output census includes one release per picture plus actual EOS");
+    for (size_t picture = 0; picture <= count; ++picture)
+      fixture.CheckPicture(static_cast<unsigned int>(picture));
+  }
+}
+
+static void H264AdmissionCancellationPreservesOtherOwners() {
+  for (bool rebind : {false, true}) {
+    H264AdmissionFixture fixture;
+    fixture.Fill(2);
+    fixture.Prepare(3);
+    const auto incoming = fixture.held.back();
+    const auto pixels = incoming->storage;
+    bool slept = false;
+    uint64_t replacement_transaction = 0;
+    std::shared_ptr<DecodeContext> replacement;
+    if (rebind) {
+      replacement = std::make_shared<DecodeContext>();
+      replacement->id = 2;
+      replacement->config = 1;
+      replacement->profile = VAProfileH264Main;
+      replacement->width = 16;
+      replacement->height = 32;
+      fixture.driver.contexts[2] = replacement;
+    }
+    fixture.io.on_sleep = [&] {
+      std::unique_lock<std::mutex> available(fixture.driver.mutex,
+                                            std::try_to_lock);
+      Require(available.owns_lock(), "cancellation can acquire the admission mutex");
+      available.unlock();
+      slept = true;
+      if (rebind) {
+        fixture.Prepare(3, 2);
+        replacement_transaction = incoming->picture_transaction;
+      } else {
+        std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+        fixture.decoder->retired = true;
+      }
+    };
+    Require(EndPicture(&fixture.context, 1) ==
+                (rebind ? VA_STATUS_ERROR_INVALID_SURFACE : VA_STATUS_ERROR_INVALID_CONTEXT) && slept,
+            "admission revalidates context lifetime and target binding after unlocking");
+    Require(fixture.io.inputs.size() == 2 &&
+                fixture.decoder->replay.cached_pictures() == 2 &&
+                fixture.decoder->replay.outstanding() == 2 &&
+                !fixture.decoder->replay.failed() && incoming->storage == pixels &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 0 &&
+                !fixture.io.invalid,
+            "canceled admission never accepts input, poisons the old queue or invents EOS");
+    if (rebind)
+      Require(!incoming->failed && incoming->picture_transaction == replacement_transaction &&
+                  replacement->target == 3 && replacement->have_picture &&
+                  replacement->slices.size() == 1 &&
+                  replacement->slice_data == std::vector<std::vector<uint8_t>>{{0x65, 0x88, 0x84}} &&
+                  replacement->replay.cached_pictures() == 0,
+              "obsolete End leaves the replacement transaction and pixels intact");
+  }
+}
+
+static void H264AdmissionJoinsPublicLifecycleChanges() {
+  for (bool destroy_context : {false, true}) {
+    H264AdmissionFixture fixture;
+    fixture.Fill(2);
+    fixture.Prepare(3);
+    const auto incoming = fixture.held.back();
+    const auto pixels = incoming->storage;
+    const uint64_t generation = fixture.decoder->generation;
+    bool slept = false;
+    VAStatus lifecycle = VA_STATUS_ERROR_OPERATION_FAILED;
+    fixture.io.on_sleep = [&] {
+      {
+        std::unique_lock<std::mutex> available(fixture.driver.mutex,
+                                              std::try_to_lock);
+        Require(available.owns_lock() && fixture.driver.active_admission_waits == 1 &&
+                    fixture.decoder->admission_in_progress,
+                "a public lifecycle call observes the exact unlocked admission lease");
+      }
+      slept = true;
+      if (destroy_context) {
+        lifecycle = DestroyContext(&fixture.context, 1);
+      } else {
+        VASurfaceID old_pool_surface = 1;
+        lifecycle = DestroySurfaces(&fixture.context, &old_pool_surface, 1);
+      }
+    };
+    Require(EndPicture(&fixture.context, 1) == VA_STATUS_ERROR_INVALID_CONTEXT && slept &&
+                lifecycle == VA_STATUS_SUCCESS &&
+                fixture.driver.active_admission_waits == 0 &&
+                !fixture.decoder->admission_in_progress &&
+                fixture.io.inputs.size() == 2 && fixture.decoder->device == nullptr &&
+                fixture.decoder->pending.empty() &&
+                fixture.decoder->replay.cached_pictures() == 0 &&
+                incoming->storage == pixels && !fixture.io.invalid,
+            "destroy or pool reset cancels the blocked End without accepting its new picture");
+    if (destroy_context) {
+      Require(fixture.driver.contexts.count(1) == 0 &&
+                  std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 1 &&
+                  std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1,
+              "public context destruction drains accepted pictures and its actual EOS once");
+      fixture.CheckPicture(0);
+      fixture.CheckPicture(1);
+    } else {
+      Require(fixture.driver.contexts.at(1) == fixture.decoder &&
+                  fixture.decoder->generation == generation + 1 &&
+                  fixture.driver.surfaces.count(1) == 0 &&
+                  std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 0,
+              "public pool destruction retires the old generation without an invented EOS");
+    }
+  }
+
+  H264AdmissionFixture fixture;
+  fixture.Fill(2);
+  fixture.Prepare(3);
+  const auto incoming = fixture.held.back();
+  const auto pixels = incoming->storage;
+  // Terminate owns and deletes Driver. Move the otherwise identical public
+  // fixture state to a heap driver so the real callback exercises that lifetime.
+  auto *driver = new Driver(-1);
+  driver->StopWorkers();
+  driver->stopping = false;
+  driver->configs = std::move(fixture.driver.configs);
+  driver->contexts = std::move(fixture.driver.contexts);
+  driver->surfaces = std::move(fixture.driver.surfaces);
+  fixture.context.pDriverData = driver;
+  TerminalCloseBarrier barrier("admission");
+  std::atomic<bool> terminated{false};
+  std::exception_ptr end_error, terminate_error;
+  VAStatus ended = VA_STATUS_ERROR_UNKNOWN;
+  VAStatus termination = VA_STATUS_ERROR_UNKNOWN;
+  struct Join {
+    VADriverContext *context;
+    TerminalCloseBarrier *barrier;
+    std::thread ender, terminator;
+    ~Join() {
+      barrier->Release();
+      if (ender.joinable()) ender.join();
+      if (terminator.joinable()) terminator.join();
+      if (context->pDriverData) Terminate(context);
+    }
+  } cleanup{&fixture.context, &barrier, {}, {}};
+  fixture.io.on_sleep = [&] {
+    {
+      std::unique_lock<std::mutex> available(driver->mutex, std::try_to_lock);
+      Require(available.owns_lock() && driver->active_admission_waits == 1 &&
+                  fixture.decoder->admission_in_progress,
+              "blocked End retains one active admission lease outside the mutex");
+    }
+    barrier.Block("admission");
+  };
+  cleanup.ender = std::thread([&] {
+    try { ended = EndPicture(&fixture.context, 1); }
+    catch (...) { end_error = std::current_exception(); }
+  });
+  Require(barrier.Wait(), "End reaches its unlocked admission wait before Terminate");
+  cleanup.terminator = std::thread([&] {
+    try { termination = Terminate(&fixture.context); }
+    catch (...) { terminate_error = std::current_exception(); }
+    terminated = true;
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  bool stopping = false;
+  while (!stopping && std::chrono::steady_clock::now() < deadline) {
+    {
+      std::lock_guard<std::mutex> lock(driver->mutex);
+      stopping = driver->stopping;
+    }
+    std::this_thread::yield();
+  }
+  Require(stopping && !terminated,
+          "Terminate waits for the admitted End before deleting Driver");
+  barrier.Release();
+  cleanup.ender.join();
+  cleanup.terminator.join();
+  if (end_error) std::rethrow_exception(end_error);
+  if (terminate_error) std::rethrow_exception(terminate_error);
+  Require(ended == VA_STATUS_ERROR_OPERATION_FAILED && termination == VA_STATUS_SUCCESS &&
+              terminated && fixture.context.pDriverData == nullptr &&
+              !fixture.decoder->admission_in_progress && fixture.decoder->device == nullptr &&
+              fixture.io.inputs.size() == 2 && fixture.io.device_close_calls == 1 &&
+              incoming->storage == pixels && !barrier.expired && !fixture.io.invalid,
+          "Terminate joins the canceled admission, consumes ownership once and preserves pixels");
 }
 
 static void ProtectedH264BufferCannotCommitEarlierParameters() {
@@ -12392,6 +12726,14 @@ static void NeutralAuxiliaryContracts() {
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::strcmp(argv[1], "--h264-admission") == 0) {
+      H264AdmissionHarvestsBeforeRejecting();
+      H264AdmissionCancellationPreservesOtherOwners();
+      H264AdmissionJoinsPublicLifecycleChanges();
+      DefaultH264TransportIsBounded();
+      std::puts("VA-API H264 bounded admission: ready/delayed RX, byte/unit guards, exact output census and lifetime rejection PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--worker-allocation-failure") == 0) {
       WorkerPollAllocationFailuresAreContained();
       return 0;
@@ -12468,7 +12810,7 @@ int main(int argc, char **argv) {
       std::puts("VA-API private first-field Bob, progress/grace and LIVE tail: TFF/BFF pixels, ownership, cancellation and explicit drain PASS");
       return 0;
     }
-    Require(argc == 1, "usage: vaapi-replay-test [--exact-sync-ready|--terminal-close-ready|--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
+    Require(argc == 1, "usage: vaapi-replay-test [--h264-admission|--exact-sync-ready|--terminal-close-ready|--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
     NeutralAuxiliaryContracts();
     DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobUsesCompactStorage();
@@ -12514,6 +12856,9 @@ int main(int argc, char **argv) {
     TraceReadExportReuseBoundary();
     ExperimentalReadyRemapGate();
     DefaultH264TransportIsBounded();
+    H264AdmissionHarvestsBeforeRejecting();
+    H264AdmissionCancellationPreservesOtherOwners();
+    H264AdmissionJoinsPublicLifecycleChanges();
     ExperimentalPolicyDelayMatrix();
     ExperimentalRemapCpuOwnershipFailures();
     ExperimentalReadyRemapFailClosedRaces();

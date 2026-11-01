@@ -2284,6 +2284,8 @@ struct DecodeContext {
   // Not yet accepted by DIL: never confers timestamp ownership on output.
   uint64_t pending_prefeed_timestamp = 0;
   uint64_t pending_prefeed_generation = 0;
+  // EndPicture parameters stay owned while replay admission yields the mutex.
+  bool admission_in_progress = false;
   bool closing = false;
   bool destroy_in_progress = false;
   bool retired = false;
@@ -2789,6 +2791,7 @@ struct Driver {
   SwsContext *vpp_scaler = nullptr;
   std::vector<uint8_t> vpp_argb_staging;
   bool stopping = false;
+  unsigned int active_admission_waits = 0;
   std::thread decode_worker;
   std::thread vpp_worker;
   int decode_control_fd = -1;
@@ -6042,8 +6045,123 @@ static bool UnobservedPendingCpuBacking(
       old.planes[1] == old.storage.data() + stride * height;
 }
 
+static VAStatus WaitForH264ReplayAdmission(
+    Driver *driver, DecodeContext *decode,
+    const std::shared_ptr<Surface> &original,
+    const std::shared_ptr<Surface> &target, VASurfaceID target_id,
+    bool idr, size_t bytes, std::unique_lock<std::mutex> *driver_lock,
+    bool *revalidate, uint64_t timeout_ns = VA_TIMEOUT_INFINITE) {
+  *revalidate = false;
+  // Validate-only source fixtures need not own a public API lock. They retain
+  // Append's hard guards; the public EndPicture path always supplies its lock.
+  if (driver_lock == nullptr || !driver_lock->owns_lock())
+    return VA_STATUS_SUCCESS;
+  // Keep the ordinary nonfull path unchanged, including its allocation-error
+  // boundary. History reclamation is needed here only at actual saturation.
+  if (decode->replay.cached_pictures() < decode->replay.MaxCachedPictures() &&
+      decode->replay.cached_bytes() <= decode->replay.MaxCachedBytes() &&
+      bytes <= decode->replay.MaxCachedBytes() - decode->replay.cached_bytes())
+    return VA_STATUS_SUCCESS;
+  if (decode->replay.PrepareAppend(decode->next_timestamp, idr, bytes) !=
+          CrystalHDDecodeReplay::Admission::Full ||
+      !decode->replay.HasPendingTransportWork())
+    return VA_STATUS_SUCCESS;
+  if (decode->admission_in_progress ||
+      driver->active_admission_waits == UINT_MAX)
+    return VA_STATUS_ERROR_HW_BUSY;
+  const uint64_t generation = decode->generation;
+  const VASurfaceID request_target = decode->target;
+  const auto request_owner = decode->transaction_target.lock();
+  const uint64_t request_transaction = decode->target_transaction;
+  const uint64_t original_transaction = original->picture_transaction;
+  const uint64_t original_identity = original->decode_identity;
+  const uint64_t target_transaction = target->picture_transaction;
+  const uint64_t target_identity = target->decode_identity;
+  const auto current_request = [&]() -> VAStatus {
+    if (driver->stopping)
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    const auto context = driver->contexts.find(decode->id);
+    if (context == driver->contexts.end() || context->second.get() != decode ||
+        decode->closing || decode->retired || decode->generation != generation ||
+        decode->target != request_target ||
+        decode->target_transaction != request_transaction ||
+        decode->transaction_target.lock() != request_owner)
+      return VA_STATUS_ERROR_INVALID_CONTEXT;
+    const auto source_binding = driver->surfaces.find(request_target);
+    const auto target_binding = driver->surfaces.find(target_id);
+    if (source_binding == driver->surfaces.end() || source_binding->second != original ||
+        target_binding == driver->surfaces.end() || target_binding->second != target ||
+        original->destroyed || target->destroyed ||
+        original->picture_transaction != original_transaction ||
+        original->decode_identity != original_identity ||
+        target->picture_transaction != target_transaction ||
+        target->decode_identity != target_identity)
+      return VA_STATUS_ERROR_INVALID_SURFACE;
+    return VA_STATUS_SUCCESS;
+  };
+  struct AdmissionLease {
+    Driver &driver;
+    DecodeContext &decode;
+    AdmissionLease(Driver &d, DecodeContext &c) : driver(d), decode(c) {
+      decode.admission_in_progress = true;
+      ++driver.active_admission_waits;
+    }
+    ~AdmissionLease() {
+      decode.admission_in_progress = false;
+      --driver.active_admission_waits;
+      driver.condition.notify_all();
+    }
+  } lease(*driver, *decode);
+  *revalidate = true;
+  Debug("H.264 replay admission wait: context=%u cached=%zu/%zu bytes=%zu/%zu outstanding=%zu incoming=%zu",
+        decode->id, decode->replay.cached_pictures(), decode->replay.MaxCachedPictures(),
+        decode->replay.cached_bytes(), decode->replay.MaxCachedBytes(),
+        decode->replay.outstanding(), bytes);
+  const auto start = std::chrono::steady_clock::now();
+  for (;;) {
+    VAStatus status = current_request();
+    if (status != VA_STATUS_SUCCESS)
+      return status;
+    const auto admission =
+        decode->replay.PrepareAppend(decode->next_timestamp, idr, bytes);
+    if (admission != CrystalHDDecodeReplay::Admission::Full ||
+        !decode->replay.HasPendingTransportWork())
+      return VA_STATUS_SUCCESS;
+    const uint64_t elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    status = DecodeWaitStatus(timeout_ns, elapsed);
+    if (status == VA_STATUS_ERROR_DECODING_ERROR)
+      return FailDecode(driver, decode, "H.264 replay admission timed out");
+    if (status != VA_STATUS_SUCCESS)
+      return status;
+    // Retire genuine accepted output, and submit already accepted backlog.
+    // Saturation is not EOF and never authorizes sealing or dropping input.
+    status = ReceiveAvailable(driver, decode, 1);
+    if (status == VA_STATUS_SUCCESS)
+      status = PumpDecodeInput(driver, decode, 4);
+    if (status != VA_STATUS_SUCCESS)
+      return status;
+    status = current_request();
+    if (status != VA_STATUS_SUCCESS)
+      return status;
+    if (decode->replay.PrepareAppend(decode->next_timestamp, idr, bytes) !=
+            CrystalHDDecodeReplay::Admission::Full ||
+        !decode->replay.HasPendingTransportWork())
+      return VA_STATUS_SUCCESS;
+    driver->NotifyDecodeWorker();
+    if (decode->output_poll && driver->decode_control_fd >= 0) {
+      driver->condition.wait_for(*driver_lock, std::chrono::milliseconds(10));
+    } else {
+      driver_lock->unlock();
+      usleep(1000);
+      driver_lock->lock();
+    }
+  }
+}
+
 static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
-                              VAProfile profile) {
+                              VAProfile profile,
+                              std::unique_lock<std::mutex> *driver_lock = nullptr) {
   if (decode->IsMpeg4() && decode->mpeg4_replay.failed())
     return VA_STATUS_ERROR_DECODING_ERROR;
   if (IsH264Profile(profile) &&
@@ -6431,6 +6549,21 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       Debug("large H.264 input requires fragmented libcrystalhd input");
       return RejectH264Picture(driver, decode, VA_STATUS_ERROR_INVALID_PARAMETER);
     }
+  }
+
+  if (IsH264Profile(profile)) {
+    bool revalidate = false;
+    const VAStatus admission = WaitForH264ReplayAdmission(
+        driver, decode, original_surface, target_surface, target_id, idr,
+        bitstream.size(), driver_lock, &revalidate);
+    if (admission != VA_STATUS_SUCCESS)
+      return admission;
+    // Progress may have completed old pictures or yielded to other contexts.
+    // Repeat all surface/lease/parameter validation before capturing backing.
+    // The mutex is owned and no other producer can refill this context here,
+    // so the second pass has capacity without another admission wait.
+    if (revalidate)
+      return SubmitPicture(driver, decode, profile, driver_lock);
     Debug("submit surface=%u bytes=%zu slices=%zu", decode->target,
           bitstream.size(), decode->slice_data.size());
     if (decode->next_timestamp == kTimestampStep) {
@@ -7821,7 +7954,8 @@ static VAStatus Terminate(VADriverContextP context) {
     // An admitted destroy may be outside this mutex in a terminal DIL call.
     // Join that exact transaction before closing its handle or freeing Driver.
     driver->condition.wait(lock, [&] {
-      return std::none_of(driver->contexts.begin(), driver->contexts.end(),
+      return driver->active_admission_waits == 0 &&
+          std::none_of(driver->contexts.begin(), driver->contexts.end(),
           [](const auto &entry) { return entry.second->destroy_in_progress; });
     });
     for (const auto &entry : driver->contexts) {
@@ -9253,6 +9387,8 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
   auto decode = driver->contexts.find(context_id);
   if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
+  if (decode->second->admission_in_progress)
+    return VA_STATUS_ERROR_HW_BUSY;
   auto target_surface = driver->surfaces.find(target);
   if (target_surface == driver->surfaces.end() ||
       !HasLiveBackingOwner(driver, target_surface->second.get()))
@@ -9724,6 +9860,8 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
   auto decode = driver->contexts.find(context_id);
   if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
+  if (decode->second->admission_in_progress)
+    return VA_STATUS_ERROR_HW_BUSY;
   if (decode->second->video_process) {
     // A failed replacement Render must not leave an earlier filter snapshot
     // available for EndPicture to commit as if the failed request succeeded.
@@ -9986,6 +10124,8 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
   auto decode = driver->contexts.find(context_id);
   if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
+  if (decode->second->admission_in_progress)
+    return VA_STATUS_ERROR_HW_BUSY;
   const std::shared_ptr<DecodeContext> decode_context = decode->second;
   if (decode_context->video_process) {
     const VASurfaceID request_target = decode_context->target;
@@ -10308,7 +10448,19 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
   if (config == driver->configs.end())
     return VA_STATUS_ERROR_INVALID_CONFIG;
   const VAProfile profile = config->second.profile;
-  VAStatus status = SubmitPicture(driver, decode_context.get(), profile);
+  const uint64_t generation = decode_context->generation;
+  const VASurfaceID request_target = decode_context->target;
+  const auto request_owner = decode_context->transaction_target.lock();
+  const uint64_t request_transaction = decode_context->target_transaction;
+  VAStatus status = SubmitPicture(driver, decode_context.get(), profile, &lock);
+  const auto current = driver->contexts.find(context_id);
+  if (current == driver->contexts.end() || current->second != decode_context ||
+      decode_context->closing || decode_context->retired ||
+      decode_context->generation != generation ||
+      decode_context->target != request_target ||
+      decode_context->transaction_target.lock() != request_owner ||
+      decode_context->target_transaction != request_transaction)
+    return status == VA_STATUS_SUCCESS ? VA_STATUS_ERROR_INVALID_CONTEXT : status;
   // Every decode profile consumes End even for malformed/unsupported input or
   // allocation failure. Recoverable Render errors remain replaceable before
   // End; successful queued/backpressured submissions are not rejections.
