@@ -96,6 +96,7 @@ int crystalhd_status_to_errno(BC_STATUS status);
     ((((~0ULL) - (1ULL << (low)) + 1ULL) & \
       (~0ULL >> (63U - (high)))))
 #define lockdep_assert_held(lock) AuditLock(lock)
+#define lockdep_assert_held_write(lock) AuditLock(lock)
 #define dma_wmb() DmaWriteBarrier()
 
 #include "h264-stream-production.h"
@@ -113,6 +114,7 @@ struct captured_packet {
 };
 
 static unsigned checks, failures;
+static unsigned fault_at_lock;
 static struct pci_dev endpoint;
 static struct crystalhd_adp adapter;
 static struct crystalhd_hw hardware;
@@ -213,6 +215,8 @@ static void AuditLock(const int *lock)
           *lock == 1,
           "typed submission retains session lifetime and TX serialization");
     lock_assertions++;
+    if (fault_at_lock && lock_assertions == fault_at_lock)
+        hardware.dma_fault = true;
     if (lock == &adapter.user_lock)
         user_lock_assertions++;
     else if (lock == &adapter.tx_lock)

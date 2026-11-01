@@ -38,7 +38,7 @@ typedef uint64_t u64;
 #define dev_info(dev, ...) do { (void)(dev); if (false) fprintf(stderr, __VA_ARGS__); } while (0)
 #define dev_dbg(dev, ...) ((void)(dev))
 #define lockdep_assert_held(lock) \
-    Check((lock) == &adapter.user_lock && *(lock) == 1, \
+    Check(((lock) == &adapter.user_lock || (lock) == &adapter.legacy_gate) && *(lock) == 1, \
           "firmware execution retains shared user admission")
 #define lockdep_assert_held_write(lock) \
     Check((lock) == &adapter.user_lock && *(lock) == 1, \
@@ -120,7 +120,7 @@ struct crystalhd_adp {
     uint64_t generation;
     bool dma_terminal_quiesced;
     void *fill_byte_pool, *elem_pool_head;
-    int user_lock, dram_lock;
+    int user_lock, dram_lock, legacy_gate;
     struct crystalhd_cmd cmds;
 };
 static void crystalhd_rx_poll_wake(struct crystalhd_adp *adp,
@@ -379,6 +379,9 @@ static void Event(char event)
 }
 static void TransactionLock(int *lock)
 {
+    if (lock == &adapter.legacy_gate) {
+        Check(!*lock, "legacy gate starts unlocked"); *lock = 1; return;
+    }
     if (lock != &hardware.fwcmd_trans_mutex) abort();
     if (transaction_mode) {
         if (pthread_mutex_lock(&transaction_audit)) abort();
@@ -394,6 +397,9 @@ static void TransactionLock(int *lock)
 }
 static void TransactionUnlock(int *lock)
 {
+    if (lock == &adapter.legacy_gate) {
+        Check(*lock == 1, "legacy gate balances"); *lock = 0; return;
+    }
     if (lock != &hardware.fwcmd_trans_mutex ||
         pthread_mutex_unlock(&transaction_mutex)) abort();
 }
@@ -407,6 +413,10 @@ static struct crystalhd_adp *chd_get_adp(void)
 }
 static void down_read(int *lock)
 {
+    if (lock == &adapter.user_lock) {
+        Check(!*lock && chd_device_lock == 1, "legacy admission checks owner under reader");
+        *lock = 1; return;
+    }
     Check(lock == &chd_device_lock && !*lock,
           "file close acquires the device read lock once");
     *lock = 1;
@@ -414,6 +424,9 @@ static void down_read(int *lock)
 }
 static void up_read(int *lock)
 {
+    if (lock == &adapter.user_lock) {
+        Check(*lock == 1, "legacy reader balances"); *lock = 0; return;
+    }
     Check(lock == &chd_device_lock && *lock == 1 && !adapter.user_lock,
           "file close releases the device lock after the user lock");
     *lock = 0;

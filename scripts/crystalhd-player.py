@@ -238,8 +238,8 @@ def arguments(argv=None, environment=None):
                        help="disable hardware video decoders; no automatic fallback")
     parser.add_argument("--weave", action="store_true",
                         help="preserve interlaced frames without deinterlacing; works with either decoder mode")
-    parser.add_argument("--video-output", choices=("auto", "xv-async"), default="auto",
-                        help="video output (default: auto); xv-async selects the optional experimental X11 plugin")
+    parser.add_argument("--video-output", choices=("auto", "xv-async", "field-gpu"), default="auto",
+                        help="video output (default: auto); xv-async and field-gpu select optional experimental sinks")
     parser.add_argument("--packed-upscale", action="store_true",
                         help="experimental packed 1280x720 to1920x1080 resize; requires --video-output xv-async")
     parser.add_argument("--scale-width", type=hardware_scale_width, default=argparse.SUPPRESS, metavar="PIXELS",
@@ -269,6 +269,10 @@ def arguments(argv=None, environment=None):
         parser.error("--software-output-size requires a nonzero --scale-width")
     if args.video_output == "xv-async" and args.weave:
         parser.error("--video-output xv-async needs progressive/deinterlaced output; use auto with --weave")
+    if args.video_output == "field-gpu" and args.weave:
+        parser.error("--video-output field-gpu performs Bob; omit --weave")
+    if args.video_output == "field-gpu" and args.software_output_size:
+        parser.error("field-gpu fits on the GPU; use --software-output-size native")
     if args.packed_upscale and (args.mode != "hardware" or args.weave or
                                 args.video_output != "xv-async" or
                                 args.scale_width != 1280 or
@@ -392,8 +396,12 @@ def select_video_output(Gst, choice, sinks=None):
     result = dict(sinks or {})
     if choice == "auto":
         return result
-    if choice != "xv-async" or "video-sink" in result:
+    if choice not in ("xv-async", "field-gpu") or "video-sink" in result:
         raise RuntimeError("conflicting or unsupported explicit video output")
+    if choice == "field-gpu":
+        # Player owns this sink's Bob/deinterlace setup. Preserve unrelated
+        # injected sinks, including audio, until that setup is complete.
+        return result
     sink = Gst.ElementFactory.make("crystalhdxvsink", "crystalhd-video-output")
     if sink is None:
         raise RuntimeError("experimental Xv output is unavailable; build filters/gst/xv-output "
@@ -869,15 +877,24 @@ class Player:
                                    else args.file)
         if args.subtitles:
             self.pipeline.set_property("suburi", args.subtitles.as_uri())
-        if args.mode == "software" or args.weave:
+        field_gpu = getattr(args, "video_output", "auto") == "field-gpu"
+        if args.mode == "software" or args.weave or field_gpu:
             flags = int(self.pipeline.get_property("flags"))
             # GstPlayFlags::FORCE_SW_DECODERS, present since GStreamer 1.18.
             if args.mode == "software":
                 flags |= 1 << 12
-            if args.weave:
+            if args.weave or field_gpu:
                 # GstPlayFlags::DEINTERLACE; leave audio, subtitles and other flags alone.
                 flags &= ~(1 << 9)
             self.pipeline.set_property("flags", flags)
+        if field_gpu:
+            if "video-sink" in (sinks or {}):
+                raise RuntimeError("field-gpu conflicts with an injected video sink")
+            self.field_sink = Gst.ElementFactory.make("crystalhdfieldsink", "crystalhd-fields")
+            if self.field_sink is None:
+                raise RuntimeError("experimental crystalhdfieldsink is unavailable; build the research plugin")
+            self.pipeline.set_property("video-sink", self.field_sink)
+            print("Output: experimental GPU nearest Bob; pipeline audio clock; GPU display fitting", flush=True)
         if args.weave:
             if int(self.pipeline.get_property("flags")) & (1 << 9):
                 raise RuntimeError("GStreamer did not disable deinterlacing for --weave")
@@ -1115,6 +1132,10 @@ class Player:
                     self.fail(fields.get_value("message"))
             elif fields.get_name() == "crystalhd-player-output-error":
                 self.fail(fields.get_value("message"))
+            elif fields.get_name() == "crystalhd-field-close":
+                self.control("quit")
+            elif fields.get_name() == "crystalhd-field-key":
+                self.control(fields.get_value("action"))
         elif message.type == Gst.MessageType.ERROR:
             error, _debug = message.parse_error()
             self.fail(input_error(self.args.file,
@@ -1409,6 +1430,16 @@ class Player:
         self.bus.remove_signal_watch()
         # A diagnostic failure must not block decoder/resource teardown.
         self.video_output_summary = self.snapshot_video_output()
+        field_sink = getattr(self, "field_sink", None)
+        field_output = False
+        late_whole_buffers = None
+        try:
+            field_output = (field_sink is not None and
+                            field_sink.find_property("field-stats") is not None)
+            if field_output:
+                late_whole_buffers = field_sink.get_property("stats").get_value("dropped")
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            print("crystalhd-play: GPU field drop statistics unavailable", file=sys.stderr)
         try:
             if self.pipeline.set_state(self.Gst.State.NULL) == self.Gst.StateChangeReturn.FAILURE:
                 print("crystalhd-play: decoder teardown failed", file=sys.stderr)
@@ -1419,6 +1450,14 @@ class Player:
                     workaround.close()
                 self.deinterlace_qos.clear()
             finally:
+                if field_output:
+                    try:
+                        stats = field_sink.get_property("field-stats")
+                        print(f"GPU field submissions: {stats.get_value('fields')}; "
+                              f"expired field skips: {stats.get_value('dropped-fields')}; "
+                              f"late whole-buffer drops: {late_whole_buffers} (since last reset)", flush=True)
+                    except (AttributeError, RuntimeError, TypeError, ValueError):
+                        print("crystalhd-play: GPU field statistics unavailable", file=sys.stderr)
                 trace = getattr(self, "stage_trace", None)
                 if trace is not None:
                     try:

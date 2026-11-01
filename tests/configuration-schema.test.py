@@ -77,6 +77,8 @@ class SchemaOracleTest(unittest.TestCase):
         self.assertEqual(len(bounded), 17)
         self.assertFalse(mapped & bounded)
         self.assertEqual(mapped | bounded, surfaces)
+        self.assertIn(("player-flag", "--video-output", "invocation-only"),
+                      boundary_matches)
         self.assertEqual(
             {reason for _kind, _name, reason in boundary_matches},
             {"staged-module", "legacy-bootstrap", "managed-launch-boundary", "invocation-only",

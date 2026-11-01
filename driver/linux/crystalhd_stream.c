@@ -199,7 +199,7 @@ void crystalhd_stream_release(struct crystalhd_cmd *ctx)
 	crystalhd_tx_buffer_put(ctx->adp, &stream->buffer);
 }
 
-static int crystalhd_h264_validate(struct crystalhd_cmd *ctx,
+int crystalhd_decoder_validate_h264_locked(struct crystalhd_cmd *ctx,
 				   const void *owner)
 {
 	const u32 allowed_state = BC_LINK_INIT | BC_LINK_CAP_EN |
@@ -265,7 +265,7 @@ int crystalhd_decoder_submit_h264(struct crystalhd_cmd *ctx,
 
 	if (!annexb || !bytes)
 		return -EINVAL;
-	rc = crystalhd_h264_validate(ctx, owner);
+	rc = crystalhd_decoder_validate_h264_locked(ctx, owner);
 	if (rc)
 		return rc;
 	sts = crystalhd_tx_deadline_from_ms(total_timeout_ms, &deadline);
@@ -300,7 +300,7 @@ int crystalhd_decoder_submit_h264_eos(struct crystalhd_cmd *ctx,
 	unsigned int i;
 	int rc;
 
-	rc = crystalhd_h264_validate(ctx, owner);
+	rc = crystalhd_decoder_validate_h264_locked(ctx, owner);
 	if (rc)
 		return rc;
 	sts = crystalhd_tx_deadline_from_ms(total_timeout_ms, &deadline);

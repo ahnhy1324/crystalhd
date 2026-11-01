@@ -1,0 +1,157 @@
+{
+  "schema": "crystalhd.flea-color-word.static-evidence.v1",
+  "date": "2026-10-29",
+  "status": "SOURCE_QUALIFIED_STATIC_INTERPRETATION",
+  "scope": "Original bundled BCM70015 ordinary H264 SPS-to-compact-PIB path; no firmware execution or alteration, device access, external client modification, or runtime qualification in this receipt.",
+  "firmware": {
+    "repository_path": "firmware/fwbin/70015/bcm70015fw.bin",
+    "size_bytes": 864276,
+    "sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+    "outer_elf": {
+      "blob_file_offset_hex": "0x2ea60",
+      "size_bytes": 308088,
+      "sha256": "7e8793b363e0c2514c4435a941332b051d55bca40950aedab96a27d20d0de7a7",
+      "retained_elf_equals_original_blob_slice": true
+    }
+  },
+  "existing_source_bridge": {
+    "repository_path": "tools/fw-research/flea_fw_map.py",
+    "sha256": "4c31acfcbd5b18f07bdeef001b5339a2747981883a917a584a40d270819262f6",
+    "entries": ["_PPB_SOURCE_BODIES", "_ppb_source_provenance"],
+    "existing_proof_scope": "Section-qualified complete body hashes, selected original numeric relocations, geometry and publication equations. The existing mapper does not itself define or validate colour packing.",
+    "original_arc_bodies": [
+      {
+        "name": "PopulatePPB",
+        "section_index": 5,
+        "elf_start_hex": "0xf2b0",
+        "elf_end_hex": "0xf760",
+        "blob_file_offset_hex": "0x3a154",
+        "size_bytes": 1200,
+        "sha256": "4d8a71519ab56a688c61948d5aec9bc15da67ee3525df3d638fc478895dceff6"
+      },
+      {
+        "name": "H264_ParseSPS",
+        "section_index": 16,
+        "elf_start_hex": "0x2aee4",
+        "elf_end_hex": "0x2b658",
+        "blob_file_offset_hex": "0x4da78",
+        "size_bytes": 1908,
+        "sha256": "7604f8afb6bd6c75ae532d5599b0068f48d94a8574405d5347c92e687be169c4"
+      },
+      {
+        "name": "H264_ActivateSPS",
+        "section_index": 16,
+        "elf_start_hex": "0x2b658",
+        "elf_end_hex": "0x2b724",
+        "blob_file_offset_hex": "0x4e1ec",
+        "size_bytes": 204,
+        "sha256": "7d875e642ba9f2ee2230f7298f48ae8ebc3cdaa1983035bfb6e50773da43c33a"
+      },
+      {
+        "name": "Core_PopulatePPB",
+        "section_index": 4,
+        "elf_start_hex": "0x9344",
+        "elf_end_hex": "0x9548",
+        "blob_file_offset_hex": "0x341e8",
+        "size_bytes": 516,
+        "sha256": "2b3cde5b8b4eef00eedd2c7fa4829324f428f7cb89d01eee685db5a5f6de6805"
+      }
+    ],
+    "independent_retained_disassembly_check": {
+      "raw_instruction_words_compared": 957,
+      "all_compared_bytes_equal_original_blob": true,
+      "retained_disassembly_sha256": "35edfdc3f4fbd33d5eadd4c5aaf1fa06f32a781cc11c4453f446a58dd3533b3d",
+      "interpretation": "Conditional GNU legacy ARC base-case instruction and delay-slot interpretation; original numeric relocations and metadata declarations are not a vendor ISA or runtime ABI certificate."
+    }
+  },
+  "sps_producer": {
+    "address_domain": "Original ELF instruction addresses and relative structure offsets, not live host pointers or device-read instructions.",
+    "scratch_sps_bytes": 296,
+    "default_value": 2,
+    "defaults": {
+      "load_2_site_hex": "0x2af58",
+      "primaries_store_hex": "0x2af5c",
+      "transfer_store_hex": "0x2af60",
+      "matrix_store_hex": "0x2af64"
+    },
+    "vui_present": {
+      "read_call_hex": "0x2b2e4",
+      "flag_or_hex": "0x2b2f8",
+      "active_sps_flags_offset_hex": "0x44",
+      "mask_hex": "0x4"
+    },
+    "video_signal_type_present_read_hex": "0x2b360",
+    "video_format_read_hex": "0x2b370",
+    "full_range_read_hex": "0x2b378",
+    "colour_description_present_read_hex": "0x2b380",
+    "explicit_colour_bytes": [
+      {"field": "colour_primaries", "read_call_hex": "0x2b390", "store_hex": "0x2b398", "bits_read": 8, "active_sps_offset_hex": "0x29"},
+      {"field": "transfer_characteristics", "read_call_hex": "0x2b39c", "store_hex": "0x2b3a4", "bits_read": 8, "active_sps_offset_hex": "0x3c"},
+      {"field": "matrix_coefficients", "read_call_hex": "0x2b3a8", "store_hex": "0x2b3b0", "bits_read": 8, "active_sps_offset_hex": "0x30"}
+    ],
+    "parsed_sps_copy_call_hex": "0x2b5ac",
+    "activated_sps_copy_call_hex": "0x2b6f4",
+    "validity_limits": [
+      "Absent VUI leaves the packed output word zero after the metadata clear.",
+      "VUI present without an explicit colour description retains the initialized 2/2/2 tuple. The packed word has no separate colour-description-present indicator.",
+      "The parser consumes video_full_range_flag but its returned value has no retained use or store before the next bit read. This producer word does not establish source quantization.",
+      "The three explicit fields are stored as bytes; the firmware sequence does not validate their CICP meaning. Consumers must validate each value."
+    ]
+  },
+  "packed_word": {
+    "producer_elf_range_hex": ["0xf3bc", "0xf3e0"],
+    "producer_blob_offset_hex": "0x3a260",
+    "producer_size_bytes": 36,
+    "producer_sha256": "2a2c64521025c558ace01bb3c10a49563fc347fa046326ef5a539bf7d02f7430",
+    "equation": "W = (matrix_coefficients << 24) | (colour_primaries << 16) | (transfer_characteristics << 8)",
+    "metadata_offset_bytes": 48,
+    "fields": [
+      {"field": "matrix_coefficients", "shift": 24, "mask_hex": "0xff000000", "load_hex": "0xf3bc", "shift_hex": "0xf3c0"},
+      {"field": "colour_primaries", "shift": 16, "mask_hex": "0x00ff0000", "load_hex": "0xf3c4", "shift_hex": "0xf3c8"},
+      {"field": "transfer_characteristics", "shift": 8, "mask_hex": "0x0000ff00", "load_hex": "0xf3d0", "shift_hex": "0xf3d4"}
+    ],
+    "store_hex": "0xf3dc",
+    "low_byte": "Zero in the scoped producer: initialized clear, followed by this packed whole-word store. It is not a range flag.",
+    "core_population": "The pinned Core_PopulatePPB body does not rewrite metadata+48. The existing source bridge then copies the complete 228-byte metadata record."
+  },
+  "compact_pib_publication": {
+    "isa": "A32",
+    "publisher_blob_start_hex": "0x7bd4",
+    "publisher_size_bytes": 1788,
+    "publisher_sha256": "ac1cda4bb2d19248b0ddd34688437b773cfbc7cff6647dcab3e153fffaba2dcf",
+    "copy_blob_start_hex": "0x8024",
+    "copy_size_bytes": 12,
+    "copy_sha256": "ea4cf0b736ca2d560cdab7e3e3cfd9464880ce77a65fd34c5cea1aca3c43c734",
+    "copy_words_hex": ["e5950000", "e5900030", "e5840028"],
+    "copy_equation": "compact_PIB.colour_primaries at byte40 = metadata DWORD at byte48, unchanged",
+    "layout_cross_checks": "The same compact record receives width+12, height+16, frame_rate+32 and aspect_ratio+36, matching BC_PIC_INFO_BLOCK.",
+    "metadata_acquire_call_blob_hex": "0x845c",
+    "publisher_call_sites_blob_hex": ["0x8694", "0x8710", "0x8768"],
+    "host_structure_repository_path": "include/bc_dts_defs.h",
+    "host_structure_sha256": "46bc1696a2026c777632269a71fafc80b2daa6345579fb8910c67393299be347",
+    "host_copy_path": "Flea FORMAT_CHANGE reads compact PIB and preserves its raw colour_primaries DWORD through RX completion into the native format callback. Public field naming/scalar enum alone does not define this packed firmware representation."
+  },
+  "bounded_consumer_policy": {
+    "recognition": "Require low byte zero and recognize all three fields atomically; otherwise keep the freshly normalized OUTPUT hint rather than previous source state.",
+    "supported_primaries": {"1": "V4L2_COLORSPACE_REC709", "5": "V4L2_COLORSPACE_470_SYSTEM_BG", "6": "V4L2_COLORSPACE_SMPTE170M", "7": "V4L2_COLORSPACE_SMPTE240M"},
+    "supported_transfer": {"1": "V4L2_XFER_FUNC_709", "6": "V4L2_XFER_FUNC_709", "7": "V4L2_XFER_FUNC_SMPTE240M"},
+    "supported_matrix": {"1": "V4L2_YCBCR_ENC_709", "5": "V4L2_YCBCR_ENC_601", "6": "V4L2_YCBCR_ENC_601", "7": "V4L2_YCBCR_ENC_SMPTE240M"},
+    "sentinels": ["0x00000000", "0x02020200"],
+    "reject": "Any unsupported, reserved or partial tuple, and any nonzero low byte; no scalar-primary or geometry-based reconstruction of missing matrix/transfer.",
+    "source_vs_hint": "An accepted source tuple overrides CAPTURE primaries, transfer and matrix. OUTPUT remains the caller hint. G_FMT and TRY_FMT remain observational. Apply only to accepted source-format events and reset the source projection from the hint at each such event.",
+    "range": "No source quantization is established by this word. Preserve existing validated caller quantization only as a compatibility hint, otherwise retain DEFAULT; neither is proof of stream range. Do not derive LIM_RANGE/FULL_RANGE from the tuple or low byte.",
+    "extended_fields": "Advertise V4L2_CAP_EXT_PIX_FORMAT when implementing independent extended fields, obey priv=MAGIC semantics, and return initialized applicable fields. Mixed tuples require those independent fields; a scalar colorspace cannot express the full tuple.",
+    "client_limit": "Correct V4L2 reporting does not establish that every unchanged client consumes mixed tuples correctly. No Kodi/FFmpeg change or full-range qualification is part of this receipt."
+  },
+  "primary_contract_sources": [
+    {"url": "https://docs.kernel.org/userspace-api/media/v4l/pixfmt-v4l2.html", "supports": "CAPTURE colour fields are driver reported; extended-field capability and priv rules."},
+    {"url": "https://docs.kernel.org/userspace-api/media/v4l/colorspaces-defs.html", "supports": "Independent colour components; DEFAULT quantization means a colorspace default, not an unknown-range marker."}
+  ],
+  "limitations": [
+    "This is an interpretation of the exact original bundled image and ordinary H264 path, not a vendor packing specification or a guarantee for other firmware, codecs, silicon, CFP2/MVC paths or all firmware consumers.",
+    "Original addresses, symbol tables, relocations, instruction bytes and declared extensions are distinct from proof of runtime relocation, vendor ISA semantics or device execution.",
+    "No producer full-range, video-signal-present or colour-description-present bit is supplied by the packed word. Unknown, partial and unsupported metadata remains unqualified.",
+    "This receipt does not prove detection of all intra-stream colour-only changes. Applying a supplied FORMAT_CHANGE event and proving that firmware emits every required event are separate questions.",
+    "No GPU/pixel, physical presentation, performance, native lifetime or heap outcome is claimed. Future one-field controls are experiments to test this interpretation, not a substitute for the producer evidence."
+  ]
+}

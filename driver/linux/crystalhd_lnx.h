@@ -97,6 +97,8 @@ struct crystalhd_adp {
 	/* Flea window selection + BAR2 PIO. Lock before gisb_lock. */
 	spinlock_t		dram_lock;
 	struct rw_semaphore	user_lock;
+	/* Legacy admission/slots only; native TX/RX never take this mutex. */
+	struct mutex		legacy_gate;
 	struct mutex		tx_lock;
 	/* Mirrored from the transient RX-ready queue under its queue lock. */
 	atomic_t		rx_poll_ready;
@@ -133,6 +135,8 @@ struct crystalhd_device_access {
  */
 int crystalhd_device_enter(u64 generation, bool exclusive,
 			   struct crystalhd_device_access *access);
+int crystalhd_device_try_enter_exclusive(u64 generation,
+				       struct crystalhd_device_access *access);
 void crystalhd_device_exit(struct crystalhd_device_access *access);
 
 struct crystalhd_adp *chd_get_adp(void);

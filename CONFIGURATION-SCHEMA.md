@@ -89,8 +89,9 @@ and `player.software_output_size` once before constructing a pipeline. It uses
 the existing secure file reader, preset selection, profile precedence and
 resolver. Each explicitly supplied player flag overrides only its own key;
 an absent flag inherits the saved value. With no files, retain hardware decode,
-native output width and no software resize. `--weave` and subtitles remain
-invocation-only. Other applications and GStreamer pipelines are unaffected.
+native output width and no software resize. `--weave`, subtitles and
+`--video-output` remain invocation-only. Other applications and GStreamer
+pipelines are unaffected.
 
 `--scale-width 0` explicitly requests native card width;
 `--software-output-size native` explicitly removes a saved software resize.
@@ -495,7 +496,7 @@ These current surfaces deliberately do not become ordinary merged keys:
 | `crystalhdstagetrace capacity` <!-- schema-boundary:gst-property:capacity=invocation-only --> | Player-owned diagnostic controller capacity, set before attachment; no managed frontend setting |
 | `crystalhdstagetrace window` <!-- schema-boundary:gst-property:window=invocation-only --> | Player-owned rolling retention, set before attachment; no managed frontend setting |
 | `crystalhddec finish-trace-limit` <!-- schema-boundary:gst-property:finish-trace-limit=invocation-only --> | Explicit own finish-frame diagnostic capacity for one collector; set in NULL/READY, never saved as a managed setting |
-| `crystalhd-play --video-output` <!-- schema-boundary:player-flag:--video-output=invocation-only --> | Explicit optional output for this invocation; no saved profile/preset key or default promotion |
+| `crystalhd-play --video-output` <!-- schema-boundary:player-flag:--video-output=invocation-only --> | Per-invocation `auto`, experimental `xv-async` or experimental `field-gpu`; no saved profile/preset key or default promotion |
 | `crystalhd-play --packed-upscale` <!-- schema-boundary:player-flag:--packed-upscale=invocation-only --> | Explicit experimental fused resize for this invocation; no saved profile/preset key or default promotion |
 | `crystalhdxvsink display` <!-- schema-boundary:gst-property:display=external-gst-output --> | Optional renderer's own GStreamer property; the manager does not set it or replace the X11 session's `DISPLAY` |
 

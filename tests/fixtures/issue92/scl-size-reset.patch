@@ -1964,7 +1964,7 @@ index f1beeba..ea721c8 100644
          "$lifetime_test_dir/access-functions.h" "$lifetime_test_dir/probe-admission.h"
      rmdir "$lifetime_test_dir"
 @@ -56,6 +57,22 @@ awk '
-     END { if (found != 13 || copying) exit 1 }
+     END { if (found != 15 || copying) exit 1 }
  ' "$repo_dir/driver/linux/crystalhd_lnx.c" > "$lifetime_test_dir/lifetime-functions.h"
  
 +# Execute the complete command and outer PM functions for dirty-duty early

@@ -138,6 +138,16 @@ class PolicyAndControlTests(unittest.TestCase):
         player.configure_decoders(Gst, "software")
         self.assertEqual(factories[0].rank, 0)
 
+    def test_field_output_preserves_audio_and_rejects_injected_video(self):
+        Gst = SimpleNamespace(ElementFactory=mock.Mock())
+        audio = object()
+        sinks = {"audio-sink": audio}
+        self.assertEqual(player.select_video_output(Gst, "field-gpu", sinks), sinks)
+        Gst.ElementFactory.make.assert_not_called()
+        with self.assertRaisesRegex(RuntimeError, "conflicting"):
+            player.select_video_output(Gst, "field-gpu", {"video-sink": object()})
+        self.assertEqual(sinks, {"audio-sink": audio})
+
     def test_missing_hardware_plugin_fails(self):
         Gst = SimpleNamespace(Registry=SimpleNamespace(get=lambda: SimpleNamespace(
             get_feature_list=lambda _type: [])), ElementFactory=object)
@@ -826,6 +836,19 @@ class ArgumentTests(unittest.TestCase):
                 self.assertEqual(args.video_output, "xv-async")
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 player.arguments(["--video-output", "xv-async", "--weave", str(path)], environment={})
+
+    def test_field_output_is_explicit_and_rejects_double_processing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "video.mp4"
+            path.touch()
+            self.assertEqual(player.arguments([str(path)]).video_output, "auto")
+            args = player.arguments(["--video-output", "field-gpu", "--scale-width", "1280",
+                                     "--software-output-size", "native", str(path)])
+            self.assertEqual((args.video_output, args.scale_width, args.software_output_size),
+                             ("field-gpu", 1280, None))
+            for flags in (["--weave"], ["--scale-width", "1280", "--software-output-size", "1920x1080"]):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    player.arguments(["--video-output", "field-gpu"] + flags + [str(path)])
 
     def test_local_paths_and_subtitles_are_safely_encoded(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1838,6 +1861,76 @@ class GStreamerApiTests(unittest.TestCase):
         self.assertEqual(result.video_output_summary, [])
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(result.pipeline.get_state(0).state, self.Gst.State.NULL)
+
+    def test_field_output_owns_bob_without_disabling_audio(self):
+        original_make = self.Gst.ElementFactory.make
+        reference = original_make("playbin")
+        expected = int(reference.get_property("flags")) & ~(1 << 9)
+        def make(name, instance=None):
+            return original_make("fakesink" if name == "crystalhdfieldsink" else name, instance)
+        args = SimpleNamespace(mode="hardware", weave=False, video_output="field-gpu",
+                               scale_width=1280, software_output_size=None,
+                               file=Path(self.temp.name) / "unused.ogg", subtitles=None)
+        with mock.patch.object(player, "configure_decoders"), \
+                mock.patch.object(self.Gst.ElementFactory, "make", side_effect=make), \
+                contextlib.redirect_stdout(io.StringIO()):
+            result = player.Player(args, self.Gst, self.GLib)
+        self.addCleanup(result.close)
+        self.assertEqual(int(result.pipeline.get_property("flags")), expected)
+        self.assertIs(result.pipeline.get_property("video-sink"), result.field_sink)
+        self.assertIsNone(result.pipeline.get_property("video-filter"))
+
+    def test_field_output_preserves_drop_diagnostic_before_null_resets_it(self):
+        result = self.make_player()
+        Gst = self.Gst
+        result.pipeline = Gst.parse_launch(
+            "videotestsrc num-buffers=4 ! video/x-raw,framerate=25/1 ! "
+            "identity sleep-time=60000 ! fakesink name=sink sync=true qos=true max-lateness=0")
+        sink = result.pipeline.get_by_name("sink")
+        fields = Gst.Structure.new_empty("field-stats")
+        fields.set_value("fields", 2)
+        fields.set_value("dropped-fields", 1)
+        # Only the research-specific fields are substituted. Sink lifecycle
+        # and the counter reset are the actual native GstBaseSink API.
+        result.field_sink = SimpleNamespace(
+            find_property=lambda name: True,
+            get_property=lambda name: fields if name == "field-stats" else sink.get_property(name))
+        result.pipeline.set_state(Gst.State.PLAYING)
+        message = result.pipeline.get_bus().timed_pop_filtered(
+            3*Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+        self.assertIsNotNone(message)
+        self.assertEqual(message.type, Gst.MessageType.EOS)
+        dropped = sink.get_property("stats").get_value("dropped")
+        self.assertGreater(dropped, 0)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            result.close()
+        self.assertEqual(sink.get_property("stats").get_value("dropped"), 0)
+        self.assertIn(f"late whole-buffer drops: {dropped}", output.getvalue())
+
+    def test_field_statistics_failure_still_retires_pipeline_and_trace(self):
+        for failing_property in ("stats", "field-stats"):
+            with self.subTest(failing_property=failing_property):
+                result = self.make_player()
+                trace = mock.Mock()
+                result.stage_trace = trace
+                fields = self.Gst.Structure.new_empty("field-stats")
+                fields.set_value("fields", 2)
+                fields.set_value("dropped-fields", 1)
+
+                def read(name):
+                    if name == failing_property:
+                        raise RuntimeError("counter unavailable")
+                    return fields if name == "field-stats" else SimpleNamespace(get_value=lambda _key: 0)
+
+                result.field_sink = SimpleNamespace(find_property=lambda _name: True,
+                                                    get_property=read)
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()) as error:
+                    result.close()
+                self.assertEqual(result.pipeline.get_state(0).state, self.Gst.State.NULL)
+                self.assertEqual(result.exit_code, 0)
+                self.assertIn("statistics unavailable", error.getvalue())
+                trace.finish.assert_called_once_with(result.video_output_summary, 0)
 
     def test_weave_changes_only_deinterlacing_and_preserves_decoder_policy(self):
         reference = self.Gst.ElementFactory.make("playbin")

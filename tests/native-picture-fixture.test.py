@@ -32,6 +32,20 @@ def capture(payload, width=1280, kind='bgra'):
 
 
 class BarcodeTests(unittest.TestCase):
+    def test_declared_control_case_is_required(self):
+        raw = capture(F.code_bytes(1920, 1, source_case=3), 1920)
+        self.assertEqual(F.decode(1920, 1080, raw, 'bgra', source_case=3), 1)
+        for expected in (None, 1, 2, 4):
+            with self.assertRaisesRegex(ValueError, 'source-case'):
+                F.decode(1920, 1080, raw, 'bgra', source_case=expected)
+        source = F.frame(1920, 1080, 179, source_case=3)
+        self.assertEqual(F.decode(1920, 1080, source, 'yuv420p', source_case=3), 179)
+
+    def test_invalid_declared_case_rejected(self):
+        for value in (0, 256, -1, '3'):
+            with self.assertRaisesRegex(ValueError, 'source case'):
+                F.code_bytes(1920, 0, source_case=value)
+
     def test_frozen_codes_and_source_cases(self):
         expected = {1280: ('c53d0100ff81', 'c53d01b34c91'),
                     1920: ('c53d0200ffbe', 'c53d02b34cae')}
