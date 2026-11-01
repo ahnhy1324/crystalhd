@@ -157,7 +157,20 @@ slot lifecycle tools. It copies the exact seven FFmpeg DSOs, their SONAME links,
 the two CLIs and source/dependency inventories; it never executes the selected
 payload or publishes a package. Run `runtime-package.py --help` for the explicit
 `pack`/`verify` inputs. `build-native-ffmpeg.sh` retains the pinned unmodified
-source recipe; it does not edit third-party code and is not run by these tests.
+source recipe; these tests do not configure or compile third-party code.
+
+The build helper requires GNU `realpath` and `mv`, the pinned clean checkout,
+and two fresh, absolute, disjoint output directories. Its logical prefix is
+`/usr`; `make install DESTDIR=...` writes into the private build tree. Only a
+successful installation publishes the requested private `bin/` and `lib/`
+layout. Existing outputs, dangling links, overlapping paths and competing
+destinations are rejected or preserved. No installation targets the host `/usr`.
+The neutral prefix keeps private output paths out of configuration metadata;
+it does not establish reproducible compilation or ABI compatibility.
+
+`make -C tools/kodi-route-probe check-build-helper` runs the 13 existing
+fake-tool controls for staging, paths, failures and publication. It does not
+configure or compile FFmpeg. The aggregate `check` target includes them.
 
 `make -C tools/kodi-route-probe check-package` tests real generated ELF fixtures,
 reproducible packaging and relocation. It also passes producer output through

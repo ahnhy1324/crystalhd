@@ -10,7 +10,7 @@ display.
 with module-DKMS `3.10.13`. The quick start installs that stable release. See the
 [final-package qualification](HARDWARE-2026-09-13.md#120-final-package-qualification--2026-10-23)
 and [change summary](HISTORY.md#120).
-This integration candidate is `1.3.0-rc.2` / `3.10.16`; qualification is in
+This integration candidate is `1.3.0-rc.2` / `3.10.17`; qualification is in
 progress. Its version does not extend stable compatibility claims. See the
 [complete 1.3 scope](RELEASING.md#private-v13-candidate-preparation).
 For published [v1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0),

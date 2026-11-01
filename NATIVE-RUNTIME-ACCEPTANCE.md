@@ -309,21 +309,24 @@ not new native playback or reproducible-compilation qualification.
 
 ## Reuse the implemented package and runtime checks
 
-The current repository also carries the three metadata/software observer
-workers under `tools/kodi-route-probe/`; the packager itself remains the pinned
-#576 tool described below. The observer now distinguishes a visible declared
+The current repository carries the package producer, neutral-prefix build
+helper and three metadata/software observer workers under
+`tools/kodi-route-probe/`. The observer now distinguishes a visible declared
 neutral `/usr` prefix from a leaked private build prefix. All seven FFmpeg
 libraries must still map from the exact relocated package. A visible `/usr` is
 reported as visible, not hidden, and does not approve neutral/reproducible builds.
 
-The reviewed #576 source is `ec946ac6cc5a78ce552911510cf89a651cf19e5a`, merged
-only into `research/issue539-runtime-verified-20261029` at `c65af5e`. Its
+The reviewed #576 source is `ec946ac6cc5a78ce552911510cf89a651cf19e5a`, originally
+merged into `research/issue539-runtime-verified-20261029` at `c65af5e`. Its
 [package guide](https://github.com/ahnhy1324/crystalhd/blob/ec946ac6cc5a78ce552911510cf89a651cf19e5a/tools/kodi-route-probe/README.md#private-runtime-packaging-and-dependency-audit)
-and four helpers already implement:
+describes the original producer. The current integration also restores the
+neutral `/usr` prefix/private DESTDIR helper from `00c1511` with its 13 existing
+fake-tool checks. The included tools implement:
 
-| Helper in that research tree | What it proves when executed successfully |
+| Included helper | What it proves when executed successfully |
 | --- | --- |
 | `runtime-package.py pack` / `verify` | Explicit seven-DSO/two-CLI allowlist, relative SONAME links, source/notice inventory, deterministic packaging, exact pinned-provider ELF version/strong-symbol closure; no host library search. |
+| `build-native-ffmpeg.sh` | Pinned unmodified source recipe, neutral logical prefix, private staged installation and no-clobber publication. Its 13 fake-tool controls do not compile external code or prove binary/source correspondence. |
 | `runtime-package-namespace.py` + `runtime-package-metadata.py` | Device-free bubblewrap namespace, inspected build tools absent, actual library metadata calls, exact seven mappings, original prefix absent. Existing kernel remains shared. |
 | `runtime-package-namespace.py` + `runtime-package-cli.py` | Actual relocated CLI startup and software H.264/NV12 decode against frozen independent bytes and clock/metadata. Requires all four retained inputs. |
 

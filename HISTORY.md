@@ -2,11 +2,13 @@
 
 ## 1.3.0-rc.2 — integration candidate
 
-Bundle `1.3.0-rc.2` / module-DKMS `3.10.16` combines the maintained runtime,
+Bundle `1.3.0-rc.2` / module-DKMS `3.10.17` combines the maintained runtime,
 PTS-epoch diagnostics, native V4L2 colour/format/EXPBUF work and explicit
 field-GPU output. Runtime package production now exercises the current
 preflight and slot install/update/rollback/removal contracts. Previously omitted
 native adapter, TX-wrap and field-output build/contracts join automated checks.
+The neutral-prefix private build helper and its 13 existing controls are also
+restored. Package17 preserves the already registered package16 source unchanged.
 Qualification remains in progress; this entry does not announce publication
 or promote optional backends. External application code, firmware and the
 legacy ABI are unchanged.

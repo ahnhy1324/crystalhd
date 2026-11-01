@@ -5,7 +5,7 @@ CFLAGS ?= -O2
 
 EMBEDDED_HELPER := build/ffmpeg-embedded-hwconfig-preload.so
 
-.PHONY: all check check-capability check-runtime-metadata check-native-pts check-package clean
+.PHONY: all check check-capability check-runtime-metadata check-native-pts check-package check-build-helper clean
 
 all: $(EMBEDDED_HELPER)
 
@@ -14,7 +14,7 @@ $(EMBEDDED_HELPER): ffmpeg-embedded-hwconfig-preload.c
 	$(CC) -std=c11 -Wall -Wextra -Werror -fPIC -shared \
 		$(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) -ldl -o "$@"
 
-check: check-capability check-runtime-metadata check-native-pts check-package
+check: check-capability check-runtime-metadata check-native-pts check-package check-build-helper
 
 check-capability: $(EMBEDDED_HELPER)
 	$(PYTHON3) -B ../../tests/kodi-ffmpeg-hwconfig-probe.py ./ffmpeg-hwconfig-probe.py
@@ -29,6 +29,9 @@ check-native-pts:
 
 check-package:
 	$(PYTHON3) -B ../../tests/kodi-runtime-package.test.py
+
+check-build-helper:
+	$(PYTHON3) -B ../../tests/kodi-native-ffmpeg-build.py
 
 clean:
 	rm -f -- $(EMBEDDED_HELPER)

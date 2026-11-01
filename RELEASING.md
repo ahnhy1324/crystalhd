@@ -52,7 +52,9 @@ boundaries and current status are in
 ## Private v1.3 candidate preparation
 
 The complete integration candidate uses bundle `1.3.0-rc.2` and the previously
-unused module-DKMS identity `3.10.16`. RC1 is an incomplete historical cut,
+unused module-DKMS identity `3.10.17`. The helper/test restoration uses a new
+identity so the registered package16 source and its receipts remain immutable.
+RC1 is an incomplete historical cut,
 not the final scope of 1.3. Implemented PTS-epoch diagnostics, native V4L2
 decoding and its colour/format/EXPBUF repairs, explicit experimental field-GPU
 output, runtime producer/lifecycle and host/metadata/materials tools remain in
@@ -155,7 +157,7 @@ checkout alone does not announce a published release.
 
 | Identity | Current value | Purpose |
 | --- | --- | --- |
-| Complete integration candidate / module package | `1.3.0-rc.2` / `3.10.16` | Qualification in progress; never replace registered payloads |
+| Complete integration candidate / module package | `1.3.0-rc.2` / `3.10.17` | Qualification in progress; never replace registered payloads |
 | Historical partial RC1 / module package | `1.3.0-rc.1` / `3.10.15` | Immutable tag/assets; incomplete 1.3 scope |
 | Earlier development bundle / module package | `1.3.0-dev.1` / `3.10.14` | Historical private checkpoints |
 | Published stable bundle / module package | `1.2.0` / `3.10.13` | Immutable source `8132043`; qualified public source asset |

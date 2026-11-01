@@ -8,7 +8,7 @@ with module-DKMS identity `3.10.13` and prereleases
 (`3.10.12`) are published and immutable. RC2 completed its bounded G0–G3
 qualification in [#473](https://github.com/ahnhy1324/crystalhd/issues/473).
 Fresh final-package checks, explicit maintainer GO and public-asset verification
-are complete. The full integration candidate is `1.3.0-rc.2` / `3.10.16`,
+are complete. The full integration candidate is `1.3.0-rc.2` / `3.10.17`,
 with acceptance and packaging still in progress.
 Previous stable releases and RCs remain unchanged.
 The [qualification summary](HARDWARE-2026-09-13.md#120-final-package-qualification--2026-10-23)
