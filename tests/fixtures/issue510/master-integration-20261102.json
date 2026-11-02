@@ -1,0 +1,36 @@
+{
+  "CI": {
+    "conclusion": "success",
+    "intended_skips": 2,
+    "status": "completed",
+    "successful_jobs": 15,
+    "url": "https://github.com/ahnhy1324/crystalhd/actions/runs/41391220208"
+  },
+  "GTK623": "Prior intermittent assertion/SIGSEGV remains root-cause unresolved; main-thread test retirement and verbose/faulthandler added. One successful fullCI is not a causal repair proof.",
+  "date": "2026-11-02",
+  "local_master": "Fast-forwarded; source tree equals merged622 head; clean",
+  "master": "979d93606523ed8a484986d98d597c3513e16447",
+  "merges": [
+    {
+      "PR": 619,
+      "merge_commit": "a00e34bbafbbab769c24435112b05889084d0277"
+    },
+    {
+      "PR": 620,
+      "merge_commit": "17f6bd55a1e95bf348830e9b170a5039d0903d97"
+    },
+    {
+      "PR": 621,
+      "merge_commit": "00b31210c2f525f5ff8df28da153d499f0b8eb0d"
+    },
+    {
+      "PR": 622,
+      "merge_commit": "979d93606523ed8a484986d98d597c3513e16447"
+    }
+  ],
+  "module_runtime": "Installed stable13 and36-leaf runtime baseline are not replaced by source integration",
+  "original538_heap": "Excluded subtask/reason unchanged; #538 remains open",
+  "published_RC2": "Frozen core/native companion/assets retained; no tag/asset replacement",
+  "schema": "crystalhd.master-integration.v1",
+  "stable_release": "DEFERRED_BY_EXPLICIT_MAINTAINER_REQUEST"
+}

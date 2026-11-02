@@ -21,7 +21,15 @@ scope to general full-rate FHD or hardware deinterlacing.
 
 ## Current priorities — 2026-11-02
 
-The complete 1.3 core is frozen at940/module17 on
+Master now integrates #619/#620/#621/#622: complete core, native companion,
+live field-window replacement and same-layout Xv port handoff. The
+[master integration receipt](tests/fixtures/issue510/master-integration-20261102.json)
+records both Ubuntu userspaces, all ten kernel/architecture lanes, contracts
+and final CI gate passing. Stable1.3 publication is explicitly deferred by the
+maintainer. #623 retains the intermittent GTK CI crash investigation; a later
+successful run does not establish its root cause. Published RC2 stays frozen.
+
+The published RC2 core remains frozen at940/module17 on
 `integrate/v1.3-complete-20261101`; the separately identified
 [native companion](NATIVE-RUNTIME-DELIVERY.md) supplies its binaries, source,
 notices and supplemental tools without overwriting registered17 source.
@@ -57,9 +65,13 @@ shelve the work or silently exclude implemented features.
    rejection, dormant pools and stop cancellation. See the
    [receipt](tests/fixtures/issue513/xv-live-port-20261102.json).
    X-server interruption and matched endurance/attribution remain active research.
-3. #538: continue source-range/native compatibility research. Nonempty
-   STOP/START must keep its firmware-DPB-loss rejection; clearing a host flag
-   is not a repair. Only the original heap subtask is excluded.
+3. #538: the private SPS/VUI range-prefix reader now distinguishes explicit
+   limited/full from absent source flags;15 independent header goldens and780
+   ordinary/sanitized CPU checks pass. Next connect PPS/VCL identity and
+   admission-token snapshots before applying source range to native output.
+   [Receipt](tests/fixtures/issue538/h264-sps-range-20261102.json).
+   Nonempty STOP/START retains its firmware-DPB-loss rejection. Only the
+   original heap subtask is excluded.
 4. #470/#477: retain current-equipment allocation/ROI qualification work in
    their owning issues. VA-Bob endurance does not substitute for their matched
    allocation or centered-ROI cases. Extra physical targets remain unavailable.
