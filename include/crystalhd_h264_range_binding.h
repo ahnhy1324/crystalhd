@@ -19,7 +19,10 @@ struct chd_h264_range_state {
 		unsigned long long generation;
 		bool valid;
 	} sps[32];
-	struct { unsigned int sps_id; bool valid; } pps[256];
+	struct {
+		unsigned int sps_id;
+		bool valid, picture_qualified;
+	} pps[256];
 	unsigned long long generation;
 	bool exhausted;
 };
@@ -56,6 +59,81 @@ static inline bool chd_h264_slice_prefix(const unsigned char *nal, unsigned int 
 	if (b.failed || first || type > 9 || p > 255) return false;
 	*pps = p; return true;
 }
+
+/* Qualify a single slice group without redundant pictures. Reading through
+ * redundant_pic_cnt_present_flag is necessary: the two ID UEs alone do not
+ * distinguish these supported picture headers from FMO/redundant syntax.
+ * The caller has already validated the PPS header/EBSP with pps_prefix().
+ */
+static inline bool chd_h264_pps_picture_prefix(const unsigned char *nal,
+	unsigned int bytes)
+{
+	struct chd_h264_range_bits b = {nal, bytes, 1, 0, 0, 0, false};
+	int value;
+	chd_h264_range_ue(&b); chd_h264_range_ue(&b);
+	chd_h264_range_get(&b, 1); /* entropy_coding_mode_flag */
+	chd_h264_range_get(&b, 1); /* bottom-field POC: not used for POC2 */
+	if (chd_h264_range_ue(&b)) return false; /* num_slice_groups_minus1 */
+	if (chd_h264_range_ue(&b) > 31 || chd_h264_range_ue(&b) > 31) return false;
+	chd_h264_range_get(&b, 1);
+	if (chd_h264_range_get(&b, 2) > 2) return false;
+	value = chd_h264_range_se(&b);
+	if (value < -26 || value > 25) return false;
+	value = chd_h264_range_se(&b);
+	if (value < -26 || value > 25) return false;
+	value = chd_h264_range_se(&b);
+	if (value < -12 || value > 12) return false;
+	chd_h264_range_get(&b, 1); chd_h264_range_get(&b, 1);
+	return !chd_h264_range_get(&b, 1) && !b.failed;
+}
+
+struct chd_h264_range_picture {
+	unsigned int first_mb, pps_id, frame_num, idr_pic_id;
+	bool idr, reference;
+};
+
+/* First bounded multi-slice scope: progressive 8-bit420, POC2, ordinary
+ * ordered I/P/B slices, one group and no redundant picture. ITU-T H.264
+ * 7.4.1.2.4 picture-boundary fields reduce here to PPS, frame_num, IDR/id and
+ * reference zero/nonzero. POC0/1 and fields remain UNKNOWN for multi-slice.
+ */
+static inline bool chd_h264_range_picture_prefix(const struct chd_h264_range_state *s,
+	const unsigned char *nal, unsigned int bytes, struct chd_h264_range_picture *out)
+{
+	struct chd_h264_range_bits b = {nal, bytes < 128 ? bytes : 128, 1, 0, 0, 0, false};
+	struct chd_h264_range_picture p = {0};
+	const struct chd_h264_sps_range *sps;
+	unsigned int type, slice_type;
+	if (!nal || bytes < 2 || (nal[0] & 0x80)) return false;
+	type = nal[0] & 31;
+	if ((type != 1 && type != 5) || (type == 5 && !(nal[0] & 0x60))) return false;
+	p.first_mb = chd_h264_range_ue(&b);
+	slice_type = chd_h264_range_ue(&b); p.pps_id = chd_h264_range_ue(&b);
+	if (b.failed || p.pps_id > 255 || slice_type > 9 || slice_type % 5 > 2 ||
+	    !s->pps[p.pps_id].valid || !s->pps[p.pps_id].picture_qualified ||
+	    !s->sps[s->pps[p.pps_id].sps_id].valid) return false;
+	sps = &s->sps[s->pps[p.pps_id].sps_id].value;
+	if (!sps->frame_mbs_only || sps->poc_type != 2 ||
+	    sps->frame_num_bits < 4 || sps->frame_num_bits > 16 ||
+	    !sps->pic_size_in_map_units || p.first_mb >= sps->pic_size_in_map_units)
+		return false;
+	p.frame_num = chd_h264_range_get(&b, sps->frame_num_bits);
+	p.idr = type == 5; p.reference = (nal[0] & 0x60) != 0;
+	if (p.idr) {
+		p.idr_pic_id = chd_h264_range_ue(&b);
+		if (p.frame_num || slice_type % 5 != 2 || p.idr_pic_id > 65535) return false;
+	}
+	if (b.failed) return false;
+	*out = p; return true;
+}
+
+static inline bool chd_h264_range_same_picture(const struct chd_h264_range_picture *a,
+	const struct chd_h264_range_picture *b)
+{
+	return a->pps_id == b->pps_id && a->frame_num == b->frame_num &&
+	       a->idr == b->idr && a->idr_pic_id == b->idr_pic_id &&
+	       a->reference == b->reference;
+}
 /* Sequential Annex-B scan; zero padding is framing, not SPS/PPS EBSP. */
 static inline unsigned int chd_h264_range_start(const unsigned char *data,
 	unsigned int bytes, unsigned int from, unsigned int *start)
@@ -72,8 +150,9 @@ static inline void chd_h264_observe_range(struct chd_h264_range_state *s,
 	const unsigned char *data, unsigned int bytes, struct chd_h264_range_snapshot *out)
 {
 	struct chd_h264_range_snapshot observed = {0, 0, 0, false, false, false};
+	struct chd_h264_range_picture picture = {0};
 	unsigned int pos, start, nals = 0, slices = 0, auds = 0, i;
-	bool ambiguous = false;
+	bool ambiguous = false, picture_qualified = false;
 	*out = observed;
 	if (!data || !bytes || bytes > CHD_H264_RANGE_MAX_AU || s->exhausted) {
 		chd_h264_range_forget(s); return;
@@ -107,10 +186,20 @@ static inline void chd_h264_observe_range(struct chd_h264_range_state *s,
 			if (!chd_h264_pps_prefix(nal, size, &p, &q)) {
 				for (i = 0; i < 256; i++) s->pps[i].valid = false;
 				ambiguous = true;
-			} else { s->pps[p].sps_id = q; s->pps[p].valid = true; }
+			} else {
+				s->pps[p].sps_id = q; s->pps[p].valid = true;
+				s->pps[p].picture_qualified = chd_h264_pps_picture_prefix(nal, size);
+			}
 		} else if (type == 1 || type == 5) {
 			slices++;
-			if (slices != 1 || !chd_h264_slice_prefix(nal, size, &p)) ambiguous = true;
+			if (slices > 1) {
+				struct chd_h264_range_picture next_picture;
+				if (!picture_qualified ||
+				    !chd_h264_range_picture_prefix(s, nal, size, &next_picture) ||
+				    next_picture.first_mb <= picture.first_mb ||
+				    !chd_h264_range_same_picture(&picture, &next_picture)) ambiguous = true;
+				else picture = next_picture;
+			} else if (!chd_h264_slice_prefix(nal, size, &p)) ambiguous = true;
 			else if (s->pps[p].valid && s->sps[s->pps[p].sps_id].valid) {
 				q = s->pps[p].sps_id;
 				observed.sps_id = q; observed.pps_id = p;
@@ -118,6 +207,7 @@ static inline void chd_h264_observe_range(struct chd_h264_range_state *s,
 				observed.associated = true;
 				observed.range_present = s->sps[q].value.range_present;
 				observed.full_range = s->sps[q].value.full_range;
+				picture_qualified = chd_h264_range_picture_prefix(s, nal, size, &picture);
 			}
 		} else if (type == 9) {
 			if (++auds > 1 || slices) ambiguous = true;
@@ -134,8 +224,9 @@ static inline void chd_h264_observe_range(struct chd_h264_range_state *s,
 		}
 		pos = next;
 	}
-	/* One first slice only. Full frame_num/field/POC picture identity and
-	 * multi-slice/partition/extension streams are deliberately unqualified. */
-	if (!ambiguous && slices == 1) *out = observed;
+	/* Preserve the existing single-first-slice observation. Additional slices
+	 * require independently qualified, matching progressive POC2 identities.
+	 */
+	if (!ambiguous && slices) *out = observed;
 }
 #endif

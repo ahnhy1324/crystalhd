@@ -1,0 +1,83 @@
+{
+  "source_manifest_sha256": "aade137e8cffa463eb065317a5102536e0b678283c5c91c23b5bd3fe41f62926",
+  "cases": [
+    {
+      "stem": "slices2-full",
+      "slices": 2,
+      "range": "full",
+      "first_mb": [
+        0,
+        480
+      ],
+      "frame_num_bits": 4,
+      "pic_width_in_mbs": 40,
+      "pic_height_in_map_units": 23,
+      "media_sha256": "6353b410261ac58299e379bb8e589270d8328a5f9b4da1ed1c28c82ca274e416",
+      "decoded_sha256": "d642c4637cb520b6db0517cd62927a5e31f3f61ebd3dc9759b88c1f14fd7324a",
+      "reference_sha256": "6e760076f3bd1ed8c72bfc6a39c00238b0ff421d3a48402b07a6b62e35e9d212",
+      "annexb_sha256": "587b39643d23cdb21c4e95e6db9d470cc3d977e9c8268c454d7af7a70bd51ef0",
+      "trace_sha256": "f98541cddd10820c6ee79cfd001bf07c2e1242643d210608720d206d50fe6cb0",
+      "time_base": "1/15360"
+    },
+    {
+      "stem": "slices2-limited",
+      "slices": 2,
+      "range": "limited",
+      "first_mb": [
+        0,
+        480
+      ],
+      "frame_num_bits": 4,
+      "pic_width_in_mbs": 40,
+      "pic_height_in_map_units": 23,
+      "media_sha256": "48e35d2dcfc43f758eaceef9835d5c5a6eaf8b6a6bd1afa7350687bf50efea36",
+      "decoded_sha256": "d642c4637cb520b6db0517cd62927a5e31f3f61ebd3dc9759b88c1f14fd7324a",
+      "reference_sha256": "6e760076f3bd1ed8c72bfc6a39c00238b0ff421d3a48402b07a6b62e35e9d212",
+      "annexb_sha256": "b7a04d77821914ef191d9298767503dcfefd8e5f4e3ab940674adcff68d1f434",
+      "trace_sha256": "f5d79e4085c85f2b3aef6cf6c437269f3c525d29e78a1b60f30f81cdf48d196f",
+      "time_base": "1/15360"
+    },
+    {
+      "stem": "slices4-full",
+      "slices": 4,
+      "range": "full",
+      "first_mb": [
+        0,
+        240,
+        480,
+        680
+      ],
+      "frame_num_bits": 4,
+      "pic_width_in_mbs": 40,
+      "pic_height_in_map_units": 23,
+      "media_sha256": "cff34fd98a585147db6268925fa9315f00bbce591f28adba3b91fef1e173d257",
+      "decoded_sha256": "d642c4637cb520b6db0517cd62927a5e31f3f61ebd3dc9759b88c1f14fd7324a",
+      "reference_sha256": "6e760076f3bd1ed8c72bfc6a39c00238b0ff421d3a48402b07a6b62e35e9d212",
+      "annexb_sha256": "37735a59249282ff78512403cf2cb7d5baaf9e61f1c3cfbf3f36e625cbfe296a",
+      "trace_sha256": "436336e260a3e628a55ae1a50f74957a367bbb1191c17049437d7560c74e155c",
+      "time_base": "1/15360"
+    },
+    {
+      "stem": "slices4-limited",
+      "slices": 4,
+      "range": "limited",
+      "first_mb": [
+        0,
+        240,
+        480,
+        680
+      ],
+      "frame_num_bits": 4,
+      "pic_width_in_mbs": 40,
+      "pic_height_in_map_units": 23,
+      "media_sha256": "8ca3913a3da17601aa1914bc53becbd3a66d6e6778c14d9ca09ce44b4aa48d0a",
+      "decoded_sha256": "d642c4637cb520b6db0517cd62927a5e31f3f61ebd3dc9759b88c1f14fd7324a",
+      "reference_sha256": "6e760076f3bd1ed8c72bfc6a39c00238b0ff421d3a48402b07a6b62e35e9d212",
+      "annexb_sha256": "167f844290f845d3392819d2b5ef90af7afd5b922b7c2b7220145ca7365fe45b",
+      "trace_sha256": "a669793b0552cf7eb973ee0a9a4d1e6de0decedb26189bfc7c6b663f95b70231",
+      "time_base": "1/15360"
+    }
+  ],
+  "prefix_header_sha256": "dcc20671d85fe25133a3cc601c8dc8bffb43233c3e5a527cb326be2ede36b30a",
+  "scope": "Real independently decoded/traced sources; CPU VCL arrays are prefixes only. No hardware or full picture identity claim."
+}

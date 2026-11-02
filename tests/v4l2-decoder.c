@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include "crystalhd_h264_range_binding.h"
 #include "fixtures/issue538/h264-range-nals-20261102.h"
+#include "fixtures/issue538/h264-multislice-prefixes-20261102.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -432,6 +433,55 @@ static void observation_checks(void)
 #undef RANGE_AU
 }
 
+static void multislice_observation_checks(void)
+{
+    static const u8 limited[] = CHD_TEST_MULTI_SPS_LIMITED;
+    static const u8 full[] = CHD_TEST_MULTI2_SPS;
+    static const u8 pps[] = CHD_TEST_MULTI2_PPS;
+    static const u8 first[] = CHD_TEST_MULTI2_VCL0;
+    static const u8 next[] = CHD_TEST_MULTI2_VCL1;
+    struct crystalhd_v4l2_decoder d;
+    struct crystalhd_cmd c = {0};
+    struct crystalhd_rx_metadata m = {.valid=true};
+    struct chd_h264_range_snapshot out, saved;
+    u64 pts[2], timestamp = 42, old_epoch;
+    u8 input[128]; size_t n;
+    fail_call=0;crystalhd_v4l2_decoder_init(&d);
+    assert(!crystalhd_v4l2_decoder_open_locked(&d,&c,&owner));
+#define MULTI_ADD(nal) do { memcpy(input+n,"\0\0\1",3);n+=3; \
+    memcpy(input+n,nal,sizeof(nal));n+=sizeof(nal); } while (0)
+    for (unsigned i=0;i<2;i++) {
+        n=0;if(i) { MULTI_ADD(full); } else { MULTI_ADD(limited); }
+        MULTI_ADD(pps);MULTI_ADD(first);MULTI_ADD(next);
+        mapped.source=input;mapped.bytes=n;
+        assert(!crystalhd_v4l2_decoder_reserve_mapped(&d,&c,&owner,&mapped,
+            i?UINT64_MAX:0,&pts[i]));
+        assert(d.timestamps[i].input_range.associated && d.timestamps[i].input_range.range_present &&
+               d.timestamps[i].input_range.full_range==!!i &&
+               d.timestamps[i].input_range.sps_generation==i+1);
+        if(!i)saved=d.timestamps[0].input_range;
+    }
+    assert(!memcmp(&saved,&d.timestamps[0].input_range,sizeof(saved)) && d.count==2);
+    for(unsigned i=0;i<2;i++) {
+        unsigned index=1-i;m.firmware_timestamp=pts[index]>>1;
+        assert(!crystalhd_v4l2_decoder_complete_observed(&d,&m,d.epoch,&timestamp,&out));
+        assert(timestamp==(index?UINT64_MAX:0) && out.associated && out.full_range==!!index &&
+               out.sps_generation==index+1);
+    }
+    assert(!d.count);old_epoch=d.epoch;restart(&d,&c);
+    n=0;MULTI_ADD(first);MULTI_ADD(next);mapped.source=input;mapped.bytes=n;
+    assert(!crystalhd_v4l2_decoder_reserve_mapped(&d,&c,&owner,&mapped,31,&pts[0]));
+    assert(!d.timestamps[0].input_range.associated && !d.input_parameters.pps[0].valid);
+    m.firmware_timestamp=pts[0]>>1;saved=out;timestamp=77;
+    assert(crystalhd_v4l2_decoder_complete_observed(&d,&m,old_epoch,&timestamp,&out)==-ESTALE);
+    assert(timestamp==77 && !memcmp(&saved,&out,sizeof(out)) && d.count==1);
+    assert(!crystalhd_v4l2_decoder_complete_observed(&d,&m,d.epoch,&timestamp,&out));
+    assert(timestamp==31 && !out.associated && !d.count);
+    mapped=(struct crystalhd_v4l2_output_buffer){0};
+    puts("V4L2 multi-slice input observations: immutable redefinition/reordered completion/reset PASS");
+#undef MULTI_ADD
+}
+
 int main(void)
 {
     struct crystalhd_v4l2_decoder d;
@@ -558,6 +608,7 @@ int main(void)
     mapped_checks();
     asynchronous_checks();
     failed_picture_checks();
+    multislice_observation_checks();
     puts("V4L2 decoder state, timestamp correlation and genuine drain checks passed");
     return 0;
 }

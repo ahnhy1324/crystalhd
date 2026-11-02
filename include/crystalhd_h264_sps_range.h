@@ -21,6 +21,11 @@ enum chd_h264_range_status {
 struct chd_h264_sps_range {
 	unsigned int sps_id;
 	bool vui_present, video_signal_present, range_present, full_range;
+	/* Additional input-prefix facts for bounded progressive picture grouping.
+	 * Geometry is never used for allocation by this reader.
+	 */
+	unsigned int frame_num_bits, poc_type, pic_size_in_map_units;
+	bool frame_mbs_only;
 };
 struct chd_h264_range_bits {
 	const unsigned char *nal;
@@ -86,9 +91,10 @@ static inline bool chd_h264_range_ebsp(const unsigned char *nal, unsigned int by
 static inline enum chd_h264_range_status chd_h264_read_sps_range(
 	const unsigned char *nal, unsigned int bytes, struct chd_h264_sps_range *result)
 {
-	struct chd_h264_sps_range out = {0, false, false, false, false};
+	struct chd_h264_sps_range out = {0};
 	struct chd_h264_range_bits b = {nal, bytes, 1, 0, 0, 0, false};
-	unsigned int profile, value, i;
+	unsigned int profile, value, i, width, height;
+	unsigned long long map_units;
 	if (!nal || !result || bytes < 4 || bytes > CHD_H264_SPS_MAX_BYTES ||
 	    (nal[0] & 0x80) || !(nal[0] & 0x60) || (nal[0] & 31) != 7 ||
 	    !chd_h264_range_ebsp(nal, bytes)) return CHD_H264_RANGE_INVALID;
@@ -121,9 +127,12 @@ static inline enum chd_h264_range_status chd_h264_read_sps_range(
 			}
 		}
 	}
-	if (chd_h264_range_ue(&b) > 12) return CHD_H264_RANGE_INVALID;
+	value = chd_h264_range_ue(&b);
+	if (value > 12) return CHD_H264_RANGE_INVALID;
+	out.frame_num_bits = value + 4;
 	value = chd_h264_range_ue(&b); /* pic_order_cnt_type */
 	if (value > 2) return CHD_H264_RANGE_INVALID;
+	out.poc_type = value;
 	if (!value) {
 		if (chd_h264_range_ue(&b) > 12) return CHD_H264_RANGE_INVALID;
 	} else if (value == 1) {
@@ -135,8 +144,11 @@ static inline enum chd_h264_range_status chd_h264_read_sps_range(
 	}
 	if (chd_h264_range_ue(&b) > 16) return CHD_H264_RANGE_INVALID;
 	chd_h264_range_get(&b, 1); /* gaps_in_frame_num_value_allowed_flag */
-	chd_h264_range_ue(&b); chd_h264_range_ue(&b); /* geometry, not allocation */
-	if (!chd_h264_range_get(&b, 1)) chd_h264_range_get(&b, 1); /* MBAFF */
+	width = chd_h264_range_ue(&b); height = chd_h264_range_ue(&b);
+	map_units = (width + 1ULL) * (height + 1ULL);
+	if (map_units <= ~0U) out.pic_size_in_map_units = (unsigned int)map_units;
+	out.frame_mbs_only = chd_h264_range_get(&b, 1) != 0;
+	if (!out.frame_mbs_only) chd_h264_range_get(&b, 1); /* MBAFF */
 	chd_h264_range_get(&b, 1);
 	if (chd_h264_range_get(&b, 1))
 		for (i = 0; i < 4; i++) chd_h264_range_ue(&b);
