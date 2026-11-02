@@ -22,8 +22,10 @@ with tempfile.TemporaryDirectory(prefix='crystalhd-sps-range-') as scratch:
         expected = case['expected']
         values = [expected[key] for key in ('sps_id', 'vui_present', 'video_signal_present',
                                            'range_present', 'full_range')]
+        names = ('sps_id', 'vui_present', 'video_signal_present', 'range_present', 'full_range')
+        fields = ','.join('.%s=%d' % (name, int(value)) for name, value in zip(names, values))
         entries.append('{golden_%d,%d,%d,{%s}}' %
-                       (index, len(nal), case['minimum_bytes_for_prefix'], ','.join(str(int(x)) for x in values)))
+                       (index, len(nal), case['minimum_bytes_for_prefix'], fields))
     declarations.append('static const struct range_golden goldens[] = {%s};' % ','.join(entries))
     (work / 'range-goldens.h').write_text('\n'.join(declarations) + '\n')
     base = (shlex.split(os.environ.get('CC', 'cc')) +
