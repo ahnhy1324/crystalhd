@@ -1,0 +1,207 @@
+{
+  "claims": [
+    {
+      "evidence": [
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-final17-run-20261102/qualification-02/final-candidate-qualification.json",
+          "sha256": "b0e6174808900f0a71523e40f71f35fad03c238a2d61af78b62fa4fe9cf80904",
+          "status": "PASS_COMPLETE_ARCHIVE_BUILD_AND_STAGING"
+        }
+      ],
+      "feature": "complete integration, PTS diagnostics and CPU/CI contracts",
+      "measured_source": "940cf357ff0b64a41907126c58f629f0f3c514da",
+      "scope": "Core940 CI41328400518 includes whole maintained integration, PTS epochs, producer/lifecycle, settings, field/native/RX/TX contracts; fresh archive contracts/build/staging checked. No feature silently omitted."
+    },
+    {
+      "evidence": [
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-complete-run-20261101/live-legacy/live-result.json",
+          "sha256": "7e8bee1c7a31f02abe7679bb5a2a93f7b5e5e378de78cc82df77e4e270b0b8ab",
+          "status": "PASS_RC2_LIVE_MODULE_ORACLE_AND_CONTROLS"
+        }
+      ],
+      "feature": "legacy codec source-picture/oracle, seek/reopen and AAC controls",
+      "measured_source": "a60aa4fd57f85cc93cf5b838d6ed75382c76fd13",
+      "scope": "Package16 actual module. Driver/DIL/VA/GStreamer/Player unchanged through940/package17, reuse scoped to identical implementations."
+    },
+    {
+      "evidence": [
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-final17-run-20261102/live-native/live-result.json",
+          "sha256": "52453ddc6b5b6920320ddb0427c1cdd5f2df62debcbe5c6afba19694b3de4005",
+          "status": "PASS_RC2_NATIVE_API_AND_OWNERSHIP"
+        }
+      ],
+      "feature": "native V4L2 API32/64 and minimum-buffer sourcePTS/YUYV/drain/EOS/restart/admission/ownership",
+      "measured_source": "940cf357ff0b64a41907126c58f629f0f3c514da",
+      "scope": "Actual final17 module,141 API checks each32/64 plus180x2 minimum2-buffer source oracle and lifetime checks."
+    },
+    {
+      "evidence": [
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-complete-run-20261101/live-native-kodi/live-result.json",
+          "sha256": "d5d64c0e3d612f32443d9c26c3e9506ea4b2c1907d21f41cfaa6f4a8a6f116b4",
+          "status": "PASS_RC2_NATIVE_KODI_SHORT_REOPEN"
+        },
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-distribution-20261102/first-use/live-result.json",
+          "sha256": "165382f6863685eeb0894e51f21e080c79b2ece660beafc9daecc5d635eb6d4a",
+          "status": "PASS_RC2_NATIVE_KODI_SHORT_REOPEN"
+        }
+      ],
+      "feature": "native Kodi colour/format/EXPBUF and720/1080 EOS/reopen",
+      "measured_source": {
+        "fresh_acquired_target": "940cf357ff0b64a41907126c58f629f0f3c514da",
+        "retained": "a60aa4fd57f85cc93cf5b838d6ed75382c76fd13"
+      },
+      "scope": "Retained720/1080 source census plus fresh-acquired pinned target180x2 actual17. HeadlessGL/PipeWire-null only; external code unmodified; source-qualified A/V logs clear."
+    },
+    {
+      "evidence": [
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-complete-run-20261101/live-field-gpu/live-result.json",
+          "sha256": "3218db0c3e7449028c6aec53885c18d635c17db022d105da89296d36298ba95a",
+          "status": "PASS_RC2_FIELD_GPU_SYNTHETIC"
+        },
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-complete-run-20261101/live-field-card/live-result.json",
+          "sha256": "654fe1d25ce14851738234dcd6e69c58fdb6ae0a66634a5df687d4976feb54de",
+          "status": "PASS_RC2_FIELD_CARD_AUDIO"
+        },
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-complete-run-20261101/live-field-controls/live-result.json",
+          "sha256": "9d8a32a5a40e03a69a326def380d908f0c7667b1566617213750f2126a400895",
+          "status": "PASS_RC2_FIELD_CARD_CONTROLS"
+        }
+      ],
+      "feature": "explicit field GPU synthetic pixels, card/audio, retirement/cancellation and controls",
+      "measured_source": "a60aa4fd57f85cc93cf5b838d6ed75382c76fd13",
+      "scope": "Actual Intel965 declared experimental path; unchanged source reuse. Does not imply hardware deinterlacing or generic GPU support."
+    },
+    {
+      "evidence": [
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-complete-run-20261101/quality-sustained-02/live-result.json",
+          "sha256": "4733862b6b1d4f80413eb5e896ffe6b8b689030454efac2bcb96284b85722e31",
+          "status": "PASS_RC2_SELECTED_KODI_APPLICATION_AND_BOB_ENDURANCE"
+        }
+      ],
+      "feature": "installed Kodi Auto/Off/progressive, selected30minute Player and3hour VA-Bob",
+      "measured_source": "a60aa4fd57f85cc93cf5b838d6ed75382c76fd13",
+      "scope": "10800.076385989087s/540000 fullNV12 hash and orderedPTS fields, resource windowsPASS, max73C. Player45000 input44997decoded under accepted QoS; no new zero-loss gate."
+    },
+    {
+      "evidence": [
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-complete-run-20261101/live-dkms/live-result.json",
+          "sha256": "a355bd47d3b2b04e7d181a62fc8ae04fb80b8c86d590c616dd9842c5ddc009b0",
+          "status": "PASS_RC2_LIVE_DKMS_UPGRADE_ROLLBACK_REINSTALL"
+        }
+      ],
+      "feature": "installed MPEG1 and installed application/control checks",
+      "measured_source": "a60aa4fd57f85cc93cf5b838d6ed75382c76fd13",
+      "scope": "Existing installed run covers bounded MPEG1 repeatedEOS, Kodi and own frontend controls. Not general MPEG1 conformance or broader native controls."
+    },
+    {
+      "evidence": [
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-final17-run-20261102/resume-install-result.json",
+          "sha256": "3582e478b589c54431da65880ff4ed7e571ff07a9f76769630fd51a335504451",
+          "status": "PASS_FINAL17_AFFECTED_ARCHIVE_NATIVE_INSTALL_QUALIFICATION"
+        },
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-final17-run-20261102/live-dkms-02/live-result.json",
+          "sha256": "0f26063512bed0aa0158030b6d3dd8a9dfa1658ba041dd5d741b2a8e46906bdc",
+          "status": "PASS_RC2_LIVE_DKMS_UPGRADE_ROLLBACK_REINSTALL"
+        },
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-final17-run-20261102/live-direct/live-result.json",
+          "sha256": "a26b273cefe5fbc75f1fef049c8e18b243d98cd861c4f234dda95bddb781d940",
+          "status": "PASS_RC2_DIRECT_FIRST_UPDATE_ROLLBACK_REINSTALL_REMOVE"
+        }
+      ],
+      "feature": "final17 actual DKMS2cycles and direct17->15->17/remove/repeat",
+      "measured_source": "940cf357ff0b64a41907126c58f629f0f3c514da",
+      "scope": "Fresh final17 binaries/install/provenance checks; original36 leaves, baseline13, complete modules/DKMS inventory restored; initial missing own test executable failure retained."
+    },
+    {
+      "evidence": [
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-distribution-20261102/delivery-integration/result.json",
+          "sha256": "85b52016da12bc13f112343e418ab8440081dd84c80d2afd05f6de15a7fc10dc",
+          "status": "PASS_REPRODUCIBLE_DELIVERY_ALL_MEMBERS_AND_EXTRACTED_TOOL_INTEGRATION"
+        },
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-distribution-20261102/delivery-inputs/first-user-cost.json",
+          "sha256": "16f34b2977c9393a7f03d89b93e0011cfeda94d510da5bc81f1bd05b53453085",
+          "status": "PASS_MEASURED_COLD_USERSPACE_AND_FRESH_TARGET_ACQUISITION_SCOPED"
+        },
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-distribution-20261102/delivery-inputs/fresh-target-native.json",
+          "sha256": "6db7fbe23fe0e53bab8e5986128c8b00337c72f04d004f5a666f8ed3d0b0a5e3",
+          "status": "PASS_FRESH_ACQUIRED_TARGET_NATIVE17_SLOT_LIFECYCLE"
+        },
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-distribution-20261102/build-proof-result.json",
+          "sha256": "5e9c4d9ffe8082deb8d3dd93ae454dee27bee5f61657350881b4a348e7c3274d",
+          "status": "PASS_REPRODUCIBLE_BUILDS_AND_RETAINED_BINARY_SOURCE_CORRESPONDENCE"
+        },
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-distribution-20261102/offline-source/result.json",
+          "sha256": "97f4b96ac23ed11b165ca5171e7ffb9ce0eaedf169d6948e2f6027de2a1b371b",
+          "status": "PASS_OFFLINE_SOURCE_AND_GIT_METADATA"
+        }
+      ],
+      "feature": "compilerless runtime, complete source/notice/build correspondence, first-user acquisition and lifecycle",
+      "measured_source": {
+        "core": "940cf357ff0b64a41907126c58f629f0f3c514da",
+        "external_source": "12cc1f42f06ff0e85633c2602c96786fbd280b70"
+      },
+      "scope": "Two exact source rebuilds; deterministic complete companion; defined cold acquisition/body/resource/disk metrics; raw command evidence; fixed ABI/cohort and project issue-intake/update policy."
+    },
+    {
+      "evidence": [
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-delivery-20261102/tests/fixtures/issue510/v13-private-admission-qualification-20261101.json",
+          "sha256": "01d4bcb9cc2f66fa445882b31f2c818edf52c5aca4fdc7ebd4c3b6d19c962da8",
+          "status": "PASS_SCOPED_PRIVATE_CANDIDATE_NOT_RELEASED"
+        },
+        {
+          "record": "/home/mache/.cache/crystalhd-v13-delivery-20261102/tests/fixtures/issue400/validation-native-owned-20261031.json",
+          "sha256": "6f208a68009d07fec8791cad41f3a9f6e2a4050b31ddfc74dc3589cf56727d8f",
+          "status": "DATED_SCOPED_RECEIPT"
+        }
+      ],
+      "feature": "optional native GTK/Kodi settings UI",
+      "measured_source": {
+        "integration": "940cf357ff0b64a41907126c58f629f0f3c514da",
+        "settings_runtime": "c48fe3a12d4f0443dc444df27c0b6c35be2b3ced"
+      },
+      "scope": "Unchanged settings implementation and reproducible sameZIP retained, actual stockKodi21.3 D-pad/save/cancel/reset/new-processVA defaults and native owned accessibility receipts; final core configuration-preserving staging/install."
+    }
+  ],
+  "core_source": "940cf357ff0b64a41907126c58f629f0f3c514da",
+  "date": "2026-11-02",
+  "explicit_boundaries": [
+    "CurrentCore2/BCM70015/Intel965/x86_64 only",
+    "Independent bootedOS unavailable; fresh userspace shares host kernel, NOT cleanOS PASS",
+    "Native headlessGL/nullsink not physical scanout/audio/generaldesktop",
+    "Accepted scoped renderer/QoS losses nonblocking; source-qualified no-drift logs suffice",
+    "Broader native control and sameDPBnonemptySTOPSTART remain unqualified/unsupported",
+    "No broadAtom/i386/BCM70012/fullFHD/hardwaredeinterlacing/conformance claims",
+    "538OPEN originalheap-only exclusion/reason unchanged",
+    "No stable1.3 promotion or external source modification implied"
+  ],
+  "known_original_failures": {
+    "RC1_interrupted_controller": "/home/mache/.cache/crystalhd-v13-release-quality-20261101/interrupted-result.json",
+    "RC1_thermal_abort": "/home/mache/.cache/crystalhd-v13-bob3h-service-20261101/live-result.json",
+    "first_sustained_collector_layout_failure": "/home/mache/.cache/crystalhd-v13-complete-run-20261101/quality-sustained/live-result.json",
+    "initial_GTK_CI_log": "/home/mache/.cache/crystalhd-v13-complete-userspace24-failed.log",
+    "matching_Ubuntu24_GTK": "6 complete31-test GDB runs pass; original crash unreproduced",
+    "thermal_recovery": "/home/mache/.cache/crystalhd-v13-bob3h-service-20261101/thermal-recovery-result.json"
+  },
+  "module_and_runtime_baseline": "Restored stable13/ref0/pin0 plus original36leaves; verify after final fresh-target run PASS",
+  "module_package": "3.10.17",
+  "schema": 1,
+  "status": "COMPLETE_DECLARED_1_3_RC2_CLAIM_EVIDENCE_MAP"
+}

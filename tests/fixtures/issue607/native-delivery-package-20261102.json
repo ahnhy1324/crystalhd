@@ -1,0 +1,37 @@
+{
+  "affected_checks": {
+    "additional": "10 hardware-config probe groups and embedded probe cases",
+    "log_sha256": "8f5960fd403e6edd2b2a2e43fdefdaebaf3695f89a94f7495d361286226b1f87",
+    "scope": "Delivery7, preflight23, slots20, host14, materials25, metadata11, PTS21, producer13, helper13; no external/device execution by these controls.",
+    "status": "PASS",
+    "test_cases": 147
+  },
+  "all_outer_members_verified": 33,
+  "archive": {
+    "archive": "crystalhd-native-runtime-1.3.0-rc.2.tar.gz",
+    "bytes": 95203515,
+    "manifest_sha256": "c958142019ffff5b426ebc02dd89214cf3420d6754a12f77ef2bf5739c0a7bb9",
+    "sha256": "8a9b65e07eb50732e7e604217b6cdfb989ad5a03937777366cad8978dc1f019f",
+    "spec_sha256": "571d80d3dd74dd1f9f2b12f41880129ca51f18595efa722f8e3b14b50e18be95",
+    "status": "PACKAGED_DELIVERY_REVIEW_CANDIDATE"
+  },
+  "core_module": "3.10.17",
+  "core_source": "940cf357ff0b64a41907126c58f629f0f3c514da",
+  "date": "2026-11-02",
+  "delivery_tool_source": "File hashes bound by delivery-manifest; supplemental source separate from frozen registered core.",
+  "extracted_helpers_equal_used_source": true,
+  "extracted_tool_operations": {
+    "install": "PASS_PRIVATE_SLOTS_FILES_ONLY",
+    "preflight": "PASS_PINNED_TARGET_FILES_ONLY",
+    "remove": "PASS_PRIVATE_SLOTS_FILES_ONLY",
+    "remove-again": "PASS_PRIVATE_SLOTS_FILES_ONLY",
+    "rollback": "PASS_PRIVATE_SLOTS_FILES_ONLY",
+    "status": "PASS_PRIVATE_SLOTS_FILES_ONLY",
+    "update": "PASS_PRIVATE_SLOTS_FILES_ONLY"
+  },
+  "independent_exports": 2,
+  "lifecycle_scope": "Update-only equivalent TAR mtimes qualification wrapper; unchanged payload/metadata. Actual native playback of original installed slot is separately recorded in fresh-target-native.json. No public publication or clean-OS PASS inferred.",
+  "manifest_inputs_verified": 31,
+  "schema": 1,
+  "status": "PASS_REPRODUCIBLE_DELIVERY_ALL_MEMBERS_AND_EXTRACTED_TOOL_INTEGRATION"
+}

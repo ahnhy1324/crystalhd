@@ -1,0 +1,205 @@
+{
+  "builds": [
+    {
+      "name": "a",
+      "payload": {
+        "bin/ffmpeg": {
+          "bytes": 452912,
+          "sha256": "400b3e6e16197887bbd27a4d68f4a0c0fd62b226878c62d6e986d944dfa5c0ca"
+        },
+        "bin/ffprobe": {
+          "bytes": 219368,
+          "sha256": "c23b918be65252d00720f862d5b486ab73484bd5f72f9dd5cee76a6a0d86100d"
+        },
+        "lib/libavcodec.so.63.1.102": {
+          "bytes": 2525272,
+          "sha256": "21c16b84974892e5c1cedf195e87229b8227adcd534c38669c6ed1aecf72d475"
+        },
+        "lib/libavdevice.so.63.1.102": {
+          "bytes": 14584,
+          "sha256": "23f02ce623093bf676c1909148254c1741a462a8c54a63ed26fc3518b2d946fc"
+        },
+        "lib/libavfilter.so.12.1.102": {
+          "bytes": 265688,
+          "sha256": "94ed874affee0b734dd1463738ad2c9b36b11382a92ddac88f4e1f9c1b7c0c85"
+        },
+        "lib/libavformat.so.63.1.102": {
+          "bytes": 668640,
+          "sha256": "4a0c56833892f9653ece66c21fe3f83bb65bc1bedd6b353d6c4333e99aa95140"
+        },
+        "lib/libavutil.so.61.1.102": {
+          "bytes": 1072168,
+          "sha256": "942a75fe3715b645ad3183953c6446c85ae8a24f332de95c503a5b4f99af3a04"
+        },
+        "lib/libswresample.so.7.1.102": {
+          "bytes": 178616,
+          "sha256": "5ea49c11bfdc920c470a957f1f5fd1314957851ca9ab0d855e9e405594a67ca1"
+        },
+        "lib/libswscale.so.10.1.102": {
+          "bytes": 2526120,
+          "sha256": "cb3a2ce99376ec2b793c6616aa3dd23595a6a3e77c98adb31af529d793764b43"
+        }
+      },
+      "seconds": 1198.082274232991,
+      "status": "PASS"
+    },
+    {
+      "name": "b",
+      "payload": {
+        "bin/ffmpeg": {
+          "bytes": 452912,
+          "sha256": "400b3e6e16197887bbd27a4d68f4a0c0fd62b226878c62d6e986d944dfa5c0ca"
+        },
+        "bin/ffprobe": {
+          "bytes": 219368,
+          "sha256": "c23b918be65252d00720f862d5b486ab73484bd5f72f9dd5cee76a6a0d86100d"
+        },
+        "lib/libavcodec.so.63.1.102": {
+          "bytes": 2525272,
+          "sha256": "21c16b84974892e5c1cedf195e87229b8227adcd534c38669c6ed1aecf72d475"
+        },
+        "lib/libavdevice.so.63.1.102": {
+          "bytes": 14584,
+          "sha256": "23f02ce623093bf676c1909148254c1741a462a8c54a63ed26fc3518b2d946fc"
+        },
+        "lib/libavfilter.so.12.1.102": {
+          "bytes": 265688,
+          "sha256": "94ed874affee0b734dd1463738ad2c9b36b11382a92ddac88f4e1f9c1b7c0c85"
+        },
+        "lib/libavformat.so.63.1.102": {
+          "bytes": 668640,
+          "sha256": "4a0c56833892f9653ece66c21fe3f83bb65bc1bedd6b353d6c4333e99aa95140"
+        },
+        "lib/libavutil.so.61.1.102": {
+          "bytes": 1072168,
+          "sha256": "942a75fe3715b645ad3183953c6446c85ae8a24f332de95c503a5b4f99af3a04"
+        },
+        "lib/libswresample.so.7.1.102": {
+          "bytes": 178616,
+          "sha256": "5ea49c11bfdc920c470a957f1f5fd1314957851ca9ab0d855e9e405594a67ca1"
+        },
+        "lib/libswscale.so.10.1.102": {
+          "bytes": 2526120,
+          "sha256": "cb3a2ce99376ec2b793c6616aa3dd23595a6a3e77c98adb31af529d793764b43"
+        }
+      },
+      "seconds": 1202.3915911080549,
+      "status": "PASS"
+    }
+  ],
+  "complete_dependency_sources": [
+    {
+      "bytes": 601392,
+      "component": "libdrm",
+      "revision": "e984d448b8b17aab853369e6c203e53719f46de1",
+      "sha256": "98fa5677e9396a5186f3f768da769cedf73d2d4964c198b328d6861ff74b8cda"
+    },
+    {
+      "bytes": 306573,
+      "component": "libva",
+      "revision": "710eb465c6277ee2cac3e6948767b01eebe7e77a",
+      "sha256": "f207ab793203a21fb153ad5ffb0e3e268f98826c850009353b094a4ab5da8150"
+    },
+    {
+      "bytes": 2450038,
+      "component": "zlib-ng",
+      "revision": "12731092979c6d07f42da27da673a9f6c7b13586",
+      "sha256": "a0d2a5d122c84b56a793a1553a9c3327fb2eb7469bf7a86b79e3c7be5d92e8d6"
+    },
+    {
+      "bytes": 832924,
+      "component": "freedesktop-sdk",
+      "revision": "d0c0b597d58f8cc14ee26c427aec1be13c6a313e",
+      "sha256": "5e7f0d5f5dd95411a0687fa2884124db2121f56660f30acf39f1b452a012b13b"
+    },
+    {
+      "bytes": 41450855,
+      "component": "glibc",
+      "revision": "6b48c0b29c359dfa84c09c32373a48c8f663c304",
+      "sha256": "916260983126b288129cdb6508bff5d2a0b3b3c5a417c2951ead6d09f51ad742"
+    }
+  ],
+  "cpu_quota": "50% of one CPU for this independent unit",
+  "date": "2026-11-02",
+  "full_receipt_sha256": "5e9c4d9ffe8082deb8d3dd93ae454dee27bee5f61657350881b4a348e7c3274d",
+  "helper_sha256": "32db3e781ee4911a5b87c04af3c46d90d3e6d1ac62b31bed6d62fd7c73aa18df",
+  "historical_invocation_log": "NOT_RECONSTRUCTED; exact source correspondence established by two fresh reproductions",
+  "host_toolchain": {
+    "dependencies": "2.4.131\n1.23.0\n1.3.1",
+    "gcc": "gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0\nCopyright (C) 2025 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+    "linker": "GNU ld (GNU Binutils for Ubuntu) 2.46\nCopyright (C) 2026 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or (at your option) a later version.\nThis program has absolutely no warranty.",
+    "make": "GNU Make 4.4.1\nBuilt for x86_64-pc-linux-gnu\nCopyright (C) 1988-2023 Free Software Foundation, Inc.\nLicense GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>\nThis is free software: you are free to change and redistribute it.\nThere is NO WARRANTY, to the extent permitted by law.",
+    "nasm": "NASM version 3.01"
+  },
+  "offline_git_metadata": {
+    "metadata_bytes": 21319263,
+    "metadata_sha256": "3699bacae0ce063544aff835595b58f46926a61ff4902027db3ddcca7048586b",
+    "scope": "Original source and its existing companion unchanged. Fresh independent metadata has no alternates/promisor/commondir, remotes, reflogs or hooks. Reconstructed source passes exactHEAD/tree/diff/fsck with network disabled and original checkout absent.",
+    "source_companion_sha256": "808f3c2dc43fd283bd342f16bf7006e81d44f771eec4c7ffe6900b8b87524c2a",
+    "source_revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "source_tree": "10bdcda36b5c1b96cce93bfe5571c97e2b2a7cef",
+    "status": "PASS_OFFLINE_SOURCE_AND_GIT_METADATA"
+  },
+  "resource_record": {
+    "records": [
+      {
+        "CPU_USAGE_NSEC": "1199976886000",
+        "MEMORY_PEAK": "925896704",
+        "MEMORY_SWAP_PEAK": "0",
+        "MESSAGE": "crystalhd-v13-unmodified-build-proof-20261102.service: Consumed 19min 59.976s CPU time over 40min 1.330s wall clock time, 883M memory peak.",
+        "_RUNTIME_SCOPE": "system",
+        "_SOURCE_REALTIME_TIMESTAMP": "1793576239165266",
+        "__MONOTONIC_TIMESTAMP": "563147630858",
+        "__REALTIME_TIMESTAMP": "1793576239165846"
+      }
+    ],
+    "scope": "Whole independent two-build unit, including file cache. Not unique physical RAM or minimum host RAM. Outer GNUtime wrapper statistics do not account for children behind bwrap PID namespace.",
+    "source": "systemd cgroup resource-completion record"
+  },
+  "retained_neutral_exact_payload_equal": true,
+  "retained_payload": {
+    "bin/ffmpeg": {
+      "bytes": 452912,
+      "sha256": "400b3e6e16197887bbd27a4d68f4a0c0fd62b226878c62d6e986d944dfa5c0ca"
+    },
+    "bin/ffprobe": {
+      "bytes": 219368,
+      "sha256": "c23b918be65252d00720f862d5b486ab73484bd5f72f9dd5cee76a6a0d86100d"
+    },
+    "lib/libavcodec.so.63.1.102": {
+      "bytes": 2525272,
+      "sha256": "21c16b84974892e5c1cedf195e87229b8227adcd534c38669c6ed1aecf72d475"
+    },
+    "lib/libavdevice.so.63.1.102": {
+      "bytes": 14584,
+      "sha256": "23f02ce623093bf676c1909148254c1741a462a8c54a63ed26fc3518b2d946fc"
+    },
+    "lib/libavfilter.so.12.1.102": {
+      "bytes": 265688,
+      "sha256": "94ed874affee0b734dd1463738ad2c9b36b11382a92ddac88f4e1f9c1b7c0c85"
+    },
+    "lib/libavformat.so.63.1.102": {
+      "bytes": 668640,
+      "sha256": "4a0c56833892f9653ece66c21fe3f83bb65bc1bedd6b353d6c4333e99aa95140"
+    },
+    "lib/libavutil.so.61.1.102": {
+      "bytes": 1072168,
+      "sha256": "942a75fe3715b645ad3183953c6446c85ae8a24f332de95c503a5b4f99af3a04"
+    },
+    "lib/libswresample.so.7.1.102": {
+      "bytes": 178616,
+      "sha256": "5ea49c11bfdc920c470a957f1f5fd1314957851ca9ab0d855e9e405594a67ca1"
+    },
+    "lib/libswscale.so.10.1.102": {
+      "bytes": 2526120,
+      "sha256": "cb3a2ce99376ec2b793c6616aa3dd23595a6a3e77c98adb31af529d793764b43"
+    }
+  },
+  "schema": 1,
+  "scope": "Actual two sequential unmodified-source builds in isolated writable outputs. Device-free and network-free compiler namespace; original source and host/usr read-only. No install or publication.",
+  "source_date_epoch": 1790018630,
+  "source_revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+  "source_tree": "10bdcda36b5c1b96cce93bfe5571c97e2b2a7cef",
+  "status": "PASS_REPRODUCIBLE_BUILDS_AND_RETAINED_BINARY_SOURCE_CORRESPONDENCE",
+  "two_builds_exact_payload_equal": true
+}

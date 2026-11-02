@@ -1,0 +1,307 @@
+{
+  "apt": {
+    "bootstrap_deb_body_bytes": 32970044,
+    "bootstrap_deb_files": 89,
+    "index_report": "Resume06 Fetched2264kB is supplemental security/update index; base index fetched by bootstrap separately. Not complete HTTP wire accounting.",
+    "logs_reported_downloads": {
+      "flatpak_weston_pipewire": "12.2 MB",
+      "measurement_tools": "375 kB",
+      "optional_output_headers": "30.3 kB",
+      "optional_settings": "862 kB",
+      "ordinary_runtime_development": "232 MB",
+      "source_prerequisites": "128 MB"
+    },
+    "retained_deb_body_bytes": 406673418,
+    "retained_deb_files": 693,
+    "source_git_transfer_bytes": "NOT_RECORDED",
+    "subsequent_new_deb_body_bytes": 373703374,
+    "subsequent_new_deb_files": 604
+  },
+  "cold_successful_phases": [
+    {
+      "name": "bootstrap-foreign",
+      "time_file": "bootstrap-foreign.time.txt",
+      "time_sha256": "1936add9e255d4f21dfaff84b69fc0ed4583aec1ebb884e02db43e5499f6980f",
+      "wall_seconds": 251.7
+    },
+    {
+      "name": "bootstrap-second-stage",
+      "time_file": "resume04-bootstrap-second-stage.time.txt",
+      "time_sha256": "ebb7369b676e172225854bec7712affe93714ca3f4688f7a942aa9c16987343a",
+      "wall_seconds": 66.23
+    },
+    {
+      "name": "apt-index",
+      "time_file": "resume06-fresh-apt-index.time.txt",
+      "time_sha256": "73c391b97311f1404d57385350e55f51b50df3124ad225692f704c1da795955e",
+      "wall_seconds": 8.3
+    },
+    {
+      "name": "source-build-prerequisites-FIRST",
+      "time_file": "resume06-source-build-prerequisites.time.txt",
+      "time_sha256": "012104c633e6ab5542a9f132d8f04e723a63b1882a9650b92f33ba4379e04223",
+      "wall_seconds": 140.51
+    },
+    {
+      "name": "ordinary-user-runtime",
+      "time_file": "resume07-ordinary-user-runtime.time.txt",
+      "time_sha256": "f3ee141a202ae6147944f98d1ba085cb5e36c46e7c411373677a630fb9a32da4",
+      "wall_seconds": 317.7
+    },
+    {
+      "name": "optional-settings",
+      "time_file": "resume07-optional-settings.time.txt",
+      "time_sha256": "13d29e06854258b1843c81dd0604069661548db5065684a4e61980d10e8a8173",
+      "wall_seconds": 11.01
+    },
+    {
+      "name": "optional-own-output-builds",
+      "time_file": "resume07-optional-own-output-builds.time.txt",
+      "time_sha256": "c641a4dba224b12508cf356b6a6ea05758e487c58ac663e5d9d291113baee5da",
+      "wall_seconds": 7.2
+    },
+    {
+      "name": "native-acquisition-and-compositor",
+      "time_file": "resume07-native-acquisition-and-compositor.time.txt",
+      "time_sha256": "4385c938f782b5c177ef82479bbae63e9305560eb6bc95d4fd03b37c74334a62",
+      "wall_seconds": 36.8
+    },
+    {
+      "name": "measurement-tools",
+      "time_file": "resume07-measurement-tools.time.txt",
+      "time_sha256": "361d2d514b0e864882fc5cf99081871b1670dfd51e223bb6a751249b891aab2d",
+      "wall_seconds": 8.18
+    },
+    {
+      "name": "fresh-own-source",
+      "time_file": "resume07-fresh-own-source.time.txt",
+      "time_sha256": "1e80bd5724d428edb26b59c3b831a6e2113b314eb9d0b4a6d3d5b10b3be6b79e",
+      "wall_seconds": 5.8
+    },
+    {
+      "name": "cold-userspace-build",
+      "time_file": "resume07-cold-userspace-build.time.txt",
+      "time_sha256": "272261113ce2728675641ab143d7e37061072d9b958f55908f770defa6d2d1db",
+      "wall_seconds": 145.2
+    },
+    {
+      "name": "cold-module-default",
+      "time_file": "resume07-cold-module-default.time.txt",
+      "time_sha256": "71602db7a1795ffb8a81f90238695da62332336a196a31977f19a55248bbbe5d",
+      "wall_seconds": 52.4
+    },
+    {
+      "name": "cold-module-native",
+      "time_file": "resume07-cold-module-native.time.txt",
+      "time_sha256": "7d000003a1d84b55f1195605e44d2451324602997df0b5582ac11b5e17a7033b",
+      "wall_seconds": 71.78
+    },
+    {
+      "name": "cold-output-xv-output",
+      "time_file": "resume07-cold-output-xv-output.time.txt",
+      "time_sha256": "52449fd0c810b2ffd2a45a05cc4be99f1951d60639056b5893a29b560d20676c",
+      "wall_seconds": 3.71
+    },
+    {
+      "name": "cold-output-packed-upscale",
+      "time_file": "resume07-cold-output-packed-upscale.time.txt",
+      "time_sha256": "4de0b213a8dac16de76f4acb0df728e7667342ceec964c8a99c028d783386daf",
+      "wall_seconds": 3.02
+    },
+    {
+      "name": "cold-output-field-output",
+      "time_file": "resume07-cold-output-field-output.time.txt",
+      "time_sha256": "0d1807a0d64236fd642d79b5daedb0059d778978f9666d0b17866b3a5b8e078f",
+      "wall_seconds": 11.89
+    },
+    {
+      "name": "private-staging",
+      "time_file": "resume07-private-staging.time.txt",
+      "time_sha256": "40f5848f938228f44f47376ecbe05244f2e738bfe597e63880c3df69108de1c2",
+      "wall_seconds": 4.56
+    }
+  ],
+  "command_and_failure_evidence": "evidence/first-user-evidence.tar",
+  "date": "2026-11-02",
+  "disk": {
+    "cold_setup_observed_max_allocated_bytes": 2362372096,
+    "cold_setup_observed_max_apparent_bytes": 2207764297,
+    "retained_two_store_rootfs_allocated_bytes": 5168214016,
+    "retained_two_store_rootfs_apparent_bytes": 4877639925,
+    "sampling": "Phase boundaries and30s; transient du races preserved, instantaneous peak unknown.",
+    "scope": "Two audit Flatpak stores retained. This is observed temporary audit storage, not minimum install space. Original FFmpeg source/build pairs are separate."
+  },
+  "flatpak": {
+    "counter_scope": "Flatpak operation pull/extra-data fetcher bytes; excludes HTTP headers/TLS/IP and preparatory remote summary requests outside operation progress. Not wire bytes.",
+    "descriptor_body_bytes": 8076,
+    "pinned_ref_installed_size_sum": 1425577472,
+    "pull_and_extra_data_body_bytes": 522363521,
+    "scope": "Entirely empty separate store with working private DBus from start. Fetcher body bytes exclude preparatory summaries/HTTP headers/TLS/IP. Prior failed store costs not added. OSTree sharing means ref declared sizes differ from store du.",
+    "store_allocated_bytes": 1419534336,
+    "store_apparent_bytes": 1351400389,
+    "successful_phase_seconds": 194.4107925198041,
+    "targets": [
+      {
+        "commit": "e7f7b0fb20662fe92e4eac65d58a57019cefae45a39559c4b50440a88acc0491",
+        "installed_size": 724066816,
+        "ref": "runtime/org.freedesktop.Platform/x86_64/26.08"
+      },
+      {
+        "commit": "25dbbb0cd3a63b2ef8a24ee948ad43998960f3e2bea713263742cc076840aec2",
+        "installed_size": 469800960,
+        "ref": "runtime/org.freedesktop.Platform.GL.default/x86_64/26.08"
+      },
+      {
+        "commit": "0a381e42781914ae76ed338d3aa11f9403c55c57f5c9c194e1f4fb437cf71630",
+        "installed_size": 231709696,
+        "ref": "app/tv.kodi.Kodi/x86_64/beta"
+      }
+    ],
+    "transaction_seconds": 190.54263931978494
+  },
+  "observer_failures_preserved": [
+    "initial namespace/debootstrap/apt UID mapping attempts and quote correction",
+    "du transient observer failure during successful first prerequisites install",
+    "first Flatpak store failed Kodi deployment without private DBus, then succeeded; separate empty-store normal acquisition measured",
+    "first offline PTS invocation omitted ffprobe-show_format; second corrected metadata input passes; no product playback failure"
+  ],
+  "own_git_free_source_alternative": {
+    "bytes": 8644373,
+    "curl_body_bytes": 8644373,
+    "curl_seconds": 3.116583,
+    "http_status": "200",
+    "revision": "940cf357ff0b64a41907126c58f629f0f3c514da",
+    "schema": 1,
+    "scope": "Additional standalone empty-file HTTPS source archive acquisition; all included Git blobs match exact core commit, SOURCE_REVISION export-subst checked. GitHub export-ignore .github omissions retained. Not a reconstruction of original Git transfer bytes; not added to original19m phase sum. Same unmodified core source implementation as already built cold.",
+    "seconds": 3.1423555269138888,
+    "sha256": "bbd5971670eae03d29da11d83e0ad5951d409b4fd668b2d5c2de7e48509cbaa1",
+    "status": "PASS_FRESH_GIT_FREE_OWN_SOURCE_ACQUISITION",
+    "url": "https://codeload.github.com/ahnhy1324/crystalhd/tar.gz/940cf357ff0b64a41907126c58f629f0f3c514da",
+    "verified_source_members": 911
+  },
+  "phase_sum_scope": "Sum of successful command GNUtime elapsed values across preserved attempts; not uninterrupted full wall time. Excludes failed attempts, orchestration, observer sampling and idle overhead. Cached resume07-source-build-prerequisites (2.98s) excluded; actual first resume06 install140.51s included.",
+  "schema": 1,
+  "scope": "New Ubuntu26.04.1 minbase and signed APT acquisition, own source940 build/staging; host kernel shared. Independent booted OS NOT_RUN. FFmpeg reproducible builds use host GCC15, not this cold rootfs.",
+  "status": "PASS_MEASURED_COLD_USERSPACE_AND_FRESH_TARGET_ACQUISITION_SCOPED",
+  "successful_phase_wall_sum_seconds": 1145.99,
+  "unit_resources": [
+    {
+      "records": [
+        {
+          "CPU_USAGE_NSEC": "40902521000",
+          "MEMORY_PEAK": "299884544",
+          "MEMORY_SWAP_PEAK": "0",
+          "MESSAGE": "crystalhd-v13-cold-first-user-20261102.service: Consumed 40.902s CPU time over 4min 14.901s wall clock time, 285.9M memory peak.",
+          "__REALTIME_TIMESTAMP": "1793575546148232"
+        }
+      ],
+      "scope": "Completion cgroup includes file cache; not unique physical/minimum RAM. Resume06 observer ended before its installation child; its cgroup is incomplete.",
+      "unit": "crystalhd-v13-cold-first-user-20261102.service"
+    },
+    {
+      "records": [
+        {
+          "CPU_USAGE_NSEC": "35756774000",
+          "MEMORY_PEAK": "412962816",
+          "MEMORY_SWAP_PEAK": "0",
+          "MESSAGE": "crystalhd-v13-cold-first-user-resume04-20261102.service: Consumed 35.756s CPU time over 1min 14.440s wall clock time, 393.8M memory peak.",
+          "__REALTIME_TIMESTAMP": "1793576283244913"
+        }
+      ],
+      "scope": "Completion cgroup includes file cache; not unique physical/minimum RAM. Resume06 observer ended before its installation child; its cgroup is incomplete.",
+      "unit": "crystalhd-v13-cold-first-user-resume04-20261102.service"
+    },
+    {
+      "records": [
+        {
+          "CPU_USAGE_NSEC": "23462082000",
+          "MEMORY_PEAK": "330756096",
+          "MEMORY_SWAP_PEAK": "0",
+          "MESSAGE": "crystalhd-v13-cold-first-user-resume06-20261102.service: Consumed 23.462s CPU time over 1min 12.457s wall clock time, 315.4M memory peak.",
+          "__REALTIME_TIMESTAMP": "1793576801739821"
+        }
+      ],
+      "scope": "Completion cgroup includes file cache; not unique physical/minimum RAM. Resume06 observer ended before its installation child; its cgroup is incomplete.",
+      "unit": "crystalhd-v13-cold-first-user-resume06-20261102.service"
+    },
+    {
+      "records": [
+        {
+          "CPU_USAGE_NSEC": "317497046000",
+          "MEMORY_PEAK": "1807728640",
+          "MEMORY_SWAP_PEAK": "0",
+          "MESSAGE": "crystalhd-v13-cold-first-user-resume07-20261102.service: Consumed 5min 17.497s CPU time over 13min 9.042s wall clock time, 1.6G memory peak.",
+          "__REALTIME_TIMESTAMP": "1793577830763555"
+        }
+      ],
+      "scope": "Completion cgroup includes file cache; not unique physical/minimum RAM. Resume06 observer ended before its installation child; its cgroup is incomplete.",
+      "unit": "crystalhd-v13-cold-first-user-resume07-20261102.service"
+    },
+    {
+      "records": [
+        {
+          "CPU_USAGE_NSEC": "92581565000",
+          "MEMORY_PEAK": "1559031808",
+          "MEMORY_SWAP_PEAK": "0",
+          "MESSAGE": "crystalhd-v13-clean-flatpak-acquisition-20261102.service: Consumed 1min 32.581s CPU time over 3min 15.062s wall clock time, 1.4G memory peak.",
+          "__REALTIME_TIMESTAMP": "1793580147564300"
+        }
+      ],
+      "scope": "Completion cgroup includes file cache; not unique physical/minimum RAM. Resume06 observer ended before its installation child; its cgroup is incomplete.",
+      "unit": "crystalhd-v13-clean-flatpak-acquisition-20261102.service"
+    },
+    {
+      "records": [
+        {
+          "CPU_USAGE_NSEC": "1199976886000",
+          "MEMORY_PEAK": "925896704",
+          "MEMORY_SWAP_PEAK": "0",
+          "MESSAGE": "crystalhd-v13-unmodified-build-proof-20261102.service: Consumed 19min 59.976s CPU time over 40min 1.330s wall clock time, 883M memory peak.",
+          "__REALTIME_TIMESTAMP": "1793576239165846"
+        }
+      ],
+      "scope": "Completion cgroup includes file cache; not unique physical/minimum RAM. Resume06 observer ended before its installation child; its cgroup is incomplete.",
+      "unit": "crystalhd-v13-unmodified-build-proof-20261102.service"
+    },
+    {
+      "records": [
+        {
+          "CPU_USAGE_NSEC": "22238279000",
+          "MEMORY_PEAK": "311947264",
+          "MEMORY_SWAP_PEAK": "0",
+          "MESSAGE": "crystalhd-v13-fresh-target-native-20261102.service: Consumed 22.238s CPU time over 33.540s wall clock time, 297.4M memory peak.",
+          "__REALTIME_TIMESTAMP": "1793580536739864"
+        }
+      ],
+      "scope": "Completion cgroup includes file cache; not unique physical/minimum RAM. Resume06 observer ended before its installation child; its cgroup is incomplete.",
+      "unit": "crystalhd-v13-fresh-target-native-20261102.service"
+    }
+  ],
+  "user_prerequisites": {
+    "build_only": [
+      "build-essential",
+      "pkgconf",
+      "gettext",
+      "git",
+      "kernel headers matching running kernel",
+      "own frontend development headers"
+    ],
+    "optional": [
+      "GTK3/PyGObject/ayatana tray for settings",
+      "Xv/EGL/GLES for explicit experimental outputs"
+    ],
+    "qualification_observers": [
+      "bpftrace",
+      "ffprobe source metadata",
+      "GNUtime",
+      "Flatpak GIR progress counters",
+      "pw-dump/kodi-send/fuser/pciutils/thermal/module collectors"
+    ],
+    "runtime": [
+      "own installed driver/DIL/GStreamer/VA components and firmware as selected",
+      "Python3 for helper tools",
+      "Flatpak acquisition, pinned Kodi/App/Platform/GL",
+      "graphics/Wayland compositor and PipeWire for tested route"
+    ]
+  }
+}

@@ -61,9 +61,15 @@ output, runtime producer/lifecycle and host/metadata/materials tools remain in
 the complete integration. A separate branch or unfinished qualification does
 not authorize excluding an implemented feature.
 
-Combined-source build, device and distribution qualification remains in
-progress. The private source/UI checkpoint below retains only its original
-qualified scope. Master merge, tags, public uploads and default-backend
+Combined-source archive/build, final17 native and installed DKMS/direct
+lifecycle checks are complete. Selected30minute Player and3hour VA-Bob
+evidence is reused only for unchanged runtime implementation from package16.
+The [native companion delivery](NATIVE-RUNTIME-DELIVERY.md) adds two exact
+unchanged-source reproductions, complete source/notice companions, measured
+fresh acquisition/build costs and fresh-acquired target native EOS/reopen.
+Its [support policy](NATIVE-RUNTIME-SUPPORT.md) explicitly disposes unavailable
+independent booted-OS acceptance without claiming PASS. The private source/UI
+checkpoint below retains only its original qualified scope. Master merge, tags, public uploads and default-backend
 promotion remain separate maintainer decisions. Published RC1 tags/assets and
 registered module payloads remain immutable.
 
@@ -138,13 +144,16 @@ full-rate FHD, Atom/i386/BCM70012 acceptance or every open research issue as don
 Keep historical FAILs and unavailable-target boundaries. #538 remains open;
 only its explicitly excluded heap-abort follow-up stays ignored.
 
-#607 owns remaining clean-target/public native-runtime prerequisites. The old
-seven-DSO research artifact remains `PUBLIC_NOT_READY` and has distinct platform
-dependencies. Its absence from RC1 is a remaining integration/distribution task,
-not exclusion from the 1.3 plan. The source TAR includes native/runtime tools;
-those source files do not themselves supply the binary DSO payload. Source/notices,
-ABI/provider/rollback, clean-target availability, update ownership and public
-distribution decisions must retain their actual PASS/FAIL/NOT RUN scope.
+#607 tracks native-runtime delivery prerequisites. Its new outer companion
+keeps the historical inner PUBLIC_NOT_READY metadata immutable and adds the
+complete source/build/dependency materials, tools, evidence and scoped project
+maintenance policy. The frozen complete core source940/module17 and the
+separately identified delivery-tool source retain their own attribution;
+registered package17 source must never be overwritten with supplemental files.
+Use the frozen core source for DKMS, not the supplemental delivery-tool branch.
+All developed features remain supplied across these artifacts. This packaging
+work does not silently change the native default, imply independent booted-OS
+acceptance, move RC1 tags/assets or authorize stable publication.
 
 ## Versions and compatibility
 
@@ -157,7 +166,7 @@ checkout alone does not announce a published release.
 
 | Identity | Current value | Purpose |
 | --- | --- | --- |
-| Complete integration candidate / module package | `1.3.0-rc.2` / `3.10.17` | Qualification in progress; never replace registered payloads |
+| Complete integration candidate / module package | `1.3.0-rc.2` / `3.10.17` | Core runtime/install qualification complete; immutable registered payloads |
 | Historical partial RC1 / module package | `1.3.0-rc.1` / `3.10.15` | Immutable tag/assets; incomplete 1.3 scope |
 | Earlier development bundle / module package | `1.3.0-dev.1` / `3.10.14` | Historical private checkpoints |
 | Published stable bundle / module package | `1.2.0` / `3.10.13` | Immutable source `8132043`; qualified public source asset |
