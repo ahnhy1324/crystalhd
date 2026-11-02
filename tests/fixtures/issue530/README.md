@@ -27,12 +27,13 @@ GST_PLUGIN_PATH_1_0="$field_plugins${GST_PLUGIN_PATH_1_0:+:$GST_PLUGIN_PATH_1_0}
 Run from the source root with a separately qualified CrystalHD GStreamer
 decoder/library available. This leaves the default output unchanged. The
 sink consumes limited-range YUY2 with BT.601/709 colorimetry. It accepts
-progressive or paired fields; ONEFIELD/RFF, reverse playback and live window
-replacement are unqualified. It does not add a Kick/readiness policy.
+progressive or paired fields; ONEFIELD/RFF and reverse playback remain
+unqualified. It does not add a Kick/readiness policy.
 
 Space, arrows and Q/Escape send application control messages handled by our
 Player; F11 toggles its managed window. `GstVideoOverlay` can embed a window
-provided before READY; paused expose/resize redraws retain the last field.
+before READY and replace it while PLAYING/PAUSED; paused expose/resize redraws
+retain the last field. See the current-host replacement qualification below.
 Nominal field targets follow pipeline running time, latency and timestamp
 offset, including an audio-selected clock. Swaps are submitted with the
 reported render lead because a vsynced swap queues/throttles presentation.
@@ -79,6 +80,50 @@ these PTS. Timestamped-container playback above is a separate observation.
 Live input, NV12, native i386, long endurance and physical scanout timing
 remain unqualified. The installed module, PM, links, pins and AER boundaries
 are unchanged; finite playback does not advance #533's nonempty-drain gate.
+
+### Live window replacement — 2026-11-02
+
+The worker applies checked reparent requests while preserving the same owned
+render child, EGL context/surface, field imports and source generation. An
+interrupted clock wait resumes at the same absolute media target. Stop joins
+the GPU owner even when a caller retains a Worker reference. Start and overlay
+setters serialize their cached target update; stop can cancel them independently.
+
+Standalone output uses a separate managed host around the render child. The
+first implementation let that child become a WM client; a late native resize
+then changed it to320x180 after embedding into a480x270 parent. Its RGB test
+failed beyond x320. Context/surface recreation did not correct this own X11
+ownership mistake and was removed. The managed host prevents the stale WM
+resize from following the render child. Configure notifications query current
+parent/child geometry, and stale close/key messages from retired parents are
+ignored. The original failed attempts remain in the dated receipt.
+
+Use handle0 for standalone mode. Literal screen roots, invalid/self targets,
+high-bit-truncated handles and descendants of an owned host that would be
+deleted are rejected without replacing the active attachment. Keep the target
+and its ancestry stable through the synchronous call and while selected. The
+API is void; inspect `window-handle`/`window-rejections` for a rejected request.
+
+`make -C filters/gst/field-output check` compiles the explicit X11 regression
+and runs the7 existing CPU groups in ordinary and ASan/UBSan modes plus plugin
+discovery. Run actual GPU cases only on an available X11/DRM host:
+
+```sh
+filters/gst/field-output/field-window-test
+python3 -B tests/gst-field-output-bench.py /absolute/timestamped-h264-aac.mkv \
+  --expected-plugin "$PWD/filters/gst/field-output/libgstcrystalhdfield.so" \
+  --label live-window --replace-window --results /absolute/new-result.json
+```
+
+The [current-host receipt](live-window-20261102.json) separates synthetic RGB/
+paused/clock-wait/invalid-target/close-message checks, the concurrent-stop
+scheduling smoke, existing spatial/retirement/EOS regression and the real
+card/audio run. In the final30-second run750 pictures decode,1496 fields submit and
+4 fields expire under the existing accepted-loss policy. Three live changes
+reach EOS and retire cleanly with a real Pulse clock. An EOS-tail Pulse
+underflow warning remains recorded; no universal zero-warning, lossless display,
+physical scanout or calibrated A/V claim follows. Live/NV12/field-GPU endurance
+and unavailable native-i386 physical acceptance keep their separate scopes.
 
 ### Completion and deadline ownership follow-up
 

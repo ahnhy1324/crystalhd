@@ -17,6 +17,8 @@ def main():
     parser.add_argument("--label", required=True)
     parser.add_argument("--expected-pictures", type=int, default=750)
     parser.add_argument("--fullscreen", action="store_true")
+    parser.add_argument("--replace-window", action="store_true",
+                        help="exercise playing embedded/standalone window replacement")
     args = parser.parse_args()
     if args.results.exists():
         parser.error("use a new results file")
@@ -85,7 +87,7 @@ def main():
                   audio_buffers=0, audio_stream_muted=True, clock=None,
                   audio_clock=None, same_audio_clock=False, peak_mC=0, sizes=[],
                   verified_initial_size=initial_size, sink_buffers=0, sink_fields=0,
-                  qos_sources={})
+                  qos_sources={}, window_replacements=[])
 
     def audio_probe(_pad, _info):
         report["audio_buffers"] += 1
@@ -122,6 +124,7 @@ def main():
     player.bus.connect("message::qos", qos)
 
     def tick():
+        nonlocal window, area
         report["peak_mC"] = max(report["peak_mC"], max(
             int(p.read_text()) for p in Path("/sys/class/thermal").glob("thermal_zone*/temp")))
         if report["peak_mC"] >= 75000:
@@ -130,9 +133,42 @@ def main():
         if clock and audio_clock:
             report.update(clock=clock.get_name(), audio_clock=audio_clock.get_name(),
                           same_audio_clock=clock == audio_clock)
-        size = [area.get_allocated_width(), area.get_allocated_height()]
-        if size not in report["sizes"]:
-            report["sizes"].append(size)
+        if area is not None:
+            size = [area.get_allocated_width(), area.get_allocated_height()]
+            if size not in report["sizes"]:
+                report["sizes"].append(size)
+        stage = len(report["window_replacements"])
+        if args.replace_window and stage < 3 and time.monotonic()-begin >= 2*(stage+1):
+            replacement, drawing = None, None
+            target = 0
+            if stage != 1:
+                replacement = Gtk.Window(title="CrystalHD live window replacement")
+                drawing = Gtk.DrawingArea()
+                replacement.add(drawing)
+                replacement.set_default_size(*( (480, 270) if stage == 0 else (800, 450) ))
+                replacement.show_all()
+                while Gtk.events_pending():
+                    Gtk.main_iteration_do(False)
+                target = GdkX11.X11Window.get_xid(drawing.get_window())
+                replacement.connect("delete-event", lambda *_: (player.control("quit"), True)[1])
+            started = time.monotonic()
+            GstVideo.VideoOverlay.set_window_handle(player.field_sink, target)
+            stats = player.field_sink.get_property("field-stats")
+            applied = stats.get_value("window-handle") == target
+            report["window_replacements"].append(dict(
+                stage=stage, handle=target, applied=applied,
+                seconds=time.monotonic()-started,
+                fields=stats.get_value("fields"),
+                retained=stats.get_value("retained-buffers"), images=stats.get_value("images")))
+            if not applied:
+                if replacement is not None:
+                    replacement.destroy()
+                player.fail("live output window replacement was rejected")
+                return False
+            old = window
+            window, area = replacement, drawing
+            if old is not None:
+                old.destroy()
         return not player.done
 
     player.sources.append(GLib.timeout_add(250, tick))
@@ -155,13 +191,18 @@ def main():
                   field_stats={fields.nth_field_name(i): fields.get_value(fields.nth_field_name(i))
                                for i in range(fields.n_fields())},
                   whole_buffer_drops=report.get("base_sink_before_null", {}).get("dropped"))
-    window.destroy()
+    if window is not None:
+        window.destroy()
     clean = all(report["field_stats"][key] == 0
                 for key in ("failures", "allocations", "images", "retained-buffers"))
+    window_ok = (len(report["window_replacements"]) == 3 and
+                 all(row["applied"] for row in report["window_replacements"]) and
+                 report["field_stats"]["window-replacements"] == 3
+                 if args.replace_window else report["sizes"] == [initial_size])
     report["pass"] = (code == 0 and report["eos"] and clean and
                       report["decoded"] == args.expected_pictures and
                       report["audio_buffers"] > 0 and report["same_audio_clock"] and
-                      report["sizes"] == [initial_size])
+                      window_ok)
     with args.results.open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2)
         stream.write("\n")

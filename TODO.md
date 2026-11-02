@@ -39,7 +39,28 @@ its source/UI checkpoint does not authorize excluding already-developed work.
 - [x] Complete affected combined-source build, contract and actual-device tests.
 - [x] Complete the current-equipment runtime distribution work in #607 and
   package the complete candidate with its own qualification receipt.
-- [ ] Record the final RC2 release disposition; stable1.3 is a separate step.
+- [x] Record the [published complete RC2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2)
+  disposition and independently verify all13 public assets; #607 is closed.
+  Stable1.3 remains a separate step.
+
+### Active research execution — 2026-11-02
+
+The maintainer explicitly requires nonblocking research to continue alongside
+release work. Nonblocking is a release-impact decision, not authorization to
+shelve the work or silently exclude implemented features.
+
+1. #530: live PLAYING/PAUSED overlay-window replacement, owned standalone
+   host and current-parent geometry, same field generation/deadline and bounded
+   stop are implemented in the follow-up; see its current-host receipt.
+2. #513: next own-code task is same-layout UYVY port handoff, preserving the
+   existing pool and retiring prior SHM requests before releasing the old port.
+   Busy/incompatible targets must preserve the current output.
+3. #538: continue source-range/native compatibility research. Nonempty
+   STOP/START must keep its firmware-DPB-loss rejection; clearing a host flag
+   is not a repair. Only the original heap subtask is excluded.
+4. #470/#477: retain current-equipment allocation/ROI qualification work in
+   their owning issues. VA-Bob endurance does not substitute for their matched
+   allocation or centered-ROI cases. Extra physical targets remain unavailable.
 
 Withdrawn copy/performance prototypes remain withdrawn. The original #538 heap
 subtask alone remains excluded; #538 and its other work stay open. Accepted

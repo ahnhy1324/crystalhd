@@ -1,0 +1,269 @@
+{
+  "accepted_loss_policy": "4 of1500 fields expired; all750 source pictures decoded. Existing renderer/QoS allowance remains; no universal zero-loss gate.",
+  "actual_card_audio": {
+    "EOS_tail_diagnostic": "Pulse underflow warning after FoundEOS retained. No zero-warning or lossless-presentation PASS claimed.",
+    "audio_buffers": 1408,
+    "benchmark_sha256": "fb8ca574fa8227a53b4180340995bd73bf8ef94166f54dccd5c048934315331a",
+    "boundary_equal": true,
+    "clock": "GstPulseSinkClock",
+    "decoded": 750,
+    "eos": true,
+    "exit": 0,
+    "field_stats": {
+      "allocations": 0,
+      "cancelled": 0,
+      "clipped": 0,
+      "clocked-fields": 1496,
+      "draw-ns": 604818487,
+      "dropped-fields": 4,
+      "early-fields": 36,
+      "failures": 0,
+      "fields": 1496,
+      "images": 0,
+      "late-fields": 316,
+      "max-age-ns": 34837000,
+      "max-early-ns": 15000000,
+      "pictures": 750,
+      "prepare-ns": 2129082949,
+      "prerolls": 1,
+      "redraws": 2,
+      "retained-buffers": 0,
+      "retire-ns": 129634583,
+      "retirements": 750,
+      "swap-ns": 25336992334,
+      "swaps": 1499,
+      "wait-ns": 452058389,
+      "window-handle": 0,
+      "window-rejections": 0,
+      "window-replacements": 3,
+      "worst-clock-elapsed-ns": 21831000,
+      "worst-draw-ns": 213021,
+      "worst-field-index": 1,
+      "worst-field-pts": 22340000000,
+      "worst-head-age-ns": 13006000,
+      "worst-monotonic-elapsed-ns": 21790861,
+      "worst-parity": 1,
+      "worst-prepare-ns": 1959025,
+      "worst-preswap-age-ns": 13254000,
+      "worst-retire-ns": 170696,
+      "worst-swap-ns": 21543058,
+      "worst-swap-sequence": 1118,
+      "worst-wait-ns": 23397
+    },
+    "maximum_temperature_mC": 50000,
+    "observed_sizes": [
+      [
+        640,
+        360
+      ],
+      [
+        480,
+        270
+      ],
+      [
+        800,
+        450
+      ]
+    ],
+    "result_sha256": "3cede16abd761a638abe08f17111bb8bdeaa2475d95ee6facacfe165cd431bca",
+    "same_audio_clock": true,
+    "scope": "Timestamped30s H2641080i25/AAC source, card1280-wide output, real Pulse clock, three PLAYING embedded->standalone->embedded reattachments; no physical scanout/calibratedAV claim.",
+    "seconds": 33.42333438503556,
+    "source_attribution": "Fresh run after all final production code changes; file hashes below identify exact tested contents.",
+    "source_qualified_CPP_sha256": "37f0692705af21643e40ca07b367a5614c12ece36df988212b334acb576935c7",
+    "source_qualified_plugin_sha256": "a4b3743c17293b6dc20e9e87ce5346d0a765b6901b5be733cc6ec281a9b4a2c5",
+    "status": "PASS_CARD_AUDIO_LIVE_WINDOW_REPLACEMENT",
+    "stderr_sha256": "36467427a791abfdda9d256ce2ab879fd9eb74c08de2a700b9d7c7b7fb7c9eca",
+    "stdout_sha256": "018f5a0fd8bd6759f288a03dd4726f430dfd1fa4a98d04d2b9c1236b3ba9b146",
+    "window_replacements": [
+      {
+        "applied": true,
+        "fields": 36,
+        "handle": 50331666,
+        "images": 2,
+        "retained": 1,
+        "seconds": 0.0010905980598181486,
+        "stage": 0
+      },
+      {
+        "applied": true,
+        "fields": 135,
+        "handle": 0,
+        "images": 2,
+        "retained": 1,
+        "seconds": 0.0175099759362638,
+        "stage": 1
+      },
+      {
+        "applied": true,
+        "fields": 235,
+        "handle": 50331673,
+        "images": 2,
+        "retained": 1,
+        "seconds": 0.023207204998470843,
+        "stage": 2
+      }
+    ]
+  },
+  "base_source": "5109afeba5c30284f74e7de16c29c7aa09059d50",
+  "code_files": {
+    "filters/gst/field-output/Makefile": {
+      "bytes": 3815,
+      "sha256": "29217c10a7f206535cff0dc3ead3af00f393d9874d91e7c3ddd6dc424d5ea007"
+    },
+    "filters/gst/field-output/gstcrystalhdfield.cpp": {
+      "bytes": 48718,
+      "sha256": "37f0692705af21643e40ca07b367a5614c12ece36df988212b334acb576935c7"
+    },
+    "tests/gst-field-output-bench.py": {
+      "bytes": 10704,
+      "sha256": "c1c65debba592360a54545b80f4077b64008505c3cee27e683ae0aa36354f34f"
+    },
+    "tests/gst-field-window.cpp": {
+      "bytes": 15044,
+      "sha256": "e0054bd079457c64056f0093b362d995215d207f29f268b9c470c1d484794771"
+    }
+  },
+  "date": "2026-11-02",
+  "existing_GPU_regression": {
+    "EOS_reopen_cycles": 3,
+    "boundary_equal": true,
+    "clock_wait_cancellation": "PASS",
+    "exit": 0,
+    "full_spatial_RGB_comparisons": 36,
+    "letterbox_rectangles": 3,
+    "maximum_temperature_mC": 54000,
+    "queued_retirement_RGB_comparisons": 8,
+    "result_sha256": "e7ff8fcd984a012cd5d39ea1c4cd13f654c470498392d46a92e63c22da51ffd8",
+    "seconds": 6.92149213294033,
+    "source_attribution": "Fresh run after all final production code changes; file hashes below identify exact tested contents.",
+    "status": "PASS_EXISTING_FIELD_GPU_REGRESSION",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_sha256": "fc6efd1d068db1b22e14ba501be0cd02efdcefaaefa5729edb731e1afbdbfb95"
+  },
+  "external_code": "Unmodified",
+  "failure_disposition": [
+    "gpu01 test incorrectly assumed standalone native parent must equal root; WM frame is valid and test corrected.",
+    "gpu02-06 own reparent prototype let render child become a managed standalone client. Actual native child320x180 under parent480x270 caused RGB failure at x320.",
+    "Context/surface refresh attempts did not fix own WM lifetime mistake and were removed. Separate owned managed host fixes the failure with unchanged child/context/surface/imports.",
+    "All attempts retire owned helper and preserve stable module/ref/pin/PM/AER boundaries."
+  ],
+  "final_synthetic": {
+    "boundary_equal": true,
+    "exit": 0,
+    "maximum_temperature_mC": 58000,
+    "result_sha256": "7f44ef7fd1089aee61c6bdb69c24f5dcaedee1923b151ee91a68502157eb2376",
+    "scope": "Own X11/DRM resources; full solid parity RGB over8 attachment cases, pipeline PAUSED/PLAYING, active2s field wait, stale geometry/message routing, rejected target retention and NULL join. Stop scheduling smoke does not prove every pending-cancel interleaving.",
+    "seconds": 5.810045170946978,
+    "status": "PASS_SYNTHETIC_LIVE_WINDOW_REPLACEMENT",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_sha256": "e3602870f3a4575e8f81eb27a292c281efd808c95270421978159b6b3a92e30c",
+    "summary": [
+      {
+        "comparisons": 8,
+        "pass": true,
+        "same_context_and_imports": true,
+        "test": "window-pixels"
+      },
+      {
+        "clock_wait_replacement_ms": 21.654,
+        "concurrent_stop_smoke": true,
+        "current_close_forwarded": true,
+        "fields": 2,
+        "pass": true,
+        "paused": true,
+        "rejected_target_preserved": true,
+        "stale_close_ignored": true,
+        "stale_geometry": true,
+        "stop_with_reference": true,
+        "test": "window-pipeline"
+      }
+    ]
+  },
+  "host": {
+    "CPU": "Core2 T8100",
+    "GLES": "OpenGL ES2.0 Mesa26.0.8-1ubuntu0.3",
+    "GPU": "Intel965GM",
+    "decoder": "BCM70015",
+    "loaded_module": "3.10.13",
+    "module_srcversion": "F76E163690F147B91495DDD"
+  },
+  "implementation": [
+    "Synchronous checked worker reparent; retained child/context/surface/field images/source generation",
+    "Clock wait unscheduled only for control service, then same original absolute media target",
+    "Independent owned managed host keeps EGL render child out of WM client management",
+    "Fresh coalesced parent/child geometry and retired-parent close/key filtering",
+    "Reject invalid/self/root/truncated handles and descendants of old owned host before deletion",
+    "Serialize startup/cached-target setter; stop cancels and joins independently of external Worker references"
+  ],
+  "initial_failures": [
+    {
+      "boundary_equal": true,
+      "run": "gpu-01",
+      "status": "FAIL",
+      "stderr_sha256": "aceca556f17e5e038363350d38ace1a93d79e781669b082edf8992df62bd011f"
+    },
+    {
+      "boundary_equal": true,
+      "run": "gpu-02",
+      "status": "FAIL",
+      "stderr_sha256": "594a9a5f92be41bf124017951297b8c49e2c752d57eb981d56580c0b5dde16d7"
+    },
+    {
+      "boundary_equal": true,
+      "run": "gpu-03",
+      "status": "FAIL",
+      "stderr_sha256": "594a9a5f92be41bf124017951297b8c49e2c752d57eb981d56580c0b5dde16d7"
+    },
+    {
+      "boundary_equal": true,
+      "run": "gpu-04",
+      "status": "FAIL",
+      "stderr_sha256": "594a9a5f92be41bf124017951297b8c49e2c752d57eb981d56580c0b5dde16d7"
+    },
+    {
+      "boundary_equal": true,
+      "run": "gpu-05",
+      "status": "FAIL",
+      "stderr_sha256": "a8125325cce134b99ccefb3e644fabb386fc376e9172955f4fa9feafa918af6b"
+    },
+    {
+      "boundary_equal": true,
+      "run": "gpu-06",
+      "status": "FAIL",
+      "stderr_sha256": "35ec6bdfe4104d687125b1719d426ed572ea36a5377e969de519c879a1817955"
+    }
+  ],
+  "kernel_observation": {
+    "errors": [],
+    "log_sha256": "4e3eb103c07449c9e9b2f3bb52e620ed79017e9ca5bbc0f1391dddcca635406d",
+    "scope": "Kernel journal since own research branch creation; no forced reset/unload/kill or installed runtime change.",
+    "since": "2026-11-02T10:48:49+09:00"
+  },
+  "local_CPU": {
+    "ASan_UBSan_leak_groups": 7,
+    "log_sha256": "162211db0786d1fee678b5669986c58a9e31b4aecd9d48a344354c597248d79d",
+    "new_GPU_probe_compile": "PASS; actual GPU execution explicit, not run by make check",
+    "ordinary_groups": 7,
+    "plugin_discovery": "PASS"
+  },
+  "prior_card_checkpoint": {
+    "decoded": 750,
+    "expired_fields": 3,
+    "fields": 1497,
+    "scope": "Earlier valid-path checkpoint preserved; final-source result above supersedes its source attribution.",
+    "source_qualified_CPP_sha256": "92d6de3d421153377ddf968c193bb41479a889da51a4100973dbac30e799fb08",
+    "source_qualified_plugin_sha256": "4c4384f8959fa35ec6f10e113047f76f059387c02992393237ab39acaefc05ed"
+  },
+  "release_impact": "Active nonblocking research per maintainer; no change to published immutable RC2 or default output.",
+  "remaining_research": [
+    "live-source input",
+    "NV12",
+    "field-GPU endurance",
+    "unavailable native-i386 physical target",
+    "physical presentation/cadence beyond declared current-host readback scope"
+  ],
+  "schema": 1,
+  "source_binding": "Precommit tested file contents below; owning PR identifies resulting commit. Never replaces frozen RC2/core940/package17 artifacts.",
+  "status": "PASS_CURRENT_HOST_LIVE_WINDOW_REPLACEMENT_FINAL_SOURCE"
+}

@@ -23,7 +23,8 @@ struct Counters {
         prepare_ns{0},draw_ns{0},wait_ns{0},swap_ns{0},retire_ns{0},retirements{0},
         worst_field_pts{0},worst_field_index{0},worst_parity{0},worst_swap_sequence{0},worst_prepare_ns{0},
         worst_retire_ns{0},worst_draw_ns{0},worst_wait_ns{0},worst_swap_ns{0},
-        worst_monotonic_elapsed_ns{0},worst_clock_elapsed_ns{0};
+        worst_monotonic_elapsed_ns{0},worst_clock_elapsed_ns{0},
+        window_replacements{0},window_rejections{0},window_handle{0};
     std::atomic<gint64> worst_head_age_ns{0},worst_preswap_age_ns{0};
 };
 // The opaque video draw overwrites its entire rectangle. Clear only the bars;
@@ -52,11 +53,15 @@ struct Command {
     GstFlowReturn result=GST_FLOW_OK;
     ~Command() { if(buffer)gst_buffer_unref(buffer);if(clock)gst_object_unref(clock); }
 };
+struct WindowCommand {
+    guintptr handle=0;
+    bool done=false,accepted=false;
+};
 
 // This object and all GPU objects are constructed/destroyed on the worker.
 struct Window {
     xcb_connection_t *connection=nullptr;
-    xcb_window_t window=0,parent=0;
+    xcb_window_t window=0,parent=0,standalone=0;
     xcb_colormap_t colormap=0;
     xcb_atom_t protocols=0,delete_window=0,state=0,fullscreen=0;
     EGLDisplay display=EGL_NO_DISPLAY;
@@ -78,12 +83,14 @@ struct Window {
         auto screens=xcb_setup_roots_iterator(xcb_get_setup(connection));
         for(int i=0;i<screen_index&&screens.rem;++i)xcb_screen_next(&screens);
         need(screens.rem,"XCB screen");auto *screen=screens.data;
-        embedded=handle!=0;parent=embedded?xcb_window_t(handle):screen->root;
+        embedded=handle!=0;
+        need(handle<=G_MAXUINT32&&(!embedded||handle!=screen->root),"valid embedding window, use0 for standalone");
+        parent=embedded?xcb_window_t(handle):screen->root;
         const char *extensions=eglQueryString(EGL_NO_DISPLAY,EGL_EXTENSIONS);
         need(extensions&&strstr(extensions,"EGL_EXT_platform_xcb"),"EGL XCB platform extension");
         auto get=reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(eglGetProcAddress("eglGetPlatformDisplayEXT"));
-        auto create=reinterpret_cast<PFNEGLCREATEPLATFORMWINDOWSURFACEEXTPROC>(eglGetProcAddress("eglCreatePlatformWindowSurfaceEXT"));
-        need(get&&create,"EGL platform functions");
+        auto create_surface=reinterpret_cast<PFNEGLCREATEPLATFORMWINDOWSURFACEEXTPROC>(eglGetProcAddress("eglCreatePlatformWindowSurfaceEXT"));
+        need(get&&create_surface,"EGL platform functions");
         EGLint attrs[]={EGL_PLATFORM_XCB_SCREEN_EXT,screen_index,EGL_NONE};
         display=get(EGL_PLATFORM_XCB_EXT,connection,attrs);
         EGLint major=0,minor=0;need(eglInitialize(display,&major,&minor),"window EGL initialization");
@@ -119,9 +126,17 @@ struct Window {
         protocols=atom("WM_PROTOCOLS");delete_window=atom("WM_DELETE_WINDOW");
         state=atom("_NET_WM_STATE");fullscreen=atom("_NET_WM_STATE_FULLSCREEN");
         xcb_change_property(connection,XCB_PROP_MODE_REPLACE,window,protocols,XCB_ATOM_ATOM,32,1,&delete_window);
+        if(!embedded) {
+            // Keep the EGL child out of the WM's client set. Otherwise a late
+            // WM configure/unmanage can resize it after a live reparent.
+            standalone=make_standalone(screen->root);parent=standalone;
+            error=xcb_request_check(connection,xcb_reparent_window_checked(connection,window,parent,0,0));
+            if(error){free(error);need(false,"standalone video parent");}
+        }
         xcb_map_window(connection,window);xcb_flush(connection);
+        if(standalone){xcb_map_window(connection,standalone);xcb_flush(connection);}
         // The EXT API takes the address of an xcb_window_t, not an integer cast.
-        surface=create(display,config,&window,nullptr);
+        surface=create_surface(display,config,&window,nullptr);
         need(surface!=EGL_NO_SURFACE,"EGL XCB window surface");
         EGLint context_attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
         context=eglCreateContext(display,config,EGL_NO_CONTEXT,context_attrs);
@@ -138,15 +153,102 @@ struct Window {
         }
         if(connection) {
             if(window)xcb_destroy_window(connection,window);
+            if(standalone)xcb_destroy_window(connection,standalone);
             if(colormap)xcb_free_colormap(connection,colormap);
             xcb_disconnect(connection);connection=nullptr;
         }
     }
     ~Window(){cleanup();}
+    xcb_window_t make_standalone(xcb_window_t root) {
+        auto id=xcb_generate_id(connection);
+        uint32_t values[]={0,XCB_EVENT_MASK_EXPOSURE|XCB_EVENT_MASK_STRUCTURE_NOTIFY|XCB_EVENT_MASK_KEY_PRESS};
+        auto *error=xcb_request_check(connection,xcb_create_window_checked(connection,XCB_COPY_FROM_PARENT,
+            id,root,0,0,width,height,0,XCB_WINDOW_CLASS_INPUT_OUTPUT,XCB_COPY_FROM_PARENT,
+            XCB_CW_BACK_PIXEL|XCB_CW_EVENT_MASK,values));
+        if(error){free(error);need(false,"standalone output window");}
+        const char title[]="CrystalHD GPU field output (experimental)";
+        const char klass[]="crystalhd-field\0CrystalHD\0";
+        xcb_change_property(connection,XCB_PROP_MODE_REPLACE,id,XCB_ATOM_WM_NAME,XCB_ATOM_STRING,8,sizeof(title)-1,title);
+        xcb_change_property(connection,XCB_PROP_MODE_REPLACE,id,XCB_ATOM_WM_CLASS,XCB_ATOM_STRING,8,sizeof(klass)-1,klass);
+        xcb_change_property(connection,XCB_PROP_MODE_REPLACE,id,protocols,XCB_ATOM_ATOM,32,1,&delete_window);
+        return id;
+    }
+    void resize() {
+        auto *geometry=xcb_get_geometry_reply(connection,
+            xcb_get_geometry(connection,parent),nullptr);
+        need(geometry,"current output window geometry");
+        width=geometry->width;height=geometry->height;free(geometry);
+        auto *child=xcb_get_geometry_reply(connection,xcb_get_geometry(connection,window),nullptr);
+        need(child,"current video child geometry");
+        const bool changed=child->width!=width||child->height!=height;free(child);
+        if(changed) {
+            uint32_t size[]={width,height};
+            auto *error=xcb_request_check(connection,xcb_configure_window_checked(connection,window,
+                XCB_CONFIG_WINDOW_WIDTH|XCB_CONFIG_WINDOW_HEIGHT,size));
+            if(error){free(error);need(false,"current video child resize");}
+        }
+    }
+    bool inside(xcb_window_t target,xcb_window_t ancestor,xcb_window_t root) {
+        // The caller keeps its target stable through the synchronous request.
+        // Never move into the old owned wrapper's tree and then destroy it.
+        for(unsigned depth=0;target&&target!=root;++depth) {
+            if(target==ancestor||depth==256)return true;
+            xcb_generic_error_t *error=nullptr;
+            auto *tree=xcb_query_tree_reply(connection,xcb_query_tree(connection,target),&error);
+            if(error||!tree){free(error);free(tree);return true;}
+            target=tree->parent;free(tree);
+        }
+        return false;
+    }
+    bool replace(guintptr handle) {
+        if(handle>G_MAXUINT32||handle==window||(standalone&&handle==standalone))return false;
+        if(!handle&&!embedded)return true;
+        // Use the root belonging to this window, including on nondefault X screens.
+        auto *own=xcb_get_geometry_reply(connection,xcb_get_geometry(connection,window),nullptr);
+        if(!own)return false;
+        const xcb_window_t root=own->root;free(own);
+        if(handle==root||(handle&&standalone&&inside(xcb_window_t(handle),standalone,root)))return false;
+        const xcb_window_t candidate=handle?0:make_standalone(root);
+        const xcb_window_t target=handle?xcb_window_t(handle):candidate;
+        if(target==parent&&embedded==(handle!=0))return true;
+        xcb_generic_error_t *error=nullptr;
+        auto *geometry=xcb_get_geometry_reply(connection,xcb_get_geometry(connection,target),&error);
+        if(error){free(error);free(geometry);if(candidate)xcb_destroy_window(connection,candidate);return false;}
+        if(!geometry){if(candidate)xcb_destroy_window(connection,candidate);return false;}
+        const bool valid=geometry->root==root&&geometry->width&&geometry->height;
+        const unsigned next_width=handle?geometry->width:width;
+        const unsigned next_height=handle?geometry->height:height;
+        free(geometry);
+        if(!valid){if(candidate)xcb_destroy_window(connection,candidate);return false;}
+        // A checked reparent leaves the owned child and EGL surface/context
+        // intact. Reject invalid/foreign-screen targets before changing state.
+        error=xcb_request_check(connection,xcb_reparent_window_checked(connection,window,target,0,0));
+        if(error){free(error);if(candidate)xcb_destroy_window(connection,candidate);return false;}
+        if(embedded) {
+            uint32_t mask=0;
+            error=xcb_request_check(connection,xcb_change_window_attributes_checked(connection,parent,XCB_CW_EVENT_MASK,&mask));
+            free(error); // A retired old parent may already have disappeared.
+        }
+        const auto old_standalone=standalone;standalone=candidate;
+        embedded=handle!=0;parent=target;width=next_width;height=next_height;
+        if(embedded) {
+            uint32_t mask=XCB_EVENT_MASK_STRUCTURE_NOTIFY;
+            xcb_change_window_attributes(connection,parent,XCB_CW_EVENT_MASK,&mask);
+        }
+        uint32_t size[]={width,height};
+        error=xcb_request_check(connection,xcb_configure_window_checked(connection,window,
+            XCB_CONFIG_WINDOW_WIDTH|XCB_CONFIG_WINDOW_HEIGHT,size));
+        if(error){free(error);need(false,"attached window size");}
+        xcb_map_window(connection,window);xcb_flush(connection);
+        if(standalone)xcb_map_window(connection,standalone);
+        if(old_standalone)xcb_destroy_window(connection,old_standalone);
+        xcb_flush(connection);
+        return true;
+    }
     void toggle_fullscreen() {
         if(embedded)return;
         xcb_client_message_event_t event{};event.response_type=XCB_CLIENT_MESSAGE;
-        event.window=window;event.type=state;event.format=32;
+        event.window=standalone;event.type=state;event.format=32;
         event.data.data32[0]=2;event.data.data32[1]=fullscreen;event.data.data32[3]=1;
         auto screens=xcb_setup_roots_iterator(xcb_get_setup(connection));
         xcb_send_event(connection,0,screens.data->root,
@@ -165,9 +267,12 @@ struct Worker {
     GstElement *owner;
     Counters &stats;
     std::mutex mutex;
+    std::mutex join_mutex;
     std::condition_variable changed;
     std::deque<std::shared_ptr<Command>> queue;
+    std::deque<std::shared_ptr<WindowCommand>> windows;
     std::thread thread;
+    std::thread::id thread_id;
     int wake=-1;
     bool ready=false,stopping=false,flushing=false,broken=false;
     guint64 generation=1;
@@ -177,7 +282,7 @@ struct Worker {
     std::atomic<bool> expose{false};
     Worker(GstElement *element,Counters &c,guintptr window):owner(element),stats(c),handle(window) {
         wake=eventfd(0,EFD_CLOEXEC|EFD_NONBLOCK);need(wake>=0,"worker eventfd");
-        try {thread=std::thread(&Worker::run,this);}catch(...){close(wake);throw;}
+        try {thread=std::thread(&Worker::run,this);thread_id=thread.get_id();}catch(...){close(wake);throw;}
     }
     void notify(){uint64_t one=1;ssize_t ignored=write(wake,&one,sizeof(one));(void)ignored;}
     void cancel(bool stop=false) {
@@ -185,7 +290,48 @@ struct Worker {
          if(active_wait)gst_clock_id_unschedule(active_wait);}
         notify();changed.notify_all();
     }
-    ~Worker(){cancel(true);if(thread.joinable())thread.join();close(wake);}
+    void shutdown() {
+        cancel(true);
+        std::lock_guard<std::mutex> lock(join_mutex);
+        if(thread.joinable())thread.join();
+    }
+    ~Worker(){shutdown();close(wake);}
+    bool replace_window(guintptr value) {
+        // Never wait on the thread that must service this request.
+        if(std::this_thread::get_id()==thread_id)return false;
+        auto request=std::make_shared<WindowCommand>();request->handle=value;
+        std::unique_lock<std::mutex> lock(mutex);
+        changed.wait(lock,[&]{return ready||broken||stopping;});
+        if(broken||stopping)return false;
+        windows.push_back(request);
+        if(active_wait)gst_clock_id_unschedule(active_wait);
+        notify();
+        changed.wait(lock,[&]{return request->done||broken||stopping;});
+        return request->done&&request->accepted;
+    }
+    bool replace_windows(Window &window) {
+        bool moved=false;
+        for(;;) {
+            std::shared_ptr<WindowCommand> request;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                if(stopping||windows.empty())break;
+                request=windows.front();windows.pop_front();
+            }
+            const auto before=window.embedded?window.parent:0;
+            const bool accepted=window.replace(request->handle);
+            if(accepted) {
+                stats.window_handle=request->handle;
+                if(before!=request->handle){++stats.window_replacements;moved=true;}
+            }else ++stats.window_rejections;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                request->accepted=accepted;request->done=true;
+            }
+            changed.notify_all();
+        }
+        return moved;
+    }
     bool current(guint64 value) {
         std::lock_guard<std::mutex> lock(mutex);
         return !stopping&&!flushing&&!broken&&generation==value;
@@ -214,7 +360,7 @@ struct Worker {
         if(command.base>=GST_CLOCK_TIME_NONE-adjusted)return false;
         target=command.base+adjusted;return true;
     }
-    bool wait(Command &command,GstClockTime running) {
+    template<class Controls> bool wait(Command &command,GstClockTime running,Controls controls) {
         if(!command.clock)return current(command.generation);
         GstClockTime target=0;
         need(target_time(command,running,target),"valid field clock target");
@@ -222,16 +368,23 @@ struct Worker {
         // instantaneous scanout. Waiting until the media target before calling
         // it adds another refresh wait and can accumulate unbounded A/V lag.
         target=target>command.base+command.render_lead?target-command.render_lead:command.base;
-        GstClockID id=gst_clock_new_single_shot_id(command.clock,target);
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            if(stopping||flushing||generation!=command.generation){gst_clock_id_unref(id);return false;}
-            active_wait=id;
+        for(;;) {
+            controls();
+            GstClockID id=gst_clock_new_single_shot_id(command.clock,target);
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                if(stopping||flushing||generation!=command.generation){gst_clock_id_unref(id);return false;}
+                if(!windows.empty()){gst_clock_id_unref(id);continue;}
+                active_wait=id;
+            }
+            GstClockReturn result=gst_clock_id_wait(id,nullptr);
+            {std::lock_guard<std::mutex> lock(mutex);active_wait=nullptr;}
+            gst_clock_id_unref(id);
+            // Window replacement interrupts only this wait, not the picture
+            // generation. Service it and wait again for the original deadline.
+            if(result==GST_CLOCK_UNSCHEDULED&&current(command.generation))continue;
+            return (result==GST_CLOCK_OK||result==GST_CLOCK_EARLY)&&current(command.generation);
         }
-        GstClockReturn result=gst_clock_id_wait(id,nullptr);
-        {std::lock_guard<std::mutex> lock(mutex);active_wait=nullptr;}
-        gst_clock_id_unref(id);
-        return (result==GST_CLOCK_OK||result==GST_CLOCK_EARLY)&&current(command.generation);
     }
     void post(const char *name,const char *action=nullptr) {
         auto *fields=gst_structure_new_empty(name);
@@ -268,8 +421,9 @@ struct Worker {
         };
         // Scope guard also runs on exceptions, while the EGL context is current.
         struct RetainGuard { decltype(retire) &cleanup;Counters &stats;
-            ~RetainGuard(){cleanup();stats.allocations=0;}
+            ~RetainGuard(){cleanup();stats.allocations=0;stats.window_handle=0;}
         } guard{retire,stats};
+        stats.window_handle=handle;
         {std::lock_guard<std::mutex> lock(mutex);ready=true;}changed.notify_all();
         auto draw=[&](unsigned parity,bool interlaced) {
             if(!retained||!window.width||!window.height)return;
@@ -283,25 +437,25 @@ struct Worker {
         };
         auto swap=[&] {need(eglSwapBuffers(window.display,window.surface),"window swap");++stats.swaps;};
         for(;;) {
-            bool redraw=expose.exchange(false);
+            bool redraw=replace_windows(window)|expose.exchange(false),resized=false;
             while(auto *event=xcb_poll_for_event(window.connection)) {
                 const uint8_t type=event->response_type&0x7f;
                 if(type==XCB_EXPOSE)redraw=true;
                 else if(type==XCB_CONFIGURE_NOTIFY) {
                     auto *configure=reinterpret_cast<xcb_configure_notify_event_t *>(event);
+                    // An old child ConfigureNotify may predate reparenting.
+                    // Embedded size follows only the current parent.
                     if(configure->window==window.window||configure->window==window.parent) {
-                        window.width=configure->width;window.height=configure->height;redraw=true;
-                        if(window.embedded&&configure->window==window.parent) {
-                            uint32_t size[]={window.width,window.height};
-                            xcb_configure_window(window.connection,window.window,XCB_CONFIG_WINDOW_WIDTH|XCB_CONFIG_WINDOW_HEIGHT,size);
-                            xcb_flush(window.connection);
-                        }
+                        resized=true;
                     }
                 } else if(type==XCB_CLIENT_MESSAGE) {
                     auto *client=reinterpret_cast<xcb_client_message_event_t *>(event);
-                    if(client->type==window.protocols&&client->data.data32[0]==window.delete_window)post("crystalhd-field-close");
+                    if((client->window==window.window||client->window==window.parent)&&
+                       client->type==window.protocols&&client->data.data32[0]==window.delete_window)post("crystalhd-field-close");
                 } else if(type==XCB_KEY_PRESS) {
-                    auto symbol=window.keysym(reinterpret_cast<xcb_key_press_event_t *>(event)->detail);
+                    auto *key=reinterpret_cast<xcb_key_press_event_t *>(event);
+                    if(key->event!=window.window&&key->event!=window.parent){free(event);continue;}
+                    auto symbol=window.keysym(key->detail);
                     if(symbol==0xffc8)window.toggle_fullscreen(); // F11
                     else if(symbol==0x20)post("crystalhd-field-key","pause");
                     else if(symbol==0xff51)post("crystalhd-field-key","back");
@@ -315,6 +469,9 @@ struct Worker {
                 free(event);
             }
             need(!xcb_connection_has_error(window.connection),"live XCB connection");
+            // Coalesce notifications and read current geometry. A queued
+            // event from an earlier attachment to this same parent is stale.
+            if(resized){window.resize();redraw=true;}
             std::shared_ptr<Command> command;
             guint64 now_generation=0;
             {
@@ -402,7 +559,9 @@ struct Worker {
                     const auto draw_elapsed=gst_util_get_timestamp()-draw_begin;
                     stats.draw_ns+=draw_elapsed;
                     const auto wait_begin=gst_util_get_timestamp();
-                    if((!command->preroll&&!wait(*command,running))||!current(command->generation)) {
+                    if((!command->preroll&&!wait(*command,running,[&] {
+                            if(replace_windows(window)&&current(command->generation))draw(parity,interlaced);
+                        }))||!current(command->generation)) {
                         result=GST_FLOW_FLUSHING;++stats.cancelled;break;
                     }
                     const auto wait_elapsed=gst_util_get_timestamp()-wait_begin;
@@ -463,6 +622,7 @@ struct Worker {
 };
 struct State {
     std::mutex mutex;
+    std::mutex window_mutex;
     std::shared_ptr<Worker> worker;
     GstVideoInfo info{};
     guintptr window=0;
@@ -487,6 +647,7 @@ static gboolean start(GstBaseSink *sink) {
     auto *self=reinterpret_cast<GstCrystalhdField *>(sink);
     gst_video_overlay_prepare_window_handle(GST_VIDEO_OVERLAY(self));
     try {
+        std::lock_guard<std::mutex> replacement(self->state->window_mutex);
         std::lock_guard<std::mutex> lock(self->state->mutex);
         self->state->worker=std::make_shared<Worker>(GST_ELEMENT(self),self->state->counters,self->state->window);
         return TRUE;
@@ -495,7 +656,7 @@ static gboolean start(GstBaseSink *sink) {
 static gboolean stop(GstBaseSink *sink) {
     auto *self=reinterpret_cast<GstCrystalhdField *>(sink);std::shared_ptr<Worker> worker;
     {std::lock_guard<std::mutex> lock(self->state->mutex);worker.swap(self->state->worker);}
-    if(worker)worker->cancel(true);
+    if(worker)worker->shutdown();
     worker.reset();return TRUE;
 }
 static gboolean unlock(GstBaseSink *sink) {
@@ -542,8 +703,23 @@ static void get_times(GstBaseSink *sink,GstBuffer *buffer,GstClockTime *start_ti
 }
 static void set_window(GstVideoOverlay *overlay,guintptr window) {
     auto *self=reinterpret_cast<GstCrystalhdField *>(overlay);
+    auto caller=get_worker(self);
+    if(caller&&std::this_thread::get_id()==caller->thread_id) {
+        GST_WARNING_OBJECT(self,"cannot replace output from its GPU worker");return;
+    }
+    // Serialize setters without holding State::mutex while the worker acks:
+    // stop must remain able to cancel and join it concurrently.
+    std::lock_guard<std::mutex> replacement(self->state->window_mutex);
+    std::shared_ptr<Worker> worker;
+    {
+        std::lock_guard<std::mutex> lock(self->state->mutex);
+        worker=self->state->worker;
+        if(!worker){self->state->window=window;return;}
+    }
+    if(!worker->replace_window(window)) {
+        GST_WARNING_OBJECT(self,"window replacement rejected; current output preserved");return;
+    }
     std::lock_guard<std::mutex> lock(self->state->mutex);
-    if(self->state->worker){GST_WARNING_OBJECT(self,"set window before READY; live replacement is unqualified");return;}
     self->state->window=window;
 }
 static void expose(GstVideoOverlay *overlay) {
@@ -564,6 +740,9 @@ static void get_property(GObject *object,guint id,GValue *value,GParamSpec *spec
         "max-age-ns",G_TYPE_UINT64,c.max_age.load(),
         "early-fields",G_TYPE_UINT64,c.early.load(),"max-early-ns",G_TYPE_UINT64,c.max_early.load(),
         "dropped-fields",G_TYPE_UINT64,c.dropped.load(),
+        "window-replacements",G_TYPE_UINT64,c.window_replacements.load(),
+        "window-rejections",G_TYPE_UINT64,c.window_rejections.load(),
+        "window-handle",G_TYPE_UINT64,c.window_handle.load(),
         "prepare-ns",G_TYPE_UINT64,c.prepare_ns.load(),"draw-ns",G_TYPE_UINT64,c.draw_ns.load(),
         "wait-ns",G_TYPE_UINT64,c.wait_ns.load(),"swap-ns",G_TYPE_UINT64,c.swap_ns.load(),
         "retire-ns",G_TYPE_UINT64,c.retire_ns.load(),"retirements",G_TYPE_UINT64,c.retirements.load(),
