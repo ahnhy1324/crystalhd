@@ -17,6 +17,15 @@
 #include <sys/un.h>
 #include <time.h>
 
+/* Separate consumers reserve disjoint high-half XDM client-ID ranges.
+ * Header-local counters are not shared across plugins in one process. */
+#ifndef CRYSTALHD_X11_NONCE_FIRST
+#define CRYSTALHD_X11_NONCE_FIRST UINT32_C(0x80000000)
+#endif
+#ifndef CRYSTALHD_X11_NONCE_LAST
+#define CRYSTALHD_X11_NONCE_LAST UINT32_C(0xbfffffff)
+#endif
+
 typedef struct {
   GMutex lock;
   GCond changed;
@@ -27,7 +36,7 @@ typedef struct {
 
 static gpointer setup_watch(gpointer user)
 {
-  XvSetupWatch *w = user;
+  XvSetupWatch *w = (XvSetupWatch *)user;
   g_mutex_lock(&w->lock);
   while (!w->finished && g_cond_wait_until(&w->changed, &w->lock, w->deadline)) {}
   if (!w->finished) {
@@ -40,7 +49,8 @@ static gpointer setup_watch(gpointer user)
 
 static int connect_local_socket(guint display, gboolean abstract, gint64 deadline)
 {
-  struct sockaddr_un address = {.sun_family = AF_UNIX};
+  struct sockaddr_un address;
+  memset(&address, 0, sizeof(address)); address.sun_family = AF_UNIX;
   char path[sizeof(address.sun_path) - 1];
   int length = g_snprintf(path, sizeof(path), "/tmp/.X11-unix/X%u", display);
   if (length < 0 || (gsize)length >= sizeof(path)) return -1;
@@ -71,7 +81,8 @@ static int connect_local_socket(guint display, gboolean abstract, gint64 deadlin
 static gboolean local_authority(guint display, Xauth **owned, xcb_auth_info_t *info,
                                 unsigned char xdm[24])
 {
-  static char *types[] = {"XDM-AUTHORIZATION-1", "MIT-MAGIC-COOKIE-1"};
+  static char xdm_type[] = "XDM-AUTHORIZATION-1", mit_type[] = "MIT-MAGIC-COOKIE-1";
+  static char *types[] = {xdm_type, mit_type};
   static const int lengths[] = {19, 18};
   char hostname[256], number[32];
   if (gethostname(hostname, sizeof(hostname) - 1)) return FALSE;
@@ -91,10 +102,10 @@ static gboolean local_authority(guint display, Xauth **owned, xcb_auth_info_t *i
   static GMutex nonce_lock;
   /* Keep the immediate wire values distinct from libxcb's counter starting0.
    * Refuse exhaustion rather than wrapping into that ordinary counter range. */
-  static guint32 nonce = UINT32_C(0x80000000);
+  static guint32 nonce = CRYSTALHD_X11_NONCE_FIRST;
   g_mutex_lock(&nonce_lock);
   guint32 serial = nonce;
-  if (nonce) nonce++;
+  if (nonce) nonce = nonce == CRYSTALHD_X11_NONCE_LAST ? 0 : nonce + 1;
   g_mutex_unlock(&nonce_lock);
   if (!serial) return FALSE;
   guint32 address = htonl(UINT32_MAX - serial), stamp = htonl((guint32)time(NULL));
@@ -117,7 +128,7 @@ static xcb_connection_t *setup_local_socket(int fd, xcb_auth_info_t *auth)
   gboolean had_pipe = sigismember(&pending, SIGPIPE) == 1;
   xcb_connection_t *connection = xcb_connect_to_fd(fd, auth);
   if (!had_pipe) {
-    struct timespec zero = {0};
+    struct timespec zero = {0, 0};
     while (sigtimedwait(&pipe, NULL, &zero) < 0 && errno == EINTR) {}
   }
   pthread_sigmask(SIG_SETMASK, &original, NULL);
@@ -135,7 +146,8 @@ static xcb_connection_t *connect_local_display(const char *name, int *screen,
   free(host);
   if (!local) return NULL;
   Xauth *authority = NULL;
-  xcb_auth_info_t auth = {0}; unsigned char xdm[24];
+  xcb_auth_info_t auth; unsigned char xdm[24];
+  memset(&auth, 0, sizeof(auth));
   if (!local_authority(display, &authority, &auth, xdm)) {
     if (authority) XauDisposeAuth(authority);
     *failure = "Cannot prepare local X11 authority"; return NULL;
@@ -148,7 +160,9 @@ static xcb_connection_t *connect_local_display(const char *name, int *screen,
     if (authority) XauDisposeAuth(authority);
     return NULL;
   }
-  XvSetupWatch watch = {.deadline = deadline, .fd = fcntl(fd, F_DUPFD_CLOEXEC, 0)};
+  XvSetupWatch watch;
+  memset(&watch, 0, sizeof(watch));
+  watch.deadline = deadline; watch.fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
   g_mutex_init(&watch.lock); g_cond_init(&watch.changed);
   GThread *thread = watch.fd >= 0 ? g_thread_try_new("xv-setup-deadline", setup_watch, &watch, NULL) : NULL;
   xcb_connection_t *connection = NULL;

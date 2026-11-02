@@ -90,3 +90,6 @@ GTAGS
 /filters/vaapi/payload-observer/
 
 /filters/gst/field-output/nv12-field-equivalence
+
+/filters/gst/field-output/field-setup-test
+/filters/gst/field-output/field-setup-test-asan

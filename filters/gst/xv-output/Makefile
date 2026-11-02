@@ -13,7 +13,7 @@ all: libgstcrystalhdxv.so
 libgstcrystalhdxv.so: gstcrystalhdxv.c xv-connect.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -shared $< $(LDFLAGS) $(LDLIBS) -o $@
 
-gst-xv-output-test: ../../../tests/gst-xv-output.c ../../../tests/xv-setup-fixture.h gstcrystalhdxv.c xv-connect.h
+gst-xv-output-test: ../../../tests/gst-xv-output.c ../../../tests/xv-setup-fixture.h ../../../tests/x11-setup-peer.h gstcrystalhdxv.c xv-connect.h
 	$(CC) $(CPPFLAGS) $(shell $(PKG_CONFIG) --cflags gstreamer-app-1.0) $(CFLAGS) \
 		$< $(LDFLAGS) $(LDLIBS) $(shell $(PKG_CONFIG) --libs gstreamer-app-1.0) -o $@
 

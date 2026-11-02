@@ -12,6 +12,13 @@
 #include <mutex>
 #include <thread>
 #include "../../../tests/field-view-gpu.h"
+#define XV_TIMEOUT_US G_USEC_PER_SEC
+#define CRYSTALHD_X11_NONCE_FIRST UINT32_C(0xc0000000)
+#define CRYSTALHD_X11_NONCE_LAST UINT32_C(0xffffffff)
+#include "../xv-output/xv-connect.h"
+#undef CRYSTALHD_X11_NONCE_LAST
+#undef CRYSTALHD_X11_NONCE_FIRST
+#undef XV_TIMEOUT_US
 GST_DEBUG_CATEGORY_STATIC(field_debug);
 #define GST_CAT_DEFAULT field_debug
 
@@ -89,8 +96,9 @@ struct Window {
     Window(guintptr handle) {
       try {
         int screen_index=0;
-        connection=xcb_connect(nullptr,&screen_index);
-        need(connection&&!xcb_connection_has_error(connection),"XCB display connection");
+        const char *failure=nullptr;
+        connection=connect_local_display(nullptr,&screen_index,&failure);
+        need(connection&&!xcb_connection_has_error(connection),failure);
         auto screens=xcb_setup_roots_iterator(xcb_get_setup(connection));
         for(int i=0;i<screen_index&&screens.rem;++i)xcb_screen_next(&screens);
         need(screens.rem,"XCB screen");auto *screen=screens.data;
