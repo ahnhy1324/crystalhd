@@ -3595,7 +3595,9 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 		hw->TickSpentInPD = 0;
 		hw->TickCntDecodePU = rdtsc_ordered();
 
-		dev_dbg(dev, "[FMT CH] DoneSz:0x%x, PIB:%x %x %x %x %x %x %x %x %x %x\n",
+		dev_dbg(dev, "[FMT CH] pts=%llu session=%u flags=%x DoneSz:0x%x, PIB:%x %x %x %x %x %x %x %x %x %x\n",
+			(unsigned long long)pPicInfoLine->timeStamp,
+			pPicInfoLine->sess_num, pPicInfoLine->flags,
 			y_done_bytes, rx_pkt->pib.picture_number,
 			rx_pkt->pib.aspect_ratio, rx_pkt->pib.chroma_format,
 			rx_pkt->pib.colour_primaries, rx_pkt->pib.frame_rate,
