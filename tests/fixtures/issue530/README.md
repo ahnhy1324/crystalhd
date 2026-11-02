@@ -77,8 +77,8 @@ early PTS (`0, 80, 120, 120 ms`) in both software and CrystalHD output.
 A two-buffer queue does not fix this counterexample. Counts/EOS/resource
 checks alone do not make its cadence pass, and the sink does not rewrite
 these PTS. Timestamped-container playback above is a separate observation.
-Live input, NV12, native i386, long endurance and physical scanout timing
-remain unqualified. The installed module, PM, links, pins and AER boundaries
+In those historical runs, live input, NV12, native i386, long endurance and
+physical scanout timing remain unqualified. The installed module, PM, links, pins and AER boundaries
 are unchanged; finite playback does not advance #533's nonempty-drain gate.
 
 ### NV12 input — 2026-11-03

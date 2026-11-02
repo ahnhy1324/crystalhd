@@ -87,8 +87,10 @@
       "evidence_label": "existing-01",
       "exit": 0,
       "maximum_temperature_mC": 48000,
+      "original_controller_scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+      "original_controller_status": "PASS_EXISTING_FIELD_REGRESSION",
       "probe_sha256": "e6acfbad2d6e8cd656ce0900c1b576fb2fecfa91774b5df7deb607817af00cc7",
-      "scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+      "scope": "Existing actual native YUY2 window RGB/retirement/border/EOS/reopen/cancellation regression from tests/gst-field-output.cpp; no NV12 inputs.",
       "seconds": 5.898381734965369,
       "source_files": {
         "filters/gst/field-output/Makefile": "bad20414e81cc06faa5474d246ef6f27703a6e9251df1eee03746be8e0b608c1",
@@ -97,7 +99,7 @@
         "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
         "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
       },
-      "status": "PASS_EXISTING_FIELD_REGRESSION",
+      "status": "PASS_EXISTING_YUY2_NATIVE_REGRESSION",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "stdout_sha256": "8d3a4a31d5e2e27d8e9fbdabaa9ead3126495b05c17410e0c2adfd3416cbb104"
     },
@@ -118,8 +120,9 @@
       "exit": -6,
       "failure": "AssertionError(('probe failed', -6))",
       "maximum_temperature_mC": 47000,
+      "original_controller_scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
       "probe_sha256": "fd65e08ce394ff94b9428ba31ef07710be9cc10b278cb706375ec2c29f8d693d",
-      "scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+      "scope": "Independent public GLES2/GBM draw control with an owned VBO; no project/GStreamer code. Earlier prototype precedes final extra close/glIsBuffer assertions.",
       "seconds": 1.8555714809335768,
       "source_files": {
         "filters/gst/field-output/Makefile": "bad20414e81cc06faa5474d246ef6f27703a6e9251df1eee03746be8e0b608c1",
