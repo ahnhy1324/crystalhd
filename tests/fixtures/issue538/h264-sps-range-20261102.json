@@ -1,0 +1,88 @@
+{
+  "base_source": "979d93606523ed8a484986d98d597c3513e16447",
+  "code_files": {
+    "Makefile": {
+      "bytes": 27058,
+      "sha256": "f5ff000fd8ea2a5bf0a99eb406db5765f47ff1b89191e7c3e2d817c629195cbc"
+    },
+    "include/crystalhd_h264_sps_range.h": {
+      "bytes": 6005,
+      "sha256": "84423207eb40d959570f813d0a9925c21f1eda51ad81cad33d27aa101abb509f"
+    },
+    "tests/fixtures/issue538/h264-sps-range-goldens-20261102.json": {
+      "bytes": 6762,
+      "sha256": "e9b61c19aeb7445fc3fd0d0dcf012a144490a887e25d756bb0a28b5e3a698a1e"
+    },
+    "tests/h264-sps-range.c": {
+      "bytes": 4595,
+      "sha256": "c69fc479766e70ba9c33dd2e9300e92ae07de327bf3f9681c482a62e5bdc1fdc"
+    },
+    "tests/h264-sps-range.test.py": {
+      "bytes": 2252,
+      "sha256": "39cb5ae1274c3a192077bd2eab5358c8a0962b1ffdbff3787279c8e31c7af6aa"
+    }
+  },
+  "contract": {
+    "failure": "caller result unchanged; no input rewind, allocation or unbounded loop",
+    "input": "one SPS NAL header+EBSP without start code/length,4..4096bytes",
+    "output": "SPS ID and separate VUI/video-signal/range presence and full-range flag",
+    "prefix_scope": "Remaining VUI/SPS syntax, level/media conformance, PPS/VCL/frame association and output color conversion are not established",
+    "profiles": "66 Baseline,77 Main,100 High8-bit4:2:0; other profiles/chroma/bit-depth explicitly unsupported"
+  },
+  "date": "2026-11-02",
+  "hardware_tests": "NOT_RUN_NOT_APPLICABLE_TO_PURE_CPU_HELPER",
+  "independent_traces": {
+    "extended-sar-overscan-id31": "5a66a9d148bbeb2dde7f5d745bffa011a983d37917d2f0039bd48275d4a9edda",
+    "field-crop": "1bc3cd71a6c9236d7aadf59073ecbb37685915ef79eaa8de01e65d2ce5f50765",
+    "high-scaling-lists": "2ab298c432d975fa8c8fb373f1a34fa7d32c14198a729f3dc030182a451e821e",
+    "no-color-description": "9e2d9e7b441023d66974b32af1e5b08a5494e39d4daf29a5d21fc74f93ca8ae7",
+    "no-video-signal": "7fb854cbeb8cfe9700308d4237d2cc2baabc0a45db6979e673dae4bfd8c44068",
+    "no-vui": "92166e0917b5fa545d795926c4f8ca0766a1f63bc47752eccf8a13a4ae7b2e65",
+    "poc0": "6014bc8a491c784a08856df5f058496744494fb31fb5e04bc7c47210929b80fb",
+    "poc1-ep-offset": "f28cde319543d3b9a925a0e1e2c9c80a90786b5970f0ced5b65fce7da71bdb7c",
+    "poc1-signed-cycle": "2173d5ec108cee4c5c480b8b48d7abf234015759de260847178b3f1bae7014f2",
+    "x264-baseline-full": "28c8cd34ac0846bbc4345f38d2ac445e3da1563301e01d70828b72810a66e226",
+    "x264-baseline-limited": "57ef5bd45b662ed7734fee746d42523de0bdec65dcf6f56f36ea6d449998ce40",
+    "x264-high-full": "c4e39085da92163f9f544e64d9709949dc300d411e7a5cd4bb6d4bd1049ac3f3",
+    "x264-high-limited": "f19cd118a6fed12905d9a146ade0b1bc3bb85dfe9b64c694fb717c16b40a8078",
+    "x264-main-full": "d2cc33c239ba49ce7c3de02d601544f7b199e87e2a17c46d39fda7b411b5218b",
+    "x264-main-limited": "39b2a630393d10a0178f617f58b584bcf9e804cb313bc0d026af3b79346f1137"
+  },
+  "next_work": [
+    "PPS-to-SPS and VCL picture association",
+    "Snapshot SPS generation and range in existing256-row admission token ledger, including TX failure/reset/reordering",
+    "Apply metadata at the matching output/source-change boundary and qualify actual native pixels before claiming full-range support"
+  ],
+  "policy": "Original538 excluded heap subtask and exact reason unchanged. Existing STOP/START rejection, external code, installed module/firmware/runtime, published assets, loss/AV policy unchanged.",
+  "private_evidence_root": "/home/mache/.cache/crystalhd-issue538-sps-range-run-20261102",
+  "qualification": {
+    "ASan_UBSan_leak_checks": 780,
+    "all_oracle_traces_exit": 0,
+    "check_log_sha256": "92831c0694328456e195d30c9296303237051a7b42eedec3c4088dbe701f6bce",
+    "coverage": [
+      "real x264 baseline/main/high limited/full",
+      "absent VUI and video signal",
+      "absent color description",
+      "POC0/1/2 and signed cycle offsets",
+      "interlace/MBAFF/crop",
+      "extended SAR/overscan/SPSid31",
+      "High scaling lists including nextScale0",
+      "emulation prevention inside consumed prefix",
+      "all byte truncations before independently measured required prefix",
+      "High chroma0/2/3 and nonzero luma/chroma bit depth unsupported",
+      "bad headers/IDs/reserved bits/oversized UE/EP/over4096bytes",
+      "both signed32 extreme SE values and unchanged output on failure"
+    ],
+    "fixed_goldens": 15,
+    "independent_oracle": "ffmpeg version 8.0.1-3ubuntu2 Copyright (c) 2000-2025 the FFmpeg developers unchanged trace_headers",
+    "ordinary_checks": 780
+  },
+  "retained_setup_failures": [
+    "Initial SPSid31 oracle stream referenced missing SPS0 via its PPS; retained original context FAIL and supplied separate valid SPS0 so final header traces all exit0. This was an oracle container-context fix, not parser/decoder repair.",
+    "First requested EP-offset case had no EP in consumed prefix. Its original input/trace is retained; a larger valid signed POC offset supplies actual prefix EP coverage."
+  ],
+  "schema": "crystalhd.issue538.sps-range-prefix.v1",
+  "scope": "Private allocation-free H264 SPS/VUI prefix reader; no production decoder wiring or native full-range pixel support claimed",
+  "standard": "ITU-T H.264 (08/2024),7.3.2.1.1 and E.1.1",
+  "standard_url": "https://www.itu.int/rec/dologin_pub.asp?id=T-REC-H.264-202408-I%21%21PDF-E&lang=e&type=items"
+}

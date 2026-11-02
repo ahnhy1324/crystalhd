@@ -1,0 +1,217 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "full_range": false,
+        "range_present": true,
+        "sps_id": 0,
+        "video_signal_present": true,
+        "vui_present": true
+      },
+      "minimum_bytes_for_prefix": 12,
+      "nal_hex": "6742c00ad9096c05a810100a000003000200000300041e244c90",
+      "name": "x264-baseline-limited",
+      "trace_exit": 0,
+      "trace_sha256": "57ef5bd45b662ed7734fee746d42523de0bdec65dcf6f56f36ea6d449998ce40"
+    },
+    {
+      "expected": {
+        "full_range": true,
+        "range_present": true,
+        "sps_id": 0,
+        "video_signal_present": true,
+        "vui_present": true
+      },
+      "minimum_bytes_for_prefix": 12,
+      "nal_hex": "6742c00ad9096c05b810100a000003000200000300041e244c90",
+      "name": "x264-baseline-full",
+      "trace_exit": 0,
+      "trace_sha256": "28c8cd34ac0846bbc4345f38d2ac445e3da1563301e01d70828b72810a66e226"
+    },
+    {
+      "expected": {
+        "full_range": false,
+        "range_present": true,
+        "sps_id": 0,
+        "video_signal_present": true,
+        "vui_present": true
+      },
+      "minimum_bytes_for_prefix": 12,
+      "nal_hex": "674d400aeca4b602d4080805000003000100000300020f122596",
+      "name": "x264-main-limited",
+      "trace_exit": 0,
+      "trace_sha256": "39b2a630393d10a0178f617f58b584bcf9e804cb313bc0d026af3b79346f1137"
+    },
+    {
+      "expected": {
+        "full_range": true,
+        "range_present": true,
+        "sps_id": 0,
+        "video_signal_present": true,
+        "vui_present": true
+      },
+      "minimum_bytes_for_prefix": 12,
+      "nal_hex": "674d400aeca4b602dc080805000003000100000300020f122596",
+      "name": "x264-main-full",
+      "trace_exit": 0,
+      "trace_sha256": "d2cc33c239ba49ce7c3de02d601544f7b199e87e2a17c46d39fda7b411b5218b"
+    },
+    {
+      "expected": {
+        "full_range": false,
+        "range_present": true,
+        "sps_id": 0,
+        "video_signal_present": true,
+        "vui_present": true
+      },
+      "minimum_bytes_for_prefix": 13,
+      "nal_hex": "6764000aacd9496c05a810100a000003000200000300041e244b2c",
+      "name": "x264-high-limited",
+      "trace_exit": 0,
+      "trace_sha256": "f19cd118a6fed12905d9a146ade0b1bc3bb85dfe9b64c694fb717c16b40a8078"
+    },
+    {
+      "expected": {
+        "full_range": true,
+        "range_present": true,
+        "sps_id": 0,
+        "video_signal_present": true,
+        "vui_present": true
+      },
+      "minimum_bytes_for_prefix": 13,
+      "nal_hex": "6764000aacd9496c05b810100a000003000200000300041e244b2c",
+      "name": "x264-high-full",
+      "trace_exit": 0,
+      "trace_sha256": "c4e39085da92163f9f544e64d9709949dc300d411e7a5cd4bb6d4bd1049ac3f3"
+    },
+    {
+      "expected": {
+        "full_range": false,
+        "range_present": false,
+        "sps_id": 0,
+        "video_signal_present": false,
+        "vui_present": false
+      },
+      "minimum_bytes_for_prefix": 7,
+      "nal_hex": "6742001eda2590",
+      "name": "no-vui",
+      "trace_exit": 0,
+      "trace_sha256": "92166e0917b5fa545d795926c4f8ca0766a1f63bc47752eccf8a13a4ae7b2e65"
+    },
+    {
+      "expected": {
+        "full_range": false,
+        "range_present": false,
+        "sps_id": 0,
+        "video_signal_present": false,
+        "vui_present": true
+      },
+      "minimum_bytes_for_prefix": 7,
+      "nal_hex": "6742001eda25a008",
+      "name": "no-video-signal",
+      "trace_exit": 0,
+      "trace_sha256": "7fb854cbeb8cfe9700308d4237d2cc2baabc0a45db6979e673dae4bfd8c44068"
+    },
+    {
+      "expected": {
+        "full_range": true,
+        "range_present": true,
+        "sps_id": 0,
+        "video_signal_present": true,
+        "vui_present": true
+      },
+      "minimum_bytes_for_prefix": 8,
+      "nal_hex": "6742001eda25a6c040",
+      "name": "no-color-description",
+      "trace_exit": 0,
+      "trace_sha256": "9e2d9e7b441023d66974b32af1e5b08a5494e39d4daf29a5d21fc74f93ca8ae7"
+    },
+    {
+      "expected": {
+        "full_range": false,
+        "range_present": true,
+        "sps_id": 0,
+        "video_signal_present": true,
+        "vui_present": true
+      },
+      "minimum_bytes_for_prefix": 11,
+      "nal_hex": "6742001ef44b4d4040404080",
+      "name": "poc0",
+      "trace_exit": 0,
+      "trace_sha256": "6014bc8a491c784a08856df5f058496744494fb31fb5e04bc7c47210929b80fb"
+    },
+    {
+      "expected": {
+        "full_range": false,
+        "range_present": true,
+        "sps_id": 0,
+        "video_signal_present": true,
+        "vui_present": true
+      },
+      "minimum_bytes_for_prefix": 22,
+      "nal_hex": "674d001ed000000301000003009194c8969a80808081",
+      "name": "poc1-ep-offset",
+      "trace_exit": 0,
+      "trace_sha256": "f28cde319543d3b9a925a0e1e2c9c80a90786b5970f0ced5b65fce7da71bdb7c"
+    },
+    {
+      "expected": {
+        "full_range": true,
+        "range_present": true,
+        "sps_id": 0,
+        "video_signal_present": true,
+        "vui_present": true
+      },
+      "minimum_bytes_for_prefix": 14,
+      "nal_hex": "674d001ed19194c8969b80808081",
+      "name": "poc1-signed-cycle",
+      "trace_exit": 0,
+      "trace_sha256": "2173d5ec108cee4c5c480b8b48d7abf234015759de260847178b3f1bae7014f2"
+    },
+    {
+      "expected": {
+        "full_range": false,
+        "range_present": true,
+        "sps_id": 0,
+        "video_signal_present": true,
+        "vui_present": true
+      },
+      "minimum_bytes_for_prefix": 12,
+      "nal_hex": "6742001eda24fd4d4040404080",
+      "name": "field-crop",
+      "trace_exit": 0,
+      "trace_sha256": "1bc3cd71a6c9236d7aadf59073ecbb37685915ef79eaa8de01e65d2ce5f50765"
+    },
+    {
+      "expected": {
+        "full_range": true,
+        "range_present": true,
+        "sps_id": 31,
+        "video_signal_present": true,
+        "vui_present": true
+      },
+      "minimum_bytes_for_prefix": 17,
+      "nal_hex": "6742001e0416896ffc0010000fdc04040408",
+      "name": "extended-sar-overscan-id31",
+      "trace_exit": 0,
+      "trace_sha256": "5a66a9d148bbeb2dde7f5d745bffa011a983d37917d2f0039bd48275d4a9edda"
+    },
+    {
+      "expected": {
+        "full_range": true,
+        "range_present": true,
+        "sps_id": 0,
+        "video_signal_present": true,
+        "vui_present": true
+      },
+      "minimum_bytes_for_prefix": 31,
+      "nal_hex": "6764001ead847ffff08ffffe11ffffc23ffffffffffffffffe8969b808080810",
+      "name": "high-scaling-lists",
+      "trace_exit": 0,
+      "trace_sha256": "2ab298c432d975fa8c8fb373f1a34fa7d32c14198a729f3dc030182a451e821e"
+    }
+  ],
+  "oracle": "Unmodified installed FFmpeg trace_headers; literal expectations are input fixture declarations, not extracted from the new reader.",
+  "schema": "crystalhd.h264-sps-range-goldens.v1",
+  "source_standard": "ITU-T H.264 (08/2024) 7.3.2.1.1/E.1.1"
+}
