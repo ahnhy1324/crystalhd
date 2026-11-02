@@ -1,5 +1,11 @@
 {
   "date": "2026-11-02",
+  "final_installed_runtime_verification": {
+    "baseline_verify": true,
+    "leaves": 36,
+    "private_result_sha256": "bdb67573d41a118c007bc041d680b12c4b923a70a3cf33dc4df0fec27a65eabb",
+    "scope": "Read-only exact cached installed baseline verification after all completed range/Kodi/reuse batches; no new device/media/module run."
+  },
   "implementation": "After real completion/PTS association, copy the first range-changed picture into independent bounded storage. Under fetch/IRQ exclusion require native RX idle; no flush/fallback or firmware STOP. Announce SOURCE_CHANGE plus empty boundary LAST, preserve stage through CAPTURE reallocation, deliver saved bytes/PTS/sequence/snapshot into a newly queued allocation once, before further DMA or true EOS. A destructive reset/close frees stage. Unknown/absent/unchanged observations do not invent boundaries.",
   "limits": [
     "Scoped single-slice/B0 same-size BT709 transitions onBCM70015, not arbitrary H264 syntax/reorder/endurance/other hardware.",

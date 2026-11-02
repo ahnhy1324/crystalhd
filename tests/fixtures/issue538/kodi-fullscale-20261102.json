@@ -704,6 +704,12 @@
     }
   ],
   "date": "2026-11-02",
+  "final_installed_runtime_verification": {
+    "baseline_verify": true,
+    "leaves": 36,
+    "private_result_sha256": "bdb67573d41a118c007bc041d680b12c4b923a70a3cf33dc4df0fec27a65eabb",
+    "scope": "Read-only exact cached installed baseline verification after all completed range/Kodi/reuse batches; no new device/media/module run."
+  },
   "generator": "tests/native-kodi-fullscale-fixture.py",
   "generator_commit": "a3d2852",
   "generator_sha256": "acae202713cd7d3fb298f49ab1961d098d9bc56b29774860f80f1fa496e3e5c8",
