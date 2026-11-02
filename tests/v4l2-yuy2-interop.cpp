@@ -25,7 +25,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-static void need(bool b,const char* s) { if(!b) throw std::runtime_error(std::string(s)+" errno="+std::to_string(errno)); }
+#include "yuy2-gpu.h"
+using yuy2_gpu::need;
 static double seconds(clockid_t c) { timespec t{};need(clock_gettime(c,&t)==0,"clock");return t.tv_sec+t.tv_nsec/1e9; }
 static int temperature() {
  int maximum=0;
@@ -35,7 +36,6 @@ static int temperature() {
  }
  return maximum;
 }
-#include "yuy2-gpu.h"
 using yuy2_gpu::GPU;
 using yuy2_gpu::Picture;
 

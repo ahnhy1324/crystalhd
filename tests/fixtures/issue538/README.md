@@ -331,3 +331,30 @@ capture against its corresponding frozen software source with
 geometry, reference/capture hashes. The two new TSV files preserve every fixed
 YUV/expected-RGB/captured-RGB row. They do not substitute for all-pixel or
 physical presentation measurements.
+
+The [EGL range-rebind receipt](egl-range-rebind-20261102.json) keeps the later
+single-file Kodi limited→full PASS separate from its round-trip RGB FAIL.
+The same failure is independently reproducible without opening CrystalHD:
+
+```sh
+c++ -std=c++17 -O2 -Wall -Wextra -Werror -Itests \
+  $(pkg-config --cflags egl glesv2 gbm libdrm) tests/yuy2-range-rebind.cpp \
+  $(pkg-config --libs egl glesv2 gbm libdrm) -o /tmp/yuy2-range-rebind
+/tmp/yuy2-range-rebind
+```
+
+The process needs access to `/dev/dri/renderD128` and `/dev/dma_heap/system`.
+The tested host's heap permission requires an explicitly privileged invocation;
+the first unprivileged attempt stops before allocation and is not a pixel test.
+The probe rejects a start temperature at/above75C, uses16KiB per DMA-BUF allocation,
+uses128×64 neutral bars and checks all pixels after each completed GPU draw.
+It changes no module, firmware, renderer binary or installed preference.
+
+Output labels encode reuse of the DMA-BUF, input external texture and Picture
+bundle. That last bundle includes programs, output texture and FBO; it is not
+a shader-program-only experiment. On the retained965GM/Mesa26.0.8 stack, all
+four reused-input-texture return-to-NARROW checks fail at max20; fresh input
+textures return at error0. The strict exit1 is the expected reproduction of
+this measured failure, never a PASS. Other implementations can return0 if
+every RGB check passes. Kodi's actual NARROW import logs and the independent
+native90-picture point/raw/GPU controls retain their separate attribution.
