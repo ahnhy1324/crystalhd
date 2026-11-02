@@ -1,0 +1,229 @@
+{
+  "RGB": {
+    "capture_sha256": "129342ea0723b5abd69f5c42110e6649e16849be07adb7cf40498bccc71d85fb",
+    "capture_source_pts": "CONTENT_BARCODE_BOUND",
+    "channels_over_tolerance": 0,
+    "declared_matrix": "bt709",
+    "declared_range": "full",
+    "decoded_source_ordinal": 1,
+    "invariant_samples": 794,
+    "maximum_channel_error": 0,
+    "minimum_samples": 100,
+    "nonopaque_active_pixels": 0,
+    "permitted_channel_error": 2,
+    "reference_coverage": "SUFFICIENT",
+    "result": "PASS",
+    "source_pts": {
+      "barcode_hex": "c53d0101fe86",
+      "ordinal": 1,
+      "pts": 512,
+      "pts_time": "0.033333",
+      "time_base": "1/15360"
+    }
+  },
+  "case_receipt_sha256": "55f69d9dd7a7a7a5361378c8f01d7cbabcb75f5cbcbd0e42f4b13866dffd6e8d",
+  "client": {
+    "actual_mapped_native_libraries": {
+      "libavcodec.so.63.1.102": {
+        "device": "08:01",
+        "inode": 11428928,
+        "mapping_path": "/native-ffmpeg/libavcodec.so.63.1.102",
+        "sha256": "c92a041da4f924cbf73668b9de633e593b9f17eb92fef2da73d6febcf075c8c6"
+      },
+      "libavfilter.so.12.1.102": {
+        "device": "08:01",
+        "inode": 11428922,
+        "mapping_path": "/native-ffmpeg/libavfilter.so.12.1.102",
+        "sha256": "5e5d1bbb82ffbf171f08a419ed3c8bda7a426f759670df1f691e393667ce9b0a"
+      },
+      "libavformat.so.63.1.102": {
+        "device": "08:01",
+        "inode": 11428925,
+        "mapping_path": "/native-ffmpeg/libavformat.so.63.1.102",
+        "sha256": "f26fc0d099394f72ec31ae69d3928fe6efeed5ea87201b047cf4b304705acd2f"
+      },
+      "libavutil.so.61.1.102": {
+        "device": "08:01",
+        "inode": 11428937,
+        "mapping_path": "/native-ffmpeg/libavutil.so.61.1.102",
+        "sha256": "4ba4f5b9058a6bc3d186ea46814c2d9e1c00db0ba04979f01df5df454c48c384"
+      },
+      "libswresample.so.7.1.102": {
+        "device": "08:01",
+        "inode": 11428931,
+        "mapping_path": "/native-ffmpeg/libswresample.so.7.1.102",
+        "sha256": "daed68f97a4fc2a555649cc3c9e4916bcb49437e8c7f52e80e95f6903a937b2c"
+      },
+      "libswscale.so.10.1.102": {
+        "device": "08:01",
+        "inode": 11428934,
+        "mapping_path": "/native-ffmpeg/libswscale.so.10.1.102",
+        "sha256": "832481dc5636b6439e36531dcc1088c4af5f037adb956a6106c901979887300b"
+      }
+    },
+    "actual_native_node": true,
+    "audio_null_link": true,
+    "exit_code": 0,
+    "legacy_node_seen": false,
+    "live_retired": true,
+    "original_kodi_executable_sha256": "2862331a8a047f929d8019987a518527fcb45330082435bec7b7756141cf688f",
+    "selection": "ACTUAL_V4L2_DEVICE_OPEN_OBSERVED"
+  },
+  "date": "2026-11-02",
+  "input": {
+    "AAC": "Added silent AAC solely for the existing private playback lifecycle; no new A/V sync claim.",
+    "declared_range": "full",
+    "frames": 30,
+    "height": 720,
+    "limitation": "VUI/container full declaration control retains the original decoded YUV/VCL; this is not the separate actual0..255 own-probe fixture.",
+    "matrix": "bt709",
+    "media_sha256": "e54baddc570a056ecbd72bdd36b4aa5747d3544419befac4e2bd8547659eeb53",
+    "original_video_full_control_sha256": "3d4ca289acccecf415f932efbeb6824d8ab5b8cff55f96a184f954af3b8a6621",
+    "reference_YUV_sha256": "ff22f11c98142c49ab17c350592e329a14016c77d6900c88739204d95b06992d",
+    "sorted_source_video_PTS_match": true,
+    "width": 1280
+  },
+  "limits": [
+    "One720p full-range declaration control and one paused sampled RGB capture; not full native playback acceptance across all sources.",
+    "Source barcode identifies capture content/ordinal/source PTS; no physical scanout time or same-EXPBUF raw-image attribution.",
+    "Ioctl timestamps are internal FFmpeg tracking IDs; complete application sourcePTS is NOT_OBSERVED.",
+    "Actual0..255 full-scale GPU results belong to the separate own-probe receipt, not this Kodi input.",
+    "No same-size range-only notification, nativei386/BCM70012/FHD full-range/endurance or new A/V claim.",
+    "Original538heap exclusion, unsupported nonempty STOP/START, external-code policy and stable1.3 deferral unchanged."
+  ],
+  "live_receipt_sha256": "be8df9ba6ba797fe4f71c1fea825118f344bbe9d6886d3484f071c9bcbc35943",
+  "module_source": "985f155",
+  "native_census": {
+    "admission": {
+      "active_at_end": 0,
+      "admissions": 2,
+      "querycap_calls": 3,
+      "unbound_requests": 0
+    },
+    "calls": 246,
+    "capture_LAST": 1,
+    "capture_nonempty": 30,
+    "complete_application_source_pts": "NOT_OBSERVED",
+    "scope": "Owned PID+known video FD Linux syscall census; no external functions/render queue/DRM object/physical presentation observation.",
+    "source_capture_formats": [
+      {
+        "after_source_change": true,
+        "colorspace": 3,
+        "fd": 35,
+        "flags": 0,
+        "fourcc": 1448695129,
+        "height": 720,
+        "id": 30,
+        "priv": 4276996862,
+        "quantization": 1,
+        "req": 3234878980,
+        "tid": 1656820,
+        "type": 1,
+        "width": 1280,
+        "xfer": 1,
+        "ycbcr": 2
+      },
+      {
+        "after_source_change": true,
+        "colorspace": 3,
+        "fd": 35,
+        "flags": 0,
+        "fourcc": 1448695129,
+        "height": 720,
+        "id": 33,
+        "priv": 4276996862,
+        "quantization": 1,
+        "req": 3234878980,
+        "tid": 1656820,
+        "type": 1,
+        "width": 1280,
+        "xfer": 1,
+        "ycbcr": 2
+      }
+    ],
+    "status": "PASS",
+    "syscall_timestamp_semantics": "FFmpeg12cc tracking IDs, not source PTS"
+  },
+  "oracle_source": "022d83a",
+  "private_evidence_root": "/home/mache/.cache/crystalhd-issue538-kodi-full-range-run-20261102",
+  "restoration": {
+    "baseline_equal": true,
+    "kernel_errors": false,
+    "maximum_temperature_mC": 56000,
+    "module_inventory_equal": true,
+    "null_sink_removed": true,
+    "restored": true,
+    "runtime_baseline_verify": {
+      "leaves": 36,
+      "passed": true
+    }
+  },
+  "schema": "crystalhd.issue538.kodi-full-range-sampled.v1",
+  "scope": "Unchanged published Kodi22RC1 plus retained unchanged published native-DRM FFmpeg, actual BCM70015/Intel965GM 1280x720 full-range declaration control, sampled native BGRA and complete native ioctl census.",
+  "source_bindings": {
+    "controller_files": {
+      "controller.py": "556b848c33e8975a0a294c5219a0ec3fdd776a0c63326151f84e639ff2e23312",
+      "evaluate.py": "c9b509f45c712d9add2b48dd1eb93d7f7c61a5df0593fb8b41c29c227836e226",
+      "fmt-offsets.json": "f00ccd409d6dde8545d793d097897db6624f8149a7eba475ddde0a8911dcbbda",
+      "full.fixture.json": "08063bcf4366c4ef731165c2ca923fda4c268e4c340bb1a1dd095601522a9087",
+      "observer-draft.bt": "f83abcfdb82152d948db0f834c1ae0764889b80115a64ce4b6a3176799053ced",
+      "observer.py": "ddea1b4f6de767c754ba3f104cc7404561b91d6f4f538b78fd1cf787534d02ca",
+      "picture_fixture.py": "a758f7037d899309aba47aca297031c0d565d9e6a2b0df15f4ed0b178ef5e436",
+      "pixel_oracle.py": "8051927c7f1e3896e59a87c2e8a3889bfb95acbae483349cf594944dc5c40b8b",
+      "querycap-fragment.bt": "516e8d9eb66b23726d437f42fd9caea69127bbae9109857239d51cb399181322",
+      "querycap-offsets.json": "2f4ffab9e772d32e04b57a7000810ce002a31e9ce92d0b1850476e49d0fe57de",
+      "querycap_analyze.py": "6807194f25bb14ed435332458218fc3294e126a016e339fc465284a168a32cda",
+      "run-plan.json": "aae0e480b427e5cb96b2b04f448066a617674c8753a5703e06179e9692390507",
+      "safe_cleanup.py": "b77f641d32335cd638da434c4f94b3f104ad39ed6a27c1b13fd5827c4e3a3ead",
+      "uapi-offsets.json": "2a4a5f4ac16e38f745c75f1ac1819f9a3796754aed08e104c2c938300122a89b"
+    },
+    "module_binding": {
+      "files": {
+        "driver/linux/crystalhd_fleafuncs.c": "437a0ba3289cb3c911a463f71a87c3d14c6936056c0a990e98f138bab62b6412",
+        "driver/linux/crystalhd_hw.c": "d9319e72697e41db299b97890d34b8923678c7c8e4baba3930ea662acb164163",
+        "driver/linux/crystalhd_hw.h": "5bc775db77a822587f09158286a118b9bfe667ddd746dc1cf8e6f69816798bd3",
+        "driver/linux/crystalhd_linkfuncs.c": "1f8e17cfe60395819e9e6de5496f1a00d00cd7f98605fb435dc02fb74f39eb2b",
+        "driver/linux/crystalhd_v4l2_decoder.c": "908f9e96db9c64936dbb48f5df845da91ab581f7e0bf26fda0c7f4afc15cff5e",
+        "driver/linux/crystalhd_v4l2_decoder.h": "fcb5013b297780535127ff6464006eaf4339418304863a6c7cefc9117833d787",
+        "driver/linux/crystalhd_v4l2_node.c": "414db2167e937f270529cc053978e5aaf4ffc26f816c3b3b40002b899580bea2",
+        "tests/flea-pib.c": "27c6d1dcb5daa56581936beaef345a7c10f1299a4d87532d9a999bf177822cce",
+        "tests/flea-pib.sh": "3ec53b1e3e512913d8f46ee7527c8b6d69f7d0793345d41e272e10975b782f73",
+        "tests/rx-ownership.c": "ea57f7562a02dda4736ac3e1e9264d12161821a16e7774c3bfdfcbeef7fcf039",
+        "tests/rx-ownership.sh": "a0fee155183299a5a42fc91733e7fa05ce85c6e14300361215526a82f8a38667",
+        "tests/v4l2-buffers.sh": "dc4ac8a53fcd080b9049fcf30b349d9cac6e8d39ba97802451df075d8d8d7b30",
+        "tests/v4l2-decode.cpp": "034c7e1b1ae903bff0f5c7a1b552f5956aa797901fb6ca69af4fa35133f97cb8",
+        "tests/v4l2-decoder.c": "c9c4074e9bcd4c0a7fd577c5647d2f772ebbf62cc45dfa776ed182b280f316b8",
+        "tests/v4l2-node.c": "869b646b1929ff6b776996ee3326bbc7930cf25392dacfe4e3f61fec954bcb36"
+      },
+      "module_sha256": "3b9d45723bb6e95675851a049fb98f3cc720e25bb4bf0195cde0cde852875f88",
+      "probe_sha256": "a511883fd99f4a848c6e029ef978feeef1254fa96c0403c14fb8e9a52416f31b",
+      "source": "985f155baf2279f5292abf73c737ec89c1bf522f",
+      "srcversion": "7C46B02B3F58D82CBFEADBF"
+    },
+    "oracle_sha256": "8051927c7f1e3896e59a87c2e8a3889bfb95acbae483349cf594944dc5c40b8b",
+    "oracle_source": "022d83aaa62c6b0933bca63a9dead4a334eb3ab0"
+  },
+  "source_samples": {
+    "rows": 794,
+    "selection": "794 unique points with flat3x3 Y/U/V neighbourhoods identical in every independently decoded source frame; y>=128 mask fixed before capture. No output-based point/frame search.",
+    "table": "kodi-full-range-samples-20261102.tsv",
+    "table_sha256": "27955402868ffaac58e87df7d979df2a478a429074235ca8e0df20cef5edb24d"
+  },
+  "status": "PASS_BOUNDED_ORIGINAL_KODI_FULL_RANGE",
+  "validation": {
+    "full_golden_RGB_128_64_192": [
+      229,
+      110,
+      9
+    ],
+    "ordinary_and_optimized_oracle_tests_each": 14,
+    "private_controller_fixes_before_execution": [
+      "Require RGB PASS in case and outer result after writing evidence.",
+      "Signal saved actual Kodi pidfd/identity with TERM, never wrapper while Kodi lives. Unretired actual process/wrapper preserves compositor/runtime and prohibits module restoration.",
+      "Hash actual MP4 at execution.",
+      "Verify mapped /proc/PID/root library bytes plus inode/device against maps and pinned published binaries."
+    ],
+    "private_preparation_failures": "Missing querycap-offsets copy then resume-script variable shadowing; both corrected before any module/device execution. Retained private logs.",
+    "wrong_limited_interpretation_gray_control_max_error": 20
+  }
+}
