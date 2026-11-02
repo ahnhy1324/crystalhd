@@ -57,6 +57,7 @@ class CaptureRenderer {
     std::unique_ptr<yuy2_gpu::Picture> picture;
     std::vector<uint8_t> first, second;
     std::string mode;
+    bool full_range = false;
     size_t frames = 0;
     double cpu = 0, wall = 0;
     static double clock(clockid_t kind) {
@@ -67,10 +68,21 @@ class CaptureRenderer {
 public:
     explicit CaptureRenderer(const std::string &m)
         : gpu("/dev/dri/renderD128"), mode(m) {}
+    void configure(const v4l2_pix_format &format) {
+        require(format.colorspace == V4L2_COLORSPACE_REC709 &&
+            format.ycbcr_enc == V4L2_YCBCR_ENC_709 &&
+            format.xfer_func == V4L2_XFER_FUNC_709 &&
+            (format.quantization == V4L2_QUANTIZATION_FULL_RANGE ||
+             format.quantization == V4L2_QUANTIZATION_LIM_RANGE),
+            "GPU probe requires explicit BT.709 and full/limited CAPTURE range");
+        full_range = format.quantization == V4L2_QUANTIZATION_FULL_RANGE;
+        printf("gpu_format range=%s\n", full_range ? "full" : "limited");
+    }
     void present(int fd, unsigned index, const void *address,
                  unsigned width, unsigned height, unsigned stride) {
-        if (!picture || picture->w != width || picture->h != height) {
-            picture = std::make_unique<yuy2_gpu::Picture>(width, height);
+        if (!picture || picture->w != width || picture->h != height ||
+            picture->full_range != full_range) {
+            picture = std::make_unique<yuy2_gpu::Picture>(width, height, true, full_range);
             first.resize(size_t(width) * height * 2);
             second.resize(first.size());
         }
@@ -94,7 +106,7 @@ public:
             checked(fd, VIDIOC_EXPBUF, &exp, "EXPBUF CAPTURE");
             // No CPU write, cache flush, or staging copy in the consumer.
             try {
-                yuy2_gpu::Imported image(gpu, exp.fd, width, height, stride);
+                yuy2_gpu::Imported image(gpu, exp.fd, width, height, stride, full_range);
                 picture->draw(true, image.texture);
             } catch (...) { close(exp.fd); throw; }
             close(exp.fd);
@@ -102,7 +114,7 @@ public:
         cpu += clock(CLOCK_PROCESS_CPUTIME_ID) - start_cpu;
         wall += clock(CLOCK_MONOTONIC) - start_wall;
         ++frames;
-        if (mode == "check") {
+        if (mode == "check" || mode == "upload") {
             for (unsigned y = 0; y < height; ++y)
                 memcpy(first.data() + size_t(y) * width * 2,
                        static_cast<const uint8_t *>(address) + size_t(y) * stride,
@@ -937,8 +949,9 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
             fmt.fmt.pix.ycbcr_enc, frames);
         require(!expected_range || fmt.fmt.pix.quantization == expected_range,
             "CAPTURE source range mismatch before buffer exposure");
-        require(gpu_mode.empty() || fmt.fmt.pix.quantization == V4L2_QUANTIZATION_LIM_RANGE,
-            "GPU probe requires actual limited-range CAPTURE");
+#ifdef CRYSTALHD_TEST_GPU
+        if (renderer) renderer->configure(fmt.fmt.pix);
+#endif
         v4l2_format output_fmt{}; output_fmt.type = output.type;
         checked(fd, VIDIOC_G_FMT, &output_fmt, "G_FMT OUTPUT after source change");
         require(output_fmt.fmt.pix.quantization == original_output.fmt.pix.quantization,
@@ -1165,7 +1178,7 @@ int main(int argc, char **argv)
                 puts("usage: v4l2-decode --input fixture.mp4 [--device /dev/videoN] [--timeout 60]\n"
                      "       [--raw frames.yuyv] [--timestamps source|stress] [--repeat N] [--expect-sha256 HEX]\n"
                      "       [--demux-only] (validate fixture without opening any device)\n"
-                     "       [--gpu-check|--gpu-render|--gpu-upload] (opt-in GLES build; limited BT.709 fixture)\n"
+                     "       [--gpu-check|--gpu-render|--gpu-upload] (opt-in GLES build; BT.709 fixture)\n"
                      "       [--capture-buffers N] (2..32, default 12)\n"
                      "       [--range-hint default|limited|full] [--expect-range limited|full]\n"
                      "       [--seek-at N --expect-sha256 HEX] [--idle-before-stop-ms 250]\n"
@@ -1226,9 +1239,6 @@ int main(int argc, char **argv)
             "capture buffer request must be 2..32");
         require(!range_hint_set || (!contracts && !empty_stop),
             "--range-hint requires direct decode setup without empty STOP/preflight");
-        require(gpu_mode.empty() || (range_hint != V4L2_QUANTIZATION_FULL_RANGE &&
-            expected_range != V4L2_QUANTIZATION_FULL_RANGE),
-            "GPU probe only qualifies limited BT.709");
         Input input = demux(input_path, stress);
         require(next_inputs.size() <= 8, "at most eight --next-input segments are supported");
         require(next_inputs.empty() || (!seek_at && repeat == 1),
