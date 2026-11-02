@@ -38,6 +38,22 @@ def samples(frames=None):
 
 
 class OracleTests(unittest.TestCase):
+    def test_full_range_has_independent_levels_and_does_not_accept_limited(self):
+        for y in (0, 1, 16, 128, 235, 254, 255):
+            self.assertEqual(oracle.rgb(y, 128, 128, color_range='full'), (y, y, y))
+        self.assertEqual(oracle.rgb(128, 64, 192, color_range='full'), (229, 110, 9))
+        points = {(x, y): (16 if x < WIDTH // 2 else 235, 128, 128)
+                  for y in range(HEIGHT) for x in range(WIDTH)}
+        row = bytes((16, 16, 16, 255) * (WIDTH // 2) + (235, 235, 235, 255) * (WIDTH // 2))
+        full = oracle.compare(points, row * HEIGHT, WIDTH, HEIGHT, color_range='full')
+        wrong = oracle.compare(points, row * HEIGHT, WIDTH, HEIGHT)
+        self.assertEqual((full['result'], full['declared_range'], full['maximum_channel_error']),
+                         ('PASS', 'full', 0))
+        self.assertEqual((wrong['result'], wrong['maximum_channel_error']), ('FAIL', 20))
+        self.assertFalse(wrong['diagnostic_alternate_matrix']['changes_primary_verdict'])
+        with self.assertRaises(ValueError):
+            oracle.compare(points, row * HEIGHT, WIDTH, HEIGHT, color_range='auto')
+
     def test_known_real_valued_samples(self):
         for yuv, expected in [((16, 128, 128), (0, 0, 0)), ((235, 128, 128), (255, 255, 255)),
                               ((210, 16, 146), (255, 240, 0)), ((41, 240, 110), (0, 15, 255))]:
