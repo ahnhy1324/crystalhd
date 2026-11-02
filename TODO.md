@@ -52,9 +52,11 @@ shelve the work or silently exclude implemented features.
 1. #530: live PLAYING/PAUSED overlay-window replacement, owned standalone
    host and current-parent geometry, same field generation/deadline and bounded
    stop are implemented in the follow-up; see its current-host receipt.
-2. #513: next own-code task is same-layout UYVY port handoff, preserving the
-   existing pool and retiring prior SHM requests before releasing the old port.
-   Busy/incompatible targets must preserve the current output.
+2. #513: same-layout UYVY port handoff is implemented and qualified on the
+   current Intel965 host, including PAUSED/PLAYING, held ACK, busy/incompatible
+   rejection, dormant pools and stop cancellation. See the
+   [receipt](tests/fixtures/issue513/xv-live-port-20261102.json).
+   X-server interruption and matched endurance/attribution remain active research.
 3. #538: continue source-range/native compatibility research. Nonempty
    STOP/START must keep its firmware-DPB-loss rejection; clearing a host flag
    is not a repair. Only the original heap subtask is excluded.

@@ -30,6 +30,11 @@
 
 typedef struct XvContext XvContext;
 typedef struct XvMemory XvMemory;
+typedef struct XvPoolLayout XvPoolLayout;
+struct XvPoolLayout {
+  XvPoolLayout *next;
+  guint width, height, pitch, offset, size;
+};
 struct XvMemory {
   XvContext *context;
   XvMemory *next;
@@ -66,15 +71,17 @@ struct XvContext {
   GThread *thread;
   GstBus *bus;
   XvMemory *images, *copies[XV_DEPTH];
+  XvPoolLayout *pool_layouts;
   XvFlight flights[XV_DEPTH];
   GstBuffer *last_buffer;
   GstVideoInfo last_info;
   guint64 last_epoch, video_submitted, redraw_submitted;
   guint redraw_suspended;
-  gboolean redraw_pending, borders_dirty, window_changing;
+  gboolean redraw_pending, borders_dirty, output_changing;
   guint image_count, image_bytes, pending;
   guint64 submitted, acknowledged, terminal, copied_bytes, generation, epoch;
   guint64 allocated, freed, stale, pool_submitted;
+  guint64 port_switches, port_rejections;
 };
 /* Bounds contexts retained after an unproved detach; no unbounded error loop. */
 static gint live_contexts;
@@ -178,7 +185,36 @@ static gboolean barrier_locked(XvContext *c)
   if (!r) return FALSE;
   free(r); return TRUE;
 }
-static gboolean open_locked(XvContext *c, const char *name, xcb_window_t window)
+static gboolean port_colors_locked(XvContext *c, xcb_xv_port_t port, gboolean probe,
+                                   xcb_atom_t *atom, gint *original)
+{
+  *atom = XCB_NONE; *original = 0;
+  xcb_xv_query_port_attributes_reply_t *attributes = checked_reply_locked(c,
+      xcb_xv_query_port_attributes(c->connection, port).sequence, probe);
+  if (!attributes) return FALSE;
+  xcb_xv_attribute_info_iterator_t it = xcb_xv_query_port_attributes_attributes_iterator(attributes);
+  for (; it.rem; xcb_xv_attribute_info_next(&it)) {
+    const char *s = xcb_xv_attribute_info_name(it.data);
+    guint length = xcb_xv_attribute_info_name_length(it.data);
+    if ((it.data->flags & XCB_XV_ATTRIBUTE_FLAG_SETTABLE) &&
+        (it.data->flags & XCB_XV_ATTRIBUTE_FLAG_GETTABLE) &&
+        length >= 13 && (length == 13 || s[13] == '\0') &&
+        it.data->min <= 0 && it.data->max >= 1) {
+      if (!memcmp(s, "XV_COLORSPACE", 13)) *atom = atom_locked(c, "XV_COLORSPACE");
+      if (!memcmp(s, "XV_ITURBT_709", 13)) *atom = atom_locked(c, "XV_ITURBT_709");
+    }
+  }
+  free(attributes);
+  if (*atom) {
+    xcb_xv_get_port_attribute_reply_t *r = checked_reply_locked(c,
+        xcb_xv_get_port_attribute(c->connection, port, *atom).sequence, probe);
+    if (!r) return FALSE;
+    *original = r->value; free(r);
+  }
+  return !c->failed;
+}
+static gboolean open_locked(XvContext *c, const char *name, xcb_window_t window,
+                             xcb_xv_port_t requested)
 {
   int screen_number;
   c->connection = xcb_connect(name, &screen_number);
@@ -209,6 +245,7 @@ static gboolean open_locked(XvContext *c, const char *name, xcb_window_t window)
     if (!(a.data->type & XCB_XV_TYPE_IMAGE_MASK)) continue;
     for (guint j = 0; j < a.data->num_ports && !c->port && !c->failed; j++) {
       xcb_xv_port_t candidate = a.data->base_id + j;
+      if (requested && candidate != requested) continue;
       xcb_xv_list_image_formats_reply_t *formats = reply_locked(c,
           xcb_xv_list_image_formats(c->connection, candidate).sequence);
       if (!formats) break;
@@ -226,30 +263,9 @@ static gboolean open_locked(XvContext *c, const char *name, xcb_window_t window)
     }
   }
   free(adaptors);
-  if (!c->port) return context_error(c, "No free UYVY XVideo port");
-  c->colorspace_atom = XCB_NONE;
-  xcb_xv_query_port_attributes_reply_t *attributes = reply_locked(c,
-      xcb_xv_query_port_attributes(c->connection, c->port).sequence);
-  if (!attributes) return FALSE;
-  xcb_xv_attribute_info_iterator_t it = xcb_xv_query_port_attributes_attributes_iterator(attributes);
-  for (; it.rem; xcb_xv_attribute_info_next(&it)) {
-    const char *s = xcb_xv_attribute_info_name(it.data);
-    guint length = xcb_xv_attribute_info_name_length(it.data);
-    if ((it.data->flags & XCB_XV_ATTRIBUTE_FLAG_SETTABLE) &&
-        (it.data->flags & XCB_XV_ATTRIBUTE_FLAG_GETTABLE) &&
-        length >= 13 && (length == 13 || s[13] == '\0') &&
-        it.data->min <= 0 && it.data->max >= 1) {
-      if (!memcmp(s, "XV_COLORSPACE", 13)) c->colorspace_atom = atom_locked(c, "XV_COLORSPACE");
-      if (!memcmp(s, "XV_ITURBT_709", 13)) c->colorspace_atom = atom_locked(c, "XV_ITURBT_709");
-    }
-  }
-  free(attributes);
-  if (c->colorspace_atom) {
-    xcb_xv_get_port_attribute_reply_t *r = reply_locked(c,
-        xcb_xv_get_port_attribute(c->connection, c->port, c->colorspace_atom).sequence);
-    if (!r) return FALSE;
-    c->original_colorspace = c->active_colorspace = r->value; free(r);
-  }
+  if (!c->port) return context_error(c, requested ? "Requested UYVY XVideo port is unavailable" : "No free UYVY XVideo port");
+  if (!port_colors_locked(c, c->port, FALSE, &c->colorspace_atom, &c->original_colorspace)) return FALSE;
+  c->active_colorspace = c->original_colorspace;
   c->own_window = window == XCB_NONE;
   c->window = window ? window : xcb_generate_id(c->connection);
   c->width = MIN(screen->width_in_pixels, 960);
@@ -329,24 +345,34 @@ static void memory_free(gpointer data)
 static XvMemory *allocate_locked(XvContext *c, guint width, guint height)
 {
   if (c->failed || c->closed || !c->connection) return NULL;
-  xcb_xv_query_image_attributes_reply_t *r = reply_locked(c,
-      xcb_xv_query_image_attributes(c->connection, c->port, XV_UYVY, width, height).sequence);
-  if (!r) return NULL;
-  gboolean valid = r->width == width && r->height == height && r->num_planes == 1 &&
-      r->data_size && r->data_size <= XV_MAX_BYTES &&
-      xcb_xv_query_image_attributes_pitches_length(r) == 1 &&
-      xcb_xv_query_image_attributes_offsets_length(r) == 1;
-  guint pitch = valid ? xcb_xv_query_image_attributes_pitches(r)[0] : 0;
-  guint offset = valid ? xcb_xv_query_image_attributes_offsets(r)[0] : 0;
-  valid = valid && pitch >= width * 2 && offset <= r->data_size &&
-      (guint64)offset + (guint64)(height - 1) * pitch + width * 2 <= r->data_size;
   gint64 deadline = g_get_monotonic_time() + XV_TIMEOUT_US;
-  while (valid && !c->failed && !g_atomic_int_get(&c->stopping) &&
-      (c->image_count >= XV_MAX_IMAGES || r->data_size > XV_MAX_BYTES - c->image_bytes))
-    if (!g_cond_wait_until(&c->changed, &c->lock, deadline)) break;
-  if (!valid || c->failed || g_atomic_int_get(&c->stopping) ||
-      c->image_count >= XV_MAX_IMAGES || r->data_size > XV_MAX_BYTES - c->image_bytes) {
-    free(r); context_error(c, "Unsupported Xv layout or bounded image capacity exhausted"); return NULL;
+  xcb_xv_query_image_attributes_reply_t *r = NULL;
+  guint pitch = 0, offset = 0;
+  for (;;) {
+    if (c->failed || c->closed || !c->connection || g_atomic_int_get(&c->stopping)) return NULL;
+    if (!c->output_changing) {
+      r = reply_locked(c, xcb_xv_query_image_attributes(
+          c->connection, c->port, XV_UYVY, width, height).sequence);
+      if (!r) return NULL;
+      gboolean valid = r->width == width && r->height == height && r->num_planes == 1 &&
+          r->data_size && r->data_size <= XV_MAX_BYTES &&
+          xcb_xv_query_image_attributes_pitches_length(r) == 1 &&
+          xcb_xv_query_image_attributes_offsets_length(r) == 1;
+      pitch = valid ? xcb_xv_query_image_attributes_pitches(r)[0] : 0;
+      offset = valid ? xcb_xv_query_image_attributes_offsets(r)[0] : 0;
+      valid = valid && pitch >= width * 2 && offset <= r->data_size &&
+          (guint64)offset + (guint64)(height - 1) * pitch + width * 2 <= r->data_size;
+      if (!valid) {
+        free(r); context_error(c, "Unsupported Xv image layout"); return NULL;
+      }
+      if (c->image_count < XV_MAX_IMAGES && r->data_size <= XV_MAX_BYTES - c->image_bytes) break;
+      free(r); r = NULL;
+    }
+    /* A capacity wait can span a port handoff. Requery the active port after
+     * every wake instead of allocating from a reply obtained on its predecessor. */
+    if (!g_cond_wait_until(&c->changed, &c->lock, deadline)) {
+      context_error(c, "Bounded Xv image capacity or output wait exhausted"); return NULL;
+    }
   }
   XvMemory *m = g_new0(XvMemory, 1);
   m->shmid = shmget(IPC_PRIVATE, r->data_size, IPC_CREAT | 0600);
@@ -525,7 +551,8 @@ static gpointer event_reader(gpointer user)
   context_unref(c);
   return NULL;
 }
-static XvContext *context_new(const char *name, xcb_window_t window, GstBus *bus, GError **error)
+static XvContext *context_new(const char *name, xcb_window_t window, GstBus *bus,
+                              xcb_xv_port_t requested, GError **error)
 {
   const char *selected = name ? name : g_getenv("DISPLAY");
   if (!selected || !g_regex_match_simple("^(:|unix/:)[0-9]+(\\.[0-9]+)?$", selected, 0, 0)) {
@@ -545,7 +572,7 @@ static XvContext *context_new(const char *name, xcb_window_t window, GstBus *bus
   g_mutex_init(&c->lock); g_cond_init(&c->changed);
   c->bus = bus ? gst_object_ref(bus) : NULL;
   g_mutex_lock(&c->lock);
-  gboolean opened = c->wake_fd >= 0 && open_locked(c, selected, window);
+  gboolean opened = c->wake_fd >= 0 && open_locked(c, selected, window, requested);
   g_mutex_unlock(&c->lock);
   if (!opened) {
     g_set_error_literal(error, GST_RESOURCE_ERROR, GST_RESOURCE_ERROR_OPEN_READ_WRITE,
@@ -604,10 +631,10 @@ static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
   gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US;
   XvFlight *f = NULL; guint index = 0;
   while (!c->failed && !g_atomic_int_get(&c->flushing) && !g_atomic_int_get(&c->stopping)) {
-    if (c->window_changing) {
+    if (c->output_changing) {
       if (redraw) break;
       if (!g_cond_wait_until(&c->changed, &c->lock, end)) {
-        context_error(c, "Window replacement exceeded its completion deadline"); break;
+        context_error(c, "Output replacement exceeded its completion deadline"); break;
       }
       continue;
     }
@@ -710,7 +737,7 @@ static GstFlowReturn submit_buffer(XvContext *c, const GstVideoInfo *info,
  * GstBuffer until ACK prevents the parent pool from recycling writable pixels;
  * an application's remaining references can delay recycling further. */
 typedef struct { GstBufferPool parent; XvContext *context;
-  GstVideoInfo info; guint size; } CrystalXvPool;
+  GstVideoInfo info; guint size; XvPoolLayout *layout; } CrystalXvPool;
 typedef struct { GstBufferPoolClass parent; } CrystalXvPoolClass;
 G_DEFINE_TYPE(CrystalXvPool, crystal_xv_pool, GST_TYPE_BUFFER_POOL)
 static GQuark memory_key(void) { return g_quark_from_static_string("crystalhd-xv-shm-memory"); }
@@ -757,7 +784,15 @@ static GstFlowReturn pool_allocate(GstBufferPool *base, GstBuffer **out, GstBuff
 }
 static void pool_finalize(GObject *object)
 {
-  XvContext *c = ((CrystalXvPool *)object)->context;
+  CrystalXvPool *p = (CrystalXvPool *)object;
+  XvContext *c = p->context;
+  if (c && p->layout) {
+    g_mutex_lock(&c->lock);
+    XvPoolLayout **link = &c->pool_layouts;
+    while (*link && *link != p->layout) link = &(*link)->next;
+    if (*link) *link = p->layout->next;
+    g_mutex_unlock(&c->lock); g_free(p->layout);
+  }
   G_OBJECT_CLASS(crystal_xv_pool_parent_class)->finalize(object);
   if (c) context_unref(c);
 }
@@ -769,14 +804,14 @@ static void crystal_xv_pool_class_init(CrystalXvPoolClass *klass)
 }
 static void crystal_xv_pool_init(CrystalXvPool *pool) { (void)pool; }
 
-typedef struct { GstVideoSink parent; GMutex lock; XvContext *context;
-  GstVideoInfo info; gchar *display; guintptr window; GstStructure *last_stats; } GstCrystalHdXv;
+typedef struct { GstVideoSink parent; GMutex lock, control; XvContext *context;
+  GstVideoInfo info; gchar *display; guintptr window; guint requested_port; GstStructure *last_stats; } GstCrystalHdXv;
 typedef struct { GstVideoSinkClass parent; } GstCrystalHdXvClass;
 static void overlay_init(GstVideoOverlayInterface *interface);
 G_DEFINE_TYPE_WITH_CODE(GstCrystalHdXv, gst_crystalhd_xv, GST_TYPE_VIDEO_SINK,
     G_IMPLEMENT_INTERFACE(GST_TYPE_VIDEO_OVERLAY, overlay_init))
 #define XV_SINK(o) ((GstCrystalHdXv *)(o))
-enum { PROP_ZERO, PROP_DISPLAY, PROP_STATS };
+enum { PROP_ZERO, PROP_DISPLAY, PROP_STATS, PROP_PORT };
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink", GST_PAD_SINK,
     GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw,format=UYVY,width=[2,4096],height=[1,2160],"
       "framerate=[0/1,2147483647/1],interlace-mode=progressive"));
@@ -796,6 +831,8 @@ static GstStructure *stats_locked(XvContext *c)
       "pool-submitted", G_TYPE_UINT64, c->pool_submitted, "pending", G_TYPE_UINT, c->pending,
       "images", G_TYPE_UINT, c->image_count, "bytes", G_TYPE_UINT, c->image_bytes,
       "allocated", G_TYPE_UINT64, c->allocated, "freed", G_TYPE_UINT64, c->freed,
+      "active-port", G_TYPE_UINT, c->port, "port-switches", G_TYPE_UINT64, c->port_switches,
+      "port-rejections", G_TYPE_UINT64, c->port_rejections,
       "failed", G_TYPE_BOOLEAN, c->failed, "closed", G_TYPE_BOOLEAN, c->closed,
       "quarantined", G_TYPE_BOOLEAN, c->quarantined, NULL);
 }
@@ -803,19 +840,22 @@ static gboolean sink_start(GstBaseSink *base)
 {
   GstCrystalHdXv *s = XV_SINK(base);
   gst_video_overlay_prepare_window_handle(GST_VIDEO_OVERLAY(s));
+  g_mutex_lock(&s->control);
   g_mutex_lock(&s->lock);
-  gchar *display_name = g_strdup(s->display); guintptr window = s->window;
+  gchar *display_name = g_strdup(s->display); guintptr window = s->window; guint port = s->requested_port;
   g_mutex_unlock(&s->lock);
   GstBus *bus = gst_element_get_bus(GST_ELEMENT(s));
   GError *error = NULL;
-  XvContext *c = context_new(display_name, window, bus, &error);
+  XvContext *c = context_new(display_name, window, bus, port, &error);
   g_free(display_name);
   if (bus) gst_object_unref(bus);
   if (!c) {
+    g_mutex_unlock(&s->control);
     GST_ELEMENT_ERROR(s, RESOURCE, OPEN_READ_WRITE, ("%s", error->message), (NULL));
     g_error_free(error); return FALSE;
   }
   g_mutex_lock(&s->lock); s->context = c; g_mutex_unlock(&s->lock);
+  g_mutex_unlock(&s->control);
   return TRUE;
 }
 static gboolean sink_stop(GstBaseSink *base)
@@ -866,6 +906,7 @@ static gboolean sink_set_caps(GstBaseSink *base, GstCaps *caps)
   if (!GST_BASE_SINK_CLASS(gst_crystalhd_xv_parent_class)->set_caps(base, caps)) return FALSE;
   XvContext *c = sink_context(s);
   if (!c) return FALSE;
+  g_mutex_lock(&s->control);
   g_mutex_lock(&c->lock);
   GstBuffer *old = forget_picture_locked(c);
   gboolean ok = drain_locked(c) && colorspace_locked(c, &info);
@@ -873,7 +914,9 @@ static gboolean sink_set_caps(GstBaseSink *base, GstCaps *caps)
     s->info = info; c->epoch++;
     GST_VIDEO_SINK_WIDTH(s) = info.width; GST_VIDEO_SINK_HEIGHT(s) = info.height;
   }
-  g_mutex_unlock(&c->lock); if (old) gst_buffer_unref(old); context_unref(c);
+  g_mutex_unlock(&c->lock); g_mutex_unlock(&s->control);
+  if (old) gst_buffer_unref(old);
+  context_unref(c);
   return ok;
 }
 static GstFlowReturn sink_show_frame(GstVideoSink *video, GstBuffer *buffer)
@@ -901,10 +944,20 @@ static gboolean sink_propose_allocation(GstBaseSink *base, GstQuery *query)
   guint size = r ? r->data_size : 0;
   gboolean valid = r && r->width == info.width && r->height == info.height && r->num_planes == 1 &&
       size && size <= XV_MAX_BYTES / (XV_DEPTH + 3);
+  valid = valid && xcb_xv_query_image_attributes_pitches_length(r) == 1 &&
+      xcb_xv_query_image_attributes_offsets_length(r) == 1;
+  XvPoolLayout *layout = NULL;
+  if (valid) {
+    layout = g_new0(XvPoolLayout, 1);
+    layout->width = info.width; layout->height = info.height; layout->size = size;
+    layout->pitch = xcb_xv_query_image_attributes_pitches(r)[0];
+    layout->offset = xcb_xv_query_image_attributes_offsets(r)[0];
+    layout->next = c->pool_layouts; c->pool_layouts = layout;
+  }
   free(r); g_mutex_unlock(&c->lock);
   if (!valid) { context_unref(c); return FALSE; }
   CrystalXvPool *pool = g_object_new(crystal_xv_pool_get_type(), NULL);
-  pool->context = c; pool->info = info; pool->size = size;
+  pool->context = c; pool->info = info; pool->size = size; pool->layout = layout;
   GstStructure *config = gst_buffer_pool_get_config(GST_BUFFER_POOL(pool));
   gst_buffer_pool_config_set_params(config, caps, size, XV_DEPTH + 3, XV_DEPTH + 3);
   gst_buffer_pool_config_add_option(config, GST_BUFFER_POOL_OPTION_VIDEO_META);
@@ -973,7 +1026,7 @@ static gboolean replace_window_locked(XvContext *c, xcb_window_t window)
   if (c->failed || c->closed || !c->connection || g_atomic_int_get(&c->stopping) ||
       g_atomic_int_get(&c->flushing) || !target_geometry_locked(c, window, &width, &height))
     return FALSE;
-  c->window_changing = TRUE; c->redraw_suspended++;
+  c->output_changing = TRUE; c->redraw_suspended++;
   g_cond_broadcast(&c->changed);
   /* The completion matcher still sees the old drawable until pending==0.
    * Normal video submissions wait without changing their source epoch. */
@@ -1003,27 +1056,162 @@ static gboolean replace_window_locked(XvContext *c, xcb_window_t window)
     if (barrier_locked(c)) checked_void_result_locked(c, retire);
     else ok = FALSE;
   }
-  c->redraw_suspended--; c->window_changing = FALSE;
+  c->redraw_suspended--; c->output_changing = FALSE;
   g_cond_broadcast(&c->changed); wake_context(c);
   return ok;
+}
+/* Candidate probes may reject an application request without failing the old
+ * output. Transport errors and completion deadlines still fail the context. */
+static gboolean port_advertised_locked(XvContext *c, xcb_xv_port_t port)
+{
+  xcb_xv_query_adaptors_reply_t *r = checked_reply_locked(c,
+      xcb_xv_query_adaptors(c->connection, c->root).sequence, TRUE);
+  if (!r) return FALSE;
+  gboolean found = FALSE;
+  xcb_xv_adaptor_info_iterator_t a = xcb_xv_query_adaptors_info_iterator(r);
+  for (; a.rem && !found; xcb_xv_adaptor_info_next(&a)) {
+    if (!(a.data->type & XCB_XV_TYPE_IMAGE_MASK) || port < a.data->base_id ||
+        (guint64)port >= (guint64)a.data->base_id + a.data->num_ports) continue;
+    xcb_xv_format_t *formats = xcb_xv_adaptor_info_formats(a.data);
+    for (int i = 0; i < xcb_xv_adaptor_info_formats_length(a.data); i++)
+      if (formats[i].visual == c->visual && formats[i].depth == c->depth) found = TRUE;
+  }
+  free(r);
+  if (!found) return FALSE;
+  xcb_xv_list_image_formats_reply_t *formats = checked_reply_locked(c,
+      xcb_xv_list_image_formats(c->connection, port).sequence, TRUE);
+  if (!formats) return FALSE;
+  found = FALSE;
+  xcb_xv_image_format_info_t *f = xcb_xv_list_image_formats_format(formats);
+  for (int i = 0; i < xcb_xv_list_image_formats_format_length(formats); i++)
+    if (f[i].id == XV_UYVY) found = TRUE;
+  free(formats); return found;
+}
+static gboolean port_layout_locked(XvContext *c, xcb_xv_port_t port,
+                                   guint width, guint height, guint size, guint pitch, guint offset)
+{
+  xcb_xv_query_image_attributes_reply_t *r = checked_reply_locked(c,
+      xcb_xv_query_image_attributes(c->connection, port, XV_UYVY, width, height).sequence, TRUE);
+  if (!r) return FALSE;
+  gboolean ok = r->width == width && r->height == height && r->num_planes == 1 &&
+      xcb_xv_query_image_attributes_pitches_length(r) == 1 &&
+      xcb_xv_query_image_attributes_offsets_length(r) == 1;
+  if (ok && size) {
+    ok = r->data_size == size &&
+        xcb_xv_query_image_attributes_pitches(r)[0] == pitch &&
+        xcb_xv_query_image_attributes_offsets(r)[0] == offset;
+  } else if (ok) {
+    xcb_xv_query_image_attributes_reply_t *old = reply_locked(c,
+        xcb_xv_query_image_attributes(c->connection, c->port, XV_UYVY, width, height).sequence);
+    ok = old && old->width == r->width && old->height == r->height &&
+        old->num_planes == 1 && xcb_xv_query_image_attributes_pitches_length(old) == 1 &&
+        xcb_xv_query_image_attributes_offsets_length(old) == 1 && old->data_size == r->data_size &&
+        xcb_xv_query_image_attributes_pitches(old)[0] == xcb_xv_query_image_attributes_pitches(r)[0] &&
+        xcb_xv_query_image_attributes_offsets(old)[0] == xcb_xv_query_image_attributes_offsets(r)[0];
+    free(old);
+  }
+  free(r); return ok;
+}
+static gboolean port_layouts_locked(XvContext *c, xcb_xv_port_t port, const GstVideoInfo *info)
+{
+  if (info->width && !port_layout_locked(c, port, info->width, info->height, 0, 0, 0)) return FALSE;
+  for (XvMemory *m = c->images; m; m = m->next)
+    if (!port_layout_locked(c, port, m->width, m->height, m->size, m->pitch, m->offset)) return FALSE;
+  for (XvPoolLayout *p = c->pool_layouts; p; p = p->next)
+    if (!port_layout_locked(c, port, p->width, p->height, p->size, p->pitch, p->offset)) return FALSE;
+  return TRUE;
+}
+static gboolean replace_port_locked(XvContext *c, xcb_xv_port_t port, const GstVideoInfo *info)
+{
+  if (c->failed || c->closed || !c->connection || g_atomic_int_get(&c->stopping) ||
+      g_atomic_int_get(&c->flushing)) return FALSE;
+  if (port == c->port) return TRUE;
+  if (!port_advertised_locked(c, port)) return FALSE;
+  xcb_xv_grab_port_reply_t *grab = checked_reply_locked(c,
+      xcb_xv_grab_port(c->connection, port, XCB_CURRENT_TIME).sequence, TRUE);
+  if (!grab) return FALSE;
+  gboolean owned = grab->result == XCB_GRAB_STATUS_SUCCESS;
+  free(grab); if (!owned) return FALSE;
+  xcb_atom_t atom = XCB_NONE; gint original = 0, desired = 0;
+  gboolean ok = port_colors_locked(c, port, TRUE, &atom, &original);
+  desired = info->width ? (info->colorimetry.matrix == GST_VIDEO_COLOR_MATRIX_BT709 ? 1 : 0) : original;
+  ok = ok && (atom || !desired) && port_layouts_locked(c, port, info);
+  if (ok) {
+    c->output_changing = TRUE; c->redraw_suspended++;
+    g_cond_broadcast(&c->changed);
+    /* Keep the old port/drawable and exact flights until their ACKs retire.
+     * Recheck the registry because draining releases the context mutex. */
+    ok = drain_locked(c) && c->connection && port_layouts_locked(c, port, info);
+    if (ok && atom && desired != original) {
+      xcb_void_cookie_t color = xcb_xv_set_port_attribute_checked(c->connection, port, atom, desired);
+      ok = barrier_locked(c) && checked_void_result_locked(c, color);
+    }
+    if (ok) {
+      xcb_void_cookie_t color = {0};
+      if (c->colorspace_atom && c->active_colorspace != c->original_colorspace)
+        color = xcb_xv_set_port_attribute_checked(c->connection, c->port,
+            c->colorspace_atom, c->original_colorspace);
+      xcb_void_cookie_t stop = xcb_xv_stop_video_checked(c->connection, c->port, c->window);
+      xcb_void_cookie_t ungrab = xcb_xv_ungrab_port_checked(c->connection, c->port, XCB_CURRENT_TIME);
+      ok = barrier_locked(c);
+      if (ok) {
+        gboolean restored = !color.sequence || checked_void_result_locked(c, color);
+        gboolean stopped = checked_void_result_locked(c, stop);
+        gboolean released = checked_void_result_locked(c, ungrab);
+        if (!restored || !stopped || !released) ok = context_error(c, "Cannot retire the previous Xv port");
+      }
+      if (ok) {
+        c->port = port; c->colorspace_atom = atom;
+        c->original_colorspace = original; c->active_colorspace = desired;
+        c->port_switches++; c->redraw_pending = c->borders_dirty = TRUE;
+      }
+    }
+    c->redraw_suspended--; c->output_changing = FALSE;
+    g_cond_broadcast(&c->changed); wake_context(c);
+  }
+  if (!ok && c->connection && !c->failed) {
+    xcb_void_cookie_t release = xcb_xv_ungrab_port_checked(c->connection, port, XCB_CURRENT_TIME);
+    if (barrier_locked(c) && !checked_void_result_locked(c, release))
+      context_error(c, "Cannot release the rejected Xv candidate");
+  }
+  return ok;
+}
+static void sink_set_port(GstCrystalHdXv *s, guint port)
+{
+  g_mutex_lock(&s->control);
+  XvContext *c = sink_context(s);
+  gboolean ok = TRUE;
+  if (c && port) {
+    g_mutex_lock(&c->lock);
+    ok = replace_port_locked(c, port, &s->info);
+    if (!ok) c->port_rejections++;
+    g_mutex_unlock(&c->lock);
+  }
+  if (ok) { g_mutex_lock(&s->lock); s->requested_port = port; g_mutex_unlock(&s->lock); }
+  g_mutex_unlock(&s->control);
+  if (!ok) GST_ELEMENT_WARNING(s, RESOURCE, SETTINGS,
+      ("Xv port replacement was rejected; a free same-layout UYVY port is required"), (NULL));
+  if (c) context_unref(c);
 }
 static void sink_set_window(GstVideoOverlay *overlay, guintptr window)
 {
   GstCrystalHdXv *s = XV_SINK(overlay);
+  g_mutex_lock(&s->control);
   g_mutex_lock(&s->lock);
   XvContext *c = s->context ? context_ref(s->context) : NULL;
+  g_mutex_unlock(&s->lock);
   gboolean ok = window <= G_MAXUINT32;
   if (!c) {
-    if (ok) s->window = window;
-  } else if (ok && (window == c->window || (!window && c->own_window))) {
-    /* Repeated handles leave in-flight generations and completions alone. */
-  } else if (ok && window) {
+    if (ok) { g_mutex_lock(&s->lock); s->window = window; g_mutex_unlock(&s->lock); }
+  } else if (ok) {
     g_mutex_lock(&c->lock);
-    ok = replace_window_locked(c, (xcb_window_t)window);
-    if (ok) s->window = window;
+    if (window == c->window || (!window && c->own_window)) {
+    /* Repeated handles leave in-flight generations and completions alone. */
+    } else ok = window && replace_window_locked(c, (xcb_window_t)window);
     g_mutex_unlock(&c->lock);
+    if (ok) { g_mutex_lock(&s->lock); s->window = window; g_mutex_unlock(&s->lock); }
   } else ok = FALSE;
-  g_mutex_unlock(&s->lock);
+  g_mutex_unlock(&s->control);
   if (!ok)
     GST_ELEMENT_WARNING(s, RESOURCE, SETTINGS,
         ("Xv window replacement was rejected; a mapped same-screen window is required"), (NULL));
@@ -1044,7 +1232,9 @@ static void overlay_init(GstVideoOverlayInterface *interface)
 static void sink_set_property(GObject *object, guint id, const GValue *value, GParamSpec *spec)
 {
   GstCrystalHdXv *s = XV_SINK(object);
-  if (id == PROP_DISPLAY) {
+  if (id == PROP_PORT) {
+    sink_set_port(s, g_value_get_uint(value));
+  } else if (id == PROP_DISPLAY) {
     g_mutex_lock(&s->lock);
     if (!s->context) { g_free(s->display); s->display = g_value_dup_string(value); }
     else GST_WARNING_OBJECT(s, "Display changes take effect only while output is stopped");
@@ -1056,6 +1246,8 @@ static void sink_get_property(GObject *object, guint id, GValue *value, GParamSp
   GstCrystalHdXv *s = XV_SINK(object);
   if (id == PROP_DISPLAY) {
     g_mutex_lock(&s->lock); g_value_set_string(value, s->display); g_mutex_unlock(&s->lock);
+  } else if (id == PROP_PORT) {
+    g_mutex_lock(&s->lock); g_value_set_uint(value, s->requested_port); g_mutex_unlock(&s->lock);
   } else if (id == PROP_STATS) {
     XvContext *c = sink_context(s);
     if (c) {
@@ -1073,6 +1265,7 @@ static void sink_finalize(GObject *object)
   g_free(s->display);
   if (s->last_stats) gst_structure_free(s->last_stats);
   g_mutex_clear(&s->lock);
+  g_mutex_clear(&s->control);
   G_OBJECT_CLASS(gst_crystalhd_xv_parent_class)->finalize(object);
 }
 static void gst_crystalhd_xv_class_init(GstCrystalHdXvClass *klass)
@@ -1085,6 +1278,9 @@ static void gst_crystalhd_xv_class_init(GstCrystalHdXvClass *klass)
   g_object_class_install_property(object, PROP_DISPLAY, g_param_spec_string("display", "Display",
       "Local Unix X11 display; the DISPLAY environment is used when unset", NULL,
       G_PARAM_READWRITE | GST_PARAM_MUTABLE_READY | G_PARAM_STATIC_STRINGS));
+  g_object_class_install_property(object, PROP_PORT, g_param_spec_uint("port", "Xv port",
+      "Preferred UYVY port; zero selects automatically at startup and keeps the active port live",
+      0, G_MAXUINT, 0, G_PARAM_READWRITE | GST_PARAM_MUTABLE_PLAYING | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property(object, PROP_STATS, g_param_spec_boxed("xv-stats", "Xv statistics",
       "Submission/SHM ownership counters; not physical display statistics", GST_TYPE_STRUCTURE,
       G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
@@ -1099,7 +1295,7 @@ static void gst_crystalhd_xv_class_init(GstCrystalHdXvClass *klass)
 }
 static void gst_crystalhd_xv_init(GstCrystalHdXv *s)
 {
-  g_mutex_init(&s->lock); gst_video_info_init(&s->info);
+  g_mutex_init(&s->lock); g_mutex_init(&s->control); gst_video_info_init(&s->info);
   gst_base_sink_set_qos_enabled(GST_BASE_SINK(s), TRUE);
 }
 static gboolean plugin_init(GstPlugin *plugin)

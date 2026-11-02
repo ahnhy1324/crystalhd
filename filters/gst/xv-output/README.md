@@ -46,6 +46,21 @@ continues owning its external windows. An invalid target posts a GStreamer
 warning and keeps the current window; changing an external live window to
 handle zero is rejected. A repeated current handle is idempotent.
 
+The optional writable `port` property selects an exact UYVY Xv port. Before
+startup, zero (the default) selects the first free compatible port; a nonzero
+request fails if that exact port is unavailable. In PAUSED/PLAYING, a nonzero
+request acquires the candidate first, checks its visual/color selector and
+exact UYVY layouts for current caps, every image and every proposed pool
+(including pools with no allocated images), then drains the old SHM requests
+before restoring and releasing the old port. It keeps the window, GC, pool,
+source epoch and retained picture and repaints on the new port. A rejected
+busy/missing/incompatible candidate posts a warning and preserves the active
+port and preferred selection. Transport/deadline failures retain the ordinary
+failure/retirement behavior. Selecting the current port is idempotent; setting
+zero live clears the next-start preference while keeping the active port.
+For example, an embedding application can use `g_object_set(sink, "port",
+port_id, NULL)`. The Player's default output selection is unchanged.
+
 The renderer holds one last source buffer independently of BaseSink's
 `enable-last-sample` setting. For negotiated pool memory, both SHM completion
 and the final Gst owner must retire before that storage is writable again.
@@ -80,6 +95,10 @@ the inherited `show-preroll-frame` property is enabled: twelve video frames
 can generate thirteen requests. ACKs measure X-server SHM retirement, **not
 unique video frames or physical scanout**. After stop the property retains a
 stop-time snapshot; later quarantine cleanup is not a live snapshot.
+`active-port` reports the acquired port ID; `port-switches` counts committed
+live handoffs and `port-rejections` counts rejected live nonzero requests.
+The readable `port` property reports the preferred selection rather than an
+automatically acquired ID.
 
 ```sh
 # Device-free checks. The second command opens temporary X11 windows.
@@ -107,6 +126,22 @@ Without explicit X11 opt-in/local Xv availability the case truthfully skips.
 The [receipt](../../../tests/fixtures/issue513/xv-port-contention-20261031.json)
 retains the two original harness FAILs, diagnostic and corrected outcome.
 System X-server interruption and broader stress remain separate acceptance.
+
+The decoder-free `/xv/x11/live-port-handoff` control requires two currently
+free compatible ports and owns its pixel-test window. It covers busy/missing
+requests, a deliberately injected candidate-only dormant-pool layout mismatch,
+a held real SHM completion, direct-pool source IDs/PTS/pixels, retained and
+next-frame RGB output, exact-port reacquisition, preference reset and exact
+startup selection. A stop during a second held-ACK handoff cancels it: that
+request has zero ACKs and one detach-proven terminal retirement, not successful
+presentation. A separate actual appsrc pipeline switches ports in PAUSED and
+PLAYING, preserving source memory/PTS through the copy path and reaching
+natural EOS with five requests/ACKs (three video calls including preroll, two
+repaints). Its two source pictures are not five unique video frames.
+The [current-host receipt](../../../tests/fixtures/issue513/xv-live-port-20261102.json)
+also retains the initial harness failures. PAUSED pixel regression fixtures
+explicitly map their own windows; an SHM ACK/EOS does not prove a window manager
+has made a managed window viewable. No user desktop policy is changed.
 
 The [current qualification](../../../HARDWARE-2026-09-13.md#development-per-instance-xv-output--2026-10-26)
 records complete bounded Player controls and a timestamped MP4 error/reopen
