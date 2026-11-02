@@ -1,0 +1,796 @@
+{
+  "batches": [
+    {
+      "batch": "live-native-01",
+      "cases": [
+        {
+          "RGB": {
+            "barcode_case_id": 17,
+            "capture_sha256": "ca5e18f50c6f3ddda6fc78a47ef1eddbb3f3888f449cc442c08dc7a74cace61b",
+            "capture_source_pts": "CONTENT_BARCODE_BOUND",
+            "capture_stride": 5120,
+            "channels_over_tolerance": 0,
+            "complete_crop_and_pixels": "NOT_VERIFIED",
+            "declared_matrix": "bt709",
+            "declared_range": "full",
+            "decoded_source_ordinal": 1,
+            "decoded_yuyv": "NOT_OBSERVED",
+            "diagnostic_alternate_matrix": {
+              "changes_primary_verdict": false,
+              "channels_over_tolerance": 612,
+              "matrix": "bt601",
+              "maximum_channel_error": 23
+            },
+            "differences": [],
+            "height": 720,
+            "invariant_samples": 798,
+            "maximum_channel_error": 0,
+            "mean_absolute_channel_error": 0.0,
+            "minimum_samples": 100,
+            "module_source": "985f155",
+            "nonopaque_active_pixels": 0,
+            "permitted_channel_error": 2,
+            "physical_presentation": "NOT_VERIFIED",
+            "reference_coverage": "SUFFICIENT",
+            "result": "PASS",
+            "schema": 1,
+            "scope": "sampled source-invariant colour/spatial points only",
+            "source_pts": {
+              "ordinal": 1,
+              "pts": 512,
+              "pts_time": "0.03333333333333333",
+              "time_base": "1/15360"
+            },
+            "width": 1280
+          },
+          "accepted_output_count": 30,
+          "actual_mapped_native_libraries": {
+            "libavcodec.so.63.1.102": {
+              "device": "08:01",
+              "inode": 11428928,
+              "mapping_path": "/native-ffmpeg/libavcodec.so.63.1.102",
+              "sha256": "c92a041da4f924cbf73668b9de633e593b9f17eb92fef2da73d6febcf075c8c6"
+            },
+            "libavfilter.so.12.1.102": {
+              "device": "08:01",
+              "inode": 11428922,
+              "mapping_path": "/native-ffmpeg/libavfilter.so.12.1.102",
+              "sha256": "5e5d1bbb82ffbf171f08a419ed3c8bda7a426f759670df1f691e393667ce9b0a"
+            },
+            "libavformat.so.63.1.102": {
+              "device": "08:01",
+              "inode": 11428925,
+              "mapping_path": "/native-ffmpeg/libavformat.so.63.1.102",
+              "sha256": "f26fc0d099394f72ec31ae69d3928fe6efeed5ea87201b047cf4b304705acd2f"
+            },
+            "libavutil.so.61.1.102": {
+              "device": "08:01",
+              "inode": 11428937,
+              "mapping_path": "/native-ffmpeg/libavutil.so.61.1.102",
+              "sha256": "4ba4f5b9058a6bc3d186ea46814c2d9e1c00db0ba04979f01df5df454c48c384"
+            },
+            "libswresample.so.7.1.102": {
+              "device": "08:01",
+              "inode": 11428931,
+              "mapping_path": "/native-ffmpeg/libswresample.so.7.1.102",
+              "sha256": "daed68f97a4fc2a555649cc3c9e4916bcb49437e8c7f52e80e95f6903a937b2c"
+            },
+            "libswscale.so.10.1.102": {
+              "device": "08:01",
+              "inode": 11428934,
+              "mapping_path": "/native-ffmpeg/libswscale.so.10.1.102",
+              "sha256": "832481dc5636b6439e36531dcc1088c4af5f037adb956a6106c901979887300b"
+            }
+          },
+          "boundary_equal": true,
+          "exit_code": 0,
+          "input": {
+            "barcode_case_id": 17,
+            "color_range": "full",
+            "expected_colorspace": 3,
+            "expected_quantization": 1,
+            "expected_xfer_func": 1,
+            "expected_ycbcr_enc": 2,
+            "fps": 30,
+            "frames": 30,
+            "height": 720,
+            "id": "fullscale-1280",
+            "matrix": "bt709",
+            "media_sha256": "e3a27a698e1325ad7747640b21632230ad46504762397eca0ede73b7044da110",
+            "minimum_points": 100,
+            "reference_sha256": "d95346e91d0c2f5a26b6cf7c477d14ce83b181c33321a23e82fb3b8289ffea09",
+            "source_above235": 4546560,
+            "source_below16": 4546560,
+            "source_luma_max": 255,
+            "source_luma_min": 0,
+            "width": 1280
+          },
+          "live_retired": true,
+          "module_sha256": "3b9d45723bb6e95675851a049fb98f3cc720e25bb4bf0195cde0cde852875f88",
+          "module_source": "985f155",
+          "module_srcversion": "7C46B02B3F58D82CBFEADBF",
+          "native_census": {
+            "admission": {
+              "active_at_end": 0,
+              "admissions": 2,
+              "querycap_calls": 3,
+              "unbound_requests": 0
+            },
+            "calls": 249,
+            "capture_LAST": 1,
+            "capture_nonempty": 30,
+            "complete_application_source_pts": "NOT_OBSERVED",
+            "scope": "Owned PID+known video FD Linux syscall census; no external functions/render queue/DRM object/physical presentation observation.",
+            "source_capture_formats": [
+              {
+                "after_source_change": true,
+                "colorspace": 3,
+                "fd": 35,
+                "flags": 0,
+                "fourcc": 1448695129,
+                "height": 720,
+                "id": 34,
+                "priv": 4276996862,
+                "quantization": 1,
+                "req": 3234878980,
+                "tid": 1660255,
+                "type": 1,
+                "width": 1280,
+                "xfer": 1,
+                "ycbcr": 2
+              },
+              {
+                "after_source_change": true,
+                "colorspace": 3,
+                "fd": 35,
+                "flags": 0,
+                "fourcc": 1448695129,
+                "height": 720,
+                "id": 37,
+                "priv": 4276996862,
+                "quantization": 1,
+                "req": 3234878980,
+                "tid": 1660255,
+                "type": 1,
+                "width": 1280,
+                "xfer": 1,
+                "ycbcr": 2
+              }
+            ],
+            "status": "PASS",
+            "syscall_timestamp_semantics": "FFmpeg12cc tracking IDs, not source PTS"
+          },
+          "null_sink_removed": true,
+          "original_kodi_executable_sha256": "2862331a8a047f929d8019987a518527fcb45330082435bec7b7756141cf688f",
+          "points_table": "kodi-fullscale-720-samples-20261102.tsv",
+          "points_table_sha256": "130cc9a3eae8635c50e18d1e5f827e8231323d58600b9c32154ff3300d1cab85",
+          "private_case_receipt_sha256": "815477fe0778d392bb5908fef693d43aae3921f11d0ff544691cef9becc463ca",
+          "selection": "ACTUAL_V4L2_DEVICE_OPEN_OBSERVED",
+          "source_fixture_sha256": "42b2c358ef60b96bc3107669e454a44cfd55a78cc816ead85a5c530c59d62e33",
+          "status": "PASS"
+        },
+        {
+          "RGB": {
+            "barcode_case_id": 18,
+            "capture_sha256": "4dd92193e4820bd632a7b3bc99c871d7e62404a0d2b183efe3e8c9ea52acb004",
+            "capture_source_pts": "CONTENT_BARCODE_BOUND",
+            "capture_stride": 7680,
+            "channels_over_tolerance": 0,
+            "complete_crop_and_pixels": "NOT_VERIFIED",
+            "declared_matrix": "bt709",
+            "declared_range": "full",
+            "decoded_source_ordinal": 3,
+            "decoded_yuyv": "NOT_OBSERVED",
+            "diagnostic_alternate_matrix": {
+              "changes_primary_verdict": false,
+              "channels_over_tolerance": 1368,
+              "matrix": "bt601",
+              "maximum_channel_error": 23
+            },
+            "differences": [],
+            "height": 1080,
+            "invariant_samples": 1922,
+            "maximum_channel_error": 0,
+            "mean_absolute_channel_error": 0.0,
+            "minimum_samples": 100,
+            "module_source": "985f155",
+            "nonopaque_active_pixels": 0,
+            "permitted_channel_error": 2,
+            "physical_presentation": "NOT_VERIFIED",
+            "reference_coverage": "SUFFICIENT",
+            "result": "PASS",
+            "schema": 1,
+            "scope": "sampled source-invariant colour/spatial points only",
+            "source_pts": {
+              "ordinal": 3,
+              "pts": 1536,
+              "pts_time": "0.1",
+              "time_base": "1/15360"
+            },
+            "width": 1920
+          },
+          "accepted_output_count": 30,
+          "actual_mapped_native_libraries": {
+            "libavcodec.so.63.1.102": {
+              "device": "08:01",
+              "inode": 11428928,
+              "mapping_path": "/native-ffmpeg/libavcodec.so.63.1.102",
+              "sha256": "c92a041da4f924cbf73668b9de633e593b9f17eb92fef2da73d6febcf075c8c6"
+            },
+            "libavfilter.so.12.1.102": {
+              "device": "08:01",
+              "inode": 11428922,
+              "mapping_path": "/native-ffmpeg/libavfilter.so.12.1.102",
+              "sha256": "5e5d1bbb82ffbf171f08a419ed3c8bda7a426f759670df1f691e393667ce9b0a"
+            },
+            "libavformat.so.63.1.102": {
+              "device": "08:01",
+              "inode": 11428925,
+              "mapping_path": "/native-ffmpeg/libavformat.so.63.1.102",
+              "sha256": "f26fc0d099394f72ec31ae69d3928fe6efeed5ea87201b047cf4b304705acd2f"
+            },
+            "libavutil.so.61.1.102": {
+              "device": "08:01",
+              "inode": 11428937,
+              "mapping_path": "/native-ffmpeg/libavutil.so.61.1.102",
+              "sha256": "4ba4f5b9058a6bc3d186ea46814c2d9e1c00db0ba04979f01df5df454c48c384"
+            },
+            "libswresample.so.7.1.102": {
+              "device": "08:01",
+              "inode": 11428931,
+              "mapping_path": "/native-ffmpeg/libswresample.so.7.1.102",
+              "sha256": "daed68f97a4fc2a555649cc3c9e4916bcb49437e8c7f52e80e95f6903a937b2c"
+            },
+            "libswscale.so.10.1.102": {
+              "device": "08:01",
+              "inode": 11428934,
+              "mapping_path": "/native-ffmpeg/libswscale.so.10.1.102",
+              "sha256": "832481dc5636b6439e36531dcc1088c4af5f037adb956a6106c901979887300b"
+            }
+          },
+          "boundary_equal": true,
+          "exit_code": 0,
+          "input": {
+            "barcode_case_id": 18,
+            "color_range": "full",
+            "expected_colorspace": 3,
+            "expected_quantization": 1,
+            "expected_xfer_func": 1,
+            "expected_ycbcr_enc": 2,
+            "fps": 30,
+            "frames": 30,
+            "height": 1080,
+            "id": "fullscale-1920",
+            "matrix": "bt709",
+            "media_sha256": "180ff276c035a80768dcb63036f9c2a5bb3d18b091fb5d9d659b512b2248bd8c",
+            "minimum_points": 100,
+            "reference_sha256": "65135db9190a0790b1a219079071e7d8b1df3fbac6520092fdd31794c526b4da",
+            "source_above235": 10967040,
+            "source_below16": 10967040,
+            "source_luma_max": 255,
+            "source_luma_min": 0,
+            "width": 1920
+          },
+          "live_retired": true,
+          "module_sha256": "3b9d45723bb6e95675851a049fb98f3cc720e25bb4bf0195cde0cde852875f88",
+          "module_source": "985f155",
+          "module_srcversion": "7C46B02B3F58D82CBFEADBF",
+          "native_census": {
+            "admission": {
+              "active_at_end": 0,
+              "admissions": 2,
+              "querycap_calls": 3,
+              "unbound_requests": 0
+            },
+            "calls": 248,
+            "capture_LAST": 1,
+            "capture_nonempty": 30,
+            "complete_application_source_pts": "NOT_OBSERVED",
+            "scope": "Owned PID+known video FD Linux syscall census; no external functions/render queue/DRM object/physical presentation observation.",
+            "source_capture_formats": [
+              {
+                "after_source_change": true,
+                "colorspace": 3,
+                "fd": 35,
+                "flags": 0,
+                "fourcc": 1448695129,
+                "height": 1080,
+                "id": 40,
+                "priv": 4276996862,
+                "quantization": 1,
+                "req": 3234878980,
+                "tid": 1660521,
+                "type": 1,
+                "width": 1920,
+                "xfer": 1,
+                "ycbcr": 2
+              },
+              {
+                "after_source_change": true,
+                "colorspace": 3,
+                "fd": 35,
+                "flags": 0,
+                "fourcc": 1448695129,
+                "height": 1080,
+                "id": 43,
+                "priv": 4276996862,
+                "quantization": 1,
+                "req": 3234878980,
+                "tid": 1660521,
+                "type": 1,
+                "width": 1920,
+                "xfer": 1,
+                "ycbcr": 2
+              }
+            ],
+            "status": "PASS",
+            "syscall_timestamp_semantics": "FFmpeg12cc tracking IDs, not source PTS"
+          },
+          "null_sink_removed": true,
+          "original_kodi_executable_sha256": "2862331a8a047f929d8019987a518527fcb45330082435bec7b7756141cf688f",
+          "points_table": "kodi-fullscale-1080-samples-20261102.tsv",
+          "points_table_sha256": "106d9ccd1dc6935fb82c7b2289f7d0157b415a477da246e307290a5b00433996",
+          "private_case_receipt_sha256": "176324d8e244ee0f45a872b696b1cf5043587b60a954f39f09dd4a4f0c909092",
+          "selection": "ACTUAL_V4L2_DEVICE_OPEN_OBSERVED",
+          "source_fixture_sha256": "0582f114ef65db1946da839d6a229cd3034c43e525e96e0a2717a58a21184543",
+          "status": "PASS"
+        }
+      ],
+      "private_receipt_sha256": "79ae79dcf17a4535ce912c182cb377f3457b6f5910d495ae0ae2516160c4cc55",
+      "restoration": {
+        "baseline_equal": true,
+        "kernel_errors": false,
+        "maximum_temperature_mC": 57000,
+        "module_inventory_equal": true,
+        "pin_net": 0,
+        "ref": 0,
+        "restored": true,
+        "stable_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+        "stable_module_srcversion": "F76E163690F147B91495DDD",
+        "stable_module_version": "3.10.13",
+        "video_nodes": []
+      }
+    },
+    {
+      "batch": "kodi-fixed-04",
+      "cases": [
+        {
+          "RGB": {
+            "barcode_case_id": 17,
+            "capture_sha256": "ca5e18f50c6f3ddda6fc78a47ef1eddbb3f3888f449cc442c08dc7a74cace61b",
+            "capture_source_pts": "CONTENT_BARCODE_BOUND",
+            "capture_stride": 5120,
+            "channels_over_tolerance": 0,
+            "complete_crop_and_pixels": "NOT_VERIFIED",
+            "declared_matrix": "bt709",
+            "declared_range": "full",
+            "decoded_source_ordinal": 1,
+            "decoded_yuyv": "NOT_OBSERVED",
+            "diagnostic_alternate_matrix": {
+              "changes_primary_verdict": false,
+              "channels_over_tolerance": 612,
+              "matrix": "bt601",
+              "maximum_channel_error": 23
+            },
+            "differences": [],
+            "height": 720,
+            "invariant_samples": 798,
+            "maximum_channel_error": 0,
+            "mean_absolute_channel_error": 0.0,
+            "minimum_samples": 100,
+            "module_source": "2d6ad43fc743593fd95c02282cedd141d38d8db2",
+            "nonopaque_active_pixels": 0,
+            "permitted_channel_error": 2,
+            "physical_presentation": "NOT_VERIFIED",
+            "reference_coverage": "SUFFICIENT",
+            "result": "PASS",
+            "schema": 1,
+            "scope": "sampled source-invariant colour/spatial points only",
+            "source_pts": {
+              "ordinal": 1,
+              "pts": 512,
+              "pts_time": "0.03333333333333333",
+              "time_base": "1/15360"
+            },
+            "width": 1280
+          },
+          "accepted_output_count": 30,
+          "actual_mapped_native_libraries": {
+            "libavcodec.so.63.1.102": {
+              "device": "08:01",
+              "inode": 11428928,
+              "mapping_path": "/native-ffmpeg/libavcodec.so.63.1.102",
+              "sha256": "c92a041da4f924cbf73668b9de633e593b9f17eb92fef2da73d6febcf075c8c6"
+            },
+            "libavfilter.so.12.1.102": {
+              "device": "08:01",
+              "inode": 11428922,
+              "mapping_path": "/native-ffmpeg/libavfilter.so.12.1.102",
+              "sha256": "5e5d1bbb82ffbf171f08a419ed3c8bda7a426f759670df1f691e393667ce9b0a"
+            },
+            "libavformat.so.63.1.102": {
+              "device": "08:01",
+              "inode": 11428925,
+              "mapping_path": "/native-ffmpeg/libavformat.so.63.1.102",
+              "sha256": "f26fc0d099394f72ec31ae69d3928fe6efeed5ea87201b047cf4b304705acd2f"
+            },
+            "libavutil.so.61.1.102": {
+              "device": "08:01",
+              "inode": 11428937,
+              "mapping_path": "/native-ffmpeg/libavutil.so.61.1.102",
+              "sha256": "4ba4f5b9058a6bc3d186ea46814c2d9e1c00db0ba04979f01df5df454c48c384"
+            },
+            "libswresample.so.7.1.102": {
+              "device": "08:01",
+              "inode": 11428931,
+              "mapping_path": "/native-ffmpeg/libswresample.so.7.1.102",
+              "sha256": "daed68f97a4fc2a555649cc3c9e4916bcb49437e8c7f52e80e95f6903a937b2c"
+            },
+            "libswscale.so.10.1.102": {
+              "device": "08:01",
+              "inode": 11428934,
+              "mapping_path": "/native-ffmpeg/libswscale.so.10.1.102",
+              "sha256": "832481dc5636b6439e36531dcc1088c4af5f037adb956a6106c901979887300b"
+            }
+          },
+          "boundary_equal": true,
+          "exit_code": 0,
+          "input": {
+            "barcode_case_id": 17,
+            "color_range": "full",
+            "expected_colorspace": 3,
+            "expected_quantization": 1,
+            "expected_xfer_func": 1,
+            "expected_ycbcr_enc": 2,
+            "fps": 30,
+            "frames": 30,
+            "height": 720,
+            "id": "fullscale-1280",
+            "matrix": "bt709",
+            "media_sha256": "e3a27a698e1325ad7747640b21632230ad46504762397eca0ede73b7044da110",
+            "minimum_points": 100,
+            "reference_sha256": "d95346e91d0c2f5a26b6cf7c477d14ce83b181c33321a23e82fb3b8289ffea09",
+            "source_above235": 4546560,
+            "source_below16": 4546560,
+            "source_luma_max": 255,
+            "source_luma_min": 0,
+            "width": 1280
+          },
+          "live_retired": true,
+          "module_sha256": "9ea1e89421ff04033f84418feebdc01c45fc903c2daa06f8e9c432e32fca30c4",
+          "module_source": "2d6ad43fc743593fd95c02282cedd141d38d8db2",
+          "module_srcversion": "FEB8DC48436425D92497DA7",
+          "native_census": {
+            "admission": {
+              "active_at_end": 0,
+              "admissions": 2,
+              "querycap_calls": 3,
+              "unbound_requests": 0
+            },
+            "calls": 249,
+            "capture_LAST": 1,
+            "capture_nonempty": 30,
+            "complete_application_source_pts": "NOT_OBSERVED",
+            "scope": "Owned PID+known video FD Linux syscall census; no external functions/render queue/DRM object/physical presentation observation.",
+            "source_capture_formats": [
+              {
+                "after_source_change": true,
+                "colorspace": 3,
+                "fd": 37,
+                "flags": 0,
+                "fourcc": 1448695129,
+                "height": 720,
+                "id": 34,
+                "priv": 4276996862,
+                "quantization": 1,
+                "req": 3234878980,
+                "tid": 1671711,
+                "type": 1,
+                "width": 1280,
+                "xfer": 1,
+                "ycbcr": 2
+              },
+              {
+                "after_source_change": true,
+                "colorspace": 3,
+                "fd": 37,
+                "flags": 0,
+                "fourcc": 1448695129,
+                "height": 720,
+                "id": 37,
+                "priv": 4276996862,
+                "quantization": 1,
+                "req": 3234878980,
+                "tid": 1671711,
+                "type": 1,
+                "width": 1280,
+                "xfer": 1,
+                "ycbcr": 2
+              }
+            ],
+            "status": "PASS",
+            "syscall_timestamp_semantics": "FFmpeg12cc tracking IDs, not source PTS"
+          },
+          "null_sink_removed": true,
+          "original_kodi_executable_sha256": "2862331a8a047f929d8019987a518527fcb45330082435bec7b7756141cf688f",
+          "points_table": "kodi-fullscale-720-samples-20261102.tsv",
+          "points_table_sha256": "130cc9a3eae8635c50e18d1e5f827e8231323d58600b9c32154ff3300d1cab85",
+          "private_case_receipt_sha256": "a8ab872cc584a43e32469d394279ef1534455ea882197a6e247e37c55b30d8f2",
+          "selection": "ACTUAL_V4L2_DEVICE_OPEN_OBSERVED",
+          "source_fixture_sha256": "42b2c358ef60b96bc3107669e454a44cfd55a78cc816ead85a5c530c59d62e33",
+          "status": "PASS"
+        },
+        {
+          "RGB": {
+            "barcode_case_id": 18,
+            "capture_sha256": "6979a05f50d58bef39be9aa510cb806bc6496fc1c01acb3bca1c0bf4aef5e4b6",
+            "capture_source_pts": "CONTENT_BARCODE_BOUND",
+            "capture_stride": 7680,
+            "channels_over_tolerance": 0,
+            "complete_crop_and_pixels": "NOT_VERIFIED",
+            "declared_matrix": "bt709",
+            "declared_range": "full",
+            "decoded_source_ordinal": 2,
+            "decoded_yuyv": "NOT_OBSERVED",
+            "diagnostic_alternate_matrix": {
+              "changes_primary_verdict": false,
+              "channels_over_tolerance": 1368,
+              "matrix": "bt601",
+              "maximum_channel_error": 23
+            },
+            "differences": [],
+            "height": 1080,
+            "invariant_samples": 1922,
+            "maximum_channel_error": 0,
+            "mean_absolute_channel_error": 0.0,
+            "minimum_samples": 100,
+            "module_source": "2d6ad43fc743593fd95c02282cedd141d38d8db2",
+            "nonopaque_active_pixels": 0,
+            "permitted_channel_error": 2,
+            "physical_presentation": "NOT_VERIFIED",
+            "reference_coverage": "SUFFICIENT",
+            "result": "PASS",
+            "schema": 1,
+            "scope": "sampled source-invariant colour/spatial points only",
+            "source_pts": {
+              "ordinal": 2,
+              "pts": 1024,
+              "pts_time": "0.06666666666666667",
+              "time_base": "1/15360"
+            },
+            "width": 1920
+          },
+          "accepted_output_count": 30,
+          "actual_mapped_native_libraries": {
+            "libavcodec.so.63.1.102": {
+              "device": "08:01",
+              "inode": 11428928,
+              "mapping_path": "/native-ffmpeg/libavcodec.so.63.1.102",
+              "sha256": "c92a041da4f924cbf73668b9de633e593b9f17eb92fef2da73d6febcf075c8c6"
+            },
+            "libavfilter.so.12.1.102": {
+              "device": "08:01",
+              "inode": 11428922,
+              "mapping_path": "/native-ffmpeg/libavfilter.so.12.1.102",
+              "sha256": "5e5d1bbb82ffbf171f08a419ed3c8bda7a426f759670df1f691e393667ce9b0a"
+            },
+            "libavformat.so.63.1.102": {
+              "device": "08:01",
+              "inode": 11428925,
+              "mapping_path": "/native-ffmpeg/libavformat.so.63.1.102",
+              "sha256": "f26fc0d099394f72ec31ae69d3928fe6efeed5ea87201b047cf4b304705acd2f"
+            },
+            "libavutil.so.61.1.102": {
+              "device": "08:01",
+              "inode": 11428937,
+              "mapping_path": "/native-ffmpeg/libavutil.so.61.1.102",
+              "sha256": "4ba4f5b9058a6bc3d186ea46814c2d9e1c00db0ba04979f01df5df454c48c384"
+            },
+            "libswresample.so.7.1.102": {
+              "device": "08:01",
+              "inode": 11428931,
+              "mapping_path": "/native-ffmpeg/libswresample.so.7.1.102",
+              "sha256": "daed68f97a4fc2a555649cc3c9e4916bcb49437e8c7f52e80e95f6903a937b2c"
+            },
+            "libswscale.so.10.1.102": {
+              "device": "08:01",
+              "inode": 11428934,
+              "mapping_path": "/native-ffmpeg/libswscale.so.10.1.102",
+              "sha256": "832481dc5636b6439e36531dcc1088c4af5f037adb956a6106c901979887300b"
+            }
+          },
+          "boundary_equal": true,
+          "exit_code": 0,
+          "input": {
+            "barcode_case_id": 18,
+            "color_range": "full",
+            "expected_colorspace": 3,
+            "expected_quantization": 1,
+            "expected_xfer_func": 1,
+            "expected_ycbcr_enc": 2,
+            "fps": 30,
+            "frames": 30,
+            "height": 1080,
+            "id": "fullscale-1920",
+            "matrix": "bt709",
+            "media_sha256": "180ff276c035a80768dcb63036f9c2a5bb3d18b091fb5d9d659b512b2248bd8c",
+            "minimum_points": 100,
+            "reference_sha256": "65135db9190a0790b1a219079071e7d8b1df3fbac6520092fdd31794c526b4da",
+            "source_above235": 10967040,
+            "source_below16": 10967040,
+            "source_luma_max": 255,
+            "source_luma_min": 0,
+            "width": 1920
+          },
+          "live_retired": true,
+          "module_sha256": "9ea1e89421ff04033f84418feebdc01c45fc903c2daa06f8e9c432e32fca30c4",
+          "module_source": "2d6ad43fc743593fd95c02282cedd141d38d8db2",
+          "module_srcversion": "FEB8DC48436425D92497DA7",
+          "native_census": {
+            "admission": {
+              "active_at_end": 0,
+              "admissions": 2,
+              "querycap_calls": 3,
+              "unbound_requests": 0
+            },
+            "calls": 247,
+            "capture_LAST": 1,
+            "capture_nonempty": 30,
+            "complete_application_source_pts": "NOT_OBSERVED",
+            "scope": "Owned PID+known video FD Linux syscall census; no external functions/render queue/DRM object/physical presentation observation.",
+            "source_capture_formats": [
+              {
+                "after_source_change": true,
+                "colorspace": 3,
+                "fd": 35,
+                "flags": 0,
+                "fourcc": 1448695129,
+                "height": 1080,
+                "id": 40,
+                "priv": 4276996862,
+                "quantization": 1,
+                "req": 3234878980,
+                "tid": 1672036,
+                "type": 1,
+                "width": 1920,
+                "xfer": 1,
+                "ycbcr": 2
+              },
+              {
+                "after_source_change": true,
+                "colorspace": 3,
+                "fd": 35,
+                "flags": 0,
+                "fourcc": 1448695129,
+                "height": 1080,
+                "id": 43,
+                "priv": 4276996862,
+                "quantization": 1,
+                "req": 3234878980,
+                "tid": 1672036,
+                "type": 1,
+                "width": 1920,
+                "xfer": 1,
+                "ycbcr": 2
+              }
+            ],
+            "status": "PASS",
+            "syscall_timestamp_semantics": "FFmpeg12cc tracking IDs, not source PTS"
+          },
+          "null_sink_removed": true,
+          "original_kodi_executable_sha256": "2862331a8a047f929d8019987a518527fcb45330082435bec7b7756141cf688f",
+          "points_table": "kodi-fullscale-1080-samples-20261102.tsv",
+          "points_table_sha256": "106d9ccd1dc6935fb82c7b2289f7d0157b415a477da246e307290a5b00433996",
+          "private_case_receipt_sha256": "548b7e7e52f9682498e5b28c1f8f9ca44515b7fabd8cf9f44297bc83ff901870",
+          "selection": "ACTUAL_V4L2_DEVICE_OPEN_OBSERVED",
+          "source_fixture_sha256": "0582f114ef65db1946da839d6a229cd3034c43e525e96e0a2717a58a21184543",
+          "status": "PASS"
+        }
+      ],
+      "private_receipt_sha256": "7b4aa759617c43a306965d71b43656621719169cc6892bed725eca5e114fb62b",
+      "restoration": {
+        "baseline_equal": true,
+        "kernel_errors": false,
+        "maximum_temperature_mC": 67000,
+        "module_inventory_equal": true,
+        "pin_net": 0,
+        "ref": 0,
+        "restored": true,
+        "stable_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+        "stable_module_srcversion": "F76E163690F147B91495DDD",
+        "stable_module_version": "3.10.13",
+        "video_nodes": []
+      }
+    }
+  ],
+  "date": "2026-11-02",
+  "generator": "tests/native-kodi-fullscale-fixture.py",
+  "generator_commit": "a3d2852",
+  "generator_sha256": "acae202713cd7d3fb298f49ab1961d098d9bc56b29774860f80f1fa496e3e5c8",
+  "limits": [
+    "Kodi comparison is sampled RGB, not an all-pixel/crop/physical-scanout proof.",
+    "Content barcode binds one captured source ordinal/PTS; ioctl tracking IDs do not establish all application source PTS.",
+    "These Kodi sources are actual0..255 at720p/FHD, distinct from the earlier720p declaration-only control and640x360 all-pixel own-GPU case.",
+    "Silent AAC and these short runs add no A/V-sync/endurance/general-codec claim.",
+    "Only current Core2/BCM70015/x86_64 hardware; original538heap exclusion and unsupported nonempty STOP/START remain.",
+    "External Kodi/FFmpeg/firmware unchanged; stable1.3 publication deferred."
+  ],
+  "point_selection_minimum": 100,
+  "private_evidence_root": "/home/mache/.cache/crystalhd-issue538-kodi-fullscale-run-20261102",
+  "public_oracle_replays": {
+    "1080": {
+      "capture_sha256": "6979a05f50d58bef39be9aa510cb806bc6496fc1c01acb3bca1c0bf4aef5e4b6",
+      "capture_source_pts": "NOT_VERIFIED",
+      "capture_stride": 7680,
+      "channels_over_tolerance": 0,
+      "complete_crop_and_pixels": "NOT_VERIFIED",
+      "declared_matrix": "bt709",
+      "declared_range": "full",
+      "decoded_yuyv": "NOT_OBSERVED",
+      "diagnostic_alternate_matrix": {
+        "changes_primary_verdict": false,
+        "channels_over_tolerance": 1368,
+        "matrix": "bt601",
+        "maximum_channel_error": 23
+      },
+      "differences": [],
+      "height": 1080,
+      "invariant_samples": 1922,
+      "maximum_channel_error": 0,
+      "mean_absolute_channel_error": 0.0,
+      "minimum_samples": 100,
+      "nonopaque_active_pixels": 0,
+      "permitted_channel_error": 2,
+      "physical_presentation": "NOT_VERIFIED",
+      "reference_coverage": "SUFFICIENT",
+      "reference_frames": 30,
+      "reference_sha256": "65135db9190a0790b1a219079071e7d8b1df3fbac6520092fdd31794c526b4da",
+      "result": "PASS",
+      "sample_grid_step": 32,
+      "sample_selection": "flat 3x3 Y/U/V neighbourhoods identical in EVERY source frame",
+      "schema": 1,
+      "scope": "sampled source-invariant colour/spatial points only",
+      "source_minimum_y": 128,
+      "width": 1920
+    },
+    "720": {
+      "capture_sha256": "ca5e18f50c6f3ddda6fc78a47ef1eddbb3f3888f449cc442c08dc7a74cace61b",
+      "capture_source_pts": "NOT_VERIFIED",
+      "capture_stride": 5120,
+      "channels_over_tolerance": 0,
+      "complete_crop_and_pixels": "NOT_VERIFIED",
+      "declared_matrix": "bt709",
+      "declared_range": "full",
+      "decoded_yuyv": "NOT_OBSERVED",
+      "diagnostic_alternate_matrix": {
+        "changes_primary_verdict": false,
+        "channels_over_tolerance": 612,
+        "matrix": "bt601",
+        "maximum_channel_error": 23
+      },
+      "differences": [],
+      "height": 720,
+      "invariant_samples": 798,
+      "maximum_channel_error": 0,
+      "mean_absolute_channel_error": 0.0,
+      "minimum_samples": 100,
+      "nonopaque_active_pixels": 0,
+      "permitted_channel_error": 2,
+      "physical_presentation": "NOT_VERIFIED",
+      "reference_coverage": "SUFFICIENT",
+      "reference_frames": 30,
+      "reference_sha256": "d95346e91d0c2f5a26b6cf7c477d14ce83b181c33321a23e82fb3b8289ffea09",
+      "result": "PASS",
+      "sample_grid_step": 32,
+      "sample_selection": "flat 3x3 Y/U/V neighbourhoods identical in EVERY source frame",
+      "schema": 1,
+      "scope": "sampled source-invariant colour/spatial points only",
+      "source_minimum_y": 128,
+      "width": 1280
+    }
+  },
+  "schema": "crystalhd.kodi-fullscale-research.v1",
+  "source_recipe": "30-frame single-slice progressive High8bit420/B0/30fps; software yuvj420p decoding preserves declared FULL. Source-only flat3x3 points invariant across all30 frames, grid32 and y>=128, frozen before hardware. Silent AAC only for playback lifecycle.",
+  "status": "PASS_SAMPLED_720P_FHD",
+  "tolerance": 2
+}

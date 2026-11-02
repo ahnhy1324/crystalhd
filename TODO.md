@@ -82,9 +82,19 @@ shelve the work or silently exclude implemented features.
    Unchanged Kodi/native FFmpeg now also passes one720p FULL-declaration
    control:794 fixed source points at RGB error0, barcode-bound source frame1,
   30 inputs/outputs and one LAST. See the [Kodi receipt](tests/fixtures/issue538/kodi-full-range-20261102.json).
-   Next qualify an actual full-scale Kodi fixture and investigate same-size
-   range-only notifications. The separate own-probe and Kodi results retain
-   their input and presentation limits.
+   Actual0..255 Kodi720p/FHD sources now pass798/1,922 pre-frozen sampled RGB
+   points at error0, each with30 inputs/pictures and one LAST; the corrected
+   module repeats both passes. See the [full-scale Kodi receipt](tests/fixtures/issue538/kodi-fullscale-20261102.json).
+   Same-size range changes previously retained stale CAPTURE range without a
+   firmware event. The own driver now preserves the first changed picture
+   across CAPTURE renegotiation. Both directions, unchanged-format control,
+   a final-picture DRAINING change,60-picture EXPBUF/GPU and90-picture same-fd
+   double-transition/GPU reuse checks pass with
+   exact sourcePTS/retained YUYV/LAST/EPIPE and full baseline restoration.
+   See the [transition receipt](tests/fixtures/issue538/same-size-range-staging-20261102.json).
+   Next qualify dynamic range renegotiation in unchanged Kodi, then broader
+   syntax/reorder and controlled endurance. Sampled Kodi RGB, own-probe GPU
+   checks and physical presentation retain their separate evidence limits.
    Nonempty STOP/START retains its firmware-DPB-loss rejection. Only the
    original heap subtask is excluded.
 4. #470/#477: retain current-equipment allocation/ROI qualification work in

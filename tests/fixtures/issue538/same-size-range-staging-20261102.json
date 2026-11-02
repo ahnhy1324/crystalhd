@@ -1,0 +1,468 @@
+{
+  "date": "2026-11-02",
+  "implementation": "After real completion/PTS association, copy the first range-changed picture into independent bounded storage. Under fetch/IRQ exclusion require native RX idle; no flush/fallback or firmware STOP. Announce SOURCE_CHANGE plus empty boundary LAST, preserve stage through CAPTURE reallocation, deliver saved bytes/PTS/sequence/snapshot into a newly queued allocation once, before further DMA or true EOS. A destructive reset/close frees stage. Unknown/absent/unchanged observations do not invent boundaries.",
+  "limits": [
+    "Scoped single-slice/B0 same-size BT709 transitions onBCM70015, not arbitrary H264 syntax/reorder/endurance/other hardware.",
+    "Own direct probe observes the range transition; unchanged Kodi cases separately establish constant full-scale source playback, not dynamic Kodi reconfiguration.",
+    "GPU import/check uses actual captured YUYV and correct announced range; physical display and complete application AV sync remain separate.",
+    "#538 stays open, originalheap subtask remains excluded, stable1.3 publication deferred; external code/binaries and installed payload unchanged."
+  ],
+  "local_validation": {
+    "buffers": "2 API layouts ordinary andASan/UBSan,388 checks each PASS; copy-out canaries, independent allocation lifetime, exact physical backing across SG, CPU/device/CPU publication and subsequent real DMA-path model",
+    "buffers_log_sha256": "680aff5f977d37d52316825101d1533e775a6764e879c64203fd3cb8cc197c3d",
+    "build_log_sha256": "0e442341a23b5b04123be3a3a4d6a474fb7fd0121c188ed641248d1bc4e74878",
+    "existing_format_mutants": "8 compiled/8 rejected",
+    "native_build": "PASS Werror",
+    "node_api_shapes": [
+      "5.15.0",
+      "6.17.0",
+      "6.18.0",
+      "6.18.54",
+      "6.19.0",
+      "7.0.0",
+      "7.2.8"
+    ],
+    "node_log_sha256": "621b1cdbb77f136e4092b289b8b174def8a4ec01e7fd5684338ea66073d62c16",
+    "ordinary_and_asan_ubsan_leaks": "14 variants each765 scenarios/6157 checks PASS"
+  },
+  "module_sha256": "9ea1e89421ff04033f84418feebdc01c45fc903c2daa06f8e9c432e32fca30c4",
+  "module_source": "2d6ad43fc743593fd95c02282cedd141d38d8db2",
+  "module_srcversion": "FEB8DC48436425D92497DA7",
+  "post_fix": {
+    "YUYV_oracle": "Exact regression against the frozen prior hardware corpus, not independent full software-image equality.",
+    "cases": [
+      {
+        "after_last_epipe": 1,
+        "command": [
+          "/home/mache/.cache/crystalhd-issue538-kodi-fullscale-run-20261102/v4l2-decode-ranges",
+          "--device",
+          "/dev/video0",
+          "--input",
+          "/home/mache/.cache/crystalhd-own-color-word-20261029/controls/709.mp4",
+          "--next-input",
+          "/home/mache/.cache/crystalhd-own-color-word-20261029/controls/709.mp4",
+          "--capture-buffers",
+          "2",
+          "--range-hint",
+          "limited",
+          "--expect-segment-range",
+          "limited",
+          "--expect-segment-range",
+          "limited",
+          "--expect-segment-sha256",
+          "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+          "--expect-segment-sha256",
+          "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+          "--expect-sha256",
+          "a32f00b4712981cba6b47b20db8f5594f9948b95c52ba96c8cf7c12608dca332",
+          "--timeout",
+          "45"
+        ],
+        "dynamic_boundaries": 0,
+        "frames": 60,
+        "gpu_result": [],
+        "last": 1,
+        "name": "limited-same",
+        "output_completed": 60,
+        "segment_quantization": [
+          2,
+          2
+        ],
+        "status": "PASS",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "85de1e8e8903ecd7db56f5027440bfe32e7ad00e9b2baee2f49ff1fa678741c9",
+        "yuyv_sha256": "a32f00b4712981cba6b47b20db8f5594f9948b95c52ba96c8cf7c12608dca332"
+      },
+      {
+        "after_last_epipe": 1,
+        "command": [
+          "/home/mache/.cache/crystalhd-issue538-kodi-fullscale-run-20261102/v4l2-decode-ranges",
+          "--device",
+          "/dev/video0",
+          "--input",
+          "/home/mache/.cache/crystalhd-own-color-word-20261029/controls/709.mp4",
+          "--next-input",
+          "/home/mache/.cache/crystalhd-own-color-word-20261029/controls/full.mp4",
+          "--capture-buffers",
+          "2",
+          "--range-hint",
+          "limited",
+          "--expect-segment-range",
+          "limited",
+          "--expect-segment-range",
+          "full",
+          "--expect-segment-sha256",
+          "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+          "--expect-segment-sha256",
+          "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+          "--expect-sha256",
+          "a32f00b4712981cba6b47b20db8f5594f9948b95c52ba96c8cf7c12608dca332",
+          "--timeout",
+          "45"
+        ],
+        "dynamic_boundaries": 1,
+        "frames": 60,
+        "gpu_result": [],
+        "last": 1,
+        "name": "limited-to-full",
+        "output_completed": 60,
+        "segment_quantization": [
+          2,
+          1
+        ],
+        "status": "PASS",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "2f0c7cdf006fd180e3da7bf341902769d7842988234100aa8bfafec4ed2e59d6",
+        "yuyv_sha256": "a32f00b4712981cba6b47b20db8f5594f9948b95c52ba96c8cf7c12608dca332"
+      },
+      {
+        "after_last_epipe": 1,
+        "command": [
+          "/home/mache/.cache/crystalhd-issue538-kodi-fullscale-run-20261102/v4l2-decode-ranges",
+          "--device",
+          "/dev/video0",
+          "--input",
+          "/home/mache/.cache/crystalhd-own-color-word-20261029/controls/full.mp4",
+          "--next-input",
+          "/home/mache/.cache/crystalhd-own-color-word-20261029/controls/709.mp4",
+          "--capture-buffers",
+          "2",
+          "--range-hint",
+          "full",
+          "--expect-segment-range",
+          "full",
+          "--expect-segment-range",
+          "limited",
+          "--expect-segment-sha256",
+          "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+          "--expect-segment-sha256",
+          "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+          "--expect-sha256",
+          "a32f00b4712981cba6b47b20db8f5594f9948b95c52ba96c8cf7c12608dca332",
+          "--timeout",
+          "45"
+        ],
+        "dynamic_boundaries": 1,
+        "frames": 60,
+        "gpu_result": [],
+        "last": 1,
+        "name": "full-to-limited",
+        "output_completed": 60,
+        "segment_quantization": [
+          1,
+          2
+        ],
+        "status": "PASS",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "0a0399e7e6d8a878c95c9ea6c6cfa3e844e0f5a246bb01bf97227eec03d0b1d7",
+        "yuyv_sha256": "a32f00b4712981cba6b47b20db8f5594f9948b95c52ba96c8cf7c12608dca332"
+      },
+      {
+        "after_last_epipe": 1,
+        "command": [
+          "/home/mache/.cache/crystalhd-issue538-kodi-fullscale-run-20261102/v4l2-decode-ranges",
+          "--device",
+          "/dev/video0",
+          "--input",
+          "/home/mache/.cache/crystalhd-own-color-word-20261029/controls/709.mp4",
+          "--next-input",
+          "/home/mache/.cache/crystalhd-issue538-kodi-fullscale-run-20261102/late-source/full-first1.mp4",
+          "--capture-buffers",
+          "2",
+          "--range-hint",
+          "limited",
+          "--expect-segment-range",
+          "limited",
+          "--expect-segment-range",
+          "full",
+          "--expect-segment-sha256",
+          "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+          "--expect-segment-sha256",
+          "5ad10245f5d7d6b835f158a5e8fb45cd178ffa0ce351395b6a0e7e336a5a65e9",
+          "--expect-sha256",
+          "024d7b5aacd075a9ec3c2d46c6ce73032456c3c8df7ba70ab32919616a8e1c00",
+          "--timeout",
+          "45",
+          "--idle-before-stop-ms",
+          "0"
+        ],
+        "dynamic_boundaries": 1,
+        "frames": 31,
+        "gpu_result": [],
+        "last": 1,
+        "name": "late-final-full",
+        "output_completed": 31,
+        "segment_quantization": [
+          2,
+          1
+        ],
+        "status": "PASS",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "e133cc47d8955eeccdfad781559d05be1c8681162087c618ff8a1ad0f00fbfa0",
+        "yuyv_sha256": "024d7b5aacd075a9ec3c2d46c6ce73032456c3c8df7ba70ab32919616a8e1c00"
+      },
+      {
+        "after_last_epipe": 1,
+        "command": [
+          "/home/mache/.cache/crystalhd-issue538-kodi-fullscale-run-20261102/v4l2-decode-ranges-gpu",
+          "--device",
+          "/dev/video0",
+          "--input",
+          "/home/mache/.cache/crystalhd-own-color-word-20261029/controls/709.mp4",
+          "--next-input",
+          "/home/mache/.cache/crystalhd-own-color-word-20261029/controls/full.mp4",
+          "--capture-buffers",
+          "2",
+          "--range-hint",
+          "limited",
+          "--expect-segment-range",
+          "limited",
+          "--expect-segment-range",
+          "full",
+          "--expect-segment-sha256",
+          "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+          "--expect-segment-sha256",
+          "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+          "--expect-sha256",
+          "a32f00b4712981cba6b47b20db8f5594f9948b95c52ba96c8cf7c12608dca332",
+          "--timeout",
+          "45",
+          "--gpu-check"
+        ],
+        "dynamic_boundaries": 1,
+        "frames": 60,
+        "gpu_result": [
+          "GPU_PASS mode=check frames=60 render_cpu_s=0.076384848 render_wall_s=0.444256822 render_cpu_ms_per_frame=1.273081 completion=glFinish physical_display=NOT_RUN"
+        ],
+        "last": 1,
+        "name": "gpu-limited-to-full",
+        "output_completed": 60,
+        "segment_quantization": [
+          2,
+          1
+        ],
+        "status": "PASS",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "2810602ee857119ec22adaa26dbe9115c14a3bc2e922c249158c7541b9277456",
+        "yuyv_sha256": "a32f00b4712981cba6b47b20db8f5594f9948b95c52ba96c8cf7c12608dca332"
+      }
+    ],
+    "final_picture_drain": "late-final-full observes phase2/DRAINING, remaining token count0, EOS TX complete1; all31 pictures precede real LAST/EPIPE.",
+    "late_source": {
+      "baseline_raw_sha256": "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+      "baseline_raw_source": "/home/mache/.cache/crystalhd-own-color-word-20261029/raw-709/all-frames.yuyv",
+      "combined31_sha256": "024d7b5aacd075a9ec3c2d46c6ce73032456c3c8df7ba70ab32919616a8e1c00",
+      "frame1_sha256": "5ad10245f5d7d6b835f158a5e8fb45cd178ffa0ce351395b6a0e7e336a5a65e9",
+      "frames": 1,
+      "height": 720,
+      "media_sha256": "f40fed6592b1d6238c4133d33b7f6c8130fa9cb0eaa17bf49adcd14517db6c1e",
+      "oracle_scope": "Exact regression against prior hardware corpus; independent full software YUYV equality is not asserted.",
+      "width": 1280
+    },
+    "native_boundary_log": [
+      "[602074.456644] crystalhd 0000:02:00.0: Native range boundary: pts=4294967296000 range=2->1 phase=1 count=9 tx=1 eos_tx=0",
+      "[602079.265820] crystalhd 0000:02:00.0: Native range boundary: pts=4294967296000 range=1->2 phase=1 count=3 tx=0 eos_tx=0",
+      "[602083.979632] crystalhd 0000:02:00.0: Native range boundary: pts=4294967296000 range=2->1 phase=2 count=0 tx=0 eos_tx=1",
+      "[602089.861967] crystalhd 0000:02:00.0: Native range boundary: pts=4294967296000 range=2->1 phase=1 count=9 tx=1 eos_tx=0"
+    ],
+    "private_receipt_sha256": "4c38ee2e968022c08f362518351a3059c9304c1ac1751d3644dd561f4f677b27",
+    "restoration": {
+      "baseline_equal": true,
+      "kernel_errors": false,
+      "maximum_temperature_mC": 67000,
+      "module_inventory_equal": true,
+      "pin_net": 0,
+      "ref": 0,
+      "restored": true,
+      "stable_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+      "stable_module_srcversion": "F76E163690F147B91495DDD",
+      "stable_module_version": "3.10.13",
+      "video_nodes": []
+    },
+    "timestamps": "Exact input packet sourcePTS after a deliberate1<<32 microsecond second-segment offset; not continuous AV-clock sync."
+  },
+  "pre_fix": [
+    {
+      "batch": "range-observe-01",
+      "cases": [
+        {
+          "complete_decode_census": [
+            "decode_census frames=60 output_completed=60 last=1 after_last_epipe=1 yuyv_sha256=a32f00b4712981cba6b47b20db8f5594f9948b95c52ba96c8cf7c12608dca332"
+          ],
+          "exit": 1,
+          "failure": "FAIL: missing dynamic resolution boundary handshakes",
+          "name": "limited-to-709",
+          "segment_quantization": [
+            2,
+            2
+          ],
+          "status": "OBSERVED_PROBE_FAILURE",
+          "stderr_sha256": "982241be3d6c572db2b6b4ecf749b114962036f62d8ed10017dc586c7668804b",
+          "stdout_sha256": "f5826c0fd022e095890b161fbca563da49af6cefe172ccb90e65bd72aba92e71"
+        },
+        {
+          "complete_decode_census": [
+            "decode_census frames=60 output_completed=60 last=1 after_last_epipe=1 yuyv_sha256=a32f00b4712981cba6b47b20db8f5594f9948b95c52ba96c8cf7c12608dca332"
+          ],
+          "exit": 1,
+          "failure": "FAIL: missing dynamic resolution boundary handshakes",
+          "name": "limited-to-full",
+          "segment_quantization": [
+            2,
+            2
+          ],
+          "status": "OBSERVED_PROBE_FAILURE",
+          "stderr_sha256": "982241be3d6c572db2b6b4ecf749b114962036f62d8ed10017dc586c7668804b",
+          "stdout_sha256": "f5826c0fd022e095890b161fbca563da49af6cefe172ccb90e65bd72aba92e71"
+        }
+      ],
+      "private_receipt_sha256": "ddb5163450d1f87e817f6b66f122554704e906ba6a7494c1535a3875781af518",
+      "restoration": {
+        "baseline_equal": true,
+        "kernel_errors": false,
+        "maximum_temperature_mC": 55000,
+        "module_inventory_equal": true,
+        "pin_net": 0,
+        "ref": 0,
+        "restored": true,
+        "stable_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+        "stable_module_srcversion": "F76E163690F147B91495DDD",
+        "stable_module_version": "3.10.13",
+        "video_nodes": []
+      },
+      "source": "985f155baf2279f5292abf73c737ec89c1bf522f",
+      "status": "COMPLETE_RANGE_ONLY_FORMAT_OBSERVATIONS"
+    },
+    {
+      "batch": "range-validation-02",
+      "cases": [
+        {
+          "complete_decode_census": [
+            "decode_census frames=60 output_completed=60 last=1 after_last_epipe=1 yuyv_sha256=a32f00b4712981cba6b47b20db8f5594f9948b95c52ba96c8cf7c12608dca332"
+          ],
+          "exit": 0,
+          "failure": "",
+          "name": "limited-to-709",
+          "segment_quantization": [
+            2,
+            2
+          ],
+          "status": "PASS",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_sha256": "85de1e8e8903ecd7db56f5027440bfe32e7ad00e9b2baee2f49ff1fa678741c9"
+        },
+        {
+          "complete_decode_census": [],
+          "exit": 1,
+          "failure": "FAIL: CAPTURE segment source range mismatch",
+          "name": "limited-to-full",
+          "segment_quantization": [
+            2,
+            2
+          ],
+          "status": "OBSERVED_METADATA_FAILURE",
+          "stderr_sha256": "4a4109e0dbcba7df4f4d2ce227d9c1b3b5f217d020653b7070795affc0692a48",
+          "stdout_sha256": "064c595a2dc72670995b8b63e8dc46c1f409927dfabd5ff04d7ef2eb16f557d7"
+        }
+      ],
+      "private_receipt_sha256": "cc98c78c77b6a241998780363f186d9175a1d1a3bda52625d6c3deaa43414be7",
+      "restoration": {
+        "baseline_equal": true,
+        "kernel_errors": false,
+        "maximum_temperature_mC": 55000,
+        "module_inventory_equal": true,
+        "pin_net": 0,
+        "ref": 0,
+        "restored": true,
+        "stable_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+        "stable_module_srcversion": "F76E163690F147B91495DDD",
+        "stable_module_version": "3.10.13",
+        "video_nodes": []
+      },
+      "source": "985f155baf2279f5292abf73c737ec89c1bf522f",
+      "status": "COMPLETE_STRICT_RANGE_VALIDATION_WITH_CONFIRMED_GAP"
+    }
+  ],
+  "pre_fix_interpretation": [
+    "Original probe incorrectly required a boundary for unchanged same-size segments; both original diagnostic runs nevertheless finished60 exact retained-corpus pictures/sourcePTS/LAST/EPIPE before final assertion.",
+    "Corrected probe accepts unchanged limited/limited with0 boundaries. Strict limited/full fails at the first FULL picture because CAPTURE remains quantization2. That later failing run does not claim a60-picture census.",
+    "Firmware reports only initial token1 format for these pinned inputs; post-fix host publication does not claim a new firmware notification."
+  ],
+  "private_evidence_root": "/home/mache/.cache/crystalhd-issue538-kodi-fullscale-run-20261102",
+  "same_fd_stage_reuse": {
+    "after_last_epipe": 1,
+    "command": [
+      "/home/mache/.cache/crystalhd-issue538-kodi-fullscale-run-20261102/v4l2-decode-ranges-gpu",
+      "--device",
+      "/dev/video0",
+      "--input",
+      "/home/mache/.cache/crystalhd-own-color-word-20261029/controls/709.mp4",
+      "--next-input",
+      "/home/mache/.cache/crystalhd-own-color-word-20261029/controls/full.mp4",
+      "--next-input",
+      "/home/mache/.cache/crystalhd-own-color-word-20261029/controls/709.mp4",
+      "--capture-buffers",
+      "2",
+      "--range-hint",
+      "limited",
+      "--gpu-check",
+      "--timeout",
+      "45",
+      "--expect-segment-range",
+      "limited",
+      "--expect-segment-sha256",
+      "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+      "--expect-segment-range",
+      "full",
+      "--expect-segment-sha256",
+      "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+      "--expect-segment-range",
+      "limited",
+      "--expect-segment-sha256",
+      "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+      "--expect-sha256",
+      "038f343e6f472e92a3cede55f10632357af26a6229e7a7434f2037632c7074fd"
+    ],
+    "dynamic_boundaries": 2,
+    "frames": 90,
+    "gpu_result": [
+      "GPU_PASS mode=check frames=90 render_cpu_s=0.109437881 render_wall_s=0.682500718 render_cpu_ms_per_frame=1.215976 completion=glFinish physical_display=NOT_RUN"
+    ],
+    "last": 1,
+    "module_source": "2d6ad43fc743593fd95c02282cedd141d38d8db2",
+    "native_boundary_log": [
+      "[602375.874430] crystalhd 0000:02:00.0: Native range boundary: pts=4294967296000 range=2->1 phase=1 count=2 tx=0 eos_tx=0",
+      "[602379.781467] crystalhd 0000:02:00.0: Native range boundary: pts=8589934592000 range=1->2 phase=1 count=6 tx=0 eos_tx=0"
+    ],
+    "output_completed": 90,
+    "private_receipt_sha256": "1b9521533c20d93c788c992df1a86b5bcfdace5e66ed30fa32a615a47ccc6e49",
+    "ranges": [
+      "limited",
+      "full",
+      "limited"
+    ],
+    "restoration": {
+      "baseline_equal": true,
+      "kernel_errors": false,
+      "maximum_temperature_mC": 60000,
+      "module_inventory_equal": true,
+      "pin_net": 0,
+      "ref": 0,
+      "restored": true,
+      "stable_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+      "stable_module_srcversion": "F76E163690F147B91495DDD",
+      "stable_module_version": "3.10.13",
+      "video_nodes": []
+    },
+    "segment_quantization": [
+      2,
+      1,
+      2
+    ],
+    "status": "PASS",
+    "stdout_sha256": "ad4a66568144b8584124e07c888e34660489865492aa42cfd2213cd938065a83",
+    "yuyv_sha256": "038f343e6f472e92a3cede55f10632357af26a6229e7a7434f2037632c7074fd"
+  },
+  "schema": "crystalhd.same-size-range-staging.v1",
+  "status": "PASS_SCOPED_RANGE_TRANSITIONS"
+}
