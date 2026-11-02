@@ -9,8 +9,9 @@
 #endif
 
 /* Private, allocation-free SPS prefix reader. This does not validate a whole
- * SPS, bind a picture to an SPS, or establish decoded-pixel range. No production
- * decoder calls it yet. ITU-T H.264 (08/2024), 7.3.2.1.1 and E.1.1.
+ * SPS, bind a picture to an SPS, or establish decoded-pixel range. Admission
+ * users must snapshot observations per token; this sets no output policy.
+ * ITU-T H.264 (08/2024), 7.3.2.1.1 and E.1.1.
  * Input is ONE SPS NAL (header + EBSP), without an Annex-B start code or length.
  */
 #define CHD_H264_SPS_MAX_BYTES 4096U
@@ -33,12 +34,16 @@ static inline unsigned int chd_h264_range_get(struct chd_h264_range_bits *b,
 	unsigned int value = 0;
 	while (count-- && !b->failed) {
 		if (!b->left) {
-			if (b->offset == b->bytes) { b->failed = true; break; }
+			if (b->offset >= b->bytes) { b->failed = true; break; }
 			b->byte = b->nal[b->offset++];
-			if (b->zeros == 2 && b->byte == 3) {
-				/* Whole-EBSP validation below proves a following byte. */
-				if (b->offset == b->bytes) { b->failed = true; break; }
-				b->byte = b->nal[b->offset++]; b->zeros = 0;
+			if (b->zeros == 2) {
+				if (b->byte < 3) { b->failed = true; break; }
+				if (b->byte == 3) {
+					if (b->offset >= b->bytes || b->nal[b->offset] > 3) {
+						b->failed = true; break;
+					}
+					b->byte = b->nal[b->offset++]; b->zeros = 0;
+				}
 			}
 			b->zeros = b->byte ? 0 : b->zeros + 1;
 			b->left = 8;

@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdbool.h>
+#include "crystalhd_h264_range_binding.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -112,6 +113,7 @@ static const unsigned chd_discovery_ops;
 struct crystalhd_v4l2_capture_buffer {
     struct v4l2_m2m_buffer m2m;
     u64 decoder_epoch; bool owned; u32 width, height;
+    struct chd_h264_range_snapshot input_range;
 };
 struct crystalhd_v4l2_decoder { int phase; unsigned count; u64 epoch; };
 struct crystalhd_v4l2 { int unused; };
@@ -736,11 +738,21 @@ static int crystalhd_v4l2_decoder_complete(struct crystalhd_v4l2_decoder *d,
     if (d->count) return -EPROTO;
     completed++; d->phase = CHD_V4L2_DRAINED; return 1;
 }
-static int crystalhd_v4l2_decoder_reserve(struct crystalhd_v4l2_decoder *d,
-        struct crystalhd_cmd *cmd, void *owner, u64 timestamp, u64 *pts)
+static int crystalhd_v4l2_decoder_complete_observed(struct crystalhd_v4l2_decoder *d,
+        struct crystalhd_rx_metadata *metadata, u64 epoch, u64 *timestamp,
+        struct chd_h264_range_snapshot *range)
+{
+    int rc = crystalhd_v4l2_decoder_complete(d, metadata, epoch, timestamp);
+    if (rc == 0 || rc == -EILSEQ)
+        *range = (struct chd_h264_range_snapshot){.associated=true, .range_present=true,
+            .full_range=true, .sps_id=3, .pps_id=5, .sps_generation=7};
+    return rc;
+}
+static int crystalhd_v4l2_decoder_reserve_mapped(struct crystalhd_v4l2_decoder *d,
+        struct crystalhd_cmd *cmd, void *owner, struct crystalhd_v4l2_output_buffer *buffer, u64 timestamp, u64 *pts)
 {
     assert(fixture.run_lock.held && access_active && !access_exclusive &&
-           cmd == &adapter.cmds && owner == &lease);
+           cmd == &adapter.cmds && owner == &lease && buffer == &tx_buffer);
     d->count++; *pts = timestamp; return 0;
 }
 static int crystalhd_v4l2_decoder_begin_drain(struct crystalhd_v4l2_decoder *d)
@@ -1833,6 +1845,10 @@ static void native_error_completion(void)
               fixture.decoder.phase == CHD_V4L2_RUNNING);
         CHECK(last_buffer.vb2_buf.timestamp == (failure ? 0 : UINT64_C(0x1234567890)) &&
               fixture.decoder.count == (failure ? 3 : 2));
+        CHECK(last_capture.input_range.associated == !failure);
+        if (!failure) CHECK(last_capture.input_range.full_range &&
+            last_capture.input_range.sps_generation == 7 &&
+            last_capture.input_range.sps_id == 3 && last_capture.input_range.pps_id == 5);
         mutex_unlock(&fixture.run_lock);
     }
 }
@@ -2207,15 +2223,18 @@ static void drain_capture_credit_case(void)
     fixture.capture.width = last_capture.width = 640;
     fixture.capture.height = last_capture.height = 480;
     last_buffer.vb2_buf.index = 31;
+    last_capture.input_range=(struct chd_h264_range_snapshot){.associated=true,.sps_generation=99};
     queues.dst_ready = &last_capture.m2m;
     mutex_lock(&fixture.run_lock);
     CHECK(!chd_submit_capture(&fixture, &adapter.cmds));
     CHECK(!capture_submits && queues.dst_ready == &last_capture.m2m);
+    CHECK(last_capture.input_range.associated && last_capture.input_range.sps_generation==99);
     struct crystalhd_v4l2_capture_buffer spare = { .width = 640, .height = 480 };
     last_capture.m2m.next = &spare.m2m;
     CHECK(!chd_submit_capture(&fixture, &adapter.cmds));
     CHECK(capture_submits == 1 && fixture.active[31] == &last_capture &&
           queues.dst_ready == &spare.m2m && last_capture.owned);
+    CHECK(!last_capture.input_range.associated && !last_capture.input_range.sps_generation);
     fixture.active[31] = NULL; last_capture.owned = false;
     fixture.decoder.count = 0; fixture.drain_left = 1;
     CHECK(!chd_submit_capture(&fixture, &adapter.cmds));

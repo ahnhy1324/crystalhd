@@ -469,6 +469,7 @@ static int chd_submit_capture(struct crystalhd_v4l2_file *f,
 			v4l2_m2m_buf_done(vb, VB2_BUF_STATE_ERROR);
 			return -EIO;
 		}
+		memset(&b->input_range, 0, sizeof(b->input_range));
 		b->decoder_epoch = f->decoder.epoch;
 		f->active[vb->vb2_buf.index] = b;
 		sts = crystalhd_v4l2_capture_submit(cmd, b);
@@ -612,8 +613,8 @@ static int chd_receive(struct crystalhd_v4l2_file *f, struct crystalhd_cmd *cmd)
 		      (pixels == BC_STS_IO_ERROR && result.metadata.valid &&
 		       (result.flags & COMP_FLAG_DATA_VALID) &&
 		       (result.metadata.picture_flags & CRYSTALHD_PICTURE_FLAG_DECODE_ERROR))) ?
-			crystalhd_v4l2_decoder_complete(&f->decoder, &result.metadata,
-						       b->decoder_epoch, &timestamp) : -EIO;
+			crystalhd_v4l2_decoder_complete_observed(&f->decoder, &result.metadata,
+						       b->decoder_epoch, &timestamp, &b->input_range) : -EIO;
 		vb->field = V4L2_FIELD_NONE;
 		vb->sequence = f->sequence++;
 		vb->flags &= ~(V4L2_BUF_FLAG_LAST | V4L2_BUF_FLAG_ERROR);
@@ -741,8 +742,8 @@ static void chd_tx_run(struct work_struct *work)
 	src = chd_next_input(f);
 	if (src) {
 		buffer = container_of(src, struct crystalhd_v4l2_output_buffer, m2m.vb);
-		rc = crystalhd_v4l2_decoder_reserve(&f->decoder, &access.adp->cmds,
-						 f->lease, src->vb2_buf.timestamp, &pts);
+		rc = crystalhd_v4l2_decoder_reserve_mapped(&f->decoder, &access.adp->cmds,
+						 f->lease, buffer, src->vb2_buf.timestamp, &pts);
 	} else if (f->drain_requested) {
 		eos = true;
 		rc = crystalhd_v4l2_decoder_begin_drain(&f->decoder);

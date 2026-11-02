@@ -259,6 +259,10 @@ h264-stream-check:
 h264-sps-range-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" $(PYTHON3) -B tests/h264-sps-range.test.py
 
+.PHONY: h264-range-binding-check
+h264-range-binding-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" $(PYTHON3) -B tests/h264-range-binding.test.py
+
 .PHONY: h264-reference-check
 h264-reference-check:
 	$(PYTHON3) -B tests/h264-reference-lifecycle.py --self-test
@@ -347,7 +351,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv tests/maintenance-oracl
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
 	sh tests/phase1-release-gate.sh manifest-check tests/maintenance-oracle.tsv
 
-check: kodi-settings-check candidate-package-check native-delivery-check runtime-preflight-check runtime-slots-check runtime-host-preflight-check runtime-materials-check kodi-package-check runtime-install-check kodi-compat-check ffmpeg-compat-check native-picture-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-sps-range-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
+check: kodi-settings-check candidate-package-check native-delivery-check runtime-preflight-check runtime-slots-check runtime-host-preflight-check runtime-materials-check kodi-package-check runtime-install-check kodi-compat-check ffmpeg-compat-check native-picture-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-sps-range-check h264-range-binding-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check

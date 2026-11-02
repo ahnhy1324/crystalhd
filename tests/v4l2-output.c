@@ -546,8 +546,36 @@ static void validation(void)
     check(!tx_calls && !crystalhd_v4l2_output_owned(&f.buffer));
     teardown(&f);
 }
+static void source_observation(void)
+{
+    static const u32 lengths[] = {39,65509};
+    for(unsigned i=0;i<2;i++) {
+        struct fixture f; const u8 *data=(const u8 *)1;size_t bytes=987;
+        setup(&f,lengths[i],256);
+        check(crystalhd_v4l2_output_source(&f.buffer,&data,&bytes)==-EINVAL);
+        check(data==(const u8 *)1 && bytes==987 && !cpu_syncs);
+        check(!crystalhd_v4l2_output_prepare(&f.buffer));
+        f.buffer.refs++;
+        check(crystalhd_v4l2_output_source(&f.buffer,&data,&bytes)==-EBUSY);
+        check(data==(const u8 *)1 && bytes==987 && !cpu_syncs);f.buffer.refs--;
+        f.buffer.failed=true;
+        check(crystalhd_v4l2_output_source(&f.buffer,&data,&bytes)==-EPIPE);
+        check(data==(const u8 *)1 && bytes==987 && !cpu_syncs);f.buffer.failed=false;
+        check(crystalhd_v4l2_output_source(&f.buffer,NULL,&bytes)==-EINVAL);
+        check(crystalhd_v4l2_output_source(&f.buffer,&data,NULL)==-EINVAL);
+        check(!crystalhd_v4l2_output_source(&f.buffer,&data,&bytes));
+        check(data==f.alias && bytes==lengths[i] && !memcmp(data,f.data,bytes));
+        check(cpu_syncs==1 && !device_syncs && !tx_calls);
+        check(!crystalhd_v4l2_output_source(&f.buffer,&data,&bytes) && cpu_syncs==1);
+        check(!crystalhd_v4l2_output_submit(&f.cmd,&f,&f.buffer,expected_pts,100));
+        check(sent==lengths[i] && !memcmp(data,f.data,bytes));
+        check(device_syncs==(lengths[i]<=65508 ? 1U:0U));
+        teardown(&f);
+    }
+}
 int main(void)
 {
+    source_observation();
     packet_cases();
     retained_and_timeout();
     validation();

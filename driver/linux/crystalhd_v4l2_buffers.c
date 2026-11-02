@@ -91,6 +91,7 @@ void crystalhd_v4l2_capture_init(struct crystalhd_v4l2_capture_buffer *buffer,
 {
 	spin_lock_init(&buffer->lock);
 	buffer->owner = CRYSTALHD_CAPTURE_CPU;
+	memset(&buffer->input_range, 0, sizeof(buffer->input_range));
 	buffer->cpu_synced = false;
 	buffer->dev = dev;
 	buffer->retired = retired;

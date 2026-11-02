@@ -4,6 +4,7 @@
 
 #include <media/v4l2-mem2mem.h>
 #include "crystalhd_hw.h"
+#include "crystalhd_h264_range_binding.h"
 
 struct crystalhd_cmd;
 
@@ -31,6 +32,7 @@ struct crystalhd_v4l2_capture_buffer {
 	u32 width;
 	u32 height;
 	u64 decoder_epoch; /* Frontend correlation; not the core capture epoch. */
+	struct chd_h264_range_snapshot input_range; /* Observation only, not G_FMT. */
 };
 
 /* All public calls are process-context and serialized by the frontend mutex.
