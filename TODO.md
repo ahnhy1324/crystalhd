@@ -72,8 +72,13 @@ shelve the work or silently exclude implemented features.
    fresh current-host32/64 API and180x2 native hash/PTS/EOS/reopen regressions
    restore the exact baseline. See the
    [receipt](tests/fixtures/issue538/input-range-observations-20261102.json).
-   Next qualify the source/output-format boundary and actual pixel/client
-   range semantics before applying observations to CAPTURE quantization.
+   Format-token source range is now applied before SOURCE_CHANGE. Actual
+   limited/full sources override contradictory hints in four combinations,
+   each repeated after destructive reset, with original YUYV bytes/PTS/EOS
+   preserved; see the [bounded range receipt](tests/fixtures/issue538/format-source-range-20261102.json).
+   Next qualify full-scale full-range pictures in unchanged Kodi/GPU clients
+   and investigate same-size range-only notifications. The VUI-only full
+   control does not establish full-range rendering quality.
    Nonempty STOP/START retains its firmware-DPB-loss rejection. Only the
    original heap subtask is excluded.
 4. #470/#477: retain current-equipment allocation/ROI qualification work in

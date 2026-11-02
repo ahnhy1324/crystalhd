@@ -3446,8 +3446,10 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 	*PicNumber = 0;
 	*PicMetaData = 0;
 
-	if (rx_pkt)
+	if (rx_pkt) {
 		memset(&rx_pkt->metadata, 0, sizeof(rx_pkt->metadata));
+		memset(&rx_pkt->format_metadata, 0, sizeof(rx_pkt->format_metadata));
+	}
 
 	if (!rx_pkt || !rx_pkt->buffer)
 		goto getpictureinfo_err;
@@ -3595,7 +3597,9 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 		hw->TickSpentInPD = 0;
 		hw->TickCntDecodePU = rdtsc_ordered();
 
-		dev_dbg(dev, "[FMT CH] DoneSz:0x%x, PIB:%x %x %x %x %x %x %x %x %x %x\n",
+		dev_dbg(dev, "[FMT CH] pts=%llu session=%u flags=%x DoneSz:0x%x, PIB:%x %x %x %x %x %x %x %x %x %x\n",
+			(unsigned long long)pPicInfoLine->timeStamp,
+			pPicInfoLine->sess_num, pPicInfoLine->flags,
 			y_done_bytes, rx_pkt->pib.picture_number,
 			rx_pkt->pib.aspect_ratio, rx_pkt->pib.chroma_format,
 			rx_pkt->pib.colour_primaries, rx_pkt->pib.frame_rate,
@@ -3655,6 +3659,16 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 		rx_pkt->metadata.valid = true;
 	}
 
+	/* Publish only after every required PIB read/write succeeded. Status peeks,
+	 * EOS/error contradictions and rejected packets retain no format identity.
+	 * The ordinary accepted-picture metadata remains empty on this path.
+	 */
+	if (prepare_output && (widthField & PIB_FORMAT_CHANGE_BIT) &&
+	    !(widthField & PIB_EOS_DETECTED_BIT) &&
+	    !(pPicInfoLine->flags & (FLEA_DECODE_ERROR_FLAG | CRYSTALHD_PICTURE_FLAG_EOS))) {
+		rx_pkt->format_metadata.firmware_timestamp = pPicInfoLine->timeStamp;
+		rx_pkt->format_metadata.valid = true;
+	}
 	return rtVal;
 
 getpictureinfo_err:

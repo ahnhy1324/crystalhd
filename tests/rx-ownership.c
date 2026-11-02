@@ -287,7 +287,8 @@ static void inventory_with_private(unsigned active_count, unsigned ready_count,
         seen[packet_index(packet)]++;
         check(!packet->buffer && !packet->cookie,
               "pooled RX packet is detached from buffer and cookie");
-        check(memory_is_zero(&packet->metadata, sizeof(packet->metadata)),
+        check((memory_is_zero(&packet->metadata, sizeof(packet->metadata)) &&
+           memory_is_zero(&packet->format_metadata, sizeof(packet->format_metadata))),
               "pooled RX packet retains no metadata from its previous owner");
         packet = packet->next;
     }
@@ -343,7 +344,8 @@ static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue, void *data,
     assert(queue && packet && queue->count < BC_RX_LIST_CNT);
     (void)wake;
     if (checking_metadata_reset)
-        check(memory_is_zero(&packet->metadata, sizeof(packet->metadata)),
+        check((memory_is_zero(&packet->metadata, sizeof(packet->metadata)) &&
+           memory_is_zero(&packet->format_metadata, sizeof(packet->format_metadata))),
               "completion clears old metadata before publishing a queue owner");
     if (queue == fail_queue) return queue_status;
     for (size_t q = 0; q < 3; q++)
@@ -1305,15 +1307,19 @@ static void metadata_pool_reset_case(uint32_t device)
     head = hardware.rx_pkt_pool_head;
     descriptor_address = head->desc_mem.phy_addr;
     memset(&head->metadata, 0xa5, sizeof(head->metadata));
+    memset(&head->format_metadata, 0xa5, sizeof(head->format_metadata));
     packet = crystalhd_hw_alloc_rx_pkt(&hardware);
     check(packet == head &&
-          memory_is_zero(&packet->metadata, sizeof(packet->metadata)) &&
+          (memory_is_zero(&packet->metadata, sizeof(packet->metadata)) &&
+           memory_is_zero(&packet->format_metadata, sizeof(packet->format_metadata))) &&
           packet->desc_mem.phy_addr == descriptor_address,
           "allocation clears stale metadata without destroying DMA descriptor storage");
     memset(&packet->metadata, 0x5a, sizeof(packet->metadata));
+    memset(&packet->format_metadata, 0x5a, sizeof(packet->format_metadata));
     crystalhd_hw_free_rx_pkt(&hardware, packet);
     check(hardware.rx_pkt_pool_head == packet &&
-          memory_is_zero(&packet->metadata, sizeof(packet->metadata)) &&
+          (memory_is_zero(&packet->metadata, sizeof(packet->metadata)) &&
+           memory_is_zero(&packet->format_metadata, sizeof(packet->format_metadata))) &&
           packet->desc_mem.phy_addr == descriptor_address,
           "free clears all metadata before publishing the packet to its pool");
     inventory(0, 0, 0);
@@ -1331,6 +1337,7 @@ static void metadata_completion_reset_cases(uint32_t device)
               "prepare a registration carrying metadata from an earlier frame");
         packet = active.packets[0];
         memset(&packet->metadata, 0xa5, sizeof(packet->metadata));
+        memset(&packet->format_metadata, 0xa5, sizeof(packet->format_metadata));
         if (variant == 2)
             expected = post_status = BC_STS_BUSY;
         else if (variant == 3)
@@ -1343,17 +1350,20 @@ static void metadata_completion_reset_cases(uint32_t device)
         check(crystalhd_rx_pkt_done(&hardware, 0, completion_status) == expected,
               "metadata reset preserves ready and failed-completion status semantics");
         checking_metadata_reset = false;
-        check(memory_is_zero(&packet->metadata, sizeof(packet->metadata)),
+        check((memory_is_zero(&packet->metadata, sizeof(packet->metadata)) &&
+           memory_is_zero(&packet->format_metadata, sizeof(packet->format_metadata))),
               "successful, reposted and retained completions clear stale metadata");
         if (variant == 1) {
             check(active.count == 1 && active.packets[0] == packet,
                   "failed completion reuses the exact original registration");
             memset(&packet->metadata, 0x5a, sizeof(packet->metadata));
+            memset(&packet->format_metadata, 0x5a, sizeof(packet->format_metadata));
             checking_metadata_reset = true;
             complete(0);
             checking_metadata_reset = false;
             check(ready.count == 1 && ready.packets[0] == packet &&
-                  memory_is_zero(&packet->metadata, sizeof(packet->metadata)),
+                  (memory_is_zero(&packet->metadata, sizeof(packet->metadata)) &&
+           memory_is_zero(&packet->format_metadata, sizeof(packet->format_metadata))),
                   "successful completion after error reuse cannot expose prior metadata");
         }
         fail_queue = NULL;
@@ -1379,11 +1389,18 @@ static void metadata_suppression_cases(uint32_t device)
             .picture_number = 99, .picture_flags = 0x12345678,
             .valid = variant != 0, .eos_trailer = true,
         };
+        ready.packets[0]->format_metadata = (struct crystalhd_rx_format_metadata){
+            .firmware_timestamp = 17, .valid = true,
+        };
         memset(&result, 0xa5, sizeof(result));
         check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
               result.flags == flags &&
               memory_is_zero(&result.metadata, sizeof(result.metadata)),
               "invalid and format-change metadata never leaks into a typed result");
+        check(variant ? result.format_metadata.valid &&
+              result.format_metadata.firmware_timestamp == 17 :
+              memory_is_zero(&result.format_metadata, sizeof(result.format_metadata)),
+              "only a format completion forwards the separate format identity");
         inventory_with_private(0, 0, 0, result.buffer);
         crystalhd_rx_buffer_release(&adapter, result.buffer);
         inventory(0, 0, 0);
@@ -2022,6 +2039,7 @@ static void quiesced_retirement_cases(uint32_t device)
                     packet->capture_epoch = hardware.rx_cancel_epoch;
                     packet->flags = COMP_FLAG_DATA_VALID;
                     memset(&packet->metadata, 0xa5, sizeof(packet->metadata));
+                    memset(&packet->format_metadata, 0xa5, sizeof(packet->format_metadata));
                     if (q < ARRAY_SIZE(queues))
                         check(crystalhd_dioq_add(queues[q], packet, false,
                               owners + 1) == BC_STS_SUCCESS,

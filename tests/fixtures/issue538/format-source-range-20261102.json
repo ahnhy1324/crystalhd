@@ -1,0 +1,327 @@
+{
+  "CPU": {
+    "Flea_ISR_checks_each": 750,
+    "Link_ISR_checks_each": 57,
+    "PIB_checks_each": 2349,
+    "PIB_groups": 139,
+    "RX_ownership_checks_each": 316822,
+    "RX_scenarios": 1084,
+    "capture_checks_each_two_layouts": 86,
+    "compiled_semantic_negatives_rejected": 8,
+    "controller": "Production peek preserves state/ledger and old SPS generation; stale/zero/overflow/retired/epoch/failed phase rejection. Ordinary+ASan/UBSan/leaks PASS.",
+    "fetch_wait_checks_each": 284,
+    "native_Werror_build": true,
+    "node_API_shapes": [
+      "5.15.0",
+      "6.17.0",
+      "6.18.0",
+      "6.18.54",
+      "6.19.0",
+      "7.0.0",
+      "7.2.8"
+    ],
+    "node_checks_each": 6041,
+    "node_scenarios_each": 739,
+    "node_scope": "Seven actual selected compatibility-shape values ordinary+sanitized; final failure-provenance fixture additionally rerun at7.0.0 ordinary+sanitized."
+  },
+  "actual_native": {
+    "API32_and_API64_checks_each": 141,
+    "baseline_equal": true,
+    "existing_640x360_regression_pictures": 360,
+    "existing_regression": "180 twice, sourcePTS, full original YUYV oracle, empty STOP, failed STREAMON, admission/ownership, legacy arbitration, natural LAST/EPIPE, destructive reset recovery.",
+    "format_raw_tokens_in_execution_order": [
+      1,
+      31,
+      1,
+      31,
+      1,
+      31,
+      1,
+      31,
+      1,
+      181
+    ],
+    "kernel_errors": false,
+    "matrix": [
+      {
+        "case": "source-709-hint-full",
+        "cycles": 2,
+        "formats_before_CAPTURE_allocation": [
+          {
+            "colorspace": 3,
+            "frames_before": 0,
+            "height": 720,
+            "matrix": 2,
+            "output_streaming": 1,
+            "quantization": 2,
+            "sizeimage": 1846052,
+            "stride": 2560,
+            "width": 1280,
+            "xfer": 1
+          },
+          {
+            "colorspace": 3,
+            "frames_before": 0,
+            "height": 720,
+            "matrix": 2,
+            "output_streaming": 1,
+            "quantization": 2,
+            "sizeimage": 1846052,
+            "stride": 2560,
+            "width": 1280,
+            "xfer": 1
+          }
+        ],
+        "frames_each": 30,
+        "source_PTS_LAST_EPIPE_and_OUTPUT_hint_preserved": true,
+        "status": "PASS",
+        "stdout_sha256": "6be015a2aa8915585bf05b39ba821d8a85489ae141369284c74c6d420fbb1985"
+      },
+      {
+        "case": "source-full-hint-limited",
+        "cycles": 2,
+        "formats_before_CAPTURE_allocation": [
+          {
+            "colorspace": 3,
+            "frames_before": 0,
+            "height": 720,
+            "matrix": 2,
+            "output_streaming": 1,
+            "quantization": 1,
+            "sizeimage": 1846052,
+            "stride": 2560,
+            "width": 1280,
+            "xfer": 1
+          },
+          {
+            "colorspace": 3,
+            "frames_before": 0,
+            "height": 720,
+            "matrix": 2,
+            "output_streaming": 1,
+            "quantization": 1,
+            "sizeimage": 1846052,
+            "stride": 2560,
+            "width": 1280,
+            "xfer": 1
+          }
+        ],
+        "frames_each": 30,
+        "source_PTS_LAST_EPIPE_and_OUTPUT_hint_preserved": true,
+        "status": "PASS",
+        "stdout_sha256": "4d56bfef563a034a9d609b45cd33cc052a6ac549bc7b48a7aa6be054eba85671"
+      },
+      {
+        "case": "source-709-hint-default",
+        "cycles": 2,
+        "formats_before_CAPTURE_allocation": [
+          {
+            "colorspace": 3,
+            "frames_before": 0,
+            "height": 720,
+            "matrix": 2,
+            "output_streaming": 1,
+            "quantization": 2,
+            "sizeimage": 1846052,
+            "stride": 2560,
+            "width": 1280,
+            "xfer": 1
+          },
+          {
+            "colorspace": 3,
+            "frames_before": 0,
+            "height": 720,
+            "matrix": 2,
+            "output_streaming": 1,
+            "quantization": 2,
+            "sizeimage": 1846052,
+            "stride": 2560,
+            "width": 1280,
+            "xfer": 1
+          }
+        ],
+        "frames_each": 30,
+        "source_PTS_LAST_EPIPE_and_OUTPUT_hint_preserved": true,
+        "status": "PASS",
+        "stdout_sha256": "3167ac9191babc46c0350bca69b8ed4500bbac37aeab4f8b92cdf489e45973ad"
+      },
+      {
+        "case": "source-full-hint-default",
+        "cycles": 2,
+        "formats_before_CAPTURE_allocation": [
+          {
+            "colorspace": 3,
+            "frames_before": 0,
+            "height": 720,
+            "matrix": 2,
+            "output_streaming": 1,
+            "quantization": 1,
+            "sizeimage": 1846052,
+            "stride": 2560,
+            "width": 1280,
+            "xfer": 1
+          },
+          {
+            "colorspace": 3,
+            "frames_before": 0,
+            "height": 720,
+            "matrix": 2,
+            "output_streaming": 1,
+            "quantization": 1,
+            "sizeimage": 1846052,
+            "stride": 2560,
+            "width": 1280,
+            "xfer": 1
+          }
+        ],
+        "frames_each": 30,
+        "source_PTS_LAST_EPIPE_and_OUTPUT_hint_preserved": true,
+        "status": "PASS",
+        "stdout_sha256": "03b6e284083d7fdc0b0bcb1da96ddc8dbbc8182611decb7e57088148b0a3e34d"
+      }
+    ],
+    "matrix_total_pictures": 240,
+    "maximum_temperature_mC": 64000,
+    "module_inventory_equal": true,
+    "module_sha256": "3b9d45723bb6e95675851a049fb98f3cc720e25bb4bf0195cde0cde852875f88",
+    "module_srcversion": "7C46B02B3F58D82CBFEADBF",
+    "module_version": "3.10.17 private research build",
+    "probe_sha256": "a511883fd99f4a848c6e029ef978feeef1254fa96c0403c14fb8e9a52416f31b",
+    "receipt_sha256": "f1a2f3a8c8c45153f7c1f5d27131c84f39fb4087e171475354ba7aa840faeefe",
+    "restored": true,
+    "runtime_baseline_verify": {
+      "leaves": 36,
+      "passed": true
+    },
+    "total_final_pictures": 600
+  },
+  "date": "2026-11-02",
+  "implementation": {
+    "fallback": "Every format event starts from unchanged OUTPUT hint; missing provenance, unmatched/retired/stale token, UNKNOWN association or absent range retains it.",
+    "format_provenance": "Separate bounded PIB timestamp+valid; cleared on parser/status/recycle/alloc/free; never sets picture metadata.valid. EOS/error contradictions and rejected parser paths publish no format identity.",
+    "lookup": "Non-consuming exact non-reused token/current-decoder-epoch lookup after pause_format validates core RX epoch. No newest-SPS, FIFO or consensus fallback.",
+    "notification": "Quantization finalized before event; existing dynamic retirement/boundary LAST and nonempty START rejection unchanged."
+  },
+  "limits": [
+    "Initial format and same-fd destructive-reset format proven on current BCM70015 only; no Atom/native-i386/BCM70012 claim.",
+    "No assertion that firmware emits an event for a same-size range-only change.",
+    "No firmware SPS adoption/full parameter syntax or full picture identity proof; input-prefix association scope unchanged.",
+    "UNKNOWN/absent-range fallback tested on production CPU paths; no new hardware UNKNOWN bitstream claim.",
+    "No actual Kodi/GPU full-range RGB, full-scale0..255 input, physical display, A/V or release qualification.",
+    "Stable1.3 deferred; immutable RC2, registered payloads, external code/firmware/defaults and original538heap exclusion unchanged."
+  ],
+  "log_sha256": {
+    "buffers-01.log": "ad6bdcd030420067620d30632ad16d620cae072bee2c12cfecba7ee2d426f086",
+    "decoder-01.log": "d6fda173c98e4bc9b830bf58695997debb864b43356f595251e8bea734bb25bf",
+    "native-build-01.log": "43dd46dc99dceed47f754d8f00b98417a898918e17fe86c88815b80d993f65f0",
+    "native-build-final.log": "7d2135903c4742295f4d8a415ae913ab74e98e909fed6c119cc8e1bf0e354a87",
+    "node-01.log": "7acf62435872fce524581aae194f94ed309bf98c03b10b96753cf14c0c016310",
+    "node-final.log": "4518380a3230f9bc7bc283cf5ed0d31c8c549971802268748199201ebc53ad07",
+    "pib-01.log": "dec01959d9b6ca1d7b7b69e91850b74b28275837c566f8f74f7284c2db00bdaa",
+    "pib-final.log": "8ee6a035278f8f57f6bc447671e8a682fec34fdf9e8a7425bf26d12abe4cb262",
+    "probe-build-final.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "rx-01.log": "f8deac6f339738e7f421af74789f8e60027d482fe33ec391c8918c8ec99751f1"
+  },
+  "prior_independent_oracle": {
+    "controls": [
+      {
+        "expected_word": "0x01010100",
+        "framemd5_pts_match": true,
+        "frames": 30,
+        "id": "709",
+        "maximum_yuv_component_error": 0,
+        "native_result": "PASS",
+        "observed_words": [
+          "0x1010100"
+        ],
+        "producer_prediction": "PASS",
+        "raw_bytes": 55296000,
+        "raw_result_sha256": "0a2574edd3cfa3c033c79f4d7b0ca2006fc5d989a6a9b19e2f0251ad40ca866a",
+        "raw_yuv_result": "PASS",
+        "raw_yuyv_sha256": "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+        "source_cicp": {
+          "full_range": 0,
+          "matrix": 1,
+          "primaries": 1,
+          "transfer": 1
+        },
+        "source_decoded_yuv_identical": true,
+        "source_decoded_yuv_sha256": "ff22f11c98142c49ab17c350592e329a14016c77d6900c88739204d95b06992d",
+        "source_media_sha256": "44e6307393637bba3ea73185e0bb4da3e4cfc9707984cac14a1d5b0a4a0f38d5",
+        "source_vcl_identical": true
+      },
+      {
+        "expected_word": "0x01010100",
+        "framemd5_pts_match": true,
+        "frames": 30,
+        "id": "full",
+        "maximum_yuv_component_error": 0,
+        "native_result": "PASS",
+        "observed_words": [
+          "0x1010100"
+        ],
+        "producer_prediction": "PASS",
+        "raw_bytes": 55296000,
+        "raw_result_sha256": "9582826efd4a54834193399034dfa2c216cf8330c5dbe04ecd4fc05f8f4fa319",
+        "raw_yuv_result": "PASS",
+        "raw_yuyv_sha256": "e114aa87cc0d48e3d95f0d61b86ce3b2b164a56fd80c73492bed4d425da6f6b1",
+        "source_cicp": {
+          "full_range": 1,
+          "matrix": 1,
+          "primaries": 1,
+          "transfer": 1
+        },
+        "source_decoded_yuv_identical": true,
+        "source_decoded_yuv_sha256": "ff22f11c98142c49ab17c350592e329a14016c77d6900c88739204d95b06992d",
+        "source_media_sha256": "3d4ca289acccecf415f932efbeb6824d8ab5b8cff55f96a184f954af3b8a6621",
+        "source_vcl_identical": true
+      }
+    ],
+    "limitation": "Full control changes only VUI/container declaration: same VCL/software YUV as limited. Proves metadata priority and unchanged raw bytes, not 0..255 full-range picture quality.",
+    "receipt": "flea-color-word-hardware-20261029.json",
+    "receipt_sha256": "0438f7eec083eb0bab259ce586e66facbb6da0b03166d0d494e01f68167490e4"
+  },
+  "prior_raw_token_observation": {
+    "limited_and_full_same_fd_repeat2_tokens_each": [
+      1,
+      31
+    ],
+    "receipt_sha256": "f535af0d1250f1cd4ea43c24b987cf4d6badfa7fbbc5a486f3ce245121457547",
+    "restored": true,
+    "source": "e3df044",
+    "source_PTS_pixels_EOS": "PASS_FORMAT_IDENTITY_OBSERVATION"
+  },
+  "private_evidence_root": "/home/mache/.cache/crystalhd-issue538-range-format-run-20261102",
+  "retained_development_failures": [
+    "PIB01 added a post-dequeue status peek but compared against the pre-dequeue buffer image. Snapshot corrected at that point; parser unchanged for this correction.",
+    "native-build01 used the userspace EOS macro; corrected to the existing shared kernel firmware EOS constant, pinned/asserted by CPU test.",
+    "probe initial compile rejected mixed enum/unsigned conditional under Werror; explicit cast corrected."
+  ],
+  "schema": "crystalhd.issue538.format-source-range.v1",
+  "scope": "At a received valid native format event, correlate its raw token to the immutable admitted input-prefix snapshot and report explicit source range on CAPTURE before SOURCE_CHANGE. No pixel conversion.",
+  "source": "985f155baf2279f5292abf73c737ec89c1bf522f",
+  "source_bindings": {
+    "files": {
+      "driver/linux/crystalhd_fleafuncs.c": "437a0ba3289cb3c911a463f71a87c3d14c6936056c0a990e98f138bab62b6412",
+      "driver/linux/crystalhd_hw.c": "d9319e72697e41db299b97890d34b8923678c7c8e4baba3930ea662acb164163",
+      "driver/linux/crystalhd_hw.h": "5bc775db77a822587f09158286a118b9bfe667ddd746dc1cf8e6f69816798bd3",
+      "driver/linux/crystalhd_linkfuncs.c": "1f8e17cfe60395819e9e6de5496f1a00d00cd7f98605fb435dc02fb74f39eb2b",
+      "driver/linux/crystalhd_v4l2_decoder.c": "908f9e96db9c64936dbb48f5df845da91ab581f7e0bf26fda0c7f4afc15cff5e",
+      "driver/linux/crystalhd_v4l2_decoder.h": "fcb5013b297780535127ff6464006eaf4339418304863a6c7cefc9117833d787",
+      "driver/linux/crystalhd_v4l2_node.c": "414db2167e937f270529cc053978e5aaf4ffc26f816c3b3b40002b899580bea2",
+      "tests/flea-pib.c": "27c6d1dcb5daa56581936beaef345a7c10f1299a4d87532d9a999bf177822cce",
+      "tests/flea-pib.sh": "3ec53b1e3e512913d8f46ee7527c8b6d69f7d0793345d41e272e10975b782f73",
+      "tests/rx-ownership.c": "ea57f7562a02dda4736ac3e1e9264d12161821a16e7774c3bfdfcbeef7fcf039",
+      "tests/rx-ownership.sh": "a0fee155183299a5a42fc91733e7fa05ce85c6e14300361215526a82f8a38667",
+      "tests/v4l2-buffers.sh": "dc4ac8a53fcd080b9049fcf30b349d9cac6e8d39ba97802451df075d8d8d7b30",
+      "tests/v4l2-decode.cpp": "034c7e1b1ae903bff0f5c7a1b552f5956aa797901fb6ca69af4fa35133f97cb8",
+      "tests/v4l2-decoder.c": "c9c4074e9bcd4c0a7fd577c5647d2f772ebbf62cc45dfa776ed182b280f316b8",
+      "tests/v4l2-node.c": "869b646b1929ff6b776996ee3326bbc7930cf25392dacfe4e3f61fec954bcb36"
+    },
+    "module_sha256": "3b9d45723bb6e95675851a049fb98f3cc720e25bb4bf0195cde0cde852875f88",
+    "probe_sha256": "a511883fd99f4a848c6e029ef978feeef1254fa96c0403c14fb8e9a52416f31b",
+    "source": "985f155baf2279f5292abf73c737ec89c1bf522f",
+    "srcversion": "7C46B02B3F58D82CBFEADBF"
+  },
+  "status": "PASS_BOUNDED_NATIVE_SOURCE_RANGE"
+}

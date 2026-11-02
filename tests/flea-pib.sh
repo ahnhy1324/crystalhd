@@ -14,11 +14,14 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 awk '
-    /^struct crystalhd_rx_(metadata|completion|image)[[:space:]]*\{/ { copying = 1; found++ }
+    /^struct crystalhd_rx_(format_metadata|metadata|completion|image)[[:space:]]*\{/ { copying = 1; found++ }
     copying { print }
     copying && /^};/ { copying = 0 }
-    END { if (found != 3 || copying) exit 1 }
+    END { if (found != 4 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.h" > "$pib_test_dir/rx-metadata.h"
+awk '/^#define CRYSTALHD_PICTURE_FLAG_EOS / { print; found++ }
+     END { if (found != 1) exit 1 }' \
+    "$repo_dir/driver/linux/crystalhd_fw_if.h" >> "$pib_test_dir/rx-metadata.h"
 
 # Exercise the real bounds-checking buffer wrappers and opt-in pixel finisher.
 awk '

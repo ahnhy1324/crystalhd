@@ -65,6 +65,8 @@ enum { CHD_V4L2_OFF, CHD_V4L2_RUNNING, CHD_V4L2_DRAINING, CHD_V4L2_DRAINED, CHD_
 #define U8_MAX 255U
 #define V4L2_YCBCR_ENC_DEFAULT 0
 #define V4L2_QUANTIZATION_DEFAULT 0
+#define V4L2_QUANTIZATION_FULL_RANGE 1
+#define V4L2_QUANTIZATION_LIM_RANGE 2
 #define V4L2_XFER_FUNC_DEFAULT 0
 #define V4L2_XFER_FUNC_709 1
 #define V4L2_XFER_FUNC_SMPTE240M 4
@@ -80,6 +82,7 @@ struct vb2_buffer { u64 timestamp; unsigned payload, index, size; };
 struct vb2_v4l2_buffer { struct vb2_buffer vb2_buf; unsigned field, sequence, flags, done; };
 struct v4l2_m2m_buffer { struct vb2_v4l2_buffer vb; struct v4l2_m2m_buffer *next; };
 struct crystalhd_v4l2_output_buffer { struct { struct vb2_v4l2_buffer vb; } m2m; bool owned; };
+struct crystalhd_rx_format_metadata { u64 firmware_timestamp; bool valid; };
 struct crystalhd_rx_metadata { bool valid, eos_trailer; u32 picture_number, picture_flags; };
 struct crystalhd_rx_image { unsigned payload_bytes; };
 struct v4l2_event { unsigned type; union { struct { u32 changes; } src_change; } u; };
@@ -222,6 +225,7 @@ struct crystalhd_cmd {
 struct crystalhd_rx_completion {
     struct crystalhd_rx_buffer *buffer; void *cookie; unsigned flags; u64 capture_epoch;
     struct crystalhd_rx_metadata metadata;
+    struct crystalhd_rx_format_metadata format_metadata;
     struct { struct { u32 width, height, colour_primaries; } ppb; } pib;
 };
 struct pci_dev { unsigned device, irq; };
@@ -748,6 +752,18 @@ static int crystalhd_v4l2_decoder_complete_observed(struct crystalhd_v4l2_decode
             .full_range=true, .sps_id=3, .pps_id=5, .sps_generation=7};
     return rc;
 }
+static int range_lookup_rc = -ESTALE;
+static unsigned range_lookup_calls;
+static struct chd_h264_range_snapshot range_lookup_value;
+static int crystalhd_v4l2_decoder_peek_range(const struct crystalhd_v4l2_decoder *d,
+        u64 epoch, u64 token, struct chd_h264_range_snapshot *out)
+{
+    assert(fixture.run_lock.held && d == &fixture.decoder && epoch == d->epoch);
+    assert(!fixture.capture_started && !detached_owned && token == 17);
+    range_lookup_calls++;
+    if (!range_lookup_rc) *out = range_lookup_value;
+    return range_lookup_rc;
+}
 static int crystalhd_v4l2_decoder_reserve_mapped(struct crystalhd_v4l2_decoder *d,
         struct crystalhd_cmd *cmd, void *owner, struct crystalhd_v4l2_output_buffer *buffer, u64 timestamp, u64 *pts)
 {
@@ -863,6 +879,8 @@ static void crystalhd_rx_buffer_release(struct crystalhd_adp *adp,
 
 static void reset(bool running)
 {
+    range_lookup_rc = -ESTALE; range_lookup_calls = 0;
+    memset(&range_lookup_value, 0, sizeof(range_lookup_value));
     assert(!access_active);
     for (unsigned i = 0; i < CHD_DISCOVERY_BUFFERS; i++) {
         assert(!fixture.discovery[i].owned);
@@ -1198,6 +1216,32 @@ static void check_format_announcement(unsigned count, u32 width, u32 height,
 
 static void format_notification_cases(void)
 {
+    /* Source range must be visible in the event snapshot before any client
+     * CAPTURE exposure. Unknown input falls back anew, including after full.
+     */
+    for (unsigned dynamic = 0; dynamic < 2; dynamic++)
+    for (unsigned mode = 0; mode < 7; mode++) {
+        struct crystalhd_rx_buffer buffer = {0};
+        prepare_format_notification();
+        fixture.format_known = dynamic;
+        fixture.capture.quantization = V4L2_QUANTIZATION_FULL_RANGE;
+        fixture.decoder.count = 3;
+        struct crystalhd_rx_completion result = format_result(&buffer, 1280, 720, 0x01010100);
+        result.format_metadata = (struct crystalhd_rx_format_metadata){
+            .firmware_timestamp = 17, .valid = mode != 0 };
+        range_lookup_rc = mode == 1 ? -ESTALE : 0;
+        range_lookup_value = (struct chd_h264_range_snapshot){
+            .associated = mode != 2, .range_present = mode != 3,
+            .full_range = mode != 4, .sps_generation = 1 };
+        if (mode == 6) result.pib.ppb.colour_primaries = 0;
+        CHECK(!apply_format(&result));
+        CHECK(range_lookup_calls == (mode != 0) && fixture.decoder.count == 3);
+        CHECK(format_events == 1 && announced_format.quantization ==
+              (mode >= 5 ? V4L2_QUANTIZATION_FULL_RANGE : V4L2_QUANTIZATION_LIM_RANGE));
+        CHECK(fixture.capture.quantization == announced_format.quantization &&
+              fixture.output.quantization == V4L2_QUANTIZATION_LIM_RANGE &&
+              !last_buffer.done && !eos_events);
+    }
     /* Initial discovery can reuse a matching hinted allocation; an absent or
      * differently sized queued CAPTURE must still negotiate. Observe the
      * event before that optional reuse decision changes format_pending.
@@ -1288,6 +1332,8 @@ static void format_notification_cases(void)
         last_capture.owned = true; last_buffer.vb2_buf.payload = 1234;
         fixture.active[31] = &last_capture;
         struct crystalhd_rx_completion result = format_result(&buffer, 1920, 1080, 0x01010100);
+        result.format_metadata = (struct crystalhd_rx_format_metadata){
+            .firmware_timestamp = 17, .valid = true };
         int expected = -EIO;
         if (failure == 0) { result.pib.ppb.width = 1919; expected = -EINVAL; }
         if (failure == 1) { result.capture_epoch--; expected = BC_STS_IO_USER_ABORT; }
@@ -1302,7 +1348,7 @@ static void format_notification_cases(void)
         CHECK(!memcmp(&fixture.capture, &old_capture, sizeof(old_capture)) &&
               !memcmp(&fixture.output, &old_output, sizeof(old_output)) &&
               fixture.format_known && !fixture.format_pending);
-        CHECK(!format_events && !eos_events && !returns && !last_buffer.done &&
+        CHECK(!format_events && !range_lookup_calls && !eos_events && !returns && !last_buffer.done &&
               last_buffer.vb2_buf.payload == 1234 && !last_buffer.flags &&
               last_capture.owned && fixture.active[31] == &last_capture);
         CHECK(!detached_owned && pause_releases == 1 &&

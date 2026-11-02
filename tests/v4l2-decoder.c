@@ -335,12 +335,32 @@ static void observation_checks(void)
     RANGE_AU(limited);
     assert(!crystalhd_v4l2_decoder_submit(&d,&c,&owner,input,n,UINT64_MAX,100));
     assert(d.timestamps[2].input_range.sps_generation==3);
+    /* Format provenance peeks an exact admission, including an older SPS
+     * generation, without releasing tokens or changing parser state.
+     */
+    before=d;
+    for (unsigned k=0;k<3;k++) {
+        assert(!crystalhd_v4l2_decoder_peek_range(&d,d.epoch,k+1,&out));
+        assert(out.associated && out.range_present && out.sps_generation==k+1 &&
+               out.full_range==(k==1) && !memcmp(&before,&d,sizeof(d)));
+    }
+    for (unsigned k=0;k<4;k++) {
+        static const u64 bad[]={0,4,0xffffffffULL,UINT64_MAX};
+        out=saved;
+        assert(crystalhd_v4l2_decoder_peek_range(&d,d.epoch,bad[k],&out)==-ESTALE);
+        assert(!memcmp(&out,&saved,sizeof(out)) && !memcmp(&before,&d,sizeof(d)));
+    }
+    assert(crystalhd_v4l2_decoder_peek_range(&d,d.epoch-1,1,&out)==-ESTALE);
+    assert(!memcmp(&before,&d,sizeof(d)));
     for(unsigned i=0;i<3;i++) {
         static const unsigned order[]={2,0,1}; unsigned k=order[i];
         m.firmware_timestamp=k+1;
         assert(!crystalhd_v4l2_decoder_complete_observed(&d,&m,d.epoch,&timestamp,&out));
         assert(timestamp==(k==2?UINT64_MAX:0) && out.associated && out.range_present &&
                out.sps_generation==k+1 && out.full_range==(k==1));
+        out=saved;
+        assert(crystalhd_v4l2_decoder_peek_range(&d,d.epoch,k+1,&out)==-ESTALE);
+        assert(!memcmp(&out,&saved,sizeof(out)));
     }
     assert(!d.count);
     /* A full queue must not observe newer headers or even read mapped bytes. */
@@ -396,6 +416,7 @@ static void observation_checks(void)
     assert(crystalhd_v4l2_decoder_submit(&d,&c,&owner,input,n,123,100)==-EIO);
     assert(d.phase==CHD_V4L2_FAILED && d.count==1 && d.timestamps[0].input_range.associated &&
            !d.timestamps[0].input_range.full_range);
+    assert(crystalhd_v4l2_decoder_peek_range(&d,d.epoch,d.timestamps[0].token,&out)==-EPIPE);
     out=(struct chd_h264_range_snapshot){.sps_generation=777};saved=out;timestamp=9;
     m.firmware_timestamp=d.timestamps[0].token;
     assert(crystalhd_v4l2_decoder_complete_observed(&d,&m,d.epoch,&timestamp,&out)==-EPIPE);

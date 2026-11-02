@@ -223,6 +223,28 @@ int crystalhd_v4l2_decoder_drain(struct crystalhd_v4l2_decoder *d,
 	return crystalhd_v4l2_decoder_submitted(d, rc);
 }
 
+int crystalhd_v4l2_decoder_peek_range(const struct crystalhd_v4l2_decoder *d,
+	u64 epoch, u64 firmware_timestamp, struct chd_h264_range_snapshot *input_range)
+{
+	u32 i;
+
+	if (!d || !input_range)
+		return -EINVAL;
+	if (epoch != d->epoch)
+		return -ESTALE;
+	if (d->phase != CHD_V4L2_RUNNING && d->phase != CHD_V4L2_DRAINING)
+		return -EPIPE;
+	if (!firmware_timestamp || firmware_timestamp >= 0xffffffffULL)
+		return -ESTALE;
+	for (i = 0; i < CRYSTALHD_V4L2_TIMESTAMPS; i++) {
+		if (d->timestamps[i].token == firmware_timestamp) {
+			*input_range = d->timestamps[i].input_range;
+			return 0;
+		}
+	}
+	return -ESTALE;
+}
+
 int crystalhd_v4l2_decoder_complete_observed(struct crystalhd_v4l2_decoder *d,
 	const struct crystalhd_rx_metadata *metadata, u64 epoch, u64 *timestamp,
 	struct chd_h264_range_snapshot *input_range)
