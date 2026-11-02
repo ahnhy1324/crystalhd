@@ -61,6 +61,28 @@
       "sha256": "c5959c26874a78bb2da99c4a3e318561cfffb07bfc2541085b7e1e3814f06762"
     }
   },
+  "configuration_contracts": {
+    "CI_selection_groups": 38,
+    "canonical_managed_keys": 21,
+    "files": {
+      "CONFIGURATION-SCHEMA.md": "9cf91f02c4300dd0f9eedde15586e0ae64ba8173946770ead49f631f34f71b2c",
+      "CONFIGURATION.md": "ff5d678936e4c437cb7cafd956a83ce6e19d12fe70c51836a95164d83a918ba3",
+      "tests/configuration-inventory.test.py": "1d836eb752ae553a460dc8b2aeaa0e3d54e3c85f2be227859cf1a01646825f42",
+      "tests/configuration-schema.test.py": "a3bd857d150ac219975817a97923d30ae570bfa2c5528f3c53a7365bbfce681a"
+    },
+    "initial_CI_docs_failure": {
+      "reason": "New writable port property missing from configuration inventory; corrected inventory/schema and exact count/boundary expectations",
+      "run": 41384412420
+    },
+    "inventory": "PASS",
+    "logs": {
+      "ci-plan-final.log": "9efb90de7baf05ca147a11106c9f37f672d5ff9f6b1b91d8b9d96a85e2ee4f77",
+      "docs-contract-final.log": "f087aee0fa937e5822bfb95b2f74e6a39afb0d5085e6ef57fd5afe5b9224ad7a"
+    },
+    "new_port_disposition": "external-gst-output; per-element only, no saved profile/preset/manager key",
+    "production_surfaces": 41,
+    "schema_groups": 16
+  },
   "date": "2026-11-02",
   "direct_pool_control": {
     "RGB_readback": "retained white and following black at window center",

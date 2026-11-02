@@ -499,6 +499,7 @@ These current surfaces deliberately do not become ordinary merged keys:
 | `crystalhd-play --video-output` <!-- schema-boundary:player-flag:--video-output=invocation-only --> | Per-invocation `auto`, experimental `xv-async` or experimental `field-gpu`; no saved profile/preset key or default promotion |
 | `crystalhd-play --packed-upscale` <!-- schema-boundary:player-flag:--packed-upscale=invocation-only --> | Explicit experimental fused resize for this invocation; no saved profile/preset key or default promotion |
 | `crystalhdxvsink display` <!-- schema-boundary:gst-property:display=external-gst-output --> | Optional renderer's own GStreamer property; the manager does not set it or replace the X11 session's `DISPLAY` |
+| `crystalhdxvsink port` <!-- schema-boundary:gst-property:port=external-gst-output --> | Optional renderer's per-element startup/live port selection; zero auto-selects at startup or keeps the active live port. No saved key, preset or manager translation |
 
 External loader selectors such as `LIBVA_DRIVER_NAME`, `VAAPI_FORCE_INDIRECT`,
 `GST_PLUGIN_PATH` and `LD_LIBRARY_PATH` remain owned by their respective

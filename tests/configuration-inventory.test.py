@@ -100,7 +100,7 @@ def gst_properties() -> set[str]:
                 raise ValueError("packed upscale observations must remain read-only")
             continue
         if path.name == "gstcrystalhdxv.c":
-            # This renderer mixes the public display selector with one
+            # This renderer mixes public display/port selectors with one
             # strictly read-only observation; retain the existing all-readonly
             # controller check below unchanged.
             observations = re.findall(r'g_param_spec_boxed\(\s*"xv-stats".*?\)\);', source, re.DOTALL)
